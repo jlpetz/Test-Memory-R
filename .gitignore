@@ -1,0 +1,17 @@
+# Ignore target directory (build artifacts)
+target/
+
+# Ignore backup and temp files
+**/*.rs.bk
+**/*~
+**/#*#
+**/.#*
+
+# By Cargo: https://github.com/github/gitignore/blob/main/Rust.gitignore
+/target
+**/*.rs.bk
+Cargo.lock
+
+# Ignore patch files
+*patch*.txt
+*.patch
