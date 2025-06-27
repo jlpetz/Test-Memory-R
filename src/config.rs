@@ -1,4 +1,4 @@
-use crate::{ErrorMode, MemoryReserve};
+use crate::{ErrorMode, MemoryStrategy, MemorySpec};
 use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
 use std::fs;
@@ -27,23 +27,48 @@ pub struct ConfigMetadata {
     pub version: String,
     pub description: Option<String>,
     pub created: Option<String>,
-    pub tested_with_version: String, // TMR version this config was developed with
+    pub tested_with_version: String,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct SystemConfig {
-    pub memory_reserve: MemoryReserveConfig,
+    pub memory_strategy: MemoryStrategyConfig,
     pub cpu_config: CpuConfig,
-    pub error_mode: String, // "log", "halt", "panic"
+    pub error_mode: String,
     pub cycles: u32,
     pub large_pages: bool,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
-pub struct MemoryReserveConfig {
+pub struct MemoryStrategyConfig {
     #[serde(rename = "type")]
-    pub reserve_type: String, // "percent", "gib", "mib"
-    pub value: f64,
+    pub strategy_type: String, // "single_block", "multi_block"
+    
+    // Memory specification
+    pub memory_spec: MemorySpecConfig,
+    
+    // TM5-compatible chunking
+    pub test_chunk_size_mb: Option<u32>, // None = no chunking, Some(size) = TM5-style chunking
+    
+    // Multi-block settings (only used when strategy_type = "multi_block")
+    pub blocks_per_thread: Option<u32>,
+    pub min_block_size_mb: Option<u32>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct MemorySpecConfig {
+    #[serde(rename = "type")]
+    pub spec_type: String, // "fixed_window", "percent_reserve", "absolute_reserve"
+    
+    // Fixed window (TM5-style)
+    pub size_mb: Option<u32>,
+    pub reserved_mb: Option<u32>,
+    
+    // Percentage reserve (modern)
+    pub percent: Option<f64>,
+    
+    // Absolute reserve (modern)
+    pub gib: Option<f64>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -127,12 +152,34 @@ impl ModernConfig {
     }
 
     // Convert to runtime configuration
-    pub fn to_memory_reserve(&self) -> MemoryReserve {
-        match self.system.memory_reserve.reserve_type.as_str() {
-            "percent" => MemoryReserve::PercentFree(self.system.memory_reserve.value),
-            "gib" => MemoryReserve::GiB(self.system.memory_reserve.value),
-            "mib" => MemoryReserve::MiB(self.system.memory_reserve.value),
-            _ => MemoryReserve::PercentFree(10.0), // default
+    pub fn to_memory_strategy(&self) -> MemoryStrategy {
+        let memory_spec = match self.system.memory_strategy.memory_spec.spec_type.as_str() {
+            "fixed_window" => MemorySpec::FixedWindow {
+                size_mb: self.system.memory_strategy.memory_spec.size_mb.unwrap_or(880),
+                reserved_mb: self.system.memory_strategy.memory_spec.reserved_mb.unwrap_or(128),
+            },
+            "percent_reserve" => MemorySpec::PercentReserve(
+                self.system.memory_strategy.memory_spec.percent.unwrap_or(10.0)
+            ),
+            "absolute_reserve" => MemorySpec::AbsoluteReserve(
+                self.system.memory_strategy.memory_spec.gib.unwrap_or(2.0)
+            ),
+            _ => MemorySpec::PercentReserve(10.0), // default
+        };
+
+        match self.system.memory_strategy.strategy_type.as_str() {
+            "single_block" => MemoryStrategy::SingleBlock {
+                memory_spec,
+                test_chunk_size_mb: self.system.memory_strategy.test_chunk_size_mb,
+            },
+            "multi_block" => MemoryStrategy::MultiBlock {
+                blocks_per_thread: self.system.memory_strategy.blocks_per_thread.unwrap_or(4),
+                min_block_size_mb: self.system.memory_strategy.min_block_size_mb.unwrap_or(256),
+            },
+            _ => MemoryStrategy::SingleBlock {
+                memory_spec: MemorySpec::PercentReserve(10.0),
+                test_chunk_size_mb: None,
+            }, // default
         }
     }
 
@@ -144,26 +191,35 @@ impl ModernConfig {
         }
     }
 
-    pub fn create_demo_config() -> Self {
+    pub fn create_demo_tm5_compatible() -> Self {
         ModernConfig {
             config_format_version: CONFIG_VERSION.to_string(),
             application_name: format!("{} ({})", APP_NAME, APP_SHORT_NAME),
             metadata: ConfigMetadata {
-                name: "High Performance DDR5 Test".to_string(),
+                name: "TM5-Compatible Memory Test".to_string(),
                 author: "tmr_user".to_string(),
                 version: "1.0".to_string(),
-                description: Some("Comprehensive DDR5 memory testing with SIMD optimizations".to_string()),
+                description: Some("TM5-compatible memory testing with chunking".to_string()),
                 created: Some("2025-06-27".to_string()),
                 tested_with_version: APP_VERSION.to_string(),
             },
             system: SystemConfig {
-                memory_reserve: MemoryReserveConfig {
-                    reserve_type: "percent".to_string(),
-                    value: 15.0,
+                memory_strategy: MemoryStrategyConfig {
+                    strategy_type: "single_block".to_string(),
+                    memory_spec: MemorySpecConfig {
+                        spec_type: "fixed_window".to_string(),
+                        size_mb: Some(880),
+                        reserved_mb: Some(128),
+                        percent: None,
+                        gib: None,
+                    },
+                    test_chunk_size_mb: Some(16), // TM5-style chunking
+                    blocks_per_thread: None,
+                    min_block_size_mb: None,
                 },
                 cpu_config: CpuConfig {
                     cpu_type: "cores".to_string(),
-                    usage_percent: 75,
+                    usage_percent: 100,
                 },
                 error_mode: "log".to_string(),
                 cycles: 3,
@@ -173,26 +229,6 @@ impl ModernConfig {
                 TestConfig {
                     enabled: true,
                     function: "MirrorMove128NonTemporal".to_string(),
-                    time_percent: 100,
-                    block_size_mb: None,
-                    pattern_mode: None,
-                    pattern_param0: None,
-                    pattern_param1: None,
-                    parameter: None,
-                },
-                TestConfig {
-                    enabled: true,
-                    function: "MirrorMove256NonTemporal".to_string(),
-                    time_percent: 100,
-                    block_size_mb: None,
-                    pattern_mode: None,
-                    pattern_param0: None,
-                    pattern_param1: None,
-                    parameter: None,
-                },
-                TestConfig {
-                    enabled: true,
-                    function: "MirrorMove512NonTemporal".to_string(),
                     time_percent: 100,
                     block_size_mb: None,
                     pattern_mode: None,
@@ -220,10 +256,49 @@ impl ModernConfig {
                     pattern_param1: None,
                     parameter: None,
                 },
+            ],
+        }
+    }
+
+    pub fn create_demo_modern_optimal() -> Self {
+        ModernConfig {
+            config_format_version: CONFIG_VERSION.to_string(),
+            application_name: format!("{} ({})", APP_NAME, APP_SHORT_NAME),
+            metadata: ConfigMetadata {
+                name: "Modern Optimal Memory Test".to_string(),
+                author: "tmr_user".to_string(),
+                version: "1.0".to_string(),
+                description: Some("Modern optimized memory testing for high-performance systems".to_string()),
+                created: Some("2025-06-27".to_string()),
+                tested_with_version: APP_VERSION.to_string(),
+            },
+            system: SystemConfig {
+                memory_strategy: MemoryStrategyConfig {
+                    strategy_type: "single_block".to_string(),
+                    memory_spec: MemorySpecConfig {
+                        spec_type: "percent_reserve".to_string(),
+                        size_mb: None,
+                        reserved_mb: None,
+                        percent: Some(15.0),
+                        gib: None,
+                    },
+                    test_chunk_size_mb: None, // No chunking for modern optimal
+                    blocks_per_thread: None,
+                    min_block_size_mb: None,
+                },
+                cpu_config: CpuConfig {
+                    cpu_type: "threads".to_string(),
+                    usage_percent: 100,
+                },
+                error_mode: "log".to_string(),
+                cycles: 3,
+                large_pages: true,
+            },
+            test_sequence: vec![
                 TestConfig {
                     enabled: true,
-                    function: "RandomTorture".to_string(),
-                    time_percent: 300,
+                    function: "MirrorMove256NonTemporal".to_string(),
+                    time_percent: 100,
                     block_size_mb: None,
                     pattern_mode: None,
                     pattern_param0: None,
@@ -232,8 +307,28 @@ impl ModernConfig {
                 },
                 TestConfig {
                     enabled: true,
-                    function: "StrideAccess".to_string(),
+                    function: "MirrorMove512NonTemporal".to_string(),
                     time_percent: 100,
+                    block_size_mb: None,
+                    pattern_mode: None,
+                    pattern_param0: None,
+                    pattern_param1: None,
+                    parameter: None,
+                },
+                TestConfig {
+                    enabled: true,
+                    function: "SimpleTest".to_string(),
+                    time_percent: 200,
+                    block_size_mb: Some(32),
+                    pattern_mode: Some(2),
+                    pattern_param0: Some(0x12345678),
+                    pattern_param1: Some(0x87654321),
+                    parameter: Some(0),
+                },
+                TestConfig {
+                    enabled: true,
+                    function: "RandomTorture".to_string(),
+                    time_percent: 300,
                     block_size_mb: None,
                     pattern_mode: None,
                     pattern_param0: None,
@@ -316,7 +411,6 @@ impl LegacyConfig {
         // Parse tests
         let mut tests = Vec::new();
         for i in 0..=15 {
-            // Legacy configs typically have Test0-Test15
             let test_section = format!("Test{}", i);
             if let Some(test) = sections.get(&test_section) {
                 let legacy_test = LegacyTest {
@@ -349,22 +443,6 @@ impl LegacyConfig {
 
     // Convert legacy config to modern config v2.0
     pub fn to_modern_config(&self) -> ModernConfig {
-        let memory_reserve = if self.memory_setup.testing_window_size_mb > 0 {
-            // Convert testing window size to percentage (rough approximation)
-            let estimated_percent = (self.memory_setup.reserved_memory_mb as f64
-                / (self.memory_setup.testing_window_size_mb + self.memory_setup.reserved_memory_mb) as f64)
-                * 100.0;
-            MemoryReserveConfig {
-                reserve_type: "percent".to_string(),
-                value: estimated_percent.max(5.0).min(50.0), // Clamp to reasonable range
-            }
-        } else {
-            MemoryReserveConfig {
-                reserve_type: "percent".to_string(),
-                value: 10.0,
-            }
-        };
-
         let test_sequence = self
             .tests
             .iter()
@@ -397,7 +475,19 @@ impl LegacyConfig {
                 tested_with_version: APP_VERSION.to_string(),
             },
             system: SystemConfig {
-                memory_reserve,
+                memory_strategy: MemoryStrategyConfig {
+                    strategy_type: "single_block".to_string(),
+                    memory_spec: MemorySpecConfig {
+                        spec_type: "fixed_window".to_string(),
+                        size_mb: Some(self.memory_setup.testing_window_size_mb),
+                        reserved_mb: Some(self.memory_setup.reserved_memory_mb),
+                        percent: None,
+                        gib: None,
+                    },
+                    test_chunk_size_mb: Some(0), // TM5 legacy - 0 means use full window per thread
+                    blocks_per_thread: None,
+                    min_block_size_mb: None,
+                },
                 cpu_config: CpuConfig {
                     cpu_type: if self.main_section.cores > 0 { "cores" } else { "threads" }.to_string(),
                     usage_percent: 100,
@@ -415,7 +505,7 @@ impl LegacyConfig {
         match legacy_name {
             "RefreshStable" => "RefreshStable".to_string(),
             "SimpleTest" => "SimpleTest".to_string(),
-            "MirrorMove" => "MirrorMove128NonTemporal".to_string(), // Map basic to 128-bit
+            "MirrorMove" => "MirrorMove128NonTemporal".to_string(),
             "MirrorMove128" => "MirrorMove128NonTemporal".to_string(),
             "MirrorMove256" => "MirrorMove256NonTemporal".to_string(),
             "MirrorMove512" => "MirrorMove512NonTemporal".to_string(),
@@ -451,13 +541,25 @@ pub fn load_config(path: &str) -> Result<ModernConfig, String> {
 
 // Generate demo configs
 pub fn create_demo_configs() -> Result<(), String> {
-    // Create modern demo config
-    let modern_config = ModernConfig::create_demo_config();
-    modern_config.save_to_file("demo_modern_v2.json")?;
+    // Create TM5-compatible demo config
+    let tm5_config = ModernConfig::create_demo_tm5_compatible();
+    tm5_config.save_to_file("demo_tm5_compatible.json")?;
 
-    println!("✅ Created demo_modern_v2.json - Modern configuration format v2.0");
-    println!("   Features: JSON format, version tracking, full parameter control, SIMD tests");
-    println!("   Compatible with: {} v{}", APP_NAME, APP_VERSION);
+    // Create modern optimal demo config
+    let modern_config = ModernConfig::create_demo_modern_optimal();
+    modern_config.save_to_file("demo_modern_optimal.json")?;
+
+    println!("✅ Created demo_tm5_compatible.json - TM5-compatible mode");
+    println!("   Features: Fixed testing window, test chunking, backwards compatible");
+    println!("   Memory: Single large block per thread with optional TM5-style chunking");
+    println!();
+    println!("✅ Created demo_modern_optimal.json - Modern optimal mode");
+    println!("   Features: Percentage-based allocation, no chunking, SIMD optimized");
+    println!("   Memory: Single optimized block per thread for maximum throughput");
+    println!();
+    println!("Key Difference:");
+    println!("  TM5-Compatible: Uses test_chunk_size_mb for TM5-style test chunking");
+    println!("  Modern Optimal: No chunking - tests run on full blocks for better performance");
 
     Ok(())
 }

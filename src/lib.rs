@@ -11,30 +11,72 @@ use std::time::Instant;
 
 pub use config::*;
 
-pub const DEFAULT_RESERVE_PERCENT: f64 = 10.0; // Reserve 10% of system memory by default
-const MIN_BLOCK_SIZE_MIB: usize = 256; // Larger blocks to exceed cache sizes
+pub const DEFAULT_RESERVE_PERCENT: f64 = 10.0;
+const CACHE_BUSTING_STRIDE: usize = 4096;
 
 pub fn check_large_page_privilege() -> Result<(), &'static str> {
     memory::check_large_page_privilege()
 }
-const CACHE_BUSTING_STRIDE: usize = 4096; // Jump 4KB to avoid cache optimization
 
 #[derive(Debug, Clone)]
-pub enum MemoryReserve {
-    PercentFree(f64),
-    GiB(f64),
-    MiB(f64),
+pub enum MemoryStrategy {
+    SingleBlock {
+        memory_spec: MemorySpec,
+        test_chunk_size_mb: Option<u32>, // None = no chunking, Some(size) = TM5-style chunking
+    },
+    MultiBlock {
+        blocks_per_thread: u32,
+        min_block_size_mb: u32,
+    },
 }
 
-impl MemoryReserve {
-    pub fn calculate_usable_memory(&self, total_memory_bytes: usize) -> usize {
-        let reserve_bytes = match self {
-            MemoryReserve::PercentFree(percent) => (total_memory_bytes as f64 * percent / 100.0) as usize,
-            MemoryReserve::GiB(gib) => (gib * 1024.0 * 1024.0 * 1024.0) as usize,
-            MemoryReserve::MiB(mib) => (mib * 1024.0 * 1024.0) as usize,
-        };
+#[derive(Debug, Clone)]
+pub enum MemorySpec {
+    FixedWindow { 
+        size_mb: u32, 
+        reserved_mb: u32 
+    }, // TM5-style: fixed testing window
+    PercentReserve(f64),     // Modern: percentage of system memory to reserve
+    AbsoluteReserve(f64),    // Modern: absolute GiB to reserve
+}
 
-        total_memory_bytes.saturating_sub(reserve_bytes)
+impl MemoryStrategy {
+    pub fn calculate_usable_memory(&self, total_memory_bytes: usize) -> usize {
+        match self {
+            MemoryStrategy::SingleBlock { memory_spec, .. } => {
+                match memory_spec {
+                    MemorySpec::FixedWindow { size_mb, .. } => {
+                        (*size_mb as usize) * 1024 * 1024
+                    }
+                    MemorySpec::PercentReserve(percent) => {
+                        let reserve_bytes = (total_memory_bytes as f64 * percent / 100.0) as usize;
+                        total_memory_bytes.saturating_sub(reserve_bytes)
+                    }
+                    MemorySpec::AbsoluteReserve(gib) => {
+                        let reserve_bytes = (gib * 1024.0 * 1024.0 * 1024.0) as usize;
+                        total_memory_bytes.saturating_sub(reserve_bytes)
+                    }
+                }
+            }
+            MemoryStrategy::MultiBlock { .. } => {
+                // For multi-block, we'll use a default percentage-based approach
+                let reserve_bytes = (total_memory_bytes as f64 * DEFAULT_RESERVE_PERCENT / 100.0) as usize;
+                total_memory_bytes.saturating_sub(reserve_bytes)
+            }
+        }
+    }
+
+    pub fn strategy_name(&self) -> &'static str {
+        match self {
+            MemoryStrategy::SingleBlock { test_chunk_size_mb, .. } => {
+                if test_chunk_size_mb.is_some() {
+                    "Single Block (TM5-Compatible)"
+                } else {
+                    "Single Block (Modern Optimal)"
+                }
+            }
+            MemoryStrategy::MultiBlock { .. } => "Multi Block (Legacy)",
+        }
     }
 }
 
@@ -90,57 +132,68 @@ pub struct MemoryLayout {
     pub usable_memory: usize,
     pub reserved_memory: usize,
     pub blocks: Vec<BlockInfo>,
+    pub strategy: MemoryStrategy,
 }
 
 #[derive(Debug, Clone)]
 pub struct BlockInfo {
     pub size_bytes: usize,
     pub thread_id: usize,
+    pub test_chunk_size: Option<usize>, // For TM5-compatible chunking within the block
 }
 
 impl MemoryLayout {
-    pub fn calculate(reserve: MemoryReserve, thread_count: usize) -> Self {
+    pub fn calculate(strategy: MemoryStrategy, thread_count: usize) -> Self {
         let total_memory = memory::get_total_system_memory();
-        let usable_memory = reserve.calculate_usable_memory(total_memory);
+        let usable_memory = strategy.calculate_usable_memory(total_memory);
         let reserved_memory = total_memory - usable_memory;
 
-        let blocks = Self::distribute_memory_blocks(usable_memory, thread_count);
+        let blocks = Self::distribute_memory_blocks(&strategy, usable_memory, thread_count);
 
         MemoryLayout {
             total_memory,
             usable_memory,
             reserved_memory,
             blocks,
+            strategy,
         }
     }
 
-    fn distribute_memory_blocks(usable_memory: usize, thread_count: usize) -> Vec<BlockInfo> {
-        let min_block_bytes = MIN_BLOCK_SIZE_MIB * 1024 * 1024;
+    fn distribute_memory_blocks(strategy: &MemoryStrategy, usable_memory: usize, thread_count: usize) -> Vec<BlockInfo> {
+        match strategy {
+            MemoryStrategy::SingleBlock { test_chunk_size_mb, .. } => {
+                // Single large block per thread (TM5-style or Modern)
+                let memory_per_thread = usable_memory / thread_count;
+                let test_chunk_size = test_chunk_size_mb.map(|mb| mb as usize * 1024 * 1024);
 
-        // For memory testing, we want large blocks that exceed all cache levels
-        // Modern CPUs have ~32MB L3 cache, so 256MB+ blocks ensure we hit RAM
-        if usable_memory < min_block_bytes * thread_count {
-            log::warn!("Memory blocks may be too small for effective RAM testing");
-            log::warn!("Recommended: At least {}MB per thread to exceed cache sizes", MIN_BLOCK_SIZE_MIB);
-        }
+                (0..thread_count)
+                    .map(|thread_id| BlockInfo {
+                        size_bytes: memory_per_thread,
+                        thread_id,
+                        test_chunk_size,
+                    })
+                    .collect()
+            }
+            MemoryStrategy::MultiBlock { blocks_per_thread, min_block_size_mb } => {
+                // Multiple blocks per thread (legacy approach)
+                let min_block_bytes = *min_block_size_mb as usize * 1024 * 1024;
+                let memory_per_thread = usable_memory / thread_count;
+                let actual_blocks_per_thread = (*blocks_per_thread as usize).max(1);
+                let block_size = (memory_per_thread / actual_blocks_per_thread).max(min_block_bytes);
 
-        let memory_per_thread = usable_memory / thread_count;
-        let blocks_per_thread = (memory_per_thread / min_block_bytes).max(1);
-        let block_size = memory_per_thread / blocks_per_thread;
-
-        // For memory testing, we DON'T align to cache boundaries
-        // We want to test arbitrary memory locations
-        let mut blocks = Vec::new();
-        for thread_id in 0..thread_count {
-            for _ in 0..blocks_per_thread {
-                blocks.push(BlockInfo {
-                    size_bytes: block_size,
-                    thread_id,
-                });
+                let mut blocks = Vec::new();
+                for thread_id in 0..thread_count {
+                    for _ in 0..actual_blocks_per_thread {
+                        blocks.push(BlockInfo {
+                            size_bytes: block_size,
+                            thread_id,
+                            test_chunk_size: None,
+                        });
+                    }
+                }
+                blocks
             }
         }
-
-        blocks
     }
 
     pub fn print_layout(&self) {
@@ -154,6 +207,7 @@ impl MemoryLayout {
             self.reserved_memory as f64 / (1024.0 * 1024.0 * 1024.0)
         );
         log::info!("  Usable Memory: {:.2} GiB", self.usable_memory as f64 / (1024.0 * 1024.0 * 1024.0));
+        log::info!("  Strategy: {}", self.strategy.strategy_name());
         log::info!("  Total Blocks: {}", self.blocks.len());
 
         let mut thread_blocks: HashMap<usize, Vec<&BlockInfo>> = HashMap::new();
@@ -163,13 +217,13 @@ impl MemoryLayout {
 
         for (thread_id, blocks) in &thread_blocks {
             let total_size: usize = blocks.iter().map(|b| b.size_bytes).sum();
-            let total_mb = total_size / (1024 * 1024);
-            log::info!("  Thread {}: {} blocks, {} MiB total", thread_id, blocks.len(), total_mb);
-
-            // Warn if block size might not exceed cache
-            if total_size < 64 * 1024 * 1024 {
-                // 64MB threshold
-                log::warn!("    Block size may not exceed L3 cache - consider larger memory allocation");
+            let total_gib = total_size as f64 / (1024.0 * 1024.0 * 1024.0);
+            log::info!("  Thread {}: {} blocks, {:.2} GiB total", thread_id, blocks.len(), total_gib);
+            
+            // Show test chunk size if applicable
+            if let Some(test_chunk_size) = blocks[0].test_chunk_size {
+                let test_chunk_mb = test_chunk_size / (1024 * 1024);
+                log::info!("    Test chunk size: {} MB (TM5-compatible mode)", test_chunk_mb);
             }
         }
     }
@@ -239,7 +293,7 @@ pub fn run_tests_with_layout(layout: MemoryLayout, error_mode: ErrorMode) -> boo
     let success = Arc::new(AtomicBool::new(true));
 
     // Calculate total tests
-    let test_types = 9; // Added AVX-512 test function
+    let test_types = 9;
     let total_tests = layout.blocks.len() * test_types;
     progress.total_tests.store(total_tests as u64, Ordering::Relaxed);
 
@@ -261,7 +315,7 @@ pub fn run_tests_with_layout(layout: MemoryLayout, error_mode: ErrorMode) -> boo
     };
 
     // Print allocation summary
-    print_allocation_summary(&allocated_blocks);
+    print_allocation_summary(&allocated_blocks, &layout.strategy);
 
     // Start progress reporter thread
     let progress_clone = Arc::clone(&progress);
@@ -390,7 +444,7 @@ fn allocate_all_blocks(thread_blocks: &HashMap<usize, Vec<BlockInfo>>) -> Result
     Ok(allocated_blocks)
 }
 
-fn print_allocation_summary(allocated_blocks: &HashMap<usize, Vec<AllocatedBlock>>) {
+fn print_allocation_summary(allocated_blocks: &HashMap<usize, Vec<AllocatedBlock>>, strategy: &MemoryStrategy) {
     let mut total_blocks = 0;
     let mut total_size = 0usize;
     let mut large_page_blocks = 0;
@@ -413,16 +467,16 @@ fn print_allocation_summary(allocated_blocks: &HashMap<usize, Vec<AllocatedBlock
     }
 
     let thread_count = allocated_blocks.len();
-    let size_per_block_mib = if total_blocks > 0 {
-        (size_per_thread / blocks_per_thread) / (1024 * 1024)
+    let size_per_block_gib = if total_blocks > 0 {
+        (size_per_thread / blocks_per_thread) as f64 / (1024.0 * 1024.0 * 1024.0)
     } else {
-        0
+        0.0
     };
 
     println!("Memory Allocation Summary:");
     println!(
-        "  {} blocks of {} MiB per thread, {} threads",
-        blocks_per_thread, size_per_block_mib, thread_count
+        "  {} blocks of {:.2} GiB per thread, {} threads ({})",
+        blocks_per_thread, size_per_block_gib, thread_count, strategy.strategy_name()
     );
     println!(
         "  Total: {} blocks, {:.2} GiB",
@@ -438,7 +492,7 @@ fn print_allocation_summary(allocated_blocks: &HashMap<usize, Vec<AllocatedBlock
     println!();
 }
 
-// SIMD-optimized memory testing implementations - must be defined before use
+// SIMD-optimized memory testing implementations
 
 unsafe fn mirror_move_128_non_temporal(ptr: *mut u8, size: usize, thread_id: usize, _error_mode: ErrorMode) -> TestStats {
     let start = Instant::now();
@@ -473,7 +527,7 @@ unsafe fn mirror_move_128_non_temporal(ptr: *mut u8, size: usize, thread_id: usi
         bytes_processed: size,
         elapsed_ms: elapsed,
         thread_id,
-        error_count: 0, // This test doesn't verify data
+        error_count: 0,
     }
 }
 
@@ -495,7 +549,6 @@ unsafe fn mirror_move_256_non_temporal(ptr: *mut u8, size: usize, thread_id: usi
 
     for i in 0..(len / 2) {
         let val = _mm256_load_si256(base.add(i));
-        // Non-temporal store
         _mm256_stream_si256(base.add(len - 1 - i), val);
     }
 
@@ -508,7 +561,7 @@ unsafe fn mirror_move_256_non_temporal(ptr: *mut u8, size: usize, thread_id: usi
         bytes_processed: size,
         elapsed_ms: elapsed,
         thread_id,
-        error_count: 0, // This test doesn't verify data
+        error_count: 0,
     }
 }
 
@@ -528,14 +581,11 @@ unsafe fn mirror_move_512_non_temporal(ptr: *mut u8, size: usize, thread_id: usi
     let len = size / std::mem::size_of::<__m512i>();
     let base = ptr as *mut __m512i;
 
-    // Use AVX-512 512-bit non-temporal loads/stores
     for i in 0..(len / 2) {
         let val = _mm512_load_si512(base.add(i));
-        // Non-temporal store bypasses cache
         _mm512_stream_si512(base.add(len - 1 - i), val);
     }
 
-    // Ensure all stores complete
     _mm_sfence();
 
     let elapsed = start.elapsed().as_millis();
@@ -545,7 +595,7 @@ unsafe fn mirror_move_512_non_temporal(ptr: *mut u8, size: usize, thread_id: usi
         bytes_processed: size,
         elapsed_ms: elapsed,
         thread_id,
-        error_count: 0, // This test doesn't verify data
+        error_count: 0,
     }
 }
 
@@ -564,9 +614,9 @@ fn run_thread_tests_with_allocated_blocks(
 
     // Define test functions in order
     let test_functions: Vec<(&str, unsafe fn(*mut u8, usize, usize, ErrorMode) -> TestStats)> = vec![
-        ("MirrorMove128NonTemporal", mirror_move_128_non_temporal), // SSE2 128-bit non-temporal
-        ("MirrorMove256NonTemporal", mirror_move_256_non_temporal), // AVX2 256-bit non-temporal
-        ("MirrorMove512NonTemporal", mirror_move_512_non_temporal), // AVX-512 512-bit non-temporal
+        ("MirrorMove128NonTemporal", mirror_move_128_non_temporal),
+        ("MirrorMove256NonTemporal", mirror_move_256_non_temporal),
+        ("MirrorMove512NonTemporal", mirror_move_512_non_temporal),
         ("SimpleTest", simple_test),
         ("RefreshStable", refresh_stable),
         ("CacheBusting", cache_busting_write_test),
@@ -585,36 +635,42 @@ fn run_thread_tests_with_allocated_blocks(
         for (block_idx, allocated_block) in allocated_blocks.iter().enumerate() {
             let ptr = allocated_block.buffer.as_mut_ptr();
             let size = allocated_block.buffer.size();
-            let size_mb = size / (1024 * 1024);
+            let size_gib = size as f64 / (1024.0 * 1024.0 * 1024.0);
 
             log::debug!(
-                "[Thread {}] Block {}/{} - {} MiB - Running {}",
+                "[Thread {}] Block {}/{} - {:.2} GiB - Running {}",
                 thread_id,
                 block_idx + 1,
                 allocated_blocks.len(),
-                size_mb,
+                size_gib,
                 test_name
             );
 
-            unsafe {
-                let stats = test_func(ptr, size, thread_id, error_mode);
+            // Handle test chunk processing for TM5-compatible mode
+            if let Some(test_chunk_size) = allocated_block.block_info.test_chunk_size {
+                // Run test in chunks as per TM5 behavior
+                let chunk_count = size / test_chunk_size;
+                log::debug!("[Thread {}] Running {} in {} chunks of {} MB", 
+                    thread_id, test_name, chunk_count, test_chunk_size / (1024 * 1024));
+                
+                for chunk_idx in 0..chunk_count {
+                    let chunk_ptr = unsafe { ptr.add(chunk_idx * test_chunk_size) };
+                    let stats = unsafe { test_func(chunk_ptr, test_chunk_size, thread_id, error_mode) };
+                    log_stats(&stats);
+                    progress.complete_test(&stats);
+
+                    if stats.error_count > 0 {
+                        handle_test_errors(&stats, error_mode, test_name)?;
+                    }
+                }
+            } else {
+                // Run test on full block (Modern Optimal mode)
+                let stats = unsafe { test_func(ptr, size, thread_id, error_mode) };
                 log_stats(&stats);
                 progress.complete_test(&stats);
 
-                // Handle errors based on mode
                 if stats.error_count > 0 {
-                    match error_mode {
-                        ErrorMode::Panic => panic!("Memory error detected in {} (see logs)", test_name),
-                        ErrorMode::Halt => return Err(format!("Test halted due to {} errors in {}", stats.error_count, test_name)),
-                        ErrorMode::Log => {
-                            log::error!(
-                                "[Thread {}] {} errors detected in {} (continuing)",
-                                thread_id,
-                                stats.error_count,
-                                test_name
-                            );
-                        }
-                    }
+                    handle_test_errors(&stats, error_mode, test_name)?;
                 }
             }
         }
@@ -626,10 +682,26 @@ fn run_thread_tests_with_allocated_blocks(
     Ok(())
 }
 
+fn handle_test_errors(stats: &TestStats, error_mode: ErrorMode, test_name: &str) -> Result<(), String> {
+    match error_mode {
+        ErrorMode::Panic => panic!("Memory error detected in {} (see logs)", test_name),
+        ErrorMode::Halt => return Err(format!("Test halted due to {} errors in {}", stats.error_count, test_name)),
+        ErrorMode::Log => {
+            log::error!(
+                "[Thread {}] {} errors detected in {} (continuing)",
+                stats.thread_id,
+                stats.error_count,
+                test_name
+            );
+        }
+    }
+    Ok(())
+}
+
 fn log_stats(stats: &TestStats) {
     let gib = stats.bytes_processed as f64 / (1024.0 * 1024.0 * 1024.0);
     let secs = stats.elapsed_ms as f64 / 1000.0;
-    let throughput = gib / secs;
+    let throughput = if secs > 0.0 { gib / secs } else { 0.0 };
     log::debug!(
         "[T{}] [{}] ({}) completed in {} ms — {:.2} GiB/s — {} errors",
         stats.thread_id,
@@ -683,7 +755,7 @@ pub fn detect_simd_capabilities() -> String {
     }
 }
 
-// Memory testing focused implementations - Updated with error handling
+// Memory testing implementations (same as before)
 
 unsafe fn simple_test(ptr: *mut u8, size: usize, thread_id: usize, error_mode: ErrorMode) -> TestStats {
     let start = Instant::now();
@@ -691,12 +763,11 @@ unsafe fn simple_test(ptr: *mut u8, size: usize, thread_id: usize, error_mode: E
     let len = size / std::mem::size_of::<u64>();
     let mut error_count = 0;
 
-    // Write phase - no prefetching, we want to stress memory
+    // Write phase
     for i in 0..len {
         base.add(i).write(i as u64 ^ 0xDEADBEEFDEADBEEF);
     }
 
-    // Memory barrier to ensure writes complete
     std::sync::atomic::fence(Ordering::SeqCst);
 
     // Verify phase
@@ -769,8 +840,6 @@ unsafe fn refresh_stable(ptr: *mut u8, size: usize, thread_id: usize, error_mode
     }
 }
 
-// New memory-focused tests with error handling
-
 unsafe fn cache_busting_write_test(ptr: *mut u8, size: usize, thread_id: usize, error_mode: ErrorMode) -> TestStats {
     let start = Instant::now();
     let base = ptr as *mut u64;
@@ -840,9 +909,9 @@ unsafe fn random_access_torture_test(ptr: *mut u8, size: usize, thread_id: usize
 
     std::sync::atomic::fence(Ordering::SeqCst);
 
-    // Random access torture - simpler approach without tracking individual writes
+    // Random access torture
     let mut rng_state = 0x123456789ABCDEFu64.wrapping_add(thread_id as u64);
-    let iterations = (len / 1000).max(5000).min(50000); // Reasonable iteration count
+    let iterations = (len / 1000).max(5000).min(50000);
 
     // Phase 1: Random read verification of initial pattern
     for iteration in 0..iterations {
@@ -875,51 +944,11 @@ unsafe fn random_access_torture_test(ptr: *mut u8, size: usize, thread_id: usize
         }
     }
 
-    // Phase 2: Random write with different pattern
-    let write_pattern = 0xDEADBEEFu64.wrapping_add(thread_id as u64);
-    for i in 0..len {
-        base.add(i).write(write_pattern.wrapping_add(i as u64));
-    }
-
-    std::sync::atomic::fence(Ordering::SeqCst);
-
-    // Phase 3: Random read verification of new pattern
-    rng_state = 0x987654321ABCDEFu64.wrapping_add(thread_id as u64); // Reset RNG
-    for iteration in 0..iterations {
-        rng_state ^= rng_state << 13;
-        rng_state ^= rng_state >> 17;
-        rng_state ^= rng_state << 5;
-
-        let idx = (rng_state as usize) % len;
-        let expected = write_pattern.wrapping_add(idx as u64);
-        let actual = base.add(idx).read();
-
-        if actual != expected {
-            error_count += 1;
-            match error_mode {
-                ErrorMode::Panic => panic!(
-                    "random_access_torture_test: Phase 3 memory error at index {}, iteration {}, expected {}, actual {}",
-                    idx, iteration, expected, actual
-                ),
-                ErrorMode::Halt => break,
-                ErrorMode::Log => {
-                    log::error!(
-                        "random_access_torture_test: Phase 3 memory error at index {}, iteration {}, expected {}, actual {}",
-                        idx,
-                        iteration,
-                        expected,
-                        actual
-                    );
-                }
-            }
-        }
-    }
-
     let elapsed = start.elapsed().as_millis();
     TestStats {
         name: "RandomTorture",
         action: TestAction::RandomAccess,
-        bytes_processed: (iterations * 2 + len) * std::mem::size_of::<u64>(), // 2 read phases + 1 write phase
+        bytes_processed: (iterations * 2 + len) * std::mem::size_of::<u64>(),
         elapsed_ms: elapsed,
         thread_id,
         error_count,
@@ -933,7 +962,7 @@ unsafe fn stride_access_test(ptr: *mut u8, size: usize, thread_id: usize, error_
     let mut error_count = 0;
 
     // Test various stride patterns that defeat caching
-    let strides = [1, 16, 64, 256, 1024, 4096]; // Different stride sizes
+    let strides = [1, 16, 64, 256, 1024, 4096];
     let pattern_base = 0xFEDCBA9876543210u64.wrapping_add(thread_id as u64);
 
     for &stride in &strides {

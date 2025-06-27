@@ -37,7 +37,6 @@ impl TestBuffer {
         if ptr.is_null() {
             None
         } else {
-            // Don't print allocation message here - will be summarized later
             Some(Self {
                 ptr: ptr as *mut u8,
                 size: aligned_size,
