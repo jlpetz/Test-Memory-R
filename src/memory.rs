@@ -1,12 +1,12 @@
-use windows::Win32::System::Memory::{
-    VirtualAlloc, VirtualFree, MEM_COMMIT, MEM_RESERVE, MEM_RELEASE, PAGE_READWRITE, MEM_LARGE_PAGES,
-};
-use windows::Win32::System::SystemInformation::{GetPhysicallyInstalledSystemMemory};
-use windows::Win32::System::Threading::{GetCurrentProcess, OpenProcessToken};
-use windows::Win32::Security::{LookupPrivilegeValueW, AdjustTokenPrivileges, TOKEN_ADJUST_PRIVILEGES, TOKEN_QUERY, LUID_AND_ATTRIBUTES, SE_PRIVILEGE_ENABLED};
-use windows::Win32::Foundation::{HANDLE, LUID};
-use std::ptr::null_mut;
 use std::ffi::c_void;
+use std::ptr::null_mut;
+use windows::Win32::Foundation::{HANDLE, LUID};
+use windows::Win32::Security::{
+    AdjustTokenPrivileges, LookupPrivilegeValueW, LUID_AND_ATTRIBUTES, SE_PRIVILEGE_ENABLED, TOKEN_ADJUST_PRIVILEGES, TOKEN_QUERY,
+};
+use windows::Win32::System::Memory::{VirtualAlloc, VirtualFree, MEM_COMMIT, MEM_LARGE_PAGES, MEM_RELEASE, MEM_RESERVE, PAGE_READWRITE};
+use windows::Win32::System::SystemInformation::GetPhysicallyInstalledSystemMemory;
+use windows::Win32::System::Threading::{GetCurrentProcess, OpenProcessToken};
 
 pub struct TestBuffer {
     ptr: *mut u8,
@@ -51,14 +51,7 @@ impl TestBuffer {
         let page_size = 4096;
         let aligned_size = (size_bytes + page_size - 1) & !(page_size - 1);
 
-        let ptr = unsafe {
-            VirtualAlloc(
-                Some(null_mut()),
-                aligned_size,
-                MEM_RESERVE | MEM_COMMIT,
-                PAGE_READWRITE,
-            )
-        };
+        let ptr = unsafe { VirtualAlloc(Some(null_mut()), aligned_size, MEM_RESERVE | MEM_COMMIT, PAGE_READWRITE) };
 
         if ptr.is_null() {
             None
@@ -78,7 +71,7 @@ impl TestBuffer {
     pub fn size(&self) -> usize {
         self.size
     }
-    
+
     pub fn uses_large_pages(&self) -> bool {
         self.uses_large_pages
     }
@@ -114,14 +107,14 @@ fn enable_large_page_privilege() -> Result<(), &'static str> {
     unsafe {
         let process = GetCurrentProcess();
         let mut token: HANDLE = HANDLE::default();
-        
+
         if OpenProcessToken(process, TOKEN_ADJUST_PRIVILEGES | TOKEN_QUERY, &mut token).is_err() {
             return Err("Failed to open process token");
         }
 
         let mut luid = LUID::default();
         let privilege_name = windows::core::w!("SeLockMemoryPrivilege");
-        
+
         if LookupPrivilegeValueW(None, privilege_name, &mut luid).is_err() {
             return Err("Failed to lookup privilege value");
         }
@@ -134,14 +127,7 @@ fn enable_large_page_privilege() -> Result<(), &'static str> {
             }],
         };
 
-        if AdjustTokenPrivileges(
-            token,
-            false,
-            Some(&mut privileges),
-            0,
-            None,
-            None,
-        ).is_err() {
+        if AdjustTokenPrivileges(token, false, Some(&mut privileges), 0, None, None).is_err() {
             return Err("Failed to adjust token privileges");
         }
 

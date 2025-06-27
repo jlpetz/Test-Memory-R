@@ -1,17 +1,15 @@
 use std::env;
-use tmr::{run_tests_with_layout, MemoryLayout, MemoryReserve, ErrorMode, DEFAULT_RESERVE_PERCENT, load_config, create_demo_configs};
+use tmr::{create_demo_configs, load_config, run_tests_with_layout, ErrorMode, MemoryLayout, MemoryReserve, DEFAULT_RESERVE_PERCENT};
 
 fn main() {
     // Initialize logging - detailed logs go to stderr/file
-    env_logger::Builder::from_default_env()
-        .filter_level(log::LevelFilter::Info)
-        .init();
+    env_logger::Builder::from_default_env().filter_level(log::LevelFilter::Info).init();
 
     println!("🚀 Test Memory R (TMR) v1.0.0 - High-Performance Memory Testing Tool");
     println!("=======================================================================");
 
     let args: Vec<String> = env::args().collect();
-    
+
     // Check for special commands
     if args.len() > 1 {
         match args[1].as_str() {
@@ -34,28 +32,32 @@ fn main() {
             _ => {}
         }
     }
-    
+
     // Check for config file parameter
-    let config_file = args.iter()
-        .find(|arg| arg.starts_with("config="))
-        .map(|arg| &arg[7..]);
-    
+    let config_file = args.iter().find(|arg| arg.starts_with("config=")).map(|arg| &arg[7..]);
+
     let (memory_reserve, error_mode, cputype, cpus) = if let Some(config_path) = config_file {
         match load_config(config_path) {
             Ok(config) => {
                 println!("✅ Loaded configuration: {}", config.metadata.name);
-                println!("   Format Version: {} | Application: {}", config.config_format_version, config.application_name);
-                println!("   Author: {} | Tested with: TMR v{}", config.metadata.author, config.metadata.tested_with_version);
+                println!(
+                    "   Format Version: {} | Application: {}",
+                    config.config_format_version, config.application_name
+                );
+                println!(
+                    "   Author: {} | Tested with: TMR v{}",
+                    config.metadata.author, config.metadata.tested_with_version
+                );
                 if let Some(desc) = &config.metadata.description {
                     println!("   Description: {}", desc);
                 }
                 println!();
-                
+
                 let memory_reserve = config.to_memory_reserve();
                 let error_mode = config.to_error_mode();
                 let cputype = config.system.cpu_config.cpu_type.clone();
                 let cpus = format!("{}%", config.system.cpu_config.usage_percent);
-                
+
                 (memory_reserve, error_mode, cputype, cpus)
             }
             Err(e) => {
@@ -81,21 +83,22 @@ fn main() {
     // Display startup mode and parameters
     println!("Startup Mode & Parameters:");
     println!("  Command Line: {}", args.join(" "));
-    
+
     // Check environment variables
     let rust_log = env::var("RUST_LOG").unwrap_or_else(|_| "not set".to_string());
     println!("  RUST_LOG: {}", rust_log);
-    
+
     let rust_backtrace = env::var("RUST_BACKTRACE").unwrap_or_else(|_| "not set".to_string());
     if rust_backtrace != "not set" {
         println!("  RUST_BACKTRACE: {}", rust_backtrace);
     }
-    
+
     // Show which parameters were explicitly set vs defaults
     let mut explicit_params = Vec::new();
     let mut default_params = Vec::new();
-    
-    for arg in &args[1..] { // Skip program name
+
+    for arg in &args[1..] {
+        // Skip program name
         if arg.starts_with("config=") {
             explicit_params.push(arg.clone());
         } else if arg.starts_with("cputype=") {
@@ -108,7 +111,7 @@ fn main() {
             explicit_params.push(arg.clone());
         }
     }
-    
+
     // Add defaults that weren't explicitly set (only if no config file)
     if config_file.is_none() {
         if !args.iter().any(|a| a.starts_with("cputype=")) {
@@ -124,7 +127,7 @@ fn main() {
             default_params.push("errors=log (default)".to_string());
         }
     }
-    
+
     if !explicit_params.is_empty() {
         println!("  Explicit Parameters: {}", explicit_params.join(", "));
     }
@@ -148,7 +151,7 @@ fn main() {
         ErrorMode::Halt => println!("Halt on first error"),
         ErrorMode::Panic => println!("Panic on error (debug mode)"),
     }
-    
+
     // Check large page privilege early
     match tmr::check_large_page_privilege() {
         Ok(()) => println!("  Large Pages: ✅ Available (SeLockMemoryPrivilege enabled)"),
@@ -158,16 +161,16 @@ fn main() {
             println!("    Impact: Will use standard 4KB pages instead of 2MB pages");
         }
     }
-    
+
     // Detect SIMD capabilities
     let simd_caps = tmr::detect_simd_capabilities();
     println!("  SIMD Support: {}", simd_caps);
-    
+
     println!();
 
     // Calculate memory layout
     let layout = MemoryLayout::calculate(memory_reserve, threads);
-    
+
     // Run tests
     println!("Starting memory tests... (detailed logs available with RUST_LOG=debug)");
     println!();
@@ -182,7 +185,7 @@ fn main() {
     } else {
         println!("❌ Tests failed or encountered errors in {}", format_duration(total_time));
     }
-    
+
     println!();
     print_usage(&args[0]);
 }
@@ -205,63 +208,69 @@ fn parse_command_line_params(args: &[String]) -> (MemoryReserve, ErrorMode, Stri
             error_mode = parse_error_mode(&arg[7..]);
         }
     }
-    
+
     (memory_reserve, error_mode, cputype, cpus)
 }
 
 fn parse_memory_parameter(param: &str) -> MemoryReserve {
     let param = param.trim();
-    
+
     if param.ends_with('%') {
         let percent_str = param.trim_end_matches('%');
         match percent_str.parse::<f64>() {
-            Ok(percent) if percent >= 0.0 && percent <= 95.0 => {
-                MemoryReserve::PercentFree(percent)
-            }
+            Ok(percent) if percent >= 0.0 && percent <= 95.0 => MemoryReserve::PercentFree(percent),
             Ok(percent) => {
-                println!("Warning: Invalid percentage {}%, using default {}%", 
-                    percent, DEFAULT_RESERVE_PERCENT);
+                println!(
+                    "Warning: Invalid percentage {}%, using default {}%",
+                    percent, DEFAULT_RESERVE_PERCENT
+                );
                 MemoryReserve::PercentFree(DEFAULT_RESERVE_PERCENT)
             }
             Err(_) => {
-                println!("Warning: Could not parse percentage '{}', using default {}%", 
-                    param, DEFAULT_RESERVE_PERCENT);
+                println!(
+                    "Warning: Could not parse percentage '{}', using default {}%",
+                    param, DEFAULT_RESERVE_PERCENT
+                );
                 MemoryReserve::PercentFree(DEFAULT_RESERVE_PERCENT)
             }
         }
     } else if param.to_lowercase().ends_with("gib") {
-        let gib_str = param[..param.len()-3].trim();
+        let gib_str = param[..param.len() - 3].trim();
         match gib_str.parse::<f64>() {
             Ok(gib) if gib >= 0.0 => MemoryReserve::GiB(gib),
             Ok(gib) => {
-                println!("Warning: Invalid GiB value {}, using default {}%", 
-                    gib, DEFAULT_RESERVE_PERCENT);
+                println!("Warning: Invalid GiB value {}, using default {}%", gib, DEFAULT_RESERVE_PERCENT);
                 MemoryReserve::PercentFree(DEFAULT_RESERVE_PERCENT)
             }
             Err(_) => {
-                println!("Warning: Could not parse GiB value '{}', using default {}%", 
-                    param, DEFAULT_RESERVE_PERCENT);
+                println!(
+                    "Warning: Could not parse GiB value '{}', using default {}%",
+                    param, DEFAULT_RESERVE_PERCENT
+                );
                 MemoryReserve::PercentFree(DEFAULT_RESERVE_PERCENT)
             }
         }
     } else if param.to_lowercase().ends_with("mib") {
-        let mib_str = param[..param.len()-3].trim();
+        let mib_str = param[..param.len() - 3].trim();
         match mib_str.parse::<f64>() {
             Ok(mib) if mib >= 0.0 => MemoryReserve::MiB(mib),
             Ok(mib) => {
-                println!("Warning: Invalid MiB value {}, using default {}%", 
-                    mib, DEFAULT_RESERVE_PERCENT);
+                println!("Warning: Invalid MiB value {}, using default {}%", mib, DEFAULT_RESERVE_PERCENT);
                 MemoryReserve::PercentFree(DEFAULT_RESERVE_PERCENT)
             }
             Err(_) => {
-                println!("Warning: Could not parse MiB value '{}', using default {}%", 
-                    param, DEFAULT_RESERVE_PERCENT);
+                println!(
+                    "Warning: Could not parse MiB value '{}', using default {}%",
+                    param, DEFAULT_RESERVE_PERCENT
+                );
                 MemoryReserve::PercentFree(DEFAULT_RESERVE_PERCENT)
             }
         }
     } else {
-        println!("Warning: Unknown memory parameter format '{}', using default {}%", 
-            param, DEFAULT_RESERVE_PERCENT);
+        println!(
+            "Warning: Unknown memory parameter format '{}', using default {}%",
+            param, DEFAULT_RESERVE_PERCENT
+        );
         println!("  Supported formats: 10%, 2GiB, 1024MiB");
         MemoryReserve::PercentFree(DEFAULT_RESERVE_PERCENT)
     }
@@ -286,9 +295,18 @@ fn print_help(program_name: &str) {
     println!();
     println!("USAGE:");
     println!("  {}                                    # Run with defaults", program_name);
-    println!("  {} config=test.json                  # Load modern JSON config (v2.0)", program_name);
-    println!("  {} config=legacy.cfg                 # Load legacy TestMem5 config (v1.0)", program_name);
-    println!("  {} --create-demo-configs              # Create demo configuration files", program_name);
+    println!(
+        "  {} config=test.json                  # Load modern JSON config (v2.0)",
+        program_name
+    );
+    println!(
+        "  {} config=legacy.cfg                 # Load legacy TestMem5 config (v1.0)",
+        program_name
+    );
+    println!(
+        "  {} --create-demo-configs              # Create demo configuration files",
+        program_name
+    );
     println!("  {} --version                         # Show version information", program_name);
     println!();
     println!("COMMAND LINE PARAMETERS:");
@@ -337,7 +355,10 @@ fn print_usage(program_name: &str) {
     println!("  {} cpus=50% cputype=cores       # Use 50% of CPU cores", program_name);
     println!("  {} errors=halt                  # Stop on first error", program_name);
     println!("  {} config=test.json             # Load JSON config file (v2.0)", program_name);
-    println!("  {} config=legacy.cfg            # Load legacy TestMem5 config (v1.0)", program_name);
+    println!(
+        "  {} config=legacy.cfg            # Load legacy TestMem5 config (v1.0)",
+        program_name
+    );
     println!("  {} --create-demo-configs        # Create demo config files", program_name);
     println!();
     println!("Environment variables:");
@@ -354,7 +375,7 @@ fn format_duration(duration: std::time::Duration) -> String {
     let minutes = (total_seconds % 3600) / 60;
     let seconds = total_seconds % 60;
     let millis = duration.subsec_millis();
-    
+
     if days > 0 {
         format!("{}d {:02}h {:02}m {:02}.{:03}s", days, hours, minutes, seconds, millis)
     } else if hours > 0 {

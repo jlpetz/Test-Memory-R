@@ -1,8 +1,8 @@
+use crate::{ErrorMode, MemoryReserve};
+use serde::{Deserialize, Serialize};
+use std::collections::HashMap;
 use std::fs;
 use std::path::Path;
-use std::collections::HashMap;
-use serde::{Deserialize, Serialize};
-use crate::{MemoryReserve, ErrorMode};
 
 // Application constants
 pub const APP_NAME: &str = "Test Memory R";
@@ -105,28 +105,27 @@ pub struct LegacyTest {
 
 impl ModernConfig {
     pub fn load_from_file(path: &str) -> Result<Self, String> {
-        let content = fs::read_to_string(path)
-            .map_err(|e| format!("Failed to read config file: {}", e))?;
-        
-        let config: ModernConfig = serde_json::from_str(&content)
-            .map_err(|e| format!("Failed to parse JSON config: {}", e))?;
-        
+        let content = fs::read_to_string(path).map_err(|e| format!("Failed to read config file: {}", e))?;
+
+        let config: ModernConfig = serde_json::from_str(&content).map_err(|e| format!("Failed to parse JSON config: {}", e))?;
+
         // Validate config version compatibility
         match config.config_format_version.as_str() {
             "2.0" => Ok(config),
             "1.0" => Err("Config format version 1.0 detected - please use legacy .cfg format or upgrade to v2.0".to_string()),
-            version => Err(format!("Unsupported config format version '{}' - TMR {} supports v2.0", version, APP_VERSION)),
+            version => Err(format!(
+                "Unsupported config format version '{}' - TMR {} supports v2.0",
+                version, APP_VERSION
+            )),
         }
     }
-    
+
     pub fn save_to_file(&self, path: &str) -> Result<(), String> {
-        let json = serde_json::to_string_pretty(self)
-            .map_err(|e| format!("Failed to serialize config: {}", e))?;
-        
-        fs::write(path, json)
-            .map_err(|e| format!("Failed to write config file: {}", e))
+        let json = serde_json::to_string_pretty(self).map_err(|e| format!("Failed to serialize config: {}", e))?;
+
+        fs::write(path, json).map_err(|e| format!("Failed to write config file: {}", e))
     }
-    
+
     // Convert to runtime configuration
     pub fn to_memory_reserve(&self) -> MemoryReserve {
         match self.system.memory_reserve.reserve_type.as_str() {
@@ -136,7 +135,7 @@ impl ModernConfig {
             _ => MemoryReserve::PercentFree(10.0), // default
         }
     }
-    
+
     pub fn to_error_mode(&self) -> ErrorMode {
         match self.system.error_mode.as_str() {
             "halt" | "stop" => ErrorMode::Halt,
@@ -144,7 +143,7 @@ impl ModernConfig {
             _ => ErrorMode::Log, // default
         }
     }
-    
+
     pub fn create_demo_config() -> Self {
         ModernConfig {
             config_format_version: CONFIG_VERSION.to_string(),
@@ -258,44 +257,41 @@ impl ModernConfig {
 
 impl LegacyConfig {
     pub fn load_from_file(path: &str) -> Result<Self, String> {
-        let content = fs::read_to_string(path)
-            .map_err(|e| format!("Failed to read legacy config file: {}", e))?;
-        
+        let content = fs::read_to_string(path).map_err(|e| format!("Failed to read legacy config file: {}", e))?;
+
         Self::parse_legacy_format(&content)
     }
-    
+
     fn parse_legacy_format(content: &str) -> Result<Self, String> {
         let mut sections: HashMap<String, HashMap<String, String>> = HashMap::new();
         let mut current_section = String::new();
-        
+
         for line in content.lines() {
             let line = line.trim();
             if line.is_empty() || line.starts_with('#') {
                 continue;
             }
-            
+
             if line.starts_with('[') && line.ends_with(']') {
-                current_section = line[1..line.len()-1].to_string();
+                current_section = line[1..line.len() - 1].to_string();
                 sections.insert(current_section.clone(), HashMap::new());
             } else if let Some(eq_pos) = line.find('=') {
                 let key = line[..eq_pos].trim().to_string();
-                let value = line[eq_pos+1..].trim().to_string();
+                let value = line[eq_pos + 1..].trim().to_string();
                 if let Some(section) = sections.get_mut(&current_section) {
                     section.insert(key, value);
                 }
             }
         }
-        
+
         // Parse main section
-        let main = sections.get("Main Section")
-            .ok_or("Missing [Main Section]")?;
-        
-        let test_sequence = main.get("Test Sequence")
-            .map(|s| s.split(',')
-                .filter_map(|n| n.trim().parse::<u32>().ok())
-                .collect())
+        let main = sections.get("Main Section").ok_or("Missing [Main Section]")?;
+
+        let test_sequence = main
+            .get("Test Sequence")
+            .map(|s| s.split(',').filter_map(|n| n.trim().parse::<u32>().ok()).collect())
             .unwrap_or_default();
-        
+
         let main_section = LegacyMainSection {
             config_name: main.get("Config Name").unwrap_or(&"Unknown".to_string()).clone(),
             config_author: main.get("Config Author").unwrap_or(&"Unknown".to_string()).clone(),
@@ -305,21 +301,22 @@ impl LegacyConfig {
             cycles: main.get("Cycles").and_then(|s| s.parse().ok()).unwrap_or(1),
             test_sequence,
         };
-        
+
         // Parse memory setup
-        let memory = sections.get("Global Memory Setup")
-            .ok_or("Missing [Global Memory Setup]")?;
-        
+        let memory = sections.get("Global Memory Setup").ok_or("Missing [Global Memory Setup]")?;
+
         let memory_setup = LegacyMemorySetup {
-            testing_window_size_mb: memory.get("Testing Window Size (Mb)")
-                .and_then(|s| s.parse().ok()).unwrap_or(880),
-            reserved_memory_mb: memory.get("Reserved Memory for Windows (Mb)")
-                .and_then(|s| s.parse().ok()).unwrap_or(128),
+            testing_window_size_mb: memory.get("Testing Window Size (Mb)").and_then(|s| s.parse().ok()).unwrap_or(880),
+            reserved_memory_mb: memory
+                .get("Reserved Memory for Windows (Mb)")
+                .and_then(|s| s.parse().ok())
+                .unwrap_or(128),
         };
-        
+
         // Parse tests
         let mut tests = Vec::new();
-        for i in 0..=15 { // Legacy configs typically have Test0-Test15
+        for i in 0..=15 {
+            // Legacy configs typically have Test0-Test15
             let test_section = format!("Test{}", i);
             if let Some(test) = sections.get(&test_section) {
                 let legacy_test = LegacyTest {
@@ -328,10 +325,12 @@ impl LegacyConfig {
                     time_percent: test.get("Time (%)").and_then(|s| s.parse().ok()).unwrap_or(100),
                     function: test.get("Function").unwrap_or(&"Unknown".to_string()).clone(),
                     pattern_mode: test.get("Pattern Mode").and_then(|s| s.parse().ok()).unwrap_or(0),
-                    pattern_param0: test.get("Pattern Param0")
+                    pattern_param0: test
+                        .get("Pattern Param0")
                         .and_then(|s| u64::from_str_radix(s.trim_start_matches("0x"), 16).ok())
                         .unwrap_or(0),
-                    pattern_param1: test.get("Pattern Param1")
+                    pattern_param1: test
+                        .get("Pattern Param1")
                         .and_then(|s| u64::from_str_radix(s.trim_start_matches("0x"), 16).ok())
                         .unwrap_or(0),
                     parameter: test.get("Parameter").and_then(|s| s.parse().ok()).unwrap_or(0),
@@ -340,20 +339,21 @@ impl LegacyConfig {
                 tests.push(legacy_test);
             }
         }
-        
+
         Ok(LegacyConfig {
             main_section,
             memory_setup,
             tests,
         })
     }
-    
+
     // Convert legacy config to modern config v2.0
     pub fn to_modern_config(&self) -> ModernConfig {
         let memory_reserve = if self.memory_setup.testing_window_size_mb > 0 {
             // Convert testing window size to percentage (rough approximation)
-            let estimated_percent = (self.memory_setup.reserved_memory_mb as f64 / 
-                (self.memory_setup.testing_window_size_mb + self.memory_setup.reserved_memory_mb) as f64) * 100.0;
+            let estimated_percent = (self.memory_setup.reserved_memory_mb as f64
+                / (self.memory_setup.testing_window_size_mb + self.memory_setup.reserved_memory_mb) as f64)
+                * 100.0;
             MemoryReserveConfig {
                 reserve_type: "percent".to_string(),
                 value: estimated_percent.max(5.0).min(50.0), // Clamp to reasonable range
@@ -364,21 +364,27 @@ impl LegacyConfig {
                 value: 10.0,
             }
         };
-        
-        let test_sequence = self.tests.iter()
+
+        let test_sequence = self
+            .tests
+            .iter()
             .filter(|t| t.enabled)
             .map(|test| TestConfig {
                 enabled: true,
                 function: Self::map_legacy_function(&test.function),
                 time_percent: test.time_percent,
-                block_size_mb: if test.test_block_size_mb > 0 { Some(test.test_block_size_mb) } else { None },
+                block_size_mb: if test.test_block_size_mb > 0 {
+                    Some(test.test_block_size_mb)
+                } else {
+                    None
+                },
                 pattern_mode: Some(test.pattern_mode),
                 pattern_param0: Some(test.pattern_param0),
                 pattern_param1: Some(test.pattern_param1),
                 parameter: Some(test.parameter),
             })
             .collect();
-        
+
         ModernConfig {
             config_format_version: CONFIG_VERSION.to_string(),
             application_name: format!("{} ({})", APP_NAME, APP_SHORT_NAME),
@@ -403,7 +409,7 @@ impl LegacyConfig {
             test_sequence,
         }
     }
-    
+
     // Map legacy function names to modern equivalents
     fn map_legacy_function(legacy_name: &str) -> String {
         match legacy_name {
@@ -426,7 +432,7 @@ pub fn load_config(path: &str) -> Result<ModernConfig, String> {
     if !Path::new(path).exists() {
         return Err(format!("Config file does not exist: {}", path));
     }
-    
+
     // Try to detect format by file extension or content
     if path.ends_with(".json") {
         ModernConfig::load_from_file(path)
@@ -436,11 +442,10 @@ pub fn load_config(path: &str) -> Result<ModernConfig, String> {
         Ok(legacy.to_modern_config())
     } else {
         // Try JSON first, then legacy
-        ModernConfig::load_from_file(path)
-            .or_else(|_| {
-                let legacy = LegacyConfig::load_from_file(path)?;
-                Ok(legacy.to_modern_config())
-            })
+        ModernConfig::load_from_file(path).or_else(|_| {
+            let legacy = LegacyConfig::load_from_file(path)?;
+            Ok(legacy.to_modern_config())
+        })
     }
 }
 
@@ -449,10 +454,10 @@ pub fn create_demo_configs() -> Result<(), String> {
     // Create modern demo config
     let modern_config = ModernConfig::create_demo_config();
     modern_config.save_to_file("demo_modern_v2.json")?;
-    
+
     println!("✅ Created demo_modern_v2.json - Modern configuration format v2.0");
     println!("   Features: JSON format, version tracking, full parameter control, SIMD tests");
     println!("   Compatible with: {} v{}", APP_NAME, APP_VERSION);
-    
+
     Ok(())
 }
