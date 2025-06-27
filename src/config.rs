@@ -443,23 +443,30 @@ impl LegacyConfig {
 
     // Convert legacy config to modern config v2.0
     pub fn to_modern_config(&self) -> ModernConfig {
+        let global_time_multiplier = self.main_section.time_percent as f64 / 100.0;
+        
         let test_sequence = self
             .tests
             .iter()
             .filter(|t| t.enabled)
-            .map(|test| TestConfig {
-                enabled: true,
-                function: Self::map_legacy_function(&test.function),
-                time_percent: test.time_percent,
-                block_size_mb: if test.test_block_size_mb > 0 {
-                    Some(test.test_block_size_mb)
-                } else {
-                    None
-                },
-                pattern_mode: Some(test.pattern_mode),
-                pattern_param0: Some(test.pattern_param0),
-                pattern_param1: Some(test.pattern_param1),
-                parameter: Some(test.parameter),
+            .map(|test| {
+                // Calculate effective time percent considering both global and test-specific multipliers
+                let effective_time_percent = ((test.time_percent as f64 * global_time_multiplier) as u32).max(1);
+                
+                TestConfig {
+                    enabled: true,
+                    function: Self::map_legacy_function(&test.function),
+                    time_percent: effective_time_percent,
+                    block_size_mb: if test.test_block_size_mb > 0 {
+                        Some(test.test_block_size_mb)
+                    } else {
+                        None
+                    },
+                    pattern_mode: Some(test.pattern_mode),
+                    pattern_param0: Some(test.pattern_param0),
+                    pattern_param1: Some(test.pattern_param1),
+                    parameter: Some(test.parameter),
+                }
             })
             .collect();
 
