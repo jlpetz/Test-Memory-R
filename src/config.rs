@@ -388,8 +388,8 @@ impl LegacyConfig {
                     function: Self::map_legacy_function(&test.function),
                     time_percent: effective_time_percent,
                     
-                    // Stage 2 & 3: Per-test memory configuration from legacy
-                    window_size_mb: None, // Use global window from memory setup
+                    // Map legacy block size to per-test configuration
+                    window_size_mb: None, // Use global window size from memory setup
                     block_size_mb: if test.test_block_size_mb > 0 {
                         Some(test.test_block_size_mb)
                     } else {
@@ -397,7 +397,7 @@ impl LegacyConfig {
                     },
                     allow_misaligned: Some(false), // Legacy configs assume aligned access
                     
-                    // Preserve legacy patterns
+                    // Preserve legacy test parameters
                     pattern_mode: Some(test.pattern_mode),
                     pattern_param0: Some(test.pattern_param0),
                     pattern_param1: Some(test.pattern_param1),
@@ -413,21 +413,17 @@ impl LegacyConfig {
                 name: format!("{} (Legacy Converted)", self.main_section.config_name),
                 author: self.main_section.config_author.clone(),
                 version: "1.0".to_string(),
-                description: Some(format!(
-                    "Converted from legacy TestMem5 config - Global Time: {}%, Window: {}MB", 
-                    self.main_section.time_percent,
-                    self.memory_setup.testing_window_size_mb
-                )),
+                description: Some("Converted from legacy TestMem5 config with three-stage memory architecture".to_string()),
                 created: None,
                 tested_with_version: APP_VERSION.to_string(),
             },
             system: SystemConfig {
                 memory_strategy: MemoryStrategyConfig {
                     strategy_type: "tm5_compatible".to_string(),
-                    // Stage 1 & 2: Use legacy memory setup
+                    // Stage 1 & 2 settings from legacy config
                     testing_window_size_mb: Some(self.memory_setup.testing_window_size_mb),
                     reserved_memory_mb: Some(self.memory_setup.reserved_memory_mb),
-                    test_block_size_mb: Some(0), // Let per-test configs override
+                    test_block_size_mb: Some(0), // Legacy configs use per-test block sizes
                     memory_reserve_percent: None,
                     memory_reserve_gib: None,
                     memory_reserve_mib: None,
@@ -494,7 +490,7 @@ pub fn create_demo_configs() -> Result<(), String> {
     // Create modern optimal config
     let mut modern_optimal = modern_config.clone();
     modern_optimal.metadata.name = "Modern Optimal Three-Stage Test".to_string();
-    modern_optimal.metadata.description = Some("Modern optimized three-stage memory testing with auto-sizing".to_string());
+    modern_optimal.metadata.description = Some("Modern optimized three-stage memory testing strategy".to_string());
     modern_optimal.system.memory_strategy = MemoryStrategyConfig {
         strategy_type: "modern_optimal".to_string(),
         testing_window_size_mb: None,
@@ -509,50 +505,24 @@ pub fn create_demo_configs() -> Result<(), String> {
     
     // Update test configs for modern optimal strategy
     for test in &mut modern_optimal.test_sequence {
-        test.window_size_mb = None; // Auto-calculate based on cache sizes
-        test.block_size_mb = None;  // Auto-calculate with optimal alignment
-        test.allow_misaligned = Some(false); // Default to aligned for performance
+        test.window_size_mb = None; // Let auto-calculation determine optimal sizes
+        test.allow_misaligned = Some(false); // Modern systems prefer aligned access
     }
     
     modern_optimal.save_to_file("demo_modern_three_stage.json")?;
 
-    // Create a stress testing config
-    let mut stress_config = modern_config.clone();
-    stress_config.metadata.name = "Stress Testing Configuration".to_string();
-    stress_config.metadata.description = Some("Intensive stress testing with misaligned accesses and large windows".to_string());
-    
-    // Stress config uses larger windows and allows misaligned access
-    for test in &mut stress_config.test_sequence {
-        test.time_percent *= 3; // 3x longer testing
-        match test.function.as_str() {
-            "RandomTorture" => {
-                test.window_size_mb = Some(512); // Large window for stress
-                test.allow_misaligned = Some(true); // Allow misaligned for stress
-            }
-            "CacheBusting" => {
-                test.window_size_mb = Some(256); // Large cache-busting window
-                test.block_size_mb = Some(512); // Misaligned large blocks
-                test.allow_misaligned = Some(true);
-            }
-            _ => {
-                test.window_size_mb = test.window_size_mb.map(|w| w * 2); // Double window sizes
-            }
-        }
-    }
-    
-    stress_config.save_to_file("demo_stress_testing.json")?;
-
     println!("✅ Created demo_tm5_three_stage.json - TM5-compatible three-stage memory allocation");
-    println!("   Features: Stage 1 (max allocation), Stage 2 (configurable windows), Stage 3 (aligned blocks)");
-    println!("   Compatible with: Legacy TM5 configs with per-test memory configuration");
+    println!("   Features: Stage 1 (max allocation), Stage 2 (configurable windows), Stage 3 (per-test blocks)");
+    println!("   Compatible with: Legacy TM5 configs with automatic conversion");
     println!();
     println!("✅ Created demo_modern_three_stage.json - Modern optimized three-stage allocation");
-    println!("   Features: Auto-sized windows and blocks based on cache hierarchy and test requirements");
-    println!("   Compatible with: Modern systems with automatic cache-aware sizing");
+    println!("   Features: Auto-sizing windows and blocks based on system cache hierarchy");
+    println!("   Compatible with: {} v{} with intelligent memory management", APP_NAME, APP_VERSION);
     println!();
-    println!("✅ Created demo_stress_testing.json - Intensive stress testing configuration");
-    println!("   Features: Large windows, misaligned access testing, extended duration");
-    println!("   Purpose: Maximum stress testing for stability validation");
+    println!("Three-Stage Architecture Summary:");
+    println!("  Stage 1: Memory Allocation - Allocate maximum available memory per thread");
+    println!("  Stage 2: Testing Window - Focus testing on subset of allocation for temporal locality");
+    println!("  Stage 3: Block/Chunk Size - Control access patterns and alignment within window");
 
     Ok(())
 }
