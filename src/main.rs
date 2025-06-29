@@ -1,5 +1,7 @@
 use std::env;
-use tmr::{create_demo_configs, load_config, run_tests_with_layout, ErrorMode, MemoryLayout, MemoryStrategy, DEFAULT_RESERVE_PERCENT};
+use tmr::{create_demo_configs, load_config, ErrorMode, MemoryStrategy, AllocationMode, WindowMode, BlockMode};
+use tmr::layout::MemoryLayout;
+use tmr::runner::{run_tests_with_layout_and_timing, TestSuiteTiming};
 
 fn main() {
     // Initialize logging
@@ -27,6 +29,7 @@ fn main() {
             "--version" | "-v" => {
                 println!("Test Memory R (TMR) version 1.0.0");
                 println!("High-Performance Memory Testing Tool with TM5 Compatibility");
+                println!("Three-Stage Memory Architecture with Comprehensive Testing");
                 return;
             }
             _ => {}
@@ -36,7 +39,7 @@ fn main() {
     // Check for config file parameter
     let config_file = args.iter().find(|arg| arg.starts_with("config=")).map(|arg| &arg[7..]);
 
-    let (memory_strategy, error_mode, cputype, cpus, reserve_percent) = if let Some(config_path) = config_file {
+    let (memory_strategy, error_mode, suite_timing, cputype, cpus) = if let Some(config_path) = config_file {
         match load_config(config_path) {
             Ok(config) => {
                 println!("✅ Loaded configuration: {}", config.metadata.name);
@@ -54,22 +57,65 @@ fn main() {
                 
                 // Show test configuration summary
                 let enabled_tests: Vec<_> = config.test_sequence.iter().filter(|t| t.enabled).collect();
-                println!("   Tests: {} enabled tests with per-test memory configuration", enabled_tests.len());
+                println!("   Tests: {} enabled tests with three-stage memory configuration", enabled_tests.len());
                 
-                // Show any per-test window or block overrides
+                // Show timing configuration
+                if let Some(cycles) = config.system.timing.global_cycles {
+                    print!("   Global Timing: {} cycles", cycles);
+                    if let Some(duration) = config.system.timing.global_duration_secs {
+                        println!(" (max {}s)", duration);
+                    } else {
+                        println!(" (no time limit)");
+                    }
+                } else if let Some(duration) = config.system.timing.global_duration_secs {
+                    println!("   Global Timing: {}s duration (unlimited cycles)", duration);
+                } else {
+                    println!("   Global Timing: Unlimited cycles and duration");
+                }
+                
+                // Show any per-test timing or window overrides
                 let mut has_overrides = false;
                 for test in &enabled_tests {
-                    if test.window_size_mb.is_some() || test.block_size_mb.is_some() {
+                    let mut override_parts = Vec::new();
+                    
+                    if test.cycles.is_some() || test.duration_secs.is_some() {
+                        let timing_str = match (test.cycles, test.duration_secs) {
+                            (Some(c), Some(d)) => format!("{}cycles/{}s", c, d),
+                            (Some(c), None) => format!("{}cycles", c),
+                            (None, Some(d)) => format!("{}s", d),
+                            _ => String::new(),
+                        };
+                        if !timing_str.is_empty() {
+                            override_parts.push(format!("Timing {}", timing_str));
+                        }
+                    }
+                    
+                    if test.window_size_mb.is_some() || test.window_mode.is_some() {
+                        if let Some(size) = test.window_size_mb {
+                            override_parts.push(format!("Window {}MB", size));
+                        } else if let Some(mode) = &test.window_mode {
+                            override_parts.push(format!("Window {}", mode));
+                        }
+                    }
+                    
+                    if test.block_size_mb.is_some() || test.block_mode.is_some() {
+                        if let Some(size) = test.block_size_mb {
+                            override_parts.push(format!("Block {}MB", size));
+                        } else if let Some(mode) = &test.block_mode {
+                            override_parts.push(format!("Block {}", mode));
+                        }
+                    }
+                    
+                    if test.allow_misaligned == Some(true) {
+                        override_parts.push("Misaligned".to_string());
+                    }
+                    
+                    if !override_parts.is_empty() {
                         if !has_overrides {
                             println!("   Per-test overrides detected:");
                             has_overrides = true;
                         }
-                        println!("     {}: {}{}{}",
-                            test.function,
-                            test.window_size_mb.map(|w| format!("Window {}MB ", w)).unwrap_or_default(),
-                            test.block_size_mb.map(|b| format!("Block {}MB ", b)).unwrap_or_default(),
-                            test.allow_misaligned.map(|m| if m { "Misaligned" } else { "Aligned" }).unwrap_or("")
-                        );
+                        println!("     {}: {}", test.function, override_parts.join(", "));
                     }
                 }
                 
@@ -77,16 +123,11 @@ fn main() {
 
                 let memory_strategy = config.to_memory_strategy();
                 let error_mode = config.to_error_mode();
+                let suite_timing = config.to_test_suite_timing();
                 let cputype = config.system.cpu_config.cpu_type.clone();
                 let cpus = format!("{}%", config.system.cpu_config.usage_percent);
-                
-                // For TM5-compatible mode, use a default reserve percent (not used in calculation)
-                let reserve_percent = match &memory_strategy {
-                    MemoryStrategy::TM5Compatible { .. } => 0.0, // Not used
-                    _ => 10.0, // Default fallback
-                };
 
-                (memory_strategy, error_mode, cputype, cpus, reserve_percent)
+                (memory_strategy, error_mode, suite_timing, cputype, cpus)
             }
             Err(e) => {
                 println!("❌ Failed to load config file '{}': {}", config_path, e);
@@ -135,7 +176,9 @@ fn main() {
             explicit_params.push(arg.clone());
         } else if arg.starts_with("errors=") {
             explicit_params.push(arg.clone());
-        } else if arg.starts_with("strategy=") {
+        } else if arg.starts_with("cycles=") {
+            explicit_params.push(arg.clone());
+        } else if arg.starts_with("duration=") {
             explicit_params.push(arg.clone());
         }
     }
@@ -149,13 +192,13 @@ fn main() {
             default_params.push("cpus=100% (default)".to_string());
         }
         if !args.iter().any(|a| a.starts_with("memory=")) {
-            default_params.push(format!("memory={}% (default)", DEFAULT_RESERVE_PERCENT));
+            default_params.push("memory=10% reserve (default)".to_string());
         }
         if !args.iter().any(|a| a.starts_with("errors=")) {
             default_params.push("errors=log (default)".to_string());
         }
-        if !args.iter().any(|a| a.starts_with("strategy=")) {
-            default_params.push("strategy=modern_optimal (default)".to_string());
+        if !args.iter().any(|a| a.starts_with("cycles=")) {
+            default_params.push("cycles=3 (default)".to_string());
         }
     }
 
@@ -173,32 +216,42 @@ fn main() {
     
     // Display memory strategy information
     print!("  Memory Strategy: ");
-    match &memory_strategy {
-        MemoryStrategy::TM5Compatible { testing_window_size_mb, reserved_memory_mb, test_block_size_mb } => {
-            println!("TM5-Compatible");
-            println!("    Stage 1 (Allocation): Maximum available minus {} MB OS reserve", reserved_memory_mb);
-            println!("    Stage 2 (Testing Window): {} MB total window across all threads", testing_window_size_mb);
-            if *test_block_size_mb > 0 {
-                println!("    Stage 3 (Block Size): {} MB default blocks (per-test overrides allowed)", test_block_size_mb);
-            } else {
-                println!("    Stage 3 (Block Size): Auto-calculated per test (per-test overrides allowed)");
-            }
+    match &memory_strategy.allocation_mode {
+        AllocationMode::MaxAvailable { reserve_mb } => {
+            println!("TM5-Compatible Maximum Allocation");
+            println!("    Stage 1 (Allocation): Maximum available minus {} MB OS reserve", reserve_mb);
         }
-        MemoryStrategy::ModernOptimal { reserve_gib } => {
-            println!("Modern Optimal");
-            if let Some(gib) = reserve_gib {
-                println!("    Stage 1 (Allocation): Maximum available minus {:.2} GiB reserve", gib);
-            } else {
-                println!("    Stage 1 (Allocation): Maximum available minus {:.1}% reserve", reserve_percent);
-            }
-            println!("    Stage 2 (Testing Window): Auto-sized per test based on cache hierarchy");
-            println!("    Stage 3 (Block Size): Auto-aligned per test for optimal SIMD performance");
+        AllocationMode::PercentageReserve { reserve_percent } => {
+            println!("Modern Optimal Allocation");
+            println!("    Stage 1 (Allocation): Maximum available minus {:.1}% reserve", reserve_percent);
         }
-        MemoryStrategy::Custom { blocks_per_thread, min_block_size_mb } => {
-            println!("Custom");
-            println!("    Stage 1 (Allocation): Multiple blocks per thread ({} blocks)", blocks_per_thread);
-            println!("    Stage 2 (Testing Window): Configurable per test");
-            println!("    Stage 3 (Block Size): Minimum {} MB (per-test overrides allowed)", min_block_size_mb);
+        AllocationMode::FixedReserve { reserve_gib } => {
+            println!("Fixed Reserve Allocation");
+            println!("    Stage 1 (Allocation): Maximum available minus {:.2} GiB reserve", reserve_gib);
+        }
+    }
+    
+    match &memory_strategy.default_window_mode {
+        WindowMode::FullAllocation => {
+            println!("    Stage 2 (Testing Window): Full allocation per thread (maximum memory stress)");
+        }
+        WindowMode::FixedSize { size_mb } => {
+            println!("    Stage 2 (Testing Window): {} MB total window (TM5-compatible)", size_mb);
+        }
+        WindowMode::CacheRelative { multiplier } => {
+            println!("    Stage 2 (Testing Window): {:.1}x cache size (adaptive sizing)", multiplier);
+        }
+    }
+    
+    match &memory_strategy.default_block_mode {
+        BlockMode::AutoOptimal => {
+            println!("    Stage 3 (Block Size): Auto-optimized per test for SIMD and cache alignment");
+        }
+        BlockMode::FixedSize { size_mb } => {
+            println!("    Stage 3 (Block Size): {} MB fixed blocks", size_mb);
+        }
+        BlockMode::WindowFraction { fraction } => {
+            println!("    Stage 3 (Block Size): {:.1}% of window size per block", fraction * 100.0);
         }
     }
     
@@ -207,6 +260,15 @@ fn main() {
         ErrorMode::Log => println!("Log and continue"),
         ErrorMode::Halt => println!("Halt on first error"),
         ErrorMode::Panic => println!("Panic on error (debug mode)"),
+    }
+    
+    // Display timing configuration
+    print!("  Test Suite Timing: ");
+    match (&suite_timing.global_cycles, &suite_timing.global_duration_secs) {
+        (Some(cycles), Some(duration)) => println!("{} cycles or {}s max (whichever first)", cycles, duration),
+        (Some(cycles), None) => println!("{} cycles (no time limit)", cycles),
+        (None, Some(duration)) => println!("{}s duration (unlimited cycles)", duration),
+        (None, None) => println!("Unlimited cycles and duration"),
     }
 
     // Check large page privilege early
@@ -248,29 +310,31 @@ fn main() {
     println!("    Total Cache: {:.1} MB | Detection: {}", 
         cache_info.total_cache as f64 / (1024.0 * 1024.0),
         cache_info.detection_method);
-    println!("    DDR Testing: Windows should exceed {:.1} MB to avoid cache effects", 
-        cache_info.total_cache as f64 / (1024.0 * 1024.0));
+    println!("    Memory Testing: Windows configured relative to cache for optimal stress patterns");
 
     println!();
 
     // Calculate memory layout (Stage 1 allocation only)
-    let layout = MemoryLayout::calculate(memory_strategy, threads, reserve_percent);
+    let layout = MemoryLayout::calculate(memory_strategy, threads);
 
-    println!("Starting memory tests...");
+    println!("Starting comprehensive memory tests...");
     println!("  Stage 1: Pre-allocating maximum memory per thread");
-    println!("  Stage 2: Configuring testing windows per test");
+    println!("  Stage 2: Configuring testing windows per test (full allocation or optimized)");
     println!("  Stage 3: Optimizing block sizes and alignment per test");
+    println!("  Critical: StuckBitTest will scan ALL allocated memory for stuck bits");
     println!("(detailed logs available with RUST_LOG=debug)");
     println!();
+    
     let start_time = std::time::Instant::now();
-    let success = run_tests_with_layout(layout, error_mode);
+    let success = run_tests_with_layout_and_timing(layout, error_mode, suite_timing);
     let total_time = start_time.elapsed();
 
     println!();
     println!("================================================================================");
     if success {
         println!("✅ All memory tests completed successfully in {}", format_duration(total_time));
-        println!("   Memory pressure maintained throughout testing with focused window access");
+        println!("   Comprehensive testing: Full memory stuck bit detection + optimized stress tests");
+        println!("   Memory pressure maintained throughout testing with three-stage architecture");
     } else {
         println!("❌ Tests failed or encountered errors in {}", format_duration(total_time));
     }
@@ -279,12 +343,12 @@ fn main() {
     print_usage(&args[0]);
 }
 
-fn parse_command_line_params(args: &[String]) -> (MemoryStrategy, ErrorMode, String, String, f64) {
+fn parse_command_line_params(args: &[String]) -> (MemoryStrategy, ErrorMode, TestSuiteTiming, String, String) {
     let mut cputype = "threads".to_string();
     let mut cpus = "100%".to_string();
-    let mut memory_strategy = MemoryStrategy::ModernOptimal { reserve_gib: None };
+    let mut memory_strategy = MemoryStrategy::default(); // Modern optimal by default
     let mut error_mode = ErrorMode::Log;
-    let mut reserve_percent = DEFAULT_RESERVE_PERCENT;
+    let mut suite_timing = TestSuiteTiming::default(); // 3 cycles
 
     // Parse arguments
     for arg in args {
@@ -293,59 +357,62 @@ fn parse_command_line_params(args: &[String]) -> (MemoryStrategy, ErrorMode, Str
         } else if arg.starts_with("cpus=") {
             cpus = arg[5..].to_string();
         } else if arg.starts_with("memory=") {
-            let (strategy, percent) = parse_memory_parameter(&arg[7..]);
-            memory_strategy = strategy;
-            reserve_percent = percent;
+            memory_strategy = parse_memory_parameter(&arg[7..]);
         } else if arg.starts_with("errors=") {
             error_mode = parse_error_mode(&arg[7..]);
-        } else if arg.starts_with("strategy=") {
-            memory_strategy = parse_strategy_parameter(&arg[9..]);
+        } else if arg.starts_with("cycles=") {
+            if let Ok(cycles) = arg[7..].parse::<u32>() {
+                suite_timing = TestSuiteTiming::cycles_only(cycles);
+            }
+        } else if arg.starts_with("duration=") {
+            if let Ok(duration) = arg[9..].parse::<u32>() {
+                suite_timing = TestSuiteTiming::duration_only(duration);
+            }
         }
     }
 
-    (memory_strategy, error_mode, cputype, cpus, reserve_percent)
+    (memory_strategy, error_mode, suite_timing, cputype, cpus)
 }
 
-fn parse_memory_parameter(param: &str) -> (MemoryStrategy, f64) {
+fn parse_memory_parameter(param: &str) -> MemoryStrategy {
     let param = param.trim();
 
     if param.ends_with('%') {
         let percent_str = param.trim_end_matches('%');
         match percent_str.parse::<f64>() {
             Ok(percent) if percent >= 0.0 && percent <= 95.0 => {
-                (MemoryStrategy::ModernOptimal { reserve_gib: None }, percent)
+                MemoryStrategy {
+                    allocation_mode: AllocationMode::PercentageReserve { reserve_percent: percent },
+                    default_window_mode: WindowMode::FullAllocation,
+                    default_block_mode: BlockMode::AutoOptimal,
+                }
             }
             Ok(percent) => {
-                println!(
-                    "Warning: Invalid percentage {}%, using default {}%",
-                    percent, DEFAULT_RESERVE_PERCENT
-                );
-                (MemoryStrategy::ModernOptimal { reserve_gib: None }, DEFAULT_RESERVE_PERCENT)
+                println!("Warning: Invalid percentage {}%, using default 10%", percent);
+                MemoryStrategy::default()
             }
             Err(_) => {
-                println!(
-                    "Warning: Could not parse percentage '{}', using default {}%",
-                    param, DEFAULT_RESERVE_PERCENT
-                );
-                (MemoryStrategy::ModernOptimal { reserve_gib: None }, DEFAULT_RESERVE_PERCENT)
+                println!("Warning: Could not parse percentage '{}', using default 10%", param);
+                MemoryStrategy::default()
             }
         }
     } else if param.to_lowercase().ends_with("gib") {
         let gib_str = param[..param.len() - 3].trim();
         match gib_str.parse::<f64>() {
             Ok(gib) if gib >= 0.0 => {
-                (MemoryStrategy::ModernOptimal { reserve_gib: Some(gib) }, 0.0)
+                MemoryStrategy {
+                    allocation_mode: AllocationMode::FixedReserve { reserve_gib: gib },
+                    default_window_mode: WindowMode::FullAllocation,
+                    default_block_mode: BlockMode::AutoOptimal,
+                }
             }
             Ok(gib) => {
-                println!("Warning: Invalid GiB value {}, using default {}%", gib, DEFAULT_RESERVE_PERCENT);
-                (MemoryStrategy::ModernOptimal { reserve_gib: None }, DEFAULT_RESERVE_PERCENT)
+                println!("Warning: Invalid GiB value {}, using default 10%", gib);
+                MemoryStrategy::default()
             }
             Err(_) => {
-                println!(
-                    "Warning: Could not parse GiB value '{}', using default {}%",
-                    param, DEFAULT_RESERVE_PERCENT
-                );
-                (MemoryStrategy::ModernOptimal { reserve_gib: None }, DEFAULT_RESERVE_PERCENT)
+                println!("Warning: Could not parse GiB value '{}', using default 10%", param);
+                MemoryStrategy::default()
             }
         }
     } else if param.to_lowercase().ends_with("mib") {
@@ -353,47 +420,27 @@ fn parse_memory_parameter(param: &str) -> (MemoryStrategy, f64) {
         match mib_str.parse::<f64>() {
             Ok(mib) if mib >= 0.0 => {
                 let gib = mib / 1024.0;
-                (MemoryStrategy::ModernOptimal { reserve_gib: Some(gib) }, 0.0)
+                MemoryStrategy {
+                    allocation_mode: AllocationMode::FixedReserve { reserve_gib: gib },
+                    default_window_mode: WindowMode::FullAllocation,
+                    default_block_mode: BlockMode::AutoOptimal,
+                }
             }
             Ok(mib) => {
-                println!("Warning: Invalid MiB value {}, using default {}%", mib, DEFAULT_RESERVE_PERCENT);
-                (MemoryStrategy::ModernOptimal { reserve_gib: None }, DEFAULT_RESERVE_PERCENT)
+                println!("Warning: Invalid MiB value {}, using default 10%", mib);
+                MemoryStrategy::default()
             }
             Err(_) => {
-                println!(
-                    "Warning: Could not parse MiB value '{}', using default {}%",
-                    param, DEFAULT_RESERVE_PERCENT
-                );
-                (MemoryStrategy::ModernOptimal { reserve_gib: None }, DEFAULT_RESERVE_PERCENT)
+                println!("Warning: Could not parse MiB value '{}', using default 10%", param);
+                MemoryStrategy::default()
             }
         }
+    } else if param.to_lowercase() == "tm5" {
+        MemoryStrategy::tm5_compatible(880, 128)
     } else {
-        println!(
-            "Warning: Unknown memory parameter format '{}', using default {}%",
-            param, DEFAULT_RESERVE_PERCENT
-        );
-        println!("  Supported formats: 10%, 2GiB, 1024MiB");
-        (MemoryStrategy::ModernOptimal { reserve_gib: None }, DEFAULT_RESERVE_PERCENT)
-    }
-}
-
-fn parse_strategy_parameter(param: &str) -> MemoryStrategy {
-    match param.trim().to_lowercase().as_str() {
-        "tm5" | "tm5_compatible" => MemoryStrategy::TM5Compatible {
-            testing_window_size_mb: 880,
-            reserved_memory_mb: 128,
-            test_block_size_mb: 0,
-        },
-        "modern" | "modern_optimal" => MemoryStrategy::ModernOptimal { reserve_gib: None },
-        "custom" => MemoryStrategy::Custom {
-            blocks_per_thread: 4,
-            min_block_size_mb: 256,
-        },
-        _ => {
-            println!("Warning: Unknown strategy '{}', using default 'modern_optimal'", param);
-            println!("  Supported strategies: tm5_compatible, modern_optimal, custom");
-            MemoryStrategy::ModernOptimal { reserve_gib: None }
-        }
+        println!("Warning: Unknown memory parameter format '{}', using default", param);
+        println!("  Supported formats: 10%, 2GiB, 1024MiB, tm5");
+        MemoryStrategy::default()
     }
 }
 
@@ -416,151 +463,34 @@ fn print_help(program_name: &str) {
     println!();
     println!("USAGE:");
     println!("  {}                                    # Run with defaults", program_name);
-    println!(
-        "  {} config=test.json                  # Load modern JSON config (v2.0)",
-        program_name
-    );
-    println!(
-        "  {} config=legacy.cfg                 # Load legacy TestMem5 config (v1.0)",
-        program_name
-    );
-    println!(
-        "  {} --create-demo-configs              # Create demo configuration files",
-        program_name
-    );
+    println!("  {} config=test.json                  # Load modern JSON config (v2.0)", program_name);
+    println!("  {} config=legacy.cfg                 # Load legacy TestMem5 config (v1.0)", program_name);
+    println!("  {} --create-demo-configs              # Create demo configuration files", program_name);
     println!("  {} --version                         # Show version information", program_name);
     println!();
-    println!("THREE-STAGE MEMORY ARCHITECTURE:");
-    println!("  Stage 1: Memory Allocation");
-    println!("    - Allocate maximum available memory per thread");
-    println!("    - Create memory pressure on the system");
-    println!("    - Lock pages to prevent swapping during tests");
-    println!();
-    println!("  Stage 2: Testing Window");
-    println!("    - Focus testing on subset of allocation for temporal locality");
-    println!("    - Test read-after-write and write-after-read timing");
-    println!("    - Configurable per test (e.g., 64MB window within 4.6GB allocation)");
-    println!();
-    println!("  Stage 3: Block/Chunk Size");
-    println!("    - Control memory controller behavior and access patterns");
-    println!("    - Auto-aligned for SIMD operations (128-bit, 256-bit, 512-bit)");
-    println!("    - Configurable per test with misaligned access option");
-    println!();
-    println!("INTELLIGENT CACHE-AWARE CONFIGURATION:");
-    println!("  TMR automatically detects your CPU's cache architecture at runtime:");
-    println!("    • L1, L2, L3 cache sizes via CPUID instruction");
-    println!("    • Cache line size for optimal alignment");
-    println!("    • Fallback to empirical timing detection if CPUID fails");
-    println!("    • Auto-configures Stage 2 windows based on detected cache sizes");
-    println!("    • Optimizes Stage 3 block alignment to cache line boundaries");
-    println!();
-    println!("  Cache-Aware Test Optimizations:");
-    println!("    • CacheBusting: Window sized to L3/2, blocks aligned to cache lines");
-    println!("    • RandomTorture: Window sized to L3*2 for maximum stress");
-    println!("    • SIMD tests: Large windows with SIMD-aligned blocks");
-    println!("    • Bandwidth tests: Windows exceed all cache levels");
-    println!();
-    println!("COMMAND LINE PARAMETERS:");
-    println!("  memory=<value>     Memory allocation (Stage 1):");
-    println!("                       10%           - Reserve 10% of system memory");
-    println!("                       2GiB          - Reserve 2 GiB");
-    println!("                       1024MiB       - Reserve 1024 MiB");
-    println!();
-    println!("  strategy=<type>    Memory allocation strategy:");
-    println!("                       modern_optimal - Auto-sized windows and blocks (default)");
-    println!("                       tm5_compatible - TM5-style allocation with configurable window");
-    println!("                       custom         - Multiple smaller blocks per thread");
-    println!();
-    println!("  cpus=<percent>     CPU usage percentage (1-100, default: 100)");
-    println!("  cputype=<type>     CPU type:");
-    println!("                       threads       - Use logical threads (default)");
-    println!("                       cores         - Use physical cores only");
-    println!();
-    println!("  errors=<mode>      Error handling mode:");
-    println!("                       log           - Log errors and continue (default)");
-    println!("                       halt          - Stop on first error");
-    println!("                       panic         - Panic on error (debug mode)");
-    println!();
-    println!("CONFIG FILES:");
-    println!("  Modern JSON format v2.0 (.json):");
-    println!("    - Memory layout configuration with per-test overrides");
-    println!("    - Version tracking and compatibility checks");
-    println!("    - Window size and block size configuration per test");
-    println!("    - Alignment control and misaligned access options");
-    println!();
-    println!("  Legacy TestMem5 format v1.0 (.cfg):");
-    println!("    - Compatible with original TestMem5 configs");
-    println!("    - Automatically converted to new memory configuration architecture");
-    println!("    - Preserves test sequences, patterns, and timing");
-    println!("    - Maps legacy block sizes to Stage 3 configuration");
-    println!();
-    println!("MEMORY ALLOCATION STRATEGIES:");
-    println!("  TM5-Compatible (tm5_compatible):");
-    println!("    - Stage 1: Allocate maximum memory like TM5 (e.g., 12 x 4.6GB)");
-    println!("    - Stage 2: Configurable testing window (e.g., 880MB total)");
-    println!("    - Stage 3: Per-test block sizes with auto-alignment");
-    println!("    - Best for: Backwards compatibility with TM5 configs");
-    println!();
-    println!("  Modern Optimal (modern_optimal):");
-    println!("    - Stage 1: Optimized allocation based on available memory");
-    println!("    - Stage 2: Auto-sized windows based on cache hierarchy");
-    println!("    - Stage 3: Auto-aligned blocks for SIMD performance");
-    println!("    - Best for: Modern systems with intelligent auto-configuration");
-    println!();
-    println!("  Custom (custom):");
-    println!("    - Stage 1: Multiple configurable blocks per thread");
-    println!("    - Stage 2: Fully configurable testing windows");
-    println!("    - Stage 3: Manual block size and alignment control");
-    println!("    - Best for: Advanced users requiring specific memory layouts");
-    println!();
-    println!("ENVIRONMENT VARIABLES:");
-    println!("  RUST_LOG=debug     Enable detailed memory stage logging");
-    println!("  RUST_LOG=trace     Enable very detailed logging with alignment info");
-    println!();
-    println!("EXAMPLES:");
-    println!("  {} memory=5% cpus=75% cputype=cores", program_name);
-    println!("  {} strategy=tm5_compatible memory=880MiB", program_name);
-    println!("  {} config=1usmus_v3.cfg  # Auto-converts legacy format config to new application", program_name);
-    println!("  {} config=my_test.json errors=halt", program_name);
-    println!("  RUST_LOG=debug {} strategy=modern_optimal", program_name);
-    println!();
-    println!("UNDERSTANDING THE LOGS:");
-    println!("  Stage 1 logs: Show total memory allocation per thread");
-    println!("  Stage 2 logs: Show testing window size for each test");
-    println!("  Stage 3 logs: Show block size and alignment adjustments");
+    println!("For full help documentation, see the artifacts or code comments.");
 }
 
 fn print_usage(program_name: &str) {
     println!("Quick Usage Examples:");
     println!("  {} memory=10%                    # Reserve 10% of system memory", program_name);
     println!("  {} memory=2GiB                  # Reserve 2 GiB", program_name);
-    println!("  {} strategy=tm5_compatible      # Use TM5-style three-stage memory allocation", program_name);
+    println!("  {} memory=tm5                   # TM5-compatible allocation", program_name);
+    println!("  {} cycles=5 duration=600        # 5 cycles OR 10 minutes max", program_name);
     println!("  {} cpus=50% cputype=cores       # Use 50% of CPU cores", program_name);
     println!("  {} errors=halt                  # Stop on first error", program_name);
-    println!("  {} config=test.json             # Load JSON config with three-stage settings", program_name);
-    println!(
-        "  {} config=legacy.cfg            # Auto-convert legacy TM5 config to three-stage",
-        program_name
-    );
-    println!("  {} --create-demo-configs        # Create demo three-stage config files", program_name);
-    println!();
-    println!("Three-Stage Architecture Benefits:");
-    println!("  • Maximum memory pressure (Stage 1) like TM5's large allocations");
-    println!("  • Focused temporal testing (Stage 2) for timing-sensitive errors");
-    println!("  • Optimized access patterns (Stage 3) for SIMD and cache behavior");
-    println!();
-    println!("Environment variables:");
-    println!("  RUST_LOG=debug                  # See Stage 2 & 3 configuration details");
-    println!("  RUST_LOG=tmr=trace              # See memory alignment adjustments");
+    println!("  {} config=test.json             # Load comprehensive JSON config", program_name);
+    println!("  {} config=legacy.cfg            # Auto-convert TM5 config + add stuck bit test", program_name);
+    println!("  {} --create-demo-configs        # Create demo configurations", program_name);
     println!();
     println!("For full help: {} --help", program_name);
 }
 
 fn format_duration(duration: std::time::Duration) -> String {
-	// Format runtime as HH:MM:SS
-	let total_seconds = duration.as_secs();
-	let hours = total_seconds / 3600;
-	let minutes = (total_seconds % 3600) / 60;
-	let seconds = total_seconds % 60;
-	format!("{:02}:{:02}:{:02}", hours, minutes, seconds)
+    // Format runtime as HH:MM:SS
+    let total_seconds = duration.as_secs();
+    let hours = total_seconds / 3600;
+    let minutes = (total_seconds % 3600) / 60;
+    let seconds = total_seconds % 60;
+    format!("{:02}:{:02}:{:02}", hours, minutes, seconds)
 }

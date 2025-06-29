@@ -7,17 +7,15 @@ pub mod runner;
 pub mod simd;
 pub mod cache;
 
-// Re-export main types and functions for backward compatibility
+// Re-export main types and functions
 pub use config::*;
 pub use memory::TestBuffer;
 pub use tests::TestMemoryConfig;
 pub use progress::ProgressTracker;
-pub use layout::{MemoryLayout, MemoryStrategy, BlockInfo};
-pub use runner::{run_tests_with_layout, AllocatedBlock};
+pub use layout::{MemoryLayout, MemoryStrategy, AllocationMode, WindowMode, BlockMode, BlockInfo};
+pub use runner::{run_tests_with_layout, run_tests_with_layout_and_timing, TestSuiteTiming, AllocatedBlock};
 pub use simd::detect_simd_capabilities;
 pub use cache::{CacheInfo, SystemInfo};
-
-pub const DEFAULT_RESERVE_PERCENT: f64 = 10.0;
 
 #[derive(Debug, Clone, Copy)]
 pub enum ErrorMode {
