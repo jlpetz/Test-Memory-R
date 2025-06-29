@@ -1,5 +1,5 @@
 use crate::ErrorMode;
-use crate::cache::CacheInfo;
+use crate::cache::{CacheInfo, SystemInfo};
 use std::arch::x86_64::*;
 use std::sync::atomic::Ordering;
 use std::time::Instant;
@@ -7,15 +7,19 @@ use std::sync::OnceLock;
 
 const CACHE_BUSTING_STRIDE: usize = 4096;
 
-// Global cache info that gets detected once at runtime
-static CACHE_INFO: OnceLock<CacheInfo> = OnceLock::new();
+// Global system info that gets detected once at runtime
+static SYSTEM_INFO: OnceLock<SystemInfo> = OnceLock::new();
+
+pub fn get_system_info() -> &'static SystemInfo {
+    SYSTEM_INFO.get_or_init(|| {
+        let system_info = SystemInfo::detect();
+        system_info.print_system_info();
+        system_info
+    })
+}
 
 pub fn get_cache_info() -> &'static CacheInfo {
-    CACHE_INFO.get_or_init(|| {
-        let cache_info = CacheInfo::detect();
-        cache_info.print_info();
-        cache_info
-    })
+    get_system_info().get_cache_info()
 }
 
 #[repr(C)]
@@ -84,33 +88,14 @@ impl TestMemoryConfig {
     pub fn calculate_optimal_window_size(&self, test_name: &str, allocated_size: usize) -> usize {
         let cache_info = get_cache_info();
         
-        match test_name {
-            // Cache-focused tests use smaller windows
-            "CacheBusting" => cache_info.get_optimal_window_size("CacheBusting").min(allocated_size / 4),
-            "RandomTorture" => cache_info.get_optimal_window_size("RandomTorture").min(allocated_size / 2),
-            
-            // Memory bandwidth tests use larger windows
-            "BandwidthSat" => cache_info.get_optimal_window_size("BandwidthSat").min(allocated_size / 2),
-            "MirrorMove128NonTemporal" | "MirrorMove256NonTemporal" | "MirrorMove512NonTemporal" => {
-                cache_info.get_optimal_window_size(test_name).min(allocated_size / 3)
-            }
-            
-            // General tests use moderate windows
-            "SimpleTest" | "RefreshStable" => {
-                let min_size = 64 * 1024 * 1024; // At least 64MB
-                (allocated_size / 4).max(min_size).max(cache_info.l3_cache)
-            },
-            "StrideAccess" => {
-                let min_size = 32 * 1024 * 1024; // At least 32MB
-                (allocated_size / 8).max(min_size).max(cache_info.l3_cache / 2)
-            },
-            
-            _ => if self.window_size_bytes > 0 {
-                self.window_size_bytes
-            } else {
-                (allocated_size / 4).max(cache_info.l3_cache) // Default to 25% of allocation or L3 size
-            }
-        }
+        let optimal_size = if self.window_size_bytes > 0 {
+            self.window_size_bytes
+        } else {
+            cache_info.get_optimal_window_size(test_name)
+        };
+        
+        // Ensure window doesn't exceed allocation
+        optimal_size.min(allocated_size)
     }
 
     // Calculate optimal block size with alignment
@@ -135,7 +120,7 @@ impl TestMemoryConfig {
             // Cache tests use cache-line aligned blocks
             "CacheBusting" => {
                 let base_size = if self.block_size_bytes > 0 { self.block_size_bytes } else { 1 * 1024 * 1024 };
-                align_to_boundary(base_size, cache_info.cache_line_size) // Detected cache line alignment
+                align_to_boundary(base_size, cache_info.cache_line_size)
             }
             
             // Memory controller tests use page-aligned blocks
@@ -149,7 +134,7 @@ impl TestMemoryConfig {
                 if self.allow_misaligned {
                     base_size // No alignment adjustment
                 } else {
-                    align_to_boundary(base_size, cache_info.cache_line_size) // Detected cache line alignment
+                    align_to_boundary(base_size, cache_info.cache_line_size)
                 }
             }
         };

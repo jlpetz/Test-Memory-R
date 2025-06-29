@@ -1,4 +1,5 @@
-use std::arch::x86_64::*;
+use cache_size::*;
+use raw_cpuid::CpuId;
 
 #[derive(Debug, Clone)]
 pub struct CacheInfo {
@@ -7,18 +8,32 @@ pub struct CacheInfo {
     pub l2_cache: usize,
     pub l3_cache: usize,
     pub cache_line_size: usize,
+    pub total_cache: usize,
     pub detection_method: String,
+}
+
+#[derive(Debug, Clone)]
+pub struct SystemInfo {
+    pub cpu_vendor: String,
+    pub cpu_brand: String,
+    pub cpu_family: u32,
+    pub cpu_model: u32,
+    pub cpu_stepping: u32,
+    pub physical_cores: usize,
+    pub logical_cores: usize,
+    pub has_hyperthreading: bool,
+    pub cache_info: CacheInfo,
 }
 
 impl Default for CacheInfo {
     fn default() -> Self {
-        // Fallback values if detection fails
         Self {
             l1_data_cache: 32 * 1024,      // 32KB
             l1_instruction_cache: 32 * 1024, // 32KB
             l2_cache: 256 * 1024,          // 256KB
-            l3_cache: 8 * 1024 * 1024,     // 8MB (conservative)
+            l3_cache: 8 * 1024 * 1024,     // 8MB
             cache_line_size: 64,           // 64 bytes
+            total_cache: (32 + 32) * 1024 + 256 * 1024 + 8 * 1024 * 1024,
             detection_method: "Default fallback values".to_string(),
         }
     }
@@ -26,18 +41,18 @@ impl Default for CacheInfo {
 
 impl CacheInfo {
     pub fn detect() -> Self {
-        // Try CPUID detection first (most accurate)
-        if let Some(cache_info) = detect_cache_via_cpuid() {
+        // Try cache-size crate first (most reliable)
+        if let Some(cache_info) = detect_via_cache_size_crate() {
             return cache_info;
         }
 
-        // Fallback to empirical detection
-        if let Some(cache_info) = detect_cache_empirically() {
+        // Fallback to raw_cpuid for detailed detection
+        if let Some(cache_info) = detect_via_raw_cpuid() {
             return cache_info;
         }
 
         // Use defaults as last resort
-        log::warn!("Could not detect cache sizes, using conservative defaults");
+        log::warn!("Could not detect cache sizes using either cache-size or raw_cpuid, using defaults");
         Self::default()
     }
 
@@ -47,7 +62,15 @@ impl CacheInfo {
         log::info!("  L1 Instruction Cache: {:.1} KB", self.l1_instruction_cache as f64 / 1024.0);
         log::info!("  L2 Cache: {:.1} KB", self.l2_cache as f64 / 1024.0);
         log::info!("  L3 Cache: {:.1} MB", self.l3_cache as f64 / (1024.0 * 1024.0));
+        log::info!("  Total Cache: {:.1} MB", self.total_cache as f64 / (1024.0 * 1024.0));
         log::info!("  Cache Line Size: {} bytes", self.cache_line_size);
+        log::info!("  For DDR memory testing, windows should exceed {:.1} MB to avoid cache", 
+                  self.total_cache as f64 / (1024.0 * 1024.0));
+    }
+
+    // Calculate total cache size
+    fn calculate_total_cache(&mut self) {
+        self.total_cache = self.l1_data_cache + self.l1_instruction_cache + self.l2_cache + self.l3_cache;
     }
 
     // Get the effective cache size for memory testing windows
@@ -59,328 +82,195 @@ impl CacheInfo {
             // Random access tests benefit from larger windows
             "RandomTorture" => self.l3_cache * 2,
             
-            // Memory bandwidth tests should exceed all cache levels
-            "BandwidthSat" => self.l3_cache * 4,
+            // Memory bandwidth tests should exceed all cache levels significantly
+            "BandwidthSat" => (self.total_cache * 2).max(64 * 1024 * 1024),
             
             // SIMD tests work well with L3-sized windows
             "MirrorMove128NonTemporal" | "MirrorMove256NonTemporal" | "MirrorMove512NonTemporal" => {
-                self.l3_cache
+                self.l3_cache.max(32 * 1024 * 1024)
             }
             
-            // General tests use L3 as baseline
-            _ => self.l3_cache.max(64 * 1024 * 1024), // At least 64MB for safety
+            // General tests use total cache as baseline but ensure reasonable minimum
+            _ => (self.total_cache * 2).max(64 * 1024 * 1024),
         }
     }
 }
 
-// CPUID-based cache detection (most accurate)
-fn detect_cache_via_cpuid() -> Option<CacheInfo> {
-    if !is_x86_feature_detected!("sse") {
-        return None;
-    }
-
-    unsafe {
-        // Check if we have CPUID with cache info support
-        let cpuid_result = __cpuid(0);
-        if cpuid_result.eax < 4 {
-            return None;
-        }
-
-        let mut cache_info = CacheInfo::default();
-        cache_info.detection_method = "CPUID instruction".to_string();
-
-        // Intel/AMD cache detection via CPUID leaf 4 (Intel) or 0x8000001D (AMD)
-        if let Some(info) = detect_intel_cache_cpuid() {
-            cache_info = info;
-        } else if let Some(info) = detect_amd_cache_cpuid() {
-            cache_info = info;
-        } else {
-            // Try legacy CPUID leaf 2 (Intel)
-            if let Some(info) = detect_legacy_intel_cache() {
-                cache_info = info;
+impl SystemInfo {
+    pub fn detect() -> Self {
+        let cpuid = CpuId::new();
+        
+        let (cpu_vendor, cpu_brand) = if let Some(vendor_info) = cpuid.get_vendor_info() {
+            let vendor = vendor_info.as_str().to_string();
+            let brand = if let Some(brand_info) = cpuid.get_processor_brand_string() {
+                brand_info.as_str().trim().to_string()
             } else {
-                return None;
-            }
-        }
+                "Unknown".to_string()
+            };
+            (vendor, brand)
+        } else {
+            ("Unknown".to_string(), "Unknown".to_string())
+        };
 
-        // Detect cache line size via CPUID leaf 1
-        let cpuid_1 = __cpuid(1);
-        let cache_line_size = ((cpuid_1.ebx >> 8) & 0xFF) * 8;
-        if cache_line_size > 0 && cache_line_size <= 128 {
-            cache_info.cache_line_size = cache_line_size as usize;
-        }
+        let (cpu_family, cpu_model, cpu_stepping) = if let Some(feature_info) = cpuid.get_feature_info() {
+            (
+                feature_info.family_id().into(),
+                feature_info.model_id().into(),
+                feature_info.stepping_id().into(),
+            )
+        } else {
+            (0, 0, 0)
+        };
 
-        Some(cache_info)
+        // Get core count information
+        let physical_cores = num_cpus::get_physical();
+        let logical_cores = num_cpus::get();
+        let has_hyperthreading = logical_cores > physical_cores;
+
+        let cache_info = CacheInfo::detect();
+
+        Self {
+            cpu_vendor,
+            cpu_brand,
+            cpu_family,
+            cpu_model,
+            cpu_stepping,
+            physical_cores,
+            logical_cores,
+            has_hyperthreading,
+            cache_info,
+        }
+    }
+
+    pub fn print_system_info(&self) {
+        log::info!("System Information:");
+        log::info!("  CPU: {} ({})", self.cpu_brand, self.cpu_vendor);
+        log::info!("  Family: {}, Model: {}, Stepping: {}", 
+                  self.cpu_family, self.cpu_model, self.cpu_stepping);
+        log::info!("  Cores: {} physical, {} logical{}", 
+                  self.physical_cores, 
+                  self.logical_cores,
+                  if self.has_hyperthreading { " (Hyperthreading enabled)" } else { "" });
+        
+        // Print cache info
+        self.cache_info.print_info();
+    }
+
+    pub fn get_cache_info(&self) -> &CacheInfo {
+        &self.cache_info
     }
 }
 
-// Intel cache detection using CPUID leaf 4
-unsafe fn detect_intel_cache_cpuid() -> Option<CacheInfo> {
-    let mut cache_info = CacheInfo::default();
-    cache_info.detection_method = "Intel CPUID leaf 4".to_string();
+// Detection using cache-size crate (primary method)
+fn detect_via_cache_size_crate() -> Option<CacheInfo> {
+    // Try to get all cache levels
+    let l1_data = l1_cache_size();
+    let l2_size = l2_cache_size(); 
+    let l3_size = l3_cache_size();
+    let line_size = l1_cache_line_size();
 
-    for index in 0..32 {
-        let result = __cpuid_count(4, index);
-        let cache_type = result.eax & 0x1F;
-        
-        // Break if no more cache levels
-        if cache_type == 0 {
-            break;
-        }
-
-        let cache_level = (result.eax >> 5) & 0x7;
-        let ways = ((result.ebx >> 22) & 0x3FF) + 1;
-        let partitions = ((result.ebx >> 12) & 0x3FF) + 1;
-        let line_size = (result.ebx & 0xFFF) + 1;
-        let sets = result.ecx + 1;
-        
-        let cache_size = (ways * partitions * line_size * sets) as usize;
-
-        match (cache_level, cache_type) {
-            (1, 1) => cache_info.l1_data_cache = cache_size, // L1 Data
-            (1, 2) => cache_info.l1_instruction_cache = cache_size, // L1 Instruction
-            (2, 3) => cache_info.l2_cache = cache_size, // L2 Unified
-            (3, 3) => cache_info.l3_cache = cache_size, // L3 Unified
-            _ => {}
-        }
-
-        if line_size > 0 && line_size <= 128 {
-            cache_info.cache_line_size = line_size as usize;
-        }
-    }
-
-    // Validate that we got reasonable values
-    if cache_info.l1_data_cache > 4096 && cache_info.l2_cache > cache_info.l1_data_cache {
-        Some(cache_info)
-    } else {
-        None
-    }
-}
-
-// AMD cache detection using CPUID leaf 0x8000001D
-unsafe fn detect_amd_cache_cpuid() -> Option<CacheInfo> {
-    // Check if extended CPUID is available
-    let cpuid_result = __cpuid(0x80000000);
-    if cpuid_result.eax < 0x8000001D {
+    // Check if we got at least some cache information
+    if l1_data.is_none() && l2_size.is_none() && l3_size.is_none() {
+        log::debug!("cache-size crate failed to detect any cache levels");
         return None;
     }
 
-    let mut cache_info = CacheInfo::default();
-    cache_info.detection_method = "AMD CPUID leaf 0x8000001D".to_string();
+    let mut cache_info = CacheInfo {
+        l1_data_cache: l1_data.unwrap_or(32 * 1024),
+        l1_instruction_cache: l1_data.unwrap_or(32 * 1024), // cache-size doesn't separate I/D cache
+        l2_cache: l2_size.unwrap_or(256 * 1024),
+        l3_cache: l3_size.unwrap_or(8 * 1024 * 1024),
+        cache_line_size: line_size.unwrap_or(64),
+        total_cache: 0, // Will be calculated
+        detection_method: "cache-size crate".to_string(),
+    };
 
-    for index in 0..8 {
-        let result = __cpuid_count(0x8000001D, index);
-        let cache_type = result.eax & 0x1F;
-        
-        if cache_type == 0 {
-            break;
-        }
+    cache_info.calculate_total_cache();
 
-        let cache_level = (result.eax >> 5) & 0x7;
-        let ways = ((result.ebx >> 22) & 0x3FF) + 1;
-        let partitions = ((result.ebx >> 12) & 0x3FF) + 1;
-        let line_size = (result.ebx & 0xFFF) + 1;
-        let sets = result.ecx + 1;
-        
-        let cache_size = (ways * partitions * line_size * sets) as usize;
+    log::debug!("cache-size detection: L1D={}KB, L2={}KB, L3={}MB, Line={}B", 
+               cache_info.l1_data_cache / 1024,
+               cache_info.l2_cache / 1024,
+               cache_info.l3_cache / (1024 * 1024),
+               cache_info.cache_line_size);
 
-        match (cache_level, cache_type) {
-            (1, 1) => cache_info.l1_data_cache = cache_size,
-            (1, 2) => cache_info.l1_instruction_cache = cache_size,
-            (2, 3) => cache_info.l2_cache = cache_size,
-            (3, 3) => cache_info.l3_cache = cache_size,
-            _ => {}
-        }
-
-        if line_size > 0 && line_size <= 128 {
-            cache_info.cache_line_size = line_size as usize;
-        }
-    }
-
-    if cache_info.l1_data_cache > 4096 && cache_info.l2_cache > cache_info.l1_data_cache {
-        Some(cache_info)
-    } else {
-        None
-    }
+    Some(cache_info)
 }
 
-// Legacy Intel cache detection using CPUID leaf 2
-unsafe fn detect_legacy_intel_cache() -> Option<CacheInfo> {
-    let result = __cpuid(2);
+// Detection using raw_cpuid (fallback method with more detail)
+fn detect_via_raw_cpuid() -> Option<CacheInfo> {
+    let cpuid = CpuId::new();
+    
     let mut cache_info = CacheInfo::default();
-    cache_info.detection_method = "Legacy Intel CPUID leaf 2".to_string();
-
-    // This is a simplified parser for common cache descriptors
-    // In practice, you'd need a full lookup table
-    let descriptors = [
-        (result.eax >> 8) as u8,
-        (result.eax >> 16) as u8,
-        (result.eax >> 24) as u8,
-        result.ebx as u8,
-        (result.ebx >> 8) as u8,
-        (result.ebx >> 16) as u8,
-        (result.ebx >> 24) as u8,
-        result.ecx as u8,
-        (result.ecx >> 8) as u8,
-        (result.ecx >> 16) as u8,
-        (result.ecx >> 24) as u8,
-        result.edx as u8,
-        (result.edx >> 8) as u8,
-        (result.edx >> 16) as u8,
-        (result.edx >> 24) as u8,
-    ];
-
-    for &descriptor in &descriptors {
-        match descriptor {
-            // Common L1 data cache sizes
-            0x0A => cache_info.l1_data_cache = 8 * 1024,    // 8KB
-            0x0C => cache_info.l1_data_cache = 16 * 1024,   // 16KB
-            0x0D => cache_info.l1_data_cache = 16 * 1024,   // 16KB
-            0x2C => cache_info.l1_data_cache = 32 * 1024,   // 32KB
-            0x60 => cache_info.l1_data_cache = 16 * 1024,   // 16KB
-            0x66 => cache_info.l1_data_cache = 8 * 1024,    // 8KB
-            0x67 => cache_info.l1_data_cache = 16 * 1024,   // 16KB
-            0x68 => cache_info.l1_data_cache = 32 * 1024,   // 32KB
+    cache_info.detection_method = "raw_cpuid detailed detection".to_string();
+    
+    // Try deterministic cache parameters (CPUID leaf 4) - works for both Intel and AMD
+    if let Some(cache_params) = cpuid.get_cache_parameters() {
+        for cache in cache_params {
+            let size = cache.associativity() * 
+                      cache.physical_line_partitions() * 
+                      cache.coherency_line_size() * 
+                      cache.sets();
             
-            // Common L2 cache sizes
-            0x39 => cache_info.l2_cache = 128 * 1024,       // 128KB
-            0x3A => cache_info.l2_cache = 192 * 1024,       // 192KB
-            0x3B => cache_info.l2_cache = 128 * 1024,       // 128KB
-            0x3C => cache_info.l2_cache = 256 * 1024,       // 256KB
-            0x3D => cache_info.l2_cache = 384 * 1024,       // 384KB
-            0x3E => cache_info.l2_cache = 512 * 1024,       // 512KB
-            0x41 => cache_info.l2_cache = 128 * 1024,       // 128KB
-            0x42 => cache_info.l2_cache = 256 * 1024,       // 256KB
-            0x43 => cache_info.l2_cache = 512 * 1024,       // 512KB
-            0x44 => cache_info.l2_cache = 1024 * 1024,      // 1MB
-            0x45 => cache_info.l2_cache = 2 * 1024 * 1024,  // 2MB
+            let cache_type = cache.cache_type();
+            let level = cache.level();
             
-            // Common L3 cache sizes
-            0x22 => cache_info.l3_cache = 512 * 1024,       // 512KB
-            0x23 => cache_info.l3_cache = 1024 * 1024,      // 1MB
-            0x25 => cache_info.l3_cache = 2 * 1024 * 1024,  // 2MB
-            0x29 => cache_info.l3_cache = 4 * 1024 * 1024,  // 4MB
-            0x2C => cache_info.l3_cache = 8 * 1024 * 1024,  // 8MB
-            0x46 => cache_info.l3_cache = 4 * 1024 * 1024,  // 4MB
-            0x47 => cache_info.l3_cache = 8 * 1024 * 1024,  // 8MB
-            0x48 => cache_info.l3_cache = 3 * 1024 * 1024,  // 3MB
-            0x49 => cache_info.l3_cache = 4 * 1024 * 1024,  // 4MB
-            0x4A => cache_info.l3_cache = 6 * 1024 * 1024,  // 6MB
-            0x4B => cache_info.l3_cache = 8 * 1024 * 1024,  // 8MB
-            0x4C => cache_info.l3_cache = 12 * 1024 * 1024, // 12MB
-            0x4D => cache_info.l3_cache = 16 * 1024 * 1024, // 16MB
-            0x4E => cache_info.l3_cache = 24 * 1024 * 1024, // 24MB
+            log::debug!("raw_cpuid: Found L{} cache, type={:?}, size={}KB", 
+                       level, &cache_type, size / 1024);
             
-            _ => {} // Unknown descriptor
-        }
-    }
-
-    if cache_info.l1_data_cache > 4096 {
-        Some(cache_info)
-    } else {
-        None
-    }
-}
-
-// Empirical cache detection through memory access timing
-fn detect_cache_empirically() -> Option<CacheInfo> {
-    use std::time::Instant;
-    use std::ptr;
-
-    let mut cache_info = CacheInfo::default();
-    cache_info.detection_method = "Empirical timing analysis".to_string();
-
-    // Allocate a large buffer for testing (16MB should be enough)
-    let test_size = 16 * 1024 * 1024;
-    let test_buffer: Vec<u64> = vec![0; test_size / 8];
-    let base_ptr = test_buffer.as_ptr() as *mut u64;
-
-    // Test various sizes and measure access times
-    let test_sizes = [
-        4 * 1024,      // 4KB
-        8 * 1024,      // 8KB
-        16 * 1024,     // 16KB
-        32 * 1024,     // 32KB
-        64 * 1024,     // 64KB
-        128 * 1024,    // 128KB
-        256 * 1024,    // 256KB
-        512 * 1024,    // 512KB
-        1024 * 1024,   // 1MB
-        2 * 1024 * 1024,   // 2MB
-        4 * 1024 * 1024,   // 4MB
-        8 * 1024 * 1024,   // 8MB
-        12 * 1024 * 1024,  // 12MB
-    ];
-
-    let mut timings = Vec::new();
-
-    for &size in &test_sizes {
-        if size > test_size {
-            break;
-        }
-
-        let iterations = 10000;
-        let stride = 64; // Cache line size
-        let elements = size / 8;
-        
-        // Warm up
-        unsafe {
-            for _ in 0..100 {
-                for i in (0..elements).step_by(stride / 8) {
-                    ptr::read_volatile(base_ptr.add(i));
+            match (level, &cache_type) {
+                (1, raw_cpuid::CacheType::Data) => {
+                    cache_info.l1_data_cache = size;
+                }
+                (1, raw_cpuid::CacheType::Instruction) => {
+                    cache_info.l1_instruction_cache = size;
+                }
+                (2, raw_cpuid::CacheType::Unified) => {
+                    cache_info.l2_cache = size;
+                }
+                (3, raw_cpuid::CacheType::Unified) => {
+                    cache_info.l3_cache = size;
+                }
+                _ => {
+                    log::debug!("raw_cpuid: Ignoring cache level {} type {:?}", level, &cache_type);
                 }
             }
-        }
-
-        // Measure access time
-        let start = Instant::now();
-        unsafe {
-            for _ in 0..iterations {
-                for i in (0..elements).step_by(stride / 8) {
-                    ptr::read_volatile(base_ptr.add(i));
-                }
-            }
-        }
-        let elapsed = start.elapsed();
-        
-        let ns_per_access = elapsed.as_nanos() / (iterations * (elements / (stride / 8))) as u128;
-        timings.push((size, ns_per_access));
-        
-        log::debug!("Cache timing test: {} KB -> {} ns/access", size / 1024, ns_per_access);
-    }
-
-    // Analyze timing jumps to detect cache boundaries
-    if timings.len() >= 3 {
-        let baseline = timings[0].1;
-        
-        for i in 1..timings.len() {
-            let current_time = timings[i].1;
-            let prev_time = timings[i-1].1;
             
-            // Look for significant timing increases (> 50% jump)
-            if current_time > prev_time * 3 / 2 && current_time > baseline * 3 / 2 {
-                let cache_size = timings[i-1].0;
-                
-                // Categorize based on size
-                if cache_size <= 64 * 1024 && cache_info.l1_data_cache == CacheInfo::default().l1_data_cache {
-                    cache_info.l1_data_cache = cache_size;
-                    log::debug!("Detected L1 cache boundary at {} KB", cache_size / 1024);
-                } else if cache_size <= 1024 * 1024 && cache_info.l2_cache == CacheInfo::default().l2_cache {
-                    cache_info.l2_cache = cache_size;
-                    log::debug!("Detected L2 cache boundary at {} KB", cache_size / 1024);
-                } else if cache_size > 1024 * 1024 && cache_info.l3_cache == CacheInfo::default().l3_cache {
-                    cache_info.l3_cache = cache_size;
-                    log::debug!("Detected L3 cache boundary at {} MB", cache_size / (1024 * 1024));
-                }
+            // Get cache line size from any cache level
+            let line_size = cache.coherency_line_size();
+            if line_size > 0 && line_size <= 128 {
+                cache_info.cache_line_size = line_size;
             }
+        }
+        
+        cache_info.calculate_total_cache();
+        
+        // Validate we got reasonable values
+        if cache_info.l1_data_cache > 4096 && cache_info.l2_cache > cache_info.l1_data_cache {
+            log::debug!("raw_cpuid detection successful: Total cache = {}MB", 
+                       cache_info.total_cache / (1024 * 1024));
+            return Some(cache_info);
         }
     }
 
-    // Validate results
-    if cache_info.l1_data_cache < CacheInfo::default().l1_data_cache && 
-       cache_info.l2_cache > cache_info.l1_data_cache {
-        Some(cache_info)
-    } else {
-        None
+    // Try AMD-specific extended cache info as fallback
+    if let Some(extended_cache) = cpuid.get_l2_l3_cache_and_tlb_info() {
+        log::debug!("raw_cpuid: Trying AMD extended cache detection");
+        
+        if extended_cache.l2cache_size() > 0 {
+            cache_info.l2_cache = (extended_cache.l2cache_size() as usize) * 1024;
+        }
+        if extended_cache.l3cache_size() > 0 {
+            cache_info.l3_cache = (extended_cache.l3cache_size() as usize) * 1024 * 512; // AMD reports in 512KB units
+        }
+        
+        cache_info.calculate_total_cache();
+        
+        if cache_info.l2_cache > 0 || cache_info.l3_cache > 0 {
+            cache_info.detection_method = "raw_cpuid AMD extended".to_string();
+            return Some(cache_info);
+        }
     }
+
+    log::debug!("raw_cpuid detection failed");
+    None
 }

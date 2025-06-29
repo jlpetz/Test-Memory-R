@@ -15,7 +15,7 @@ pub use progress::ProgressTracker;
 pub use layout::{MemoryLayout, MemoryStrategy, BlockInfo};
 pub use runner::{run_tests_with_layout, AllocatedBlock};
 pub use simd::detect_simd_capabilities;
-pub use cache::CacheInfo;
+pub use cache::{CacheInfo, SystemInfo};
 
 pub const DEFAULT_RESERVE_PERCENT: f64 = 10.0;
 

@@ -5,7 +5,7 @@ fn main() {
     // Initialize logging
     env_logger::Builder::from_default_env().filter_level(log::LevelFilter::Info).init();
 
-    println!("🚀 Test Memory R (TMR) v1.0.0 - High-Performance Three-Stage Memory Testing Tool");
+    println!("🚀 Test Memory R (TMR) v1.0.0 - High-Performance Memory Testing Tool");
     println!("================================================================================");
 
     let args: Vec<String> = env::args().collect();
@@ -26,8 +26,7 @@ fn main() {
             }
             "--version" | "-v" => {
                 println!("Test Memory R (TMR) version 1.0.0");
-                println!("High-Performance Three-Stage Memory Testing Tool with TM5 Compatibility");
-                println!("Architecture: Stage 1 (Allocation) → Stage 2 (Window) → Stage 3 (Blocks)");
+                println!("High-Performance Memory Testing Tool with TM5 Compatibility");
                 return;
             }
             _ => {}
@@ -91,9 +90,8 @@ fn main() {
             }
             Err(e) => {
                 println!("❌ Failed to load config file '{}': {}", config_path, e);
-                println!("   Falling back to command line parameters...");
-                println!();
-                parse_command_line_params(&args)
+                println!("   Stopping execution. Please provide a valid config file or run without config parameter.");
+                std::process::exit(1);
             }
         }
     } else {
@@ -169,15 +167,15 @@ fn main() {
     }
     println!();
 
-    println!("Three-Stage Memory Architecture Configuration:");
+    println!("System information and Memory Architecture detection:");
     println!("  CPU Type: {}", cputype);
     println!("  Using {}/{} {} for testing", threads, total_cpus, cputype);
     
-    // Display memory strategy information with three-stage breakdown
+    // Display memory strategy information
     print!("  Memory Strategy: ");
     match &memory_strategy {
         MemoryStrategy::TM5Compatible { testing_window_size_mb, reserved_memory_mb, test_block_size_mb } => {
-            println!("TM5-Compatible Three-Stage");
+            println!("TM5-Compatible");
             println!("    Stage 1 (Allocation): Maximum available minus {} MB OS reserve", reserved_memory_mb);
             println!("    Stage 2 (Testing Window): {} MB total window across all threads", testing_window_size_mb);
             if *test_block_size_mb > 0 {
@@ -187,7 +185,7 @@ fn main() {
             }
         }
         MemoryStrategy::ModernOptimal { reserve_gib } => {
-            println!("Modern Optimal Three-Stage");
+            println!("Modern Optimal");
             if let Some(gib) = reserve_gib {
                 println!("    Stage 1 (Allocation): Maximum available minus {:.2} GiB reserve", gib);
             } else {
@@ -197,7 +195,7 @@ fn main() {
             println!("    Stage 3 (Block Size): Auto-aligned per test for optimal SIMD performance");
         }
         MemoryStrategy::Custom { blocks_per_thread, min_block_size_mb } => {
-            println!("Custom Three-Stage");
+            println!("Custom");
             println!("    Stage 1 (Allocation): Multiple blocks per thread ({} blocks)", blocks_per_thread);
             println!("    Stage 2 (Testing Window): Configurable per test");
             println!("    Stage 3 (Block Size): Minimum {} MB (per-test overrides allowed)", min_block_size_mb);
@@ -226,13 +224,19 @@ fn main() {
     println!("  SIMD Support: {}", simd_caps);
 
     println!();
-	
-	// Detect SIMD capabilities
-    let simd_caps = tmr::detect_simd_capabilities();
-    println!("  SIMD Support: {}", simd_caps);
 
-    // Detect and display cache architecture
-    let cache_info = tmr::tests::get_cache_info();
+    // Detect and display system architecture (includes CPU info and cache)
+    let system_info = tmr::tests::get_system_info();
+    println!("System Information:");
+    println!("  CPU: {} ({})", system_info.cpu_brand, system_info.cpu_vendor);
+    println!("  Family: {}, Model: {}, Stepping: {}", 
+              system_info.cpu_family, system_info.cpu_model, system_info.cpu_stepping);
+    println!("  Cores: {} physical, {} logical{}", 
+              system_info.physical_cores, 
+              system_info.logical_cores,
+              if system_info.has_hyperthreading { " (Hyperthreading enabled)" } else { "" });
+
+    let cache_info = system_info.get_cache_info();
     println!("  Cache Architecture:");
     println!("    L1 Data: {:.1} KB | L1 Instruction: {:.1} KB", 
         cache_info.l1_data_cache as f64 / 1024.0,
@@ -241,16 +245,18 @@ fn main() {
         cache_info.l2_cache as f64 / 1024.0,
         cache_info.l3_cache as f64 / (1024.0 * 1024.0),
         cache_info.cache_line_size);
-    println!("    Detection: {}", cache_info.detection_method);
+    println!("    Total Cache: {:.1} MB | Detection: {}", 
+        cache_info.total_cache as f64 / (1024.0 * 1024.0),
+        cache_info.detection_method);
+    println!("    DDR Testing: Windows should exceed {:.1} MB to avoid cache effects", 
+        cache_info.total_cache as f64 / (1024.0 * 1024.0));
 
     println!();
-	
 
     // Calculate memory layout (Stage 1 allocation only)
     let layout = MemoryLayout::calculate(memory_strategy, threads, reserve_percent);
 
-    // Run tests with three-stage architecture
-    println!("Starting three-stage memory tests...");
+    println!("Starting memory tests...");
     println!("  Stage 1: Pre-allocating maximum memory per thread");
     println!("  Stage 2: Configuring testing windows per test");
     println!("  Stage 3: Optimizing block sizes and alignment per test");
@@ -263,7 +269,7 @@ fn main() {
     println!();
     println!("================================================================================");
     if success {
-        println!("✅ All three-stage memory tests completed successfully in {}", format_duration(total_time));
+        println!("✅ All memory tests completed successfully in {}", format_duration(total_time));
         println!("   Memory pressure maintained throughout testing with focused window access");
     } else {
         println!("❌ Tests failed or encountered errors in {}", format_duration(total_time));
@@ -405,7 +411,7 @@ fn parse_error_mode(param: &str) -> ErrorMode {
 }
 
 fn print_help(program_name: &str) {
-    println!("🚀 Test Memory R (TMR) v1.0.0 - High-Performance Three-Stage Memory Testing Tool");
+    println!("🚀 Test Memory R (TMR) v1.0.0 - High-Performance Memory Testing Tool");
     println!("===================================================================================");
     println!();
     println!("USAGE:");
@@ -426,8 +432,7 @@ fn print_help(program_name: &str) {
     println!();
     println!("THREE-STAGE MEMORY ARCHITECTURE:");
     println!("  Stage 1: Memory Allocation");
-    println!("  Stage 1: Memory Allocation");
-    println!("    - Allocate maximum available memory per thread (like TM5's 12 x 4.6GB)");
+    println!("    - Allocate maximum available memory per thread");
     println!("    - Create memory pressure on the system");
     println!("    - Lock pages to prevent swapping during tests");
     println!();
@@ -478,14 +483,14 @@ fn print_help(program_name: &str) {
     println!();
     println!("CONFIG FILES:");
     println!("  Modern JSON format v2.0 (.json):");
-    println!("    - Three-stage memory configuration with per-test overrides");
+    println!("    - Memory layout configuration with per-test overrides");
     println!("    - Version tracking and compatibility checks");
     println!("    - Window size and block size configuration per test");
     println!("    - Alignment control and misaligned access options");
     println!();
     println!("  Legacy TestMem5 format v1.0 (.cfg):");
     println!("    - Compatible with original TestMem5 configs");
-    println!("    - Automatically converted to three-stage architecture");
+    println!("    - Automatically converted to new memory configuration architecture");
     println!("    - Preserves test sequences, patterns, and timing");
     println!("    - Maps legacy block sizes to Stage 3 configuration");
     println!();
@@ -509,13 +514,13 @@ fn print_help(program_name: &str) {
     println!("    - Best for: Advanced users requiring specific memory layouts");
     println!();
     println!("ENVIRONMENT VARIABLES:");
-    println!("  RUST_LOG=debug     Enable detailed three-stage logging");
+    println!("  RUST_LOG=debug     Enable detailed memory stage logging");
     println!("  RUST_LOG=trace     Enable very detailed logging with alignment info");
     println!();
     println!("EXAMPLES:");
     println!("  {} memory=5% cpus=75% cputype=cores", program_name);
     println!("  {} strategy=tm5_compatible memory=880MiB", program_name);
-    println!("  {} config=1usmus_v3.cfg  # Auto-converts to three-stage", program_name);
+    println!("  {} config=1usmus_v3.cfg  # Auto-converts legacy format config to new application", program_name);
     println!("  {} config=my_test.json errors=halt", program_name);
     println!("  RUST_LOG=debug {} strategy=modern_optimal", program_name);
     println!();
@@ -529,7 +534,7 @@ fn print_usage(program_name: &str) {
     println!("Quick Usage Examples:");
     println!("  {} memory=10%                    # Reserve 10% of system memory", program_name);
     println!("  {} memory=2GiB                  # Reserve 2 GiB", program_name);
-    println!("  {} strategy=tm5_compatible      # Use TM5-style three-stage allocation", program_name);
+    println!("  {} strategy=tm5_compatible      # Use TM5-style three-stage memory allocation", program_name);
     println!("  {} cpus=50% cputype=cores       # Use 50% of CPU cores", program_name);
     println!("  {} errors=halt                  # Stop on first error", program_name);
     println!("  {} config=test.json             # Load JSON config with three-stage settings", program_name);
@@ -552,20 +557,10 @@ fn print_usage(program_name: &str) {
 }
 
 fn format_duration(duration: std::time::Duration) -> String {
-    let total_seconds = duration.as_secs();
-    let days = total_seconds / 86400;
-    let hours = (total_seconds % 86400) / 3600;
-    let minutes = (total_seconds % 3600) / 60;
-    let seconds = total_seconds % 60;
-    let millis = duration.subsec_millis();
-
-    if days > 0 {
-        format!("{}d {:02}h {:02}m {:02}.{:03}s", days, hours, minutes, seconds, millis)
-    } else if hours > 0 {
-        format!("{:02}h {:02}m {:02}.{:03}s", hours, minutes, seconds, millis)
-    } else if minutes > 0 {
-        format!("{:02}m {:02}.{:03}s", minutes, seconds, millis)
-    } else {
-        format!("{}.{:03}s", seconds, millis)
-    }
+	// Format runtime as HH:MM:SS
+	let total_seconds = duration.as_secs();
+	let hours = total_seconds / 3600;
+	let minutes = (total_seconds % 3600) / 60;
+	let seconds = total_seconds % 60;
+	format!("{:02}:{:02}:{:02}", hours, minutes, seconds)
 }
