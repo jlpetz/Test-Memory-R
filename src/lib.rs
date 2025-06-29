@@ -14,68 +14,56 @@ pub use config::*;
 pub const DEFAULT_RESERVE_PERCENT: f64 = 10.0;
 const CACHE_BUSTING_STRIDE: usize = 4096;
 
+// Cache size detection for modern window sizing
+const L1_CACHE_SIZE: usize = 32 * 1024;      // 32KB typical
+const L2_CACHE_SIZE: usize = 256 * 1024;     // 256KB typical  
+const L3_CACHE_SIZE: usize = 32 * 1024 * 1024; // 32MB typical
+
 pub fn check_large_page_privilege() -> Result<(), &'static str> {
     memory::check_large_page_privilege()
 }
 
 #[derive(Debug, Clone)]
 pub enum MemoryStrategy {
-    SingleBlock {
-        memory_spec: MemorySpec,
-        test_chunk_size_mb: Option<u32>, // None = no chunking, Some(size) = TM5-style chunking
+    TM5Compatible {
+        testing_window_size_mb: u32,
+        reserved_memory_mb: u32,
+        test_block_size_mb: u32, // 0 = use full window per thread
     },
-    MultiBlock {
+    ModernOptimal {
+        reserve_gib: Option<f64>, // None = use percentage
+    },
+    Custom {
         blocks_per_thread: u32,
         min_block_size_mb: u32,
     },
 }
 
-#[derive(Debug, Clone)]
-pub enum MemorySpec {
-    FixedWindow { 
-        size_mb: u32, 
-        reserved_mb: u32 
-    }, // TM5-style: fixed testing window
-    PercentReserve(f64),     // Modern: percentage of system memory to reserve
-    AbsoluteReserve(f64),    // Modern: absolute GiB to reserve
-}
-
 impl MemoryStrategy {
-    pub fn calculate_usable_memory(&self, total_memory_bytes: usize) -> usize {
+    pub fn calculate_stage1_allocation(&self, total_memory_bytes: usize, reserve_percent: f64, thread_count: usize) -> usize {
         match self {
-            MemoryStrategy::SingleBlock { memory_spec, .. } => {
-                match memory_spec {
-                    MemorySpec::FixedWindow { size_mb, .. } => {
-                        (*size_mb as usize) * 1024 * 1024
-                    }
-                    MemorySpec::PercentReserve(percent) => {
-                        let reserve_bytes = (total_memory_bytes as f64 * percent / 100.0) as usize;
-                        total_memory_bytes.saturating_sub(reserve_bytes)
-                    }
-                    MemorySpec::AbsoluteReserve(gib) => {
-                        let reserve_bytes = (gib * 1024.0 * 1024.0 * 1024.0) as usize;
-                        total_memory_bytes.saturating_sub(reserve_bytes)
-                    }
-                }
+            MemoryStrategy::TM5Compatible { reserved_memory_mb, .. } => {
+                // Stage 1: Allocate maximum memory minus OS reserve (TM5 style)
+                let os_reserve = (*reserved_memory_mb as usize) * 1024 * 1024;
+                let max_memory_for_testing = total_memory_bytes.saturating_sub(os_reserve);
+                max_memory_for_testing / thread_count
             }
-            MemoryStrategy::MultiBlock { .. } => {
-                // For multi-block, we'll use a default percentage-based approach
-                let reserve_bytes = (total_memory_bytes as f64 * DEFAULT_RESERVE_PERCENT / 100.0) as usize;
-                total_memory_bytes.saturating_sub(reserve_bytes)
-            }
-        }
-    }
-
-    pub fn strategy_name(&self) -> &'static str {
-        match self {
-            MemoryStrategy::SingleBlock { test_chunk_size_mb, .. } => {
-                if test_chunk_size_mb.is_some() {
-                    "Single Block (TM5-Compatible)"
+            MemoryStrategy::ModernOptimal { reserve_gib } => {
+                if let Some(gib) = reserve_gib {
+                    let reserve_bytes = (gib * 1024.0 * 1024.0 * 1024.0) as usize;
+                    let usable = total_memory_bytes.saturating_sub(reserve_bytes);
+                    usable / thread_count
                 } else {
-                    "Single Block (Modern Optimal)"
+                    let reserve_bytes = (total_memory_bytes as f64 * reserve_percent / 100.0) as usize;
+                    let usable = total_memory_bytes.saturating_sub(reserve_bytes);
+                    usable / thread_count
                 }
             }
-            MemoryStrategy::MultiBlock { .. } => "Multi Block (Legacy)",
+            MemoryStrategy::Custom { .. } => {
+                let reserve_bytes = (total_memory_bytes as f64 * reserve_percent / 100.0) as usize;
+                let usable = total_memory_bytes.saturating_sub(reserve_bytes);
+                usable / thread_count
+            }
         }
     }
 }
@@ -127,9 +115,123 @@ pub struct TestStats {
     error_count: u64,
 }
 
+// Three-stage memory configuration
+#[derive(Debug, Clone)]
+pub struct TestMemoryConfig {
+    pub window_size_bytes: usize,        // Stage 2: Testing window within allocation
+    pub block_size_bytes: usize,         // Stage 3: Block/chunk size for access patterns
+    pub allow_misaligned: bool,          // Allow unaligned accesses for stress testing
+    pub auto_adjust_alignment: bool,     // Auto-adjust for optimal alignment
+}
+
+impl TestMemoryConfig {
+    pub fn new(window_size_mb: Option<u32>, block_size_mb: Option<u32>, allow_misaligned: bool) -> Self {
+        let window_size_bytes = window_size_mb.map(|mb| mb as usize * 1024 * 1024).unwrap_or(0);
+        let block_size_bytes = block_size_mb.map(|mb| mb as usize * 1024 * 1024).unwrap_or(0);
+        
+        Self {
+            window_size_bytes,
+            block_size_bytes,
+            allow_misaligned,
+            auto_adjust_alignment: true,
+        }
+    }
+
+    // Calculate optimal window size for modern systems
+    pub fn calculate_optimal_window_size(&self, test_name: &str, allocated_size: usize) -> usize {
+        match test_name {
+            // Cache-focused tests use smaller windows
+            "CacheBusting" => (L3_CACHE_SIZE * 2).min(allocated_size / 4),
+            "RandomTorture" => (L3_CACHE_SIZE * 4).min(allocated_size / 2),
+            
+            // Memory bandwidth tests use larger windows
+            "BandwidthSat" => allocated_size / 2,
+            "MirrorMove128NonTemporal" | "MirrorMove256NonTemporal" | "MirrorMove512NonTemporal" => {
+                allocated_size / 3 // Large but not full allocation
+            }
+            
+            // General tests use moderate windows
+            "SimpleTest" | "RefreshStable" => (allocated_size / 4).max(64 * 1024 * 1024), // At least 64MB
+            "StrideAccess" => (allocated_size / 8).max(32 * 1024 * 1024), // At least 32MB
+            
+            _ => if self.window_size_bytes > 0 {
+                self.window_size_bytes
+            } else {
+                allocated_size / 4 // Default to 25% of allocation
+            }
+        }
+    }
+
+    // Calculate optimal block size with alignment
+    pub fn calculate_optimal_block_size(&self, test_name: &str, window_size: usize) -> (usize, bool) {
+        let optimal_block_size = match test_name {
+            // SIMD tests need specific alignments
+            "MirrorMove128NonTemporal" => {
+                let base_size = if self.block_size_bytes > 0 { self.block_size_bytes } else { 16 * 1024 * 1024 };
+                align_to_boundary(base_size, 128 / 8) // 128-bit alignment
+            }
+            "MirrorMove256NonTemporal" => {
+                let base_size = if self.block_size_bytes > 0 { self.block_size_bytes } else { 32 * 1024 * 1024 };
+                align_to_boundary(base_size, 256 / 8) // 256-bit alignment  
+            }
+            "MirrorMove512NonTemporal" => {
+                let base_size = if self.block_size_bytes > 0 { self.block_size_bytes } else { 64 * 1024 * 1024 };
+                align_to_boundary(base_size, 512 / 8) // 512-bit alignment
+            }
+            
+            // Cache tests use cache-line aligned blocks
+            "CacheBusting" => {
+                let base_size = if self.block_size_bytes > 0 { self.block_size_bytes } else { 1 * 1024 * 1024 };
+                align_to_boundary(base_size, 64) // Cache line alignment
+            }
+            
+            // Memory controller tests use page-aligned blocks
+            "SimpleTest" | "RefreshStable" => {
+                let base_size = if self.block_size_bytes > 0 { self.block_size_bytes } else { 4 * 1024 * 1024 };
+                align_to_boundary(base_size, 4096) // Page alignment
+            }
+            
+            _ => {
+                let base_size = if self.block_size_bytes > 0 { self.block_size_bytes } else { 8 * 1024 * 1024 };
+                if self.allow_misaligned {
+                    base_size // No alignment adjustment
+                } else {
+                    align_to_boundary(base_size, 64) // Cache line alignment default
+                }
+            }
+        };
+
+        let was_adjusted = optimal_block_size != self.block_size_bytes;
+        (optimal_block_size.min(window_size), was_adjusted)
+    }
+
+    // Ensure window size is multiple of block size
+    pub fn align_window_to_blocks(&self, window_size: usize, block_size: usize) -> (usize, bool) {
+        if block_size == 0 || window_size == 0 {
+            return (window_size, false);
+        }
+        
+        let aligned_window = (window_size / block_size) * block_size;
+        let was_adjusted = aligned_window != window_size;
+        
+        // Ensure we have at least one full block
+        let final_window = if aligned_window < block_size {
+            block_size
+        } else {
+            aligned_window
+        };
+        
+        (final_window, was_adjusted || final_window != window_size)
+    }
+}
+
+fn align_to_boundary(size: usize, alignment: usize) -> usize {
+    ((size + alignment - 1) / alignment) * alignment
+}
+
 pub struct MemoryLayout {
     pub total_memory: usize,
-    pub usable_memory: usize,
+    pub allocated_memory: usize,      // Stage 1: Total allocated (e.g., 55GB)
     pub reserved_memory: usize,
     pub blocks: Vec<BlockInfo>,
     pub strategy: MemoryStrategy,
@@ -137,95 +239,60 @@ pub struct MemoryLayout {
 
 #[derive(Debug, Clone)]
 pub struct BlockInfo {
-    pub size_bytes: usize,
+    pub size_bytes: usize,           // Stage 1: Full allocation per thread (e.g., 4.6GB)
     pub thread_id: usize,
-    pub test_chunk_size: Option<usize>, // For TM5-compatible chunking within the block
 }
 
 impl MemoryLayout {
-    pub fn calculate(strategy: MemoryStrategy, thread_count: usize) -> Self {
+    pub fn calculate(strategy: MemoryStrategy, thread_count: usize, reserve_percent: f64) -> Self {
         let total_memory = memory::get_total_system_memory();
-        let usable_memory = strategy.calculate_usable_memory(total_memory);
-        let reserved_memory = total_memory - usable_memory;
+        
+        // Stage 1: Calculate maximum allocation per thread
+        let allocated_per_thread = strategy.calculate_stage1_allocation(total_memory, reserve_percent, thread_count);
+        let total_allocated = allocated_per_thread * thread_count;
+        let reserved_memory = total_memory - total_allocated;
 
-        let blocks = Self::distribute_memory_blocks(&strategy, usable_memory, thread_count);
+        let blocks = (0..thread_count)
+            .map(|thread_id| BlockInfo {
+                size_bytes: allocated_per_thread,
+                thread_id,
+            })
+            .collect();
 
         MemoryLayout {
             total_memory,
-            usable_memory,
+            allocated_memory: total_allocated,
             reserved_memory,
             blocks,
             strategy,
         }
     }
 
-    fn distribute_memory_blocks(strategy: &MemoryStrategy, usable_memory: usize, thread_count: usize) -> Vec<BlockInfo> {
-        match strategy {
-            MemoryStrategy::SingleBlock { test_chunk_size_mb, .. } => {
-                // Single large block per thread (TM5-style or Modern)
-                let memory_per_thread = usable_memory / thread_count;
-                let test_chunk_size = test_chunk_size_mb.map(|mb| mb as usize * 1024 * 1024);
-
-                (0..thread_count)
-                    .map(|thread_id| BlockInfo {
-                        size_bytes: memory_per_thread,
-                        thread_id,
-                        test_chunk_size,
-                    })
-                    .collect()
-            }
-            MemoryStrategy::MultiBlock { blocks_per_thread, min_block_size_mb } => {
-                // Multiple blocks per thread (legacy approach)
-                let min_block_bytes = *min_block_size_mb as usize * 1024 * 1024;
-                let memory_per_thread = usable_memory / thread_count;
-                let actual_blocks_per_thread = (*blocks_per_thread as usize).max(1);
-                let block_size = (memory_per_thread / actual_blocks_per_thread).max(min_block_bytes);
-
-                let mut blocks = Vec::new();
-                for thread_id in 0..thread_count {
-                    for _ in 0..actual_blocks_per_thread {
-                        blocks.push(BlockInfo {
-                            size_bytes: block_size,
-                            thread_id,
-                            test_chunk_size: None,
-                        });
-                    }
-                }
-                blocks
-            }
-        }
-    }
-
     pub fn print_layout(&self) {
-        log::info!("Memory Layout:");
+        log::info!("Memory Layout (Three-Stage Architecture):");
         log::info!(
             "  Total System Memory: {:.2} GiB",
             self.total_memory as f64 / (1024.0 * 1024.0 * 1024.0)
         );
         log::info!(
-            "  Reserved Memory: {:.2} GiB",
+            "  Stage 1 - Total Allocated: {:.2} GiB ({:.1}% of system)",
+            self.allocated_memory as f64 / (1024.0 * 1024.0 * 1024.0),
+            (self.allocated_memory as f64 / self.total_memory as f64) * 100.0
+        );
+        log::info!(
+            "  Reserved for OS: {:.2} GiB",
             self.reserved_memory as f64 / (1024.0 * 1024.0 * 1024.0)
         );
-        log::info!("  Usable Memory: {:.2} GiB", self.usable_memory as f64 / (1024.0 * 1024.0 * 1024.0));
-        log::info!("  Strategy: {}", self.strategy.strategy_name());
-        log::info!("  Total Blocks: {}", self.blocks.len());
+        log::info!("  Strategy: {:?}", self.strategy);
+        log::info!("  Threads: {}", self.blocks.len());
 
-        let mut thread_blocks: HashMap<usize, Vec<&BlockInfo>> = HashMap::new();
         for block in &self.blocks {
-            thread_blocks.entry(block.thread_id).or_default().push(block);
+            let size_gib = block.size_bytes as f64 / (1024.0 * 1024.0 * 1024.0);
+            log::info!("  Thread {}: {:.2} GiB allocated", block.thread_id, size_gib);
         }
-
-        for (thread_id, blocks) in &thread_blocks {
-            let total_size: usize = blocks.iter().map(|b| b.size_bytes).sum();
-            let total_gib = total_size as f64 / (1024.0 * 1024.0 * 1024.0);
-            log::info!("  Thread {}: {} blocks, {:.2} GiB total", thread_id, blocks.len(), total_gib);
-            
-            // Show test chunk size if applicable
-            if let Some(test_chunk_size) = blocks[0].test_chunk_size {
-                let test_chunk_mb = test_chunk_size / (1024 * 1024);
-                log::info!("    Test chunk size: {} MB (TM5-compatible mode)", test_chunk_mb);
-            }
-        }
+        
+        log::info!("  Note: Stage 2 (window size) and Stage 3 (block size) will be");
+        log::info!("        configured per test within these allocations");
     }
 }
 
@@ -235,7 +302,7 @@ pub struct ProgressTracker {
     pub completed_tests: AtomicU64,
     pub total_errors: AtomicU64,
     pub current_phase: Mutex<String>,
-    pub current_throughput: AtomicU64, // Store as bytes/sec * 1000 for precision
+    pub current_throughput: AtomicU64,
 }
 
 impl ProgressTracker {
@@ -257,7 +324,6 @@ impl ProgressTracker {
         self.completed_tests.fetch_add(1, Ordering::Relaxed);
         self.add_errors(stats.error_count);
 
-        // Calculate throughput (bytes/sec * 1000)
         if stats.elapsed_ms > 0 {
             let throughput = (stats.bytes_processed as u128 * 1000 * 1000) / stats.elapsed_ms;
             self.current_throughput.store(throughput as u64, Ordering::Relaxed);
@@ -302,9 +368,9 @@ pub fn run_tests_with_layout(layout: MemoryLayout, error_mode: ErrorMode) -> boo
         thread_blocks.entry(block.thread_id).or_default().push(block);
     }
 
-    // Pre-allocate all memory blocks before starting tests
-    progress.set_phase("Allocating Memory");
-    println!("Pre-allocating memory blocks...");
+    // Stage 1: Pre-allocate all memory blocks
+    progress.set_phase("Stage 1: Allocating Memory");
+    println!("Stage 1: Pre-allocating memory blocks...");
 
     let mut allocated_blocks = match allocate_all_blocks(&thread_blocks) {
         Ok(blocks) => blocks,
@@ -314,8 +380,7 @@ pub fn run_tests_with_layout(layout: MemoryLayout, error_mode: ErrorMode) -> boo
         }
     };
 
-    // Print allocation summary
-    print_allocation_summary(&allocated_blocks, &layout.strategy);
+    print_allocation_summary(&allocated_blocks);
 
     // Start progress reporter thread
     let progress_clone = Arc::clone(&progress);
@@ -350,17 +415,14 @@ pub fn run_tests_with_layout(layout: MemoryLayout, error_mode: ErrorMode) -> boo
         }
     }
 
-    // Signal progress reporter to stop
     progress.set_phase("Completed");
-    thread::sleep(std::time::Duration::from_millis(100)); // Give reporter time to show final status
+    thread::sleep(std::time::Duration::from_millis(100));
 
     if let Err(_) = progress_handle.join() {
         log::warn!("Progress reporter thread failed to join cleanly");
     }
 
-    // Memory blocks will be automatically freed when they go out of scope
     log::info!("Releasing all allocated memory blocks");
-
     success.load(Ordering::Relaxed)
 }
 
@@ -368,22 +430,21 @@ fn progress_reporter(progress: Arc<ProgressTracker>) {
     let mut last_update = Instant::now();
 
     loop {
-        thread::sleep(std::time::Duration::from_millis(1000)); // Check every second
+        thread::sleep(std::time::Duration::from_millis(1000));
 
         let (completed, total, errors, phase, throughput) = progress.get_status();
 
-        // Update every 5 seconds or when phase changes to "Completed"
         if last_update.elapsed().as_secs() >= 5 || phase == "Completed" {
             let progress_pct = if total > 0 { (completed * 100) / total } else { 0 };
 
-            print!("\r\x1b[K"); // Clear line
+            print!("\r\x1b[K");
             print!(
                 "Progress: {}/{} ({}%) | Errors: {} | Phase: {} | Speed: {:.2} GiB/s",
                 completed, total, progress_pct, errors, phase, throughput
             );
 
             if phase == "Completed" {
-                println!(); // New line at completion
+                println!();
                 break;
             }
 
@@ -417,7 +478,6 @@ fn allocate_all_blocks(thread_blocks: &HashMap<usize, Vec<BlockInfo>>) -> Result
                 .or_else(|| TestBuffer::new_aligned(block.size_bytes))
                 .ok_or_else(|| format!("Failed to allocate buffer of {} bytes for thread {}", block.size_bytes, thread_id))?;
 
-            // Check if we got large pages
             if buffer.uses_large_pages() {
                 large_page_blocks += 1;
             }
@@ -435,7 +495,7 @@ fn allocate_all_blocks(thread_blocks: &HashMap<usize, Vec<BlockInfo>>) -> Result
     }
 
     log::info!(
-        "Memory allocation completed: {} blocks, {:.2} GiB total, {} using large pages",
+        "Stage 1 allocation completed: {} blocks, {:.2} GiB total, {} using large pages",
         total_blocks,
         total_allocated as f64 / (1024.0 * 1024.0 * 1024.0),
         large_page_blocks
@@ -444,11 +504,10 @@ fn allocate_all_blocks(thread_blocks: &HashMap<usize, Vec<BlockInfo>>) -> Result
     Ok(allocated_blocks)
 }
 
-fn print_allocation_summary(allocated_blocks: &HashMap<usize, Vec<AllocatedBlock>>, strategy: &MemoryStrategy) {
+fn print_allocation_summary(allocated_blocks: &HashMap<usize, Vec<AllocatedBlock>>) {
     let mut total_blocks = 0;
     let mut total_size = 0usize;
     let mut large_page_blocks = 0;
-    let mut blocks_per_thread = 0;
     let mut size_per_thread = 0usize;
 
     for (thread_id, blocks) in allocated_blocks {
@@ -460,27 +519,17 @@ fn print_allocation_summary(allocated_blocks: &HashMap<usize, Vec<AllocatedBlock
         large_page_blocks += thread_large_pages;
 
         if *thread_id == 0 {
-            // Use first thread as template
-            blocks_per_thread = blocks.len();
             size_per_thread = thread_total_size;
         }
     }
 
     let thread_count = allocated_blocks.len();
-    let size_per_block_gib = if total_blocks > 0 {
-        (size_per_thread / blocks_per_thread) as f64 / (1024.0 * 1024.0 * 1024.0)
-    } else {
-        0.0
-    };
+    let size_per_thread_gib = size_per_thread as f64 / (1024.0 * 1024.0 * 1024.0);
 
-    println!("Memory Allocation Summary:");
+    println!("Stage 1 Memory Allocation Summary:");
     println!(
-        "  {} blocks of {:.2} GiB per thread, {} threads ({})",
-        blocks_per_thread, size_per_block_gib, thread_count, strategy.strategy_name()
-    );
-    println!(
-        "  Total: {} blocks, {:.2} GiB",
-        total_blocks,
+        "  {} × {:.2} GiB per thread = {:.2} GiB total (TM5-style)",
+        thread_count, size_per_thread_gib,
         total_size as f64 / (1024.0 * 1024.0 * 1024.0)
     );
 
@@ -492,8 +541,59 @@ fn print_allocation_summary(allocated_blocks: &HashMap<usize, Vec<AllocatedBlock
     println!();
 }
 
-// SIMD-optimized memory testing implementations
+// Test function with three-stage memory management
+fn run_test_with_memory_stages(
+    test_name: &str,
+    test_func: unsafe fn(*mut u8, usize, usize, ErrorMode) -> TestStats,
+    allocated_block: &AllocatedBlock,
+    test_config: &TestMemoryConfig,
+    thread_id: usize,
+    error_mode: ErrorMode,
+) -> Result<TestStats, String> {
+    let allocated_size = allocated_block.buffer.size();
+    let allocated_ptr = allocated_block.buffer.as_mut_ptr();
+    
+    // Stage 2: Calculate optimal window size within allocation
+    let optimal_window_size = test_config.calculate_optimal_window_size(test_name, allocated_size);
+    let (window_size, window_adjusted) = if test_config.window_size_bytes > 0 {
+        (test_config.window_size_bytes.min(allocated_size), false)
+    } else {
+        (optimal_window_size, true)
+    };
+    
+    // Stage 3: Calculate optimal block size with alignment
+    let (block_size, block_adjusted) = test_config.calculate_optimal_block_size(test_name, window_size);
+    
+    // Ensure window is multiple of block size
+    let (final_window_size, window_aligned) = test_config.align_window_to_blocks(window_size, block_size);
+    
+    // Log Stage 2 & 3 configuration
+    let window_mb = final_window_size as f64 / (1024.0 * 1024.0);
+    let block_mb = block_size as f64 / (1024.0 * 1024.0);
+    let allocated_mb = allocated_size as f64 / (1024.0 * 1024.0);
+    
+    log::info!(
+        "[Thread {}] {} - Stage 2: Window {:.1}MB/{:.1}MB allocated{}{}",
+        thread_id, test_name, window_mb, allocated_mb,
+        if window_adjusted { " (auto-sized)" } else { "" },
+        if window_aligned { " (aligned to blocks)" } else { "" }
+    );
+    
+    log::info!(
+        "[Thread {}] {} - Stage 3: Block size {:.1}MB{}",
+        thread_id, test_name, block_mb,
+        if block_adjusted { " (auto-aligned)" } else { "" }
+    );
+    
+    // Run the test function on the configured window
+    let stats = unsafe {
+        test_func(allocated_ptr, final_window_size, thread_id, error_mode)
+    };
+    
+    Ok(stats)
+}
 
+// SIMD-optimized memory testing implementations
 unsafe fn mirror_move_128_non_temporal(ptr: *mut u8, size: usize, thread_id: usize, _error_mode: ErrorMode) -> TestStats {
     let start = Instant::now();
     if !is_x86_feature_detected!("sse2") {
@@ -510,14 +610,11 @@ unsafe fn mirror_move_128_non_temporal(ptr: *mut u8, size: usize, thread_id: usi
     let len = size / std::mem::size_of::<__m128i>();
     let base = ptr as *mut __m128i;
 
-    // Use non-temporal loads/stores to bypass cache
     for i in 0..(len / 2) {
         let val = _mm_load_si128(base.add(i));
-        // Non-temporal store bypasses cache
         _mm_stream_si128(base.add(len - 1 - i), val);
     }
 
-    // Ensure all stores complete
     _mm_sfence();
 
     let elapsed = start.elapsed().as_millis();
@@ -612,50 +709,80 @@ fn run_thread_tests_with_allocated_blocks(
         allocated_blocks.len()
     );
 
-    // Define test functions in order
-    let test_functions: Vec<(&str, unsafe fn(*mut u8, usize, usize, ErrorMode) -> TestStats)> = vec![
-        ("MirrorMove128NonTemporal", mirror_move_128_non_temporal),
-        ("MirrorMove256NonTemporal", mirror_move_256_non_temporal),
-        ("MirrorMove512NonTemporal", mirror_move_512_non_temporal),
-        ("SimpleTest", simple_test),
-        ("RefreshStable", refresh_stable),
-        ("CacheBusting", cache_busting_write_test),
-        ("RandomTorture", random_access_torture_test),
-        ("StrideAccess", stride_access_test),
-        ("BandwidthSat", bandwidth_saturation_test),
+    // Define test functions with their configurations
+    let test_definitions: Vec<(&str, unsafe fn(*mut u8, usize, usize, ErrorMode) -> TestStats, TestMemoryConfig)> = vec![
+        (
+            "MirrorMove128NonTemporal", 
+            mirror_move_128_non_temporal,
+            TestMemoryConfig::new(Some(64), Some(16), false) // 64MB window, 16MB blocks
+        ),
+        (
+            "MirrorMove256NonTemporal", 
+            mirror_move_256_non_temporal,
+            TestMemoryConfig::new(Some(128), Some(32), false) // 128MB window, 32MB blocks
+        ),
+        (
+            "MirrorMove512NonTemporal", 
+            mirror_move_512_non_temporal,
+            TestMemoryConfig::new(Some(256), Some(64), false) // 256MB window, 64MB blocks
+        ),
+        (
+            "SimpleTest", 
+            simple_test,
+            TestMemoryConfig::new(None, Some(4), false) // Auto window, 4MB blocks
+        ),
+        (
+            "RefreshStable", 
+            refresh_stable,
+            TestMemoryConfig::new(Some(32), Some(1), false) // 32MB window, 1MB blocks
+        ),
+        (
+            "CacheBusting", 
+            cache_busting_write_test,
+            TestMemoryConfig::new(None, Some(1), false) // Auto cache-sized window, 1MB blocks
+        ),
+        (
+            "RandomTorture", 
+            random_access_torture_test,
+            TestMemoryConfig::new(None, Some(8), false) // Auto window, 8MB blocks
+        ),
+        (
+            "StrideAccess", 
+            stride_access_test,
+            TestMemoryConfig::new(None, Some(2), false) // Auto window, 2MB blocks
+        ),
+        (
+            "BandwidthSat", 
+            bandwidth_saturation_test,
+            TestMemoryConfig::new(None, Some(32), false) // Auto large window, 32MB blocks
+        ),
     ];
 
     // Run each test type across all blocks before moving to next test type
-    for (test_name, test_func) in test_functions {
-        progress.set_phase(test_name);
+    for (test_name, test_func, test_config) in test_definitions {
+        progress.set_phase(&format!("Stage 2&3: {}", test_name));
 
         // Wait for all threads to reach this test phase
         barrier.wait();
 
         for (block_idx, allocated_block) in allocated_blocks.iter().enumerate() {
-            let ptr = allocated_block.buffer.as_mut_ptr();
-            let size = allocated_block.buffer.size();
-            let size_gib = size as f64 / (1024.0 * 1024.0 * 1024.0);
-
             log::debug!(
-                "[Thread {}] Block {}/{} - {:.2} GiB - Running {}",
+                "[Thread {}] Block {}/{} - Running {} with Stage 2&3 configuration",
                 thread_id,
                 block_idx + 1,
                 allocated_blocks.len(),
-                size_gib,
                 test_name
             );
 
-            // Handle test chunk processing for TM5-compatible mode
-            if let Some(test_chunk_size) = allocated_block.block_info.test_chunk_size {
-                // Run test in chunks as per TM5 behavior
-                let chunk_count = size / test_chunk_size;
-                log::debug!("[Thread {}] Running {} in {} chunks of {} MB", 
-                    thread_id, test_name, chunk_count, test_chunk_size / (1024 * 1024));
-                
-                for chunk_idx in 0..chunk_count {
-                    let chunk_ptr = unsafe { ptr.add(chunk_idx * test_chunk_size) };
-                    let stats = unsafe { test_func(chunk_ptr, test_chunk_size, thread_id, error_mode) };
+            match run_test_with_memory_stages(
+                test_name,
+                test_func,
+                allocated_block,
+                &test_config,
+                thread_id,
+                error_mode,
+            ) {
+                Ok(stats) => {
                     log_stats(&stats);
                     progress.complete_test(&stats);
 
@@ -663,14 +790,9 @@ fn run_thread_tests_with_allocated_blocks(
                         handle_test_errors(&stats, error_mode, test_name)?;
                     }
                 }
-            } else {
-                // Run test on full block (Modern Optimal mode)
-                let stats = unsafe { test_func(ptr, size, thread_id, error_mode) };
-                log_stats(&stats);
-                progress.complete_test(&stats);
-
-                if stats.error_count > 0 {
-                    handle_test_errors(&stats, error_mode, test_name)?;
+                Err(e) => {
+                    log::error!("[Thread {}] Test {} failed: {}", thread_id, test_name, e);
+                    return Err(e);
                 }
             }
         }
@@ -755,7 +877,7 @@ pub fn detect_simd_capabilities() -> String {
     }
 }
 
-// Memory testing implementations (same as before)
+// Memory testing focused implementations with error handling
 
 unsafe fn simple_test(ptr: *mut u8, size: usize, thread_id: usize, error_mode: ErrorMode) -> TestStats {
     let start = Instant::now();
