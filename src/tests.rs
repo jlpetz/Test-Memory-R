@@ -297,80 +297,99 @@ fn align_to_boundary(size: usize, alignment: usize) -> usize {
 }
 
 // === NEW: Full Memory Stuck Bit Test ===
-pub unsafe fn stuck_bit_test(ptr: *mut u8, size: usize, thread_id: usize, error_mode: ErrorMode) -> TestStats {
+pub unsafe fn stuck_bit_test(ptr: *mut u8, size: usize, thread_id: usize, error_mode: ErrorMode, timing: &TestTiming) -> TestStats {
+    let test_name = "StuckBitTest";
     let start = Instant::now();
-    let base = ptr as *mut u64;
     let len = size / std::mem::size_of::<u64>();
-    let mut error_count = 0;
+    let mut total_error_count = 0u64;
+    let mut total_bytes_processed = 0usize;
+    let base = ptr as *mut u64;
 
-    log::info!("[Thread {}] Running stuck bit test on {:.2} MB of memory", 
-              thread_id, size as f64 / (1024.0 * 1024.0));
+    log::info!("[Thread {}] Running {} on {:.2} MB of memory", 
+              thread_id, test_name, size as f64 / (1024.0 * 1024.0));
 
-    // Phase 1: Write 0xAAAAAAAAAAAAAAAA (10101010...)
-    let pattern1 = 0xAAAAAAAAAAAAAAAAu64;
-    for i in 0..len {
-        base.add(i).write(pattern1);
-    }
+    let mut cycle = 0u32;
+    let test_start = Instant::now();
+    
+    loop {
+        cycle += 1;
+        let mut cycle_errors = 0u64;
+        
+        // Phase 1: Write 0xAAAAAAAAAAAAAAAA (10101010...)
+        let pattern1 = 0xAAAAAAAAAAAAAAAAu64;
+        for i in 0..len {
+            base.add(i).write(pattern1);
+        }
 
-    std::sync::atomic::fence(Ordering::SeqCst);
+        std::sync::atomic::fence(Ordering::SeqCst);
 
-    // Phase 1 Verify
-    for i in 0..len {
-        let v = base.add(i).read();
-        if v != pattern1 {
-            error_count += 1;
-            match error_mode {
-                ErrorMode::Panic => panic!("stuck_bit_test: Phase 1 error at index {} - expected {:#x}, got {:#x}", i, pattern1, v),
-                ErrorMode::Halt => break,
-                ErrorMode::Log => {
-                    log::error!("stuck_bit_test: Phase 1 error at index {} - expected {:#x}, got {:#x}", i, pattern1, v);
+        // Phase 1 Verify
+        for i in 0..len {
+            let v = base.add(i).read();
+            if v != pattern1 {
+                cycle_errors += 1;
+                match error_mode {
+                    ErrorMode::Panic => panic!("stuck_bit_test: Phase 1 error at index {} - expected {:#x}, got {:#x}", i, pattern1, v),
+                    ErrorMode::Halt => break,
+                    ErrorMode::Log => {
+                        log::error!("stuck_bit_test: Phase 1 error at index {} - expected {:#x}, got {:#x}", i, pattern1, v);
+                    }
                 }
             }
         }
-    }
 
-    // Phase 2: Write 0x5555555555555555 (01010101...)
-    let pattern2 = 0x5555555555555555u64;
-    for i in 0..len {
-        base.add(i).write(pattern2);
-    }
+        // Phase 2: Write 0x5555555555555555 (01010101...)
+        let pattern2 = 0x5555555555555555u64;
+        for i in 0..len {
+            base.add(i).write(pattern2);
+        }
 
-    std::sync::atomic::fence(Ordering::SeqCst);
+        std::sync::atomic::fence(Ordering::SeqCst);
 
-    // Phase 2 Verify
-    for i in 0..len {
-        let v = base.add(i).read();
-        if v != pattern2 {
-            error_count += 1;
-            match error_mode {
-                ErrorMode::Panic => panic!("stuck_bit_test: Phase 2 error at index {} - expected {:#x}, got {:#x}", i, pattern2, v),
-                ErrorMode::Halt => break,
-                ErrorMode::Log => {
-                    log::error!("stuck_bit_test: Phase 2 error at index {} - expected {:#x}, got {:#x}", i, pattern2, v);
+        // Phase 2 Verify
+        for i in 0..len {
+            let v = base.add(i).read();
+            if v != pattern2 {
+                cycle_errors += 1;
+                match error_mode {
+                    ErrorMode::Panic => panic!("stuck_bit_test: Phase 2 error at index {} - expected {:#x}, got {:#x}", i, pattern2, v),
+                    ErrorMode::Halt => break,
+                    ErrorMode::Log => {
+                        log::error!("stuck_bit_test: Phase 2 error at index {} - expected {:#x}, got {:#x}", i, pattern2, v);
+                    }
                 }
             }
         }
-    }
 
-    // Phase 3: Write back to 0xAAAAAAAAAAAAAAAA
-    for i in 0..len {
-        base.add(i).write(pattern1);
-    }
+        // Phase 3: Write back to 0xAAAAAAAAAAAAAAAA
+        for i in 0..len {
+            base.add(i).write(pattern1);
+        }
 
-    std::sync::atomic::fence(Ordering::SeqCst);
+        std::sync::atomic::fence(Ordering::SeqCst);
 
-    // Phase 3 Verify
-    for i in 0..len {
-        let v = base.add(i).read();
-        if v != pattern1 {
-            error_count += 1;
-            match error_mode {
-                ErrorMode::Panic => panic!("stuck_bit_test: Phase 3 error at index {} - expected {:#x}, got {:#x}", i, pattern1, v),
-                ErrorMode::Halt => break,
-                ErrorMode::Log => {
-                    log::error!("stuck_bit_test: Phase 3 error at index {} - expected {:#x}, got {:#x}", i, pattern1, v);
+        // Phase 3 Verify
+        for i in 0..len {
+            let v = base.add(i).read();
+            if v != pattern1 {
+                cycle_errors += 1;
+                match error_mode {
+                    ErrorMode::Panic => panic!("stuck_bit_test: Phase 3 error at index {} - expected {:#x}, got {:#x}", i, pattern1, v),
+                    ErrorMode::Halt => break,
+                    ErrorMode::Log => {
+                        log::error!("stuck_bit_test: Phase 3 error at index {} - expected {:#x}, got {:#x}", i, pattern1, v);
+                    }
                 }
             }
+        }
+        
+        total_error_count += cycle_errors;
+        total_bytes_processed += size * 6; // 3 writes + 3 reads
+        
+        // Check if should continue based on timing
+        let elapsed_secs = test_start.elapsed().as_secs() as u32;
+        if !timing.should_continue(cycle, elapsed_secs) {
+            break;
         }
     }
 
@@ -378,20 +397,22 @@ pub unsafe fn stuck_bit_test(ptr: *mut u8, size: usize, thread_id: usize, error_
     TestStats {
         name: "StuckBitTest",
         action: TestAction::StuckBitTest,
-        bytes_processed: size * 6, // 3 writes + 3 reads
+        bytes_processed: total_bytes_processed,
         elapsed_ms: elapsed,
         thread_id,
-        error_count,
+        error_count: total_error_count,
     }
 }
 
-// === EXISTING TEST FUNCTIONS (updated for timing support) ===
+// === UPDATED TEST FUNCTIONS WITH INTERNAL LOOPING ===
 
-pub unsafe fn mirror_move_128_non_temporal(ptr: *mut u8, size: usize, thread_id: usize, _error_mode: ErrorMode) -> TestStats {
+pub unsafe fn mirror_move_128_non_temporal(ptr: *mut u8, size: usize, thread_id: usize, _error_mode: ErrorMode, timing: &TestTiming) -> TestStats {
+    let test_name = "MirrorMove128NonTemporal";
     let start = Instant::now();
+    
     if !is_x86_feature_detected!("sse2") {
         return TestStats {
-            name: "MirrorMove128NonTemporal",
+            name: test_name,
             action: TestAction::ReadWrite,
             bytes_processed: 0,
             elapsed_ms: 0,
@@ -402,30 +423,48 @@ pub unsafe fn mirror_move_128_non_temporal(ptr: *mut u8, size: usize, thread_id:
 
     let len = size / std::mem::size_of::<__m128i>();
     let base = ptr as *mut __m128i;
+    let mut total_bytes_processed = 0usize;
+    
+    let mut cycle = 0u32;
+    let test_start = Instant::now();
+    
+    loop {
+        cycle += 1;
+        
+        for i in 0..(len / 2) {
+            let val = _mm_load_si128(base.add(i));
+            _mm_stream_si128(base.add(len - 1 - i), val);
+        }
 
-    for i in 0..(len / 2) {
-        let val = _mm_load_si128(base.add(i));
-        _mm_stream_si128(base.add(len - 1 - i), val);
+        _mm_sfence();
+        
+        total_bytes_processed += size;
+        
+        // Check if should continue based on timing
+        let elapsed_secs = test_start.elapsed().as_secs() as u32;
+        if !timing.should_continue(cycle, elapsed_secs) {
+            break;
+        }
     }
-
-    _mm_sfence();
 
     let elapsed = start.elapsed().as_millis();
     TestStats {
-        name: "MirrorMove128NonTemporal",
+        name: test_name,
         action: TestAction::ReadWrite,
-        bytes_processed: size,
+        bytes_processed: total_bytes_processed,
         elapsed_ms: elapsed,
         thread_id,
         error_count: 0,
     }
 }
 
-pub unsafe fn mirror_move_256_non_temporal(ptr: *mut u8, size: usize, thread_id: usize, _error_mode: ErrorMode) -> TestStats {
+pub unsafe fn mirror_move_256_non_temporal(ptr: *mut u8, size: usize, thread_id: usize, _error_mode: ErrorMode, timing: &TestTiming) -> TestStats {
+    let test_name = "MirrorMove256NonTemporal";
     let start = Instant::now();
+    
     if !is_x86_feature_detected!("avx2") {
         return TestStats {
-            name: "MirrorMove256NonTemporal",
+            name: test_name,
             action: TestAction::ReadWrite,
             bytes_processed: 0,
             elapsed_ms: 0,
@@ -436,30 +475,47 @@ pub unsafe fn mirror_move_256_non_temporal(ptr: *mut u8, size: usize, thread_id:
 
     let len = size / std::mem::size_of::<__m256i>();
     let base = ptr as *mut __m256i;
+    let mut total_bytes_processed = 0usize;
+    
+    let mut cycle = 0u32;
+    let test_start = Instant::now();
+    
+    loop {
+        cycle += 1;
+        
+        for i in 0..(len / 2) {
+            let val = _mm256_load_si256(base.add(i));
+            _mm256_stream_si256(base.add(len - 1 - i), val);
+        }
 
-    for i in 0..(len / 2) {
-        let val = _mm256_load_si256(base.add(i));
-        _mm256_stream_si256(base.add(len - 1 - i), val);
+        _mm_sfence();
+        
+        total_bytes_processed += size;
+        
+        let elapsed_secs = test_start.elapsed().as_secs() as u32;
+        if !timing.should_continue(cycle, elapsed_secs) {
+            break;
+        }
     }
-
-    _mm_sfence();
 
     let elapsed = start.elapsed().as_millis();
     TestStats {
-        name: "MirrorMove256NonTemporal",
+        name: test_name,
         action: TestAction::ReadWrite,
-        bytes_processed: size,
+        bytes_processed: total_bytes_processed,
         elapsed_ms: elapsed,
         thread_id,
         error_count: 0,
     }
 }
 
-pub unsafe fn mirror_move_512_non_temporal(ptr: *mut u8, size: usize, thread_id: usize, _error_mode: ErrorMode) -> TestStats {
+pub unsafe fn mirror_move_512_non_temporal(ptr: *mut u8, size: usize, thread_id: usize, _error_mode: ErrorMode, timing: &TestTiming) -> TestStats {
+    let test_name = "MirrorMove512NonTemporal";
     let start = Instant::now();
+    
     if !is_x86_feature_detected!("avx512f") {
         return TestStats {
-            name: "MirrorMove512NonTemporal",
+            name: test_name,
             action: TestAction::ReadWrite,
             bytes_processed: 0,
             elapsed_ms: 0,
@@ -470,268 +526,207 @@ pub unsafe fn mirror_move_512_non_temporal(ptr: *mut u8, size: usize, thread_id:
 
     let len = size / std::mem::size_of::<__m512i>();
     let base = ptr as *mut __m512i;
+    let mut total_bytes_processed = 0usize;
+    
+    let mut cycle = 0u32;
+    let test_start = Instant::now();
+    
+    loop {
+        cycle += 1;
+        
+        for i in 0..(len / 2) {
+            let val = _mm512_load_si512(base.add(i));
+            _mm512_stream_si512(base.add(len - 1 - i), val);
+        }
 
-    for i in 0..(len / 2) {
-        let val = _mm512_load_si512(base.add(i));
-        _mm512_stream_si512(base.add(len - 1 - i), val);
+        _mm_sfence();
+        
+        total_bytes_processed += size;
+        
+        let elapsed_secs = test_start.elapsed().as_secs() as u32;
+        if !timing.should_continue(cycle, elapsed_secs) {
+            break;
+        }
     }
-
-    _mm_sfence();
 
     let elapsed = start.elapsed().as_millis();
     TestStats {
-        name: "MirrorMove512NonTemporal",
+        name: test_name,
         action: TestAction::ReadWrite,
-        bytes_processed: size,
+        bytes_processed: total_bytes_processed,
         elapsed_ms: elapsed,
         thread_id,
         error_count: 0,
     }
 }
 
-pub unsafe fn simple_test(ptr: *mut u8, size: usize, thread_id: usize, error_mode: ErrorMode) -> TestStats {
+pub unsafe fn simple_test(ptr: *mut u8, size: usize, thread_id: usize, error_mode: ErrorMode, timing: &TestTiming) -> TestStats {
+    let test_name = "Simple Test";
     let start = Instant::now();
     let base = ptr as *mut u64;
     let len = size / std::mem::size_of::<u64>();
-    let mut error_count = 0;
-
-    // Write phase
-    for i in 0..len {
-        base.add(i).write(i as u64 ^ 0xDEADBEEFDEADBEEF);
-    }
-
-    std::sync::atomic::fence(Ordering::SeqCst);
-
-    // Verify phase
-    for i in 0..len {
-        let v = base.add(i).read();
-        let expected = i as u64 ^ 0xDEADBEEFDEADBEEF;
-        if v != expected {
-            error_count += 1;
-            match error_mode {
-                ErrorMode::Panic => panic!("simple_test: memory error at index {}", i),
-                ErrorMode::Halt => break,
-                ErrorMode::Log => {
-                    log::error!("simple_test: memory error at index {} - expected {:#x}, got {:#x}", i, expected, v);
-                }
-            }
+    let mut total_error_count = 0u64;
+    let mut total_bytes_processed = 0usize;
+    
+    let mut cycle = 0u32;
+    let test_start = Instant::now();
+    
+    loop {
+        cycle += 1;
+        let mut cycle_errors = 0u64;
+        
+        // Write phase
+        for i in 0..len {
+            base.add(i).write(i as u64 ^ 0xDEADBEEFDEADBEEF);
         }
-    }
 
-    let elapsed = start.elapsed().as_millis();
-    TestStats {
-        name: "SimpleTest",
-        action: TestAction::WriteVerify,
-        bytes_processed: size,
-        elapsed_ms: elapsed,
-        thread_id,
-        error_count,
-    }
-}
+        std::sync::atomic::fence(Ordering::SeqCst);
 
-pub unsafe fn refresh_stable(ptr: *mut u8, size: usize, thread_id: usize, error_mode: ErrorMode) -> TestStats {
-    let start = Instant::now();
-    let base = ptr as *mut u64;
-    let len = size / std::mem::size_of::<u64>();
-    let mut error_count = 0;
-
-    for i in 0..len {
-        base.add(i).write(0xA5A5A5A5A5A5A5A5);
-    }
-
-    std::sync::atomic::fence(Ordering::SeqCst);
-    std::thread::sleep(std::time::Duration::from_millis(50));
-
-    for i in 0..len {
-        let v = base.add(i).read();
-        if v != 0xA5A5A5A5A5A5A5A5 {
-            error_count += 1;
-            match error_mode {
-                ErrorMode::Panic => panic!("refresh_stable: memory error at index {}", i),
-                ErrorMode::Halt => break,
-                ErrorMode::Log => {
-                    log::error!(
-                        "refresh_stable: memory error at index {} - expected {:#x}, got {:#x}",
-                        i,
-                        0xA5A5A5A5A5A5A5A5u64,
-                        v
-                    );
-                }
-            }
-        }
-    }
-
-    let elapsed = start.elapsed().as_millis();
-    TestStats {
-        name: "RefreshStable",
-        action: TestAction::WriteWaitVerify,
-        bytes_processed: size,
-        elapsed_ms: elapsed,
-        thread_id,
-        error_count,
-    }
-}
-
-pub unsafe fn cache_busting_write_test(ptr: *mut u8, size: usize, thread_id: usize, error_mode: ErrorMode) -> TestStats {
-    let start = Instant::now();
-    let base = ptr as *mut u64;
-    let len = size / std::mem::size_of::<u64>();
-    let mut error_count = 0;
-
-    // Write with large strides to bust cache
-    let stride = CACHE_BUSTING_STRIDE / std::mem::size_of::<u64>();
-    let pattern = 0x0123456789ABCDEFu64.wrapping_add(thread_id as u64);
-
-    for offset in 0..stride.min(len) {
-        let mut i = offset;
-        while i < len {
-            base.add(i).write(pattern.wrapping_add(i as u64));
-            i += stride;
-        }
-    }
-
-    std::sync::atomic::fence(Ordering::SeqCst);
-
-    // Verify with same stride pattern
-    for offset in 0..stride.min(len) {
-        let mut i = offset;
-        while i < len {
+        // Verify phase
+        for i in 0..len {
             let v = base.add(i).read();
-            let expected = pattern.wrapping_add(i as u64);
+            let expected = i as u64 ^ 0xDEADBEEFDEADBEEF;
             if v != expected {
-                error_count += 1;
+                cycle_errors += 1;
                 match error_mode {
-                    ErrorMode::Panic => panic!("cache_busting_write_test: memory error at index {}", i),
+                    ErrorMode::Panic => panic!("{}: memory error at index {}", test_name, i),
+                    ErrorMode::Halt => break,
+                    ErrorMode::Log => {
+                        log::error!("{}: memory error at index {} - expected {:#x}, got {:#x}", test_name, i, expected, v);
+                    }
+                }
+            }
+        }
+        
+        total_error_count += cycle_errors;
+        total_bytes_processed += size * 2; // write + read
+        
+        let elapsed_secs = test_start.elapsed().as_secs() as u32;
+        if !timing.should_continue(cycle, elapsed_secs) {
+            break;
+        }
+    }
+
+    let elapsed = start.elapsed().as_millis();
+    TestStats {
+        name: test_name,
+        action: TestAction::WriteVerify,
+        bytes_processed: total_bytes_processed,
+        elapsed_ms: elapsed,
+        thread_id,
+        error_count: total_error_count,
+    }
+}
+
+pub unsafe fn refresh_stable(ptr: *mut u8, size: usize, thread_id: usize, error_mode: ErrorMode, timing: &TestTiming) -> TestStats {
+    let test_name = "Refresh Stable";
+    let start = Instant::now();
+    let base = ptr as *mut u64;
+    let len = size / std::mem::size_of::<u64>();
+    let mut total_error_count = 0u64;
+    let mut total_bytes_processed = 0usize;
+    
+    let mut cycle = 0u32;
+    let test_start = Instant::now();
+    
+    loop {
+        cycle += 1;
+        let mut cycle_errors = 0u64;
+        
+        for i in 0..len {
+            base.add(i).write(0xA5A5A5A5A5A5A5A5);
+        }
+
+        std::sync::atomic::fence(Ordering::SeqCst);
+        std::thread::sleep(std::time::Duration::from_millis(50));
+
+        for i in 0..len {
+            let v = base.add(i).read();
+            if v != 0xA5A5A5A5A5A5A5A5 {
+                cycle_errors += 1;
+                match error_mode {
+                    ErrorMode::Panic => panic!("{}: memory error at index {}", test_name, i),
                     ErrorMode::Halt => break,
                     ErrorMode::Log => {
                         log::error!(
-                            "cache_busting_write_test: memory error at index {} - expected {:#x}, got {:#x}",
+                            "{}: memory error at index {} - expected {:#x}, got {:#x}",
+                            test_name,
                             i,
-                            expected,
+                            0xA5A5A5A5A5A5A5A5u64,
                             v
                         );
                     }
                 }
             }
-            i += stride;
+        }
+        
+        total_error_count += cycle_errors;
+        total_bytes_processed += size * 2;
+        
+        let elapsed_secs = test_start.elapsed().as_secs() as u32;
+        if !timing.should_continue(cycle, elapsed_secs) {
+            break;
         }
     }
 
     let elapsed = start.elapsed().as_millis();
     TestStats {
-        name: "CacheBusting",
-        action: TestAction::CacheBusting,
-        bytes_processed: size,
+        name: test_name,
+        action: TestAction::WriteWaitVerify,
+        bytes_processed: total_bytes_processed,
         elapsed_ms: elapsed,
         thread_id,
-        error_count,
+        error_count: total_error_count,
     }
 }
 
-pub unsafe fn random_access_torture_test(ptr: *mut u8, size: usize, thread_id: usize, error_mode: ErrorMode) -> TestStats {
+pub unsafe fn cache_busting_write_test(ptr: *mut u8, size: usize, thread_id: usize, error_mode: ErrorMode, timing: &TestTiming) -> TestStats {
+    let test_name = "Cache Busting Write";
     let start = Instant::now();
     let base = ptr as *mut u64;
     let len = size / std::mem::size_of::<u64>();
-    let mut error_count = 0;
+    let mut total_error_count = 0u64;
+    let mut total_bytes_processed = 0usize;
+    
+    let mut cycle = 0u32;
+    let test_start = Instant::now();
+    
+    loop {
+        cycle += 1;
+        let mut cycle_errors = 0u64;
+        
+        // Write with large strides to bust cache
+        let stride = CACHE_BUSTING_STRIDE / std::mem::size_of::<u64>();
+        let pattern = 0x0123456789ABCDEFu64.wrapping_add(thread_id as u64);
 
-    // Initialize with known pattern
-    for i in 0..len {
-        base.add(i).write(i as u64);
-    }
-
-    std::sync::atomic::fence(Ordering::SeqCst);
-
-    // Random access torture
-    let mut rng_state = 0x123456789ABCDEFu64.wrapping_add(thread_id as u64);
-    let iterations = (len / 1000).max(5000).min(50000);
-
-    // Phase 1: Random read verification of initial pattern
-    for iteration in 0..iterations {
-        rng_state ^= rng_state << 13;
-        rng_state ^= rng_state >> 17;
-        rng_state ^= rng_state << 5;
-
-        let idx = (rng_state as usize) % len;
-        let expected = idx as u64;
-        let actual = base.add(idx).read();
-
-        if actual != expected {
-            error_count += 1;
-            match error_mode {
-                ErrorMode::Panic => panic!(
-                    "random_access_torture_test: Phase 1 memory error at index {}, iteration {}, expected {}, actual {}",
-                    idx, iteration, expected, actual
-                ),
-                ErrorMode::Halt => break,
-                ErrorMode::Log => {
-                    log::error!(
-                        "random_access_torture_test: Phase 1 memory error at index {}, iteration {}, expected {}, actual {}",
-                        idx,
-                        iteration,
-                        expected,
-                        actual
-                    );
-                }
-            }
-        }
-    }
-
-    let elapsed = start.elapsed().as_millis();
-    TestStats {
-        name: "RandomTorture",
-        action: TestAction::RandomAccess,
-        bytes_processed: (iterations * 2 + len) * std::mem::size_of::<u64>(),
-        elapsed_ms: elapsed,
-        thread_id,
-        error_count,
-    }
-}
-
-pub unsafe fn stride_access_test(ptr: *mut u8, size: usize, thread_id: usize, error_mode: ErrorMode) -> TestStats {
-    let start = Instant::now();
-    let base = ptr as *mut u64;
-    let len = size / std::mem::size_of::<u64>();
-    let mut error_count = 0;
-
-    // Test various stride patterns that defeat caching
-    let strides = [1, 16, 64, 256, 1024, 4096];
-    let pattern_base = 0xFEDCBA9876543210u64.wrapping_add(thread_id as u64);
-
-    for &stride in &strides {
-        if stride >= len {
-            continue;
-        }
-
-        // Write with this stride
-        for start_offset in 0..stride.min(len) {
-            let mut i = start_offset;
+        for offset in 0..stride.min(len) {
+            let mut i = offset;
             while i < len {
-                let pattern = pattern_base.wrapping_add((stride as u64) << 32).wrapping_add(i as u64);
-                base.add(i).write(pattern);
+                base.add(i).write(pattern.wrapping_add(i as u64));
                 i += stride;
             }
         }
 
         std::sync::atomic::fence(Ordering::SeqCst);
 
-        // Verify with same stride
-        for start_offset in 0..stride.min(len) {
-            let mut i = start_offset;
+        // Verify with same stride pattern
+        for offset in 0..stride.min(len) {
+            let mut i = offset;
             while i < len {
-                let expected = pattern_base.wrapping_add((stride as u64) << 32).wrapping_add(i as u64);
-                let actual = base.add(i).read();
-                if actual != expected {
-                    error_count += 1;
+                let v = base.add(i).read();
+                let expected = pattern.wrapping_add(i as u64);
+                if v != expected {
+                    cycle_errors += 1;
                     match error_mode {
-                        ErrorMode::Panic => panic!("stride_access_test: memory error at stride {} index {}", stride, i),
+                        ErrorMode::Panic => panic!("{}: memory error at index {}", test_name, i),
                         ErrorMode::Halt => break,
                         ErrorMode::Log => {
                             log::error!(
-                                "stride_access_test: memory error at stride {} index {} - expected {:#x}, got {:#x}",
-                                stride,
+                                "{}: memory error at index {} - expected {:#x}, got {:#x}",
+                                test_name,
                                 i,
                                 expected,
-                                actual
+                                v
                             );
                         }
                     }
@@ -739,48 +734,234 @@ pub unsafe fn stride_access_test(ptr: *mut u8, size: usize, thread_id: usize, er
                 i += stride;
             }
         }
+        
+        total_error_count += cycle_errors;
+        total_bytes_processed += size * 2;
+        
+        let elapsed_secs = test_start.elapsed().as_secs() as u32;
+        if !timing.should_continue(cycle, elapsed_secs) {
+            break;
+        }
     }
 
     let elapsed = start.elapsed().as_millis();
     TestStats {
-        name: "StrideAccess",
-        action: TestAction::ReadWrite,
-        bytes_processed: size * strides.len(),
+        name: "CacheBusting",
+        action: TestAction::CacheBusting,
+        bytes_processed: total_bytes_processed,
         elapsed_ms: elapsed,
         thread_id,
-        error_count,
+        error_count: total_error_count,
     }
 }
 
-pub unsafe fn bandwidth_saturation_test(ptr: *mut u8, size: usize, thread_id: usize, _error_mode: ErrorMode) -> TestStats {
+pub unsafe fn random_access_torture_test(ptr: *mut u8, size: usize, thread_id: usize, error_mode: ErrorMode, timing: &TestTiming) -> TestStats {
+    let test_name = "Random Access Torture";
     let start = Instant::now();
     let base = ptr as *mut u64;
     let len = size / std::mem::size_of::<u64>();
-
-    // Pure memory bandwidth test - large sequential writes
-    let pattern = 0x5555AAAA5555AAAAu64.wrapping_add(thread_id as u64);
-
-    // Write phase
+    let mut total_error_count = 0u64;
+    let mut total_bytes_processed = 0usize;
+    
+    let mut cycle = 0u32;
+    let test_start = Instant::now();
+    
+    // Initialize with known pattern once
     for i in 0..len {
-        base.add(i).write(pattern.wrapping_add(i as u64));
+        base.add(i).write(i as u64);
     }
-
     std::sync::atomic::fence(Ordering::SeqCst);
+    total_bytes_processed += size;
+    
+    loop {
+        cycle += 1;
+        let mut cycle_errors = 0u64;
+        
+        // Random access torture
+        let mut rng_state = 0x123456789ABCDEFu64.wrapping_add(thread_id as u64).wrapping_add(cycle as u64);
+        let iterations = (len / 1000).max(5000).min(50000);
 
-    // Read phase
-    let mut checksum = 0u64;
-    for i in 0..len {
-        checksum = checksum.wrapping_add(base.add(i).read());
+        // Random read verification
+        for iteration in 0..iterations {
+            rng_state ^= rng_state << 13;
+            rng_state ^= rng_state >> 17;
+            rng_state ^= rng_state << 5;
+
+            let idx = (rng_state as usize) % len;
+            let expected = idx as u64;
+            let actual = base.add(idx).read();
+
+            if actual != expected {
+                cycle_errors += 1;
+                match error_mode {
+                    ErrorMode::Panic => panic!(
+                        "{}: memory error at index {}, iteration {}, expected {}, actual {}",
+                        test_name, idx, iteration, expected, actual
+                    ),
+                    ErrorMode::Halt => break,
+                    ErrorMode::Log => {
+                        log::error!(
+                            "{}: memory error at index {}, iteration {}, expected {}, actual {}",
+                            test_name,
+                            idx,
+                            iteration,
+                            expected,
+                            actual
+                        );
+                    }
+                }
+            }
+        }
+        
+        total_error_count += cycle_errors;
+        total_bytes_processed += iterations * std::mem::size_of::<u64>();
+        
+        let elapsed_secs = test_start.elapsed().as_secs() as u32;
+        if !timing.should_continue(cycle, elapsed_secs) {
+            break;
+        }
     }
-
-    // Prevent optimization
-    std::ptr::write_volatile(&mut checksum, checksum);
 
     let elapsed = start.elapsed().as_millis();
     TestStats {
-        name: "BandwidthSat",
+        name: test_name,
+        action: TestAction::RandomAccess,
+        bytes_processed: total_bytes_processed,
+        elapsed_ms: elapsed,
+        thread_id,
+        error_count: total_error_count,
+    }
+}
+
+pub unsafe fn stride_access_test(ptr: *mut u8, size: usize, thread_id: usize, error_mode: ErrorMode, timing: &TestTiming) -> TestStats {
+    let test_name = "Stride Access";
+    let start = Instant::now();
+    let base = ptr as *mut u64;
+    let len = size / std::mem::size_of::<u64>();
+    let mut total_error_count = 0u64;
+    let mut total_bytes_processed = 0usize;
+    
+    let mut cycle = 0u32;
+    let test_start = Instant::now();
+    
+    loop {
+        cycle += 1;
+        let mut cycle_errors = 0u64;
+        
+        // Test various stride patterns that defeat caching
+        let strides = [1, 16, 64, 256, 1024, 4096];
+        let pattern_base = 0xFEDCBA9876543210u64.wrapping_add(thread_id as u64).wrapping_add(cycle as u64);
+
+        for &stride in &strides {
+            if stride >= len {
+                continue;
+            }
+
+            // Write with this stride
+            for start_offset in 0..stride.min(len) {
+                let mut i = start_offset;
+                while i < len {
+                    let pattern = pattern_base.wrapping_add((stride as u64) << 32).wrapping_add(i as u64);
+                    base.add(i).write(pattern);
+                    i += stride;
+                }
+            }
+
+            std::sync::atomic::fence(Ordering::SeqCst);
+
+            // Verify with same stride
+            for start_offset in 0..stride.min(len) {
+                let mut i = start_offset;
+                while i < len {
+                    let expected = pattern_base.wrapping_add((stride as u64) << 32).wrapping_add(i as u64);
+                    let actual = base.add(i).read();
+                    if actual != expected {
+                        cycle_errors += 1;
+                        match error_mode {
+                            ErrorMode::Panic => panic!("{}: memory error at stride {} index {}", test_name, stride, i),
+                            ErrorMode::Halt => break,
+                            ErrorMode::Log => {
+                                log::error!(
+                                    "{}: memory error at stride {} index {} - expected {:#x}, got {:#x}",
+                                    test_name,
+                                    stride,
+                                    i,
+                                    expected,
+                                    actual
+                                );
+                            }
+                        }
+                    }
+                    i += stride;
+                }
+            }
+        }
+        
+        total_error_count += cycle_errors;
+        total_bytes_processed += size * strides.len() * 2;
+        
+        let elapsed_secs = test_start.elapsed().as_secs() as u32;
+        if !timing.should_continue(cycle, elapsed_secs) {
+            break;
+        }
+    }
+
+    let elapsed = start.elapsed().as_millis();
+    TestStats {
+        name: test_name,
         action: TestAction::ReadWrite,
-        bytes_processed: size * 2, // Read + Write
+        bytes_processed: total_bytes_processed,
+        elapsed_ms: elapsed,
+        thread_id,
+        error_count: total_error_count,
+    }
+}
+
+pub unsafe fn bandwidth_saturation_test(ptr: *mut u8, size: usize, thread_id: usize, _error_mode: ErrorMode, timing: &TestTiming) -> TestStats {
+    let test_name = "Bandwidth Saturation";
+    let start = Instant::now();
+    let base = ptr as *mut u64;
+    let len = size / std::mem::size_of::<u64>();
+    let mut total_bytes_processed = 0usize;
+    
+    let mut cycle = 0u32;
+    let test_start = Instant::now();
+    
+    loop {
+        cycle += 1;
+        
+        // Pure memory bandwidth test - large sequential writes
+        let pattern = 0x5555AAAA5555AAAAu64.wrapping_add(thread_id as u64).wrapping_add(cycle as u64);
+
+        // Write phase
+        for i in 0..len {
+            base.add(i).write(pattern.wrapping_add(i as u64));
+        }
+
+        std::sync::atomic::fence(Ordering::SeqCst);
+
+        // Read phase
+        let mut checksum = 0u64;
+        for i in 0..len {
+            checksum = checksum.wrapping_add(base.add(i).read());
+        }
+
+        // Prevent optimization
+        std::ptr::write_volatile(&mut checksum, checksum);
+        
+        total_bytes_processed += size * 2; // Read + Write
+        
+        let elapsed_secs = test_start.elapsed().as_secs() as u32;
+        if !timing.should_continue(cycle, elapsed_secs) {
+            break;
+        }
+    }
+
+    let elapsed = start.elapsed().as_millis();
+    TestStats {
+        name: test_name,
+        action: TestAction::ReadWrite,
+        bytes_processed: total_bytes_processed,
         elapsed_ms: elapsed,
         thread_id,
         error_count: 0, // This test doesn't verify individual values

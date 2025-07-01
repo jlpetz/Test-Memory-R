@@ -37,7 +37,7 @@ pub enum BlockMode {
 impl Default for MemoryStrategy {
     fn default() -> Self {
         Self {
-            allocation_mode: AllocationMode::PercentageReserve { reserve_percent: 10.0 },
+            allocation_mode: AllocationMode::PercentageReserve { reserve_percent: 15.0 },
             default_window_mode: WindowMode::FullAllocation,
             default_block_mode: BlockMode::AutoOptimal,
         }

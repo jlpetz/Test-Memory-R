@@ -1,5 +1,3 @@
-use std::arch::x86_64::*;
-
 // SIMD capability detection
 pub fn detect_simd_capabilities() -> String {
     let mut capabilities = Vec::new();

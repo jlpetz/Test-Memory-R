@@ -163,6 +163,106 @@ impl ModernConfig {
             )),
         }
     }
+	
+     pub fn to_report(&self) -> String {
+        let mut report = String::new();
+        
+        // Main configuration
+        report.push_str(&format!("Configuration: {}\n", self.metadata.name));
+        report.push_str(&format!("  Version: {} | Author: {}\n", self.metadata.version, self.metadata.author));
+        if let Some(desc) = &self.metadata.description {
+            report.push_str(&format!("  Description: {}\n", desc));
+        }
+        
+        // System settings
+        report.push_str(&format!("  CPU: {}% of {} ({})\n", 
+            self.system.cpu_config.usage_percent,
+            self.system.cpu_config.cpu_type,
+            if self.system.large_pages { "Large Pages Enabled" } else { "Standard Pages" }
+        ));
+        
+        // Memory strategy
+        report.push_str("  Memory Strategy: ");
+        match self.system.memory_strategy.allocation_mode.as_str() {
+            "max_available" => report.push_str(&format!("Max Available (reserve {} MB)", 
+                self.system.memory_strategy.reserve_mb.unwrap_or(0))),
+            "percentage_reserve" => report.push_str(&format!("{}% Reserve", 
+                self.system.memory_strategy.reserve_percent.unwrap_or(0.0))),
+            "fixed_reserve" => report.push_str(&format!("{:.1} GiB Reserve", 
+                self.system.memory_strategy.reserve_gib.unwrap_or(0.0))),
+            _ => report.push_str("Unknown"),
+        }
+        report.push_str(&format!(", Window: {}, Block: {}\n", 
+            self.system.memory_strategy.default_window_mode,
+            self.system.memory_strategy.default_block_mode
+        ));
+        
+        // Timing
+        report.push_str("  Timing: ");
+        match (self.system.timing.global_cycles, self.system.timing.global_duration_secs) {
+            (Some(c), Some(d)) => report.push_str(&format!("{} cycles or {}s max", c, d)),
+            (Some(c), None) => report.push_str(&format!("{} cycles", c)),
+            (None, Some(d)) => report.push_str(&format!("{}s duration", d)),
+            (None, None) => report.push_str("Unlimited"),
+        }
+        report.push_str(&format!(", Error Mode: {}\n", self.system.error_mode));
+        
+        // Test sequence summary
+        let enabled_tests: Vec<_> = self.test_sequence.iter().filter(|t| t.enabled).collect();
+        report.push_str(&format!("  Test Sequence: {} tests enabled\n", enabled_tests.len()));
+        
+        // Individual test details
+        for (i, test) in enabled_tests.iter().enumerate() {
+            report.push_str(&format!("    {}. {} - ", i + 1, test.function));
+            
+            // Timing
+            match (&test.cycles, &test.duration_secs) {
+                (Some(c), Some(d)) => report.push_str(&format!("{}cycles/{}s", c, d)),
+                (Some(c), None) => report.push_str(&format!("{}cycles", c)),
+                (None, Some(d)) => report.push_str(&format!("{}s", d)),
+                _ => report.push_str("default timing"),
+            }
+            
+            // Window override
+            if let Some(mode) = &test.window_mode {
+                report.push_str(&format!(", Window:{}", mode));
+                if mode == "fixed_size" {
+                    if let Some(mb) = test.window_size_mb {
+                        report.push_str(&format!(" {}MB", mb));
+                    }
+                } else if mode == "cache_relative" {
+                    if let Some(mult) = test.window_cache_multiplier {
+                        report.push_str(&format!(" {}x", mult));
+                    }
+                }
+            }
+            
+            // Block override
+            if let Some(mode) = &test.block_mode {
+                report.push_str(&format!(", Block:{}", mode));
+                if mode == "fixed_size" {
+                    if let Some(mb) = test.block_size_mb {
+                        report.push_str(&format!(" {}MB", mb));
+                    }
+                } else if mode == "window_fraction" {
+                    if let Some(frac) = test.block_window_fraction {
+                        report.push_str(&format!(" {:.1}%", frac * 100.0));
+                    }
+                }
+            }
+            
+            if test.allow_misaligned == Some(true) {
+                report.push_str(", Misaligned");
+            }
+            if test.requires_locality == Some(true) {
+                report.push_str(", Locality");
+            }
+            
+            report.push_str("\n");
+        }
+        
+        report
+    }
 
     pub fn save_to_file(&self, path: &str) -> Result<(), String> {
         let json = serde_json::to_string_pretty(self).map_err(|e| format!("Failed to serialize config: {}", e))?;

@@ -6,6 +6,7 @@ pub mod layout;
 pub mod runner;
 pub mod simd;
 pub mod cache;
+pub mod results; // New results module
 
 // Re-export main types and functions
 pub use config::*;
@@ -16,6 +17,7 @@ pub use layout::{MemoryLayout, MemoryStrategy, AllocationMode, WindowMode, Block
 pub use runner::{run_tests_with_layout, run_tests_with_layout_and_timing, TestSuiteTiming, AllocatedBlock};
 pub use simd::detect_simd_capabilities;
 pub use cache::{CacheInfo, SystemInfo};
+pub use results::{TestRunResult, TestComparison, compare_test_results}; // New exports
 
 #[derive(Debug, Clone, Copy)]
 pub enum ErrorMode {

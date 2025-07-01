@@ -1,5 +1,7 @@
 # Ignore target directory (build artifacts)
 target/
+logs/
+results/
 
 # Ignore backup and temp files
 **/*.rs.bk

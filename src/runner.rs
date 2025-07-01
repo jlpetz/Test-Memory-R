@@ -1,17 +1,21 @@
 use crate::{ErrorMode, MemoryLayout, ProgressTracker, BlockInfo, TestBuffer};
 use crate::layout::{WindowMode, BlockMode};
-use crate::tests::{TestStats, TestMemoryConfig, TestAction, TestTiming, stuck_bit_test};
+use crate::tests::{TestStats, TestMemoryConfig, TestTiming, stuck_bit_test};
 use crate::tests::{
     mirror_move_128_non_temporal, mirror_move_256_non_temporal, mirror_move_512_non_temporal,
     simple_test, refresh_stable, cache_busting_write_test, random_access_torture_test,
     stride_access_test, bandwidth_saturation_test
 };
-use crate::progress::progress_reporter;
+use crate::progress::{progress_reporter, TestSummary};
+use crate::results::{TestRunResult, save_test_result}; // New results module
 use std::collections::HashMap;
 use std::sync::atomic::{AtomicBool, Ordering};
-use std::sync::{Arc, Barrier};
+use std::sync::{Arc, Barrier, Mutex};
 use std::thread;
 use std::time::Instant;
+
+// Global flag for graceful shutdown
+static SHUTDOWN_REQUESTED: AtomicBool = AtomicBool::new(false);
 
 // Pre-allocated memory block management
 pub struct AllocatedBlock {
@@ -65,6 +69,11 @@ impl TestSuiteTiming {
     }
     
     pub fn should_continue_suite(&self, current_cycle: u32, elapsed_secs: u32) -> bool {
+        // Check if shutdown was requested
+        if SHUTDOWN_REQUESTED.load(Ordering::Relaxed) {
+            return false;
+        }
+        
         // Check maximum duration first
         if let Some(max_secs) = self.global_duration_secs {
             if elapsed_secs >= max_secs {
@@ -84,11 +93,17 @@ impl TestSuiteTiming {
     }
 }
 
+// Test function with timing passed down
+type TestFunction = unsafe fn(*mut u8, usize, usize, ErrorMode, &TestTiming) -> TestStats;
+
 pub fn run_tests_with_layout(layout: MemoryLayout, error_mode: ErrorMode) -> bool {
     run_tests_with_layout_and_timing(layout, error_mode, TestSuiteTiming::default())
 }
 
 pub fn run_tests_with_layout_and_timing(layout: MemoryLayout, error_mode: ErrorMode, suite_timing: TestSuiteTiming) -> bool {
+    // Set up CTRL+C handler
+    setup_signal_handler();
+    
     layout.print_layout();
 
     let progress = Arc::new(ProgressTracker::new());
@@ -113,11 +128,15 @@ pub fn run_tests_with_layout_and_timing(layout: MemoryLayout, error_mode: ErrorM
 
     print_allocation_summary(&allocated_blocks);
 
-    // Calculate total tests for progress tracking
+    // Calculate progress tracking information
     let test_definitions = create_test_definitions();
-    let max_cycles = suite_timing.global_cycles.unwrap_or(1);
-    let total_tests = thread_blocks.len() * test_definitions.len() * max_cycles as usize;
-    progress.total_tests.store(total_tests as u64, Ordering::Relaxed);
+    let tests_per_cycle = test_definitions.len() as u64; // One test completion = all threads finishing that test
+    
+    // Set up progress tracking with proper cycle information
+    progress.set_cycle_info(1, suite_timing.global_cycles, tests_per_cycle);
+
+    // Print test configuration summary
+    print_test_configuration(&test_definitions, &suite_timing);
 
     // Start progress reporter thread
     let progress_clone = Arc::clone(&progress);
@@ -125,18 +144,25 @@ pub fn run_tests_with_layout_and_timing(layout: MemoryLayout, error_mode: ErrorM
         progress_reporter(progress_clone);
     });
 
+    // Initialize test run result
+    let test_run_result = Arc::new(Mutex::new(TestRunResult::new()));
+
     // Run test suite with timing control
     let suite_start = Instant::now();
     let mut current_cycle = 0u32;
     
-    println!("Starting test suite with timing: {:?}", suite_timing);
+    println!("\n=== Starting Test Suite ===");
     
     loop {
         current_cycle += 1;
         let cycle_start = Instant::now();
         
         println!("\n=== Test Suite Cycle {} ===", current_cycle);
+        progress.start_new_cycle(current_cycle);
         progress.set_phase(&format!("Cycle {}", current_cycle));
+        
+        // Collect cycle test summaries
+        let cycle_summaries = Arc::new(Mutex::new(Vec::new()));
         
         // Run one complete cycle of all tests
         let cycle_success = run_single_test_cycle(
@@ -145,22 +171,41 @@ pub fn run_tests_with_layout_and_timing(layout: MemoryLayout, error_mode: ErrorM
             &test_definitions,
             error_mode,
             Arc::clone(&progress),
+            Arc::clone(&cycle_summaries),
             current_cycle,
         );
         
-        if !cycle_success {
+        if !cycle_success || SHUTDOWN_REQUESTED.load(Ordering::Relaxed) {
             success.store(false, Ordering::Relaxed);
+            
+            // Print cycle report before exiting
+            let cycle_elapsed = cycle_start.elapsed().as_secs() as u32;
+            if let Ok(summaries) = cycle_summaries.lock() {
+                if !summaries.is_empty() {
+                    println!("\n=== Interrupted Cycle {} Report ===", current_cycle);
+                    print_cycle_report(current_cycle, cycle_elapsed, &summaries, &test_definitions);
+                }
+            }
             break;
         }
         
         let cycle_elapsed = cycle_start.elapsed().as_secs() as u32;
         let total_elapsed = suite_start.elapsed().as_secs() as u32;
         
-        println!("Cycle {} completed in {}s (total: {}s)", current_cycle, cycle_elapsed, total_elapsed);
+        // Print cycle report and save to result
+        if let Ok(summaries) = cycle_summaries.lock() {
+            print_cycle_report(current_cycle, cycle_elapsed, &summaries, &test_definitions);
+            progress.complete_cycle(current_cycle, summaries.clone());
+            
+            // Add cycle to test run result
+            if let Ok(mut result) = test_run_result.lock() {
+                result.add_cycle(current_cycle, cycle_elapsed, summaries.clone());
+            }
+        }
         
         // Check if we should continue to next cycle
         if !suite_timing.should_continue_suite(current_cycle, total_elapsed) {
-            println!("Test suite timing limits reached - stopping");
+            println!("\nTest suite timing limits reached - stopping");
             break;
         }
     }
@@ -172,16 +217,36 @@ pub fn run_tests_with_layout_and_timing(layout: MemoryLayout, error_mode: ErrorM
         log::warn!("Progress reporter thread failed to join cleanly");
     }
 
+    // Print final summary
+    let total_time = suite_start.elapsed();
+    if let Ok(result) = test_run_result.lock() {
+        print_final_summary(&progress, total_time, &result, &test_definitions);
+        
+        // Save test result to file
+        if let Err(e) = save_test_result(&result) {
+            log::warn!("Failed to save test result: {}", e);
+        } else {
+            log::info!("Test result saved to file");
+        }
+    }
+
     log::info!("Releasing all allocated memory blocks");
     success.load(Ordering::Relaxed)
 }
 
-fn create_test_definitions() -> Vec<(&'static str, unsafe fn(*mut u8, usize, usize, ErrorMode) -> TestStats, TestMemoryConfig)> {
+fn setup_signal_handler() {
+    ctrlc::set_handler(move || {
+        println!("\n\n🛑 CTRL+C detected - initiating graceful shutdown...");
+        SHUTDOWN_REQUESTED.store(true, Ordering::Relaxed);
+    }).expect("Error setting CTRL+C handler");
+}
+
+fn create_test_definitions() -> Vec<(&'static str, TestFunction, TestMemoryConfig)> {
     vec![
         // === CRITICAL: Full Memory Stuck Bit Test ===
         (
             "StuckBitTest", 
-            stuck_bit_test,
+            |ptr, size, tid, em, timing| unsafe { stuck_bit_test(ptr, size, tid, em, timing) },
             TestMemoryConfig::new(
                 WindowMode::FullAllocation,           // Use entire allocation 
                 BlockMode::WindowFraction { fraction: 0.0625 }, // 1/16th of window per block for efficiency
@@ -193,7 +258,7 @@ fn create_test_definitions() -> Vec<(&'static str, unsafe fn(*mut u8, usize, usi
         // === SIMD Tests with optimal window/block sizing ===
         (
             "MirrorMove128NonTemporal", 
-            mirror_move_128_non_temporal,
+            |ptr, size, tid, em, timing| unsafe { mirror_move_128_non_temporal(ptr, size, tid, em, timing) },
             TestMemoryConfig::new(
                 WindowMode::FixedSize { size_mb: 64 },   // 64MB window for SIMD locality
                 BlockMode::FixedSize { size_mb: 16 },    // 16MB blocks for 128-bit alignment
@@ -203,7 +268,7 @@ fn create_test_definitions() -> Vec<(&'static str, unsafe fn(*mut u8, usize, usi
         ),
         (
             "MirrorMove256NonTemporal", 
-            mirror_move_256_non_temporal,
+            |ptr, size, tid, em, timing| unsafe { mirror_move_256_non_temporal(ptr, size, tid, em, timing) },
             TestMemoryConfig::new(
                 WindowMode::FixedSize { size_mb: 128 },  // 128MB window
                 BlockMode::FixedSize { size_mb: 32 },    // 32MB blocks for 256-bit alignment
@@ -213,7 +278,7 @@ fn create_test_definitions() -> Vec<(&'static str, unsafe fn(*mut u8, usize, usi
         ),
         (
             "MirrorMove512NonTemporal", 
-            mirror_move_512_non_temporal,
+            |ptr, size, tid, em, timing| unsafe { mirror_move_512_non_temporal(ptr, size, tid, em, timing) },
             TestMemoryConfig::new(
                 WindowMode::FixedSize { size_mb: 256 },  // 256MB window
                 BlockMode::FixedSize { size_mb: 64 },    // 64MB blocks for 512-bit alignment
@@ -225,7 +290,7 @@ fn create_test_definitions() -> Vec<(&'static str, unsafe fn(*mut u8, usize, usi
         // === Memory Pattern Tests ===
         (
             "SimpleTest", 
-            simple_test,
+            |ptr, size, tid, em, timing| unsafe { simple_test(ptr, size, tid, em, timing) },
             TestMemoryConfig::new(
                 WindowMode::FullAllocation,              // Test large portions of memory
                 BlockMode::FixedSize { size_mb: 4 },     // 4MB blocks
@@ -237,7 +302,7 @@ fn create_test_definitions() -> Vec<(&'static str, unsafe fn(*mut u8, usize, usi
         // === Refresh/Retention Tests ===
         (
             "RefreshStable", 
-            refresh_stable,
+            |ptr, size, tid, em, timing| unsafe { refresh_stable(ptr, size, tid, em, timing) },
             TestMemoryConfig::new(
                 WindowMode::CacheRelative { multiplier: 2.0 }, // 2x cache size for refresh testing
                 BlockMode::FixedSize { size_mb: 1 },           // Small 1MB blocks
@@ -249,7 +314,7 @@ fn create_test_definitions() -> Vec<(&'static str, unsafe fn(*mut u8, usize, usi
         // === Cache Tests ===
         (
             "CacheBusting", 
-            cache_busting_write_test,
+            |ptr, size, tid, em, timing| unsafe { cache_busting_write_test(ptr, size, tid, em, timing) },
             TestMemoryConfig::new(
                 WindowMode::CacheRelative { multiplier: 0.5 }, // Half cache size
                 BlockMode::FixedSize { size_mb: 1 },           // 1MB blocks for cache busting
@@ -261,7 +326,7 @@ fn create_test_definitions() -> Vec<(&'static str, unsafe fn(*mut u8, usize, usi
         // === Stress Tests ===
         (
             "RandomTorture", 
-            random_access_torture_test,
+            |ptr, size, tid, em, timing| unsafe { random_access_torture_test(ptr, size, tid, em, timing) },
             TestMemoryConfig::new(
                 WindowMode::FullAllocation,              // Random access across full allocation
                 BlockMode::FixedSize { size_mb: 8 },     // 8MB blocks
@@ -271,19 +336,19 @@ fn create_test_definitions() -> Vec<(&'static str, unsafe fn(*mut u8, usize, usi
         ),
         (
             "StrideAccess", 
-            stride_access_test,
+            |ptr, size, tid, em, timing| unsafe { stride_access_test(ptr, size, tid, em, timing) },
             TestMemoryConfig::new(
                 WindowMode::FullAllocation,              // Test stride patterns across full memory
                 BlockMode::FixedSize { size_mb: 2 },     // 2MB blocks
                 false,
                 false
-            ).with_timing(TestTiming::cycles_only(50)) // 50 cycles of stride patterns
+            ).with_timing(TestTiming::cycles_only(1)) // 1 cycle of stride patterns
         ),
         
         // === Bandwidth Test ===
         (
             "BandwidthSat", 
-            bandwidth_saturation_test,
+            |ptr, size, tid, em, timing| unsafe { bandwidth_saturation_test(ptr, size, tid, em, timing) },
             TestMemoryConfig::new(
                 WindowMode::FullAllocation,              // Maximum bandwidth requires full allocation
                 BlockMode::FixedSize { size_mb: 32 },    // Large 32MB blocks for bandwidth
@@ -297,134 +362,154 @@ fn create_test_definitions() -> Vec<(&'static str, unsafe fn(*mut u8, usize, usi
 fn run_single_test_cycle(
     thread_blocks: &HashMap<usize, Vec<BlockInfo>>,
     allocated_blocks: &mut HashMap<usize, Vec<AllocatedBlock>>,
-    test_definitions: &[(&'static str, unsafe fn(*mut u8, usize, usize, ErrorMode) -> TestStats, TestMemoryConfig)],
+    test_definitions: &[(&'static str, TestFunction, TestMemoryConfig)],
     error_mode: ErrorMode,
     progress: Arc<ProgressTracker>,
-    cycle_number: u32,
+    cycle_summaries: Arc<Mutex<Vec<TestSummary>>>,
+    _: u32, // cycle_number - not used
 ) -> bool {
     let thread_count = thread_blocks.len();
-    let barrier = Arc::new(Barrier::new(thread_count));
     let success = Arc::new(AtomicBool::new(true));
-    let mut handles = vec![];
 
-    // Extract all allocated blocks before threading
-    let mut thread_allocated_data = Vec::new();
-    for (thread_id, _) in thread_blocks {
-        let blocks = allocated_blocks.remove(thread_id).unwrap();
-        thread_allocated_data.push((*thread_id, blocks));
-    }
+    // Run each test type across all threads before moving to next test
+    for (test_idx, (test_name, test_func, test_config)) in test_definitions.iter().enumerate() {
+        // Check for shutdown before starting each test
+        if SHUTDOWN_REQUESTED.load(Ordering::Relaxed) {
+            return false;
+        }
+        
+        progress.set_phase(&format!("{} ({}/{})", test_name, test_idx + 1, test_definitions.len()));
+        
+        let test_start = Instant::now();
+        let barrier = Arc::new(Barrier::new(thread_count));
+        let test_stats = Arc::new(Mutex::new(Vec::new()));
+        
+        // Extract all allocated blocks before threading
+        let mut thread_allocated_data = Vec::new();
+        for (thread_id, _) in thread_blocks {
+            let blocks = allocated_blocks.remove(thread_id).unwrap();
+            thread_allocated_data.push((*thread_id, blocks));
+        }
 
-    for (thread_id, blocks) in thread_allocated_data {
-        let success_clone = Arc::clone(&success);
-        let progress_clone = Arc::clone(&progress);
-        let barrier_clone = Arc::clone(&barrier);
-        let test_definitions_clone = test_definitions.to_vec();
+        let mut handles = vec![];
+        for (thread_id, blocks) in thread_allocated_data {
+            let success_clone = Arc::clone(&success);
+            let barrier_clone = Arc::clone(&barrier);
+            let test_stats_clone = Arc::clone(&test_stats);
+            let test_name = test_name.to_string();
+            let test_func = *test_func;
+            let test_config = test_config.clone();
 
-        let handle = thread::spawn(move || {
-            if let Err(e) = run_thread_test_cycle(
-                thread_id,
-                &blocks,
-                test_definitions_clone,
-                error_mode,
-                progress_clone,
-                barrier_clone,
-                cycle_number,
-            ) {
-                log::error!("[Thread {}] Cycle {} Error: {}", thread_id, cycle_number, e);
-                success_clone.store(false, Ordering::Relaxed);
+            let handle = thread::spawn(move || {
+                // Wait for all threads to start this test
+                barrier_clone.wait();
+                
+                let thread_start = Instant::now();
+                let mut total_bytes = 0u64;
+                let mut total_errors = 0u64;
+                
+                // Run test on all blocks for this thread
+                for allocated_block in &blocks {
+                    // Check for shutdown during test execution
+                    if SHUTDOWN_REQUESTED.load(Ordering::Relaxed) {
+                        success_clone.store(false, Ordering::Relaxed);
+                        break;
+                    }
+                    
+                    match run_test_with_memory_stages(
+                        &test_name,
+                        test_func,
+                        allocated_block,
+                        &test_config,
+                        thread_id,
+                        error_mode,
+                    ) {
+                        Ok(stats) => {
+                            total_bytes += stats.bytes_processed as u64;
+                            total_errors += stats.error_count;
+                            
+                            if stats.error_count > 0 {
+                                if let Err(e) = handle_test_errors(&stats, error_mode, &test_name) {
+                                    log::error!("[Thread {}] {}", thread_id, e);
+                                    success_clone.store(false, Ordering::Relaxed);
+                                    break;
+                                }
+                            }
+                        }
+                        Err(e) => {
+                            log::error!("[Thread {}] Test {} failed: {}", thread_id, test_name, e);
+                            success_clone.store(false, Ordering::Relaxed);
+                            break;
+                        }
+                    }
+                }
+                
+                let thread_elapsed = thread_start.elapsed().as_millis();
+                if let Ok(mut stats) = test_stats_clone.lock() {
+                    stats.push((thread_id, total_bytes, thread_elapsed, total_errors));
+                }
+                
+                // Return blocks for reuse
+                (thread_id, blocks)
+            });
+            handles.push(handle);
+        }
+
+        // Collect results and restore blocks
+        for handle in handles {
+            if let Ok((thread_id, blocks)) = handle.join() {
+                allocated_blocks.insert(thread_id, blocks);
+            } else {
+                success.store(false, Ordering::Relaxed);
             }
-        });
-        handles.push(handle);
-    }
-
-    for handle in handles {
-        if handle.join().is_err() {
-            success.store(false, Ordering::Relaxed);
+        }
+        
+        // Calculate test summary
+        let test_elapsed = test_start.elapsed();
+        if let Ok(stats) = test_stats.lock() {
+            let total_bytes: u64 = stats.iter().map(|(_, bytes, _, _)| bytes).sum();
+            let total_errors: u64 = stats.iter().map(|(_, _, _, errors)| errors).sum();
+            let throughput_mib_s = if test_elapsed.as_millis() > 0 {
+                (total_bytes as f64 / (1024.0 * 1024.0)) / (test_elapsed.as_millis() as f64 / 1000.0)
+            } else {
+                0.0
+            };
+            
+            let summary = TestSummary {
+                name: test_name.to_string(),
+                duration_ms: test_elapsed.as_millis(),
+                bytes_processed: total_bytes,
+                throughput_mib_s,
+                errors: total_errors,
+            };
+            
+            if let Ok(mut summaries) = cycle_summaries.lock() {
+                summaries.push(summary);
+            }
+            
+            // Mark test as completed in progress tracker
+            progress.complete_test(&TestStats {
+                name: test_name,
+                action: crate::tests::TestAction::Read,
+                bytes_processed: total_bytes as usize,
+                elapsed_ms: test_elapsed.as_millis(),
+                thread_id: 0,
+                error_count: total_errors,
+            });
+        }
+        
+        if !success.load(Ordering::Relaxed) || SHUTDOWN_REQUESTED.load(Ordering::Relaxed) {
+            return false;
         }
     }
 
     success.load(Ordering::Relaxed)
 }
 
-fn run_thread_test_cycle(
-    thread_id: usize,
-    allocated_blocks: &[AllocatedBlock],  // Changed from Vec<AllocatedBlock>
-    test_definitions: Vec<(&'static str, unsafe fn(*mut u8, usize, usize, ErrorMode) -> TestStats, TestMemoryConfig)>,
-    error_mode: ErrorMode,
-    progress: Arc<ProgressTracker>,
-    barrier: Arc<Barrier>,
-    cycle_number: u32,
-) -> Result<(), String> {
-    
-	log::info!(
-		"[Thread {}] Cycle {} starting with {} pre-allocated blocks",
-		thread_id, cycle_number, allocated_blocks.len()
-	);
-
-    // Run each test type across all blocks before moving to next test type
-    for (test_name, test_func, test_config) in test_definitions {
-        progress.set_phase(&format!("Cycle {} - {}", cycle_number, test_name));
-
-        // Wait for all threads to reach this test phase
-        barrier.wait();
-
-        // Run test with timing control
-        let test_start = Instant::now();
-        let mut test_cycle = 0u32;
-        
-        loop {
-            test_cycle += 1;
-            
-            // Run test on all blocks for this thread
-            for (block_idx, allocated_block) in allocated_blocks.iter().enumerate() {
-                log::debug!(
-                    "[Thread {}] Cycle {} Block {}/{} - Running {} (test cycle {})",
-                    thread_id, cycle_number, block_idx + 1, allocated_blocks.len(), test_name, test_cycle
-                );
-
-                match run_test_with_memory_stages(
-                    test_name,
-                    test_func,
-                    allocated_block,
-                    &test_config,
-                    thread_id,
-                    error_mode,
-                ) {
-                    Ok(stats) => {
-                        log_stats(&stats);
-                        progress.complete_test(&stats);
-
-                        if stats.error_count > 0 {
-                            handle_test_errors(&stats, error_mode, test_name)?;
-                        }
-                    }
-                    Err(e) => {
-                        log::error!("[Thread {}] Test {} failed: {}", thread_id, test_name, e);
-                        return Err(e);
-                    }
-                }
-            }
-            
-            // Check if we should continue this test based on timing configuration
-            let test_elapsed_secs = test_start.elapsed().as_secs() as u32;
-            if !test_config.timing.should_continue(test_cycle, test_elapsed_secs) {
-                log::debug!("[Thread {}] {} completed: {} cycles in {}s", 
-                           thread_id, test_name, test_cycle, test_elapsed_secs);
-                break;
-            }
-        }
-
-        // Wait for all threads to complete this test phase
-        barrier.wait();
-    }
-
-    Ok(())
-}
-
-// Test function with three-stage memory management (unchanged logic, enhanced logging)
+// Updated to pass timing to test function
 fn run_test_with_memory_stages(
     test_name: &str,
-    test_func: unsafe fn(*mut u8, usize, usize, ErrorMode) -> TestStats,
+    test_func: TestFunction,
     allocated_block: &AllocatedBlock,
     test_config: &TestMemoryConfig,
     thread_id: usize,
@@ -442,35 +527,31 @@ fn run_test_with_memory_stages(
     // Ensure window is multiple of block size
     let (final_window_size, window_aligned) = test_config.align_window_to_blocks(window_size, block_size);
     
-    // Enhanced logging for Stage 2 & 3 configuration
+    // Log configuration once at start
+    let allocated_mb = allocated_size as f64 / (1024.0 * 1024.0);
     let window_mb = final_window_size as f64 / (1024.0 * 1024.0);
     let block_mb = block_size as f64 / (1024.0 * 1024.0);
-    let allocated_mb = allocated_size as f64 / (1024.0 * 1024.0);
     let window_percent = (final_window_size as f64 / allocated_size as f64) * 100.0;
     
-    if final_window_size == allocated_size {
-        log::debug!(
-            "[Thread {}] {} - Stage 2: Full allocation window ({:.1}MB = 100%)",
-            thread_id, test_name, window_mb
-        );
-    } else {
-        log::debug!(
-            "[Thread {}] {} - Stage 2: Window {:.1}MB of {:.1}MB allocated ({:.1}%){}",
-            thread_id, test_name, window_mb, allocated_mb, window_percent,
-            if window_aligned { " (aligned to blocks)" } else { "" }
+    // Log configuration once per test (only for thread 0 to avoid spam)
+    if thread_id == 0 {
+        log::info!(
+            "{} - Window: {:.1}MB ({:.1}%), Block: {:.1}MB{}",
+            test_name, window_mb, window_percent, block_mb,
+            if test_config.allow_misaligned { " (misaligned)" } else { "" }
         );
     }
     
+    // Debug log for all threads if needed
     log::debug!(
-        "[Thread {}] {} - Stage 3: Block size {:.1}MB{}{}",
-        thread_id, test_name, block_mb,
-        if block_adjusted { " (auto-aligned)" } else { "" },
-        if test_config.allow_misaligned { " (misaligned allowed)" } else { "" }
+        "[Thread {}] {} - Configuration: Window {:.1}MB of {:.1}MB ({:.1}%), Block {:.1}MB{}",
+        thread_id, test_name, window_mb, allocated_mb, window_percent, block_mb,
+        if test_config.allow_misaligned { " (misaligned)" } else { "" }
     );
     
-    // Run the test function on the configured window
+    // Run the test function with timing configuration
     let stats = unsafe {
-        test_func(allocated_ptr, final_window_size, thread_id, error_mode)
+        test_func(allocated_ptr, final_window_size, thread_id, error_mode, &test_config.timing)
     };
     
     Ok(stats)
@@ -517,7 +598,6 @@ fn allocate_all_blocks(thread_blocks: &HashMap<usize, Vec<BlockInfo>>) -> Result
 }
 
 fn print_allocation_summary(allocated_blocks: &HashMap<usize, Vec<AllocatedBlock>>) {
-    let mut total_blocks = 0;
     let mut total_size = 0usize;
     let mut large_page_blocks = 0;
     let mut size_per_thread = 0usize;
@@ -526,7 +606,6 @@ fn print_allocation_summary(allocated_blocks: &HashMap<usize, Vec<AllocatedBlock
         let thread_total_size: usize = blocks.iter().map(|b| b.buffer.size()).sum();
         let thread_large_pages = blocks.iter().filter(|b| b.buffer.uses_large_pages()).count();
 
-        total_blocks += blocks.len();
         total_size += thread_total_size;
         large_page_blocks += thread_large_pages;
 
@@ -553,6 +632,169 @@ fn print_allocation_summary(allocated_blocks: &HashMap<usize, Vec<AllocatedBlock
     println!();
 }
 
+fn print_test_configuration(test_definitions: &[(&'static str, TestFunction, TestMemoryConfig)], suite_timing: &TestSuiteTiming) {
+    println!("Test Configuration:");
+    
+    // Suite timing
+    print!("  Suite Timing: ");
+    match (suite_timing.global_cycles, suite_timing.global_duration_secs) {
+        (Some(cycles), Some(duration)) => println!("{} cycles or {}s max", cycles, duration),
+        (Some(cycles), None) => println!("{} cycles", cycles),
+        (None, Some(duration)) => println!("{}s duration", duration),
+        (None, None) => println!("Unlimited"),
+    }
+    
+    // Test sequence
+    println!("  Test Sequence: {} tests", test_definitions.len());
+    
+    // Individual tests
+    for (i, (name, _, config)) in test_definitions.iter().enumerate() {
+        print!("    {}. {} - ", i + 1, name);
+        
+        // Timing
+        match (&config.timing.cycles, &config.timing.duration_secs) {
+            (Some(c), Some(d)) => print!("{}cycles/{}s, ", c, d),
+            (Some(c), None) => print!("{}cycles, ", c),
+            (None, Some(d)) => print!("{}s, ", d),
+            (None, None) => print!("unlimited, "),
+        }
+        
+        // Window mode
+        match &config.window_mode {
+            WindowMode::FullAllocation => print!("FullWindow"),
+            WindowMode::FixedSize { size_mb } => print!("Window:{}MB", size_mb),
+            WindowMode::CacheRelative { multiplier } => print!("Window:{}xCache", multiplier),
+        }
+        
+        // Block mode
+        match &config.block_mode {
+            BlockMode::AutoOptimal => print!(", AutoBlock"),
+            BlockMode::FixedSize { size_mb } => print!(", Block:{}MB", size_mb),
+            BlockMode::WindowFraction { fraction } => print!(", Block:{:.1}%", fraction * 100.0),
+        }
+        
+        if config.allow_misaligned {
+            print!(", Misaligned");
+        }
+        if config.requires_locality {
+            print!(", Locality");
+        }
+        
+        println!();
+    }
+}
+
+fn print_cycle_report(cycle: u32, duration_secs: u32, summaries: &[TestSummary], test_definitions: &[(&'static str, TestFunction, TestMemoryConfig)]) {
+    println!("\n--- Cycle {} Report ---", cycle);
+    println!("Duration: {}s", duration_secs);
+    
+    let total_bytes: u64 = summaries.iter().map(|s| s.bytes_processed).sum();
+    let total_errors: u64 = summaries.iter().map(|s| s.errors).sum();
+    let avg_throughput_mib = if duration_secs > 0 {
+        (total_bytes as f64 / (1024.0 * 1024.0)) / duration_secs as f64
+    } else {
+        0.0
+    };
+    let avg_throughput_gib = avg_throughput_mib / 1024.0;
+    
+    println!("Tests completed: {}", summaries.len());
+    println!("Total data processed: {:.2} GiB", total_bytes as f64 / (1024.0 * 1024.0 * 1024.0));
+    println!("Average throughput: {:.1} MiB/s ({:.2} GiB/s)", avg_throughput_mib, avg_throughput_gib);
+    println!("Total errors: {}", total_errors);
+    
+    if !summaries.is_empty() {
+        println!("\nTest Performance:");
+        for (i, summary) in summaries.iter().enumerate() {
+            let test_number = i + 1;
+            let throughput_gib_s = summary.throughput_mib_s / 1024.0;
+            
+            println!("  {}. {} - {:.1}s, {:.2} GiB @ {:.1} MiB/s ({:.2} GiB/s){}",
+                test_number,
+                summary.name,
+                summary.duration_ms as f64 / 1000.0,
+                summary.bytes_processed as f64 / (1024.0 * 1024.0 * 1024.0),
+                summary.throughput_mib_s,
+                throughput_gib_s,
+                if summary.errors > 0 { 
+                    format!(" [⚠️ ERRORS: {}]", summary.errors) 
+                } else { 
+                    String::new() 
+                }
+            );
+        }
+    }
+}
+
+fn print_final_summary(progress: &ProgressTracker, total_time: std::time::Duration, test_result: &TestRunResult, test_definitions: &[(&'static str, TestFunction, TestMemoryConfig)]) {
+    let cycle_stats = progress.get_cycle_stats();
+    let total_bytes = progress.total_bytes_processed.load(Ordering::Relaxed);
+    let total_errors = progress.total_errors.load(Ordering::Relaxed);
+    
+    println!("\n=== Final Test Summary ===");
+    println!("Total runtime: {}", format_duration(total_time));
+    println!("Cycles completed: {}", cycle_stats.len());
+    println!("Total data processed: {:.2} GiB", total_bytes as f64 / (1024.0 * 1024.0 * 1024.0));
+    
+    // Calculate overall throughput
+    let overall_throughput_mib = if total_time.as_secs() > 0 {
+        (total_bytes as f64 / (1024.0 * 1024.0)) / total_time.as_secs() as f64
+    } else {
+        0.0
+    };
+    let overall_throughput_gib = overall_throughput_mib / 1024.0;
+    
+    println!("Overall throughput: {:.1} MiB/s ({:.2} GiB/s)", overall_throughput_mib, overall_throughput_gib);
+    println!("Total errors detected: {}", total_errors);
+    
+    // Print per-test breakdown
+    if !cycle_stats.is_empty() {
+        println!("\nPer-Test Performance Summary (averaged across {} cycles):", cycle_stats.len());
+        
+        // Create test aggregates
+        let mut test_aggregates: HashMap<String, (u64, u128, u64)> = HashMap::new(); // bytes, duration_ms, errors
+        
+        for cycle in &cycle_stats {
+            for test_summary in &cycle.test_stats {
+                let entry = test_aggregates.entry(test_summary.name.clone()).or_insert((0, 0, 0));
+                entry.0 += test_summary.bytes_processed;
+                entry.1 += test_summary.duration_ms;
+                entry.2 += test_summary.errors;
+            }
+        }
+        
+        for (i, (test_name, _, _)) in test_definitions.iter().enumerate() {
+            if let Some((total_bytes, total_duration_ms, total_errors)) = test_aggregates.get(*test_name) {
+                let test_number = i + 1;
+                let cycle_count = cycle_stats.len() as u64;
+                let avg_bytes = *total_bytes / cycle_count;
+                let avg_duration_ms = *total_duration_ms / cycle_count as u128;
+                let avg_throughput_mib = if avg_duration_ms > 0 {
+                    (avg_bytes as f64 / (1024.0 * 1024.0)) / (avg_duration_ms as f64 / 1000.0)
+                } else {
+                    0.0
+                };
+                let avg_throughput_gib = avg_throughput_mib / 1024.0;
+                
+                println!("  {}. {} - {:.1}s avg, {:.2} GiB avg @ {:.1} MiB/s ({:.2} GiB/s){}",
+                    test_number,
+                    test_name,
+                    avg_duration_ms as f64 / 1000.0,
+                    avg_bytes as f64 / (1024.0 * 1024.0 * 1024.0),
+                    avg_throughput_mib,
+                    avg_throughput_gib,
+                    if *total_errors > 0 { 
+                        format!(" [⚠️ TOTAL ERRORS: {}]", total_errors) 
+                    } else { 
+                        String::new() 
+                    }
+                );
+            }
+        }
+    }
+    
+    println!("\nResult saved to: .\\{}", test_result.get_filename());
+}
+
 fn handle_test_errors(stats: &TestStats, error_mode: ErrorMode, test_name: &str) -> Result<(), String> {
     match error_mode {
         ErrorMode::Panic => panic!("Memory error detected in {} (see logs)", test_name),
@@ -569,17 +811,10 @@ fn handle_test_errors(stats: &TestStats, error_mode: ErrorMode, test_name: &str)
     Ok(())
 }
 
-fn log_stats(stats: &TestStats) {
-    let gib = stats.bytes_processed as f64 / (1024.0 * 1024.0 * 1024.0);
-    let secs = stats.elapsed_ms as f64 / 1000.0;
-    let throughput = if secs > 0.0 { gib / secs } else { 0.0 };
-    log::debug!(
-        "[T{}] [{}] ({}) completed in {} ms — {:.2} GiB/s — {} errors",
-        stats.thread_id,
-        stats.name,
-        stats.action.label(),
-        stats.elapsed_ms,
-        throughput,
-        stats.error_count
-    );
+fn format_duration(duration: std::time::Duration) -> String {
+    let total_seconds = duration.as_secs();
+    let hours = total_seconds / 3600;
+    let minutes = (total_seconds % 3600) / 60;
+    let seconds = total_seconds % 60;
+    format!("{:02}:{:02}:{:02}", hours, minutes, seconds)
 }

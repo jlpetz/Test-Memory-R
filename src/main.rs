@@ -2,10 +2,18 @@ use std::env;
 use tmr::{create_demo_configs, load_config, ErrorMode, MemoryStrategy, AllocationMode, WindowMode, BlockMode};
 use tmr::layout::MemoryLayout;
 use tmr::runner::{run_tests_with_layout_and_timing, TestSuiteTiming};
+use tmr::results::compare_results_command;
+use log::LevelFilter;
+use env_logger::Builder;
+use std::io::Write;
+use std::sync::{Arc, Mutex};
+
+// Global file logger for dual console+file logging
+static FILE_LOGGER: std::sync::OnceLock<Arc<Mutex<Option<std::fs::File>>>> = std::sync::OnceLock::new();
 
 fn main() {
-    // Initialize logging
-    env_logger::Builder::from_default_env().filter_level(log::LevelFilter::Info).init();
+    // Initialize enhanced logging with file output
+    setup_logging();
 
     println!("🚀 Test Memory R (TMR) v1.0.0 - High-Performance Memory Testing Tool");
     println!("================================================================================");
@@ -19,6 +27,21 @@ fn main() {
                 if let Err(e) = create_demo_configs() {
                     println!("❌ Failed to create demo configs: {}", e);
                     return;
+                }
+                return;
+            }
+            "--compare-results" => {
+                if args.len() < 4 {
+                    println!("❌ Usage: {} --compare-results <baseline.json> <current.json> [output.json]", args[0]);
+                    return;
+                }
+                let baseline = &args[2];
+                let current = &args[3];
+                let output = args.get(4).map(|s| s.as_str());
+                
+                match compare_results_command(baseline, current, output) {
+                    Ok(()) => println!("✅ Comparison completed successfully"),
+                    Err(e) => println!("❌ Comparison failed: {}", e),
                 }
                 return;
             }
@@ -39,95 +62,21 @@ fn main() {
     // Check for config file parameter
     let config_file = args.iter().find(|arg| arg.starts_with("config=")).map(|arg| &arg[7..]);
 
-    let (memory_strategy, error_mode, suite_timing, cputype, cpus) = if let Some(config_path) = config_file {
+    let (memory_strategy, error_mode, suite_timing, cputype, cpus, config_loaded) = if let Some(config_path) = config_file {
         match load_config(config_path) {
             Ok(config) => {
-                println!("✅ Loaded configuration: {}", config.metadata.name);
-                println!(
-                    "   Format Version: {} | Application: {}",
-                    config.config_format_version, config.application_name
-                );
-                println!(
-                    "   Author: {} | Tested with: TMR v{}",
-                    config.metadata.author, config.metadata.tested_with_version
-                );
-                if let Some(desc) = &config.metadata.description {
-                    println!("   Description: {}", desc);
-                }
+                println!("✅ Loaded configuration from: {}", config_path);
                 
-                // Show test configuration summary
-                let enabled_tests: Vec<_> = config.test_sequence.iter().filter(|t| t.enabled).collect();
-                println!("   Tests: {} enabled tests with three-stage memory configuration", enabled_tests.len());
+                // Print the config report
+                println!("\n{}", config.to_report());
                 
-                // Show timing configuration
-                if let Some(cycles) = config.system.timing.global_cycles {
-                    print!("   Global Timing: {} cycles", cycles);
-                    if let Some(duration) = config.system.timing.global_duration_secs {
-                        println!(" (max {}s)", duration);
-                    } else {
-                        println!(" (no time limit)");
-                    }
-                } else if let Some(duration) = config.system.timing.global_duration_secs {
-                    println!("   Global Timing: {}s duration (unlimited cycles)", duration);
-                } else {
-                    println!("   Global Timing: Unlimited cycles and duration");
-                }
-                
-                // Show any per-test timing or window overrides
-                let mut has_overrides = false;
-                for test in &enabled_tests {
-                    let mut override_parts = Vec::new();
-                    
-                    if test.cycles.is_some() || test.duration_secs.is_some() {
-                        let timing_str = match (test.cycles, test.duration_secs) {
-                            (Some(c), Some(d)) => format!("{}cycles/{}s", c, d),
-                            (Some(c), None) => format!("{}cycles", c),
-                            (None, Some(d)) => format!("{}s", d),
-                            _ => String::new(),
-                        };
-                        if !timing_str.is_empty() {
-                            override_parts.push(format!("Timing {}", timing_str));
-                        }
-                    }
-                    
-                    if test.window_size_mb.is_some() || test.window_mode.is_some() {
-                        if let Some(size) = test.window_size_mb {
-                            override_parts.push(format!("Window {}MB", size));
-                        } else if let Some(mode) = &test.window_mode {
-                            override_parts.push(format!("Window {}", mode));
-                        }
-                    }
-                    
-                    if test.block_size_mb.is_some() || test.block_mode.is_some() {
-                        if let Some(size) = test.block_size_mb {
-                            override_parts.push(format!("Block {}MB", size));
-                        } else if let Some(mode) = &test.block_mode {
-                            override_parts.push(format!("Block {}", mode));
-                        }
-                    }
-                    
-                    if test.allow_misaligned == Some(true) {
-                        override_parts.push("Misaligned".to_string());
-                    }
-                    
-                    if !override_parts.is_empty() {
-                        if !has_overrides {
-                            println!("   Per-test overrides detected:");
-                            has_overrides = true;
-                        }
-                        println!("     {}: {}", test.function, override_parts.join(", "));
-                    }
-                }
-                
-                println!();
-
                 let memory_strategy = config.to_memory_strategy();
                 let error_mode = config.to_error_mode();
                 let suite_timing = config.to_test_suite_timing();
                 let cputype = config.system.cpu_config.cpu_type.clone();
                 let cpus = format!("{}%", config.system.cpu_config.usage_percent);
 
-                (memory_strategy, error_mode, suite_timing, cputype, cpus)
+                (memory_strategy, error_mode, suite_timing, cputype, cpus, true)
             }
             Err(e) => {
                 println!("❌ Failed to load config file '{}': {}", config_path, e);
@@ -136,7 +85,8 @@ fn main() {
             }
         }
     } else {
-        parse_command_line_params(&args)
+        let parsed = parse_command_line_params(&args);
+        (parsed.0, parsed.1, parsed.2, parsed.3, parsed.4, false)
     };
 
     // Calculate CPU/thread count
@@ -153,8 +103,8 @@ fn main() {
     println!("  Command Line: {}", args.join(" "));
 
     // Check environment variables
-    let rust_log = env::var("RUST_LOG").unwrap_or_else(|_| "not set".to_string());
-    println!("  RUST_LOG: {}", rust_log);
+    let rust_log = env::var("RUST_LOG").unwrap_or_else(|_| "info".to_string());
+    println!("  RUST_LOG: {} (logs to .\\logs\\TMR_YYYY-MM-DD_HH-MM-SS.log)", rust_log);
 
     let rust_backtrace = env::var("RUST_BACKTRACE").unwrap_or_else(|_| "not set".to_string());
     if rust_backtrace != "not set" {
@@ -192,7 +142,7 @@ fn main() {
             default_params.push("cpus=100% (default)".to_string());
         }
         if !args.iter().any(|a| a.starts_with("memory=")) {
-            default_params.push("memory=10% reserve (default)".to_string());
+            default_params.push("memory=15% reserve (default)".to_string());
         }
         if !args.iter().any(|a| a.starts_with("errors=")) {
             default_params.push("errors=log (default)".to_string());
@@ -299,17 +249,24 @@ fn main() {
               if system_info.has_hyperthreading { " (Hyperthreading enabled)" } else { "" });
 
     let cache_info = system_info.get_cache_info();
-    println!("  Cache Architecture:");
-    println!("    L1 Data: {:.1} KB | L1 Instruction: {:.1} KB", 
+    println!("  Cache Architecture ({}):", cache_info.detection_method);
+    println!("    L1 Data: {:.1} KB total ({:.1} KB × {} cores)", 
         cache_info.l1_data_cache as f64 / 1024.0,
-        cache_info.l1_instruction_cache as f64 / 1024.0);
-    println!("    L2: {:.1} KB | L3: {:.1} MB | Line Size: {} bytes", 
+        cache_info.per_core_l1d as f64 / 1024.0,
+        cache_info.core_count);
+    println!("    L1 Instruction: {:.1} KB total ({:.1} KB × {} cores)", 
+        cache_info.l1_instruction_cache as f64 / 1024.0,
+        cache_info.per_core_l1i as f64 / 1024.0,
+        cache_info.core_count);
+    println!("    L2: {:.1} KB total ({:.1} KB × {} cores)", 
         cache_info.l2_cache as f64 / 1024.0,
-        cache_info.l3_cache as f64 / (1024.0 * 1024.0),
-        cache_info.cache_line_size);
-    println!("    Total Cache: {:.1} MB | Detection: {}", 
-        cache_info.total_cache as f64 / (1024.0 * 1024.0),
-        cache_info.detection_method);
+        cache_info.per_core_l2 as f64 / 1024.0,
+        cache_info.core_count);
+    println!("    L3: {:.1} MB (shared)", 
+        cache_info.l3_cache as f64 / (1024.0 * 1024.0));
+    println!("    Line Size: {} bytes | Total Cache: {:.1} MB", 
+        cache_info.cache_line_size,
+        cache_info.total_cache as f64 / (1024.0 * 1024.0));
     println!("    Memory Testing: Windows configured relative to cache for optimal stress patterns");
 
     println!();
@@ -322,6 +279,7 @@ fn main() {
     println!("  Stage 2: Configuring testing windows per test (full allocation or optimized)");
     println!("  Stage 3: Optimizing block sizes and alignment per test");
     println!("  Critical: StuckBitTest will scan ALL allocated memory for stuck bits");
+    println!("  Use CTRL+C for graceful shutdown with final report");
     println!("(detailed logs available with RUST_LOG=debug)");
     println!();
     
@@ -341,6 +299,89 @@ fn main() {
 
     println!();
     print_usage(&args[0]);
+}
+
+fn setup_logging() {
+    // Create logs directory if it doesn't exist
+    if let Err(e) = std::fs::create_dir_all("logs") {
+        eprintln!("Warning: Failed to create logs directory: {}", e);
+    }
+
+    let start_time = chrono::Local::now();
+    let log_filename = format!("logs/TMR_{}.log", start_time.format("%Y-%m-%d_%H-%M-%S"));
+    
+    let log_level = env::var("RUST_LOG").unwrap_or_else(|_| "info".to_string());
+    let level_filter = match log_level.to_lowercase().as_str() {
+        "error" => LevelFilter::Error,
+        "warn" => LevelFilter::Warn,
+        "info" => LevelFilter::Info,
+        "debug" => LevelFilter::Debug,
+        "trace" => LevelFilter::Trace,
+        _ => LevelFilter::Info,
+    };
+
+    // Initialize file logger for dual logging
+    if let Ok(log_file) = std::fs::File::create(&log_filename) {
+        FILE_LOGGER.set(Arc::new(Mutex::new(Some(log_file)))).unwrap_or(());
+    }
+
+    // Set up env_logger for console with original nice formatting (colors + module info)
+    Builder::new()
+        .filter_level(level_filter)
+        .format(|buf, record| {
+            // Clear any existing progress line and ensure we start on a new line
+            // This prevents log messages from getting merged with progress output
+            if record.level() <= log::Level::Warn {
+                // For warnings and errors, always clear the line and add emphasis
+                print!("\r\x1b[K\n"); // Clear line and add newline for visibility
+            } else {
+                // For info/debug, just clear the current line
+                print!("\r\x1b[K");
+            }
+            let _ = std::io::stdout().flush();
+            
+            // Write to console with original env_logger format
+            let console_result = writeln!(
+                buf,
+                "\x1b[{}m[{} {} {}]\x1b[0m {}",
+                match record.level() {
+                    log::Level::Error => "31", // Red
+                    log::Level::Warn => "33",  // Yellow
+                    log::Level::Info => "32",  // Green
+                    log::Level::Debug => "36", // Cyan
+                    log::Level::Trace => "35", // Magenta
+                },
+                chrono::Local::now().format("%Y-%m-%dT%H:%M:%SZ"),
+                record.level(),
+                record.module_path().unwrap_or("unknown"),
+                record.args()
+            );
+
+            // Also write to file without colors
+            if let Some(file_logger) = FILE_LOGGER.get() {
+                if let Ok(mut file_guard) = file_logger.lock() {
+                    if let Some(ref mut file) = *file_guard {
+                        let _ = writeln!(
+                            file,
+                            "[{} {} {}] {}",
+                            chrono::Local::now().format("%Y-%m-%d %H:%M:%S%.3f"),
+                            record.level(),
+                            record.module_path().unwrap_or("unknown"),
+                            record.args()
+                        );
+                        let _ = file.flush();
+                    }
+                }
+            }
+
+            console_result
+        })
+        .target(env_logger::Target::Stdout)
+        .init();
+
+    // Log startup info
+    log::info!("TMR v1.0.0 started - console logging with colors and module info restored");
+    log::info!("Log level: {} - detailed logs also saved to {}", log_level, log_filename);
 }
 
 fn parse_command_line_params(args: &[String]) -> (MemoryStrategy, ErrorMode, TestSuiteTiming, String, String) {
@@ -388,11 +429,11 @@ fn parse_memory_parameter(param: &str) -> MemoryStrategy {
                 }
             }
             Ok(percent) => {
-                println!("Warning: Invalid percentage {}%, using default 10%", percent);
+                println!("Warning: Invalid percentage {}%, using default 15%", percent);
                 MemoryStrategy::default()
             }
             Err(_) => {
-                println!("Warning: Could not parse percentage '{}', using default 10%", param);
+                println!("Warning: Could not parse percentage '{}', using default 15%", param);
                 MemoryStrategy::default()
             }
         }
@@ -407,11 +448,11 @@ fn parse_memory_parameter(param: &str) -> MemoryStrategy {
                 }
             }
             Ok(gib) => {
-                println!("Warning: Invalid GiB value {}, using default 10%", gib);
+                println!("Warning: Invalid GiB value {}, using default 15%", gib);
                 MemoryStrategy::default()
             }
             Err(_) => {
-                println!("Warning: Could not parse GiB value '{}', using default 10%", param);
+                println!("Warning: Could not parse GiB value '{}', using default 15%", param);
                 MemoryStrategy::default()
             }
         }
@@ -427,11 +468,11 @@ fn parse_memory_parameter(param: &str) -> MemoryStrategy {
                 }
             }
             Ok(mib) => {
-                println!("Warning: Invalid MiB value {}, using default 10%", mib);
+                println!("Warning: Invalid MiB value {}, using default 15%", mib);
                 MemoryStrategy::default()
             }
             Err(_) => {
-                println!("Warning: Could not parse MiB value '{}', using default 10%", param);
+                println!("Warning: Could not parse MiB value '{}', using default 15%", param);
                 MemoryStrategy::default()
             }
         }
@@ -439,7 +480,7 @@ fn parse_memory_parameter(param: &str) -> MemoryStrategy {
         MemoryStrategy::tm5_compatible(880, 128)
     } else {
         println!("Warning: Unknown memory parameter format '{}', using default", param);
-        println!("  Supported formats: 10%, 2GiB, 1024MiB, tm5");
+        println!("  Supported formats: 15%, 2GiB, 1024MiB, tm5");
         MemoryStrategy::default()
     }
 }
@@ -466,14 +507,35 @@ fn print_help(program_name: &str) {
     println!("  {} config=test.json                  # Load modern JSON config (v2.0)", program_name);
     println!("  {} config=legacy.cfg                 # Load legacy TestMem5 config (v1.0)", program_name);
     println!("  {} --create-demo-configs              # Create demo configuration files", program_name);
+    println!("  {} --compare-results baseline.json current.json [output.json]", program_name);
+    println!("                                          # Compare two test results from .\\results\\");
     println!("  {} --version                         # Show version information", program_name);
     println!();
-    println!("For full help documentation, see the artifacts or code comments.");
+    println!("COMMAND LINE PARAMETERS:");
+    println!("  memory=15%                           # Reserve 15% of system memory");
+    println!("  memory=2GiB                         # Reserve 2 GiB");
+    println!("  memory=tm5                          # TM5-compatible allocation");
+    println!("  cycles=5                            # Run 5 complete test cycles");
+    println!("  duration=600                        # Maximum 10 minutes runtime");
+    println!("  cpus=50%                            # Use 50% of available CPUs");
+    println!("  cputype=cores                       # Use physical cores (vs threads)");
+    println!("  errors=halt                         # Stop on first error");
+    println!();
+    println!("LOGGING:");
+    println!("  RUST_LOG=info                       # Set log level (error/warn/info/debug/trace)");
+    println!("                                        # Use debug for detailed per-thread logs");
+    println!("  Logs saved to: .\\logs\\TMR_YYYY-MM-DD_HH-MM-SS.log");
+    println!("  Results saved to: .\\results\\TMR_YYYY-MM-DD_HH-MM-SS.json");
+    println!();
+    println!("RESULT COMPARISON:");
+    println!("  Test results are automatically saved as JSON files to .\\results\\");
+    println!("  Use --compare-results to analyze performance differences");
+    println!("  Useful for memory overclocking and timing optimization");
 }
 
 fn print_usage(program_name: &str) {
     println!("Quick Usage Examples:");
-    println!("  {} memory=10%                    # Reserve 10% of system memory", program_name);
+    println!("  {} memory=15%                    # Reserve 15% of system memory", program_name);
     println!("  {} memory=2GiB                  # Reserve 2 GiB", program_name);
     println!("  {} memory=tm5                   # TM5-compatible allocation", program_name);
     println!("  {} cycles=5 duration=600        # 5 cycles OR 10 minutes max", program_name);
@@ -482,6 +544,7 @@ fn print_usage(program_name: &str) {
     println!("  {} config=test.json             # Load comprehensive JSON config", program_name);
     println!("  {} config=legacy.cfg            # Auto-convert TM5 config + add stuck bit test", program_name);
     println!("  {} --create-demo-configs        # Create demo configurations", program_name);
+    println!("  {} --compare-results old.json new.json # Compare results from .\\results\\", program_name);
     println!();
     println!("For full help: {} --help", program_name);
 }
