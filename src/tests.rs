@@ -143,6 +143,10 @@ pub struct TestMemoryConfig {
     pub allow_misaligned: bool,
     pub requires_locality: bool,    // True if test needs temporal locality (small window)
     pub timing: TestTiming,
+    pub streams: u32,               // Number of access streams (equivalent to TM5 jump/parameter)
+    pub pattern_mode: Option<u32>,  // TM5 pattern mode
+    pub pattern_param0: Option<u64>, // TM5 pattern parameter 0
+    pub pattern_param1: Option<u64>, // TM5 pattern parameter 1
 }
 
 impl TestMemoryConfig {
@@ -153,11 +157,27 @@ impl TestMemoryConfig {
             allow_misaligned,
             requires_locality,
             timing: TestTiming::default(),
+            streams: 1, // Default to single stream (equivalent to TM5 jump=1)
+            pattern_mode: None,
+            pattern_param0: None,
+            pattern_param1: None,
         }
     }
     
     pub fn with_timing(mut self, timing: TestTiming) -> Self {
         self.timing = timing;
+        self
+    }
+    
+    pub fn with_streams(mut self, streams: u32) -> Self {
+        self.streams = streams;
+        self
+    }
+    
+    pub fn with_pattern_config(mut self, mode: Option<u32>, param0: Option<u64>, param1: Option<u64>) -> Self {
+        self.pattern_mode = mode;
+        self.pattern_param0 = param0;
+        self.pattern_param1 = param1;
         self
     }
 
@@ -404,9 +424,9 @@ pub unsafe fn stuck_bit_test(ptr: *mut u8, size: usize, thread_id: usize, error_
     }
 }
 
-// === UPDATED TEST FUNCTIONS WITH INTERNAL LOOPING ===
+// === UPDATED TEST FUNCTIONS WITH STREAM SUPPORT ===
 
-pub unsafe fn mirror_move_128_non_temporal(ptr: *mut u8, size: usize, thread_id: usize, _error_mode: ErrorMode, timing: &TestTiming) -> TestStats {
+pub unsafe fn mirror_move_128_non_temporal(ptr: *mut u8, size: usize, thread_id: usize, error_mode: ErrorMode, timing: &TestTiming, streams: u32) -> TestStats {
     let test_name = "MirrorMove128NonTemporal";
     let start = Instant::now();
     
@@ -421,19 +441,58 @@ pub unsafe fn mirror_move_128_non_temporal(ptr: *mut u8, size: usize, thread_id:
         };
     }
 
-    let len = size / std::mem::size_of::<__m128i>();
-    let base = ptr as *mut __m128i;
     let mut total_bytes_processed = 0usize;
-    
     let mut cycle = 0u32;
     let test_start = Instant::now();
     
     loop {
         cycle += 1;
         
-        for i in 0..(len / 2) {
-            let val = _mm_load_si128(base.add(i));
-            _mm_stream_si128(base.add(len - 1 - i), val);
+        // Execute pattern based on number of streams (equivalent to TM5 jump parameter)
+        match streams {
+            2 => {
+                // Two-stream pattern: split memory in half
+                let half_size = size / 2;
+                let base = ptr as *mut __m128i;
+                let len = half_size / std::mem::size_of::<__m128i>();
+                
+                // Stream 1: First half
+                for i in 0..(len / 2) {
+                    let val = _mm_load_si128(base.add(i));
+                    _mm_stream_si128(base.add(len - 1 - i), val);
+                }
+                
+                // Stream 2: Second half
+                let second_half_base = base.add(size / (2 * std::mem::size_of::<__m128i>()));
+                for i in 0..(len / 2) {
+                    let val = _mm_load_si128(second_half_base.add(i));
+                    _mm_stream_si128(second_half_base.add(len - 1 - i), val);
+                }
+            }
+            4 => {
+                // Four-stream pattern: split memory into quarters
+                let quarter_size = size / 4;
+                let base = ptr as *mut __m128i;
+                let len = quarter_size / std::mem::size_of::<__m128i>();
+                
+                for stream in 0..4 {
+                    let stream_base = base.add(stream * quarter_size / std::mem::size_of::<__m128i>());
+                    for i in 0..(len / 2) {
+                        let val = _mm_load_si128(stream_base.add(i));
+                        _mm_stream_si128(stream_base.add(len - 1 - i), val);
+                    }
+                }
+            }
+            _ => {
+                // Default single stream pattern (streams=1 or any other value)
+                let len = size / std::mem::size_of::<__m128i>();
+                let base = ptr as *mut __m128i;
+                
+                for i in 0..(len / 2) {
+                    let val = _mm_load_si128(base.add(i));
+                    _mm_stream_si128(base.add(len - 1 - i), val);
+                }
+            }
         }
 
         _mm_sfence();
@@ -458,7 +517,7 @@ pub unsafe fn mirror_move_128_non_temporal(ptr: *mut u8, size: usize, thread_id:
     }
 }
 
-pub unsafe fn mirror_move_256_non_temporal(ptr: *mut u8, size: usize, thread_id: usize, _error_mode: ErrorMode, timing: &TestTiming) -> TestStats {
+pub unsafe fn mirror_move_256_non_temporal(ptr: *mut u8, size: usize, thread_id: usize, error_mode: ErrorMode, timing: &TestTiming, streams: u32) -> TestStats {
     let test_name = "MirrorMove256NonTemporal";
     let start = Instant::now();
     
@@ -473,19 +532,58 @@ pub unsafe fn mirror_move_256_non_temporal(ptr: *mut u8, size: usize, thread_id:
         };
     }
 
-    let len = size / std::mem::size_of::<__m256i>();
-    let base = ptr as *mut __m256i;
     let mut total_bytes_processed = 0usize;
-    
     let mut cycle = 0u32;
     let test_start = Instant::now();
     
     loop {
         cycle += 1;
         
-        for i in 0..(len / 2) {
-            let val = _mm256_load_si256(base.add(i));
-            _mm256_stream_si256(base.add(len - 1 - i), val);
+        // Execute pattern based on number of streams
+        match streams {
+            2 => {
+                // Two-stream pattern
+                let half_size = size / 2;
+                let base = ptr as *mut __m256i;
+                let len = half_size / std::mem::size_of::<__m256i>();
+                
+                // Stream 1: First half
+                for i in 0..(len / 2) {
+                    let val = _mm256_load_si256(base.add(i));
+                    _mm256_stream_si256(base.add(len - 1 - i), val);
+                }
+                
+                // Stream 2: Second half
+                let second_half_base = base.add(size / (2 * std::mem::size_of::<__m256i>()));
+                for i in 0..(len / 2) {
+                    let val = _mm256_load_si256(second_half_base.add(i));
+                    _mm256_stream_si256(second_half_base.add(len - 1 - i), val);
+                }
+            }
+            4 => {
+                // Four-stream pattern
+                let quarter_size = size / 4;
+                let base = ptr as *mut __m256i;
+                let len = quarter_size / std::mem::size_of::<__m256i>();
+                
+                for stream in 0..4 {
+                    let stream_base = base.add(stream * quarter_size / std::mem::size_of::<__m256i>());
+                    for i in 0..(len / 2) {
+                        let val = _mm256_load_si256(stream_base.add(i));
+                        _mm256_stream_si256(stream_base.add(len - 1 - i), val);
+                    }
+                }
+            }
+            _ => {
+                // Default single stream pattern
+                let len = size / std::mem::size_of::<__m256i>();
+                let base = ptr as *mut __m256i;
+                
+                for i in 0..(len / 2) {
+                    let val = _mm256_load_si256(base.add(i));
+                    _mm256_stream_si256(base.add(len - 1 - i), val);
+                }
+            }
         }
 
         _mm_sfence();
@@ -509,7 +607,7 @@ pub unsafe fn mirror_move_256_non_temporal(ptr: *mut u8, size: usize, thread_id:
     }
 }
 
-pub unsafe fn mirror_move_512_non_temporal(ptr: *mut u8, size: usize, thread_id: usize, _error_mode: ErrorMode, timing: &TestTiming) -> TestStats {
+pub unsafe fn mirror_move_512_non_temporal(ptr: *mut u8, size: usize, thread_id: usize, error_mode: ErrorMode, timing: &TestTiming, streams: u32) -> TestStats {
     let test_name = "MirrorMove512NonTemporal";
     let start = Instant::now();
     
@@ -524,19 +622,58 @@ pub unsafe fn mirror_move_512_non_temporal(ptr: *mut u8, size: usize, thread_id:
         };
     }
 
-    let len = size / std::mem::size_of::<__m512i>();
-    let base = ptr as *mut __m512i;
     let mut total_bytes_processed = 0usize;
-    
     let mut cycle = 0u32;
     let test_start = Instant::now();
     
     loop {
         cycle += 1;
         
-        for i in 0..(len / 2) {
-            let val = _mm512_load_si512(base.add(i));
-            _mm512_stream_si512(base.add(len - 1 - i), val);
+        // Execute pattern based on number of streams
+        match streams {
+            2 => {
+                // Two-stream pattern
+                let half_size = size / 2;
+                let base = ptr as *mut __m512i;
+                let len = half_size / std::mem::size_of::<__m512i>();
+                
+                // Stream 1: First half
+                for i in 0..(len / 2) {
+                    let val = _mm512_load_si512(base.add(i));
+                    _mm512_stream_si512(base.add(len - 1 - i), val);
+                }
+                
+                // Stream 2: Second half
+                let second_half_base = base.add(size / (2 * std::mem::size_of::<__m512i>()));
+                for i in 0..(len / 2) {
+                    let val = _mm512_load_si512(second_half_base.add(i));
+                    _mm512_stream_si512(second_half_base.add(len - 1 - i), val);
+                }
+            }
+            4 => {
+                // Four-stream pattern
+                let quarter_size = size / 4;
+                let base = ptr as *mut __m512i;
+                let len = quarter_size / std::mem::size_of::<__m512i>();
+                
+                for stream in 0..4 {
+                    let stream_base = base.add(stream * quarter_size / std::mem::size_of::<__m512i>());
+                    for i in 0..(len / 2) {
+                        let val = _mm512_load_si512(stream_base.add(i));
+                        _mm512_stream_si512(stream_base.add(len - 1 - i), val);
+                    }
+                }
+            }
+            _ => {
+                // Default single stream pattern
+                let len = size / std::mem::size_of::<__m512i>();
+                let base = ptr as *mut __m512i;
+                
+                for i in 0..(len / 2) {
+                    let val = _mm512_load_si512(base.add(i));
+                    _mm512_stream_si512(base.add(len - 1 - i), val);
+                }
+            }
         }
 
         _mm_sfence();
@@ -560,13 +697,24 @@ pub unsafe fn mirror_move_512_non_temporal(ptr: *mut u8, size: usize, thread_id:
     }
 }
 
-pub unsafe fn simple_test(ptr: *mut u8, size: usize, thread_id: usize, error_mode: ErrorMode, timing: &TestTiming) -> TestStats {
+pub unsafe fn simple_test(ptr: *mut u8, size: usize, thread_id: usize, error_mode: ErrorMode, timing: &TestTiming, config: &TestMemoryConfig) -> TestStats {
     let test_name = "Simple Test";
     let start = Instant::now();
     let base = ptr as *mut u64;
     let len = size / std::mem::size_of::<u64>();
     let mut total_error_count = 0u64;
     let mut total_bytes_processed = 0usize;
+    
+    // Use pattern parameters if provided (TM5 compatibility)
+    let pattern_base = if let (Some(mode), Some(param0), Some(param1)) = (config.pattern_mode, config.pattern_param0, config.pattern_param1) {
+        match mode {
+            1 => param0 ^ param1, // Pattern mode 1
+            2 => (param0 << 32) | (param1 & 0xFFFFFFFF), // Pattern mode 2
+            _ => 0xDEADBEEFDEADBEEF, // Default pattern
+        }
+    } else {
+        0xDEADBEEFDEADBEEF
+    };
     
     let mut cycle = 0u32;
     let test_start = Instant::now();
@@ -575,24 +723,120 @@ pub unsafe fn simple_test(ptr: *mut u8, size: usize, thread_id: usize, error_mod
         cycle += 1;
         let mut cycle_errors = 0u64;
         
-        // Write phase
-        for i in 0..len {
-            base.add(i).write(i as u64 ^ 0xDEADBEEFDEADBEEF);
-        }
+        // Apply stream pattern
+        match config.streams {
+            1 => {
+                // Standard single stream pattern
+                // Write phase
+                for i in 0..len {
+                    base.add(i).write(i as u64 ^ pattern_base);
+                }
 
-        std::sync::atomic::fence(Ordering::SeqCst);
+                std::sync::atomic::fence(Ordering::SeqCst);
 
-        // Verify phase
-        for i in 0..len {
-            let v = base.add(i).read();
-            let expected = i as u64 ^ 0xDEADBEEFDEADBEEF;
-            if v != expected {
-                cycle_errors += 1;
-                match error_mode {
-                    ErrorMode::Panic => panic!("{}: memory error at index {}", test_name, i),
-                    ErrorMode::Halt => break,
-                    ErrorMode::Log => {
-                        log::error!("{}: memory error at index {} - expected {:#x}, got {:#x}", test_name, i, expected, v);
+                // Verify phase
+                for i in 0..len {
+                    let v = base.add(i).read();
+                    let expected = i as u64 ^ pattern_base;
+                    if v != expected {
+                        cycle_errors += 1;
+                        match error_mode {
+                            ErrorMode::Panic => panic!("{}: memory error at index {}", test_name, i),
+                            ErrorMode::Halt => break,
+                            ErrorMode::Log => {
+                                log::error!("{}: memory error at index {} - expected {:#x}, got {:#x}", test_name, i, expected, v);
+                            }
+                        }
+                    }
+                }
+            }
+            2 => {
+                // Two-stream pattern: alternate between two regions
+                let half = len / 2;
+                
+                // Write both halves with different patterns
+                for i in 0..half {
+                    base.add(i).write(i as u64 ^ pattern_base);
+                    base.add(half + i).write((half + i) as u64 ^ !pattern_base);
+                }
+                
+                std::sync::atomic::fence(Ordering::SeqCst);
+                
+                // Verify both halves
+                for i in 0..half {
+                    let v1 = base.add(i).read();
+                    let v2 = base.add(half + i).read();
+                    let expected1 = i as u64 ^ pattern_base;
+                    let expected2 = (half + i) as u64 ^ !pattern_base;
+                    
+                    if v1 != expected1 {
+                        cycle_errors += 1;
+                        handle_error(error_mode, test_name, i, expected1, v1);
+                    }
+                    if v2 != expected2 {
+                        cycle_errors += 1;
+                        handle_error(error_mode, test_name, half + i, expected2, v2);
+                    }
+                }
+            }
+            4 => {
+                // Four-stream pattern: interleaved access
+                let quarter = len / 4;
+                
+                // Write four regions with different patterns
+                for i in 0..quarter {
+                    base.add(i).write(i as u64 ^ pattern_base);
+                    base.add(quarter + i).write((quarter + i) as u64 ^ (pattern_base.rotate_left(16)));
+                    base.add(2 * quarter + i).write((2 * quarter + i) as u64 ^ (pattern_base.rotate_left(32)));
+                    base.add(3 * quarter + i).write((3 * quarter + i) as u64 ^ (pattern_base.rotate_left(48)));
+                }
+                
+                std::sync::atomic::fence(Ordering::SeqCst);
+                
+                // Verify four regions
+                for i in 0..quarter {
+                    for stream in 0..4 {
+                        let idx = stream * quarter + i;
+                        let v = base.add(idx).read();
+                        let expected = idx as u64 ^ pattern_base.rotate_left(stream as u32 * 16);
+                        
+                        if v != expected {
+                            cycle_errors += 1;
+                            handle_error(error_mode, test_name, idx, expected, v);
+                        }
+                    }
+                }
+            }
+            _ => {
+                // For higher stream counts, use strided access
+                let stride = len / config.streams as usize;
+                
+                // Write with multiple streams
+                for stream in 0..config.streams as usize {
+                    let pattern = pattern_base.rotate_left((stream * 8) as u32);
+                    for i in 0..stride {
+                        let idx = stream * stride + i;
+                        if idx < len {
+                            base.add(idx).write(idx as u64 ^ pattern);
+                        }
+                    }
+                }
+                
+                std::sync::atomic::fence(Ordering::SeqCst);
+                
+                // Verify with multiple streams
+                for stream in 0..config.streams as usize {
+                    let pattern = pattern_base.rotate_left((stream * 8) as u32);
+                    for i in 0..stride {
+                        let idx = stream * stride + i;
+                        if idx < len {
+                            let v = base.add(idx).read();
+                            let expected = idx as u64 ^ pattern;
+                            if v != expected {
+                                cycle_errors += 1;
+                                handle_error(error_mode, test_name, idx, expected, v);
+                            }
+                        }
                     }
                 }
             }
@@ -615,6 +859,18 @@ pub unsafe fn simple_test(ptr: *mut u8, size: usize, thread_id: usize, error_mod
         elapsed_ms: elapsed,
         thread_id,
         error_count: total_error_count,
+    }
+}
+
+// Helper function for error handling
+#[inline(always)]
+unsafe fn handle_error(error_mode: ErrorMode, test_name: &str, index: usize, expected: u64, actual: u64) {
+    match error_mode {
+        ErrorMode::Panic => panic!("{}: memory error at index {} - expected {:#x}, got {:#x}", test_name, index, expected, actual),
+        ErrorMode::Halt => {},
+        ErrorMode::Log => {
+            log::error!("{}: memory error at index {} - expected {:#x}, got {:#x}", test_name, index, expected, actual);
+        }
     }
 }
 
@@ -680,7 +936,7 @@ pub unsafe fn refresh_stable(ptr: *mut u8, size: usize, thread_id: usize, error_
     }
 }
 
-pub unsafe fn cache_busting_write_test(ptr: *mut u8, size: usize, thread_id: usize, error_mode: ErrorMode, timing: &TestTiming) -> TestStats {
+pub unsafe fn cache_busting_write_test(ptr: *mut u8, size: usize, thread_id: usize, error_mode: ErrorMode, timing: &TestTiming, streams: u32) -> TestStats {
     let test_name = "Cache Busting Write";
     let start = Instant::now();
     let base = ptr as *mut u64;
@@ -695,43 +951,73 @@ pub unsafe fn cache_busting_write_test(ptr: *mut u8, size: usize, thread_id: usi
         cycle += 1;
         let mut cycle_errors = 0u64;
         
-        // Write with large strides to bust cache
-        let stride = CACHE_BUSTING_STRIDE / std::mem::size_of::<u64>();
-        let pattern = 0x0123456789ABCDEFu64.wrapping_add(thread_id as u64);
+        // Apply stream-based access patterns
+        match streams {
+            1 => {
+                // Single stream with large strides to bust cache
+                let stride = CACHE_BUSTING_STRIDE / std::mem::size_of::<u64>();
+                let pattern = 0x0123456789ABCDEFu64.wrapping_add(thread_id as u64);
 
-        for offset in 0..stride.min(len) {
-            let mut i = offset;
-            while i < len {
-                base.add(i).write(pattern.wrapping_add(i as u64));
-                i += stride;
-            }
-        }
-
-        std::sync::atomic::fence(Ordering::SeqCst);
-
-        // Verify with same stride pattern
-        for offset in 0..stride.min(len) {
-            let mut i = offset;
-            while i < len {
-                let v = base.add(i).read();
-                let expected = pattern.wrapping_add(i as u64);
-                if v != expected {
-                    cycle_errors += 1;
-                    match error_mode {
-                        ErrorMode::Panic => panic!("{}: memory error at index {}", test_name, i),
-                        ErrorMode::Halt => break,
-                        ErrorMode::Log => {
-                            log::error!(
-                                "{}: memory error at index {} - expected {:#x}, got {:#x}",
-                                test_name,
-                                i,
-                                expected,
-                                v
-                            );
-                        }
+                for offset in 0..stride.min(len) {
+                    let mut i = offset;
+                    while i < len {
+                        base.add(i).write(pattern.wrapping_add(i as u64));
+                        i += stride;
                     }
                 }
-                i += stride;
+
+                std::sync::atomic::fence(Ordering::SeqCst);
+
+                // Verify with same stride pattern
+                for offset in 0..stride.min(len) {
+                    let mut i = offset;
+                    while i < len {
+                        let v = base.add(i).read();
+                        let expected = pattern.wrapping_add(i as u64);
+                        if v != expected {
+                            cycle_errors += 1;
+                            handle_error(error_mode, test_name, i, expected, v);
+                        }
+                        i += stride;
+                    }
+                }
+            }
+            _ => {
+                // Multiple streams with different stride offsets
+                let base_stride = CACHE_BUSTING_STRIDE / std::mem::size_of::<u64>();
+                let stream_offset = base_stride / streams as usize;
+                
+                for stream in 0..streams as usize {
+                    let pattern = 0x0123456789ABCDEFu64
+                        .wrapping_add(thread_id as u64)
+                        .wrapping_add((stream as u64) * 0x1111111111111111u64);
+                    
+                    let mut i = stream * stream_offset;
+                    while i < len {
+                        base.add(i).write(pattern.wrapping_add(i as u64));
+                        i += base_stride;
+                    }
+                }
+                
+                std::sync::atomic::fence(Ordering::SeqCst);
+                
+                // Verify all streams
+                for stream in 0..streams as usize {
+                    let pattern = 0x0123456789ABCDEFu64
+                        .wrapping_add(thread_id as u64)
+                        .wrapping_add((stream as u64) * 0x1111111111111111u64);
+                    
+                    let mut i = stream * stream_offset;
+                    while i < len {
+                        let v = base.add(i).read();
+                        let expected = pattern.wrapping_add(i as u64);
+                        if v != expected {
+                            cycle_errors += 1;
+                            handle_error(error_mode, test_name, i, expected, v);
+                        }
+                        i += base_stride;
+                    }
+                }
             }
         }
         
@@ -755,7 +1041,7 @@ pub unsafe fn cache_busting_write_test(ptr: *mut u8, size: usize, thread_id: usi
     }
 }
 
-pub unsafe fn random_access_torture_test(ptr: *mut u8, size: usize, thread_id: usize, error_mode: ErrorMode, timing: &TestTiming) -> TestStats {
+pub unsafe fn random_access_torture_test(ptr: *mut u8, size: usize, thread_id: usize, error_mode: ErrorMode, timing: &TestTiming, streams: u32) -> TestStats {
     let test_name = "Random Access Torture";
     let start = Instant::now();
     let base = ptr as *mut u64;
@@ -771,50 +1057,66 @@ pub unsafe fn random_access_torture_test(ptr: *mut u8, size: usize, thread_id: u
         base.add(i).write(i as u64);
     }
     std::sync::atomic::fence(Ordering::SeqCst);
-    total_bytes_processed += size;
+    total_bytes_processed = total_bytes_processed.saturating_add(size);
     
     loop {
         cycle += 1;
         let mut cycle_errors = 0u64;
         
-        // Random access torture
-        let mut rng_state = 0x123456789ABCDEFu64.wrapping_add(thread_id as u64).wrapping_add(cycle as u64);
-        let iterations = (len / 1000).max(5000).min(50000);
+        // Random access torture with configurable streams
+        // Ensure we don't overflow by using checked arithmetic
+        let base_iterations = (len / 1000).max(5000).min(50000);
+        let iterations_per_stream = (base_iterations / streams.max(1) as usize).max(1); // Ensure at least 1 iteration
+        
+        //log::debug!("[Thread {}] RandomTorture: len={}, streams={}, iterations_per_stream={}", 
+        //           thread_id, len, streams, iterations_per_stream);
+        
+        for stream in 0..streams {
+            let mut rng_state = 0x123456789ABCDEFu64
+                .wrapping_add(thread_id as u64)
+                .wrapping_add(cycle as u64)
+                .wrapping_add((stream as u64).wrapping_mul(0x8765432187654321u64));
 
-        // Random read verification
-        for iteration in 0..iterations {
-            rng_state ^= rng_state << 13;
-            rng_state ^= rng_state >> 17;
-            rng_state ^= rng_state << 5;
+            // Random read verification for this stream
+            for iteration in 0..iterations_per_stream {
+                rng_state ^= rng_state << 13;
+                rng_state ^= rng_state >> 17;
+                rng_state ^= rng_state << 5;
 
-            let idx = (rng_state as usize) % len;
-            let expected = idx as u64;
-            let actual = base.add(idx).read();
+                let idx = (rng_state as usize) % len;
+                let expected = idx as u64;
+                let actual = base.add(idx).read();
 
-            if actual != expected {
-                cycle_errors += 1;
-                match error_mode {
-                    ErrorMode::Panic => panic!(
-                        "{}: memory error at index {}, iteration {}, expected {}, actual {}",
-                        test_name, idx, iteration, expected, actual
-                    ),
-                    ErrorMode::Halt => break,
-                    ErrorMode::Log => {
-                        log::error!(
-                            "{}: memory error at index {}, iteration {}, expected {}, actual {}",
-                            test_name,
-                            idx,
-                            iteration,
-                            expected,
-                            actual
-                        );
+                if actual != expected {
+                    cycle_errors += 1;
+                    match error_mode {
+                        ErrorMode::Panic => panic!(
+                            "{}: memory error at index {}, iteration {}, stream {}, expected {}, actual {}",
+                            test_name, idx, iteration, stream, expected, actual
+                        ),
+                        ErrorMode::Halt => break,
+                        ErrorMode::Log => {
+                            log::error!(
+                                "{}: memory error at index {}, iteration {}, stream {}, expected {}, actual {}",
+                                test_name,
+                                idx,
+                                iteration,
+                                stream,
+                                expected,
+                                actual
+                            );
+                        }
                     }
                 }
             }
         }
         
         total_error_count += cycle_errors;
-        total_bytes_processed += iterations * std::mem::size_of::<u64>();
+        // Use saturating arithmetic to prevent overflow
+        let bytes_this_cycle = iterations_per_stream
+            .saturating_mul(streams as usize)
+            .saturating_mul(std::mem::size_of::<u64>());
+        total_bytes_processed = total_bytes_processed.saturating_add(bytes_this_cycle);
         
         let elapsed_secs = test_start.elapsed().as_secs() as u32;
         if !timing.should_continue(cycle, elapsed_secs) {
@@ -833,7 +1135,7 @@ pub unsafe fn random_access_torture_test(ptr: *mut u8, size: usize, thread_id: u
     }
 }
 
-pub unsafe fn stride_access_test(ptr: *mut u8, size: usize, thread_id: usize, error_mode: ErrorMode, timing: &TestTiming) -> TestStats {
+pub unsafe fn stride_access_test(ptr: *mut u8, size: usize, thread_id: usize, error_mode: ErrorMode, timing: &TestTiming, streams: u32) -> TestStats {
     let test_name = "Stride Access";
     let start = Instant::now();
     let base = ptr as *mut u64;
@@ -857,48 +1159,75 @@ pub unsafe fn stride_access_test(ptr: *mut u8, size: usize, thread_id: usize, er
                 continue;
             }
 
-            // Write with this stride
-            for start_offset in 0..stride.min(len) {
-                let mut i = start_offset;
-                while i < len {
-                    let pattern = pattern_base.wrapping_add((stride as u64) << 32).wrapping_add(i as u64);
-                    base.add(i).write(pattern);
-                    i += stride;
+            // For stride access, partition memory between streams rather than offsets
+            let elements_per_stream = len / streams.max(1) as usize;
+            
+            log::debug!("[Thread {}] StrideAccess: stride={}, streams={}, elements_per_stream={}", 
+                       thread_id, stride, streams, elements_per_stream);
+            
+            // Write phase: each stream works on its own memory region
+            for stream in 0..streams as usize {
+                let pattern = pattern_base
+                    .wrapping_add((stride as u64) << 32)
+                    .wrapping_add((stream as u64) << 48);
+
+                let stream_start = stream * elements_per_stream;
+                let stream_end = if stream == streams as usize - 1 {
+                    len // Last stream handles any remainder
+                } else {
+                    (stream + 1) * elements_per_stream
+                };
+
+                // Write with stride pattern within this stream's region
+                let mut pos = stream_start;
+                while pos < stream_end {
+                    base.add(pos).write(pattern.wrapping_add(pos as u64));
+                    pos += stride;
                 }
             }
 
             std::sync::atomic::fence(Ordering::SeqCst);
 
-            // Verify with same stride
-            for start_offset in 0..stride.min(len) {
-                let mut i = start_offset;
-                while i < len {
-                    let expected = pattern_base.wrapping_add((stride as u64) << 32).wrapping_add(i as u64);
-                    let actual = base.add(i).read();
+            // Verify phase: each stream verifies its own memory region
+            for stream in 0..streams as usize {
+                let pattern = pattern_base
+                    .wrapping_add((stride as u64) << 32)
+                    .wrapping_add((stream as u64) << 48);
+
+                let stream_start = stream * elements_per_stream;
+                let stream_end = if stream == streams as usize - 1 {
+                    len
+                } else {
+                    (stream + 1) * elements_per_stream
+                };
+
+                // Verify with same stride pattern
+                let mut pos = stream_start;
+                while pos < stream_end {
+                    let expected = pattern.wrapping_add(pos as u64);
+                    let actual = base.add(pos).read();
                     if actual != expected {
                         cycle_errors += 1;
-                        match error_mode {
-                            ErrorMode::Panic => panic!("{}: memory error at stride {} index {}", test_name, stride, i),
-                            ErrorMode::Halt => break,
-                            ErrorMode::Log => {
-                                log::error!(
-                                    "{}: memory error at stride {} index {} - expected {:#x}, got {:#x}",
-                                    test_name,
-                                    stride,
-                                    i,
-                                    expected,
-                                    actual
-                                );
-                            }
-                        }
+                        handle_error(error_mode, test_name, pos, expected, actual);
                     }
-                    i += stride;
+                    pos += stride;
                 }
             }
         }
         
+        // Calculate approximate bytes processed
+        // For each stride, we access approximately len/stride elements
+        // Each element is 8 bytes, and we do both read and write
+        let mut bytes_this_cycle = 0;
+        for &stride in &strides {
+            if stride < len {
+                let elements_accessed = len / stride;
+                bytes_this_cycle += elements_accessed * std::mem::size_of::<u64>() * 2; // read + write
+            }
+        }
+        
         total_error_count += cycle_errors;
-        total_bytes_processed += size * strides.len() * 2;
+        total_bytes_processed = total_bytes_processed.saturating_add(bytes_this_cycle);
         
         let elapsed_secs = test_start.elapsed().as_secs() as u32;
         if !timing.should_continue(cycle, elapsed_secs) {
@@ -917,7 +1246,7 @@ pub unsafe fn stride_access_test(ptr: *mut u8, size: usize, thread_id: usize, er
     }
 }
 
-pub unsafe fn bandwidth_saturation_test(ptr: *mut u8, size: usize, thread_id: usize, _error_mode: ErrorMode, timing: &TestTiming) -> TestStats {
+pub unsafe fn bandwidth_saturation_test(ptr: *mut u8, size: usize, thread_id: usize, _error_mode: ErrorMode, timing: &TestTiming, streams: u32) -> TestStats {
     let test_name = "Bandwidth Saturation";
     let start = Instant::now();
     let base = ptr as *mut u64;
@@ -930,24 +1259,66 @@ pub unsafe fn bandwidth_saturation_test(ptr: *mut u8, size: usize, thread_id: us
     loop {
         cycle += 1;
         
-        // Pure memory bandwidth test - large sequential writes
-        let pattern = 0x5555AAAA5555AAAAu64.wrapping_add(thread_id as u64).wrapping_add(cycle as u64);
+        // Pure memory bandwidth test with configurable streams
+        match streams {
+            1 => {
+                // Single stream - maximum sequential bandwidth
+                let pattern = 0x5555AAAA5555AAAAu64.wrapping_add(thread_id as u64).wrapping_add(cycle as u64);
 
-        // Write phase
-        for i in 0..len {
-            base.add(i).write(pattern.wrapping_add(i as u64));
+                // Write phase
+                for i in 0..len {
+                    base.add(i).write(pattern.wrapping_add(i as u64));
+                }
+
+                std::sync::atomic::fence(Ordering::SeqCst);
+
+                // Read phase
+                let mut checksum = 0u64;
+                for i in 0..len {
+                    checksum = checksum.wrapping_add(base.add(i).read());
+                }
+
+                // Prevent optimization
+                std::ptr::write_volatile(&mut checksum, checksum);
+            }
+            _ => {
+                // Multiple streams - interleaved access for bandwidth
+                let stream_size = len / streams as usize;
+                
+                // Write phase with multiple streams
+                for stream in 0..streams as usize {
+                    let pattern = 0x5555AAAA5555AAAAu64
+                        .wrapping_add(thread_id as u64)
+                        .wrapping_add(cycle as u64)
+                        .wrapping_add((stream as u64) << 32);
+                    
+                    let start = stream * stream_size;
+                    let end = ((stream + 1) * stream_size).min(len);
+                    
+                    for i in start..end {
+                        base.add(i).write(pattern.wrapping_add(i as u64));
+                    }
+                }
+
+                std::sync::atomic::fence(Ordering::SeqCst);
+
+                // Read phase with multiple streams
+                let mut checksums = vec![0u64; streams as usize];
+                for stream in 0..streams as usize {
+                    let start = stream * stream_size;
+                    let end = ((stream + 1) * stream_size).min(len);
+                    
+                    for i in start..end {
+                        checksums[stream] = checksums[stream].wrapping_add(base.add(i).read());
+                    }
+                }
+
+                // Prevent optimization
+                for checksum in &mut checksums {
+                    std::ptr::write_volatile(checksum, *checksum);
+                }
+            }
         }
-
-        std::sync::atomic::fence(Ordering::SeqCst);
-
-        // Read phase
-        let mut checksum = 0u64;
-        for i in 0..len {
-            checksum = checksum.wrapping_add(base.add(i).read());
-        }
-
-        // Prevent optimization
-        std::ptr::write_volatile(&mut checksum, checksum);
         
         total_bytes_processed += size * 2; // Read + Write
         
@@ -965,5 +1336,188 @@ pub unsafe fn bandwidth_saturation_test(ptr: *mut u8, size: usize, thread_id: us
         elapsed_ms: elapsed,
         thread_id,
         error_count: 0, // This test doesn't verify individual values
+    }
+}
+
+pub unsafe fn block_move_test(ptr: *mut u8, size: usize, thread_id: usize, error_mode: ErrorMode, timing: &TestTiming, streams: u32) -> TestStats {
+    let test_name = "BlockMove";
+    let start = Instant::now();
+    
+    // Divide memory in half - first half is source, second half is destination
+    let half_size = size / 2;
+    let src_base = ptr as *mut u64;
+    let dst_base = (ptr as *mut u64).add(half_size / std::mem::size_of::<u64>());
+    let len = half_size / std::mem::size_of::<u64>();
+    
+    let mut total_bytes_processed = 0usize;
+    let mut total_error_count = 0u64;
+    let mut cycle = 0u32;
+    let test_start = Instant::now();
+    
+    // Initialize source with test pattern
+    let pattern_base = 0xDEADBEEFCAFEBABEu64;
+    for i in 0..len {
+        src_base.add(i).write(pattern_base.wrapping_add(i as u64));
+    }
+    std::sync::atomic::fence(Ordering::SeqCst);
+    
+    loop {
+        cycle += 1;
+        let mut cycle_errors = 0u64;
+        
+        match streams {
+            1 => {
+                // Single stream: Simple forward copy
+                for i in 0..len {
+                    let val = src_base.add(i).read();
+                    dst_base.add(i).write(val);
+                }
+                
+                std::sync::atomic::fence(Ordering::SeqCst);
+                
+                // Verify
+                for i in 0..len {
+                    let expected = pattern_base.wrapping_add(i as u64);
+                    let actual = dst_base.add(i).read();
+                    if actual != expected {
+                        cycle_errors += 1;
+                        handle_error(error_mode, test_name, i, expected, actual);
+                    }
+                }
+            }
+            2 => {
+                // Two streams: Copy forward and backward simultaneously
+                let mid = len / 2;
+                
+                // Stream 1: Copy first half forward
+                for i in 0..mid {
+                    let val = src_base.add(i).read();
+                    dst_base.add(i).write(val);
+                }
+                
+                // Stream 2: Copy second half backward
+                for i in 0..mid {
+                    let src_idx = len - 1 - i;
+                    let dst_idx = len - 1 - i;
+                    let val = src_base.add(src_idx).read();
+                    dst_base.add(dst_idx).write(val);
+                }
+                
+                std::sync::atomic::fence(Ordering::SeqCst);
+                
+                // Verify both halves
+                for i in 0..len {
+                    let expected = pattern_base.wrapping_add(i as u64);
+                    let actual = dst_base.add(i).read();
+                    if actual != expected {
+                        cycle_errors += 1;
+                        handle_error(error_mode, test_name, i, expected, actual);
+                    }
+                }
+            }
+            4 => {
+                // Four streams: Interleaved block copy
+                let block_size = len / 4;
+                
+                for stream in 0..4 {
+                    let start_idx = stream * block_size;
+                    let end_idx = ((stream + 1) * block_size).min(len);
+                    
+                    // Copy with different patterns per stream
+                    match stream % 4 {
+                        0 => {
+                            // Forward copy
+                            for i in start_idx..end_idx {
+                                let val = src_base.add(i).read();
+                                dst_base.add(i).write(val);
+                            }
+                        }
+                        1 => {
+                            // Backward copy within block
+                            for i in 0..(end_idx - start_idx) {
+                                let src_idx = end_idx - 1 - i;
+                                let dst_idx = end_idx - 1 - i;
+                                let val = src_base.add(src_idx).read();
+                                dst_base.add(dst_idx).write(val);
+                            }
+                        }
+                        2 => {
+                            // Skip pattern copy (every other element)
+                            for i in (start_idx..end_idx).step_by(2) {
+                                let val = src_base.add(i).read();
+                                dst_base.add(i).write(val);
+                            }
+                            for i in ((start_idx + 1)..end_idx).step_by(2) {
+                                let val = src_base.add(i).read();
+                                dst_base.add(i).write(val);
+                            }
+                        }
+                        _ => {
+                            // Block copy
+                            for i in start_idx..end_idx {
+                                let val = src_base.add(i).read();
+                                dst_base.add(i).write(val);
+                            }
+                        }
+                    }
+                }
+                
+                std::sync::atomic::fence(Ordering::SeqCst);
+                
+                // Verify
+                for i in 0..len {
+                    let expected = pattern_base.wrapping_add(i as u64);
+                    let actual = dst_base.add(i).read();
+                    if actual != expected {
+                        cycle_errors += 1;
+                        handle_error(error_mode, test_name, i, expected, actual);
+                    }
+                }
+            }
+            _ => {
+                // Many streams: Strided copy pattern
+                let stride = streams as usize;
+                
+                for offset in 0..stride.min(len) {
+                    let mut i = offset;
+                    while i < len {
+                        let val = src_base.add(i).read();
+                        dst_base.add(i).write(val);
+                        i += stride;
+                    }
+                }
+                
+                std::sync::atomic::fence(Ordering::SeqCst);
+                
+                // Verify
+                for i in 0..len {
+                    let expected = pattern_base.wrapping_add(i as u64);
+                    let actual = dst_base.add(i).read();
+                    if actual != expected {
+                        cycle_errors += 1;
+                        handle_error(error_mode, test_name, i, expected, actual);
+                    }
+                }
+            }
+        }
+        
+        // Each cycle processes: read from source + write to destination + read for verify
+        total_bytes_processed += half_size * 3;
+        total_error_count += cycle_errors;
+        
+        let elapsed_secs = test_start.elapsed().as_secs() as u32;
+        if !timing.should_continue(cycle, elapsed_secs) {
+            break;
+        }
+    }
+
+    let elapsed = start.elapsed().as_millis();
+    TestStats {
+        name: test_name,
+        action: TestAction::Copy,
+        bytes_processed: total_bytes_processed,
+        elapsed_ms: elapsed,
+        thread_id,
+        error_count: total_error_count,
     }
 }

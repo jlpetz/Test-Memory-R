@@ -4,7 +4,7 @@ use crate::tests::{TestStats, TestMemoryConfig, TestTiming, stuck_bit_test};
 use crate::tests::{
     mirror_move_128_non_temporal, mirror_move_256_non_temporal, mirror_move_512_non_temporal,
     simple_test, refresh_stable, cache_busting_write_test, random_access_torture_test,
-    stride_access_test, bandwidth_saturation_test
+    stride_access_test, bandwidth_saturation_test, block_move_test
 };
 use crate::progress::{progress_reporter, TestSummary};
 use crate::results::{TestRunResult, save_test_result}; // New results module
@@ -93,8 +93,17 @@ impl TestSuiteTiming {
     }
 }
 
-// Test function with timing passed down
-type TestFunction = unsafe fn(*mut u8, usize, usize, ErrorMode, &TestTiming) -> TestStats;
+// Updated test function signatures to accept TestMemoryConfig
+type TestFunctionSimple = unsafe fn(*mut u8, usize, usize, ErrorMode, &TestTiming) -> TestStats;
+type TestFunctionWithStreams = unsafe fn(*mut u8, usize, usize, ErrorMode, &TestTiming, u32) -> TestStats;
+type TestFunctionWithConfig = unsafe fn(*mut u8, usize, usize, ErrorMode, &TestTiming, &TestMemoryConfig) -> TestStats;
+
+// Test function wrapper enum to handle different signatures
+enum TestFunction {
+    Simple(TestFunctionSimple),
+    WithStreams(TestFunctionWithStreams),
+    WithConfig(TestFunctionWithConfig),
+}
 
 pub fn run_tests_with_layout(layout: MemoryLayout, error_mode: ErrorMode) -> bool {
     run_tests_with_layout_and_timing(layout, error_mode, TestSuiteTiming::default())
@@ -246,116 +255,157 @@ fn create_test_definitions() -> Vec<(&'static str, TestFunction, TestMemoryConfi
         // === CRITICAL: Full Memory Stuck Bit Test ===
         (
             "StuckBitTest", 
-            |ptr, size, tid, em, timing| unsafe { stuck_bit_test(ptr, size, tid, em, timing) },
+            TestFunction::Simple(|ptr, size, tid, em, timing| unsafe { stuck_bit_test(ptr, size, tid, em, timing) }),
             TestMemoryConfig::new(
                 WindowMode::FullAllocation,           // Use entire allocation 
                 BlockMode::WindowFraction { fraction: 0.0625 }, // 1/16th of window per block for efficiency
                 false,  // Require alignment
                 false   // Doesn't need locality - needs to test ALL memory
             ).with_timing(TestTiming::cycles_only(1)) // Run once per cycle - it's thorough
+             .with_streams(1) // Single stream for stuck bit test
         ),
         
         // === SIMD Tests with optimal window/block sizing ===
         (
             "MirrorMove128NonTemporal", 
-            |ptr, size, tid, em, timing| unsafe { mirror_move_128_non_temporal(ptr, size, tid, em, timing) },
+            TestFunction::WithStreams(|ptr, size, tid, em, timing, streams| unsafe { 
+                mirror_move_128_non_temporal(ptr, size, tid, em, timing, streams) 
+            }),
             TestMemoryConfig::new(
                 WindowMode::FixedSize { size_mb: 64 },   // 64MB window for SIMD locality
                 BlockMode::FixedSize { size_mb: 16 },    // 16MB blocks for 128-bit alignment
                 false,  // Require alignment
                 true    // Needs locality for SIMD efficiency
             ).with_timing(TestTiming::duration_only(10)) // 10 seconds of continuous SIMD testing
+             .with_streams(1) // Default single stream
         ),
         (
             "MirrorMove256NonTemporal", 
-            |ptr, size, tid, em, timing| unsafe { mirror_move_256_non_temporal(ptr, size, tid, em, timing) },
+            TestFunction::WithStreams(|ptr, size, tid, em, timing, streams| unsafe { 
+                mirror_move_256_non_temporal(ptr, size, tid, em, timing, streams) 
+            }),
             TestMemoryConfig::new(
                 WindowMode::FixedSize { size_mb: 128 },  // 128MB window
                 BlockMode::FixedSize { size_mb: 32 },    // 32MB blocks for 256-bit alignment
                 false,
                 true
             ).with_timing(TestTiming::duration_only(10))
+             .with_streams(2) // Dual stream for 256-bit
         ),
         (
             "MirrorMove512NonTemporal", 
-            |ptr, size, tid, em, timing| unsafe { mirror_move_512_non_temporal(ptr, size, tid, em, timing) },
+            TestFunction::WithStreams(|ptr, size, tid, em, timing, streams| unsafe { 
+                mirror_move_512_non_temporal(ptr, size, tid, em, timing, streams) 
+            }),
             TestMemoryConfig::new(
                 WindowMode::FixedSize { size_mb: 256 },  // 256MB window
                 BlockMode::FixedSize { size_mb: 64 },    // 64MB blocks for 512-bit alignment
                 false,
                 true
             ).with_timing(TestTiming::duration_only(10))
+             .with_streams(4) // Quad stream for 512-bit
         ),
         
         // === Memory Pattern Tests ===
         (
             "SimpleTest", 
-            |ptr, size, tid, em, timing| unsafe { simple_test(ptr, size, tid, em, timing) },
+            TestFunction::WithConfig(|ptr, size, tid, em, timing, config| unsafe { 
+                simple_test(ptr, size, tid, em, timing, config) 
+            }),
             TestMemoryConfig::new(
                 WindowMode::FullAllocation,              // Test large portions of memory
                 BlockMode::FixedSize { size_mb: 4 },     // 4MB blocks
                 false,
                 false   // Doesn't need locality
             ).with_timing(TestTiming::hybrid(100, 30)) // 100 cycles or 30 seconds, whichever first
+             .with_streams(1) // Default single stream
         ),
         
         // === Refresh/Retention Tests ===
         (
             "RefreshStable", 
-            |ptr, size, tid, em, timing| unsafe { refresh_stable(ptr, size, tid, em, timing) },
+            TestFunction::Simple(|ptr, size, tid, em, timing| unsafe { refresh_stable(ptr, size, tid, em, timing) }),
             TestMemoryConfig::new(
                 WindowMode::CacheRelative { multiplier: 2.0 }, // 2x cache size for refresh testing
                 BlockMode::FixedSize { size_mb: 1 },           // Small 1MB blocks
                 false,
                 true    // Needs locality for refresh timing
             ).with_timing(TestTiming::duration_only(15)) // 15 seconds of refresh testing
+             .with_streams(1) // Single stream
         ),
         
         // === Cache Tests ===
         (
             "CacheBusting", 
-            |ptr, size, tid, em, timing| unsafe { cache_busting_write_test(ptr, size, tid, em, timing) },
+            TestFunction::WithStreams(|ptr, size, tid, em, timing, streams| unsafe { 
+                cache_busting_write_test(ptr, size, tid, em, timing, streams) 
+            }),
             TestMemoryConfig::new(
                 WindowMode::CacheRelative { multiplier: 0.5 }, // Half cache size
                 BlockMode::FixedSize { size_mb: 1 },           // 1MB blocks for cache busting
                 false,
                 true    // Specifically targets cache behavior
             ).with_timing(TestTiming::duration_only(20)) // 20 seconds of cache busting
+             .with_streams(4) // 4 streams for cache stress
         ),
         
         // === Stress Tests ===
         (
             "RandomTorture", 
-            |ptr, size, tid, em, timing| unsafe { random_access_torture_test(ptr, size, tid, em, timing) },
+            TestFunction::WithStreams(|ptr, size, tid, em, timing, streams| unsafe { 
+                random_access_torture_test(ptr, size, tid, em, timing, streams) 
+            }),
             TestMemoryConfig::new(
                 WindowMode::FullAllocation,              // Random access across full allocation
                 BlockMode::FixedSize { size_mb: 8 },     // 8MB blocks
                 true,   // Allow misaligned for maximum stress
                 false   // Random access - locality not needed
             ).with_timing(TestTiming::duration_only(25)) // 25 seconds of random torture
+             .with_streams(8) // 8 streams for maximum chaos
         ),
         (
             "StrideAccess", 
-            |ptr, size, tid, em, timing| unsafe { stride_access_test(ptr, size, tid, em, timing) },
+            TestFunction::WithStreams(|ptr, size, tid, em, timing, streams| unsafe { 
+                stride_access_test(ptr, size, tid, em, timing, streams) 
+            }),
             TestMemoryConfig::new(
                 WindowMode::FullAllocation,              // Test stride patterns across full memory
                 BlockMode::FixedSize { size_mb: 2 },     // 2MB blocks
                 false,
                 false
             ).with_timing(TestTiming::cycles_only(1)) // 1 cycle of stride patterns
+             .with_streams(4) // 4 streams for stride patterns
         ),
         
         // === Bandwidth Test ===
         (
             "BandwidthSat", 
-            |ptr, size, tid, em, timing| unsafe { bandwidth_saturation_test(ptr, size, tid, em, timing) },
+            TestFunction::WithStreams(|ptr, size, tid, em, timing, streams| unsafe { 
+                bandwidth_saturation_test(ptr, size, tid, em, timing, streams) 
+            }),
             TestMemoryConfig::new(
                 WindowMode::FullAllocation,              // Maximum bandwidth requires full allocation
                 BlockMode::FixedSize { size_mb: 32 },    // Large 32MB blocks for bandwidth
                 false,
                 false
             ).with_timing(TestTiming::duration_only(15)) // 15 seconds of bandwidth saturation
+             .with_streams(1) // Single stream for max bandwidth
         ),
+		
+		// Add this to the test definitions vector
+		(
+			"BlockMove", 
+			TestFunction::WithStreams(|ptr, size, tid, em, timing, streams| unsafe { 
+				block_move_test(ptr, size, tid, em, timing, streams) 
+			}),
+			TestMemoryConfig::new(
+				WindowMode::FullAllocation,              // Need full allocation for src+dst
+				BlockMode::FixedSize { size_mb: 16 },    // 16MB blocks
+				false,  // Require alignment
+				false   // Doesn't need locality
+			).with_timing(TestTiming::duration_only(20)) // 20 seconds of block copying
+			 .with_streams(1) // Default single stream
+		),
     ]
 }
 
@@ -397,7 +447,7 @@ fn run_single_test_cycle(
             let barrier_clone = Arc::clone(&barrier);
             let test_stats_clone = Arc::clone(&test_stats);
             let test_name = test_name.to_string();
-            let test_func = *test_func;
+            let test_func = test_func.clone();
             let test_config = test_config.clone();
 
             let handle = thread::spawn(move || {
@@ -418,7 +468,7 @@ fn run_single_test_cycle(
                     
                     match run_test_with_memory_stages(
                         &test_name,
-                        test_func,
+                        &test_func,
                         allocated_block,
                         &test_config,
                         thread_id,
@@ -506,10 +556,21 @@ fn run_single_test_cycle(
     success.load(Ordering::Relaxed)
 }
 
-// Updated to pass timing to test function
+// Clone implementation for TestFunction
+impl Clone for TestFunction {
+    fn clone(&self) -> Self {
+        match self {
+            TestFunction::Simple(f) => TestFunction::Simple(*f),
+            TestFunction::WithStreams(f) => TestFunction::WithStreams(*f),
+            TestFunction::WithConfig(f) => TestFunction::WithConfig(*f),
+        }
+    }
+}
+
+// Updated to pass correct parameters based on test function type
 fn run_test_with_memory_stages(
     test_name: &str,
-    test_func: TestFunction,
+    test_func: &TestFunction,
     allocated_block: &AllocatedBlock,
     test_config: &TestMemoryConfig,
     thread_id: usize,
@@ -536,22 +597,32 @@ fn run_test_with_memory_stages(
     // Log configuration once per test (only for thread 0 to avoid spam)
     if thread_id == 0 {
         log::info!(
-            "{} - Window: {:.1}MB ({:.1}%), Block: {:.1}MB{}",
-            test_name, window_mb, window_percent, block_mb,
-            if test_config.allow_misaligned { " (misaligned)" } else { "" }
+            "{} - Window: {:.1}MB ({:.1}%), Block: {:.1}MB, Streams: {}{}",
+            test_name, window_mb, window_percent, block_mb, test_config.streams,
+            if test_config.allow_misaligned { ", misaligned" } else { "" }
         );
     }
     
     // Debug log for all threads if needed
     log::debug!(
-        "[Thread {}] {} - Configuration: Window {:.1}MB of {:.1}MB ({:.1}%), Block {:.1}MB{}",
-        thread_id, test_name, window_mb, allocated_mb, window_percent, block_mb,
-        if test_config.allow_misaligned { " (misaligned)" } else { "" }
+        "[Thread {}] {} - Configuration: Window {:.1}MB of {:.1}MB ({:.1}%), Block {:.1}MB, Streams: {}{}",
+        thread_id, test_name, window_mb, allocated_mb, window_percent, block_mb, test_config.streams,
+        if test_config.allow_misaligned { ", misaligned" } else { "" }
     );
     
-    // Run the test function with timing configuration
+    // Run the test function with appropriate parameters
     let stats = unsafe {
-        test_func(allocated_ptr, final_window_size, thread_id, error_mode, &test_config.timing)
+        match test_func {
+            TestFunction::Simple(f) => {
+                f(allocated_ptr, final_window_size, thread_id, error_mode, &test_config.timing)
+            }
+            TestFunction::WithStreams(f) => {
+                f(allocated_ptr, final_window_size, thread_id, error_mode, &test_config.timing, test_config.streams)
+            }
+            TestFunction::WithConfig(f) => {
+                f(allocated_ptr, final_window_size, thread_id, error_mode, &test_config.timing, test_config)
+            }
+        }
     };
     
     Ok(stats)
@@ -659,11 +730,14 @@ fn print_test_configuration(test_definitions: &[(&'static str, TestFunction, Tes
             (None, None) => print!("unlimited, "),
         }
         
+        // Streams (equivalent to TM5 jump/parameter)
+        print!("{}streams", config.streams);
+        
         // Window mode
         match &config.window_mode {
-            WindowMode::FullAllocation => print!("FullWindow"),
-            WindowMode::FixedSize { size_mb } => print!("Window:{}MB", size_mb),
-            WindowMode::CacheRelative { multiplier } => print!("Window:{}xCache", multiplier),
+            WindowMode::FullAllocation => print!(", FullWindow"),
+            WindowMode::FixedSize { size_mb } => print!(", Window:{}MB", size_mb),
+            WindowMode::CacheRelative { multiplier } => print!(", Window:{}xCache", multiplier),
         }
         
         // Block mode

@@ -102,14 +102,17 @@ pub struct TestConfig {
     pub allow_misaligned: Option<bool>,     // Allow unaligned accesses
     pub requires_locality: Option<bool>,    // Test needs temporal locality
     
+    // Access pattern configuration
+    pub streams: Option<u32>,               // Number of access streams (equivalent to TM5 jump/parameter)
+    
     // Legacy TM5 compatibility (preserved but not used in new logic)
     pub pattern_mode: Option<u32>,
     pub pattern_param0: Option<u64>,
     pub pattern_param1: Option<u64>,
-    pub parameter: Option<u32>,
+    pub parameter: Option<u32>,             // Legacy parameter field (mapped to streams on load)
 }
 
-// Legacy config parser (v1.0 - TestMem5 format) - unchanged
+// Legacy config parser (v1.0 - TestMem5 format) - unchanged structure
 #[derive(Debug, Clone)]
 pub struct LegacyConfig {
     pub main_section: LegacyMainSection,
@@ -151,7 +154,14 @@ impl ModernConfig {
     pub fn load_from_file(path: &str) -> Result<Self, String> {
         let content = fs::read_to_string(path).map_err(|e| format!("Failed to read config file: {}", e))?;
 
-        let config: ModernConfig = serde_json::from_str(&content).map_err(|e| format!("Failed to parse JSON config: {}", e))?;
+        let mut config: ModernConfig = serde_json::from_str(&content).map_err(|e| format!("Failed to parse JSON config: {}", e))?;
+
+        // Handle backward compatibility: if parameter exists but streams doesn't, copy it
+        for test in &mut config.test_sequence {
+            if test.streams.is_none() && test.parameter.is_some() {
+                test.streams = test.parameter;
+            }
+        }
 
         // Validate config version compatibility
         match config.config_format_version.as_str() {
@@ -164,7 +174,7 @@ impl ModernConfig {
         }
     }
 	
-     pub fn to_report(&self) -> String {
+    pub fn to_report(&self) -> String {
         let mut report = String::new();
         
         // Main configuration
@@ -221,6 +231,11 @@ impl ModernConfig {
                 (Some(c), None) => report.push_str(&format!("{}cycles", c)),
                 (None, Some(d)) => report.push_str(&format!("{}s", d)),
                 _ => report.push_str("default timing"),
+            }
+            
+            // Streams
+            if let Some(streams) = test.streams {
+                report.push_str(&format!(", {}streams", streams));
             }
             
             // Window override
@@ -346,7 +361,9 @@ impl ModernConfig {
             };
             
             let config = TestMemoryConfig::new(window_mode, block_mode, allow_misaligned, requires_locality)
-                .with_timing(timing);
+                .with_timing(timing)
+                .with_streams(test.streams.unwrap_or(1)) // Default to 1 stream (equivalent to TM5 jump=1)
+                .with_pattern_config(test.pattern_mode, test.pattern_param0, test.pattern_param1);
             
             (test.function.as_str(), config)
         }).collect()
@@ -440,6 +457,7 @@ impl ModernConfig {
                     block_window_fraction: Some(0.0625),   // 1/16th for efficiency
                     allow_misaligned: Some(false),
                     requires_locality: Some(false),
+                    streams: Some(1),                      // Single stream for stuck bit test
                     pattern_mode: None,
                     pattern_param0: None,
                     pattern_param1: None,
@@ -461,6 +479,7 @@ impl ModernConfig {
                     block_window_fraction: None,
                     allow_misaligned: Some(false),
                     requires_locality: Some(true),
+                    streams: Some(1),                      // Default single stream
                     pattern_mode: None,
                     pattern_param0: None,
                     pattern_param1: None,
@@ -481,6 +500,7 @@ impl ModernConfig {
                     block_window_fraction: None,
                     allow_misaligned: Some(false),
                     requires_locality: Some(true),
+                    streams: Some(2),                      // Dual stream for 256-bit
                     pattern_mode: None,
                     pattern_param0: None,
                     pattern_param1: None,
@@ -502,10 +522,11 @@ impl ModernConfig {
                     block_window_fraction: None,
                     allow_misaligned: Some(false),
                     requires_locality: Some(false),
+                    streams: Some(1),                      // Single stream by default
                     pattern_mode: Some(1),
                     pattern_param0: Some(0x1E5F),
                     pattern_param1: Some(0x45357354),
-                    parameter: Some(0),
+                    parameter: None,
                 },
                 
                 // Cache tests with locality
@@ -523,6 +544,7 @@ impl ModernConfig {
                     block_window_fraction: None,
                     allow_misaligned: Some(false),
                     requires_locality: Some(true),
+                    streams: Some(4),                      // 4 streams for cache stress
                     pattern_mode: None,
                     pattern_param0: None,
                     pattern_param1: None,
@@ -544,6 +566,7 @@ impl ModernConfig {
                     block_window_fraction: None,
                     allow_misaligned: Some(true),          // Maximum stress
                     requires_locality: Some(false),
+                    streams: Some(8),                      // 8 streams for maximum chaos
                     pattern_mode: None,
                     pattern_param0: None,
                     pattern_param1: None,
@@ -565,6 +588,7 @@ impl ModernConfig {
                     block_window_fraction: None,
                     allow_misaligned: Some(false),
                     requires_locality: Some(false),
+                    streams: Some(1),                      // Single stream for max bandwidth
                     pattern_mode: None,
                     pattern_param0: None,
                     pattern_param1: None,
@@ -627,6 +651,7 @@ impl ModernConfig {
                     block_window_fraction: None,
                     allow_misaligned: Some(false),
                     requires_locality: Some(false),
+                    streams: Some(1),                      // Single stream
                     pattern_mode: None,
                     pattern_param0: None,
                     pattern_param1: None,
@@ -646,10 +671,11 @@ impl ModernConfig {
                     block_window_fraction: None,
                     allow_misaligned: Some(false),
                     requires_locality: Some(false),
+                    streams: Some(1),                      // Single stream
                     pattern_mode: Some(1),
                     pattern_param0: Some(0x1E5F),
                     pattern_param1: Some(0x45357354),
-                    parameter: Some(0),
+                    parameter: None,
                 },
             ],
         }
@@ -748,7 +774,7 @@ impl LegacyConfig {
     }
 
     // Convert legacy config to modern config v2.0
-    pub fn to_modern_config(&self) -> ModernConfig {
+    pub fn to_modern_config(&self) -> Result<ModernConfig, String> {
         let global_time_multiplier = self.main_section.time_percent as f64 / 100.0;
         
         // Add critical stuck bit test first
@@ -767,6 +793,7 @@ impl LegacyConfig {
                 block_window_fraction: Some(0.0625),
                 allow_misaligned: Some(false),
                 requires_locality: Some(false),
+                streams: Some(1),                          // Single stream for stuck bit test
                 pattern_mode: None,
                 pattern_param0: None,
                 pattern_param1: None,
@@ -783,7 +810,7 @@ impl LegacyConfig {
                 
                 test_sequence.push(TestConfig {
                     enabled: true,
-                    function: Self::map_legacy_function(&test.function),
+                    function: Self::map_legacy_function(&test.function)?,
                     cycles: None,
                     duration_secs: Some(effective_duration),
                     min_duration_secs: None,
@@ -812,16 +839,19 @@ impl LegacyConfig {
                     allow_misaligned: Some(false), // Legacy configs assume aligned access
                     requires_locality: Some(matches!(test.function.as_str(), "RefreshStable")),
                     
+                    // Map parameter to streams (TM5 jump equivalent)
+                    streams: Some(Self::map_parameter_to_streams(&test.function, test.parameter)),
+                    
                     // Preserve legacy test parameters
                     pattern_mode: Some(test.pattern_mode),
                     pattern_param0: Some(test.pattern_param0),
                     pattern_param1: Some(test.pattern_param1),
-                    parameter: Some(test.parameter),
+                    parameter: Some(test.parameter), // Keep original for reference
                 });
             }
         }
 
-        ModernConfig {
+        Ok(ModernConfig {
             config_format_version: CONFIG_VERSION.to_string(),
             application_name: format!("{} ({})", APP_NAME, APP_SHORT_NAME),
             metadata: ConfigMetadata {
@@ -864,23 +894,52 @@ impl LegacyConfig {
                 large_pages: true,
             },
             test_sequence,
-        }
+        })
     }
 
     // Map legacy function names to modern equivalents
-    fn map_legacy_function(legacy_name: &str) -> String {
-        match legacy_name {
-            "RefreshStable" => "RefreshStable".to_string(),
-            "SimpleTest" => "SimpleTest".to_string(),
-            "MirrorMove" => "MirrorMove128NonTemporal".to_string(),
-            "MirrorMove128" => "MirrorMove128NonTemporal".to_string(),
-            "MirrorMove256" => "MirrorMove256NonTemporal".to_string(),
-            "MirrorMove512" => "MirrorMove512NonTemporal".to_string(),
-            "BlockMove" => "BandwidthSat".to_string(), // Map to bandwidth test
-            _ => {
-                log::warn!("Unknown legacy function '{}', mapping to SimpleTest", legacy_name);
-                "SimpleTest".to_string()
+
+fn map_legacy_function(legacy_name: &str) -> Result<String, String> {
+    match legacy_name {
+        "RefreshStable" => Ok("RefreshStable".to_string()),
+        "SimpleTest" => Ok("SimpleTest".to_string()),
+        "MirrorMove" => Ok("MirrorMove128NonTemporal".to_string()),
+        "MirrorMove128" => Ok("MirrorMove128NonTemporal".to_string()),
+        "MirrorMove256" => Ok("MirrorMove256NonTemporal".to_string()),
+        "MirrorMove512" => Ok("MirrorMove512NonTemporal".to_string()),
+        "BlockMove" => Ok("BlockMove".to_string()), // Now maps to actual BlockMove
+        _ => Err(format!("Unknown legacy test function: '{}'", legacy_name))
+    }
+}
+
+    // Map TM5 parameter values to modern streams concept
+    fn map_parameter_to_streams(function: &str, parameter: u32) -> u32 {
+        match function {
+            "MirrorMove" | "MirrorMove128" | "MirrorMove256" | "MirrorMove512" => {
+                // For MirrorMove tests, parameter directly maps to thread simulation count
+                match parameter {
+                    0 | 1 => 1,      // Single stream
+                    2 => 2,          // Dual stream
+                    3 => 3,          // Triple stream
+                    4 => 4,          // Quad stream
+                    254 => 2,        // Special dual stream pattern
+                    510 => 2,        // Special dual stream pattern
+                    16384 => 16,     // 16 streams
+                    _ => {
+                        // For other values, try to map sensibly
+                        if parameter > 100 {
+                            4 // Default to quad stream for large values
+                        } else {
+                            parameter.min(16) // Cap at 16 streams
+                        }
+                    }
+                }
             }
+            "SimpleTest" => {
+                // SimpleTest doesn't use parameter for streams, default to 1
+                1
+            }
+            _ => 1, // Default single stream
         }
     }
 }
@@ -897,12 +956,12 @@ pub fn load_config(path: &str) -> Result<ModernConfig, String> {
     } else if path.ends_with(".cfg") {
         // Legacy format (v1.0)
         let legacy = LegacyConfig::load_from_file(path)?;
-        Ok(legacy.to_modern_config())
+        legacy.to_modern_config()
     } else {
         // Try JSON first, then legacy
         ModernConfig::load_from_file(path).or_else(|_| {
             let legacy = LegacyConfig::load_from_file(path)?;
-            Ok(legacy.to_modern_config())
+            legacy.to_modern_config()
         })
     }
 }
@@ -918,19 +977,22 @@ pub fn create_demo_configs() -> Result<(), String> {
     tm5_config.save_to_file("demo_tm5_compatible.json")?;
 
     println!("✅ Created demo_comprehensive_test.json - Modern comprehensive memory testing");
-    println!("   Features: Full memory stuck bit test + timed stress tests");
+    println!("   Features: Full memory stuck bit test + timed stress tests with streams");
     println!("   Timing: 3 cycles, ~2-3 minutes per cycle with comprehensive coverage");
     println!("   Memory: Uses full allocation for critical tests, optimized windows for others");
+    println!("   Streams: Configurable access patterns (1-16 streams) for different test scenarios");
     println!();
     println!("✅ Created demo_tm5_compatible.json - TM5-compatible configuration");
     println!("   Features: TM5-style allocation with modern stuck bit test added");
     println!("   Timing: 3 cycles, faster execution for compatibility");
     println!("   Memory: Maximum allocation minus 128MB reserve, 880MB testing window");
+    println!("   Streams: Single stream mode for compatibility");
     println!();
     println!("Configuration Architecture Summary:");
     println!("  Stage 1: Memory Allocation - Maximum available memory per thread");
     println!("  Stage 2: Testing Window - Configurable window within allocation");
     println!("  Stage 3: Block/Chunk Size - Auto-optimized per test with alignment");
+    println!("  Access Patterns: 1-16 configurable streams (TM5 jump/parameter equivalent)");
     println!("  Timing: Per-test cycles/duration limits + global suite limits");
     println!("  Critical: StuckBitTest ensures full memory coverage for bit errors");
 
