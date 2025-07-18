@@ -40,6 +40,42 @@ pub struct SystemConfig {
     pub error_mode: String,
     pub timing: TimingConfig,
     pub large_pages: bool,
+	#[serde(default)]  // Add this for backward compatibility
+	pub cpu_pinning: CpuPinningConfig,  // Add this
+	#[serde(default)]  // Add this for backward compatibility
+    pub memory_allocation: MemoryAllocationConfig,  // Add this
+}
+
+// Define CpuPinningConfig in config.rs
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct CpuPinningConfig {
+    pub enable_pinning: bool,
+    pub balance_across_numa: bool,
+    pub prefer_physical_cores: bool,
+    pub avoid_cpu_0: bool,
+}
+
+// Define MemoryAllocationConfig
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct MemoryAllocationConfig {
+    // Add whatever fields you need
+}
+
+impl Default for MemoryAllocationConfig {
+    fn default() -> Self {
+        Self {}
+    }
+}
+
+impl Default for CpuPinningConfig {
+    fn default() -> Self {
+        Self {
+            enable_pinning: true,
+            balance_across_numa: true,
+            prefer_physical_cores: false,
+            avoid_cpu_0: true,
+        }
+    }
 }
 
 // Simplified memory strategy configuration
@@ -369,234 +405,355 @@ impl ModernConfig {
         }).collect()
     }
     
-    fn parse_test_window_mode(&self, test: &TestConfig) -> WindowMode {
-        if let Some(ref mode) = test.window_mode {
-            match mode.as_str() {
-                "full_allocation" => WindowMode::FullAllocation,
-                "fixed_size" => WindowMode::FixedSize { 
-                    size_mb: test.window_size_mb.unwrap_or(64) 
-                },
-                "cache_relative" => WindowMode::CacheRelative { 
-                    multiplier: test.window_cache_multiplier.unwrap_or(2.0) 
-                },
-                _ => self.to_memory_strategy().default_window_mode,
+fn parse_test_window_mode(&self, test: &TestConfig) -> WindowMode {
+    if let Some(ref mode) = test.window_mode {
+        match mode.as_str() {
+            "full_allocation" | "full-allocation" => WindowMode::FullAllocation,
+            "fixed_size" | "fixed-size" => WindowMode::FixedSize { 
+                size_mb: test.window_size_mb.unwrap_or(64) 
+            },
+            "cache_relative" | "cache-relative" => WindowMode::CacheRelative { 
+                multiplier: test.window_cache_multiplier.unwrap_or(2.0) 
+            },
+            "global_window" | "global-window" | "0" => {
+                // Use the global default window
+                self.to_memory_strategy().default_window_mode
             }
-        } else {
+            _ => {
+                log::warn!("Unknown window mode '{}', using default", mode);
+                self.to_memory_strategy().default_window_mode
+            }
+        }
+    } else if let Some(size_mb) = test.window_size_mb {
+        // Legacy behavior: if size is specified without mode
+        if size_mb == 0 {
+            // 0 means use global window
             self.to_memory_strategy().default_window_mode
-        }
-    }
-    
-    fn parse_test_block_mode(&self, test: &TestConfig) -> BlockMode {
-        if let Some(ref mode) = test.block_mode {
-            match mode.as_str() {
-                "auto_optimal" => BlockMode::AutoOptimal,
-                "fixed_size" => BlockMode::FixedSize { 
-                    size_mb: test.block_size_mb.unwrap_or(16) 
-                },
-                "window_fraction" => BlockMode::WindowFraction { 
-                    fraction: test.block_window_fraction.unwrap_or(0.125) 
-                },
-                _ => self.to_memory_strategy().default_block_mode,
-            }
         } else {
-            self.to_memory_strategy().default_block_mode
+            WindowMode::FixedSize { size_mb }
         }
+    } else {
+        self.to_memory_strategy().default_window_mode
     }
+}
+    
+fn parse_test_block_mode(&self, test: &TestConfig) -> BlockMode {
+    if let Some(ref mode) = test.block_mode {
+        match mode.as_str() {
+            "auto_optimal" | "auto-optimal" => BlockMode::AutoOptimal,
+            "fixed_size" | "fixed-size" => BlockMode::FixedSize { 
+                size_mb: test.block_size_mb.unwrap_or(16) 
+            },
+            "window_fraction" | "window-fraction" => BlockMode::WindowFraction { 
+                fraction: test.block_window_fraction.unwrap_or(0.125) 
+            },
+            "window_size" | "window-size" | "0" => {
+                // Use window size as block size (TM5 behavior for 0)
+                BlockMode::WindowFraction { fraction: 1.0 }
+            }
+            _ => {
+                log::warn!("Unknown block mode '{}', using default", mode);
+                self.to_memory_strategy().default_block_mode
+            }
+        }
+    } else if let Some(size_mb) = test.block_size_mb {
+        // Legacy behavior: if size is specified without mode
+        if size_mb == 0 {
+            // 0 means use window size (TM5 behavior)
+            BlockMode::WindowFraction { fraction: 1.0 }
+        } else {
+            BlockMode::FixedSize { size_mb }
+        }
+    } else {
+        self.to_memory_strategy().default_block_mode
+    }
+}
 
-    pub fn create_demo_config() -> Self {
-        ModernConfig {
-            config_format_version: CONFIG_VERSION.to_string(),
-            application_name: format!("{} ({})", APP_NAME, APP_SHORT_NAME),
-            metadata: ConfigMetadata {
-                name: "TMR Comprehensive Memory Test".to_string(),
-                author: "tmr_user".to_string(),
-                version: "1.0".to_string(),
-                description: Some("Comprehensive three-stage memory testing with timing controls and full memory coverage".to_string()),
-                created: Some("2025-06-29".to_string()),
-                tested_with_version: APP_VERSION.to_string(),
+pub fn create_demo_config() -> Self {
+    ModernConfig {
+        config_format_version: CONFIG_VERSION.to_string(),
+        application_name: format!("{} ({})", APP_NAME, APP_SHORT_NAME),
+        metadata: ConfigMetadata {
+            name: "TMR Quick Demo Test".to_string(),
+            author: "tmr_user".to_string(),
+            version: "1.0".to_string(),
+            description: Some("Quick 1-cycle demo showcasing each test with optimal configurations".to_string()),
+            created: Some("2025-01-03".to_string()),
+            tested_with_version: APP_VERSION.to_string(),
+        },
+        system: SystemConfig {
+            memory_strategy: MemoryStrategyConfig {
+                allocation_mode: "percentage_reserve".to_string(),
+                reserve_mb: None,
+                reserve_percent: Some(10.0),           // Reserve 10% for OS
+                reserve_gib: None,
+                default_window_mode: "full_allocation".to_string(),
+                default_window_size_mb: None,
+                window_cache_multiplier: None,
+                default_block_mode: "auto_optimal".to_string(),
+                default_block_size_mb: None,
+                block_window_fraction: None,
             },
-            system: SystemConfig {
-                memory_strategy: MemoryStrategyConfig {
-                    allocation_mode: "percentage_reserve".to_string(),
-                    reserve_mb: None,
-                    reserve_percent: Some(10.0),           // Reserve 10% for OS
-                    reserve_gib: None,
-                    default_window_mode: "full_allocation".to_string(),
-                    default_window_size_mb: None,
-                    window_cache_multiplier: None,
-                    default_block_mode: "auto_optimal".to_string(),
-                    default_block_size_mb: None,
-                    block_window_fraction: None,
-                },
-                cpu_config: CpuConfig {
-                    cpu_type: "cores".to_string(),
-                    usage_percent: 100,
-                },
-                error_mode: "log".to_string(),
-                timing: TimingConfig {
-                    global_cycles: Some(3),                // 3 complete test suite cycles
-                    global_duration_secs: None,            // No time limit
-                    default_test_cycles: None,             // Per-test timing below
-                    default_test_duration_secs: Some(10),  // Default 10s per test
-                },
-                large_pages: true,
+            cpu_config: CpuConfig {
+                cpu_type: "cores".to_string(),
+                usage_percent: 100,
             },
-            test_sequence: vec![
-                // Critical: Full memory stuck bit test
-                TestConfig {
-                    enabled: true,
-                    function: "StuckBitTest".to_string(),
-                    cycles: Some(1),                       // Run once per cycle (it's thorough)
-                    duration_secs: None,
-                    min_duration_secs: None,
-                    window_mode: Some("full_allocation".to_string()), // Test ALL memory
-                    window_size_mb: None,
-                    window_cache_multiplier: None,
-                    block_mode: Some("window_fraction".to_string()),
-                    block_size_mb: None,
-                    block_window_fraction: Some(0.0625),   // 1/16th for efficiency
-                    allow_misaligned: Some(false),
-                    requires_locality: Some(false),
-                    streams: Some(1),                      // Single stream for stuck bit test
-                    pattern_mode: None,
-                    pattern_param0: None,
-                    pattern_param1: None,
-                    parameter: None,
-                },
-                
-                // SIMD tests with locality
-                TestConfig {
-                    enabled: true,
-                    function: "MirrorMove128NonTemporal".to_string(),
-                    cycles: None,
-                    duration_secs: Some(15),               // 15 seconds of SIMD testing
-                    min_duration_secs: None,
-                    window_mode: Some("fixed_size".to_string()),
-                    window_size_mb: Some(64),              // 64MB window for locality
-                    window_cache_multiplier: None,
-                    block_mode: Some("fixed_size".to_string()),
-                    block_size_mb: Some(16),               // 16MB blocks for alignment
-                    block_window_fraction: None,
-                    allow_misaligned: Some(false),
-                    requires_locality: Some(true),
-                    streams: Some(1),                      // Default single stream
-                    pattern_mode: None,
-                    pattern_param0: None,
-                    pattern_param1: None,
-                    parameter: None,
-                },
-                
-                TestConfig {
-                    enabled: true,
-                    function: "MirrorMove256NonTemporal".to_string(),
-                    cycles: None,
-                    duration_secs: Some(15),
-                    min_duration_secs: None,
-                    window_mode: Some("fixed_size".to_string()),
-                    window_size_mb: Some(128),
-                    window_cache_multiplier: None,
-                    block_mode: Some("fixed_size".to_string()),
-                    block_size_mb: Some(32),
-                    block_window_fraction: None,
-                    allow_misaligned: Some(false),
-                    requires_locality: Some(true),
-                    streams: Some(2),                      // Dual stream for 256-bit
-                    pattern_mode: None,
-                    pattern_param0: None,
-                    pattern_param1: None,
-                    parameter: None,
-                },
-                
-                // Memory pattern tests on full allocation
-                TestConfig {
-                    enabled: true,
-                    function: "SimpleTest".to_string(),
-                    cycles: Some(100),                     // 100 cycles
-                    duration_secs: Some(30),               // Or 30 seconds max
-                    min_duration_secs: None,
-                    window_mode: Some("full_allocation".to_string()), // Test large portions
-                    window_size_mb: None,
-                    window_cache_multiplier: None,
-                    block_mode: Some("fixed_size".to_string()),
-                    block_size_mb: Some(4),
-                    block_window_fraction: None,
-                    allow_misaligned: Some(false),
-                    requires_locality: Some(false),
-                    streams: Some(1),                      // Single stream by default
-                    pattern_mode: Some(1),
-                    pattern_param0: Some(0x1E5F),
-                    pattern_param1: Some(0x45357354),
-                    parameter: None,
-                },
-                
-                // Cache tests with locality
-                TestConfig {
-                    enabled: true,
-                    function: "CacheBusting".to_string(),
-                    cycles: None,
-                    duration_secs: Some(20),               // 20 seconds of cache busting
-                    min_duration_secs: None,
-                    window_mode: Some("cache_relative".to_string()),
-                    window_size_mb: None,
-                    window_cache_multiplier: Some(0.5),    // Half cache size
-                    block_mode: Some("fixed_size".to_string()),
-                    block_size_mb: Some(1),
-                    block_window_fraction: None,
-                    allow_misaligned: Some(false),
-                    requires_locality: Some(true),
-                    streams: Some(4),                      // 4 streams for cache stress
-                    pattern_mode: None,
-                    pattern_param0: None,
-                    pattern_param1: None,
-                    parameter: None,
-                },
-                
-                // Stress tests on full allocation
-                TestConfig {
-                    enabled: true,
-                    function: "RandomTorture".to_string(),
-                    cycles: None,
-                    duration_secs: Some(25),               // 25 seconds of torture
-                    min_duration_secs: None,
-                    window_mode: Some("full_allocation".to_string()),
-                    window_size_mb: None,
-                    window_cache_multiplier: None,
-                    block_mode: Some("fixed_size".to_string()),
-                    block_size_mb: Some(8),
-                    block_window_fraction: None,
-                    allow_misaligned: Some(true),          // Maximum stress
-                    requires_locality: Some(false),
-                    streams: Some(8),                      // 8 streams for maximum chaos
-                    pattern_mode: None,
-                    pattern_param0: None,
-                    pattern_param1: None,
-                    parameter: None,
-                },
-                
-                // Bandwidth test on full allocation
-                TestConfig {
-                    enabled: true,
-                    function: "BandwidthSat".to_string(),
-                    cycles: None,
-                    duration_secs: Some(15),               // 15 seconds of bandwidth
-                    min_duration_secs: None,
-                    window_mode: Some("full_allocation".to_string()),
-                    window_size_mb: None,
-                    window_cache_multiplier: None,
-                    block_mode: Some("fixed_size".to_string()),
-                    block_size_mb: Some(32),               // Large blocks for bandwidth
-                    block_window_fraction: None,
-                    allow_misaligned: Some(false),
-                    requires_locality: Some(false),
-                    streams: Some(1),                      // Single stream for max bandwidth
-                    pattern_mode: None,
-                    pattern_param0: None,
-                    pattern_param1: None,
-                    parameter: None,
-                },
-            ],
-        }
+            error_mode: "log".to_string(),
+            timing: TimingConfig {
+                global_cycles: Some(1),                // Just 1 global cycle for demo
+                global_duration_secs: None,
+                default_test_cycles: Some(1),          // Default 1 cycle per test
+                default_test_duration_secs: None,
+            },
+            large_pages: true,
+			cpu_pinning: CpuPinningConfig::default(),  // Add this
+			memory_allocation: MemoryAllocationConfig::default(),  // Add this
+        },
+        test_sequence: vec![
+            // Critical: Full memory stuck bit test
+            TestConfig {
+                enabled: true,
+                function: "StuckBitTest".to_string(),
+                cycles: Some(1),                       // 1 cycle is thorough enough
+                duration_secs: None,
+                min_duration_secs: None,
+                window_mode: Some("full-allocation".to_string()), // Must test ALL memory
+                window_size_mb: None,
+                window_cache_multiplier: None,
+                block_mode: Some("window-fraction".to_string()),
+                block_size_mb: None,
+                block_window_fraction: Some(0.0625),   // 1/16th for efficiency
+                allow_misaligned: Some(false),
+                requires_locality: Some(false),
+                streams: Some(1),
+                pattern_mode: None,
+                pattern_param0: None,
+                pattern_param1: None,
+                parameter: None,
+            },
+            
+            // RefreshStable - needs small window for refresh timing
+            TestConfig {
+                enabled: true,
+                function: "RefreshStable".to_string(),
+                cycles: Some(1),
+                duration_secs: None,
+                min_duration_secs: None,
+                window_mode: Some("cache-relative".to_string()),
+                window_size_mb: None,
+                window_cache_multiplier: Some(2.0),    // 2x cache for refresh testing
+                block_mode: Some("fixed-size".to_string()),
+                block_size_mb: Some(1),                // Small 1MB blocks
+                block_window_fraction: None,
+                allow_misaligned: Some(false),
+                requires_locality: Some(true),
+                streams: Some(1),
+                pattern_mode: None,
+                pattern_param0: None,
+                pattern_param1: None,
+                parameter: None,
+            },
+            
+            // SimpleTest - general pattern test with TM5 compatibility
+            TestConfig {
+                enabled: true,
+                function: "SimpleTest".to_string(),
+                cycles: Some(1),
+                duration_secs: None,
+                min_duration_secs: None,
+                window_mode: Some("fixed-size".to_string()),
+                window_size_mb: Some(880),             // TM5 default window
+                window_cache_multiplier: None,
+                block_mode: Some("fixed-size".to_string()),
+                block_size_mb: Some(16),               // TM5 typical block size
+                block_window_fraction: None,
+                allow_misaligned: Some(false),
+                requires_locality: Some(false),
+                streams: Some(1),
+                pattern_mode: Some(1),
+                pattern_param0: Some(0x1E5F),
+                pattern_param1: Some(0x45357354),
+                parameter: None,
+            },
+            
+            // MirrorMove128 - SIMD test with optimal locality
+            TestConfig {
+                enabled: true,
+                function: "MirrorMove128NonTemporal".to_string(),
+                cycles: Some(1),
+                duration_secs: None,
+                min_duration_secs: None,
+                window_mode: Some("fixed-size".to_string()),
+                window_size_mb: Some(64),              // Good SIMD locality
+                window_cache_multiplier: None,
+                block_mode: Some("fixed-size".to_string()),
+                block_size_mb: Some(16),               // 16MB for 128-bit alignment
+                block_window_fraction: None,
+                allow_misaligned: Some(false),
+                requires_locality: Some(true),
+                streams: Some(1),
+                pattern_mode: None,
+                pattern_param0: None,
+                pattern_param1: None,
+                parameter: None,
+            },
+            
+            // MirrorMove256 - AVX2 with dual streams
+            TestConfig {
+                enabled: true,
+                function: "MirrorMove256NonTemporal".to_string(),
+                cycles: Some(1),
+                duration_secs: None,
+                min_duration_secs: None,
+                window_mode: Some("fixed-size".to_string()),
+                window_size_mb: Some(128),             // Larger for AVX2
+                window_cache_multiplier: None,
+                block_mode: Some("fixed-size".to_string()),
+                block_size_mb: Some(32),               // 32MB for 256-bit alignment
+                block_window_fraction: None,
+                allow_misaligned: Some(false),
+                requires_locality: Some(true),
+                streams: Some(2),                      // Dual stream for AVX2
+                pattern_mode: None,
+                pattern_param0: None,
+                pattern_param1: None,
+                parameter: None,
+            },
+            
+            // CacheBusting - specifically sized for cache stress
+            TestConfig {
+                enabled: true,
+                function: "CacheBusting".to_string(),
+                cycles: Some(1),
+                duration_secs: None,
+                min_duration_secs: None,
+                window_mode: Some("cache-relative".to_string()),
+                window_size_mb: None,
+                window_cache_multiplier: Some(0.5),    // Half cache to ensure busting
+                block_mode: Some("fixed-size".to_string()),
+                block_size_mb: Some(1),                // 1MB blocks for cache lines
+                block_window_fraction: None,
+                allow_misaligned: Some(false),
+                requires_locality: Some(true),
+                streams: Some(4),                      // 4 streams for cache stress
+                pattern_mode: None,
+                pattern_param0: None,
+                pattern_param1: None,
+                parameter: None,
+            },
+            
+            // RandomTorture - full memory random access
+            TestConfig {
+                enabled: true,
+                function: "RandomTorture".to_string(),
+                cycles: Some(1),
+                duration_secs: None,
+                min_duration_secs: None,
+                window_mode: Some("full-allocation".to_string()), // Need full memory
+                window_size_mb: None,
+                window_cache_multiplier: None,
+                block_mode: Some("fixed-size".to_string()),
+                block_size_mb: Some(8),                // 8MB blocks
+                block_window_fraction: None,
+                allow_misaligned: Some(true),          // Maximum stress
+                requires_locality: Some(false),
+                streams: Some(8),                      // 8 streams for chaos
+                pattern_mode: None,
+                pattern_param0: None,
+                pattern_param1: None,
+                parameter: None,
+            },
+            
+            // StrideAccess - test various stride patterns
+            TestConfig {
+                enabled: true,
+                function: "StrideAccess".to_string(),
+                cycles: Some(1),
+                duration_secs: None,
+                min_duration_secs: None,
+                window_mode: Some("full-allocation".to_string()),
+                window_size_mb: None,
+                window_cache_multiplier: None,
+                block_mode: Some("auto-optimal".to_string()), // Let TMR optimize
+                block_size_mb: None,
+                block_window_fraction: None,
+                allow_misaligned: Some(false),
+                requires_locality: Some(false),
+                streams: Some(4),                      // 4 streams for patterns
+                pattern_mode: None,
+                pattern_param0: None,
+                pattern_param1: None,
+                parameter: None,
+            },
+            
+            // BandwidthSat - maximum bandwidth test
+            TestConfig {
+                enabled: true,
+                function: "BandwidthSat".to_string(),
+                cycles: Some(1),
+                duration_secs: None,
+                min_duration_secs: None,
+                window_mode: Some("full-allocation".to_string()), // Max bandwidth
+                window_size_mb: None,
+                window_cache_multiplier: None,
+                block_mode: Some("fixed-size".to_string()),
+                block_size_mb: Some(32),               // Large blocks for bandwidth
+                block_window_fraction: None,
+                allow_misaligned: Some(false),
+                requires_locality: Some(false),
+                streams: Some(1),                      // Single stream for max bandwidth
+                pattern_mode: None,
+                pattern_param0: None,
+                pattern_param1: None,
+                parameter: None,
+            },
+            
+            // BlockMove - memory copy test
+            TestConfig {
+                enabled: true,
+                function: "BlockMove".to_string(),
+                cycles: Some(1),
+                duration_secs: None,
+                min_duration_secs: None,
+                window_mode: Some("full-allocation".to_string()), // Need src+dst space
+                window_size_mb: None,
+                window_cache_multiplier: None,
+                block_mode: Some("fixed-size".to_string()),
+                block_size_mb: Some(16),               // 16MB blocks
+                block_window_fraction: None,
+                allow_misaligned: Some(false),
+                requires_locality: Some(false),
+                streams: Some(2),                      // Dual stream copy pattern
+                pattern_mode: None,
+                pattern_param0: None,
+                pattern_param1: None,
+                parameter: None,
+            },
+            
+            // Legacy TM5-style test showing "window-size" block mode
+            TestConfig {
+                enabled: true,
+                function: "SimpleTest".to_string(),
+                cycles: Some(1),
+                duration_secs: None,
+                min_duration_secs: None,
+                window_mode: Some("global-window".to_string()), // Use global default
+                window_size_mb: None,
+                window_cache_multiplier: None,
+                block_mode: Some("window-size".to_string()),    // Block = window (TM5 0)
+                block_size_mb: None,
+                block_window_fraction: None,
+                allow_misaligned: Some(false),
+                requires_locality: Some(false),
+                streams: Some(1),
+                pattern_mode: Some(0),
+                pattern_param0: Some(0),
+                pattern_param1: Some(0),
+                parameter: None,
+            },
+        ],
     }
+}
     
     pub fn create_tm5_compatible_config() -> Self {
         ModernConfig {
@@ -635,6 +792,8 @@ impl ModernConfig {
                     default_test_duration_secs: None,
                 },
                 large_pages: true,
+				cpu_pinning: CpuPinningConfig::default(),  // Add this
+				memory_allocation: MemoryAllocationConfig::default(),  // Add this
             },
             test_sequence: vec![
                 TestConfig {
@@ -774,128 +933,106 @@ impl LegacyConfig {
     }
 
     // Convert legacy config to modern config v2.0
-    pub fn to_modern_config(&self) -> Result<ModernConfig, String> {
-        let global_time_multiplier = self.main_section.time_percent as f64 / 100.0;
-        
-        // Add critical stuck bit test first
-        let mut test_sequence = vec![
-            TestConfig {
+ pub fn to_modern_config(&self) -> Result<ModernConfig, String> {
+    let global_time_multiplier = self.main_section.time_percent as f64 / 100.0;
+    
+    // Start with empty test sequence - only add what's in the config
+    let mut test_sequence = Vec::new();
+    
+    // Add legacy tests WITHOUT auto-inserting StuckBitTest
+    for test in &self.tests {
+        if test.enabled {
+            // Calculate effective cycles based on Time(%)
+            // TM5: Time(%)=100 = 1 cycle, Time(%)=200 = 2 cycles, etc.
+            let base_cycles = test.time_percent as f64 / 100.0;
+            let effective_cycles = ((base_cycles * global_time_multiplier).ceil() as u32).max(1);
+            
+            test_sequence.push(TestConfig {
                 enabled: true,
-                function: "StuckBitTest".to_string(),
-                cycles: Some(1),
-                duration_secs: None,
+                function: Self::map_legacy_function(&test.function)?,
+                
+                // Use cycles for TM5 Time(%) compatibility
+                cycles: Some(effective_cycles),
+                duration_secs: None,  // Don't use duration-based timing
                 min_duration_secs: None,
-                window_mode: Some("full_allocation".to_string()),
+                
+                // Handle TM5 window behavior - no overrides for legacy
+                window_mode: None,  // Use global default
                 window_size_mb: None,
                 window_cache_multiplier: None,
-                block_mode: Some("window_fraction".to_string()),
-                block_size_mb: None,
-                block_window_fraction: Some(0.0625),
-                allow_misaligned: Some(false),
-                requires_locality: Some(false),
-                streams: Some(1),                          // Single stream for stuck bit test
-                pattern_mode: None,
-                pattern_param0: None,
-                pattern_param1: None,
-                parameter: None,
-            }
-        ];
-        
-        // Add legacy tests
-        for test in &self.tests {
-            if test.enabled {
-                // Calculate effective time based on both global and test-specific multipliers
-                let base_duration = (test.time_percent as f64 * global_time_multiplier / 10.0) as u32;
-                let effective_duration = base_duration.max(1).min(300); // 1-300 seconds
                 
-                test_sequence.push(TestConfig {
-                    enabled: true,
-                    function: Self::map_legacy_function(&test.function)?,
-                    cycles: None,
-                    duration_secs: Some(effective_duration),
-                    min_duration_secs: None,
-                    
-                    // Map legacy window to modern equivalent
-                    window_mode: if test.test_block_size_mb > 0 {
-                        Some("fixed_size".to_string()) // Use TM5 window
-                    } else {
-                        Some("full_allocation".to_string()) // Test more memory
-                    },
-                    window_size_mb: None, // Use global setting
-                    window_cache_multiplier: None,
-                    
-                    // Map legacy block size to modern equivalent  
-                    block_mode: if test.test_block_size_mb > 0 {
-                        Some("fixed_size".to_string())
-                    } else {
-                        None // Use default auto-optimal
-                    },
-                    block_size_mb: if test.test_block_size_mb > 0 {
-                        Some(test.test_block_size_mb)
-                    } else {
-                        None
-                    },
-                    block_window_fraction: None,
-                    allow_misaligned: Some(false), // Legacy configs assume aligned access
-                    requires_locality: Some(matches!(test.function.as_str(), "RefreshStable")),
-                    
-                    // Map parameter to streams (TM5 jump equivalent)
-                    streams: Some(Self::map_parameter_to_streams(&test.function, test.parameter)),
-                    
-                    // Preserve legacy test parameters
-                    pattern_mode: Some(test.pattern_mode),
-                    pattern_param0: Some(test.pattern_param0),
-                    pattern_param1: Some(test.pattern_param1),
-                    parameter: Some(test.parameter), // Keep original for reference
-                });
-            }
+                // Handle TM5 block size with new special values
+                block_mode: if test.test_block_size_mb == 0 {
+                    Some("window-size".to_string())  // 0 = use window size
+                } else {
+                    Some("fixed_size".to_string())
+                },
+                block_size_mb: if test.test_block_size_mb == 0 {
+                    None  // "window-size" mode doesn't need a value
+                } else {
+                    Some(test.test_block_size_mb)
+                },
+                block_window_fraction: None,
+                
+                allow_misaligned: Some(false), // Legacy configs assume aligned access
+                requires_locality: Some(matches!(test.function.as_str(), "RefreshStable")),
+                
+                // Map parameter to streams
+                streams: Some(Self::map_parameter_to_streams(&test.function, test.parameter)),
+                
+                // Preserve legacy test parameters
+                pattern_mode: Some(test.pattern_mode),
+                pattern_param0: Some(test.pattern_param0),
+                pattern_param1: Some(test.pattern_param1),
+                parameter: Some(test.parameter),
+            });
         }
-
-        Ok(ModernConfig {
-            config_format_version: CONFIG_VERSION.to_string(),
-            application_name: format!("{} ({})", APP_NAME, APP_SHORT_NAME),
-            metadata: ConfigMetadata {
-                name: format!("{} (Legacy Converted)", self.main_section.config_name),
-                author: self.main_section.config_author.clone(),
-                version: "1.0".to_string(),
-                description: Some("Converted from legacy TestMem5 config with comprehensive memory testing including stuck bit test".to_string()),
-                created: None,
-                tested_with_version: APP_VERSION.to_string(),
-            },
-            system: SystemConfig {
-                memory_strategy: MemoryStrategyConfig {
-                    // TM5-compatible Stage 1 allocation
-                    allocation_mode: "max_available".to_string(),
-                    reserve_mb: Some(self.memory_setup.reserved_memory_mb),
-                    reserve_percent: None,
-                    reserve_gib: None,
-                    
-                    // TM5-compatible Stage 2 window
-                    default_window_mode: "fixed_size".to_string(),
-                    default_window_size_mb: Some(self.memory_setup.testing_window_size_mb),
-                    window_cache_multiplier: None,
-                    
-                    // Modern Stage 3 block sizing
-                    default_block_mode: "auto_optimal".to_string(),
-                    default_block_size_mb: None,
-                    block_window_fraction: None,
-                },
-                cpu_config: CpuConfig {
-                    cpu_type: if self.main_section.cores > 0 { "cores" } else { "threads" }.to_string(),
-                    usage_percent: 100,
-                },
-                error_mode: "log".to_string(),
-                timing: TimingConfig {
-                    global_cycles: Some(self.main_section.cycles),
-                    global_duration_secs: None,
-                    default_test_cycles: None,
-                    default_test_duration_secs: Some(10), // Default 10s per test
-                },
-                large_pages: true,
-            },
-            test_sequence,
-        })
     }
+
+    Ok(ModernConfig {
+        config_format_version: CONFIG_VERSION.to_string(),
+        application_name: format!("{} ({})", APP_NAME, APP_SHORT_NAME),
+        metadata: ConfigMetadata {
+            name: format!("{} (Legacy Converted)", self.main_section.config_name),
+            author: self.main_section.config_author.clone(),
+            version: "1.0".to_string(),
+            description: Some("Converted from legacy TestMem5 config".to_string()),
+            created: None,
+            tested_with_version: APP_VERSION.to_string(),
+        },
+        system: SystemConfig {
+            memory_strategy: MemoryStrategyConfig {
+                allocation_mode: "max_available".to_string(),
+                reserve_mb: Some(self.memory_setup.reserved_memory_mb),
+                reserve_percent: None,
+                reserve_gib: None,
+                
+                default_window_mode: "fixed_size".to_string(),
+                default_window_size_mb: Some(self.memory_setup.testing_window_size_mb),
+                window_cache_multiplier: None,
+                
+                default_block_mode: "auto_optimal".to_string(),
+                default_block_size_mb: None,
+                block_window_fraction: None,
+            },
+            cpu_config: CpuConfig {
+                cpu_type: if self.main_section.cores > 0 { "cores" } else { "threads" }.to_string(),
+                usage_percent: 100,
+            },
+            error_mode: "log".to_string(),
+            timing: TimingConfig {
+                global_cycles: Some(self.main_section.cycles),
+                global_duration_secs: None,  // TM5 doesn't use duration
+                default_test_cycles: None,   // Each test has its own from Time(%)
+                default_test_duration_secs: None,
+            },
+            large_pages: true,
+			cpu_pinning: CpuPinningConfig::default(),  // Add this
+			memory_allocation: MemoryAllocationConfig::default(),  // Add this
+        },
+        test_sequence,
+    })
+}
 
     // Map legacy function names to modern equivalents
 

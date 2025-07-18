@@ -37,7 +37,7 @@ pub enum BlockMode {
 impl Default for MemoryStrategy {
     fn default() -> Self {
         Self {
-            allocation_mode: AllocationMode::PercentageReserve { reserve_percent: 15.0 },
+            allocation_mode: AllocationMode::PercentageReserve { reserve_percent: 70.0 },
             default_window_mode: WindowMode::FullAllocation,
             default_block_mode: BlockMode::AutoOptimal,
         }
@@ -114,27 +114,30 @@ impl MemoryLayout {
         }
     }
 
-    pub fn print_layout(&self) {
-        log::info!("Memory Layout (Three-Stage Architecture):");
-        log::info!(
-            "  Total System Memory: {:.2} GiB",
-            self.total_memory as f64 / (1024.0 * 1024.0 * 1024.0)
-        );
-        log::info!(
-            "  Stage 1 - Total Allocated: {:.2} GiB ({:.1}% of system)",
-            self.allocated_memory as f64 / (1024.0 * 1024.0 * 1024.0),
-            (self.allocated_memory as f64 / self.total_memory as f64) * 100.0
-        );
-        log::info!(
-            "  Reserved for OS: {:.2} GiB",
-            self.reserved_memory as f64 / (1024.0 * 1024.0 * 1024.0)
-        );
-        log::info!("  Strategy: {:?}", self.strategy);
-        log::info!("  Threads: {}", self.blocks.len());
+	pub fn print_layout(&self) {
+		log::info!("Memory Layout (Three-Stage Architecture):");
+		log::info!(
+			"  Total System Memory: {:.2} GiB",
+			self.total_memory as f64 / (1024.0 * 1024.0 * 1024.0)
+		);
+		log::info!(
+			"  Stage 1 - Total planned allocation: {:.2} GiB ({:.1}% of system)",
+			self.allocated_memory as f64 / (1024.0 * 1024.0 * 1024.0),
+			(self.allocated_memory as f64 / self.total_memory as f64) * 100.0
+		);
+		log::info!(
+			"  Reserved for OS: {:.2} GiB",
+			self.reserved_memory as f64 / (1024.0 * 1024.0 * 1024.0)
+		);
+		log::info!("  Strategy: {:?}", self.strategy);
+		log::info!("  Threads: {}", self.blocks.len());
+		
+		// Add header to clarify this is planned allocation
+		log::info!("  Planned allocation per thread:");
 
-        for block in &self.blocks {
-            let size_gib = block.size_bytes as f64 / (1024.0 * 1024.0 * 1024.0);
-            log::info!("  Thread {}: {:.2} GiB allocated", block.thread_id, size_gib);
-        }
-    }
+		for block in &self.blocks {
+			let size_gib = block.size_bytes as f64 / (1024.0 * 1024.0 * 1024.0);
+			log::info!("    Thread {}: {:.2} GiB (planned)", block.thread_id, size_gib);
+		}
+	}
 }

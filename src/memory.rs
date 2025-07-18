@@ -1,12 +1,14 @@
 use std::ffi::c_void;
 use std::ptr::null_mut;
-use windows::Win32::Foundation::{HANDLE, LUID};
+use windows::Win32::Foundation::{HANDLE, LUID, GetLastError, WIN32_ERROR};
 use windows::Win32::Security::{
     AdjustTokenPrivileges, LookupPrivilegeValueW, LUID_AND_ATTRIBUTES, SE_PRIVILEGE_ENABLED, TOKEN_ADJUST_PRIVILEGES, TOKEN_QUERY,
 };
 use windows::Win32::System::Memory::{VirtualAlloc, VirtualFree, MEM_COMMIT, MEM_LARGE_PAGES, MEM_RELEASE, MEM_RESERVE, PAGE_READWRITE};
 use windows::Win32::System::SystemInformation::GetPhysicallyInstalledSystemMemory;
 use windows::Win32::System::Threading::{GetCurrentProcess, OpenProcessToken};
+use windows::Win32::System::Diagnostics::Debug::{FormatMessageW, FORMAT_MESSAGE_FROM_SYSTEM};
+use windows::core::PWSTR;
 
 pub struct TestBuffer {
     ptr: *mut u8,
@@ -14,10 +16,31 @@ pub struct TestBuffer {
     uses_large_pages: bool,
 }
 
+fn format_win32_error(err: WIN32_ERROR) -> String {
+    let mut buffer = [0u16; 512];
+    let len = unsafe {
+        FormatMessageW(
+            FORMAT_MESSAGE_FROM_SYSTEM,
+            None,
+            err.0,
+            0,
+            PWSTR(buffer.as_mut_ptr()),
+            buffer.len() as u32,
+            None,
+        )
+    };
+    if len == 0 {
+        format!("Unknown error {}", err.0)
+    } else {
+        String::from_utf16_lossy(&buffer[..len as usize]).trim().to_string()
+    }
+}
+
 impl TestBuffer {
     pub fn new_large_pages(size_bytes: usize) -> Option<Self> {
         // Try to enable large page privilege
         if enable_large_page_privilege().is_err() {
+			log::info!("Large page error - missing priv");
             return None;
         }
 
@@ -34,9 +57,15 @@ impl TestBuffer {
             )
         };
 
-        if ptr.is_null() {
-            None
-        } else {
+		if ptr.is_null() {
+			let err = unsafe { GetLastError() };
+			log::info!(
+				"VirtualAlloc failed: code = {}, message = {}",
+				err.0,
+				format_win32_error(err)
+			);
+			None
+		} else {
             Some(Self {
                 ptr: ptr as *mut u8,
                 size: aligned_size,

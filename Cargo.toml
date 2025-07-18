@@ -7,21 +7,27 @@ authors = ["Your Name <your.email@example.com>"]
 
 [dependencies]
 windows = { version = "0.61", features = [
-    "Win32_System_Memory", 
+    "Win32_System_Memory",
+	"Win32_System_Kernel",
     "Win32_Foundation", 
+	"Win32_System_Diagnostics_Debug",
     "Win32_System_SystemInformation",
     "Win32_System_Threading",
-    "Win32_Security"
+    "Win32_Security",
+    "Win32_Storage_FileSystem",    # Add this for CreateFileA, FILE_SHARE_*, etc.
+    "Win32_System_IO",              # Add this for DeviceIoControl
+	"Win32_System_ProcessStatus",    # Add for GetNumaHighestNodeNumber
+	"Win32_System_WindowsProgramming", # Sometimes needed for NUMA
+	"Win32_System_SystemServices",
 ] }
 num_cpus = "1.17"
 log = "0.4"
 env_logger = "0.11"
 serde = { version = "1.0", features = ["derive"] }
 serde_json = "1.0"
-cache-size = "0.7"
-raw-cpuid = "11.5"
-ctrlc = "3.4"         # For CTRL+C signal handling
 chrono = { version = "0.4", features = ["serde"] }  # For timestamp handling
+ctrlc = "3.4"         # For CTRL+C signal handling
+raw-cpuid = "11.5"
 
 [profile.release]
 opt-level = 3

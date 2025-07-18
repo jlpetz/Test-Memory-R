@@ -1,8 +1,10 @@
 use std::env;
-use tmr::{create_demo_configs, load_config, ErrorMode, MemoryStrategy, AllocationMode, WindowMode, BlockMode};
+use tmr::{create_demo_configs, load_config, ErrorMode, MemoryStrategy, AllocationMode, WindowMode, BlockMode, MemoryBackend, RuntimeConfig};
 use tmr::layout::MemoryLayout;
-use tmr::runner::{run_tests_with_layout_and_timing, TestSuiteTiming};
+use tmr::runner::{run_tests_with_layout_and_timing, TestSuiteTiming, get_numa_node_for_cpu};
 use tmr::results::compare_results_command;
+use tmr::{dma_memory::{DmaBuffer, DriverHandle, CompatibilityFlags}, reset_driver, display_driver_info, check_and_display_driver_status, DriverStatus, refresh_driver_status, is_driver_connected, display_driver_stats};
+use tmr::config::{MemoryAllocationConfig, CpuPinningConfig};
 use log::LevelFilter;
 use env_logger::Builder;
 use std::io::Write;
@@ -11,7 +13,7 @@ use std::sync::{Arc, Mutex};
 // Global file logger for dual console+file logging
 static FILE_LOGGER: std::sync::OnceLock<Arc<Mutex<Option<std::fs::File>>>> = std::sync::OnceLock::new();
 
-fn main() {
+fn main() -> Result<(), Box<dyn std::error::Error>> {
     // Initialize enhanced logging with file output
     setup_logging();
 
@@ -26,14 +28,14 @@ fn main() {
             "--create-demo-configs" => {
                 if let Err(e) = create_demo_configs() {
                     println!("❌ Failed to create demo configs: {}", e);
-                    return;
+                    return Ok(());
                 }
-                return;
+                return Ok(());
             }
             "--compare-results" => {
                 if args.len() < 4 {
                     println!("❌ Usage: {} --compare-results <baseline.json> <current.json> [output.json]", args[0]);
-                    return;
+                    return Ok(());
                 }
                 let baseline = &args[2];
                 let current = &args[3];
@@ -43,17 +45,17 @@ fn main() {
                     Ok(()) => println!("✅ Comparison completed successfully"),
                     Err(e) => println!("❌ Comparison failed: {}", e),
                 }
-                return;
+                return Ok(());
             }
             "--help" | "-h" => {
                 print_help(&args[0]);
-                return;
+                return Ok(());
             }
             "--version" | "-v" => {
                 println!("Test Memory R (TMR) version 1.0.0");
                 println!("High-Performance Memory Testing Tool with TM5 Compatibility");
                 println!("Three-Stage Memory Architecture with Comprehensive Testing");
-                return;
+                return Ok(());
             }
             _ => {}
         }
@@ -62,32 +64,30 @@ fn main() {
     // Check for config file parameter
     let config_file = args.iter().find(|arg| arg.starts_with("config=")).map(|arg| &arg[7..]);
 
-    let (memory_strategy, error_mode, suite_timing, cputype, cpus, config_loaded) = if let Some(config_path) = config_file {
-        match load_config(config_path) {
-            Ok(config) => {
-                println!("✅ Loaded configuration from: {}", config_path);
-                
-                // Print the config report
-                println!("\n{}", config.to_report());
-                
-                let memory_strategy = config.to_memory_strategy();
-                let error_mode = config.to_error_mode();
-                let suite_timing = config.to_test_suite_timing();
-                let cputype = config.system.cpu_config.cpu_type.clone();
-                let cpus = format!("{}%", config.system.cpu_config.usage_percent);
-
-                (memory_strategy, error_mode, suite_timing, cputype, cpus, true)
-            }
-            Err(e) => {
-                println!("❌ Failed to load config file '{}': {}", config_path, e);
-                println!("   Stopping execution. Please provide a valid config file or run without config parameter.");
-                std::process::exit(1);
-            }
-        }
-    } else {
-        let parsed = parse_command_line_params(&args);
-        (parsed.0, parsed.1, parsed.2, parsed.3, parsed.4, false)
-    };
+	let (memory_strategy, error_mode, suite_timing, cputype, cpus, pinning_config, alloc_config) = 
+		if let Some(config_path) = config_file {
+			let config = load_config(config_path)?;
+			(
+				config.to_memory_strategy(),
+				config.to_error_mode(),
+				config.to_test_suite_timing(),
+				config.system.cpu_config.cpu_type.clone(),
+				format!("{}%", config.system.cpu_config.usage_percent),
+				config.system.cpu_pinning.clone(),
+				config.system.memory_allocation.clone(),
+			)
+		} else {
+			// Command line defaults
+			(
+				MemoryStrategy::default(),
+				ErrorMode::Log,
+				TestSuiteTiming::default(),
+				"threads".to_string(),
+				"100%".to_string(),
+				CpuPinningConfig::default(),
+				MemoryAllocationConfig::default(),
+			)
+		};
 
     // Calculate CPU/thread count
     let total_cpus = match cputype.as_str() {
@@ -142,7 +142,7 @@ fn main() {
             default_params.push("cpus=100% (default)".to_string());
         }
         if !args.iter().any(|a| a.starts_with("memory=")) {
-            default_params.push("memory=15% reserve (default)".to_string());
+            default_params.push("memory=20% reserve (default)".to_string());
         }
         if !args.iter().any(|a| a.starts_with("errors=")) {
             default_params.push("errors=log (default)".to_string());
@@ -158,11 +158,45 @@ fn main() {
     if !default_params.is_empty() {
         println!("  Default Parameters: {}", default_params.join(", "));
     }
+	print!("  Error Mode: ");
+    match error_mode {
+        ErrorMode::Log => println!("Log and continue"),
+        ErrorMode::Halt => println!("Halt on first error"),
+        ErrorMode::Panic => println!("Panic on error (debug mode)"),
+    }
     println!();
+	
+	// Check large page privilege early
+    match tmr::check_large_page_privilege() {
+        Ok(()) => println!("  Large Pages: ✅ Available (SeLockMemoryPrivilege enabled)"),
+        Err(msg) => {
+            println!("  Large Pages: ⚠️  Not available - {}", msg);
+            println!("    To enable: Run as Administrator OR enable 'Lock pages in memory' in Group Policy");
+            println!("    Impact: Will use standard 4KB pages instead of 2MB pages");
+        }
+    }
+	let use_driver_chunking = args.iter().any(|arg| arg == "--driver-chunking");
+	if use_driver_chunking {
+		println!("  Use Driver Chunking: ❌ Enabled (for driver testing, driver controls page allocation strategy)");
+	} else {
+		println!("  Use Driver Chunking: ✅ Disabled (default/good, application controls page allocation strategy)");
+	}
 
+	// Check and display DMA driver status
+	display_driver_info();
+	// Reset allocations if driver is available
+	if matches!(check_and_display_driver_status(), DriverStatus::Available(_)) {
+		reset_driver();
+	}
+	println!();
+	
     println!("System information and Memory Architecture detection:");
     println!("  CPU Type: {}", cputype);
     println!("  Using {}/{} {} for testing", threads, total_cpus, cputype);
+	// Detect SIMD capabilities
+    let simd_caps = tmr::detect_simd_capabilities();
+    println!("  SIMD Support: {}", simd_caps);
+    println!();
     
     // Display memory strategy information
     print!("  Memory Strategy: ");
@@ -205,13 +239,6 @@ fn main() {
         }
     }
     
-    print!("  Error Mode: ");
-    match error_mode {
-        ErrorMode::Log => println!("Log and continue"),
-        ErrorMode::Halt => println!("Halt on first error"),
-        ErrorMode::Panic => println!("Panic on error (debug mode)"),
-    }
-    
     // Display timing configuration
     print!("  Test Suite Timing: ");
     match (&suite_timing.global_cycles, &suite_timing.global_duration_secs) {
@@ -220,22 +247,6 @@ fn main() {
         (None, Some(duration)) => println!("{}s duration (unlimited cycles)", duration),
         (None, None) => println!("Unlimited cycles and duration"),
     }
-
-    // Check large page privilege early
-    match tmr::check_large_page_privilege() {
-        Ok(()) => println!("  Large Pages: ✅ Available (SeLockMemoryPrivilege enabled)"),
-        Err(msg) => {
-            println!("  Large Pages: ⚠️  Not available - {}", msg);
-            println!("    To enable: Run as Administrator OR enable 'Lock pages in memory' in Group Policy");
-            println!("    Impact: Will use standard 4KB pages instead of 2MB pages");
-        }
-    }
-
-    // Detect SIMD capabilities
-    let simd_caps = tmr::detect_simd_capabilities();
-    println!("  SIMD Support: {}", simd_caps);
-
-    println!();
 
     // Detect and display system architecture (includes CPU info and cache)
     let system_info = tmr::tests::get_system_info();
@@ -267,8 +278,6 @@ fn main() {
     println!("    Line Size: {} bytes | Total Cache: {:.1} MB", 
         cache_info.cache_line_size,
         cache_info.total_cache as f64 / (1024.0 * 1024.0));
-    println!("    Memory Testing: Windows configured relative to cache for optimal stress patterns");
-
     println!();
 
     // Calculate memory layout (Stage 1 allocation only)
@@ -282,9 +291,11 @@ fn main() {
     println!("  Use CTRL+C for graceful shutdown with final report");
     println!("(detailed logs available with RUST_LOG=debug)");
     println!();
+	
+	let runtime_config = detect_memory_capabilities(use_driver_chunking);
     
     let start_time = std::time::Instant::now();
-    let success = run_tests_with_layout_and_timing(layout, error_mode, suite_timing);
+	let success = run_tests_with_layout_and_timing(layout, error_mode, suite_timing, runtime_config);
     let total_time = start_time.elapsed();
 
     println!();
@@ -298,7 +309,45 @@ fn main() {
     }
 
     println!();
+	
+	if is_driver_connected() {
+		display_driver_stats(); // Gets fresh stats from existing handle
+	}
+
+	reset_driver(); // Reset_driver, this tells the driver we are done and any allocation not already released should be released(fail-safe).
+	
+	// This will completely reset the driver handle and re-check version, for when we implement a GUI
+	let new_status = refresh_driver_status();
+	
+	if is_driver_connected() {
+		display_driver_stats(); // Gets fresh stats from existing handle
+	}
+	
+	println!();
     print_usage(&args[0]);
+	Ok(())
+}
+
+// Example usage in main.rs
+pub fn check_dma_driver_status() {
+    match DriverHandle::open_with_version_check() {
+        Ok(driver) => {
+            if let Ok(version) = driver.check_version_compatibility() {
+                println!("  DMA Driver: ✅ Available and compatible");
+                println!("    Version: {}.{}.{}.{}", 
+                         version.driver_version_major,
+                         version.driver_version_minor,
+                         version.driver_version_build,
+                         version.driver_version_revision);
+            }
+        }
+        Err(e) => {
+            println!("  DMA Driver: ❌ {}", e);
+            if e.contains("version incompatible") {
+                println!("    Action: Update TMR or the kernel driver to matching versions");
+            }
+        }
+    }
 }
 
 fn setup_logging() {
@@ -429,11 +478,11 @@ fn parse_memory_parameter(param: &str) -> MemoryStrategy {
                 }
             }
             Ok(percent) => {
-                println!("Warning: Invalid percentage {}%, using default 15%", percent);
+                println!("Warning: Invalid percentage {}%, using default 20%", percent);
                 MemoryStrategy::default()
             }
             Err(_) => {
-                println!("Warning: Could not parse percentage '{}', using default 15%", param);
+                println!("Warning: Could not parse percentage '{}', using default 20%", param);
                 MemoryStrategy::default()
             }
         }
@@ -448,11 +497,11 @@ fn parse_memory_parameter(param: &str) -> MemoryStrategy {
                 }
             }
             Ok(gib) => {
-                println!("Warning: Invalid GiB value {}, using default 15%", gib);
+                println!("Warning: Invalid GiB value {}, using default 20%", gib);
                 MemoryStrategy::default()
             }
             Err(_) => {
-                println!("Warning: Could not parse GiB value '{}', using default 15%", param);
+                println!("Warning: Could not parse GiB value '{}', using default 20%", param);
                 MemoryStrategy::default()
             }
         }
@@ -468,11 +517,11 @@ fn parse_memory_parameter(param: &str) -> MemoryStrategy {
                 }
             }
             Ok(mib) => {
-                println!("Warning: Invalid MiB value {}, using default 15%", mib);
+                println!("Warning: Invalid MiB value {}, using default 20%", mib);
                 MemoryStrategy::default()
             }
             Err(_) => {
-                println!("Warning: Could not parse MiB value '{}', using default 15%", param);
+                println!("Warning: Could not parse MiB value '{}', using default 20%", param);
                 MemoryStrategy::default()
             }
         }
@@ -480,8 +529,34 @@ fn parse_memory_parameter(param: &str) -> MemoryStrategy {
         MemoryStrategy::tm5_compatible(880, 128)
     } else {
         println!("Warning: Unknown memory parameter format '{}', using default", param);
-        println!("  Supported formats: 15%, 2GiB, 1024MiB, tm5");
+        println!("  Supported formats: 20%, 2GiB, 1024MiB, tm5");
         MemoryStrategy::default()
+    }
+}
+
+// Add NUMA system info display
+fn display_numa_info() {
+    let cpu_count = num_cpus::get();
+    let physical_cores = num_cpus::get_physical();
+    
+    println!("  CPU Configuration:");
+    println!("    Logical CPUs: {}", cpu_count);
+    println!("    Physical cores: {}", physical_cores);
+    
+    // Estimate NUMA nodes based on system size
+    let estimated_numa_nodes = if cpu_count >= 32 { 2 } else { 1 };
+    println!("    Estimated NUMA nodes: {}", estimated_numa_nodes);
+    
+    // Show CPU to NUMA mapping for first few CPUs
+    if estimated_numa_nodes > 1 {
+        println!("  CPU to NUMA mapping (estimated):");
+        for cpu in 0..8.min(cpu_count) {
+            let node = get_numa_node_for_cpu(cpu);
+            println!("    CPU {} -> NUMA node {}", cpu, node);
+        }
+        if cpu_count > 8 {
+            println!("    ... and {} more CPUs", cpu_count - 8);
+        }
     }
 }
 
@@ -498,6 +573,36 @@ fn parse_error_mode(param: &str) -> ErrorMode {
     }
 }
 
+fn detect_memory_capabilities(use_driver_chunking: bool) -> RuntimeConfig {
+    let driver_available = tmr::dma_memory::DmaBuffer::is_driver_available_and_compatible();
+    let large_pages_available = tmr::check_large_page_privilege().is_ok();
+    
+    let memory_backend = if driver_available {
+        MemoryBackend::KernelDriver
+    } else if large_pages_available {
+        MemoryBackend::NativeLargePages
+    } else {
+        MemoryBackend::NativeRegular
+    };
+    
+    RuntimeConfig {
+        memory_backend,
+        driver_available,
+        large_pages_available,
+		use_driver_chunking,
+    }
+}
+
+
+fn format_duration(duration: std::time::Duration) -> String {
+    // Format runtime as HH:MM:SS
+    let total_seconds = duration.as_secs();
+    let hours = total_seconds / 3600;
+    let minutes = (total_seconds % 3600) / 60;
+    let seconds = total_seconds % 60;
+    format!("{:02}:{:02}:{:02}", hours, minutes, seconds)
+}
+
 fn print_help(program_name: &str) {
     println!("🚀 Test Memory R (TMR) v1.0.0 - High-Performance Memory Testing Tool");
     println!("===================================================================================");
@@ -512,7 +617,7 @@ fn print_help(program_name: &str) {
     println!("  {} --version                         # Show version information", program_name);
     println!();
     println!("COMMAND LINE PARAMETERS:");
-    println!("  memory=15%                           # Reserve 15% of system memory");
+    println!("  memory=20%                           # Reserve 20% of system memory");
     println!("  memory=2GiB                         # Reserve 2 GiB");
     println!("  memory=tm5                          # TM5-compatible allocation");
     println!("  cycles=5                            # Run 5 complete test cycles");
@@ -531,11 +636,19 @@ fn print_help(program_name: &str) {
     println!("  Test results are automatically saved as JSON files to .\\results\\");
     println!("  Use --compare-results to analyze performance differences");
     println!("  Useful for memory overclocking and timing optimization");
+	println!();
+	println!("ADVANCED FEATURES:");
+    println!("  DMA Memory: Install kernel driver for physical memory testing");
+    println!("              - Provides true physical address access");
+    println!("              - Guaranteed physically contiguous memory");
+    println!("              - Better detection of memory controller issues");
+    println!("  Installation: Run Install-TmrDriver.ps1 as Administrator");
+    println!();
 }
 
 fn print_usage(program_name: &str) {
     println!("Quick Usage Examples:");
-    println!("  {} memory=15%                    # Reserve 15% of system memory", program_name);
+    println!("  {} memory=20%                   # Reserve 20% of system memory", program_name);
     println!("  {} memory=2GiB                  # Reserve 2 GiB", program_name);
     println!("  {} memory=tm5                   # TM5-compatible allocation", program_name);
     println!("  {} cycles=5 duration=600        # 5 cycles OR 10 minutes max", program_name);
@@ -547,13 +660,4 @@ fn print_usage(program_name: &str) {
     println!("  {} --compare-results old.json new.json # Compare results from .\\results\\", program_name);
     println!();
     println!("For full help: {} --help", program_name);
-}
-
-fn format_duration(duration: std::time::Duration) -> String {
-    // Format runtime as HH:MM:SS
-    let total_seconds = duration.as_secs();
-    let hours = total_seconds / 3600;
-    let minutes = (total_seconds % 3600) / 60;
-    let seconds = total_seconds % 60;
-    format!("{:02}:{:02}:{:02}", hours, minutes, seconds)
 }

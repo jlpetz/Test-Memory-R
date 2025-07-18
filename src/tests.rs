@@ -1,6 +1,7 @@
 use crate::ErrorMode;
 use crate::cache::{CacheInfo, SystemInfo};
 use crate::layout::{WindowMode, BlockMode};
+use crate::dma_memory::MemoryType;
 use std::arch::x86_64::*;
 use std::sync::atomic::Ordering;
 use std::time::Instant;
@@ -147,6 +148,7 @@ pub struct TestMemoryConfig {
     pub pattern_mode: Option<u32>,  // TM5 pattern mode
     pub pattern_param0: Option<u64>, // TM5 pattern parameter 0
     pub pattern_param1: Option<u64>, // TM5 pattern parameter 1
+    pub memory_type: Option<MemoryType>,  // Add this field
 }
 
 impl TestMemoryConfig {
@@ -161,7 +163,13 @@ impl TestMemoryConfig {
             pattern_mode: None,
             pattern_param0: None,
             pattern_param1: None,
+			memory_type: None,  // Add this line
         }
+    }
+
+    pub fn with_memory_type(mut self, memory_type: Option<MemoryType>) -> Self {
+        self.memory_type = memory_type;
+        self
     }
     
     pub fn with_timing(mut self, timing: TestTiming) -> Self {
@@ -218,7 +226,7 @@ impl TestMemoryConfig {
     }
 
     // Calculate optimal block size with alignment
-    pub fn calculate_block_size(&self, test_name: &str, window_size: usize) -> (usize, bool) {
+    pub fn calculate_block_size(&self, test_name: &str, window_size: usize) -> usize {
         let cache_info = get_cache_info();
         
         let optimal_block_size = match &self.block_mode {
@@ -243,7 +251,7 @@ impl TestMemoryConfig {
             }
         };
 
-        let was_adjusted = match &self.block_mode {
+        let _was_adjusted = match &self.block_mode {
             BlockMode::FixedSize { size_mb } => {
                 let original = (*size_mb as usize) * 1024 * 1024;
                 optimal_block_size != original
@@ -251,7 +259,7 @@ impl TestMemoryConfig {
             _ => false, // Auto-calculated, so not "adjusted"
         };
         
-        (optimal_block_size.min(window_size), was_adjusted)
+        optimal_block_size.min(window_size)
     }
     
     fn calculate_optimal_block_for_test(&self, test_name: &str, window_size: usize, cache_info: &CacheInfo) -> usize {
@@ -293,13 +301,13 @@ impl TestMemoryConfig {
     }
 
     // Ensure window size is multiple of block size
-    pub fn align_window_to_blocks(&self, window_size: usize, block_size: usize) -> (usize, bool) {
+    pub fn align_window_to_blocks(&self, window_size: usize, block_size: usize) -> usize {
         if block_size == 0 || window_size == 0 {
-            return (window_size, false);
+            return window_size;
         }
         
         let aligned_window = (window_size / block_size) * block_size;
-        let was_adjusted = aligned_window != window_size;
+        let _was_adjusted = aligned_window != window_size;
         
         // Ensure we have at least one full block
         let final_window = if aligned_window < block_size {
@@ -308,7 +316,7 @@ impl TestMemoryConfig {
             aligned_window
         };
         
-        (final_window, was_adjusted || final_window != window_size)
+        final_window
     }
 }
 
@@ -425,8 +433,14 @@ pub unsafe fn stuck_bit_test(ptr: *mut u8, size: usize, thread_id: usize, error_
 }
 
 // === UPDATED TEST FUNCTIONS WITH STREAM SUPPORT ===
-
-pub unsafe fn mirror_move_128_non_temporal(ptr: *mut u8, size: usize, thread_id: usize, error_mode: ErrorMode, timing: &TestTiming, streams: u32) -> TestStats {
+pub unsafe fn mirror_move_128_non_temporal(
+    ptr: *mut u8, 
+    size: usize, 
+    thread_id: usize, 
+    error_mode: ErrorMode, 
+    timing: &TestTiming, 
+    streams: u32
+) -> TestStats {
     let test_name = "MirrorMove128NonTemporal";
     let start = Instant::now();
     
@@ -442,64 +456,135 @@ pub unsafe fn mirror_move_128_non_temporal(ptr: *mut u8, size: usize, thread_id:
     }
 
     let mut total_bytes_processed = 0usize;
+    let mut total_error_count = 0u64;
     let mut cycle = 0u32;
     let test_start = Instant::now();
     
+    let base = ptr as *mut __m128i;
+    let len = size / std::mem::size_of::<__m128i>();
+    let streams = streams.max(1) as usize;
+    
+    // Initialize memory with a pattern
+    for i in 0..len {
+        let pattern = _mm_set_epi32(
+            (i as i32).wrapping_add((thread_id as i32) << 16),
+            (i as i32).wrapping_add((thread_id as i32) << 16).wrapping_mul(2),
+            (i as i32).wrapping_add((thread_id as i32) << 16).wrapping_mul(3),
+            (i as i32).wrapping_add((thread_id as i32) << 16).wrapping_mul(4),
+        );
+        _mm_store_si128(base.add(i), pattern);
+    }
+    _mm_sfence();
+    
     loop {
         cycle += 1;
+        let mut cycle_errors = 0u64;
         
-        // Execute pattern based on number of streams (equivalent to TM5 jump parameter)
-        match streams {
-            2 => {
-                // Two-stream pattern: split memory in half
-                let half_size = size / 2;
-                let base = ptr as *mut __m128i;
-                let len = half_size / std::mem::size_of::<__m128i>();
-                
-                // Stream 1: First half
-                for i in 0..(len / 2) {
-                    let val = _mm_load_si128(base.add(i));
-                    _mm_stream_si128(base.add(len - 1 - i), val);
-                }
-                
-                // Stream 2: Second half
-                let second_half_base = base.add(size / (2 * std::mem::size_of::<__m128i>()));
-                for i in 0..(len / 2) {
-                    let val = _mm_load_si128(second_half_base.add(i));
-                    _mm_stream_si128(second_half_base.add(len - 1 - i), val);
-                }
+        // Generic stream-based mirror operation
+        if streams == 1 {
+            // Special case for single stream (full mirror)
+            for i in 0..(len / 2) {
+                let val1 = _mm_load_si128(base.add(i));
+                let val2 = _mm_load_si128(base.add(len - 1 - i));
+                _mm_stream_si128(base.add(len - 1 - i), val1);
+                _mm_stream_si128(base.add(i), val2);
             }
-            4 => {
-                // Four-stream pattern: split memory into quarters
-                let quarter_size = size / 4;
-                let base = ptr as *mut __m128i;
-                let len = quarter_size / std::mem::size_of::<__m128i>();
+        } else {
+            // Generic multi-stream implementation
+            let elements_per_stream = len / streams;
+            let extra_elements = len % streams;
+            
+            for stream_id in 0..streams {
+                // Calculate this stream's boundaries with remainder distribution
+                let extra = (stream_id < extra_elements) as usize;
+                let start = stream_id * elements_per_stream + stream_id.min(extra_elements);
+                let stream_len = elements_per_stream + extra;
+                let end = start + stream_len;
                 
-                for stream in 0..4 {
-                    let stream_base = base.add(stream * quarter_size / std::mem::size_of::<__m128i>());
-                    for i in 0..(len / 2) {
-                        let val = _mm_load_si128(stream_base.add(i));
-                        _mm_stream_si128(stream_base.add(len - 1 - i), val);
-                    }
-                }
-            }
-            _ => {
-                // Default single stream pattern (streams=1 or any other value)
-                let len = size / std::mem::size_of::<__m128i>();
-                let base = ptr as *mut __m128i;
-                
-                for i in 0..(len / 2) {
-                    let val = _mm_load_si128(base.add(i));
-                    _mm_stream_si128(base.add(len - 1 - i), val);
+                // Mirror within this stream's chunk
+                for i in 0..(stream_len / 2) {
+                    let idx1 = start + i;
+                    let idx2 = end - 1 - i;
+                    
+                    let val1 = _mm_load_si128(base.add(idx1));
+                    let val2 = _mm_load_si128(base.add(idx2));
+                    _mm_stream_si128(base.add(idx2), val1);
+                    _mm_stream_si128(base.add(idx1), val2);
                 }
             }
         }
-
         _mm_sfence();
         
-        total_bytes_processed += size;
+        // Verify the mirrored data using SIMD XOR accumulation
+        let mut error_accumulator = _mm_setzero_si128();
         
-        // Check if should continue based on timing
+        if streams == 1 {
+            // Single stream verification
+            for i in 0..len {
+                let expected_idx = len - 1 - i;
+                let expected = _mm_set_epi32(
+                    (expected_idx as i32).wrapping_add((thread_id as i32) << 16),
+                    (expected_idx as i32).wrapping_add((thread_id as i32) << 16).wrapping_mul(2),
+                    (expected_idx as i32).wrapping_add((thread_id as i32) << 16).wrapping_mul(3),
+                    (expected_idx as i32).wrapping_add((thread_id as i32) << 16).wrapping_mul(4),
+                );
+                
+                let actual = _mm_load_si128(base.add(i));
+                let diff = _mm_xor_si128(expected, actual);
+                error_accumulator = _mm_or_si128(error_accumulator, diff);
+            }
+        }
+        
+        // Check if any errors were detected
+        let error_mask = _mm_movemask_epi8(error_accumulator);
+        if error_mask != 0 {
+            cycle_errors += 1;
+            match error_mode {
+                ErrorMode::Panic => panic!("{}: memory error detected in cycle {}", test_name, cycle),
+                ErrorMode::Halt => {
+                    total_error_count += cycle_errors;
+                    break;
+                }
+                ErrorMode::Log => {
+                    log::error!("{}: memory error detected in cycle {} (thread {})", test_name, cycle, thread_id);
+                }
+            }
+        }
+        
+        // Mirror back to restore original pattern for next iteration
+        if streams == 1 {
+            for i in 0..(len / 2) {
+                let val1 = _mm_load_si128(base.add(i));
+                let val2 = _mm_load_si128(base.add(len - 1 - i));
+                _mm_stream_si128(base.add(len - 1 - i), val1);
+                _mm_stream_si128(base.add(i), val2);
+            }
+        } else {
+            let elements_per_stream = len / streams;
+            let extra_elements = len % streams;
+            
+            for stream_id in 0..streams {
+                let extra = (stream_id < extra_elements) as usize;
+                let start = stream_id * elements_per_stream + stream_id.min(extra_elements);
+                let stream_len = elements_per_stream + extra;
+                let end = start + stream_len;
+                
+                for i in 0..(stream_len / 2) {
+                    let idx1 = start + i;
+                    let idx2 = end - 1 - i;
+                    
+                    let val1 = _mm_load_si128(base.add(idx1));
+                    let val2 = _mm_load_si128(base.add(idx2));
+                    _mm_stream_si128(base.add(idx2), val1);
+                    _mm_stream_si128(base.add(idx1), val2);
+                }
+            }
+        }
+        _mm_sfence();
+        
+        total_error_count += cycle_errors;
+        total_bytes_processed += size * 2; // Mirror + restore operations
+        
         let elapsed_secs = test_start.elapsed().as_secs() as u32;
         if !timing.should_continue(cycle, elapsed_secs) {
             break;
@@ -513,11 +598,18 @@ pub unsafe fn mirror_move_128_non_temporal(ptr: *mut u8, size: usize, thread_id:
         bytes_processed: total_bytes_processed,
         elapsed_ms: elapsed,
         thread_id,
-        error_count: 0,
+        error_count: total_error_count,
     }
 }
 
-pub unsafe fn mirror_move_256_non_temporal(ptr: *mut u8, size: usize, thread_id: usize, error_mode: ErrorMode, timing: &TestTiming, streams: u32) -> TestStats {
+pub unsafe fn mirror_move_256_non_temporal(
+    ptr: *mut u8, 
+    size: usize, 
+    thread_id: usize, 
+    error_mode: ErrorMode, 
+    timing: &TestTiming, 
+    streams: u32
+) -> TestStats {
     let test_name = "MirrorMove256NonTemporal";
     let start = Instant::now();
     
@@ -533,62 +625,142 @@ pub unsafe fn mirror_move_256_non_temporal(ptr: *mut u8, size: usize, thread_id:
     }
 
     let mut total_bytes_processed = 0usize;
+    let mut total_error_count = 0u64;
     let mut cycle = 0u32;
     let test_start = Instant::now();
     
+    let base = ptr as *mut __m256i;
+    let len = size / std::mem::size_of::<__m256i>();
+    let streams = streams.max(1) as usize;
+    
+    // Initialize memory with a pattern
+    for i in 0..len {
+        let pattern = _mm256_set_epi32(
+            (i as i32).wrapping_add((thread_id as i32) << 16),
+            (i as i32).wrapping_add((thread_id as i32) << 16).wrapping_mul(2),
+            (i as i32).wrapping_add((thread_id as i32) << 16).wrapping_mul(3),
+            (i as i32).wrapping_add((thread_id as i32) << 16).wrapping_mul(4),
+            (i as i32).wrapping_add((thread_id as i32) << 16).wrapping_mul(5),
+            (i as i32).wrapping_add((thread_id as i32) << 16).wrapping_mul(6),
+            (i as i32).wrapping_add((thread_id as i32) << 16).wrapping_mul(7),
+            (i as i32).wrapping_add((thread_id as i32) << 16).wrapping_mul(8),
+        );
+        _mm256_store_si256(base.add(i), pattern);
+    }
+    _mm_sfence();
+    
     loop {
         cycle += 1;
+        let mut cycle_errors = 0u64;
         
-        // Execute pattern based on number of streams
-        match streams {
-            2 => {
-                // Two-stream pattern
-                let half_size = size / 2;
-                let base = ptr as *mut __m256i;
-                let len = half_size / std::mem::size_of::<__m256i>();
-                
-                // Stream 1: First half
-                for i in 0..(len / 2) {
-                    let val = _mm256_load_si256(base.add(i));
-                    _mm256_stream_si256(base.add(len - 1 - i), val);
-                }
-                
-                // Stream 2: Second half
-                let second_half_base = base.add(size / (2 * std::mem::size_of::<__m256i>()));
-                for i in 0..(len / 2) {
-                    let val = _mm256_load_si256(second_half_base.add(i));
-                    _mm256_stream_si256(second_half_base.add(len - 1 - i), val);
-                }
+        // Generic stream-based mirror operation
+        if streams == 1 {
+            // Special case for single stream (full mirror)
+            for i in 0..(len / 2) {
+                let val1 = _mm256_load_si256(base.add(i));
+                let val2 = _mm256_load_si256(base.add(len - 1 - i));
+                _mm256_stream_si256(base.add(len - 1 - i), val1);
+                _mm256_stream_si256(base.add(i), val2);
             }
-            4 => {
-                // Four-stream pattern
-                let quarter_size = size / 4;
-                let base = ptr as *mut __m256i;
-                let len = quarter_size / std::mem::size_of::<__m256i>();
+        } else {
+            // Generic multi-stream implementation
+            let elements_per_stream = len / streams;
+            let extra_elements = len % streams;
+            
+            for stream_id in 0..streams {
+                // Calculate this stream's boundaries with remainder distribution
+                let extra = (stream_id < extra_elements) as usize;
+                let start = stream_id * elements_per_stream + stream_id.min(extra_elements);
+                let stream_len = elements_per_stream + extra;
+                let end = start + stream_len;
                 
-                for stream in 0..4 {
-                    let stream_base = base.add(stream * quarter_size / std::mem::size_of::<__m256i>());
-                    for i in 0..(len / 2) {
-                        let val = _mm256_load_si256(stream_base.add(i));
-                        _mm256_stream_si256(stream_base.add(len - 1 - i), val);
-                    }
-                }
-            }
-            _ => {
-                // Default single stream pattern
-                let len = size / std::mem::size_of::<__m256i>();
-                let base = ptr as *mut __m256i;
-                
-                for i in 0..(len / 2) {
-                    let val = _mm256_load_si256(base.add(i));
-                    _mm256_stream_si256(base.add(len - 1 - i), val);
+                // Mirror within this stream's chunk
+                for i in 0..(stream_len / 2) {
+                    let idx1 = start + i;
+                    let idx2 = end - 1 - i;
+                    
+                    let val1 = _mm256_load_si256(base.add(idx1));
+                    let val2 = _mm256_load_si256(base.add(idx2));
+                    _mm256_stream_si256(base.add(idx2), val1);
+                    _mm256_stream_si256(base.add(idx1), val2);
                 }
             }
         }
-
         _mm_sfence();
         
-        total_bytes_processed += size;
+        // Verify the mirrored data using SIMD XOR accumulation
+        let mut error_accumulator = _mm256_setzero_si256();
+        
+        if streams == 1 {
+            // Single stream verification
+            for i in 0..len {
+                let expected_idx = len - 1 - i;
+                let expected = _mm256_set_epi32(
+                    (expected_idx as i32).wrapping_add((thread_id as i32) << 16),
+                    (expected_idx as i32).wrapping_add((thread_id as i32) << 16).wrapping_mul(2),
+                    (expected_idx as i32).wrapping_add((thread_id as i32) << 16).wrapping_mul(3),
+                    (expected_idx as i32).wrapping_add((thread_id as i32) << 16).wrapping_mul(4),
+                    (expected_idx as i32).wrapping_add((thread_id as i32) << 16).wrapping_mul(5),
+                    (expected_idx as i32).wrapping_add((thread_id as i32) << 16).wrapping_mul(6),
+                    (expected_idx as i32).wrapping_add((thread_id as i32) << 16).wrapping_mul(7),
+                    (expected_idx as i32).wrapping_add((thread_id as i32) << 16).wrapping_mul(8),
+                );
+                
+                let actual = _mm256_load_si256(base.add(i));
+                let diff = _mm256_xor_si256(expected, actual);
+                error_accumulator = _mm256_or_si256(error_accumulator, diff);
+            }
+        }
+        
+        // Check if any errors were detected
+        let error_mask = _mm256_movemask_epi8(error_accumulator);
+        if error_mask != 0 {
+            cycle_errors += 1;
+            match error_mode {
+                ErrorMode::Panic => panic!("{}: memory error detected in cycle {}", test_name, cycle),
+                ErrorMode::Halt => {
+                    total_error_count += cycle_errors;
+                    break;
+                }
+                ErrorMode::Log => {
+                    log::error!("{}: memory error detected in cycle {} (thread {})", test_name, cycle, thread_id);
+                }
+            }
+        }
+        
+        // Mirror back to restore original pattern for next iteration
+        if streams == 1 {
+            for i in 0..(len / 2) {
+                let val1 = _mm256_load_si256(base.add(i));
+                let val2 = _mm256_load_si256(base.add(len - 1 - i));
+                _mm256_stream_si256(base.add(len - 1 - i), val1);
+                _mm256_stream_si256(base.add(i), val2);
+            }
+        } else {
+            let elements_per_stream = len / streams;
+            let extra_elements = len % streams;
+            
+            for stream_id in 0..streams {
+                let extra = (stream_id < extra_elements) as usize;
+                let start = stream_id * elements_per_stream + stream_id.min(extra_elements);
+                let stream_len = elements_per_stream + extra;
+                let end = start + stream_len;
+                
+                for i in 0..(stream_len / 2) {
+                    let idx1 = start + i;
+                    let idx2 = end - 1 - i;
+                    
+                    let val1 = _mm256_load_si256(base.add(idx1));
+                    let val2 = _mm256_load_si256(base.add(idx2));
+                    _mm256_stream_si256(base.add(idx2), val1);
+                    _mm256_stream_si256(base.add(idx1), val2);
+                }
+            }
+        }
+        _mm_sfence();
+        
+        total_error_count += cycle_errors;
+        total_bytes_processed += size * 2; // Mirror + restore operations
         
         let elapsed_secs = test_start.elapsed().as_secs() as u32;
         if !timing.should_continue(cycle, elapsed_secs) {
@@ -603,11 +775,18 @@ pub unsafe fn mirror_move_256_non_temporal(ptr: *mut u8, size: usize, thread_id:
         bytes_processed: total_bytes_processed,
         elapsed_ms: elapsed,
         thread_id,
-        error_count: 0,
+        error_count: total_error_count,
     }
 }
 
-pub unsafe fn mirror_move_512_non_temporal(ptr: *mut u8, size: usize, thread_id: usize, error_mode: ErrorMode, timing: &TestTiming, streams: u32) -> TestStats {
+pub unsafe fn mirror_move_512_non_temporal(
+    ptr: *mut u8, 
+    size: usize, 
+    thread_id: usize, 
+    error_mode: ErrorMode, 
+    timing: &TestTiming, 
+    streams: u32
+) -> TestStats {
     let test_name = "MirrorMove512NonTemporal";
     let start = Instant::now();
     
@@ -623,62 +802,160 @@ pub unsafe fn mirror_move_512_non_temporal(ptr: *mut u8, size: usize, thread_id:
     }
 
     let mut total_bytes_processed = 0usize;
+    let mut total_error_count = 0u64;
     let mut cycle = 0u32;
     let test_start = Instant::now();
     
+    let base = ptr as *mut __m512i;
+    let len = size / std::mem::size_of::<__m512i>();
+    let streams = streams.max(1) as usize;
+    
+    // Initialize memory with a pattern
+    for i in 0..len {
+        let pattern = _mm512_set_epi32(
+            (i as i32).wrapping_add((thread_id as i32) << 16),
+            (i as i32).wrapping_add((thread_id as i32) << 16).wrapping_mul(2),
+            (i as i32).wrapping_add((thread_id as i32) << 16).wrapping_mul(3),
+            (i as i32).wrapping_add((thread_id as i32) << 16).wrapping_mul(4),
+            (i as i32).wrapping_add((thread_id as i32) << 16).wrapping_mul(5),
+            (i as i32).wrapping_add((thread_id as i32) << 16).wrapping_mul(6),
+            (i as i32).wrapping_add((thread_id as i32) << 16).wrapping_mul(7),
+            (i as i32).wrapping_add((thread_id as i32) << 16).wrapping_mul(8),
+            (i as i32).wrapping_add((thread_id as i32) << 16).wrapping_mul(9),
+            (i as i32).wrapping_add((thread_id as i32) << 16).wrapping_mul(10),
+            (i as i32).wrapping_add((thread_id as i32) << 16).wrapping_mul(11),
+            (i as i32).wrapping_add((thread_id as i32) << 16).wrapping_mul(12),
+            (i as i32).wrapping_add((thread_id as i32) << 16).wrapping_mul(13),
+            (i as i32).wrapping_add((thread_id as i32) << 16).wrapping_mul(14),
+            (i as i32).wrapping_add((thread_id as i32) << 16).wrapping_mul(15),
+            (i as i32).wrapping_add((thread_id as i32) << 16).wrapping_mul(16),
+        );
+        _mm512_store_si512(base.add(i), pattern);
+    }
+    _mm_sfence();
+    
     loop {
         cycle += 1;
+        let mut cycle_errors = 0u64;
         
-        // Execute pattern based on number of streams
-        match streams {
-            2 => {
-                // Two-stream pattern
-                let half_size = size / 2;
-                let base = ptr as *mut __m512i;
-                let len = half_size / std::mem::size_of::<__m512i>();
-                
-                // Stream 1: First half
-                for i in 0..(len / 2) {
-                    let val = _mm512_load_si512(base.add(i));
-                    _mm512_stream_si512(base.add(len - 1 - i), val);
-                }
-                
-                // Stream 2: Second half
-                let second_half_base = base.add(size / (2 * std::mem::size_of::<__m512i>()));
-                for i in 0..(len / 2) {
-                    let val = _mm512_load_si512(second_half_base.add(i));
-                    _mm512_stream_si512(second_half_base.add(len - 1 - i), val);
-                }
+        // Generic stream-based mirror operation
+        if streams == 1 {
+            // Special case for single stream (full mirror)
+            for i in 0..(len / 2) {
+                let val1 = _mm512_load_si512(base.add(i));
+                let val2 = _mm512_load_si512(base.add(len - 1 - i));
+                _mm512_stream_si512(base.add(len - 1 - i), val1);
+                _mm512_stream_si512(base.add(i), val2);
             }
-            4 => {
-                // Four-stream pattern
-                let quarter_size = size / 4;
-                let base = ptr as *mut __m512i;
-                let len = quarter_size / std::mem::size_of::<__m512i>();
+        } else {
+            // Generic multi-stream implementation
+            let elements_per_stream = len / streams;
+            let extra_elements = len % streams;
+            
+            for stream_id in 0..streams {
+                // Calculate this stream's boundaries with remainder distribution
+                let extra = (stream_id < extra_elements) as usize;
+                let start = stream_id * elements_per_stream + stream_id.min(extra_elements);
+                let stream_len = elements_per_stream + extra;
+                let end = start + stream_len;
                 
-                for stream in 0..4 {
-                    let stream_base = base.add(stream * quarter_size / std::mem::size_of::<__m512i>());
-                    for i in 0..(len / 2) {
-                        let val = _mm512_load_si512(stream_base.add(i));
-                        _mm512_stream_si512(stream_base.add(len - 1 - i), val);
-                    }
-                }
-            }
-            _ => {
-                // Default single stream pattern
-                let len = size / std::mem::size_of::<__m512i>();
-                let base = ptr as *mut __m512i;
-                
-                for i in 0..(len / 2) {
-                    let val = _mm512_load_si512(base.add(i));
-                    _mm512_stream_si512(base.add(len - 1 - i), val);
+                // Mirror within this stream's chunk
+                for i in 0..(stream_len / 2) {
+                    let idx1 = start + i;
+                    let idx2 = end - 1 - i;
+                    
+                    let val1 = _mm512_load_si512(base.add(idx1));
+                    let val2 = _mm512_load_si512(base.add(idx2));
+                    _mm512_stream_si512(base.add(idx2), val1);
+                    _mm512_stream_si512(base.add(idx1), val2);
                 }
             }
         }
-
         _mm_sfence();
         
-        total_bytes_processed += size;
+        // Verify the mirrored data using SIMD XOR accumulation
+        let mut error_accumulator = _mm512_setzero_si512();
+        
+        if streams == 1 {
+            // Single stream verification
+            for i in 0..len {
+                let expected_idx = len - 1 - i;
+                let expected = _mm512_set_epi32(
+                    (expected_idx as i32).wrapping_add((thread_id as i32) << 16),
+                    (expected_idx as i32).wrapping_add((thread_id as i32) << 16).wrapping_mul(2),
+                    (expected_idx as i32).wrapping_add((thread_id as i32) << 16).wrapping_mul(3),
+                    (expected_idx as i32).wrapping_add((thread_id as i32) << 16).wrapping_mul(4),
+                    (expected_idx as i32).wrapping_add((thread_id as i32) << 16).wrapping_mul(5),
+                    (expected_idx as i32).wrapping_add((thread_id as i32) << 16).wrapping_mul(6),
+                    (expected_idx as i32).wrapping_add((thread_id as i32) << 16).wrapping_mul(7),
+                    (expected_idx as i32).wrapping_add((thread_id as i32) << 16).wrapping_mul(8),
+                    (expected_idx as i32).wrapping_add((thread_id as i32) << 16).wrapping_mul(9),
+                    (expected_idx as i32).wrapping_add((thread_id as i32) << 16).wrapping_mul(10),
+                    (expected_idx as i32).wrapping_add((thread_id as i32) << 16).wrapping_mul(11),
+                    (expected_idx as i32).wrapping_add((thread_id as i32) << 16).wrapping_mul(12),
+                    (expected_idx as i32).wrapping_add((thread_id as i32) << 16).wrapping_mul(13),
+                    (expected_idx as i32).wrapping_add((thread_id as i32) << 16).wrapping_mul(14),
+                    (expected_idx as i32).wrapping_add((thread_id as i32) << 16).wrapping_mul(15),
+                    (expected_idx as i32).wrapping_add((thread_id as i32) << 16).wrapping_mul(16),
+                );
+                
+                let actual = _mm512_load_si512(base.add(i));
+                let diff = _mm512_xor_si512(expected, actual);
+                error_accumulator = _mm512_or_si512(error_accumulator, diff);
+            }
+        }
+        
+        // Check if any errors were detected
+        // For AVX512, we need to check if the accumulator has any non-zero bits
+        let zero = _mm512_setzero_si512();
+        let cmp_result = _mm512_cmpeq_epi32_mask(error_accumulator, zero);
+        if cmp_result != 0xFFFF { // All 16 dwords should be equal to zero
+            cycle_errors += 1;
+            match error_mode {
+                ErrorMode::Panic => panic!("{}: memory error detected in cycle {}", test_name, cycle),
+                ErrorMode::Halt => {
+                    total_error_count += cycle_errors;
+                    break;
+                }
+                ErrorMode::Log => {
+                    log::error!("{}: memory error detected in cycle {} (thread {})", test_name, cycle, thread_id);
+                }
+            }
+        }
+        
+        // Mirror back to restore original pattern for next iteration
+        if streams == 1 {
+            for i in 0..(len / 2) {
+                let val1 = _mm512_load_si512(base.add(i));
+                let val2 = _mm512_load_si512(base.add(len - 1 - i));
+                _mm512_stream_si512(base.add(len - 1 - i), val1);
+                _mm512_stream_si512(base.add(i), val2);
+            }
+        } else {
+            let elements_per_stream = len / streams;
+            let extra_elements = len % streams;
+            
+            for stream_id in 0..streams {
+                let extra = (stream_id < extra_elements) as usize;
+                let start = stream_id * elements_per_stream + stream_id.min(extra_elements);
+                let stream_len = elements_per_stream + extra;
+                let end = start + stream_len;
+                
+                for i in 0..(stream_len / 2) {
+                    let idx1 = start + i;
+                    let idx2 = end - 1 - i;
+                    
+                    let val1 = _mm512_load_si512(base.add(idx1));
+                    let val2 = _mm512_load_si512(base.add(idx2));
+                    _mm512_stream_si512(base.add(idx2), val1);
+                    _mm512_stream_si512(base.add(idx1), val2);
+                }
+            }
+        }
+        _mm_sfence();
+        
+        total_error_count += cycle_errors;
+        total_bytes_processed += size * 2; // Mirror + restore operations
         
         let elapsed_secs = test_start.elapsed().as_secs() as u32;
         if !timing.should_continue(cycle, elapsed_secs) {
@@ -693,7 +970,7 @@ pub unsafe fn mirror_move_512_non_temporal(ptr: *mut u8, size: usize, thread_id:
         bytes_processed: total_bytes_processed,
         elapsed_ms: elapsed,
         thread_id,
-        error_count: 0,
+        error_count: total_error_count,
     }
 }
 
