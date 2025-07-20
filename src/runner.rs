@@ -11,6 +11,7 @@ use crate::results::{TestRunResult, save_test_result}; // New results module
 use crate::dma_memory::{DmaBuffer, DmaBufferEnhanced, DmaConfig, EnhancedTestBuffer, MemoryType, DriverHandle, remap_all_allocations_to_type, PageSize};
 use crate::config::CpuPinningConfig;
 use crate::{MemoryBackend, RuntimeConfig};
+use crate::utils::{TableBuilder, Alignment};
 use std::collections::HashMap;
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, Barrier, Mutex};
@@ -77,7 +78,7 @@ pub struct TestSuiteTiming {
 impl Default for TestSuiteTiming {
     fn default() -> Self {
         Self {
-            global_cycles: Some(3), // Default 3 cycles like TM5
+            global_cycles: Some(1), // Default 3 cycles like TM5
             global_duration_secs: None,
         }
     }
@@ -215,8 +216,9 @@ fn detect_runtime_capabilities(use_driver_chunking: bool) -> RuntimeConfig {
 }
 
 
-fn print_current_memory_status() {
+pub fn print_current_memory_status() {
     use windows::Win32::System::SystemInformation::{GlobalMemoryStatusEx, MEMORYSTATUSEX};
+    use crate::utils::{TableBuilder, Alignment};
     
     unsafe {
         let mut mem_status = MEMORYSTATUSEX {
@@ -225,14 +227,39 @@ fn print_current_memory_status() {
         };
         
         if GlobalMemoryStatusEx(&mut mem_status).is_ok() {
-            println!("\n📊 Current System Memory Status:");
-            println!("   Total Physical: {:.2} GiB", mem_status.ullTotalPhys as f64 / (1024.0 * 1024.0 * 1024.0));
-            println!("   Available Physical: {:.2} GiB ({:.1}%)", 
-                    mem_status.ullAvailPhys as f64 / (1024.0 * 1024.0 * 1024.0),
-                    (mem_status.ullAvailPhys as f64 / mem_status.ullTotalPhys as f64) * 100.0);
-            println!("   Total Page File: {:.2} GiB", mem_status.ullTotalPageFile as f64 / (1024.0 * 1024.0 * 1024.0));
-            println!("   Available Page File: {:.2} GiB", mem_status.ullAvailPageFile as f64 / (1024.0 * 1024.0 * 1024.0));
-            println!("   Memory Load: {}%", mem_status.dwMemoryLoad);
+            println!("📊 Current System Memory Status:");
+            
+            // Convert to GiB for display
+            let total_phys_gib = mem_status.ullTotalPhys as f64 / (1024.0 * 1024.0 * 1024.0);
+            let avail_phys_gib = mem_status.ullAvailPhys as f64 / (1024.0 * 1024.0 * 1024.0);
+            let total_page_gib = mem_status.ullTotalPageFile as f64 / (1024.0 * 1024.0 * 1024.0);
+            let avail_page_gib = mem_status.ullAvailPageFile as f64 / (1024.0 * 1024.0 * 1024.0);
+            let phys_percent = (mem_status.ullAvailPhys as f64 / mem_status.ullTotalPhys as f64) * 100.0;
+            
+            let table = TableBuilder::new()
+                .add_header("Memory Type", Alignment::Left)
+                .add_header("Total", Alignment::Right)
+                .add_header("Available", Alignment::Right)
+                .add_header("Used", Alignment::Right)
+                .add_header("Status", Alignment::Center)
+                .add_row(vec![
+                    "Physical RAM".to_string(),
+                    format!("{:.2} GiB", total_phys_gib),
+                    format!("{:.2} GiB", avail_phys_gib),
+                    format!("{:.2} GiB", total_phys_gib - avail_phys_gib),
+                    format!("{:.1}% free", phys_percent),
+                ])
+                .add_row(vec![
+                    "Page File".to_string(),
+                    format!("{:.2} GiB", total_page_gib),
+                    format!("{:.2} GiB", avail_page_gib),
+                    format!("{:.2} GiB", total_page_gib - avail_page_gib),
+                    format!("{:.1}% load", mem_status.dwMemoryLoad as f64)
+                ]);
+            
+            table.print();
+        } else {
+            println!("📊 Unable to retrieve system memory status");
         }
     }
 }
@@ -265,7 +292,7 @@ pub fn run_tests_with_layout_and_timing(layout: MemoryLayout, error_mode: ErrorM
     let mut allocated_blocks = match allocate_all_blocks(&thread_blocks, &runtime_config) {
         Ok(blocks) => blocks,
         Err(e) => {
-            println!("❌ Failed to allocate memory blocks: {}", e);
+            println!("❌ Failed to allocate memory blocks: {}\n", e);
 			// Try to print current memory status
             print_current_memory_status();
             return false;
@@ -575,6 +602,8 @@ fn run_single_test_cycle(
     
 	let supports_remapping = allocated_blocks.values()
 		.any(|blocks| blocks.iter().any(|b| b.supports_remapping));
+		
+	let mut current_memory_type = MemoryType::WriteBack; // Default initial type
 
     for (test_idx, (test_name, test_func, test_config)) in test_definitions.iter().enumerate() {
         if SHUTDOWN_REQUESTED.load(Ordering::Relaxed) {
@@ -582,23 +611,23 @@ fn run_single_test_cycle(
         }
         
         progress.set_phase(&format!("{} ({}/{})", test_name, test_idx + 1, test_definitions.len()));
-        
-        // Determine required memory type for this test
-        let required_memory_type = test_config.memory_type.unwrap_or(MemoryType::WriteBack);
-        
+                
         // Remap memory if needed (fast operation, no reallocation)
 		if supports_remapping && test_config.memory_type.is_some() {
 			let required_memory_type = test_config.memory_type.unwrap_or(MemoryType::WriteBack);
 			
-			if let Ok(driver) = DriverHandle::open() {
-				let remap_start = Instant::now();
-				if let Err(e) = remap_all_allocations_to_type(allocated_blocks, required_memory_type, &driver) {
-					log::warn!("Failed to remap memory for test {}: {} - continuing with current memory type", test_name, e);
-				} else {
-					let remap_time = remap_start.elapsed();  // Move this inside the else block
-					if remap_time.as_millis() > 0 {
-						log::info!("Memory remapped to {:?} for {} in {:?}", 
-								 required_memory_type, test_name, remap_time);
+			if current_memory_type != required_memory_type {
+				if let Ok(driver) = DriverHandle::open() {
+					let remap_start = Instant::now();
+					if let Err(e) = remap_all_allocations_to_type(allocated_blocks, required_memory_type, &driver) {
+						log::warn!("Failed to remap memory for test {}: {} - continuing with current memory type", test_name, e);
+					} else {
+						current_memory_type = required_memory_type; // Update tracked type
+						let remap_time = remap_start.elapsed();
+						if remap_time.as_millis() > 0 {
+							log::info!("Memory remapped from {:?} to {:?} for {} in {:?}", 
+									 current_memory_type, required_memory_type, test_name, remap_time);
+						}
 					}
 				}
 			}
@@ -608,7 +637,7 @@ fn run_single_test_cycle(
                
         let test_start = Instant::now();
         let barrier = Arc::new(Barrier::new(thread_count));
-        let test_stats = Arc::new(Mutex::new(Vec::new()));
+        let test_stats = Arc::new(Mutex::new(Vec::new())); // Now: (cpu_id, thread_id, total_bytes, thread_elapsed, total_errors)
         
         // Extract allocated blocks
         let mut thread_allocated_data = Vec::new();
@@ -699,7 +728,7 @@ fn run_single_test_cycle(
                 
                 let thread_elapsed = thread_start.elapsed().as_millis();
                 if let Ok(mut stats) = test_stats_clone.lock() {
-                    stats.push((thread_id, total_bytes, thread_elapsed, total_errors));
+                    stats.push((cpu_id, thread_id, total_bytes, thread_elapsed, total_errors));
                 }
                 (thread_id, blocks)
             });
@@ -715,10 +744,134 @@ fn run_single_test_cycle(
             }
         }
         
-        // Process test statistics...
-        // (rest of the function remains the same)
-    }
+		// Process test statistics
+		{
+			let stats = test_stats.lock().unwrap();
+			let test_duration = test_start.elapsed();
+			let total_bytes_for_test: u64 = stats.iter().map(|(_, _, bytes, _, _)| bytes).sum();
+			let throughput_mib_s = if test_duration.as_millis() > 0 {
+				(total_bytes_for_test as f64 / (1024.0 * 1024.0)) / (test_duration.as_secs_f64())
+			} else {
+				0.0
+			};
+			
+			let total_errors_for_test: u64 = stats.iter().map(|(_, _, _, _, errors)| errors).sum();
+			
+			// Create test summary
+			let test_summary = TestSummary {
+				name: test_name.to_string(),
+				duration_ms: test_duration.as_millis(),
+				bytes_processed: total_bytes_for_test,
+				throughput_mib_s,
+				errors: total_errors_for_test,
+			};
+			
+			// Add to cycle summaries
+			if let Ok(mut summaries) = cycle_summaries.lock() {
+				summaries.push(test_summary);
+			}
+			
+			log::info!("Cycle {} - {} completed: {:.2} GiB in {:.1}s @ {:.1} MiB/s{}",
+					  cycle_number,
+					  test_name,
+					  total_bytes_for_test as f64 / (1024.0 * 1024.0 * 1024.0),
+					  test_duration.as_secs_f64(),
+					  throughput_mib_s,
+					  if total_errors_for_test > 0 {
+						  format!(" [⚠️ {} ERRORS]", total_errors_for_test)
+					  } else {
+						  String::new()
+					  }
+			);
+		} // Lock guard is explicitly dropped here
 
+		// Analyze and display thread timing deviation
+		{  // Add this opening brace to create a new scope
+			let stats = test_stats.lock().unwrap();
+			if !stats.is_empty() {
+				// Calculate average runtime
+				let total_elapsed: u128 = stats.iter().map(|(_, _, _, elapsed, _)| elapsed).sum();
+				let avg_elapsed = total_elapsed / stats.len() as u128;
+				
+				// Find max deviation
+				let mut max_deviation = 0i128;
+				let mut max_dev_thread = 0;
+				let mut max_dev_cpu = 0;
+				
+				// Calculate deviations
+				let mut deviations: Vec<(usize, usize, i128)> = Vec::new();
+				
+				for &(cpu_id, thread_id, _, elapsed, _) in stats.iter() {
+					let deviation = elapsed as i128 - avg_elapsed as i128;
+					deviations.push((thread_id, cpu_id, deviation));
+					
+					if deviation.abs() > max_deviation.abs() {
+						max_deviation = deviation;
+						max_dev_thread = thread_id;
+						max_dev_cpu = cpu_id;
+					}
+				}
+				
+				// Only show deviation info if significant (>100ms difference)
+				if max_deviation.abs() > 100 {
+					// Format average time as HH:MM:SS.mmm
+					let avg_secs = avg_elapsed / 1000;
+					let avg_millis = avg_elapsed % 1000;
+					let hours = avg_secs / 3600;
+					let minutes = (avg_secs % 3600) / 60;
+					let seconds = avg_secs % 60;
+					let avg_formatted = format!("{:02}:{:02}:{:02}.{:03}", hours, minutes, seconds, avg_millis);
+					
+					// Format max deviation
+					let dev_abs = max_deviation.abs();
+					let dev_secs = dev_abs / 1000;
+					let dev_millis = dev_abs % 1000;
+					let dev_hours = dev_secs / 3600;
+					let dev_minutes = (dev_secs % 3600) / 60;
+					let dev_seconds = dev_secs % 60;
+					let dev_formatted = format!("{:02}:{:02}:{:02}.{:03}", dev_hours, dev_minutes, dev_seconds, dev_millis);
+					
+					log::info!("Test {} - Thread timing deviation - AVG runtime: {}, MAX dev: Thread {} (CPU {}) @ {}{}",
+							  test_name, 
+							  avg_formatted,
+							  max_dev_thread,
+							  max_dev_cpu,
+							  if max_deviation > 0 { "+" } else { "-" },
+							  dev_formatted
+					);
+					
+					// Sort by deviation (slowest first)
+					deviations.sort_by(|a, b| b.2.cmp(&a.2));
+					
+					let mut table = TableBuilder::new()
+						.add_header("Thread", Alignment::Left)
+						.add_header("CPU (Core)", Alignment::Center)
+						.add_header("Deviation", Alignment::Right);
+					
+					for (thread_id, cpu_id, deviation) in deviations {
+						let dev_abs = deviation.abs();
+						let dev_secs = dev_abs / 1000;
+						let dev_millis = dev_abs % 1000;
+						let dev_formatted = if dev_secs > 0 {
+							format!("{}{}.{:03}s", if deviation >= 0 { "+" } else { "-" }, dev_secs, dev_millis)
+						} else {
+							format!("{}{}ms", if deviation >= 0 { "+" } else { "-" }, dev_millis)
+						};
+						
+						let numa_node = get_numa_node_for_cpu(cpu_id);
+						table = table.add_row(vec![
+							format!("Thread {}", thread_id),
+							format!("CPU {} (N{})", cpu_id, numa_node),
+							dev_formatted,
+						]);
+					}
+					
+					log::info!("Thread deviation summary for {}", test_name);
+					table.print();
+				}
+			}
+		}  // Add this closing brace - the lock is dropped here		
+    }
     success.load(Ordering::Relaxed)
 }
 

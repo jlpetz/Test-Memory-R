@@ -8,15 +8,16 @@ pub mod runner;
 pub mod simd;
 pub mod cache;
 pub mod results; // New results module
+pub mod utils;
 
 // Re-export main types and functions
 pub use config::*;
 pub use memory::TestBuffer;
-pub use dma_memory::{reset_driver, DriverStatus, display_driver_info, check_and_display_driver_status, refresh_driver_status, display_driver_stats, is_driver_connected};
+pub use dma_memory::{reset_driver, DriverStatus, display_driver_info, check_and_display_driver_status, refresh_driver_status, display_driver_stats, is_driver_connected, compare_app_vs_driver_stats, reset_app_driver_stats, display_app_driver_stats_table, set_use_remap_all};
 pub use tests::TestMemoryConfig;
 pub use progress::ProgressTracker;
 pub use layout::{MemoryLayout, MemoryStrategy, AllocationMode, WindowMode, BlockMode, BlockInfo};
-pub use runner::{run_tests_with_layout, run_tests_with_layout_and_timing, TestSuiteTiming, AllocatedBlock};
+pub use runner::{run_tests_with_layout, run_tests_with_layout_and_timing, TestSuiteTiming, AllocatedBlock, print_current_memory_status};
 pub use simd::detect_simd_capabilities;
 pub use cache::{CacheInfo, SystemInfo};
 pub use results::{TestRunResult, TestComparison, compare_test_results}; // New exports

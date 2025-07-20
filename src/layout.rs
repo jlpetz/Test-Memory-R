@@ -13,6 +13,16 @@ pub struct MemoryStrategy {
     pub default_block_mode: BlockMode,
 }
 
+impl Default for MemoryStrategy {
+    fn default() -> Self {
+        Self {
+            allocation_mode: AllocationMode::PercentageReserve { reserve_percent: 70.0 },
+            default_window_mode: WindowMode::FullAllocation,
+            default_block_mode: BlockMode::AutoOptimal,
+        }
+    }
+}
+
 #[derive(Debug, Clone)]
 pub enum AllocationMode {
     MaxAvailable { reserve_mb: u32 },           // TM5 style: max memory minus fixed reserve
@@ -32,16 +42,6 @@ pub enum BlockMode {
     AutoOptimal,                       // Auto-calculate optimal block size per test
     FixedSize { size_mb: u32 },       // Fixed block size
     WindowFraction { fraction: f64 },  // Fraction of window size
-}
-
-impl Default for MemoryStrategy {
-    fn default() -> Self {
-        Self {
-            allocation_mode: AllocationMode::PercentageReserve { reserve_percent: 70.0 },
-            default_window_mode: WindowMode::FullAllocation,
-            default_block_mode: BlockMode::AutoOptimal,
-        }
-    }
 }
 
 impl MemoryStrategy {

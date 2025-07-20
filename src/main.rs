@@ -1,14 +1,16 @@
 use std::env;
 use tmr::{create_demo_configs, load_config, ErrorMode, MemoryStrategy, AllocationMode, WindowMode, BlockMode, MemoryBackend, RuntimeConfig};
 use tmr::layout::MemoryLayout;
-use tmr::runner::{run_tests_with_layout_and_timing, TestSuiteTiming, get_numa_node_for_cpu};
+use tmr::runner::{run_tests_with_layout_and_timing, TestSuiteTiming, get_numa_node_for_cpu, print_current_memory_status};
 use tmr::results::compare_results_command;
-use tmr::{dma_memory::{DmaBuffer, DriverHandle, CompatibilityFlags}, reset_driver, display_driver_info, check_and_display_driver_status, DriverStatus, refresh_driver_status, is_driver_connected, display_driver_stats};
+use tmr::{dma_memory::{DmaBuffer, DriverHandle, CompatibilityFlags}, reset_driver, display_driver_info, check_and_display_driver_status, DriverStatus, refresh_driver_status, is_driver_connected, display_driver_stats, compare_app_vs_driver_stats, reset_app_driver_stats};
 use tmr::config::{MemoryAllocationConfig, CpuPinningConfig};
 use log::LevelFilter;
 use env_logger::Builder;
 use std::io::Write;
 use std::sync::{Arc, Mutex};
+use windows::Win32::Storage::FileSystem::{GetFileVersionInfoW, GetFileVersionInfoSizeW, VerQueryValueW};
+use windows::core::PCWSTR;
 
 // Global file logger for dual console+file logging
 static FILE_LOGGER: std::sync::OnceLock<Arc<Mutex<Option<std::fs::File>>>> = std::sync::OnceLock::new();
@@ -60,9 +62,20 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
             _ => {}
         }
     }
+	
+	let use_batch_remap = args.iter().any(|arg| arg == "--batch-remap");
+	if use_batch_remap {
+		tmr::dma_memory::set_use_remap_all(false);
+		println!("  Remap Mode: Batch remapping (original implementation)");
+	} else {
+		tmr::dma_memory::set_use_remap_all(true);
+		println!("  Remap Mode: Remap all (optimized for TMR)");
+	}
 
     // Check for config file parameter
     let config_file = args.iter().find(|arg| arg.starts_with("config=")).map(|arg| &arg[7..]);
+	
+	
 
 	let (memory_strategy, error_mode, suite_timing, cputype, cpus, pinning_config, alloc_config) = 
 		if let Some(config_path) = config_file {
@@ -164,6 +177,19 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         ErrorMode::Halt => println!("Halt on first error"),
         ErrorMode::Panic => println!("Panic on error (debug mode)"),
     }
+	// Display timing configuration
+    print!("  Test Suite Timing: ");
+    match (&suite_timing.global_cycles, &suite_timing.global_duration_secs) {
+        (Some(cycles), Some(duration)) => println!("{} cycles or {}s max (whichever first)", cycles, duration),
+        (Some(cycles), None) => println!("{} cycles (no time limit)", cycles),
+        (None, Some(duration)) => println!("{}s duration (unlimited cycles)", duration),
+        (None, None) => println!("Unlimited cycles and duration"),
+    }
+	println!("  CPU Type: {}", cputype);
+    println!("  Using {}/{} {} for testing", threads, total_cpus, cputype);
+	// Detect SIMD capabilities
+    let simd_caps = tmr::detect_simd_capabilities();
+    println!("  SIMD Support: {}", simd_caps);
     println!();
 	
 	// Check large page privilege early
@@ -175,6 +201,21 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
             println!("    Impact: Will use standard 4KB pages instead of 2MB pages");
         }
     }
+	
+	// Check KMDF version before attempting to use the driver
+	let kmdf_compatible = match verify_kmdf_compatibility() {
+		Ok((major, minor)) => {
+			println!("  KMDF Framework: ✅ v{}.{} (Compatible)", major, minor);
+			true
+		}
+		Err(e) => {
+			println!("  KMDF Framework: ⚠️  {}", e);
+			println!("    Impact: TMR kernel driver will not be available");
+			println!("    Note: Driver requires Windows 10 version 2004 or later (KMDF 1.33+)");
+			false
+		}
+	};
+	
 	let use_driver_chunking = args.iter().any(|arg| arg == "--driver-chunking");
 	if use_driver_chunking {
 		println!("  Use Driver Chunking: ❌ Enabled (for driver testing, driver controls page allocation strategy)");
@@ -182,21 +223,53 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
 		println!("  Use Driver Chunking: ✅ Disabled (default/good, application controls page allocation strategy)");
 	}
 
-	// Check and display DMA driver status
-	display_driver_info();
-	// Reset allocations if driver is available
-	if matches!(check_and_display_driver_status(), DriverStatus::Available(_)) {
-		reset_driver();
+	// Only check driver status if KMDF is compatible
+	if kmdf_compatible {
+		display_driver_info();
+		// Reset allocations if driver is available
+		if matches!(check_and_display_driver_status(), DriverStatus::Available(_)) {
+			reset_driver();
+		}
+	} else {
+		println!("  DMA Driver: ⚠️  Skipped (KMDF version too old)");
 	}
 	println!();
 	
-    println!("System information and Memory Architecture detection:");
-    println!("  CPU Type: {}", cputype);
-    println!("  Using {}/{} {} for testing", threads, total_cpus, cputype);
-	// Detect SIMD capabilities
-    let simd_caps = tmr::detect_simd_capabilities();
-    println!("  SIMD Support: {}", simd_caps);
+    // Detect and display system architecture (includes CPU info and cache)
+    let system_info = tmr::tests::get_system_info();
+    println!("System information and Cache Architecture detection:");
+    println!("  CPU: {} ({})", system_info.cpu_brand, system_info.cpu_vendor);
+    println!("  Family: {}, Model: {}, Stepping: {}", 
+              system_info.cpu_family, system_info.cpu_model, system_info.cpu_stepping);
+    println!("  Cores: {} physical, {} logical{}", 
+              system_info.physical_cores, 
+              system_info.logical_cores,
+              if system_info.has_hyperthreading { " (Hyperthreading enabled)" } else { "" });
+
+    let cache_info = system_info.get_cache_info();
+    println!("  Cache Architecture ({}):", cache_info.detection_method);
+    println!("    L1 Data: {:.1} KB total ({:.1} KB × {} cores)", 
+        cache_info.l1_data_cache as f64 / 1024.0,
+        cache_info.per_core_l1d as f64 / 1024.0,
+        cache_info.core_count);
+    println!("    L1 Instruction: {:.1} KB total ({:.1} KB × {} cores)", 
+        cache_info.l1_instruction_cache as f64 / 1024.0,
+        cache_info.per_core_l1i as f64 / 1024.0,
+        cache_info.core_count);
+    println!("    L2: {:.1} KB total ({:.1} KB × {} cores)", 
+        cache_info.l2_cache as f64 / 1024.0,
+        cache_info.per_core_l2 as f64 / 1024.0,
+        cache_info.core_count);
+    println!("    L3: {:.1} MB (shared)", 
+        cache_info.l3_cache as f64 / (1024.0 * 1024.0));
+    println!("    Line Size: {} bytes | Total Cache: {:.1} MB", 
+        cache_info.cache_line_size,
+        cache_info.total_cache as f64 / (1024.0 * 1024.0));
     println!();
+	
+	// Show memory stats
+	print_current_memory_status();
+	println!();
     
     // Display memory strategy information
     print!("  Memory Strategy: ");
@@ -238,57 +311,12 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
             println!("    Stage 3 (Block Size): {:.1}% of window size per block", fraction * 100.0);
         }
     }
-    
-    // Display timing configuration
-    print!("  Test Suite Timing: ");
-    match (&suite_timing.global_cycles, &suite_timing.global_duration_secs) {
-        (Some(cycles), Some(duration)) => println!("{} cycles or {}s max (whichever first)", cycles, duration),
-        (Some(cycles), None) => println!("{} cycles (no time limit)", cycles),
-        (None, Some(duration)) => println!("{}s duration (unlimited cycles)", duration),
-        (None, None) => println!("Unlimited cycles and duration"),
-    }
-
-    // Detect and display system architecture (includes CPU info and cache)
-    let system_info = tmr::tests::get_system_info();
-    println!("System Information:");
-    println!("  CPU: {} ({})", system_info.cpu_brand, system_info.cpu_vendor);
-    println!("  Family: {}, Model: {}, Stepping: {}", 
-              system_info.cpu_family, system_info.cpu_model, system_info.cpu_stepping);
-    println!("  Cores: {} physical, {} logical{}", 
-              system_info.physical_cores, 
-              system_info.logical_cores,
-              if system_info.has_hyperthreading { " (Hyperthreading enabled)" } else { "" });
-
-    let cache_info = system_info.get_cache_info();
-    println!("  Cache Architecture ({}):", cache_info.detection_method);
-    println!("    L1 Data: {:.1} KB total ({:.1} KB × {} cores)", 
-        cache_info.l1_data_cache as f64 / 1024.0,
-        cache_info.per_core_l1d as f64 / 1024.0,
-        cache_info.core_count);
-    println!("    L1 Instruction: {:.1} KB total ({:.1} KB × {} cores)", 
-        cache_info.l1_instruction_cache as f64 / 1024.0,
-        cache_info.per_core_l1i as f64 / 1024.0,
-        cache_info.core_count);
-    println!("    L2: {:.1} KB total ({:.1} KB × {} cores)", 
-        cache_info.l2_cache as f64 / 1024.0,
-        cache_info.per_core_l2 as f64 / 1024.0,
-        cache_info.core_count);
-    println!("    L3: {:.1} MB (shared)", 
-        cache_info.l3_cache as f64 / (1024.0 * 1024.0));
-    println!("    Line Size: {} bytes | Total Cache: {:.1} MB", 
-        cache_info.cache_line_size,
-        cache_info.total_cache as f64 / (1024.0 * 1024.0));
-    println!();
+	println!("  ");
 
     // Calculate memory layout (Stage 1 allocation only)
     let layout = MemoryLayout::calculate(memory_strategy, threads);
 
-    println!("Starting comprehensive memory tests...");
-    println!("  Stage 1: Pre-allocating maximum memory per thread");
-    println!("  Stage 2: Configuring testing windows per test (full allocation or optimized)");
-    println!("  Stage 3: Optimizing block sizes and alignment per test");
-    println!("  Critical: StuckBitTest will scan ALL allocated memory for stuck bits");
-    println!("  Use CTRL+C for graceful shutdown with final report");
+    println!("Starting comprehensive memory tests... Use CTRL+C for graceful shutdown with final report");
     println!("(detailed logs available with RUST_LOG=debug)");
     println!();
 	
@@ -311,13 +339,25 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     println!();
 	
 	if is_driver_connected() {
-		display_driver_stats(); // Gets fresh stats from existing handle
+		compare_app_vs_driver_stats(); // Gets fresh stats from existing handle
+		
+		reset_driver(); // Reset_driver, this tells the driver we are done and any allocation not already released should be released(fail-safe).
+		
+		// This will completely reset the driver handle and re-check version, for when we implement a GUI
+		let new_status = refresh_driver_status();
+		reset_app_driver_stats(); // Reset the app stats since we reset the Driver, we want stats to align at zero
+
+		// display_driver_stats(); // Commented out, as the below will display both app and driver after reset.
+		compare_app_vs_driver_stats(); // Gets fresh stats from existing handle
 	}
 
-	reset_driver(); // Reset_driver, this tells the driver we are done and any allocation not already released should be released(fail-safe).
+	
 	
 	// This will completely reset the driver handle and re-check version, for when we implement a GUI
 	let new_status = refresh_driver_status();
+	reset_app_driver_stats(); // Reset the app stats since we reset the Driver, we want stats to align at zero
+	
+	
 	
 	if is_driver_connected() {
 		display_driver_stats(); // Gets fresh stats from existing handle
@@ -593,6 +633,97 @@ fn detect_memory_capabilities(use_driver_chunking: bool) -> RuntimeConfig {
     }
 }
 
+// Add these functions to main.rs
+fn check_kmdf_version() -> Result<(u16, u16), String> {
+    unsafe {
+        let file_path = windows::core::w!("C:\\Windows\\System32\\drivers\\Wdf01000.sys");
+        
+        // Get the size of version info
+        let size = GetFileVersionInfoSizeW(file_path, None);
+        if size == 0 {
+            return Err("Failed to get KMDF version info size".to_string());
+        }
+        
+        // Allocate buffer for version info
+        let mut buffer = vec![0u8; size as usize];
+        
+        // Get version info
+        if GetFileVersionInfoW(
+            file_path,
+            None,
+            size,
+            buffer.as_mut_ptr() as *mut std::ffi::c_void,
+        ).is_err() {
+            return Err("Failed to get KMDF version info".to_string());
+        }
+        
+        // Query for VS_FIXEDFILEINFO
+        let mut file_info_ptr: *mut std::ffi::c_void = std::ptr::null_mut();
+        let mut len = 0u32;
+        
+        if !VerQueryValueW(
+            buffer.as_ptr() as *const std::ffi::c_void,
+            windows::core::w!("\\"),
+            &mut file_info_ptr,
+            &mut len,
+        ).as_bool() {  // BOOL type uses .as_bool()
+            return Err("Failed to query KMDF version value".to_string());
+        }
+        
+        if file_info_ptr.is_null() || len == 0 {
+            return Err("Invalid KMDF version info pointer".to_string());
+        }
+        
+        // Cast to VS_FIXEDFILEINFO structure
+        #[repr(C)]
+        struct VS_FIXEDFILEINFO {
+            dw_signature: u32,
+            dw_struct_version: u32,
+            dw_file_version_ms: u32,
+            dw_file_version_ls: u32,
+            dw_product_version_ms: u32,
+            dw_product_version_ls: u32,
+            dw_file_flags_mask: u32,
+            dw_file_flags: u32,
+            dw_file_os: u32,
+            dw_file_type: u32,
+            dw_file_subtype: u32,
+            dw_file_date_ms: u32,
+            dw_file_date_ls: u32,
+        }
+        
+        let file_info = &*(file_info_ptr as *const VS_FIXEDFILEINFO);
+        
+        // Extract major and minor version from product version
+        let major = (file_info.dw_product_version_ms >> 16) as u16;
+        let minor = (file_info.dw_product_version_ms & 0xFFFF) as u16;
+        
+        Ok((major, minor))
+    }
+}
+
+fn verify_kmdf_compatibility() -> Result<(u16, u16), String> {
+    const REQUIRED_MAJOR: u16 = 1;
+    const REQUIRED_MINOR: u16 = 33;
+    
+    match check_kmdf_version() {
+        Ok((major, minor)) => {
+            log::info!("KMDF version detected: {}.{}", major, minor);
+            
+            if major > REQUIRED_MAJOR || (major == REQUIRED_MAJOR && minor >= REQUIRED_MINOR) {
+                log::info!("KMDF version {}.{} meets minimum requirement ({}.{})", 
+                         major, minor, REQUIRED_MAJOR, REQUIRED_MINOR);
+                Ok((major, minor))
+            } else {
+                Err(format!(
+                    "KMDF version {}.{} is too old. Minimum required: {}.{}",
+                    major, minor, REQUIRED_MAJOR, REQUIRED_MINOR
+                ))
+            }
+        }
+        Err(e) => Err(format!("Failed to check KMDF version: {}", e))
+    }
+}
 
 fn format_duration(duration: std::time::Duration) -> String {
     // Format runtime as HH:MM:SS

@@ -2,11 +2,15 @@ use std::sync::Arc;
 use std::collections::HashMap;
 use std::sync::OnceLock;
 use std::sync::Mutex;
+use std::sync::atomic::{AtomicU64, Ordering};
 use windows::Win32::Foundation::{CloseHandle, HANDLE, INVALID_HANDLE_VALUE};
 use windows::Win32::Storage::FileSystem::{CreateFileA, OPEN_EXISTING};
 use windows::Win32::System::IO::DeviceIoControl;
 use windows::core::PCSTR;
 use crate::AllocatedBlock;
+use crate::utils::{TableBuilder, Alignment};
+
+static USE_REMAP_ALL: std::sync::atomic::AtomicBool = std::sync::atomic::AtomicBool::new(true);
 
 /// TMR application version
 const APP_VERSION_MAJOR: u32 = 1;
@@ -16,6 +20,161 @@ const APP_VERSION_BUILD: u32 = 0;
 /// IOCTL for version query
 const IOCTL_TMR_GET_VERSION: u32 = ctl_code(FILE_DEVICE_TMR, 0x7FF, METHOD_BUFFERED, FILE_ANY_ACCESS);
 pub const IOCTL_TMR_BATCH_REMAP_MEMORY_TYPE: u32 = ctl_code(FILE_DEVICE_TMR, 0x815, METHOD_BUFFERED, FILE_ANY_ACCESS);
+pub const IOCTL_TMR_REMAP_ALL_MEMORY_TYPE: u32 = ctl_code(FILE_DEVICE_TMR, 0x816, METHOD_BUFFERED, FILE_ANY_ACCESS);
+
+pub fn set_use_remap_all(value: bool) {
+    USE_REMAP_ALL.store(value, std::sync::atomic::Ordering::Relaxed);
+}
+
+pub fn get_use_remap_all() -> bool {
+    USE_REMAP_ALL.load(std::sync::atomic::Ordering::Relaxed)
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+pub enum DriverStatType {
+    TotalCalls,
+    AllocateDma,
+    FreeDma,
+    GetMemoryStats,
+    BatchAllocate,
+    GetStatistics,
+    SetCpuAffinity,
+    GetHardwareInfo,
+    ResetAll,
+    GetVersion,
+    BatchRemapMemoryType,
+    RemapAllMemoryType,  // New separate tracking
+}
+
+// Stat definition with all metadata
+struct StatDefinition {
+    stat_type: DriverStatType,
+    display_name: &'static str,
+    counter: AtomicU64,
+}
+
+pub struct AppDriverStats {
+    stats: Vec<StatDefinition>,
+}
+
+impl AppDriverStats {
+    fn new() -> Self {
+        // Define all stats in one place with their display names
+        let stat_defs = vec![
+            (DriverStatType::TotalCalls, "Total Calls"),
+            (DriverStatType::AllocateDma, "Allocate DMA"),
+            (DriverStatType::FreeDma, "Free DMA"),
+            (DriverStatType::GetMemoryStats, "Get Memory Stats"),
+            (DriverStatType::BatchAllocate, "Batch Allocate"),
+            (DriverStatType::GetStatistics, "Get Statistics"),
+            (DriverStatType::SetCpuAffinity, "Set CPU Affinity"),
+            (DriverStatType::GetHardwareInfo, "Get Hardware Info"),
+            (DriverStatType::ResetAll, "Reset All"),
+            (DriverStatType::GetVersion, "Get Version"),
+            (DriverStatType::BatchRemapMemoryType, "Batch Remap Memory Type"),
+            (DriverStatType::RemapAllMemoryType, "Remap All Memory Type"),
+        ];
+        
+        let stats = stat_defs
+            .into_iter()
+            .map(|(stat_type, display_name)| StatDefinition {
+                stat_type,
+                display_name,
+                counter: AtomicU64::new(0),
+            })
+            .collect();
+        
+        Self { stats }
+    }
+    
+    fn increment(&self, stat_type: DriverStatType) {
+        // Find and increment the specific stat
+        if let Some(stat) = self.stats.iter().find(|s| s.stat_type == stat_type) {
+            stat.counter.fetch_add(1, Ordering::Relaxed);
+        }
+        // Always increment total calls (except for total calls itself)
+        if stat_type != DriverStatType::TotalCalls {
+            if let Some(total) = self.stats.iter().find(|s| s.stat_type == DriverStatType::TotalCalls) {
+                total.counter.fetch_add(1, Ordering::Relaxed);
+            }
+        }
+    }
+    
+    fn reset(&self) {
+        for stat in &self.stats {
+            stat.counter.store(0, Ordering::Relaxed);
+        }
+    }
+    
+    pub fn get_summary(&self) -> HashMap<String, u64> {
+        self.stats
+            .iter()
+            .map(|stat| (stat.display_name.to_string(), stat.counter.load(Ordering::Relaxed)))
+            .collect()
+    }
+    
+    pub fn get_value(&self, stat_type: DriverStatType) -> u64 {
+        self.stats
+            .iter()
+            .find(|s| s.stat_type == stat_type)
+            .map(|s| s.counter.load(Ordering::Relaxed))
+            .unwrap_or(0)
+    }
+}
+
+// Global application stats
+static APP_DRIVER_STATS: OnceLock<AppDriverStats> = OnceLock::new();
+
+fn get_app_stats() -> &'static AppDriverStats {
+    APP_DRIVER_STATS.get_or_init(|| AppDriverStats::new())
+}
+
+// Helper macro to track calls
+macro_rules! track_driver_call {
+    ($stat_type:expr) => {
+        {
+            let stats = get_app_stats();
+            stats.increment($stat_type);
+        }
+    };
+}
+
+/// Input structure for remap all request
+#[repr(C)]
+#[derive(Copy, Clone)]
+pub struct RemapAllInput {
+    pub new_memory_type: u32,  // MemoryType as u32
+}
+
+/// Output structure for remap all result
+#[repr(C)]
+#[derive(Copy, Clone)]
+pub struct RemapAllOutput {
+    pub success: bool,
+    pub allocations_remapped: u32,
+    pub allocations_failed: u32,
+    pub total_time_us: u32,
+}
+
+// Make sure these have Default implementations
+impl Default for RemapAllInput {
+    fn default() -> Self {
+        Self {
+            new_memory_type: MemoryType::WriteBack as u32,
+        }
+    }
+}
+
+impl Default for RemapAllOutput {
+    fn default() -> Self {
+        Self {
+            success: false,
+            allocations_remapped: 0,
+            allocations_failed: 0,
+            total_time_us: 0,
+        }
+    }
+}
 
 
 // Global driver handle that gets initialized once
@@ -491,6 +650,8 @@ impl DriverHandle {
     }
 
 	pub fn reset_all(&self) -> Result<(), String> {
+		track_driver_call!(DriverStatType::ResetAll);
+		
 		unsafe {
 			let mut bytes_returned = 0u32;
 			
@@ -515,6 +676,8 @@ impl DriverHandle {
 
     /// Check driver version compatibility
     pub fn check_version_compatibility(&self) -> Result<DriverVersionInfo, DriverVersionError> {
+		track_driver_call!(DriverStatType::GetVersion);
+        
         let mut version_info = DriverVersionInfo {
             driver_version_major: 0,
             driver_version_minor: 0,
@@ -594,6 +757,53 @@ impl DriverHandle {
 			Err(e) => Err(format!("Driver version incompatible: {}", e))
 		}
 	}
+	
+    pub fn remap_all_memory_type(&self, new_memory_type: MemoryType) -> Result<u32, String> {
+		track_driver_call!(DriverStatType::RemapAllMemoryType);
+        
+        let input = RemapAllInput {
+            new_memory_type: new_memory_type as u32,
+        };
+        
+        let mut output = RemapAllOutput {
+            success: false,
+            allocations_remapped: 0,
+            allocations_failed: 0,
+            total_time_us: 0,
+        };
+        
+        unsafe {
+            let mut bytes_returned = 0u32;
+            
+            let result = DeviceIoControl(
+                self.handle,
+                IOCTL_TMR_REMAP_ALL_MEMORY_TYPE,
+                Some(&input as *const _ as *const std::ffi::c_void),
+                std::mem::size_of::<RemapAllInput>() as u32,
+                Some(&mut output as *mut _ as *mut std::ffi::c_void),
+                std::mem::size_of::<RemapAllOutput>() as u32,
+                Some(&mut bytes_returned),
+                None,
+            );
+            
+            if result.is_err() {
+                return Err("Failed to execute remap all IOCTL".to_string());
+            }
+            
+            if !output.success {
+                return Err(format!(
+                    "Driver failed to remap all allocations: {} succeeded, {} failed", 
+                    output.allocations_remapped, 
+                    output.allocations_failed
+                ));
+            }
+            
+            log::debug!("Driver remapped {} allocations to {:?} in {}μs", 
+                      output.allocations_remapped, new_memory_type, output.total_time_us);
+            
+            Ok(output.allocations_remapped)
+        }
+    }
 	
 }
 
@@ -725,6 +935,8 @@ impl DmaBuffer {
     pub fn new_with_config(size_bytes: usize, config: DmaConfig) -> Result<Self, String> {
         let driver = get_global_driver_handle()?;
         
+		track_driver_call!(DriverStatType::AllocateDma);
+        
 		let input = AllocateDmaInput {
 			size: size_bytes,
 			numa_node: config.prefer_numa_node.unwrap_or(0xFFFFFFFF),
@@ -803,6 +1015,8 @@ impl DmaBuffer {
         let driver = get_global_driver_handle()?;
         let mut stats = MemoryStats::default();
         
+		track_driver_call!(DriverStatType::GetMemoryStats);
+        
         unsafe {
             let mut bytes_returned = 0u32;
             
@@ -829,6 +1043,8 @@ impl DmaBuffer {
         let driver = get_global_driver_handle()?;
         
         let mut stats = RuntimeStatistics::default();
+        
+        track_driver_call!(DriverStatType::GetStatistics);
         
         unsafe {
             let mut bytes_returned = 0u32;
@@ -872,6 +1088,8 @@ impl DmaBuffer {
     
     pub fn batch_allocate(requests: &BatchAllocationRequest) -> Result<Vec<(u32, Vec<DmaBuffer>)>, String> {
         let driver = get_global_driver_handle()?;
+        
+        track_driver_call!(DriverStatType::BatchAllocate);
         
         // Prepare batch request
         let mut batch_input = BatchAllocateInput::default();
@@ -967,6 +1185,8 @@ impl DmaBuffer {
             return Ok(Vec::new());
         }
         
+        track_driver_call!(DriverStatType::BatchRemapMemoryType);
+        
         // Group by memory type for efficiency
         let mut by_type: std::collections::HashMap<MemoryType, Vec<u64>> = std::collections::HashMap::new();
         for (addr, mem_type) in remaps {
@@ -1030,6 +1250,8 @@ impl DmaBuffer {
 impl Drop for DmaBuffer {
     fn drop(&mut self) {
         if !self.ptr.is_null() {
+            track_driver_call!(DriverStatType::FreeDma);
+            
             let input = FreeDmaInput {
                 user_address: self.ptr as u64,
             };
@@ -1068,6 +1290,8 @@ impl DmaBufferEnhanced {
     /// Create with specific configuration
     pub fn new_with_config(size_bytes: usize, config: DmaConfig) -> Result<Self, String> {
         let driver = get_global_driver_handle()?;
+        
+        track_driver_call!(DriverStatType::AllocateDma);
         
         // Log the allocation request
         log::info!("DMA allocation request: {} bytes, min_page_size: {:?}, max_page_size: {:?}, NUMA: {:?}",
@@ -1278,6 +1502,8 @@ impl DmaBufferEnhanced {
 impl Drop for DmaBufferEnhanced {
     fn drop(&mut self) {
         if !self.ptr.is_null() {
+            track_driver_call!(DriverStatType::FreeDma);
+            
             let input = FreeDmaInput {
                 user_address: self.ptr as u64,
             };
@@ -1441,51 +1667,98 @@ pub fn remap_all_allocations_to_type(
     new_memory_type: MemoryType,
     driver: &Arc<DriverHandle>,
 ) -> Result<(), String> {
-    // Collect all addresses that need remapping
-    let mut remap_requests = Vec::new();
-    let mut address_to_buffer: HashMap<u64, (*mut AllocatedBlock, usize, usize)> = HashMap::new();
-    
-    for (thread_id, blocks) in allocated_blocks.iter_mut() {
-        for (block_idx, block) in blocks.iter_mut().enumerate() {
-            if block.memory_type != new_memory_type {
-                if let Some(addr) = block.buffer.get_virtual_address() {
-                    remap_requests.push((addr, new_memory_type));
-                    address_to_buffer.insert(addr, (block as *mut _, *thread_id, block_idx));
+    if get_use_remap_all() {
+        // Optimized approach: Just tell the driver to remap everything
+        let start = std::time::Instant::now();
+        
+        match driver.remap_all_memory_type(new_memory_type) {
+            Ok(count) => {
+                // Update all our local block tracking to reflect the new memory type
+                for (_, blocks) in allocated_blocks.iter_mut() {
+                    for block in blocks.iter_mut() {
+                        block.memory_type = new_memory_type;
+                        // Note: Virtual addresses don't change with memory type remap
+                        // The physical mapping changes but virtual addresses remain stable
+                    }
+                }
+                
+                let elapsed = start.elapsed();
+                log::info!("Remapped {} allocations to {:?} in {:?} (remap all mode)", 
+                          count, new_memory_type, elapsed);
+                Ok(())
+            }
+            Err(e) => {
+                log::error!("Failed to remap all memory types: {}", e);
+                Err(e)
+            }
+        }
+    } else {
+        // Original batch approach - check each block and build remap list
+        let mut remap_requests = Vec::new();
+        let mut address_to_buffer: HashMap<u64, (*mut AllocatedBlock, usize, usize)> = HashMap::new();
+        
+        // Collect all addresses that need remapping
+        for (thread_id, blocks) in allocated_blocks.iter_mut() {
+            for (block_idx, block) in blocks.iter_mut().enumerate() {
+                // Only remap if the memory type is different
+                if block.memory_type != new_memory_type {
+                    if let Some(addr) = block.buffer.get_virtual_address() {
+                        remap_requests.push((addr, new_memory_type));
+                        address_to_buffer.insert(addr, (block as *mut _, *thread_id, block_idx));
+                    }
                 }
             }
         }
-    }
-    
-    if remap_requests.is_empty() {
-        return Ok(()); // Nothing to remap
-    }
-    
-    log::info!("Remapping {} allocations to {:?}", remap_requests.len(), new_memory_type);
-    let start = std::time::Instant::now();
-    
-    // Execute batch remap
-    let results = DmaBuffer::batch_remap_memory_type(driver, &remap_requests)?;
-    
-    // Update buffers with results
-    for result in results {
-        if result.success {
-            if let Some((block_ptr, _, _)) = address_to_buffer.get(&result.user_address) {
-                unsafe {
-                    let block = &mut **block_ptr;
-                    block.buffer.update_address_after_remap(result.new_address);
-                    block.memory_type = new_memory_type;
-                }
-            }
-        } else {
-            log::error!("Failed to remap address {:#x}, error: {}", 
-                       result.user_address, result.error_code);
+        
+        if remap_requests.is_empty() {
+            log::debug!("No blocks need remapping - all already at {:?}", new_memory_type);
+            return Ok(()); // Nothing to remap
         }
+        
+        log::info!("Remapping {} allocations to {:?} (batch mode)", remap_requests.len(), new_memory_type);
+        let start = std::time::Instant::now();
+        
+        // Execute batch remap
+        let results = DmaBuffer::batch_remap_memory_type(driver, &remap_requests)?;
+        
+        // Update buffers with results
+        let mut success_count = 0;
+        let mut failure_count = 0;
+        
+        for result in results {
+            if result.success {
+                if let Some((block_ptr, _, _)) = address_to_buffer.get(&result.user_address) {
+                    unsafe {
+                        let block = &mut **block_ptr;
+                        // Update address if it changed (shouldn't happen for memory type remap)
+                        if result.new_address != result.user_address {
+                            block.buffer.update_address_after_remap(result.new_address);
+                            log::warn!("Address changed during remap: {:#x} -> {:#x}", 
+                                     result.user_address, result.new_address);
+                        }
+                        // Update the memory type
+                        block.memory_type = new_memory_type;
+                        success_count += 1;
+                    }
+                }
+            } else {
+                failure_count += 1;
+                log::error!("Failed to remap address {:#x}, error code: {}", 
+                           result.user_address, result.error_code);
+            }
+        }
+        
+        let elapsed = start.elapsed();
+        
+        if failure_count > 0 {
+            return Err(format!("Batch remap completed with {} successes and {} failures in {:?}", 
+                             success_count, failure_count, elapsed));
+        }
+        
+        log::info!("Successfully remapped {} allocations in {:?} (batch mode)", 
+                  success_count, elapsed);
+        Ok(())
     }
-    
-    let elapsed = start.elapsed();
-    log::info!("Remapped {} allocations in {:?}", remap_requests.len(), elapsed);
-    
-    Ok(())
 }
 
 // Update get_cached_driver_version to properly clone the data
@@ -1641,6 +1914,100 @@ pub fn display_driver_info() {
             println!("  DMA Driver: ❌ Error - {}", e);
         }
     }
+}
+
+// New functions for displaying app driver stats
+pub fn display_app_driver_stats() {
+    let app_stats = get_app_stats();
+    
+    println!("\n📊 Application-side Driver Call Statistics:");
+    
+    // Display total calls first
+    println!("  Total Calls: {}", app_stats.get_value(DriverStatType::TotalCalls));
+    println!("  Breakdown by Type:");
+    
+    // Loop through all stats except TotalCalls
+    for stat in &app_stats.stats {
+        if stat.stat_type != DriverStatType::TotalCalls {
+            let count = stat.counter.load(Ordering::Relaxed);
+            if count > 0 {
+                println!("    {}: {}", stat.display_name, count);
+            }
+        }
+    }
+}
+
+pub fn display_app_driver_stats_table() {
+    let app_stats = get_app_stats();
+    
+    let mut table = TableBuilder::new()
+        .add_header("Operation", Alignment::Left)
+        .add_header("Count", Alignment::Right)
+        .min_column_width(35); // Match your original spacing
+    
+    for stat in &app_stats.stats {
+        let count = stat.counter.load(Ordering::Relaxed);
+        if count > 0 || stat.stat_type == DriverStatType::TotalCalls {
+            table = table.add_row(vec![
+                stat.display_name.to_string(),
+                count.to_string(),
+            ]);
+        }
+    }
+    
+    println!("\n📊 Application Driver Call Statistics:");
+    table.print();
+}
+
+pub fn compare_app_vs_driver_stats() -> Result<(), String> {
+    let app_stats = get_app_stats();
+    let driver_stats = DmaBuffer::get_driver_statistics()?;
+    
+    println!("\n📊 Application vs Driver Statistics Comparison:");
+    println!("  Application-side:");
+    println!("    Total calls: {}", app_stats.get_value(DriverStatType::TotalCalls));
+    println!("    Call breakdown:");
+    
+    // Compact loop for displaying app stats
+    for stat in &app_stats.stats {
+        if stat.stat_type != DriverStatType::TotalCalls {
+            let count = stat.counter.load(Ordering::Relaxed);
+            if count > 0 {
+                println!("      {}: {}", stat.display_name, count);
+            }
+        }
+    }
+    
+    println!("\n  Driver-side:");
+    println!("    Total allocations: {}", driver_stats.total_allocations);
+    println!("    Successful allocations: {}", driver_stats.successful_allocations);
+    println!("    Failed allocations: {}", driver_stats.failed_allocations);
+    
+    // Calculate discrepancies for specific operations
+    let app_allocs = app_stats.get_value(DriverStatType::AllocateDma);
+    let app_batch_allocs = app_stats.get_value(DriverStatType::BatchAllocate);
+    let total_app_allocs = app_allocs + app_batch_allocs;
+    
+    if total_app_allocs != driver_stats.total_allocations {
+        println!("\n  ⚠️  Discrepancy: App sent {} allocation requests ({}+{} batch), driver reports {} total",
+            total_app_allocs, app_allocs, app_batch_allocs, driver_stats.total_allocations);
+    }
+    
+    // Check remap operations
+    let app_remaps = app_stats.get_value(DriverStatType::BatchRemapMemoryType) + 
+                     app_stats.get_value(DriverStatType::RemapAllMemoryType);
+    if app_remaps > 0 {
+        println!("\n  Memory Remap Operations:");
+        println!("    Batch remaps: {}", app_stats.get_value(DriverStatType::BatchRemapMemoryType));
+        println!("    Remap all calls: {}", app_stats.get_value(DriverStatType::RemapAllMemoryType));
+    }
+    
+    Ok(())
+}
+
+pub fn reset_app_driver_stats() {
+    get_app_stats().reset();
+    log::info!("App driver stats reset to zero");
 }
 
 impl DmaBuffer {
