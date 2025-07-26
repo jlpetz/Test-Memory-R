@@ -19,10 +19,12 @@ windows = { version = "0.61", features = [
 	"Win32_System_ProcessStatus",    # Add for GetNumaHighestNodeNumber
 	"Win32_System_WindowsProgramming", # Sometimes needed for NUMA
 	"Win32_System_SystemServices",
+	"Win32_System_Registry",
 ] }
 num_cpus = "1.17"
 log = "0.4"
 env_logger = "0.11"
+encoding_rs = "0.8" # Needed for windows CLI interaction.
 serde = { version = "1.0", features = ["derive"] }
 serde_json = "1.0"
 chrono = { version = "0.4", features = ["serde"] }  # For timestamp handling

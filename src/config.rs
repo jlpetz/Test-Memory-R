@@ -52,18 +52,128 @@ pub struct CpuPinningConfig {
     pub enable_pinning: bool,
     pub balance_across_numa: bool,
     pub prefer_physical_cores: bool,
-    pub avoid_cpu_0: bool,
+    #[serde(default = "default_cpus_to_skip")]
+    pub cpus_to_skip: usize,  // New field
+    #[serde(default = "default_avoid_smt_doubling")]
+    pub avoid_smt_doubling: bool,  // New field
 }
+
+fn default_cpus_to_skip() -> usize { 1 }
+fn default_avoid_smt_doubling() -> bool { false }
 
 // Define MemoryAllocationConfig
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct MemoryAllocationConfig {
-    // Add whatever fields you need
+    // Driver control
+    #[serde(default = "default_use_driver")]
+    pub use_driver: Option<bool>,              // None = auto-detect, Some(true/false) = force
+    
+    #[serde(default = "default_driver_chunking")]
+    pub driver_chunking: bool,                 // Let driver control page allocation strategy
+    
+    #[serde(default = "default_remap_mode")]
+    pub remap_mode: String,                    // "remap_all" or "batch"
+    
+    // Page size constraints (using your existing system)
+    #[serde(default = "default_min_page_size")]
+    pub min_page_size: String,                 // "regular", "large", "huge"
+    
+    #[serde(default = "default_max_page_size")]
+    pub max_page_size: String,                 // "regular", "large", "huge"
+    
+    // Allocation behavior
+    #[serde(default = "default_zero_memory")]
+    pub zero_memory: bool,                     // Zero memory on allocation
+    
+    #[serde(default = "default_require_contiguous")]
+    pub require_contiguous: bool,              // Require contiguous physical memory
+    
+    #[serde(default = "default_memory_type")]
+    pub default_memory_type: String,           // "write_back", "write_through", "uncached", "write_combining"
+    
+    // Timing/retry parameters
+    #[serde(default = "default_allocation_timeout_ms")]
+    pub allocation_timeout_ms: u32,            // Default: 10000
+    
+    #[serde(default = "default_retry_interval_ms")]
+    pub retry_interval_ms: u32,                // Default: 10
+    
+    #[serde(default = "default_max_retries")]
+    pub max_retries: u32,                      // Default: 100
+    
+    // NUMA behavior
+    #[serde(default = "default_strict_numa")]
+    pub strict_numa: bool,                     // Fail if can't allocate on requested NUMA node
 }
+
+fn default_use_driver() -> Option<bool> { None }
+fn default_driver_chunking() -> bool { false }
+fn default_remap_mode() -> String { "remap_all".to_string() }
+fn default_min_page_size() -> String { "large".to_string() }
+fn default_max_page_size() -> String { "huge".to_string() }
+fn default_zero_memory() -> bool { false }
+fn default_require_contiguous() -> bool { true }
+fn default_memory_type() -> String { "write_back".to_string() }
+fn default_allocation_timeout_ms() -> u32 { 10000 }
+fn default_retry_interval_ms() -> u32 { 100 }
+fn default_max_retries() -> u32 { 3 }
+fn default_strict_numa() -> bool { false }
 
 impl Default for MemoryAllocationConfig {
     fn default() -> Self {
-        Self {}
+        Self {
+            use_driver: default_use_driver(),
+            driver_chunking: default_driver_chunking(),
+            remap_mode: default_remap_mode(),
+            min_page_size: default_min_page_size(),
+            max_page_size: default_max_page_size(),
+            zero_memory: default_zero_memory(),
+            require_contiguous: default_require_contiguous(),
+            default_memory_type: default_memory_type(),
+            allocation_timeout_ms: default_allocation_timeout_ms(),
+            retry_interval_ms: default_retry_interval_ms(),
+            max_retries: default_max_retries(),
+            strict_numa: default_strict_numa(),
+        }
+    }
+}
+
+impl MemoryAllocationConfig {
+    // Convert string page size to PageSize enum
+    pub fn parse_page_size(size_str: &str) -> Result<crate::dma_memory::PageSize, String> {
+        match size_str.to_lowercase().as_str() {
+            "regular" | "4kb" => Ok(crate::dma_memory::PageSize::Regular),
+            "large" | "2mb" => Ok(crate::dma_memory::PageSize::Large),
+            "huge" | "1gb" => Ok(crate::dma_memory::PageSize::Huge),
+            _ => Err(format!("Invalid page size: {}", size_str)),
+        }
+    }
+    
+    // Convert string memory type to MemoryType enum
+    pub fn parse_memory_type(type_str: &str) -> Result<crate::dma_memory::MemoryType, String> {
+        match type_str.to_lowercase().replace('_', "").as_str() {
+            "writeback" => Ok(crate::dma_memory::MemoryType::WriteBack),
+            "writethrough" => Ok(crate::dma_memory::MemoryType::WriteThrough),
+            "uncached" => Ok(crate::dma_memory::MemoryType::Uncached),
+            "writecombining" => Ok(crate::dma_memory::MemoryType::WriteCombining),
+            _ => Err(format!("Invalid memory type: {}", type_str)),
+        }
+    }
+    
+    // Create a DmaConfig from this allocation config
+    pub fn to_dma_config(&self, numa_node: Option<u32>) -> Result<crate::dma_memory::DmaConfig, String> {
+        Ok(crate::dma_memory::DmaConfig {
+            minimum_page_size: Self::parse_page_size(&self.min_page_size)?,
+            maximum_page_size: Self::parse_page_size(&self.max_page_size)?,
+            prefer_numa_node: numa_node,
+            zero_memory: self.zero_memory,
+            memory_type: Self::parse_memory_type(&self.default_memory_type)?,
+            contiguous: self.require_contiguous,
+            timeout_ms: self.allocation_timeout_ms,
+            retry_interval_ms: self.retry_interval_ms,
+            max_retries: self.max_retries,
+            strict_numa: self.strict_numa,
+        })
     }
 }
 
@@ -73,7 +183,8 @@ impl Default for CpuPinningConfig {
             enable_pinning: true,
             balance_across_numa: true,
             prefer_physical_cores: false,
-            avoid_cpu_0: true,
+			cpus_to_skip: 1,
+			avoid_smt_doubling: false,
         }
     }
 }

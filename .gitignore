@@ -18,3 +18,5 @@ Cargo.lock
 *patch*.txt
 *.patch
 *.bak
+/.claude
+CLAUDE.md

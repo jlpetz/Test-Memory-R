@@ -75,7 +75,7 @@ pub struct BlockInfo {
 }
 
 impl MemoryLayout {
-    pub fn calculate(strategy: MemoryStrategy, thread_count: usize) -> Self {
+    pub fn calculate(strategy: &MemoryStrategy, thread_count: usize) -> Self {
         let total_memory = memory::get_total_system_memory();
         let allocated_per_thread = match &strategy.allocation_mode {
             AllocationMode::MaxAvailable { reserve_mb } => {
@@ -110,7 +110,7 @@ impl MemoryLayout {
             allocated_memory: total_allocated,
             reserved_memory,
             blocks,
-            strategy,
+            strategy: strategy.clone(),
         }
     }
 

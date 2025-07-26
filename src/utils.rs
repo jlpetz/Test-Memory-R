@@ -1,5 +1,4 @@
 
-
 pub struct TableBuilder {
     headers: Vec<(String, Alignment)>,
     rows: Vec<Vec<String>>,
@@ -110,10 +109,75 @@ impl TableBuilder {
     }
     
     // Alternative: return as string for logging
-    pub fn to_string(&self) -> String {
-        // Similar implementation but building a String instead of printing
-        let mut result = String::new();
-        // ... (same logic as print but using result.push_str)
-        result
-    }
+	pub fn to_string(&self) -> String {
+		let mut result = String::new();
+		
+		if self.headers.is_empty() {
+			return result;
+		}
+		
+		// Calculate column widths
+		let mut widths: Vec<usize> = self.headers
+			.iter()
+			.map(|(h, _)| h.len().max(self.min_column_width))
+			.collect();
+		
+		// Adjust widths based on row content
+		for row in &self.rows {
+			for (i, cell) in row.iter().enumerate() {
+				if i < widths.len() {
+					widths[i] = widths[i].max(cell.len());
+				}
+			}
+		}
+		
+		// Add padding
+		for width in &mut widths {
+			*width += 2; // Add padding
+		}
+		
+		// Add separator
+		let total_width: usize = widths.iter().sum();
+		result.push_str(&self.separator_char.to_string().repeat(total_width));
+		result.push('\n');
+		
+		// Add headers
+		for (i, (header, alignment)) in self.headers.iter().enumerate() {
+			let width = widths[i];
+			let formatted = match alignment {
+				Alignment::Left => format!("{:<width$}", header, width = width),
+				Alignment::Right => format!("{:>width$}", header, width = width),
+				Alignment::Center => format!("{:^width$}", header, width = width),
+			};
+			result.push_str(&formatted);
+		}
+		result.push('\n');
+		
+		// Add separator
+		result.push_str(&self.separator_char.to_string().repeat(total_width));
+		result.push('\n');
+		
+		// Add rows
+		for row in &self.rows {
+			for (i, cell) in row.iter().enumerate() {
+				if i < self.headers.len() {
+					let (_, alignment) = &self.headers[i];
+					let width = widths[i];
+					let formatted = match alignment {
+						Alignment::Left => format!("{:<width$}", cell, width = width),
+						Alignment::Right => format!("{:>width$}", cell, width = width),
+						Alignment::Center => format!("{:^width$}", cell, width = width),
+					};
+					result.push_str(&formatted);
+				}
+			}
+			result.push('\n');
+		}
+		
+		// Add final separator
+		result.push_str(&self.separator_char.to_string().repeat(total_width));
+		result.push('\n');
+		
+		result
+	}
 }

@@ -1,16 +1,19 @@
 use std::env;
-use tmr::{create_demo_configs, load_config, ErrorMode, MemoryStrategy, AllocationMode, WindowMode, BlockMode, MemoryBackend, RuntimeConfig};
-use tmr::layout::MemoryLayout;
-use tmr::runner::{run_tests_with_layout_and_timing, TestSuiteTiming, get_numa_node_for_cpu, print_current_memory_status};
-use tmr::results::compare_results_command;
-use tmr::{dma_memory::{DmaBuffer, DriverHandle, CompatibilityFlags}, reset_driver, display_driver_info, check_and_display_driver_status, DriverStatus, refresh_driver_status, is_driver_connected, display_driver_stats, compare_app_vs_driver_stats, reset_app_driver_stats};
-use tmr::config::{MemoryAllocationConfig, CpuPinningConfig};
+use std::collections::HashMap;
+use std::io::{stdin, stdout};
+use std::io::Write;						// Needed for flush()
+use std::sync::{Arc, Mutex};
 use log::LevelFilter;
 use env_logger::Builder;
-use std::io::Write;
-use std::sync::{Arc, Mutex};
 use windows::Win32::Storage::FileSystem::{GetFileVersionInfoW, GetFileVersionInfoSizeW, VerQueryValueW};
-use windows::core::PCWSTR;
+
+use tmr::{create_demo_configs, load_config, ErrorMode, MemoryStrategy, AllocationMode, WindowMode, BlockMode};
+use tmr::layout::MemoryLayout;
+use tmr::runner::{run_tests_with_layout_and_timing, TestSuiteTiming, print_current_memory_status, detect_runtime_capabilities};
+use tmr::cpu_topology::{display_cpu_topology, get_cpu_topology, is_hybrid_cpu, CoreType};
+use tmr::results::compare_results_command;
+use tmr::{dma_memory::DriverHandle, reset_driver, display_driver_info, check_and_display_driver_status, DriverStatus, refresh_driver_status, is_driver_connected, display_driver_stats, compare_app_vs_driver_stats, reset_app_driver_stats};
+use tmr::config::{MemoryAllocationConfig, CpuPinningConfig};
 
 // Global file logger for dual console+file logging
 static FILE_LOGGER: std::sync::OnceLock<Arc<Mutex<Option<std::fs::File>>>> = std::sync::OnceLock::new();
@@ -49,6 +52,37 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
                 }
                 return Ok(());
             }
+			"--debug-topology" => {
+                println!("🔍 Debugging CPU Topology Detection");
+                tmr::cpu_topology::debug_topology_detection();
+                return Ok(());
+            }
+			"--show-topology" => {
+				println!("🔍 Complete CPU Topology Mapping");
+				tmr::cpu_topology::show_complete_topology_mapping();
+				return Ok(());
+			}
+			"--setup-large-pages" => {
+				println!("🔧 TMR Large Page Setup Tool");
+				println!("=============================\n");
+				
+				let diagnostic = tmr::memory::diagnose_and_setup_large_pages();
+				println!("{}", diagnostic);
+				
+				// Test final state
+				match tmr::check_large_page_privilege() {
+					Ok(()) => {
+						println!("\n🎉 SUCCESS: Large pages are now enabled and working!");
+						println!("You can now run TMR normally for optimal performance.");
+					}
+					Err(e) => {
+						println!("\n⚠️  Large pages are still not available: {}", e);
+						println!("TMR will still work but will use standard pages.");
+						println!("This may require a system restart if privileges were just granted.");
+					}
+				}
+				return Ok(());
+			}
             "--help" | "-h" => {
                 print_help(&args[0]);
                 return Ok(());
@@ -63,19 +97,9 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         }
     }
 	
-	let use_batch_remap = args.iter().any(|arg| arg == "--batch-remap");
-	if use_batch_remap {
-		tmr::dma_memory::set_use_remap_all(false);
-		println!("  Remap Mode: Batch remapping (original implementation)");
-	} else {
-		tmr::dma_memory::set_use_remap_all(true);
-		println!("  Remap Mode: Remap all (optimized for TMR)");
-	}
 
     // Check for config file parameter
     let config_file = args.iter().find(|arg| arg.starts_with("config=")).map(|arg| &arg[7..]);
-	
-	
 
 	let (memory_strategy, error_mode, suite_timing, cputype, cpus, pinning_config, alloc_config) = 
 		if let Some(config_path) = config_file {
@@ -87,29 +111,11 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
 				config.system.cpu_config.cpu_type.clone(),
 				format!("{}%", config.system.cpu_config.usage_percent),
 				config.system.cpu_pinning.clone(),
-				config.system.memory_allocation.clone(),
+				config.system.memory_allocation.clone(), // Use the config's allocation settings
 			)
 		} else {
-			// Command line defaults
-			(
-				MemoryStrategy::default(),
-				ErrorMode::Log,
-				TestSuiteTiming::default(),
-				"threads".to_string(),
-				"100%".to_string(),
-				CpuPinningConfig::default(),
-				MemoryAllocationConfig::default(),
-			)
+			parse_command_line_params(&args)
 		};
-
-    // Calculate CPU/thread count
-    let total_cpus = match cputype.as_str() {
-        "cores" => num_cpus::get_physical(),
-        _ => num_cpus::get(),
-    };
-
-    let percent = cpus.trim_end_matches('%').parse::<u32>().unwrap_or(100);
-    let threads = ((total_cpus as u32 * percent) / 100).max(1).min(total_cpus as u32) as usize;
 
     // Display startup mode and parameters
     println!("Startup Mode & Parameters:");
@@ -128,23 +134,23 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     let mut explicit_params = Vec::new();
     let mut default_params = Vec::new();
 
-    for arg in &args[1..] {
-        if arg.starts_with("config=") {
-            explicit_params.push(arg.clone());
-        } else if arg.starts_with("cputype=") {
-            explicit_params.push(format!("cputype={}", cputype));
-        } else if arg.starts_with("cpus=") {
-            explicit_params.push(format!("cpus={}", cpus));
-        } else if arg.starts_with("memory=") {
-            explicit_params.push(arg.clone());
-        } else if arg.starts_with("errors=") {
-            explicit_params.push(arg.clone());
-        } else if arg.starts_with("cycles=") {
-            explicit_params.push(arg.clone());
-        } else if arg.starts_with("duration=") {
-            explicit_params.push(arg.clone());
-        }
-    }
+	for arg in &args[1..] {
+		if arg.starts_with("config=") {
+			explicit_params.push(arg.clone());
+		} else if arg.starts_with("cputype=") {
+			explicit_params.push(arg.clone());
+		} else if arg.starts_with("cpus=") {
+			explicit_params.push(arg.clone());
+		} else if arg.starts_with("memory=") {
+			explicit_params.push(arg.clone());
+		} else if arg.starts_with("errors=") {
+			explicit_params.push(arg.clone());
+		} else if arg.starts_with("cycles=") {
+			explicit_params.push(arg.clone());
+		} else if arg.starts_with("duration=") {
+			explicit_params.push(arg.clone());
+		}
+	}
 
     // Add defaults that weren't explicitly set (only if no config file)
     if config_file.is_none() {
@@ -171,12 +177,66 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     if !default_params.is_empty() {
         println!("  Default Parameters: {}", default_params.join(", "));
     }
+	
+    // Calculate CPU/thread count
+	let total_cpus = match cputype.as_str() {
+		"cores" => num_cpus::get_physical(),
+		_ => num_cpus::get(),
+	};
+	
+	// When using cores mode, we should automatically avoid SMT doubling
+	let avoid_smt = cputype == "cores";
+	if avoid_smt {
+		println!("  CPU Type: {} (avoiding SMT/Hyperthreading)", cputype);
+	} else {
+		println!("  CPU Type: {}", cputype);
+	}
+
+	let percent = cpus.trim_end_matches('%').parse::<u32>().unwrap_or(100);
+	let threads = ((total_cpus as u32 * percent) / 100).max(1).min(total_cpus as u32) as usize;
+		
+	let (actual_threads, cpu_list) = if pinning_config.enable_pinning {
+		// Override avoid_smt_doubling if cputype=cores
+		let effective_avoid_smt = pinning_config.avoid_smt_doubling || avoid_smt;
+		
+		calculate_thread_allocation(
+			threads,
+			pinning_config.cpus_to_skip,
+			effective_avoid_smt
+		)
+	} else {
+		// No pinning, use all requested threads
+		(threads, (0..threads).collect())
+	};
+	
 	print!("  Error Mode: ");
     match error_mode {
         ErrorMode::Log => println!("Log and continue"),
         ErrorMode::Halt => println!("Halt on first error"),
         ErrorMode::Panic => println!("Panic on error (debug mode)"),
     }
+	
+	println!("  CPU Type: {}", cputype);
+	println!("  Using {}/{} {} for testing", actual_threads, total_cpus, cputype);
+	if pinning_config.enable_pinning {
+		println!("  CPU Assignment: {:?}", cpu_list);
+		if pinning_config.cpus_to_skip > 0 {
+			println!("  Skipping first {} CPU(s) for system responsiveness", pinning_config.cpus_to_skip);
+		}
+		if pinning_config.avoid_smt_doubling {
+			println!("  Avoiding SMT doubling (using physical cores only)");
+		}
+	}
+
+	let use_batch_remap = args.iter().any(|arg| arg == "--batch-remap");
+	if use_batch_remap {
+		tmr::dma_memory::set_use_remap_all(false);
+		println!("  Remap Mode: Batch remapping (original implementation)");
+	} else {
+		tmr::dma_memory::set_use_remap_all(true);
+		println!("  Remap Mode: Remap all (optimized for TMR)");
+	}
+	
 	// Display timing configuration
     print!("  Test Suite Timing: ");
     match (&suite_timing.global_cycles, &suite_timing.global_duration_secs) {
@@ -185,22 +245,75 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         (None, Some(duration)) => println!("{}s duration (unlimited cycles)", duration),
         (None, None) => println!("Unlimited cycles and duration"),
     }
-	println!("  CPU Type: {}", cputype);
-    println!("  Using {}/{} {} for testing", threads, total_cpus, cputype);
 	// Detect SIMD capabilities
     let simd_caps = tmr::detect_simd_capabilities();
     println!("  SIMD Support: {}", simd_caps);
     println!();
-	
-	// Check large page privilege early
-    match tmr::check_large_page_privilege() {
-        Ok(()) => println!("  Large Pages: ✅ Available (SeLockMemoryPrivilege enabled)"),
-        Err(msg) => {
-            println!("  Large Pages: ⚠️  Not available - {}", msg);
-            println!("    To enable: Run as Administrator OR enable 'Lock pages in memory' in Group Policy");
-            println!("    Impact: Will use standard 4KB pages instead of 2MB pages");
-        }
-    }
+		
+	println!("🔧 Checking Large Page Setup...");
+
+	// Check for restart needed scenario first
+	if tmr::check_restart_needed() {
+		println!("⚠️  LARGE PAGE SETUP REQUIRES RESTART");
+		println!("=====================================");
+		println!("The Large Page privilege has been configured but requires a restart to take effect.");
+		println!();
+		println!("Choose your preferred action:");
+		println!("  A) Exit TMR and restart system (RECOMMENDED for optimal performance)");
+		println!("  B) Continue with standard 4KB pages (5-10% performance impact)");
+		println!();
+		print!("Enter your choice (A/B): ");
+		stdout().flush().unwrap();
+		
+		let mut input = String::new();
+		stdin().read_line(&mut input).unwrap();
+		let choice = input.trim().to_uppercase();
+		
+		match choice.as_str() {
+			"A" => {
+				println!();
+				println!("✅ Restart recommended for optimal performance.");
+				println!("After restart, TMR will automatically use large pages.");
+				println!();
+				println!("To restart:");
+				println!("  • Windows: shutdown /r /t 0");
+				println!("  • Or use Start Menu → Power → Restart");
+				println!();
+				println!("TMR will exit now.");
+				return Ok(());
+			}
+			"B" => {
+				println!();
+				println!("⚠️  Continuing with standard 4KB pages.");
+				println!("   Performance impact: ~5-10% slower than large pages");
+				println!("   Test accuracy: Unaffected (still comprehensive)");
+				println!();
+				println!("💡 TIP: Restart TMR after rebooting for optimal performance");
+				println!();
+			}
+			_ => {
+				println!();
+				println!("❌ Invalid choice. Defaulting to continue with 4KB pages.");
+				println!();
+			}
+		}
+	} else {
+		// Normal large page setup flow
+		let large_page_diagnostic = tmr::memory::diagnose_and_setup_large_pages();
+		println!("{}", large_page_diagnostic);
+	}
+
+	match tmr::check_large_page_privilege() {
+		Ok(()) => {
+			println!("🎉 Large Pages: ✅ ENABLED and tested successfully!");
+			println!("   TMR will use 2MB large pages for optimal performance");
+		},
+		Err(_) => {
+			println!("⚠️  Large Pages: Not available - TMR will use standard 4KB pages");
+			println!("   Performance impact: ~5-10% slower memory allocation");
+			println!("   This is normal on some systems and doesn't affect test accuracy");
+		}
+	}
 	
 	// Check KMDF version before attempting to use the driver
 	let kmdf_compatible = match verify_kmdf_compatibility() {
@@ -266,6 +379,15 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         cache_info.cache_line_size,
         cache_info.total_cache as f64 / (1024.0 * 1024.0));
     println!();
+
+	// Display CPU topology right after system information
+	// Add this after the cache architecture display (around line 220-230):
+	if pinning_config.enable_pinning {
+		display_cpu_topology(&cpu_list, pinning_config.cpus_to_skip);
+	} else {
+		println!("\nCPU Thread Assignment: No pinning - threads will be scheduled by OS");
+	}
+	println!();
 	
 	// Show memory stats
 	print_current_memory_status();
@@ -314,13 +436,15 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
 	println!("  ");
 
     // Calculate memory layout (Stage 1 allocation only)
-    let layout = MemoryLayout::calculate(memory_strategy, threads);
+    let layout = MemoryLayout::calculate(&memory_strategy, actual_threads);
 
     println!("Starting comprehensive memory tests... Use CTRL+C for graceful shutdown with final report");
     println!("(detailed logs available with RUST_LOG=debug)");
     println!();
 	
-	let runtime_config = detect_memory_capabilities(use_driver_chunking);
+	let mut runtime_config = detect_runtime_capabilities(&alloc_config);
+	runtime_config.cpu_list = Some(cpu_list);
+	runtime_config.memory_strategy = memory_strategy; // Add this
     
     let start_time = std::time::Instant::now();
 	let success = run_tests_with_layout_and_timing(layout, error_mode, suite_timing, runtime_config);
@@ -339,28 +463,27 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     println!();
 	
 	if is_driver_connected() {
-		compare_app_vs_driver_stats(); // Gets fresh stats from existing handle
+		// Gets fresh stats from existing handle
+		if let Err(e) = compare_app_vs_driver_stats() {
+			log::warn!("Failed to compare driver stats: {}", e);
+		}
 		
 		reset_driver(); // Reset_driver, this tells the driver we are done and any allocation not already released should be released(fail-safe).
 		
-		// This will completely reset the driver handle and re-check version, for when we implement a GUI
+		// This will completely reset the apps driver handle and re-check version, for when we implement a GUI
 		let new_status = refresh_driver_status();
+		log::debug!("Driver status after reset: {:?}", new_status);
 		reset_app_driver_stats(); // Reset the app stats since we reset the Driver, we want stats to align at zero
 
-		// display_driver_stats(); // Commented out, as the below will display both app and driver after reset.
-		compare_app_vs_driver_stats(); // Gets fresh stats from existing handle
-	}
-
-	
-	
-	// This will completely reset the driver handle and re-check version, for when we implement a GUI
-	let new_status = refresh_driver_status();
-	reset_app_driver_stats(); // Reset the app stats since we reset the Driver, we want stats to align at zero
-	
-	
-	
-	if is_driver_connected() {
-		display_driver_stats(); // Gets fresh stats from existing handle
+		// display_driver_stats(); // We can probably comment this out, as the below compare_app_vs_driver_stats will display both app and driver after reset.
+		if let Err(e) = display_driver_stats() {
+			log::warn!("Failed to display driver stats: {}", e);
+		}
+		
+		// Gets fresh stats from existing handle, because we did a reset, things should be ZEROed
+		if let Err(e) = compare_app_vs_driver_stats() {
+			log::warn!("Failed to compare driver stats: {}", e);
+		}
 	}
 	
 	println!();
@@ -388,6 +511,112 @@ pub fn check_dma_driver_status() {
             }
         }
     }
+}
+
+// In main.rs - Pre-calculate thread allocation
+fn calculate_thread_allocation(
+    requested_threads: usize,
+    cpus_to_skip: usize,
+    avoid_smt_doubling: bool,
+) -> (usize, Vec<usize>) {
+    let topology = get_cpu_topology(); // Use v2 here
+    let is_hybrid = is_hybrid_cpu(&topology);
+    
+    // Group logical CPUs by physical core
+    let mut cores_map: HashMap<usize, Vec<(usize, CoreType)>> = HashMap::new();
+    for cpu in topology {
+        cores_map.entry(cpu.physical_core_id)
+            .or_insert_with(Vec::new)
+            .push((cpu.logical_id, cpu.core_type));
+    }
+    
+    // Separate P-cores and E-cores
+	let mut p_cores: Vec<_> = cores_map.iter()
+		.filter(|(_, cpus)| cpus.iter().any(|(_, t)| matches!(t, CoreType::Performance(_))))
+		.map(|(id, cpus)| (*id, cpus.clone()))
+		.collect();
+
+	let mut e_cores: Vec<_> = cores_map.iter()
+		.filter(|(_, cpus)| cpus.iter().any(|(_, t)| matches!(t, CoreType::Efficiency(_))))
+		.map(|(id, cpus)| (*id, cpus.clone()))
+		.collect();
+    
+    p_cores.sort_by_key(|(id, _)| *id);
+    e_cores.sort_by_key(|(id, _)| *id);
+    
+    let mut selected_cpus = Vec::new();
+    let mut cores_to_skip = cpus_to_skip;
+    
+    if is_hybrid {
+        // Skip E-cores first (if we have any to skip)
+        let e_cores_to_skip = cores_to_skip.min(e_cores.len());
+        let e_cores_to_use = e_cores.iter().skip(e_cores_to_skip);
+        
+        // Update remaining cores to skip
+        cores_to_skip = cores_to_skip.saturating_sub(e_cores.len());
+        
+        // Then skip some P-cores if needed
+        let p_cores_to_skip = cores_to_skip.min(p_cores.len());
+        let p_cores_to_use = p_cores.iter().skip(p_cores_to_skip);
+        
+        // Assign from P-cores first
+        for (_, logical_cpus) in p_cores_to_use {
+            if avoid_smt_doubling {
+                // Take only first logical CPU per core
+                if let Some((cpu_id, _)) = logical_cpus.first() {
+                    if selected_cpus.len() < requested_threads {
+                        selected_cpus.push(*cpu_id);
+                    }
+                }
+            } else {
+                // Take all logical CPUs from this core
+                for (cpu_id, _) in logical_cpus {
+                    if selected_cpus.len() < requested_threads {
+                        selected_cpus.push(*cpu_id);
+                    }
+                }
+            }
+        }
+        
+        // If we still need more threads and have E-cores available
+        if selected_cpus.len() < requested_threads {
+            for (_, logical_cpus) in e_cores_to_use {
+                for (cpu_id, _) in logical_cpus {
+                    if selected_cpus.len() < requested_threads {
+                        selected_cpus.push(*cpu_id);
+                    }
+                }
+            }
+        }
+    } else {
+        // Non-hybrid CPU - use existing logic
+        let mut physical_cores: Vec<_> = cores_map.keys().cloned().collect();
+        physical_cores.sort();
+        
+        for (core_idx, physical_core) in physical_cores.iter().enumerate() {
+            if core_idx < cores_to_skip {
+                continue;
+            }
+            
+            if let Some(logical_cpus) = cores_map.get(physical_core) {
+                if avoid_smt_doubling {
+                    if let Some((cpu_id, _)) = logical_cpus.first() {
+                        if selected_cpus.len() < requested_threads {
+                            selected_cpus.push(*cpu_id);
+                        }
+                    }
+                } else {
+                    for (cpu_id, _) in logical_cpus {
+                        if selected_cpus.len() < requested_threads {
+                            selected_cpus.push(*cpu_id);
+                        }
+                    }
+                }
+            }
+        }
+    }
+    
+    (selected_cpus.len(), selected_cpus)
 }
 
 fn setup_logging() {
@@ -427,7 +656,7 @@ fn setup_logging() {
                 // For info/debug, just clear the current line
                 print!("\r\x1b[K");
             }
-            let _ = std::io::stdout().flush();
+            let _ = stdout().flush();
             
             // Write to console with original env_logger format
             let console_result = writeln!(
@@ -473,12 +702,14 @@ fn setup_logging() {
     log::info!("Log level: {} - detailed logs also saved to {}", log_level, log_filename);
 }
 
-fn parse_command_line_params(args: &[String]) -> (MemoryStrategy, ErrorMode, TestSuiteTiming, String, String) {
+fn parse_command_line_params(args: &[String]) -> (MemoryStrategy, ErrorMode, TestSuiteTiming, String, String, CpuPinningConfig, MemoryAllocationConfig) {
     let mut cputype = "threads".to_string();
     let mut cpus = "100%".to_string();
-    let mut memory_strategy = MemoryStrategy::default(); // Modern optimal by default
+    let mut memory_strategy = MemoryStrategy::default();
+	let mut alloc_config = MemoryAllocationConfig::default();
     let mut error_mode = ErrorMode::Log;
-    let mut suite_timing = TestSuiteTiming::default(); // 3 cycles
+    let mut suite_timing = TestSuiteTiming::default();
+    let pinning_config = CpuPinningConfig::default();
 
     // Parse arguments
     for arg in args {
@@ -486,6 +717,10 @@ fn parse_command_line_params(args: &[String]) -> (MemoryStrategy, ErrorMode, Tes
             cputype = arg[8..].to_string();
         } else if arg.starts_with("cpus=") {
             cpus = arg[5..].to_string();
+        } else if arg == "--driver-chunking" {
+            alloc_config.driver_chunking = true;
+        } else if arg == "--batch-remap" {
+            alloc_config.remap_mode = "batch".to_string();
         } else if arg.starts_with("memory=") {
             memory_strategy = parse_memory_parameter(&arg[7..]);
         } else if arg.starts_with("errors=") {
@@ -498,10 +733,27 @@ fn parse_command_line_params(args: &[String]) -> (MemoryStrategy, ErrorMode, Tes
             if let Ok(duration) = arg[9..].parse::<u32>() {
                 suite_timing = TestSuiteTiming::duration_only(duration);
             }
+        } else if arg.starts_with("topology=") {
+            // Set the topology detection method
+            use tmr::cpu_topology::{set_topology_detection_method, TopologyDetectionMethod};
+            let method_str = &arg[9..];
+            let method = match method_str.to_lowercase().as_str() {
+                "windows" | "windowsapi" => TopologyDetectionMethod::WindowsApi,
+                "windowsv2" | "v2" => TopologyDetectionMethod::WindowsApiV2,
+                "cpuid" => TopologyDetectionMethod::CpuidBased,
+                "auto" => TopologyDetectionMethod::Auto,
+                _ => {
+                    println!("Warning: Unknown topology method '{}', using Auto", method_str);
+                    TopologyDetectionMethod::Auto
+                }
+            };
+            set_topology_detection_method(method);
+            println!("  Topology Detection: {:?}", method);
         }
+		
     }
 
-    (memory_strategy, error_mode, suite_timing, cputype, cpus)
+    (memory_strategy, error_mode, suite_timing, cputype, cpus, pinning_config, alloc_config)
 }
 
 fn parse_memory_parameter(param: &str) -> MemoryStrategy {
@@ -574,32 +826,6 @@ fn parse_memory_parameter(param: &str) -> MemoryStrategy {
     }
 }
 
-// Add NUMA system info display
-fn display_numa_info() {
-    let cpu_count = num_cpus::get();
-    let physical_cores = num_cpus::get_physical();
-    
-    println!("  CPU Configuration:");
-    println!("    Logical CPUs: {}", cpu_count);
-    println!("    Physical cores: {}", physical_cores);
-    
-    // Estimate NUMA nodes based on system size
-    let estimated_numa_nodes = if cpu_count >= 32 { 2 } else { 1 };
-    println!("    Estimated NUMA nodes: {}", estimated_numa_nodes);
-    
-    // Show CPU to NUMA mapping for first few CPUs
-    if estimated_numa_nodes > 1 {
-        println!("  CPU to NUMA mapping (estimated):");
-        for cpu in 0..8.min(cpu_count) {
-            let node = get_numa_node_for_cpu(cpu);
-            println!("    CPU {} -> NUMA node {}", cpu, node);
-        }
-        if cpu_count > 8 {
-            println!("    ... and {} more CPUs", cpu_count - 8);
-        }
-    }
-}
-
 fn parse_error_mode(param: &str) -> ErrorMode {
     match param.trim().to_lowercase().as_str() {
         "log" => ErrorMode::Log,
@@ -610,26 +836,6 @@ fn parse_error_mode(param: &str) -> ErrorMode {
             println!("  Supported modes: log, halt, panic");
             ErrorMode::Log
         }
-    }
-}
-
-fn detect_memory_capabilities(use_driver_chunking: bool) -> RuntimeConfig {
-    let driver_available = tmr::dma_memory::DmaBuffer::is_driver_available_and_compatible();
-    let large_pages_available = tmr::check_large_page_privilege().is_ok();
-    
-    let memory_backend = if driver_available {
-        MemoryBackend::KernelDriver
-    } else if large_pages_available {
-        MemoryBackend::NativeLargePages
-    } else {
-        MemoryBackend::NativeRegular
-    };
-    
-    RuntimeConfig {
-        memory_backend,
-        driver_available,
-        large_pages_available,
-		use_driver_chunking,
     }
 }
 
@@ -745,7 +951,10 @@ fn print_help(program_name: &str) {
     println!("  {} --create-demo-configs              # Create demo configuration files", program_name);
     println!("  {} --compare-results baseline.json current.json [output.json]", program_name);
     println!("                                          # Compare two test results from .\\results\\");
+	println!("  {} --setup-large-pages              # Configure large pages for optimal performance", program_name);
     println!("  {} --version                         # Show version information", program_name);
+	println!("  {} --show-topology                   # Show CPU Topology Mapping for debugging", program_name);
+	println!("  {} --debug-topology                  # Runs multiple CPU Topology checks to debug if one works better", program_name);
     println!();
     println!("COMMAND LINE PARAMETERS:");
     println!("  memory=20%                           # Reserve 20% of system memory");

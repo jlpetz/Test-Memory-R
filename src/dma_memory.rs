@@ -1283,7 +1283,6 @@ pub struct DmaBufferEnhanced {
     ptr: *mut u8,
     size: usize,
     segments: Vec<SegmentInfo>,
-    config: DmaConfig,
 }
 
 impl DmaBufferEnhanced {
@@ -1359,7 +1358,6 @@ impl DmaBufferEnhanced {
                 ptr: output.user_address as *mut u8,
                 size: output.size,
                 segments,
-                config,
             })
         }
     }
