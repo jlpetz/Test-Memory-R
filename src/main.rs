@@ -7,12 +7,15 @@ use log::LevelFilter;
 use env_logger::Builder;
 use windows::Win32::Storage::FileSystem::{GetFileVersionInfoW, GetFileVersionInfoSizeW, VerQueryValueW};
 
-use tmr::{create_demo_configs, load_config, ErrorMode, MemoryStrategy, AllocationMode, WindowMode, BlockMode};
-use tmr::layout::MemoryLayout;
+use tmr::{create_demo_configs, load_config, ErrorMode};
+use tmr::constants::{BYTES_PER_GIB, MB_F64};
+// Note: Legacy MemoryLayout still needed for runner interface
+use tmr::memory::allocation_strategy::EnhancedMemoryStrategy;
 use tmr::runner::{run_tests_with_layout_and_timing, TestSuiteTiming, print_current_memory_status, detect_runtime_capabilities};
 use tmr::cpu_topology::{display_cpu_topology, get_cpu_topology, is_hybrid_cpu, CoreType};
 use tmr::results::compare_results_command;
-use tmr::{dma_memory::DriverHandle, reset_driver, display_driver_info, check_and_display_driver_status, DriverStatus, refresh_driver_status, is_driver_connected, display_driver_stats, compare_app_vs_driver_stats, reset_app_driver_stats};
+use tmr::{reset_driver, check_and_display_driver_status, DriverStatus, refresh_driver_status, is_driver_connected, display_driver_stats, compare_app_vs_driver_stats, reset_app_driver_stats};
+use tmr::driver::DriverHandle;
 use tmr::config::{MemoryAllocationConfig, CpuPinningConfig};
 
 // Global file logger for dual console+file logging
@@ -83,6 +86,62 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
 				}
 				return Ok(());
 			}
+			"--quick-test" => {
+				println!("🚀 TMR Quick Allocation & Test");
+				println!("==============================\n");
+				
+				// Show driver status
+				tmr::display_driver_info();
+				
+				// Set up quick test configuration
+				let alloc_config = tmr::MemoryAllocationConfig::default();
+				let runtime_config = tmr::runner::detect_runtime_capabilities(&alloc_config);
+				
+				println!("\nRuntime Configuration:");
+				println!("  Memory Backend: {:?}", runtime_config.memory_backend);
+				println!("  Driver Available: {}", runtime_config.driver_available);
+				println!("  Large Pages Available: {}", runtime_config.large_pages_available);
+				
+				// Quick memory allocation test (1GB total)
+				println!("\n=== Quick Memory Allocation Test ===");
+				use tmr::memory::allocation_strategy::{AllocationMode, ReserveAmount};
+				let quick_enhanced_strategy = EnhancedMemoryStrategy {
+					allocation_mode: AllocationMode::ReserveFromAvailable { 
+						reserve: ReserveAmount::Bytes(BYTES_PER_GIB) // 1GB
+					},
+					..EnhancedMemoryStrategy::default()
+				};
+				
+				let enhanced_layout = quick_enhanced_strategy.create_layout(2)?; // Just 2 threads for speed
+				
+				// Create quick test timing (single cycle, very short duration)
+				let quick_timing = tmr::TestSuiteTiming {
+					global_cycles: Some(1),
+					global_duration_secs: Some(5), // Just 5 seconds
+				};
+				
+				// Create runtime config for quick test
+				let mut quick_runtime_config = runtime_config;
+				quick_runtime_config.enhanced_memory_strategy = quick_enhanced_strategy;
+				quick_runtime_config.cpu_list = Some(vec![0, 1]); // Just use 2 CPUs
+				
+				// Run the quick test
+				let success = tmr::run_tests_with_layout_and_timing(
+					enhanced_layout, 
+					tmr::ErrorMode::Log, 
+					quick_timing, 
+					quick_runtime_config
+				);
+				
+				if success {
+					println!("\n✅ Quick test completed successfully!");
+					println!("   Enhanced allocation table and constraint-aware logic validated.");
+				} else {
+					println!("\n❌ Quick test encountered issues.");
+				}
+				
+				return Ok(());
+			}
             "--help" | "-h" => {
                 print_help(&args[0]);
                 return Ok(());
@@ -99,9 +158,9 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
 	
 
     // Check for config file parameter
-    let config_file = args.iter().find(|arg| arg.starts_with("config=")).map(|arg| &arg[7..]);
+    let config_file = args.iter().find_map(|arg| arg.strip_prefix("config="));
 
-	let (memory_strategy, error_mode, suite_timing, cputype, cpus, pinning_config, alloc_config) = 
+	let (enhanced_memory_strategy, error_mode, suite_timing, cputype, cpus, pinning_config, alloc_config, config_opt) = 
 		if let Some(config_path) = config_file {
 			let config = load_config(config_path)?;
 			(
@@ -112,9 +171,11 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
 				format!("{}%", config.system.cpu_config.usage_percent),
 				config.system.cpu_pinning.clone(),
 				config.system.memory_allocation.clone(), // Use the config's allocation settings
+				Some(config) // Keep the full config
 			)
 		} else {
-			parse_command_line_params(&args)
+			let (enhanced_memory_strategy, error_mode, suite_timing, cputype, cpus, pinning_config, alloc_config) = parse_command_line_params(&args);
+			(enhanced_memory_strategy, error_mode, suite_timing, cputype, cpus, pinning_config, alloc_config, None)
 		};
 
     // Display startup mode and parameters
@@ -135,19 +196,13 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     let mut default_params = Vec::new();
 
 	for arg in &args[1..] {
-		if arg.starts_with("config=") {
-			explicit_params.push(arg.clone());
-		} else if arg.starts_with("cputype=") {
-			explicit_params.push(arg.clone());
-		} else if arg.starts_with("cpus=") {
-			explicit_params.push(arg.clone());
-		} else if arg.starts_with("memory=") {
-			explicit_params.push(arg.clone());
-		} else if arg.starts_with("errors=") {
-			explicit_params.push(arg.clone());
-		} else if arg.starts_with("cycles=") {
-			explicit_params.push(arg.clone());
-		} else if arg.starts_with("duration=") {
+		if arg.starts_with("config=") 
+			|| arg.starts_with("cputype=") 
+			|| arg.starts_with("cpus=") 
+			|| arg.starts_with("memory=") 
+			|| arg.starts_with("errors=") 
+			|| arg.starts_with("cycles=") 
+			|| arg.starts_with("duration=") {
 			explicit_params.push(arg.clone());
 		}
 	}
@@ -161,7 +216,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
             default_params.push("cpus=100% (default)".to_string());
         }
         if !args.iter().any(|a| a.starts_with("memory=")) {
-            default_params.push("memory=20% reserve (default)".to_string());
+            default_params.push("memory=10%-from-available:start=split:auto (default)".to_string());
         }
         if !args.iter().any(|a| a.starts_with("errors=")) {
             default_params.push("errors=log (default)".to_string());
@@ -230,10 +285,10 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
 
 	let use_batch_remap = args.iter().any(|arg| arg == "--batch-remap");
 	if use_batch_remap {
-		tmr::dma_memory::set_use_remap_all(false);
+		tmr::set_use_remap_all(false);
 		println!("  Remap Mode: Batch remapping (original implementation)");
 	} else {
-		tmr::dma_memory::set_use_remap_all(true);
+		tmr::set_use_remap_all(true);
 		println!("  Remap Mode: Remap all (optimized for TMR)");
 	}
 	
@@ -250,7 +305,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     println!("  SIMD Support: {}", simd_caps);
     println!();
 		
-	println!("🔧 Checking Large Page Setup...");
+	println!("Checking Large Page access");
 
 	// Check for restart needed scenario first
 	if tmr::check_restart_needed() {
@@ -338,7 +393,54 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
 
 	// Only check driver status if KMDF is compatible
 	if kmdf_compatible {
-		display_driver_info();
+		// Use formal reporting system for driver status
+		{
+			use tmr::reporting::{create_console_reporter, models::{DriverStatusReport, DriverVersion}};
+			
+			let driver_status = check_and_display_driver_status();
+			
+			let (available, version, error_message, statistics) = match &driver_status {
+				DriverStatus::Available(ver) => {
+					let driver_version = Some(DriverVersion {
+						major: ver.driver_version_major as u16,
+						minor: ver.driver_version_minor as u16,
+						build: ver.driver_version_build as u16,
+						revision: ver.driver_version_revision as u16,
+					});
+					
+					// Statistics not easily available from current interface, so None for now
+					(true, driver_version, None, None)
+				},
+				DriverStatus::NotFound => {
+					(false, None, Some("TMR kernel driver not found or not accessible".to_string()), None)
+				},
+				DriverStatus::VersionMismatch { .. } => {
+					(false, None, Some("Driver version incompatible with application".to_string()), None)
+				},
+				DriverStatus::Error(e) => {
+					(false, None, Some(e.clone()), None)
+				},
+			};
+			
+			let report = DriverStatusReport {
+				available,
+				version,
+				error_message,
+				statistics,
+			};
+			
+			let mut reporter = create_console_reporter();
+			if let Err(e) = reporter.report_driver_status(&report) {
+				log::error!("Failed to display driver status report: {}", e);
+				// Fallback to basic output
+				if available {
+					println!("  DMA Driver: ✅ Available");
+				} else {
+					println!("  DMA Driver: ❌ Not Found");
+				}
+			}
+		}
+		
 		// Reset allocations if driver is available
 		if matches!(check_and_display_driver_status(), DriverStatus::Available(_)) {
 			reset_driver();
@@ -374,10 +476,10 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         cache_info.per_core_l2 as f64 / 1024.0,
         cache_info.core_count);
     println!("    L3: {:.1} MB (shared)", 
-        cache_info.l3_cache as f64 / (1024.0 * 1024.0));
+        cache_info.l3_cache as f64 / MB_F64);
     println!("    Line Size: {} bytes | Total Cache: {:.1} MB", 
         cache_info.cache_line_size,
-        cache_info.total_cache as f64 / (1024.0 * 1024.0));
+        cache_info.total_cache as f64 / MB_F64);
     println!();
 
 	// Display CPU topology right after system information
@@ -389,54 +491,41 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
 	}
 	println!();
 	
-	// Show memory stats
-	print_current_memory_status();
+	// Show memory stats and get cached memory info
+	let cached_memory_info = print_current_memory_status();
+	
+	// Add formal system info reporting using cached memory info (no duplicate Windows API calls)
+	if let Some(ref memory_info) = cached_memory_info {
+		use tmr::reporting::{create_console_reporter, system_info_builder::build_system_info_report};
+		
+		let report = build_system_info_report(
+			system_info,
+			memory_info,
+			get_cpu_topology(),
+			&simd_caps,
+			&cpu_list
+		);
+		
+		let mut reporter = create_console_reporter();
+		if let Err(e) = reporter.report_system_info(&report) {
+			log::error!("Failed to display system info report: {}", e);
+			// Manual system info already displayed above as fallback
+		}
+	}
+	
 	println!();
     
-    // Display memory strategy information
-    print!("  Memory Strategy: ");
-    match &memory_strategy.allocation_mode {
-        AllocationMode::MaxAvailable { reserve_mb } => {
-            println!("TM5-Compatible Maximum Allocation");
-            println!("    Stage 1 (Allocation): Maximum available minus {} MB OS reserve", reserve_mb);
-        }
-        AllocationMode::PercentageReserve { reserve_percent } => {
-            println!("Modern Optimal Allocation");
-            println!("    Stage 1 (Allocation): Maximum available minus {:.1}% reserve", reserve_percent);
-        }
-        AllocationMode::FixedReserve { reserve_gib } => {
-            println!("Fixed Reserve Allocation");
-            println!("    Stage 1 (Allocation): Maximum available minus {:.2} GiB reserve", reserve_gib);
-        }
-    }
-    
-    match &memory_strategy.default_window_mode {
-        WindowMode::FullAllocation => {
-            println!("    Stage 2 (Testing Window): Full allocation per thread (maximum memory stress)");
-        }
-        WindowMode::FixedSize { size_mb } => {
-            println!("    Stage 2 (Testing Window): {} MB total window (TM5-compatible)", size_mb);
-        }
-        WindowMode::CacheRelative { multiplier } => {
-            println!("    Stage 2 (Testing Window): {:.1}x cache size (adaptive sizing)", multiplier);
-        }
-    }
-    
-    match &memory_strategy.default_block_mode {
-        BlockMode::AutoOptimal => {
-            println!("    Stage 3 (Block Size): Auto-optimized per test for SIMD and cache alignment");
-        }
-        BlockMode::FixedSize { size_mb } => {
-            println!("    Stage 3 (Block Size): {} MB fixed blocks", size_mb);
-        }
-        BlockMode::WindowFraction { fraction } => {
-            println!("    Stage 3 (Block Size): {:.1}% of window size per block", fraction * 100.0);
-        }
-    }
-	println!("  ");
+    // Calculate memory layout using enhanced system
+    let enhanced_layout = enhanced_memory_strategy.create_layout(actual_threads)?;
 
-    // Calculate memory layout (Stage 1 allocation only)
-    let layout = MemoryLayout::calculate(&memory_strategy, actual_threads);
+    // Display memory strategy information
+    println!("  Memory Strategy: {}", enhanced_layout.allocation_result.allocation_type);
+    println!("    Allocation: {:.2} GiB, Reserve: {:.2} GiB", 
+             enhanced_layout.allocation_result.allocation_bytes as f64 / 1024_f64.powi(3),
+             enhanced_layout.allocation_result.reserve_bytes as f64 / 1024_f64.powi(3));
+    
+    println!("    Window/Chunk Modes: Per-test configuration (see test sequence below)");
+	println!("  ");
 
     println!("Starting comprehensive memory tests... Use CTRL+C for graceful shutdown with final report");
     println!("(detailed logs available with RUST_LOG=debug)");
@@ -444,10 +533,10 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
 	
 	let mut runtime_config = detect_runtime_capabilities(&alloc_config);
 	runtime_config.cpu_list = Some(cpu_list);
-	runtime_config.memory_strategy = memory_strategy; // Add this
+	runtime_config.enhanced_memory_strategy = enhanced_memory_strategy.clone();
     
     let start_time = std::time::Instant::now();
-	let success = run_tests_with_layout_and_timing(layout, error_mode, suite_timing, runtime_config);
+	let success = run_tests_with_layout_and_timing(enhanced_layout, error_mode, suite_timing, runtime_config);
     let total_time = start_time.elapsed();
 
     println!();
@@ -493,7 +582,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
 
 // Example usage in main.rs
 pub fn check_dma_driver_status() {
-    match DriverHandle::open_with_version_check() {
+    match DriverHandle::open() {
         Ok(driver) => {
             if let Ok(version) = driver.check_version_compatibility() {
                 println!("  DMA Driver: ✅ Available and compatible");
@@ -520,13 +609,13 @@ fn calculate_thread_allocation(
     avoid_smt_doubling: bool,
 ) -> (usize, Vec<usize>) {
     let topology = get_cpu_topology(); // Use v2 here
-    let is_hybrid = is_hybrid_cpu(&topology);
+    let is_hybrid = is_hybrid_cpu(topology);
     
     // Group logical CPUs by physical core
     let mut cores_map: HashMap<usize, Vec<(usize, CoreType)>> = HashMap::new();
     for cpu in topology {
         cores_map.entry(cpu.physical_core_id)
-            .or_insert_with(Vec::new)
+            .or_default()
             .push((cpu.logical_id, cpu.core_type));
     }
     
@@ -563,11 +652,10 @@ fn calculate_thread_allocation(
         for (_, logical_cpus) in p_cores_to_use {
             if avoid_smt_doubling {
                 // Take only first logical CPU per core
-                if let Some((cpu_id, _)) = logical_cpus.first() {
-                    if selected_cpus.len() < requested_threads {
+                if let Some((cpu_id, _)) = logical_cpus.first()
+                    && selected_cpus.len() < requested_threads {
                         selected_cpus.push(*cpu_id);
                     }
-                }
             } else {
                 // Take all logical CPUs from this core
                 for (cpu_id, _) in logical_cpus {
@@ -600,11 +688,10 @@ fn calculate_thread_allocation(
             
             if let Some(logical_cpus) = cores_map.get(physical_core) {
                 if avoid_smt_doubling {
-                    if let Some((cpu_id, _)) = logical_cpus.first() {
-                        if selected_cpus.len() < requested_threads {
+                    if let Some((cpu_id, _)) = logical_cpus.first()
+                        && selected_cpus.len() < requested_threads {
                             selected_cpus.push(*cpu_id);
                         }
-                    }
                 } else {
                     for (cpu_id, _) in logical_cpus {
                         if selected_cpus.len() < requested_threads {
@@ -650,8 +737,8 @@ fn setup_logging() {
             // Clear any existing progress line and ensure we start on a new line
             // This prevents log messages from getting merged with progress output
             if record.level() <= log::Level::Warn {
-                // For warnings and errors, always clear the line and add emphasis
-                print!("\r\x1b[K\n"); // Clear line and add newline for visibility
+                // For warnings and errors, clear the line (removed extra newline)
+                print!("\r\x1b[K");
             } else {
                 // For info/debug, just clear the current line
                 print!("\r\x1b[K");
@@ -676,9 +763,9 @@ fn setup_logging() {
             );
 
             // Also write to file without colors
-            if let Some(file_logger) = FILE_LOGGER.get() {
-                if let Ok(mut file_guard) = file_logger.lock() {
-                    if let Some(ref mut file) = *file_guard {
+            if let Some(file_logger) = FILE_LOGGER.get()
+                && let Ok(mut file_guard) = file_logger.lock()
+                    && let Some(ref mut file) = *file_guard {
                         let _ = writeln!(
                             file,
                             "[{} {} {}] {}",
@@ -689,8 +776,6 @@ fn setup_logging() {
                         );
                         let _ = file.flush();
                     }
-                }
-            }
 
             console_result
         })
@@ -702,41 +787,68 @@ fn setup_logging() {
     log::info!("Log level: {} - detailed logs also saved to {}", log_level, log_filename);
 }
 
-fn parse_command_line_params(args: &[String]) -> (MemoryStrategy, ErrorMode, TestSuiteTiming, String, String, CpuPinningConfig, MemoryAllocationConfig) {
+fn parse_command_line_params(args: &[String]) -> (EnhancedMemoryStrategy, ErrorMode, TestSuiteTiming, String, String, CpuPinningConfig, MemoryAllocationConfig) {
     let mut cputype = "threads".to_string();
     let mut cpus = "100%".to_string();
-    let mut memory_strategy = MemoryStrategy::default();
+    let mut enhanced_memory_strategy = EnhancedMemoryStrategy::default();
 	let mut alloc_config = MemoryAllocationConfig::default();
     let mut error_mode = ErrorMode::Log;
     let mut suite_timing = TestSuiteTiming::default();
-    let pinning_config = CpuPinningConfig::default();
+    let mut pinning_config = CpuPinningConfig::default();
 
     // Parse arguments
     for arg in args {
-        if arg.starts_with("cputype=") {
-            cputype = arg[8..].to_string();
-        } else if arg.starts_with("cpus=") {
-            cpus = arg[5..].to_string();
+        if let Some(value) = arg.strip_prefix("cputype=") {
+            cputype = value.to_string();
+        } else if let Some(value) = arg.strip_prefix("cpus=") {
+            cpus = value.to_string();
         } else if arg == "--driver-chunking" {
             alloc_config.driver_chunking = true;
         } else if arg == "--batch-remap" {
             alloc_config.remap_mode = "batch".to_string();
-        } else if arg.starts_with("memory=") {
-            memory_strategy = parse_memory_parameter(&arg[7..]);
-        } else if arg.starts_with("errors=") {
-            error_mode = parse_error_mode(&arg[7..]);
-        } else if arg.starts_with("cycles=") {
-            if let Ok(cycles) = arg[7..].parse::<u32>() {
+        } else if let Some(value) = arg.strip_prefix("memory=") {
+            match parse_enhanced_memory_parameter(value) {
+                Ok(strategy) => enhanced_memory_strategy = strategy,
+                Err(e) => {
+                    println!("❌ Invalid memory parameter '{}': {}", &arg[7..], e);
+                    println!("💡 Valid formats:");
+                    println!("   Standard (from available): 4GiB-from-available, 15%-from-available, 20%");
+                    println!("   Legacy TM5 (from available): 2048MB, 1024MB-legacy");
+                    println!("   Failure mode testing (from total): 8GiB-from-total, 50%-from-total");
+                    println!("   Failure mode testing (target): 64GiB-target, 120%-target");
+                    println!("   With start address control:");
+                    println!("     memory=20%-from-available:start=+2GiB     # Offset from end of used memory");
+                    println!("     memory=2048MB:start=split:10%:90%         # Split reserve (10% pre, 90% post)");
+                    println!("     memory=10%-from-available:start=split:auto # Auto split for post-boot testing");
+                    std::process::exit(1);
+                }
+            }
+        } else if let Some(value) = arg.strip_prefix("allocator=") {
+            use tmr::memory::allocator::AllocationStrategy;
+            match value.parse::<AllocationStrategy>() {
+                Ok(strategy) => {
+                    alloc_config.allocation_strategy = strategy.to_string();
+                    println!("  Allocation Strategy: {}", strategy);
+                }
+                Err(e) => {
+                    println!("❌ Invalid allocator parameter '{}': {}", value, e);
+                    println!("💡 Valid options: greedy, plan-pagesize-pref, plan-blocksize-pref");
+                    std::process::exit(1);
+                }
+            }
+        } else if let Some(value) = arg.strip_prefix("errors=") {
+            error_mode = parse_error_mode(value);
+        } else if let Some(value) = arg.strip_prefix("cycles=") {
+            if let Ok(cycles) = value.parse::<u32>() {
                 suite_timing = TestSuiteTiming::cycles_only(cycles);
             }
-        } else if arg.starts_with("duration=") {
-            if let Ok(duration) = arg[9..].parse::<u32>() {
+        } else if let Some(value) = arg.strip_prefix("duration=") {
+            if let Ok(duration) = value.parse::<u32>() {
                 suite_timing = TestSuiteTiming::duration_only(duration);
             }
-        } else if arg.starts_with("topology=") {
+        } else if let Some(method_str) = arg.strip_prefix("topology=") {
             // Set the topology detection method
             use tmr::cpu_topology::{set_topology_detection_method, TopologyDetectionMethod};
-            let method_str = &arg[9..];
             let method = match method_str.to_lowercase().as_str() {
                 "windows" | "windowsapi" => TopologyDetectionMethod::WindowsApi,
                 "windowsv2" | "v2" => TopologyDetectionMethod::WindowsApiV2,
@@ -749,82 +861,24 @@ fn parse_command_line_params(args: &[String]) -> (MemoryStrategy, ErrorMode, Tes
             };
             set_topology_detection_method(method);
             println!("  Topology Detection: {:?}", method);
+        } else if let Some(value) = arg.strip_prefix("--skip-cores=") {
+            if let Ok(skip_count) = value.parse::<usize>() {
+                pinning_config.cpus_to_skip = skip_count;
+                println!("  CPU Pinning: Skipping first {} CPU(s)", skip_count);
+            } else {
+                println!("❌ Invalid --skip-cores value: {}", value);
+                std::process::exit(1);
+            }
+        } else if arg == "--disable-pinning" {
+            pinning_config.enable_pinning = false;
+            println!("  CPU Pinning: Disabled");
         }
 		
     }
 
-    (memory_strategy, error_mode, suite_timing, cputype, cpus, pinning_config, alloc_config)
+    (enhanced_memory_strategy, error_mode, suite_timing, cputype, cpus, pinning_config, alloc_config)
 }
 
-fn parse_memory_parameter(param: &str) -> MemoryStrategy {
-    let param = param.trim();
-
-    if param.ends_with('%') {
-        let percent_str = param.trim_end_matches('%');
-        match percent_str.parse::<f64>() {
-            Ok(percent) if percent >= 0.0 && percent <= 95.0 => {
-                MemoryStrategy {
-                    allocation_mode: AllocationMode::PercentageReserve { reserve_percent: percent },
-                    default_window_mode: WindowMode::FullAllocation,
-                    default_block_mode: BlockMode::AutoOptimal,
-                }
-            }
-            Ok(percent) => {
-                println!("Warning: Invalid percentage {}%, using default 20%", percent);
-                MemoryStrategy::default()
-            }
-            Err(_) => {
-                println!("Warning: Could not parse percentage '{}', using default 20%", param);
-                MemoryStrategy::default()
-            }
-        }
-    } else if param.to_lowercase().ends_with("gib") {
-        let gib_str = param[..param.len() - 3].trim();
-        match gib_str.parse::<f64>() {
-            Ok(gib) if gib >= 0.0 => {
-                MemoryStrategy {
-                    allocation_mode: AllocationMode::FixedReserve { reserve_gib: gib },
-                    default_window_mode: WindowMode::FullAllocation,
-                    default_block_mode: BlockMode::AutoOptimal,
-                }
-            }
-            Ok(gib) => {
-                println!("Warning: Invalid GiB value {}, using default 20%", gib);
-                MemoryStrategy::default()
-            }
-            Err(_) => {
-                println!("Warning: Could not parse GiB value '{}', using default 20%", param);
-                MemoryStrategy::default()
-            }
-        }
-    } else if param.to_lowercase().ends_with("mib") {
-        let mib_str = param[..param.len() - 3].trim();
-        match mib_str.parse::<f64>() {
-            Ok(mib) if mib >= 0.0 => {
-                let gib = mib / 1024.0;
-                MemoryStrategy {
-                    allocation_mode: AllocationMode::FixedReserve { reserve_gib: gib },
-                    default_window_mode: WindowMode::FullAllocation,
-                    default_block_mode: BlockMode::AutoOptimal,
-                }
-            }
-            Ok(mib) => {
-                println!("Warning: Invalid MiB value {}, using default 20%", mib);
-                MemoryStrategy::default()
-            }
-            Err(_) => {
-                println!("Warning: Could not parse MiB value '{}', using default 20%", param);
-                MemoryStrategy::default()
-            }
-        }
-    } else if param.to_lowercase() == "tm5" {
-        MemoryStrategy::tm5_compatible(880, 128)
-    } else {
-        println!("Warning: Unknown memory parameter format '{}', using default", param);
-        println!("  Supported formats: 20%, 2GiB, 1024MiB, tm5");
-        MemoryStrategy::default()
-    }
-}
 
 fn parse_error_mode(param: &str) -> ErrorMode {
     match param.trim().to_lowercase().as_str() {
@@ -963,7 +1017,13 @@ fn print_help(program_name: &str) {
     println!("  cycles=5                            # Run 5 complete test cycles");
     println!("  duration=600                        # Maximum 10 minutes runtime");
     println!("  cpus=50%                            # Use 50% of available CPUs");
-    println!("  cputype=cores                       # Use physical cores (vs threads)");
+    println!("  cputype=cores                       # Use physical cores (vs threads/SMT)");
+    println!("  --skip-cores=0                      # Skip first N CPUs (default: 1)");
+    println!("  --disable-pinning                   # Disable CPU thread pinning");
+    println!("  allocator=plan-pagesize-pref        # Allocation strategy:");
+    println!("    greedy                            #   Legacy: largest chunks first");
+    println!("    plan-pagesize-pref                #   Plan-based: page type priority (default)");
+    println!("    plan-blocksize-pref               #   Plan-based: block size priority");
     println!("  errors=halt                         # Stop on first error");
     println!();
     println!("LOGGING:");
@@ -986,13 +1046,32 @@ fn print_help(program_name: &str) {
     println!();
 }
 
+/// Parse enhanced memory parameter with clear reserve semantics
+fn parse_enhanced_memory_parameter(param: &str) -> Result<tmr::memory::allocation_strategy::EnhancedMemoryStrategy, String> {
+    use tmr::memory::allocation_strategy::{EnhancedMemoryStrategy, AllocationMode};
+    
+    let (allocation_mode, start_address_mode) = AllocationMode::parse(param)?;
+    
+    Ok(EnhancedMemoryStrategy {
+        allocation_mode,
+        start_address_mode,
+    })
+}
+
+
 fn print_usage(program_name: &str) {
     println!("Quick Usage Examples:");
-    println!("  {} memory=20%                   # Reserve 20% of system memory", program_name);
-    println!("  {} memory=2GiB                  # Reserve 2 GiB", program_name);
-    println!("  {} memory=tm5                   # TM5-compatible allocation", program_name);
+    println!("  {} memory=10%-from-available     # Standard: Reserve 10% from currently available memory", program_name);
+    println!("  {} memory=2048MB                 # TM5 compatible: Reserve 2048MB from available memory", program_name);
+    println!("  {} memory=8GiB-from-total        # Failure test: Reserve 8 GiB from total (unrealistic)", program_name);
+    println!("  {} memory=64GiB-target           # Failure test: Target 64 GiB allocation (may fail)", program_name);
+    println!("  {} memory=10%-from-available:start=+2GiB     # Reserve 10%, start 2GiB above used memory", program_name);
+    println!("  {} memory=10%-from-available:start=split:5%:95% # Reserve 10%, split: 5% pre-buffer, 95% post", program_name);
+    println!("  {} memory=20%-from-available:start=split:auto # Reserve 20%, auto-split for post-boot testing", program_name);
     println!("  {} cycles=5 duration=600        # 5 cycles OR 10 minutes max", program_name);
-    println!("  {} cpus=50% cputype=cores       # Use 50% of CPU cores", program_name);
+    println!("  {} cpus=50% cputype=cores       # Use 50% of CPU cores (cores=avoid SMT)", program_name);
+    println!("  {} --skip-cores=0               # Don't skip any CPUs (default: skip first CPU)", program_name);
+    println!("  {} --disable-pinning            # Disable CPU pinning (default: enabled)", program_name);
     println!("  {} errors=halt                  # Stop on first error", program_name);
     println!("  {} config=test.json             # Load comprehensive JSON config", program_name);
     println!("  {} config=legacy.cfg            # Auto-convert TM5 config + add stuck bit test", program_name);

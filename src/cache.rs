@@ -1,4 +1,5 @@
 use raw_cpuid::CpuId;
+use crate::constants::{KB, MB, KB_F64, MB_F64, MB_64};
 
 #[derive(Debug, Clone)]
 pub struct CacheInfo {
@@ -31,16 +32,16 @@ pub struct SystemInfo {
 impl Default for CacheInfo {
     fn default() -> Self {
         Self {
-            l1_data_cache: 32 * 1024,
-            l1_instruction_cache: 32 * 1024,
-            l2_cache: 256 * 1024,
-            l3_cache: 8 * 1024 * 1024,
+            l1_data_cache: 32 * KB,
+            l1_instruction_cache: 32 * KB,
+            l2_cache: 256 * KB,
+            l3_cache: 8 * MB,
             cache_line_size: 64,
-            total_cache: (32 + 32) * 1024 + 256 * 1024 + 8 * 1024 * 1024,
+            total_cache: (32 + 32) * KB + 256 * KB + 8 * MB,
             detection_method: "Default fallback values".to_string(),
-            per_core_l1d: 32 * 1024,
-            per_core_l1i: 32 * 1024,
-            per_core_l2: 256 * 1024,
+            per_core_l1d: 32 * KB,
+            per_core_l1i: 32 * KB,
+            per_core_l2: 256 * KB,
             core_count: 1,
         }
     }
@@ -75,8 +76,10 @@ impl CacheInfo {
         
         // Use defaults as last resort
         log::warn!("All cache detection methods failed, using defaults");
-        let mut default = Self::default();
-        default.core_count = physical_cores;
+        let mut default = Self {
+            core_count: physical_cores,
+            ..Default::default()
+        };
         default.recalculate_totals();
         default
     }
@@ -92,19 +95,19 @@ impl CacheInfo {
         log::info!("Cache Architecture Detected ({})", self.detection_method);
         log::info!("  Cores: {} physical", self.core_count);
         log::info!("  L1 Data Cache: {:.1} KB total ({:.1} KB × {} cores)", 
-                  self.l1_data_cache as f64 / 1024.0,
-                  self.per_core_l1d as f64 / 1024.0,
+                  self.l1_data_cache as f64 / KB_F64,
+                  self.per_core_l1d as f64 / KB_F64,
                   self.core_count);
         log::info!("  L1 Instruction Cache: {:.1} KB total ({:.1} KB × {} cores)", 
-                  self.l1_instruction_cache as f64 / 1024.0,
-                  self.per_core_l1i as f64 / 1024.0,
+                  self.l1_instruction_cache as f64 / KB_F64,
+                  self.per_core_l1i as f64 / KB_F64,
                   self.core_count);
         log::info!("  L2 Cache: {:.1} KB total ({:.1} KB × {} cores)", 
-                  self.l2_cache as f64 / 1024.0,
-                  self.per_core_l2 as f64 / 1024.0,
+                  self.l2_cache as f64 / KB_F64,
+                  self.per_core_l2 as f64 / KB_F64,
                   self.core_count);
-        log::info!("  L3 Cache: {:.1} MB (shared)", self.l3_cache as f64 / (1024.0 * 1024.0));
-        log::info!("  Total Cache: {:.1} MB", self.total_cache as f64 / (1024.0 * 1024.0));
+        log::info!("  L3 Cache: {:.1} MB (shared)", self.l3_cache as f64 / MB_F64);
+        log::info!("  Total Cache: {:.1} MB", self.total_cache as f64 / MB_F64);
         log::info!("  Cache Line Size: {} bytes", self.cache_line_size);
     }
 
@@ -112,11 +115,11 @@ impl CacheInfo {
         match test_type {
             "CacheBusting" => (self.l3_cache / 2).max(self.l2_cache * 4),
             "RandomTorture" => self.l3_cache * 2,
-            "BandwidthSat" => (self.total_cache * 2).max(64 * 1024 * 1024),
-            "MirrorMove128NonTemporal" | "MirrorMove256NonTemporal" | "MirrorMove512NonTemporal" => {
-                self.l3_cache.max(32 * 1024 * 1024)
+            "BandwidthSat" => (self.total_cache * 2).max(MB_64),
+            "MirrorMove128" | "MirrorMove256" | "MirrorMove512" => {
+                self.l3_cache.max(32 * MB)
             }
-            _ => (self.total_cache * 2).max(64 * 1024 * 1024),
+            _ => (self.total_cache * 2).max(MB_64),
         }
     }
 }
@@ -208,10 +211,10 @@ fn detect_via_raw_cpuid_comprehensive(physical_cores: usize) -> Option<CacheInfo
     if let Some(cache_params) = cpuid.get_cache_parameters() {
         log::debug!("raw_cpuid: Found cache parameters via leaf 4");
         for cache in cache_params {
-            let size = (cache.associativity() as usize) * 
-                      (cache.physical_line_partitions() as usize) * 
-                      (cache.coherency_line_size() as usize) * 
-                      (cache.sets() as usize + 1);
+            let size = cache.associativity() * 
+                      cache.physical_line_partitions() * 
+                      cache.coherency_line_size() * 
+                      (cache.sets() + 1);
             
             let cache_type = cache.cache_type();
             let level = cache.level();
@@ -240,7 +243,7 @@ fn detect_via_raw_cpuid_comprehensive(physical_cores: usize) -> Option<CacheInfo
             }
             
             if cache.coherency_line_size() > 0 {
-                cache_info.cache_line_size = cache.coherency_line_size() as usize;
+                cache_info.cache_line_size = cache.coherency_line_size();
             }
         }
         
@@ -276,7 +279,7 @@ fn detect_via_raw_cpuid_comprehensive(physical_cores: usize) -> Option<CacheInfo
                 let cache_size = (ways * partitions * line_size * sets) as usize;
                 
                 log::debug!("raw_cpuid AMD 0x8000001D[{}]: L{} type={} size={}KB, sharing={}", 
-                           subleaf, cache_level, cache_type, cache_size / 1024, num_sharing);
+                           subleaf, cache_level, cache_type, cache_size / KB, num_sharing);
                 
                 // Cache type: 1=Data, 2=Instruction, 3=Unified
                 match (cache_level, cache_type) {
@@ -321,9 +324,9 @@ fn detect_via_raw_cpuid_comprehensive(physical_cores: usize) -> Option<CacheInfo
             let l3_size_kb = (result.ecx >> 18) & 0x3FFF;
             
             if l3_size_kb > 0 {
-                cache_info.l3_cache = (l3_size_kb as usize) * 512 * 1024; // Units of 512KB
+                cache_info.l3_cache = (l3_size_kb as usize) * 512 * KB; // Units of 512KB
                 found_any = true;
-                log::debug!("raw_cpuid 0x80000006: L3 cache {}MB", cache_info.l3_cache / (1024 * 1024));
+                log::debug!("raw_cpuid 0x80000006: L3 cache {}MB", cache_info.l3_cache / MB);
                 
                 if cache_info.detection_method.is_empty() {
                     cache_info.detection_method = "raw_cpuid legacy AMD".to_string();
@@ -343,9 +346,9 @@ fn detect_via_raw_cpuid_comprehensive(physical_cores: usize) -> Option<CacheInfo
     
     if found_any {
         // Fill in reasonable defaults for missing values
-        if cache_info.per_core_l1d == 0 { cache_info.per_core_l1d = 32 * 1024; }
-        if cache_info.per_core_l1i == 0 { cache_info.per_core_l1i = 32 * 1024; }
-        if cache_info.per_core_l2 == 0 { cache_info.per_core_l2 = 512 * 1024; }
+        if cache_info.per_core_l1d == 0 { cache_info.per_core_l1d = 32 * KB; }
+        if cache_info.per_core_l1i == 0 { cache_info.per_core_l1i = 32 * KB; }
+        if cache_info.per_core_l2 == 0 { cache_info.per_core_l2 = 512 * KB; }
         
         cache_info.recalculate_totals();
         Some(cache_info)
@@ -386,19 +389,19 @@ fn detect_via_hardcoded_database(physical_cores: usize) -> Option<CacheInfo> {
     let (per_core_l1d, per_core_l1i, per_core_l2, l3_cache) = if brand.contains("amd") {
         match (family, model) {
             // Zen 4 APUs (Phoenix)
-            (25, 120) | (25, 124) => (32 * 1024, 32 * 1024, 1024 * 1024, 16 * 1024 * 1024),
+            (25, 120) | (25, 124) => (32 * KB, 32 * KB, MB, 16 * MB),
             // Zen 4 Desktop (Raphael)
-            (25, 97) | (25, 98) => (32 * 1024, 32 * 1024, 1024 * 1024, 32 * 1024 * 1024),
+            (25, 97) | (25, 98) => (32 * KB, 32 * KB, MB, 32 * MB),
             // Zen 3
-            (25, 33) | (25, 1) => (32 * 1024, 32 * 1024, 512 * 1024, 32 * 1024 * 1024),
+            (25, 33) | (25, 1) => (32 * KB, 32 * KB, 512 * KB, 32 * MB),
             // Zen 2
-            (23, 113) | (23, 104) => (32 * 1024, 32 * 1024, 512 * 1024, 16 * 1024 * 1024),
+            (23, 113) | (23, 104) => (32 * KB, 32 * KB, 512 * KB, 16 * MB),
             _ => {
                 // Try to parse from brand string
                 if brand.contains("8500g") || brand.contains("8600g") || brand.contains("8700g") {
-                    (32 * 1024, 32 * 1024, 1024 * 1024, 16 * 1024 * 1024)
+                    (32 * KB, 32 * KB, MB, 16 * MB)
                 } else if brand.contains("7000") || brand.contains("9000") {
-                    (32 * 1024, 32 * 1024, 1024 * 1024, 32 * 1024 * 1024)
+                    (32 * KB, 32 * KB, MB, 32 * MB)
                 } else {
                     return None;
                 }

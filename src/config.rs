@@ -1,5 +1,7 @@
 use crate::{ErrorMode};
-use crate::layout::{MemoryStrategy, AllocationMode, WindowMode, BlockMode};
+use crate::constants::{gib_to_bytes, BYTES_PER_MIB};
+use crate::tests::{WindowMode, ChunkMode};
+use crate::memory::allocation_strategy::{EnhancedMemoryStrategy, AllocationMode, ReserveAmount, StartAddressMode};
 use crate::runner::TestSuiteTiming;
 use crate::tests::{TestTiming, TestMemoryConfig};
 use serde::{Deserialize, Serialize};
@@ -21,6 +23,14 @@ pub struct ModernConfig {
     pub metadata: ConfigMetadata,
     pub system: SystemConfig,
     pub test_sequence: Vec<TestConfig>,
+    pub legacy_metadata: Option<LegacyMetadata>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct LegacyMetadata {
+    pub tm5_test_sequence: Vec<u32>,
+    pub tm5_cycles: u32,
+    pub tm5_time_percent: u32,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -50,16 +60,15 @@ pub struct SystemConfig {
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct CpuPinningConfig {
     pub enable_pinning: bool,
-    pub balance_across_numa: bool,
-    pub prefer_physical_cores: bool,
     #[serde(default = "default_cpus_to_skip")]
-    pub cpus_to_skip: usize,  // New field
+    pub cpus_to_skip: usize,
     #[serde(default = "default_avoid_smt_doubling")]
-    pub avoid_smt_doubling: bool,  // New field
+    pub avoid_smt_doubling: bool,
 }
 
 fn default_cpus_to_skip() -> usize { 1 }
 fn default_avoid_smt_doubling() -> bool { false }
+
 
 // Define MemoryAllocationConfig
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -88,6 +97,9 @@ pub struct MemoryAllocationConfig {
     #[serde(default = "default_require_contiguous")]
     pub require_contiguous: bool,              // Require contiguous physical memory
     
+    #[serde(default = "default_allocation_strategy")]
+    pub allocation_strategy: String,           // "greedy", "plan-pagesize-pref", "plan-blocksize-pref"
+    
     #[serde(default = "default_memory_type")]
     pub default_memory_type: String,           // "write_back", "write_through", "uncached", "write_combining"
     
@@ -113,6 +125,7 @@ fn default_min_page_size() -> String { "large".to_string() }
 fn default_max_page_size() -> String { "huge".to_string() }
 fn default_zero_memory() -> bool { false }
 fn default_require_contiguous() -> bool { true }
+fn default_allocation_strategy() -> String { "plan-pagesize-pref".to_string() }
 fn default_memory_type() -> String { "write_back".to_string() }
 fn default_allocation_timeout_ms() -> u32 { 10000 }
 fn default_retry_interval_ms() -> u32 { 100 }
@@ -129,6 +142,7 @@ impl Default for MemoryAllocationConfig {
             max_page_size: default_max_page_size(),
             zero_memory: default_zero_memory(),
             require_contiguous: default_require_contiguous(),
+            allocation_strategy: default_allocation_strategy(),
             default_memory_type: default_memory_type(),
             allocation_timeout_ms: default_allocation_timeout_ms(),
             retry_interval_ms: default_retry_interval_ms(),
@@ -140,29 +154,29 @@ impl Default for MemoryAllocationConfig {
 
 impl MemoryAllocationConfig {
     // Convert string page size to PageSize enum
-    pub fn parse_page_size(size_str: &str) -> Result<crate::dma_memory::PageSize, String> {
+    pub fn parse_page_size(size_str: &str) -> Result<crate::driver::PageSize, String> {
         match size_str.to_lowercase().as_str() {
-            "regular" | "4kb" => Ok(crate::dma_memory::PageSize::Regular),
-            "large" | "2mb" => Ok(crate::dma_memory::PageSize::Large),
-            "huge" | "1gb" => Ok(crate::dma_memory::PageSize::Huge),
+            "regular" | "4kb" => Ok(crate::driver::PageSize::Regular),
+            "large" | "2mb" => Ok(crate::driver::PageSize::Large),
+            "huge" | "1gb" => Ok(crate::driver::PageSize::Huge),
             _ => Err(format!("Invalid page size: {}", size_str)),
         }
     }
     
     // Convert string memory type to MemoryType enum
-    pub fn parse_memory_type(type_str: &str) -> Result<crate::dma_memory::MemoryType, String> {
+    pub fn parse_memory_type(type_str: &str) -> Result<crate::driver::MemoryType, String> {
         match type_str.to_lowercase().replace('_', "").as_str() {
-            "writeback" => Ok(crate::dma_memory::MemoryType::WriteBack),
-            "writethrough" => Ok(crate::dma_memory::MemoryType::WriteThrough),
-            "uncached" => Ok(crate::dma_memory::MemoryType::Uncached),
-            "writecombining" => Ok(crate::dma_memory::MemoryType::WriteCombining),
+            "writeback" => Ok(crate::driver::MemoryType::WriteBack),
+            "writethrough" => Ok(crate::driver::MemoryType::WriteThrough),
+            "uncached" => Ok(crate::driver::MemoryType::Uncached),
+            "writecombining" => Ok(crate::driver::MemoryType::WriteCombining),
             _ => Err(format!("Invalid memory type: {}", type_str)),
         }
     }
     
     // Create a DmaConfig from this allocation config
-    pub fn to_dma_config(&self, numa_node: Option<u32>) -> Result<crate::dma_memory::DmaConfig, String> {
-        Ok(crate::dma_memory::DmaConfig {
+    pub fn to_dma_config(&self, numa_node: Option<u32>) -> Result<crate::memory::DmaConfig, String> {
+        Ok(crate::memory::DmaConfig {
             minimum_page_size: Self::parse_page_size(&self.min_page_size)?,
             maximum_page_size: Self::parse_page_size(&self.max_page_size)?,
             prefer_numa_node: numa_node,
@@ -181,8 +195,6 @@ impl Default for CpuPinningConfig {
     fn default() -> Self {
         Self {
             enable_pinning: true,
-            balance_across_numa: true,
-            prefer_physical_cores: false,
 			cpus_to_skip: 1,
 			avoid_smt_doubling: false,
         }
@@ -204,8 +216,8 @@ pub struct MemoryStrategyConfig {
     pub window_cache_multiplier: Option<f64>, // For cache_relative mode
     
     // Stage 3: Default block sizing  
-    pub default_block_mode: String,    // "auto_optimal", "fixed_size", "window_fraction"
-    pub default_block_size_mb: Option<u32>, // For fixed_size mode
+    pub default_chunk_mode: String,    // "auto_optimal", "fixed_size", "window_fraction"
+    pub default_chunk_size_mb: Option<u32>, // For fixed_size mode
     pub block_window_fraction: Option<f64>,  // For window_fraction mode
 }
 
@@ -242,7 +254,7 @@ pub struct TestConfig {
     pub window_size_mb: Option<u32>,        // For fixed window mode
     pub window_cache_multiplier: Option<f64>, // For cache relative mode
     
-    pub block_mode: Option<String>,         // Override default block mode  
+    pub chunk_mode: Option<String>,         // Override default block mode  
     pub block_size_mb: Option<u32>,         // For fixed block mode
     pub block_window_fraction: Option<f64>, // For window fraction mode
     
@@ -294,7 +306,7 @@ pub struct LegacyTest {
     pub pattern_param0: u64,
     pub pattern_param1: u64,
     pub parameter: u32,
-    pub test_block_size_mb: u32,
+    pub test_chunk_size_mb: u32,
 }
 
 impl ModernConfig {
@@ -351,7 +363,7 @@ impl ModernConfig {
         }
         report.push_str(&format!(", Window: {}, Block: {}\n", 
             self.system.memory_strategy.default_window_mode,
-            self.system.memory_strategy.default_block_mode
+            self.system.memory_strategy.default_chunk_mode
         ));
         
         // Timing
@@ -392,25 +404,23 @@ impl ModernConfig {
                     if let Some(mb) = test.window_size_mb {
                         report.push_str(&format!(" {}MB", mb));
                     }
-                } else if mode == "cache_relative" {
-                    if let Some(mult) = test.window_cache_multiplier {
+                } else if mode == "cache_relative"
+                    && let Some(mult) = test.window_cache_multiplier {
                         report.push_str(&format!(" {}x", mult));
                     }
-                }
             }
             
             // Block override
-            if let Some(mode) = &test.block_mode {
+            if let Some(mode) = &test.chunk_mode {
                 report.push_str(&format!(", Block:{}", mode));
                 if mode == "fixed_size" {
                     if let Some(mb) = test.block_size_mb {
                         report.push_str(&format!(" {}MB", mb));
                     }
-                } else if mode == "window_fraction" {
-                    if let Some(frac) = test.block_window_fraction {
+                } else if mode == "window_fraction"
+                    && let Some(frac) = test.block_window_fraction {
                         report.push_str(&format!(" {:.1}%", frac * 100.0));
                     }
-                }
             }
             
             if test.allow_misaligned == Some(true) {
@@ -420,7 +430,7 @@ impl ModernConfig {
                 report.push_str(", Locality");
             }
             
-            report.push_str("\n");
+            report.push('\n');
         }
         
         report
@@ -432,22 +442,32 @@ impl ModernConfig {
         fs::write(path, json).map_err(|e| format!("Failed to write config file: {}", e))
     }
 
-    // Convert to runtime configuration
-    pub fn to_memory_strategy(&self) -> MemoryStrategy {
+    // Convert to runtime allocation strategy (window/chunk modes are now test-specific)
+    pub fn to_memory_strategy(&self) -> EnhancedMemoryStrategy {
         let allocation_mode = match self.system.memory_strategy.allocation_mode.as_str() {
-            "max_available" => AllocationMode::MaxAvailable { 
-                reserve_mb: self.system.memory_strategy.reserve_mb.unwrap_or(128) 
+            "max_available" => AllocationMode::ReserveFromAvailable { 
+                reserve: ReserveAmount::Bytes((self.system.memory_strategy.reserve_mb.unwrap_or(128) as u64) * BYTES_PER_MIB)
             },
-            "percentage_reserve" => AllocationMode::PercentageReserve { 
-                reserve_percent: self.system.memory_strategy.reserve_percent.unwrap_or(10.0) 
+            "percentage_reserve" => AllocationMode::ReserveFromAvailable { 
+                reserve: ReserveAmount::Percentage(self.system.memory_strategy.reserve_percent.unwrap_or(10.0))
             },
-            "fixed_reserve" => AllocationMode::FixedReserve { 
-                reserve_gib: self.system.memory_strategy.reserve_gib.unwrap_or(2.0) 
+            "fixed_reserve" => AllocationMode::ReserveFromAvailable { 
+                reserve: ReserveAmount::Bytes(gib_to_bytes(self.system.memory_strategy.reserve_gib.unwrap_or(2.0)))
             },
-            _ => AllocationMode::PercentageReserve { reserve_percent: 10.0 },
+            _ => AllocationMode::ReserveFromAvailable { 
+                reserve: ReserveAmount::Percentage(10.0) 
+            },
         };
-        
-        let default_window_mode = match self.system.memory_strategy.default_window_mode.as_str() {
+
+        EnhancedMemoryStrategy {
+            allocation_mode,
+            start_address_mode: StartAddressMode::default(),
+        }
+    }
+    
+    // Parse default window mode for tests (moved out of allocation strategy)
+    pub fn get_default_window_mode(&self) -> WindowMode {
+        match self.system.memory_strategy.default_window_mode.as_str() {
             "full_allocation" => WindowMode::FullAllocation,
             "fixed_size" => WindowMode::FixedSize { 
                 size_mb: self.system.memory_strategy.default_window_size_mb.unwrap_or(880) 
@@ -456,23 +476,20 @@ impl ModernConfig {
                 multiplier: self.system.memory_strategy.window_cache_multiplier.unwrap_or(2.0) 
             },
             _ => WindowMode::FullAllocation,
-        };
-        
-        let default_block_mode = match self.system.memory_strategy.default_block_mode.as_str() {
-            "auto_optimal" => BlockMode::AutoOptimal,
-            "fixed_size" => BlockMode::FixedSize { 
-                size_mb: self.system.memory_strategy.default_block_size_mb.unwrap_or(16) 
+        }
+    }
+    
+    // Parse default chunk mode for tests (moved out of allocation strategy)
+    pub fn get_default_chunk_mode(&self) -> ChunkMode {
+        match self.system.memory_strategy.default_chunk_mode.as_str() {
+            "auto_optimal" => ChunkMode::AutoOptimal,
+            "fixed_size" => ChunkMode::FixedSize { 
+                size_mb: self.system.memory_strategy.default_chunk_size_mb.unwrap_or(16) 
             },
-            "window_fraction" => BlockMode::WindowFraction { 
+            "window_fraction" => ChunkMode::WindowFraction { 
                 fraction: self.system.memory_strategy.block_window_fraction.unwrap_or(0.125) 
             },
-            _ => BlockMode::AutoOptimal,
-        };
-
-        MemoryStrategy {
-            allocation_mode,
-            default_window_mode,
-            default_block_mode,
+            _ => ChunkMode::AutoOptimal,
         }
     }
 
@@ -494,9 +511,9 @@ impl ModernConfig {
     pub fn get_test_configs(&self) -> Vec<(&str, TestMemoryConfig)> {
         self.test_sequence.iter().filter(|t| t.enabled).map(|test| {
             let window_mode = self.parse_test_window_mode(test);
-            let block_mode = self.parse_test_block_mode(test);
+            let chunk_mode = self.parse_test_chunk_mode(test);
             let allow_misaligned = test.allow_misaligned.unwrap_or(false);
-            let requires_locality = test.requires_locality.unwrap_or_else(|| {
+            let requires_locality = test.requires_locality.unwrap_or({
                 // Auto-detect based on function name
                 matches!(test.function.as_str(), "CacheBusting" | "RefreshStable")
             });
@@ -507,13 +524,68 @@ impl ModernConfig {
                 min_duration_secs: test.min_duration_secs,
             };
             
-            let config = TestMemoryConfig::new(window_mode, block_mode, allow_misaligned, requires_locality)
+            let config = TestMemoryConfig::new(window_mode, chunk_mode, allow_misaligned, requires_locality)
                 .with_timing(timing)
                 .with_streams(test.streams.unwrap_or(1)) // Default to 1 stream (equivalent to TM5 jump=1)
                 .with_pattern_config(test.pattern_mode, test.pattern_param0, test.pattern_param1);
             
             (test.function.as_str(), config)
         }).collect()
+    }
+
+    /// Get test configs in TM5 test sequence order (if available) with repetition support
+    pub fn get_test_configs_with_sequence(&self) -> Vec<(&str, TestMemoryConfig)> {
+        // Check if we have TM5 test sequence data
+        if let Some(ref metadata) = self.legacy_metadata {
+            if !metadata.tm5_test_sequence.is_empty() {
+                return self.get_tm5_sequence_configs(&metadata.tm5_test_sequence);
+            }
+        }
+        
+        // Fallback to standard sequential execution
+        self.get_test_configs()
+    }
+    
+    /// Get test configs following TM5 test sequence order and repetition
+    fn get_tm5_sequence_configs(&self, sequence: &[u32]) -> Vec<(&str, TestMemoryConfig)> {
+        let mut result = Vec::new();
+        
+        for &test_index in sequence {
+            // Find the test by index (TM5 uses 0-based indexing)
+            if let Some(test) = self.test_sequence.get(test_index as usize) {
+                if test.enabled {
+                    let window_mode = self.parse_test_window_mode(test);
+                    let chunk_mode = self.parse_test_chunk_mode(test);
+                    let allow_misaligned = test.allow_misaligned.unwrap_or(false);
+                    let requires_locality = test.requires_locality.unwrap_or({
+                        // Auto-detect based on function name
+                        matches!(test.function.as_str(), "CacheBusting" | "RefreshStable")
+                    });
+                    
+                    let timing = TestTiming {
+                        cycles: test.cycles.or(self.system.timing.default_test_cycles),
+                        duration_secs: test.duration_secs.or(self.system.timing.default_test_duration_secs),
+                        min_duration_secs: test.min_duration_secs,
+                    };
+                    
+                    let config = TestMemoryConfig::new(window_mode, chunk_mode, allow_misaligned, requires_locality)
+                        .with_timing(timing)
+                        .with_streams(test.streams.unwrap_or(1))
+                        .with_pattern_config(test.pattern_mode, test.pattern_param0, test.pattern_param1);
+                    
+                    result.push((test.function.as_str(), config));
+                }
+            } else {
+                log::warn!("TM5 test sequence references invalid test index: {}", test_index);
+            }
+        }
+        
+        if result.is_empty() {
+            log::warn!("TM5 test sequence produced no valid tests, falling back to sequential order");
+            return self.get_test_configs();
+        }
+        
+        result
     }
     
 fn parse_test_window_mode(&self, test: &TestConfig) -> WindowMode {
@@ -528,55 +600,55 @@ fn parse_test_window_mode(&self, test: &TestConfig) -> WindowMode {
             },
             "global_window" | "global-window" | "0" => {
                 // Use the global default window
-                self.to_memory_strategy().default_window_mode
+                self.get_default_window_mode()
             }
             _ => {
                 log::warn!("Unknown window mode '{}', using default", mode);
-                self.to_memory_strategy().default_window_mode
+                self.get_default_window_mode()
             }
         }
     } else if let Some(size_mb) = test.window_size_mb {
         // Legacy behavior: if size is specified without mode
         if size_mb == 0 {
             // 0 means use global window
-            self.to_memory_strategy().default_window_mode
+            self.get_default_window_mode()
         } else {
             WindowMode::FixedSize { size_mb }
         }
     } else {
-        self.to_memory_strategy().default_window_mode
+        self.get_default_window_mode()
     }
 }
     
-fn parse_test_block_mode(&self, test: &TestConfig) -> BlockMode {
-    if let Some(ref mode) = test.block_mode {
+fn parse_test_chunk_mode(&self, test: &TestConfig) -> ChunkMode {
+    if let Some(ref mode) = test.chunk_mode {
         match mode.as_str() {
-            "auto_optimal" | "auto-optimal" => BlockMode::AutoOptimal,
-            "fixed_size" | "fixed-size" => BlockMode::FixedSize { 
+            "auto_optimal" | "auto-optimal" => ChunkMode::AutoOptimal,
+            "fixed_size" | "fixed-size" => ChunkMode::FixedSize { 
                 size_mb: test.block_size_mb.unwrap_or(16) 
             },
-            "window_fraction" | "window-fraction" => BlockMode::WindowFraction { 
+            "window_fraction" | "window-fraction" => ChunkMode::WindowFraction { 
                 fraction: test.block_window_fraction.unwrap_or(0.125) 
             },
             "window_size" | "window-size" | "0" => {
                 // Use window size as block size (TM5 behavior for 0)
-                BlockMode::WindowFraction { fraction: 1.0 }
+                ChunkMode::WindowFraction { fraction: 1.0 }
             }
             _ => {
-                log::warn!("Unknown block mode '{}', using default", mode);
-                self.to_memory_strategy().default_block_mode
+                log::warn!("Unknown chunk mode '{}', using default", mode);
+                self.get_default_chunk_mode()
             }
         }
     } else if let Some(size_mb) = test.block_size_mb {
         // Legacy behavior: if size is specified without mode
         if size_mb == 0 {
             // 0 means use window size (TM5 behavior)
-            BlockMode::WindowFraction { fraction: 1.0 }
+            ChunkMode::WindowFraction { fraction: 1.0 }
         } else {
-            BlockMode::FixedSize { size_mb }
+            ChunkMode::FixedSize { size_mb }
         }
     } else {
-        self.to_memory_strategy().default_block_mode
+        self.get_default_chunk_mode()
     }
 }
 
@@ -601,8 +673,8 @@ pub fn create_demo_config() -> Self {
                 default_window_mode: "full_allocation".to_string(),
                 default_window_size_mb: None,
                 window_cache_multiplier: None,
-                default_block_mode: "auto_optimal".to_string(),
-                default_block_size_mb: None,
+                default_chunk_mode: "auto_optimal".to_string(),
+                default_chunk_size_mb: None,
                 block_window_fraction: None,
             },
             cpu_config: CpuConfig {
@@ -631,7 +703,7 @@ pub fn create_demo_config() -> Self {
                 window_mode: Some("full-allocation".to_string()), // Must test ALL memory
                 window_size_mb: None,
                 window_cache_multiplier: None,
-                block_mode: Some("window-fraction".to_string()),
+                chunk_mode: Some("window-fraction".to_string()),
                 block_size_mb: None,
                 block_window_fraction: Some(0.0625),   // 1/16th for efficiency
                 allow_misaligned: Some(false),
@@ -653,7 +725,7 @@ pub fn create_demo_config() -> Self {
                 window_mode: Some("cache-relative".to_string()),
                 window_size_mb: None,
                 window_cache_multiplier: Some(2.0),    // 2x cache for refresh testing
-                block_mode: Some("fixed-size".to_string()),
+                chunk_mode: Some("fixed-size".to_string()),
                 block_size_mb: Some(1),                // Small 1MB blocks
                 block_window_fraction: None,
                 allow_misaligned: Some(false),
@@ -675,7 +747,7 @@ pub fn create_demo_config() -> Self {
                 window_mode: Some("fixed-size".to_string()),
                 window_size_mb: Some(880),             // TM5 default window
                 window_cache_multiplier: None,
-                block_mode: Some("fixed-size".to_string()),
+                chunk_mode: Some("fixed-size".to_string()),
                 block_size_mb: Some(16),               // TM5 typical block size
                 block_window_fraction: None,
                 allow_misaligned: Some(false),
@@ -690,14 +762,14 @@ pub fn create_demo_config() -> Self {
             // MirrorMove128 - SIMD test with optimal locality
             TestConfig {
                 enabled: true,
-                function: "MirrorMove128NonTemporal".to_string(),
+                function: "MirrorMove128".to_string(),
                 cycles: Some(1),
                 duration_secs: None,
                 min_duration_secs: None,
                 window_mode: Some("fixed-size".to_string()),
                 window_size_mb: Some(64),              // Good SIMD locality
                 window_cache_multiplier: None,
-                block_mode: Some("fixed-size".to_string()),
+                chunk_mode: Some("fixed-size".to_string()),
                 block_size_mb: Some(16),               // 16MB for 128-bit alignment
                 block_window_fraction: None,
                 allow_misaligned: Some(false),
@@ -712,14 +784,14 @@ pub fn create_demo_config() -> Self {
             // MirrorMove256 - AVX2 with dual streams
             TestConfig {
                 enabled: true,
-                function: "MirrorMove256NonTemporal".to_string(),
+                function: "MirrorMove256".to_string(),
                 cycles: Some(1),
                 duration_secs: None,
                 min_duration_secs: None,
                 window_mode: Some("fixed-size".to_string()),
                 window_size_mb: Some(128),             // Larger for AVX2
                 window_cache_multiplier: None,
-                block_mode: Some("fixed-size".to_string()),
+                chunk_mode: Some("fixed-size".to_string()),
                 block_size_mb: Some(32),               // 32MB for 256-bit alignment
                 block_window_fraction: None,
                 allow_misaligned: Some(false),
@@ -741,7 +813,7 @@ pub fn create_demo_config() -> Self {
                 window_mode: Some("cache-relative".to_string()),
                 window_size_mb: None,
                 window_cache_multiplier: Some(0.5),    // Half cache to ensure busting
-                block_mode: Some("fixed-size".to_string()),
+                chunk_mode: Some("fixed-size".to_string()),
                 block_size_mb: Some(1),                // 1MB blocks for cache lines
                 block_window_fraction: None,
                 allow_misaligned: Some(false),
@@ -763,7 +835,7 @@ pub fn create_demo_config() -> Self {
                 window_mode: Some("full-allocation".to_string()), // Need full memory
                 window_size_mb: None,
                 window_cache_multiplier: None,
-                block_mode: Some("fixed-size".to_string()),
+                chunk_mode: Some("fixed-size".to_string()),
                 block_size_mb: Some(8),                // 8MB blocks
                 block_window_fraction: None,
                 allow_misaligned: Some(true),          // Maximum stress
@@ -785,7 +857,7 @@ pub fn create_demo_config() -> Self {
                 window_mode: Some("full-allocation".to_string()),
                 window_size_mb: None,
                 window_cache_multiplier: None,
-                block_mode: Some("auto-optimal".to_string()), // Let TMR optimize
+                chunk_mode: Some("auto-optimal".to_string()), // Let TMR optimize
                 block_size_mb: None,
                 block_window_fraction: None,
                 allow_misaligned: Some(false),
@@ -807,7 +879,7 @@ pub fn create_demo_config() -> Self {
                 window_mode: Some("full-allocation".to_string()), // Max bandwidth
                 window_size_mb: None,
                 window_cache_multiplier: None,
-                block_mode: Some("fixed-size".to_string()),
+                chunk_mode: Some("fixed-size".to_string()),
                 block_size_mb: Some(32),               // Large blocks for bandwidth
                 block_window_fraction: None,
                 allow_misaligned: Some(false),
@@ -829,7 +901,7 @@ pub fn create_demo_config() -> Self {
                 window_mode: Some("full-allocation".to_string()), // Need src+dst space
                 window_size_mb: None,
                 window_cache_multiplier: None,
-                block_mode: Some("fixed-size".to_string()),
+                chunk_mode: Some("fixed-size".to_string()),
                 block_size_mb: Some(16),               // 16MB blocks
                 block_window_fraction: None,
                 allow_misaligned: Some(false),
@@ -851,7 +923,7 @@ pub fn create_demo_config() -> Self {
                 window_mode: Some("global-window".to_string()), // Use global default
                 window_size_mb: None,
                 window_cache_multiplier: None,
-                block_mode: Some("window-size".to_string()),    // Block = window (TM5 0)
+                chunk_mode: Some("window-size".to_string()),    // Block = window (TM5 0)
                 block_size_mb: None,
                 block_window_fraction: None,
                 allow_misaligned: Some(false),
@@ -863,6 +935,7 @@ pub fn create_demo_config() -> Self {
                 parameter: None,
             },
         ],
+        legacy_metadata: None,
     }
 }
     
@@ -887,8 +960,8 @@ pub fn create_demo_config() -> Self {
                     default_window_mode: "fixed_size".to_string(),
                     default_window_size_mb: Some(880),     // TM5 default window
                     window_cache_multiplier: None,
-                    default_block_mode: "auto_optimal".to_string(),
-                    default_block_size_mb: None,
+                    default_chunk_mode: "auto_optimal".to_string(),
+                    default_chunk_size_mb: None,
                     block_window_fraction: None,
                 },
                 cpu_config: CpuConfig {
@@ -905,7 +978,7 @@ pub fn create_demo_config() -> Self {
                 large_pages: true,
 				cpu_pinning: CpuPinningConfig::default(),  // Add this
 				memory_allocation: MemoryAllocationConfig::default(),  // Add this
-            },
+	            },
             test_sequence: vec![
                 TestConfig {
                     enabled: true,
@@ -916,7 +989,7 @@ pub fn create_demo_config() -> Self {
                     window_mode: Some("full_allocation".to_string()), // Override to test all memory
                     window_size_mb: None,
                     window_cache_multiplier: None,
-                    block_mode: None,                      // Use default auto-optimal
+                    chunk_mode: None,                      // Use default auto-optimal
                     block_size_mb: None,
                     block_window_fraction: None,
                     allow_misaligned: Some(false),
@@ -936,7 +1009,7 @@ pub fn create_demo_config() -> Self {
                     window_mode: None,                     // Use default fixed 880MB
                     window_size_mb: None,
                     window_cache_multiplier: None,
-                    block_mode: Some("fixed_size".to_string()),
+                    chunk_mode: Some("fixed_size".to_string()),
                     block_size_mb: Some(16),               // TM5-style block size
                     block_window_fraction: None,
                     allow_misaligned: Some(false),
@@ -948,6 +1021,7 @@ pub fn create_demo_config() -> Self {
                     parameter: None,
                 },
             ],
+            legacy_metadata: None,
         }
     }
 }
@@ -1030,7 +1104,7 @@ impl LegacyConfig {
                         .and_then(|s| u64::from_str_radix(s.trim_start_matches("0x"), 16).ok())
                         .unwrap_or(0),
                     parameter: test.get("Parameter").and_then(|s| s.parse().ok()).unwrap_or(0),
-                    test_block_size_mb: test.get("Test Block Size (Mb)").and_then(|s| s.parse().ok()).unwrap_or(0),
+                    test_chunk_size_mb: test.get("Test Block Size (Mb)").and_then(|s| s.parse().ok()).unwrap_or(0),
                 };
                 tests.push(legacy_test);
             }
@@ -1073,15 +1147,15 @@ impl LegacyConfig {
                 window_cache_multiplier: None,
                 
                 // Handle TM5 block size with new special values
-                block_mode: if test.test_block_size_mb == 0 {
+                chunk_mode: if test.test_chunk_size_mb == 0 {
                     Some("window-size".to_string())  // 0 = use window size
                 } else {
                     Some("fixed_size".to_string())
                 },
-                block_size_mb: if test.test_block_size_mb == 0 {
+                block_size_mb: if test.test_chunk_size_mb == 0 {
                     None  // "window-size" mode doesn't need a value
                 } else {
-                    Some(test.test_block_size_mb)
+                    Some(test.test_chunk_size_mb)
                 },
                 block_window_fraction: None,
                 
@@ -1122,8 +1196,8 @@ impl LegacyConfig {
                 default_window_size_mb: Some(self.memory_setup.testing_window_size_mb),
                 window_cache_multiplier: None,
                 
-                default_block_mode: "auto_optimal".to_string(),
-                default_block_size_mb: None,
+                default_chunk_mode: "auto_optimal".to_string(),
+                default_chunk_size_mb: None,
                 block_window_fraction: None,
             },
             cpu_config: CpuConfig {
@@ -1142,6 +1216,11 @@ impl LegacyConfig {
 			memory_allocation: MemoryAllocationConfig::default(),  // Add this
         },
         test_sequence,
+        legacy_metadata: Some(LegacyMetadata {
+            tm5_test_sequence: self.main_section.test_sequence.clone(),
+            tm5_cycles: self.main_section.cycles,
+            tm5_time_percent: self.main_section.time_percent,
+        }),
     })
 }
 
@@ -1151,11 +1230,11 @@ fn map_legacy_function(legacy_name: &str) -> Result<String, String> {
     match legacy_name {
         "RefreshStable" => Ok("RefreshStable".to_string()),
         "SimpleTest" => Ok("SimpleTest".to_string()),
-        "MirrorMove" => Ok("MirrorMove128NonTemporal".to_string()),
-        "MirrorMove128" => Ok("MirrorMove128NonTemporal".to_string()),
-        "MirrorMove256" => Ok("MirrorMove256NonTemporal".to_string()),
-        "MirrorMove512" => Ok("MirrorMove512NonTemporal".to_string()),
-        "BlockMove" => Ok("BlockMove".to_string()), // Now maps to actual BlockMove
+        "MirrorMove" => Ok("MirrorMove128".to_string()),  // TM5 base MirrorMove -> TMR 128-bit SIMD
+        "MirrorMove128" => Ok("MirrorMove128".to_string()),
+        "MirrorMove256" => Ok("MirrorMove256".to_string()),
+        "MirrorMove512" => Ok("MirrorMove512".to_string()),
+        "BlockMove" => Ok("BlockMove".to_string()),
         _ => Err(format!("Unknown legacy test function: '{}'", legacy_name))
     }
 }

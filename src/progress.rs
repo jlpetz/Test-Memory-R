@@ -1,4 +1,5 @@
 use crate::tests::TestStats;
+use crate::constants::{BYTES_PER_GIB_F64, BYTES_PER_MIB_F64};
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::{Arc, Mutex};
 use std::time::Instant;
@@ -47,6 +48,12 @@ pub struct TestSummary {
     pub errors: u64,
 }
 
+impl Default for ProgressTracker {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
 impl ProgressTracker {
     pub fn new() -> Self {
         Self {
@@ -89,8 +96,8 @@ impl ProgressTracker {
     }
     
     pub fn complete_cycle(&self, cycle_number: u32, test_summaries: Vec<TestSummary>) {
-        if let Ok(cycle_start) = self.cycle_start_time.lock() {
-            if let Some(start_time) = *cycle_start {
+        if let Ok(cycle_start) = self.cycle_start_time.lock()
+            && let Some(start_time) = *cycle_start {
                 let duration = start_time.elapsed().as_secs();
                 let bytes = test_summaries.iter().map(|t| t.bytes_processed).sum();
                 
@@ -105,7 +112,6 @@ impl ProgressTracker {
                     stats.push(cycle_stat);
                 }
             }
-        }
     }
 
     pub fn add_errors(&self, count: u64) {
@@ -115,11 +121,10 @@ impl ProgressTracker {
     pub fn add_test_errors(&self, test_name: &str, count: u64) {
         self.add_errors(count);
         
-        if count > 0 {
-            if let Ok(mut per_test_errors) = self.per_test_errors.lock() {
+        if count > 0
+            && let Ok(mut per_test_errors) = self.per_test_errors.lock() {
                 *per_test_errors.entry(test_name.to_string()).or_insert(0) += count;
             }
-        }
     }
 
     pub fn complete_test(&self, stats: &TestStats) {
@@ -159,8 +164,8 @@ impl ProgressTracker {
             .unwrap_or_else(|_| "Unknown".to_string());
             
         let throughput_raw = self.current_throughput.load(Ordering::Relaxed);
-        let throughput_gib_s = (throughput_raw as f64) / (1024.0 * 1024.0 * 1024.0);
-        let throughput_mib_s = (throughput_raw as f64) / (1024.0 * 1024.0);
+        let throughput_gib_s = (throughput_raw as f64) / BYTES_PER_GIB_F64;
+        let throughput_mib_s = (throughput_raw as f64) / BYTES_PER_MIB_F64;
         let total_runtime = self.start_time.elapsed();
 
         // Calculate progress percentage for current cycle only

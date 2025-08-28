@@ -1,4 +1,5 @@
 use crate::progress::TestSummary;
+use crate::constants::{BYTES_PER_GIB_F64, MB_F64};
 use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
 use std::fs;
@@ -113,6 +114,12 @@ pub struct TestComparisonResult {
     pub errors_diff: i64,
 }
 
+impl Default for TestRunResult {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
 impl TestRunResult {
     pub fn new() -> Self {
         // Create results directory if it doesn't exist
@@ -177,7 +184,7 @@ impl TestRunResult {
         let total_bytes: u64 = test_summaries.iter().map(|t| t.bytes_processed).sum();
         let total_errors: u64 = test_summaries.iter().map(|t| t.errors).sum();
         let avg_throughput_mib = if duration_secs > 0 {
-            (total_bytes as f64 / (1024.0 * 1024.0)) / duration_secs as f64
+            (total_bytes as f64 / MB_F64) / duration_secs as f64
         } else {
             0.0
         };
@@ -214,10 +221,10 @@ impl TestRunResult {
         self.overall_stats.cycles_completed = self.cycles.len() as u32;
         
         let total_bytes: u64 = self.cycles.iter().map(|c| c.cycle_stats.total_bytes).sum();
-        self.overall_stats.total_data_processed_gib = total_bytes as f64 / (1024.0 * 1024.0 * 1024.0);
+        self.overall_stats.total_data_processed_gib = total_bytes as f64 / BYTES_PER_GIB_F64;
         
         self.overall_stats.overall_throughput_mib_s = if total_runtime.as_secs() > 0 {
-            (total_bytes as f64 / (1024.0 * 1024.0)) / total_runtime.as_secs() as f64
+            (total_bytes as f64 / MB_F64) / total_runtime.as_secs() as f64
         } else {
             0.0
         };
@@ -246,7 +253,7 @@ impl TestRunResult {
             let avg_duration_ms = total_duration / cycle_count;
             let avg_bytes = total_bytes / cycle_count as u64;
             let avg_throughput_mib = if avg_duration_ms > 0 {
-                (avg_bytes as f64 / (1024.0 * 1024.0)) / (avg_duration_ms as f64 / 1000.0)
+                (avg_bytes as f64 / MB_F64) / (avg_duration_ms as f64 / 1000.0)
             } else {
                 0.0
             };
@@ -294,15 +301,15 @@ impl TestRunResult {
     pub fn to_text_report(&self) -> String {
         let mut report = String::new();
         
-        report.push_str(&format!("=== TMR Test Result Report ===\n"));
+        report.push_str("=== TMR Test Result Report ===\n");
         report.push_str(&format!("Run Time: {}\n", self.metadata.start_time_iso));
         report.push_str(&format!("TMR Version: {}\n", self.metadata.tmr_version));
         if let Some(config) = &self.metadata.config_name {
             report.push_str(&format!("Config: {}\n", config));
         }
-        report.push_str("\n");
+        report.push('\n');
 
-        report.push_str(&format!("System Information:\n"));
+        report.push_str("System Information:\n");
         report.push_str(&format!("  CPU: {}\n", self.system_info.cpu_brand));
         report.push_str(&format!("  Cores: {} physical\n", self.system_info.cpu_cores));
         report.push_str(&format!("  Memory: {:.2} GiB total, {:.2} GiB allocated\n", 
@@ -310,25 +317,25 @@ impl TestRunResult {
         report.push_str(&format!("  Threads: {}\n", self.system_info.thread_count));
         report.push_str(&format!("  Large Pages: {}\n", if self.system_info.large_pages_enabled { "Enabled" } else { "Disabled" }));
         report.push_str(&format!("  SIMD: {}\n", self.system_info.simd_capabilities));
-        report.push_str("\n");
+        report.push('\n');
 
-        report.push_str(&format!("Overall Results:\n"));
+        report.push_str("Overall Results:\n");
         report.push_str(&format!("  Runtime: {}s\n", self.overall_stats.total_runtime_secs));
         report.push_str(&format!("  Cycles: {}\n", self.overall_stats.cycles_completed));
         report.push_str(&format!("  Data Processed: {:.2} GiB\n", self.overall_stats.total_data_processed_gib));
         report.push_str(&format!("  Throughput: {:.1} MiB/s ({:.2} GiB/s)\n", 
             self.overall_stats.overall_throughput_mib_s, self.overall_stats.overall_throughput_gib_s));
         report.push_str(&format!("  Total Errors: {}\n", self.overall_stats.total_errors));
-        report.push_str("\n");
+        report.push('\n');
 
         if !self.overall_stats.per_test_averages.is_empty() {
-            report.push_str(&format!("Per-Test Averages:\n"));
+            report.push_str("Per-Test Averages:\n");
             for test in &self.overall_stats.per_test_averages {
                 report.push_str(&format!("  {}. {} - {:.1}s, {:.2} GiB @ {:.1} MiB/s ({:.2} GiB/s){}\n",
                     test.test_number,
                     test.name,
                     test.avg_duration_ms as f64 / 1000.0,
-                    test.avg_bytes_processed as f64 / (1024.0 * 1024.0 * 1024.0),
+                    test.avg_bytes_processed as f64 / BYTES_PER_GIB_F64,
                     test.avg_throughput_mib_s,
                     test.avg_throughput_gib_s,
                     if test.total_errors > 0 { 
@@ -434,7 +441,7 @@ impl TestComparison {
         report.push_str(&format!("Comparison Time: {}\n", self.comparison_time));
         report.push_str(&format!("Baseline: {} ({})\n", self.baseline.start_time_iso, self.baseline.filename));
         report.push_str(&format!("Current:  {} ({})\n", self.current.start_time_iso, self.current.filename));
-        report.push_str("\n");
+        report.push('\n');
 
         report.push_str("Overall Performance Changes:\n");
         report.push_str(&format!("  Runtime: {}{} seconds ({:+.1}%)\n", 
@@ -456,7 +463,7 @@ impl TestComparison {
         } else {
             report.push_str("  Errors: No change\n");
         }
-        report.push_str("\n");
+        report.push('\n');
 
         if !self.per_test_comparisons.is_empty() {
             report.push_str("Per-Test Performance Changes:\n");

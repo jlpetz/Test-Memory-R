@@ -1,7 +1,7 @@
 [package]
 name = "tmr"
 version = "1.0.0"
-edition = "2021"
+edition = "2024"
 description = "Test Memory R - High-Performance DDR5 Memory Testing Tool"
 authors = ["Your Name <your.email@example.com>"]
 
@@ -31,6 +31,10 @@ chrono = { version = "0.4", features = ["serde"] }  # For timestamp handling
 ctrlc = "3.4"         # For CTRL+C signal handling
 raw-cpuid = "11.5"
 
+# --------------------------------------------
+# BUILD PROFILES
+# --------------------------------------------
+
 [profile.release]
 opt-level = 3
 lto = true
@@ -38,10 +42,19 @@ codegen-units = 1
 panic = "abort"
 strip = true
 
+[profile.release-with-debug]
+inherits = "release"
+lto = false
+strip = false
+debug = 2
+split-debuginfo = "unpacked"
+codegen-units = 1         # keep layout stable for profiling
+panic = "abort"           # match your release panic strategy
+# Note: For profiling with frame pointers, build with:
+# RUSTFLAGS="-C force-frame-pointers=yes" cargo build --profile release-with-debug
+
 [profile.bench]
 opt-level = 3
 lto = true
 codegen-units = 1
 
-# Enable CPU-specific optimizations
-[target.'cfg(target_arch = "x86_64")'.dependencies]

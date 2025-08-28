@@ -270,7 +270,7 @@ pub fn detect_cpu_topology_auto() -> Vec<CpuTopologyInfo> {
     
     if has_multiple_types && !has_unknown {
         log::info!("✓ Successfully detected heterogeneous cores using cache differences");
-        return topology;
+        topology
 	} else {
         // Log what we ended up with
         let physical_cores = topology.iter()
@@ -281,8 +281,16 @@ pub fn detect_cpu_topology_auto() -> Vec<CpuTopologyInfo> {
         log::warn!("✗ Unable to differentiate core types for {} physical cores", physical_cores);
         log::warn!("  All cores will be treated as the same type");
         log::info!("  This is common for non-hybrid CPUs or when Windows doesn't expose differences");
+        
+        // For uniform systems, treat all cores as Performance cores instead of Efficiency cores
+        let mut updated_topology = topology;
+        for cpu in &mut updated_topology {
+            if matches!(cpu.core_type, CoreType::Efficiency(_)) {
+                cpu.core_type = CoreType::Performance(0);
+            }
+        }
+        updated_topology
     }
-    topology
 }
 
 pub fn detect_cpu_topology_cpuid() -> Vec<CpuTopologyInfo> {
@@ -327,7 +335,7 @@ pub fn detect_cpu_topology_cpuid() -> Vec<CpuTopologyInfo> {
         for cpu in &mut topology {
             if let Some(l3_size) = core_characteristics.get(&cpu.physical_core_id) {
                 // Cores with max cache are performance cores
-                let is_performance = l3_size.map_or(false, |l3| l3 == max_l3);
+                let is_performance = l3_size.is_some_and(|l3| l3 == max_l3);
                 
                 cpu.core_type = if is_performance {
                     CoreType::Performance(0)
@@ -532,7 +540,7 @@ pub fn detect_cpu_topology() -> Vec<CpuTopologyInfo> {
 
 
 pub fn display_cpu_topology(cpu_list: &[usize], cpus_to_skip: usize) {
-    use crate::utils::{TableBuilder, Alignment};
+    use crate::reporting::{create_console_reporter, models::{CpuTopologyReport, CpuTopologyEntry, TopologySummary}};
     
     let topology = get_cpu_topology();
     let is_hybrid = is_hybrid_cpu(topology);
@@ -558,7 +566,7 @@ pub fn display_cpu_topology(cpu_list: &[usize], cpus_to_skip: usize) {
                 CoreType::Unknown => "unknown",
             };
             cores_by_type.entry(type_key)
-                .or_insert_with(Vec::new)
+                .or_default()
                 .push(*core_id);
         }
         
@@ -579,26 +587,13 @@ pub fn display_cpu_topology(cpu_list: &[usize], cpus_to_skip: usize) {
         }
         
         // Then skip performance cores if needed
-        if remaining_to_skip > 0 {
-            if let Some(p_cores) = cores_by_type.get("performance") {
+        if remaining_to_skip > 0
+            && let Some(p_cores) = cores_by_type.get("performance") {
                 for &core_id in p_cores.iter().take(remaining_to_skip) {
                     skipped_physical_cores.insert(core_id);
                 }
             }
-        }
     }
-    
-    println!("\nCPU Topology and Thread Assignment:");
-    
-    let mut table = TableBuilder::new()
-        .add_header("Logical CPU", Alignment::Right)
-        .add_header("Physical Core", Alignment::Right)
-        .add_header("Type", Alignment::Center)           // ALWAYS show Type column
-        .add_header("Threads", Alignment::Center)
-        .add_header("NUMA Node", Alignment::Right)
-        .add_header("SMT", Alignment::Center)
-        .add_header("Status", Alignment::Center)
-        .add_header("Thread ID", Alignment::Right);
     
     let mut skipped_count = 0;
     let mut assigned_count = 0;
@@ -608,8 +603,9 @@ pub fn display_cpu_topology(cpu_list: &[usize], cpus_to_skip: usize) {
     
     // Count unique physical cores by type
     let mut counted_cores = std::collections::HashSet::new();
+    let mut cpu_entries = Vec::new();
     
-    for cpu_info in topology {  // Changed from &topology to topology
+    for cpu_info in topology {
         if !counted_cores.contains(&cpu_info.physical_core_id) {
             counted_cores.insert(cpu_info.physical_core_id);
             match cpu_info.core_type {
@@ -622,62 +618,62 @@ pub fn display_cpu_topology(cpu_list: &[usize], cpus_to_skip: usize) {
         // Determine status based on physical core
         let (status, thread_id) = if skipped_physical_cores.contains(&cpu_info.physical_core_id) {
             skipped_count += 1;
-            ("Skipped", "-".to_string())
+            ("Skipped", None)
         } else if let Some(thread_idx) = cpu_list.iter().position(|&cpu| cpu == cpu_info.logical_id) {
             assigned_count += 1;
-            ("Assigned", thread_idx.to_string())
+            ("Assigned", Some(thread_idx))
         } else {
             available_count += 1;
-            ("Available", "-".to_string())
+            ("Available", None)
         };
         
-        let row = vec![
-            format!("{}", cpu_info.logical_id),
-            format!("{}", cpu_info.physical_core_id),
-            cpu_info.core_type.display_name().to_string(),  // Always include type
-            format!("{}", cpu_info.threads_on_this_core),
-            format!("{}", cpu_info.numa_node),
-            if cpu_info.is_hyperthreaded { "Yes" } else { "No" }.to_string(),
-            status.to_string(),
+        cpu_entries.push(CpuTopologyEntry {
+            logical_cpu: cpu_info.logical_id,
+            physical_core: cpu_info.physical_core_id,
+            core_type: cpu_info.core_type.display_name().to_string(),
+            threads_on_core: cpu_info.threads_on_this_core,
+            numa_node: cpu_info.numa_node,
+            is_hyperthreaded: cpu_info.is_hyperthreaded,
+            status: status.to_string(),
             thread_id,
-        ];
-        
-        table = table.add_row(row);
+        });
     }
     
-    table.print();
-    
-    // Add summary
+    // Calculate summary data
     let total_logical = topology.len();
     let total_physical = topology.iter()
         .map(|cpu| cpu.physical_core_id)
         .collect::<std::collections::HashSet<_>>()
         .len();
     
-    println!("\nSummary:");
+    let performance_logical = topology.iter().filter(|c| matches!(c.core_type, CoreType::Performance(_))).count();
+    let efficiency_logical = topology.iter().filter(|c| matches!(c.core_type, CoreType::Efficiency(_))).count();
     
-    if is_hybrid {
-        println!("  Hybrid CPU Architecture Detected!");
-        if p_core_count > 0 && e_core_count > 0 {
-            println!("  Performance cores: {} ({} logical CPUs)", 
-                p_core_count, 
-                topology.iter().filter(|c| matches!(c.core_type, CoreType::Performance(_))).count());
-            println!("  Efficiency cores: {} ({} logical CPUs)", 
-                e_core_count,
-                topology.iter().filter(|c| matches!(c.core_type, CoreType::Efficiency(_))).count());
-        }
+    let summary = TopologySummary {
+        is_hybrid,
+        total_logical,
+        total_physical,
+        performance_cores: p_core_count,
+        efficiency_cores: e_core_count,
+        performance_logical,
+        efficiency_logical,
+        assigned_count,
+        available_count,
+        skipped_count,
+    };
+    
+    let report = CpuTopologyReport {
+        cpus: cpu_entries,
+        summary,
+    };
+    
+    let mut reporter = create_console_reporter();
+    if let Err(e) = reporter.report_cpu_topology(&report) {
+        log::error!("Failed to display CPU topology table: {}", e);
+        return;
     }
     
-    println!("  Total Physical Cores: {}", total_physical);
-    println!("  Total Logical CPUs: {}", total_logical);
-    println!("  Skipped (system): {} logical CPUs ({} physical core(s))", skipped_count, skipped_physical_cores.len());
-    if is_hybrid && cpus_to_skip > 0 {
-        println!("    Note: E-cores were prioritized for skipping");
-    }
-    println!("  Assigned to TMR: {} logical CPUs", assigned_count);
-    println!("  Available (unused): {} logical CPUs", available_count);
-    
-    // SMT usage warning for hybrid CPUs
+    // Additional SMT usage information for hybrid CPUs
     if is_hybrid {
         let p_cores_with_smt = topology.iter()
             .filter(|t| matches!(t.core_type, CoreType::Performance(_)) && t.is_hyperthreaded)
@@ -687,6 +683,10 @@ pub fn display_cpu_topology(cpu_list: &[usize], cpus_to_skip: usize) {
         
         if p_cores_with_smt > 0 {
             println!("  SMT/Hyperthreading: Enabled on {} P-cores", p_cores_with_smt);
+        }
+        
+        if cpus_to_skip > 0 {
+            println!("    Note: E-cores were prioritized for skipping");
         }
     }
 }
@@ -958,8 +958,8 @@ pub fn debug_topology_detection() {
         }
         
         // If using enhanced info, show scheduling classes
-        if matches!(method, TopologyDetectionMethod::WindowsApiV2 | TopologyDetectionMethod::CpuidBased | TopologyDetectionMethod::Auto) {
-            if let Ok(cpu_sets) = get_system_cpu_set_information() {
+        if matches!(method, TopologyDetectionMethod::WindowsApiV2 | TopologyDetectionMethod::CpuidBased | TopologyDetectionMethod::Auto)
+            && let Ok(cpu_sets) = get_system_cpu_set_information() {
                 let sched_classes: HashSet<_> = cpu_sets.iter()
                     .map(|c| c.scheduling_class)
                     .collect();
@@ -980,7 +980,6 @@ pub fn debug_topology_detection() {
                     }
                 }
             }
-        }
     }
     
     println!("\n=== End Debug ===");
@@ -1033,14 +1032,13 @@ pub fn map_scheduling_to_core_types(
     log::info!("Scheduling class → Core type mapping:");
     for &sched_class in &sched_classes {
         let example_core = core_sched_classes.iter()
-            .find(|(_, &s)| s == sched_class)
+            .find(|&(_, &s)| s == sched_class)
             .map(|(&core, _)| core);
         
-        if let Some(core) = example_core {
-            if let Some(core_type) = core_types.get(&core) {
+        if let Some(core) = example_core
+            && let Some(core_type) = core_types.get(&core) {
                 log::info!("  SchedClass {} → {}", sched_class, core_type.display_name());
             }
-        }
     }
     
     core_types

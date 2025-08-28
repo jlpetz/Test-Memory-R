@@ -20,3 +20,4 @@ Cargo.lock
 *.bak
 /.claude
 CLAUDE.md
+/temp_backup
