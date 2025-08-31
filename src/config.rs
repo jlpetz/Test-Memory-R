@@ -505,6 +505,7 @@ impl ModernConfig {
         TestSuiteTiming {
             global_cycles: self.system.timing.global_cycles,
             global_duration_secs: self.system.timing.global_duration_secs,
+            per_test_cycle_multiplier: self.system.timing.default_test_cycles.unwrap_or(1) as f64,
         }
     }
     

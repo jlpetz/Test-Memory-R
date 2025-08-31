@@ -1,0 +1,655 @@
+PS C:\Users\Administrator\Downloads\Rust\TMR\TMR-APP> cargo run -- cputype=threads --skip-cores=1
+    Finished `dev` profile [unoptimized + debuginfo] target(s) in 0.07s
+     Running `target\debug\tmr.exe cputype=threads --skip-cores=1`
+[2025-08-28T11:40:46Z INFO tmr] TMR v1.0.0 started - console logging with colors and module info restored
+[2025-08-28T11:40:46Z INFO tmr] Log level: info - detailed logs also saved to logs/TMR_2025-08-28_11-40-46.log
+🚀 Test Memory R (TMR) v1.0.0 - High-Performance Memory Testing Tool
+================================================================================
+  CPU Pinning: Skipping first 1 CPU(s)
+Startup Mode & Parameters:
+  Command Line: target\debug\tmr.exe cputype=threads --skip-cores=1
+  RUST_LOG: info (logs to .\logs\TMR_YYYY-MM-DD_HH-MM-SS.log)
+  Explicit Parameters: cputype=threads
+  Default Parameters: cpus=100% (default), memory=10%-from-available:start=split:auto (default), errors=log (default), cycles=3 (default)
+  CPU Type: threads
+[2025-08-28T11:40:46Z INFO tmr::cpu_topology] Detecting CPU topology using method: Auto
+[2025-08-28T11:40:46Z INFO tmr::cpu_topology] *** ENTERED detect_cpu_topology_auto ***
+[2025-08-28T11:40:46Z INFO tmr::cpu_topology] Method 1: Trying Windows API V2 (scheduling classes)...
+[2025-08-28T11:40:46Z INFO tmr::cpu_topology] Using GetSystemCpuSetInformation for enhanced topology detection
+[2025-08-28T11:40:46Z INFO tmr::cpu_topology] Found efficiency classes: {0}
+[2025-08-28T11:40:46Z INFO tmr::cpu_topology] Found scheduling classes: {0}
+[2025-08-28T11:40:46Z INFO tmr::cpu_topology] Method 2: Trying basic Windows API (efficiency class)...
+[2025-08-28T11:40:46Z INFO tmr::cpu_topology] Detected efficiency classes: {0}
+[2025-08-28T11:40:46Z INFO tmr::cpu_topology] Method 3: Trying CPUID cache-based detection...
+[2025-08-28T11:40:46Z INFO tmr::cpu_topology] Detected efficiency classes: {0}
+[2025-08-28T11:40:46Z INFO tmr::cpu_topology] Reading CPUID cache information from each logical CPU...
+[2025-08-28T11:40:46Z INFO tmr::cpu_topology] Detected L3 cache sizes: {238553120} bytes
+[2025-08-28T11:40:46Z INFO tmr::cpu_topology] No cache differences found - all cores have uniform cache
+[2025-08-28T11:40:46Z WARN tmr::cpu_topology] ✗ Unable to differentiate core types for 4 physical cores
+[2025-08-28T11:40:46Z WARN tmr::cpu_topology]   All cores will be treated as the same type
+[2025-08-28T11:40:46Z INFO tmr::cpu_topology]   This is common for non-hybrid CPUs or when Windows doesn't expose differences
+[2025-08-28T11:40:46Z INFO tmr::cpu_topology] CPU topology detection completed in 9.1857ms
+[2025-08-28T11:40:46Z INFO tmr::cpu_topology] Topology: 4 physical cores (4 P-cores, 0 E-cores, 0 Unknown)
+  Error Mode: Log and continue
+  CPU Type: threads
+  Using 6/8 threads for testing
+  CPU Assignment: [2, 3, 4, 5, 6, 7]
+  Skipping first 1 CPU(s) for system responsiveness
+  Remap Mode: Remap all (optimized for TMR)
+  Test Suite Timing: 1 cycles (no time limit)
+  SIMD Support: SSE, SSE2, SSE3, SSE4.1, SSE4.2, AVX, AVX2, AVX-512F, AVX-512BW, AVX-512VL
+
+Checking Large Page access
+[2025-08-28T11:40:46Z INFO tmr::memory::privileges] Successfully enabled SeLockMemoryPrivilege
+🔧 TMR Large Page Auto-Setup starting
+
+System Information:
+✅ Running with Administrator privileges
+👤 User: EC2AMAZ-801M934\Administrator
+
+Auto-Setup Results:
+👤 User: EC2AMAZ-801M934\Administrator
+⚠️  SeLockMemoryPrivilege: ASSIGNED but DISABLED
+✅ Successfully enabled SeLockMemoryPrivilege
+✅ Large page test allocation successful
+
+[2025-08-28T11:40:46Z INFO tmr::memory::privileges] SeLockMemoryPrivilege already enabled
+[2025-08-28T11:40:46Z INFO tmr::memory::privileges] Testing large page allocation with 2MB test allocation...
+[2025-08-28T11:40:46Z INFO tmr::memory::privileges] Large page test allocation successful
+🎉 Large Pages: ✅ ENABLED and tested successfully!
+   TMR will use 2MB large pages for optimal performance
+[2025-08-28T11:40:46Z INFO tmr] KMDF version detected: 1.33
+[2025-08-28T11:40:46Z INFO tmr] KMDF version 1.33 meets minimum requirement (1.33)
+  KMDF Framework: ✅ v1.33 (Compatible)
+  Use Driver Chunking: ✅ Disabled (default/good, application controls page allocation strategy)
+ℹ️  ❌ DMA Driver: TMR kernel driver not found or not accessible
+
+[2025-08-28T11:40:46Z INFO tmr::cache] System Information:
+[2025-08-28T11:40:46Z INFO tmr::cache]   CPU: Intel(R) Xeon(R) Platinum 8488C (GenuineIntel)
+[2025-08-28T11:40:46Z INFO tmr::cache]   Family: 6, Model: 143, Stepping: 8
+[2025-08-28T11:40:46Z INFO tmr::cache]   Cores: 4 physical, 8 logical (Hyperthreading enabled)
+[2025-08-28T11:40:46Z INFO tmr::cache] Cache Architecture Detected (raw_cpuid leaf 4)
+[2025-08-28T11:40:46Z INFO tmr::cache]   Cores: 4 physical
+[2025-08-28T11:40:46Z INFO tmr::cache]   L1 Data Cache: 195.0 KB total (48.8 KB × 4 cores)
+[2025-08-28T11:40:46Z INFO tmr::cache]   L1 Instruction Cache: 130.0 KB total (32.5 KB × 4 cores)
+[2025-08-28T11:40:46Z INFO tmr::cache]   L2 Cache: 8196.0 KB total (2049.0 KB × 4 cores)
+[2025-08-28T11:40:46Z INFO tmr::cache]   L3 Cache: 105.0 MB (shared)
+[2025-08-28T11:40:46Z INFO tmr::cache]   Total Cache: 113.3 MB
+[2025-08-28T11:40:46Z INFO tmr::cache]   Cache Line Size: 64 bytes
+System information and Cache Architecture detection:
+  CPU: Intel(R) Xeon(R) Platinum 8488C (GenuineIntel)
+  Family: 6, Model: 143, Stepping: 8
+  Cores: 4 physical, 8 logical (Hyperthreading enabled)
+  Cache Architecture (raw_cpuid leaf 4):
+    L1 Data: 195.0 KB total (48.8 KB × 4 cores)
+    L1 Instruction: 130.0 KB total (32.5 KB × 4 cores)
+    L2: 8196.0 KB total (2049.0 KB × 4 cores)
+    L3: 105.0 MB (shared)
+    Line Size: 64 bytes | Total Cache: 113.3 MB
+
+📊 CPU Topology and Thread Assignment
+----------------------------------------------------------------------------------------------------
+Logical CPU  Physical Core     Type      Threads     NUMA Node     SMT        Status     Thread ID
+----------------------------------------------------------------------------------------------------
+          0              0    P-core        2                0     Yes       Skipped             -
+          1              0    P-core        2                0     Yes       Skipped             -
+          2              1    P-core        2                0     Yes       Assigned            0
+          3              1    P-core        2                0     Yes       Assigned            1
+          4              2    P-core        2                0     Yes       Assigned            2
+          5              2    P-core        2                0     Yes       Assigned            3
+          6              3    P-core        2                0     Yes       Assigned            4
+          7              3    P-core        2                0     Yes       Assigned            5
+----------------------------------------------------------------------------------------------------
+Total: 8 logical CPUs, 4 physical cores
+Assigned: 6, Available: 0, Skipped: 2
+
+[2025-08-28T11:40:46Z INFO tmr::memory::allocation_strategy] Start address alignment: raw=4.460 GiB, aligned=5.000 GiB, adjustment=+0.540 GiB
+[2025-08-28T11:40:46Z INFO tmr::memory::allocation_strategy] Legacy allocation: 52.382 GiB → 52.000 GiB (rounded down to 1GB boundary)
+[2025-08-28T11:40:46Z INFO tmr::memory::allocation_strategy] Final reserves: total=6.803 GiB (was 5.880), pre=0.834 GiB, post=5.968 GiB
+📊 Memory Status & Allocation Plan
+-------------------------------------------------------------------------------------
+Memory Component                         Amount    Relative  Relative Info
+-------------------------------------------------------------------------------------
+Total Installed RAM                   64.00 GiB           -  Hardware capacity
+Total Physical RAM                    62.97 GiB           -  OS available
+Currently Available                   58.80 GiB       93.4%  free
+Currently Used                         4.17 GiB        6.0%  load
+Virtual Memory Total                  71.97 GiB           -  Physical + Page file
+
+Strategy Type                                 -      5%:95%  Reserve pre/post split
+Testing Allocation                    52.00 GiB       88.4%  of available
+Reserved Amount                        6.80 GiB       11.6%  of available
+Min Start Address                      5.00 GiB        8.5%  offset, of available
+Pre-Buffer (Frag Prevention)         854.31 MiB        5.0%  of reserve
+Post-Reserve (Ceil/frag Protection)    5.97 GiB       95.0%  of reserve
+-------------------------------------------------------------------------------------
+Strategy: Reserve pre/post split with split reserve optimization
+[2025-08-28T11:40:46Z INFO tmr::memory::privileges] SeLockMemoryPrivilege already enabled
+[2025-08-28T11:40:46Z INFO tmr::memory::privileges] Testing large page allocation with 2MB test allocation...
+[2025-08-28T11:40:46Z INFO tmr::memory::privileges] Large page test allocation successful
+
+🔍 System Information
+════════════════════════════════════════════════════════════════════════════════
+📊 CPU Information
+------------------------------------------------------------------------------------------
+Property      Value
+------------------------------------------------------------------------------------------
+CPU           Intel(R) Xeon(R) Platinum 8488C (GenuineIntel)
+Architecture  Family 6, Model 143, Stepping 8
+Cores         4 physical, 8 logical (HT enabled)
+SIMD Support  SSE, SSE2, SSE3, SSE4.1, SSE4.2, AVX, AVX2, AVX-512F, AVX-512BW, AVX-512VL
+------------------------------------------------------------------------------------------
+
+📊 Cache Architecture (raw_cpuid leaf 4)
+-----------------------------------------
+Cache Level      Total Size    Per Core
+-----------------------------------------
+L1 Data          195.00 KiB   48.75 KiB
+L1 Instruction   130.00 KiB   32.50 KiB
+L2                 8.00 MiB    2.00 MiB
+L3 (Shared)      105.00 MiB           -
+Cache Line Size    64 bytes           -
+-----------------------------------------
+
+
+[2025-08-28T11:40:46Z INFO tmr::memory::allocation_strategy] Start address alignment: raw=4.460 GiB, aligned=5.000 GiB, adjustment=+0.540 GiB
+[2025-08-28T11:40:46Z INFO tmr::memory::allocation_strategy] Thread-aware allocation: 6 threads × 8.730 GiB → rounded to 9.000 GiB each
+[2025-08-28T11:40:46Z INFO tmr::memory::allocation_strategy] Total allocation: 52.382 GiB → 54.000 GiB (overage: +1.618 GiB absorbed by reserves)
+[2025-08-28T11:40:46Z INFO tmr::memory::allocation_strategy] Final reserves: total=8.038 GiB (was 5.880), pre=0.834 GiB, post=7.204 GiB
+  Memory Strategy: Reserve pre/post split (5%:95%) [thread-aware (6×9.00 GiB)]
+    Allocation: 54.00 GiB, Reserve: 8.04 GiB
+    Window/Chunk Modes: Per-test configuration (see test sequence below)
+
+Starting comprehensive memory tests... Use CTRL+C for graceful shutdown with final report
+(detailed logs available with RUST_LOG=debug)
+
+[2025-08-28T11:40:46Z INFO tmr::memory::privileges] SeLockMemoryPrivilege already enabled
+[2025-08-28T11:40:46Z INFO tmr::memory::privileges] Testing large page allocation with 2MB test allocation...
+[2025-08-28T11:40:46Z INFO tmr::memory::privileges] Large page test allocation successful
+[2025-08-28T11:40:46Z INFO tmr::runner] detect_runtime_capabilities: driver_available=false, large_pages_available=true
+[2025-08-28T11:40:46Z INFO tmr::runner] Runtime capabilities detected: backend=NativeLargePages, driver_available=false, large_pages_available=true
+
+[2025-08-28T11:40:46Z INFO tmr::layout] 🧵 Thread Memory Layout:
+[2025-08-28T11:40:46Z INFO tmr::layout]   Total threads: 6
+[2025-08-28T11:40:46Z INFO tmr::layout]   Allocation per thread: 9.00 GiB
+[2025-08-28T11:40:46Z INFO tmr::layout]   Total planned allocation: 54.00 GiB
+[2025-08-28T11:40:46Z INFO tmr::layout] 💡 Memory Allocation Recommendations:
+[2025-08-28T11:40:46Z INFO tmr::layout]   Minimum start address: 0x0000000140000000
+[2025-08-28T11:40:46Z INFO tmr::layout]   Strategy: Reserve pre/post split (5%:95%) [thread-aware (6×9.00 GiB)]
+Stage 1: Pre-allocating memory blocks...
+[2025-08-28T11:40:46Z INFO tmr::runner] Using Windows Large Pages for memory allocation
+[2025-08-28T11:40:46Z INFO tmr::runner] Using allocation strategy: plan-pagesize-pref
+[2025-08-28T11:40:46Z INFO tmr::memory::allocator] Plan-based chunk allocation: 6 threads across 1 NUMA nodes (strategy: PlanPageSizePref)
+[2025-08-28T11:40:46Z INFO tmr::memory::allocator] NUMA 0: Creating allocation plan for 6 threads × 9.00GB = 54.00GB total
+[2025-08-28T11:40:46Z INFO tmr::memory::allocator] Creating allocation plan: 9663676416 bytes per thread × 6 threads = 57982058496 total
+[2025-08-28T11:40:46Z INFO tmr::memory::allocator] Plan: 12 × 4096MB blocks (2 per thread)
+[2025-08-28T11:40:46Z INFO tmr::memory::allocator] Plan: 6 × 1024MB blocks (1 per thread)
+[2025-08-28T11:40:46Z INFO tmr::memory::allocator] NUMA 0: Allocation plan:
+[2025-08-28T11:40:46Z INFO tmr::memory::allocator]   - 12 × 4096MB blocks per thread (49152MB total per thread)
+[2025-08-28T11:40:46Z INFO tmr::memory::allocator]   - 6 × 1024MB blocks per thread (6144MB total per thread)
+[2025-08-28T11:40:46Z INFO tmr::memory::allocator] NUMA 0: Phase 1 - PageTypeFirst: Try planned chunks + extra sizes with huge pages
+[2025-08-28T11:40:46Z INFO tmr::memory::allocator] NUMA 0: Trying 12 × 4096MB huge page blocks (planned)
+[2025-08-28T11:40:46Z INFO tmr::memory::allocator] ✅ NUMA 0: 4096MB chunk allocated (1GB huge)
+[2025-08-28T11:40:46Z INFO tmr::memory::allocator] ✅ NUMA 0: 4096MB chunk allocated (1GB huge)
+[2025-08-28T11:40:46Z INFO tmr::memory::allocator] ✅ NUMA 0: 4096MB chunk allocated (1GB huge)
+[2025-08-28T11:40:46Z INFO tmr::memory::allocator] ✅ NUMA 0: 4096MB chunk allocated (1GB huge)
+[2025-08-28T11:40:46Z INFO tmr::memory::allocator] ✅ NUMA 0: 4096MB chunk allocated (1GB huge)
+[2025-08-28T11:40:46Z INFO tmr::memory::allocator] ✅ NUMA 0: 4096MB chunk allocated (1GB huge)
+[2025-08-28T11:40:46Z INFO tmr::memory::allocator] ✅ NUMA 0: 4096MB chunk allocated (1GB huge)
+[2025-08-28T11:40:46Z INFO tmr::memory::allocator] ✅ NUMA 0: 4096MB chunk allocated (1GB huge)
+[2025-08-28T11:40:46Z INFO tmr::memory::allocator] ✅ NUMA 0: 4096MB chunk allocated (1GB huge)
+[2025-08-28T11:40:46Z INFO tmr::memory::allocator] ✅ NUMA 0: 4096MB chunk allocated (1GB huge)
+[2025-08-28T11:40:46Z INFO tmr::memory::allocator] ✅ NUMA 0: 4096MB chunk allocated (1GB huge)
+[2025-08-28T11:40:46Z INFO tmr::memory::allocator] ✅ NUMA 0: 4096MB chunk allocated (1GB huge)
+[2025-08-28T11:40:46Z INFO tmr::memory::allocator] NUMA 0: Successfully allocated 12 of 12 planned 4096MB huge page blocks
+[2025-08-28T11:40:46Z INFO tmr::memory::allocator] NUMA 0: Trying 6 × 1024MB huge page blocks (planned)
+[2025-08-28T11:40:46Z INFO tmr::memory::allocator] ✅ NUMA 0: 1024MB chunk allocated (1GB huge)
+[2025-08-28T11:40:46Z INFO tmr::memory::allocator] ✅ NUMA 0: 1024MB chunk allocated (1GB huge)
+[2025-08-28T11:40:46Z INFO tmr::memory::allocator] ❌ NUMA 0: 1024MB huge page allocation failed: VirtualAlloc2 failed: code = 1450
+[2025-08-28T11:40:46Z INFO tmr::memory::allocator] NUMA 0: Successfully allocated 2 of 6 planned 1024MB huge page blocks
+[2025-08-28T11:40:46Z INFO tmr::memory::allocator] NUMA 0: Trying additional huge page sizes for remaining 4294967296 bytes
+[2025-08-28T11:40:46Z INFO tmr::memory::allocator] NUMA 0: No additional huge page sizes needed (all sizes already in plan)
+[2025-08-28T11:40:46Z INFO tmr::memory::allocator] NUMA 0: Phase 2 - Complete planned chunks first, then fill remaining
+[2025-08-28T11:40:46Z INFO tmr::memory::allocator] NUMA 0: Phase 2a - Completing planned chunks with large pages
+[2025-08-28T11:40:46Z INFO tmr::memory::allocator] NUMA 0: Completing planned 6 × 1024MB blocks (have 2, need 4)
+[2025-08-28T11:40:46Z INFO tmr::memory::allocator] ✅ NUMA 0: 1024MB chunk allocated (2MB large)
+[2025-08-28T11:40:46Z INFO tmr::memory::allocator] ✅ NUMA 0: 1024MB chunk allocated (2MB large)
+[2025-08-28T11:40:46Z INFO tmr::memory::allocator] ✅ NUMA 0: 1024MB chunk allocated (2MB large)
+[2025-08-28T11:40:47Z INFO tmr::memory::allocator] ✅ NUMA 0: 1024MB chunk allocated (2MB large)
+[2025-08-28T11:40:47Z INFO tmr::memory::allocator] NUMA 0: Successfully completed 4 of 4 remaining 1024MB blocks
+[2025-08-28T11:40:47Z INFO tmr::memory::allocator] NUMA 0: Plan execution complete - 18 chunks allocated
+[2025-08-28T11:40:47Z INFO tmr::memory::allocator] Distributing 18 chunks to 6 threads with consecutive block grouping
+[2025-08-28T11:40:47Z INFO tmr::memory::allocator] Distributing 12 × 4096MB blocks (2 consecutive blocks per thread)
+[2025-08-28T11:40:47Z INFO tmr::memory::allocator] Distributing 6 × 1024MB blocks (1 consecutive blocks per thread)
+[2025-08-28T11:40:47Z INFO tmr::memory::allocator] Plan-based distribution complete:
+[2025-08-28T11:40:47Z INFO tmr::memory::allocator] Thread 4: 9.00GB allocated (target: 9.00GB)
+[2025-08-28T11:40:47Z INFO tmr::memory::allocator] Thread 0: 9.00GB allocated (target: 9.00GB)
+[2025-08-28T11:40:47Z INFO tmr::memory::allocator] Thread 5: 9.00GB allocated (target: 9.00GB)
+[2025-08-28T11:40:47Z INFO tmr::memory::allocator] Thread 1: 9.00GB allocated (target: 9.00GB)
+[2025-08-28T11:40:47Z INFO tmr::memory::allocator] Thread 3: 9.00GB allocated (target: 9.00GB)
+[2025-08-28T11:40:47Z INFO tmr::memory::allocator] Thread 2: 9.00GB allocated (target: 9.00GB)
+[2025-08-28T11:40:47Z INFO tmr::memory::allocator] Plan-based allocation complete: Memory distributed to 6 threads
+Stage 1 Memory Allocation Summary:
+  6 × 9.00 GiB per thread = 54.00 GiB total (TM5-style maximum allocation)
+  ✅ 14 blocks with 1GB huge pages, 18 blocks with 2MB+ large pages
+📊 Enhanced Allocation Table
+------------------------------------------------------------------------------
+Page Type            User Constraints   Requested   Allocated  Result
+------------------------------------------------------------------------------
+Huge (1GB) × 50         ✅ Allowed       54.00 GiB   50.00 GiB  ✅ 50.00 GiB
+Large (2MB) × 2048      ✅ Allowed               -    4.00 GiB  ✅ 4.00 GiB
+------------------------------------------------------------------------------
+
+
+🔍 Block Allocation Report (Windows VirtualAlloc2)
+════════════════════════════════════════════════════════════════════════════════
+📊 Block Size Distribution
+------------------------------------------------------------------------------------------
+Block Size       Count  Total Bytes           Page Type              Threads  Avg/Thread
+------------------------------------------------------------------------------------------
+   4096 MB          12    48.00 GiB           1GB huge                     6         2.0
+   1024 MB           6     6.00 GiB  Mixed (1GB huge, 2MB large)           6         1.0
+------------------------------------------------------------------------------------------
+Total: 6 threads, 54.00 GiB allocated
+
+================================================================================
+📊 Page Type Summary
+---------------------------------------------------------------------------
+Page Type    Page Count  Total Bytes  Block Count     Threads  % of Total
+---------------------------------------------------------------------------
+Huge (1GB)           50    50.00 GiB           14           6       92.6%
+Large (2MB)        2048     4.00 GiB            4           4        7.4%
+---------------------------------------------------------------------------
+
+
+================================================================================
+📊 Per-Thread Block Allocation
+-------------------------------------------------------------------------------------------------------------------
+    Thread         CPU     NUMA     Total Size  Block Sizes             Huge Pages     Large Pages  Regular Pages
+-------------------------------------------------------------------------------------------------------------------
+         1           1      0         9.00 GiB  4096MB×2, 1024MB×1    8 (8.00 GiB)  512 (1.00 GiB)              -
+         5           5      0         9.00 GiB  4096MB×2, 1024MB×1    8 (8.00 GiB)  512 (1.00 GiB)              -
+         3           3      0         9.00 GiB  4096MB×2, 1024MB×1    8 (8.00 GiB)  512 (1.00 GiB)              -
+         2           2      0         9.00 GiB  4096MB×2, 1024MB×1    8 (8.00 GiB)  512 (1.00 GiB)              -
+         4           4      0         9.00 GiB  4096MB×2, 1024MB×1    9 (9.00 GiB)               -              -
+         0           0      0         9.00 GiB  4096MB×2, 1024MB×1    9 (9.00 GiB)               -              -
+-------------------------------------------------------------------------------------------------------------------
+
+
+================================================================================
+📊 NUMA Node Distribution
+-------------------------------------------------------------------------------------------------------
+NUMA Node   Thread Count  Total Bytes  Block Sizes         Huge Pages      Large Pages  Regular Pages
+-------------------------------------------------------------------------------------------------------
+    0                  6    54.00 GiB  4096MB, 1024MB  50 (50.00 GiB)  2048 (4.00 GiB)              -
+-------------------------------------------------------------------------------------------------------
+
+
+================================================================================
+📊 Allocation Fairness Analysis
+------------------------------------------------
+Thread ID    Allocated   Deviation  Status
+------------------------------------------------
+    1         9.00 GiB       +0.0%  ✅ Fair
+    5         9.00 GiB       +0.0%  ✅ Fair
+    3         9.00 GiB       +0.0%  ✅ Fair
+    2         9.00 GiB       +0.0%  ✅ Fair
+    4         9.00 GiB       +0.0%  ✅ Fair
+    0         9.00 GiB       +0.0%  ✅ Fair
+------------------------------------------------
+Fairness Stats: Min=9.00 GiB, Max=9.00 GiB, Mean=9.0 GiB, CV=0.000 (Fair Distribution)
+📊 Per-Thread Allocation Breakdown
+-------------------------------------------------------------------------------------------------
+    Thread  Total Size      Huge #    Huge GiB     Large #   Large GiB   Regular #  Regular GiB
+-------------------------------------------------------------------------------------------------
+         1    9.00 GiB           8        8.00         512        1.00           -            -
+         5    9.00 GiB           8        8.00         512        1.00           -            -
+         3    9.00 GiB           8        8.00         512        1.00           -            -
+         2    9.00 GiB           8        8.00         512        1.00           -            -
+         4    9.00 GiB           9        9.00           -           -           -            -
+         0    9.00 GiB           9        9.00           -           -           -            -
+-------------------------------------------------------------------------------------------------
+
+📊 Test Configuration
+----------------------------------------------------------------------------------------------------------------
+         #  Test Name          Timing       Streams        Window Mode            Block Mode        Flags
+----------------------------------------------------------------------------------------------------------------
+         1  StuckBitTest       1cycles         1          FullAllocation     WindowFraction (6.2%)
+         2  MirrorMove           10s           1        FixedSize (64 MB)      FixedSize (4 MB)     Locality
+         3  MirrorMoveAuto       10s           1        FixedSize (64 MB)      FixedSize (8 MB)     Locality
+         4  MirrorMove128        10s           1        FixedSize (64 MB)      FixedSize (8 MB)     Locality
+         5  MirrorMove256        10s           2        FixedSize (128 MB)     FixedSize (8 MB)     Locality
+         6  MirrorMove512        10s           4        FixedSize (256 MB)     FixedSize (8 MB)     Locality
+         7  SimpleTest      100cycles/30s      1          FullAllocation       FixedSize (4 MB)
+         8  RefreshStable        15s           1       CacheRelative (2.0x)   FixedSize (2048 MB)   Locality
+         9  CacheBusting         20s           4       CacheRelative (0.5x)    FixedSize (1 MB)     Locality
+        10  RandomTorture        25s           8          FullAllocation       FixedSize (8 MB)     Misaligned
+        11  StrideAccess       1cycles         4          FullAllocation       FixedSize (2 MB)
+        12  BandwidthSat         15s           1          FullAllocation       FixedSize (32 MB)
+        13  BlockMove            20s           1          FullAllocation       FixedSize (16 MB)
+----------------------------------------------------------------------------------------------------------------
+Suite Timing: 1 cycles | Total Tests: 13
+
+Creating thread pool with 6 persistent workers...
+
+=== Starting Test Suite ===
+
+=== Test Suite Cycle 1 ===
+[2025-08-28T11:40:47Z INFO tmr::tests] [Thread 4] Running StuckBitTest on 4096.00 MB of memory
+[2025-08-28T11:40:47Z INFO tmr::runner] StuckBitTest - Block: 4096.0MB, Chunk: 256.0MB, Streams: 1
+[2025-08-28T11:40:47Z INFO tmr::tests] [Thread 2] Running StuckBitTest on 4096.00 MB of memory
+[2025-08-28T11:40:47Z INFO tmr::tests] [Thread 3] Running StuckBitTest on 4096.00 MB of memory
+[2025-08-28T11:40:47Z INFO tmr::tests] [Thread 1] Running StuckBitTest on 4096.00 MB of memory
+[2025-08-28T11:40:47Z INFO tmr::tests] [Thread 5] Running StuckBitTest on 4096.00 MB of memory
+[2025-08-28T11:40:47Z INFO tmr::tests] [Thread 0] Running StuckBitTest on 4096.00 MB of memory
+[2025-08-28T11:41:31Z INFO tmr::tests] [Thread 3] Running StuckBitTest on 4096.00 MB of memory
+[2025-08-28T11:41:33Z INFO tmr::tests] [Thread 1] Running StuckBitTest on 4096.00 MB of memory
+[2025-08-28T11:41:33Z INFO tmr::tests] [Thread 5] Running StuckBitTest on 4096.00 MB of memory
+[2025-08-28T11:41:33Z INFO tmr::runner] StuckBitTest - Block: 4096.0MB, Chunk: 256.0MB, Streams: 1
+[2025-08-28T11:41:33Z INFO tmr::tests] [Thread 0] Running StuckBitTest on 4096.00 MB of memory
+[2025-08-28T11:41:33Z INFO tmr::tests] [Thread 4] Running StuckBitTest on 4096.00 MB of memory
+[2025-08-28T11:41:35Z INFO tmr::tests] [Thread 2] Running StuckBitTest on 4096.00 MB of memory
+[2025-08-28T11:42:16Z INFO tmr::tests] [Thread 3] Running StuckBitTest on 1024.00 MB of memory
+[2025-08-28T11:42:18Z INFO tmr::tests] [Thread 1] Running StuckBitTest on 1024.00 MB of memory
+[2025-08-28T11:42:19Z INFO tmr::runner] StuckBitTest - Block: 1024.0MB, Chunk: 64.0MB, Streams: 1
+[2025-08-28T11:42:19Z INFO tmr::tests] [Thread 0] Running StuckBitTest on 1024.00 MB of memory
+[2025-08-28T11:42:19Z INFO tmr::tests] [Thread 5] Running StuckBitTest on 1024.00 MB of memory
+[2025-08-28T11:42:19Z INFO tmr::tests] [Thread 4] Running StuckBitTest on 1024.00 MB of memory
+[2025-08-28T11:42:21Z INFO tmr::tests] [Thread 2] Running StuckBitTest on 1024.00 MB of memory
+[2025-08-28T11:42:31Z INFO tmr::runner] Cycle 1 - StuckBitTest completed: 324.00 GiB in 103.9s @ 3193.5 MiB/s
+📊 Thread timing deviation for StuckBitTest - Avg: 102.8s
+-----------------------------------------------------------------------------------------------------------------
+    Thread  Logical CPU  Physical Core  NUMA Node      Runtime   Deviation        Data   Throughput      Errors
+-----------------------------------------------------------------------------------------------------------------
+         4            6              3      0           103.9s       +1.1s   54.00 GiB  532.2 MiB/s           ✅
+         5            7              3      0           103.7s       +0.9s   54.00 GiB  533.3 MiB/s           ✅
+         0            2              1      0           103.1s       +0.3s   54.00 GiB  536.4 MiB/s           ✅
+         2            4              2      0           103.0s       +0.2s   54.00 GiB  536.9 MiB/s           ✅
+         1            3              1      0           102.8s       +0.1s   54.00 GiB  537.7 MiB/s           ✅
+         3            5              2      0           100.1s       -2.6s   54.00 GiB  552.3 MiB/s           ✅
+-----------------------------------------------------------------------------------------------------------------
+
+[2025-08-28T11:42:31Z INFO tmr::thread_pool] Window 64.0MB smaller than first block 4096.0MB - testing one complete block
+[2025-08-28T11:42:31Z INFO tmr::thread_pool] Window 64.0MB smaller than first block 4096.0MB - testing one complete block
+[2025-08-28T11:42:31Z INFO tmr::thread_pool] Window 64.0MB smaller than first block 4096.0MB - testing one complete block
+[2025-08-28T11:42:31Z INFO tmr::thread_pool] Window 64.0MB smaller than first block 4096.0MB - testing one complete block
+[2025-08-28T11:42:31Z INFO tmr::thread_pool] Window 64.0MB smaller than first block 4096.0MB - testing one complete block
+[2025-08-28T11:42:31Z INFO tmr::thread_pool] Window 64.0MB smaller than first block 4096.0MB - testing one complete block
+[2025-08-28T11:42:31Z INFO tmr::runner] MirrorMove - Block: 4096.0MB, Chunk: 4.0MB, Streams: 1
+[2025-08-28T11:42:56Z INFO tmr::tests] [Thread 5] MirrorMove completed cycle limit or time limit
+[2025-08-28T11:42:56Z INFO tmr::tests] [Thread 5] MirrorMove completed: 1 cycles, 0 errors, 8192.00 MB processed in 25620 ms
+[2025-08-28T11:42:56Z INFO tmr::tests] [Thread 1] MirrorMove completed cycle limit or time limit
+[2025-08-28T11:42:56Z INFO tmr::tests] [Thread 1] MirrorMove completed: 1 cycles, 0 errors, 8192.00 MB processed in 25645 ms
+[2025-08-28T11:42:56Z INFO tmr::tests] [Thread 4] MirrorMove completed cycle limit or time limit
+[2025-08-28T11:42:56Z INFO tmr::tests] [Thread 4] MirrorMove completed: 1 cycles, 0 errors, 8192.00 MB processed in 25650 ms
+[2025-08-28T11:42:56Z INFO tmr::tests] [Thread 0] MirrorMove completed cycle limit or time limit
+[2025-08-28T11:42:56Z INFO tmr::tests] [Thread 0] MirrorMove completed: 1 cycles, 0 errors, 8192.00 MB processed in 25693 ms
+[2025-08-28T11:42:57Z INFO tmr::tests] [Thread 3] MirrorMove completed cycle limit or time limit
+[2025-08-28T11:42:57Z INFO tmr::tests] [Thread 3] MirrorMove completed: 1 cycles, 0 errors, 8192.00 MB processed in 26037 ms
+[2025-08-28T11:42:57Z INFO tmr::tests] [Thread 2] MirrorMove completed cycle limit or time limit
+[2025-08-28T11:42:57Z INFO tmr::tests] [Thread 2] MirrorMove completed: 1 cycles, 0 errors, 8192.00 MB processed in 26398 ms
+[2025-08-28T11:42:57Z INFO tmr::runner] Cycle 1 - MirrorMove completed: 48.00 GiB in 26.4s @ 1861.7 MiB/s
+📊 Thread timing deviation for MirrorMove - Avg: 25.8s
+-----------------------------------------------------------------------------------------------------------------
+    Thread  Logical CPU  Physical Core  NUMA Node      Runtime   Deviation        Data   Throughput      Errors
+-----------------------------------------------------------------------------------------------------------------
+         2            4              2      0            26.4s       +0.6s    8.00 GiB  310.3 MiB/s           ✅
+         3            5              2      0            26.0s       +0.2s    8.00 GiB  314.6 MiB/s           ✅
+         0            2              1      0            25.7s       -0.1s    8.00 GiB  318.8 MiB/s           ✅
+         4            6              3      0            25.7s       -0.2s    8.00 GiB  319.3 MiB/s           ✅
+         1            3              1      0            25.7s       -0.2s    8.00 GiB  319.4 MiB/s           ✅
+         5            7              3      0            25.6s       -0.2s    8.00 GiB  319.7 MiB/s           ✅
+-----------------------------------------------------------------------------------------------------------------
+
+[2025-08-28T11:42:57Z INFO tmr::thread_pool] Window 64.0MB smaller than first block 4096.0MB - testing one complete block
+
+thread '<unnamed>' panicked at src\tests.rs:661:18:
+Unknown test 'MirrorMoveAuto' - add explicit SIMD requirement to calculate_minimum_chunk_size()
+note: run with `RUST_BACKTRACE=1` environment variable to display a backtrace
+[2025-08-28T11:42:57Z INFO tmr::thread_pool] Window 64.0MB smaller than first block 4096.0MB - testing one complete block
+
+thread '<unnamed>' panicked at src\tests.rs:661:18:
+Unknown test 'MirrorMoveAuto' - add explicit SIMD requirement to calculate_minimum_chunk_size()
+[2025-08-28T11:42:57Z INFO tmr::thread_pool] Window 64.0MB smaller than first block 4096.0MB - testing one complete block
+
+thread '<unnamed>' panicked at src\tests.rs:661:18:
+Unknown test 'MirrorMoveAuto' - add explicit SIMD requirement to calculate_minimum_chunk_size()
+[2025-08-28T11:42:57Z INFO tmr::thread_pool] Window 64.0MB smaller than first block 4096.0MB - testing one complete block
+[2025-08-28T11:42:57Z INFO tmr::thread_pool] Window 64.0MB smaller than first block 4096.0MB - testing one complete block
+
+thread '<unnamed>' panicked at src\tests.rs:661:18:
+Unknown test 'MirrorMoveAuto' - add explicit SIMD requirement to calculate_minimum_chunk_size()
+[2025-08-28T11:42:57Z INFO tmr::thread_pool] Window 64.0MB smaller than first block 4096.0MB - testing one complete block
+
+thread '<unnamed>' panicked at src\tests.rs:661:18:
+Unknown test 'MirrorMoveAuto' - add explicit SIMD requirement to calculate_minimum_chunk_size()
+
+thread '<unnamed>' panicked at src\tests.rs:661:18:
+Unknown test 'MirrorMoveAuto' - add explicit SIMD requirement to calculate_minimum_chunk_size()
+[2025-08-28T11:42:57Z ERROR tmr::runner] Failed to receive result: RecvError
+[2025-08-28T11:42:57Z ERROR tmr::runner] Failed to receive result: RecvError
+[2025-08-28T11:42:57Z ERROR tmr::runner] Failed to receive result: RecvError
+[2025-08-28T11:42:57Z ERROR tmr::runner] Failed to receive result: RecvError
+[2025-08-28T11:42:57Z ERROR tmr::runner] Failed to receive result: RecvError
+[2025-08-28T11:42:57Z ERROR tmr::runner] Failed to receive result: RecvError
+[2025-08-28T11:42:57Z INFO tmr::runner] Cycle 1 - MirrorMoveAuto completed: 0.00 GiB in 0.0s @ 0.0 MiB/s
+[2025-08-28T11:42:57Z ERROR tmr::thread_pool] Failed to send work to thread
+[2025-08-28T11:42:57Z ERROR tmr::thread_pool] Failed to send work to thread
+[2025-08-28T11:42:57Z ERROR tmr::thread_pool] Failed to send work to thread
+[2025-08-28T11:42:57Z ERROR tmr::thread_pool] Failed to send work to thread
+[2025-08-28T11:42:57Z ERROR tmr::thread_pool] Failed to send work to thread
+[2025-08-28T11:42:57Z ERROR tmr::thread_pool] Failed to send work to thread
+[2025-08-28T11:42:57Z ERROR tmr::runner] Failed to receive result: RecvError
+[2025-08-28T11:42:57Z ERROR tmr::runner] Failed to receive result: RecvError
+[2025-08-28T11:42:57Z ERROR tmr::runner] Failed to receive result: RecvError
+[2025-08-28T11:42:57Z ERROR tmr::runner] Failed to receive result: RecvError
+[2025-08-28T11:42:57Z ERROR tmr::runner] Failed to receive result: RecvError
+[2025-08-28T11:42:57Z ERROR tmr::runner] Failed to receive result: RecvError
+[2025-08-28T11:42:57Z INFO tmr::runner] Cycle 1 - MirrorMove128 completed: 0.00 GiB in 0.0s @ 0.0 MiB/s
+[2025-08-28T11:42:57Z ERROR tmr::thread_pool] Failed to send work to thread
+[2025-08-28T11:42:57Z ERROR tmr::thread_pool] Failed to send work to thread
+[2025-08-28T11:42:57Z ERROR tmr::thread_pool] Failed to send work to thread
+[2025-08-28T11:42:57Z ERROR tmr::thread_pool] Failed to send work to thread
+[2025-08-28T11:42:57Z ERROR tmr::thread_pool] Failed to send work to thread
+[2025-08-28T11:42:57Z ERROR tmr::thread_pool] Failed to send work to thread
+[2025-08-28T11:42:57Z ERROR tmr::runner] Failed to receive result: RecvError
+[2025-08-28T11:42:57Z ERROR tmr::runner] Failed to receive result: RecvError
+[2025-08-28T11:42:57Z ERROR tmr::runner] Failed to receive result: RecvError
+[2025-08-28T11:42:57Z ERROR tmr::runner] Failed to receive result: RecvError
+[2025-08-28T11:42:57Z ERROR tmr::runner] Failed to receive result: RecvError
+[2025-08-28T11:42:57Z ERROR tmr::runner] Failed to receive result: RecvError
+[2025-08-28T11:42:57Z INFO tmr::runner] Cycle 1 - MirrorMove256 completed: 0.00 GiB in 0.0s @ 0.0 MiB/s
+[2025-08-28T11:42:57Z ERROR tmr::thread_pool] Failed to send work to thread
+[2025-08-28T11:42:57Z ERROR tmr::thread_pool] Failed to send work to thread
+[2025-08-28T11:42:57Z ERROR tmr::thread_pool] Failed to send work to thread
+[2025-08-28T11:42:57Z ERROR tmr::thread_pool] Failed to send work to thread
+[2025-08-28T11:42:57Z ERROR tmr::thread_pool] Failed to send work to thread
+[2025-08-28T11:42:57Z ERROR tmr::thread_pool] Failed to send work to thread
+[2025-08-28T11:42:57Z ERROR tmr::runner] Failed to receive result: RecvError
+[2025-08-28T11:42:57Z ERROR tmr::runner] Failed to receive result: RecvError
+[2025-08-28T11:42:57Z ERROR tmr::runner] Failed to receive result: RecvError
+[2025-08-28T11:42:57Z ERROR tmr::runner] Failed to receive result: RecvError
+[2025-08-28T11:42:57Z ERROR tmr::runner] Failed to receive result: RecvError
+[2025-08-28T11:42:57Z ERROR tmr::runner] Failed to receive result: RecvError
+[2025-08-28T11:42:57Z INFO tmr::runner] Cycle 1 - MirrorMove512 completed: 0.00 GiB in 0.0s @ 0.0 MiB/s
+[2025-08-28T11:42:57Z ERROR tmr::thread_pool] Failed to send work to thread
+[2025-08-28T11:42:57Z ERROR tmr::thread_pool] Failed to send work to thread
+[2025-08-28T11:42:57Z ERROR tmr::thread_pool] Failed to send work to thread
+[2025-08-28T11:42:57Z ERROR tmr::thread_pool] Failed to send work to thread
+[2025-08-28T11:42:57Z ERROR tmr::thread_pool] Failed to send work to thread
+[2025-08-28T11:42:57Z ERROR tmr::thread_pool] Failed to send work to thread
+[2025-08-28T11:42:57Z ERROR tmr::runner] Failed to receive result: RecvError
+[2025-08-28T11:42:57Z ERROR tmr::runner] Failed to receive result: RecvError
+[2025-08-28T11:42:57Z ERROR tmr::runner] Failed to receive result: RecvError
+[2025-08-28T11:42:57Z ERROR tmr::runner] Failed to receive result: RecvError
+[2025-08-28T11:42:57Z ERROR tmr::runner] Failed to receive result: RecvError
+[2025-08-28T11:42:57Z ERROR tmr::runner] Failed to receive result: RecvError
+[2025-08-28T11:42:57Z INFO tmr::runner] Cycle 1 - SimpleTest completed: 0.00 GiB in 0.0s @ 0.0 MiB/s
+[2025-08-28T11:42:57Z ERROR tmr::thread_pool] Failed to send work to thread
+[2025-08-28T11:42:57Z ERROR tmr::thread_pool] Failed to send work to thread
+[2025-08-28T11:42:57Z ERROR tmr::thread_pool] Failed to send work to thread
+[2025-08-28T11:42:57Z ERROR tmr::thread_pool] Failed to send work to thread
+[2025-08-28T11:42:57Z ERROR tmr::thread_pool] Failed to send work to thread
+[2025-08-28T11:42:57Z ERROR tmr::thread_pool] Failed to send work to thread
+[2025-08-28T11:42:57Z ERROR tmr::runner] Failed to receive result: RecvError
+[2025-08-28T11:42:57Z ERROR tmr::runner] Failed to receive result: RecvError
+[2025-08-28T11:42:57Z ERROR tmr::runner] Failed to receive result: RecvError
+[2025-08-28T11:42:57Z ERROR tmr::runner] Failed to receive result: RecvError
+[2025-08-28T11:42:57Z ERROR tmr::runner] Failed to receive result: RecvError
+[2025-08-28T11:42:57Z ERROR tmr::runner] Failed to receive result: RecvError
+[2025-08-28T11:42:57Z INFO tmr::runner] Cycle 1 - RefreshStable completed: 0.00 GiB in 0.0s @ 0.0 MiB/s
+[2025-08-28T11:42:57Z ERROR tmr::thread_pool] Failed to send work to thread
+[2025-08-28T11:42:57Z ERROR tmr::thread_pool] Failed to send work to thread
+[2025-08-28T11:42:57Z ERROR tmr::thread_pool] Failed to send work to thread
+[2025-08-28T11:42:57Z ERROR tmr::thread_pool] Failed to send work to thread
+[2025-08-28T11:42:57Z ERROR tmr::thread_pool] Failed to send work to thread
+[2025-08-28T11:42:57Z ERROR tmr::thread_pool] Failed to send work to thread
+[2025-08-28T11:42:57Z ERROR tmr::runner] Failed to receive result: RecvError
+[2025-08-28T11:42:57Z ERROR tmr::runner] Failed to receive result: RecvError
+[2025-08-28T11:42:57Z ERROR tmr::runner] Failed to receive result: RecvError
+[2025-08-28T11:42:57Z ERROR tmr::runner] Failed to receive result: RecvError
+[2025-08-28T11:42:57Z ERROR tmr::runner] Failed to receive result: RecvError
+[2025-08-28T11:42:57Z ERROR tmr::runner] Failed to receive result: RecvError
+[2025-08-28T11:42:57Z INFO tmr::runner] Cycle 1 - CacheBusting completed: 0.00 GiB in 0.0s @ 0.0 MiB/s
+[2025-08-28T11:42:57Z ERROR tmr::thread_pool] Failed to send work to thread
+[2025-08-28T11:42:57Z ERROR tmr::thread_pool] Failed to send work to thread
+[2025-08-28T11:42:57Z ERROR tmr::thread_pool] Failed to send work to thread
+[2025-08-28T11:42:57Z ERROR tmr::thread_pool] Failed to send work to thread
+[2025-08-28T11:42:57Z ERROR tmr::thread_pool] Failed to send work to thread
+[2025-08-28T11:42:57Z ERROR tmr::thread_pool] Failed to send work to thread
+[2025-08-28T11:42:57Z ERROR tmr::runner] Failed to receive result: RecvError
+[2025-08-28T11:42:57Z ERROR tmr::runner] Failed to receive result: RecvError
+[2025-08-28T11:42:57Z ERROR tmr::runner] Failed to receive result: RecvError
+[2025-08-28T11:42:57Z ERROR tmr::runner] Failed to receive result: RecvError
+[2025-08-28T11:42:57Z ERROR tmr::runner] Failed to receive result: RecvError
+[2025-08-28T11:42:57Z ERROR tmr::runner] Failed to receive result: RecvError
+[2025-08-28T11:42:57Z INFO tmr::runner] Cycle 1 - RandomTorture completed: 0.00 GiB in 0.0s @ 0.0 MiB/s
+[2025-08-28T11:42:57Z ERROR tmr::thread_pool] Failed to send work to thread
+[2025-08-28T11:42:57Z ERROR tmr::thread_pool] Failed to send work to thread
+[2025-08-28T11:42:57Z ERROR tmr::thread_pool] Failed to send work to thread
+[2025-08-28T11:42:57Z ERROR tmr::thread_pool] Failed to send work to thread
+[2025-08-28T11:42:57Z ERROR tmr::thread_pool] Failed to send work to thread
+[2025-08-28T11:42:57Z ERROR tmr::thread_pool] Failed to send work to thread
+[2025-08-28T11:42:57Z ERROR tmr::runner] Failed to receive result: RecvError
+[2025-08-28T11:42:57Z ERROR tmr::runner] Failed to receive result: RecvError
+[2025-08-28T11:42:57Z ERROR tmr::runner] Failed to receive result: RecvError
+[2025-08-28T11:42:57Z ERROR tmr::runner] Failed to receive result: RecvError
+[2025-08-28T11:42:57Z ERROR tmr::runner] Failed to receive result: RecvError
+[2025-08-28T11:42:57Z ERROR tmr::runner] Failed to receive result: RecvError
+[2025-08-28T11:42:57Z INFO tmr::runner] Cycle 1 - StrideAccess completed: 0.00 GiB in 0.0s @ 0.0 MiB/s
+[2025-08-28T11:42:57Z ERROR tmr::thread_pool] Failed to send work to thread
+[2025-08-28T11:42:57Z ERROR tmr::thread_pool] Failed to send work to thread
+[2025-08-28T11:42:57Z ERROR tmr::thread_pool] Failed to send work to thread
+[2025-08-28T11:42:57Z ERROR tmr::thread_pool] Failed to send work to thread
+[2025-08-28T11:42:57Z ERROR tmr::thread_pool] Failed to send work to thread
+[2025-08-28T11:42:57Z ERROR tmr::thread_pool] Failed to send work to thread
+[2025-08-28T11:42:57Z ERROR tmr::runner] Failed to receive result: RecvError
+[2025-08-28T11:42:57Z ERROR tmr::runner] Failed to receive result: RecvError
+[2025-08-28T11:42:57Z ERROR tmr::runner] Failed to receive result: RecvError
+[2025-08-28T11:42:57Z ERROR tmr::runner] Failed to receive result: RecvError
+[2025-08-28T11:42:57Z ERROR tmr::runner] Failed to receive result: RecvError
+[2025-08-28T11:42:57Z ERROR tmr::runner] Failed to receive result: RecvError
+[2025-08-28T11:42:57Z INFO tmr::runner] Cycle 1 - BandwidthSat completed: 0.00 GiB in 0.0s @ 0.0 MiB/s
+[2025-08-28T11:42:57Z ERROR tmr::thread_pool] Failed to send work to thread
+[2025-08-28T11:42:57Z ERROR tmr::thread_pool] Failed to send work to thread
+[2025-08-28T11:42:57Z ERROR tmr::thread_pool] Failed to send work to thread
+[2025-08-28T11:42:57Z ERROR tmr::thread_pool] Failed to send work to thread
+[2025-08-28T11:42:57Z ERROR tmr::thread_pool] Failed to send work to thread
+[2025-08-28T11:42:57Z ERROR tmr::thread_pool] Failed to send work to thread
+[2025-08-28T11:42:57Z ERROR tmr::runner] Failed to receive result: RecvError
+[2025-08-28T11:42:57Z ERROR tmr::runner] Failed to receive result: RecvError
+[2025-08-28T11:42:57Z ERROR tmr::runner] Failed to receive result: RecvError
+[2025-08-28T11:42:57Z ERROR tmr::runner] Failed to receive result: RecvError
+[2025-08-28T11:42:57Z ERROR tmr::runner] Failed to receive result: RecvError
+[2025-08-28T11:42:57Z ERROR tmr::runner] Failed to receive result: RecvError
+[2025-08-28T11:42:57Z INFO tmr::runner] Cycle 1 - BlockMove completed: 0.00 GiB in 0.0s @ 0.0 MiB/s
+
+=== Interrupted Cycle 1 Report ===
+📊 Cycle 1 Report
+-------------------------------------------------------------------------------------------
+         #  Test Name         Duration        Data                 Throughput    Errors
+-------------------------------------------------------------------------------------------
+         1  StuckBitTest        103.9s  324.00 GiB  3193.5 MiB/s (3.12 GiB/s)      ✅
+         2  MirrorMove           26.4s   48.00 GiB  1861.7 MiB/s (1.82 GiB/s)      ✅
+         3  MirrorMoveAuto        0.0s    0.00 GiB     0.0 MiB/s (0.00 GiB/s)      ✅
+         4  MirrorMove128         0.0s    0.00 GiB     0.0 MiB/s (0.00 GiB/s)      ✅
+         5  MirrorMove256         0.0s    0.00 GiB     0.0 MiB/s (0.00 GiB/s)      ✅
+         6  MirrorMove512         0.0s    0.00 GiB     0.0 MiB/s (0.00 GiB/s)      ✅
+         7  SimpleTest            0.0s    0.00 GiB     0.0 MiB/s (0.00 GiB/s)      ✅
+         8  RefreshStable         0.0s    0.00 GiB     0.0 MiB/s (0.00 GiB/s)      ✅
+         9  CacheBusting          0.0s    0.00 GiB     0.0 MiB/s (0.00 GiB/s)      ✅
+        10  RandomTorture         0.0s    0.00 GiB     0.0 MiB/s (0.00 GiB/s)      ✅
+        11  StrideAccess          0.0s    0.00 GiB     0.0 MiB/s (0.00 GiB/s)      ✅
+        12  BandwidthSat          0.0s    0.00 GiB     0.0 MiB/s (0.00 GiB/s)      ✅
+        13  BlockMove             0.0s    0.00 GiB     0.0 MiB/s (0.00 GiB/s)      ✅
+-------------------------------------------------------------------------------------------
+Cycle Duration: 130s
+Runtime: 00:02:11 | Cycle: 1/1 | Progress: 13/13 (100%) | Completed | Speed: 0.00 GiB/s (0.0 MiB/s)
+[2025-08-28T11:42:57Z INFO tmr::runner] Thread pool shut down, recovered 0 thread block sets
+
+=== CPU Performance Summary ===
+📊 Performance by Thread
+-----------------------------------------------------------------------------------------
+    Thread  Logical CPU  Physical Core     NUMA     Total Time   Throughput      Errors
+-----------------------------------------------------------------------------------------
+         0            2              1      0        02:08.790  493.0 MiB/s           ✅
+         1            3              1      0        02:08.480  494.1 MiB/s           ✅
+         2            4              2      0        02:09.397  490.6 MiB/s           ✅
+         3            5              2      0        02:06.162  503.2 MiB/s           ✅
+         4            6              3      0        02:09.547  490.1 MiB/s           ✅
+         5            7              3      0        02:09.315  491.0 MiB/s           ✅
+-----------------------------------------------------------------------------------------
+
+📊 Performance by CPU
+-----------------------------------------------------------------------------
+Logical CPU  Physical Core     NUMA     Total Time   Throughput      Errors
+-----------------------------------------------------------------------------
+          2              1      0        02:08.790  493.0 MiB/s           ✅
+          3              1      0        02:08.480  494.1 MiB/s           ✅
+          4              2      0        02:09.397  490.6 MiB/s           ✅
+          5              2      0        02:06.162  503.2 MiB/s           ✅
+          6              3      0        02:09.547  490.1 MiB/s           ✅
+          7              3      0        02:09.315  491.0 MiB/s           ✅
+-----------------------------------------------------------------------------
+
+📊 Performance by Physical Core
+------------------------------------------------------------------
+Physical Core  Logical CPUs  Total Time   Throughput      Errors
+------------------------------------------------------------------
+      1            3,2        04:17.270  493.6 MiB/s           ✅
+      2            5,4        04:15.559  496.9 MiB/s           ✅
+      3            7,6        04:18.862  490.5 MiB/s           ✅
+------------------------------------------------------------------
+
+📊 CPU Performance Variance
+-------------------------------------------------------------
+    CPU ID   Throughput    Variance  Test Count    Status
+-------------------------------------------------------------
+         2  493.0 MiB/s       -0.1%           1   ✅ Normal
+         3  494.1 MiB/s       +0.1%           1   ✅ Normal
+         4  490.6 MiB/s       -0.6%           1   ✅ Normal
+         5  503.2 MiB/s       +1.9%           1   ✅ Normal
+         6  490.1 MiB/s       -0.7%           1   ✅ Normal
+         7  491.0 MiB/s       -0.5%           1   ✅ Normal
+-------------------------------------------------------------
+Average Throughput: 493.6 MiB/s
+
+================================================================================
+📊 Final Test Summary - Overview
+-------------------------------------------------
+Metric                                    Value
+-------------------------------------------------
+Total Runtime                            2m 10s
+Cycles Completed                              0
+Total Data Processed                 372.00 GiB
+Overall Throughput    2930.2 MiB/s (2.86 GiB/s)
+Total Errors                                  ✅
+-------------------------------------------------
+
+
+🔍 Detailed Operation Analysis
+═══════════════════════════════════════════════════════════════
+
+thread 'main' panicked at src\tests.rs:521:18:
+Unknown test 'MirrorMoveAuto' - add explicit metadata to get_operation_metadata()
+error: process didn't exit successfully: `target\debug\tmr.exe cputype=threads --skip-cores=1` (exit code: 101)

@@ -118,6 +118,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
 				let quick_timing = tmr::TestSuiteTiming {
 					global_cycles: Some(1),
 					global_duration_secs: Some(5), // Just 5 seconds
+					per_test_cycle_multiplier: 1.0,
 				};
 				
 				// Create runtime config for quick test

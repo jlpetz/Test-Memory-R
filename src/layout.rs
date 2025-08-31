@@ -30,9 +30,22 @@ impl EnhancedMemoryLayout {
     /// Print comprehensive layout information
     pub fn print_layout(&self) {
         // Note: System memory analysis is now shown in consolidated memory report
+		
+        // Print allocation plan TURNED OFF
+        // self.allocation_result.print_summary(&self.system_memory_info);
+		
+        use crate::reporting::{create_console_reporter, converters::create_consolidated_memory_report};
         
-        // Print allocation plan
-        self.allocation_result.print_summary(&self.system_memory_info);
+        // Show consolidated memory status and allocation plan
+        let consolidated_report = create_consolidated_memory_report(&self.system_memory_info, &self.allocation_result);
+        let mut reporter = create_console_reporter();
+        
+        if let Err(e) = reporter.report_consolidated_memory(&consolidated_report) {
+            log::error!("Failed to display consolidated memory report: {}", e);
+            // Fallback to basic allocation summary
+            self.allocation_result.print_summary(&self.system_memory_info);
+        }
+        
         println!();
         
         // Print thread layout
