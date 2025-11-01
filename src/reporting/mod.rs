@@ -190,34 +190,40 @@ impl<R: Renderer> Reporter<R> {
     
     /// Report block allocation distribution with separate tables (Option B layout)
     pub fn report_block_allocation(&mut self, report: &BlockAllocationReport) -> Result<()> {
-        self.renderer.render_heading(&format!("Block Allocation Report ({})", report.allocator_backend))?;
-        
-        // Table 1: Block Size Distribution
+        self.renderer.render_heading(&format!("Memory Allocation Summary ({})", report.allocator_backend))?;
+
+        // Table 1: Consolidated Block Size Distribution
         let size_dist_table = self.formatter.prepare_block_size_distribution_table(report);
         self.renderer.render_table(&size_dist_table)?;
-        
+
         self.renderer.render_separator()?;
-        
-        // Table 2: Page Type Summary
+
+        // Table 2: Consolidated Page Type Summary
         let page_type_table = self.formatter.prepare_page_type_summary_table(report);
         self.renderer.render_table(&page_type_table)?;
-        
+
+        // Footer with total summary
+        println!("\nTotal: {} threads, {} blocks, {} allocated\n",
+                 report.total_threads,
+                 report.block_size_distribution.iter().map(|d| d.block_count).sum::<u32>(),
+                 self.formatter.format_bytes(report.total_allocated_bytes));
+
         self.renderer.render_separator()?;
-        
+
         // Table 3: Per-Thread Allocation Details
         let thread_table = self.formatter.prepare_thread_block_allocation_table(report);
         self.renderer.render_table(&thread_table)?;
-        
+
         // Table 4: NUMA Distribution (always show)
         self.renderer.render_separator()?;
         let numa_table = self.formatter.prepare_numa_distribution_table(report);
         self.renderer.render_table(&numa_table)?;
-        
+
         // Table 5: Allocation Fairness Analysis (always show)
         self.renderer.render_separator()?;
         let fairness_table = self.formatter.prepare_allocation_fairness_table(report);
         self.renderer.render_table(&fairness_table)?;
-        
+
         Ok(())
     }
 }

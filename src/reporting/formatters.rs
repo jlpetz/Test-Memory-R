@@ -851,10 +851,10 @@ impl ReportFormatter for DefaultFormatter {
             .with_title("Test Configuration")
             .add_header("#", ColumnAlignment::Right)
             .add_header("Test Name", ColumnAlignment::Left)
-            .add_header("Timing", ColumnAlignment::Center)
-            .add_header("Streams", ColumnAlignment::Center)
-            .add_header("Window Mode", ColumnAlignment::Center)
-            .add_header("Block Mode", ColumnAlignment::Center)
+            .add_header("Timing", ColumnAlignment::Right)
+            .add_header("Streams", ColumnAlignment::Right)
+            .add_header("Window Mode", ColumnAlignment::Left)
+            .add_header("Block Mode", ColumnAlignment::Left)
             .add_header("Flags", ColumnAlignment::Left);
         
         for test in &report.tests {
@@ -943,7 +943,7 @@ impl ReportFormatter for DefaultFormatter {
             .add_header("Metric", ColumnAlignment::Left)
             .add_header("Value", ColumnAlignment::Right)
             .add_row(vec![
-                "Total Runtime".to_string(),
+                "Runtime (HH:MM:SS)".to_string(),
                 report.total_runtime.clone(),
             ])
             .add_row(vec![
@@ -1005,26 +1005,34 @@ impl ReportFormatter for DefaultFormatter {
         let mut table = TableData::new()
             .with_title("Block Size Distribution")
             .add_header("Block Size", ColumnAlignment::Right)
-            .add_header("Count", ColumnAlignment::Right)
-            .add_header("Total Bytes", ColumnAlignment::Right)
             .add_header("Page Type", ColumnAlignment::Center)
-            .add_header("Threads", ColumnAlignment::Right)
-            .add_header("Avg/Thread", ColumnAlignment::Right);
+            .add_header("Count", ColumnAlignment::Right)
+            .add_header("Blocks/Thread", ColumnAlignment::Right)
+            .add_header("Threads Using", ColumnAlignment::Right)
+            .add_header("Total Bytes", ColumnAlignment::Right)
+            .add_header("% Total", ColumnAlignment::Right);
+
+        let total_bytes = report.total_allocated_bytes as f64;
 
         for block_dist in &report.block_size_distribution {
+            let pct = if total_bytes > 0.0 {
+                (block_dist.total_bytes as f64 / total_bytes) * 100.0
+            } else {
+                0.0
+            };
+
             table = table.add_row(vec![
                 format!("{} MB", block_dist.block_size_mb),
-                block_dist.block_count.to_string(),
-                self.format_bytes(block_dist.total_bytes),
                 block_dist.page_type.clone(),
-                block_dist.threads_with_this_size.to_string(),
+                block_dist.block_count.to_string(),
                 format!("{:.1}", block_dist.average_per_thread),
+                block_dist.threads_with_this_size.to_string(),
+                self.format_bytes(block_dist.total_bytes),
+                format!("{:.1}%", pct),
             ]);
         }
 
-        table.with_footer(format!("Total: {} threads, {} allocated", 
-                                  report.total_threads, 
-                                  self.format_bytes(report.total_allocated_bytes)))
+        table
     }
     
     /// Prepare page type summary table (Table 2)
@@ -1033,45 +1041,45 @@ impl ReportFormatter for DefaultFormatter {
             .with_title("Page Type Summary")
             .add_header("Page Type", ColumnAlignment::Left)
             .add_header("Page Count", ColumnAlignment::Right)
+            .add_header("Blocks", ColumnAlignment::Right)
+            .add_header("Threads Using", ColumnAlignment::Right)
             .add_header("Total Bytes", ColumnAlignment::Right)
-            .add_header("Block Count", ColumnAlignment::Right)
-            .add_header("Threads", ColumnAlignment::Right)
-            .add_header("% of Total", ColumnAlignment::Right);
+            .add_header("% Total", ColumnAlignment::Right);
 
         let page_summary = &report.page_type_summary;
-        
-        // Huge pages row
+
+        // Huge pages row (only if used)
         if page_summary.huge_pages.page_count > 0 {
             table = table.add_row(vec![
                 "Huge (1GB)".to_string(),
                 page_summary.huge_pages.page_count.to_string(),
-                self.format_bytes(page_summary.huge_pages.total_bytes),
                 page_summary.huge_pages.block_count.to_string(),
                 page_summary.huge_pages.threads_using.to_string(),
+                self.format_bytes(page_summary.huge_pages.total_bytes),
                 format!("{:.1}%", page_summary.huge_pages.percentage_of_total),
             ]);
         }
-        
-        // Large pages row
+
+        // Large pages row (only if used)
         if page_summary.large_pages.page_count > 0 {
             table = table.add_row(vec![
                 "Large (2MB)".to_string(),
                 page_summary.large_pages.page_count.to_string(),
-                self.format_bytes(page_summary.large_pages.total_bytes),
                 page_summary.large_pages.block_count.to_string(),
                 page_summary.large_pages.threads_using.to_string(),
+                self.format_bytes(page_summary.large_pages.total_bytes),
                 format!("{:.1}%", page_summary.large_pages.percentage_of_total),
             ]);
         }
-        
-        // Regular pages row
+
+        // Regular pages row (only if used)
         if page_summary.regular_pages.page_count > 0 {
             table = table.add_row(vec![
                 "Regular (4KB)".to_string(),
                 page_summary.regular_pages.page_count.to_string(),
-                self.format_bytes(page_summary.regular_pages.total_bytes),
                 page_summary.regular_pages.block_count.to_string(),
                 page_summary.regular_pages.threads_using.to_string(),
+                self.format_bytes(page_summary.regular_pages.total_bytes),
                 format!("{:.1}%", page_summary.regular_pages.percentage_of_total),
             ]);
         }

@@ -448,7 +448,7 @@ pub struct CpuPerformanceEntry {
 /// Final test summary report
 #[derive(Debug, Clone)]
 pub struct FinalTestSummaryReport {
-    pub total_runtime: String,
+    pub total_runtime: String,              // Fixed format: "HH:MM:SS"
     pub cycles_completed: usize,
     pub total_data_processed_gib: f64,
     pub overall_throughput_mib_s: f64,

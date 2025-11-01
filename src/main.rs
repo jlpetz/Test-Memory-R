@@ -8,7 +8,8 @@ use env_logger::Builder;
 use windows::Win32::Storage::FileSystem::{GetFileVersionInfoW, GetFileVersionInfoSizeW, VerQueryValueW};
 
 use tmr::{create_demo_configs, load_config, ErrorMode};
-use tmr::constants::{BYTES_PER_GIB, MB_F64};
+use tmr::constants::MB_F64;
+use tmr::params;  // Centralized parameter registry
 // Note: Legacy MemoryLayout still needed for runner interface
 use tmr::memory::allocation_strategy::EnhancedMemoryStrategy;
 use tmr::runner::{run_tests_with_layout_and_timing, TestSuiteTiming, print_current_memory_status, detect_runtime_capabilities};
@@ -28,7 +29,35 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     println!("🚀 Test Memory R (TMR) v1.0.0 - High-Performance Memory Testing Tool");
     println!("================================================================================");
 
-    let args: Vec<String> = env::args().collect();
+    let mut args: Vec<String> = env::args().collect();
+
+    // Handle --quick-test by injecting defaults BEFORE parameter parsing
+    // This allows CLI overrides to work: --quick-test cycles=2 skip-cores=0
+    let has_quick_test = args.iter().any(|a| a == "--quick-test");
+    if has_quick_test {
+        println!("🚀 TMR Quick Test Mode");
+        println!("  Quick test uses reduced memory (60% reserve) for faster validation");
+        println!("  All diagnostics and checks included, CLI overrides supported\n");
+
+        // Inject quick-test defaults (only if not already specified)
+        let mut quick_defaults = vec![
+            ("memory", "60%-from-available:start=split:auto"),
+            ("cycles", "1"),
+            ("skip-cores", "1"),
+            ("cpus", "100%"),
+        ];
+
+        // Only add defaults that aren't already specified on command line
+        for (key, default_value) in quick_defaults.drain(..) {
+            let param_prefix = format!("{}=", key);
+            if !args.iter().any(|a| a.starts_with(&param_prefix)) {
+                args.push(format!("{}={}", key, default_value));
+            }
+        }
+
+        // Remove --quick-test flag (it's not a real parameter)
+        args.retain(|a| a != "--quick-test");
+    }
 
     // Check for special commands
     if args.len() > 1 {
@@ -86,65 +115,8 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
 				}
 				return Ok(());
 			}
-			"--quick-test" => {
-				println!("🚀 TMR Quick Allocation & Test");
-				println!("==============================\n");
-				
-				// Show driver status
-				tmr::display_driver_info();
-				
-				// Set up quick test configuration
-				let alloc_config = tmr::MemoryAllocationConfig::default();
-				let runtime_config = tmr::runner::detect_runtime_capabilities(&alloc_config);
-				
-				println!("\nRuntime Configuration:");
-				println!("  Memory Backend: {:?}", runtime_config.memory_backend);
-				println!("  Driver Available: {}", runtime_config.driver_available);
-				println!("  Large Pages Available: {}", runtime_config.large_pages_available);
-				
-				// Quick memory allocation test (1GB total)
-				println!("\n=== Quick Memory Allocation Test ===");
-				use tmr::memory::allocation_strategy::{AllocationMode, ReserveAmount};
-				let quick_enhanced_strategy = EnhancedMemoryStrategy {
-					allocation_mode: AllocationMode::ReserveFromAvailable { 
-						reserve: ReserveAmount::Bytes(BYTES_PER_GIB) // 1GB
-					},
-					..EnhancedMemoryStrategy::default()
-				};
-				
-				let enhanced_layout = quick_enhanced_strategy.create_layout(2)?; // Just 2 threads for speed
-				
-				// Create quick test timing (single cycle, very short duration)
-				let quick_timing = tmr::TestSuiteTiming {
-					global_cycles: Some(1),
-					global_duration_secs: Some(5), // Just 5 seconds
-					per_test_cycle_multiplier: 1.0,
-				};
-				
-				// Create runtime config for quick test
-				let mut quick_runtime_config = runtime_config;
-				quick_runtime_config.enhanced_memory_strategy = quick_enhanced_strategy;
-				quick_runtime_config.cpu_list = Some(vec![0, 1]); // Just use 2 CPUs
-				
-				// Run the quick test
-				let success = tmr::run_tests_with_layout_and_timing(
-					enhanced_layout, 
-					tmr::ErrorMode::Log, 
-					quick_timing, 
-					quick_runtime_config
-				);
-				
-				if success {
-					println!("\n✅ Quick test completed successfully!");
-					println!("   Enhanced allocation table and constraint-aware logic validated.");
-				} else {
-					println!("\n❌ Quick test encountered issues.");
-				}
-				
-				return Ok(());
-			}
             "--help" | "-h" => {
-                print_help(&args[0]);
+                params::print_help(&args[0]);
                 return Ok(());
             }
             "--version" | "-v" => {
@@ -158,11 +130,21 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     }
 	
 
-    // Check for config file parameter
-    let config_file = args.iter().find_map(|arg| arg.strip_prefix("config="));
+    // Parse and validate ALL command-line arguments using centralized registry
+    let validated_params = match params::parse_and_validate_args(&args[1..]) {
+        Ok(params) => params,
+        Err(e) => {
+            eprintln!("{}", e);
+            std::process::exit(1);
+        }
+    };
 
-	let (enhanced_memory_strategy, error_mode, suite_timing, cputype, cpus, pinning_config, alloc_config, config_opt) = 
-		if let Some(config_path) = config_file {
+    // Check for config file parameter
+    let config_file = params::get_string(&validated_params, "config", "");
+    let config_file = if config_file.is_empty() { None } else { Some(config_file) };
+
+	let (mut enhanced_memory_strategy, mut error_mode, mut suite_timing, mut cputype, mut cpus, mut pinning_config, mut alloc_config, config_opt) =
+		if let Some(ref config_path) = config_file {
 			let config = load_config(config_path)?;
 			(
 				config.to_memory_strategy(),
@@ -172,16 +154,131 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
 				format!("{}%", config.system.cpu_config.usage_percent),
 				config.system.cpu_pinning.clone(),
 				config.system.memory_allocation.clone(), // Use the config's allocation settings
-				Some(config) // Keep the full config
+				Some(config) // Keep the full config for test sequence
 			)
 		} else {
-			let (enhanced_memory_strategy, error_mode, suite_timing, cputype, cpus, pinning_config, alloc_config) = parse_command_line_params(&args);
+			// Build config from validated command-line parameters
+			let (enhanced_memory_strategy, error_mode, suite_timing, cputype, cpus, pinning_config, alloc_config) =
+				build_config_from_validated_params(&validated_params)?;
 			(enhanced_memory_strategy, error_mode, suite_timing, cputype, cpus, pinning_config, alloc_config, None)
 		};
+
+	// Apply CLI parameter overrides even when using a config file
+	// This allows: tmr.exe config=test.json cycles=1 skip-cores=0 memory=4GiB cpus=50%
+	if config_opt.is_some() {
+		let registry = params::get_registry();
+
+		// Apply overrides for each parameter (already validated)
+		for (key, value) in &validated_params {
+			// Only apply if this parameter can override config files
+			if !registry.can_override_config(key) {
+				continue;
+			}
+
+			// Apply the override based on parameter type
+			match key.as_str() {
+				"errors" => {
+					error_mode = match params::get_string(&validated_params, "errors", "log").to_lowercase().as_str() {
+						"halt" | "stop" => ErrorMode::Halt,
+						"panic" | "debug" => ErrorMode::Panic,
+						_ => ErrorMode::Log,
+					};
+					log::debug!("CLI override: error_mode = {:?}", error_mode);
+				}
+				"cycles" => {
+					let cycles = params::get_u32(&validated_params, "cycles", 3);
+					suite_timing.global_cycles = Some(cycles);
+					log::debug!("CLI override: global_cycles = {}", cycles);
+				}
+				"duration" => {
+					let duration = params::get_u32(&validated_params, "duration", 0);
+					suite_timing.global_duration_secs = Some(duration);
+					log::debug!("CLI override: global_duration_secs = {}", duration);
+				}
+				"memory" => {
+					if let params::ParamValue::String(memory_str) = value {
+						match parse_enhanced_memory_parameter(memory_str) {
+							Ok(strategy) => {
+								enhanced_memory_strategy = strategy;
+								log::debug!("CLI override: enhanced_memory_strategy");
+							}
+							Err(e) => {
+								println!("❌ Invalid memory override '{}': {}", memory_str, e);
+								std::process::exit(1);
+							}
+						}
+					}
+				}
+				"cpus" => {
+					cpus = params::get_string(&validated_params, "cpus", "100%");
+					log::debug!("CLI override: cpus = {}", cpus);
+				}
+				"cputype" => {
+					cputype = params::get_string(&validated_params, "cputype", "threads");
+					log::debug!("CLI override: cputype = {}", cputype);
+				}
+				"skip-cores" => {
+					pinning_config.cpus_to_skip = params::get_usize(&validated_params, "skip-cores", 1);
+					log::debug!("CLI override: cpus_to_skip = {}", pinning_config.cpus_to_skip);
+				}
+				"--disable-pinning" => {
+					pinning_config.enable_pinning = false;
+					log::debug!("CLI override: enable_pinning = false");
+				}
+				"allocator" => {
+					if let params::ParamValue::String(allocator_str) = value {
+						use tmr::memory::allocator::AllocationStrategy;
+						match allocator_str.parse::<AllocationStrategy>() {
+							Ok(strategy) => {
+								alloc_config.allocation_strategy = strategy.to_string();
+								log::debug!("CLI override: allocation_strategy = {}", strategy);
+							}
+							Err(e) => {
+								println!("❌ Invalid allocator override '{}': {}", allocator_str, e);
+								std::process::exit(1);
+							}
+						}
+					}
+				}
+				"topology" => {
+					if let params::ParamValue::String(topology_str) = value {
+						use tmr::cpu_topology::{set_topology_detection_method, TopologyDetectionMethod};
+						let method = match topology_str.to_lowercase().as_str() {
+							"windows" | "windowsapi" => TopologyDetectionMethod::WindowsApi,
+							"windowsv2" | "v2" => TopologyDetectionMethod::WindowsApiV2,
+							"cpuid" => TopologyDetectionMethod::CpuidBased,
+							"auto" => TopologyDetectionMethod::Auto,
+							_ => TopologyDetectionMethod::Auto,
+						};
+						set_topology_detection_method(method);
+						log::debug!("CLI override: topology_detection_method = {:?}", method);
+					}
+				}
+				"--driver-chunking" => {
+					alloc_config.driver_chunking = true;
+					log::debug!("CLI override: driver_chunking = true");
+				}
+				"--batch-remap" => {
+					alloc_config.remap_mode = "batch".to_string();
+					log::debug!("CLI override: remap_mode = batch");
+				}
+				_ => {} // Ignore unknown overrides
+			}
+		}
+	}
 
     // Display startup mode and parameters
     println!("Startup Mode & Parameters:");
     println!("  Command Line: {}", args.join(" "));
+
+    // Display build type (helps identify performance issues in logs)
+    let (build_type, build_icon) = if cfg!(debug_assertions) {
+        ("Debug (unoptimized)", "❌")
+    } else {
+        ("Release (optimized)", "✅")
+    };
+    println!("  Build Type: {} {}", build_icon, build_type);
+    log::info!("TMR v1.0.0 starting - {} build on {}", build_type, std::env::consts::ARCH);
 
     // Check environment variables
     let rust_log = env::var("RUST_LOG").unwrap_or_else(|_| "info".to_string());
@@ -196,14 +293,20 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     let mut explicit_params = Vec::new();
     let mut default_params = Vec::new();
 
+	// Use centralized registry to check for recognized parameters
+	let registry = params::get_registry();
+
 	for arg in &args[1..] {
-		if arg.starts_with("config=") 
-			|| arg.starts_with("cputype=") 
-			|| arg.starts_with("cpus=") 
-			|| arg.starts_with("memory=") 
-			|| arg.starts_with("errors=") 
-			|| arg.starts_with("cycles=") 
-			|| arg.starts_with("duration=") {
+		// Check if it's a recognized parameter or flag
+		let is_recognized = if arg.starts_with("--") {
+			registry.all_keys().contains(&arg.as_str())
+		} else if let Some(key) = arg.split('=').next() {
+			registry.all_keys().contains(&key)
+		} else {
+			false
+		};
+
+		if is_recognized {
 			explicit_params.push(arg.clone());
 		}
 	}
@@ -537,7 +640,13 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
 	runtime_config.enhanced_memory_strategy = enhanced_memory_strategy.clone();
     
     let start_time = std::time::Instant::now();
-	let success = run_tests_with_layout_and_timing(enhanced_layout, error_mode, suite_timing, runtime_config);
+	let success = run_tests_with_layout_and_timing(
+		enhanced_layout,
+		error_mode,
+		suite_timing,
+		runtime_config,
+		config_opt.as_ref(),  // Pass config if available
+	);
     let total_time = start_time.elapsed();
 
     println!();
@@ -577,7 +686,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
 	}
 	
 	println!();
-    print_usage(&args[0]);
+    params::print_usage(&args[0]);
 	Ok(())
 }
 
@@ -788,110 +897,94 @@ fn setup_logging() {
     log::info!("Log level: {} - detailed logs also saved to {}", log_level, log_filename);
 }
 
-fn parse_command_line_params(args: &[String]) -> (EnhancedMemoryStrategy, ErrorMode, TestSuiteTiming, String, String, CpuPinningConfig, MemoryAllocationConfig) {
-    let mut cputype = "threads".to_string();
-    let mut cpus = "100%".to_string();
-    let mut enhanced_memory_strategy = EnhancedMemoryStrategy::default();
-	let mut alloc_config = MemoryAllocationConfig::default();
-    let mut error_mode = ErrorMode::Log;
-    let mut suite_timing = TestSuiteTiming::default();
-    let mut pinning_config = CpuPinningConfig::default();
+/// Build configuration from validated parameters (using centralized registry)
+fn build_config_from_validated_params(
+    validated: &HashMap<String, params::ParamValue>
+) -> Result<(EnhancedMemoryStrategy, ErrorMode, TestSuiteTiming, String, String, CpuPinningConfig, MemoryAllocationConfig), String> {
+    // Extract basic string parameters with defaults
+    let cputype = params::get_string(validated, "cputype", "threads");
+    let cpus = params::get_string(validated, "cpus", "100%");
 
-    // Parse arguments
-    for arg in args {
-        if let Some(value) = arg.strip_prefix("cputype=") {
-            cputype = value.to_string();
-        } else if let Some(value) = arg.strip_prefix("cpus=") {
-            cpus = value.to_string();
-        } else if arg == "--driver-chunking" {
-            alloc_config.driver_chunking = true;
-        } else if arg == "--batch-remap" {
-            alloc_config.remap_mode = "batch".to_string();
-        } else if let Some(value) = arg.strip_prefix("memory=") {
-            match parse_enhanced_memory_parameter(value) {
-                Ok(strategy) => enhanced_memory_strategy = strategy,
-                Err(e) => {
-                    println!("❌ Invalid memory parameter '{}': {}", &arg[7..], e);
-                    println!("💡 Valid formats:");
-                    println!("   Standard (from available): 4GiB-from-available, 15%-from-available, 20%");
-                    println!("   Legacy TM5 (from available): 2048MB, 1024MB-legacy");
-                    println!("   Failure mode testing (from total): 8GiB-from-total, 50%-from-total");
-                    println!("   Failure mode testing (target): 64GiB-target, 120%-target");
-                    println!("   With start address control:");
-                    println!("     memory=20%-from-available:start=+2GiB     # Offset from end of used memory");
-                    println!("     memory=2048MB:start=split:10%:90%         # Split reserve (10% pre, 90% post)");
-                    println!("     memory=10%-from-available:start=split:auto # Auto split for post-boot testing");
-                    std::process::exit(1);
-                }
-            }
-        } else if let Some(value) = arg.strip_prefix("allocator=") {
-            use tmr::memory::allocator::AllocationStrategy;
-            match value.parse::<AllocationStrategy>() {
-                Ok(strategy) => {
-                    alloc_config.allocation_strategy = strategy.to_string();
-                    println!("  Allocation Strategy: {}", strategy);
-                }
-                Err(e) => {
-                    println!("❌ Invalid allocator parameter '{}': {}", value, e);
-                    println!("💡 Valid options: greedy, plan-pagesize-pref, plan-blocksize-pref");
-                    std::process::exit(1);
-                }
-            }
-        } else if let Some(value) = arg.strip_prefix("errors=") {
-            error_mode = parse_error_mode(value);
-        } else if let Some(value) = arg.strip_prefix("cycles=") {
-            if let Ok(cycles) = value.parse::<u32>() {
-                suite_timing = TestSuiteTiming::cycles_only(cycles);
-            }
-        } else if let Some(value) = arg.strip_prefix("duration=") {
-            if let Ok(duration) = value.parse::<u32>() {
-                suite_timing = TestSuiteTiming::duration_only(duration);
-            }
-        } else if let Some(method_str) = arg.strip_prefix("topology=") {
-            // Set the topology detection method
-            use tmr::cpu_topology::{set_topology_detection_method, TopologyDetectionMethod};
-            let method = match method_str.to_lowercase().as_str() {
-                "windows" | "windowsapi" => TopologyDetectionMethod::WindowsApi,
-                "windowsv2" | "v2" => TopologyDetectionMethod::WindowsApiV2,
-                "cpuid" => TopologyDetectionMethod::CpuidBased,
-                "auto" => TopologyDetectionMethod::Auto,
-                _ => {
-                    println!("Warning: Unknown topology method '{}', using Auto", method_str);
-                    TopologyDetectionMethod::Auto
-                }
-            };
-            set_topology_detection_method(method);
-            println!("  Topology Detection: {:?}", method);
-        } else if let Some(value) = arg.strip_prefix("--skip-cores=") {
-            if let Ok(skip_count) = value.parse::<usize>() {
-                pinning_config.cpus_to_skip = skip_count;
-                println!("  CPU Pinning: Skipping first {} CPU(s)", skip_count);
-            } else {
-                println!("❌ Invalid --skip-cores value: {}", value);
-                std::process::exit(1);
-            }
-        } else if arg == "--disable-pinning" {
-            pinning_config.enable_pinning = false;
-            println!("  CPU Pinning: Disabled");
-        }
-		
-    }
-
-    (enhanced_memory_strategy, error_mode, suite_timing, cputype, cpus, pinning_config, alloc_config)
-}
-
-
-fn parse_error_mode(param: &str) -> ErrorMode {
-    match param.trim().to_lowercase().as_str() {
-        "log" => ErrorMode::Log,
+    // Build error mode
+    let error_mode = match params::get_string(validated, "errors", "log").to_lowercase().as_str() {
         "halt" | "stop" => ErrorMode::Halt,
         "panic" | "debug" => ErrorMode::Panic,
-        _ => {
-            println!("Warning: Unknown error mode '{}', using default 'log'", param);
-            println!("  Supported modes: log, halt, panic");
-            ErrorMode::Log
+        _ => ErrorMode::Log,
+    };
+
+    // Build test suite timing
+    let suite_timing = if params::has_param(validated, "cycles") {
+        let cycles = params::get_u32(validated, "cycles", 3);
+        TestSuiteTiming::cycles_only(cycles)
+    } else if params::has_param(validated, "duration") {
+        let duration = params::get_u32(validated, "duration", 0);
+        TestSuiteTiming::duration_only(duration)
+    } else {
+        TestSuiteTiming::default()
+    };
+
+    // Build memory strategy (requires special parsing)
+    let enhanced_memory_strategy = if let Some(params::ParamValue::String(memory_str)) = validated.get("memory") {
+        parse_enhanced_memory_parameter(memory_str)?
+    } else {
+        EnhancedMemoryStrategy::default()
+    };
+
+    // Build CPU pinning config
+    let mut pinning_config = CpuPinningConfig::default();
+    pinning_config.cpus_to_skip = params::get_usize(validated, "skip-cores", 1);
+    if params::get_bool(validated, "--disable-pinning", false) {
+        pinning_config.enable_pinning = false;
+    }
+
+    // Build memory allocation config
+    let mut alloc_config = MemoryAllocationConfig::default();
+
+    // Handle allocator if specified (requires special parsing)
+    if let Some(params::ParamValue::String(allocator_str)) = validated.get("allocator") {
+        use tmr::memory::allocator::AllocationStrategy;
+        match allocator_str.parse::<AllocationStrategy>() {
+            Ok(strategy) => {
+                alloc_config.allocation_strategy = strategy.to_string();
+                println!("  Allocation Strategy: {}", strategy);
+            }
+            Err(e) => {
+                return Err(format!("Invalid allocator '{}': {}", allocator_str, e));
+            }
         }
     }
+
+    // Handle driver flags
+    if params::get_bool(validated, "--driver-chunking", false) {
+        alloc_config.driver_chunking = true;
+    }
+    if params::get_bool(validated, "--batch-remap", false) {
+        alloc_config.remap_mode = "batch".to_string();
+    }
+
+    // Handle topology (has side effect of setting global state)
+    if let Some(params::ParamValue::String(topology_str)) = validated.get("topology") {
+        use tmr::cpu_topology::{set_topology_detection_method, TopologyDetectionMethod};
+        let method = match topology_str.to_lowercase().as_str() {
+            "windows" | "windowsapi" => TopologyDetectionMethod::WindowsApi,
+            "windowsv2" | "v2" => TopologyDetectionMethod::WindowsApiV2,
+            "cpuid" => TopologyDetectionMethod::CpuidBased,
+            "auto" => TopologyDetectionMethod::Auto,
+            _ => TopologyDetectionMethod::Auto,
+        };
+        set_topology_detection_method(method);
+        println!("  Topology Detection: {:?}", method);
+    }
+
+    // Print skip-cores if specified
+    if params::has_param(validated, "skip-cores") {
+        println!("  CPU Pinning: Skipping first {} CPU(s)", pinning_config.cpus_to_skip);
+    }
+    if !pinning_config.enable_pinning {
+        println!("  CPU Pinning: Disabled");
+    }
+
+    Ok((enhanced_memory_strategy, error_mode, suite_timing, cputype, cpus, pinning_config, alloc_config))
 }
 
 // Add these functions to main.rs
@@ -995,57 +1088,6 @@ fn format_duration(duration: std::time::Duration) -> String {
     format!("{:02}:{:02}:{:02}", hours, minutes, seconds)
 }
 
-fn print_help(program_name: &str) {
-    println!("🚀 Test Memory R (TMR) v1.0.0 - High-Performance Memory Testing Tool");
-    println!("===================================================================================");
-    println!();
-    println!("USAGE:");
-    println!("  {}                                    # Run with defaults", program_name);
-    println!("  {} config=test.json                  # Load modern JSON config (v2.0)", program_name);
-    println!("  {} config=legacy.cfg                 # Load legacy TestMem5 config (v1.0)", program_name);
-    println!("  {} --create-demo-configs              # Create demo configuration files", program_name);
-    println!("  {} --compare-results baseline.json current.json [output.json]", program_name);
-    println!("                                          # Compare two test results from .\\results\\");
-	println!("  {} --setup-large-pages              # Configure large pages for optimal performance", program_name);
-    println!("  {} --version                         # Show version information", program_name);
-	println!("  {} --show-topology                   # Show CPU Topology Mapping for debugging", program_name);
-	println!("  {} --debug-topology                  # Runs multiple CPU Topology checks to debug if one works better", program_name);
-    println!();
-    println!("COMMAND LINE PARAMETERS:");
-    println!("  memory=20%                           # Reserve 20% of system memory");
-    println!("  memory=2GiB                         # Reserve 2 GiB");
-    println!("  memory=tm5                          # TM5-compatible allocation");
-    println!("  cycles=5                            # Run 5 complete test cycles");
-    println!("  duration=600                        # Maximum 10 minutes runtime");
-    println!("  cpus=50%                            # Use 50% of available CPUs");
-    println!("  cputype=cores                       # Use physical cores (vs threads/SMT)");
-    println!("  --skip-cores=0                      # Skip first N CPUs (default: 1)");
-    println!("  --disable-pinning                   # Disable CPU thread pinning");
-    println!("  allocator=plan-pagesize-pref        # Allocation strategy:");
-    println!("    greedy                            #   Legacy: largest chunks first");
-    println!("    plan-pagesize-pref                #   Plan-based: page type priority (default)");
-    println!("    plan-blocksize-pref               #   Plan-based: block size priority");
-    println!("  errors=halt                         # Stop on first error");
-    println!();
-    println!("LOGGING:");
-    println!("  RUST_LOG=info                       # Set log level (error/warn/info/debug/trace)");
-    println!("                                        # Use debug for detailed per-thread logs");
-    println!("  Logs saved to: .\\logs\\TMR_YYYY-MM-DD_HH-MM-SS.log");
-    println!("  Results saved to: .\\results\\TMR_YYYY-MM-DD_HH-MM-SS.json");
-    println!();
-    println!("RESULT COMPARISON:");
-    println!("  Test results are automatically saved as JSON files to .\\results\\");
-    println!("  Use --compare-results to analyze performance differences");
-    println!("  Useful for memory overclocking and timing optimization");
-	println!();
-	println!("ADVANCED FEATURES:");
-    println!("  DMA Memory: Install kernel driver for physical memory testing");
-    println!("              - Provides true physical address access");
-    println!("              - Guaranteed physically contiguous memory");
-    println!("              - Better detection of memory controller issues");
-    println!("  Installation: Run Install-TmrDriver.ps1 as Administrator");
-    println!();
-}
 
 /// Parse enhanced memory parameter with clear reserve semantics
 fn parse_enhanced_memory_parameter(param: &str) -> Result<tmr::memory::allocation_strategy::EnhancedMemoryStrategy, String> {
@@ -1057,27 +1099,4 @@ fn parse_enhanced_memory_parameter(param: &str) -> Result<tmr::memory::allocatio
         allocation_mode,
         start_address_mode,
     })
-}
-
-
-fn print_usage(program_name: &str) {
-    println!("Quick Usage Examples:");
-    println!("  {} memory=10%-from-available     # Standard: Reserve 10% from currently available memory", program_name);
-    println!("  {} memory=2048MB                 # TM5 compatible: Reserve 2048MB from available memory", program_name);
-    println!("  {} memory=8GiB-from-total        # Failure test: Reserve 8 GiB from total (unrealistic)", program_name);
-    println!("  {} memory=64GiB-target           # Failure test: Target 64 GiB allocation (may fail)", program_name);
-    println!("  {} memory=10%-from-available:start=+2GiB     # Reserve 10%, start 2GiB above used memory", program_name);
-    println!("  {} memory=10%-from-available:start=split:5%:95% # Reserve 10%, split: 5% pre-buffer, 95% post", program_name);
-    println!("  {} memory=20%-from-available:start=split:auto # Reserve 20%, auto-split for post-boot testing", program_name);
-    println!("  {} cycles=5 duration=600        # 5 cycles OR 10 minutes max", program_name);
-    println!("  {} cpus=50% cputype=cores       # Use 50% of CPU cores (cores=avoid SMT)", program_name);
-    println!("  {} --skip-cores=0               # Don't skip any CPUs (default: skip first CPU)", program_name);
-    println!("  {} --disable-pinning            # Disable CPU pinning (default: enabled)", program_name);
-    println!("  {} errors=halt                  # Stop on first error", program_name);
-    println!("  {} config=test.json             # Load comprehensive JSON config", program_name);
-    println!("  {} config=legacy.cfg            # Auto-convert TM5 config + add stuck bit test", program_name);
-    println!("  {} --create-demo-configs        # Create demo configurations", program_name);
-    println!("  {} --compare-results old.json new.json # Compare results from .\\results\\", program_name);
-    println!();
-    println!("For full help: {} --help", program_name);
 }

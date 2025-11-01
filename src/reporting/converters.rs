@@ -154,21 +154,21 @@ pub fn create_driver_status_report(status: &DriverStatus) -> DriverStatusReport 
     }
 }
 
-/// Convert test definitions to test configuration report
+/// Convert test definitions to test configuration report (legacy signature)
 pub fn create_test_configuration_report(
     test_definitions: &[(&'static str, crate::runner::TestFunction, crate::tests::TestMemoryConfig)],
     suite_timing: &crate::runner::TestSuiteTiming,
 ) -> TestConfigurationReport {
     use crate::reporting::formatters::{ReportFormatter, DefaultFormatter};
     let formatter = DefaultFormatter::new();
-    
+
     let suite_timing_str = match (suite_timing.global_cycles, suite_timing.global_duration_secs) {
         (Some(cycles), Some(duration)) => format!("{} cycles or {}s max", cycles, duration),
         (Some(cycles), None) => format!("{} cycles", cycles),
         (None, Some(duration)) => format!("{}s duration", duration),
         (None, None) => "Unlimited".to_string(),
     };
-    
+
     let tests = test_definitions.iter().enumerate().map(|(i, (name, _, config))| {
         let timing = match (&config.timing.cycles, &config.timing.duration_secs) {
             (Some(c), Some(d)) => format!("{}cycles/{}s", c, d),
@@ -176,10 +176,10 @@ pub fn create_test_configuration_report(
             (None, Some(d)) => format!("{}s", d),
             (None, None) => "unlimited".to_string(),
         };
-        
+
         let window_mode = formatter.format_window_mode(&config.window_mode);
         let chunk_mode = formatter.format_chunk_mode(&config.chunk_mode);
-        
+
         let mut flags = Vec::new();
         if config.allow_misaligned {
             flags.push("Misaligned".to_string());
@@ -187,7 +187,7 @@ pub fn create_test_configuration_report(
         if config.requires_locality {
             flags.push("Locality".to_string());
         }
-        
+
         TestConfigurationEntry {
             number: i + 1,
             name: name.to_string(),
@@ -198,7 +198,62 @@ pub fn create_test_configuration_report(
             flags,
         }
     }).collect();
-    
+
+    TestConfigurationReport {
+        suite_timing: suite_timing_str,
+        test_count: test_definitions.len(),
+        tests,
+    }
+}
+
+/// Convert TestDefinition structs to test configuration report (updated version)
+pub fn create_test_configuration_report_v2(
+    test_definitions: &[crate::runner::TestDefinition],
+    suite_timing: &crate::runner::TestSuiteTiming,
+) -> TestConfigurationReport {
+    use crate::reporting::formatters::{ReportFormatter, DefaultFormatter};
+    let formatter = DefaultFormatter::new();
+
+    let suite_timing_str = match (suite_timing.global_cycles, suite_timing.global_duration_secs) {
+        (Some(cycles), Some(duration)) => format!("{} cycles or {}s max", cycles, duration),
+        (Some(cycles), None) => format!("{} cycles", cycles),
+        (None, Some(duration)) => format!("{}s duration", duration),
+        (None, None) => "Unlimited".to_string(),
+    };
+
+    let tests = test_definitions.iter().enumerate().map(|(i, test_def)| {
+        let config = &test_def.config;
+
+        let timing = match (&config.timing.cycles, &config.timing.duration_secs) {
+            (Some(c), Some(d)) => format!("{}cycles/{}s", c, d),
+            (Some(c), None) => format!("{}cycles", c),
+            (None, Some(d)) => format!("{}s", d),
+            (None, None) => "default".to_string(),  // Match old behavior
+        };
+
+        let window_mode = formatter.format_window_mode(&config.window_mode);
+        let chunk_mode = formatter.format_chunk_mode(&config.chunk_mode);
+
+        // Match old flag order: Locality first, then Misaligned
+        let mut flags = Vec::new();
+        if config.requires_locality {
+            flags.push("Locality".to_string());
+        }
+        if config.allow_misaligned {
+            flags.push("Misaligned".to_string());
+        }
+
+        TestConfigurationEntry {
+            number: i + 1,
+            name: test_def.display_name.clone(),  // Use display_name to get _A suffix
+            timing,
+            streams: config.streams as usize,
+            window_mode,
+            chunk_mode,
+            flags,
+        }
+    }).collect();
+
     TestConfigurationReport {
         suite_timing: suite_timing_str,
         test_count: test_definitions.len(),
@@ -406,7 +461,7 @@ fn analyze_block_allocations(
         };
         
         let cpu_id = blocks.first().map(|b| b.block_info.thread_id).unwrap_or(thread_id);
-        let numa_node = blocks.first().map(|b| b.numa_node).unwrap_or(0);
+        let numa_node = blocks.first().map(|b| b.buffer.info().numa_node).unwrap_or(0);
         
         for block in blocks {
             let block_size_mb = (block.buffer.size() as f64 / (1024.0 * 1024.0)).ceil() as u32;
@@ -679,13 +734,109 @@ fn calculate_allocation_fairness(
     }
 }
 
+/// Convert thread stats to thread timing report
+pub fn create_thread_timing_report(
+    test_name: &str,
+    stats: &[(usize, usize, u64, u128, u64, u64)],  // (thread_id, cpu_id, bytes, elapsed_ms, errors, operations)
+) -> super::models::ThreadTimingReport {
+    use super::models::{ThreadTimingReport, ThreadTiming};
+
+    if stats.is_empty() {
+        return ThreadTimingReport {
+            test_name: test_name.to_string(),
+            average_elapsed_ms: 0,
+            thread_timings: Vec::new(),
+        };
+    }
+
+    // Calculate average elapsed time
+    let total_elapsed: u128 = stats.iter().map(|(_, _, _, elapsed, _, _)| *elapsed).sum();
+    let avg_elapsed = total_elapsed / stats.len() as u128;
+
+    // Build thread timing entries with deviations
+    let mut thread_timings: Vec<ThreadTiming> = stats.iter().map(|&(thread_id, cpu_id, bytes, elapsed, errors, _operations)| {
+        let deviation_ms = elapsed as i128 - avg_elapsed as i128;
+
+        // Calculate throughput
+        let throughput_mib_s = if elapsed > 0 {
+            (bytes as f64 / (1024.0 * 1024.0)) / (elapsed as f64 / 1000.0)
+        } else {
+            0.0
+        };
+
+        // Get physical core and NUMA node info
+        let physical_core_id = cpu_id / 2; // Simple approximation
+        let numa_node = crate::cpu_topology::get_numa_node_for_cpu(cpu_id);
+
+        ThreadTiming {
+            thread_id,
+            cpu_id,
+            physical_core_id,
+            numa_node,
+            runtime_ms: elapsed,
+            deviation_ms,
+            data_bytes: bytes,
+            throughput_mib_s,
+            errors,
+        }
+    }).collect();
+
+    // Sort by deviation descending (highest deviation first)
+    thread_timings.sort_by(|a, b| b.deviation_ms.cmp(&a.deviation_ms));
+
+    ThreadTimingReport {
+        test_name: test_name.to_string(),
+        average_elapsed_ms: avg_elapsed,
+        thread_timings,
+    }
+}
+
+/// Create a final test summary report from OverallStats
+/// This is a simpler converter that works with already-finalized statistics
+pub fn create_overall_stats_summary_report(
+    overall_stats: &crate::results::OverallStats,
+) -> super::models::FinalTestSummaryReport {
+    use super::models::{FinalTestSummaryReport, TestSummaryEntry};
+
+    // Format runtime in fixed HH:MM:SS format for machine comparison
+    let secs = overall_stats.total_runtime_secs;
+    let hours = secs / 3600;
+    let minutes = (secs % 3600) / 60;
+    let seconds = secs % 60;
+    let total_runtime = format!("{:02}:{:02}:{:02}", hours, minutes, seconds);
+
+    // Convert per-test averages to TestSummaryEntry format
+    let per_test_summaries: Vec<TestSummaryEntry> = overall_stats
+        .per_test_averages
+        .iter()
+        .map(|avg| TestSummaryEntry {
+            name: avg.name.clone(),
+            average_duration_secs: avg.avg_duration_ms as f64 / 1000.0,
+            total_data_gib: avg.avg_bytes_processed as f64 / (1024.0 * 1024.0 * 1024.0),
+            average_throughput_mib_s: avg.avg_throughput_mib_s,
+            average_throughput_gib_s: avg.avg_throughput_gib_s,
+            total_errors: avg.total_errors,
+        })
+        .collect();
+
+    FinalTestSummaryReport {
+        total_runtime,
+        cycles_completed: overall_stats.cycles_completed as usize,
+        total_data_processed_gib: overall_stats.total_data_processed_gib,
+        overall_throughput_mib_s: overall_stats.overall_throughput_mib_s,
+        overall_throughput_gib_s: overall_stats.overall_throughput_gib_s,
+        total_errors: overall_stats.total_errors,
+        per_test_summaries,
+    }
+}
+
 /// Format duration in human-readable format
 fn format_duration(duration: std::time::Duration) -> String {
     let secs = duration.as_secs();
     let hours = secs / 3600;
     let minutes = (secs % 3600) / 60;
     let seconds = secs % 60;
-    
+
     if hours > 0 {
         format!("{}h {}m {}s", hours, minutes, seconds)
     } else if minutes > 0 {

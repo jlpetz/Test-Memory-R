@@ -156,9 +156,6 @@ pub fn compare_app_vs_driver_stats(driver_stats: &HashMap<String, u64>) {
     table.print();
 }
 
-// Export the macro for use in other modules
-pub(crate) use track_driver_call;
-
 /// Public function to manually track driver calls (for testing/debugging)
 pub fn track_call(stat_type: DriverStatType) {
     track_driver_call!(stat_type);

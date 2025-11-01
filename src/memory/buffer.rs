@@ -73,7 +73,6 @@ pub enum MemoryType {
     WriteCombined,
 }
 
-
 impl MemoryBuffer {
     pub fn new(allocation: BackendAllocation, backend: Arc<dyn Backend>) -> Self {
         Self {

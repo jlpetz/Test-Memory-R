@@ -129,6 +129,9 @@ pub struct TestStats {
     pub thread_id: usize,
     pub error_count: u64,
     pub total_operations: u64,  // Total operation count (lightweight tracking)
+    pub cycles_completed: u32,  // Actual cycles completed
+    pub cycles_planned: Option<u32>, // Planned cycles (None = unlimited)
+    pub stopped_by_time_limit: bool, // True if stopped due to time, false if stopped due to cycle limit
 }
 
 /// Detailed operation breakdown calculated post-test from total_operations
@@ -955,7 +958,14 @@ pub unsafe fn stuck_bit_test(ptr: *mut u8, size: usize, thread_id: usize, error_
                             thread_id,
                             error_count: total_error_count,
                             total_operations,
-                        };
+
+                            cycles_completed: 0,
+
+                            cycles_planned: None,
+
+                            stopped_by_time_limit: false,
+
+                            };
                     }
                     ErrorMode::Log => {
                         // Continue testing - errors already logged individually
@@ -983,7 +993,14 @@ pub unsafe fn stuck_bit_test(ptr: *mut u8, size: usize, thread_id: usize, error_
                     thread_id,
                     error_count: total_error_count,
                     total_operations,
-                };
+
+                    cycles_completed: 0,
+
+                    cycles_planned: None,
+
+                    stopped_by_time_limit: false,
+
+                    };
             }
         }
         
@@ -1010,7 +1027,14 @@ pub unsafe fn stuck_bit_test(ptr: *mut u8, size: usize, thread_id: usize, error_
         thread_id,
         error_count: total_error_count,
         total_operations,
-    }
+
+        cycles_completed: 0,
+
+        cycles_planned: None,
+
+        stopped_by_time_limit: false,
+
+        }
 }
 
 // === STUCK BIT TEST SIMD VARIANTS ===
@@ -1028,7 +1052,14 @@ pub unsafe fn stuck_bit_test_128(ptr: *mut u8, size: usize, thread_id: usize, er
             thread_id,
             error_count: 0,
             total_operations: 0,
-        };
+
+            cycles_completed: 0,
+
+            cycles_planned: None,
+
+            stopped_by_time_limit: false,
+
+            };
     }
     
     let start = Instant::now();
@@ -1239,7 +1270,14 @@ pub unsafe fn stuck_bit_test_128(ptr: *mut u8, size: usize, thread_id: usize, er
                     thread_id,
                     error_count: total_error_count,
                     total_operations,
-                };
+
+                    cycles_completed: 0,
+
+                    cycles_planned: None,
+
+                    stopped_by_time_limit: false,
+
+                    };
             }
         }
         
@@ -1266,7 +1304,14 @@ pub unsafe fn stuck_bit_test_128(ptr: *mut u8, size: usize, thread_id: usize, er
         thread_id,
         error_count: total_error_count,
         total_operations,
-    }
+
+        cycles_completed: 0,
+
+        cycles_planned: None,
+
+        stopped_by_time_limit: false,
+
+        }
 }
 
 /// # Safety
@@ -1283,7 +1328,14 @@ pub unsafe fn stuck_bit_test_256(ptr: *mut u8, size: usize, thread_id: usize, er
             thread_id,
             error_count: 0,
             total_operations: 0,
-        };
+
+            cycles_completed: 0,
+
+            cycles_planned: None,
+
+            stopped_by_time_limit: false,
+
+            };
     }
 
     let start = Instant::now();
@@ -1490,7 +1542,14 @@ pub unsafe fn stuck_bit_test_256(ptr: *mut u8, size: usize, thread_id: usize, er
                     thread_id,
                     error_count: total_error_count,
                     total_operations,
-                };
+
+                    cycles_completed: 0,
+
+                    cycles_planned: None,
+
+                    stopped_by_time_limit: false,
+
+                    };
             }
         }
         
@@ -1517,7 +1576,14 @@ pub unsafe fn stuck_bit_test_256(ptr: *mut u8, size: usize, thread_id: usize, er
         thread_id,
         error_count: total_error_count,
         total_operations,
-    }
+
+        cycles_completed: 0,
+
+        cycles_planned: None,
+
+        stopped_by_time_limit: false,
+
+        }
 }
 
 /// # Safety
@@ -1534,7 +1600,14 @@ pub unsafe fn stuck_bit_test_512(ptr: *mut u8, size: usize, thread_id: usize, er
             thread_id,
             error_count: 0,
             total_operations: 0,
-        };
+
+            cycles_completed: 0,
+
+            cycles_planned: None,
+
+            stopped_by_time_limit: false,
+
+            };
     }
 
     let start = std::time::Instant::now();
@@ -1730,7 +1803,14 @@ pub unsafe fn stuck_bit_test_512(ptr: *mut u8, size: usize, thread_id: usize, er
                             thread_id,
                             error_count: total_error_count + cycle_errors,
                             total_operations,
-                        };
+
+                            cycles_completed: 0,
+
+                            cycles_planned: None,
+
+                            stopped_by_time_limit: false,
+
+                            };
                     }
                     ErrorMode::Log => {
                         // Continue testing - errors already logged individually
@@ -1756,7 +1836,14 @@ pub unsafe fn stuck_bit_test_512(ptr: *mut u8, size: usize, thread_id: usize, er
                     thread_id,
                     error_count: total_error_count + cycle_errors,
                     total_operations,
-                };
+
+                    cycles_completed: 0,
+
+                    cycles_planned: None,
+
+                    stopped_by_time_limit: false,
+
+                    };
             }
         }
         
@@ -1790,7 +1877,14 @@ pub unsafe fn stuck_bit_test_512(ptr: *mut u8, size: usize, thread_id: usize, er
         thread_id,
         error_count: total_error_count,
         total_operations,
-    }
+
+        cycles_completed: 0,
+
+        cycles_planned: None,
+
+        stopped_by_time_limit: false,
+
+        }
 }
 
 /// Auto-dispatch wrapper that selects the best SIMD implementation based on CPU capabilities
@@ -1824,7 +1918,14 @@ pub unsafe fn refresh_stable_128(ptr: *mut u8, size: usize, thread_id: usize, er
             thread_id,
             error_count: 0,
             total_operations: 0,
-        };
+
+            cycles_completed: 0,
+
+            cycles_planned: None,
+
+            stopped_by_time_limit: false,
+
+            };
     }
 
     let start = Instant::now();
@@ -1922,7 +2023,14 @@ pub unsafe fn refresh_stable_128(ptr: *mut u8, size: usize, thread_id: usize, er
                             thread_id,
                             error_count: total_error_count,
                             total_operations: cycle as u64 * (chunk_end - chunk_start) as u64,
-                        };
+
+                            cycles_completed: 0,
+
+                            cycles_planned: None,
+
+                            stopped_by_time_limit: false,
+
+                            };
                     }
                     ErrorMode::Log => {
                         // Continue testing - errors already logged individually
@@ -1944,7 +2052,14 @@ pub unsafe fn refresh_stable_128(ptr: *mut u8, size: usize, thread_id: usize, er
                     thread_id,
                     error_count: total_error_count,
                     total_operations: cycle as u64 * (chunk_end - chunk_start) as u64,
-                };
+
+                    cycles_completed: 0,
+
+                    cycles_planned: None,
+
+                    stopped_by_time_limit: false,
+
+                    };
             }
         }
         
@@ -1970,7 +2085,14 @@ pub unsafe fn refresh_stable_128(ptr: *mut u8, size: usize, thread_id: usize, er
         thread_id,
         error_count: total_error_count,
         total_operations,
-    }
+
+        cycles_completed: 0,
+
+        cycles_planned: None,
+
+        stopped_by_time_limit: false,
+
+        }
 }
 
 /// # Safety
@@ -1987,7 +2109,14 @@ pub unsafe fn refresh_stable_256(ptr: *mut u8, size: usize, thread_id: usize, er
             thread_id,
             error_count: 0,
             total_operations: 0,
-        };
+
+            cycles_completed: 0,
+
+            cycles_planned: None,
+
+            stopped_by_time_limit: false,
+
+            };
     }
 
     let start = Instant::now();
@@ -2085,7 +2214,14 @@ pub unsafe fn refresh_stable_256(ptr: *mut u8, size: usize, thread_id: usize, er
                             thread_id,
                             error_count: total_error_count,
                             total_operations: cycle as u64 * (chunk_end - chunk_start) as u64,
-                        };
+
+                            cycles_completed: 0,
+
+                            cycles_planned: None,
+
+                            stopped_by_time_limit: false,
+
+                            };
                     }
                     ErrorMode::Log => {
                         // Continue testing - errors already logged individually
@@ -2107,7 +2243,14 @@ pub unsafe fn refresh_stable_256(ptr: *mut u8, size: usize, thread_id: usize, er
                     thread_id,
                     error_count: total_error_count,
                     total_operations: cycle as u64 * (chunk_end - chunk_start) as u64,
-                };
+
+                    cycles_completed: 0,
+
+                    cycles_planned: None,
+
+                    stopped_by_time_limit: false,
+
+                    };
             }
         }
         
@@ -2133,7 +2276,14 @@ pub unsafe fn refresh_stable_256(ptr: *mut u8, size: usize, thread_id: usize, er
         thread_id,
         error_count: total_error_count,
         total_operations,
-    }
+
+        cycles_completed: 0,
+
+        cycles_planned: None,
+
+        stopped_by_time_limit: false,
+
+        }
 }
 
 /// # Safety
@@ -2150,7 +2300,14 @@ pub unsafe fn refresh_stable_512(ptr: *mut u8, size: usize, thread_id: usize, er
             thread_id,
             error_count: 0,
             total_operations: 0,
-        };
+
+            cycles_completed: 0,
+
+            cycles_planned: None,
+
+            stopped_by_time_limit: false,
+
+            };
     }
 
     let start = Instant::now();
@@ -2248,7 +2405,14 @@ pub unsafe fn refresh_stable_512(ptr: *mut u8, size: usize, thread_id: usize, er
                             thread_id,
                             error_count: total_error_count,
                             total_operations: cycle as u64 * (chunk_end - chunk_start) as u64,
-                        };
+
+                            cycles_completed: 0,
+
+                            cycles_planned: None,
+
+                            stopped_by_time_limit: false,
+
+                            };
                     }
                     ErrorMode::Log => {
                         // Continue testing - errors already logged individually
@@ -2270,7 +2434,14 @@ pub unsafe fn refresh_stable_512(ptr: *mut u8, size: usize, thread_id: usize, er
                     thread_id,
                     error_count: total_error_count,
                     total_operations: cycle as u64 * (chunk_end - chunk_start) as u64,
-                };
+
+                    cycles_completed: 0,
+
+                    cycles_planned: None,
+
+                    stopped_by_time_limit: false,
+
+                    };
             }
         }
         
@@ -2296,7 +2467,14 @@ pub unsafe fn refresh_stable_512(ptr: *mut u8, size: usize, thread_id: usize, er
         thread_id,
         error_count: total_error_count,
         total_operations,
-    }
+
+        cycles_completed: 0,
+
+        cycles_planned: None,
+
+        stopped_by_time_limit: false,
+
+        }
 }
 
 /// Auto-dispatch wrapper that selects the best SIMD implementation based on CPU capabilities
@@ -2429,7 +2607,14 @@ pub unsafe fn mirror_move(
                             thread_id,
                             error_count: total_error_count,
                             total_operations: cycle as u64 * (chunk_end - chunk_start) as u64,
-                        };
+
+                            cycles_completed: 0,
+
+                            cycles_planned: None,
+
+                            stopped_by_time_limit: false,
+
+                            };
                     }
                     ErrorMode::Log => {
                         // Continue - errors already logged individually above
@@ -2450,7 +2635,14 @@ pub unsafe fn mirror_move(
                     thread_id,
                     error_count: total_error_count,
                     total_operations: cycle as u64 * (chunk_end - chunk_start) as u64,
-                };
+
+                    cycles_completed: 0,
+
+                    cycles_planned: None,
+
+                    stopped_by_time_limit: false,
+
+                    };
             }
         }
         
@@ -2484,7 +2676,14 @@ pub unsafe fn mirror_move(
         thread_id,
         error_count: total_error_count,
         total_operations,
-    }
+
+        cycles_completed: 0,
+
+        cycles_planned: None,
+
+        stopped_by_time_limit: false,
+
+        }
 }
 
 /// # Safety
@@ -2546,7 +2745,14 @@ pub unsafe fn mirror_move_128(
             thread_id,
             error_count: 0,
             total_operations: 0,
-        };
+
+            cycles_completed: 0,
+
+            cycles_planned: None,
+
+            stopped_by_time_limit: false,
+
+            };
     }
     
     let streams = config.streams.max(1) as usize;
@@ -2710,7 +2916,14 @@ unsafe fn mirror_move_128_single_stream(
                             thread_id,
                             error_count: total_error_count,
                             total_operations: cycle as u64 * (chunk_end - chunk_start) as u64,
-                        };
+
+                            cycles_completed: 0,
+
+                            cycles_planned: None,
+
+                            stopped_by_time_limit: false,
+
+                            };
                     }
                     ErrorMode::Log => {
                         // Continue - errors already logged above
@@ -2730,7 +2943,14 @@ unsafe fn mirror_move_128_single_stream(
                     thread_id,
                     error_count: total_error_count,
                     total_operations: cycle as u64 * (chunk_end - chunk_start) as u64,
-                };
+
+                    cycles_completed: 0,
+
+                    cycles_planned: None,
+
+                    stopped_by_time_limit: false,
+
+                    };
             }
         }
         
@@ -2754,7 +2974,14 @@ unsafe fn mirror_move_128_single_stream(
         thread_id,
         error_count: total_error_count,
         total_operations,
-    }
+
+        cycles_completed: 0,
+
+        cycles_planned: None,
+
+        stopped_by_time_limit: false,
+
+        }
 }
 
 /// Optimized multi-stream version - pre-computed stream boundaries
@@ -2942,7 +3169,14 @@ unsafe fn mirror_move_128_multi_stream(
                             thread_id,
                             error_count: total_error_count,
                             total_operations: cycle as u64 * (chunk_end - chunk_start) as u64,
-                        };
+
+                            cycles_completed: 0,
+
+                            cycles_planned: None,
+
+                            stopped_by_time_limit: false,
+
+                            };
                     }
                     ErrorMode::Log => {
                         // Continue - errors already logged above
@@ -2962,7 +3196,14 @@ unsafe fn mirror_move_128_multi_stream(
                     thread_id,
                     error_count: total_error_count,
                     total_operations: cycle as u64 * (chunk_end - chunk_start) as u64,
-                };
+
+                    cycles_completed: 0,
+
+                    cycles_planned: None,
+
+                    stopped_by_time_limit: false,
+
+                    };
             }
         }
         
@@ -2986,7 +3227,14 @@ unsafe fn mirror_move_128_multi_stream(
         thread_id,
         error_count: total_error_count,
         total_operations,
-    }
+
+        cycles_completed: 0,
+
+        cycles_planned: None,
+
+        stopped_by_time_limit: false,
+
+        }
 }
 
 /// # Safety
@@ -3010,7 +3258,14 @@ pub unsafe fn mirror_move_256(
             thread_id,
             error_count: 0,
             total_operations: 0,
-        };
+
+            cycles_completed: 0,
+
+            cycles_planned: None,
+
+            stopped_by_time_limit: false,
+
+            };
     }
     
     let streams = config.streams.max(1) as usize;
@@ -3196,7 +3451,14 @@ unsafe fn mirror_move_256_single_stream(
                             thread_id,
                             error_count: total_error_count,
                             total_operations: cycle as u64 * (chunk_end - chunk_start) as u64,
-                        };
+
+                            cycles_completed: 0,
+
+                            cycles_planned: None,
+
+                            stopped_by_time_limit: false,
+
+                            };
                     }
                     ErrorMode::Log => {
                         // Continue - errors already logged above
@@ -3216,7 +3478,14 @@ unsafe fn mirror_move_256_single_stream(
                     thread_id,
                     error_count: total_error_count,
                     total_operations: cycle as u64 * (chunk_end - chunk_start) as u64,
-                };
+
+                    cycles_completed: 0,
+
+                    cycles_planned: None,
+
+                    stopped_by_time_limit: false,
+
+                    };
             }
         }
         
@@ -3240,7 +3509,14 @@ unsafe fn mirror_move_256_single_stream(
         thread_id,
         error_count: total_error_count,
         total_operations,
-    }
+
+        cycles_completed: 0,
+
+        cycles_planned: None,
+
+        stopped_by_time_limit: false,
+
+        }
 }
 
 /// Optimized multi-stream version - pre-computed stream boundaries
@@ -3449,7 +3725,14 @@ unsafe fn mirror_move_256_multi_stream(
                             thread_id,
                             error_count: total_error_count,
                             total_operations: cycle as u64 * (chunk_end - chunk_start) as u64,
-                        };
+
+                            cycles_completed: 0,
+
+                            cycles_planned: None,
+
+                            stopped_by_time_limit: false,
+
+                            };
                     }
                     ErrorMode::Log => {
                         // Continue - errors already logged above
@@ -3469,7 +3752,14 @@ unsafe fn mirror_move_256_multi_stream(
                     thread_id,
                     error_count: total_error_count,
                     total_operations: cycle as u64 * (chunk_end - chunk_start) as u64,
-                };
+
+                    cycles_completed: 0,
+
+                    cycles_planned: None,
+
+                    stopped_by_time_limit: false,
+
+                    };
             }
         }
         
@@ -3493,7 +3783,14 @@ unsafe fn mirror_move_256_multi_stream(
         thread_id,
         error_count: total_error_count,
         total_operations,
-    }
+
+        cycles_completed: 0,
+
+        cycles_planned: None,
+
+        stopped_by_time_limit: false,
+
+        }
 }
 
 /// # Safety
@@ -3517,7 +3814,14 @@ pub unsafe fn mirror_move_512(
             thread_id,
             error_count: 0,
             total_operations: 0,
-        };
+
+            cycles_completed: 0,
+
+            cycles_planned: None,
+
+            stopped_by_time_limit: false,
+
+            };
     }
     
     let streams = config.streams.max(1) as usize;
@@ -3727,7 +4031,14 @@ unsafe fn mirror_move_512_single_stream(
                             thread_id,
                             error_count: total_error_count,
                             total_operations: cycle as u64 * (chunk_end - chunk_start) as u64,
-                        };
+
+                            cycles_completed: 0,
+
+                            cycles_planned: None,
+
+                            stopped_by_time_limit: false,
+
+                            };
                     }
                     ErrorMode::Log => {
                         // Continue - errors already logged above
@@ -3747,7 +4058,14 @@ unsafe fn mirror_move_512_single_stream(
                     thread_id,
                     error_count: total_error_count,
                     total_operations: cycle as u64 * (chunk_end - chunk_start) as u64,
-                };
+
+                    cycles_completed: 0,
+
+                    cycles_planned: None,
+
+                    stopped_by_time_limit: false,
+
+                    };
             }
         }
         
@@ -3771,7 +4089,14 @@ unsafe fn mirror_move_512_single_stream(
         thread_id,
         error_count: total_error_count,
         total_operations,
-    }
+
+        cycles_completed: 0,
+
+        cycles_planned: None,
+
+        stopped_by_time_limit: false,
+
+        }
 }
 
 /// Optimized multi-stream version - pre-computed stream boundaries
@@ -4004,7 +4329,14 @@ unsafe fn mirror_move_512_multi_stream(
                             thread_id,
                             error_count: total_error_count,
                             total_operations: cycle as u64 * (chunk_end - chunk_start) as u64,
-                        };
+
+                            cycles_completed: 0,
+
+                            cycles_planned: None,
+
+                            stopped_by_time_limit: false,
+
+                            };
                     }
                     ErrorMode::Log => {
                         // Continue - errors already logged above
@@ -4024,7 +4356,14 @@ unsafe fn mirror_move_512_multi_stream(
                     thread_id,
                     error_count: total_error_count,
                     total_operations: cycle as u64 * (chunk_end - chunk_start) as u64,
-                };
+
+                    cycles_completed: 0,
+
+                    cycles_planned: None,
+
+                    stopped_by_time_limit: false,
+
+                    };
             }
         }
         
@@ -4048,7 +4387,14 @@ unsafe fn mirror_move_512_multi_stream(
         thread_id,
         error_count: total_error_count,
         total_operations,
-    }
+
+        cycles_completed: 0,
+
+        cycles_planned: None,
+
+        stopped_by_time_limit: false,
+
+        }
 }
 
 /// # Safety
@@ -4150,7 +4496,14 @@ unsafe fn simple_test_stream1(
                     thread_id,
                     error_count: total_error_count,
                     total_operations: cycle as u64 * len as u64,
-                };
+
+                    cycles_completed: 0,
+
+                    cycles_planned: None,
+
+                    stopped_by_time_limit: false,
+
+                    };
             }
         }
         
@@ -4174,7 +4527,14 @@ unsafe fn simple_test_stream1(
         thread_id,
         error_count: total_error_count,
         total_operations,
-    }
+
+        cycles_completed: 0,
+
+        cycles_planned: None,
+
+        stopped_by_time_limit: false,
+
+        }
 }
 
 // Stream 2: Split halves with different patterns
@@ -4261,7 +4621,14 @@ unsafe fn simple_test_stream2(
                     thread_id,
                     error_count: total_error_count,
                     total_operations: cycle as u64 * len as u64,
-                };
+
+                    cycles_completed: 0,
+
+                    cycles_planned: None,
+
+                    stopped_by_time_limit: false,
+
+                    };
             }
         }
         
@@ -4285,7 +4652,14 @@ unsafe fn simple_test_stream2(
         thread_id,
         error_count: total_error_count,
         total_operations,
-    }
+
+        cycles_completed: 0,
+
+        cycles_planned: None,
+
+        stopped_by_time_limit: false,
+
+        }
 }
 
 // Stream 4: Quarters with rotated patterns
@@ -4395,7 +4769,14 @@ unsafe fn simple_test_stream4(
                     thread_id,
                     error_count: total_error_count,
                     total_operations: cycle as u64 * len as u64,
-                };
+
+                    cycles_completed: 0,
+
+                    cycles_planned: None,
+
+                    stopped_by_time_limit: false,
+
+                    };
             }
         }
         
@@ -4419,7 +4800,14 @@ unsafe fn simple_test_stream4(
         thread_id,
         error_count: total_error_count,
         total_operations,
-    }
+
+        cycles_completed: 0,
+
+        cycles_planned: None,
+
+        stopped_by_time_limit: false,
+
+        }
 }
 
 // Stream N: Generic multi-stream with contiguous blocks
@@ -4514,7 +4902,14 @@ unsafe fn simple_test_stream_n(
                     thread_id,
                     error_count: total_error_count,
                     total_operations: cycle as u64 * len as u64,
-                };
+
+                    cycles_completed: 0,
+
+                    cycles_planned: None,
+
+                    stopped_by_time_limit: false,
+
+                    };
             }
         }
         
@@ -4538,7 +4933,14 @@ unsafe fn simple_test_stream_n(
         thread_id,
         error_count: total_error_count,
         total_operations,
-    }
+
+        cycles_completed: 0,
+
+        cycles_planned: None,
+
+        stopped_by_time_limit: false,
+
+        }
 }
 
 
@@ -4617,7 +5019,14 @@ pub unsafe fn refresh_stable(ptr: *mut u8, size: usize, thread_id: usize, error_
                     thread_id,
                     error_count: total_error_count,
                     total_operations: cycle as u64 * (chunk_end - chunk_start) as u64,
-                };
+
+                    cycles_completed: 0,
+
+                    cycles_planned: None,
+
+                    stopped_by_time_limit: false,
+
+                    };
             }
         }
         
@@ -4643,7 +5052,14 @@ pub unsafe fn refresh_stable(ptr: *mut u8, size: usize, thread_id: usize, error_
         thread_id,
         error_count: total_error_count,
         total_operations,
-    }
+
+        cycles_completed: 0,
+
+        cycles_planned: None,
+
+        stopped_by_time_limit: false,
+
+        }
 }
 
 /// # Safety
@@ -4775,7 +5191,14 @@ pub unsafe fn cache_busting_write_test(ptr: *mut u8, size: usize, thread_id: usi
                     thread_id,
                     error_count: total_error_count,
                     total_operations: cycle as u64 * (chunk_end - chunk_start) as u64,
-                };
+
+                    cycles_completed: 0,
+
+                    cycles_planned: None,
+
+                    stopped_by_time_limit: false,
+
+                    };
             }
         }
         
@@ -4801,7 +5224,14 @@ pub unsafe fn cache_busting_write_test(ptr: *mut u8, size: usize, thread_id: usi
         thread_id,
         error_count: total_error_count,
         total_operations,
-    }
+
+        cycles_completed: 0,
+
+        cycles_planned: None,
+
+        stopped_by_time_limit: false,
+
+        }
 }
 
 /// # Safety
@@ -4908,7 +5338,14 @@ pub unsafe fn random_access_torture_test(ptr: *mut u8, size: usize, thread_id: u
                         thread_id,
                         error_count: total_error_count,
                         total_operations: cycle as u64 * (chunk_end - chunk_start) as u64,
-                    };
+
+                        cycles_completed: 0,
+
+                        cycles_planned: None,
+
+                        stopped_by_time_limit: false,
+
+                        };
                 }
             }
         }
@@ -4943,7 +5380,14 @@ pub unsafe fn random_access_torture_test(ptr: *mut u8, size: usize, thread_id: u
         thread_id,
         error_count: total_error_count,
         total_operations,
-    }
+
+        cycles_completed: 0,
+
+        cycles_planned: None,
+
+        stopped_by_time_limit: false,
+
+        }
 }
 
 /// # Safety
@@ -5059,7 +5503,14 @@ pub unsafe fn stride_access_test(ptr: *mut u8, size: usize, thread_id: usize, er
                         thread_id,
                         error_count: total_error_count,
                         total_operations: cycle as u64 * (chunk_end - chunk_start) as u64,
-                    };
+
+                        cycles_completed: 0,
+
+                        cycles_planned: None,
+
+                        stopped_by_time_limit: false,
+
+                        };
                 }
             }
         }
@@ -5105,7 +5556,14 @@ pub unsafe fn stride_access_test(ptr: *mut u8, size: usize, thread_id: usize, er
         thread_id,
         error_count: total_error_count,
         total_operations,
-    }
+
+        cycles_completed: 0,
+
+        cycles_planned: None,
+
+        stopped_by_time_limit: false,
+
+        }
 }
 
 #[allow(clippy::needless_range_loop)]
@@ -5221,7 +5679,14 @@ pub unsafe fn bandwidth_saturation_test(ptr: *mut u8, size: usize, thread_id: us
                     thread_id,
                     error_count: 0,
                     total_operations: cycle as u64 * (chunk_end - chunk_start) as u64,
-                };
+
+                    cycles_completed: 0,
+
+                    cycles_planned: None,
+
+                    stopped_by_time_limit: false,
+
+                    };
             }
         }
         
@@ -5246,7 +5711,14 @@ pub unsafe fn bandwidth_saturation_test(ptr: *mut u8, size: usize, thread_id: us
         thread_id,
         error_count: 0, // This test doesn't verify individual values
         total_operations,
-    }
+
+        cycles_completed: 0,
+
+        cycles_planned: None,
+
+        stopped_by_time_limit: false,
+
+        }
 }
 
 /// # Safety
@@ -5422,7 +5894,14 @@ pub unsafe fn block_move_test(ptr: *mut u8, size: usize, thread_id: usize, error
                     thread_id,
                     error_count: total_error_count,
                     total_operations,
-                };
+
+                    cycles_completed: 0,
+
+                    cycles_planned: None,
+
+                    stopped_by_time_limit: false,
+
+                    };
             }
         }
         
@@ -5450,5 +5929,93 @@ pub unsafe fn block_move_test(ptr: *mut u8, size: usize, thread_id: usize, error
         thread_id,
         error_count: total_error_count,
         total_operations,
+
+        cycles_completed: 0,
+
+        cycles_planned: None,
+
+        stopped_by_time_limit: false,
+
+        }
+}
+
+// ============================================================================
+// Test Registry - Maps config test names to actual function implementations
+// ============================================================================
+
+/// Map test name (from config or CLI) to its function implementation
+/// This is the single source of truth for test name → function mapping
+pub fn get_test_function_by_name(name: &str) -> Option<crate::runner::TestFunction> {
+    use crate::runner::TestFunction;
+
+    match name {
+        // Stuck Bit Tests
+        "StuckBitTest" => Some(TestFunction::WithConfig(|ptr, size, tid, em, timing, config| unsafe {
+            stuck_bit_test(ptr, size, tid, em, timing, config)
+        })),
+        "StuckBitTest128" => Some(TestFunction::WithConfig(|ptr, size, tid, em, timing, config| unsafe {
+            stuck_bit_test_128(ptr, size, tid, em, timing, config)
+        })),
+        "StuckBitTest256" => Some(TestFunction::WithConfig(|ptr, size, tid, em, timing, config| unsafe {
+            stuck_bit_test_256(ptr, size, tid, em, timing, config)
+        })),
+        "StuckBitTest512" => Some(TestFunction::WithConfig(|ptr, size, tid, em, timing, config| unsafe {
+            stuck_bit_test_512(ptr, size, tid, em, timing, config)
+        })),
+
+        // Mirror Move Tests
+        "MirrorMove" => Some(TestFunction::WithConfig(|ptr, size, tid, em, timing, config| unsafe {
+            mirror_move(ptr, size, tid, em, timing, config)
+        })),
+        "MirrorMoveAuto" => Some(TestFunction::WithConfig(|ptr, size, tid, em, timing, config| unsafe {
+            mirror_move_auto(ptr, size, tid, em, timing, config)
+        })),
+        "MirrorMove128" => Some(TestFunction::WithConfig(|ptr, size, tid, em, timing, config| unsafe {
+            mirror_move_128(ptr, size, tid, em, timing, config)
+        })),
+        "MirrorMove256" => Some(TestFunction::WithConfig(|ptr, size, tid, em, timing, config| unsafe {
+            mirror_move_256(ptr, size, tid, em, timing, config)
+        })),
+        "MirrorMove512" => Some(TestFunction::WithConfig(|ptr, size, tid, em, timing, config| unsafe {
+            mirror_move_512(ptr, size, tid, em, timing, config)
+        })),
+
+        // Simple Test
+        "SimpleTest" => Some(TestFunction::WithConfig(|ptr, size, tid, em, timing, config| unsafe {
+            simple_test(ptr, size, tid, em, timing, config)
+        })),
+
+        // Refresh Stability Tests
+        "RefreshStable" => Some(TestFunction::WithConfig(|ptr, size, tid, em, timing, config| unsafe {
+            refresh_stable(ptr, size, tid, em, timing, config)
+        })),
+        "RefreshStable128" => Some(TestFunction::WithConfig(|ptr, size, tid, em, timing, config| unsafe {
+            refresh_stable_128(ptr, size, tid, em, timing, config)
+        })),
+        "RefreshStable256" => Some(TestFunction::WithConfig(|ptr, size, tid, em, timing, config| unsafe {
+            refresh_stable_256(ptr, size, tid, em, timing, config)
+        })),
+        "RefreshStable512" => Some(TestFunction::WithConfig(|ptr, size, tid, em, timing, config| unsafe {
+            refresh_stable_512(ptr, size, tid, em, timing, config)
+        })),
+
+        // Performance & Stress Tests
+        "CacheBusting" => Some(TestFunction::WithConfig(|ptr, size, tid, em, timing, config| unsafe {
+            cache_busting_write_test(ptr, size, tid, em, timing, config)
+        })),
+        "RandomTorture" => Some(TestFunction::WithConfig(|ptr, size, tid, em, timing, config| unsafe {
+            random_access_torture_test(ptr, size, tid, em, timing, config)
+        })),
+        "StrideAccess" => Some(TestFunction::WithConfig(|ptr, size, tid, em, timing, config| unsafe {
+            stride_access_test(ptr, size, tid, em, timing, config)
+        })),
+        "BandwidthSat" => Some(TestFunction::WithConfig(|ptr, size, tid, em, timing, config| unsafe {
+            bandwidth_saturation_test(ptr, size, tid, em, timing, config)
+        })),
+        "BlockMove" => Some(TestFunction::WithConfig(|ptr, size, tid, em, timing, config| unsafe {
+            block_move_test(ptr, size, tid, em, timing, config)
+        })),
+
+        _ => None,
     }
 }

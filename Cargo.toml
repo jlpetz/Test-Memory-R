@@ -6,6 +6,7 @@ description = "Test Memory R - High-Performance DDR5 Memory Testing Tool"
 authors = ["Your Name <your.email@example.com>"]
 
 [dependencies]
+### windows = { version = "0.62", features = [
 windows = { version = "0.61", features = [
     "Win32_System_Memory",
 	"Win32_System_Kernel",
@@ -28,8 +29,8 @@ encoding_rs = "0.8" # Needed for windows CLI interaction.
 serde = { version = "1.0", features = ["derive"] }
 serde_json = "1.0"
 chrono = { version = "0.4", features = ["serde"] }  # For timestamp handling
-ctrlc = "3.4"         # For CTRL+C signal handling
-raw-cpuid = "11.5"
+ctrlc = "3.5"         # For CTRL+C signal handling
+raw-cpuid = "11.6"
 
 # --------------------------------------------
 # BUILD PROFILES

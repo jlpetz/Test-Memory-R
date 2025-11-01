@@ -42,6 +42,9 @@ pub struct WorkResult {
     pub elapsed_ms: u128,
     pub total_errors: u64,
     pub total_operations: u64,  // Add operations tracking from runner.rs
+    pub cycles_completed: u32,  // Cycles completed (from last block processed)
+    pub cycle_limit: Option<u32>,  // Planned cycles (None = unlimited)
+    pub stopped_by_time_limit: bool,  // True if stopped due to time limit
 }
 
 // Thread pool worker context
@@ -295,7 +298,10 @@ fn worker_thread_loop(context: &mut WorkerContext) {
                 let mut total_bytes = 0u64;
                 let mut total_errors = 0u64;
                 let mut total_operations = 0u64;
-                
+                let mut cycles_completed = 0u32;
+                let mut cycle_limit: Option<u32> = None;
+                let mut stopped_by_time_limit = false;
+
                 // Calculate which blocks to test based on window size
                 let blocks_to_test = calculate_blocks_for_window(&context.allocated_blocks, &test_config, &test_name);
                 
@@ -311,7 +317,6 @@ fn worker_thread_loop(context: &mut WorkerContext) {
                     }
                     
                     match crate::runner::run_test_with_memory_stages(
-                        &test_name,
                         &test_func,
                         allocated_block,
                         &test_config,
@@ -322,7 +327,12 @@ fn worker_thread_loop(context: &mut WorkerContext) {
                             total_bytes += stats.bytes_processed as u64;
                             total_errors += stats.error_count;
                             total_operations += stats.total_operations;
-                            
+
+                            // Track cycle info from last block (all blocks should have similar cycle counts)
+                            cycles_completed = stats.cycles_completed;
+                            cycle_limit = stats.cycles_planned;
+                            stopped_by_time_limit = stats.stopped_by_time_limit;
+
                             if stats.error_count > 0 {
                                 if let Err(e) = handle_test_errors(&stats, error_mode, &test_name) {
                                     log::error!("[Thread {} on CPU {}] {}", context.thread_id, context.cpu_id, e);
@@ -342,13 +352,16 @@ fn worker_thread_loop(context: &mut WorkerContext) {
                 }
                 
                 let elapsed_ms = thread_start.elapsed().as_millis();
-                
+
                 let result = WorkResult {
                     thread_id: context.thread_id,
                     total_bytes,
                     elapsed_ms,
                     total_errors,
                     total_operations,
+                    cycles_completed,
+                    cycle_limit,
+                    stopped_by_time_limit,
                 };
                 
                 if context.result_sender.send(result).is_err() {

@@ -1,5 +1,5 @@
 use crate::{ErrorMode, EnhancedMemoryLayout, ProgressTracker, BlockInfo};
-use crate::constants::{HUGE_PAGE_SIZE, LARGE_PAGE_SIZE, REGULAR_PAGE_SIZE, BYTES_PER_GIB_F64};
+use crate::constants::{HUGE_PAGE_SIZE, LARGE_PAGE_SIZE, REGULAR_PAGE_SIZE};
 use crate::tests::{WindowMode, ChunkMode};
 use crate::MemoryAllocationConfig;
 use crate::tests::{TestStats, TestMemoryConfig, TestTiming};
@@ -12,10 +12,8 @@ use crate::tests::{
 };
 use crate::progress::progress_reporter;
 use crate::results::TestRunResult;
-use crate::memory::{MemoryBuffer, MemoryAllocator, AllocationConfig, PageSizePreference, BackendType};
+use crate::memory::{MemoryBuffer, MemoryAllocator, BackendType};
 use crate::memory::allocation_strategy::SystemMemoryInfo;
-use crate::driver::MemoryType;
-use crate::memory::buffer::MemoryType as BufferMemoryType;
 use crate::config::CpuPinningConfig;
 use crate::{MemoryBackend, RuntimeConfig};
 use std::collections::HashMap;
@@ -23,13 +21,11 @@ use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, Mutex};
 use std::thread;
 use std::time::Instant;
-use crate::cpu_topology::get_numa_node_for_cpu;
 
 use std::sync::mpsc::Receiver;
 
 // Use the proper ThreadPool from thread_pool.rs
 use crate::thread_pool::{ThreadPool, WorkResult};
-use crate::table::{TableBuilder, Alignment};
 
 // Global flags for shutdown handling
 pub static SHUTDOWN_REQUESTED: AtomicBool = AtomicBool::new(false);
@@ -38,10 +34,8 @@ pub static SHUTDOWN_REQUESTED: AtomicBool = AtomicBool::new(false);
 // Represents: Physical memory allocated from the OS for testing
 #[derive(Debug)]
 pub struct AllocationBlock {
-    pub buffer: MemoryBuffer,
-    pub block_info: BlockInfo,
-    pub memory_type: MemoryType,
-    pub numa_node: u32,
+    pub buffer: MemoryBuffer,  // Contains BufferInfo with numa_node, page_type, etc.
+    pub block_info: BlockInfo, // Thread assignment and size planning
 }
 
 // Test definition with display name support
@@ -55,9 +49,6 @@ pub struct TestDefinition {
 
 // Work item for thread pool
 
-
-type TestStatsTuple = (usize, usize, u64, u128, u64, u64);	 // thread_id, cpu_id, bytes, elapsed, errors, operations
-
 // Test Suite Timing Configuration
 #[derive(Debug, Clone)]
 pub struct TestSuiteTiming {
@@ -69,7 +60,7 @@ pub struct TestSuiteTiming {
 impl Default for TestSuiteTiming {
     fn default() -> Self {
         Self {
-            global_cycles: Some(1),
+            global_cycles: Some(3),  // Default 3 cycles to match help text
             global_duration_secs: None,
             per_test_cycle_multiplier: 1.0,
         }
@@ -114,14 +105,15 @@ pub enum TestFunction {
 pub fn run_tests_with_layout(layout: EnhancedMemoryLayout, error_mode: ErrorMode) -> bool {
     let alloc_config = MemoryAllocationConfig::default();
     let runtime_config = detect_runtime_capabilities(&alloc_config);
-    run_tests_with_layout_and_timing(layout, error_mode, TestSuiteTiming::default(), runtime_config)
+    run_tests_with_layout_and_timing(layout, error_mode, TestSuiteTiming::default(), runtime_config, None)
 }
 
 pub fn run_tests_with_layout_and_timing(
-    layout: EnhancedMemoryLayout, 
-    error_mode: ErrorMode, 
-    suite_timing: TestSuiteTiming, 
-    runtime_config: RuntimeConfig
+    layout: EnhancedMemoryLayout,
+    error_mode: ErrorMode,
+    suite_timing: TestSuiteTiming,
+    runtime_config: RuntimeConfig,
+    config: Option<&crate::config::ModernConfig>,
 ) -> bool {
     setup_signal_handler();
     
@@ -140,6 +132,32 @@ pub fn run_tests_with_layout_and_timing(
     progress.set_phase("Stage 1: Allocating Memory");
     println!("Stage 1: Pre-allocating memory blocks...");
 
+    // Display page size constraints before allocation begins
+    {
+        let min = &runtime_config.memory_allocation.min_page_size;
+        let max = &runtime_config.memory_allocation.max_page_size;
+
+        let format_size = |s: &str| -> &'static str {
+            match s {
+                "regular" => "Regular (4KB)",
+                "large" => "Large (2MB)",
+                "huge" => "Huge (1GB)",
+                _ => "Unknown",
+            }
+        };
+
+        if min == max {
+            // Restrictive: only one page size allowed
+            println!("⚠️  Page Size Restricted: {} only - may limit available memory", format_size(min));
+        } else if min == "large" && max == "huge" {
+            // Default constraints
+            println!("⚙️  Page Size Constraints: {} to {} (default)", format_size(min), format_size(max));
+        } else {
+            // Custom constraints
+            println!("⚙️  Page Size Constraints: {} to {}", format_size(min), format_size(max));
+        }
+    }
+
     let allocated_blocks = match allocate_all_blocks_new(&thread_blocks, &runtime_config) {
         Ok(blocks) => blocks,
         Err(e) => {
@@ -147,11 +165,6 @@ pub fn run_tests_with_layout_and_timing(
             return false;
         }
     };
-
-    print_allocation_summary(&allocated_blocks);
-    
-    // Add requested vs allocated reporting
-    print_allocation_details(&allocated_blocks, &thread_blocks, &runtime_config);
 
     // Display enhanced block allocation report using new reporting system
     {
@@ -217,13 +230,37 @@ pub fn run_tests_with_layout_and_timing(
     }
 
     // Calculate progress tracking information and resolve auto-dispatch tests
-    let test_definitions = create_test_definitions();
+    // Use config-driven tests if config is provided, otherwise use hard-coded defaults
+    let test_definitions = if let Some(cfg) = config {
+        match create_test_definitions_from_config(cfg) {
+            Ok(tests) => {
+                log::info!("Using config-driven test sequence with {} tests", tests.len());
+                tests
+            }
+            Err(e) => {
+                println!("❌ Failed to load tests from config: {}", e);
+                println!("   Falling back to default test suite");
+                log::error!("Config test loading failed: {}", e);
+                create_test_definitions()
+            }
+        }
+    } else {
+        log::info!("Using default hard-coded test suite");
+        create_test_definitions()
+    };
     let tests_per_cycle = test_definitions.len() as u64;
     
     progress.set_cycle_info(1, suite_timing.global_cycles, tests_per_cycle);
 
     // Print test configuration summary with resolved auto-dispatch names
-    print_test_configuration(&test_definitions, &suite_timing);
+    {
+        use crate::reporting::{create_console_reporter, converters};
+        let report = converters::create_test_configuration_report_v2(&test_definitions, &suite_timing);
+        let mut reporter = create_console_reporter();
+        if let Err(e) = reporter.report_test_configuration(&report) {
+            log::error!("Failed to display test configuration report: {}", e);
+        }
+    }
 
     // Start progress reporter thread
     let progress_clone = Arc::clone(&progress);
@@ -321,6 +358,13 @@ fn execute_test_cycle(
     all_test_cpu_stats: &Arc<Mutex<HashMap<String, Vec<(usize, usize, u64, u128, u64, u64)>>>>,
     cycle: u64,
 ) {
+    use crate::progress::TestSummary;
+    use crate::constants::MB_F64;
+
+    // Track cycle timing and collect test summaries for this cycle
+    let cycle_start = Instant::now();
+    let mut cycle_test_summaries = Vec::new();
+
     let success = Arc::new(AtomicBool::new(true));
     for (test_idx, test_def) in test_definitions.iter().enumerate() {
         let test_name = test_def.actual_name; // Use actual name for function calls and stats
@@ -342,6 +386,9 @@ fn execute_test_cycle(
 		let mut total_bytes_for_test = 0u64;
 		let mut total_errors_for_test = 0u64;
 		let mut total_operations_for_test = 0u64;
+		let mut cycles_completed = 0u32;
+		let mut cycle_limit: Option<u32> = None;
+		let mut stopped_by_time_limit = false;
 
 		for _ in 0..thread_count {
 			match result_receiver.recv() {
@@ -349,16 +396,23 @@ fn execute_test_cycle(
 					// Look up CPU assignment for this thread
 					if let Some(&(_, cpu_id, _)) = thread_pool.get_cpu_assignments()
 						.iter()
-						.find(|(tid, _, _)| *tid == result.thread_id) 
+						.find(|(tid, _, _)| *tid == result.thread_id)
 					{
 						// Store simplified stats: (thread_id, cpu_id, bytes, elapsed, errors, operations)
-						test_stats.push((result.thread_id, cpu_id, 
+						test_stats.push((result.thread_id, cpu_id,
 									   result.total_bytes, result.elapsed_ms, result.total_errors, result.total_operations));
 					}
-					
+
 					total_bytes_for_test += result.total_bytes;
 					total_errors_for_test += result.total_errors;
 					total_operations_for_test += result.total_operations;
+
+					// Track cycle info from first thread (all should be similar)
+					if cycles_completed == 0 {
+						cycles_completed = result.cycles_completed;
+						cycle_limit = result.cycle_limit;
+						stopped_by_time_limit = result.stopped_by_time_limit;
+					}
 					
 					if result.total_errors > 0 {
 						success.store(false, Ordering::Relaxed);
@@ -374,10 +428,37 @@ fn execute_test_cycle(
 		}
 
         let test_duration = test_start.elapsed();
-        
-        log::info!("Test {} completed: {} bytes, {} errors, {} operations in {:?}", 
-                  test_name, total_bytes_for_test, total_errors_for_test, 
-                  total_operations_for_test, test_duration);
+        let test_duration_secs = test_duration.as_secs_f64();
+        let throughput_mib_s = if test_duration_secs > 0.0 {
+            (total_bytes_for_test as f64 / MB_F64) / test_duration_secs
+        } else {
+            0.0
+        };
+
+        // Format cycle info for logging
+        let cycles_info = if cycles_completed > 0 || cycle_limit.is_some() {
+            let limit_str = cycle_limit.map_or("∞".to_string(), |l| l.to_string());
+
+            // Cycle limit indicator: RED if cycle limit caused stop, GREEN if didn't reach it
+            let stop_indicator_cycles = if let Some(limit) = cycle_limit {
+                if cycles_completed >= limit { "🔴" } else { "🟢" }  // RED when hit, GREEN when not
+            } else {
+                "🟢"  // No limit = always green (can't hit what doesn't exist)
+            };
+
+            // Time limit indicator: red if time limit stopped us, green otherwise
+            let stop_indicator_time = if stopped_by_time_limit { "🔴" } else { "🟢" };
+
+            format!("(Cycles {} {}/{}, Time Limit {})",
+                    stop_indicator_cycles, cycles_completed, limit_str, stop_indicator_time)
+        } else {
+            String::new()
+        };
+
+        // Log in human-readable format
+        log::info!("Test {} completed: {} bytes, {} errors, {} operations in {:?} {}",
+                  test_name, total_bytes_for_test, total_errors_for_test,
+                  total_operations_for_test, test_duration, cycles_info);
 
         // Update progress tracker with test completion
         use crate::tests::{TestStats, TestAction};
@@ -389,17 +470,36 @@ fn execute_test_cycle(
             thread_id: 0, // Not used by progress tracker
             error_count: total_errors_for_test,
             total_operations: total_operations_for_test,
+            cycles_completed: 0,  // Aggregated from threads
+            cycles_planned: None,
+            stopped_by_time_limit: false,
         };
         progress.complete_test(&test_summary);
 
         // Generate thread timing deviation report
-        print_thread_timing_deviation(test_name, &test_stats);
+        {
+            use crate::reporting::{create_console_reporter, converters};
+            let report = converters::create_thread_timing_report(test_name, &test_stats);
+            let mut reporter = create_console_reporter();
+            if let Err(e) = reporter.report_thread_timing(&report) {
+                log::error!("Failed to display thread timing report: {}", e);
+            }
+        }
 
-		// Store aggregated stats for this test  
+		// Store aggregated stats for this test
 		{
 			let mut stats_map = all_test_cpu_stats.lock().unwrap();
 			stats_map.entry(test_name.to_string()).or_insert_with(Vec::new).extend(test_stats);
 		}
+
+        // Create TestSummary for this test and add to cycle collection
+        cycle_test_summaries.push(TestSummary {
+            name: test_name.to_string(),
+            duration_ms: test_duration.as_millis(),
+            bytes_processed: total_bytes_for_test,
+            throughput_mib_s,
+            errors: total_errors_for_test,
+        });
 
         // Early exit on errors if required
         if !success.load(Ordering::Relaxed) && matches!(error_mode, ErrorMode::Halt) {
@@ -407,6 +507,14 @@ fn execute_test_cycle(
             SHUTDOWN_REQUESTED.store(true, Ordering::Relaxed);
             return;
         }
+    }
+
+    // Cycle complete - add results to TestRunResult
+    let cycle_duration_secs = cycle_start.elapsed().as_secs() as u32;
+    if let Ok(mut result) = test_run_result.lock() {
+        result.add_cycle(cycle as u32, cycle_duration_secs, cycle_test_summaries);
+    } else {
+        log::error!("Failed to lock test_run_result to add cycle {}", cycle);
     }
 }
 
@@ -735,92 +843,58 @@ fn create_test_definitions() -> Vec<TestDefinition> {
     resolved_tests
 }
 
-fn print_thread_timing_deviation(test_name: &str, stats: &[(usize, usize, u64, u128, u64, u64)]) {
-    use crate::table::{TableBuilder, Alignment};
-    use crate::cpu_topology::get_numa_node_for_cpu;
-    
-    if stats.is_empty() {
-        return;
+/// Create test definitions from config file (config-driven test execution)
+fn create_test_definitions_from_config(config: &crate::config::ModernConfig) -> Result<Vec<TestDefinition>, String> {
+    let mut resolved_tests = Vec::new();
+
+    // Helper to validate and adjust streams
+    let validate_streams = |mut test_config: TestMemoryConfig, test_name: &str| -> TestMemoryConfig {
+        if !test_config.streams.is_power_of_two() {
+            let original = test_config.streams;
+            test_config.streams = test_config.streams.next_power_of_two();
+            println!("⚠️  {}: Adjusting stream count {} → {} (power-of-2 required)",
+                     test_name, original, test_config.streams);
+        }
+        test_config
+    };
+
+    // Get enabled tests from config
+    let test_configs = config.get_test_configs();
+
+    for (test_name, mut test_config) in test_configs {
+        // Validate streams
+        test_config = validate_streams(test_config, test_name);
+
+        // Look up function by name using the test registry
+        let test_function = crate::tests::get_test_function_by_name(test_name)
+            .ok_or_else(|| format!("Unknown test function '{}' in config", test_name))?;
+
+        // Check for auto-dispatch
+        if let Some((resolved_name, resolved_function)) = resolve_auto_dispatch_test(test_name) {
+            log::info!("Auto-dispatch: {} → {} (based on CPU capabilities)", test_name, resolved_name);
+            resolved_tests.push(TestDefinition {
+                actual_name: resolved_name,
+                display_name: format!("{}_A", resolved_name),
+                function: resolved_function,
+                config: test_config,
+            });
+        } else {
+            // Convert to 'static str by leaking (safe for test names, small and finite set)
+            let static_name: &'static str = Box::leak(test_name.to_string().into_boxed_str());
+            resolved_tests.push(TestDefinition {
+                actual_name: static_name,
+                display_name: test_name.to_string(),
+                function: test_function,
+                config: test_config,
+            });
+        }
     }
-    
-    // Calculate average elapsed time
-    let total_elapsed: u128 = stats.iter().map(|(_, _, _, elapsed, _, _)| *elapsed).sum();
-    let avg_elapsed = total_elapsed / stats.len() as u128;
-    
-    // Calculate deviations and collect timing data
-    let mut deviations = Vec::new();
-    for &(thread_id, cpu_id, bytes, elapsed, errors, _operations) in stats.iter() {
-        let deviation = elapsed as i128 - avg_elapsed as i128;
-        deviations.push((thread_id, cpu_id, bytes, elapsed, errors, deviation));
+
+    if resolved_tests.is_empty() {
+        return Err("No enabled tests found in configuration".to_string());
     }
-    
-    // Print timing deviation report
-    println!("📊 Thread timing deviation for {} - Avg: {:.1}s", 
-             test_name, avg_elapsed as f64 / 1000.0);
-    
-    let mut table = TableBuilder::new()
-        .add_header("Thread", Alignment::Right)
-        .add_header("Logical CPU", Alignment::Right)
-        .add_header("Physical Core", Alignment::Right)
-        .add_header("NUMA Node", Alignment::Center)
-        .add_header("Runtime", Alignment::Right)
-        .add_header("Deviation", Alignment::Right)
-        .add_header("Data", Alignment::Right)
-        .add_header("Throughput", Alignment::Right)
-        .add_header("Errors", Alignment::Right);
-    
-    // Sort by deviation descending (highest deviation first)
-    deviations.sort_by(|a, b| b.5.cmp(&a.5));
-    
-    for (thread_id, cpu_id, bytes, elapsed, errors, deviation) in deviations {
-        // Get physical core and NUMA node info
-        let physical_core = cpu_id / 2; // Simple approximation - may need better mapping
-        let numa_node = get_numa_node_for_cpu(cpu_id);
-        
-        // Calculate throughput
-        let throughput_mib_s = if elapsed > 0 {
-            (bytes as f64 / (1024.0 * 1024.0)) / (elapsed as f64 / 1000.0)
-        } else {
-            0.0
-        };
-        
-        // Format runtime and deviation
-        let runtime_str = format!("{:.1}s", elapsed as f64 / 1000.0);
-        let deviation_str = if deviation >= 0 {
-            format!("+{:.1}s", deviation as f64 / 1000.0)
-        } else {
-            format!("{:.1}s", deviation as f64 / 1000.0)
-        };
-        
-        // Format data size
-        let data_str = if bytes >= 1024 * 1024 * 1024 {
-            format!("{:.2} GiB", bytes as f64 / (1024.0 * 1024.0 * 1024.0))
-        } else {
-            format!("{:.0} MiB", bytes as f64 / (1024.0 * 1024.0))
-        };
-        
-        // Format errors
-        let errors_str = if errors > 0 {
-            errors.to_string()
-        } else {
-            "✅".to_string()
-        };
-        
-        table = table.add_row(vec![
-            thread_id.to_string(),
-            cpu_id.to_string(),
-            physical_core.to_string(),
-            numa_node.to_string(),
-            runtime_str,
-            deviation_str,
-            data_str,
-            format!("{:.1} MiB/s", throughput_mib_s),
-            errors_str,
-        ]);
-    }
-    
-    table.print();
-    println!();
+
+    Ok(resolved_tests)
 }
 
 // Re-export RuntimeConfig from lib.rs instead of redefining
@@ -962,7 +1036,6 @@ impl PerformanceConfig {
 
 // Main test execution function that thread_pool calls
 pub fn run_test_with_memory_stages(
-    test_name: &str,
     test_func: &TestFunction,
     allocated_block: &AllocationBlock,
     test_config: &TestMemoryConfig,
@@ -998,14 +1071,13 @@ fn setup_signal_handler() {
 }
 
 fn allocate_all_blocks_new(thread_blocks: &HashMap<usize, Vec<BlockInfo>>, runtime_config: &RuntimeConfig) -> Result<HashMap<usize, Vec<AllocationBlock>>, String> {
-    use crate::memory::MemoryAllocator;
     use crate::memory::allocator::AllocationStrategy;
-    
+
     // Determine backend type based on runtime config
     let backend_type = match runtime_config.memory_backend {
-        MemoryBackend::KernelDriver => crate::memory::BackendType::Driver,
-        MemoryBackend::NativeLargePages => crate::memory::BackendType::Windows { large_pages: true },
-        MemoryBackend::NativeRegular => crate::memory::BackendType::Windows { large_pages: false },
+        MemoryBackend::KernelDriver => BackendType::Driver,
+        MemoryBackend::NativeLargePages => BackendType::Windows { large_pages: true },
+        MemoryBackend::NativeRegular => BackendType::Windows { large_pages: false },
     };
     
     // Create memory allocator
@@ -1024,169 +1096,6 @@ fn allocate_all_blocks_new(thread_blocks: &HashMap<usize, Vec<BlockInfo>>, runti
     allocator.chunk_allocate_planned(thread_blocks, runtime_config, strategy)
 }
 
-fn print_allocation_summary(allocated_blocks: &HashMap<usize, Vec<AllocationBlock>>) {
-    
-    let mut total_allocated = 0usize;
-    let mut huge_page_count = 0;
-    let mut large_page_count = 0;
-    
-    for blocks in allocated_blocks.values() {
-        for block in blocks {
-            total_allocated += block.buffer.size();
-            if block.buffer.uses_huge_pages() {
-                huge_page_count += 1;
-            } else if block.buffer.uses_large_pages() {
-                large_page_count += 1;
-            }
-        }
-    }
-    
-    println!("Stage 1 Memory Allocation Summary:");
-    println!("  {} × {:.2} GiB per thread = {:.2} GiB total",
-             allocated_blocks.len(),
-             total_allocated as f64 / allocated_blocks.len() as f64 / BYTES_PER_GIB_F64,
-             total_allocated as f64 / BYTES_PER_GIB_F64);
-    
-    if huge_page_count > 0 || large_page_count > 0 {
-        println!("  ✅ {} blocks with 1GB huge pages, {} blocks with 2MB+ large pages", 
-                 huge_page_count, large_page_count);
-    }
-}
-
-fn print_allocation_details(allocated_blocks: &HashMap<usize, Vec<AllocationBlock>>, _thread_blocks: &HashMap<usize, Vec<BlockInfo>>, _runtime_config: &RuntimeConfig) {
-    use crate::reporting::models::{TableData, TableHeader};
-    use crate::reporting::create_console_reporter;
-    
-    // Calculate totals by page type
-    let mut total_huge = 0usize;
-    let mut total_large = 0usize;
-    let mut total_regular = 0usize;
-    
-    for blocks in allocated_blocks.values() {
-        for block in blocks {
-            let size = block.buffer.size();
-            if block.buffer.uses_huge_pages() {
-                total_huge += size;
-            } else if block.buffer.uses_large_pages() {
-                total_large += size;
-            } else {
-                total_regular += size;
-            }
-        }
-    }
-    
-    // Build table using TableData
-    let mut rows = Vec::new();
-    
-    if total_huge > 0 {
-        rows.push(vec![
-            "Huge (1GB)".to_string(),
-            "✅ Allowed".to_string(),
-            "N/A".to_string(),
-            format!("{:.2} GiB", total_huge as f64 / BYTES_PER_GIB_F64),
-            format!("✅ {:.2} GiB", total_huge as f64 / BYTES_PER_GIB_F64)
-        ]);
-    }
-    if total_large > 0 {
-        rows.push(vec![
-            "Large (2MB)".to_string(),
-            "✅ Allowed".to_string(),
-            "N/A".to_string(),
-            format!("{:.2} GiB", total_large as f64 / BYTES_PER_GIB_F64),
-            format!("✅ {:.2} GiB", total_large as f64 / BYTES_PER_GIB_F64)
-        ]);
-    }
-    if total_regular > 0 {
-        rows.push(vec![
-            "Regular (4KB)".to_string(),
-            "✅ Allowed".to_string(),
-            "N/A".to_string(),
-            format!("{:.2} GiB", total_regular as f64 / BYTES_PER_GIB_F64),
-            format!("✅ {:.2} GiB", total_regular as f64 / BYTES_PER_GIB_F64)
-        ]);
-    }
-    
-    let mut table = TableBuilder::new()
-        .add_header("Page Type", Alignment::Left)
-        .add_header("User Constraints", Alignment::Center)
-        .add_header("Requested", Alignment::Right)
-        .add_header("Allocated", Alignment::Right)
-        .add_header("Result", Alignment::Center);
-    
-    for row in rows {
-        table = table.add_row(row);
-    }
-    
-    table.print();
-}
-
-fn print_test_configuration(test_definitions: &[TestDefinition], suite_timing: &TestSuiteTiming) {
-    
-    let mut rows = Vec::new();
-    
-    for (idx, test_def) in test_definitions.iter().enumerate() {
-        let test_name = &test_def.display_name; // Use display name for UI
-        let config = &test_def.config;
-        let timing_str = if let Some(cycles) = config.timing.cycles {
-            if let Some(duration) = config.timing.duration_secs {
-                format!("{}cycles/{}s", cycles, duration)
-            } else {
-                format!("{}cycles", cycles)
-            }
-        } else if let Some(duration) = config.timing.duration_secs {
-            format!("{}s", duration)
-        } else {
-            "default".to_string()
-        };
-        
-        let window_str = match config.window_mode {
-            WindowMode::FullAllocation => "FullAllocation".to_string(),
-            WindowMode::FixedSize { size_mb } => format!("FixedSize ({} MB)", size_mb),
-            WindowMode::CacheRelative { multiplier } => format!("CacheRelative ({:.1}x)", multiplier),
-        };
-        
-        let chunk_str = match config.chunk_mode {
-            ChunkMode::WindowFraction { fraction } => format!("WindowFraction ({:.1}%)", fraction * 100.0),
-            ChunkMode::FixedSize { size_mb } => format!("FixedSize ({} MB)", size_mb),
-            ChunkMode::AutoOptimal => "AutoOptimal".to_string(),
-        };
-        
-        let mut flags = Vec::new();
-        if config.requires_locality {
-            flags.push("Locality");
-        }
-        if config.allow_misaligned {
-            flags.push("Misaligned");
-        }
-        let flags_str = if flags.is_empty() { String::new() } else { flags.join(", ") };
-        
-        rows.push(vec![
-            format!("{}", idx + 1),
-            test_name.to_string(),
-            timing_str,
-            config.streams.to_string(),
-            window_str,
-            chunk_str,
-            flags_str
-        ]);
-    }
-    
-    let mut table = TableBuilder::new()
-        .add_header("#", Alignment::Right)
-        .add_header("Test Name", Alignment::Left)
-        .add_header("Timing", Alignment::Right)
-        .add_header("Streams", Alignment::Right)
-        .add_header("Window Mode", Alignment::Left)
-        .add_header("Block Mode", Alignment::Left)
-        .add_header("Flags", Alignment::Left);
-    
-    for row in rows {
-        table = table.add_row(row);
-    }
-    
-    table.print();
-}
-
 fn print_detailed_cpu_performance_summary(_final_stats: &HashMap<String, Vec<(usize, usize, u64, u128, u64, u64)>>, _suite_duration: std::time::Duration) {
     println!("CPU Performance Summary:");
     for (test_name, stats) in _final_stats {
@@ -1197,20 +1106,17 @@ fn print_detailed_cpu_performance_summary(_final_stats: &HashMap<String, Vec<(us
 fn display_and_save_results(test_run_result: &Arc<Mutex<TestRunResult>>, suite_duration: std::time::Duration) {
     let mut result = test_run_result.lock().unwrap();
     result.finalize(suite_duration);
-    
-    // Create test results summary table using reporting system
-    
-    let table = TableBuilder::new()
-        .add_header("Metric", Alignment::Left)
-        .add_header("Value", Alignment::Right)
-        .add_row(vec!["Duration".to_string(), format!("{:.2}s", result.overall_stats.total_runtime_secs)])
-        .add_row(vec!["Cycles Completed".to_string(), format!("{}", result.overall_stats.cycles_completed)])
-        .add_row(vec!["Data Processed".to_string(), format!("{:.2} GiB", result.overall_stats.total_data_processed_gib)])
-        .add_row(vec!["Overall Throughput".to_string(), format!("{:.2} GiB/s", result.overall_stats.overall_throughput_gib_s)])
-        .add_row(vec!["Total Errors".to_string(), format!("{}", result.overall_stats.total_errors)]);
-    
-    table.print();
-    
+
+    // Display final summary using reporting layer
+    {
+        use crate::reporting::{create_console_reporter, converters};
+        let report = converters::create_overall_stats_summary_report(&result.overall_stats);
+        let mut reporter = create_console_reporter();
+        if let Err(e) = reporter.report_final_summary(&report) {
+            log::error!("Failed to display final summary: {}", e);
+        }
+    }
+
     // Save results to file
     let filename = result.get_filename();
     match result.save_to_file(filename) {

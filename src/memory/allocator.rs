@@ -1,7 +1,6 @@
 use crate::memory::backend::{Backend, BackendType, WindowsBackend, DriverBackend};
 use crate::memory::buffer::{MemoryBuffer, PageType};
 use crate::memory::buffer::MemoryType as BufferMemoryType;
-use crate::driver::MemoryType;
 use crate::{BlockInfo, AllocationBlock};
 use crate::cpu_topology::get_numa_node_for_cpu;
 use crate::constants::{HUGE_PAGE_SIZE_USIZE, BYTES_PER_MIB_USIZE, bytes_to_gib_f64};
@@ -801,7 +800,7 @@ impl MemoryAllocator {
             if block_size >= HUGE_PAGE_SIZE_USIZE && runtime_config.large_pages_available {
                 log::info!("NUMA {}: Trying {} × {}MB with huge pages",
                          numa_node, total_blocks_planned, block_size / (1024 * 1024));
-                
+
                 for _ in 0..total_blocks_planned {
                     let config = AllocationConfig {
                         size: block_size,
@@ -813,17 +812,17 @@ impl MemoryAllocator {
                         base_address: None,
                         alignment: Some(HUGE_PAGE_SIZE_USIZE),
                     };
-                    
+
                     match self.allocate(&config) {
                         Ok(buffer) => {
-                            log::info!("✅ NUMA {}: {}MB chunk allocated (1GB huge)",
-                                     numa_node, block_size / (1024 * 1024));
+                            blocks_allocated += 1;
+                            log::info!("✅ NUMA {}: {}MB chunk allocated (1GB huge) - planned block {}/{}",
+                                     numa_node, block_size / (1024 * 1024), blocks_allocated, total_blocks_planned);
                             allocated_chunks.push(AllocatedChunk {
                                 buffer,
                                 chunk_size: block_size,
                                 numa_node,
                             });
-                            blocks_allocated += 1;
                         }
                         Err(e) => {
                             log::info!("❌ NUMA {}: {}MB huge page allocation failed: {}",
@@ -854,14 +853,14 @@ impl MemoryAllocator {
                     
                     match self.allocate(&config) {
                         Ok(buffer) => {
-                            log::info!("✅ NUMA {}: {}MB chunk allocated (2MB large)",
-                                     numa_node, block_size / (1024 * 1024));
+                            blocks_allocated += 1;
+                            log::info!("✅ NUMA {}: {}MB chunk allocated (2MB large) - planned block {}/{}",
+                                     numa_node, block_size / (1024 * 1024), blocks_allocated, total_blocks_planned);
                             allocated_chunks.push(AllocatedChunk {
                                 buffer,
                                 chunk_size: block_size,
                                 numa_node,
                             });
-                            blocks_allocated += 1;
                         }
                         Err(e) => {
                             log::info!("❌ NUMA {}: {}MB large page allocation failed: {}",
@@ -889,7 +888,8 @@ impl MemoryAllocator {
                 if still_needed > 0 {
                     log::info!("NUMA {}: Last resort - {} × {}MB with regular pages",
                              numa_node, still_needed, block_size / (1024 * 1024));
-                    
+
+                    let mut phase2_allocated = 0;
                     for _ in 0..still_needed {
                         let config = AllocationConfig {
                             size: block_size,
@@ -901,11 +901,13 @@ impl MemoryAllocator {
                             base_address: None,
                             alignment: Some(64 * 1024),
                         };
-                        
+
                         match self.allocate(&config) {
                             Ok(buffer) => {
-                                log::info!("✅ NUMA {}: {}MB chunk allocated (4KB regular)",
-                                         numa_node, block_size / (1024 * 1024));
+                                phase2_allocated += 1;
+                                log::info!("✅ NUMA {}: {}MB chunk allocated (4KB regular) - planned block {}/{}",
+                                         numa_node, block_size / (1024 * 1024),
+                                         already_allocated + phase2_allocated, total_blocks_planned);
                                 allocated_chunks.push(AllocatedChunk {
                                     buffer,
                                     chunk_size: block_size,
@@ -988,8 +990,6 @@ impl MemoryAllocator {
                         let allocated_block = AllocationBlock {
                             buffer: chunk.buffer,
                             block_info,
-                            memory_type: MemoryType::WriteBack,
-                            numa_node: chunk.numa_node,
                         };
                         
                         thread_allocations.entry(thread_id)
@@ -1052,8 +1052,6 @@ impl MemoryAllocator {
                     let allocated_block = AllocationBlock {
                         buffer: chunk.buffer,
                         block_info,
-                        memory_type: MemoryType::WriteBack,
-                        numa_node: chunk.numa_node,
                     };
                     
                     thread_allocations.entry(thread_id)
@@ -1260,8 +1258,6 @@ impl MemoryAllocator {
                                     let allocated_block = AllocationBlock {
                                         buffer: chunk.buffer,
                                         block_info,
-                                        memory_type: MemoryType::WriteBack,
-                                        numa_node: chunk.numa_node,
                                     };
                                     
                                     thread_allocations.entry(thread_id).or_insert_with(Vec::new).push(allocated_block);
@@ -1326,8 +1322,6 @@ impl MemoryAllocator {
                                     let allocated_block = AllocationBlock {
                                         buffer: chunk.buffer,
                                         block_info,
-                                        memory_type: MemoryType::WriteBack,
-                                        numa_node: chunk.numa_node,
                                     };
                                     
                                     thread_allocations.entry(thread_id).or_insert_with(Vec::new).push(allocated_block);

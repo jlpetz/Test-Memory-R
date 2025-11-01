@@ -294,6 +294,9 @@ pub fn run_pattern_test<P: TestPattern>(
         thread_id,
         error_count: error_accumulator.total_errors(),
         total_operations: test_loop.cycle() as u64,  // Total cycles completed
+        cycles_completed: test_loop.cycle(),
+        cycles_planned: timing.cycles,
+        stopped_by_time_limit: false,  // Pattern tests don't track this yet
     })
 }
 
@@ -329,6 +332,138 @@ impl CacheAwareAccess {
                 offset = stride / 2;
             }
         }
+    }
+}
+
+/// Result from a single test cycle on a single block
+#[derive(Debug, Clone)]
+pub struct CycleResult {
+    pub errors: u64,
+    pub bytes_processed: u64,
+    pub operations: u64,
+}
+
+impl CycleResult {
+    /// Create a simple result for common read+write pattern
+    pub fn read_write(size: usize, errors: u64) -> Self {
+        CycleResult {
+            errors,
+            bytes_processed: (size * 2) as u64,  // Read + write
+            operations: 1,
+        }
+    }
+
+    /// Create a result for read-only pattern
+    pub fn read_only(size: usize, errors: u64) -> Self {
+        CycleResult {
+            errors,
+            bytes_processed: size as u64,
+            operations: 1,
+        }
+    }
+
+    /// Create a result for write-only pattern
+    pub fn write_only(size: usize, errors: u64) -> Self {
+        CycleResult {
+            errors,
+            bytes_processed: size as u64,
+            operations: 1,
+        }
+    }
+
+    /// Create a custom result with specific values
+    pub fn custom(bytes: u64, errors: u64, ops: u64) -> Self {
+        CycleResult {
+            errors,
+            bytes_processed: bytes,
+            operations: ops,
+        }
+    }
+}
+
+/// Generic test orchestrator that handles interleaved execution across multiple blocks
+/// Returns detailed stats from each cycle for accurate accounting
+#[inline(always)]
+pub fn run_interleaved_test<F>(
+    blocks: &[crate::runner::AllocationBlock],
+    timing: &TestTiming,
+    thread_id: usize,
+    error_mode: ErrorMode,
+    test_name: &'static str,
+    test_action: crate::tests::TestAction,
+    mut cycle_fn: F,
+) -> crate::tests::TestStats
+where
+    F: FnMut(*mut u8, usize, u32) -> CycleResult  // ptr, size, cycle_num -> CycleResult
+{
+    use crate::runner::SHUTDOWN_REQUESTED;
+    use std::sync::atomic::Ordering;
+    use std::time::Instant;
+
+    let start_time = Instant::now();
+    let mut test_loop = TestLoop::new(timing);
+    let mut total_errors = 0u64;
+    let mut total_bytes = 0u64;
+    let mut total_operations = 0u64;
+
+    // Interleaved execution: cycle through all blocks for each iteration
+    'outer: while test_loop.should_continue() {
+        for block in blocks {
+            let ptr = block.buffer.as_mut_ptr() as *mut u8;
+            let size = block.buffer.size();
+
+            // Run one cycle on this block
+            let result = cycle_fn(ptr, size, test_loop.cycle());
+
+            // Accumulate stats
+            total_errors += result.errors;
+            total_bytes += result.bytes_processed;
+            total_operations += result.operations;
+
+            // Handle errors based on mode
+            if result.errors > 0 {
+                match error_mode {
+                    ErrorMode::Panic => {
+                        panic!("Memory error in {} (thread {}): {} errors",
+                               test_name, thread_id, result.errors)
+                    },
+                    ErrorMode::Halt => {
+                        log::error!("Halting {} due to {} errors on thread {}",
+                                  test_name, result.errors, thread_id);
+                        break 'outer;
+                    },
+                    ErrorMode::Log => {
+                        log::error!("{} errors in {} on thread {} (continuing)",
+                                  result.errors, test_name, thread_id);
+                    }
+                }
+            }
+
+            // Check for shutdown
+            if SHUTDOWN_REQUESTED.load(Ordering::Relaxed) {
+                log::debug!("Thread {} stopping {} due to shutdown request",
+                          thread_id, test_name);
+                break 'outer;
+            }
+        }
+    }
+
+    let elapsed = start_time.elapsed();
+    let cycles_completed = test_loop.cycle();
+    let stopped_by_time_limit = timing.duration_secs.is_some() &&
+                               elapsed.as_secs() >= timing.duration_secs.unwrap_or(0) as u64;
+
+    crate::tests::TestStats {
+        name: test_name,
+        action: test_action,
+        bytes_processed: total_bytes as usize,
+        elapsed_ms: elapsed.as_millis(),
+        thread_id,
+        error_count: total_errors,
+        total_operations,
+        cycles_completed,
+        cycles_planned: timing.cycles,
+        stopped_by_time_limit,
     }
 }
 

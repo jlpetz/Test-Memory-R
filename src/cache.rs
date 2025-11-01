@@ -122,6 +122,10 @@ impl CacheInfo {
             _ => (self.total_cache * 2).max(MB_64),
         }
     }
+
+    pub fn total_cache_size(&self) -> usize {
+        self.total_cache
+    }
 }
 
 impl SystemInfo {
