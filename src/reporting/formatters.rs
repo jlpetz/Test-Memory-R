@@ -366,38 +366,77 @@ impl ReportFormatter for DefaultFormatter {
     
     fn prepare_thread_timing_table(&self, report: &ThreadTimingReport) -> TableData {
         let mut table = TableData::new()
-            .with_title(format!("Thread timing deviation for {} - Avg: {:.1}s",
-                report.test_name, report.average_elapsed_ms as f64 / 1000.0))
             .add_header("Thread", ColumnAlignment::Right)
-            .add_header("Logical CPU", ColumnAlignment::Right)
-            .add_header("Physical Core", ColumnAlignment::Right)
-            .add_header("NUMA Node", ColumnAlignment::Center)
-            .add_header("Runtime", ColumnAlignment::Right)
-            .add_header("Deviation", ColumnAlignment::Right)
+            .add_header("L CPU", ColumnAlignment::Right)
+            .add_header("P Core", ColumnAlignment::Right)
+            .add_header("NUMA", ColumnAlignment::Center)
+            .add_header("Time", ColumnAlignment::Right)
+            .add_header("Dev T", ColumnAlignment::Right)
             .add_header("Data", ColumnAlignment::Right)
-            .add_header("Throughput", ColumnAlignment::Right)
+            .add_header("Dev D", ColumnAlignment::Right)
+            .add_header("Speed", ColumnAlignment::Right)
+            .add_header("Dev S", ColumnAlignment::Right)
             .add_header("Errors", ColumnAlignment::Right);
-        
+
         for timing in &report.thread_timings {
-            let deviation_str = if timing.deviation_ms >= 0 {
+            let deviation_time_str = if timing.deviation_ms >= 0 {
                 format!("+{:.1}s", timing.deviation_ms as f64 / 1000.0)
             } else {
                 format!("{:.1}s", timing.deviation_ms as f64 / 1000.0)
             };
-            
+
+            let deviation_data_str = if timing.deviation_data_bytes >= 0 {
+                format!("+{}", self.format_bytes(timing.deviation_data_bytes as u64))
+            } else {
+                format!("-{}", self.format_bytes(timing.deviation_data_bytes.abs() as u64))
+            };
+
+            let deviation_speed_str = if timing.deviation_speed_mib_s >= 0.0 {
+                format!("+{:.1}", timing.deviation_speed_mib_s)
+            } else {
+                format!("{:.1}", timing.deviation_speed_mib_s)
+            };
+
             table = table.add_row(vec![
                 timing.thread_id.to_string(),
                 format!("{}", timing.cpu_id),
                 format!("{}", timing.physical_core_id),
                 format!("{}", timing.numa_node),
                 format!("{:.1}s", timing.runtime_ms as f64 / 1000.0),
-                deviation_str,
+                deviation_time_str,
                 self.format_bytes(timing.data_bytes),
+                deviation_data_str,
                 format!("{:.1} MiB/s", timing.throughput_mib_s),
+                deviation_speed_str,
                 if timing.errors > 0 { format!("{}", timing.errors) } else { "✅".to_string() },
             ]);
         }
-        
+
+        // Add average row
+        if !report.thread_timings.is_empty() {
+            let avg_runtime = report.average_elapsed_ms;
+            let total_data: u64 = report.thread_timings.iter().map(|t| t.data_bytes).sum();
+            let avg_data = total_data / report.thread_timings.len() as u64;
+            let avg_speed = report.thread_timings.iter()
+                .map(|t| t.throughput_mib_s)
+                .sum::<f64>() / report.thread_timings.len() as f64;
+            let total_errors: u64 = report.thread_timings.iter().map(|t| t.errors).sum();
+
+            table = table.add_row(vec![
+                "Avg".to_string(),
+                "".to_string(),
+                "".to_string(),
+                "".to_string(),
+                format!("{:.1}s", avg_runtime as f64 / 1000.0),
+                "".to_string(),
+                self.format_bytes(avg_data),
+                "".to_string(),
+                format!("{:.1} MiB/s", avg_speed),
+                "".to_string(),
+                if total_errors > 0 { format!("{}", total_errors) } else { "✅".to_string() },
+            ]);
+        }
+
         table
     }
     

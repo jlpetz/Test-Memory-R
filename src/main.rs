@@ -12,7 +12,7 @@ use tmr::constants::MB_F64;
 use tmr::params;  // Centralized parameter registry
 // Note: Legacy MemoryLayout still needed for runner interface
 use tmr::memory::allocation_strategy::EnhancedMemoryStrategy;
-use tmr::runner::{run_tests_with_layout_and_timing, TestSuiteTiming, print_current_memory_status, detect_runtime_capabilities};
+use tmr::runner::{run_tests_with_layout_and_timing_filtered, TestSuiteTiming, print_current_memory_status, detect_runtime_capabilities};
 use tmr::cpu_topology::{display_cpu_topology, get_cpu_topology, is_hybrid_cpu, CoreType};
 use tmr::results::compare_results_command;
 use tmr::{reset_driver, check_and_display_driver_status, DriverStatus, refresh_driver_status, is_driver_connected, display_driver_stats, compare_app_vs_driver_stats, reset_app_driver_stats};
@@ -30,6 +30,30 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     println!("================================================================================");
 
     let mut args: Vec<String> = env::args().collect();
+
+    // Handle --single-test=TestName by extracting the test name
+    let mut single_test: Option<String> = None;
+    for arg in &args {
+        if let Some(test_name) = arg.strip_prefix("--single-test=") {
+            single_test = Some(test_name.to_string());
+            println!("🎯 Single Test Mode: {}", test_name);
+            println!("  Running only {} with default 30-second duration", test_name);
+            println!("  CLI overrides supported (e.g. duration=60 cycles=5)\n");
+        }
+    }
+
+    // If single-test mode, inject timing defaults and remove the parameter
+    if single_test.is_some() {
+        // Add timing defaults if not specified
+        if !args.iter().any(|a| a.starts_with("duration=")) {
+            args.push("duration=30".to_string());
+        }
+        if !args.iter().any(|a| a.starts_with("cycles=")) {
+            args.push("cycles=1".to_string());  // Single cycle with 30s time limit
+        }
+        // Remove --single-test parameter from args
+        args.retain(|a| !a.starts_with("--single-test="));
+    }
 
     // Handle --quick-test by injecting defaults BEFORE parameter parsing
     // This allows CLI overrides to work: --quick-test cycles=2 skip-cores=0
@@ -640,12 +664,13 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
 	runtime_config.enhanced_memory_strategy = enhanced_memory_strategy.clone();
     
     let start_time = std::time::Instant::now();
-	let success = run_tests_with_layout_and_timing(
+	let success = run_tests_with_layout_and_timing_filtered(
 		enhanced_layout,
 		error_mode,
 		suite_timing,
 		runtime_config,
 		config_opt.as_ref(),  // Pass config if available
+		single_test.as_deref(),  // Pass single test filter if provided
 	);
     let total_time = start_time.elapsed();
 

@@ -2,11 +2,14 @@ use crate::{ErrorMode, EnhancedMemoryLayout, ProgressTracker, BlockInfo};
 use crate::constants::{HUGE_PAGE_SIZE, LARGE_PAGE_SIZE, REGULAR_PAGE_SIZE};
 use crate::tests::{WindowMode, ChunkMode};
 use crate::MemoryAllocationConfig;
-use crate::tests::{TestStats, TestMemoryConfig, TestTiming};
+use crate::tests::{TestStats, TestMemoryConfig, TestTiming, TestProgress};
 use crate::tests::{
-    mirror_move, mirror_move_128, mirror_move_256, mirror_move_512, mirror_move_auto,
+    mirror_move, mirror_move_128, mirror_move_256, mirror_move_512, mirror_move_multi,
+    mirror_move_128_multi, mirror_move_256_multi, mirror_move_512_multi, mirror_move_auto_multi,
     stuck_bit_test, stuck_bit_test_128, stuck_bit_test_256, stuck_bit_test_512,
-    simple_test, refresh_stable, refresh_stable_128, refresh_stable_256, refresh_stable_512,
+    stuck_bit_test_multi, stuck_bit_test_128_multi, stuck_bit_test_256_multi, stuck_bit_test_512_multi,
+    stuck_bit_test_auto_multi,
+    simple_test_multi, refresh_stable, refresh_stable_128, refresh_stable_256, refresh_stable_512,
     cache_busting_write_test, random_access_torture_test,
     stride_access_test, bandwidth_saturation_test, block_move_test
 };
@@ -93,6 +96,7 @@ impl TestSuiteTiming {
 type TestFunctionSimple = unsafe fn(*mut u8, usize, usize, ErrorMode, &TestTiming) -> TestStats;
 type TestFunctionWithStreams = unsafe fn(*mut u8, usize, usize, ErrorMode, &TestTiming, u32) -> TestStats;
 type TestFunctionWithConfig = unsafe fn(*mut u8, usize, usize, ErrorMode, &TestTiming, &TestMemoryConfig) -> TestStats;
+type TestFunctionMultiBlock = unsafe fn(&[AllocationBlock], usize, ErrorMode, &TestTiming, &TestMemoryConfig, Option<&TestProgress>) -> TestStats;
 
 // Test function wrapper enum
 #[derive(Debug, Clone)]
@@ -100,6 +104,7 @@ pub enum TestFunction {
     Simple(TestFunctionSimple),
     WithStreams(TestFunctionWithStreams),
     WithConfig(TestFunctionWithConfig),
+    MultiBlock(TestFunctionMultiBlock),
 }
 
 pub fn run_tests_with_layout(layout: EnhancedMemoryLayout, error_mode: ErrorMode) -> bool {
@@ -114,6 +119,17 @@ pub fn run_tests_with_layout_and_timing(
     suite_timing: TestSuiteTiming,
     runtime_config: RuntimeConfig,
     config: Option<&crate::config::ModernConfig>,
+) -> bool {
+    run_tests_with_layout_and_timing_filtered(layout, error_mode, suite_timing, runtime_config, config, None)
+}
+
+pub fn run_tests_with_layout_and_timing_filtered(
+    layout: EnhancedMemoryLayout,
+    error_mode: ErrorMode,
+    suite_timing: TestSuiteTiming,
+    runtime_config: RuntimeConfig,
+    config: Option<&crate::config::ModernConfig>,
+    single_test_filter: Option<&str>,
 ) -> bool {
     setup_signal_handler();
     
@@ -231,7 +247,7 @@ pub fn run_tests_with_layout_and_timing(
 
     // Calculate progress tracking information and resolve auto-dispatch tests
     // Use config-driven tests if config is provided, otherwise use hard-coded defaults
-    let test_definitions = if let Some(cfg) = config {
+    let mut test_definitions = if let Some(cfg) = config {
         match create_test_definitions_from_config(cfg) {
             Ok(tests) => {
                 log::info!("Using config-driven test sequence with {} tests", tests.len());
@@ -248,6 +264,22 @@ pub fn run_tests_with_layout_and_timing(
         log::info!("Using default hard-coded test suite");
         create_test_definitions()
     };
+
+    // Apply single test filter if provided
+    if let Some(test_name_filter) = single_test_filter {
+        test_definitions.retain(|def| def.actual_name == test_name_filter || def.display_name == test_name_filter);
+
+        if test_definitions.is_empty() {
+            println!("❌ Test '{}' not found. Available tests:", test_name_filter);
+            for def in create_test_definitions() {
+                println!("  - {}", def.actual_name);
+            }
+            return false;
+        }
+
+        log::info!("🎯 Running single test: {}", test_definitions[0].display_name);
+    }
+
     let tests_per_cycle = test_definitions.len() as u64;
     
     progress.set_cycle_info(1, suite_timing.global_cycles, tests_per_cycle);
@@ -449,16 +481,55 @@ fn execute_test_cycle(
             // Time limit indicator: red if time limit stopped us, green otherwise
             let stop_indicator_time = if stopped_by_time_limit { "🔴" } else { "🟢" };
 
-            format!("(Cycles {} {}/{}, Time Limit {})",
+            format!(", Cycles {} {}/{}, Time Limit {}",
                     stop_indicator_cycles, cycles_completed, limit_str, stop_indicator_time)
         } else {
             String::new()
         };
 
-        // Log in human-readable format
-        log::info!("Test {} completed: {} bytes, {} errors, {} operations in {:?} {}",
-                  test_name, total_bytes_for_test, total_errors_for_test,
-                  total_operations_for_test, test_duration, cycles_info);
+        // Pause progress output and clear any existing progress line
+        progress.pause_progress_output.store(true, Ordering::Relaxed);
+        print!("\r\x1b[K"); // Clear the progress ticker line
+        std::io::Write::flush(&mut std::io::stdout()).ok();
+
+        // Format operations in human-readable form (B/M/K notation)
+        let format_ops = |ops: u64| -> String {
+            if ops >= 1_000_000_000 {
+                format!("{:.2}B", ops as f64 / 1_000_000_000.0)
+            } else if ops >= 1_000_000 {
+                format!("{:.2}M", ops as f64 / 1_000_000.0)
+            } else if ops >= 1_000 {
+                format!("{:.2}K", ops as f64 / 1_000.0)
+            } else {
+                format!("{}", ops)
+            }
+        };
+
+        // Calculate operations per second
+        let ops_per_sec = if test_duration.as_secs_f64() > 0.0 {
+            total_operations_for_test as f64 / test_duration.as_secs_f64()
+        } else {
+            0.0
+        };
+
+        // Create test report header with results and indicators
+        println!("📊 Test report - Cycle {} - {}: {:.1}s, {} errors, {:.2} GiB @ {:.1} MiB/s, {} ops @ {} ops/s{}",
+                 cycle,
+                 test_def.display_name,
+                 test_duration.as_secs_f64(),
+                 total_errors_for_test,
+                 total_bytes_for_test as f64 / (1024.0 * 1024.0 * 1024.0),
+                 (total_bytes_for_test as f64 / (1024.0 * 1024.0)) / test_duration.as_secs_f64(),
+                 format_ops(total_operations_for_test),
+                 format_ops(ops_per_sec as u64),
+                 cycles_info);
+
+        // Add config line
+        println!("   Config: streams={}, window={:?}, chunk={:?}, locality={}",
+                 test_def.config.streams,
+                 test_def.config.window_mode,
+                 test_def.config.chunk_mode,
+                 if test_def.config.requires_locality { "yes" } else { "no" });
 
         // Update progress tracker with test completion
         use crate::tests::{TestStats, TestAction};
@@ -485,6 +556,9 @@ fn execute_test_cycle(
                 log::error!("Failed to display thread timing report: {}", e);
             }
         }
+
+        // Resume progress output now that report is complete
+        progress.pause_progress_output.store(false, Ordering::Relaxed);
 
 		// Store aggregated stats for this test
 		{
@@ -591,8 +665,9 @@ fn resolve_auto_dispatch_test(test_name: &str) -> Option<(&'static str, TestFunc
         ("MirrorMove", "") => "MirrorMove",
         ("StuckBitTest", "512") => "StuckBitTest512",
         ("StuckBitTest", "256") => "StuckBitTest256",
-        ("StuckBitTest", "128") => "StuckBitTest128", 
+        ("StuckBitTest", "128") => "StuckBitTest128",
         ("StuckBitTest", "") => "StuckBitTest",
+        ("StuckBitTestAuto", "") => "StuckBitTestAuto",
         ("RefreshStable", "512") => "RefreshStable512",
         ("RefreshStable", "256") => "RefreshStable256",
         ("RefreshStable", "128") => "RefreshStable128",
@@ -618,8 +693,8 @@ fn create_test_definitions() -> Vec<TestDefinition> {
     let test_definitions = vec![
         // === CRITICAL: Full Memory Stuck Bit Test ===
         (
-            "StuckBitTest", 
-            TestFunction::WithConfig(|ptr, size, tid, em, timing, config| unsafe { stuck_bit_test(ptr, size, tid, em, timing, config) }),
+            "StuckBitTest",
+            TestFunction::MultiBlock(stuck_bit_test_multi),
             validate_streams(TestMemoryConfig::new(
                 WindowMode::FullAllocation,
                 ChunkMode::WindowFraction { fraction: 0.0625 },
@@ -629,13 +704,65 @@ fn create_test_definitions() -> Vec<TestDefinition> {
              .with_streams(1), "StuckBitTest")
              .with_memory_type(None)
         ),
-        
-        // === Base mirror move test (scalar implementation with detailed error reporting) ===
+
+        // === StuckBitTest Auto-dispatch (AVX-512 > AVX2 > SSE2 > scalar) ===
         (
-            "MirrorMove", 
-            TestFunction::WithConfig(|ptr, size, tid, em, timing, config| unsafe {
-                mirror_move(ptr, size, tid, em, timing, config)
-            }),
+            "StuckBitTestAuto",
+            TestFunction::MultiBlock(stuck_bit_test_auto_multi),
+            validate_streams(TestMemoryConfig::new(
+                WindowMode::FullAllocation,
+                ChunkMode::WindowFraction { fraction: 0.0625 },
+                false,
+                false
+            ).with_timing(TestTiming::cycles_only(1))
+             .with_streams(1), "StuckBitTestAuto")
+             .with_memory_type(None)
+        ),
+
+        // === StuckBitTest SIMD variants ===
+        (
+            "StuckBitTest128",
+            TestFunction::MultiBlock(stuck_bit_test_128_multi),
+            validate_streams(TestMemoryConfig::new(
+                WindowMode::FullAllocation,
+                ChunkMode::WindowFraction { fraction: 0.0625 },
+                false,
+                false
+            ).with_timing(TestTiming::cycles_only(1))
+             .with_streams(1), "StuckBitTest128")
+             .with_memory_type(None)
+        ),
+
+        (
+            "StuckBitTest256",
+            TestFunction::MultiBlock(stuck_bit_test_256_multi),
+            validate_streams(TestMemoryConfig::new(
+                WindowMode::FullAllocation,
+                ChunkMode::WindowFraction { fraction: 0.0625 },
+                false,
+                false
+            ).with_timing(TestTiming::cycles_only(1))
+             .with_streams(1), "StuckBitTest256")
+             .with_memory_type(None)
+        ),
+
+        (
+            "StuckBitTest512",
+            TestFunction::MultiBlock(stuck_bit_test_512_multi),
+            validate_streams(TestMemoryConfig::new(
+                WindowMode::FullAllocation,
+                ChunkMode::WindowFraction { fraction: 0.0625 },
+                false,
+                false
+            ).with_timing(TestTiming::cycles_only(1))
+             .with_streams(1), "StuckBitTest512")
+             .with_memory_type(None)
+        ),
+
+        // === Base mirror move test (MultiBlock implementation) ===
+        (
+            "MirrorMove",
+            TestFunction::MultiBlock(mirror_move_multi),
             validate_streams(TestMemoryConfig::new(
                 WindowMode::FixedSize { size_mb: 64 },
                 ChunkMode::FixedSize { size_mb: 4 },
@@ -647,13 +774,10 @@ fn create_test_definitions() -> Vec<TestDefinition> {
         ),
         
         // === Auto-dispatch SIMD test (resolved at runtime) ===
-        // This will be resolved by resolve_auto_dispatch_test() to the best SIMD variant
+        // Auto-dispatches to best SIMD variant at runtime (AVX-512 > AVX2 > SSE2 > scalar)
         (
             "MirrorMoveAuto",
-            TestFunction::WithConfig(|ptr, size, tid, em, timing, config| unsafe {
-                // This placeholder will be replaced by the resolver
-                mirror_move_auto(ptr, size, tid, em, timing, config)
-            }),
+            TestFunction::MultiBlock(mirror_move_auto_multi),
             validate_streams(TestMemoryConfig::new(
                 WindowMode::FixedSize { size_mb: 64 },
                 ChunkMode::FixedSize { size_mb: 8 },
@@ -667,9 +791,7 @@ fn create_test_definitions() -> Vec<TestDefinition> {
         // === SIMD variants with different vector sizes ===
         (
             "MirrorMove128",
-            TestFunction::WithConfig(|ptr, size, tid, em, timing, config| unsafe {
-                mirror_move_128(ptr, size, tid, em, timing, config)
-            }),
+            TestFunction::MultiBlock(mirror_move_128_multi),
             validate_streams(TestMemoryConfig::new(
                 WindowMode::FixedSize { size_mb: 64 },
                 ChunkMode::FixedSize { size_mb: 8 },
@@ -682,9 +804,7 @@ fn create_test_definitions() -> Vec<TestDefinition> {
         
         (
             "MirrorMove256",
-            TestFunction::WithConfig(|ptr, size, tid, em, timing, config| unsafe {
-                mirror_move_256(ptr, size, tid, em, timing, config)
-            }),
+            TestFunction::MultiBlock(mirror_move_256_multi),
             validate_streams(TestMemoryConfig::new(
                 WindowMode::FixedSize { size_mb: 128 },
                 ChunkMode::FixedSize { size_mb: 8 },
@@ -697,9 +817,7 @@ fn create_test_definitions() -> Vec<TestDefinition> {
         
         (
             "MirrorMove512",
-            TestFunction::WithConfig(|ptr, size, tid, em, timing, config| unsafe {
-                mirror_move_512(ptr, size, tid, em, timing, config)
-            }),
+            TestFunction::MultiBlock(mirror_move_512_multi),
             validate_streams(TestMemoryConfig::new(
                 WindowMode::FixedSize { size_mb: 256 },
                 ChunkMode::FixedSize { size_mb: 8 },
@@ -713,9 +831,7 @@ fn create_test_definitions() -> Vec<TestDefinition> {
         // === Simple test with configurable patterns ===
         (
             "SimpleTest",
-            TestFunction::WithConfig(|ptr, size, tid, em, timing, config| unsafe {
-                simple_test(ptr, size, tid, em, timing, config)
-            }),
+            TestFunction::MultiBlock(simple_test_multi),
             validate_streams(TestMemoryConfig::new(
                 WindowMode::FullAllocation,
                 ChunkMode::FixedSize { size_mb: 4 },
@@ -1051,6 +1167,11 @@ pub fn run_test_with_memory_stages(
             TestFunction::Simple(f) => f(ptr, size, thread_id, error_mode, &test_config.timing),
             TestFunction::WithStreams(f) => f(ptr, size, thread_id, error_mode, &test_config.timing, test_config.streams),
             TestFunction::WithConfig(f) => f(ptr, size, thread_id, error_mode, &test_config.timing, test_config),
+            TestFunction::MultiBlock(_) => {
+                // MultiBlock tests need to be called from thread_pool with all blocks
+                // This path should not be reached when properly implemented
+                return Err("MultiBlock tests must be called with all blocks at once".to_string());
+            }
         }
     };
     

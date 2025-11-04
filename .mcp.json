@@ -1,0 +1,10 @@
+{
+  "mcpServers": {
+    "rust-mcp": {
+      "type": "stdio",
+      "command": "C:\\Users\\Administrator\\Downloads\\Rust\\TMR\\rust-mcp\\target\\release\\rustmcp.exe",
+      "args": [],
+      "env": {}
+    }
+  }
+}

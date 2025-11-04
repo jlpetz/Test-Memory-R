@@ -17,7 +17,7 @@ use crate::runner::SHUTDOWN_REQUESTED;
 #[derive(Debug)]
 pub enum WorkItem {
     RunTest {
-        test_name: String,
+        test_name: &'static str,  // Keep as static throughout
         test_func: TestFunction,
         test_config: TestMemoryConfig,
         error_mode: ErrorMode,
@@ -146,7 +146,7 @@ impl ThreadPool {
     
     pub fn execute_test(
         &self,
-        test_name: &str,
+        test_name: &'static str,  // Must be static for WorkItem
         test_func: &TestFunction,
         test_config: &TestMemoryConfig,
         error_mode: ErrorMode,
@@ -157,7 +157,7 @@ impl ThreadPool {
         // Send work to all threads
         for sender in &self.senders {
             let work_item = WorkItem::RunTest {
-                test_name: test_name.to_string(),
+                test_name,  // Already &'static str
                 test_func: test_func.clone(),
                 test_config: test_config.clone(),
                 error_mode,
@@ -304,50 +304,103 @@ fn worker_thread_loop(context: &mut WorkerContext) {
 
                 // Calculate which blocks to test based on window size
                 let blocks_to_test = calculate_blocks_for_window(&context.allocated_blocks, &test_config, &test_name);
-                
-                log::debug!("Thread {} on NUMA node {} processing {} of {} blocks", 
+
+                log::debug!("Thread {} on NUMA node {} processing {} of {} blocks",
                           context.thread_id, context.numa_node, blocks_to_test.len(), context.allocated_blocks.len());
-                
-                // Run test only on selected blocks (limited by window)
-                for block_idx in blocks_to_test {
-                    let allocated_block = &context.allocated_blocks[block_idx];
-                    
-                    if SHUTDOWN_REQUESTED.load(Ordering::Relaxed) {
-                        break;
+
+                // Check if this is a MultiBlock test that should handle all blocks at once
+                let stats = match &test_func {
+                    crate::runner::TestFunction::MultiBlock(f) => {
+                        // MultiBlock tests receive ALL allocated blocks and handle interleaving internally
+                        // The window calculation is only relevant for legacy single-block tests
+                        // MultiBlock tests will test all blocks in an interleaved manner
+                        let blocks_slice = &context.allocated_blocks[..];
+
+                        // Create progress tracker (optional)
+                        let progress = crate::tests::TestProgress::new();
+
+                        // Run the multi-block test with ALL blocks
+                        let stats = unsafe {
+                            f(blocks_slice, context.thread_id, error_mode, &test_config.timing, &test_config, Some(&progress))
+                        };
+
+                        // Update totals from the single result
+                        total_bytes = stats.bytes_processed as u64;
+                        total_errors = stats.error_count;
+                        total_operations = stats.total_operations;
+                        cycles_completed = stats.cycles_completed;
+                        cycle_limit = stats.cycles_planned;
+                        stopped_by_time_limit = stats.stopped_by_time_limit;
+
+                        stats
                     }
-                    
-                    match crate::runner::run_test_with_memory_stages(
-                        &test_func,
-                        allocated_block,
-                        &test_config,
-                        context.thread_id,
-                        error_mode,
-                    ) {
-                        Ok(stats) => {
-                            total_bytes += stats.bytes_processed as u64;
-                            total_errors += stats.error_count;
-                            total_operations += stats.total_operations;
+                    _ => {
+                        // Legacy path: run test on each block separately (causes timer bug)
+                        let mut last_stats = None;
 
-                            // Track cycle info from last block (all blocks should have similar cycle counts)
-                            cycles_completed = stats.cycles_completed;
-                            cycle_limit = stats.cycles_planned;
-                            stopped_by_time_limit = stats.stopped_by_time_limit;
+                        for block_idx in blocks_to_test {
+                            let allocated_block = &context.allocated_blocks[block_idx];
 
-                            if stats.error_count > 0 {
-                                if let Err(e) = handle_test_errors(&stats, error_mode, &test_name) {
-                                    log::error!("[Thread {} on CPU {}] {}", context.thread_id, context.cpu_id, e);
-                                    break;
+                            if SHUTDOWN_REQUESTED.load(Ordering::Relaxed) {
+                                break;
+                            }
+
+                            match crate::runner::run_test_with_memory_stages(
+                                &test_func,
+                                allocated_block,
+                                &test_config,
+                                context.thread_id,
+                                error_mode,
+                            ) {
+                                Ok(stats) => {
+                                    total_bytes += stats.bytes_processed as u64;
+                                    total_errors += stats.error_count;
+                                    total_operations += stats.total_operations;
+
+                                    // Track cycle info from last block (all blocks should have similar cycle counts)
+                                    cycles_completed = stats.cycles_completed;
+                                    cycle_limit = stats.cycles_planned;
+                                    stopped_by_time_limit = stats.stopped_by_time_limit;
+
+                                    last_stats = Some(stats);
+
+                                    if total_errors > 0 {
+                                        if let Some(ref stats) = last_stats {
+                                            if let Err(e) = handle_test_errors(stats, error_mode, &test_name) {
+                                                log::error!("[Thread {} on CPU {}] {}", context.thread_id, context.cpu_id, e);
+                                                break;
+                                            }
+                                        }
+                                    }
                                 }
-                                else {
-                                    log::debug!("Thread {} on CPU {} finished ok", context.thread_id, context.cpu_id);
+                                Err(e) => {
+                                    log::error!("[Thread {} on CPU {}] Test {} failed: {}",
+                                              context.thread_id, context.cpu_id, test_name, e);
+                                    break;
                                 }
                             }
                         }
-                        Err(e) => {
-                            log::error!("[Thread {} on CPU {}] Test {} failed: {}", 
-                                      context.thread_id, context.cpu_id, test_name, e);
-                            break;
-                        }
+
+                        // Return a synthetic stats combining all blocks
+                        last_stats.unwrap_or(crate::tests::TestStats {
+                            name: test_name,  // Now it's already &'static str
+                            action: crate::tests::TestAction::WriteVerify,
+                            bytes_processed: total_bytes as usize,
+                            elapsed_ms: thread_start.elapsed().as_millis(),
+                            thread_id: context.thread_id,
+                            error_count: total_errors,
+                            total_operations,
+                            cycles_completed,
+                            cycles_planned: cycle_limit,
+                            stopped_by_time_limit,
+                        })
+                    }
+                };
+
+                // Handle any errors from the test
+                if stats.error_count > 0 {
+                    if let Err(e) = handle_test_errors(&stats, error_mode, &test_name) {
+                        log::error!("[Thread {} on CPU {}] {}", context.thread_id, context.cpu_id, e);
                     }
                 }
                 

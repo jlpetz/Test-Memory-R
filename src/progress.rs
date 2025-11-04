@@ -1,6 +1,6 @@
 use crate::tests::TestStats;
 use crate::constants::{BYTES_PER_GIB_F64, BYTES_PER_MIB_F64};
-use std::sync::atomic::{AtomicU64, Ordering};
+use std::sync::atomic::{AtomicU64, AtomicBool, Ordering};
 use std::sync::{Arc, Mutex};
 use std::time::Instant;
 use std::thread;
@@ -12,23 +12,26 @@ pub struct ProgressTracker {
     pub completed_tests_this_cycle: AtomicU64, // Tests completed in current cycle
     pub current_cycle: AtomicU64,            // Current cycle number (1-based)
     pub total_cycles: AtomicU64,             // Total planned cycles (0 = unlimited)
-    
+
     // Performance tracking
     pub total_bytes_processed: AtomicU64,
     pub total_test_time_ms: AtomicU64,
     pub cycle_stats: Mutex<Vec<CycleStats>>,
-    
+
     // Enhanced error tracking
     pub total_errors: AtomicU64,
     pub per_test_errors: Mutex<std::collections::HashMap<String, u64>>, // Track errors per test type
-    
+
     // Phase and throughput tracking
     pub current_phase: Mutex<String>,
     pub current_throughput: AtomicU64,
     pub start_time: Instant,
-    
+
     // Cycle timing
     pub cycle_start_time: Mutex<Option<Instant>>,
+
+    // Output synchronization - pause progress updates when printing reports
+    pub pause_progress_output: AtomicBool,
 }
 
 #[derive(Debug, Clone)]
@@ -70,6 +73,7 @@ impl ProgressTracker {
             current_throughput: AtomicU64::new(0),
             start_time: Instant::now(),
             cycle_start_time: Mutex::new(None),
+            pause_progress_output: AtomicBool::new(false),
         }
     }
 
@@ -221,6 +225,11 @@ pub fn progress_reporter(progress: Arc<ProgressTracker>) {
 
         // Update progress display every 2 seconds or when completed
         if last_update.elapsed().as_secs() >= 2 || status.phase == "Completed" {
+            // Skip output if paused (main thread is printing a report)
+            if progress.pause_progress_output.load(Ordering::Relaxed) && status.phase != "Completed" {
+                continue;
+            }
+
             // Clear the line and redraw progress (in case logs interrupted us)
             print!("\r\x1b[K");
             

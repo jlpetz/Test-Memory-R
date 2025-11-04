@@ -749,13 +749,17 @@ pub fn create_thread_timing_report(
         };
     }
 
-    // Calculate average elapsed time
+    // Calculate averages
     let total_elapsed: u128 = stats.iter().map(|(_, _, _, elapsed, _, _)| *elapsed).sum();
     let avg_elapsed = total_elapsed / stats.len() as u128;
+
+    let total_bytes: u64 = stats.iter().map(|(_, _, bytes, _, _, _)| *bytes).sum();
+    let avg_bytes = total_bytes / stats.len() as u64;
 
     // Build thread timing entries with deviations
     let mut thread_timings: Vec<ThreadTiming> = stats.iter().map(|&(thread_id, cpu_id, bytes, elapsed, errors, _operations)| {
         let deviation_ms = elapsed as i128 - avg_elapsed as i128;
+        let deviation_data_bytes = bytes as i64 - avg_bytes as i64;
 
         // Calculate throughput
         let throughput_mib_s = if elapsed > 0 {
@@ -776,10 +780,21 @@ pub fn create_thread_timing_report(
             runtime_ms: elapsed,
             deviation_ms,
             data_bytes: bytes,
+            deviation_data_bytes,
             throughput_mib_s,
+            deviation_speed_mib_s: 0.0, // Will calculate after we know avg speed
             errors,
         }
     }).collect();
+
+    // Calculate average speed and then update speed deviations
+    let avg_speed_mib_s = thread_timings.iter()
+        .map(|t| t.throughput_mib_s)
+        .sum::<f64>() / thread_timings.len() as f64;
+
+    for timing in &mut thread_timings {
+        timing.deviation_speed_mib_s = timing.throughput_mib_s - avg_speed_mib_s;
+    }
 
     // Sort by deviation descending (highest deviation first)
     thread_timings.sort_by(|a, b| b.deviation_ms.cmp(&a.deviation_ms));

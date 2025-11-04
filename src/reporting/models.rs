@@ -240,7 +240,9 @@ pub struct ThreadTiming {
     pub runtime_ms: u128,
     pub deviation_ms: i128,
     pub data_bytes: u64,
+    pub deviation_data_bytes: i64,
     pub throughput_mib_s: f64,
+    pub deviation_speed_mib_s: f64,
     pub errors: u64,
 }
 
