@@ -662,7 +662,14 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
 	let mut runtime_config = detect_runtime_capabilities(&alloc_config);
 	runtime_config.cpu_list = Some(cpu_list);
 	runtime_config.enhanced_memory_strategy = enhanced_memory_strategy.clone();
-    
+
+	// Extract streams parameter if provided (overrides hard-coded config)
+	let streams_override = if params::has_param(&validated_params, "streams") {
+		Some(params::get_usize(&validated_params, "streams", 1))
+	} else {
+		None
+	};
+
     let start_time = std::time::Instant::now();
 	let success = run_tests_with_layout_and_timing_filtered(
 		enhanced_layout,
@@ -671,6 +678,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
 		runtime_config,
 		config_opt.as_ref(),  // Pass config if available
 		single_test.as_deref(),  // Pass single test filter if provided
+		streams_override,  // Pass streams override if provided
 	);
     let total_time = start_time.elapsed();
 

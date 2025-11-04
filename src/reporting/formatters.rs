@@ -1012,30 +1012,32 @@ impl ReportFormatter for DefaultFormatter {
     fn prepare_final_summary_performance_table(&self, report: &FinalTestSummaryReport) -> TableData {
         let mut table = TableData::new()
             .with_title("Final Test Summary - Per-Test Performance")
+            .add_header("#", ColumnAlignment::Center)
             .add_header("Test Name", ColumnAlignment::Left)
             .add_header("Avg Duration", ColumnAlignment::Right)
             .add_header("Total Data", ColumnAlignment::Right)
             .add_header("Avg Throughput", ColumnAlignment::Right)
             .add_header("Errors", ColumnAlignment::Center);
-        
-        for test in &report.per_test_summaries {
+
+        for (idx, test) in report.per_test_summaries.iter().enumerate() {
             let error_display = if test.total_errors > 0 {
                 format!("{}", test.total_errors)
             } else {
                 "✅".to_string()
             };
-            
+
             table = table.add_row(vec![
+                format!("{}", idx + 1),
                 test.name.clone(),
                 format!("{:.1}s", test.average_duration_secs),
                 format!("{:.2} GiB", test.total_data_gib),
-                format!("{:.1} MiB/s ({:.2} GiB/s)", 
-                        test.average_throughput_mib_s, 
+                format!("{:.1} MiB/s ({:.2} GiB/s)",
+                        test.average_throughput_mib_s,
                         test.average_throughput_gib_s),
                 error_display,
             ]);
         }
-        
+
         table.with_footer(format!("Averaged across {} cycles", report.cycles_completed))
     }
     

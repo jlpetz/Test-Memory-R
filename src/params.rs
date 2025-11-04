@@ -194,6 +194,26 @@ impl ParamRegistry {
             },
         });
 
+        params.insert("streams", ParamDef {
+            key: "streams",
+            is_flag: false,
+            default: ParamValue::Usize(1),
+            help: "Number of concurrent memory streams (must be power of 2: 1, 2, 4, 8, etc.)",
+            example: "streams=4",
+            can_override_config: true,
+            parser: |v| {
+                let val = v.parse::<usize>()
+                    .map_err(|_| format!("Invalid streams value '{}'", v))?;
+
+                // Validate power of 2
+                if val == 0 || (val & (val - 1)) != 0 {
+                    return Err(format!("Streams must be a power of 2 (1, 2, 4, 8, etc.), got {}", val));
+                }
+
+                Ok(ParamValue::Usize(val))
+            },
+        });
+
         // Driver-related parameters
         flags.insert("--driver-chunking", ParamDef {
             key: "--driver-chunking",

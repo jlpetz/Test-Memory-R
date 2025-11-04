@@ -4,12 +4,13 @@ use crate::tests::{WindowMode, ChunkMode};
 use crate::MemoryAllocationConfig;
 use crate::tests::{TestStats, TestMemoryConfig, TestTiming, TestProgress};
 use crate::tests::{
-    mirror_move, mirror_move_128, mirror_move_256, mirror_move_512, mirror_move_multi,
+    mirror_move_multi,
     mirror_move_128_multi, mirror_move_256_multi, mirror_move_512_multi, mirror_move_auto_multi,
-    stuck_bit_test, stuck_bit_test_128, stuck_bit_test_256, stuck_bit_test_512,
     stuck_bit_test_multi, stuck_bit_test_128_multi, stuck_bit_test_256_multi, stuck_bit_test_512_multi,
     stuck_bit_test_auto_multi,
-    simple_test_multi, refresh_stable, refresh_stable_128, refresh_stable_256, refresh_stable_512,
+    refresh_stable_multi, refresh_stable_128_multi, refresh_stable_256_multi, refresh_stable_512_multi,
+    refresh_stable_auto_multi,
+    simple_test_multi,
     cache_busting_write_test, random_access_torture_test,
     stride_access_test, bandwidth_saturation_test, block_move_test
 };
@@ -48,6 +49,7 @@ pub struct TestDefinition {
     pub display_name: String,         // Used for UI display and logging
     pub function: TestFunction,
     pub config: TestMemoryConfig,
+    pub original_name: Option<&'static str>, // Preserves original name for Auto variants (e.g., "StuckBitTestAuto")
 }
 
 // Work item for thread pool
@@ -120,7 +122,7 @@ pub fn run_tests_with_layout_and_timing(
     runtime_config: RuntimeConfig,
     config: Option<&crate::config::ModernConfig>,
 ) -> bool {
-    run_tests_with_layout_and_timing_filtered(layout, error_mode, suite_timing, runtime_config, config, None)
+    run_tests_with_layout_and_timing_filtered(layout, error_mode, suite_timing, runtime_config, config, None, None)
 }
 
 pub fn run_tests_with_layout_and_timing_filtered(
@@ -130,6 +132,7 @@ pub fn run_tests_with_layout_and_timing_filtered(
     runtime_config: RuntimeConfig,
     config: Option<&crate::config::ModernConfig>,
     single_test_filter: Option<&str>,
+    streams_override: Option<usize>,
 ) -> bool {
     setup_signal_handler();
     
@@ -267,7 +270,10 @@ pub fn run_tests_with_layout_and_timing_filtered(
 
     // Apply single test filter if provided
     if let Some(test_name_filter) = single_test_filter {
-        test_definitions.retain(|def| def.actual_name == test_name_filter || def.display_name == test_name_filter);
+        test_definitions.retain(|def| {
+            def.display_name == test_name_filter ||
+            def.original_name == Some(test_name_filter)
+        });
 
         if test_definitions.is_empty() {
             println!("❌ Test '{}' not found. Available tests:", test_name_filter);
@@ -278,6 +284,14 @@ pub fn run_tests_with_layout_and_timing_filtered(
         }
 
         log::info!("🎯 Running single test: {}", test_definitions[0].display_name);
+    }
+
+    // Apply streams override if provided (CLI parameter overrides hard-coded config)
+    if let Some(streams) = streams_override {
+        log::info!("🔧 Applying CLI streams override: {} stream(s)", streams);
+        for def in test_definitions.iter_mut() {
+            def.config.streams = streams as u32;
+        }
     }
 
     let tests_per_cycle = test_definitions.len() as u64;
@@ -399,7 +413,8 @@ fn execute_test_cycle(
 
     let success = Arc::new(AtomicBool::new(true));
     for (test_idx, test_def) in test_definitions.iter().enumerate() {
-        let test_name = test_def.actual_name; // Use actual name for function calls and stats
+        let test_name = test_def.actual_name; // Use actual_name for thread pool (requires 'static)
+        let test_display_name = &test_def.display_name; // Use display_name for results to preserve _A suffix
         let test_func = &test_def.function;
         let test_config = &test_def.config;
         if SHUTDOWN_REQUESTED.load(Ordering::Relaxed) {
@@ -568,7 +583,7 @@ fn execute_test_cycle(
 
         // Create TestSummary for this test and add to cycle collection
         cycle_test_summaries.push(TestSummary {
-            name: test_name.to_string(),
+            name: test_display_name.to_string(), // Use display_name to preserve _A suffix for AUTO tests
             duration_ms: test_duration.as_millis(),
             bytes_processed: total_bytes_for_test,
             throughput_mib_s,
@@ -604,55 +619,31 @@ fn resolve_auto_dispatch_test(test_name: &str) -> Option<(&'static str, TestFunc
     // Determine best SIMD variant based on CPU capabilities
     let (variant_suffix, test_function): (&str, TestFunction) = if is_x86_feature_detected!("avx512f") {
         ("512", match base_name {
-            "MirrorMove" => TestFunction::WithConfig(|ptr, size, tid, em, timing, config| unsafe { 
-                mirror_move_512(ptr, size, tid, em, timing, config) 
-            }),
-            "StuckBitTest" => TestFunction::WithConfig(|ptr, size, tid, em, timing, config| unsafe { 
-                stuck_bit_test_512(ptr, size, tid, em, timing, config) 
-            }),
-            "RefreshStable" => TestFunction::WithConfig(|ptr, size, tid, em, timing, config| unsafe { 
-                refresh_stable_512(ptr, size, tid, em, timing, config) 
-            }),
+            "MirrorMove" => TestFunction::MultiBlock(mirror_move_512_multi),
+            "StuckBitTest" => TestFunction::MultiBlock(stuck_bit_test_512_multi),
+            "RefreshStable" => TestFunction::MultiBlock(refresh_stable_512_multi),
             _ => return None,
         })
     } else if is_x86_feature_detected!("avx2") {
         ("256", match base_name {
-            "MirrorMove" => TestFunction::WithConfig(|ptr, size, tid, em, timing, config| unsafe { 
-                mirror_move_256(ptr, size, tid, em, timing, config) 
-            }),
-            "StuckBitTest" => TestFunction::WithConfig(|ptr, size, tid, em, timing, config| unsafe { 
-                stuck_bit_test_256(ptr, size, tid, em, timing, config) 
-            }),
-            "RefreshStable" => TestFunction::WithConfig(|ptr, size, tid, em, timing, config| unsafe { 
-                refresh_stable_256(ptr, size, tid, em, timing, config) 
-            }),
+            "MirrorMove" => TestFunction::MultiBlock(mirror_move_256_multi),
+            "StuckBitTest" => TestFunction::MultiBlock(stuck_bit_test_256_multi),
+            "RefreshStable" => TestFunction::MultiBlock(refresh_stable_256_multi),
             _ => return None,
         })
     } else if is_x86_feature_detected!("sse2") {
         ("128", match base_name {
-            "MirrorMove" => TestFunction::WithConfig(|ptr, size, tid, em, timing, config| unsafe { 
-                mirror_move_128(ptr, size, tid, em, timing, config) 
-            }),
-            "StuckBitTest" => TestFunction::WithConfig(|ptr, size, tid, em, timing, config| unsafe { 
-                stuck_bit_test_128(ptr, size, tid, em, timing, config) 
-            }),
-            "RefreshStable" => TestFunction::WithConfig(|ptr, size, tid, em, timing, config| unsafe { 
-                refresh_stable_128(ptr, size, tid, em, timing, config) 
-            }),
+            "MirrorMove" => TestFunction::MultiBlock(mirror_move_128_multi),
+            "StuckBitTest" => TestFunction::MultiBlock(stuck_bit_test_128_multi),
+            "RefreshStable" => TestFunction::MultiBlock(refresh_stable_128_multi),
             _ => return None,
         })
     } else {
         // Fallback to scalar version
         ("", match base_name {
-            "MirrorMove" => TestFunction::WithConfig(|ptr, size, tid, em, timing, config| unsafe { 
-                mirror_move(ptr, size, tid, em, timing, config) 
-            }),
-            "StuckBitTest" => TestFunction::WithConfig(|ptr, size, tid, em, timing, config| unsafe { 
-                stuck_bit_test(ptr, size, tid, em, timing, config) 
-            }),
-            "RefreshStable" => TestFunction::WithConfig(|ptr, size, tid, em, timing, config| unsafe { 
-                refresh_stable(ptr, size, tid, em, timing, config) 
-            }),
+            "MirrorMove" => TestFunction::MultiBlock(mirror_move_multi),
+            "StuckBitTest" => TestFunction::MultiBlock(stuck_bit_test_multi),
+            "RefreshStable" => TestFunction::MultiBlock(refresh_stable_multi),
             _ => return None,
         })
     };
@@ -705,20 +696,6 @@ fn create_test_definitions() -> Vec<TestDefinition> {
              .with_memory_type(None)
         ),
 
-        // === StuckBitTest Auto-dispatch (AVX-512 > AVX2 > SSE2 > scalar) ===
-        (
-            "StuckBitTestAuto",
-            TestFunction::MultiBlock(stuck_bit_test_auto_multi),
-            validate_streams(TestMemoryConfig::new(
-                WindowMode::FullAllocation,
-                ChunkMode::WindowFraction { fraction: 0.0625 },
-                false,
-                false
-            ).with_timing(TestTiming::cycles_only(1))
-             .with_streams(1), "StuckBitTestAuto")
-             .with_memory_type(None)
-        ),
-
         // === StuckBitTest SIMD variants ===
         (
             "StuckBitTest128",
@@ -759,6 +736,21 @@ fn create_test_definitions() -> Vec<TestDefinition> {
              .with_memory_type(None)
         ),
 
+        // === StuckBitTest Auto-dispatch (AVX-512 > AVX2 > SSE2 > scalar) ===
+        // Placed last so results match the actual variant performance
+        (
+            "StuckBitTestAuto",
+            TestFunction::MultiBlock(stuck_bit_test_auto_multi),
+            validate_streams(TestMemoryConfig::new(
+                WindowMode::FullAllocation,
+                ChunkMode::WindowFraction { fraction: 0.0625 },
+                false,
+                false
+            ).with_timing(TestTiming::cycles_only(1))
+             .with_streams(1), "StuckBitTestAuto")
+             .with_memory_type(None)
+        ),
+
         // === Base mirror move test (MultiBlock implementation) ===
         (
             "MirrorMove",
@@ -772,22 +764,7 @@ fn create_test_definitions() -> Vec<TestDefinition> {
              .with_streams(1), "MirrorMove")
              .with_memory_type(None)
         ),
-        
-        // === Auto-dispatch SIMD test (resolved at runtime) ===
-        // Auto-dispatches to best SIMD variant at runtime (AVX-512 > AVX2 > SSE2 > scalar)
-        (
-            "MirrorMoveAuto",
-            TestFunction::MultiBlock(mirror_move_auto_multi),
-            validate_streams(TestMemoryConfig::new(
-                WindowMode::FixedSize { size_mb: 64 },
-                ChunkMode::FixedSize { size_mb: 8 },
-                false,
-                true
-            ).with_timing(TestTiming::duration_only(10))
-             .with_streams(1), "MirrorMoveAuto")
-             .with_memory_type(None)
-        ),
-        
+
         // === SIMD variants with different vector sizes ===
         (
             "MirrorMove128",
@@ -801,7 +778,7 @@ fn create_test_definitions() -> Vec<TestDefinition> {
              .with_streams(1), "MirrorMove128")
              .with_memory_type(None)
         ),
-        
+
         (
             "MirrorMove256",
             TestFunction::MultiBlock(mirror_move_256_multi),
@@ -814,7 +791,7 @@ fn create_test_definitions() -> Vec<TestDefinition> {
              .with_streams(2), "MirrorMove256")
              .with_memory_type(None)
         ),
-        
+
         (
             "MirrorMove512",
             TestFunction::MultiBlock(mirror_move_512_multi),
@@ -825,6 +802,22 @@ fn create_test_definitions() -> Vec<TestDefinition> {
                 true
             ).with_timing(TestTiming::duration_only(10))
              .with_streams(4), "MirrorMove512")
+             .with_memory_type(None)
+        ),
+
+        // === Auto-dispatch SIMD test (resolved at runtime) ===
+        // Auto-dispatches to best SIMD variant at runtime (AVX-512 > AVX2 > SSE2 > scalar)
+        // Placed last so results match the actual variant performance
+        (
+            "MirrorMoveAuto",
+            TestFunction::MultiBlock(mirror_move_auto_multi),
+            validate_streams(TestMemoryConfig::new(
+                WindowMode::FixedSize { size_mb: 64 },
+                ChunkMode::FixedSize { size_mb: 8 },
+                false,
+                true
+            ).with_timing(TestTiming::duration_only(10))
+             .with_streams(1), "MirrorMoveAuto")
              .with_memory_type(None)
         ),
         
@@ -841,13 +834,11 @@ fn create_test_definitions() -> Vec<TestDefinition> {
              .with_streams(1), "SimpleTest")
              .with_memory_type(None)
         ),
-        
-        // === Refresh stability test ===
+
+        // === Refresh stability tests (MultiBlock implementations) ===
         (
             "RefreshStable",
-            TestFunction::WithConfig(|ptr, size, tid, em, timing, config| unsafe {
-                refresh_stable(ptr, size, tid, em, timing, config)
-            }),
+            TestFunction::MultiBlock(refresh_stable_multi),
             validate_streams(TestMemoryConfig::new(
                 WindowMode::CacheRelative { multiplier: 2.0 },
                 ChunkMode::FixedSize { size_mb: 2048 },
@@ -857,7 +848,61 @@ fn create_test_definitions() -> Vec<TestDefinition> {
              .with_streams(1), "RefreshStable")
              .with_memory_type(None)
         ),
-        
+
+        (
+            "RefreshStable128",
+            TestFunction::MultiBlock(refresh_stable_128_multi),
+            validate_streams(TestMemoryConfig::new(
+                WindowMode::CacheRelative { multiplier: 2.0 },
+                ChunkMode::FixedSize { size_mb: 2048 },
+                false,
+                true
+            ).with_timing(TestTiming::duration_only(15))
+             .with_streams(1), "RefreshStable128")
+             .with_memory_type(None)
+        ),
+
+        (
+            "RefreshStable256",
+            TestFunction::MultiBlock(refresh_stable_256_multi),
+            validate_streams(TestMemoryConfig::new(
+                WindowMode::CacheRelative { multiplier: 2.0 },
+                ChunkMode::FixedSize { size_mb: 2048 },
+                false,
+                true
+            ).with_timing(TestTiming::duration_only(15))
+             .with_streams(1), "RefreshStable256")
+             .with_memory_type(None)
+        ),
+
+        (
+            "RefreshStable512",
+            TestFunction::MultiBlock(refresh_stable_512_multi),
+            validate_streams(TestMemoryConfig::new(
+                WindowMode::CacheRelative { multiplier: 2.0 },
+                ChunkMode::FixedSize { size_mb: 2048 },
+                false,
+                true
+            ).with_timing(TestTiming::duration_only(15))
+             .with_streams(1), "RefreshStable512")
+             .with_memory_type(None)
+        ),
+
+        // === RefreshStable Auto-dispatch (AVX-512 > AVX2 > SSE2 > scalar) ===
+        // Placed last so results match the actual variant performance
+        (
+            "RefreshStableAuto",
+            TestFunction::MultiBlock(refresh_stable_auto_multi),
+            validate_streams(TestMemoryConfig::new(
+                WindowMode::CacheRelative { multiplier: 2.0 },
+                ChunkMode::FixedSize { size_mb: 2048 },
+                false,
+                true
+            ).with_timing(TestTiming::duration_only(15))
+             .with_streams(1), "RefreshStableAuto")
+             .with_memory_type(None)
+        ),
+
         // === Performance stress tests ===
         (
             "CacheBusting",
@@ -945,6 +990,7 @@ fn create_test_definitions() -> Vec<TestDefinition> {
                 display_name: format!("{}_A", resolved_name), // Add _A suffix for auto-dispatch
                 function: resolved_function,
                 config,
+                original_name: Some(test_name), // Preserve original "StuckBitTestAuto" name
             });
         } else {
             resolved_tests.push(TestDefinition {
@@ -952,6 +998,7 @@ fn create_test_definitions() -> Vec<TestDefinition> {
                 display_name: test_name.to_string(),
                 function: test_function,
                 config,
+                original_name: None,
             });
         }
     }
@@ -988,11 +1035,14 @@ fn create_test_definitions_from_config(config: &crate::config::ModernConfig) -> 
         // Check for auto-dispatch
         if let Some((resolved_name, resolved_function)) = resolve_auto_dispatch_test(test_name) {
             log::info!("Auto-dispatch: {} → {} (based on CPU capabilities)", test_name, resolved_name);
+            // Convert to 'static str by leaking (safe for test names, small and finite set)
+            let static_original_name: &'static str = Box::leak(test_name.to_string().into_boxed_str());
             resolved_tests.push(TestDefinition {
                 actual_name: resolved_name,
                 display_name: format!("{}_A", resolved_name),
                 function: resolved_function,
                 config: test_config,
+                original_name: Some(static_original_name), // Preserve original Auto name
             });
         } else {
             // Convert to 'static str by leaking (safe for test names, small and finite set)
@@ -1002,6 +1052,7 @@ fn create_test_definitions_from_config(config: &crate::config::ModernConfig) -> 
                 display_name: test_name.to_string(),
                 function: test_function,
                 config: test_config,
+                original_name: None,
             });
         }
     }
