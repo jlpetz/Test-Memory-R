@@ -141,7 +141,7 @@ pub fn run_tests_with_layout_and_timing_filtered(
 
     let progress = Arc::new(ProgressTracker::new());
     let success = Arc::new(AtomicBool::new(true));
-	let all_test_cpu_stats: Arc<Mutex<HashMap<String, Vec<(usize, usize, u64, u128, u64, u64)>>>> = Arc::new(Mutex::new(HashMap::new()));
+	let all_test_cpu_stats: Arc<Mutex<HashMap<String, Vec<(usize, usize, u64, u128, u64, u64, u32)>>>> = Arc::new(Mutex::new(HashMap::new()));
 
     let mut thread_blocks: HashMap<usize, Vec<BlockInfo>> = HashMap::new();
     for block in layout.blocks {
@@ -425,7 +425,7 @@ fn execute_test_cycle(
     error_mode: ErrorMode,
     progress: &Arc<ProgressTracker>,
     test_run_result: &Arc<Mutex<TestRunResult>>,
-    all_test_cpu_stats: &Arc<Mutex<HashMap<String, Vec<(usize, usize, u64, u128, u64, u64)>>>>,
+    all_test_cpu_stats: &Arc<Mutex<HashMap<String, Vec<(usize, usize, u64, u128, u64, u64, u32)>>>>,
     cycle: u64,
 ) {
     use crate::progress::TestSummary;
@@ -478,20 +478,27 @@ fn execute_test_cycle(
 						.iter()
 						.find(|(tid, _, _)| *tid == result.thread_id)
 					{
-						// Store simplified stats: (thread_id, cpu_id, bytes, elapsed, errors, operations)
+						// Store simplified stats: (thread_id, cpu_id, bytes, elapsed, errors, operations, cycles_completed)
 						test_stats.push((result.thread_id, cpu_id,
-									   result.total_bytes, result.elapsed_ms, result.total_errors, result.total_operations));
+									   result.total_bytes, result.elapsed_ms, result.total_errors, result.total_operations,
+									   result.cycles_completed));
 					}
 
 					total_bytes_for_test += result.total_bytes;
 					total_errors_for_test += result.total_errors;
 					total_operations_for_test += result.total_operations;
 
-					// Track cycle info from first thread (all should be similar)
-					if cycles_completed == 0 {
+					// Track maximum cycle count (to detect if any thread hit the limit)
+					if result.cycles_completed > cycles_completed {
 						cycles_completed = result.cycles_completed;
+					}
+					// Track cycle limit from first thread (same for all)
+					if cycle_limit.is_none() {
 						cycle_limit = result.cycle_limit;
-						stopped_by_time_limit = result.stopped_by_time_limit;
+					}
+					// Track if ANY thread was stopped by time limit
+					if result.stopped_by_time_limit {
+						stopped_by_time_limit = true;
 					}
 					
 					if result.total_errors > 0 {
@@ -1301,7 +1308,7 @@ fn allocate_all_blocks_new(thread_blocks: &HashMap<usize, Vec<BlockInfo>>, runti
     allocator.chunk_allocate_planned(thread_blocks, runtime_config, strategy)
 }
 
-fn print_detailed_cpu_performance_summary(_final_stats: &HashMap<String, Vec<(usize, usize, u64, u128, u64, u64)>>, _suite_duration: std::time::Duration) {
+fn print_detailed_cpu_performance_summary(_final_stats: &HashMap<String, Vec<(usize, usize, u64, u128, u64, u64, u32)>>, _suite_duration: std::time::Duration) {
     println!("CPU Performance Summary:");
     for (test_name, stats) in _final_stats {
         println!("  {}: {} thread results", test_name, stats.len());

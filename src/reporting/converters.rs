@@ -737,7 +737,7 @@ fn calculate_allocation_fairness(
 /// Convert thread stats to thread timing report
 pub fn create_thread_timing_report(
     test_name: &str,
-    stats: &[(usize, usize, u64, u128, u64, u64)],  // (thread_id, cpu_id, bytes, elapsed_ms, errors, operations)
+    stats: &[(usize, usize, u64, u128, u64, u64, u32)],  // (thread_id, cpu_id, bytes, elapsed_ms, errors, operations, cycles_completed)
 ) -> super::models::ThreadTimingReport {
     use super::models::{ThreadTimingReport, ThreadTiming};
 
@@ -750,14 +750,14 @@ pub fn create_thread_timing_report(
     }
 
     // Calculate averages
-    let total_elapsed: u128 = stats.iter().map(|(_, _, _, elapsed, _, _)| *elapsed).sum();
+    let total_elapsed: u128 = stats.iter().map(|(_, _, _, elapsed, _, _, _)| *elapsed).sum();
     let avg_elapsed = total_elapsed / stats.len() as u128;
 
-    let total_bytes: u64 = stats.iter().map(|(_, _, bytes, _, _, _)| *bytes).sum();
+    let total_bytes: u64 = stats.iter().map(|(_, _, bytes, _, _, _, _)| *bytes).sum();
     let avg_bytes = total_bytes / stats.len() as u64;
 
     // Build thread timing entries with deviations
-    let mut thread_timings: Vec<ThreadTiming> = stats.iter().map(|&(thread_id, cpu_id, bytes, elapsed, errors, _operations)| {
+    let mut thread_timings: Vec<ThreadTiming> = stats.iter().map(|&(thread_id, cpu_id, bytes, elapsed, errors, _operations, cycles_completed)| {
         let deviation_ms = elapsed as i128 - avg_elapsed as i128;
         let deviation_data_bytes = bytes as i64 - avg_bytes as i64;
 
@@ -784,6 +784,7 @@ pub fn create_thread_timing_report(
             throughput_mib_s,
             deviation_speed_mib_s: 0.0, // Will calculate after we know avg speed
             errors,
+            cycles_completed,
         }
     }).collect();
 

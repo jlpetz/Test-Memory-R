@@ -376,6 +376,7 @@ impl ReportFormatter for DefaultFormatter {
             .add_header("Dev D", ColumnAlignment::Right)
             .add_header("Speed", ColumnAlignment::Right)
             .add_header("Dev S", ColumnAlignment::Right)
+            .add_header("Cycles", ColumnAlignment::Right)
             .add_header("Errors", ColumnAlignment::Right);
 
         for timing in &report.thread_timings {
@@ -408,6 +409,7 @@ impl ReportFormatter for DefaultFormatter {
                 deviation_data_str,
                 format!("{:.1} MiB/s", timing.throughput_mib_s),
                 deviation_speed_str,
+                timing.cycles_completed.to_string(),
                 if timing.errors > 0 { format!("{}", timing.errors) } else { "✅".to_string() },
             ]);
         }
@@ -421,6 +423,9 @@ impl ReportFormatter for DefaultFormatter {
                 .map(|t| t.throughput_mib_s)
                 .sum::<f64>() / report.thread_timings.len() as f64;
             let total_errors: u64 = report.thread_timings.iter().map(|t| t.errors).sum();
+            let avg_cycles = report.thread_timings.iter()
+                .map(|t| t.cycles_completed as f64)
+                .sum::<f64>() / report.thread_timings.len() as f64;
 
             table = table.add_row(vec![
                 "Avg".to_string(),
@@ -433,6 +438,7 @@ impl ReportFormatter for DefaultFormatter {
                 "".to_string(),
                 format!("{:.1} MiB/s", avg_speed),
                 "".to_string(),
+                format!("{:.1}", avg_cycles), // Cycles column - show average
                 if total_errors > 0 { format!("{}", total_errors) } else { "✅".to_string() },
             ]);
         }

@@ -244,6 +244,7 @@ pub struct ThreadTiming {
     pub throughput_mib_s: f64,
     pub deviation_speed_mib_s: f64,
     pub errors: u64,
+    pub cycles_completed: u32,
 }
 
 /// Per-thread allocation breakdown

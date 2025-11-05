@@ -54,7 +54,7 @@ pub struct WorkerContext {
     pub result_sender: Sender<WorkResult>,
 }
 
-pub type TestStatsTuple = (usize, usize, u64, u128, u64, u64); // thread_id, cpu_id, bytes, elapsed, errors, operations
+pub type TestStatsTuple = (usize, usize, u64, u128, u64, u64, u32); // thread_id, cpu_id, bytes, elapsed, errors, operations, cycles_completed
 
 // Thread pool for persistent workers
 pub struct ThreadPool {
