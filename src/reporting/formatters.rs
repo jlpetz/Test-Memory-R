@@ -11,7 +11,10 @@ pub trait ReportFormatter: Send + Sync {
     
     /// Format bytes with specific precision
     fn format_bytes_precise(&self, bytes: u64, precision: usize) -> String;
-    
+
+    /// Format signed bytes with +/- prefix (eg. "+1.23 GiB" or "-0.50 GiB")
+    fn format_bytes_signed(&self, bytes: i64) -> String;
+
     /// Format percentage
     fn format_percentage(&self, value: f64) -> String;
     
@@ -154,7 +157,41 @@ impl ReportFormatter for DefaultFormatter {
         
         format!("{:.precision$} {}", value, unit, precision = precision)
     }
-    
+
+    fn format_bytes_signed(&self, bytes: i64) -> String {
+        let sign = if bytes >= 0 { "+" } else { "" };  // Negative sign is automatic
+        let abs_bytes = bytes.abs() as u64;
+        let (value, unit) = if self.use_binary_units {
+            // Binary units (GiB, MiB, KiB)
+            if abs_bytes >= 1024_u64.pow(3) {
+                (bytes as f64 / 1024_f64.powi(3), "GiB")
+            } else if abs_bytes >= 1024_u64.pow(2) {
+                (bytes as f64 / 1024_f64.powi(2), "MiB")
+            } else if abs_bytes >= 1024 {
+                (bytes as f64 / 1024_f64, "KiB")
+            } else {
+                (bytes as f64, "B")
+            }
+        } else {
+            // Decimal units (GB, MB, KB)
+            if abs_bytes >= 1000_u64.pow(3) {
+                (bytes as f64 / 1000_f64.powi(3), "GB")
+            } else if abs_bytes >= 1000_u64.pow(2) {
+                (bytes as f64 / 1000_f64.powi(2), "MB")
+            } else if abs_bytes >= 1000 {
+                (bytes as f64 / 1000_f64, "KB")
+            } else {
+                (bytes as f64, "B")
+            }
+        };
+
+        if bytes >= 0 {
+            format!("{}{:.2} {}", sign, value, unit)
+        } else {
+            format!("{:.2} {}", value, unit)  // Negative sign already in value
+        }
+    }
+
     fn format_percentage(&self, value: f64) -> String {
         format!("{:.1}%", value)
     }
@@ -586,76 +623,214 @@ impl ReportFormatter for DefaultFormatter {
         let mut table = TableData::new()
             .with_title("Performance by Thread")
             .add_header("Thread", ColumnAlignment::Right)
-            .add_header("Logical CPU", ColumnAlignment::Right)
-            .add_header("Physical Core", ColumnAlignment::Right)
+            .add_header("L CPU", ColumnAlignment::Right)
+            .add_header("P Core", ColumnAlignment::Right)
             .add_header("NUMA", ColumnAlignment::Center)
-            .add_header("Total Time", ColumnAlignment::Right)
-            .add_header("Throughput", ColumnAlignment::Right)
+            .add_header("Time", ColumnAlignment::Right)
+            .add_header("Dev T", ColumnAlignment::Right)
+            .add_header("Data", ColumnAlignment::Right)
+            .add_header("Dev D", ColumnAlignment::Right)
+            .add_header("Speed", ColumnAlignment::Right)
+            .add_header("Dev S", ColumnAlignment::Right)
             .add_header("Errors", ColumnAlignment::Right);
-        
+
+        // Calculate averages for variance
+        let avg_time_ms = if !report.threads.is_empty() {
+            report.threads.iter().map(|t| t.total_time_ms).sum::<u128>() / report.threads.len() as u128
+        } else {
+            0
+        };
+        let avg_bytes = if !report.threads.is_empty() {
+            report.threads.iter().map(|t| t.total_bytes).sum::<u64>() / report.threads.len() as u64
+        } else {
+            0
+        };
+        let avg_speed = if !report.threads.is_empty() {
+            report.threads.iter().map(|t| t.throughput_mib_s).sum::<f64>() / report.threads.len() as f64
+        } else {
+            0.0
+        };
+
         for thread in &report.threads {
+            let dev_time_ms = thread.total_time_ms as i128 - avg_time_ms as i128;
+            let dev_bytes = thread.total_bytes as i64 - avg_bytes as i64;
+            let dev_speed = thread.throughput_mib_s - avg_speed;
+
             table = table.add_row(vec![
                 thread.thread_id.to_string(),
                 format!("{}", thread.cpu_id),
                 format!("{}", thread.physical_core_id),
                 format!("{}", thread.numa_node),
                 self.format_duration(Duration::from_millis(thread.total_time_ms as u64)),
+                format!("{:+.1}s", dev_time_ms as f64 / 1000.0),
+                self.format_bytes(thread.total_bytes),
+                self.format_bytes_signed(dev_bytes),
                 format!("{:.1} MiB/s", thread.throughput_mib_s),
+                format!("{:+.1}", dev_speed),
                 if thread.total_errors > 0 { format!("{}", thread.total_errors) } else { "✅".to_string() },
             ]);
         }
-        
+
+        // Add average row
+        if !report.threads.is_empty() {
+            let total_errors: u64 = report.threads.iter().map(|t| t.total_errors).sum();
+            table = table.add_row(vec![
+                "Avg".to_string(),
+                "".to_string(),
+                "".to_string(),
+                "".to_string(),
+                self.format_duration(Duration::from_millis(avg_time_ms as u64)),
+                "".to_string(),
+                self.format_bytes(avg_bytes),
+                "".to_string(),
+                format!("{:.1} MiB/s", avg_speed),
+                "".to_string(),
+                if total_errors > 0 { format!("{}", total_errors) } else { "✅".to_string() },
+            ]);
+        }
+
         table
     }
     
     fn prepare_performance_by_cpu_table(&self, report: &PerformanceByCpuReport) -> TableData {
         let mut table = TableData::new()
             .with_title("Performance by CPU")
-            .add_header("Logical CPU", ColumnAlignment::Right)
-            .add_header("Physical Core", ColumnAlignment::Right)
+            .add_header("L CPU", ColumnAlignment::Right)
+            .add_header("P Core", ColumnAlignment::Right)
             .add_header("NUMA", ColumnAlignment::Center)
-            .add_header("Total Time", ColumnAlignment::Right)
-            .add_header("Throughput", ColumnAlignment::Right)
+            .add_header("Time", ColumnAlignment::Right)
+            .add_header("Dev T", ColumnAlignment::Right)
+            .add_header("Data", ColumnAlignment::Right)
+            .add_header("Dev D", ColumnAlignment::Right)
+            .add_header("Speed", ColumnAlignment::Right)
+            .add_header("Dev S", ColumnAlignment::Right)
             .add_header("Errors", ColumnAlignment::Right);
-        
+
+        // Calculate averages for variance
+        let avg_time_ms = if !report.cpus.is_empty() {
+            report.cpus.iter().map(|c| c.total_time_ms).sum::<u128>() / report.cpus.len() as u128
+        } else {
+            0
+        };
+        let avg_bytes = if !report.cpus.is_empty() {
+            report.cpus.iter().map(|c| c.total_bytes).sum::<u64>() / report.cpus.len() as u64
+        } else {
+            0
+        };
+        let avg_speed = if !report.cpus.is_empty() {
+            report.cpus.iter().map(|c| c.throughput_mib_s).sum::<f64>() / report.cpus.len() as f64
+        } else {
+            0.0
+        };
+
         for cpu in &report.cpus {
+            let dev_time_ms = cpu.total_time_ms as i128 - avg_time_ms as i128;
+            let dev_bytes = cpu.total_bytes as i64 - avg_bytes as i64;
+            let dev_speed = cpu.throughput_mib_s - avg_speed;
+
             table = table.add_row(vec![
                 format!("{}", cpu.cpu_id),
                 format!("{}", cpu.physical_core_id),
                 format!("{}", cpu.numa_node),
                 self.format_duration(Duration::from_millis(cpu.total_time_ms as u64)),
+                format!("{:+.1}s", dev_time_ms as f64 / 1000.0),
+                self.format_bytes(cpu.total_bytes),
+                self.format_bytes_signed(dev_bytes),
                 format!("{:.1} MiB/s", cpu.throughput_mib_s),
+                format!("{:+.1}", dev_speed),
                 if cpu.total_errors > 0 { format!("{}", cpu.total_errors) } else { "✅".to_string() },
             ]);
         }
-        
+
+        // Add average row
+        if !report.cpus.is_empty() {
+            let total_errors: u64 = report.cpus.iter().map(|c| c.total_errors).sum();
+            table = table.add_row(vec![
+                "Avg".to_string(),
+                "".to_string(),
+                "".to_string(),
+                self.format_duration(Duration::from_millis(avg_time_ms as u64)),
+                "".to_string(),
+                self.format_bytes(avg_bytes),
+                "".to_string(),
+                format!("{:.1} MiB/s", avg_speed),
+                "".to_string(),
+                if total_errors > 0 { format!("{}", total_errors) } else { "✅".to_string() },
+            ]);
+        }
+
         table
     }
     
     fn prepare_performance_by_physical_core_table(&self, report: &PerformanceByPhysicalCoreReport) -> TableData {
         let mut table = TableData::new()
             .with_title("Performance by Physical Core")
-            .add_header("Physical Core", ColumnAlignment::Center)
-            .add_header("Logical CPUs", ColumnAlignment::Center)
-            .add_header("Total Time", ColumnAlignment::Right)
-            .add_header("Throughput", ColumnAlignment::Right)
+            .add_header("P Core", ColumnAlignment::Center)
+            .add_header("L CPUs", ColumnAlignment::Center)
+            .add_header("Time", ColumnAlignment::Right)
+            .add_header("Dev T", ColumnAlignment::Right)
+            .add_header("Data", ColumnAlignment::Right)
+            .add_header("Dev D", ColumnAlignment::Right)
+            .add_header("Speed", ColumnAlignment::Right)
+            .add_header("Dev S", ColumnAlignment::Right)
             .add_header("Errors", ColumnAlignment::Right);
-        
+
+        // Calculate averages for variance
+        let avg_time_ms = if !report.cores.is_empty() {
+            report.cores.iter().map(|c| c.total_time_ms).sum::<u128>() / report.cores.len() as u128
+        } else {
+            0
+        };
+        let avg_bytes = if !report.cores.is_empty() {
+            report.cores.iter().map(|c| c.total_bytes).sum::<u64>() / report.cores.len() as u64
+        } else {
+            0
+        };
+        let avg_speed = if !report.cores.is_empty() {
+            report.cores.iter().map(|c| c.throughput_mib_s).sum::<f64>() / report.cores.len() as f64
+        } else {
+            0.0
+        };
+
         for core in &report.cores {
             let cpu_list = core.logical_cpus.iter()
                 .map(|cpu| cpu.to_string())
                 .collect::<Vec<_>>()
                 .join(",");
-            
+
+            let dev_time_ms = core.total_time_ms as i128 - avg_time_ms as i128;
+            let dev_bytes = core.total_bytes as i64 - avg_bytes as i64;
+            let dev_speed = core.throughput_mib_s - avg_speed;
+
             table = table.add_row(vec![
                 format!("{}", core.core_id),
                 cpu_list,
                 self.format_duration(Duration::from_millis(core.total_time_ms as u64)),
+                format!("{:+.1}s", dev_time_ms as f64 / 1000.0),
+                self.format_bytes(core.total_bytes),
+                self.format_bytes_signed(dev_bytes),
                 format!("{:.1} MiB/s", core.throughput_mib_s),
+                format!("{:+.1}", dev_speed),
                 if core.total_errors > 0 { format!("{}", core.total_errors) } else { "✅".to_string() },
             ]);
         }
-        
+
+        // Add average row
+        if !report.cores.is_empty() {
+            let total_errors: u64 = report.cores.iter().map(|c| c.total_errors).sum();
+            table = table.add_row(vec![
+                "Avg".to_string(),
+                "".to_string(),
+                self.format_duration(Duration::from_millis(avg_time_ms as u64)),
+                "".to_string(),
+                self.format_bytes(avg_bytes),
+                "".to_string(),
+                format!("{:.1} MiB/s", avg_speed),
+                "".to_string(),
+                if total_errors > 0 { format!("{}", total_errors) } else { "✅".to_string() },
+            ]);
+        }
+
         table
     }
     
@@ -952,8 +1127,8 @@ impl ReportFormatter for DefaultFormatter {
     fn prepare_cpu_variance_table(&self, report: &CpuVarianceReport) -> TableData {
         let mut table = TableData::new()
             .with_title("CPU Performance Variance")
-            .add_header("CPU ID", ColumnAlignment::Right)
-            .add_header("Throughput", ColumnAlignment::Right)
+            .add_header("L CPU", ColumnAlignment::Right)
+            .add_header("Speed", ColumnAlignment::Right)
             .add_header("Variance", ColumnAlignment::Right)
             .add_header("Test Count", ColumnAlignment::Right)
             .add_header("Status", ColumnAlignment::Center);

@@ -373,7 +373,7 @@ pub fn run_tests_with_layout_and_timing_filtered(
     }
 
     // Shutdown thread pool and capture allocations for explicit cleanup
-    let (thread_blocks, _cpu_assignments) = thread_pool.shutdown();
+    let (thread_blocks, cpu_assignments) = thread_pool.shutdown();
 
     // Calculate total memory to be freed for logging
     let total_blocks: usize = thread_blocks.values().map(|v| v.len()).sum();
@@ -396,7 +396,7 @@ pub fn run_tests_with_layout_and_timing_filtered(
     // Create final performance summary with detailed per-CPU stats
     let final_stats = all_test_cpu_stats.lock().unwrap();
     if !final_stats.is_empty() {
-        print_detailed_cpu_performance_summary(&final_stats, suite_duration);
+        print_detailed_cpu_performance_summary(&final_stats, &cpu_assignments, suite_duration);
     }
 
     let final_success = success.load(Ordering::Relaxed);
@@ -1308,10 +1308,136 @@ fn allocate_all_blocks_new(thread_blocks: &HashMap<usize, Vec<BlockInfo>>, runti
     allocator.chunk_allocate_planned(thread_blocks, runtime_config, strategy)
 }
 
-fn print_detailed_cpu_performance_summary(_final_stats: &HashMap<String, Vec<(usize, usize, u64, u128, u64, u64, u32)>>, _suite_duration: std::time::Duration) {
-    println!("CPU Performance Summary:");
-    for (test_name, stats) in _final_stats {
-        println!("  {}: {} thread results", test_name, stats.len());
+fn print_detailed_cpu_performance_summary(
+    final_stats: &HashMap<String, Vec<(usize, usize, u64, u128, u64, u64, u32)>>,
+    cpu_assignments: &[(usize, usize, u32)],  // (thread_id, logical_cpu, numa_node)
+    _suite_duration: std::time::Duration
+) {
+    use crate::reporting::{Reporter, models::*, formatters::DefaultFormatter, renderers::ConsoleRenderer};
+    use crate::cpu_topology::get_cpu_topology;
+    use std::collections::HashMap;
+
+    println!("\n=== CPU Performance Summary ===");
+
+    // Get CPU topology for physical core ID lookup
+    let topology = get_cpu_topology();
+
+    // Aggregate stats across ALL tests by thread_id
+    let mut thread_aggregates: HashMap<usize, (u64, u128, u64)> = HashMap::new();  // (bytes, time_ms, errors)
+
+    for (_test_name, stats) in final_stats {
+        for &(thread_id, _cpu_id, bytes, elapsed_ms, errors, _operations, _cycles) in stats {
+            let entry = thread_aggregates.entry(thread_id).or_insert((0, 0, 0));
+            entry.0 += bytes;
+            entry.1 += elapsed_ms;
+            entry.2 += errors;
+        }
+    }
+
+    // Build PerformanceByThreadReport
+    let mut threads = Vec::new();
+    for &(thread_id, cpu_id, numa_node) in cpu_assignments {
+        if let Some(&(total_bytes, total_time_ms, total_errors)) = thread_aggregates.get(&thread_id) {
+            // Look up physical core ID from topology
+            let physical_core_id = topology.iter()
+                .find(|cpu| cpu.logical_id == cpu_id)
+                .map(|cpu| cpu.physical_core_id)
+                .unwrap_or(cpu_id);  // Fallback to logical ID if not found
+
+            let throughput_mib_s = if total_time_ms > 0 {
+                (total_bytes as f64 / (1024.0 * 1024.0)) / (total_time_ms as f64 / 1000.0)
+            } else {
+                0.0
+            };
+
+            threads.push(ThreadPerformance {
+                thread_id,
+                cpu_id,
+                physical_core_id,
+                numa_node,
+                total_time_ms,
+                total_bytes,
+                throughput_mib_s,
+                total_errors,
+            });
+        }
+    }
+    threads.sort_by_key(|t| t.thread_id);
+
+    // Build PerformanceByCpuReport (aggregate by logical CPU)
+    let mut cpu_aggregates: HashMap<usize, (usize, u32, u64, u128, u64)> = HashMap::new();  // (physical_core, numa, bytes, time, errors)
+    for thread in &threads {
+        let entry = cpu_aggregates.entry(thread.cpu_id).or_insert((thread.physical_core_id, thread.numa_node, 0, 0, 0));
+        entry.2 += thread.total_bytes;
+        entry.3 += thread.total_time_ms;
+        entry.4 += thread.total_errors;
+    }
+
+    let mut cpus: Vec<CpuPerformance> = cpu_aggregates.iter().map(|(&cpu_id, &(physical_core_id, numa_node, total_bytes, total_time_ms, total_errors))| {
+        let throughput_mib_s = if total_time_ms > 0 {
+            (total_bytes as f64 / (1024.0 * 1024.0)) / (total_time_ms as f64 / 1000.0)
+        } else {
+            0.0
+        };
+        CpuPerformance {
+            cpu_id,
+            physical_core_id,
+            numa_node,
+            total_time_ms,
+            total_bytes,
+            throughput_mib_s,
+            total_errors,
+        }
+    }).collect();
+    cpus.sort_by_key(|c| c.cpu_id);
+
+    // Build PerformanceByPhysicalCoreReport (aggregate by physical core)
+    let mut core_aggregates: HashMap<usize, (Vec<usize>, u64, u128, u64)> = HashMap::new();  // (logical_cpus, bytes, time, errors)
+    for cpu in &cpus {
+        let entry = core_aggregates.entry(cpu.physical_core_id).or_insert((Vec::new(), 0, 0, 0));
+        if !entry.0.contains(&cpu.cpu_id) {
+            entry.0.push(cpu.cpu_id);
+        }
+        entry.1 += cpu.total_bytes;
+        entry.2 += cpu.total_time_ms;
+        entry.3 += cpu.total_errors;
+    }
+
+    let mut cores: Vec<PhysicalCorePerformance> = core_aggregates.iter().map(|(&core_id, (logical_cpus, total_bytes, total_time_ms, total_errors))| {
+        let throughput_mib_s = if *total_time_ms > 0 {
+            (*total_bytes as f64 / (1024.0 * 1024.0)) / (*total_time_ms as f64 / 1000.0)
+        } else {
+            0.0
+        };
+        let mut logical_cpus_sorted = logical_cpus.clone();
+        logical_cpus_sorted.sort();
+        PhysicalCorePerformance {
+            core_id,
+            logical_cpus: logical_cpus_sorted,
+            total_time_ms: *total_time_ms,
+            total_bytes: *total_bytes,
+            throughput_mib_s,
+            total_errors: *total_errors,
+        }
+    }).collect();
+    cores.sort_by_key(|c| c.core_id);
+
+    // Display all reports using the reporting system (with variance columns built-in)
+    let mut reporter = Reporter::new(Box::new(DefaultFormatter::new()), ConsoleRenderer::new());
+
+    if !threads.is_empty() {
+        let report = PerformanceByThreadReport { threads };
+        let _ = reporter.report_performance_by_thread(&report);
+    }
+
+    if !cpus.is_empty() {
+        let report = PerformanceByCpuReport { cpus };
+        let _ = reporter.report_performance_by_cpu(&report);
+    }
+
+    if !cores.is_empty() {
+        let report = PerformanceByPhysicalCoreReport { cores };
+        let _ = reporter.report_performance_by_physical_core(&report);
     }
 }
 
