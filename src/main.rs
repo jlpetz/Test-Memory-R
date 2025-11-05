@@ -658,7 +658,17 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     println!("Starting comprehensive memory tests... Use CTRL+C for graceful shutdown with final report");
     println!("(detailed logs available with RUST_LOG=debug)");
     println!();
-	
+
+	// Register CTRL+C handler for graceful shutdown
+	// This allows tests to stop at next checkpoint and print final reports
+	ctrlc::set_handler(move || {
+		use std::sync::atomic::Ordering;
+		println!("\n\n🛑 CTRL+C received - initiating graceful shutdown...");
+		println!("   Tests will stop at next checkpoint and print final report");
+		println!("   (Press CTRL+C again to force immediate exit)\n");
+		tmr::runner::SHUTDOWN_REQUESTED.store(true, Ordering::Relaxed);
+	}).expect("Error setting CTRL+C handler");
+
 	let mut runtime_config = detect_runtime_capabilities(&alloc_config);
 	runtime_config.cpu_list = Some(cpu_list);
 	runtime_config.enhanced_memory_strategy = enhanced_memory_strategy.clone();
