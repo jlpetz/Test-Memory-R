@@ -4790,68 +4790,184 @@ pub unsafe fn block_move_multi(
     let mut total_bytes_processed = 0usize;
     let mut last_progress_update = Instant::now();
 
+    // Initialize source memory in each block
+    let pattern_base = 0xDEADBEEFCAFEBABEu64;
     for test_block in test_blocks.iter() {
-        let base = test_block.block.buffer.as_mut_ptr() as *mut u64;
-        let len = test_block.test_size / std::mem::size_of::<u64>();
+        // Divide block in half: first half = source, second half = destination
+        let half_size = test_block.test_size / 2;
+        let src_base = test_block.block.buffer.as_mut_ptr() as *mut u64;
+        let len = half_size / std::mem::size_of::<u64>();
+
+        // Initialize source with pattern
         for i in 0..len {
-            *base.add(i) = i as u64;
+            *src_base.add(i) = pattern_base.wrapping_add(i as u64);
         }
     }
+    std::sync::atomic::fence(Ordering::SeqCst);
 
     loop {
         cycle += 1;
         let mut cycle_errors = 0u64;
-        let pattern = 0xDEADBEEFCAFEBABEu64.wrapping_add(thread_id as u64).wrapping_add(cycle as u64);
 
         for test_block in test_blocks.iter() {
-            let base = test_block.block.buffer.as_mut_ptr() as *mut u64;
-            let len = test_block.test_size / std::mem::size_of::<u64>();
-            let block_size = 1024usize;
+            // Divide block: source (first half) → destination (second half)
+            let half_size = test_block.test_size / 2;
+            let src_base = test_block.block.buffer.as_mut_ptr() as *mut u64;
+            let dst_base = src_base.add(half_size / std::mem::size_of::<u64>());
+            let len = half_size / std::mem::size_of::<u64>();
 
-            for block_start in (0..len).step_by(block_size) {
-                let block_end = (block_start + block_size).min(len);
-                for i in block_start..block_end {
-                    *base.add(i) = pattern.wrapping_add(i as u64);
+            // Calculate chunk size for responsive shutdown
+            let ideal_chunk_size = calculate_ideal_chunk_size(config, test_name, test_block.test_size);
+            let chunk_size_bytes = get_safe_chunk_size(ideal_chunk_size, test_block.test_size);
+            let chunk_size_operations = chunk_size_bytes / (2 * std::mem::size_of::<u64>());
+
+            // Process in chunks
+            let mut processed = 0;
+            while processed < len {
+                let chunk_end = (processed + chunk_size_operations).min(len);
+
+                // Copy from source to destination with stream patterns
+                match config.streams {
+                    1 => {
+                        // Single stream: Simple forward copy
+                        for i in processed..chunk_end {
+                            let val = *src_base.add(i);
+                            *dst_base.add(i) = val;
+                        }
+                    }
+                    2 => {
+                        // Two streams: Copy forward and backward simultaneously
+                        let chunk_size = chunk_end - processed;
+                        let mid = processed + chunk_size / 2;
+
+                        // Stream 1: First half forward
+                        for i in processed..mid {
+                            *dst_base.add(i) = *src_base.add(i);
+                        }
+
+                        // Stream 2: Second half backward
+                        for i in 0..(chunk_end - mid) {
+                            let idx = chunk_end - 1 - i;
+                            *dst_base.add(idx) = *src_base.add(idx);
+                        }
+                    }
+                    4 => {
+                        // Four streams: Interleaved block copy with different patterns
+                        let chunk_size = chunk_end - processed;
+                        let block_size = chunk_size / 4;
+
+                        for stream in 0..4 {
+                            let start_idx = processed + stream * block_size;
+                            let end_idx = (processed + (stream + 1) * block_size).min(chunk_end);
+
+                            if start_idx < end_idx {
+                                match stream & 3 {
+                                    0 | 3 => {
+                                        // Forward copy
+                                        for i in start_idx..end_idx {
+                                            *dst_base.add(i) = *src_base.add(i);
+                                        }
+                                    }
+                                    1 => {
+                                        // Backward copy within block
+                                        for i in 0..(end_idx - start_idx) {
+                                            let idx = end_idx - 1 - i;
+                                            *dst_base.add(idx) = *src_base.add(idx);
+                                        }
+                                    }
+                                    _ => {
+                                        // Skip pattern (every other element)
+                                        for i in (start_idx..end_idx).step_by(2) {
+                                            *dst_base.add(i) = *src_base.add(i);
+                                        }
+                                        for i in ((start_idx + 1)..end_idx).step_by(2) {
+                                            *dst_base.add(i) = *src_base.add(i);
+                                        }
+                                    }
+                                }
+                            }
+                        }
+                    }
+                    _ => {
+                        // Many streams: Strided copy pattern
+                        let streams = config.streams as usize;
+                        for stream in 0..streams {
+                            for i in (processed + stream..chunk_end).step_by(streams) {
+                                *dst_base.add(i) = *src_base.add(i);
+                            }
+                        }
+                    }
                 }
-            }
-            std::sync::atomic::fence(Ordering::SeqCst);
 
-            for block_start in (0..len).step_by(block_size) {
-                let block_end = (block_start + block_size).min(len);
-                for i in block_start..block_end {
-                    let expected = pattern.wrapping_add(i as u64);
-                    let actual = *base.add(i);
+                std::sync::atomic::fence(Ordering::SeqCst);
+
+                // Verify copied data
+                for i in processed..chunk_end {
+                    let expected = pattern_base.wrapping_add(i as u64);
+                    let actual = *dst_base.add(i);
                     if actual != expected {
                         cycle_errors += 1;
-                        log::error!("{}: error at {} - expected {:#x}, got {:#x}", test_name, i, expected, actual);
+                        log::error!("{}: error at {} - expected {:#x}, got {:#x}",
+                                   test_name, i, expected, actual);
                     }
                 }
 
+                // Handle errors
                 if cycle_errors > 0 {
                     match error_mode {
-                        ErrorMode::Panic => panic!("{}: {} errors detected", test_name, cycle_errors),
-                        ErrorMode::Halt => break,
-                        ErrorMode::Log => {}
+                        ErrorMode::Panic => {
+                            panic!("{}: {} errors detected in cycle {}", test_name, cycle_errors, cycle);
+                        }
+                        ErrorMode::Halt => {
+                            total_error_count += cycle_errors;
+                            let elapsed = start.elapsed().as_millis();
+                            return TestStats {
+                                name: test_name,
+                                action: TestAction::ReadWrite,
+                                bytes_processed: total_bytes_processed,
+                                elapsed_ms: elapsed,
+                                thread_id,
+                                error_count: total_error_count,
+                                total_operations: cycle as u64 * len as u64,
+                                cycles_completed: cycle,
+                                cycles_planned: timing.cycles,
+                                stopped_by_time_limit: false,
+                            };
+                        }
+                        ErrorMode::Log => {
+                            // Continue - errors already logged
+                        }
                     }
                 }
 
+                // Check for shutdown
                 if SHUTDOWN_REQUESTED.load(Ordering::Relaxed) {
                     total_error_count += cycle_errors;
-                    total_bytes_processed += test_block.test_size * 2;
+                    total_bytes_processed += (chunk_end - processed) * std::mem::size_of::<u64>() * 2;
                     let elapsed = start.elapsed().as_millis();
                     return TestStats {
-                        name: test_name, action: TestAction::ReadWrite,
-                        bytes_processed: total_bytes_processed, elapsed_ms: elapsed, thread_id,
-                        error_count: total_error_count, total_operations: cycle as u64 * len as u64,
-                        cycles_completed: cycle, cycles_planned: timing.cycles, stopped_by_time_limit: false,
+                        name: test_name,
+                        action: TestAction::ReadWrite,
+                        bytes_processed: total_bytes_processed,
+                        elapsed_ms: elapsed,
+                        thread_id,
+                        error_count: total_error_count,
+                        total_operations: cycle as u64 * (chunk_end - processed) as u64,
+                        cycles_completed: cycle,
+                        cycles_planned: timing.cycles,
+                        stopped_by_time_limit: false,
                     };
                 }
+
+                processed = chunk_end;
             }
 
-            total_bytes_processed += test_block.test_size * 2;
+            total_bytes_processed += test_block.test_size; // Read + Write for half the block
         }
 
         total_error_count += cycle_errors;
+
+        // Progress updates
         if let Some(progress) = progress {
             let now = Instant::now();
             if now.duration_since(last_progress_update).as_millis() >= 250 {
@@ -4863,15 +4979,21 @@ pub unsafe fn block_move_multi(
             }
         }
 
+        // Check timing
         let elapsed_secs = test_start.elapsed().as_secs() as u32;
         if !timing.should_continue(cycle, elapsed_secs) {
             let elapsed = start.elapsed().as_millis();
-            let total_operations: u64 = cycle as u64 * (total_test_size / std::mem::size_of::<u64>()) as u64;
+            let total_operations: u64 = cycle as u64 * (total_test_size / (std::mem::size_of::<u64>() * 2)) as u64;
             return TestStats {
-                name: test_name, action: TestAction::ReadWrite,
-                bytes_processed: total_bytes_processed, elapsed_ms: elapsed, thread_id,
-                error_count: total_error_count, total_operations,
-                cycles_completed: cycle, cycles_planned: timing.cycles,
+                name: test_name,
+                action: TestAction::ReadWrite,
+                bytes_processed: total_bytes_processed,
+                elapsed_ms: elapsed,
+                thread_id,
+                error_count: total_error_count,
+                total_operations,
+                cycles_completed: cycle,
+                cycles_planned: timing.cycles,
                 stopped_by_time_limit: timing.cycles.map_or(false, |limit| cycle < limit),
             };
         }
@@ -8052,880 +8174,13 @@ pub unsafe fn mirror_move_512_multi(
 }
 
 // Stream 1: Linear sequential access pattern
-pub unsafe fn cache_busting_write_test(ptr: *mut u8, size: usize, thread_id: usize, error_mode: ErrorMode, timing: &TestTiming, config: &TestMemoryConfig) -> TestStats {
-    let test_name = "CacheBusting";
-    let start = Instant::now();
-    let base = ptr as *mut u64;
-    let len = size / std::mem::size_of::<u64>();
-    let mut total_error_count = 0u64;
-    let mut total_bytes_processed = 0usize;
-    let streams = config.streams.max(1) as usize;
-    let stream_shift = streams.trailing_zeros(); // Pre-calculate shift amount outside hot loops
-    // Note: stream_mask not needed since power-of-2 chunk sizes guarantee no remainders
-    
-    // Pre-calculate stride constants outside all loops (safe - doesn't affect cache busting pattern)
-    let base_stride = CACHE_BUSTING_STRIDE / std::mem::size_of::<u64>();
-    let stream_offset = base_stride >> stream_shift;
-    let pattern_base = 0x0123456789ABCDEFu64.wrapping_add(thread_id as u64);
-    
-    let mut cycle = 0u32;
-    let test_start = Instant::now();
-    
-    // Calculate chunk size for responsive shutdown
-    // Calculate ideal chunk size once (power-of-2 elements for fast stream operations)
-    let ideal_chunk_size = calculate_ideal_chunk_size(config, test_name, size);
-    let chunk_size_bytes = get_safe_chunk_size(ideal_chunk_size, size);
-    let chunk_size_elements = chunk_size_bytes / std::mem::size_of::<u64>();
-
-    loop {
-        cycle += 1;
-        let mut cycle_errors = 0u64;
-        
-        // Process memory in chunks for responsive shutdown
-        for chunk_start in (0..len).step_by(chunk_size_elements) {
-            let chunk_end = (chunk_start + chunk_size_elements).min(len);
-            
-            // COMPLETE TEST SEQUENCE FOR THIS CHUNK:
-            
-            // Apply stream-based access patterns within chunk
-            match config.streams {
-                1 => {
-                    // Single stream with large strides to bust cache - use pre-calculated values
-
-                    for offset in 0..base_stride.min(chunk_end - chunk_start) {
-                        let mut i = chunk_start + offset;
-                        while i < chunk_end {
-                            base.add(i).write(pattern_base.wrapping_add(i as u64));
-                            i += base_stride;
-                            if i >= chunk_end { break; }
-                        }
-                    }
-
-                    std::sync::atomic::fence(Ordering::SeqCst);
-
-                    // Verify with same stride pattern within chunk
-                    for offset in 0..base_stride.min(chunk_end - chunk_start) {
-                        let mut i = chunk_start + offset;
-                        while i < chunk_end {
-                            let v = base.add(i).read();
-                            let expected = pattern_base.wrapping_add(i as u64);
-                            if v != expected {
-                                cycle_errors += 1;
-                                log::error!("{}: memory error at index {} - expected {:#x}, got {:#x}", test_name, i, expected, v);
-                            }
-                            i += base_stride;
-                            if i >= chunk_end { break; }
-                        }
-                    }
-                }
-                _ => {
-                    // Multiple streams with different stride offsets within chunk - use pre-calculated values
-                    
-                    for stream in 0..streams {
-                        let pattern = pattern_base
-                            .wrapping_add((stream as u64) * 0x1111111111111111u64);
-                        
-                        let start_i = chunk_start + (stream * stream_offset).min(chunk_end - chunk_start);
-                        let mut i = start_i;
-                        while i < chunk_end {
-                            base.add(i).write(pattern.wrapping_add(i as u64));
-                            i += base_stride;
-                            if i >= chunk_end { break; }
-                        }
-                    }
-                    
-                    std::sync::atomic::fence(Ordering::SeqCst);
-                    
-                    // Verify all streams within chunk
-                    for stream in 0..streams {
-                        let pattern = pattern_base
-                            .wrapping_add((stream as u64) * 0x1111111111111111u64);
-                        
-                        let start_i = chunk_start + (stream * stream_offset).min(chunk_end - chunk_start);
-                        let mut i = start_i;
-                        while i < chunk_end {
-                            let v = base.add(i).read();
-                            let expected = pattern.wrapping_add(i as u64);
-                            if v != expected {
-                                cycle_errors += 1;
-                                log::error!("{}: memory error at index {} - expected {:#x}, got {:#x}", test_name, i, expected, v);
-                            }
-                            i += base_stride;
-                            if i >= chunk_end { break; }
-                        }
-                    }
-                }
-            }
-            
-            // Handle Halt/Panic between chunks for better hot loop performance
-            if cycle_errors > 0 {
-                match error_mode {
-                    ErrorMode::Panic => panic!("{}: {} memory errors detected (see logs above)", test_name, cycle_errors),
-                    ErrorMode::Halt => break,
-                    ErrorMode::Log => { /* Continue - already logged above */ }
-                }
-            }
-            
-            // Check for shutdown after each chunk (responsive shutdown!)
-            if SHUTDOWN_REQUESTED.load(Ordering::Relaxed) {
-                total_error_count += cycle_errors;
-                total_bytes_processed += (chunk_end - chunk_start) * std::mem::size_of::<u64>();
-                let elapsed = start.elapsed().as_millis();
-                return TestStats {
-                    name: test_name,
-                    action: TestAction::WriteWaitVerify,
-                    bytes_processed: total_bytes_processed,
-                    elapsed_ms: elapsed,
-                    thread_id,
-                    error_count: total_error_count,
-                    total_operations: cycle as u64 * (chunk_end - chunk_start) as u64,
-
-                    cycles_completed: 0,
-
-                    cycles_planned: None,
-
-                    stopped_by_time_limit: false,
-
-                    };
-            }
-        }
-        
-        total_error_count += cycle_errors;
-        total_bytes_processed += size * 2;
-        
-        let elapsed_secs = test_start.elapsed().as_secs() as u32;
-        if !timing.should_continue(cycle, elapsed_secs) {
-            break;
-        }
-    }
-
-    let elapsed = start.elapsed().as_millis();
-    
-    // For cache busting, count operations based on stride coverage (~25% of memory)
-    let total_operations: u64 = cycle as u64 * ((len as f64 * 0.25) as u64);
-    
-    TestStats {
-        name: test_name,
-        action: TestAction::CacheBusting,
-        bytes_processed: total_bytes_processed,
-        elapsed_ms: elapsed,
-        thread_id,
-        error_count: total_error_count,
-        total_operations,
-
-        cycles_completed: 0,
-
-        cycles_planned: None,
-
-        stopped_by_time_limit: false,
-
-        }
-}
 
 /// # Safety
 /// Caller must ensure `ptr` is valid for reads/writes of `size` bytes.
-pub unsafe fn random_access_torture_test(ptr: *mut u8, size: usize, thread_id: usize, error_mode: ErrorMode, timing: &TestTiming, config: &TestMemoryConfig) -> TestStats {
-    let test_name = "RandomTorture";
-    let start = Instant::now();
-    let base = ptr as *mut u64;
-    let len = size / std::mem::size_of::<u64>();
-    let mut total_error_count = 0u64;
-    let mut total_bytes_processed = 0usize;
-    
-    
-    let mut cycle = 0u32;
-    let test_start = Instant::now();
-    
-    // Initialize with known pattern once
-    for i in 0..len {
-        base.add(i).write(i as u64);
-    }
-    std::sync::atomic::fence(Ordering::SeqCst);
-    total_bytes_processed = total_bytes_processed.saturating_add(size);
-    
-    // Assert power-of-2 size for optimal performance
-    if !len.is_power_of_two() {
-        panic!("{}: Window size {} is not power-of-2! This is a bug in the alignment code.", 
-               test_name, len);
-    }
-    let mask = len - 1;  // Pre-compute mask for bit-masking
-    
-    loop {
-        cycle += 1;
-        let mut cycle_errors = 0u64;
-        
-        // Calculate chunk size for responsive shutdown based on memory block size
-        // Calculate ideal chunk size once (power-of-2 elements for fast stream operations)
-    let ideal_chunk_size = calculate_ideal_chunk_size(config, test_name, size);
-    let chunk_size_bytes = get_safe_chunk_size(ideal_chunk_size, size);
-        let chunk_size_operations = chunk_size_bytes / std::mem::size_of::<u64>(); // Operations per chunk
-        
-        // Random access torture with configurable streams
-        let base_iterations = (len / 1000).clamp(5000, 50000);
-        let streams_max = config.streams.max(1) as usize;
-        let stream_shift = streams_max.trailing_zeros();
-        let iterations_per_stream = (base_iterations >> stream_shift).max(1);
-        
-        // Process streams in chunks for responsive shutdown
-        for stream in 0..config.streams {
-            let mut rng_state = 0x123456789ABCDEFu64
-                .wrapping_add(thread_id as u64)
-                .wrapping_add(cycle as u64)
-                .wrapping_add((stream as u64).wrapping_mul(0x8765432187654321u64));
-
-            // Random read verification for this stream - chunked for responsive shutdown
-            for chunk_start in (0..iterations_per_stream).step_by(chunk_size_operations) {
-                let chunk_end = (chunk_start + chunk_size_operations).min(iterations_per_stream);
-                
-                for iteration in chunk_start..chunk_end {
-                    rng_state ^= rng_state << 13;
-                    rng_state ^= rng_state >> 17;
-                    rng_state ^= rng_state << 5;
-
-                    let idx = (rng_state as usize) & mask;  // Super fast bit masking - no branch!
-                    let expected = idx as u64;
-                    let actual = base.add(idx).read();
-
-                    if actual != expected {
-                        cycle_errors += 1;
-                        log::error!(
-                            "{}: memory error at index {}, iteration {}, stream {}, expected {}, actual {}",
-                            test_name,
-                            idx,
-                            iteration,
-                            stream,
-                            expected,
-                            actual
-                        );
-                    }
-                }
-                
-                // Optimized error handling - check ONCE at end of chunk
-                if cycle_errors > 0 {
-                    match error_mode {
-                        ErrorMode::Panic => panic!(
-                            "{}: {} memory errors detected in stream {} (see logs above)",
-                            test_name, cycle_errors, stream
-                        ),
-                        ErrorMode::Halt => break,
-                        ErrorMode::Log => {
-                            // Continue - errors already logged above
-                        }
-                    }
-                }
-                
-                // Check for shutdown after each chunk (responsive shutdown!)
-                if SHUTDOWN_REQUESTED.load(Ordering::Relaxed) {
-                    total_error_count += cycle_errors;
-                    let elapsed = start.elapsed().as_millis();
-                    return TestStats {
-                        name: test_name,
-                        action: TestAction::ReadWrite,
-                        bytes_processed: total_bytes_processed,
-                        elapsed_ms: elapsed,
-                        thread_id,
-                        error_count: total_error_count,
-                        total_operations: cycle as u64 * (chunk_end - chunk_start) as u64,
-
-                        cycles_completed: 0,
-
-                        cycles_planned: None,
-
-                        stopped_by_time_limit: false,
-
-                        };
-                }
-            }
-        }
-        
-        total_error_count += cycle_errors;
-        // Use saturating arithmetic to prevent overflow
-        let bytes_this_cycle = iterations_per_stream
-            .saturating_mul(config.streams as usize)
-            .saturating_mul(std::mem::size_of::<u64>());
-        total_bytes_processed = total_bytes_processed.saturating_add(bytes_this_cycle);
-        
-        let elapsed_secs = test_start.elapsed().as_secs() as u32;
-        if !timing.should_continue(cycle, elapsed_secs) {
-            break;
-        }
-    }
-
-    let elapsed = start.elapsed().as_millis();
-    
-    // Calculate total operations after timing capture
-    // Each cycle performs a calculated number of random reads
-    let base_iterations = (len / 1000).clamp(5000, 50000);
-    let streams_max = config.streams.max(1) as usize;
-    let iterations_per_stream = (base_iterations >> streams_max.trailing_zeros()).max(1);
-    let total_operations: u64 = cycle as u64 * (iterations_per_stream * config.streams as usize) as u64;
-    
-    TestStats {
-        name: test_name,
-        action: TestAction::RandomAccess,
-        bytes_processed: total_bytes_processed,
-        elapsed_ms: elapsed,
-        thread_id,
-        error_count: total_error_count,
-        total_operations,
-
-        cycles_completed: 0,
-
-        cycles_planned: None,
-
-        stopped_by_time_limit: false,
-
-        }
-}
 
 /// # Safety
 /// Caller must ensure `ptr` is valid for reads/writes of `size` bytes.
-pub unsafe fn stride_access_test(ptr: *mut u8, size: usize, thread_id: usize, error_mode: ErrorMode, timing: &TestTiming, config: &TestMemoryConfig) -> TestStats {
-    let test_name = "StrideAccess";
-    let start = Instant::now();
-    let base = ptr as *mut u64;
-    let len = size / std::mem::size_of::<u64>();
-    let mut total_error_count = 0u64;
-    let mut total_bytes_processed = 0usize;
-    let streams = config.streams.max(1) as usize;
-    let stream_shift = streams.trailing_zeros(); // Pre-calculate shift amount outside hot loops
-    // Note: stream_mask not needed - power-of-2 chain guarantees perfect division // Still needed for final chunk remainder handling (chunk_len can be < chunk_size_elements)
-    
-    let mut cycle = 0u32;
-    let test_start = Instant::now();
-    
-    // Calculate chunk size for responsive shutdown
-    // Calculate ideal chunk size once (power-of-2 elements for fast stream operations)
-    let ideal_chunk_size = calculate_ideal_chunk_size(config, test_name, size);
-    let chunk_size_bytes = get_safe_chunk_size(ideal_chunk_size, size);
-    let chunk_size_elements = chunk_size_bytes / std::mem::size_of::<u64>();
-
-    loop {
-        cycle += 1;
-        let mut cycle_errors = 0u64;
-        
-        // Test various stride patterns that defeat caching - chunked for responsive shutdown
-        let strides = [1, 16, 64, 256, 1024, 4096];
-        let pattern_base = 0xFEDCBA9876543210u64.wrapping_add(thread_id as u64).wrapping_add(cycle as u64);
-
-        'stride_loop: for &stride in &strides {
-            if stride >= len {
-                continue;
-            }
-
-            // Process stride pattern in chunks for responsive shutdown
-            for chunk_start in (0..len).step_by(chunk_size_elements) {
-                let chunk_end = (chunk_start + chunk_size_elements).min(len);
-                
-                // COMPLETE TEST SEQUENCE FOR THIS CHUNK WITH THIS STRIDE:
-                
-                // For stride access, partition chunk between streams
-                let chunk_len = chunk_end - chunk_start;
-                let elements_per_stream = chunk_len >> stream_shift;
-                // Power-of-2 chain guarantees no extra elements needed!
-                
-                // Write phase: each stream works on its portion of the chunk
-                for stream in 0..streams {
-                    let pattern = pattern_base
-                        .wrapping_add((stride as u64) << 32)
-                        .wrapping_add((stream as u64) << 48);
-
-                    // Power-of-2 guarantees no extra elements needed
-                    let stream_start = chunk_start + stream * elements_per_stream;
-                    let stream_end = stream_start + elements_per_stream;
-
-                    // Write with stride pattern within this stream's chunk region
-                    let mut pos = stream_start;
-                    while pos < stream_end {
-                        base.add(pos).write(pattern.wrapping_add(pos as u64));
-                        pos += stride;
-                        if pos >= stream_end { break; }
-                    }
-                }
-
-                std::sync::atomic::fence(Ordering::SeqCst);
-
-                // Verify phase: each stream verifies its portion of the chunk
-                for stream in 0..streams {
-                    let pattern = pattern_base
-                        .wrapping_add((stride as u64) << 32)
-                        .wrapping_add((stream as u64) << 48);
-
-                    // Power-of-2 guarantees no extra elements needed
-                    let stream_start = chunk_start + stream * elements_per_stream;
-                    let stream_end = stream_start + elements_per_stream;
-
-                    // Verify with same stride pattern within chunk
-                    let mut pos = stream_start;
-                    while pos < stream_end {
-                        let expected = pattern.wrapping_add(pos as u64);
-                        let actual = base.add(pos).read();
-                        if actual != expected {
-                            cycle_errors += 1;
-                            log::error!("{}: memory error at index {} - expected {:#x}, got {:#x}", test_name, pos, expected, actual);
-                        }
-                        pos += stride;
-                        if pos >= stream_end { break; }
-                    }
-                }
-                
-                // Handle Halt/Panic between stride tests for better hot loop performance
-                if cycle_errors > 0 {
-                    match error_mode {
-                        ErrorMode::Panic => panic!("{}: {} memory errors detected (see logs above)", test_name, cycle_errors),
-                        ErrorMode::Halt => break 'stride_loop,
-                        ErrorMode::Log => { /* Continue - already logged above */ }
-                    }
-                }
-                
-                // Check for shutdown after each chunk (responsive shutdown!)
-                if SHUTDOWN_REQUESTED.load(Ordering::Relaxed) {
-                    total_error_count += cycle_errors;
-                    total_bytes_processed += (chunk_end - chunk_start) * std::mem::size_of::<u64>() * 2;
-                    let elapsed = start.elapsed().as_millis();
-                    return TestStats {
-                        name: test_name,
-                        action: TestAction::WriteWaitVerify,
-                        bytes_processed: total_bytes_processed,
-                        elapsed_ms: elapsed,
-                        thread_id,
-                        error_count: total_error_count,
-                        total_operations: cycle as u64 * (chunk_end - chunk_start) as u64,
-
-                        cycles_completed: 0,
-
-                        cycles_planned: None,
-
-                        stopped_by_time_limit: false,
-
-                        };
-                }
-            }
-        }
-        
-        // Calculate approximate bytes processed
-        // For each stride, we access approximately len/stride elements
-        // Each element is 8 bytes, and we do both read and write
-        let mut bytes_this_cycle = 0;
-        for &stride in &strides {
-            if stride < len {
-                let elements_accessed = len / stride;
-                bytes_this_cycle += elements_accessed * std::mem::size_of::<u64>() * 2; // read + write
-            }
-        }
-        
-        total_error_count += cycle_errors;
-        total_bytes_processed = total_bytes_processed.saturating_add(bytes_this_cycle);
-        
-        let elapsed_secs = test_start.elapsed().as_secs() as u32;
-        if !timing.should_continue(cycle, elapsed_secs) {
-            break;
-        }
-    }
-
-    let elapsed = start.elapsed().as_millis();
-    
-    // Calculate total operations after timing capture
-    // Stride test processes multiple strides, calculate total elements accessed
-    let strides = [1, 16, 64, 256, 1024, 4096];
-    let mut total_elements_per_cycle = 0u64;
-    for &stride in &strides {
-        if stride < len {
-            total_elements_per_cycle += (len / stride) as u64;
-        }
-    }
-    let total_operations: u64 = cycle as u64 * total_elements_per_cycle;
-    
-    TestStats {
-        name: test_name,
-        action: TestAction::ReadWrite,
-        bytes_processed: total_bytes_processed,
-        elapsed_ms: elapsed,
-        thread_id,
-        error_count: total_error_count,
-        total_operations,
-
-        cycles_completed: 0,
-
-        cycles_planned: None,
-
-        stopped_by_time_limit: false,
-
-        }
-}
-
-#[allow(clippy::needless_range_loop)]
-/// # Safety
 /// Caller must ensure `ptr` is valid for reads/writes of `size` bytes.
-pub unsafe fn bandwidth_saturation_test(ptr: *mut u8, size: usize, thread_id: usize, _error_mode: ErrorMode, timing: &TestTiming, config: &TestMemoryConfig) -> TestStats {
-    let test_name = "BandwidthSat";
-    let start = Instant::now();
-    let base = ptr as *mut u64;
-    let len = size / std::mem::size_of::<u64>();
-    let mut total_bytes_processed = 0usize;
-    let streams = config.streams.max(1) as usize;
-    let stream_shift = streams.trailing_zeros(); // Pre-calculate shift amount outside hot loops
-    // Note: stream_mask not needed since power-of-2 chunk sizes guarantee no remainders
-    
-    let mut cycle = 0u32;
-    let test_start = Instant::now();
-    
-    // Calculate chunk size for responsive shutdown
-    // Calculate ideal chunk size once (power-of-2 elements for fast stream operations)
-    let ideal_chunk_size = calculate_ideal_chunk_size(config, test_name, size);
-    let chunk_size_bytes = get_safe_chunk_size(ideal_chunk_size, size);
-    let chunk_size_elements = chunk_size_bytes / std::mem::size_of::<u64>();
-
-    loop {
-        cycle += 1;
-        
-        // Process memory in chunks for responsive shutdown
-        for chunk_start in (0..len).step_by(chunk_size_elements) {
-            let chunk_end = (chunk_start + chunk_size_elements).min(len);
-            
-            // COMPLETE TEST SEQUENCE FOR THIS CHUNK:
-            
-            // Pure memory bandwidth test with configurable streams
-            match config.streams {
-                1 => {
-                    // Single stream - maximum sequential bandwidth within chunk
-                    let pattern = 0x5555AAAA5555AAAAu64.wrapping_add(thread_id as u64).wrapping_add(cycle as u64);
-
-                    // Write phase for chunk
-                    for i in chunk_start..chunk_end {
-                        base.add(i).write(pattern.wrapping_add(i as u64));
-                    }
-
-                    std::sync::atomic::fence(Ordering::SeqCst);
-
-                    // Read phase for chunk
-                    let mut checksum = 0u64;
-                    for i in chunk_start..chunk_end {
-                        checksum = checksum.wrapping_add(base.add(i).read());
-                    }
-
-                    // Prevent optimization
-                    std::ptr::write_volatile(&mut checksum, checksum);
-                }
-                _ => {
-                    // Multiple streams - interleaved access for bandwidth within chunk
-                    let chunk_len = chunk_end - chunk_start;
-                    let stream_size = chunk_len >> stream_shift;
-                    
-                    // Write phase with multiple streams within chunk
-                    for stream in 0..streams {
-                        let pattern = 0x5555AAAA5555AAAAu64
-                            .wrapping_add(thread_id as u64)
-                            .wrapping_add(cycle as u64)
-                            .wrapping_add((stream as u64) << 32);
-                        
-                        let start = chunk_start + stream * stream_size;
-                        let end = if stream == config.streams as usize - 1 {
-                            chunk_end // Last stream handles remainder
-                        } else {
-                            chunk_start + (stream + 1) * stream_size
-                        };
-                        
-                        for i in start..end {
-                            base.add(i).write(pattern.wrapping_add(i as u64));
-                        }
-                    }
-
-                    std::sync::atomic::fence(Ordering::SeqCst);
-
-                    // Read phase with multiple streams within chunk
-                    let mut checksums = vec![0u64; config.streams as usize];
-                    for stream in 0..streams {
-                        let start = chunk_start + stream * stream_size;
-                        let end = if stream == config.streams as usize - 1 {
-                            chunk_end
-                        } else {
-                            chunk_start + (stream + 1) * stream_size
-                        };
-                        
-                        for i in start..end {
-                            checksums[stream] = checksums[stream].wrapping_add(base.add(i).read());
-                        }
-                    }
-
-                    // Prevent optimization
-                    for checksum in &mut checksums {
-                        std::ptr::write_volatile(checksum, *checksum);
-                    }
-                }
-            }
-            
-            // Check for shutdown after each chunk (responsive shutdown!)
-            if SHUTDOWN_REQUESTED.load(Ordering::Relaxed) {
-                total_bytes_processed += (chunk_end - chunk_start) * std::mem::size_of::<u64>() * 2;
-                let elapsed = start.elapsed().as_millis();
-                return TestStats {
-                    name: test_name,
-                    action: TestAction::WriteWaitVerify,
-                    bytes_processed: total_bytes_processed,
-                    elapsed_ms: elapsed,
-                    thread_id,
-                    error_count: 0,
-                    total_operations: cycle as u64 * (chunk_end - chunk_start) as u64,
-
-                    cycles_completed: 0,
-
-                    cycles_planned: None,
-
-                    stopped_by_time_limit: false,
-
-                    };
-            }
-        }
-        
-        total_bytes_processed += size * 2; // Read + Write
-        
-        let elapsed_secs = test_start.elapsed().as_secs() as u32;
-        if !timing.should_continue(cycle, elapsed_secs) {
-            break;
-        }
-    }
-
-    let elapsed = start.elapsed().as_millis();
-    
-    // Calculate total operations after timing capture
-    let total_operations: u64 = cycle as u64 * len as u64;
-    
-    TestStats {
-        name: test_name,
-        action: TestAction::ReadWrite,
-        bytes_processed: total_bytes_processed,
-        elapsed_ms: elapsed,
-        thread_id,
-        error_count: 0, // This test doesn't verify individual values
-        total_operations,
-
-        cycles_completed: 0,
-
-        cycles_planned: None,
-
-        stopped_by_time_limit: false,
-
-        }
-}
-
-/// # Safety
-/// Caller must ensure `ptr` is valid for reads/writes of `size` bytes.
-pub unsafe fn block_move_test(ptr: *mut u8, size: usize, thread_id: usize, error_mode: ErrorMode, timing: &TestTiming, config: &TestMemoryConfig) -> TestStats {
-    let test_name = "BlockMove";
-    let start = Instant::now();
-    
-    // Divide memory in half - first half is source, second half is destination
-    let half_size = size / 2;
-    let src_base = ptr as *mut u64;
-    let dst_base = (ptr as *mut u64).add(half_size / std::mem::size_of::<u64>());
-    let len = half_size / std::mem::size_of::<u64>();
-    
-    let mut total_bytes_processed = 0usize;
-    let mut total_error_count = 0u64;
-    
-    let mut cycle = 0u32;
-    let test_start = Instant::now();
-    
-    // Calculate chunk size for responsive shutdown - each operation processes 2 u64s (read+write)
-    // Calculate ideal chunk size once (power-of-2 elements for fast stream operations)
-    let ideal_chunk_size = calculate_ideal_chunk_size(config, test_name, size);
-    let chunk_size_bytes = get_safe_chunk_size(ideal_chunk_size, size);
-    let chunk_size_operations = chunk_size_bytes / (2 * std::mem::size_of::<u64>());
-    
-    // Initialize source with test pattern
-    let pattern_base = 0xDEADBEEFCAFEBABEu64;
-    for i in 0..len {
-        src_base.add(i).write(pattern_base.wrapping_add(i as u64));
-    }
-    std::sync::atomic::fence(Ordering::SeqCst);
-    
-    loop {
-        cycle += 1;
-        let mut cycle_errors = 0u64;
-        
-        // Process memory in chunks for responsive shutdown
-        let mut processed = 0;
-        while processed < len {
-            let chunk_end = (processed + chunk_size_operations).min(len);
-            
-            match config.streams {
-                1 => {
-                    // Single stream: Simple forward copy
-                    for i in processed..chunk_end {
-                        let val = src_base.add(i).read();
-                        dst_base.add(i).write(val);
-                    }
-                }
-                2 => {
-                    // Two streams: Copy forward and backward simultaneously
-                    let chunk_size = chunk_end - processed;
-                    let mid = processed + chunk_size / 2;
-                    
-                    // Stream 1: Copy first half forward
-                    for i in processed..mid {
-                        let val = src_base.add(i).read();
-                        dst_base.add(i).write(val);
-                    }
-                    
-                    // Stream 2: Copy second half backward
-                    for i in 0..(chunk_end - mid) {
-                        let src_idx = chunk_end - 1 - i;
-                        let dst_idx = chunk_end - 1 - i;
-                        let val = src_base.add(src_idx).read();
-                        dst_base.add(dst_idx).write(val);
-                    }
-                }
-                4 => {
-                    // Four streams: Interleaved block copy
-                    let chunk_size = chunk_end - processed;
-                    let block_size = chunk_size / 4;
-                    
-                    for stream in 0..4 {
-                        let start_idx = processed + stream * block_size;
-                        let end_idx = (processed + (stream + 1) * block_size).min(chunk_end);
-                        
-                        if start_idx < end_idx {
-                            // Copy with different patterns per stream
-                            match stream & 3 {
-                                0 => {
-                                    // Forward copy
-                                    for i in start_idx..end_idx {
-                                        let val = src_base.add(i).read();
-                                        dst_base.add(i).write(val);
-                                    }
-                                }
-                                1 => {
-                                    // Backward copy within block
-                                    for i in 0..(end_idx - start_idx) {
-                                        let src_idx = end_idx - 1 - i;
-                                        let dst_idx = end_idx - 1 - i;
-                                        let val = src_base.add(src_idx).read();
-                                        dst_base.add(dst_idx).write(val);
-                                    }
-                                }
-                                2 => {
-                                    // Skip pattern copy (every other element)
-                                    for i in (start_idx..end_idx).step_by(2) {
-                                        let val = src_base.add(i).read();
-                                        dst_base.add(i).write(val);
-                                    }
-                                    for i in ((start_idx + 1)..end_idx).step_by(2) {
-                                        let val = src_base.add(i).read();
-                                        dst_base.add(i).write(val);
-                                    }
-                                }
-                                _ => {
-                                    // Block copy
-                                    for i in start_idx..end_idx {
-                                        let val = src_base.add(i).read();
-                                        dst_base.add(i).write(val);
-                                    }
-                                }
-                            }
-                        }
-                    }
-                }
-                _ => {
-                    // Many streams: Strided copy pattern
-                    let stride = config.streams as usize;
-                    
-                    for offset in 0..stride.min(chunk_end - processed) {
-                        let mut i = processed + offset;
-                        while i < chunk_end {
-                            let val = src_base.add(i).read();
-                            dst_base.add(i).write(val);
-                            i += stride;
-                        }
-                    }
-                }
-            }
-            
-            std::sync::atomic::fence(Ordering::SeqCst);
-            
-            // Verify this chunk
-            for i in processed..chunk_end {
-                let expected = pattern_base.wrapping_add(i as u64);
-                let actual = dst_base.add(i).read();
-                if actual != expected {
-                    cycle_errors += 1;
-                    log::error!("{}: memory error at index {} - expected {:#x}, got {:#x}", test_name, i, expected, actual);
-                }
-            }
-            
-            // Handle Halt/Panic between chunks for better hot loop performance
-            if cycle_errors > 0 {
-                match error_mode {
-                    ErrorMode::Panic => panic!("{}: {} memory errors detected (see logs above)", test_name, cycle_errors),
-                    ErrorMode::Halt => break,
-                    ErrorMode::Log => { /* Continue - already logged above */ }
-                }
-            }
-            
-            processed = chunk_end;
-            
-            // Check for shutdown request after processing each chunk
-            if SHUTDOWN_REQUESTED.load(Ordering::Relaxed) {
-                // Calculate partial bytes processed for early exit
-                let partial_cycle_bytes = processed * std::mem::size_of::<u64>() * 3;
-                total_bytes_processed += partial_cycle_bytes;
-                total_error_count += cycle_errors;
-                
-                let elapsed = start.elapsed().as_millis();
-                let total_operations: u64 = ((cycle - 1) as u64 * len as u64) + processed as u64;
-                
-                return TestStats {
-                    name: test_name,
-                    action: TestAction::Copy,
-                    bytes_processed: total_bytes_processed,
-                    elapsed_ms: elapsed,
-                    thread_id,
-                    error_count: total_error_count,
-                    total_operations,
-
-                    cycles_completed: 0,
-
-                    cycles_planned: None,
-
-                    stopped_by_time_limit: false,
-
-                    };
-            }
-        }
-        
-        // Each cycle processes: read from source + write to destination + read for verify
-        total_bytes_processed += half_size * 3;
-        total_error_count += cycle_errors;
-        
-        let elapsed_secs = test_start.elapsed().as_secs() as u32;
-        if !timing.should_continue(cycle, elapsed_secs) {
-            break;
-        }
-    }
-
-    let elapsed = start.elapsed().as_millis();
-    
-    // Calculate total operations after timing capture
-    // BlockMove processes half the memory (source to dest)
-    let total_operations: u64 = cycle as u64 * len as u64;
-    
-    TestStats {
-        name: test_name,
-        action: TestAction::Copy,
-        bytes_processed: total_bytes_processed,
-        elapsed_ms: elapsed,
-        thread_id,
-        error_count: total_error_count,
-        total_operations,
-
-        cycles_completed: 0,
-
-        cycles_planned: None,
-
-        stopped_by_time_limit: false,
-
-        }
-}
 
 // ============================================================================
 // Test Registry - Maps config test names to actual function implementations
@@ -8957,21 +8212,6 @@ pub fn get_test_function_by_name(name: &str) -> Option<crate::runner::TestFuncti
 
 
         // Performance & Stress Tests
-        "CacheBusting" => Some(TestFunction::WithConfig(|ptr, size, tid, em, timing, config| unsafe {
-            cache_busting_write_test(ptr, size, tid, em, timing, config)
-        })),
-        "RandomTorture" => Some(TestFunction::WithConfig(|ptr, size, tid, em, timing, config| unsafe {
-            random_access_torture_test(ptr, size, tid, em, timing, config)
-        })),
-        "StrideAccess" => Some(TestFunction::WithConfig(|ptr, size, tid, em, timing, config| unsafe {
-            stride_access_test(ptr, size, tid, em, timing, config)
-        })),
-        "BandwidthSat" => Some(TestFunction::WithConfig(|ptr, size, tid, em, timing, config| unsafe {
-            bandwidth_saturation_test(ptr, size, tid, em, timing, config)
-        })),
-        "BlockMove" => Some(TestFunction::WithConfig(|ptr, size, tid, em, timing, config| unsafe {
-            block_move_test(ptr, size, tid, em, timing, config)
-        })),
 
         _ => None,
     }
