@@ -8361,16 +8361,64 @@ pub unsafe fn mirror_move_multi(
 
                 std::sync::atomic::fence(Ordering::SeqCst);
 
-                // 2. Verify mirrored data
-                for idx in chunk_start..chunk_end {
-                    let mirrored_idx = chunk_start + chunk_end - 1 - idx;
-                    let expected_pattern = (mirrored_idx as u64).wrapping_add(thread_pattern_base).wrapping_mul(0x0123456789ABCDEFu64);
-                    let actual_value = *ptr.add(idx);
+                // 2. Verify mirrored data with configurable error checking
+                let mut element_count = 0usize;
+                let mut chunk_errors = 0u64;
 
-                    if actual_value != expected_pattern {
-                        block_errors += 1;
-                        log::error!("{}: memory error at index {} - expected {:#x}, got {:#x}",
-                                   test_name, idx, expected_pattern, actual_value);
+                match config.error_check_interval.get_check_mask() {
+                    Some(check_mask) => {
+                        // Intermediate error checking - check at configured intervals
+                        for idx in chunk_start..chunk_end {
+                            let mirrored_idx = chunk_start + chunk_end - 1 - idx;
+                            let expected_pattern = (mirrored_idx as u64).wrapping_add(thread_pattern_base).wrapping_mul(0x0123456789ABCDEFu64);
+                            let actual_value = *ptr.add(idx);
+
+                            if actual_value != expected_pattern {
+                                chunk_errors += 1;
+                                if chunk_errors <= 10 {  // Limit error logging
+                                    log::error!("{}: memory error at index {} - expected {:#x}, got {:#x}",
+                                               test_name, idx, expected_pattern, actual_value);
+                                }
+                            }
+
+                            element_count += 1;
+
+                            // Check errors at configured intervals (zero-branch hot loop optimization)
+                            if (element_count as u32 & check_mask) == 0 {
+                                if chunk_errors > 0 {
+                                    block_errors += chunk_errors;
+                                    log::error!("{}: {} errors detected at element {} (thread {})",
+                                               test_name, chunk_errors, element_count, thread_id);
+                                    chunk_errors = 0;  // Reset for next interval
+                                }
+                            }
+                        }
+
+                        // Final check for any remaining errors
+                        if chunk_errors > 0 {
+                            block_errors += chunk_errors;
+                        }
+                    }
+                    None => {
+                        // PER_CHUNK mode - no intermediate checks, maximum performance
+                        for idx in chunk_start..chunk_end {
+                            let mirrored_idx = chunk_start + chunk_end - 1 - idx;
+                            let expected_pattern = (mirrored_idx as u64).wrapping_add(thread_pattern_base).wrapping_mul(0x0123456789ABCDEFu64);
+                            let actual_value = *ptr.add(idx);
+
+                            if actual_value != expected_pattern {
+                                chunk_errors += 1;
+                                if chunk_errors <= 10 {  // Limit error logging
+                                    log::error!("{}: memory error at index {} - expected {:#x}, got {:#x}",
+                                               test_name, idx, expected_pattern, actual_value);
+                                }
+                            }
+                        }
+
+                        // Check errors only once at end of chunk
+                        if chunk_errors > 0 {
+                            block_errors += chunk_errors;
+                        }
                     }
                 }
 
