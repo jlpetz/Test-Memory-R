@@ -1352,6 +1352,8 @@ pub unsafe fn stuck_bit_test_multi(
 ///
 /// StuckBitTest128 MultiBlock implementation (SSE2) - tests for stuck bits using alternating patterns.
 /// Preserves EXACT SSE2 algorithm from old version.
+/// StuckBitTest128 - SSE2 optimized - MultiBlock pattern
+/// Runtime-checked wrapper for SSE2 availability
 pub unsafe fn stuck_bit_test_128_multi(
     blocks: &[crate::runner::AllocationBlock],
     thread_id: usize,
@@ -1360,10 +1362,9 @@ pub unsafe fn stuck_bit_test_128_multi(
     config: &TestMemoryConfig,
     progress: Option<&TestProgress>,
 ) -> TestStats {
-    use std::arch::x86_64::*;
-
     let test_name = "StuckBitTest128";
 
+    // Runtime CPU feature check
     if !is_x86_feature_detected!("sse2") {
         log::warn!("{}: SSE2 not available, returning zero stats", test_name);
         return TestStats {
@@ -1379,6 +1380,25 @@ pub unsafe fn stuck_bit_test_128_multi(
             stopped_by_time_limit: false,
         };
     }
+
+    // Call the SSE2 optimized implementation
+    stuck_bit_test_128_impl(blocks, thread_id, error_mode, timing, config, progress)
+}
+
+/// StuckBitTest128 - SSE2 optimized implementation
+/// This function is annotated with #[target_feature] to enable full compiler optimization
+#[target_feature(enable = "sse2")]
+unsafe fn stuck_bit_test_128_impl(
+    blocks: &[crate::runner::AllocationBlock],
+    thread_id: usize,
+    error_mode: ErrorMode,
+    timing: &TestTiming,
+    config: &TestMemoryConfig,
+    progress: Option<&TestProgress>,
+) -> TestStats {
+    use std::arch::x86_64::*;
+
+    let test_name = "StuckBitTest128";
 
     let start = Instant::now();
 
@@ -1686,10 +1706,39 @@ pub unsafe fn stuck_bit_test_128_multi(
     }
 }
 
-/// StuckBitTest AVX2 (256-bit) - MultiBlock variant
-/// CRITICAL BUG FIX: Adds missing memory fences after Phase 1 and Phase 2 writes
+/// StuckBitTest256 - AVX2 optimized - MultiBlock pattern
+/// Runtime-checked wrapper for AVX2 availability
 #[allow(clippy::missing_safety_doc)]
 pub unsafe fn stuck_bit_test_256_multi(
+    blocks: &[crate::runner::AllocationBlock],
+    thread_id: usize,
+    error_mode: ErrorMode,
+    timing: &TestTiming,
+    config: &TestMemoryConfig,
+    progress: Option<&TestProgress>,
+) -> TestStats {
+    let test_name = "StuckBitTest256";
+
+    // Runtime CPU feature check
+    if !is_x86_feature_detected!("avx2") {
+        log::warn!("{}: AVX2 not available, returning zero stats", test_name);
+        return TestStats {
+            name: test_name, action: TestAction::StuckBitTest,
+            bytes_processed: 0, elapsed_ms: 0, thread_id,
+            error_count: 0, total_operations: 0,
+            cycles_completed: 0, cycles_planned: timing.cycles,
+            stopped_by_time_limit: false,
+        };
+    }
+
+    // Call the AVX2 optimized implementation
+    stuck_bit_test_256_impl(blocks, thread_id, error_mode, timing, config, progress)
+}
+
+/// StuckBitTest256 - AVX2 optimized implementation
+/// This function is annotated with #[target_feature] to enable full compiler optimization
+#[target_feature(enable = "avx2")]
+unsafe fn stuck_bit_test_256_impl(
     blocks: &[crate::runner::AllocationBlock],
     thread_id: usize,
     error_mode: ErrorMode,
@@ -1702,17 +1751,6 @@ pub unsafe fn stuck_bit_test_256_multi(
     use std::time::Instant;
 
     let test_name = "StuckBitTest256";
-
-    if !is_x86_feature_detected!("avx2") {
-        log::warn!("{}: AVX2 not available, returning zero stats", test_name);
-        return TestStats {
-            name: test_name, action: TestAction::StuckBitTest,
-            bytes_processed: 0, elapsed_ms: 0, thread_id,
-            error_count: 0, total_operations: 0,
-            cycles_completed: 0, cycles_planned: timing.cycles,  // BUG FIX #1: Use timing.cycles, not None
-            stopped_by_time_limit: false,
-        };
-    }
 
     let total_allocated: usize = blocks.iter().map(|b| b.buffer.size()).sum();
     let window_size = config.calculate_window_size(test_name, total_allocated);
@@ -1929,10 +1967,39 @@ pub unsafe fn stuck_bit_test_256_multi(
     }
 }
 
-/// StuckBitTest AVX-512 (512-bit) - MultiBlock variant
-/// CRITICAL BUG FIX: Adds missing memory fences after all 3 phase writes
+/// StuckBitTest512 - AVX-512 optimized - MultiBlock pattern
+/// Runtime-checked wrapper for AVX-512 availability
 #[allow(clippy::missing_safety_doc)]
 pub unsafe fn stuck_bit_test_512_multi(
+    blocks: &[crate::runner::AllocationBlock],
+    thread_id: usize,
+    error_mode: ErrorMode,
+    timing: &TestTiming,
+    config: &TestMemoryConfig,
+    progress: Option<&TestProgress>,
+) -> TestStats {
+    let test_name = "StuckBitTest512";
+
+    // Runtime CPU feature check
+    if !is_x86_feature_detected!("avx512f") {
+        log::warn!("{}: AVX-512 not available, returning zero stats", test_name);
+        return TestStats {
+            name: test_name, action: TestAction::StuckBitTest,
+            bytes_processed: 0, elapsed_ms: 0, thread_id,
+            error_count: 0, total_operations: 0,
+            cycles_completed: 0, cycles_planned: timing.cycles,
+            stopped_by_time_limit: false,
+        };
+    }
+
+    // Call the AVX-512 optimized implementation
+    stuck_bit_test_512_impl(blocks, thread_id, error_mode, timing, config, progress)
+}
+
+/// StuckBitTest512 - AVX-512 optimized implementation
+/// This function is annotated with #[target_feature] to enable full compiler optimization
+#[target_feature(enable = "avx512f")]
+unsafe fn stuck_bit_test_512_impl(
     blocks: &[crate::runner::AllocationBlock],
     thread_id: usize,
     error_mode: ErrorMode,
@@ -1945,17 +2012,6 @@ pub unsafe fn stuck_bit_test_512_multi(
     use std::time::Instant;
 
     let test_name = "StuckBitTest512";
-
-    if !is_x86_feature_detected!("avx512f") {
-        log::warn!("{}: AVX-512 not available, returning zero stats", test_name);
-        return TestStats {
-            name: test_name, action: TestAction::StuckBitTest,
-            bytes_processed: 0, elapsed_ms: 0, thread_id,
-            error_count: 0, total_operations: 0,
-            cycles_completed: 0, cycles_planned: timing.cycles,  // BUG FIX #1: Use timing.cycles, not None
-            stopped_by_time_limit: false,
-        };
-    }
 
     let total_allocated: usize = blocks.iter().map(|b| b.buffer.size()).sum();
     let window_size = config.calculate_window_size(test_name, total_allocated);
@@ -3247,6 +3303,8 @@ pub unsafe fn refresh_stable_multi(
 /// # Safety
 /// Caller must ensure blocks contain valid, aligned memory
 #[allow(clippy::missing_safety_doc)]
+/// RefreshStable128 - SSE2 optimized - MultiBlock pattern
+/// Runtime-checked wrapper for SSE2 availability
 pub unsafe fn refresh_stable_128_multi(
     blocks: &[crate::runner::AllocationBlock],
     thread_id: usize,
@@ -3257,7 +3315,7 @@ pub unsafe fn refresh_stable_128_multi(
 ) -> TestStats {
     let test_name = "RefreshStable128";
 
-    // Check CPU feature support
+    // Runtime CPU feature check
     if !is_x86_feature_detected!("sse2") {
         log::warn!("{}: SSE2 not available, returning zero stats", test_name);
         return TestStats {
@@ -3273,6 +3331,23 @@ pub unsafe fn refresh_stable_128_multi(
             stopped_by_time_limit: false,
         };
     }
+
+    // Call the SSE2 optimized implementation
+    refresh_stable_128_impl(blocks, thread_id, error_mode, timing, config, progress)
+}
+
+/// RefreshStable128 - SSE2 optimized implementation
+/// This function is annotated with #[target_feature] to enable full compiler optimization
+#[target_feature(enable = "sse2")]
+unsafe fn refresh_stable_128_impl(
+    blocks: &[crate::runner::AllocationBlock],
+    thread_id: usize,
+    error_mode: ErrorMode,
+    timing: &TestTiming,
+    config: &TestMemoryConfig,
+    progress: Option<&TestProgress>,
+) -> TestStats {
+    let test_name = "RefreshStable128";
 
     let start = Instant::now();
 
@@ -3450,7 +3525,8 @@ pub unsafe fn refresh_stable_128_multi(
     }
 }
 
-/// RefreshStable256 MultiBlock implementation (AVX2) - tests DRAM refresh stability.
+/// RefreshStable256 - AVX2 optimized - MultiBlock pattern
+/// Runtime-checked wrapper for AVX2 availability
 ///
 /// # Safety
 /// Caller must ensure blocks contain valid, aligned memory
@@ -3465,7 +3541,7 @@ pub unsafe fn refresh_stable_256_multi(
 ) -> TestStats {
     let test_name = "RefreshStable256";
 
-    // Check CPU feature support
+    // Runtime CPU feature check
     if !is_x86_feature_detected!("avx2") {
         log::warn!("{}: AVX2 not available, returning zero stats", test_name);
         return TestStats {
@@ -3481,6 +3557,23 @@ pub unsafe fn refresh_stable_256_multi(
             stopped_by_time_limit: false,
         };
     }
+
+    // Call the AVX2 optimized implementation
+    refresh_stable_256_impl(blocks, thread_id, error_mode, timing, config, progress)
+}
+
+/// RefreshStable256 - AVX2 optimized implementation
+/// This function is annotated with #[target_feature] to enable full compiler optimization
+#[target_feature(enable = "avx2")]
+unsafe fn refresh_stable_256_impl(
+    blocks: &[crate::runner::AllocationBlock],
+    thread_id: usize,
+    error_mode: ErrorMode,
+    timing: &TestTiming,
+    config: &TestMemoryConfig,
+    progress: Option<&TestProgress>,
+) -> TestStats {
+    let test_name = "RefreshStable256";
 
     let start = Instant::now();
 
@@ -3658,7 +3751,8 @@ pub unsafe fn refresh_stable_256_multi(
     }
 }
 
-/// RefreshStable512 MultiBlock implementation (AVX-512) - tests DRAM refresh stability.
+/// RefreshStable512 - AVX-512 optimized - MultiBlock pattern
+/// Runtime-checked wrapper for AVX-512 availability
 ///
 /// # Safety
 /// Caller must ensure blocks contain valid, aligned memory
@@ -3673,7 +3767,7 @@ pub unsafe fn refresh_stable_512_multi(
 ) -> TestStats {
     let test_name = "RefreshStable512";
 
-    // Check CPU feature support
+    // Runtime CPU feature check
     if !is_x86_feature_detected!("avx512f") {
         log::warn!("{}: AVX-512 not available, returning zero stats", test_name);
         return TestStats {
@@ -3689,6 +3783,23 @@ pub unsafe fn refresh_stable_512_multi(
             stopped_by_time_limit: false,
         };
     }
+
+    // Call the AVX-512 optimized implementation
+    refresh_stable_512_impl(blocks, thread_id, error_mode, timing, config, progress)
+}
+
+/// RefreshStable512 - AVX-512 optimized implementation
+/// This function is annotated with #[target_feature] to enable full compiler optimization
+#[target_feature(enable = "avx512f")]
+unsafe fn refresh_stable_512_impl(
+    blocks: &[crate::runner::AllocationBlock],
+    thread_id: usize,
+    error_mode: ErrorMode,
+    timing: &TestTiming,
+    config: &TestMemoryConfig,
+    progress: Option<&TestProgress>,
+) -> TestStats {
+    let test_name = "RefreshStable512";
 
     let start = Instant::now();
 
@@ -3890,6 +4001,790 @@ pub unsafe fn refresh_stable_auto_multi(
     } else {
         // Fallback to scalar MultiBlock implementation
         refresh_stable_multi(blocks, thread_id, error_mode, timing, config, progress)
+    }
+}
+
+// ================================================================================================
+// CacheBusting MultiBlock Implementation
+// ================================================================================================
+
+/// CacheBusting MultiBlock implementation - tests memory with stride-based cache-busting patterns.
+///
+/// Pattern per cycle:
+/// - Writes with large strides (CACHE_BUSTING_STRIDE) to evict from cache
+/// - Verifies the pattern
+/// - Supports single stream and multi-stream modes
+///
+/// Tests blocks in interleaved fashion with shared timer to fix N×duration bug.
+pub unsafe fn cache_busting_multi(
+    blocks: &[crate::runner::AllocationBlock],
+    thread_id: usize,
+    error_mode: ErrorMode,
+    timing: &TestTiming,
+    config: &TestMemoryConfig,
+    progress: Option<&TestProgress>,
+) -> TestStats {
+    let test_name = "CacheBusting";
+    let start = Instant::now();
+
+    // Calculate total allocated memory
+    let total_allocated: usize = blocks.iter().map(|b| b.buffer.size()).sum();
+
+    // Window preparation - determines which blocks to test
+    let window_size = config.calculate_window_size(test_name, total_allocated);
+    let test_blocks = prepare_blocks_for_window(blocks, window_size, test_name);
+
+    let total_test_size: usize = test_blocks.iter().map(|b| b.test_size).sum();
+
+    log::info!("[Thread {}] Running {} on {:.2} MB of memory (window: {:.2} MB)",
+              thread_id, test_name,
+              total_test_size as f64 / MB_F64,
+              window_size as f64 / MB_F64);
+
+    let streams = config.streams.max(1) as usize;
+    let stream_shift = streams.trailing_zeros();
+
+    // Pre-calculate stride constants outside all loops
+    let base_stride = CACHE_BUSTING_STRIDE / std::mem::size_of::<u64>();
+    let stream_offset = base_stride >> stream_shift;
+    let pattern_base = 0x0123456789ABCDEFu64.wrapping_add(thread_id as u64);
+
+    let mut cycle = 0u32;
+    let test_start = Instant::now();
+    let mut total_error_count = 0u64;
+    let mut total_bytes_processed = 0usize;
+
+    let mut last_progress_update = Instant::now();
+
+    loop {
+        cycle += 1;
+        let mut cycle_errors = 0u64;
+
+        // Interleave testing across all blocks with shared timer
+        for test_block in test_blocks.iter() {
+            let base = test_block.block.buffer.as_mut_ptr() as *mut u64;
+            let len = test_block.test_size / std::mem::size_of::<u64>();
+
+            // Recalculate chunk size for THIS block's size
+            let ideal_chunk_size = calculate_ideal_chunk_size(config, test_name, test_block.test_size);
+            let chunk_size_bytes = get_safe_chunk_size(ideal_chunk_size, test_block.test_size);
+            let chunk_size_operations = (chunk_size_bytes / std::mem::size_of::<u64>()).max(1024);
+
+            // Process this block in chunks
+            let mut processed = 0;
+            while processed < len {
+                let chunk_end = (processed + chunk_size_operations).min(len);
+
+                // Apply stream-based access patterns within chunk
+                match config.streams {
+                    1 => {
+                        // Single stream with large strides to bust cache
+                        for offset in 0..base_stride.min(chunk_end - processed) {
+                            let mut i = processed + offset;
+                            while i < chunk_end {
+                                *base.add(i) = pattern_base.wrapping_add(i as u64);
+                                i += base_stride;
+                                if i >= chunk_end { break; }
+                            }
+                        }
+
+                        std::sync::atomic::fence(Ordering::SeqCst);
+
+                        // Verify with same stride pattern within chunk
+                        for offset in 0..base_stride.min(chunk_end - processed) {
+                            let mut i = processed + offset;
+                            while i < chunk_end {
+                                let v = *base.add(i);
+                                let expected = pattern_base.wrapping_add(i as u64);
+                                if v != expected {
+                                    cycle_errors += 1;
+                                    log::error!("{}: memory error at index {} - expected {:#x}, got {:#x}",
+                                               test_name, i, expected, v);
+                                }
+                                i += base_stride;
+                                if i >= chunk_end { break; }
+                            }
+                        }
+                    }
+                    _ => {
+                        // Multiple streams with different stride offsets within chunk
+                        for stream in 0..streams {
+                            let pattern = pattern_base.wrapping_add((stream as u64) * 0x1111111111111111u64);
+
+                            let start_i = processed + (stream * stream_offset).min(chunk_end - processed);
+                            let mut i = start_i;
+                            while i < chunk_end {
+                                *base.add(i) = pattern.wrapping_add(i as u64);
+                                i += base_stride;
+                                if i >= chunk_end { break; }
+                            }
+                        }
+
+                        std::sync::atomic::fence(Ordering::SeqCst);
+
+                        // Verify all streams within chunk
+                        for stream in 0..streams {
+                            let pattern = pattern_base.wrapping_add((stream as u64) * 0x1111111111111111u64);
+
+                            let start_i = processed + (stream * stream_offset).min(chunk_end - processed);
+                            let mut i = start_i;
+                            while i < chunk_end {
+                                let v = *base.add(i);
+                                let expected = pattern.wrapping_add(i as u64);
+                                if v != expected {
+                                    cycle_errors += 1;
+                                    log::error!("{}: memory error at index {} - expected {:#x}, got {:#x}",
+                                               test_name, i, expected, v);
+                                }
+                                i += base_stride;
+                                if i >= chunk_end { break; }
+                            }
+                        }
+                    }
+                }
+
+                // Handle errors if found
+                if cycle_errors > 0 {
+                    match error_mode {
+                        ErrorMode::Panic => {
+                            panic!("{}: panicking due to {} memory errors in cycle {}",
+                                  test_name, cycle_errors, cycle);
+                        }
+                        ErrorMode::Halt => {
+                            let elapsed = start.elapsed().as_millis();
+                            let total_operations = ((total_bytes_processed / std::mem::size_of::<u64>()) as f64 * 0.25) as u64;
+
+                            return TestStats {
+                                name: test_name,
+                                action: TestAction::CacheBusting,
+                                bytes_processed: total_bytes_processed,
+                                elapsed_ms: elapsed,
+                                thread_id,
+                                error_count: total_error_count + cycle_errors,
+                                total_operations,
+                                cycles_completed: cycle,
+                                cycles_planned: timing.cycles,
+                                stopped_by_time_limit: false,
+                            };
+                        }
+                        ErrorMode::Log => {
+                            // Continue testing - errors already logged
+                        }
+                    }
+                }
+
+                processed = chunk_end;
+
+                // Check for shutdown request
+                if SHUTDOWN_REQUESTED.load(Ordering::Relaxed) {
+                    let elapsed = start.elapsed().as_millis();
+                    let total_operations = ((total_bytes_processed / std::mem::size_of::<u64>()) as f64 * 0.25) as u64;
+
+                    return TestStats {
+                        name: test_name,
+                        action: TestAction::CacheBusting,
+                        bytes_processed: total_bytes_processed,
+                        elapsed_ms: elapsed,
+                        thread_id,
+                        error_count: total_error_count + cycle_errors,
+                        total_operations,
+                        cycles_completed: cycle,
+                        cycles_planned: timing.cycles,
+                        stopped_by_time_limit: false,
+                    };
+                }
+            }
+
+            // Update bytes processed for this block (stride coverage ~25%)
+            total_bytes_processed += test_block.test_size * 2;
+        }
+
+        total_error_count += cycle_errors;
+
+        // Update progress tracker every 250ms
+        if let Some(progress) = progress {
+            let now = Instant::now();
+            if now.duration_since(last_progress_update).as_millis() >= 250 {
+                progress.cycles_completed.store(cycle, Ordering::Relaxed);
+                progress.bytes_processed.store(total_bytes_processed as u64, Ordering::Relaxed);
+                progress.errors_found.store(total_error_count, Ordering::Relaxed);
+                progress.last_update_ms.store(start.elapsed().as_millis() as u64, Ordering::Relaxed);
+                last_progress_update = now;
+            }
+        }
+
+        // Check if should continue based on timing
+        let elapsed_secs = test_start.elapsed().as_secs() as u32;
+        if !timing.should_continue(cycle, elapsed_secs) {
+            let elapsed = start.elapsed().as_millis();
+            let total_operations = ((total_bytes_processed / std::mem::size_of::<u64>()) as f64 * 0.25) as u64;
+
+            return TestStats {
+                name: test_name,
+                action: TestAction::CacheBusting,
+                bytes_processed: total_bytes_processed,
+                elapsed_ms: elapsed,
+                thread_id,
+                error_count: total_error_count,
+                total_operations,
+                cycles_completed: cycle,
+                cycles_planned: timing.cycles,
+                stopped_by_time_limit: timing.cycles.map_or(false, |limit| cycle < limit),
+            };
+        }
+    }
+}
+
+// ================================================================================================
+// RandomTorture MultiBlock Implementation
+// ================================================================================================
+
+/// RandomTorture MultiBlock implementation - random access pattern testing.
+///
+/// Pattern per cycle:
+/// - Initializes memory with sequential pattern (index as value)
+/// - Performs random reads using XORshift RNG
+/// - Verifies each random read matches expected value
+/// - Supports multiple streams with different RNG seeds
+///
+/// Tests blocks in interleaved fashion with shared timer to fix N×duration bug.
+pub unsafe fn random_torture_multi(
+    blocks: &[crate::runner::AllocationBlock],
+    thread_id: usize,
+    error_mode: ErrorMode,
+    timing: &TestTiming,
+    config: &TestMemoryConfig,
+    progress: Option<&TestProgress>,
+) -> TestStats {
+    let test_name = "RandomTorture";
+    let start = Instant::now();
+
+    // Calculate total allocated memory
+    let total_allocated: usize = blocks.iter().map(|b| b.buffer.size()).sum();
+
+    // Window preparation - determines which blocks to test
+    let window_size = config.calculate_window_size(test_name, total_allocated);
+    let test_blocks = prepare_blocks_for_window(blocks, window_size, test_name);
+
+    let total_test_size: usize = test_blocks.iter().map(|b| b.test_size).sum();
+
+    log::info!("[Thread {}] Running {} on {:.2} MB of memory (window: {:.2} MB)",
+              thread_id, test_name,
+              total_test_size as f64 / MB_F64,
+              window_size as f64 / MB_F64);
+
+    let mut cycle = 0u32;
+    let test_start = Instant::now();
+    let mut total_error_count = 0u64;
+    let mut total_bytes_processed = 0usize;
+
+    let mut last_progress_update = Instant::now();
+
+    // Initialize all blocks with known pattern once
+    for test_block in test_blocks.iter() {
+        let base = test_block.block.buffer.as_mut_ptr() as *mut u64;
+        let len = test_block.test_size / std::mem::size_of::<u64>();
+
+        for i in 0..len {
+            *base.add(i) = i as u64;
+        }
+        std::sync::atomic::fence(Ordering::SeqCst);
+        total_bytes_processed += test_block.test_size;
+    }
+
+    loop {
+        cycle += 1;
+        let mut cycle_errors = 0u64;
+
+        // Interleave testing across all blocks with shared timer
+        for test_block in test_blocks.iter() {
+            let base = test_block.block.buffer.as_mut_ptr() as *mut u64;
+            let len = test_block.test_size / std::mem::size_of::<u64>();
+
+            // Assert power-of-2 size for optimal performance
+            if !len.is_power_of_two() {
+                panic!("{}: Window size {} is not power-of-2! This is a bug in the alignment code.",
+                       test_name, len);
+            }
+            let mask = len - 1;
+
+            // Calculate chunk size for responsive shutdown
+            let ideal_chunk_size = calculate_ideal_chunk_size(config, test_name, test_block.test_size);
+            let chunk_size_bytes = get_safe_chunk_size(ideal_chunk_size, test_block.test_size);
+            let chunk_size_operations = chunk_size_bytes / std::mem::size_of::<u64>();
+
+            // Random access torture with configurable streams
+            let base_iterations = (len / 1000).clamp(5000, 50000);
+            let streams_max = config.streams.max(1) as usize;
+            let stream_shift = streams_max.trailing_zeros();
+            let iterations_per_stream = (base_iterations >> stream_shift).max(1);
+
+            // Process streams in chunks for responsive shutdown
+            for stream in 0..config.streams {
+                let mut rng_state = 0x123456789ABCDEFu64
+                    .wrapping_add(thread_id as u64)
+                    .wrapping_add(cycle as u64)
+                    .wrapping_add((stream as u64).wrapping_mul(0x8765432187654321u64));
+
+                // Random read verification for this stream - chunked for responsive shutdown
+                for chunk_start in (0..iterations_per_stream).step_by(chunk_size_operations) {
+                    let chunk_end = (chunk_start + chunk_size_operations).min(iterations_per_stream);
+
+                    for _iteration in chunk_start..chunk_end {
+                        rng_state ^= rng_state << 13;
+                        rng_state ^= rng_state >> 17;
+                        rng_state ^= rng_state << 5;
+
+                        let idx = (rng_state as usize) & mask;
+                        let expected = idx as u64;
+                        let actual = *base.add(idx);
+
+                        if actual != expected {
+                            cycle_errors += 1;
+                            log::error!(
+                                "{}: memory error at index {}, iteration {}, stream {}, expected {}, actual {}",
+                                test_name,
+                                idx,
+                                _iteration,
+                                stream,
+                                expected,
+                                actual
+                            );
+                        }
+                    }
+
+                    // Handle errors if found
+                    if cycle_errors > 0 {
+                        match error_mode {
+                            ErrorMode::Panic => {
+                                panic!("{}: {} memory errors detected in stream {} (see logs above)",
+                                      test_name, cycle_errors, stream);
+                            }
+                            ErrorMode::Halt => {
+                                let elapsed = start.elapsed().as_millis();
+                                let total_operations = cycle as u64 * (chunk_end - chunk_start) as u64;
+
+                                return TestStats {
+                                    name: test_name,
+                                    action: TestAction::RandomAccess,
+                                    bytes_processed: total_bytes_processed,
+                                    elapsed_ms: elapsed,
+                                    thread_id,
+                                    error_count: total_error_count + cycle_errors,
+                                    total_operations,
+                                    cycles_completed: cycle,
+                                    cycles_planned: timing.cycles,
+                                    stopped_by_time_limit: false,
+                                };
+                            }
+                            ErrorMode::Log => {
+                                // Continue - errors already logged
+                            }
+                        }
+                    }
+
+                    // Check for shutdown request
+                    if SHUTDOWN_REQUESTED.load(Ordering::Relaxed) {
+                        let elapsed = start.elapsed().as_millis();
+                        let total_operations = cycle as u64 * (chunk_end - chunk_start) as u64;
+
+                        return TestStats {
+                            name: test_name,
+                            action: TestAction::RandomAccess,
+                            bytes_processed: total_bytes_processed,
+                            elapsed_ms: elapsed,
+                            thread_id,
+                            error_count: total_error_count + cycle_errors,
+                            total_operations,
+                            cycles_completed: cycle,
+                            cycles_planned: timing.cycles,
+                            stopped_by_time_limit: false,
+                        };
+                    }
+                }
+            }
+
+            // Update bytes processed for this block
+            let bytes_this_cycle = iterations_per_stream
+                .saturating_mul(config.streams as usize)
+                .saturating_mul(std::mem::size_of::<u64>());
+            total_bytes_processed = total_bytes_processed.saturating_add(bytes_this_cycle);
+        }
+
+        total_error_count += cycle_errors;
+
+        // Update progress tracker every 250ms
+        if let Some(progress) = progress {
+            let now = Instant::now();
+            if now.duration_since(last_progress_update).as_millis() >= 250 {
+                progress.cycles_completed.store(cycle, Ordering::Relaxed);
+                progress.bytes_processed.store(total_bytes_processed as u64, Ordering::Relaxed);
+                progress.errors_found.store(total_error_count, Ordering::Relaxed);
+                progress.last_update_ms.store(start.elapsed().as_millis() as u64, Ordering::Relaxed);
+                last_progress_update = now;
+            }
+        }
+
+        // Check if should continue based on timing
+        let elapsed_secs = test_start.elapsed().as_secs() as u32;
+        if !timing.should_continue(cycle, elapsed_secs) {
+            let elapsed = start.elapsed().as_millis();
+
+            // Calculate total operations
+            let base_iterations = (total_test_size / std::mem::size_of::<u64>() / 1000).clamp(5000, 50000);
+            let streams_max = config.streams.max(1) as usize;
+            let iterations_per_stream = (base_iterations >> streams_max.trailing_zeros()).max(1);
+            let total_operations: u64 = cycle as u64 * (iterations_per_stream * config.streams as usize) as u64;
+
+            return TestStats {
+                name: test_name,
+                action: TestAction::RandomAccess,
+                bytes_processed: total_bytes_processed,
+                elapsed_ms: elapsed,
+                thread_id,
+                error_count: total_error_count,
+                total_operations,
+                cycles_completed: cycle,
+                cycles_planned: timing.cycles,
+                stopped_by_time_limit: timing.cycles.map_or(false, |limit| cycle < limit),
+            };
+        }
+    }
+}
+
+// ================================================================================================
+// StrideAccess, BandwidthSat, BlockMove MultiBlock Implementations
+// ================================================================================================
+
+/// StrideAccess MultiBlock implementation - tests various stride patterns.
+pub unsafe fn stride_access_multi(
+    blocks: &[crate::runner::AllocationBlock],
+    thread_id: usize,
+    error_mode: ErrorMode,
+    timing: &TestTiming,
+    config: &TestMemoryConfig,
+    progress: Option<&TestProgress>,
+) -> TestStats {
+    let test_name = "StrideAccess";
+    let start = Instant::now();
+    let total_allocated: usize = blocks.iter().map(|b| b.buffer.size()).sum();
+    let window_size = config.calculate_window_size(test_name, total_allocated);
+    let test_blocks = prepare_blocks_for_window(blocks, window_size, test_name);
+    let total_test_size: usize = test_blocks.iter().map(|b| b.test_size).sum();
+
+    log::info!("[Thread {}] Running {} on {:.2} MB of memory (window: {:.2} MB)",
+              thread_id, test_name, total_test_size as f64 / MB_F64, window_size as f64 / MB_F64);
+
+    let streams = config.streams.max(1) as usize;
+    let stream_shift = streams.trailing_zeros();
+    let mut cycle = 0u32;
+    let test_start = Instant::now();
+    let mut total_error_count = 0u64;
+    let mut total_bytes_processed = 0usize;
+    let mut last_progress_update = Instant::now();
+
+    loop {
+        cycle += 1;
+        let mut cycle_errors = 0u64;
+        let strides = [1, 16, 64, 256, 1024, 4096];
+        let pattern_base = 0xFEDCBA9876543210u64.wrapping_add(thread_id as u64).wrapping_add(cycle as u64);
+
+        for test_block in test_blocks.iter() {
+            let base = test_block.block.buffer.as_mut_ptr() as *mut u64;
+            let len = test_block.test_size / std::mem::size_of::<u64>();
+            let ideal_chunk_size = calculate_ideal_chunk_size(config, test_name, test_block.test_size);
+            let chunk_size_bytes = get_safe_chunk_size(ideal_chunk_size, test_block.test_size);
+            let chunk_size_elements = chunk_size_bytes / std::mem::size_of::<u64>();
+
+            'stride_loop: for &stride in &strides {
+                if stride >= len { continue; }
+
+                for chunk_start in (0..len).step_by(chunk_size_elements) {
+                    let chunk_end = (chunk_start + chunk_size_elements).min(len);
+                    let chunk_len = chunk_end - chunk_start;
+                    let elements_per_stream = chunk_len >> stream_shift;
+
+                    for stream in 0..streams {
+                        let pattern = pattern_base.wrapping_add((stride as u64) << 32).wrapping_add((stream as u64) << 48);
+                        let stream_start = chunk_start + stream * elements_per_stream;
+                        let stream_end = stream_start + elements_per_stream;
+                        let mut pos = stream_start;
+                        while pos < stream_end {
+                            *base.add(pos) = pattern.wrapping_add(pos as u64);
+                            pos += stride;
+                            if pos >= stream_end { break; }
+                        }
+                    }
+
+                    std::sync::atomic::fence(Ordering::SeqCst);
+
+                    for stream in 0..streams {
+                        let pattern = pattern_base.wrapping_add((stride as u64) << 32).wrapping_add((stream as u64) << 48);
+                        let stream_start = chunk_start + stream * elements_per_stream;
+                        let stream_end = stream_start + elements_per_stream;
+                        let mut pos = stream_start;
+                        while pos < stream_end {
+                            let expected = pattern.wrapping_add(pos as u64);
+                            let actual = *base.add(pos);
+                            if actual != expected {
+                                cycle_errors += 1;
+                                log::error!("{}: memory error at index {} - expected {:#x}, got {:#x}", test_name, pos, expected, actual);
+                            }
+                            pos += stride;
+                            if pos >= stream_end { break; }
+                        }
+                    }
+
+                    if cycle_errors > 0 {
+                        match error_mode {
+                            ErrorMode::Panic => panic!("{}: {} memory errors detected (see logs above)", test_name, cycle_errors),
+                            ErrorMode::Halt => break 'stride_loop,
+                            ErrorMode::Log => {}
+                        }
+                    }
+
+                    if SHUTDOWN_REQUESTED.load(Ordering::Relaxed) {
+                        total_error_count += cycle_errors;
+                        total_bytes_processed += (chunk_end - chunk_start) * std::mem::size_of::<u64>() * 2;
+                        let elapsed = start.elapsed().as_millis();
+                        return TestStats {
+                            name: test_name, action: TestAction::ReadWrite,
+                            bytes_processed: total_bytes_processed, elapsed_ms: elapsed, thread_id,
+                            error_count: total_error_count,
+                            total_operations: cycle as u64 * (chunk_end - chunk_start) as u64,
+                            cycles_completed: cycle, cycles_planned: timing.cycles, stopped_by_time_limit: false,
+                        };
+                    }
+                }
+            }
+
+            let mut bytes_this_cycle = 0;
+            for &stride in &strides {
+                if stride < len {
+                    bytes_this_cycle += (len / stride) * std::mem::size_of::<u64>() * 2;
+                }
+            }
+            total_bytes_processed = total_bytes_processed.saturating_add(bytes_this_cycle);
+        }
+
+        total_error_count += cycle_errors;
+        if let Some(progress) = progress {
+            let now = Instant::now();
+            if now.duration_since(last_progress_update).as_millis() >= 250 {
+                progress.cycles_completed.store(cycle, Ordering::Relaxed);
+                progress.bytes_processed.store(total_bytes_processed as u64, Ordering::Relaxed);
+                progress.errors_found.store(total_error_count, Ordering::Relaxed);
+                progress.last_update_ms.store(start.elapsed().as_millis() as u64, Ordering::Relaxed);
+                last_progress_update = now;
+            }
+        }
+
+        let elapsed_secs = test_start.elapsed().as_secs() as u32;
+        if !timing.should_continue(cycle, elapsed_secs) {
+            let elapsed = start.elapsed().as_millis();
+            let strides = [1, 16, 64, 256, 1024, 4096];
+            let mut total_elements_per_cycle = 0u64;
+            for &stride in &strides {
+                if stride < (total_test_size / std::mem::size_of::<u64>()) {
+                    total_elements_per_cycle += ((total_test_size / std::mem::size_of::<u64>()) / stride) as u64;
+                }
+            }
+            let total_operations: u64 = cycle as u64 * total_elements_per_cycle;
+            return TestStats {
+                name: test_name, action: TestAction::ReadWrite,
+                bytes_processed: total_bytes_processed, elapsed_ms: elapsed, thread_id,
+                error_count: total_error_count, total_operations,
+                cycles_completed: cycle, cycles_planned: timing.cycles,
+                stopped_by_time_limit: timing.cycles.map_or(false, |limit| cycle < limit),
+            };
+        }
+    }
+}
+
+/// BandwidthSat MultiBlock - saturate memory bandwidth.
+pub unsafe fn bandwidth_saturation_multi(
+    blocks: &[crate::runner::AllocationBlock],
+    thread_id: usize,
+    _error_mode: ErrorMode,
+    timing: &TestTiming,
+    config: &TestMemoryConfig,
+    progress: Option<&TestProgress>,
+) -> TestStats {
+    let test_name = "BandwidthSat";
+    let start = Instant::now();
+    let total_allocated: usize = blocks.iter().map(|b| b.buffer.size()).sum();
+    let window_size = config.calculate_window_size(test_name, total_allocated);
+    let test_blocks = prepare_blocks_for_window(blocks, window_size, test_name);
+    let total_test_size: usize = test_blocks.iter().map(|b| b.test_size).sum();
+
+    log::info!("[Thread {}] Running {} on {:.2} MB of memory (window: {:.2} MB)",
+              thread_id, test_name, total_test_size as f64 / MB_F64, window_size as f64 / MB_F64);
+
+    let pattern = 0x0123456789ABCDEFu64.wrapping_add(thread_id as u64);
+    let mut cycle = 0u32;
+    let test_start = Instant::now();
+    let mut total_bytes_processed = 0usize;
+    let mut last_progress_update = Instant::now();
+
+    loop {
+        cycle += 1;
+
+        for test_block in test_blocks.iter() {
+            let base = test_block.block.buffer.as_mut_ptr() as *mut u64;
+            let len = test_block.test_size / std::mem::size_of::<u64>();
+
+            for i in 0..len {
+                *base.add(i) = pattern.wrapping_add(i as u64);
+            }
+            std::sync::atomic::fence(Ordering::SeqCst);
+            total_bytes_processed += test_block.test_size;
+
+            if SHUTDOWN_REQUESTED.load(Ordering::Relaxed) {
+                let elapsed = start.elapsed().as_millis();
+                return TestStats {
+                    name: test_name, action: TestAction::Write,
+                    bytes_processed: total_bytes_processed, elapsed_ms: elapsed, thread_id,
+                    error_count: 0, total_operations: cycle as u64 * len as u64,
+                    cycles_completed: cycle, cycles_planned: timing.cycles, stopped_by_time_limit: false,
+                };
+            }
+        }
+
+        if let Some(progress) = progress {
+            let now = Instant::now();
+            if now.duration_since(last_progress_update).as_millis() >= 250 {
+                progress.cycles_completed.store(cycle, Ordering::Relaxed);
+                progress.bytes_processed.store(total_bytes_processed as u64, Ordering::Relaxed);
+                progress.last_update_ms.store(start.elapsed().as_millis() as u64, Ordering::Relaxed);
+                last_progress_update = now;
+            }
+        }
+
+        let elapsed_secs = test_start.elapsed().as_secs() as u32;
+        if !timing.should_continue(cycle, elapsed_secs) {
+            let elapsed = start.elapsed().as_millis();
+            let total_operations: u64 = cycle as u64 * (total_test_size / std::mem::size_of::<u64>()) as u64;
+            return TestStats {
+                name: test_name, action: TestAction::Write,
+                bytes_processed: total_bytes_processed, elapsed_ms: elapsed, thread_id,
+                error_count: 0, total_operations,
+                cycles_completed: cycle, cycles_planned: timing.cycles,
+                stopped_by_time_limit: timing.cycles.map_or(false, |limit| cycle < limit),
+            };
+        }
+    }
+}
+
+/// BlockMove MultiBlock - sequential block memory moves.
+pub unsafe fn block_move_multi(
+    blocks: &[crate::runner::AllocationBlock],
+    thread_id: usize,
+    error_mode: ErrorMode,
+    timing: &TestTiming,
+    config: &TestMemoryConfig,
+    progress: Option<&TestProgress>,
+) -> TestStats {
+    let test_name = "BlockMove";
+    let start = Instant::now();
+    let total_allocated: usize = blocks.iter().map(|b| b.buffer.size()).sum();
+    let window_size = config.calculate_window_size(test_name, total_allocated);
+    let test_blocks = prepare_blocks_for_window(blocks, window_size, test_name);
+    let total_test_size: usize = test_blocks.iter().map(|b| b.test_size).sum();
+
+    log::info!("[Thread {}] Running {} on {:.2} MB of memory (window: {:.2} MB)",
+              thread_id, test_name, total_test_size as f64 / MB_F64, window_size as f64 / MB_F64);
+
+    let mut cycle = 0u32;
+    let test_start = Instant::now();
+    let mut total_error_count = 0u64;
+    let mut total_bytes_processed = 0usize;
+    let mut last_progress_update = Instant::now();
+
+    for test_block in test_blocks.iter() {
+        let base = test_block.block.buffer.as_mut_ptr() as *mut u64;
+        let len = test_block.test_size / std::mem::size_of::<u64>();
+        for i in 0..len {
+            *base.add(i) = i as u64;
+        }
+    }
+
+    loop {
+        cycle += 1;
+        let mut cycle_errors = 0u64;
+        let pattern = 0xDEADBEEFCAFEBABEu64.wrapping_add(thread_id as u64).wrapping_add(cycle as u64);
+
+        for test_block in test_blocks.iter() {
+            let base = test_block.block.buffer.as_mut_ptr() as *mut u64;
+            let len = test_block.test_size / std::mem::size_of::<u64>();
+            let block_size = 1024usize;
+
+            for block_start in (0..len).step_by(block_size) {
+                let block_end = (block_start + block_size).min(len);
+                for i in block_start..block_end {
+                    *base.add(i) = pattern.wrapping_add(i as u64);
+                }
+            }
+            std::sync::atomic::fence(Ordering::SeqCst);
+
+            for block_start in (0..len).step_by(block_size) {
+                let block_end = (block_start + block_size).min(len);
+                for i in block_start..block_end {
+                    let expected = pattern.wrapping_add(i as u64);
+                    let actual = *base.add(i);
+                    if actual != expected {
+                        cycle_errors += 1;
+                        log::error!("{}: error at {} - expected {:#x}, got {:#x}", test_name, i, expected, actual);
+                    }
+                }
+
+                if cycle_errors > 0 {
+                    match error_mode {
+                        ErrorMode::Panic => panic!("{}: {} errors detected", test_name, cycle_errors),
+                        ErrorMode::Halt => break,
+                        ErrorMode::Log => {}
+                    }
+                }
+
+                if SHUTDOWN_REQUESTED.load(Ordering::Relaxed) {
+                    total_error_count += cycle_errors;
+                    total_bytes_processed += test_block.test_size * 2;
+                    let elapsed = start.elapsed().as_millis();
+                    return TestStats {
+                        name: test_name, action: TestAction::ReadWrite,
+                        bytes_processed: total_bytes_processed, elapsed_ms: elapsed, thread_id,
+                        error_count: total_error_count, total_operations: cycle as u64 * len as u64,
+                        cycles_completed: cycle, cycles_planned: timing.cycles, stopped_by_time_limit: false,
+                    };
+                }
+            }
+
+            total_bytes_processed += test_block.test_size * 2;
+        }
+
+        total_error_count += cycle_errors;
+        if let Some(progress) = progress {
+            let now = Instant::now();
+            if now.duration_since(last_progress_update).as_millis() >= 250 {
+                progress.cycles_completed.store(cycle, Ordering::Relaxed);
+                progress.bytes_processed.store(total_bytes_processed as u64, Ordering::Relaxed);
+                progress.errors_found.store(total_error_count, Ordering::Relaxed);
+                progress.last_update_ms.store(start.elapsed().as_millis() as u64, Ordering::Relaxed);
+                last_progress_update = now;
+            }
+        }
+
+        let elapsed_secs = test_start.elapsed().as_secs() as u32;
+        if !timing.should_continue(cycle, elapsed_secs) {
+            let elapsed = start.elapsed().as_millis();
+            let total_operations: u64 = cycle as u64 * (total_test_size / std::mem::size_of::<u64>()) as u64;
+            return TestStats {
+                name: test_name, action: TestAction::ReadWrite,
+                bytes_processed: total_bytes_processed, elapsed_ms: elapsed, thread_id,
+                error_count: total_error_count, total_operations,
+                cycles_completed: cycle, cycles_planned: timing.cycles,
+                stopped_by_time_limit: timing.cycles.map_or(false, |limit| cycle < limit),
+            };
+        }
     }
 }
 
@@ -7589,6 +8484,8 @@ pub unsafe fn mirror_move_multi(
 }
 
 /// MirrorMove128 Stream1 - MultiBlock version (SSE2 optimized, single stream)
+/// MirrorMove128 Stream1 - SSE2 optimized - MultiBlock pattern
+/// Runtime-checked wrapper for SSE2 availability
 unsafe fn mirror_move_128_stream1_multi(
     blocks: &[crate::runner::AllocationBlock],
     thread_id: usize,
@@ -7599,7 +8496,7 @@ unsafe fn mirror_move_128_stream1_multi(
 ) -> TestStats {
     let test_name = "MirrorMove128";
 
-    // Check CPU feature support
+    // Runtime CPU feature check
     if !is_x86_feature_detected!("sse2") {
         log::warn!("{}: SSE2 not supported, test skipped", test_name);
         return TestStats {
@@ -7615,6 +8512,23 @@ unsafe fn mirror_move_128_stream1_multi(
             stopped_by_time_limit: false,
         };
     }
+
+    // Call the SSE2 optimized implementation
+    mirror_move_128_stream1_impl(blocks, thread_id, error_mode, timing, config, progress)
+}
+
+/// MirrorMove128 Stream1 - SSE2 optimized implementation
+/// This function is annotated with #[target_feature] to enable full compiler optimization
+#[target_feature(enable = "sse2")]
+unsafe fn mirror_move_128_stream1_impl(
+    blocks: &[crate::runner::AllocationBlock],
+    thread_id: usize,
+    error_mode: ErrorMode,
+    timing: &TestTiming,
+    config: &TestMemoryConfig,
+    progress: Option<&TestProgress>,
+) -> TestStats {
+    let test_name = "MirrorMove128";
 
     if blocks.is_empty() {
         return TestStats {
@@ -7722,14 +8636,21 @@ unsafe fn mirror_move_128_stream1_multi(
 
                 // 2. Verify mirrored data
                 let chunk_sum = chunk_start + chunk_end - 1;
+
+                // OPTIMIZATION: Pre-compute pattern base ONCE outside hot loop
+                // This avoids 4 scalar multiplications per iteration
+                let pattern_base = _mm_set_epi32(
+                    thread_pattern_base,
+                    thread_pattern_base.wrapping_mul(2),
+                    thread_pattern_base.wrapping_mul(3),
+                    thread_pattern_base.wrapping_mul(4),
+                );
+
                 for i in chunk_start..chunk_end {
                     let mirrored_idx = chunk_sum - i;
-                    let expected = _mm_set_epi32(
-                        (mirrored_idx as i32).wrapping_add(thread_pattern_base),
-                        (mirrored_idx as i32).wrapping_add(thread_pattern_base).wrapping_mul(2),
-                        (mirrored_idx as i32).wrapping_add(thread_pattern_base).wrapping_mul(3),
-                        (mirrored_idx as i32).wrapping_add(thread_pattern_base).wrapping_mul(4),
-                    );
+                    // OPTIMIZED: Broadcast index + vector add (replaces 4 scalar muls)
+                    let idx_vec = _mm_set1_epi32(mirrored_idx as i32);
+                    let expected = _mm_add_epi32(pattern_base, idx_vec);
                     let actual = _mm_load_si128(base.add(i));
 
                     // Compare using movemask for efficient error detection
@@ -7859,7 +8780,8 @@ unsafe fn mirror_move_128_stream1_multi(
     }
 }
 
-/// MirrorMove128 StreamN - MultiBlock version (SSE2 optimized, N-way streams)
+/// MirrorMove128 StreamN - SSE2 optimized - MultiBlock pattern
+/// Runtime-checked wrapper for SSE2 availability
 unsafe fn mirror_move_128_stream_n_multi(
     blocks: &[crate::runner::AllocationBlock],
     thread_id: usize,
@@ -7870,7 +8792,7 @@ unsafe fn mirror_move_128_stream_n_multi(
     streams: usize,
     test_name: &'static str,
 ) -> TestStats {
-    // Check CPU feature support
+    // Runtime CPU feature check
     if !is_x86_feature_detected!("sse2") {
         log::warn!("{}: SSE2 not supported, test skipped", test_name);
         return TestStats {
@@ -7887,6 +8809,23 @@ unsafe fn mirror_move_128_stream_n_multi(
         };
     }
 
+    // Call the SSE2 optimized implementation
+    mirror_move_128_stream_n_impl(blocks, thread_id, error_mode, timing, config, progress, streams, test_name)
+}
+
+/// MirrorMove128 StreamN - SSE2 optimized implementation
+/// This function is annotated with #[target_feature] to enable full compiler optimization
+#[target_feature(enable = "sse2")]
+unsafe fn mirror_move_128_stream_n_impl(
+    blocks: &[crate::runner::AllocationBlock],
+    thread_id: usize,
+    error_mode: ErrorMode,
+    timing: &TestTiming,
+    config: &TestMemoryConfig,
+    progress: Option<&TestProgress>,
+    streams: usize,
+    test_name: &'static str,
+) -> TestStats {
     if blocks.is_empty() {
         return TestStats {
             name: test_name,
@@ -8017,6 +8956,15 @@ unsafe fn mirror_move_128_stream_n_multi(
                 _mm_sfence();
 
                 // 2. Verify mirrored data (check each stream)
+                // OPTIMIZATION: Pre-compute pattern base ONCE outside hot loop
+                // This avoids 4 scalar multiplications per iteration
+                let pattern_base = _mm_set_epi32(
+                    thread_pattern_base,
+                    thread_pattern_base.wrapping_mul(2),
+                    thread_pattern_base.wrapping_mul(3),
+                    thread_pattern_base.wrapping_mul(4),
+                );
+
                 for stream_id in 0..streams {
                     let stream_start = chunk_start + (stream_id * elements_per_stream);
                     let stream_end = stream_start + elements_per_stream;
@@ -8024,12 +8972,9 @@ unsafe fn mirror_move_128_stream_n_multi(
 
                     for i in stream_start..stream_end {
                         let mirrored_idx = stream_sum - i;
-                        let expected = _mm_set_epi32(
-                            (mirrored_idx as i32).wrapping_add(thread_pattern_base),
-                            (mirrored_idx as i32).wrapping_add(thread_pattern_base).wrapping_mul(2),
-                            (mirrored_idx as i32).wrapping_add(thread_pattern_base).wrapping_mul(3),
-                            (mirrored_idx as i32).wrapping_add(thread_pattern_base).wrapping_mul(4),
-                        );
+                        // OPTIMIZED: Broadcast index + vector add (replaces 4 scalar muls)
+                        let idx_vec = _mm_set1_epi32(mirrored_idx as i32);
+                        let expected = _mm_add_epi32(pattern_base, idx_vec);
                         let actual = _mm_load_si128(base.add(i));
 
                         // Compare using movemask for efficient error detection
@@ -8192,6 +9137,8 @@ pub unsafe fn mirror_move_128_multi(
 
 /// MirrorMove256 Stream1 - Single stream (linear sequential) - MultiBlock pattern
 /// Tests all blocks with shared timer and interleaved execution
+///
+/// This is the runtime-checked wrapper that calls the optimized implementation
 unsafe fn mirror_move_256_stream1_multi(
     blocks: &[crate::runner::AllocationBlock],
     thread_id: usize,
@@ -8200,11 +9147,9 @@ unsafe fn mirror_move_256_stream1_multi(
     config: &TestMemoryConfig,
     progress: Option<&TestProgress>,
 ) -> TestStats {
-    use std::arch::x86_64::*;
-
     let test_name = "MirrorMove256";
 
-    // CPU feature check
+    // Runtime CPU feature check
     if !is_x86_feature_detected!("avx2") {
         log::warn!("{}: AVX2 not available, returning zero stats", test_name);
         return TestStats {
@@ -8221,6 +9166,24 @@ unsafe fn mirror_move_256_stream1_multi(
         };
     }
 
+    // Call the optimized AVX2 implementation
+    mirror_move_256_stream1_impl(blocks, thread_id, error_mode, timing, config, progress)
+}
+
+/// MirrorMove256 Stream1 - AVX2-optimized implementation
+/// CRITICAL: #[target_feature] enables full compiler optimization of SIMD code
+#[target_feature(enable = "avx2")]
+unsafe fn mirror_move_256_stream1_impl(
+    blocks: &[crate::runner::AllocationBlock],
+    thread_id: usize,
+    error_mode: ErrorMode,
+    timing: &TestTiming,
+    config: &TestMemoryConfig,
+    progress: Option<&TestProgress>,
+) -> TestStats {
+    use std::arch::x86_64::*;
+
+    let test_name = "MirrorMove256";
     let test_start = Instant::now();
 
     // Calculate window and prepare blocks
@@ -8328,6 +9291,19 @@ unsafe fn mirror_move_256_stream1_multi(
                 let chunk_sum = chunk_start + chunk_end - 1;
                 let mut element_count = 0usize;
 
+                // OPTIMIZATION: Pre-compute pattern base ONCE outside hot loop
+                // This avoids 8 scalar multiplications per iteration
+                let pattern_base = _mm256_set_epi32(
+                    thread_pattern_base,
+                    thread_pattern_base.wrapping_mul(2),
+                    thread_pattern_base.wrapping_mul(3),
+                    thread_pattern_base.wrapping_mul(4),
+                    thread_pattern_base.wrapping_mul(5),
+                    thread_pattern_base.wrapping_mul(6),
+                    thread_pattern_base.wrapping_mul(7),
+                    thread_pattern_base.wrapping_mul(8),
+                );
+
                 // Pre-compute check mask for hot loop optimization
                 match config.error_check_interval.get_check_mask() {
                     Some(check_mask) => {
@@ -8335,17 +9311,9 @@ unsafe fn mirror_move_256_stream1_multi(
                             // Pre-compute mirrored index (hot loop optimization)
                             let mirrored_idx = chunk_sum - i;
 
-                            // Pre-compute expected pattern (hot loop optimization)
-                            let expected = _mm256_set_epi32(
-                                (mirrored_idx as i32).wrapping_add(thread_pattern_base),
-                                (mirrored_idx as i32).wrapping_add(thread_pattern_base).wrapping_mul(2),
-                                (mirrored_idx as i32).wrapping_add(thread_pattern_base).wrapping_mul(3),
-                                (mirrored_idx as i32).wrapping_add(thread_pattern_base).wrapping_mul(4),
-                                (mirrored_idx as i32).wrapping_add(thread_pattern_base).wrapping_mul(5),
-                                (mirrored_idx as i32).wrapping_add(thread_pattern_base).wrapping_mul(6),
-                                (mirrored_idx as i32).wrapping_add(thread_pattern_base).wrapping_mul(7),
-                                (mirrored_idx as i32).wrapping_add(thread_pattern_base).wrapping_mul(8),
-                            );
+                            // OPTIMIZED: Broadcast index + vector add (replaces 8 scalar muls)
+                            let idx_vec = _mm256_set1_epi32(mirrored_idx as i32);
+                            let expected = _mm256_add_epi32(pattern_base, idx_vec);
 
                             let actual = _mm256_load_si256(base.add(i));
                             let diff = _mm256_xor_si256(expected, actual);
@@ -8372,17 +9340,9 @@ unsafe fn mirror_move_256_stream1_multi(
                             // Pre-compute mirrored index (hot loop optimization)
                             let mirrored_idx = chunk_sum - i;
 
-                            // Pre-compute expected pattern (hot loop optimization)
-                            let expected = _mm256_set_epi32(
-                                (mirrored_idx as i32).wrapping_add(thread_pattern_base),
-                                (mirrored_idx as i32).wrapping_add(thread_pattern_base).wrapping_mul(2),
-                                (mirrored_idx as i32).wrapping_add(thread_pattern_base).wrapping_mul(3),
-                                (mirrored_idx as i32).wrapping_add(thread_pattern_base).wrapping_mul(4),
-                                (mirrored_idx as i32).wrapping_add(thread_pattern_base).wrapping_mul(5),
-                                (mirrored_idx as i32).wrapping_add(thread_pattern_base).wrapping_mul(6),
-                                (mirrored_idx as i32).wrapping_add(thread_pattern_base).wrapping_mul(7),
-                                (mirrored_idx as i32).wrapping_add(thread_pattern_base).wrapping_mul(8),
-                            );
+                            // OPTIMIZED: Broadcast index + vector add (replaces 8 scalar muls)
+                            let idx_vec = _mm256_set1_epi32(mirrored_idx as i32);
+                            let expected = _mm256_add_epi32(pattern_base, idx_vec);
 
                             let actual = _mm256_load_si256(base.add(i));
                             let diff = _mm256_xor_si256(expected, actual);
@@ -8486,6 +9446,8 @@ unsafe fn mirror_move_256_stream1_multi(
 
 /// MirrorMove256 StreamN - N-way segmented mirroring - MultiBlock pattern
 /// Tests all blocks with shared timer and interleaved execution
+///
+/// This is the runtime-checked wrapper that calls the optimized implementation
 unsafe fn mirror_move_256_stream_n_multi(
     blocks: &[crate::runner::AllocationBlock],
     thread_id: usize,
@@ -8496,9 +9458,7 @@ unsafe fn mirror_move_256_stream_n_multi(
     streams: usize,
     test_name: &'static str,
 ) -> TestStats {
-    use std::arch::x86_64::*;
-
-    // CPU feature check
+    // Runtime CPU feature check
     if !is_x86_feature_detected!("avx2") {
         log::warn!("{}: AVX2 not available, returning zero stats", test_name);
         return TestStats {
@@ -8514,6 +9474,25 @@ unsafe fn mirror_move_256_stream_n_multi(
             stopped_by_time_limit: false,
         };
     }
+
+    // Call the optimized AVX2 implementation
+    mirror_move_256_stream_n_impl(blocks, thread_id, error_mode, timing, config, progress, streams, test_name)
+}
+
+/// MirrorMove256 StreamN - AVX2-optimized implementation
+/// CRITICAL: #[target_feature] enables full compiler optimization of SIMD code
+#[target_feature(enable = "avx2")]
+unsafe fn mirror_move_256_stream_n_impl(
+    blocks: &[crate::runner::AllocationBlock],
+    thread_id: usize,
+    error_mode: ErrorMode,
+    timing: &TestTiming,
+    config: &TestMemoryConfig,
+    progress: Option<&TestProgress>,
+    streams: usize,
+    test_name: &'static str,
+) -> TestStats {
+    use std::arch::x86_64::*;
 
     let test_start = Instant::now();
     let stream_shift = streams.trailing_zeros();
@@ -8626,6 +9605,19 @@ unsafe fn mirror_move_256_stream_n_multi(
                 let mut error_accumulator = _mm256_setzero_si256();
                 let mut element_count = 0usize;
 
+                // OPTIMIZATION: Pre-compute pattern base ONCE outside hot loop
+                // This avoids 8 scalar multiplications per iteration
+                let pattern_base = _mm256_set_epi32(
+                    thread_pattern_base,
+                    thread_pattern_base.wrapping_mul(2),
+                    thread_pattern_base.wrapping_mul(3),
+                    thread_pattern_base.wrapping_mul(4),
+                    thread_pattern_base.wrapping_mul(5),
+                    thread_pattern_base.wrapping_mul(6),
+                    thread_pattern_base.wrapping_mul(7),
+                    thread_pattern_base.wrapping_mul(8),
+                );
+
                 match config.error_check_interval.get_check_mask() {
                     Some(check_mask) => {
                         for stream_id in 0..streams {
@@ -8637,16 +9629,9 @@ unsafe fn mirror_move_256_stream_n_multi(
                             while i < stream_end {
                                 let mirrored_idx = stream_sum - i;
 
-                                let expected = _mm256_set_epi32(
-                                    (mirrored_idx as i32).wrapping_add(thread_pattern_base),
-                                    (mirrored_idx as i32).wrapping_add(thread_pattern_base).wrapping_mul(2),
-                                    (mirrored_idx as i32).wrapping_add(thread_pattern_base).wrapping_mul(3),
-                                    (mirrored_idx as i32).wrapping_add(thread_pattern_base).wrapping_mul(4),
-                                    (mirrored_idx as i32).wrapping_add(thread_pattern_base).wrapping_mul(5),
-                                    (mirrored_idx as i32).wrapping_add(thread_pattern_base).wrapping_mul(6),
-                                    (mirrored_idx as i32).wrapping_add(thread_pattern_base).wrapping_mul(7),
-                                    (mirrored_idx as i32).wrapping_add(thread_pattern_base).wrapping_mul(8),
-                                );
+                                // OPTIMIZED: Broadcast index + vector add (replaces 8 scalar muls)
+                                let idx_vec = _mm256_set1_epi32(mirrored_idx as i32);
+                                let expected = _mm256_add_epi32(pattern_base, idx_vec);
 
                                 let actual = _mm256_load_si256(base.add(i));
                                 let diff = _mm256_xor_si256(expected, actual);
@@ -8678,16 +9663,9 @@ unsafe fn mirror_move_256_stream_n_multi(
                             while i < stream_end {
                                 let mirrored_idx = stream_sum - i;
 
-                                let expected = _mm256_set_epi32(
-                                    (mirrored_idx as i32).wrapping_add(thread_pattern_base),
-                                    (mirrored_idx as i32).wrapping_add(thread_pattern_base).wrapping_mul(2),
-                                    (mirrored_idx as i32).wrapping_add(thread_pattern_base).wrapping_mul(3),
-                                    (mirrored_idx as i32).wrapping_add(thread_pattern_base).wrapping_mul(4),
-                                    (mirrored_idx as i32).wrapping_add(thread_pattern_base).wrapping_mul(5),
-                                    (mirrored_idx as i32).wrapping_add(thread_pattern_base).wrapping_mul(6),
-                                    (mirrored_idx as i32).wrapping_add(thread_pattern_base).wrapping_mul(7),
-                                    (mirrored_idx as i32).wrapping_add(thread_pattern_base).wrapping_mul(8),
-                                );
+                                // OPTIMIZED: Broadcast index + vector add (replaces 8 scalar muls)
+                                let idx_vec = _mm256_set1_epi32(mirrored_idx as i32);
+                                let expected = _mm256_add_epi32(pattern_base, idx_vec);
 
                                 let actual = _mm256_load_si256(base.add(i));
                                 let diff = _mm256_xor_si256(expected, actual);
@@ -8821,6 +9799,7 @@ pub unsafe fn mirror_move_256_multi(
 
 /// MirrorMove512 Stream1 - Single stream (linear sequential) - MultiBlock pattern
 /// Tests all blocks with shared timer and interleaved execution
+/// Runtime-checked wrapper for AVX-512 availability
 unsafe fn mirror_move_512_stream1_multi(
     blocks: &[crate::runner::AllocationBlock],
     thread_id: usize,
@@ -8829,11 +9808,9 @@ unsafe fn mirror_move_512_stream1_multi(
     config: &TestMemoryConfig,
     progress: Option<&TestProgress>,
 ) -> TestStats {
-    use std::arch::x86_64::*;
-
     let test_name = "MirrorMove512";
 
-    // CPU feature check
+    // Runtime CPU feature check
     if !is_x86_feature_detected!("avx512f") {
         log::warn!("{}: AVX-512 not available, returning zero stats", test_name);
         return TestStats {
@@ -8849,6 +9826,25 @@ unsafe fn mirror_move_512_stream1_multi(
             stopped_by_time_limit: false,
         };
     }
+
+    // Call the AVX-512 optimized implementation
+    mirror_move_512_stream1_impl(blocks, thread_id, error_mode, timing, config, progress)
+}
+
+/// MirrorMove512 Stream1 - AVX-512 optimized implementation
+/// This function is annotated with #[target_feature] to enable full compiler optimization
+#[target_feature(enable = "avx512f")]
+unsafe fn mirror_move_512_stream1_impl(
+    blocks: &[crate::runner::AllocationBlock],
+    thread_id: usize,
+    error_mode: ErrorMode,
+    timing: &TestTiming,
+    config: &TestMemoryConfig,
+    progress: Option<&TestProgress>,
+) -> TestStats {
+    use std::arch::x86_64::*;
+
+    let test_name = "MirrorMove512";
 
     let test_start = Instant::now();
 
@@ -8965,6 +9961,27 @@ unsafe fn mirror_move_512_stream1_multi(
                 let chunk_sum = chunk_start + chunk_end - 1;
                 let mut element_count = 0usize;
 
+                // OPTIMIZATION: Pre-compute pattern base ONCE outside hot loop
+                // This avoids 16 scalar multiplications per iteration!
+                let pattern_base = _mm512_set_epi32(
+                    thread_pattern_base,
+                    thread_pattern_base.wrapping_mul(2),
+                    thread_pattern_base.wrapping_mul(3),
+                    thread_pattern_base.wrapping_mul(4),
+                    thread_pattern_base.wrapping_mul(5),
+                    thread_pattern_base.wrapping_mul(6),
+                    thread_pattern_base.wrapping_mul(7),
+                    thread_pattern_base.wrapping_mul(8),
+                    thread_pattern_base.wrapping_mul(9),
+                    thread_pattern_base.wrapping_mul(10),
+                    thread_pattern_base.wrapping_mul(11),
+                    thread_pattern_base.wrapping_mul(12),
+                    thread_pattern_base.wrapping_mul(13),
+                    thread_pattern_base.wrapping_mul(14),
+                    thread_pattern_base.wrapping_mul(15),
+                    thread_pattern_base.wrapping_mul(16),
+                );
+
                 // Pre-compute check mask for hot loop optimization
                 match config.error_check_interval.get_check_mask() {
                     Some(check_mask) => {
@@ -8972,25 +9989,9 @@ unsafe fn mirror_move_512_stream1_multi(
                             // Pre-compute mirrored index (hot loop optimization)
                             let mirrored_idx = chunk_sum - i;
 
-                            // Pre-compute expected pattern (hot loop optimization)
-                            let expected = _mm512_set_epi32(
-                                (mirrored_idx as i32).wrapping_add(thread_pattern_base),
-                                (mirrored_idx as i32).wrapping_add(thread_pattern_base).wrapping_mul(2),
-                                (mirrored_idx as i32).wrapping_add(thread_pattern_base).wrapping_mul(3),
-                                (mirrored_idx as i32).wrapping_add(thread_pattern_base).wrapping_mul(4),
-                                (mirrored_idx as i32).wrapping_add(thread_pattern_base).wrapping_mul(5),
-                                (mirrored_idx as i32).wrapping_add(thread_pattern_base).wrapping_mul(6),
-                                (mirrored_idx as i32).wrapping_add(thread_pattern_base).wrapping_mul(7),
-                                (mirrored_idx as i32).wrapping_add(thread_pattern_base).wrapping_mul(8),
-                                (mirrored_idx as i32).wrapping_add(thread_pattern_base).wrapping_mul(9),
-                                (mirrored_idx as i32).wrapping_add(thread_pattern_base).wrapping_mul(10),
-                                (mirrored_idx as i32).wrapping_add(thread_pattern_base).wrapping_mul(11),
-                                (mirrored_idx as i32).wrapping_add(thread_pattern_base).wrapping_mul(12),
-                                (mirrored_idx as i32).wrapping_add(thread_pattern_base).wrapping_mul(13),
-                                (mirrored_idx as i32).wrapping_add(thread_pattern_base).wrapping_mul(14),
-                                (mirrored_idx as i32).wrapping_add(thread_pattern_base).wrapping_mul(15),
-                                (mirrored_idx as i32).wrapping_add(thread_pattern_base).wrapping_mul(16),
-                            );
+                            // OPTIMIZED: Broadcast index + vector add (replaces 16 scalar muls!)
+                            let idx_vec = _mm512_set1_epi32(mirrored_idx as i32);
+                            let expected = _mm512_add_epi32(pattern_base, idx_vec);
 
                             let actual = _mm512_load_si512(base.add(i));
                             let diff = _mm512_xor_si512(expected, actual);
@@ -9017,25 +10018,9 @@ unsafe fn mirror_move_512_stream1_multi(
                             // Pre-compute mirrored index (hot loop optimization)
                             let mirrored_idx = chunk_sum - i;
 
-                            // Pre-compute expected pattern (hot loop optimization)
-                            let expected = _mm512_set_epi32(
-                                (mirrored_idx as i32).wrapping_add(thread_pattern_base),
-                                (mirrored_idx as i32).wrapping_add(thread_pattern_base).wrapping_mul(2),
-                                (mirrored_idx as i32).wrapping_add(thread_pattern_base).wrapping_mul(3),
-                                (mirrored_idx as i32).wrapping_add(thread_pattern_base).wrapping_mul(4),
-                                (mirrored_idx as i32).wrapping_add(thread_pattern_base).wrapping_mul(5),
-                                (mirrored_idx as i32).wrapping_add(thread_pattern_base).wrapping_mul(6),
-                                (mirrored_idx as i32).wrapping_add(thread_pattern_base).wrapping_mul(7),
-                                (mirrored_idx as i32).wrapping_add(thread_pattern_base).wrapping_mul(8),
-                                (mirrored_idx as i32).wrapping_add(thread_pattern_base).wrapping_mul(9),
-                                (mirrored_idx as i32).wrapping_add(thread_pattern_base).wrapping_mul(10),
-                                (mirrored_idx as i32).wrapping_add(thread_pattern_base).wrapping_mul(11),
-                                (mirrored_idx as i32).wrapping_add(thread_pattern_base).wrapping_mul(12),
-                                (mirrored_idx as i32).wrapping_add(thread_pattern_base).wrapping_mul(13),
-                                (mirrored_idx as i32).wrapping_add(thread_pattern_base).wrapping_mul(14),
-                                (mirrored_idx as i32).wrapping_add(thread_pattern_base).wrapping_mul(15),
-                                (mirrored_idx as i32).wrapping_add(thread_pattern_base).wrapping_mul(16),
-                            );
+                            // OPTIMIZED: Broadcast index + vector add (replaces 16 scalar muls!)
+                            let idx_vec = _mm512_set1_epi32(mirrored_idx as i32);
+                            let expected = _mm512_add_epi32(pattern_base, idx_vec);
 
                             let actual = _mm512_load_si512(base.add(i));
                             let diff = _mm512_xor_si512(expected, actual);
@@ -9139,6 +10124,7 @@ unsafe fn mirror_move_512_stream1_multi(
 
 /// MirrorMove512 StreamN - N-way segmented mirroring - MultiBlock pattern
 /// Tests all blocks with shared timer and interleaved execution
+/// Runtime-checked wrapper for AVX-512 availability
 unsafe fn mirror_move_512_stream_n_multi(
     blocks: &[crate::runner::AllocationBlock],
     thread_id: usize,
@@ -9149,9 +10135,7 @@ unsafe fn mirror_move_512_stream_n_multi(
     streams: usize,
     test_name: &'static str,
 ) -> TestStats {
-    use std::arch::x86_64::*;
-
-    // CPU feature check
+    // Runtime CPU feature check
     if !is_x86_feature_detected!("avx512f") {
         log::warn!("{}: AVX-512 not available, returning zero stats", test_name);
         return TestStats {
@@ -9167,6 +10151,25 @@ unsafe fn mirror_move_512_stream_n_multi(
             stopped_by_time_limit: false,
         };
     }
+
+    // Call the AVX-512 optimized implementation
+    mirror_move_512_stream_n_impl(blocks, thread_id, error_mode, timing, config, progress, streams, test_name)
+}
+
+/// MirrorMove512 StreamN - AVX-512 optimized implementation
+/// This function is annotated with #[target_feature] to enable full compiler optimization
+#[target_feature(enable = "avx512f")]
+unsafe fn mirror_move_512_stream_n_impl(
+    blocks: &[crate::runner::AllocationBlock],
+    thread_id: usize,
+    error_mode: ErrorMode,
+    timing: &TestTiming,
+    config: &TestMemoryConfig,
+    progress: Option<&TestProgress>,
+    streams: usize,
+    test_name: &'static str,
+) -> TestStats {
+    use std::arch::x86_64::*;
 
     let test_start = Instant::now();
     let stream_shift = streams.trailing_zeros();
@@ -9287,6 +10290,27 @@ unsafe fn mirror_move_512_stream_n_multi(
                 let mut error_accumulator = _mm512_setzero_si512();
                 let mut element_count = 0usize;
 
+                // OPTIMIZATION: Pre-compute pattern base ONCE outside hot loop
+                // This avoids 16 scalar multiplications per iteration!
+                let pattern_base = _mm512_set_epi32(
+                    thread_pattern_base,
+                    thread_pattern_base.wrapping_mul(2),
+                    thread_pattern_base.wrapping_mul(3),
+                    thread_pattern_base.wrapping_mul(4),
+                    thread_pattern_base.wrapping_mul(5),
+                    thread_pattern_base.wrapping_mul(6),
+                    thread_pattern_base.wrapping_mul(7),
+                    thread_pattern_base.wrapping_mul(8),
+                    thread_pattern_base.wrapping_mul(9),
+                    thread_pattern_base.wrapping_mul(10),
+                    thread_pattern_base.wrapping_mul(11),
+                    thread_pattern_base.wrapping_mul(12),
+                    thread_pattern_base.wrapping_mul(13),
+                    thread_pattern_base.wrapping_mul(14),
+                    thread_pattern_base.wrapping_mul(15),
+                    thread_pattern_base.wrapping_mul(16),
+                );
+
                 match config.error_check_interval.get_check_mask() {
                     Some(check_mask) => {
                         for stream_id in 0..streams {
@@ -9298,24 +10322,9 @@ unsafe fn mirror_move_512_stream_n_multi(
                             while i < stream_end {
                                 let mirrored_idx = stream_sum - i;
 
-                                let expected = _mm512_set_epi32(
-                                    (mirrored_idx as i32).wrapping_add(thread_pattern_base),
-                                    (mirrored_idx as i32).wrapping_add(thread_pattern_base).wrapping_mul(2),
-                                    (mirrored_idx as i32).wrapping_add(thread_pattern_base).wrapping_mul(3),
-                                    (mirrored_idx as i32).wrapping_add(thread_pattern_base).wrapping_mul(4),
-                                    (mirrored_idx as i32).wrapping_add(thread_pattern_base).wrapping_mul(5),
-                                    (mirrored_idx as i32).wrapping_add(thread_pattern_base).wrapping_mul(6),
-                                    (mirrored_idx as i32).wrapping_add(thread_pattern_base).wrapping_mul(7),
-                                    (mirrored_idx as i32).wrapping_add(thread_pattern_base).wrapping_mul(8),
-                                    (mirrored_idx as i32).wrapping_add(thread_pattern_base).wrapping_mul(9),
-                                    (mirrored_idx as i32).wrapping_add(thread_pattern_base).wrapping_mul(10),
-                                    (mirrored_idx as i32).wrapping_add(thread_pattern_base).wrapping_mul(11),
-                                    (mirrored_idx as i32).wrapping_add(thread_pattern_base).wrapping_mul(12),
-                                    (mirrored_idx as i32).wrapping_add(thread_pattern_base).wrapping_mul(13),
-                                    (mirrored_idx as i32).wrapping_add(thread_pattern_base).wrapping_mul(14),
-                                    (mirrored_idx as i32).wrapping_add(thread_pattern_base).wrapping_mul(15),
-                                    (mirrored_idx as i32).wrapping_add(thread_pattern_base).wrapping_mul(16),
-                                );
+                                // OPTIMIZED: Broadcast index + vector add (replaces 16 scalar muls!)
+                                let idx_vec = _mm512_set1_epi32(mirrored_idx as i32);
+                                let expected = _mm512_add_epi32(pattern_base, idx_vec);
 
                                 let actual = _mm512_load_si512(base.add(i));
                                 let diff = _mm512_xor_si512(expected, actual);
@@ -9347,24 +10356,9 @@ unsafe fn mirror_move_512_stream_n_multi(
                             while i < stream_end {
                                 let mirrored_idx = stream_sum - i;
 
-                                let expected = _mm512_set_epi32(
-                                    (mirrored_idx as i32).wrapping_add(thread_pattern_base),
-                                    (mirrored_idx as i32).wrapping_add(thread_pattern_base).wrapping_mul(2),
-                                    (mirrored_idx as i32).wrapping_add(thread_pattern_base).wrapping_mul(3),
-                                    (mirrored_idx as i32).wrapping_add(thread_pattern_base).wrapping_mul(4),
-                                    (mirrored_idx as i32).wrapping_add(thread_pattern_base).wrapping_mul(5),
-                                    (mirrored_idx as i32).wrapping_add(thread_pattern_base).wrapping_mul(6),
-                                    (mirrored_idx as i32).wrapping_add(thread_pattern_base).wrapping_mul(7),
-                                    (mirrored_idx as i32).wrapping_add(thread_pattern_base).wrapping_mul(8),
-                                    (mirrored_idx as i32).wrapping_add(thread_pattern_base).wrapping_mul(9),
-                                    (mirrored_idx as i32).wrapping_add(thread_pattern_base).wrapping_mul(10),
-                                    (mirrored_idx as i32).wrapping_add(thread_pattern_base).wrapping_mul(11),
-                                    (mirrored_idx as i32).wrapping_add(thread_pattern_base).wrapping_mul(12),
-                                    (mirrored_idx as i32).wrapping_add(thread_pattern_base).wrapping_mul(13),
-                                    (mirrored_idx as i32).wrapping_add(thread_pattern_base).wrapping_mul(14),
-                                    (mirrored_idx as i32).wrapping_add(thread_pattern_base).wrapping_mul(15),
-                                    (mirrored_idx as i32).wrapping_add(thread_pattern_base).wrapping_mul(16),
-                                );
+                                // OPTIMIZED: Broadcast index + vector add (replaces 16 scalar muls!)
+                                let idx_vec = _mm512_set1_epi32(mirrored_idx as i32);
+                                let expected = _mm512_add_epi32(pattern_base, idx_vec);
 
                                 let actual = _mm512_load_si512(base.add(i));
                                 let diff = _mm512_xor_si512(expected, actual);

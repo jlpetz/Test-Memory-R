@@ -11,8 +11,9 @@ use crate::tests::{
     refresh_stable_multi, refresh_stable_128_multi, refresh_stable_256_multi, refresh_stable_512_multi,
     refresh_stable_auto_multi,
     simple_test_multi,
-    cache_busting_write_test, random_access_torture_test,
-    stride_access_test, bandwidth_saturation_test, block_move_test
+    cache_busting_multi,
+    random_torture_multi,
+    stride_access_multi, bandwidth_saturation_multi, block_move_multi
 };
 use crate::progress::progress_reporter;
 use crate::results::TestRunResult;
@@ -906,9 +907,7 @@ fn create_test_definitions() -> Vec<TestDefinition> {
         // === Performance stress tests ===
         (
             "CacheBusting",
-            TestFunction::WithConfig(|ptr, size, tid, em, timing, config| unsafe {
-                cache_busting_write_test(ptr, size, tid, em, timing, config)
-            }),
+            TestFunction::MultiBlock(cache_busting_multi),
             validate_streams(TestMemoryConfig::new(
                 WindowMode::CacheRelative { multiplier: 0.5 },
                 ChunkMode::FixedSize { size_mb: 1 },
@@ -921,9 +920,7 @@ fn create_test_definitions() -> Vec<TestDefinition> {
         
         (
             "RandomTorture",
-            TestFunction::WithConfig(|ptr, size, tid, em, timing, config| unsafe {
-                random_access_torture_test(ptr, size, tid, em, timing, config)
-            }),
+            TestFunction::MultiBlock(random_torture_multi),
             validate_streams(TestMemoryConfig::new(
                 WindowMode::FullAllocation,
                 ChunkMode::FixedSize { size_mb: 8 },
@@ -936,9 +933,7 @@ fn create_test_definitions() -> Vec<TestDefinition> {
         
         (
             "StrideAccess",
-            TestFunction::WithConfig(|ptr, size, tid, em, timing, config| unsafe {
-                stride_access_test(ptr, size, tid, em, timing, config)
-            }),
+            TestFunction::MultiBlock(stride_access_multi),
             validate_streams(TestMemoryConfig::new(
                 WindowMode::FullAllocation,
                 ChunkMode::FixedSize { size_mb: 2 },
@@ -951,9 +946,7 @@ fn create_test_definitions() -> Vec<TestDefinition> {
         
         (
             "BandwidthSat",
-            TestFunction::WithConfig(|ptr, size, tid, em, timing, config| unsafe {
-                bandwidth_saturation_test(ptr, size, tid, em, timing, config)
-            }),
+            TestFunction::MultiBlock(bandwidth_saturation_multi),
             validate_streams(TestMemoryConfig::new(
                 WindowMode::FullAllocation,
                 ChunkMode::FixedSize { size_mb: 32 },
@@ -966,9 +959,7 @@ fn create_test_definitions() -> Vec<TestDefinition> {
         
         (
             "BlockMove",
-            TestFunction::WithConfig(|ptr, size, tid, em, timing, config| unsafe {
-                block_move_test(ptr, size, tid, em, timing, config)
-            }),
+            TestFunction::MultiBlock(block_move_multi),
             validate_streams(TestMemoryConfig::new(
                 WindowMode::FullAllocation,
                 ChunkMode::FixedSize { size_mb: 16 },
