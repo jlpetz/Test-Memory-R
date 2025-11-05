@@ -5384,6 +5384,226 @@ pub unsafe fn refresh_stable_auto(ptr: *mut u8, size: usize, thread_id: usize, e
 
 // === UPDATED TEST FUNCTIONS WITH STREAM SUPPORT ===
 
+/// # Safety
+/// Caller must ensure `ptr` is valid for reads/writes of `size` bytes.
+/// 
+/// Base MirrorMove implementation using scalar operations (no SIMD).
+/// Unlike SIMD variants, this provides INDIVIDUAL ERROR REPORTING per u64 element
+/// for precise debugging and hardware diagnosis, matching TM5's base MirrorMove.
+/// 
+/// Error Reporting Style: Individual element checking (like stuck_bit_test)
+/// - Reports exact memory address and values for each failure  
+/// - Counts each failed u64 element individually
+/// - Better for hardware diagnosis but slower than SIMD variants
+pub unsafe fn mirror_move(
+    ptr: *mut u8, 
+    size: usize, 
+    thread_id: usize, 
+    error_mode: ErrorMode, 
+    timing: &TestTiming, 
+    config: &TestMemoryConfig
+) -> TestStats {
+    let test_name = "MirrorMove";
+    let start = std::time::Instant::now();
+    let test_start = std::time::Instant::now();
+    
+    let base = ptr as *mut u64;
+    let len = size / std::mem::size_of::<u64>();
+    let mut total_bytes_processed = 0usize;
+    let mut total_error_count = 0u64;
+    
+    // Pre-compute pattern base outside all loops (like TM5)
+    let thread_pattern_base = (thread_id as u64) << 16;
+    
+    // Initialize memory with thread-specific patterns
+    for i in 0..len {
+        let pattern = (i as u64).wrapping_add(thread_pattern_base).wrapping_mul(0x0123456789ABCDEFu64);
+        *base.add(i) = pattern;
+    }
+    std::sync::atomic::fence(std::sync::atomic::Ordering::SeqCst);
+    
+    // Calculate chunk size for responsive shutdown - use config-based sizing
+    let ideal_chunk_size = calculate_ideal_chunk_size(config, test_name, size);
+    let chunk_size_bytes = get_safe_chunk_size(ideal_chunk_size, size);
+    let chunk_size_elements = chunk_size_bytes / std::mem::size_of::<u64>();
+    
+    let mut cycle = 0u32;
+    
+    loop {
+        cycle += 1;
+        let mut cycle_errors = 0u64;
+        
+        // Process in chunks for responsive shutdown
+        for chunk_start in (0..len).step_by(chunk_size_elements) {
+            let chunk_end = (chunk_start + chunk_size_elements).min(len);
+            
+            // 1. Mirror operation - scalar version with two-pointer approach
+            let mut idx1 = chunk_start;
+            let mut idx2 = chunk_end - 1;
+            while idx1 < idx2 {
+                let val1 = *base.add(idx1);
+                let val2 = *base.add(idx2);
+                *base.add(idx2) = val1;
+                *base.add(idx1) = val2;
+                idx1 += 1;
+                idx2 -= 1;
+            }
+            
+            std::sync::atomic::fence(std::sync::atomic::Ordering::SeqCst);
+            
+            // 2. Verify - Individual element checking with precise error reporting
+            for idx in chunk_start..chunk_end {
+                // Calculate what the mirrored value should be
+                let mirrored_idx = chunk_start + chunk_end - 1 - idx;
+                let expected_pattern = (mirrored_idx as u64).wrapping_add(thread_pattern_base).wrapping_mul(0x0123456789ABCDEFu64);
+                let actual_value = *base.add(idx);
+                
+                if actual_value != expected_pattern {
+                    cycle_errors += 1;
+                    log::error!("{}: memory error at index {} - expected {:#x}, got {:#x}", 
+                               test_name, idx, expected_pattern, actual_value);
+                }
+            }
+            
+            // 3. Mirror back to restore original pattern
+            idx1 = chunk_start;
+            idx2 = chunk_end - 1;
+            while idx1 < idx2 {
+                let val1 = *base.add(idx1);
+                let val2 = *base.add(idx2);
+                *base.add(idx2) = val1;
+                *base.add(idx1) = val2;
+                idx1 += 1;
+                idx2 -= 1;
+            }
+            
+            std::sync::atomic::fence(std::sync::atomic::Ordering::SeqCst);
+            
+            // Optimized error handling - check ONCE at end of chunk
+            if cycle_errors > 0 {
+                match error_mode {
+                    ErrorMode::Panic => panic!("{}: {} memory errors detected in cycle {}", test_name, cycle_errors, cycle),
+                    ErrorMode::Halt => {
+                        total_error_count += cycle_errors;
+                        total_bytes_processed += (chunk_end - chunk_start) * std::mem::size_of::<u64>() * 2;
+                        let elapsed = start.elapsed().as_millis();
+                        return TestStats {
+                            name: test_name,
+                            action: TestAction::WriteWaitVerify,
+                            bytes_processed: total_bytes_processed,
+                            elapsed_ms: elapsed,
+                            thread_id,
+                            error_count: total_error_count,
+                            total_operations: cycle as u64 * (chunk_end - chunk_start) as u64,
+
+                            cycles_completed: 0,
+
+                            cycles_planned: None,
+
+                            stopped_by_time_limit: false,
+
+                            };
+                    }
+                    ErrorMode::Log => {
+                        // Continue - errors already logged individually above
+                    }
+                }
+            }
+            
+            // Check for shutdown request
+            if SHUTDOWN_REQUESTED.load(std::sync::atomic::Ordering::Relaxed) {
+                total_error_count += cycle_errors;
+                total_bytes_processed += (chunk_end - chunk_start) * std::mem::size_of::<u64>() * 2;
+                let elapsed = start.elapsed().as_millis();
+                return TestStats {
+                    name: test_name,
+                    action: TestAction::WriteWaitVerify,
+                    bytes_processed: total_bytes_processed,
+                    elapsed_ms: elapsed,
+                    thread_id,
+                    error_count: total_error_count,
+                    total_operations: cycle as u64 * (chunk_end - chunk_start) as u64,
+
+                    cycles_completed: 0,
+
+                    cycles_planned: None,
+
+                    stopped_by_time_limit: false,
+
+                    };
+            }
+        }
+        
+        total_error_count += cycle_errors;
+        total_bytes_processed += size * 2; // mirror + restore
+        
+        let elapsed_secs = test_start.elapsed().as_secs() as u32;
+        if !timing.should_continue(cycle, elapsed_secs) {
+            log::info!("[Thread {}] {} completed cycle limit or time limit", thread_id, test_name);
+            break;
+        }
+        
+        if SHUTDOWN_REQUESTED.load(std::sync::atomic::Ordering::Relaxed) {
+            log::info!("[Thread {}] {} shutdown requested after cycle {}", thread_id, test_name, cycle);
+            break;
+        }
+    }
+
+    let elapsed = start.elapsed().as_millis();
+    let total_operations = cycle as u64 * len as u64;
+
+    log::info!("[Thread {}] {} completed: {} cycles, {} errors, {:.2} MB processed in {} ms", 
+              thread_id, test_name, cycle, total_error_count, 
+              total_bytes_processed as f64 / MB_F64, elapsed);
+
+    TestStats {
+        name: test_name,
+        action: TestAction::WriteWaitVerify,
+        bytes_processed: total_bytes_processed,
+        elapsed_ms: elapsed,
+        thread_id,
+        error_count: total_error_count,
+        total_operations,
+
+        cycles_completed: 0,
+
+        cycles_planned: None,
+
+        stopped_by_time_limit: false,
+
+        }
+}
+
+/// # Safety
+/// Caller must ensure `ptr` is valid for reads/writes of `size` bytes.
+/// 
+/// Auto-dispatch MirrorMove - Automatically selects the best SIMD implementation
+/// available on the current system. Falls back to scalar version if no SIMD available.
+/// 
+/// Error Reporting Style: Binary chunk-level reporting (like SIMD variants)
+/// - Uses SIMD accumulation for maximum performance
+/// - Reports 1 error per failed chunk (not individual elements)
+/// - Optimized for speed over detailed error diagnosis
+pub unsafe fn mirror_move_auto(
+    ptr: *mut u8,
+    size: usize,
+    thread_id: usize,
+    error_mode: ErrorMode,
+    timing: &TestTiming,
+    config: &TestMemoryConfig
+) -> TestStats {
+    // Auto-dispatch to best available SIMD implementation
+    if is_x86_feature_detected!("avx512f") {
+        mirror_move_512(ptr, size, thread_id, error_mode, timing, config)
+    } else if is_x86_feature_detected!("avx2") {
+        mirror_move_256(ptr, size, thread_id, error_mode, timing, config)
+    } else if is_x86_feature_detected!("sse2") {
+        mirror_move_128(ptr, size, thread_id, error_mode, timing, config)
+    } else {
+        // Fallback to scalar implementation
+        mirror_move(ptr, size, thread_id, error_mode, timing, config)
+    }
+}
 
 /// # Safety
 /// Caller must ensure all blocks are valid for reads/writes.
@@ -5420,10 +5640,1677 @@ pub unsafe fn mirror_move_auto_multi(
 /// - Uses SIMD error accumulation across entire chunk
 /// - Reports 1 error per failed chunk regardless of actual error count within chunk
 /// - Optimized for maximum performance in hot loops
+pub unsafe fn mirror_move_128(
+    ptr: *mut u8, 
+    size: usize, 
+    thread_id: usize, 
+    error_mode: ErrorMode, 
+    timing: &TestTiming, 
+    config: &TestMemoryConfig
+) -> TestStats {
+    let test_name = "MirrorMove128";
+    
+    if !is_x86_feature_detected!("sse2") {
+        return TestStats {
+            name: test_name,
+            action: TestAction::ReadWrite,
+            bytes_processed: 0,
+            elapsed_ms: 0,
+            thread_id,
+            error_count: 0,
+            total_operations: 0,
+
+            cycles_completed: 0,
+
+            cycles_planned: None,
+
+            stopped_by_time_limit: false,
+
+            };
+    }
+    
+    let streams = config.streams.max(1) as usize;
+    
+    // Dispatch to optimized single-stream or multi-stream function
+    if streams == 1 {
+        mirror_move_128_single_stream(ptr, size, thread_id, error_mode, timing, config)
+    } else {
+        let stream_shift = streams.trailing_zeros();
+        // Note: stream_mask not needed - power-of-2 chain guarantees perfect division
+        mirror_move_128_multi_stream(ptr, size, thread_id, error_mode, timing, config, streams, stream_shift)
+    }
+}
+
+/// Optimized single-stream version - no branching in hot loops
+unsafe fn mirror_move_128_single_stream(
+    ptr: *mut u8, 
+    size: usize, 
+    thread_id: usize, 
+    error_mode: ErrorMode, 
+    timing: &TestTiming, 
+    config: &TestMemoryConfig
+) -> TestStats {
+    let test_name = "MirrorMove128";
+    let start = Instant::now();
+    let test_start = Instant::now();
+    
+    let base = ptr as *mut __m128i;
+    let len = size / std::mem::size_of::<__m128i>();
+    let mut total_bytes_processed = 0usize;
+    let mut total_error_count = 0u64;
+    
+    // Pre-compute pattern base outside all loops
+    let thread_pattern_base = (thread_id as i32) << 16;
+    
+    // Initialize memory with pattern
+    for i in 0..len {
+        let pattern = _mm_set_epi32(
+            (i as i32).wrapping_add(thread_pattern_base),
+            (i as i32).wrapping_add(thread_pattern_base).wrapping_mul(2),
+            (i as i32).wrapping_add(thread_pattern_base).wrapping_mul(3),
+            (i as i32).wrapping_add(thread_pattern_base).wrapping_mul(4),
+        );
+        _mm_store_si128(base.add(i), pattern);
+    }
+    _mm_sfence();
+    
+    // Calculate ideal chunk size once (power-of-2 elements for fast stream operations)
+    let ideal_chunk_size = calculate_ideal_chunk_size(config, test_name, size);
+    let chunk_size_bytes = get_safe_chunk_size(ideal_chunk_size, size);
+    let chunk_size_elements = chunk_size_bytes / std::mem::size_of::<__m128i>();
+    
+    let mut cycle = 0u32;
+    
+    loop {
+        cycle += 1;
+        let mut cycle_errors = 0u64;
+        
+        for chunk_start in (0..len).step_by(chunk_size_elements) {
+            let chunk_end = (chunk_start + chunk_size_elements).min(len);
+            let chunk_len = chunk_end - chunk_start;
+            
+            // 1. Mirror operation - single stream with two-pointer optimization
+            let mut idx1 = chunk_start;
+            let mut idx2 = chunk_start + chunk_len - 1;
+            while idx1 < idx2 {
+                let val1 = _mm_load_si128(base.add(idx1));
+                let val2 = _mm_load_si128(base.add(idx2));
+                _mm_stream_si128(base.add(idx2), val1);
+                _mm_stream_si128(base.add(idx1), val2);
+                idx1 += 1;
+                idx2 -= 1;
+            }
+            _mm_sfence();
+            
+            // 2. Verify with configurable error checking interval
+            let mut error_accumulator = _mm_setzero_si128();
+            let chunk_sum = chunk_start + chunk_end - 1;
+            
+            // Single branch: configure error checking frequency
+            match config.error_check_interval.get_check_mask() {
+                None => {
+                    // PER_CHUNK mode: Check only at end (maximum performance)
+                    for i in chunk_start..chunk_end {
+                        let mirrored_idx = chunk_sum - i;
+                        let expected = _mm_set_epi32(
+                            (mirrored_idx as i32).wrapping_add(thread_pattern_base),
+                            (mirrored_idx as i32).wrapping_add(thread_pattern_base).wrapping_mul(2),
+                            (mirrored_idx as i32).wrapping_add(thread_pattern_base).wrapping_mul(3),
+                            (mirrored_idx as i32).wrapping_add(thread_pattern_base).wrapping_mul(4),
+                        );
+                        let actual = _mm_load_si128(base.add(i));
+                        let diff = _mm_xor_si128(expected, actual);
+                        error_accumulator = _mm_or_si128(error_accumulator, diff);
+                    }
+                    // Single check at chunk end
+                    if _mm_movemask_epi8(error_accumulator) != 0 {
+                        cycle_errors += 1;
+                        log::error!("{}: errors detected in chunk {} (thread {})", test_name, chunk_start, thread_id);
+                    }
+                }
+                Some(check_mask) => {
+                    // Power-of-2 interval checking (TM5 Parameter-based)
+                    for (i, idx) in (chunk_start..chunk_end).enumerate() {
+                        let mirrored_idx = chunk_sum - idx;
+                        let expected = _mm_set_epi32(
+                            (mirrored_idx as i32).wrapping_add(thread_pattern_base),
+                            (mirrored_idx as i32).wrapping_add(thread_pattern_base).wrapping_mul(2),
+                            (mirrored_idx as i32).wrapping_add(thread_pattern_base).wrapping_mul(3),
+                            (mirrored_idx as i32).wrapping_add(thread_pattern_base).wrapping_mul(4),
+                        );
+                        let actual = _mm_load_si128(base.add(idx));
+                        let diff = _mm_xor_si128(expected, actual);
+                        error_accumulator = _mm_or_si128(error_accumulator, diff);
+                        
+                        // Fast bitwise check every 2^N operations
+                        if (i as u32 & check_mask) == check_mask {
+                            if _mm_movemask_epi8(error_accumulator) != 0 {
+                                cycle_errors += 1;
+                                let block_id = i >> config.error_check_interval.power_of_two_shift;
+                                log::error!("{}: errors in block {} of chunk {} (thread {})", 
+                                          test_name, block_id, chunk_start, thread_id);
+                            }
+                            error_accumulator = _mm_setzero_si128(); // Reset for next block
+                        }
+                    }
+                    // Check remaining elements
+                    if _mm_movemask_epi8(error_accumulator) != 0 {
+                        cycle_errors += 1;
+                        log::error!("{}: errors in final block of chunk {} (thread {})", test_name, chunk_start, thread_id);
+                    }
+                }
+            }
+            
+            // 3. Mirror back to restore - same two-pointer optimization
+            let mut idx1 = chunk_start;
+            let mut idx2 = chunk_start + chunk_len - 1;
+            while idx1 < idx2 {
+                let val1 = _mm_load_si128(base.add(idx1));
+                let val2 = _mm_load_si128(base.add(idx2));
+                _mm_stream_si128(base.add(idx2), val1);
+                _mm_stream_si128(base.add(idx1), val2);
+                idx1 += 1;
+                idx2 -= 1;
+            }
+            _mm_sfence();
+            
+            // Optimized error handling - check ONCE at end of chunk
+            if cycle_errors > 0 {
+                match error_mode {
+                    ErrorMode::Panic => panic!("{}: memory error detected in cycle {} chunk {}", test_name, cycle, chunk_start),
+                    ErrorMode::Halt => {
+                        total_error_count += cycle_errors;
+                        total_bytes_processed += (chunk_end - chunk_start) * std::mem::size_of::<__m128i>() * 2;
+                        let elapsed = start.elapsed().as_millis();
+                        return TestStats {
+                            name: test_name,
+                            action: TestAction::WriteWaitVerify,
+                            bytes_processed: total_bytes_processed,
+                            elapsed_ms: elapsed,
+                            thread_id,
+                            error_count: total_error_count,
+                            total_operations: cycle as u64 * (chunk_end - chunk_start) as u64,
+
+                            cycles_completed: 0,
+
+                            cycles_planned: None,
+
+                            stopped_by_time_limit: false,
+
+                            };
+                    }
+                    ErrorMode::Log => {
+                        // Continue - errors already logged above
+                    }
+                }
+            }
+            
+            if SHUTDOWN_REQUESTED.load(Ordering::Relaxed) {
+                total_error_count += cycle_errors;
+                total_bytes_processed += (chunk_end - chunk_start) * std::mem::size_of::<__m128i>() * 2;
+                let elapsed = start.elapsed().as_millis();
+                return TestStats {
+                    name: test_name,
+                    action: TestAction::WriteWaitVerify,
+                    bytes_processed: total_bytes_processed,
+                    elapsed_ms: elapsed,
+                    thread_id,
+                    error_count: total_error_count,
+                    total_operations: cycle as u64 * (chunk_end - chunk_start) as u64,
+
+                    cycles_completed: 0,
+
+                    cycles_planned: None,
+
+                    stopped_by_time_limit: false,
+
+                    };
+            }
+        }
+        
+        total_error_count += cycle_errors;
+        total_bytes_processed += size * 2;
+        
+        let elapsed_secs = test_start.elapsed().as_secs() as u32;
+        if !timing.should_continue(cycle, elapsed_secs) {
+            break;
+        }
+    }
+    
+    let elapsed = start.elapsed().as_millis();
+    let total_operations = cycle as u64 * len as u64;
+    
+    TestStats {
+        name: test_name,
+        action: TestAction::WriteWaitVerify,
+        bytes_processed: total_bytes_processed,
+        elapsed_ms: elapsed,
+        thread_id,
+        error_count: total_error_count,
+        total_operations,
+
+        cycles_completed: 0,
+
+        cycles_planned: None,
+
+        stopped_by_time_limit: false,
+
+        }
+}
+
+/// Optimized multi-stream version - pre-computed stream boundaries
+unsafe fn mirror_move_128_multi_stream(
+    ptr: *mut u8, 
+    size: usize, 
+    thread_id: usize, 
+    error_mode: ErrorMode, 
+    timing: &TestTiming, 
+    config: &TestMemoryConfig,
+    streams: usize,
+    stream_shift: u32
+) -> TestStats {
+    let test_name = "MirrorMove128";
+    let start = Instant::now();
+    let test_start = Instant::now();
+    
+    let base = ptr as *mut __m128i;
+    let len = size / std::mem::size_of::<__m128i>();
+    let mut total_bytes_processed = 0usize;
+    let mut total_error_count = 0u64;
+    
+    // Pre-compute pattern base outside all loops
+    let thread_pattern_base = (thread_id as i32) << 16;
+    
+    // Initialize memory with pattern
+    for i in 0..len {
+        let pattern = _mm_set_epi32(
+            (i as i32).wrapping_add(thread_pattern_base),
+            (i as i32).wrapping_add(thread_pattern_base).wrapping_mul(2),
+            (i as i32).wrapping_add(thread_pattern_base).wrapping_mul(3),
+            (i as i32).wrapping_add(thread_pattern_base).wrapping_mul(4),
+        );
+        _mm_store_si128(base.add(i), pattern);
+    }
+    _mm_sfence();
+    
+    // Calculate ideal chunk size once (power-of-2 elements for fast stream operations)
+    let ideal_chunk_size = calculate_ideal_chunk_size(config, test_name, size);
+    let chunk_size_bytes = get_safe_chunk_size(ideal_chunk_size, size);
+    let chunk_size_elements = chunk_size_bytes / std::mem::size_of::<__m128i>();
+    
+    let mut cycle = 0u32;
+    
+    loop {
+        cycle += 1;
+        let mut cycle_errors = 0u64;
+        
+        for chunk_start in (0..len).step_by(chunk_size_elements) {
+            let chunk_end = (chunk_start + chunk_size_elements).min(len);
+            let chunk_len = chunk_end - chunk_start;
+            
+            // Pre-compute stream boundaries for this chunk (outside hot loops!)
+            let elements_per_stream = chunk_len >> stream_shift;
+            // Power-of-2 chain guarantees no extra elements needed!
+            let mut stream_boundaries = Vec::with_capacity(streams + 1);
+            stream_boundaries.push(chunk_start);
+            
+            // Power-of-2 guarantees uniform stream lengths
+            for s in 0..streams {
+                stream_boundaries.push(chunk_start + (s + 1) * elements_per_stream);
+            }
+            
+            // 1. Mirror operation - multi-stream
+            for stream_id in 0..streams {
+                let stream_start = stream_boundaries[stream_id];
+                let stream_end = stream_boundaries[stream_id + 1];
+                
+                let mut idx1 = stream_start;
+                let mut idx2 = stream_end - 1;
+                while idx1 < idx2 {
+                    let val1 = _mm_load_si128(base.add(idx1));
+                    let val2 = _mm_load_si128(base.add(idx2));
+                    _mm_stream_si128(base.add(idx2), val1);
+                    _mm_stream_si128(base.add(idx1), val2);
+                    idx1 += 1;
+                    idx2 -= 1;
+                }
+            }
+            _mm_sfence();
+            
+            // 2. Verify with configurable error checking interval (multi-stream)
+            let mut error_accumulator = _mm_setzero_si128();
+            
+            // Single branch: configure error checking frequency  
+            match config.error_check_interval.get_check_mask() {
+                None => {
+                    // PER_CHUNK mode: Check only at end (maximum performance)
+                    for stream_id in 0..streams {
+                        let stream_start = stream_boundaries[stream_id];
+                        let stream_end = stream_boundaries[stream_id + 1];
+                        let stream_sum = stream_start + stream_end - 1;
+                        
+                        for i in stream_start..stream_end {
+                            let mirrored_idx = stream_sum - i;
+                            let expected = _mm_set_epi32(
+                                (mirrored_idx as i32).wrapping_add(thread_pattern_base),
+                                (mirrored_idx as i32).wrapping_add(thread_pattern_base).wrapping_mul(2),
+                                (mirrored_idx as i32).wrapping_add(thread_pattern_base).wrapping_mul(3),
+                                (mirrored_idx as i32).wrapping_add(thread_pattern_base).wrapping_mul(4),
+                            );
+                            let actual = _mm_load_si128(base.add(i));
+                            let diff = _mm_xor_si128(expected, actual);
+                            error_accumulator = _mm_or_si128(error_accumulator, diff);
+                        }
+                    }
+                    // Single check at chunk end
+                    if _mm_movemask_epi8(error_accumulator) != 0 {
+                        cycle_errors += 1;
+                        log::error!("{}: errors detected in chunk {} (thread {})", test_name, chunk_start, thread_id);
+                    }
+                }
+                Some(check_mask) => {
+                    // Power-of-2 interval checking (TM5 Parameter-based)
+                    let mut op_count = 0u32;
+                    for stream_id in 0..streams {
+                        let stream_start = stream_boundaries[stream_id];
+                        let stream_end = stream_boundaries[stream_id + 1];
+                        let stream_sum = stream_start + stream_end - 1;
+                        
+                        for i in stream_start..stream_end {
+                            let mirrored_idx = stream_sum - i;
+                            let expected = _mm_set_epi32(
+                                (mirrored_idx as i32).wrapping_add(thread_pattern_base),
+                                (mirrored_idx as i32).wrapping_add(thread_pattern_base).wrapping_mul(2),
+                                (mirrored_idx as i32).wrapping_add(thread_pattern_base).wrapping_mul(3),
+                                (mirrored_idx as i32).wrapping_add(thread_pattern_base).wrapping_mul(4),
+                            );
+                            let actual = _mm_load_si128(base.add(i));
+                            let diff = _mm_xor_si128(expected, actual);
+                            error_accumulator = _mm_or_si128(error_accumulator, diff);
+                            
+                            // Fast bitwise check every 2^N operations
+                            if (op_count & check_mask) == check_mask {
+                                if _mm_movemask_epi8(error_accumulator) != 0 {
+                                    cycle_errors += 1;
+                                    let block_id = op_count >> config.error_check_interval.power_of_two_shift;
+                                    log::error!("{}: errors in block {} of chunk {} (thread {})", 
+                                              test_name, block_id, chunk_start, thread_id);
+                                }
+                                error_accumulator = _mm_setzero_si128(); // Reset for next block
+                            }
+                            op_count += 1;
+                        }
+                    }
+                    // Check remaining elements
+                    if _mm_movemask_epi8(error_accumulator) != 0 {
+                        cycle_errors += 1;
+                        log::error!("{}: errors in final block of chunk {} (thread {})", test_name, chunk_start, thread_id);
+                    }
+                }
+            }
+            
+            // 3. Mirror back to restore - multi-stream
+            for stream_id in 0..streams {
+                let stream_start = stream_boundaries[stream_id];
+                let stream_end = stream_boundaries[stream_id + 1];
+                
+                let mut idx1 = stream_start;
+                let mut idx2 = stream_end - 1;
+                while idx1 < idx2 {
+                    let val1 = _mm_load_si128(base.add(idx1));
+                    let val2 = _mm_load_si128(base.add(idx2));
+                    _mm_stream_si128(base.add(idx2), val1);
+                    _mm_stream_si128(base.add(idx1), val2);
+                    idx1 += 1;
+                    idx2 -= 1;
+                }
+            }
+            _mm_sfence();
+            
+            // Optimized error handling - check ONCE at end of chunk
+            if cycle_errors > 0 {
+                match error_mode {
+                    ErrorMode::Panic => panic!("{}: memory error detected in cycle {} chunk {}", test_name, cycle, chunk_start),
+                    ErrorMode::Halt => {
+                        total_error_count += cycle_errors;
+                        total_bytes_processed += (chunk_end - chunk_start) * std::mem::size_of::<__m128i>() * 2;
+                        let elapsed = start.elapsed().as_millis();
+                        return TestStats {
+                            name: test_name,
+                            action: TestAction::WriteWaitVerify,
+                            bytes_processed: total_bytes_processed,
+                            elapsed_ms: elapsed,
+                            thread_id,
+                            error_count: total_error_count,
+                            total_operations: cycle as u64 * (chunk_end - chunk_start) as u64,
+
+                            cycles_completed: 0,
+
+                            cycles_planned: None,
+
+                            stopped_by_time_limit: false,
+
+                            };
+                    }
+                    ErrorMode::Log => {
+                        // Continue - errors already logged above
+                    }
+                }
+            }
+            
+            if SHUTDOWN_REQUESTED.load(Ordering::Relaxed) {
+                total_error_count += cycle_errors;
+                total_bytes_processed += (chunk_end - chunk_start) * std::mem::size_of::<__m128i>() * 2;
+                let elapsed = start.elapsed().as_millis();
+                return TestStats {
+                    name: test_name,
+                    action: TestAction::WriteWaitVerify,
+                    bytes_processed: total_bytes_processed,
+                    elapsed_ms: elapsed,
+                    thread_id,
+                    error_count: total_error_count,
+                    total_operations: cycle as u64 * (chunk_end - chunk_start) as u64,
+
+                    cycles_completed: 0,
+
+                    cycles_planned: None,
+
+                    stopped_by_time_limit: false,
+
+                    };
+            }
+        }
+        
+        total_error_count += cycle_errors;
+        total_bytes_processed += size * 2;
+        
+        let elapsed_secs = test_start.elapsed().as_secs() as u32;
+        if !timing.should_continue(cycle, elapsed_secs) {
+            break;
+        }
+    }
+    
+    let elapsed = start.elapsed().as_millis();
+    let total_operations = cycle as u64 * len as u64;
+    
+    TestStats {
+        name: test_name,
+        action: TestAction::WriteWaitVerify,
+        bytes_processed: total_bytes_processed,
+        elapsed_ms: elapsed,
+        thread_id,
+        error_count: total_error_count,
+        total_operations,
+
+        cycles_completed: 0,
+
+        cycles_planned: None,
+
+        stopped_by_time_limit: false,
+
+        }
+}
+
 /// # Safety
 /// Caller must ensure `ptr` is valid for reads/writes of `size` bytes.
+pub unsafe fn mirror_move_256(
+    ptr: *mut u8, 
+    size: usize, 
+    thread_id: usize, 
+    error_mode: ErrorMode, 
+    timing: &TestTiming, 
+    config: &TestMemoryConfig
+) -> TestStats {
+    let test_name = "MirrorMove256";
+    
+    if !is_x86_feature_detected!("avx2") {
+        return TestStats {
+            name: test_name,
+            action: TestAction::ReadWrite,
+            bytes_processed: 0,
+            elapsed_ms: 0,
+            thread_id,
+            error_count: 0,
+            total_operations: 0,
+
+            cycles_completed: 0,
+
+            cycles_planned: None,
+
+            stopped_by_time_limit: false,
+
+            };
+    }
+    
+    let streams = config.streams.max(1) as usize;
+    
+    // Dispatch to optimized single-stream or multi-stream function
+    if streams == 1 {
+        mirror_move_256_single_stream(ptr, size, thread_id, error_mode, timing, config)
+    } else {
+        let stream_shift = streams.trailing_zeros();
+        // Note: stream_mask not needed - power-of-2 chain guarantees perfect division
+        mirror_move_256_multi_stream(ptr, size, thread_id, error_mode, timing, config, streams, stream_shift)
+    }
+}
+
+/// Optimized single-stream version - no branching in hot loops
+unsafe fn mirror_move_256_single_stream(
+    ptr: *mut u8, 
+    size: usize, 
+    thread_id: usize, 
+    error_mode: ErrorMode, 
+    timing: &TestTiming, 
+    config: &TestMemoryConfig
+) -> TestStats {
+    let test_name = "MirrorMove256";
+    let start = Instant::now();
+    let test_start = Instant::now();
+    
+    let base = ptr as *mut __m256i;
+    let len = size / std::mem::size_of::<__m256i>();
+    let mut total_bytes_processed = 0usize;
+    let mut total_error_count = 0u64;
+    
+    // Pre-compute pattern base outside all loops
+    let thread_pattern_base = (thread_id as i32) << 16;
+    
+    // Initialize memory with pattern
+    for i in 0..len {
+        let pattern = _mm256_set_epi32(
+            (i as i32).wrapping_add(thread_pattern_base),
+            (i as i32).wrapping_add(thread_pattern_base).wrapping_mul(2),
+            (i as i32).wrapping_add(thread_pattern_base).wrapping_mul(3),
+            (i as i32).wrapping_add(thread_pattern_base).wrapping_mul(4),
+            (i as i32).wrapping_add(thread_pattern_base).wrapping_mul(5),
+            (i as i32).wrapping_add(thread_pattern_base).wrapping_mul(6),
+            (i as i32).wrapping_add(thread_pattern_base).wrapping_mul(7),
+            (i as i32).wrapping_add(thread_pattern_base).wrapping_mul(8),
+        );
+        _mm256_store_si256(base.add(i), pattern);
+    }
+    _mm_sfence();
+    
+    // Calculate ideal chunk size once (power-of-2 elements for fast stream operations)
+    let ideal_chunk_size = calculate_ideal_chunk_size(config, test_name, size);
+    let chunk_size_bytes = get_safe_chunk_size(ideal_chunk_size, size);
+    let chunk_size_elements = chunk_size_bytes / std::mem::size_of::<__m256i>();
+    
+    let mut cycle = 0u32;
+    
+    loop {
+        cycle += 1;
+        let mut cycle_errors = 0u64;
+        
+        for chunk_start in (0..len).step_by(chunk_size_elements) {
+            let chunk_end = (chunk_start + chunk_size_elements).min(len);
+            let chunk_len = chunk_end - chunk_start;
+            
+            // 1. Mirror operation - single stream with two-pointer optimization
+            let mut idx1 = chunk_start;
+            let mut idx2 = chunk_start + chunk_len - 1;
+            while idx1 < idx2 {
+                let val1 = _mm256_load_si256(base.add(idx1));
+                let val2 = _mm256_load_si256(base.add(idx2));
+                _mm256_stream_si256(base.add(idx2), val1);
+                _mm256_stream_si256(base.add(idx1), val2);
+                idx1 += 1;
+                idx2 -= 1;
+            }
+            _mm_sfence();
+            
+            // 2. Verify with configurable error checking frequency
+            let mut error_accumulator = _mm256_setzero_si256();
+            let mut i = chunk_start;
+            let chunk_sum = chunk_start + chunk_end - 1;
+            let mut element_count = 0usize;
+            
+            // Pre-compute check mask for hot loop optimization
+            match config.error_check_interval.get_check_mask() {
+                Some(check_mask) => {
+                    while i < chunk_end {
+                        // Pre-compute mirrored index (hot loop optimization)
+                        let mirrored_idx = chunk_sum - i;
+                        
+                        // Pre-compute expected pattern (hot loop optimization)
+                        let expected = _mm256_set_epi32(
+                            (mirrored_idx as i32).wrapping_add(thread_pattern_base),
+                            (mirrored_idx as i32).wrapping_add(thread_pattern_base).wrapping_mul(2),
+                            (mirrored_idx as i32).wrapping_add(thread_pattern_base).wrapping_mul(3),
+                            (mirrored_idx as i32).wrapping_add(thread_pattern_base).wrapping_mul(4),
+                            (mirrored_idx as i32).wrapping_add(thread_pattern_base).wrapping_mul(5),
+                            (mirrored_idx as i32).wrapping_add(thread_pattern_base).wrapping_mul(6),
+                            (mirrored_idx as i32).wrapping_add(thread_pattern_base).wrapping_mul(7),
+                            (mirrored_idx as i32).wrapping_add(thread_pattern_base).wrapping_mul(8),
+                        );
+                        
+                        let actual = _mm256_load_si256(base.add(i));
+                        let diff = _mm256_xor_si256(expected, actual);
+                        error_accumulator = _mm256_or_si256(error_accumulator, diff);
+                        
+                        element_count += 1;
+                        i += 1;
+                        
+                        // Check errors at configured intervals (zero-branch hot loop optimization)
+                        if (element_count as u32 & check_mask) == 0 {
+                            let error_mask = _mm256_movemask_epi8(error_accumulator);
+                            if error_mask != 0 {
+                                cycle_errors += 1;
+                                log::error!("{}: memory error detected in cycle {} chunk {} element {} (thread {})", 
+                                           test_name, cycle, chunk_start, element_count, thread_id);
+                                error_accumulator = _mm256_setzero_si256();
+                            }
+                        }
+                    }
+                }
+                None => {
+                    // PER_CHUNK mode - no intermediate checks, maximum performance
+                    while i < chunk_end {
+                        // Pre-compute mirrored index (hot loop optimization)
+                        let mirrored_idx = chunk_sum - i;
+                        
+                        // Pre-compute expected pattern (hot loop optimization)
+                        let expected = _mm256_set_epi32(
+                            (mirrored_idx as i32).wrapping_add(thread_pattern_base),
+                            (mirrored_idx as i32).wrapping_add(thread_pattern_base).wrapping_mul(2),
+                            (mirrored_idx as i32).wrapping_add(thread_pattern_base).wrapping_mul(3),
+                            (mirrored_idx as i32).wrapping_add(thread_pattern_base).wrapping_mul(4),
+                            (mirrored_idx as i32).wrapping_add(thread_pattern_base).wrapping_mul(5),
+                            (mirrored_idx as i32).wrapping_add(thread_pattern_base).wrapping_mul(6),
+                            (mirrored_idx as i32).wrapping_add(thread_pattern_base).wrapping_mul(7),
+                            (mirrored_idx as i32).wrapping_add(thread_pattern_base).wrapping_mul(8),
+                        );
+                        
+                        let actual = _mm256_load_si256(base.add(i));
+                        let diff = _mm256_xor_si256(expected, actual);
+                        error_accumulator = _mm256_or_si256(error_accumulator, diff);
+                        i += 1;
+                    }
+                }
+            }
+            
+            // Final error check (always performed regardless of mode)
+            let error_mask = _mm256_movemask_epi8(error_accumulator);
+            if error_mask != 0 {
+                cycle_errors += 1;
+                log::error!("{}: memory error detected in cycle {} chunk {} (thread {})", test_name, cycle, chunk_start, thread_id);
+            }
+            
+            // 3. Mirror back to restore - same two-pointer optimization
+            let mut idx1 = chunk_start;
+            let mut idx2 = chunk_start + chunk_len - 1;
+            while idx1 < idx2 {
+                let val1 = _mm256_load_si256(base.add(idx1));
+                let val2 = _mm256_load_si256(base.add(idx2));
+                _mm256_stream_si256(base.add(idx2), val1);
+                _mm256_stream_si256(base.add(idx1), val2);
+                idx1 += 1;
+                idx2 -= 1;
+            }
+            _mm_sfence();
+            
+            // Optimized error handling - check ONCE at end of chunk
+            if cycle_errors > 0 {
+                match error_mode {
+                    ErrorMode::Panic => panic!("{}: memory error detected in cycle {} chunk {}", test_name, cycle, chunk_start),
+                    ErrorMode::Halt => {
+                        total_error_count += cycle_errors;
+                        total_bytes_processed += (chunk_end - chunk_start) * std::mem::size_of::<__m256i>() * 2;
+                        let elapsed = start.elapsed().as_millis();
+                        return TestStats {
+                            name: test_name,
+                            action: TestAction::WriteWaitVerify,
+                            bytes_processed: total_bytes_processed,
+                            elapsed_ms: elapsed,
+                            thread_id,
+                            error_count: total_error_count,
+                            total_operations: cycle as u64 * (chunk_end - chunk_start) as u64,
+
+                            cycles_completed: 0,
+
+                            cycles_planned: None,
+
+                            stopped_by_time_limit: false,
+
+                            };
+                    }
+                    ErrorMode::Log => {
+                        // Continue - errors already logged above
+                    }
+                }
+            }
+            
+            if SHUTDOWN_REQUESTED.load(Ordering::Relaxed) {
+                total_error_count += cycle_errors;
+                total_bytes_processed += (chunk_end - chunk_start) * std::mem::size_of::<__m256i>() * 2;
+                let elapsed = start.elapsed().as_millis();
+                return TestStats {
+                    name: test_name,
+                    action: TestAction::WriteWaitVerify,
+                    bytes_processed: total_bytes_processed,
+                    elapsed_ms: elapsed,
+                    thread_id,
+                    error_count: total_error_count,
+                    total_operations: cycle as u64 * (chunk_end - chunk_start) as u64,
+
+                    cycles_completed: 0,
+
+                    cycles_planned: None,
+
+                    stopped_by_time_limit: false,
+
+                    };
+            }
+        }
+        
+        total_error_count += cycle_errors;
+        total_bytes_processed += size * 2;
+        
+        let elapsed_secs = test_start.elapsed().as_secs() as u32;
+        if !timing.should_continue(cycle, elapsed_secs) {
+            break;
+        }
+    }
+    
+    let elapsed = start.elapsed().as_millis();
+    let total_operations = cycle as u64 * len as u64;
+    
+    TestStats {
+        name: test_name,
+        action: TestAction::WriteWaitVerify,
+        bytes_processed: total_bytes_processed,
+        elapsed_ms: elapsed,
+        thread_id,
+        error_count: total_error_count,
+        total_operations,
+
+        cycles_completed: 0,
+
+        cycles_planned: None,
+
+        stopped_by_time_limit: false,
+
+        }
+}
+
+/// Optimized multi-stream version - pre-computed stream boundaries
+unsafe fn mirror_move_256_multi_stream(
+    ptr: *mut u8, 
+    size: usize, 
+    thread_id: usize, 
+    error_mode: ErrorMode, 
+    timing: &TestTiming, 
+    config: &TestMemoryConfig,
+    streams: usize,
+    stream_shift: u32
+) -> TestStats {
+    let test_name = "MirrorMove256";
+    let start = Instant::now();
+    let test_start = Instant::now();
+    
+    let base = ptr as *mut __m256i;
+    let len = size / std::mem::size_of::<__m256i>();
+    let mut total_bytes_processed = 0usize;
+    let mut total_error_count = 0u64;
+    
+    // Pre-compute pattern base outside all loops
+    let thread_pattern_base = (thread_id as i32) << 16;
+    
+    // Initialize memory with pattern
+    for i in 0..len {
+        let pattern = _mm256_set_epi32(
+            (i as i32).wrapping_add(thread_pattern_base),
+            (i as i32).wrapping_add(thread_pattern_base).wrapping_mul(2),
+            (i as i32).wrapping_add(thread_pattern_base).wrapping_mul(3),
+            (i as i32).wrapping_add(thread_pattern_base).wrapping_mul(4),
+            (i as i32).wrapping_add(thread_pattern_base).wrapping_mul(5),
+            (i as i32).wrapping_add(thread_pattern_base).wrapping_mul(6),
+            (i as i32).wrapping_add(thread_pattern_base).wrapping_mul(7),
+            (i as i32).wrapping_add(thread_pattern_base).wrapping_mul(8),
+        );
+        _mm256_store_si256(base.add(i), pattern);
+    }
+    _mm_sfence();
+    
+    // Calculate ideal chunk size once (power-of-2 elements for fast stream operations)
+    let ideal_chunk_size = calculate_ideal_chunk_size(config, test_name, size);
+    let chunk_size_bytes = get_safe_chunk_size(ideal_chunk_size, size);
+    let chunk_size_elements = chunk_size_bytes / std::mem::size_of::<__m256i>();
+    
+    let mut cycle = 0u32;
+    
+    loop {
+        cycle += 1;
+        let mut cycle_errors = 0u64;
+        
+        for chunk_start in (0..len).step_by(chunk_size_elements) {
+            let chunk_end = (chunk_start + chunk_size_elements).min(len);
+            let chunk_len = chunk_end - chunk_start;
+            
+            // Pre-compute stream boundaries for this chunk (outside hot loops!)
+            let elements_per_stream = chunk_len >> stream_shift;
+            // Power-of-2 chain guarantees no extra elements needed!
+            let mut stream_boundaries = Vec::with_capacity(streams + 1);
+            stream_boundaries.push(chunk_start);
+            
+            // Power-of-2 guarantees uniform stream lengths
+            for s in 0..streams {
+                stream_boundaries.push(chunk_start + (s + 1) * elements_per_stream);
+            }
+            
+            // 1. Mirror operation - multi-stream
+            for stream_id in 0..streams {
+                let stream_start = stream_boundaries[stream_id];
+                let stream_end = stream_boundaries[stream_id + 1];
+                
+                let mut idx1 = stream_start;
+                let mut idx2 = stream_end - 1;
+                while idx1 < idx2 {
+                    let val1 = _mm256_load_si256(base.add(idx1));
+                    let val2 = _mm256_load_si256(base.add(idx2));
+                    _mm256_stream_si256(base.add(idx2), val1);
+                    _mm256_stream_si256(base.add(idx1), val2);
+                    idx1 += 1;
+                    idx2 -= 1;
+                }
+            }
+            _mm_sfence();
+            
+            // 2. Verify with configurable error checking frequency - multi-stream
+            let mut error_accumulator = _mm256_setzero_si256();
+            let mut element_count = 0usize;
+            
+            // Pre-compute check mask for hot loop optimization
+            match config.error_check_interval.get_check_mask() {
+                Some(check_mask) => {
+                    for stream_id in 0..streams {
+                        let stream_start = stream_boundaries[stream_id];
+                        let stream_end = stream_boundaries[stream_id + 1];
+                        let stream_sum = stream_start + stream_end - 1;
+                        
+                        let mut i = stream_start;
+                        while i < stream_end {
+                            // Pre-compute mirrored index within this stream (hot loop optimization)
+                            let mirrored_idx = stream_sum - i;
+                            
+                            // Pre-compute expected pattern (hot loop optimization)
+                            let expected = _mm256_set_epi32(
+                                (mirrored_idx as i32).wrapping_add(thread_pattern_base),
+                                (mirrored_idx as i32).wrapping_add(thread_pattern_base).wrapping_mul(2),
+                                (mirrored_idx as i32).wrapping_add(thread_pattern_base).wrapping_mul(3),
+                                (mirrored_idx as i32).wrapping_add(thread_pattern_base).wrapping_mul(4),
+                                (mirrored_idx as i32).wrapping_add(thread_pattern_base).wrapping_mul(5),
+                                (mirrored_idx as i32).wrapping_add(thread_pattern_base).wrapping_mul(6),
+                                (mirrored_idx as i32).wrapping_add(thread_pattern_base).wrapping_mul(7),
+                                (mirrored_idx as i32).wrapping_add(thread_pattern_base).wrapping_mul(8),
+                            );
+                            
+                            let actual = _mm256_load_si256(base.add(i));
+                            let diff = _mm256_xor_si256(expected, actual);
+                            error_accumulator = _mm256_or_si256(error_accumulator, diff);
+                            
+                            element_count += 1;
+                            i += 1;
+                            
+                            // Check errors at configured intervals (zero-branch hot loop optimization)
+                            if (element_count as u32 & check_mask) == 0 {
+                                let error_mask = _mm256_movemask_epi8(error_accumulator);
+                                if error_mask != 0 {
+                                    cycle_errors += 1;
+                                    log::error!("{}: memory error detected in cycle {} chunk {} stream {} element {} (thread {})", 
+                                               test_name, cycle, chunk_start, stream_id, element_count, thread_id);
+                                    error_accumulator = _mm256_setzero_si256();
+                                }
+                            }
+                        }
+                    }
+                }
+                None => {
+                    // PER_CHUNK mode - no intermediate checks, maximum performance
+                    for stream_id in 0..streams {
+                        let stream_start = stream_boundaries[stream_id];
+                        let stream_end = stream_boundaries[stream_id + 1];
+                        let stream_sum = stream_start + stream_end - 1;
+                        
+                        let mut i = stream_start;
+                        while i < stream_end {
+                            // Pre-compute mirrored index within this stream (hot loop optimization)
+                            let mirrored_idx = stream_sum - i;
+                            
+                            // Pre-compute expected pattern (hot loop optimization)
+                            let expected = _mm256_set_epi32(
+                                (mirrored_idx as i32).wrapping_add(thread_pattern_base),
+                                (mirrored_idx as i32).wrapping_add(thread_pattern_base).wrapping_mul(2),
+                                (mirrored_idx as i32).wrapping_add(thread_pattern_base).wrapping_mul(3),
+                                (mirrored_idx as i32).wrapping_add(thread_pattern_base).wrapping_mul(4),
+                                (mirrored_idx as i32).wrapping_add(thread_pattern_base).wrapping_mul(5),
+                                (mirrored_idx as i32).wrapping_add(thread_pattern_base).wrapping_mul(6),
+                                (mirrored_idx as i32).wrapping_add(thread_pattern_base).wrapping_mul(7),
+                                (mirrored_idx as i32).wrapping_add(thread_pattern_base).wrapping_mul(8),
+                            );
+                            
+                            let actual = _mm256_load_si256(base.add(i));
+                            let diff = _mm256_xor_si256(expected, actual);
+                            error_accumulator = _mm256_or_si256(error_accumulator, diff);
+                            i += 1;
+                        }
+                    }
+                }
+            }
+            
+            // Final error check (always performed regardless of mode)
+            let error_mask = _mm256_movemask_epi8(error_accumulator);
+            if error_mask != 0 {
+                cycle_errors += 1;
+                log::error!("{}: memory error detected in cycle {} chunk {} (thread {})", test_name, cycle, chunk_start, thread_id);
+            }
+            
+            // 3. Mirror back to restore - multi-stream
+            for stream_id in 0..streams {
+                let stream_start = stream_boundaries[stream_id];
+                let stream_end = stream_boundaries[stream_id + 1];
+                
+                let mut idx1 = stream_start;
+                let mut idx2 = stream_end - 1;
+                while idx1 < idx2 {
+                    let val1 = _mm256_load_si256(base.add(idx1));
+                    let val2 = _mm256_load_si256(base.add(idx2));
+                    _mm256_stream_si256(base.add(idx2), val1);
+                    _mm256_stream_si256(base.add(idx1), val2);
+                    idx1 += 1;
+                    idx2 -= 1;
+                }
+            }
+            _mm_sfence();
+            
+            // Optimized error handling - check ONCE at end of chunk
+            if cycle_errors > 0 {
+                match error_mode {
+                    ErrorMode::Panic => panic!("{}: memory error detected in cycle {} chunk {}", test_name, cycle, chunk_start),
+                    ErrorMode::Halt => {
+                        total_error_count += cycle_errors;
+                        total_bytes_processed += (chunk_end - chunk_start) * std::mem::size_of::<__m256i>() * 2;
+                        let elapsed = start.elapsed().as_millis();
+                        return TestStats {
+                            name: test_name,
+                            action: TestAction::WriteWaitVerify,
+                            bytes_processed: total_bytes_processed,
+                            elapsed_ms: elapsed,
+                            thread_id,
+                            error_count: total_error_count,
+                            total_operations: cycle as u64 * (chunk_end - chunk_start) as u64,
+
+                            cycles_completed: 0,
+
+                            cycles_planned: None,
+
+                            stopped_by_time_limit: false,
+
+                            };
+                    }
+                    ErrorMode::Log => {
+                        // Continue - errors already logged above
+                    }
+                }
+            }
+            
+            if SHUTDOWN_REQUESTED.load(Ordering::Relaxed) {
+                total_error_count += cycle_errors;
+                total_bytes_processed += (chunk_end - chunk_start) * std::mem::size_of::<__m256i>() * 2;
+                let elapsed = start.elapsed().as_millis();
+                return TestStats {
+                    name: test_name,
+                    action: TestAction::WriteWaitVerify,
+                    bytes_processed: total_bytes_processed,
+                    elapsed_ms: elapsed,
+                    thread_id,
+                    error_count: total_error_count,
+                    total_operations: cycle as u64 * (chunk_end - chunk_start) as u64,
+
+                    cycles_completed: 0,
+
+                    cycles_planned: None,
+
+                    stopped_by_time_limit: false,
+
+                    };
+            }
+        }
+        
+        total_error_count += cycle_errors;
+        total_bytes_processed += size * 2;
+        
+        let elapsed_secs = test_start.elapsed().as_secs() as u32;
+        if !timing.should_continue(cycle, elapsed_secs) {
+            break;
+        }
+    }
+    
+    let elapsed = start.elapsed().as_millis();
+    let total_operations = cycle as u64 * len as u64;
+    
+    TestStats {
+        name: test_name,
+        action: TestAction::WriteWaitVerify,
+        bytes_processed: total_bytes_processed,
+        elapsed_ms: elapsed,
+        thread_id,
+        error_count: total_error_count,
+        total_operations,
+
+        cycles_completed: 0,
+
+        cycles_planned: None,
+
+        stopped_by_time_limit: false,
+
+        }
+}
+
 /// # Safety
 /// Caller must ensure `ptr` is valid for reads/writes of `size` bytes.
+pub unsafe fn mirror_move_512(
+    ptr: *mut u8, 
+    size: usize, 
+    thread_id: usize, 
+    error_mode: ErrorMode, 
+    timing: &TestTiming, 
+    config: &TestMemoryConfig
+) -> TestStats {
+    let test_name = "MirrorMove512";
+    
+    if !is_x86_feature_detected!("avx512f") {
+        return TestStats {
+            name: test_name,
+            action: TestAction::ReadWrite,
+            bytes_processed: 0,
+            elapsed_ms: 0,
+            thread_id,
+            error_count: 0,
+            total_operations: 0,
+
+            cycles_completed: 0,
+
+            cycles_planned: None,
+
+            stopped_by_time_limit: false,
+
+            };
+    }
+    
+    let streams = config.streams.max(1) as usize;
+    
+    // Dispatch to optimized single-stream or multi-stream function
+    if streams == 1 {
+        mirror_move_512_single_stream(ptr, size, thread_id, error_mode, timing, config)
+    } else {
+        let stream_shift = streams.trailing_zeros();
+        // Note: stream_mask not needed - power-of-2 chain guarantees perfect division
+        mirror_move_512_multi_stream(ptr, size, thread_id, error_mode, timing, config, streams, stream_shift)
+    }
+}
+
+/// Optimized single-stream version - no branching in hot loops
+unsafe fn mirror_move_512_single_stream(
+    ptr: *mut u8, 
+    size: usize, 
+    thread_id: usize, 
+    error_mode: ErrorMode, 
+    timing: &TestTiming, 
+    config: &TestMemoryConfig
+) -> TestStats {
+    let test_name = "MirrorMove512";
+    let start = Instant::now();
+    let test_start = Instant::now();
+    
+    let base = ptr as *mut __m512i;
+    let len = size / std::mem::size_of::<__m512i>();
+    let mut total_bytes_processed = 0usize;
+    let mut total_error_count = 0u64;
+    
+    // Pre-compute pattern base outside all loops
+    let thread_pattern_base = (thread_id as i32) << 16;
+    
+    // Initialize memory with pattern
+    for i in 0..len {
+        let pattern = _mm512_set_epi32(
+            (i as i32).wrapping_add(thread_pattern_base),
+            (i as i32).wrapping_add(thread_pattern_base).wrapping_mul(2),
+            (i as i32).wrapping_add(thread_pattern_base).wrapping_mul(3),
+            (i as i32).wrapping_add(thread_pattern_base).wrapping_mul(4),
+            (i as i32).wrapping_add(thread_pattern_base).wrapping_mul(5),
+            (i as i32).wrapping_add(thread_pattern_base).wrapping_mul(6),
+            (i as i32).wrapping_add(thread_pattern_base).wrapping_mul(7),
+            (i as i32).wrapping_add(thread_pattern_base).wrapping_mul(8),
+            (i as i32).wrapping_add(thread_pattern_base).wrapping_mul(9),
+            (i as i32).wrapping_add(thread_pattern_base).wrapping_mul(10),
+            (i as i32).wrapping_add(thread_pattern_base).wrapping_mul(11),
+            (i as i32).wrapping_add(thread_pattern_base).wrapping_mul(12),
+            (i as i32).wrapping_add(thread_pattern_base).wrapping_mul(13),
+            (i as i32).wrapping_add(thread_pattern_base).wrapping_mul(14),
+            (i as i32).wrapping_add(thread_pattern_base).wrapping_mul(15),
+            (i as i32).wrapping_add(thread_pattern_base).wrapping_mul(16),
+        );
+        _mm512_store_si512(base.add(i), pattern);
+    }
+    _mm_sfence();
+    
+    // Calculate ideal chunk size once (power-of-2 elements for fast stream operations)
+    let ideal_chunk_size = calculate_ideal_chunk_size(config, test_name, size);
+    let chunk_size_bytes = get_safe_chunk_size(ideal_chunk_size, size);
+    let chunk_size_elements = chunk_size_bytes / std::mem::size_of::<__m512i>();
+    
+    let mut cycle = 0u32;
+    
+    loop {
+        cycle += 1;
+        let mut cycle_errors = 0u64;
+        
+        for chunk_start in (0..len).step_by(chunk_size_elements) {
+            let chunk_end = (chunk_start + chunk_size_elements).min(len);
+            let chunk_len = chunk_end - chunk_start;
+            
+            // 1. Mirror operation - single stream with two-pointer optimization
+            let mut idx1 = chunk_start;
+            let mut idx2 = chunk_start + chunk_len - 1;
+            while idx1 < idx2 {
+                let val1 = _mm512_load_si512(base.add(idx1));
+                let val2 = _mm512_load_si512(base.add(idx2));
+                _mm512_store_si512(base.add(idx2), val1);  // Cache-backed store
+                _mm512_store_si512(base.add(idx1), val2);  // Cache-backed store
+                idx1 += 1;
+                idx2 -= 1;
+            }
+            _mm_sfence();
+            
+            // 2. Verify with configurable error checking frequency
+            let mut error_accumulator = _mm512_setzero_si512();
+            let mut i = chunk_start;
+            let chunk_sum = chunk_start + chunk_end - 1;
+            let mut element_count = 0usize;
+            
+            // Pre-compute check mask for hot loop optimization
+            match config.error_check_interval.get_check_mask() {
+                Some(check_mask) => {
+                    while i < chunk_end {
+                        // Pre-compute mirrored index (hot loop optimization)
+                        let mirrored_idx = chunk_sum - i;
+                        
+                        // Pre-compute expected pattern (hot loop optimization)
+                        let expected = _mm512_set_epi32(
+                            (mirrored_idx as i32).wrapping_add(thread_pattern_base),
+                            (mirrored_idx as i32).wrapping_add(thread_pattern_base).wrapping_mul(2),
+                            (mirrored_idx as i32).wrapping_add(thread_pattern_base).wrapping_mul(3),
+                            (mirrored_idx as i32).wrapping_add(thread_pattern_base).wrapping_mul(4),
+                            (mirrored_idx as i32).wrapping_add(thread_pattern_base).wrapping_mul(5),
+                            (mirrored_idx as i32).wrapping_add(thread_pattern_base).wrapping_mul(6),
+                            (mirrored_idx as i32).wrapping_add(thread_pattern_base).wrapping_mul(7),
+                            (mirrored_idx as i32).wrapping_add(thread_pattern_base).wrapping_mul(8),
+                            (mirrored_idx as i32).wrapping_add(thread_pattern_base).wrapping_mul(9),
+                            (mirrored_idx as i32).wrapping_add(thread_pattern_base).wrapping_mul(10),
+                            (mirrored_idx as i32).wrapping_add(thread_pattern_base).wrapping_mul(11),
+                            (mirrored_idx as i32).wrapping_add(thread_pattern_base).wrapping_mul(12),
+                            (mirrored_idx as i32).wrapping_add(thread_pattern_base).wrapping_mul(13),
+                            (mirrored_idx as i32).wrapping_add(thread_pattern_base).wrapping_mul(14),
+                            (mirrored_idx as i32).wrapping_add(thread_pattern_base).wrapping_mul(15),
+                            (mirrored_idx as i32).wrapping_add(thread_pattern_base).wrapping_mul(16),
+                        );
+                        
+                        let actual = _mm512_load_si512(base.add(i));
+                        let diff = _mm512_xor_si512(expected, actual);
+                        error_accumulator = _mm512_or_si512(error_accumulator, diff);
+                        
+                        element_count += 1;
+                        i += 1;
+                        
+                        // Check errors at configured intervals (zero-branch hot loop optimization)
+                        if (element_count as u32 & check_mask) == 0 {
+                            let cmp_result = _mm512_cmpeq_epi32_mask(error_accumulator, _mm512_setzero_si512());
+                            if cmp_result != 0xFFFF {  // If not all zeros
+                                cycle_errors += 1;
+                                log::error!("{}: memory error detected in cycle {} chunk {} element {} (thread {})", 
+                                           test_name, cycle, chunk_start, element_count, thread_id);
+                                error_accumulator = _mm512_setzero_si512();
+                            }
+                        }
+                    }
+                }
+                None => {
+                    // PER_CHUNK mode - no intermediate checks, maximum performance
+                    while i < chunk_end {
+                        // Pre-compute mirrored index (hot loop optimization)
+                        let mirrored_idx = chunk_sum - i;
+                        
+                        // Pre-compute expected pattern (hot loop optimization)
+                        let expected = _mm512_set_epi32(
+                            (mirrored_idx as i32).wrapping_add(thread_pattern_base),
+                            (mirrored_idx as i32).wrapping_add(thread_pattern_base).wrapping_mul(2),
+                            (mirrored_idx as i32).wrapping_add(thread_pattern_base).wrapping_mul(3),
+                            (mirrored_idx as i32).wrapping_add(thread_pattern_base).wrapping_mul(4),
+                            (mirrored_idx as i32).wrapping_add(thread_pattern_base).wrapping_mul(5),
+                            (mirrored_idx as i32).wrapping_add(thread_pattern_base).wrapping_mul(6),
+                            (mirrored_idx as i32).wrapping_add(thread_pattern_base).wrapping_mul(7),
+                            (mirrored_idx as i32).wrapping_add(thread_pattern_base).wrapping_mul(8),
+                            (mirrored_idx as i32).wrapping_add(thread_pattern_base).wrapping_mul(9),
+                            (mirrored_idx as i32).wrapping_add(thread_pattern_base).wrapping_mul(10),
+                            (mirrored_idx as i32).wrapping_add(thread_pattern_base).wrapping_mul(11),
+                            (mirrored_idx as i32).wrapping_add(thread_pattern_base).wrapping_mul(12),
+                            (mirrored_idx as i32).wrapping_add(thread_pattern_base).wrapping_mul(13),
+                            (mirrored_idx as i32).wrapping_add(thread_pattern_base).wrapping_mul(14),
+                            (mirrored_idx as i32).wrapping_add(thread_pattern_base).wrapping_mul(15),
+                            (mirrored_idx as i32).wrapping_add(thread_pattern_base).wrapping_mul(16),
+                        );
+                        
+                        let actual = _mm512_load_si512(base.add(i));
+                        let diff = _mm512_xor_si512(expected, actual);
+                        error_accumulator = _mm512_or_si512(error_accumulator, diff);
+                        i += 1;
+                    }
+                }
+            }
+            
+            // Final error check (always performed regardless of mode)
+            let cmp_result = _mm512_cmpeq_epi32_mask(error_accumulator, _mm512_setzero_si512());
+            if cmp_result != 0xFFFF {  // If not all zeros
+                cycle_errors += 1;
+                log::error!("{}: memory error detected in cycle {} chunk {} (thread {})", test_name, cycle, chunk_start, thread_id);
+            }
+            
+            // 3. Mirror back to restore - same two-pointer optimization
+            let mut idx1 = chunk_start;
+            let mut idx2 = chunk_start + chunk_len - 1;
+            while idx1 < idx2 {
+                let val1 = _mm512_load_si512(base.add(idx1));
+                let val2 = _mm512_load_si512(base.add(idx2));
+                _mm512_store_si512(base.add(idx2), val1);  // Cache-backed store
+                _mm512_store_si512(base.add(idx1), val2);  // Cache-backed store
+                idx1 += 1;
+                idx2 -= 1;
+            }
+            _mm_sfence();
+            
+            // Optimized error handling - check ONCE at end of chunk
+            if cycle_errors > 0 {
+                match error_mode {
+                    ErrorMode::Panic => panic!("{}: memory error detected in cycle {} chunk {}", test_name, cycle, chunk_start),
+                    ErrorMode::Halt => {
+                        total_error_count += cycle_errors;
+                        total_bytes_processed += (chunk_end - chunk_start) * std::mem::size_of::<__m512i>() * 2;
+                        let elapsed = start.elapsed().as_millis();
+                        return TestStats {
+                            name: test_name,
+                            action: TestAction::WriteWaitVerify,
+                            bytes_processed: total_bytes_processed,
+                            elapsed_ms: elapsed,
+                            thread_id,
+                            error_count: total_error_count,
+                            total_operations: cycle as u64 * (chunk_end - chunk_start) as u64,
+
+                            cycles_completed: 0,
+
+                            cycles_planned: None,
+
+                            stopped_by_time_limit: false,
+
+                            };
+                    }
+                    ErrorMode::Log => {
+                        // Continue - errors already logged above
+                    }
+                }
+            }
+            
+            if SHUTDOWN_REQUESTED.load(Ordering::Relaxed) {
+                total_error_count += cycle_errors;
+                total_bytes_processed += (chunk_end - chunk_start) * std::mem::size_of::<__m512i>() * 2;
+                let elapsed = start.elapsed().as_millis();
+                return TestStats {
+                    name: test_name,
+                    action: TestAction::WriteWaitVerify,
+                    bytes_processed: total_bytes_processed,
+                    elapsed_ms: elapsed,
+                    thread_id,
+                    error_count: total_error_count,
+                    total_operations: cycle as u64 * (chunk_end - chunk_start) as u64,
+
+                    cycles_completed: 0,
+
+                    cycles_planned: None,
+
+                    stopped_by_time_limit: false,
+
+                    };
+            }
+        }
+        
+        total_error_count += cycle_errors;
+        total_bytes_processed += size * 2;
+        
+        let elapsed_secs = test_start.elapsed().as_secs() as u32;
+        if !timing.should_continue(cycle, elapsed_secs) {
+            break;
+        }
+    }
+    
+    let elapsed = start.elapsed().as_millis();
+    let total_operations = cycle as u64 * len as u64;
+    
+    TestStats {
+        name: test_name,
+        action: TestAction::WriteWaitVerify,
+        bytes_processed: total_bytes_processed,
+        elapsed_ms: elapsed,
+        thread_id,
+        error_count: total_error_count,
+        total_operations,
+
+        cycles_completed: 0,
+
+        cycles_planned: None,
+
+        stopped_by_time_limit: false,
+
+        }
+}
+
+/// Optimized multi-stream version - pre-computed stream boundaries
+unsafe fn mirror_move_512_multi_stream(
+    ptr: *mut u8, 
+    size: usize, 
+    thread_id: usize, 
+    error_mode: ErrorMode, 
+    timing: &TestTiming, 
+    config: &TestMemoryConfig,
+    streams: usize,
+    stream_shift: u32
+) -> TestStats {
+    let test_name = "MirrorMove512";
+    let start = Instant::now();
+    let test_start = Instant::now();
+    
+    let base = ptr as *mut __m512i;
+    let len = size / std::mem::size_of::<__m512i>();
+    let mut total_bytes_processed = 0usize;
+    let mut total_error_count = 0u64;
+    
+    // Pre-compute pattern base outside all loops
+    let thread_pattern_base = (thread_id as i32) << 16;
+    
+    // Initialize memory with pattern
+    for i in 0..len {
+        let pattern = _mm512_set_epi32(
+            (i as i32).wrapping_add(thread_pattern_base),
+            (i as i32).wrapping_add(thread_pattern_base).wrapping_mul(2),
+            (i as i32).wrapping_add(thread_pattern_base).wrapping_mul(3),
+            (i as i32).wrapping_add(thread_pattern_base).wrapping_mul(4),
+            (i as i32).wrapping_add(thread_pattern_base).wrapping_mul(5),
+            (i as i32).wrapping_add(thread_pattern_base).wrapping_mul(6),
+            (i as i32).wrapping_add(thread_pattern_base).wrapping_mul(7),
+            (i as i32).wrapping_add(thread_pattern_base).wrapping_mul(8),
+            (i as i32).wrapping_add(thread_pattern_base).wrapping_mul(9),
+            (i as i32).wrapping_add(thread_pattern_base).wrapping_mul(10),
+            (i as i32).wrapping_add(thread_pattern_base).wrapping_mul(11),
+            (i as i32).wrapping_add(thread_pattern_base).wrapping_mul(12),
+            (i as i32).wrapping_add(thread_pattern_base).wrapping_mul(13),
+            (i as i32).wrapping_add(thread_pattern_base).wrapping_mul(14),
+            (i as i32).wrapping_add(thread_pattern_base).wrapping_mul(15),
+            (i as i32).wrapping_add(thread_pattern_base).wrapping_mul(16),
+        );
+        _mm512_store_si512(base.add(i), pattern);
+    }
+    _mm_sfence();
+    
+    // Calculate ideal chunk size once (power-of-2 elements for fast stream operations)
+    let ideal_chunk_size = calculate_ideal_chunk_size(config, test_name, size);
+    let chunk_size_bytes = get_safe_chunk_size(ideal_chunk_size, size);
+    let chunk_size_elements = chunk_size_bytes / std::mem::size_of::<__m512i>();
+    
+    let mut cycle = 0u32;
+    
+    loop {
+        cycle += 1;
+        let mut cycle_errors = 0u64;
+        
+        for chunk_start in (0..len).step_by(chunk_size_elements) {
+            let chunk_end = (chunk_start + chunk_size_elements).min(len);
+            let chunk_len = chunk_end - chunk_start;
+            
+            // Pre-compute stream boundaries for this chunk (outside hot loops!)
+            let elements_per_stream = chunk_len >> stream_shift;
+            // Power-of-2 chain guarantees no extra elements needed!
+            let mut stream_boundaries = Vec::with_capacity(streams + 1);
+            stream_boundaries.push(chunk_start);
+            
+            // Power-of-2 guarantees uniform stream lengths
+            for s in 0..streams {
+                stream_boundaries.push(chunk_start + (s + 1) * elements_per_stream);
+            }
+            
+            // 1. Mirror operation - multi-stream
+            for stream_id in 0..streams {
+                let stream_start = stream_boundaries[stream_id];
+                let stream_end = stream_boundaries[stream_id + 1];
+                
+                let mut idx1 = stream_start;
+                let mut idx2 = stream_end - 1;
+                while idx1 < idx2 {
+                    let val1 = _mm512_load_si512(base.add(idx1));
+                    let val2 = _mm512_load_si512(base.add(idx2));
+                    _mm512_store_si512(base.add(idx2), val1);  // Cache-backed store
+                    _mm512_store_si512(base.add(idx1), val2);  // Cache-backed store
+                    idx1 += 1;
+                    idx2 -= 1;
+                }
+            }
+            _mm_sfence();
+            
+            // 2. Verify with configurable error checking frequency - multi-stream
+            let mut error_accumulator = _mm512_setzero_si512();
+            let mut element_count = 0usize;
+            
+            // Pre-compute check mask for hot loop optimization
+            match config.error_check_interval.get_check_mask() {
+                Some(check_mask) => {
+                    for stream_id in 0..streams {
+                        let stream_start = stream_boundaries[stream_id];
+                        let stream_end = stream_boundaries[stream_id + 1];
+                        let stream_sum = stream_start + stream_end - 1;
+                        
+                        let mut i = stream_start;
+                        while i < stream_end {
+                            // Pre-compute mirrored index within this stream (hot loop optimization)
+                            let mirrored_idx = stream_sum - i;
+                            
+                            // Pre-compute expected pattern (hot loop optimization)
+                            let expected = _mm512_set_epi32(
+                                (mirrored_idx as i32).wrapping_add(thread_pattern_base),
+                                (mirrored_idx as i32).wrapping_add(thread_pattern_base).wrapping_mul(2),
+                                (mirrored_idx as i32).wrapping_add(thread_pattern_base).wrapping_mul(3),
+                                (mirrored_idx as i32).wrapping_add(thread_pattern_base).wrapping_mul(4),
+                                (mirrored_idx as i32).wrapping_add(thread_pattern_base).wrapping_mul(5),
+                                (mirrored_idx as i32).wrapping_add(thread_pattern_base).wrapping_mul(6),
+                                (mirrored_idx as i32).wrapping_add(thread_pattern_base).wrapping_mul(7),
+                                (mirrored_idx as i32).wrapping_add(thread_pattern_base).wrapping_mul(8),
+                                (mirrored_idx as i32).wrapping_add(thread_pattern_base).wrapping_mul(9),
+                                (mirrored_idx as i32).wrapping_add(thread_pattern_base).wrapping_mul(10),
+                                (mirrored_idx as i32).wrapping_add(thread_pattern_base).wrapping_mul(11),
+                                (mirrored_idx as i32).wrapping_add(thread_pattern_base).wrapping_mul(12),
+                                (mirrored_idx as i32).wrapping_add(thread_pattern_base).wrapping_mul(13),
+                                (mirrored_idx as i32).wrapping_add(thread_pattern_base).wrapping_mul(14),
+                                (mirrored_idx as i32).wrapping_add(thread_pattern_base).wrapping_mul(15),
+                                (mirrored_idx as i32).wrapping_add(thread_pattern_base).wrapping_mul(16),
+                            );
+                            
+                            let actual = _mm512_load_si512(base.add(i));
+                            let diff = _mm512_xor_si512(expected, actual);
+                            error_accumulator = _mm512_or_si512(error_accumulator, diff);
+                            
+                            element_count += 1;
+                            i += 1;
+                            
+                            // Check errors at configured intervals (zero-branch hot loop optimization)
+                            if (element_count as u32 & check_mask) == 0 {
+                                let cmp_result = _mm512_cmpeq_epi32_mask(error_accumulator, _mm512_setzero_si512());
+                                if cmp_result != 0xFFFF {  // If not all zeros
+                                    cycle_errors += 1;
+                                    log::error!("{}: memory error detected in cycle {} chunk {} stream {} element {} (thread {})", 
+                                               test_name, cycle, chunk_start, stream_id, element_count, thread_id);
+                                    error_accumulator = _mm512_setzero_si512();
+                                }
+                            }
+                        }
+                    }
+                }
+                None => {
+                    // PER_CHUNK mode - no intermediate checks, maximum performance
+                    for stream_id in 0..streams {
+                        let stream_start = stream_boundaries[stream_id];
+                        let stream_end = stream_boundaries[stream_id + 1];
+                        let stream_sum = stream_start + stream_end - 1;
+                        
+                        let mut i = stream_start;
+                        while i < stream_end {
+                            // Pre-compute mirrored index within this stream (hot loop optimization)
+                            let mirrored_idx = stream_sum - i;
+                            
+                            // Pre-compute expected pattern (hot loop optimization)
+                            let expected = _mm512_set_epi32(
+                                (mirrored_idx as i32).wrapping_add(thread_pattern_base),
+                                (mirrored_idx as i32).wrapping_add(thread_pattern_base).wrapping_mul(2),
+                                (mirrored_idx as i32).wrapping_add(thread_pattern_base).wrapping_mul(3),
+                                (mirrored_idx as i32).wrapping_add(thread_pattern_base).wrapping_mul(4),
+                                (mirrored_idx as i32).wrapping_add(thread_pattern_base).wrapping_mul(5),
+                                (mirrored_idx as i32).wrapping_add(thread_pattern_base).wrapping_mul(6),
+                                (mirrored_idx as i32).wrapping_add(thread_pattern_base).wrapping_mul(7),
+                                (mirrored_idx as i32).wrapping_add(thread_pattern_base).wrapping_mul(8),
+                                (mirrored_idx as i32).wrapping_add(thread_pattern_base).wrapping_mul(9),
+                                (mirrored_idx as i32).wrapping_add(thread_pattern_base).wrapping_mul(10),
+                                (mirrored_idx as i32).wrapping_add(thread_pattern_base).wrapping_mul(11),
+                                (mirrored_idx as i32).wrapping_add(thread_pattern_base).wrapping_mul(12),
+                                (mirrored_idx as i32).wrapping_add(thread_pattern_base).wrapping_mul(13),
+                                (mirrored_idx as i32).wrapping_add(thread_pattern_base).wrapping_mul(14),
+                                (mirrored_idx as i32).wrapping_add(thread_pattern_base).wrapping_mul(15),
+                                (mirrored_idx as i32).wrapping_add(thread_pattern_base).wrapping_mul(16),
+                            );
+                            
+                            let actual = _mm512_load_si512(base.add(i));
+                            let diff = _mm512_xor_si512(expected, actual);
+                            error_accumulator = _mm512_or_si512(error_accumulator, diff);
+                            i += 1;
+                        }
+                    }
+                }
+            }
+            
+            // Final error check (always performed regardless of mode)
+            let cmp_result = _mm512_cmpeq_epi32_mask(error_accumulator, _mm512_setzero_si512());
+            if cmp_result != 0xFFFF {  // If not all zeros
+                cycle_errors += 1;
+                log::error!("{}: memory error detected in cycle {} chunk {} (thread {})", test_name, cycle, chunk_start, thread_id);
+            }
+            
+            // 3. Mirror back to restore - multi-stream
+            for stream_id in 0..streams {
+                let stream_start = stream_boundaries[stream_id];
+                let stream_end = stream_boundaries[stream_id + 1];
+                
+                let mut idx1 = stream_start;
+                let mut idx2 = stream_end - 1;
+                while idx1 < idx2 {
+                    let val1 = _mm512_load_si512(base.add(idx1));
+                    let val2 = _mm512_load_si512(base.add(idx2));
+                    _mm512_store_si512(base.add(idx2), val1);  // Cache-backed store
+                    _mm512_store_si512(base.add(idx1), val2);  // Cache-backed store
+                    idx1 += 1;
+                    idx2 -= 1;
+                }
+            }
+            _mm_sfence();
+            
+            // Optimized error handling - check ONCE at end of chunk
+            if cycle_errors > 0 {
+                match error_mode {
+                    ErrorMode::Panic => panic!("{}: memory error detected in cycle {} chunk {}", test_name, cycle, chunk_start),
+                    ErrorMode::Halt => {
+                        total_error_count += cycle_errors;
+                        total_bytes_processed += (chunk_end - chunk_start) * std::mem::size_of::<__m512i>() * 2;
+                        let elapsed = start.elapsed().as_millis();
+                        return TestStats {
+                            name: test_name,
+                            action: TestAction::WriteWaitVerify,
+                            bytes_processed: total_bytes_processed,
+                            elapsed_ms: elapsed,
+                            thread_id,
+                            error_count: total_error_count,
+                            total_operations: cycle as u64 * (chunk_end - chunk_start) as u64,
+
+                            cycles_completed: 0,
+
+                            cycles_planned: None,
+
+                            stopped_by_time_limit: false,
+
+                            };
+                    }
+                    ErrorMode::Log => {
+                        // Continue - errors already logged above
+                    }
+                }
+            }
+            
+            if SHUTDOWN_REQUESTED.load(Ordering::Relaxed) {
+                total_error_count += cycle_errors;
+                total_bytes_processed += (chunk_end - chunk_start) * std::mem::size_of::<__m512i>() * 2;
+                let elapsed = start.elapsed().as_millis();
+                return TestStats {
+                    name: test_name,
+                    action: TestAction::WriteWaitVerify,
+                    bytes_processed: total_bytes_processed,
+                    elapsed_ms: elapsed,
+                    thread_id,
+                    error_count: total_error_count,
+                    total_operations: cycle as u64 * (chunk_end - chunk_start) as u64,
+
+                    cycles_completed: 0,
+
+                    cycles_planned: None,
+
+                    stopped_by_time_limit: false,
+
+                    };
+            }
+        }
+        
+        total_error_count += cycle_errors;
+        total_bytes_processed += size * 2;
+        
+        let elapsed_secs = test_start.elapsed().as_secs() as u32;
+        if !timing.should_continue(cycle, elapsed_secs) {
+            break;
+        }
+    }
+    
+    let elapsed = start.elapsed().as_millis();
+    let total_operations = cycle as u64 * len as u64;
+    
+    TestStats {
+        name: test_name,
+        action: TestAction::WriteWaitVerify,
+        bytes_processed: total_bytes_processed,
+        elapsed_ms: elapsed,
+        thread_id,
+        error_count: total_error_count,
+        total_operations,
+
+        cycles_completed: 0,
+
+        cycles_planned: None,
+
+        stopped_by_time_limit: false,
+
+        }
+}
+
 /// # Safety
 /// Caller must ensure `ptr` is valid for reads/writes of `size` bytes.
 pub unsafe fn simple_test(ptr: *mut u8, size: usize, thread_id: usize, error_mode: ErrorMode, timing: &TestTiming, config: &TestMemoryConfig) -> TestStats {
@@ -10102,6 +11989,21 @@ pub fn get_test_function_by_name(name: &str) -> Option<crate::runner::TestFuncti
         })),
 
         // Mirror Move Tests
+        "MirrorMove" => Some(TestFunction::WithConfig(|ptr, size, tid, em, timing, config| unsafe {
+            mirror_move(ptr, size, tid, em, timing, config)
+        })),
+        "MirrorMoveAuto" => Some(TestFunction::WithConfig(|ptr, size, tid, em, timing, config| unsafe {
+            mirror_move_auto(ptr, size, tid, em, timing, config)
+        })),
+        "MirrorMove128" => Some(TestFunction::WithConfig(|ptr, size, tid, em, timing, config| unsafe {
+            mirror_move_128(ptr, size, tid, em, timing, config)
+        })),
+        "MirrorMove256" => Some(TestFunction::WithConfig(|ptr, size, tid, em, timing, config| unsafe {
+            mirror_move_256(ptr, size, tid, em, timing, config)
+        })),
+        "MirrorMove512" => Some(TestFunction::WithConfig(|ptr, size, tid, em, timing, config| unsafe {
+            mirror_move_512(ptr, size, tid, em, timing, config)
+        })),
 
         // Simple Test
         "SimpleTest" => Some(TestFunction::WithConfig(|ptr, size, tid, em, timing, config| unsafe {
