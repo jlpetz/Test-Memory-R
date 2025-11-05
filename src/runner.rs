@@ -372,8 +372,26 @@ pub fn run_tests_with_layout_and_timing_filtered(
         log::warn!("Progress reporter thread panicked: {:?}", e);
     }
 
-    // Shutdown thread pool
-    thread_pool.shutdown();
+    // Shutdown thread pool and capture allocations for explicit cleanup
+    let (thread_blocks, _cpu_assignments) = thread_pool.shutdown();
+
+    // Calculate total memory to be freed for logging
+    let total_blocks: usize = thread_blocks.values().map(|v| v.len()).sum();
+    let total_bytes: usize = thread_blocks.values()
+        .flat_map(|blocks| blocks.iter())
+        .map(|block| block.buffer.size())
+        .sum();
+
+    log::info!("Freeing {} memory blocks ({:.2} GiB) across {} threads",
+        total_blocks,
+        total_bytes as f64 / (1024.0 * 1024.0 * 1024.0),
+        thread_blocks.len());
+
+    // Explicitly drop allocations - this triggers MemoryBuffer::drop()
+    // which calls backend.free() for each allocation
+    drop(thread_blocks);
+
+    log::info!("Memory cleanup complete");
 
     // Create final performance summary with detailed per-CPU stats
     let final_stats = all_test_cpu_stats.lock().unwrap();
@@ -382,14 +400,19 @@ pub fn run_tests_with_layout_and_timing_filtered(
     }
 
     let final_success = success.load(Ordering::Relaxed);
-    if final_success {
+
+    // Display completion status
+    let was_interrupted = SHUTDOWN_REQUESTED.load(Ordering::Relaxed);
+    if was_interrupted {
+        println!("\n⚠️  Test suite interrupted by user (CTRL+C)");
+    } else if final_success {
         println!("\n✅ All test cycles completed successfully!");
-        
-        // Display and save final results
-        display_and_save_results(&test_run_result, suite_duration);
     } else {
-        println!("\n❌ Test suite failed or was interrupted");
+        println!("\n❌ Test suite failed due to memory errors");
     }
+
+    // Always display and save results (even for partial/interrupted runs)
+    display_and_save_results(&test_run_result, suite_duration);
 
     final_success
 }
@@ -419,6 +442,15 @@ fn execute_test_cycle(
         let test_func = &test_def.function;
         let test_config = &test_def.config;
         if SHUTDOWN_REQUESTED.load(Ordering::Relaxed) {
+            // Finalize partial cycle with completed tests before early exit
+            if !cycle_test_summaries.is_empty() {
+                let cycle_duration_secs = cycle_start.elapsed().as_secs() as u32;
+                if let Ok(mut result) = test_run_result.lock() {
+                    result.add_cycle(cycle as u32, cycle_duration_secs, cycle_test_summaries);
+                } else {
+                    log::error!("Failed to lock test_run_result to add partial cycle {}", cycle);
+                }
+            }
             return;
         }
         
@@ -595,6 +627,16 @@ fn execute_test_cycle(
         if !success.load(Ordering::Relaxed) && matches!(error_mode, ErrorMode::Halt) {
             log::error!("Halting test suite due to memory errors");
             SHUTDOWN_REQUESTED.store(true, Ordering::Relaxed);
+
+            // Finalize partial cycle with completed tests before early exit
+            if !cycle_test_summaries.is_empty() {
+                let cycle_duration_secs = cycle_start.elapsed().as_secs() as u32;
+                if let Ok(mut result) = test_run_result.lock() {
+                    result.add_cycle(cycle as u32, cycle_duration_secs, cycle_test_summaries);
+                } else {
+                    log::error!("Failed to lock test_run_result to add partial cycle {}", cycle);
+                }
+            }
             return;
         }
     }

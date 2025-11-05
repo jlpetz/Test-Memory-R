@@ -110,8 +110,20 @@ impl Backend for WindowsBackend {
         })
     }
     
-    fn free(&self, _allocation: BackendAllocation) -> Result<(), String> {
-        // Memory is automatically freed when TestBuffer is dropped
+    fn free(&self, allocation: BackendAllocation) -> Result<(), String> {
+        use windows::Win32::System::Memory::{VirtualFree, MEM_RELEASE};
+
+        unsafe {
+            // VirtualFree with MEM_RELEASE must pass size = 0
+            // See: https://docs.microsoft.com/en-us/windows/win32/api/memoryapi/nf-memoryapi-virtualfree
+            if !VirtualFree(allocation.ptr as *mut _, 0, MEM_RELEASE).is_ok() {
+                let err = GetLastError();
+                return Err(format!("VirtualFree failed for ptr {:?}, size {}: error code {}",
+                    allocation.ptr, allocation.size, err.0));
+            }
+        }
+
+        log::trace!("Freed {} bytes at {:?}", allocation.size, allocation.ptr);
         Ok(())
     }
     
