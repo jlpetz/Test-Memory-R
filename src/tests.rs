@@ -6816,8 +6816,8 @@ unsafe fn mirror_move_512_single_stream(
             while idx1 < idx2 {
                 let val1 = _mm512_load_si512(base.add(idx1));
                 let val2 = _mm512_load_si512(base.add(idx2));
-                _mm512_stream_si512(base.add(idx2), val1);
-                _mm512_stream_si512(base.add(idx1), val2);
+                _mm512_store_si512(base.add(idx2), val1);  // Cache-backed store
+                _mm512_store_si512(base.add(idx1), val2);  // Cache-backed store
                 idx1 += 1;
                 idx2 -= 1;
             }
@@ -6922,8 +6922,8 @@ unsafe fn mirror_move_512_single_stream(
             while idx1 < idx2 {
                 let val1 = _mm512_load_si512(base.add(idx1));
                 let val2 = _mm512_load_si512(base.add(idx2));
-                _mm512_stream_si512(base.add(idx2), val1);
-                _mm512_stream_si512(base.add(idx1), val2);
+                _mm512_store_si512(base.add(idx2), val1);  // Cache-backed store
+                _mm512_store_si512(base.add(idx1), val2);  // Cache-backed store
                 idx1 += 1;
                 idx2 -= 1;
             }
@@ -7096,8 +7096,8 @@ unsafe fn mirror_move_512_multi_stream(
                 while idx1 < idx2 {
                     let val1 = _mm512_load_si512(base.add(idx1));
                     let val2 = _mm512_load_si512(base.add(idx2));
-                    _mm512_stream_si512(base.add(idx2), val1);
-                    _mm512_stream_si512(base.add(idx1), val2);
+                    _mm512_store_si512(base.add(idx2), val1);  // Cache-backed store
+                    _mm512_store_si512(base.add(idx1), val2);  // Cache-backed store
                     idx1 += 1;
                     idx2 -= 1;
                 }
@@ -7219,8 +7219,8 @@ unsafe fn mirror_move_512_multi_stream(
                 while idx1 < idx2 {
                     let val1 = _mm512_load_si512(base.add(idx1));
                     let val2 = _mm512_load_si512(base.add(idx2));
-                    _mm512_stream_si512(base.add(idx2), val1);
-                    _mm512_stream_si512(base.add(idx1), val2);
+                    _mm512_store_si512(base.add(idx2), val1);  // Cache-backed store
+                    _mm512_store_si512(base.add(idx1), val2);  // Cache-backed store
                     idx1 += 1;
                     idx2 -= 1;
                 }
@@ -8497,8 +8497,8 @@ unsafe fn mirror_move_128_stream1_multi(
     let test_name = "MirrorMove128";
 
     // Runtime CPU feature check
-    if !is_x86_feature_detected!("sse2") {
-        log::warn!("{}: SSE2 not supported, test skipped", test_name);
+    if !is_x86_feature_detected!("sse4.1") {
+        log::warn!("{}: SSE4.1 not supported, test skipped", test_name);
         return TestStats {
             name: test_name,
             action: TestAction::WriteWaitVerify,
@@ -8513,13 +8513,14 @@ unsafe fn mirror_move_128_stream1_multi(
         };
     }
 
-    // Call the SSE2 optimized implementation
+    // Call the SSE4.1 optimized implementation
     mirror_move_128_stream1_impl(blocks, thread_id, error_mode, timing, config, progress)
 }
 
-/// MirrorMove128 Stream1 - SSE2 optimized implementation
+/// MirrorMove128 Stream1 - SSE4.1 optimized implementation
 /// This function is annotated with #[target_feature] to enable full compiler optimization
-#[target_feature(enable = "sse2")]
+/// Upgraded from SSE2 to SSE4.1 for _mm_mullo_epi32 vector multiply support
+#[target_feature(enable = "sse4.1")]
 unsafe fn mirror_move_128_stream1_impl(
     blocks: &[crate::runner::AllocationBlock],
     thread_id: usize,
@@ -8569,6 +8570,11 @@ unsafe fn mirror_move_128_stream1_impl(
     // Pre-compute pattern base outside all loops
     let thread_pattern_base = (thread_id as i32) << 16;
 
+    // VECTOR OPTIMIZATION: Pre-compute pattern components for initialization
+    let multipliers = _mm_set_epi32(1, 2, 3, 4);
+    let base_broadcast = _mm_set1_epi32(thread_pattern_base);
+    let pattern_base = _mm_mullo_epi32(base_broadcast, multipliers);  // base × [1,2,3,4]
+
     // Track totals across all blocks
     let mut total_bytes_processed = 0usize;
     let mut total_error_count = 0u64;
@@ -8589,15 +8595,12 @@ unsafe fn mirror_move_128_stream1_impl(
         let len = test_block.test_size / std::mem::size_of::<__m128i>();
 
         for i in 0..len {
-            let pattern = _mm_set_epi32(
-                (i as i32).wrapping_add(thread_pattern_base),
-                (i as i32).wrapping_add(thread_pattern_base).wrapping_mul(2),
-                (i as i32).wrapping_add(thread_pattern_base).wrapping_mul(3),
-                (i as i32).wrapping_add(thread_pattern_base).wrapping_mul(4),
-            );
+            // OPTIMIZED: 1 broadcast + 1 mullo + 1 add (replaces 4 scalar muls + 4 adds)
+            let idx_broadcast = _mm_set1_epi32(i as i32);
+            let idx_scaled = _mm_mullo_epi32(idx_broadcast, multipliers);  // i × [1,2,3,4]
+            let pattern = _mm_add_epi32(idx_scaled, pattern_base);         // (i×M) + (base×M)
             _mm_store_si128(base.add(i), pattern);
         }
-        _mm_sfence();
     }
 
     // Main test loop - interleaves across blocks
@@ -8627,23 +8630,22 @@ unsafe fn mirror_move_128_stream1_impl(
                 while idx1 < idx2 {
                     let val1 = _mm_load_si128(base.add(idx1));
                     let val2 = _mm_load_si128(base.add(idx2));
-                    _mm_stream_si128(base.add(idx2), val1);
-                    _mm_stream_si128(base.add(idx1), val2);
+                    _mm_store_si128(base.add(idx2), val1);  // Cache-backed store
+                    _mm_store_si128(base.add(idx1), val2);  // Cache-backed store
                     idx1 += 1;
                     idx2 -= 1;
                 }
-                _mm_sfence();
 
                 // 2. Verify mirrored data
                 let chunk_sum = chunk_start + chunk_end - 1;
                 for i in chunk_start..chunk_end {
                     let mirrored_idx = chunk_sum - i;
-                    let expected = _mm_set_epi32(
-                        (mirrored_idx as i32).wrapping_add(thread_pattern_base),
-                        (mirrored_idx as i32).wrapping_add(thread_pattern_base).wrapping_mul(2),
-                        (mirrored_idx as i32).wrapping_add(thread_pattern_base).wrapping_mul(3),
-                        (mirrored_idx as i32).wrapping_add(thread_pattern_base).wrapping_mul(4),
-                    );
+
+                    // OPTIMIZED: 1 broadcast + 1 mullo + 1 add (replaces 4 scalar muls + 4 adds)
+                    let idx_broadcast = _mm_set1_epi32(mirrored_idx as i32);
+                    let idx_scaled = _mm_mullo_epi32(idx_broadcast, multipliers);  // idx × [1,2,3,4]
+                    let expected = _mm_add_epi32(idx_scaled, pattern_base);         // (idx×M) + (base×M)
+
                     let actual = _mm_load_si128(base.add(i));
 
                     // Compare using movemask for efficient error detection
@@ -8663,12 +8665,11 @@ unsafe fn mirror_move_128_stream1_impl(
                 while idx1 < idx2 {
                     let val1 = _mm_load_si128(base.add(idx1));
                     let val2 = _mm_load_si128(base.add(idx2));
-                    _mm_stream_si128(base.add(idx2), val1);
-                    _mm_stream_si128(base.add(idx1), val2);
+                    _mm_store_si128(base.add(idx2), val1);  // Cache-backed store
+                    _mm_store_si128(base.add(idx1), val2);  // Cache-backed store
                     idx1 += 1;
                     idx2 -= 1;
                 }
-                _mm_sfence();
 
                 // Check for shutdown
                 if SHUTDOWN_REQUESTED.load(Ordering::Relaxed) {
@@ -8802,13 +8803,14 @@ unsafe fn mirror_move_128_stream_n_multi(
         };
     }
 
-    // Call the SSE2 optimized implementation
+    // Call the SSE4.1 optimized implementation
     mirror_move_128_stream_n_impl(blocks, thread_id, error_mode, timing, config, progress, streams, test_name)
 }
 
-/// MirrorMove128 StreamN - SSE2 optimized implementation
+/// MirrorMove128 StreamN - SSE4.1 optimized implementation
 /// This function is annotated with #[target_feature] to enable full compiler optimization
-#[target_feature(enable = "sse2")]
+/// Upgraded from SSE2 to SSE4.1 for _mm_mullo_epi32 vector multiply support
+#[target_feature(enable = "sse4.1")]
 unsafe fn mirror_move_128_stream_n_impl(
     blocks: &[crate::runner::AllocationBlock],
     thread_id: usize,
@@ -8859,6 +8861,11 @@ unsafe fn mirror_move_128_stream_n_impl(
     let thread_pattern_base = (thread_id as i32) << 16;
     let stream_shift = streams.trailing_zeros();
 
+    // VECTOR OPTIMIZATION: Pre-compute pattern components for initialization
+    let multipliers = _mm_set_epi32(1, 2, 3, 4);
+    let base_broadcast = _mm_set1_epi32(thread_pattern_base);
+    let pattern_base = _mm_mullo_epi32(base_broadcast, multipliers);  // base × [1,2,3,4]
+
     // Track totals across all blocks
     let mut total_bytes_processed = 0usize;
     let mut total_error_count = 0u64;
@@ -8879,15 +8886,12 @@ unsafe fn mirror_move_128_stream_n_impl(
         let len = test_block.test_size / std::mem::size_of::<__m128i>();
 
         for i in 0..len {
-            let pattern = _mm_set_epi32(
-                (i as i32).wrapping_add(thread_pattern_base),
-                (i as i32).wrapping_add(thread_pattern_base).wrapping_mul(2),
-                (i as i32).wrapping_add(thread_pattern_base).wrapping_mul(3),
-                (i as i32).wrapping_add(thread_pattern_base).wrapping_mul(4),
-            );
+            // OPTIMIZED: 1 broadcast + 1 mullo + 1 add (replaces 4 scalar muls + 4 adds)
+            let idx_broadcast = _mm_set1_epi32(i as i32);
+            let idx_scaled = _mm_mullo_epi32(idx_broadcast, multipliers);  // i × [1,2,3,4]
+            let pattern = _mm_add_epi32(idx_scaled, pattern_base);         // (i×M) + (base×M)
             _mm_store_si128(base.add(i), pattern);
         }
-        _mm_sfence();
     }
 
     // Validate chunk divisibility for ALL blocks ONCE before starting
@@ -8940,13 +8944,12 @@ unsafe fn mirror_move_128_stream_n_impl(
                     while idx1 < idx2 {
                         let val1 = _mm_load_si128(base.add(idx1));
                         let val2 = _mm_load_si128(base.add(idx2));
-                        _mm_stream_si128(base.add(idx2), val1);
-                        _mm_stream_si128(base.add(idx1), val2);
+                        _mm_store_si128(base.add(idx2), val1);  // Cache-backed store
+                        _mm_store_si128(base.add(idx1), val2);  // Cache-backed store
                         idx1 += 1;
                         idx2 -= 1;
                     }
                 }
-                _mm_sfence();
 
                 // 2. Verify mirrored data (check each stream)
                 for stream_id in 0..streams {
@@ -8956,12 +8959,12 @@ unsafe fn mirror_move_128_stream_n_impl(
 
                     for i in stream_start..stream_end {
                         let mirrored_idx = stream_sum - i;
-                        let expected = _mm_set_epi32(
-                            (mirrored_idx as i32).wrapping_add(thread_pattern_base),
-                            (mirrored_idx as i32).wrapping_add(thread_pattern_base).wrapping_mul(2),
-                            (mirrored_idx as i32).wrapping_add(thread_pattern_base).wrapping_mul(3),
-                            (mirrored_idx as i32).wrapping_add(thread_pattern_base).wrapping_mul(4),
-                        );
+
+                        // OPTIMIZED: 1 broadcast + 1 mullo + 1 add (replaces 4 scalar muls + 4 adds)
+                        let idx_broadcast = _mm_set1_epi32(mirrored_idx as i32);
+                        let idx_scaled = _mm_mullo_epi32(idx_broadcast, multipliers);  // idx × [1,2,3,4]
+                        let expected = _mm_add_epi32(idx_scaled, pattern_base);         // (idx×M) + (base×M)
+
                         let actual = _mm_load_si128(base.add(i));
 
                         // Compare using movemask for efficient error detection
@@ -8986,13 +8989,12 @@ unsafe fn mirror_move_128_stream_n_impl(
                     while idx1 < idx2 {
                         let val1 = _mm_load_si128(base.add(idx1));
                         let val2 = _mm_load_si128(base.add(idx2));
-                        _mm_stream_si128(base.add(idx2), val1);
-                        _mm_stream_si128(base.add(idx1), val2);
+                        _mm_store_si128(base.add(idx2), val1);  // Cache-backed store
+                        _mm_store_si128(base.add(idx1), val2);  // Cache-backed store
                         idx1 += 1;
                         idx2 -= 1;
                     }
                 }
-                _mm_sfence();
 
                 // Check for shutdown
                 if SHUTDOWN_REQUESTED.load(Ordering::Relaxed) {
@@ -9197,22 +9199,21 @@ unsafe fn mirror_move_256_stream1_impl(
     // Pre-compute pattern base outside all loops
     let thread_pattern_base = (thread_id as i32) << 16;
 
+    // VECTOR OPTIMIZATION: Pre-compute pattern components for initialization
+    let multipliers = _mm256_set_epi32(1, 2, 3, 4, 5, 6, 7, 8);
+    let base_broadcast = _mm256_set1_epi32(thread_pattern_base);
+    let pattern_base = _mm256_mullo_epi32(base_broadcast, multipliers);  // base × [1,2,3,4,5,6,7,8]
+
     // Initialize memory with AVX2 patterns for each block
     for test_block in test_blocks.iter() {
         let base = test_block.block.buffer.as_mut_ptr() as *mut __m256i;
         let len = test_block.test_size / std::mem::size_of::<__m256i>();
 
         for i in 0..len {
-            let pattern = _mm256_set_epi32(
-                (i as i32).wrapping_add(thread_pattern_base),
-                (i as i32).wrapping_add(thread_pattern_base).wrapping_mul(2),
-                (i as i32).wrapping_add(thread_pattern_base).wrapping_mul(3),
-                (i as i32).wrapping_add(thread_pattern_base).wrapping_mul(4),
-                (i as i32).wrapping_add(thread_pattern_base).wrapping_mul(5),
-                (i as i32).wrapping_add(thread_pattern_base).wrapping_mul(6),
-                (i as i32).wrapping_add(thread_pattern_base).wrapping_mul(7),
-                (i as i32).wrapping_add(thread_pattern_base).wrapping_mul(8),
-            );
+            // OPTIMIZED: 1 broadcast + 1 mullo + 1 add (replaces 8 scalar muls + 8 adds)
+            let idx_broadcast = _mm256_set1_epi32(i as i32);
+            let idx_scaled = _mm256_mullo_epi32(idx_broadcast, multipliers);  // i × [1,2,3,4,5,6,7,8]
+            let pattern = _mm256_add_epi32(idx_scaled, pattern_base);         // (i×M) + (base×M)
             _mm256_store_si256(base.add(i), pattern);
         }
         _mm_sfence();
@@ -9265,12 +9266,11 @@ unsafe fn mirror_move_256_stream1_impl(
                 while idx1 < idx2 {
                     let val1 = _mm256_load_si256(base.add(idx1));
                     let val2 = _mm256_load_si256(base.add(idx2));
-                    _mm256_stream_si256(base.add(idx2), val1);
-                    _mm256_stream_si256(base.add(idx1), val2);
+                    _mm256_store_si256(base.add(idx2), val1);  // Cache-backed store
+                    _mm256_store_si256(base.add(idx1), val2);  // Cache-backed store
                     idx1 += 1;
                     idx2 -= 1;
                 }
-                _mm_sfence();
 
                 // 2. Verify with configurable error checking frequency
                 let mut error_accumulator = _mm256_setzero_si256();
@@ -9278,24 +9278,22 @@ unsafe fn mirror_move_256_stream1_impl(
                 let chunk_sum = chunk_start + chunk_end - 1;
                 let mut element_count = 0usize;
 
+                // VECTOR OPTIMIZATION: Pre-compute pattern components ONCE
+                // Formula: (idx + base) × M = (idx × M) + (base × M)
+                let multipliers = _mm256_set_epi32(1, 2, 3, 4, 5, 6, 7, 8);
+                let base_broadcast = _mm256_set1_epi32(thread_pattern_base);
+                let pattern_base = _mm256_mullo_epi32(base_broadcast, multipliers);  // base × [1,2,3,4,5,6,7,8]
+
                 // Pre-compute check mask for hot loop optimization
                 match config.error_check_interval.get_check_mask() {
                     Some(check_mask) => {
                         while i < chunk_end {
-                            // Pre-compute mirrored index (hot loop optimization)
                             let mirrored_idx = chunk_sum - i;
 
-                            // Pre-compute expected pattern (hot loop optimization)
-                            let expected = _mm256_set_epi32(
-                                (mirrored_idx as i32).wrapping_add(thread_pattern_base),
-                                (mirrored_idx as i32).wrapping_add(thread_pattern_base).wrapping_mul(2),
-                                (mirrored_idx as i32).wrapping_add(thread_pattern_base).wrapping_mul(3),
-                                (mirrored_idx as i32).wrapping_add(thread_pattern_base).wrapping_mul(4),
-                                (mirrored_idx as i32).wrapping_add(thread_pattern_base).wrapping_mul(5),
-                                (mirrored_idx as i32).wrapping_add(thread_pattern_base).wrapping_mul(6),
-                                (mirrored_idx as i32).wrapping_add(thread_pattern_base).wrapping_mul(7),
-                                (mirrored_idx as i32).wrapping_add(thread_pattern_base).wrapping_mul(8),
-                            );
+                            // OPTIMIZED: 1 broadcast + 1 mullo + 1 add (replaces 8 scalar muls + 8 adds)
+                            let idx_broadcast = _mm256_set1_epi32(mirrored_idx as i32);
+                            let idx_scaled = _mm256_mullo_epi32(idx_broadcast, multipliers);  // idx × [1,2,3,4,5,6,7,8]
+                            let expected = _mm256_add_epi32(idx_scaled, pattern_base);         // (idx×M) + (base×M)
 
                             let actual = _mm256_load_si256(base.add(i));
                             let diff = _mm256_xor_si256(expected, actual);
@@ -9319,20 +9317,12 @@ unsafe fn mirror_move_256_stream1_impl(
                     None => {
                         // PER_CHUNK mode - no intermediate checks, maximum performance
                         while i < chunk_end {
-                            // Pre-compute mirrored index (hot loop optimization)
                             let mirrored_idx = chunk_sum - i;
 
-                            // Pre-compute expected pattern (hot loop optimization)
-                            let expected = _mm256_set_epi32(
-                                (mirrored_idx as i32).wrapping_add(thread_pattern_base),
-                                (mirrored_idx as i32).wrapping_add(thread_pattern_base).wrapping_mul(2),
-                                (mirrored_idx as i32).wrapping_add(thread_pattern_base).wrapping_mul(3),
-                                (mirrored_idx as i32).wrapping_add(thread_pattern_base).wrapping_mul(4),
-                                (mirrored_idx as i32).wrapping_add(thread_pattern_base).wrapping_mul(5),
-                                (mirrored_idx as i32).wrapping_add(thread_pattern_base).wrapping_mul(6),
-                                (mirrored_idx as i32).wrapping_add(thread_pattern_base).wrapping_mul(7),
-                                (mirrored_idx as i32).wrapping_add(thread_pattern_base).wrapping_mul(8),
-                            );
+                            // OPTIMIZED: 1 broadcast + 1 mullo + 1 add (replaces 8 scalar muls + 8 adds)
+                            let idx_broadcast = _mm256_set1_epi32(mirrored_idx as i32);
+                            let idx_scaled = _mm256_mullo_epi32(idx_broadcast, multipliers);  // idx × [1,2,3,4,5,6,7,8]
+                            let expected = _mm256_add_epi32(idx_scaled, pattern_base);         // (idx×M) + (base×M)
 
                             let actual = _mm256_load_si256(base.add(i));
                             let diff = _mm256_xor_si256(expected, actual);
@@ -9356,12 +9346,11 @@ unsafe fn mirror_move_256_stream1_impl(
                 while idx1 < idx2 {
                     let val1 = _mm256_load_si256(base.add(idx1));
                     let val2 = _mm256_load_si256(base.add(idx2));
-                    _mm256_stream_si256(base.add(idx2), val1);
-                    _mm256_stream_si256(base.add(idx1), val2);
+                    _mm256_store_si256(base.add(idx2), val1);  // Cache-backed store
+                    _mm256_store_si256(base.add(idx1), val2);  // Cache-backed store
                     idx1 += 1;
                     idx2 -= 1;
                 }
-                _mm_sfence();
 
                 // Optimized error handling - check ONCE at end of chunk
                 if cycle_errors > 0 {
@@ -9511,22 +9500,21 @@ unsafe fn mirror_move_256_stream_n_impl(
     // Pre-compute pattern base outside all loops
     let thread_pattern_base = (thread_id as i32) << 16;
 
+    // VECTOR OPTIMIZATION: Pre-compute pattern components for initialization
+    let multipliers = _mm256_set_epi32(1, 2, 3, 4, 5, 6, 7, 8);
+    let base_broadcast = _mm256_set1_epi32(thread_pattern_base);
+    let pattern_base = _mm256_mullo_epi32(base_broadcast, multipliers);  // base × [1,2,3,4,5,6,7,8]
+
     // Initialize memory with AVX2 patterns for each block
     for test_block in test_blocks.iter() {
         let base = test_block.block.buffer.as_mut_ptr() as *mut __m256i;
         let len = test_block.test_size / std::mem::size_of::<__m256i>();
 
         for i in 0..len {
-            let pattern = _mm256_set_epi32(
-                (i as i32).wrapping_add(thread_pattern_base),
-                (i as i32).wrapping_add(thread_pattern_base).wrapping_mul(2),
-                (i as i32).wrapping_add(thread_pattern_base).wrapping_mul(3),
-                (i as i32).wrapping_add(thread_pattern_base).wrapping_mul(4),
-                (i as i32).wrapping_add(thread_pattern_base).wrapping_mul(5),
-                (i as i32).wrapping_add(thread_pattern_base).wrapping_mul(6),
-                (i as i32).wrapping_add(thread_pattern_base).wrapping_mul(7),
-                (i as i32).wrapping_add(thread_pattern_base).wrapping_mul(8),
-            );
+            // OPTIMIZED: 1 broadcast + 1 mullo + 1 add (replaces 8 scalar muls + 8 adds)
+            let idx_broadcast = _mm256_set1_epi32(i as i32);
+            let idx_scaled = _mm256_mullo_epi32(idx_broadcast, multipliers);  // i × [1,2,3,4,5,6,7,8]
+            let pattern = _mm256_add_epi32(idx_scaled, pattern_base);         // (i×M) + (base×M)
             _mm256_store_si256(base.add(i), pattern);
         }
         _mm_sfence();
@@ -9583,17 +9571,22 @@ unsafe fn mirror_move_256_stream_n_impl(
                     while idx1 < idx2 {
                         let val1 = _mm256_load_si256(base.add(idx1));
                         let val2 = _mm256_load_si256(base.add(idx2));
-                        _mm256_stream_si256(base.add(idx2), val1);
-                        _mm256_stream_si256(base.add(idx1), val2);
+                        _mm256_store_si256(base.add(idx2), val1);  // Cache-backed store
+                        _mm256_store_si256(base.add(idx1), val2);  // Cache-backed store
                         idx1 += 1;
                         idx2 -= 1;
                     }
                 }
-                _mm_sfence();
 
                 // 2. Verify with configurable error checking frequency - multi-stream
                 let mut error_accumulator = _mm256_setzero_si256();
                 let mut element_count = 0usize;
+
+                // VECTOR OPTIMIZATION: Pre-compute pattern components ONCE
+                // Formula: (idx + base) × M = (idx × M) + (base × M)
+                let multipliers = _mm256_set_epi32(1, 2, 3, 4, 5, 6, 7, 8);
+                let base_broadcast = _mm256_set1_epi32(thread_pattern_base);
+                let pattern_base = _mm256_mullo_epi32(base_broadcast, multipliers);  // base × [1,2,3,4,5,6,7,8]
 
                 match config.error_check_interval.get_check_mask() {
                     Some(check_mask) => {
@@ -9606,16 +9599,10 @@ unsafe fn mirror_move_256_stream_n_impl(
                             while i < stream_end {
                                 let mirrored_idx = stream_sum - i;
 
-                                let expected = _mm256_set_epi32(
-                                    (mirrored_idx as i32).wrapping_add(thread_pattern_base),
-                                    (mirrored_idx as i32).wrapping_add(thread_pattern_base).wrapping_mul(2),
-                                    (mirrored_idx as i32).wrapping_add(thread_pattern_base).wrapping_mul(3),
-                                    (mirrored_idx as i32).wrapping_add(thread_pattern_base).wrapping_mul(4),
-                                    (mirrored_idx as i32).wrapping_add(thread_pattern_base).wrapping_mul(5),
-                                    (mirrored_idx as i32).wrapping_add(thread_pattern_base).wrapping_mul(6),
-                                    (mirrored_idx as i32).wrapping_add(thread_pattern_base).wrapping_mul(7),
-                                    (mirrored_idx as i32).wrapping_add(thread_pattern_base).wrapping_mul(8),
-                                );
+                                // OPTIMIZED: 1 broadcast + 1 mullo + 1 add (replaces 8 scalar muls + 8 adds)
+                                let idx_broadcast = _mm256_set1_epi32(mirrored_idx as i32);
+                                let idx_scaled = _mm256_mullo_epi32(idx_broadcast, multipliers);  // idx × [1,2,3,4,5,6,7,8]
+                                let expected = _mm256_add_epi32(idx_scaled, pattern_base);         // (idx×M) + (base×M)
 
                                 let actual = _mm256_load_si256(base.add(i));
                                 let diff = _mm256_xor_si256(expected, actual);
@@ -9647,16 +9634,10 @@ unsafe fn mirror_move_256_stream_n_impl(
                             while i < stream_end {
                                 let mirrored_idx = stream_sum - i;
 
-                                let expected = _mm256_set_epi32(
-                                    (mirrored_idx as i32).wrapping_add(thread_pattern_base),
-                                    (mirrored_idx as i32).wrapping_add(thread_pattern_base).wrapping_mul(2),
-                                    (mirrored_idx as i32).wrapping_add(thread_pattern_base).wrapping_mul(3),
-                                    (mirrored_idx as i32).wrapping_add(thread_pattern_base).wrapping_mul(4),
-                                    (mirrored_idx as i32).wrapping_add(thread_pattern_base).wrapping_mul(5),
-                                    (mirrored_idx as i32).wrapping_add(thread_pattern_base).wrapping_mul(6),
-                                    (mirrored_idx as i32).wrapping_add(thread_pattern_base).wrapping_mul(7),
-                                    (mirrored_idx as i32).wrapping_add(thread_pattern_base).wrapping_mul(8),
-                                );
+                                // OPTIMIZED: 1 broadcast + 1 mullo + 1 add (replaces 8 scalar muls + 8 adds)
+                                let idx_broadcast = _mm256_set1_epi32(mirrored_idx as i32);
+                                let idx_scaled = _mm256_mullo_epi32(idx_broadcast, multipliers);  // idx × [1,2,3,4,5,6,7,8]
+                                let expected = _mm256_add_epi32(idx_scaled, pattern_base);         // (idx×M) + (base×M)
 
                                 let actual = _mm256_load_si256(base.add(i));
                                 let diff = _mm256_xor_si256(expected, actual);
@@ -9685,13 +9666,12 @@ unsafe fn mirror_move_256_stream_n_impl(
                     while idx1 < idx2 {
                         let val1 = _mm256_load_si256(base.add(idx1));
                         let val2 = _mm256_load_si256(base.add(idx2));
-                        _mm256_stream_si256(base.add(idx2), val1);
-                        _mm256_stream_si256(base.add(idx1), val2);
+                        _mm256_store_si256(base.add(idx2), val1);  // Cache-backed store
+                        _mm256_store_si256(base.add(idx1), val2);  // Cache-backed store
                         idx1 += 1;
                         idx2 -= 1;
                     }
                 }
-                _mm_sfence();
 
                 // Error handling
                 if cycle_errors > 0 {
@@ -9863,33 +9843,23 @@ unsafe fn mirror_move_512_stream1_impl(
     // Pre-compute pattern base outside all loops
     let thread_pattern_base = (thread_id as i32) << 16;
 
+    // VECTOR OPTIMIZATION: Pre-compute pattern components for initialization
+    let multipliers = _mm512_set_epi32(1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16);
+    let base_broadcast = _mm512_set1_epi32(thread_pattern_base);
+    let pattern_base = _mm512_mullo_epi32(base_broadcast, multipliers);  // base × [1..16]
+
     // Initialize memory with AVX-512 patterns for each block
     for test_block in test_blocks.iter() {
         let base = test_block.block.buffer.as_mut_ptr() as *mut __m512i;
         let len = test_block.test_size / std::mem::size_of::<__m512i>();
 
         for i in 0..len {
-            let pattern = _mm512_set_epi32(
-                (i as i32).wrapping_add(thread_pattern_base),
-                (i as i32).wrapping_add(thread_pattern_base).wrapping_mul(2),
-                (i as i32).wrapping_add(thread_pattern_base).wrapping_mul(3),
-                (i as i32).wrapping_add(thread_pattern_base).wrapping_mul(4),
-                (i as i32).wrapping_add(thread_pattern_base).wrapping_mul(5),
-                (i as i32).wrapping_add(thread_pattern_base).wrapping_mul(6),
-                (i as i32).wrapping_add(thread_pattern_base).wrapping_mul(7),
-                (i as i32).wrapping_add(thread_pattern_base).wrapping_mul(8),
-                (i as i32).wrapping_add(thread_pattern_base).wrapping_mul(9),
-                (i as i32).wrapping_add(thread_pattern_base).wrapping_mul(10),
-                (i as i32).wrapping_add(thread_pattern_base).wrapping_mul(11),
-                (i as i32).wrapping_add(thread_pattern_base).wrapping_mul(12),
-                (i as i32).wrapping_add(thread_pattern_base).wrapping_mul(13),
-                (i as i32).wrapping_add(thread_pattern_base).wrapping_mul(14),
-                (i as i32).wrapping_add(thread_pattern_base).wrapping_mul(15),
-                (i as i32).wrapping_add(thread_pattern_base).wrapping_mul(16),
-            );
+            // OPTIMIZED: 1 broadcast + 1 mullo + 1 add (replaces 16 scalar muls + 16 adds)
+            let idx_broadcast = _mm512_set1_epi32(i as i32);
+            let idx_scaled = _mm512_mullo_epi32(idx_broadcast, multipliers);  // i × [1..16]
+            let pattern = _mm512_add_epi32(idx_scaled, pattern_base);         // (i×M) + (base×M)
             _mm512_store_si512(base.add(i), pattern);
         }
-        _mm_sfence();
     }
 
     // Validate chunk divisibility for ALL blocks ONCE before starting (not in hot loop)
@@ -9939,8 +9909,8 @@ unsafe fn mirror_move_512_stream1_impl(
                 while idx1 < idx2 {
                     let val1 = _mm512_load_si512(base.add(idx1));
                     let val2 = _mm512_load_si512(base.add(idx2));
-                    _mm512_stream_si512(base.add(idx2), val1);
-                    _mm512_stream_si512(base.add(idx1), val2);
+                    _mm512_store_si512(base.add(idx2), val1);  // Cache-backed store
+                    _mm512_store_si512(base.add(idx1), val2);  // Cache-backed store
                     idx1 += 1;
                     idx2 -= 1;
                 }
@@ -9959,24 +9929,10 @@ unsafe fn mirror_move_512_stream1_impl(
                             // Pre-compute mirrored index (hot loop optimization)
                             let mirrored_idx = chunk_sum - i;
 
-                            let expected = _mm512_set_epi32(
-                                (mirrored_idx as i32).wrapping_add(thread_pattern_base),
-                                (mirrored_idx as i32).wrapping_add(thread_pattern_base).wrapping_mul(2),
-                                (mirrored_idx as i32).wrapping_add(thread_pattern_base).wrapping_mul(3),
-                                (mirrored_idx as i32).wrapping_add(thread_pattern_base).wrapping_mul(4),
-                                (mirrored_idx as i32).wrapping_add(thread_pattern_base).wrapping_mul(5),
-                                (mirrored_idx as i32).wrapping_add(thread_pattern_base).wrapping_mul(6),
-                                (mirrored_idx as i32).wrapping_add(thread_pattern_base).wrapping_mul(7),
-                                (mirrored_idx as i32).wrapping_add(thread_pattern_base).wrapping_mul(8),
-                                (mirrored_idx as i32).wrapping_add(thread_pattern_base).wrapping_mul(9),
-                                (mirrored_idx as i32).wrapping_add(thread_pattern_base).wrapping_mul(10),
-                                (mirrored_idx as i32).wrapping_add(thread_pattern_base).wrapping_mul(11),
-                                (mirrored_idx as i32).wrapping_add(thread_pattern_base).wrapping_mul(12),
-                                (mirrored_idx as i32).wrapping_add(thread_pattern_base).wrapping_mul(13),
-                                (mirrored_idx as i32).wrapping_add(thread_pattern_base).wrapping_mul(14),
-                                (mirrored_idx as i32).wrapping_add(thread_pattern_base).wrapping_mul(15),
-                                (mirrored_idx as i32).wrapping_add(thread_pattern_base).wrapping_mul(16),
-                            );
+                            // OPTIMIZED: 1 broadcast + 1 mullo + 1 add (replaces 16 scalar muls + 16 adds)
+                            let idx_broadcast = _mm512_set1_epi32(mirrored_idx as i32);
+                            let idx_scaled = _mm512_mullo_epi32(idx_broadcast, multipliers);  // idx × [1..16]
+                            let expected = _mm512_add_epi32(idx_scaled, pattern_base);         // (idx×M) + (base×M)
 
                             let actual = _mm512_load_si512(base.add(i));
                             let diff = _mm512_xor_si512(expected, actual);
@@ -10003,24 +9959,10 @@ unsafe fn mirror_move_512_stream1_impl(
                             // Pre-compute mirrored index (hot loop optimization)
                             let mirrored_idx = chunk_sum - i;
 
-                            let expected = _mm512_set_epi32(
-                                (mirrored_idx as i32).wrapping_add(thread_pattern_base),
-                                (mirrored_idx as i32).wrapping_add(thread_pattern_base).wrapping_mul(2),
-                                (mirrored_idx as i32).wrapping_add(thread_pattern_base).wrapping_mul(3),
-                                (mirrored_idx as i32).wrapping_add(thread_pattern_base).wrapping_mul(4),
-                                (mirrored_idx as i32).wrapping_add(thread_pattern_base).wrapping_mul(5),
-                                (mirrored_idx as i32).wrapping_add(thread_pattern_base).wrapping_mul(6),
-                                (mirrored_idx as i32).wrapping_add(thread_pattern_base).wrapping_mul(7),
-                                (mirrored_idx as i32).wrapping_add(thread_pattern_base).wrapping_mul(8),
-                                (mirrored_idx as i32).wrapping_add(thread_pattern_base).wrapping_mul(9),
-                                (mirrored_idx as i32).wrapping_add(thread_pattern_base).wrapping_mul(10),
-                                (mirrored_idx as i32).wrapping_add(thread_pattern_base).wrapping_mul(11),
-                                (mirrored_idx as i32).wrapping_add(thread_pattern_base).wrapping_mul(12),
-                                (mirrored_idx as i32).wrapping_add(thread_pattern_base).wrapping_mul(13),
-                                (mirrored_idx as i32).wrapping_add(thread_pattern_base).wrapping_mul(14),
-                                (mirrored_idx as i32).wrapping_add(thread_pattern_base).wrapping_mul(15),
-                                (mirrored_idx as i32).wrapping_add(thread_pattern_base).wrapping_mul(16),
-                            );
+                            // OPTIMIZED: 1 broadcast + 1 mullo + 1 add (replaces 16 scalar muls + 16 adds)
+                            let idx_broadcast = _mm512_set1_epi32(mirrored_idx as i32);
+                            let idx_scaled = _mm512_mullo_epi32(idx_broadcast, multipliers);  // idx × [1..16]
+                            let expected = _mm512_add_epi32(idx_scaled, pattern_base);         // (idx×M) + (base×M)
 
                             let actual = _mm512_load_si512(base.add(i));
                             let diff = _mm512_xor_si512(expected, actual);
@@ -10044,8 +9986,8 @@ unsafe fn mirror_move_512_stream1_impl(
                 while idx1 < idx2 {
                     let val1 = _mm512_load_si512(base.add(idx1));
                     let val2 = _mm512_load_si512(base.add(idx2));
-                    _mm512_stream_si512(base.add(idx2), val1);
-                    _mm512_stream_si512(base.add(idx1), val2);
+                    _mm512_store_si512(base.add(idx2), val1);  // Cache-backed store
+                    _mm512_store_si512(base.add(idx1), val2);  // Cache-backed store
                     idx1 += 1;
                     idx2 -= 1;
                 }
@@ -10198,33 +10140,23 @@ unsafe fn mirror_move_512_stream_n_impl(
     // Pre-compute pattern base outside all loops
     let thread_pattern_base = (thread_id as i32) << 16;
 
+    // VECTOR OPTIMIZATION: Pre-compute pattern components for initialization
+    let multipliers = _mm512_set_epi32(1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16);
+    let base_broadcast = _mm512_set1_epi32(thread_pattern_base);
+    let pattern_base = _mm512_mullo_epi32(base_broadcast, multipliers);  // base × [1..16]
+
     // Initialize memory with AVX-512 patterns for each block
     for test_block in test_blocks.iter() {
         let base = test_block.block.buffer.as_mut_ptr() as *mut __m512i;
         let len = test_block.test_size / std::mem::size_of::<__m512i>();
 
         for i in 0..len {
-            let pattern = _mm512_set_epi32(
-                (i as i32).wrapping_add(thread_pattern_base),
-                (i as i32).wrapping_add(thread_pattern_base).wrapping_mul(2),
-                (i as i32).wrapping_add(thread_pattern_base).wrapping_mul(3),
-                (i as i32).wrapping_add(thread_pattern_base).wrapping_mul(4),
-                (i as i32).wrapping_add(thread_pattern_base).wrapping_mul(5),
-                (i as i32).wrapping_add(thread_pattern_base).wrapping_mul(6),
-                (i as i32).wrapping_add(thread_pattern_base).wrapping_mul(7),
-                (i as i32).wrapping_add(thread_pattern_base).wrapping_mul(8),
-                (i as i32).wrapping_add(thread_pattern_base).wrapping_mul(9),
-                (i as i32).wrapping_add(thread_pattern_base).wrapping_mul(10),
-                (i as i32).wrapping_add(thread_pattern_base).wrapping_mul(11),
-                (i as i32).wrapping_add(thread_pattern_base).wrapping_mul(12),
-                (i as i32).wrapping_add(thread_pattern_base).wrapping_mul(13),
-                (i as i32).wrapping_add(thread_pattern_base).wrapping_mul(14),
-                (i as i32).wrapping_add(thread_pattern_base).wrapping_mul(15),
-                (i as i32).wrapping_add(thread_pattern_base).wrapping_mul(16),
-            );
+            // OPTIMIZED: 1 broadcast + 1 mullo + 1 add (replaces 16 scalar muls + 16 adds)
+            let idx_broadcast = _mm512_set1_epi32(i as i32);
+            let idx_scaled = _mm512_mullo_epi32(idx_broadcast, multipliers);  // i × [1..16]
+            let pattern = _mm512_add_epi32(idx_scaled, pattern_base);         // (i×M) + (base×M)
             _mm512_store_si512(base.add(i), pattern);
         }
-        _mm_sfence();
     }
 
     // Validate chunk divisibility for ALL blocks ONCE before starting
@@ -10278,8 +10210,8 @@ unsafe fn mirror_move_512_stream_n_impl(
                     while idx1 < idx2 {
                         let val1 = _mm512_load_si512(base.add(idx1));
                         let val2 = _mm512_load_si512(base.add(idx2));
-                        _mm512_stream_si512(base.add(idx2), val1);
-                        _mm512_stream_si512(base.add(idx1), val2);
+                        _mm512_store_si512(base.add(idx2), val1);  // Cache-backed store
+                        _mm512_store_si512(base.add(idx1), val2);  // Cache-backed store
                         idx1 += 1;
                         idx2 -= 1;
                     }
@@ -10301,24 +10233,10 @@ unsafe fn mirror_move_512_stream_n_impl(
                             while i < stream_end {
                                 let mirrored_idx = stream_sum - i;
 
-                                let expected = _mm512_set_epi32(
-                                    (mirrored_idx as i32).wrapping_add(thread_pattern_base),
-                                    (mirrored_idx as i32).wrapping_add(thread_pattern_base).wrapping_mul(2),
-                                    (mirrored_idx as i32).wrapping_add(thread_pattern_base).wrapping_mul(3),
-                                    (mirrored_idx as i32).wrapping_add(thread_pattern_base).wrapping_mul(4),
-                                    (mirrored_idx as i32).wrapping_add(thread_pattern_base).wrapping_mul(5),
-                                    (mirrored_idx as i32).wrapping_add(thread_pattern_base).wrapping_mul(6),
-                                    (mirrored_idx as i32).wrapping_add(thread_pattern_base).wrapping_mul(7),
-                                    (mirrored_idx as i32).wrapping_add(thread_pattern_base).wrapping_mul(8),
-                                    (mirrored_idx as i32).wrapping_add(thread_pattern_base).wrapping_mul(9),
-                                    (mirrored_idx as i32).wrapping_add(thread_pattern_base).wrapping_mul(10),
-                                    (mirrored_idx as i32).wrapping_add(thread_pattern_base).wrapping_mul(11),
-                                    (mirrored_idx as i32).wrapping_add(thread_pattern_base).wrapping_mul(12),
-                                    (mirrored_idx as i32).wrapping_add(thread_pattern_base).wrapping_mul(13),
-                                    (mirrored_idx as i32).wrapping_add(thread_pattern_base).wrapping_mul(14),
-                                    (mirrored_idx as i32).wrapping_add(thread_pattern_base).wrapping_mul(15),
-                                    (mirrored_idx as i32).wrapping_add(thread_pattern_base).wrapping_mul(16),
-                                );
+                                // OPTIMIZED: 1 broadcast + 1 mullo + 1 add (replaces 16 scalar muls + 16 adds)
+                                let idx_broadcast = _mm512_set1_epi32(mirrored_idx as i32);
+                                let idx_scaled = _mm512_mullo_epi32(idx_broadcast, multipliers);  // idx × [1..16]
+                                let expected = _mm512_add_epi32(idx_scaled, pattern_base);         // (idx×M) + (base×M)
 
                                 let actual = _mm512_load_si512(base.add(i));
                                 let diff = _mm512_xor_si512(expected, actual);
@@ -10350,24 +10268,10 @@ unsafe fn mirror_move_512_stream_n_impl(
                             while i < stream_end {
                                 let mirrored_idx = stream_sum - i;
 
-                                let expected = _mm512_set_epi32(
-                                    (mirrored_idx as i32).wrapping_add(thread_pattern_base),
-                                    (mirrored_idx as i32).wrapping_add(thread_pattern_base).wrapping_mul(2),
-                                    (mirrored_idx as i32).wrapping_add(thread_pattern_base).wrapping_mul(3),
-                                    (mirrored_idx as i32).wrapping_add(thread_pattern_base).wrapping_mul(4),
-                                    (mirrored_idx as i32).wrapping_add(thread_pattern_base).wrapping_mul(5),
-                                    (mirrored_idx as i32).wrapping_add(thread_pattern_base).wrapping_mul(6),
-                                    (mirrored_idx as i32).wrapping_add(thread_pattern_base).wrapping_mul(7),
-                                    (mirrored_idx as i32).wrapping_add(thread_pattern_base).wrapping_mul(8),
-                                    (mirrored_idx as i32).wrapping_add(thread_pattern_base).wrapping_mul(9),
-                                    (mirrored_idx as i32).wrapping_add(thread_pattern_base).wrapping_mul(10),
-                                    (mirrored_idx as i32).wrapping_add(thread_pattern_base).wrapping_mul(11),
-                                    (mirrored_idx as i32).wrapping_add(thread_pattern_base).wrapping_mul(12),
-                                    (mirrored_idx as i32).wrapping_add(thread_pattern_base).wrapping_mul(13),
-                                    (mirrored_idx as i32).wrapping_add(thread_pattern_base).wrapping_mul(14),
-                                    (mirrored_idx as i32).wrapping_add(thread_pattern_base).wrapping_mul(15),
-                                    (mirrored_idx as i32).wrapping_add(thread_pattern_base).wrapping_mul(16),
-                                );
+                                // OPTIMIZED: 1 broadcast + 1 mullo + 1 add (replaces 16 scalar muls + 16 adds)
+                                let idx_broadcast = _mm512_set1_epi32(mirrored_idx as i32);
+                                let idx_scaled = _mm512_mullo_epi32(idx_broadcast, multipliers);  // idx × [1..16]
+                                let expected = _mm512_add_epi32(idx_scaled, pattern_base);         // (idx×M) + (base×M)
 
                                 let actual = _mm512_load_si512(base.add(i));
                                 let diff = _mm512_xor_si512(expected, actual);
@@ -10396,8 +10300,8 @@ unsafe fn mirror_move_512_stream_n_impl(
                     while idx1 < idx2 {
                         let val1 = _mm512_load_si512(base.add(idx1));
                         let val2 = _mm512_load_si512(base.add(idx2));
-                        _mm512_stream_si512(base.add(idx2), val1);
-                        _mm512_stream_si512(base.add(idx1), val2);
+                        _mm512_store_si512(base.add(idx2), val1);  // Cache-backed store
+                        _mm512_store_si512(base.add(idx1), val2);  // Cache-backed store
                         idx1 += 1;
                         idx2 -= 1;
                     }
