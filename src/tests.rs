@@ -5951,7 +5951,8 @@ unsafe fn mirror_move_256_stream1_impl(
             let pattern = _mm256_add_epi32(idx_scaled, pattern_base);         // (i×M) + (base×M)
             _mm256_store_si256(base.add(i), pattern);
         }
-        _mm_sfence();
+        // NOTE: _mm_sfence() removed - not needed for temporal stores (cache coherency handles ordering)
+        // TODO: If using TMR-MD Uncached/WC memory OR non-temporal stores, may need to restore fence
     }
 
     // Validate chunk divisibility for ALL blocks ONCE before starting (not in hot loop)
@@ -6252,7 +6253,8 @@ unsafe fn mirror_move_256_stream_n_impl(
             let pattern = _mm256_add_epi32(idx_scaled, pattern_base);         // (i×M) + (base×M)
             _mm256_store_si256(base.add(i), pattern);
         }
-        _mm_sfence();
+        // NOTE: _mm_sfence() removed - not needed for temporal stores (cache coherency handles ordering)
+        // TODO: If using TMR-MD Uncached/WC memory OR non-temporal stores, may need to restore fence
     }
 
     // Validate chunk divisibility for ALL blocks ONCE before starting
@@ -6649,7 +6651,8 @@ unsafe fn mirror_move_512_stream1_impl(
                     idx1 += 1;
                     idx2 -= 1;
                 }
-                _mm_sfence();
+                // NOTE: _mm_sfence() removed - not needed for temporal stores (cache coherency handles ordering)
+        // TODO: If using TMR-MD Uncached/WC memory OR non-temporal stores, may need to restore fence
 
                 // 2. Verify with configurable error checking frequency
                 let mut error_accumulator = _mm512_setzero_si512();
@@ -6726,7 +6729,8 @@ unsafe fn mirror_move_512_stream1_impl(
                     idx1 += 1;
                     idx2 -= 1;
                 }
-                _mm_sfence();
+                // NOTE: _mm_sfence() removed - not needed for temporal stores (cache coherency handles ordering)
+        // TODO: If using TMR-MD Uncached/WC memory OR non-temporal stores, may need to restore fence
 
                 // Optimized error handling - check ONCE at end of chunk
                 if cycle_errors > 0 {
@@ -6951,7 +6955,8 @@ unsafe fn mirror_move_512_stream_n_impl(
                         idx2 -= 1;
                     }
                 }
-                _mm_sfence();
+                // NOTE: _mm_sfence() removed - not needed for temporal stores (cache coherency handles ordering)
+        // TODO: If using TMR-MD Uncached/WC memory OR non-temporal stores, may need to restore fence
 
                 // 2. Verify with configurable error checking frequency - multi-stream
                 let mut error_accumulator = _mm512_setzero_si512();
@@ -7041,7 +7046,8 @@ unsafe fn mirror_move_512_stream_n_impl(
                         idx2 -= 1;
                     }
                 }
-                _mm_sfence();
+                // NOTE: _mm_sfence() removed - not needed for temporal stores (cache coherency handles ordering)
+        // TODO: If using TMR-MD Uncached/WC memory OR non-temporal stores, may need to restore fence
 
                 // Error handling
                 if cycle_errors > 0 {
