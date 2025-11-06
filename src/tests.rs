@@ -3156,7 +3156,7 @@ pub unsafe fn cache_busting_multi(
                 }
             }
 
-            // Update bytes processed for this block (stride coverage ~25%)
+            // Update bytes processed for this block (write + verify = 2×)
             total_bytes_processed += test_block.test_size * 2;
         }
 
@@ -5126,7 +5126,7 @@ pub unsafe fn mirror_move_multi(
                 // Check for shutdown
                 if SHUTDOWN_REQUESTED.load(Ordering::Relaxed) {
                     total_error_count += block_errors;
-                    total_bytes_processed += (chunk_end - chunk_start) * std::mem::size_of::<u64>() * 2;
+                    total_bytes_processed += (chunk_end - chunk_start) * std::mem::size_of::<u64>() * 3;
                     let elapsed = start.elapsed().as_millis();
                     return TestStats {
                         name: test_name,
@@ -5144,7 +5144,7 @@ pub unsafe fn mirror_move_multi(
             }
 
             total_error_count += block_errors;
-            total_bytes_processed += test_block.test_size * 2; // mirror + restore
+            total_bytes_processed += test_block.test_size * 3; // mirror + verify + restore
             total_operations += len as u64;
 
             // Handle errors based on mode
@@ -5427,7 +5427,7 @@ unsafe fn mirror_move_128_stream1_impl(
             }
 
             total_error_count += block_errors;
-            total_bytes_processed += test_block.test_size * 2; // mirror + mirror back
+            total_bytes_processed += test_block.test_size * 3; // mirror + verify + mirror back
             total_operations += len as u64 * 2;
 
             // Handle errors based on mode
@@ -5752,7 +5752,7 @@ unsafe fn mirror_move_128_stream_n_impl(
             }
 
             total_error_count += block_errors;
-            total_bytes_processed += test_block.test_size * 2; // mirror + mirror back
+            total_bytes_processed += test_block.test_size * 3; // mirror + verify + mirror back
             total_operations += len as u64 * 2;
 
             // Handle errors based on mode
@@ -6118,7 +6118,7 @@ unsafe fn mirror_move_256_stream1_impl(
             }
 
             total_error_count += cycle_errors;
-            total_bytes_processed += (test_block.test_size * 2) as u64; // Mirror + mirror back
+            total_bytes_processed += (test_block.test_size * 3) as u64; // Mirror + verify + mirror back
             total_operations += len as u64;
         }
 
@@ -6440,7 +6440,7 @@ unsafe fn mirror_move_256_stream_n_impl(
             }
 
             total_error_count += cycle_errors;
-            total_bytes_processed += (test_block.test_size * 2) as u64;
+            total_bytes_processed += (test_block.test_size * 3) as u64; // Mirror + verify + mirror back
             total_operations += len as u64;
         }
 
@@ -6762,7 +6762,7 @@ unsafe fn mirror_move_512_stream1_impl(
             }
 
             total_error_count += cycle_errors;
-            total_bytes_processed += (test_block.test_size * 2) as u64; // Mirror + mirror back
+            total_bytes_processed += (test_block.test_size * 3) as u64; // Mirror + verify + mirror back
             total_operations += len as u64;
         }
 
@@ -7079,7 +7079,7 @@ unsafe fn mirror_move_512_stream_n_impl(
             }
 
             total_error_count += cycle_errors;
-            total_bytes_processed += (test_block.test_size * 2) as u64;
+            total_bytes_processed += (test_block.test_size * 3) as u64; // Mirror + verify + mirror back
             total_operations += len as u64;
         }
 

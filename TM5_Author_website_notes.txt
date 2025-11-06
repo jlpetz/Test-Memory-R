@@ -1,0 +1,77 @@
+Why is this program needed?
+
+Well, I think you know what the program is about; it's version 5, after all. Currently, memory testing isn't bad, it's downright terrible. I wouldn't say 'all' tests, but most people aren't aware of the significant changes in hardware. And the main 'damage' isn't from memory, which hasn't evolved much, but from the processor and memory controller (to a lesser extent). Processors have gotten faster, there are more of them, and they've become strange. :) For example, memory used to be located on a single controller, which the processor communicated with. Now, memory can be located on different processors and, as a result, have different 'distances' from a specific processor core to a specific DIMM module. Furthermore, the size of processor caches has increased, which can impact testing. For example, TM4 used a test block size of 512K. At the time of writing, this was the optimal size, but now this block quietly fits in L2, and the test doesn't work at all as intended. Will this unfortunate issue impact the quality of memory failure detection? Absolutely, and in the most devastating way. Alas. Other programs may operate with an access block, which is now extremely unreasonable and causes more problems than any mythical benefit. Everything becomes obsolete. Alas, this fate has befallen MemTest86. While quite good and effective, it has now quietly degraded to "just a test." The reason is the same: the test modules haven't changed in a long time, while hardware evolves.
+However, if you want to read a horror story about testing problems, please do so :)
+
+What's new.
+
+Full support for 16 tests and the ability to load other test configuration files have been added. Unfortunately, a full and seamless restart of the program is very difficult, so a manual restart is required. After installing a new configuration file, the program closes.
+
+Appearance.
+
+TestMem 5
+
+The program window displays the processor type and name, its frequency, number of cores, and supported SSE modes on the left.
+The system memory status is shown on the right—how much is available and how much is being used by the program.
+The test progress is shown in the middle left. When a failure is detected, cells 0-5 turn red, and the number of test failures is displayed in the 'Status' section in the middle right.
+A short description.
+
+This program is built on a slightly different principle than all the previous ones. Namely, it is customizable . Moreover, the user can configure it to suit the conditions they deem best. The program uses the concepts of 'test module' and 'test'. A module is called to perform testing, but it can (and should) be configured differently. Formally speaking, tests in S&M are the same module, but with different settings - have you seen that test efficiency varies significantly? ... Moreover, this effect can be different for different memory (from different manufacturers). Well, if efficiency changes, then the logical conclusion is that it (efficiency, that is) can be improved by tweaking the parameters. It's difficult to consider a program written five years ago optimal. :) So, test = test module + individual settings. The second point is the number of test threads. From the perspective of modern processors, the number of testing threads should be more than one, which will allow the processors to communicate more easily (or rather, more frequently) with 'their' memory. This is especially true for the K10-11-12 with its distributed bus. The program supports a variable (to put it mildly) number of testing threads. From S&M experience, I can say that this is the fastest mode for a single process, but I have been repeatedly told that enabling the multiple mode, although it leads to a slight decrease in speed, increases the efficiency of the algorithm. Well ... although speed is almost synonymous with quality (since a slow algorithm will not find errors), it is foolish to argue with practice.
+At the moment, the following test parameters are planned (and supported):
+- block size. The smaller, the more efficient the algorithm. But if the block fits into the cache, the algorithm will fail.
+- block bypass method. Linear or jumping. The first has high speed, the second - intensively loads the controller-DIMM combination and leads to greater memory heating. (Hm, it’s not for nothing that the fourth test in S&M heated the memory so much.)
+- pattern generation principle. Constant, variable, and random.
+
+Test modules.
+For now, there are only two of them, but this is temporary.
+1. Test 0, which is the only module running this module—data stability testing. The idea is to map all memory to a non-constant pattern, then run a test to verify the integrity of the data.
+This test significantly reduces testing speed.
+2. SimpleTest—though called "simple," that's more of a sarcasm. It supports all settings (size-method-pattern), but isn't optimized very effectively due to its increased versatility. However, the losses due to the suboptimal software implementation aren't that great and are offset by enabling multi-threaded testing—multiple processors completely hog the memory I/O channel. :) However, if something can be simplified, the speed will increase.
+Feature: the program consists of two parts - a launcher and a DLL with test modules. Unpack everything and preserve directories.
+
+I wrote two functions: MirrorMove and MirrorMove128.
+The idea is that the test block is turned inside out. This involves two reading and writing processes colliding. If the memory controller is trying to be clever and adapt to the access mode, then such pornography should blow its mind - two equally strong processes in + and - addressing never happen. The functions themselves only shake the block, but do not test the integrity of the data. Test 0 is used for verification. Therefore, if you want to use these functions, do not disable test 0.
+
+MirrorMove
+- mirrors the test block. With an even number of reflections, the final state of the block does not change (if there are no failures). The block itself can be split into several subblocks and 'mirrored' [i]simultaneously[/i]. This causes significant problems for the controller (and the memory itself) – SDRAM pages have to be reloaded more frequently.
+The only configurable parameters are the Test Block Size and Parameter, which can take values ​​of 1, 2, 3, and 4 – this is the number of subblocks in a block.
+All other settings (which is the template generation mode) are ignored.
+
+MirrorMove128
+is similar to MirrorMove, but works slightly differently – operations are performed in 128-byte pages (see below), with an additional offset between accesses. In other words, the move (mirroring) is performed in strips over several passes – first the even strips, then the odd ones (for 2 strips). In addition to increasing the load on the memory controller, this action causes intensive page reloads in SDRAM, which increases the likelihood of a page failure. (And, of course, heating.)
+The only configurable parameters are the Test Block Size and Parameter, which can take values ​​from 0 and above. The Parameter itself specifies how much additional shifting is needed in 128-byte pages. So, 0 would mean linear access (almost like MirrorMove), 1 would skip the page and jump 'every other time', 2 would skip 2 pages (256 bytes)...
+Accordingly, Parameter specifies the number of additional lanes (passes) to fill the entire block. Judging by the move execution time, for Core2 (and probably other processors with the old interleaving mode), 510 times causes the biggest problems. This means it's potentially interesting for testing. For other processors and systems, it would be a good idea to test numbers in powers of two minus 2. This '-2' forces the selection of not one, but two SDRAM pages, which causes the increase in time. That is, for optimization it would be good to check the series 128-2=126, 256-2, 512-2, 1024-2, 2048-2.
+
+Regarding the 128-byte access limit, this is intentional. Typically, a data transfer block on the bus is 64 bytes, which corresponds to a cache line, but in Core 2 (and higher), this line is paired and its size is 128 bytes. Reading 64 bytes at a time will reduce the loading speed. Furthermore, in new processors (AMD K10, K11...; Intel Core i*), interleaving is not line-based, but block-based, and the access block is 64 bytes. Thus, when accessing 128 bytes, both DIMMs are read.
+A further increase from 128 to 256 bytes is not relevant yet... but it can be done. There will be MirrorMove256 :)
+
+In TM5 version 0.5, the block size for test testing was changed. Previously, it was in bytes, now it is in megabytes. The argument is that small blocks are perfectly cached in L2/L3 and will not be tested. What's the point? It makes no sense, and it's less convenient, so I changed it.
+Since modern processors have caches larger than 4MB (or something like that), the numbers 0-3 are irrelevant and are interpreted in a special way. Specifically, as the window granularity.
+Testing is performed in a 1GB window (this number can be changed), and the test block must fit within it. You can specify the test block size in absolute MB, or as a fraction of the window. The numbers 0-3 define this 'fraction'.
+0 = entire window
+1 = 1/2 window
+2 = 1/3 window
+3 = 1/4 window
+It's probably better to specify 0 for the MirrorMove* functions and return the entire window.
+
+Setting up.
+
+After running the program, a file MT.cfg appeared in the bin directory, it is the test configuration file.
+Enable=1 - 1=on, 0 = off
+Time=100 - testing time, 100%
+Function=SimpleTest - name of the function
+DLL Name=bin\MT0.dll - name of the dll
+Pattern Mode=1 - pattern type. 0 = constant, 1 = variable, 2 = random
+Pattern Param0=0x1E5F - used to generate a pattern; For mode 2, it serves as a multiplier
+Pattern Param1=0x45357354 - similarly. For mode 2, it is added to the pattern.
+Parameter=0 - the principle of moving by addresses.
+Test Block Size=4194304 - block size, in bytes
+
+To generate a pattern in mode 2, a simple formula is used to obtain RND = Value * Param0 + Param1
+
+Parameter - the method of moving to the next block. 0 = linear (sequential) traversal. Other values ​​are specific to each DIMM. The number itself is the offset.
+The idea is that one DIMM is checked first, then the second (and third, for variants like Core i7).
+The access block, i.e. the number of bytes read from one DIMM at a time, is 64 bytes. Accordingly, setting Parameter = 1 will check every block of the selected DIMM. If "2", then every other block...
+By the way, the hardware settings section is important here. I think almost everyone has memory in paired slots and DUAL mode works. So you only need to do one thing - switch the Interliving mode . 0 for older processors (without an integrated memory controller) and 1 for new ones.
+The memory manager in Windows 7 has a quirk: as soon as you take memory from Windows, it immediately starts swapping out more and more. Usually, waiting a few cycles is enough for this process to calm down. If it bothers you, you can disable this 'soft' memory request mode.
+If you set: Capable=0x 0 , then the occupied memory will be immediately latched.
