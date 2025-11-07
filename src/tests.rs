@@ -4,7 +4,7 @@ use crate::driver::MemoryType;
 use crate::runner::SHUTDOWN_REQUESTED;
 use crate::constants::{MB, MB_16, MB_32, MB_64, MB_F64, KB, PAGE_SIZE_4KB};
 use std::simd::*; // Docs here https://doc.rust-lang.org/std/simd/index.html
-use std::simd::cmp::{SimdPartialEq, SimdPartialOrd};
+use std::simd::cmp::SimdPartialEq;
 use std::sync::atomic::Ordering;
 use std::time::Instant;
 use std::sync::OnceLock;
@@ -1288,8 +1288,8 @@ unsafe fn stuck_bit_test_128_impl(
                     Some(check_mask) => {
                         for i in processed..chunk_end {
                             let value = *base.add(i);
-                            let diff = (value ^ pattern1);
-                            error_accumulator = (error_accumulator | diff);
+                            let diff = value ^ pattern1 ;
+                            error_accumulator = error_accumulator | diff ;
 
                             element_count += 1;
 
@@ -1308,8 +1308,8 @@ unsafe fn stuck_bit_test_128_impl(
                         // PER_CHUNK mode - no intermediate checks, maximum performance
                         for i in processed..chunk_end {
                             let value = *base.add(i);
-                            let diff = (value ^ pattern1);
-                            error_accumulator = (error_accumulator | diff);
+                            let diff = value ^ pattern1 ;
+                            error_accumulator = error_accumulator | diff ;
                         }
                     }
                 }
@@ -1336,8 +1336,8 @@ unsafe fn stuck_bit_test_128_impl(
                     Some(check_mask) => {
                         for i in processed..chunk_end {
                             let value = *base.add(i);
-                            let diff = (value ^ pattern2);
-                            error_accumulator = (error_accumulator | diff);
+                            let diff = value ^ pattern2 ;
+                            error_accumulator = error_accumulator | diff ;
 
                             element_count += 1;
 
@@ -1356,8 +1356,8 @@ unsafe fn stuck_bit_test_128_impl(
                         // PER_CHUNK mode - no intermediate checks, maximum performance
                         for i in processed..chunk_end {
                             let value = *base.add(i);
-                            let diff = (value ^ pattern2);
-                            error_accumulator = (error_accumulator | diff);
+                            let diff = value ^ pattern2 ;
+                            error_accumulator = error_accumulator | diff ;
                         }
                     }
                 }
@@ -1384,8 +1384,8 @@ unsafe fn stuck_bit_test_128_impl(
                     Some(check_mask) => {
                         for i in processed..chunk_end {
                             let value = *base.add(i);
-                            let diff = (value ^ pattern1);
-                            error_accumulator = (error_accumulator | diff);
+                            let diff = value ^ pattern1 ;
+                            error_accumulator = error_accumulator | diff ;
 
                             element_count += 1;
 
@@ -1404,8 +1404,8 @@ unsafe fn stuck_bit_test_128_impl(
                         // PER_CHUNK mode - no intermediate checks, maximum performance
                         for i in processed..chunk_end {
                             let value = *base.add(i);
-                            let diff = (value ^ pattern1);
-                            error_accumulator = (error_accumulator | diff);
+                            let diff = value ^ pattern1 ;
+                            error_accumulator = error_accumulator | diff ;
                         }
                     }
                 }
@@ -1619,8 +1619,8 @@ unsafe fn stuck_bit_test_256_impl(
                     Some(check_mask) => {
                         for i in processed..chunk_end {
                             let value = *base.add(i);
-                            let diff = (value ^ pattern1);
-                            error_accumulator = (error_accumulator | diff);
+                            let diff = value ^ pattern1 ;
+                            error_accumulator = error_accumulator | diff ;
                             element_count += 1;
                             if (element_count as u32 & check_mask) == 0 {
                                 if error_accumulator.simd_ne(u64x4::splat(0)).any() {
@@ -1633,8 +1633,8 @@ unsafe fn stuck_bit_test_256_impl(
                     None => {
                         for i in processed..chunk_end {
                             let value = *base.add(i);
-                            let diff = (value ^ pattern1);
-                            error_accumulator = (error_accumulator | diff);
+                            let diff = value ^ pattern1 ;
+                            error_accumulator = error_accumulator | diff ;
                         }
                     }
                 }
@@ -1655,8 +1655,8 @@ unsafe fn stuck_bit_test_256_impl(
                     Some(check_mask) => {
                         for i in processed..chunk_end {
                             let value = *base.add(i);
-                            let diff = (value ^ pattern2);
-                            error_accumulator = (error_accumulator | diff);
+                            let diff = value ^ pattern2 ;
+                            error_accumulator = error_accumulator | diff ;
                             element_count += 1;
                             if (element_count as u32 & check_mask) == 0 {
                                 if error_accumulator.simd_ne(u64x4::splat(0)).any() {
@@ -1669,8 +1669,8 @@ unsafe fn stuck_bit_test_256_impl(
                     None => {
                         for i in processed..chunk_end {
                             let value = *base.add(i);
-                            let diff = (value ^ pattern2);
-                            error_accumulator = (error_accumulator | diff);
+                            let diff = value ^ pattern2 ;
+                            error_accumulator = error_accumulator | diff ;
                         }
                     }
                 }
@@ -1691,8 +1691,8 @@ unsafe fn stuck_bit_test_256_impl(
                     Some(check_mask) => {
                         for i in processed..chunk_end {
                             let value = *base.add(i);
-                            let diff = (value ^ pattern1);
-                            error_accumulator = (error_accumulator | diff);
+                            let diff = value ^ pattern1 ;
+                            error_accumulator = error_accumulator | diff ;
                             element_count += 1;
                             if (element_count as u32 & check_mask) == 0 {
                                 if error_accumulator.simd_ne(u64x4::splat(0)).any() {
@@ -1705,8 +1705,8 @@ unsafe fn stuck_bit_test_256_impl(
                     None => {
                         for i in processed..chunk_end {
                             let value = *base.add(i);
-                            let diff = (value ^ pattern1);
-                            error_accumulator = (error_accumulator | diff);
+                            let diff = value ^ pattern1 ;
+                            error_accumulator = error_accumulator | diff ;
                         }
                     }
                 }
@@ -1885,8 +1885,8 @@ unsafe fn stuck_bit_test_512_impl(
                     Some(check_mask) => {
                         for i in processed..chunk_end {
                             let value = *base.add(i);
-                            let diff = (value ^ pattern1);
-                            error_accumulator = (error_accumulator | diff);
+                            let diff = value ^ pattern1 ;
+                            error_accumulator = error_accumulator | diff ;
                             element_count += 1;
                             if (element_count as u32 & check_mask) == 0 {
                                 if !error_accumulator.simd_eq(u64x8::splat(0)).all() { cycle_errors += 1; }
@@ -1897,8 +1897,8 @@ unsafe fn stuck_bit_test_512_impl(
                     None => {
                         for i in processed..chunk_end {
                             let value = *base.add(i);
-                            let diff = (value ^ pattern1);
-                            error_accumulator = (error_accumulator | diff);
+                            let diff = value ^ pattern1 ;
+                            error_accumulator = error_accumulator | diff ;
                         }
                     }
                 }
@@ -1917,8 +1917,8 @@ unsafe fn stuck_bit_test_512_impl(
                     Some(check_mask) => {
                         for i in processed..chunk_end {
                             let value = *base.add(i);
-                            let diff = (value ^ pattern2);
-                            error_accumulator = (error_accumulator | diff);
+                            let diff = value ^ pattern2 ;
+                            error_accumulator = error_accumulator | diff ;
                             element_count += 1;
                             if (element_count as u32 & check_mask) == 0 {
                                 if !error_accumulator.simd_eq(u64x8::splat(0)).all() { cycle_errors += 1; }
@@ -1929,8 +1929,8 @@ unsafe fn stuck_bit_test_512_impl(
                     None => {
                         for i in processed..chunk_end {
                             let value = *base.add(i);
-                            let diff = (value ^ pattern2);
-                            error_accumulator = (error_accumulator | diff);
+                            let diff = value ^ pattern2 ;
+                            error_accumulator = error_accumulator | diff ;
                         }
                     }
                 }
@@ -1949,8 +1949,8 @@ unsafe fn stuck_bit_test_512_impl(
                     Some(check_mask) => {
                         for i in processed..chunk_end {
                             let value = *base.add(i);
-                            let diff = (value ^ pattern1);
-                            error_accumulator = (error_accumulator | diff);
+                            let diff = value ^ pattern1 ;
+                            error_accumulator = error_accumulator | diff ;
                             element_count += 1;
                             if (element_count as u32 & check_mask) == 0 {
                                 if !error_accumulator.simd_eq(u64x8::splat(0)).all() { cycle_errors += 1; }
@@ -1961,8 +1961,8 @@ unsafe fn stuck_bit_test_512_impl(
                     None => {
                         for i in processed..chunk_end {
                             let value = *base.add(i);
-                            let diff = (value ^ pattern1);
-                            error_accumulator = (error_accumulator | diff);
+                            let diff = value ^ pattern1 ;
+                            error_accumulator = error_accumulator | diff ;
                         }
                     }
                 }
@@ -2361,8 +2361,8 @@ unsafe fn refresh_stable_128_impl(
                     Some(check_mask) => {
                         for i in processed..chunk_end {
                             let value = *base.add(i);
-                            let diff = (value ^ pattern);
-                            error_accumulator = (error_accumulator | diff);
+                            let diff = value ^ pattern ;
+                            error_accumulator = error_accumulator | diff ;
 
                             element_count += 1;
 
@@ -2381,8 +2381,8 @@ unsafe fn refresh_stable_128_impl(
                         // PER_CHUNK mode - no intermediate checks, maximum performance
                         for i in processed..chunk_end {
                             let value = *base.add(i);
-                            let diff = (value ^ pattern);
-                            error_accumulator = (error_accumulator | diff);
+                            let diff = value ^ pattern ;
+                            error_accumulator = error_accumulator | diff ;
                         }
                     }
                 }
@@ -2585,8 +2585,8 @@ unsafe fn refresh_stable_256_impl(
                     Some(check_mask) => {
                         for i in processed..chunk_end {
                             let value = *base.add(i);
-                            let diff = (value ^ pattern);
-                            error_accumulator = (error_accumulator | diff);
+                            let diff = value ^ pattern ;
+                            error_accumulator = error_accumulator | diff ;
 
                             element_count += 1;
 
@@ -2605,8 +2605,8 @@ unsafe fn refresh_stable_256_impl(
                         // PER_CHUNK mode - no intermediate checks, maximum performance
                         for i in processed..chunk_end {
                             let value = *base.add(i);
-                            let diff = (value ^ pattern);
-                            error_accumulator = (error_accumulator | diff);
+                            let diff = value ^ pattern ;
+                            error_accumulator = error_accumulator | diff ;
                         }
                     }
                 }
@@ -2809,8 +2809,8 @@ unsafe fn refresh_stable_512_impl(
                     Some(check_mask) => {
                         for i in processed..chunk_end {
                             let value = *base.add(i);
-                            let diff = (value ^ pattern);
-                            error_accumulator = (error_accumulator | diff);
+                            let diff = value ^ pattern ;
+                            error_accumulator = error_accumulator | diff ;
 
                             element_count += 1;
 
@@ -2829,8 +2829,8 @@ unsafe fn refresh_stable_512_impl(
                         // PER_CHUNK mode - no intermediate checks, maximum performance
                         for i in processed..chunk_end {
                             let value = *base.add(i);
-                            let diff = (value ^ pattern);
-                            error_accumulator = (error_accumulator | diff);
+                            let diff = value ^ pattern ;
+                            error_accumulator = error_accumulator | diff ;
                         }
                     }
                 }
@@ -5294,7 +5294,7 @@ unsafe fn mirror_move_128_stream1_impl(
     // VECTOR OPTIMIZATION: Pre-compute pattern components for initialization
     let multipliers = i32x4::from_array([4, 3, 2, 1]);
     let base_broadcast = i32x4::splat(thread_pattern_base);
-    let pattern_base = (base_broadcast * multipliers);  // base × [1,2,3,4]
+    let pattern_base = base_broadcast * multipliers ;  // base × [1,2,3,4]
 
     // Track totals across all blocks
     let mut total_bytes_processed = 0usize;
@@ -5318,8 +5318,8 @@ unsafe fn mirror_move_128_stream1_impl(
         for i in 0..len {
             // OPTIMIZED: 1 broadcast + 1 mullo + 1 add (replaces 4 scalar muls + 4 adds)
             let idx_broadcast = i32x4::splat(i as i32);
-            let idx_scaled = (idx_broadcast * multipliers);  // i × [1,2,3,4]
-            let pattern = (idx_scaled + pattern_base);         // (i×M) + (base×M)
+            let idx_scaled = idx_broadcast * multipliers ;  // i × [1,2,3,4]
+            let pattern = idx_scaled + pattern_base ;         // (i×M) + (base×M)
             *base.add(i) = pattern;
         }
     }
@@ -5364,8 +5364,8 @@ unsafe fn mirror_move_128_stream1_impl(
 
                     // OPTIMIZED: 1 broadcast + 1 mullo + 1 add (replaces 4 scalar muls + 4 adds)
                     let idx_broadcast = i32x4::splat(mirrored_idx as i32);
-                    let idx_scaled = (idx_broadcast * multipliers);  // idx × [1,2,3,4]
-                    let expected = (idx_scaled + pattern_base);         // (idx×M) + (base×M)
+                    let idx_scaled = idx_broadcast * multipliers ;  // idx × [1,2,3,4]
+                    let expected = idx_scaled + pattern_base ;         // (idx×M) + (base×M)
 
                     let actual = *base.add(i);
 
@@ -5583,7 +5583,7 @@ unsafe fn mirror_move_128_stream_n_impl(
     // VECTOR OPTIMIZATION: Pre-compute pattern components for initialization
     let multipliers = i32x4::from_array([4, 3, 2, 1]);
     let base_broadcast = i32x4::splat(thread_pattern_base);
-    let pattern_base = (base_broadcast * multipliers);  // base × [1,2,3,4]
+    let pattern_base = base_broadcast * multipliers ;  // base × [1,2,3,4]
 
     // Track totals across all blocks
     let mut total_bytes_processed = 0usize;
@@ -5607,8 +5607,8 @@ unsafe fn mirror_move_128_stream_n_impl(
         for i in 0..len {
             // OPTIMIZED: 1 broadcast + 1 mullo + 1 add (replaces 4 scalar muls + 4 adds)
             let idx_broadcast = i32x4::splat(i as i32);
-            let idx_scaled = (idx_broadcast * multipliers);  // i × [1,2,3,4]
-            let pattern = (idx_scaled + pattern_base);         // (i×M) + (base×M)
+            let idx_scaled = idx_broadcast * multipliers ;  // i × [1,2,3,4]
+            let pattern = idx_scaled + pattern_base ;         // (i×M) + (base×M)
             *base.add(i) = pattern;
         }
     }
@@ -5681,8 +5681,8 @@ unsafe fn mirror_move_128_stream_n_impl(
 
                         // OPTIMIZED: 1 broadcast + 1 mullo + 1 add (replaces 4 scalar muls + 4 adds)
                         let idx_broadcast = i32x4::splat(mirrored_idx as i32);
-                        let idx_scaled = (idx_broadcast * multipliers);  // idx × [1,2,3,4]
-                        let expected = (idx_scaled + pattern_base);         // (idx×M) + (base×M)
+                        let idx_scaled = idx_broadcast * multipliers ;  // idx × [1,2,3,4]
+                        let expected = idx_scaled + pattern_base ;         // (idx×M) + (base×M)
 
                         let actual = *base.add(i);
 
@@ -5918,7 +5918,7 @@ unsafe fn mirror_move_256_stream1_impl(
     // VECTOR OPTIMIZATION: Pre-compute pattern components for initialization
     let multipliers = i32x8::from_array([8, 7, 6, 5, 4, 3, 2, 1]);
     let base_broadcast = i32x8::splat(thread_pattern_base);
-    let pattern_base = (base_broadcast * multipliers);  // base × [1,2,3,4,5,6,7,8]
+    let pattern_base = base_broadcast * multipliers ;  // base × [1,2,3,4,5,6,7,8]
 
     // Initialize memory with AVX2 patterns for each block
     for test_block in test_blocks.iter() {
@@ -5928,8 +5928,8 @@ unsafe fn mirror_move_256_stream1_impl(
         for i in 0..len {
             // OPTIMIZED: 1 broadcast + 1 mullo + 1 add (replaces 8 scalar muls + 8 adds)
             let idx_broadcast = i32x8::splat(i as i32);
-            let idx_scaled = (idx_broadcast * multipliers);  // i × [1,2,3,4,5,6,7,8]
-            let pattern = (idx_scaled + pattern_base);         // (i×M) + (base×M)
+            let idx_scaled = idx_broadcast * multipliers ;  // i × [1,2,3,4,5,6,7,8]
+            let pattern = idx_scaled + pattern_base ;         // (i×M) + (base×M)
             *base.add(i) = pattern;
         }
         // NOTE: _mm_sfence() removed - not needed for temporal stores (cache coherency handles ordering)
@@ -5999,7 +5999,7 @@ unsafe fn mirror_move_256_stream1_impl(
                 // Formula: (idx + base) × M = (idx × M) + (base × M)
                 let multipliers = i32x8::from_array([8, 7, 6, 5, 4, 3, 2, 1]);
                 let base_broadcast = i32x8::splat(thread_pattern_base);
-                let pattern_base = (base_broadcast * multipliers);  // base × [1,2,3,4,5,6,7,8]
+                let pattern_base = base_broadcast * multipliers ;  // base × [1,2,3,4,5,6,7,8]
 
                 // Pre-compute check mask for hot loop optimization
                 match config.error_check_interval.get_check_mask() {
@@ -6009,12 +6009,12 @@ unsafe fn mirror_move_256_stream1_impl(
 
                             // OPTIMIZED: 1 broadcast + 1 mullo + 1 add (replaces 8 scalar muls + 8 adds)
                             let idx_broadcast = i32x8::splat(mirrored_idx as i32);
-                            let idx_scaled = (idx_broadcast * multipliers);  // idx × [1,2,3,4,5,6,7,8]
-                            let expected = (idx_scaled + pattern_base);         // (idx×M) + (base×M)
+                            let idx_scaled = idx_broadcast * multipliers ;  // idx × [1,2,3,4,5,6,7,8]
+                            let expected = idx_scaled + pattern_base ;         // (idx×M) + (base×M)
 
                             let actual = *base.add(i);
-                            let diff = (expected ^ actual);
-                            error_accumulator = (error_accumulator | diff);
+                            let diff = expected ^ actual ;
+                            error_accumulator = error_accumulator | diff ;
 
                             element_count += 1;
                             i += 1;
@@ -6037,12 +6037,12 @@ unsafe fn mirror_move_256_stream1_impl(
 
                             // OPTIMIZED: 1 broadcast + 1 mullo + 1 add (replaces 8 scalar muls + 8 adds)
                             let idx_broadcast = i32x8::splat(mirrored_idx as i32);
-                            let idx_scaled = (idx_broadcast * multipliers);  // idx × [1,2,3,4,5,6,7,8]
-                            let expected = (idx_scaled + pattern_base);         // (idx×M) + (base×M)
+                            let idx_scaled = idx_broadcast * multipliers ;  // idx × [1,2,3,4,5,6,7,8]
+                            let expected = idx_scaled + pattern_base ;         // (idx×M) + (base×M)
 
                             let actual = *base.add(i);
-                            let diff = (expected ^ actual);
-                            error_accumulator = (error_accumulator | diff);
+                            let diff = expected ^ actual ;
+                            error_accumulator = error_accumulator | diff ;
                             i += 1;
                         }
                     }
@@ -6217,7 +6217,7 @@ unsafe fn mirror_move_256_stream_n_impl(
     // VECTOR OPTIMIZATION: Pre-compute pattern components for initialization
     let multipliers = i32x8::from_array([8, 7, 6, 5, 4, 3, 2, 1]);
     let base_broadcast = i32x8::splat(thread_pattern_base);
-    let pattern_base = (base_broadcast * multipliers);  // base × [1,2,3,4,5,6,7,8]
+    let pattern_base = base_broadcast * multipliers ;  // base × [1,2,3,4,5,6,7,8]
 
     // Initialize memory with AVX2 patterns for each block
     for test_block in test_blocks.iter() {
@@ -6227,8 +6227,8 @@ unsafe fn mirror_move_256_stream_n_impl(
         for i in 0..len {
             // OPTIMIZED: 1 broadcast + 1 mullo + 1 add (replaces 8 scalar muls + 8 adds)
             let idx_broadcast = i32x8::splat(i as i32);
-            let idx_scaled = (idx_broadcast * multipliers);  // i × [1,2,3,4,5,6,7,8]
-            let pattern = (idx_scaled + pattern_base);         // (i×M) + (base×M)
+            let idx_scaled = idx_broadcast * multipliers ;  // i × [1,2,3,4,5,6,7,8]
+            let pattern = idx_scaled + pattern_base ;         // (i×M) + (base×M)
             *base.add(i) = pattern;
         }
         // NOTE: _mm_sfence() removed - not needed for temporal stores (cache coherency handles ordering)
@@ -6301,7 +6301,7 @@ unsafe fn mirror_move_256_stream_n_impl(
                 // Formula: (idx + base) × M = (idx × M) + (base × M)
                 let multipliers = i32x8::from_array([8, 7, 6, 5, 4, 3, 2, 1]);
                 let base_broadcast = i32x8::splat(thread_pattern_base);
-                let pattern_base = (base_broadcast * multipliers);  // base × [1,2,3,4,5,6,7,8]
+                let pattern_base = base_broadcast * multipliers ;  // base × [1,2,3,4,5,6,7,8]
 
                 match config.error_check_interval.get_check_mask() {
                     Some(check_mask) => {
@@ -6316,12 +6316,12 @@ unsafe fn mirror_move_256_stream_n_impl(
 
                                 // OPTIMIZED: 1 broadcast + 1 mullo + 1 add (replaces 8 scalar muls + 8 adds)
                                 let idx_broadcast = i32x8::splat(mirrored_idx as i32);
-                                let idx_scaled = (idx_broadcast * multipliers);  // idx × [1,2,3,4,5,6,7,8]
-                                let expected = (idx_scaled + pattern_base);         // (idx×M) + (base×M)
+                                let idx_scaled = idx_broadcast * multipliers ;  // idx × [1,2,3,4,5,6,7,8]
+                                let expected = idx_scaled + pattern_base ;         // (idx×M) + (base×M)
 
                                 let actual = *base.add(i);
-                                let diff = (expected ^ actual);
-                                error_accumulator = (error_accumulator | diff);
+                                let diff = expected ^ actual ;
+                                error_accumulator = error_accumulator | diff ;
 
                                 element_count += 1;
                                 i += 1;
@@ -6350,12 +6350,12 @@ unsafe fn mirror_move_256_stream_n_impl(
 
                                 // OPTIMIZED: 1 broadcast + 1 mullo + 1 add (replaces 8 scalar muls + 8 adds)
                                 let idx_broadcast = i32x8::splat(mirrored_idx as i32);
-                                let idx_scaled = (idx_broadcast * multipliers);  // idx × [1,2,3,4,5,6,7,8]
-                                let expected = (idx_scaled + pattern_base);         // (idx×M) + (base×M)
+                                let idx_scaled = idx_broadcast * multipliers ;  // idx × [1,2,3,4,5,6,7,8]
+                                let expected = idx_scaled + pattern_base ;         // (idx×M) + (base×M)
 
                                 let actual = *base.add(i);
-                                let diff = (expected ^ actual);
-                                error_accumulator = (error_accumulator | diff);
+                                let diff = expected ^ actual ;
+                                error_accumulator = error_accumulator | diff ;
                                 i += 1;
                             }
                         }
@@ -6558,7 +6558,7 @@ unsafe fn mirror_move_512_stream1_impl(
     // VECTOR OPTIMIZATION: Pre-compute pattern components for initialization
     let multipliers = i32x16::from_array([16, 15, 14, 13, 12, 11, 10, 9, 8, 7, 6, 5, 4, 3, 2, 1]);
     let base_broadcast = i32x16::splat(thread_pattern_base);
-    let pattern_base = (base_broadcast * multipliers);  // base × [1..16]
+    let pattern_base = base_broadcast * multipliers ;  // base × [1..16]
 
     // Initialize memory with AVX-512 patterns for each block
     for test_block in test_blocks.iter() {
@@ -6568,8 +6568,8 @@ unsafe fn mirror_move_512_stream1_impl(
         for i in 0..len {
             // OPTIMIZED: 1 broadcast + 1 mullo + 1 add (replaces 16 scalar muls + 16 adds)
             let idx_broadcast = i32x16::splat(i as i32);
-            let idx_scaled = (idx_broadcast * multipliers);  // i × [1..16]
-            let pattern = (idx_scaled + pattern_base);         // (i×M) + (base×M)
+            let idx_scaled = idx_broadcast * multipliers ;  // i × [1..16]
+            let pattern = idx_scaled + pattern_base ;         // (i×M) + (base×M)
             *base.add(i) = pattern;
         }
     }
@@ -6644,12 +6644,12 @@ unsafe fn mirror_move_512_stream1_impl(
 
                             // OPTIMIZED: 1 broadcast + 1 mullo + 1 add (replaces 16 scalar muls + 16 adds)
                             let idx_broadcast = i32x16::splat(mirrored_idx as i32);
-                            let idx_scaled = (idx_broadcast * multipliers);  // idx × [1..16]
-                            let expected = (idx_scaled + pattern_base);         // (idx×M) + (base×M)
+                            let idx_scaled = idx_broadcast * multipliers ;  // idx × [1..16]
+                            let expected = idx_scaled + pattern_base ;         // (idx×M) + (base×M)
 
                             let actual = *base.add(i);
-                            let diff = (expected ^ actual);
-                            error_accumulator = (error_accumulator | diff);
+                            let diff = expected ^ actual ;
+                            error_accumulator = error_accumulator | diff ;
 
                             element_count += 1;
                             i += 1;
@@ -6673,12 +6673,12 @@ unsafe fn mirror_move_512_stream1_impl(
 
                             // OPTIMIZED: 1 broadcast + 1 mullo + 1 add (replaces 16 scalar muls + 16 adds)
                             let idx_broadcast = i32x16::splat(mirrored_idx as i32);
-                            let idx_scaled = (idx_broadcast * multipliers);  // idx × [1..16]
-                            let expected = (idx_scaled + pattern_base);         // (idx×M) + (base×M)
+                            let idx_scaled = idx_broadcast * multipliers ;  // idx × [1..16]
+                            let expected = idx_scaled + pattern_base ;         // (idx×M) + (base×M)
 
                             let actual = *base.add(i);
-                            let diff = (expected ^ actual);
-                            error_accumulator = (error_accumulator | diff);
+                            let diff = expected ^ actual ;
+                            error_accumulator = error_accumulator | diff ;
                             i += 1;
                         }
                     }
@@ -6854,7 +6854,7 @@ unsafe fn mirror_move_512_stream_n_impl(
     // VECTOR OPTIMIZATION: Pre-compute pattern components for initialization
     let multipliers = i32x16::from_array([16, 15, 14, 13, 12, 11, 10, 9, 8, 7, 6, 5, 4, 3, 2, 1]);
     let base_broadcast = i32x16::splat(thread_pattern_base);
-    let pattern_base = (base_broadcast * multipliers);  // base × [1..16]
+    let pattern_base = base_broadcast * multipliers ;  // base × [1..16]
 
     // Initialize memory with AVX-512 patterns for each block
     for test_block in test_blocks.iter() {
@@ -6864,8 +6864,8 @@ unsafe fn mirror_move_512_stream_n_impl(
         for i in 0..len {
             // OPTIMIZED: 1 broadcast + 1 mullo + 1 add (replaces 16 scalar muls + 16 adds)
             let idx_broadcast = i32x16::splat(i as i32);
-            let idx_scaled = (idx_broadcast * multipliers);  // i × [1..16]
-            let pattern = (idx_scaled + pattern_base);         // (i×M) + (base×M)
+            let idx_scaled = idx_broadcast * multipliers ;  // i × [1..16]
+            let pattern = idx_scaled + pattern_base ;         // (i×M) + (base×M)
             *base.add(i) = pattern;
         }
     }
@@ -6947,12 +6947,12 @@ unsafe fn mirror_move_512_stream_n_impl(
 
                                 // OPTIMIZED: 1 broadcast + 1 mullo + 1 add (replaces 16 scalar muls + 16 adds)
                                 let idx_broadcast = i32x16::splat(mirrored_idx as i32);
-                                let idx_scaled = (idx_broadcast * multipliers);  // idx × [1..16]
-                                let expected = (idx_scaled + pattern_base);         // (idx×M) + (base×M)
+                                let idx_scaled = idx_broadcast * multipliers ;  // idx × [1..16]
+                                let expected = idx_scaled + pattern_base ;         // (idx×M) + (base×M)
 
                                 let actual = *base.add(i);
-                                let diff = (expected ^ actual);
-                                error_accumulator = (error_accumulator | diff);
+                                let diff = expected ^ actual ;
+                                error_accumulator = error_accumulator | diff ;
 
                                 element_count += 1;
                                 i += 1;
@@ -6981,12 +6981,12 @@ unsafe fn mirror_move_512_stream_n_impl(
 
                                 // OPTIMIZED: 1 broadcast + 1 mullo + 1 add (replaces 16 scalar muls + 16 adds)
                                 let idx_broadcast = i32x16::splat(mirrored_idx as i32);
-                                let idx_scaled = (idx_broadcast * multipliers);  // idx × [1..16]
-                                let expected = (idx_scaled + pattern_base);         // (idx×M) + (base×M)
+                                let idx_scaled = idx_broadcast * multipliers ;  // idx × [1..16]
+                                let expected = idx_scaled + pattern_base ;         // (idx×M) + (base×M)
 
                                 let actual = *base.add(i);
-                                let diff = (expected ^ actual);
-                                error_accumulator = (error_accumulator | diff);
+                                let diff = expected ^ actual ;
+                                error_accumulator = error_accumulator | diff ;
                                 i += 1;
                             }
                         }
