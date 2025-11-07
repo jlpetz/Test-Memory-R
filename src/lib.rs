@@ -19,6 +19,7 @@ pub mod driver;
 pub mod cpu_topology;
 pub mod reporting;
 pub mod params; // Centralized parameter registry
+pub mod latency_tests; // Latency measurement tests
 
 // Common result type for the crate
 pub type Result<T> = std::result::Result<T, Box<dyn std::error::Error>>;

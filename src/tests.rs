@@ -102,6 +102,7 @@ pub enum TestAction {
     CacheBusting,
     RandomAccess,
     StuckBitTest,
+    Latency,
 }
 
 impl TestAction {
@@ -117,6 +118,7 @@ impl TestAction {
             TestAction::CacheBusting => "Cache Busting",
             TestAction::RandomAccess => "Random Access",
             TestAction::StuckBitTest => "Stuck Bit Test",
+            TestAction::Latency => "Latency Measurement",
         }
     }
 }
@@ -490,7 +492,7 @@ impl TestMemoryConfig {
                 cache_ops_per_op: 0,
                 simd_type: SIMDType::None,
                 access_pattern: AccessPattern::CacheBusting,
-                memory_coverage: 0.25,  // Stride access touches ~25% of memory
+                memory_coverage: 1.0,  // All memory touched with stride pattern for cache busting
                 streams: self.streams,
                 locality_sensitive: false,
             },
@@ -2995,11 +2997,9 @@ pub unsafe fn cache_busting_multi(
               window_size as f64 / MB_F64);
 
     let streams = config.streams.max(1) as usize;
-    let stream_shift = streams.trailing_zeros();
 
     // Pre-calculate stride constants outside all loops
     let base_stride = CACHE_BUSTING_STRIDE / std::mem::size_of::<u64>();
-    let stream_offset = base_stride >> stream_shift;
     let pattern_base = 0x0123456789ABCDEFu64.wrapping_add(thread_id as u64);
 
     let mut cycle = 0u32;
@@ -3060,12 +3060,14 @@ pub unsafe fn cache_busting_multi(
                         }
                     }
                     _ => {
-                        // Multiple streams with different stride offsets within chunk
-                        for stream in 0..streams {
-                            let pattern = pattern_base.wrapping_add((stream as u64) * 0x1111111111111111u64);
+                        // Multiple streams with different patterns - divide offsets among streams
+                        // Each stream handles a subset of offsets, but ALL offsets are covered
+                        for offset in 0..base_stride.min(chunk_end - processed) {
+                            // Assign this offset to a stream using round-robin
+                            let stream = (offset % streams as usize) as u64;
+                            let pattern = pattern_base.wrapping_add(stream * 0x1111111111111111u64);
 
-                            let start_i = processed + (stream * stream_offset).min(chunk_end - processed);
-                            let mut i = start_i;
+                            let mut i = processed + offset;
                             while i < chunk_end {
                                 *base.add(i) = pattern.wrapping_add(i as u64);
                                 i += base_stride;
@@ -3075,12 +3077,12 @@ pub unsafe fn cache_busting_multi(
 
                         std::sync::atomic::fence(Ordering::SeqCst);
 
-                        // Verify all streams within chunk
-                        for stream in 0..streams {
-                            let pattern = pattern_base.wrapping_add((stream as u64) * 0x1111111111111111u64);
+                        // Verify all offsets with their respective stream patterns
+                        for offset in 0..base_stride.min(chunk_end - processed) {
+                            let stream = (offset % streams as usize) as u64;
+                            let pattern = pattern_base.wrapping_add(stream * 0x1111111111111111u64);
 
-                            let start_i = processed + (stream * stream_offset).min(chunk_end - processed);
-                            let mut i = start_i;
+                            let mut i = processed + offset;
                             while i < chunk_end {
                                 let v = *base.add(i);
                                 let expected = pattern.wrapping_add(i as u64);
@@ -3105,7 +3107,7 @@ pub unsafe fn cache_busting_multi(
                         }
                         ErrorMode::Halt => {
                             let elapsed = start.elapsed().as_millis();
-                            let total_operations = ((total_bytes_processed / std::mem::size_of::<u64>()) as f64 * 0.25) as u64;
+                            let total_operations = (total_bytes_processed / std::mem::size_of::<u64>()) as u64;
 
                             return TestStats {
                                 name: test_name,
@@ -3131,7 +3133,7 @@ pub unsafe fn cache_busting_multi(
                 // Check for shutdown request
                 if SHUTDOWN_REQUESTED.load(Ordering::Relaxed) {
                     let elapsed = start.elapsed().as_millis();
-                    let total_operations = ((total_bytes_processed / std::mem::size_of::<u64>()) as f64 * 0.25) as u64;
+                    let total_operations = (total_bytes_processed / std::mem::size_of::<u64>()) as u64;
 
                     return TestStats {
                         name: test_name,
@@ -3170,7 +3172,7 @@ pub unsafe fn cache_busting_multi(
         let elapsed_secs = test_start.elapsed().as_secs() as u32;
         if !timing.should_continue(cycle, elapsed_secs) {
             let elapsed = start.elapsed().as_millis();
-            let total_operations = ((total_bytes_processed / std::mem::size_of::<u64>()) as f64 * 0.25) as u64;
+            let total_operations = (total_bytes_processed / std::mem::size_of::<u64>()) as u64;
 
             return TestStats {
                 name: test_name,
@@ -3915,7 +3917,7 @@ pub unsafe fn block_move_multi(
                 processed = chunk_end;
             }
 
-            total_bytes_processed += test_block.test_size; // Read + Write for half the block
+            total_bytes_processed += test_block.test_size * 3 / 2; // Copy (R source + W dest = 1×) + Verify (R dest = 0.5×) = 1.5×
         }
 
         total_error_count += cycle_errors;
@@ -5136,7 +5138,7 @@ pub unsafe fn mirror_move_multi(
             }
 
             total_error_count += block_errors;
-            total_bytes_processed += test_block.test_size * 3; // mirror + verify + restore
+            total_bytes_processed += test_block.test_size * 5; // mirror (R+W) + verify (R) + restore (R+W) = 3R + 2W
             total_operations += len as u64;
 
             // Handle errors based on mode
@@ -5418,7 +5420,7 @@ unsafe fn mirror_move_128_stream1_impl(
             }
 
             total_error_count += block_errors;
-            total_bytes_processed += test_block.test_size * 3; // mirror + verify + mirror back
+            total_bytes_processed += test_block.test_size * 5; // mirror (R+W) + verify (R) + mirror back (R+W) = 3R + 2W
             total_operations += len as u64 * 2;
 
             // Handle errors based on mode
@@ -5742,7 +5744,7 @@ unsafe fn mirror_move_128_stream_n_impl(
             }
 
             total_error_count += block_errors;
-            total_bytes_processed += test_block.test_size * 3; // mirror + verify + mirror back
+            total_bytes_processed += test_block.test_size * 5; // mirror (R+W) + verify (R) + mirror back (R+W) = 3R + 2W
             total_operations += len as u64 * 2;
 
             // Handle errors based on mode
@@ -6106,7 +6108,7 @@ unsafe fn mirror_move_256_stream1_impl(
             }
 
             total_error_count += cycle_errors;
-            total_bytes_processed += (test_block.test_size * 3) as u64; // Mirror + verify + mirror back
+            total_bytes_processed += (test_block.test_size * 5) as u64; // Mirror (R+W) + verify (R) + mirror back (R+W) = 3R + 2W
             total_operations += len as u64;
         }
 
@@ -6426,7 +6428,7 @@ unsafe fn mirror_move_256_stream_n_impl(
             }
 
             total_error_count += cycle_errors;
-            total_bytes_processed += (test_block.test_size * 3) as u64; // Mirror + verify + mirror back
+            total_bytes_processed += (test_block.test_size * 5) as u64; // Mirror (R+W) + verify (R) + mirror back (R+W) = 3R + 2W
             total_operations += len as u64;
         }
 
@@ -6746,7 +6748,7 @@ unsafe fn mirror_move_512_stream1_impl(
             }
 
             total_error_count += cycle_errors;
-            total_bytes_processed += (test_block.test_size * 3) as u64; // Mirror + verify + mirror back
+            total_bytes_processed += (test_block.test_size * 5) as u64; // Mirror (R+W) + verify (R) + mirror back (R+W) = 3R + 2W
             total_operations += len as u64;
         }
 
@@ -7061,7 +7063,7 @@ unsafe fn mirror_move_512_stream_n_impl(
             }
 
             total_error_count += cycle_errors;
-            total_bytes_processed += (test_block.test_size * 3) as u64; // Mirror + verify + mirror back
+            total_bytes_processed += (test_block.test_size * 5) as u64; // Mirror (R+W) + verify (R) + mirror back (R+W) = 3R + 2W
             total_operations += len as u64;
         }
 
