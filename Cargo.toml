@@ -7,7 +7,7 @@ authors = ["Your Name <your.email@example.com>"]
 
 [dependencies]
 ### windows = { version = "0.62", features = [
-windows = { version = "0.61", features = [
+windows = { version = "0.62", features = [
     "Win32_System_Memory",
 	"Win32_System_Kernel",
     "Win32_Foundation", 

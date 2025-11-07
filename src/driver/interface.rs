@@ -193,7 +193,7 @@ impl DriverHandle {
             );
             
             if result.is_err() {
-                return Err(format!("Failed to get driver statistics: {:?}", windows::core::Error::from_win32()));
+                return Err(format!("Failed to get driver statistics: {:?}", windows::core::Error::from_thread()));
             }
         }
         
@@ -246,7 +246,7 @@ impl DriverHandle {
             );
             
             if result.is_err() {
-                return Err(format!("Enhanced batch allocation failed: {:?}", windows::core::Error::from_win32()));
+                return Err(format!("Enhanced batch allocation failed: {:?}", windows::core::Error::from_thread()));
             }
         }
         
@@ -272,7 +272,7 @@ impl DriverHandle {
             );
             
             if result.is_err() {
-                return Err(format!("Failed to free all allocations: {:?}", windows::core::Error::from_win32()));
+                return Err(format!("Failed to free all allocations: {:?}", windows::core::Error::from_thread()));
             }
         }
         
@@ -326,7 +326,7 @@ impl DriverHandle {
             );
             
             if result.is_err() {
-                return Err(format!("Failed to reallocate memory: {:?}", windows::core::Error::from_win32()));
+                return Err(format!("Failed to reallocate memory: {:?}", windows::core::Error::from_thread()));
             }
         }
         
