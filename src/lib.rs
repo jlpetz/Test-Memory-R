@@ -1,4 +1,5 @@
 #![allow(unsafe_op_in_unsafe_fn)]
+#![feature(portable_simd)]
 
 pub mod config;
 pub mod constants;
