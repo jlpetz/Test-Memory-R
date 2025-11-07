@@ -64,7 +64,7 @@ impl ErrorCheckInterval {
     
     /// Get the mask for bitwise AND checking in hot loops
     /// Returns None for PER_CHUNK mode (no checking within chunk)
-    #[inline(always)]
+    #[inline]
     pub fn get_check_mask(&self) -> Option<u32> {
         if self.power_of_two_shift >= 31 {
             None  // No checking within chunk
@@ -807,7 +807,7 @@ pub fn calculate_ideal_chunk_size(config: &TestMemoryConfig, test_name: &str, to
 }
 
 /// Simple clamp chunk size to current block size (blocks are already power-of-2)
-#[inline(always)]
+#[inline]
 pub fn get_safe_chunk_size(ideal_chunk_size: usize, block_size_bytes: usize) -> usize {
     ideal_chunk_size.min(block_size_bytes)
 }
@@ -1204,6 +1204,7 @@ pub unsafe fn stuck_bit_test_128_multi(
 
 /// StuckBitTest128 - SSE2 optimized implementation
 /// This function is annotated with #[target_feature] to enable full compiler optimization
+#[inline]
 #[target_feature(enable = "sse2")]
 unsafe fn stuck_bit_test_128_impl(
     blocks: &[crate::runner::AllocationBlock],
@@ -1547,6 +1548,7 @@ pub unsafe fn stuck_bit_test_256_multi(
 
 /// StuckBitTest256 - AVX2 optimized implementation
 /// This function is annotated with #[target_feature] to enable full compiler optimization
+#[inline]
 #[target_feature(enable = "avx2")]
 unsafe fn stuck_bit_test_256_impl(
     blocks: &[crate::runner::AllocationBlock],
@@ -1813,6 +1815,7 @@ pub unsafe fn stuck_bit_test_512_multi(
 
 /// StuckBitTest512 - AVX-512 optimized implementation
 /// This function is annotated with #[target_feature] to enable full compiler optimization
+#[inline]
 #[target_feature(enable = "avx512f")]
 unsafe fn stuck_bit_test_512_impl(
     blocks: &[crate::runner::AllocationBlock],
@@ -2291,6 +2294,7 @@ pub unsafe fn refresh_stable_128_multi(
 
 /// RefreshStable128 - SSE2 optimized implementation
 /// This function is annotated with #[target_feature] to enable full compiler optimization
+#[inline]
 #[target_feature(enable = "sse2")]
 unsafe fn refresh_stable_128_impl(
     blocks: &[crate::runner::AllocationBlock],
@@ -2515,6 +2519,7 @@ pub unsafe fn refresh_stable_256_multi(
 
 /// RefreshStable256 - AVX2 optimized implementation
 /// This function is annotated with #[target_feature] to enable full compiler optimization
+#[inline]
 #[target_feature(enable = "avx2")]
 unsafe fn refresh_stable_256_impl(
     blocks: &[crate::runner::AllocationBlock],
@@ -2739,6 +2744,7 @@ pub unsafe fn refresh_stable_512_multi(
 
 /// RefreshStable512 - AVX-512 optimized implementation
 /// This function is annotated with #[target_feature] to enable full compiler optimization
+#[inline]
 #[target_feature(enable = "avx512f")]
 unsafe fn refresh_stable_512_impl(
     blocks: &[crate::runner::AllocationBlock],
@@ -5241,6 +5247,7 @@ unsafe fn mirror_move_128_stream1_multi(
 /// MirrorMove128 Stream1 - SSE4.1 optimized implementation
 /// This function is annotated with #[target_feature] to enable full compiler optimization
 /// Upgraded from SSE2 to SSE4.1 for _mm_mullo_epi32 vector multiply support
+#[inline]
 #[target_feature(enable = "sse4.1")]
 unsafe fn mirror_move_128_stream1_impl(
     blocks: &[crate::runner::AllocationBlock],
@@ -5529,6 +5536,7 @@ unsafe fn mirror_move_128_stream_n_multi(
 /// MirrorMove128 StreamN - SSE4.1 optimized implementation
 /// This function is annotated with #[target_feature] to enable full compiler optimization
 /// Upgraded from SSE2 to SSE4.1 for _mm_mullo_epi32 vector multiply support
+#[inline]
 #[target_feature(enable = "sse4.1")]
 unsafe fn mirror_move_128_stream_n_impl(
     blocks: &[crate::runner::AllocationBlock],
@@ -5878,6 +5886,7 @@ unsafe fn mirror_move_256_stream1_multi(
 
 /// MirrorMove256 Stream1 - AVX2-optimized implementation
 /// CRITICAL: #[target_feature] enables full compiler optimization of SIMD code
+#[inline]
 #[target_feature(enable = "avx2")]
 unsafe fn mirror_move_256_stream1_impl(
     blocks: &[crate::runner::AllocationBlock],
@@ -6175,6 +6184,7 @@ unsafe fn mirror_move_256_stream_n_multi(
 
 /// MirrorMove256 StreamN - AVX2-optimized implementation
 /// CRITICAL: #[target_feature] enables full compiler optimization of SIMD code
+#[inline]
 #[target_feature(enable = "avx2")]
 unsafe fn mirror_move_256_stream_n_impl(
     blocks: &[crate::runner::AllocationBlock],
@@ -6517,6 +6527,7 @@ unsafe fn mirror_move_512_stream1_multi(
 
 /// MirrorMove512 Stream1 - AVX-512 optimized implementation
 /// This function is annotated with #[target_feature] to enable full compiler optimization
+#[inline]
 #[target_feature(enable = "avx512f")]
 unsafe fn mirror_move_512_stream1_impl(
     blocks: &[crate::runner::AllocationBlock],
@@ -6812,6 +6823,7 @@ unsafe fn mirror_move_512_stream_n_multi(
 
 /// MirrorMove512 StreamN - AVX-512 optimized implementation
 /// This function is annotated with #[target_feature] to enable full compiler optimization
+#[inline]
 #[target_feature(enable = "avx512f")]
 unsafe fn mirror_move_512_stream_n_impl(
     blocks: &[crate::runner::AllocationBlock],

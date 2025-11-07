@@ -1,0 +1,153 @@
+# ==============================================================================
+# TMR CPU Target Configuration
+# ==============================================================================
+# Controls baseline CPU instruction sets for the entire binary.
+# Choose a target based on your minimum supported CPU or use 'native' for
+# optimal performance on your build machine.
+
+[build]
+rustflags = ["-C", "target-cpu=native"]
+
+# ==============================================================================
+# x86-64 MICROARCHITECTURE LEVELS (Baseline Targets)
+# ==============================================================================
+# These are standardized feature levels supported across Intel/AMD CPUs.
+# Use these for portable binaries with predictable instruction sets.
+#
+# | Level      | Key Instructions            | Released | Intel Example  | AMD Example   |
+# |------------|----------------------------|----------|----------------|---------------|
+# | x86-64     | SSE, SSE2                  | 2003     | Pentium 4      | Athlon 64     |
+# | x86-64-v2  | +SSE3, SSE4.1, SSE4.2,     | 2009     | Nehalem        | Bulldozer     |
+# |            | SSSE3, POPCNT              |          |                |               |
+# | x86-64-v3  | +AVX, AVX2, BMI1, BMI2,    | 2013     | Haswell        | Zen 1         |
+# |            | F16C, FMA, LZCNT, MOVBE    |          |                |               |
+# | x86-64-v4  | +AVX-512 F/BW/CD/DQ/VL     | 2017     | Skylake-X      | Zen 4         |
+#
+# rustflags = ["-C", "target-cpu=x86-64"]      # SSE2 baseline (2003+)
+# rustflags = ["-C", "target-cpu=x86-64-v2"]   # SSE4.2 baseline (2009+)
+# rustflags = ["-C", "target-cpu=x86-64-v3"]   # AVX2 baseline (2013+) - RECOMMENDED MINIMUM
+# rustflags = ["-C", "target-cpu=x86-64-v4"]   # AVX-512 baseline (2017+)
+
+# ==============================================================================
+# INTEL-SPECIFIC TARGETS (Chronological)
+# ==============================================================================
+# Use these to optimize for specific Intel microarchitectures.
+# Each target enables all features available in that generation.
+#
+# | Target         | Year | Notable Features                        | Cores         |
+# |----------------|------|-----------------------------------------|---------------|
+# | nehalem        | 2008 | SSE4.2, POPCNT                          | Core i7       |
+# | sandybridge    | 2011 | AVX                                     | Core 2nd Gen  |
+# | ivybridge      | 2012 | F16C, FSGSBASE                          | Core 3rd Gen  |
+# | haswell        | 2013 | AVX2, BMI2, FMA                         | Core 4th Gen  |
+# | broadwell      | 2014 | ADCX, RDSEED                            | Core 5th Gen  |
+# | skylake        | 2015 | AVX2 (desktop - no AVX-512)             | Core 6th Gen  |
+# | skylake-avx512 | 2017 | AVX-512 F/CD/BW/DQ/VL                   | Skylake-X/SP  |
+# | cascadelake    | 2019 | +AVX-512 VNNI                           | Xeon 2nd Gen  |
+# | icelake-client | 2019 | +AVX-512 VBMI/VBMI2/VNNI/BITALG/VPOPCNTDQ | Core 10th Gen |
+# | icelake-server | 2020 | +AVX-512 (server)                       | Xeon 3rd Gen  |
+# | tigerlake      | 2020 | +AVX-512 VP2INTERSECT                   | Core 11th Gen |
+# | alderlake      | 2021 | Hybrid (P+E cores, P-cores have AVX2)   | Core 12th Gen |
+# | sapphirerapids | 2023 | +AVX-512 FP16, AMX                      | Xeon 4th Gen  |
+# | raptorlake     | 2022 | Hybrid (P+E cores)                      | Core 13/14th  |
+#
+# rustflags = ["-C", "target-cpu=haswell"]        # Recommended minimum (AVX2)
+# rustflags = ["-C", "target-cpu=skylake-avx512"] # First gen AVX-512
+# rustflags = ["-C", "target-cpu=alderlake"]      # Modern hybrid CPU (12th gen)
+
+# ==============================================================================
+# AMD-SPECIFIC TARGETS (Chronological)
+# ==============================================================================
+# Use these to optimize for specific AMD microarchitectures.
+#
+# | Target      | Year | Notable Features                    | Series        |
+# |-------------|------|-------------------------------------|---------------|
+# | bdver1      | 2011 | FMA4, XOP, LWP                      | Bulldozer     |
+# | bdver2      | 2012 | FMA, F16C, TBM                      | Piledriver    |
+# | bdver3      | 2014 | +FSGSBASE                           | Steamroller   |
+# | bdver4      | 2015 | AVX2, BMI2                          | Excavator     |
+# | znver1      | 2017 | AVX2, BMI2, SHA, CLZERO             | Zen 1         |
+# | znver2      | 2019 | +RDPID, WBNOINVD                    | Zen 2         |
+# | znver3      | 2020 | +VAES, VPCLMULQDQ                   | Zen 3         |
+# | znver4      | 2022 | AVX-512 F/CD/BW/DQ/VL/IFMA/VBMI/VBMI2 | Zen 4       |
+#
+# rustflags = ["-C", "target-cpu=znver1"]  # Zen 1 (2017)
+# rustflags = ["-C", "target-cpu=znver2"]  # Zen 2 (2019)
+# rustflags = ["-C", "target-cpu=znver3"]  # Zen 3 (2020) - RECOMMENDED for modern AMD
+# rustflags = ["-C", "target-cpu=znver4"]  # Zen 4 (2022) - First AMD with AVX-512
+
+# ==============================================================================
+# BENCHMARKING DIFFERENT TARGETS
+# ==============================================================================
+# To compare performance across different CPU targets:
+#
+# 1. Edit this file to uncomment the desired target
+# 2. Clean previous build artifacts: cargo clean
+# 3. Rebuild with new target: cargo build --release
+# 4. Run benchmark: .\target\release\tmr.exe --quick-test
+# 5. Compare results and repeat for other targets
+#
+# Example workflow:
+#   # Test x86-64-v3 (AVX2)
+#   sed -i 's/target-cpu=native/target-cpu=x86-64-v3/' .cargo\config.toml
+#   cargo clean && cargo build --release
+#   .\target\release\tmr.exe --quick-test > results_v3.txt
+#
+#   # Test znver3 (Zen 3 optimized)
+#   sed -i 's/target-cpu=x86-64-v3/target-cpu=znver3/' .cargo\config.toml
+#   cargo clean && cargo build --release
+#   .\target\release\tmr.exe --quick-test > results_znver3.txt
+#
+# NOTE: Always run 'cargo clean' between target changes to force full rebuild.
+
+# ==============================================================================
+# GETTING FULL TARGET LIST
+# ==============================================================================
+# To see all available CPU targets your rustc supports:
+#   rustc --print target-cpus
+#
+# To see what features are enabled for a specific target:
+#   rustc --print target-features --target x86_64-pc-windows-msvc -C target-cpu=znver3
+#
+# Current Rust target triple for this project: x86_64-pc-windows-msvc
+
+# ==============================================================================
+# RECOMMENDED CONFIGURATIONS
+# ==============================================================================
+#
+# For TMR development (maximum performance on your machine):
+#   rustflags = ["-C", "target-cpu=native"]
+#
+# For distribution (modern CPUs, 2013+):
+#   rustflags = ["-C", "target-cpu=x86-64-v3"]
+#
+# For AMD Zen 3/4 systems (7000/5000 series Ryzen):
+#   rustflags = ["-C", "target-cpu=znver3"]
+#
+# For Intel 12th gen and newer (Alder Lake+):
+#   rustflags = ["-C", "target-cpu=alderlake"]
+#
+# For maximum compatibility (older CPUs):
+#   rustflags = ["-C", "target-cpu=x86-64-v2"]
+
+# ==============================================================================
+# ADDITIONAL RUSTFLAGS OPTIONS
+# ==============================================================================
+# You can add multiple flags by extending the array:
+#
+# rustflags = [
+#     "-C", "target-cpu=native",
+#     "-C", "opt-level=3",           # Maximum optimization (already set in Cargo.toml)
+#     "-C", "llvm-args=-enable-no-nans-fp-math",  # Aggressive FP optimization
+# ]
+#
+# For profiling builds with frame pointers (mentioned in Cargo.toml):
+#   rustflags = ["-C", "target-cpu=native", "-C", "force-frame-pointers=yes"]
+
+# ==============================================================================
+# REFERENCES
+# ==============================================================================
+# - Rust Performance Book: https://nnethercote.github.io/perf-book/
+# - x86-64 psABI levels: https://en.wikipedia.org/wiki/X86-64#Microarchitecture_levels
+# - LLVM target info: https://llvm.org/docs/CPUSupport.html
+# - rustc codegen options: https://doc.rust-lang.org/rustc/codegen-options/index.html
