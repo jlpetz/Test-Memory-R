@@ -801,3 +801,39 @@ if cycle_errors > 0 {
 - **Branch prediction**: 10-15% improvement (optimized hot loop paths)
 - **Error handling**: Function call elimination + better branching
 - **Overall**: Significantly faster hot loops while maintaining full functionality
+
+---
+
+## 📊 LATENCY TEST IMPROVEMENTS
+
+### Consolidated Thread Summary
+**Status**: Pending implementation
+
+**Problem**: Each thread logs its own latency results separately. Need consolidated view at end.
+
+**Required Change**: Modify the runner to collect `LatencyTestStats` instead of just `TestStats`, so we can aggregate all thread latency data and show a single consolidated summary with:
+- Combined percentiles across all threads
+- Overall spread ratio analysis
+- Spill warning if spread suggests cache level transitions
+
+**Implementation Notes**:
+- `print_latency_summary()` function already exists in latency_tests.rs
+- Need to modify runner to store full LatencyTestStats
+- Call summary function after all threads complete for latency tests
+
+### Cache Hierarchy Diagnostic Improvements
+**Status**: Needs investigation
+
+**Problem**: DRAM P50 variance is high between runs (73ns vs 144ns observed)
+
+**Potential causes**:
+1. Only 5000 samples - may need more for DRAM level
+2. Insufficient warmup for large working sets
+3. System background activity interference
+4. Memory controller state variations
+
+**Proposed improvements**:
+- Increase sample count for larger working sets
+- Longer warmup phase for DRAM test
+- Multiple test iterations with min/avg/max reporting
+- Add sample count to output for visibility

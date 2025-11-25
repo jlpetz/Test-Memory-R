@@ -104,6 +104,10 @@ pub trait ReportFormatter: Send + Sync {
     fn prepare_thread_block_allocation_table(&self, report: &BlockAllocationReport) -> TableData;
     fn prepare_numa_distribution_table(&self, report: &BlockAllocationReport) -> TableData;
     fn prepare_allocation_fairness_table(&self, report: &BlockAllocationReport) -> TableData;
+
+    /// Prepare latency test summary tables (multi-threaded results)
+    fn prepare_latency_summary_consolidated_table(&self, report: &LatencyTestSummaryReport) -> TableData;
+    fn prepare_latency_per_thread_table(&self, level: &LatencyLevelSummary) -> TableData;
 }
 
 /// Default formatter implementation
@@ -1047,8 +1051,18 @@ impl ReportFormatter for DefaultFormatter {
             WindowMode::FixedSize { size_mb } => {
                 format!("FixedSize ({} MB)", size_mb)
             }
+            WindowMode::FixedBytes { size_bytes } => {
+                if *size_bytes >= 1024 * 1024 {
+                    format!("FixedBytes ({} MB)", size_bytes / (1024 * 1024))
+                } else {
+                    format!("FixedBytes ({} KB)", size_bytes / 1024)
+                }
+            }
             WindowMode::CacheRelative { multiplier } => {
                 format!("CacheRelative ({:.1}x)", multiplier)
+            }
+            WindowMode::CacheLevel { target } => {
+                format!("CacheLevel ({})", target.name())
             }
         }
     }
@@ -1450,5 +1464,118 @@ impl ReportFormatter for DefaultFormatter {
             fairness.coefficient_of_variation,
             if fairness.coefficient_of_variation < 0.1 { "Fair Distribution" } else { "Unfair Distribution" }
         ))
+    }
+
+    fn prepare_latency_summary_consolidated_table(&self, report: &LatencyTestSummaryReport) -> TableData {
+        let mut table = TableData::new()
+            .with_title(format!("Latency Test Summary ({} threads)", report.thread_count))
+            .add_header("Level", ColumnAlignment::Left)
+            .add_header("Window", ColumnAlignment::Right)
+            .add_header("Samples", ColumnAlignment::Right)
+            .add_header("Min", ColumnAlignment::Right)
+            .add_header("P5", ColumnAlignment::Right)
+            .add_header("P10", ColumnAlignment::Right)
+            .add_header("P25", ColumnAlignment::Right)
+            .add_header("P50", ColumnAlignment::Right)
+            .add_header("P75", ColumnAlignment::Right)
+            .add_header("P90", ColumnAlignment::Right)
+            .add_header("P95", ColumnAlignment::Right)
+            .add_header("P99", ColumnAlignment::Right)
+            .add_header("Max", ColumnAlignment::Right)
+            .add_header("Spread", ColumnAlignment::Right);
+
+        for level in &report.levels_tested {
+            let p = &level.consolidated;
+            let window_str = if level.window_size_bytes >= 1024 * 1024 {
+                format!("{} MB", level.window_size_bytes / (1024 * 1024))
+            } else {
+                format!("{} KB", level.window_size_bytes / 1024)
+            };
+
+            table = table.add_row(vec![
+                level.target_name.clone(),
+                window_str,
+                level.total_samples.to_string(),
+                format!("{:.1}", p.min_ns),
+                format!("{:.1}", p.p5_ns),
+                format!("{:.1}", p.p10_ns),
+                format!("{:.1}", p.p25_ns),
+                format!("{:.1}", p.p50_ns),
+                format!("{:.1}", p.p75_ns),
+                format!("{:.1}", p.p90_ns),
+                format!("{:.1}", p.p95_ns),
+                format!("{:.1}", p.p99_ns),
+                format!("{:.1}", p.max_ns),
+                format!("{:.2}x", p.spread_ratio),
+            ]);
+        }
+
+        table.with_footer("All values in nanoseconds. Spread = P95/P5 ratio.")
+    }
+
+    fn prepare_latency_per_thread_table(&self, level: &LatencyLevelSummary) -> TableData {
+        let window_str = if level.window_size_bytes >= 1024 * 1024 {
+            format!("{} MB", level.window_size_bytes / (1024 * 1024))
+        } else {
+            format!("{} KB", level.window_size_bytes / 1024)
+        };
+
+        let mut table = TableData::new()
+            .with_title(format!("{} Latency - {} window/thread", level.target_name, window_str))
+            .add_header("Thread", ColumnAlignment::Right)
+            .add_header("CPU", ColumnAlignment::Right)
+            .add_header("Samples", ColumnAlignment::Right)
+            .add_header("Min", ColumnAlignment::Right)
+            .add_header("P5", ColumnAlignment::Right)
+            .add_header("P10", ColumnAlignment::Right)
+            .add_header("P25", ColumnAlignment::Right)
+            .add_header("P50", ColumnAlignment::Right)
+            .add_header("P75", ColumnAlignment::Right)
+            .add_header("P90", ColumnAlignment::Right)
+            .add_header("P95", ColumnAlignment::Right)
+            .add_header("P99", ColumnAlignment::Right)
+            .add_header("P99.9", ColumnAlignment::Right)
+            .add_header("Spread", ColumnAlignment::Right);
+
+        for result in &level.per_thread_results {
+            let p = &result.percentiles;
+            table = table.add_row(vec![
+                result.thread_id.to_string(),
+                result.cpu_id.to_string(),
+                result.sample_count.to_string(),
+                format!("{:.1}", p.min_ns),
+                format!("{:.1}", p.p5_ns),
+                format!("{:.1}", p.p10_ns),
+                format!("{:.1}", p.p25_ns),
+                format!("{:.1}", p.p50_ns),
+                format!("{:.1}", p.p75_ns),
+                format!("{:.1}", p.p90_ns),
+                format!("{:.1}", p.p95_ns),
+                format!("{:.1}", p.p99_ns),
+                format!("{:.1}", p.p99_9_ns),
+                format!("{:.2}x", p.spread_ratio),
+            ]);
+        }
+
+        // Add consolidated row
+        let p = &level.consolidated;
+        table = table.add_row(vec![
+            "ALL".to_string(),
+            "-".to_string(),
+            level.total_samples.to_string(),
+            format!("{:.1}", p.min_ns),
+            format!("{:.1}", p.p5_ns),
+            format!("{:.1}", p.p10_ns),
+            format!("{:.1}", p.p25_ns),
+            format!("{:.1}", p.p50_ns),
+            format!("{:.1}", p.p75_ns),
+            format!("{:.1}", p.p90_ns),
+            format!("{:.1}", p.p95_ns),
+            format!("{:.1}", p.p99_ns),
+            format!("{:.1}", p.p99_9_ns),
+            format!("{:.2}x", p.spread_ratio),
+        ]);
+
+        table
     }
 }

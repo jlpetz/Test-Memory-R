@@ -1,6 +1,6 @@
 use crate::{ErrorMode, EnhancedMemoryLayout, ProgressTracker, BlockInfo};
 use crate::constants::{HUGE_PAGE_SIZE, LARGE_PAGE_SIZE, REGULAR_PAGE_SIZE};
-use crate::tests::{WindowMode, ChunkMode};
+use crate::tests::{WindowMode, ChunkMode, CacheTarget};
 use crate::MemoryAllocationConfig;
 use crate::tests::{TestStats, TestMemoryConfig, TestTiming, TestProgress};
 use crate::tests::{
@@ -14,6 +14,15 @@ use crate::tests::{
     cache_busting_multi,
     random_torture_multi,
     stride_access_multi, bandwidth_saturation_multi, block_move_multi
+};
+use crate::latency_tests::{
+    read_latency_multi_wrapper, write_latency_multi_wrapper, copy_latency_multi_wrapper,
+    LatencyTestStats,
+};
+use crate::cache::CacheInfo;
+use crate::reporting::models::{
+    LatencyTestSummaryReport, LatencyLevelSummary, LatencyThreadResult,
+    LatencyPercentiles, DetectedCacheInfo,
 };
 use crate::progress::progress_reporter;
 use crate::results::TestRunResult;
@@ -269,22 +278,54 @@ pub fn run_tests_with_layout_and_timing_filtered(
         create_test_definitions()
     };
 
-    // Apply single test filter if provided
+    // Apply single test filter if provided (supports wildcards)
     if let Some(test_name_filter) = single_test_filter {
+        let matches_filter = |name: &str, filter: &str| -> bool {
+            if filter.contains('*') {
+                // Wildcard matching
+                if filter.starts_with('*') && filter.ends_with('*') {
+                    // *pattern* - contains
+                    let pattern = &filter[1..filter.len()-1];
+                    name.contains(pattern)
+                } else if filter.starts_with('*') {
+                    // *pattern - ends with
+                    let pattern = &filter[1..];
+                    name.ends_with(pattern)
+                } else if filter.ends_with('*') {
+                    // pattern* - starts with
+                    let pattern = &filter[..filter.len()-1];
+                    name.starts_with(pattern)
+                } else {
+                    // Exact match if * is in middle (not supported, treat as exact)
+                    name == filter
+                }
+            } else {
+                // Exact match
+                name == filter
+            }
+        };
+
         test_definitions.retain(|def| {
-            def.display_name == test_name_filter ||
-            def.original_name == Some(test_name_filter)
+            matches_filter(&def.display_name, test_name_filter) ||
+            def.original_name.map(|n| matches_filter(n, test_name_filter)).unwrap_or(false)
         });
 
         if test_definitions.is_empty() {
-            println!("❌ Test '{}' not found. Available tests:", test_name_filter);
+            println!("❌ No tests match filter '{}'. Available tests:", test_name_filter);
             for def in create_test_definitions() {
                 println!("  - {}", def.actual_name);
             }
             return false;
         }
 
-        log::info!("🎯 Running single test: {}", test_definitions[0].display_name);
+        if test_definitions.len() == 1 {
+            log::info!("🎯 Running single test: {}", test_definitions[0].display_name);
+        } else {
+            log::info!("🎯 Running {} tests matching filter '{}'", test_definitions.len(), test_name_filter);
+            for def in &test_definitions {
+                log::info!("  - {}", def.display_name);
+            }
+        }
     }
 
     // Apply streams override if provided (CLI parameter overrides hard-coded config)
@@ -1018,6 +1059,47 @@ fn create_test_definitions() -> Vec<TestDefinition> {
              .with_streams(1), "BlockMove")
              .with_memory_type(None)
         ),
+
+        // === Latency Measurement Tests ===
+        // Window size 128MB = ~8x typical L3 cache to ensure DRAM access
+        (
+            "ReadLatency",
+            TestFunction::MultiBlock(read_latency_multi_wrapper),
+            validate_streams(TestMemoryConfig::new(
+                WindowMode::FixedSize { size_mb: 128 },
+                ChunkMode::FixedSize { size_mb: 4 },
+                false,
+                false
+            ).with_timing(TestTiming::duration_only(10))
+             .with_streams(1), "ReadLatency")
+             .with_memory_type(None)
+        ),
+
+        (
+            "WriteLatency",
+            TestFunction::MultiBlock(write_latency_multi_wrapper),
+            validate_streams(TestMemoryConfig::new(
+                WindowMode::FixedSize { size_mb: 128 },
+                ChunkMode::FixedSize { size_mb: 4 },
+                false,
+                false
+            ).with_timing(TestTiming::duration_only(10))
+             .with_streams(1), "WriteLatency")
+             .with_memory_type(None)
+        ),
+
+        (
+            "CopyLatency",
+            TestFunction::MultiBlock(copy_latency_multi_wrapper),
+            validate_streams(TestMemoryConfig::new(
+                WindowMode::FixedSize { size_mb: 128 },
+                ChunkMode::FixedSize { size_mb: 4 },
+                false,
+                false
+            ).with_timing(TestTiming::duration_only(10))
+             .with_streams(1), "CopyLatency")
+             .with_memory_type(None)
+        ),
     ];
     
     // Process test definitions and resolve auto-dispatch tests
@@ -1522,5 +1604,230 @@ pub fn print_current_memory_status() -> Option<SystemMemoryInfo> {
             eprintln!("⚠️ Failed to retrieve system memory status");
             None
         }
+    }
+}
+
+/// Run latency test suite targeting specific cache levels
+/// Tests L1, L2, L3, and DRAM with smart window sizing based on detected cache
+pub fn run_latency_test_suite(
+    layout: EnhancedMemoryLayout,
+    targets: Option<Vec<CacheTarget>>,
+) -> LatencyTestSummaryReport {
+    // Detect cache info
+    let cache_info = CacheInfo::detect();
+    let detected_cache = DetectedCacheInfo {
+        l1d_per_core_kb: cache_info.per_core_l1d / 1024,
+        l2_per_core_kb: cache_info.per_core_l2 / 1024,
+        l3_shared_mb: cache_info.l3_cache / (1024 * 1024),
+        detection_method: cache_info.detection_method.clone(),
+    };
+
+    // Default targets if none specified
+    // Tests cache hierarchy plus two DRAM scenarios:
+    // - DRAM: high TLB hit rate (typical latency)
+    // - DRAM-Full: TLB stress (worst-case latency including TLB miss overhead)
+    let targets = targets.unwrap_or_else(|| vec![
+        CacheTarget::L1_DEFAULT,
+        CacheTarget::L2_DEFAULT,
+        CacheTarget::L3_DEFAULT,
+        CacheTarget::DRAM_DEFAULT,
+        CacheTarget::DRAM_FULL_DEFAULT,
+    ]);
+
+    let thread_count = layout.thread_count();
+
+    println!("\n🔬 Latency Test Suite");
+    println!("═══════════════════════════════════════════════════════════════════════════════");
+    println!("Detected: L1D {} KB/core, L2 {} KB/core, L3 {} MB shared ({})",
+        detected_cache.l1d_per_core_kb,
+        detected_cache.l2_per_core_kb,
+        detected_cache.l3_shared_mb,
+        detected_cache.detection_method);
+    println!("Threads: {}", thread_count);
+    println!();
+
+    // Show what we're going to test
+    println!("Testing levels:");
+    for target in &targets {
+        let window_size = target.calculate_window_size(&cache_info, thread_count);
+        let window_str = if window_size >= 1024 * 1024 {
+            format!("{} MB", window_size / (1024 * 1024))
+        } else {
+            format!("{} KB", window_size / 1024)
+        };
+        println!("  {} -> {} per thread", target.name(), window_str);
+    }
+    println!();
+
+    // Allocate memory for threads
+    let alloc_config = MemoryAllocationConfig::default();
+    let runtime_config = detect_runtime_capabilities(&alloc_config);
+
+    let thread_blocks = layout.get_thread_blocks();
+    let allocated_blocks = match allocate_all_blocks_new(&thread_blocks, &runtime_config) {
+        Ok(blocks) => blocks,
+        Err(e) => {
+            log::error!("Failed to allocate memory: {}", e);
+            return LatencyTestSummaryReport {
+                detected_cache,
+                thread_count,
+                levels_tested: vec![],
+            };
+        }
+    };
+
+    // Create thread pool with allocated blocks
+    let pinning_config = CpuPinningConfig::default();
+    println!("Creating thread pool with {} persistent workers...", thread_count);
+    let (thread_pool, _work_result_receiver) = ThreadPool::new(
+        allocated_blocks,
+        &pinning_config,
+        thread_count,
+        runtime_config.cpu_list.as_deref(),
+    );
+
+    // Get CPU assignments for result reporting
+    let _cpu_assignments: std::collections::HashMap<usize, usize> = thread_pool
+        .get_cpu_assignments()
+        .iter()
+        .map(|(tid, cpu, _numa)| (*tid, *cpu))
+        .collect();
+
+    // Collect results for each cache level
+    let mut levels_tested = Vec::new();
+
+    for target in &targets {
+        let window_size = target.calculate_window_size(&cache_info, thread_count);
+
+        println!("📊 Testing {} (window: {} per thread)...",
+            target.name(),
+            if window_size >= 1024 * 1024 {
+                format!("{} MB", window_size / (1024 * 1024))
+            } else {
+                format!("{} KB", window_size / 1024)
+            });
+
+        // Create test config with the calculated window size in bytes (for sub-MB precision)
+        let config = TestMemoryConfig::new(
+            WindowMode::FixedBytes { size_bytes: window_size },
+            ChunkMode::AutoOptimal,
+            false,
+            false,
+        ).with_timing(TestTiming::duration_only(10)); // 10 second test per level
+
+        // Execute latency test using thread pool
+        let latency_receiver = thread_pool.execute_latency_test(
+            "LatencyTest",
+            &config,
+            ErrorMode::Log,
+        );
+
+        // Collect results from all threads
+        let mut per_thread_results = Vec::new();
+        for _ in 0..thread_count {
+            match latency_receiver.recv() {
+                Ok(result) => {
+                    let percentiles = latency_stats_to_percentiles(&result.stats);
+                    per_thread_results.push(LatencyThreadResult {
+                        thread_id: result.thread_id,
+                        cpu_id: result.cpu_id,
+                        sample_count: result.stats.sample_count,
+                        percentiles,
+                    });
+                }
+                Err(e) => {
+                    log::error!("Failed to receive latency result: {}", e);
+                }
+            }
+        }
+
+        // Sort by thread ID
+        per_thread_results.sort_by_key(|r| r.thread_id);
+
+        // Calculate consolidated percentiles
+        let consolidated = consolidate_percentiles(&per_thread_results);
+        let total_samples: usize = per_thread_results.iter().map(|r| r.sample_count).sum();
+
+        levels_tested.push(LatencyLevelSummary {
+            target_name: target.name(),
+            level_name: target.level_name().to_string(),
+            window_size_bytes: window_size,
+            total_samples,
+            per_thread_results,
+            consolidated,
+        });
+
+        if SHUTDOWN_REQUESTED.load(Ordering::Relaxed) {
+            println!("\n🛑 Shutdown requested, ending test suite early");
+            break;
+        }
+    }
+
+    // Shutdown thread pool and clean up
+    let (_blocks, _assignments) = thread_pool.shutdown();
+
+    LatencyTestSummaryReport {
+        detected_cache,
+        thread_count,
+        levels_tested,
+    }
+}
+
+/// Convert LatencyTestStats to LatencyPercentiles
+fn latency_stats_to_percentiles(stats: &LatencyTestStats) -> LatencyPercentiles {
+    let min = stats.latencies_ns.first().copied().unwrap_or(0.0);
+    let max = stats.latencies_ns.last().copied().unwrap_or(0.0);
+
+    LatencyPercentiles {
+        min_ns: min,
+        p1_ns: stats.p1_ns,
+        p5_ns: stats.p5_ns,
+        p10_ns: stats.p10_ns,
+        p25_ns: stats.p25_ns,
+        p50_ns: stats.p50_ns,
+        p75_ns: stats.p75_ns,
+        p90_ns: stats.p90_ns,
+        p95_ns: stats.p95_ns,
+        p99_ns: stats.p99_ns,
+        p99_9_ns: stats.p99_9_ns,
+        max_ns: max,
+        spread_ratio: stats.spread_ratio,
+    }
+}
+
+/// Consolidate percentiles from multiple threads
+/// Uses simple averaging of percentiles (could be improved with proper merging)
+fn consolidate_percentiles(results: &[LatencyThreadResult]) -> LatencyPercentiles {
+    if results.is_empty() {
+        return LatencyPercentiles {
+            min_ns: 0.0, p1_ns: 0.0, p5_ns: 0.0, p10_ns: 0.0, p25_ns: 0.0,
+            p50_ns: 0.0, p75_ns: 0.0, p90_ns: 0.0, p95_ns: 0.0, p99_ns: 0.0,
+            p99_9_ns: 0.0, max_ns: 0.0, spread_ratio: 1.0,
+        };
+    }
+
+    let n = results.len() as f64;
+
+    // For consolidated view, take min of mins, max of maxes, average of percentiles
+    let min_ns = results.iter().map(|r| r.percentiles.min_ns).fold(f64::MAX, f64::min);
+    let max_ns = results.iter().map(|r| r.percentiles.max_ns).fold(f64::MIN, f64::max);
+
+    let p1_ns = results.iter().map(|r| r.percentiles.p1_ns).sum::<f64>() / n;
+    let p5_ns = results.iter().map(|r| r.percentiles.p5_ns).sum::<f64>() / n;
+    let p10_ns = results.iter().map(|r| r.percentiles.p10_ns).sum::<f64>() / n;
+    let p25_ns = results.iter().map(|r| r.percentiles.p25_ns).sum::<f64>() / n;
+    let p50_ns = results.iter().map(|r| r.percentiles.p50_ns).sum::<f64>() / n;
+    let p75_ns = results.iter().map(|r| r.percentiles.p75_ns).sum::<f64>() / n;
+    let p90_ns = results.iter().map(|r| r.percentiles.p90_ns).sum::<f64>() / n;
+    let p95_ns = results.iter().map(|r| r.percentiles.p95_ns).sum::<f64>() / n;
+    let p99_ns = results.iter().map(|r| r.percentiles.p99_ns).sum::<f64>() / n;
+    let p99_9_ns = results.iter().map(|r| r.percentiles.p99_9_ns).sum::<f64>() / n;
+
+    let spread_ratio = if p5_ns > 0.0 { p95_ns / p5_ns } else { 1.0 };
+
+    LatencyPercentiles {
+        min_ns, p1_ns, p5_ns, p10_ns, p25_ns, p50_ns,
+        p75_ns, p90_ns, p95_ns, p99_ns, p99_9_ns, max_ns,
+        spread_ratio,
     }
 }

@@ -352,6 +352,7 @@ pub fn parse_and_validate_args(args: &[String]) -> Result<HashMap<String, ParamV
             || arg.starts_with("--show-topology")
             || arg.starts_with("--setup-large-pages")
             || arg.starts_with("--quick-test")
+            || arg.starts_with("--latency-test")
             || arg.starts_with("--single-test=") {
             continue;
         }
@@ -383,6 +384,7 @@ pub fn print_help(program_name: &str) {
     println!("                                          # Compare two test results from .\\results\\");
     println!("  {} --setup-large-pages              # Configure large pages for optimal performance", program_name);
     println!("  {} --quick-test                     # Run 30-second validation test", program_name);
+    println!("  {} --latency-test                   # Run latency measurement tests (Read, Write, Copy)", program_name);
     println!("  {} --single-test=SimpleTest         # Run only SimpleTest for 30 seconds", program_name);
     println!("  {} --version                         # Show version information", program_name);
     println!("  {} --show-topology                   # Show CPU Topology Mapping for debugging", program_name);

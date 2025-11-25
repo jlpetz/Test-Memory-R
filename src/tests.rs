@@ -15,8 +15,150 @@ const CACHE_BUSTING_STRIDE: usize = PAGE_SIZE_4KB;
 #[derive(Debug, Clone)]
 pub enum WindowMode {
     FullAllocation,                    // Use entire allocation per thread (default for most tests)
-    FixedSize { size_mb: u32 },       // Fixed window size for quick tests or TM5 compatibility  
+    FixedSize { size_mb: u32 },       // Fixed window size for quick tests or TM5 compatibility
+    FixedBytes { size_bytes: usize },  // Fixed window size in bytes for sub-MB precision (latency tests)
     CacheRelative { multiplier: f64 }, // Relative to total cache size for cache-sensitive tests
+    CacheLevel { target: CacheTarget }, // Target specific cache level with smart sizing
+}
+
+/// Cache level targeting for latency tests
+/// Sizes are calculated at runtime based on detected cache and thread count
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub enum CacheTarget {
+    /// Target L1 data cache (per-core)
+    /// divisor: power of 2 (1, 2, 4, 8) - divides per-core L1 size
+    L1 { divisor: u8 },
+    /// Target L2 cache (per-core)
+    /// divisor: power of 2 (1, 2, 4, 8) - divides per-core L2 size
+    L2 { divisor: u8 },
+    /// Target L3 cache (shared, auto-divided by thread count)
+    /// divisor: power of 2 (1, 2, 4, 8) - divides per-thread L3 share
+    L3 { divisor: u8 },
+    /// Target DRAM with high TLB hit rate (typical latency)
+    /// Uses per-thread L3 share * multiplier - smaller working set per thread
+    DRAM { multiplier: u8 },
+    /// Target DRAM with TLB stress (worst-case latency)
+    /// Uses total L3 * multiplier - larger working set exceeds TLB coverage
+    DRAMFull { multiplier: u8 },
+}
+
+impl CacheTarget {
+    /// L1 with default divisor of 2 (50% of per-core L1)
+    pub const L1_DEFAULT: Self = Self::L1 { divisor: 2 };
+    /// L2 with default divisor of 2 (50% of per-core L2)
+    pub const L2_DEFAULT: Self = Self::L2 { divisor: 2 };
+    /// L3 with default divisor of 4 (25% of per-thread L3 share - conservative for shared cache)
+    pub const L3_DEFAULT: Self = Self::L3 { divisor: 4 };
+    /// DRAM with default multiplier of 4 (4x per-thread L3 share) - high TLB hit, typical latency
+    pub const DRAM_DEFAULT: Self = Self::DRAM { multiplier: 4 };
+    /// DRAM-Full with default multiplier of 4 (4x total L3) - large working set, worst-case latency
+    pub const DRAM_FULL_DEFAULT: Self = Self::DRAMFull { multiplier: 4 };
+
+    /// Calculate actual window size in bytes based on cache info and thread count
+    pub fn calculate_window_size(&self, cache_info: &CacheInfo, thread_count: usize) -> usize {
+        match self {
+            CacheTarget::L1 { divisor } => {
+                cache_info.per_core_l1d / (*divisor as usize)
+            }
+            CacheTarget::L2 { divisor } => {
+                cache_info.per_core_l2 / (*divisor as usize)
+            }
+            CacheTarget::L3 { divisor } => {
+                // Shared cache - divide by threads first, then apply divisor
+                let per_thread = cache_info.l3_cache / thread_count.max(1);
+                let l3_target = per_thread / (*divisor as usize);
+                // L3 window MUST exceed L2 size, otherwise we just hit L2 cache!
+                // Ensure at least 2x L2 to guarantee L3 cache hits
+                let min_l3_size = cache_info.per_core_l2 * 2;
+                l3_target.max(min_l3_size)
+            }
+            CacheTarget::DRAM { multiplier } => {
+                // High TLB hit scenario - uses per-thread L3 share
+                // Smaller working set per thread = good TLB coverage = typical DRAM latency
+                let per_thread_l3 = cache_info.l3_cache / thread_count.max(1);
+                per_thread_l3 * (*multiplier as usize)
+            }
+            CacheTarget::DRAMFull { multiplier } => {
+                // TLB stress scenario - uses total L3 size (not divided by threads)
+                // Larger working set per thread = TLB pressure = worst-case DRAM latency
+                // This tests full memory subsystem including TLB miss overhead
+                cache_info.l3_cache * (*multiplier as usize)
+            }
+        }
+    }
+
+    /// Get a human-readable name for this target
+    pub fn name(&self) -> String {
+        match self {
+            CacheTarget::L1 { divisor } => format!("L1/{}", divisor),
+            CacheTarget::L2 { divisor } => format!("L2/{}", divisor),
+            CacheTarget::L3 { divisor } => format!("L3/{}", divisor),
+            CacheTarget::DRAM { multiplier } => format!("DRAM*{}", multiplier),
+            CacheTarget::DRAMFull { multiplier } => format!("DRAM-Full*{}", multiplier),
+        }
+    }
+
+    /// Get the base level name (without divisor/multiplier)
+    pub fn level_name(&self) -> &'static str {
+        match self {
+            CacheTarget::L1 { .. } => "L1",
+            CacheTarget::L2 { .. } => "L2",
+            CacheTarget::L3 { .. } => "L3",
+            CacheTarget::DRAM { .. } => "DRAM",
+            CacheTarget::DRAMFull { .. } => "DRAM-Full",
+        }
+    }
+
+    /// Parse from string like "L1", "L1/2", "L2/4", "DRAM", "DRAM*8", "DRAM-FULL*2"
+    pub fn parse(s: &str) -> Option<Self> {
+        let s = s.trim().to_uppercase();
+
+        if let Some(rest) = s.strip_prefix("L1") {
+            let divisor = Self::parse_divisor(rest).unwrap_or(2);
+            Some(CacheTarget::L1 { divisor })
+        } else if let Some(rest) = s.strip_prefix("L2") {
+            let divisor = Self::parse_divisor(rest).unwrap_or(2);
+            Some(CacheTarget::L2 { divisor })
+        } else if let Some(rest) = s.strip_prefix("L3") {
+            let divisor = Self::parse_divisor(rest).unwrap_or(4);
+            Some(CacheTarget::L3 { divisor })
+        } else if let Some(rest) = s.strip_prefix("DRAM-FULL") {
+            // Must check DRAM-FULL before DRAM (longer prefix first)
+            let multiplier = Self::parse_multiplier(rest).unwrap_or(2);
+            Some(CacheTarget::DRAMFull { multiplier })
+        } else if let Some(rest) = s.strip_prefix("DRAMFULL") {
+            // Alternative without hyphen
+            let multiplier = Self::parse_multiplier(rest).unwrap_or(2);
+            Some(CacheTarget::DRAMFull { multiplier })
+        } else if let Some(rest) = s.strip_prefix("DRAM") {
+            let multiplier = Self::parse_multiplier(rest).unwrap_or(4);
+            Some(CacheTarget::DRAM { multiplier })
+        } else if s == "RAM" {
+            // Alias for DRAM
+            Some(CacheTarget::DRAM_DEFAULT)
+        } else if s == "RAM-FULL" || s == "RAMFULL" {
+            // Alias for DRAM-FULL
+            Some(CacheTarget::DRAM_FULL_DEFAULT)
+        } else {
+            None
+        }
+    }
+
+    fn parse_divisor(s: &str) -> Option<u8> {
+        if s.is_empty() {
+            return None;
+        }
+        let s = s.trim_start_matches('/');
+        s.parse::<u8>().ok().filter(|&d| d.is_power_of_two() && d >= 1)
+    }
+
+    fn parse_multiplier(s: &str) -> Option<u8> {
+        if s.is_empty() {
+            return None;
+        }
+        let s = s.trim_start_matches('*');
+        s.parse::<u8>().ok().filter(|&m| m >= 1)
+    }
 }
 
 #[derive(Debug, Clone)]
@@ -90,7 +232,7 @@ pub fn get_cache_info() -> &'static CacheInfo {
 }
 
 #[repr(C)]
-#[derive(Clone, Copy)]
+#[derive(Debug, Clone, Copy)]
 pub enum TestAction {
     Read,
     Write,
@@ -124,6 +266,7 @@ impl TestAction {
 }
 
 #[repr(C)]
+#[derive(Debug, Clone)]
 pub struct TestStats {
     pub name: &'static str,
     pub action: TestAction,
@@ -602,10 +745,20 @@ impl TestMemoryConfig {
                 let fixed_size = (*size_mb as usize) * MB;
                 fixed_size.min(allocated_size)
             }
+            WindowMode::FixedBytes { size_bytes } => {
+                (*size_bytes).min(allocated_size)
+            }
             WindowMode::CacheRelative { multiplier } => {
                 let cache_info = get_cache_info();
                 let cache_based_size = (cache_info.total_cache as f64 * multiplier) as usize;
                 cache_based_size.min(allocated_size)
+            }
+            WindowMode::CacheLevel { target } => {
+                // Calculate window size based on cache target
+                // Note: thread_count is not available here, use 1 for single-thread calculation
+                let cache_info = get_cache_info();
+                let calculated = target.calculate_window_size(cache_info, 1);
+                calculated.min(allocated_size)
             }
         }
     }

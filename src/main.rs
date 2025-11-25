@@ -55,6 +55,51 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         args.retain(|a| !a.starts_with("--single-test="));
     }
 
+    // Handle --cache-latency: single-threaded cache hierarchy diagnostic
+    // Uses same infrastructure as --latency-test but locked to 1 CPU
+    let cache_latency_idx = args.iter().position(|a| a == "--cache-latency");
+    if cache_latency_idx.is_some() {
+        args.retain(|a| a != "--cache-latency");
+
+        // Inject cache-latency defaults: single thread for clean measurements
+        let mut cache_latency_defaults = vec![
+            ("memory", "10%-from-available:start=split:auto"),
+            ("cpus", "1"),  // Single physical core for cache diagnostics
+        ];
+
+        for (key, default_value) in cache_latency_defaults.drain(..) {
+            let param_prefix = format!("{}=", key);
+            if !args.iter().any(|a| a.starts_with(&param_prefix)) {
+                args.push(format!("{}={}", key, default_value));
+            }
+        }
+    }
+
+    // Handle --latency-test with new cache-level aware test suite
+    // Supports targets: L1, L1/2, L2, L3, DRAM, DRAM*4, etc.
+    let latency_test_idx = args.iter().position(|a| a == "--latency-test");
+    if latency_test_idx.is_some() {
+        // Parse optional targets from args (e.g., --latency-test L1 L2 DRAM)
+        // For now, remove the flag and run later after memory allocation
+        args.retain(|a| a != "--latency-test");
+
+        // Inject latency-test defaults for memory allocation
+        let mut latency_defaults = vec![
+            ("memory", "10%-from-available:start=split:auto"),
+            ("cpus", "50%"),
+        ];
+
+        for (key, default_value) in latency_defaults.drain(..) {
+            let param_prefix = format!("{}=", key);
+            if !args.iter().any(|a| a.starts_with(&param_prefix)) {
+                args.push(format!("{}={}", key, default_value));
+            }
+        }
+    }
+
+    // Either --cache-latency (single thread) or --latency-test (multi-thread) triggers latency suite
+    let run_latency_suite = latency_test_idx.is_some() || cache_latency_idx.is_some();
+
     // Handle --quick-test by injecting defaults BEFORE parameter parsing
     // This allows CLI overrides to work: --quick-test cycles=2 skip-cores=0
     let has_quick_test = args.iter().any(|a| a == "--quick-test");
@@ -118,6 +163,8 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
 				tmr::cpu_topology::show_complete_topology_mapping();
 				return Ok(());
 			}
+			// --cache-latency is now handled above with --latency-test infrastructure
+			// It injects cpus=1 and runs through the standard latency test suite
 			"--setup-large-pages" => {
 				println!("🔧 TMR Large Page Setup Tool");
 				println!("=============================\n");
@@ -681,20 +728,43 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
 	};
 
     let start_time = std::time::Instant::now();
-	let success = run_tests_with_layout_and_timing_filtered(
-		enhanced_layout,
-		error_mode,
-		suite_timing,
-		runtime_config,
-		config_opt.as_ref(),  // Pass config if available
-		single_test.as_deref(),  // Pass single test filter if provided
-		streams_override,  // Pass streams override if provided
-	);
+
+    // Check if running latency test suite
+    let success = if run_latency_suite {
+        // Run new cache-level aware latency test suite
+        let report = tmr::runner::run_latency_test_suite(
+            enhanced_layout,
+            None,  // Use default targets (L1, L2, L3, DRAM)
+        );
+
+        // Display results using reporting system
+        let mut reporter = tmr::reporting::create_console_reporter();
+        if let Err(e) = reporter.report_latency_summary(&report) {
+            log::error!("Failed to display latency report: {}", e);
+        }
+
+        !report.levels_tested.is_empty()
+    } else {
+        // Run normal test suite
+        run_tests_with_layout_and_timing_filtered(
+            enhanced_layout,
+            error_mode,
+            suite_timing,
+            runtime_config,
+            config_opt.as_ref(),
+            single_test.as_deref(),
+            streams_override,
+        )
+    };
+
     let total_time = start_time.elapsed();
 
     println!();
     println!("================================================================================");
-    if success {
+    if run_latency_suite {
+        println!("✅ Latency test suite completed in {}", format_duration(total_time));
+        println!("   Cache hierarchy latency measured: L1, L2, L3, DRAM");
+    } else if success {
         println!("✅ All memory tests completed successfully in {}", format_duration(total_time));
         println!("   Comprehensive testing: Full memory stuck bit detection + optimized stress tests");
         println!("   Memory pressure maintained throughout testing with three-stage architecture");

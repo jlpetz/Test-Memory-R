@@ -623,6 +623,66 @@ pub struct UnfairThreadAllocation {
     pub reason: String, // e.g., "got all huge pages", "only regular pages"
 }
 
+// Note: CacheLatencyReport was removed - --cache-latency now uses LatencyTestSummaryReport
+
+/// Multi-threaded latency test summary report
+/// Aggregates results from all threads for each cache level tested
+#[derive(Debug, Clone)]
+pub struct LatencyTestSummaryReport {
+    pub detected_cache: DetectedCacheInfo,
+    pub thread_count: usize,
+    pub levels_tested: Vec<LatencyLevelSummary>,
+}
+
+/// Summary of latency measurements for a single cache level across all threads
+#[derive(Debug, Clone)]
+pub struct LatencyLevelSummary {
+    pub target_name: String,           // e.g., "L1/2", "L2/2", "DRAM*4"
+    pub level_name: String,            // e.g., "L1", "L2", "L3", "DRAM"
+    pub window_size_bytes: usize,      // Actual window size used per thread
+    pub total_samples: usize,          // Total samples across all threads
+    pub per_thread_results: Vec<LatencyThreadResult>,
+    pub consolidated: LatencyPercentiles,  // Consolidated across all threads
+}
+
+/// Per-thread latency results
+#[derive(Debug, Clone)]
+pub struct LatencyThreadResult {
+    pub thread_id: usize,
+    pub cpu_id: usize,
+    pub sample_count: usize,
+    pub percentiles: LatencyPercentiles,
+}
+
+/// Full percentile breakdown for latency measurements
+#[derive(Debug, Clone)]
+pub struct LatencyPercentiles {
+    pub min_ns: f64,
+    pub p1_ns: f64,
+    pub p5_ns: f64,
+    pub p10_ns: f64,
+    pub p25_ns: f64,
+    pub p50_ns: f64,
+    pub p75_ns: f64,
+    pub p90_ns: f64,
+    pub p95_ns: f64,
+    pub p99_ns: f64,
+    pub p99_9_ns: f64,
+    pub max_ns: f64,
+    pub spread_ratio: f64,  // P95/P5 - indicates variability
+}
+
+/// Detected cache hierarchy information
+#[derive(Debug, Clone)]
+pub struct DetectedCacheInfo {
+    pub l1d_per_core_kb: usize,
+    pub l2_per_core_kb: usize,
+    pub l3_shared_mb: usize,
+    pub detection_method: String,
+}
+
+// Note: CacheLatencyLevel was removed - --cache-latency now uses LatencyLevelSummary
+
 /// Generic table data for rendering
 #[derive(Debug, Clone)]
 pub struct TableData {

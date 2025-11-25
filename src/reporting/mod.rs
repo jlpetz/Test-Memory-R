@@ -188,6 +188,35 @@ impl<R: Renderer> Reporter<R> {
         Ok(())
     }
     
+    /// Report latency test summary results (multi-threaded)
+    pub fn report_latency_summary(&mut self, report: &LatencyTestSummaryReport) -> Result<()> {
+        self.renderer.render_heading("Latency Test Results")?;
+
+        // Show detected cache info
+        self.renderer.render_info(&format!(
+            "Detected: L1D {} KB/core, L2 {} KB/core, L3 {} MB shared ({})",
+            report.detected_cache.l1d_per_core_kb,
+            report.detected_cache.l2_per_core_kb,
+            report.detected_cache.l3_shared_mb,
+            report.detected_cache.detection_method
+        ))?;
+        self.renderer.render_info(&format!("Threads: {}", report.thread_count))?;
+
+        // Per-level detailed tables (per-thread breakdown)
+        for level in &report.levels_tested {
+            self.renderer.render_separator()?;
+            let per_thread_table = self.formatter.prepare_latency_per_thread_table(level);
+            self.renderer.render_table(&per_thread_table)?;
+        }
+
+        // Consolidated summary table
+        self.renderer.render_separator()?;
+        let summary_table = self.formatter.prepare_latency_summary_consolidated_table(report);
+        self.renderer.render_table(&summary_table)?;
+
+        Ok(())
+    }
+
     /// Report block allocation distribution with separate tables (Option B layout)
     pub fn report_block_allocation(&mut self, report: &BlockAllocationReport) -> Result<()> {
         self.renderer.render_heading(&format!("Memory Allocation Summary ({})", report.allocator_backend))?;

@@ -64,5 +64,18 @@ impl EnhancedMemoryLayout {
         log::info!("  Minimum start address: 0x{:016X}", self.allocation_result.min_start_address);
         log::info!("  Strategy: {}", self.allocation_result.allocation_type);
     }
-    
+
+    /// Get the number of threads in this layout
+    pub fn thread_count(&self) -> usize {
+        self.blocks.len()
+    }
+
+    /// Get thread blocks grouped by thread ID
+    pub fn get_thread_blocks(&self) -> std::collections::HashMap<usize, Vec<BlockInfo>> {
+        let mut result = std::collections::HashMap::new();
+        for (idx, block) in self.blocks.iter().enumerate() {
+            result.entry(idx).or_insert_with(Vec::new).push(block.clone());
+        }
+        result
+    }
 }
