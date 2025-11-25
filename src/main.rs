@@ -55,8 +55,68 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         args.retain(|a| !a.starts_with("--single-test="));
     }
 
-    // Handle --cache-latency: single-threaded cache hierarchy diagnostic
-    // Uses same infrastructure as --latency-test but locked to 1 CPU
+    // Validate that all -- flags are recognized before processing
+    // This catches typos and deprecated flags early with helpful error messages
+    let known_flags = [
+        "--single-test=", "--ram-latency", "--cache-latency", "--quick-test",
+        "--create-demo-configs", "--compare-results", "--debug-topology",
+        "--show-topology", "--setup-large-pages", "--help", "-h", "--version", "-v"
+    ];
+
+    let unknown_flags: Vec<String> = args.iter()
+        .filter(|arg| arg.starts_with("--") || arg.starts_with("-"))
+        .filter(|arg| {
+            // Check if it matches any known flag (handle --flag=value style)
+            !known_flags.iter().any(|known| {
+                arg.starts_with(known) || arg == known
+            })
+        })
+        .cloned()
+        .collect();
+
+    if !unknown_flags.is_empty() {
+        println!("❌ Error: Unknown parameter(s) detected:");
+        for flag in &unknown_flags {
+            println!("  {}", flag);
+        }
+        println!();
+        println!("Note: --latency-test has been renamed to --ram-latency");
+        println!();
+        params::print_help(&args[0]);
+        return Ok(());
+    }
+
+    // Track if a test filter should be applied (for --ram-latency and --cache-latency)
+    let mut test_filter: Option<String> = None;
+
+    // Handle --ram-latency: DRAM latency characterization with TLB analysis
+    // Tests: Read/Write/Copy × (DRAM, DRAMFull) = 6 tests
+    // Uses 50% CPUs for realistic multi-threaded DRAM behavior
+    let ram_latency_idx = args.iter().position(|a| a == "--ram-latency");
+    if ram_latency_idx.is_some() {
+        args.retain(|a| a != "--ram-latency");
+
+        // Inject ram-latency defaults
+        let mut ram_latency_defaults = vec![
+            ("memory", "10%-from-available:start=split:auto"),
+            ("cpus", "50%"),  // Multi-threaded for realistic DRAM behavior
+            ("cycles", "1"),  // Single cycle for quick latency measurement
+        ];
+
+        for (key, default_value) in ram_latency_defaults.drain(..) {
+            let param_prefix = format!("{}=", key);
+            if !args.iter().any(|a| a.starts_with(&param_prefix)) {
+                args.push(format!("{}={}", key, default_value));
+            }
+        }
+
+        // Set filter to run DRAM latency tests (6 tests: DRAM-* and DRAMFull-*)
+        test_filter = Some("DRAM*".to_string());
+    }
+
+    // Handle --cache-latency: Full cache hierarchy diagnostic (single-thread)
+    // Tests: Read/Write/Copy × (L1, L2, L3, DRAM) = 12 tests
+    // Uses 1 CPU for clean single-threaded measurements
     let cache_latency_idx = args.iter().position(|a| a == "--cache-latency");
     if cache_latency_idx.is_some() {
         args.retain(|a| a != "--cache-latency");
@@ -64,7 +124,8 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         // Inject cache-latency defaults: single thread for clean measurements
         let mut cache_latency_defaults = vec![
             ("memory", "10%-from-available:start=split:auto"),
-            ("cpus", "1"),  // Single physical core for cache diagnostics
+            ("cpus", "1"),  // Single physical core for diagnostic-quality measurements
+            ("cycles", "1"),  // Single cycle for quick latency measurement
         ];
 
         for (key, default_value) in cache_latency_defaults.drain(..) {
@@ -73,32 +134,11 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
                 args.push(format!("{}={}", key, default_value));
             }
         }
+
+        // Set filter to run cache hierarchy tests (12 tests: L1-*, L2-*, L3-*, DRAM-*)
+        // Note: Excludes DRAMFull-* tests (those are for --ram-latency)
+        test_filter = Some("L*,DRAM-*".to_string());
     }
-
-    // Handle --latency-test with new cache-level aware test suite
-    // Supports targets: L1, L1/2, L2, L3, DRAM, DRAM*4, etc.
-    let latency_test_idx = args.iter().position(|a| a == "--latency-test");
-    if latency_test_idx.is_some() {
-        // Parse optional targets from args (e.g., --latency-test L1 L2 DRAM)
-        // For now, remove the flag and run later after memory allocation
-        args.retain(|a| a != "--latency-test");
-
-        // Inject latency-test defaults for memory allocation
-        let mut latency_defaults = vec![
-            ("memory", "10%-from-available:start=split:auto"),
-            ("cpus", "50%"),
-        ];
-
-        for (key, default_value) in latency_defaults.drain(..) {
-            let param_prefix = format!("{}=", key);
-            if !args.iter().any(|a| a.starts_with(&param_prefix)) {
-                args.push(format!("{}={}", key, default_value));
-            }
-        }
-    }
-
-    // Either --cache-latency (single thread) or --latency-test (multi-thread) triggers latency suite
-    let run_latency_suite = latency_test_idx.is_some() || cache_latency_idx.is_some();
 
     // Handle --quick-test by injecting defaults BEFORE parameter parsing
     // This allows CLI overrides to work: --quick-test cycles=2 skip-cores=0
@@ -163,8 +203,8 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
 				tmr::cpu_topology::show_complete_topology_mapping();
 				return Ok(());
 			}
-			// --cache-latency is now handled above with --latency-test infrastructure
-			// It injects cpus=1 and runs through the standard latency test suite
+			// --cache-latency and --ram-latency are handled above
+			// They use the unified test flow with filters
 			"--setup-large-pages" => {
 				println!("🔧 TMR Large Page Setup Tool");
 				println!("=============================\n");
@@ -729,44 +769,28 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
 
     let start_time = std::time::Instant::now();
 
-    // Check if running latency test suite
-    let success = if run_latency_suite {
-        // Run new cache-level aware latency test suite
-        let report = tmr::runner::run_latency_test_suite(
-            enhanced_layout,
-            None,  // Use default targets (L1, L2, L3, DRAM)
-        );
+    // Unified test execution path - works for bandwidth tests, latency tests, or mixed
+    // test_filter may be set by --ram-latency or --cache-latency to run specific test subsets
+    // single_test may be set by --single-test=TestName for individual test execution
+    let final_test_filter = test_filter.as_deref().or(single_test.as_deref());
 
-        // Display results using reporting system
-        let mut reporter = tmr::reporting::create_console_reporter();
-        if let Err(e) = reporter.report_latency_summary(&report) {
-            log::error!("Failed to display latency report: {}", e);
-        }
-
-        !report.levels_tested.is_empty()
-    } else {
-        // Run normal test suite
-        run_tests_with_layout_and_timing_filtered(
-            enhanced_layout,
-            error_mode,
-            suite_timing,
-            runtime_config,
-            config_opt.as_ref(),
-            single_test.as_deref(),
-            streams_override,
-        )
-    };
+    let success = run_tests_with_layout_and_timing_filtered(
+        enhanced_layout,
+        error_mode,
+        suite_timing,
+        runtime_config,
+        config_opt.as_ref(),
+        final_test_filter,
+        streams_override,
+    );
 
     let total_time = start_time.elapsed();
 
     println!();
     println!("================================================================================");
-    if run_latency_suite {
-        println!("✅ Latency test suite completed in {}", format_duration(total_time));
-        println!("   Cache hierarchy latency measured: L1, L2, L3, DRAM");
-    } else if success {
+    if success {
         println!("✅ All memory tests completed successfully in {}", format_duration(total_time));
-        println!("   Comprehensive testing: Full memory stuck bit detection + optimized stress tests");
+        println!("   Comprehensive testing completed with unified execution pipeline");
         println!("   Memory pressure maintained throughout testing with three-stage architecture");
     } else {
         println!("❌ Tests failed or encountered errors in {}", format_duration(total_time));

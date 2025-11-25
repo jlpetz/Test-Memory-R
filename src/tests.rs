@@ -435,6 +435,7 @@ pub struct TestMemoryConfig {
     pub pattern_param1: Option<u64>, // TM5 pattern parameter 1
     pub memory_type: Option<MemoryType>,
     pub error_check_interval: ErrorCheckInterval,  // Controls error checking frequency
+    pub tsc_frequency_ghz: f64,     // TSC frequency detected at startup (for latency tests)
 }
 
 impl TestMemoryConfig {
@@ -451,6 +452,7 @@ impl TestMemoryConfig {
             pattern_param1: None,
 			memory_type: None,
             error_check_interval: ErrorCheckInterval::PER_CHUNK,  // Default: check at chunk boundaries
+            tsc_frequency_ghz: 0.0,  // MUST be set from detected CacheInfo before running latency tests
         }
     }
     
@@ -704,7 +706,12 @@ impl TestMemoryConfig {
         self.timing = timing;
         self
     }
-    
+
+    pub fn with_tsc(mut self, tsc_frequency_ghz: f64) -> Self {
+        self.tsc_frequency_ghz = tsc_frequency_ghz;
+        self
+    }
+
     pub fn with_streams(mut self, streams: u32) -> Self {
         // Validate streams is power-of-2 for multi-stream tests
         if streams > 1 && !streams.is_power_of_two() {

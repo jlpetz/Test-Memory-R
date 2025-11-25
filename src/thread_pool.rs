@@ -50,6 +50,7 @@ pub struct WorkResult {
     pub cycles_completed: u32,  // Cycles completed (from last block processed)
     pub cycle_limit: Option<u32>,  // Planned cycles (None = unlimited)
     pub stopped_by_time_limit: bool,  // True if stopped due to time limit
+    pub latency_stats: Option<LatencyTestStats>,  // Set for latency tests - includes percentiles
 }
 
 // Result from worker thread for latency tests
@@ -276,14 +277,8 @@ fn worker_thread_loop(context: &mut WorkerContext) {
             Ok(WorkItem::RunTest { test_name, test_func, test_config, error_mode, barrier }) => {
                 // Wait for all threads to be ready
                 barrier.wait();
-                
-                let thread_start = Instant::now();
 
-                // Extract the MultiBlock test function
-                let f = match &test_func {
-                    crate::runner::TestFunction::MultiBlock(f) => f,
-                    _ => unreachable!("Only MultiBlock tests are registered"),
-                };
+                let thread_start = Instant::now();
 
                 // MultiBlock tests receive ALL allocated blocks and handle interleaving internally
                 let blocks_slice = &context.allocated_blocks[..];
@@ -291,9 +286,23 @@ fn worker_thread_loop(context: &mut WorkerContext) {
                 // Create progress tracker
                 let progress = crate::tests::TestProgress::new();
 
-                // Run the multi-block test with ALL blocks
-                let stats = unsafe {
-                    f(blocks_slice, context.thread_id, error_mode, &test_config.timing, &test_config, Some(&progress))
+                // Execute test based on function type
+                let (stats, latency_stats) = match &test_func {
+                    crate::runner::TestFunction::MultiBlock(f) => {
+                        // Regular bandwidth test - returns TestStats only
+                        let stats = unsafe {
+                            f(blocks_slice, context.thread_id, error_mode, &test_config.timing, &test_config, Some(&progress))
+                        };
+                        (stats, None)
+                    }
+                    crate::runner::TestFunction::Latency(f) => {
+                        // Latency test - returns LatencyTestStats with percentiles
+                        let latency_stats = unsafe {
+                            f(blocks_slice, context.thread_id, error_mode, &test_config.timing, &test_config, Some(&progress))
+                        };
+                        (latency_stats.basic_stats.clone(), Some(latency_stats))
+                    }
+                    _ => unreachable!("Only MultiBlock and Latency tests are registered"),
                 };
 
                 // Handle any errors from the test
@@ -314,8 +323,9 @@ fn worker_thread_loop(context: &mut WorkerContext) {
                     cycles_completed: stats.cycles_completed,
                     cycle_limit: stats.cycles_planned,
                     stopped_by_time_limit: stats.stopped_by_time_limit,
+                    latency_stats,  // Include detailed latency stats when available
                 };
-                
+
                 if context.result_sender.send(result).is_err() {
                     log::error!("Failed to send result from thread {}", context.thread_id);
                 }

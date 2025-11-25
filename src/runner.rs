@@ -16,7 +16,7 @@ use crate::tests::{
     stride_access_multi, bandwidth_saturation_multi, block_move_multi
 };
 use crate::latency_tests::{
-    read_latency_multi_wrapper, write_latency_multi_wrapper, copy_latency_multi_wrapper,
+    read_latency_multi, write_latency_multi, copy_latency_multi,  // Full latency tests with percentiles
     LatencyTestStats,
 };
 use crate::cache::CacheInfo;
@@ -109,6 +109,7 @@ type TestFunctionSimple = unsafe fn(*mut u8, usize, usize, ErrorMode, &TestTimin
 type TestFunctionWithStreams = unsafe fn(*mut u8, usize, usize, ErrorMode, &TestTiming, u32) -> TestStats;
 type TestFunctionWithConfig = unsafe fn(*mut u8, usize, usize, ErrorMode, &TestTiming, &TestMemoryConfig) -> TestStats;
 type TestFunctionMultiBlock = unsafe fn(&[AllocationBlock], usize, ErrorMode, &TestTiming, &TestMemoryConfig, Option<&TestProgress>) -> TestStats;
+type TestFunctionLatency = unsafe fn(&[AllocationBlock], usize, ErrorMode, &TestTiming, &TestMemoryConfig, Option<&TestProgress>) -> LatencyTestStats;
 
 // Test function wrapper enum
 #[derive(Debug, Clone)]
@@ -117,6 +118,8 @@ pub enum TestFunction {
     WithStreams(TestFunctionWithStreams),
     WithConfig(TestFunctionWithConfig),
     MultiBlock(TestFunctionMultiBlock),
+    /// Latency tests return extended stats with percentiles
+    Latency(TestFunctionLatency),
 }
 
 pub fn run_tests_with_layout(layout: EnhancedMemoryLayout, error_mode: ErrorMode) -> bool {
@@ -278,7 +281,7 @@ pub fn run_tests_with_layout_and_timing_filtered(
         create_test_definitions()
     };
 
-    // Apply single test filter if provided (supports wildcards)
+    // Apply single test filter if provided (supports wildcards and comma-separated patterns)
     if let Some(test_name_filter) = single_test_filter {
         let matches_filter = |name: &str, filter: &str| -> bool {
             if filter.contains('*') {
@@ -305,9 +308,14 @@ pub fn run_tests_with_layout_and_timing_filtered(
             }
         };
 
+        // Support comma-separated patterns: "L*,DRAM-*"
+        let patterns: Vec<&str> = test_name_filter.split(',').map(|s| s.trim()).collect();
+
         test_definitions.retain(|def| {
-            matches_filter(&def.display_name, test_name_filter) ||
-            def.original_name.map(|n| matches_filter(n, test_name_filter)).unwrap_or(false)
+            patterns.iter().any(|pattern| {
+                matches_filter(&def.display_name, pattern) ||
+                def.original_name.map(|n| matches_filter(n, pattern)).unwrap_or(false)
+            })
         });
 
         if test_definitions.is_empty() {
@@ -504,6 +512,7 @@ fn execute_test_cycle(
         
 		// Collect results from all threads
 		let mut test_stats = Vec::new();
+		let mut latency_results = Vec::new();  // Collect latency stats separately
 		let mut total_bytes_for_test = 0u64;
 		let mut total_errors_for_test = 0u64;
 		let mut total_operations_for_test = 0u64;
@@ -523,6 +532,11 @@ fn execute_test_cycle(
 						test_stats.push((result.thread_id, cpu_id,
 									   result.total_bytes, result.elapsed_ms, result.total_errors, result.total_operations,
 									   result.cycles_completed));
+
+						// Collect latency stats if present (for latency tests)
+						if let Some(lat_stats) = result.latency_stats {
+							latency_results.push((result.thread_id, cpu_id, lat_stats));
+						}
 					}
 
 					total_bytes_for_test += result.total_bytes;
@@ -541,10 +555,10 @@ fn execute_test_cycle(
 					if result.stopped_by_time_limit {
 						stopped_by_time_limit = true;
 					}
-					
+
 					if result.total_errors > 0 {
 						success.store(false, Ordering::Relaxed);
-						log::error!("Thread {} reported {} memory errors in test '{}'", 
+						log::error!("Thread {} reported {} memory errors in test '{}'",
 								  result.thread_id, result.total_errors, test_name);
 					}
 				}
@@ -650,6 +664,32 @@ fn execute_test_cycle(
             let mut reporter = create_console_reporter();
             if let Err(e) = reporter.report_thread_timing(&report) {
                 log::error!("Failed to display thread timing report: {}", e);
+            }
+        }
+
+        // Display latency-specific report if this was a latency test
+        if !latency_results.is_empty() {
+            use crate::reporting::create_console_reporter;
+
+            // Convert to LatencyTestSummaryReport for reporting
+            let cache_info = CacheInfo::detect();
+            let level_summary = convert_to_latency_level_summary(test_name, &latency_results, test_config);
+
+            let summary_report = LatencyTestSummaryReport {
+                detected_cache: DetectedCacheInfo {
+                    l1d_per_core_kb: cache_info.per_core_l1d / 1024,
+                    l2_per_core_kb: cache_info.per_core_l2 / 1024,
+                    l3_shared_mb: cache_info.l3_cache / (1024 * 1024),
+                    detection_method: cache_info.detection_method.clone(),
+                },
+                thread_count: latency_results.len(),
+                levels_tested: vec![level_summary],
+            };
+
+            // Use existing reporting infrastructure - just display the single level
+            let mut reporter = create_console_reporter();
+            if let Err(e) = reporter.report_latency_summary(&summary_report) {
+                log::error!("Failed to display latency report: {}", e);
             }
         }
 
@@ -761,12 +801,16 @@ fn resolve_auto_dispatch_test(test_name: &str) -> Option<(&'static str, TestFunc
 }
 
 fn create_test_definitions() -> Vec<TestDefinition> {
+    // Detect TSC frequency once at startup for latency tests
+    let cache_info = CacheInfo::detect();
+    let tsc_freq = cache_info.tsc_frequency_ghz;
+
     // Helper to validate and adjust streams at config creation time
     let validate_streams = |mut config: TestMemoryConfig, test_name: &str| -> TestMemoryConfig {
         if !config.streams.is_power_of_two() {
             let original = config.streams;
             config.streams = config.streams.next_power_of_two();
-            println!("⚠️  {}: Adjusting stream count {} → {} (power-of-2 required)", 
+            println!("⚠️  {}: Adjusting stream count {} → {} (power-of-2 required)",
                      test_name, original, config.streams);
         }
         config
@@ -1060,44 +1104,209 @@ fn create_test_definitions() -> Vec<TestDefinition> {
              .with_memory_type(None)
         ),
 
-        // === Latency Measurement Tests ===
-        // Window size 128MB = ~8x typical L3 cache to ensure DRAM access
+        // === Cache Hierarchy Latency Tests ===
+        // Uses WindowMode::CacheLevel for automatic sizing based on detected cache
+        // Naming: {Level}-{Operation} for easy filtering
+        // --cache-latency: L*, DRAM-* (12 tests: L1/L2/L3/DRAM × Read/Write/Copy)
+        // --ram-latency: DRAM* (6 tests: DRAM/DRAMFull × Read/Write/Copy)
+
+        // L1 Cache - Read, Write, Copy
         (
-            "ReadLatency",
-            TestFunction::MultiBlock(read_latency_multi_wrapper),
+            "L1-Read",
+            TestFunction::Latency(read_latency_multi),
             validate_streams(TestMemoryConfig::new(
-                WindowMode::FixedSize { size_mb: 128 },
-                ChunkMode::FixedSize { size_mb: 4 },
+                WindowMode::CacheLevel { target: CacheTarget::L1_DEFAULT },
+                ChunkMode::AutoOptimal,
                 false,
                 false
             ).with_timing(TestTiming::duration_only(10))
-             .with_streams(1), "ReadLatency")
+             .with_streams(1), "L1-Read")
              .with_memory_type(None)
         ),
 
         (
-            "WriteLatency",
-            TestFunction::MultiBlock(write_latency_multi_wrapper),
+            "L1-Write",
+            TestFunction::Latency(write_latency_multi),
             validate_streams(TestMemoryConfig::new(
-                WindowMode::FixedSize { size_mb: 128 },
-                ChunkMode::FixedSize { size_mb: 4 },
+                WindowMode::CacheLevel { target: CacheTarget::L1_DEFAULT },
+                ChunkMode::AutoOptimal,
                 false,
                 false
             ).with_timing(TestTiming::duration_only(10))
-             .with_streams(1), "WriteLatency")
+             .with_streams(1), "L1-Write")
              .with_memory_type(None)
         ),
 
         (
-            "CopyLatency",
-            TestFunction::MultiBlock(copy_latency_multi_wrapper),
+            "L1-Copy",
+            TestFunction::Latency(copy_latency_multi),
             validate_streams(TestMemoryConfig::new(
-                WindowMode::FixedSize { size_mb: 128 },
-                ChunkMode::FixedSize { size_mb: 4 },
+                WindowMode::CacheLevel { target: CacheTarget::L1_DEFAULT },
+                ChunkMode::AutoOptimal,
                 false,
                 false
             ).with_timing(TestTiming::duration_only(10))
-             .with_streams(1), "CopyLatency")
+             .with_streams(1), "L1-Copy")
+             .with_memory_type(None)
+        ),
+
+        // L2 Cache - Read, Write, Copy
+        (
+            "L2-Read",
+            TestFunction::Latency(read_latency_multi),
+            validate_streams(TestMemoryConfig::new(
+                WindowMode::CacheLevel { target: CacheTarget::L2_DEFAULT },
+                ChunkMode::AutoOptimal,
+                false,
+                false
+            ).with_timing(TestTiming::duration_only(10))
+             .with_streams(1), "L2-Read")
+             .with_memory_type(None)
+        ),
+
+        (
+            "L2-Write",
+            TestFunction::Latency(write_latency_multi),
+            validate_streams(TestMemoryConfig::new(
+                WindowMode::CacheLevel { target: CacheTarget::L2_DEFAULT },
+                ChunkMode::AutoOptimal,
+                false,
+                false
+            ).with_timing(TestTiming::duration_only(10))
+             .with_streams(1), "L2-Write")
+             .with_memory_type(None)
+        ),
+
+        (
+            "L2-Copy",
+            TestFunction::Latency(copy_latency_multi),
+            validate_streams(TestMemoryConfig::new(
+                WindowMode::CacheLevel { target: CacheTarget::L2_DEFAULT },
+                ChunkMode::AutoOptimal,
+                false,
+                false
+            ).with_timing(TestTiming::duration_only(10))
+             .with_streams(1), "L2-Copy")
+             .with_memory_type(None)
+        ),
+
+        // L3 Cache - Read, Write, Copy
+        (
+            "L3-Read",
+            TestFunction::Latency(read_latency_multi),
+            validate_streams(TestMemoryConfig::new(
+                WindowMode::CacheLevel { target: CacheTarget::L3_DEFAULT },
+                ChunkMode::AutoOptimal,
+                false,
+                false
+            ).with_timing(TestTiming::duration_only(10))
+             .with_streams(1), "L3-Read")
+             .with_memory_type(None)
+        ),
+
+        (
+            "L3-Write",
+            TestFunction::Latency(write_latency_multi),
+            validate_streams(TestMemoryConfig::new(
+                WindowMode::CacheLevel { target: CacheTarget::L3_DEFAULT },
+                ChunkMode::AutoOptimal,
+                false,
+                false
+            ).with_timing(TestTiming::duration_only(10))
+             .with_streams(1), "L3-Write")
+             .with_memory_type(None)
+        ),
+
+        (
+            "L3-Copy",
+            TestFunction::Latency(copy_latency_multi),
+            validate_streams(TestMemoryConfig::new(
+                WindowMode::CacheLevel { target: CacheTarget::L3_DEFAULT },
+                ChunkMode::AutoOptimal,
+                false,
+                false
+            ).with_timing(TestTiming::duration_only(10))
+             .with_streams(1), "L3-Copy")
+             .with_memory_type(None)
+        ),
+
+        // DRAM - High TLB hit rate (typical latency) - Read, Write, Copy
+        (
+            "DRAM-Read",
+            TestFunction::Latency(read_latency_multi),
+            validate_streams(TestMemoryConfig::new(
+                WindowMode::CacheLevel { target: CacheTarget::DRAM_DEFAULT },
+                ChunkMode::AutoOptimal,
+                false,
+                false
+            ).with_timing(TestTiming::duration_only(10))
+             .with_streams(1), "DRAM-Read")
+             .with_memory_type(None)
+        ),
+
+        (
+            "DRAM-Write",
+            TestFunction::Latency(write_latency_multi),
+            validate_streams(TestMemoryConfig::new(
+                WindowMode::CacheLevel { target: CacheTarget::DRAM_DEFAULT },
+                ChunkMode::AutoOptimal,
+                false,
+                false
+            ).with_timing(TestTiming::duration_only(10))
+             .with_streams(1), "DRAM-Write")
+             .with_memory_type(None)
+        ),
+
+        (
+            "DRAM-Copy",
+            TestFunction::Latency(copy_latency_multi),
+            validate_streams(TestMemoryConfig::new(
+                WindowMode::CacheLevel { target: CacheTarget::DRAM_DEFAULT },
+                ChunkMode::AutoOptimal,
+                false,
+                false
+            ).with_timing(TestTiming::duration_only(10))
+             .with_streams(1), "DRAM-Copy")
+             .with_memory_type(None)
+        ),
+
+        // DRAMFull - Low TLB hit rate (stress with page miss overhead) - Read, Write, Copy
+        (
+            "DRAMFull-Read",
+            TestFunction::Latency(read_latency_multi),
+            validate_streams(TestMemoryConfig::new(
+                WindowMode::CacheLevel { target: CacheTarget::DRAM_FULL_DEFAULT },
+                ChunkMode::AutoOptimal,
+                false,
+                false
+            ).with_timing(TestTiming::duration_only(10))
+             .with_streams(1), "DRAMFull-Read")
+             .with_memory_type(None)
+        ),
+
+        (
+            "DRAMFull-Write",
+            TestFunction::Latency(write_latency_multi),
+            validate_streams(TestMemoryConfig::new(
+                WindowMode::CacheLevel { target: CacheTarget::DRAM_FULL_DEFAULT },
+                ChunkMode::AutoOptimal,
+                false,
+                false
+            ).with_timing(TestTiming::duration_only(10))
+             .with_streams(1), "DRAMFull-Write")
+             .with_memory_type(None)
+        ),
+
+        (
+            "DRAMFull-Copy",
+            TestFunction::Latency(copy_latency_multi),
+            validate_streams(TestMemoryConfig::new(
+                WindowMode::CacheLevel { target: CacheTarget::DRAM_FULL_DEFAULT },
+                ChunkMode::AutoOptimal,
+                false,
+                false
+            ).with_timing(TestTiming::duration_only(10))
+             .with_streams(1), "DRAMFull-Copy")
              .with_memory_type(None)
         ),
     ];
@@ -1345,10 +1554,107 @@ pub fn run_test_with_memory_stages(
                 // This path should not be reached when properly implemented
                 return Err("MultiBlock tests must be called with all blocks at once".to_string());
             }
+            TestFunction::Latency(_) => {
+                // Latency tests need to be called from thread_pool with all blocks
+                // This path should not be reached when properly implemented
+                return Err("Latency tests must be called with all blocks at once".to_string());
+            }
         }
     };
     
     Ok(stats)
+}
+
+/// Convert latency test results to LatencyLevelSummary for reporting
+fn convert_to_latency_level_summary(
+    test_name: &str,
+    latency_results: &[(usize, usize, LatencyTestStats)],
+    test_config: &TestMemoryConfig,
+) -> LatencyLevelSummary {
+    // Collect per-thread results
+    let mut per_thread_results = Vec::new();
+    let mut all_latencies = Vec::new();
+    let mut total_samples = 0;
+
+    for (thread_id, cpu_id, lat_stats) in latency_results {
+        per_thread_results.push(LatencyThreadResult {
+            thread_id: *thread_id,
+            cpu_id: *cpu_id,
+            sample_count: lat_stats.sample_count,
+            percentiles: LatencyPercentiles {
+                min_ns: lat_stats.latencies_ns.iter().min_by(|a, b| a.partial_cmp(b).unwrap()).copied().unwrap_or(0.0),
+                p1_ns: lat_stats.p1_ns,
+                p5_ns: lat_stats.p5_ns,
+                p10_ns: lat_stats.p10_ns,
+                p25_ns: lat_stats.p25_ns,
+                p50_ns: lat_stats.p50_ns,
+                p75_ns: lat_stats.p75_ns,
+                p90_ns: lat_stats.p90_ns,
+                p95_ns: lat_stats.p95_ns,
+                p99_ns: lat_stats.p99_ns,
+                p99_9_ns: lat_stats.p99_9_ns,
+                max_ns: lat_stats.latencies_ns.iter().max_by(|a, b| a.partial_cmp(b).unwrap()).copied().unwrap_or(0.0),
+                spread_ratio: lat_stats.spread_ratio,
+            },
+        });
+
+        all_latencies.extend(&lat_stats.latencies_ns);
+        total_samples += lat_stats.sample_count;
+    }
+
+    // Calculate consolidated percentiles
+    let consolidated = if !all_latencies.is_empty() {
+        // Sort latencies (safe to unwrap - timing values are never NaN)
+        all_latencies.sort_by(|a: &f64, b: &f64| a.partial_cmp(b).unwrap());
+        let len = all_latencies.len();
+
+        let percentile = |p: f64| -> f64 {
+            let idx = ((len as f64 - 1.0) * p / 100.0) as usize;
+            all_latencies[idx.min(len - 1)]
+        };
+
+        LatencyPercentiles {
+            min_ns: all_latencies[0],
+            p1_ns: percentile(1.0),
+            p5_ns: percentile(5.0),
+            p10_ns: percentile(10.0),
+            p25_ns: percentile(25.0),
+            p50_ns: percentile(50.0),
+            p75_ns: percentile(75.0),
+            p90_ns: percentile(90.0),
+            p95_ns: percentile(95.0),
+            p99_ns: percentile(99.0),
+            p99_9_ns: percentile(99.9),
+            max_ns: all_latencies[len - 1],
+            spread_ratio: {
+                let p5 = percentile(5.0);
+                let p95 = percentile(95.0);
+                if p5 > 0.0 { p95 / p5 } else { 0.0 }
+            },
+        }
+    } else {
+        LatencyPercentiles {
+            min_ns: 0.0, p1_ns: 0.0, p5_ns: 0.0, p10_ns: 0.0, p25_ns: 0.0,
+            p50_ns: 0.0, p75_ns: 0.0, p90_ns: 0.0, p95_ns: 0.0, p99_ns: 0.0,
+            p99_9_ns: 0.0, max_ns: 0.0, spread_ratio: 0.0,
+        }
+    };
+
+    // Estimate window size from config (best effort)
+    let window_size_bytes = match &test_config.window_mode {
+        WindowMode::FixedSize { size_mb } => (*size_mb as usize) * 1024 * 1024,
+        WindowMode::FixedBytes { size_bytes } => *size_bytes,
+        _ => 0, // CacheLevel will be calculated at runtime
+    };
+
+    LatencyLevelSummary {
+        target_name: test_name.to_string(),
+        level_name: test_name.to_string(),
+        window_size_bytes,
+        total_samples,
+        per_thread_results,
+        consolidated,
+    }
 }
 
 // CPU performance stats structure needed by reporting

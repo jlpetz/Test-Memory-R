@@ -1,5 +1,6 @@
 use raw_cpuid::CpuId;
 use crate::constants::{KB, MB, KB_F64, MB_F64, MB_64};
+use std::time::Instant;
 
 #[derive(Debug, Clone)]
 pub struct CacheInfo {
@@ -14,6 +15,7 @@ pub struct CacheInfo {
     pub per_core_l1i: usize,
     pub per_core_l2: usize,
     pub core_count: usize,
+    pub tsc_frequency_ghz: f64,  // TSC frequency detected once at startup
 }
 
 #[derive(Debug, Clone)]
@@ -43,41 +45,72 @@ impl Default for CacheInfo {
             per_core_l1i: 32 * KB,
             per_core_l2: 256 * KB,
             core_count: 1,
+            tsc_frequency_ghz: 0.0,  // Will be detected at startup
         }
     }
+}
+
+/// Detect CPU TSC frequency in GHz by measuring over 100ms
+#[cfg(target_arch = "x86_64")]
+fn detect_tsc_frequency() -> f64 {
+    use std::arch::x86_64::_rdtsc;
+
+    unsafe {
+        let start_tsc = _rdtsc();
+        let start_time = Instant::now();
+        std::thread::sleep(std::time::Duration::from_millis(100));
+        let end_tsc = _rdtsc();
+        let elapsed_ns = start_time.elapsed().as_nanos() as f64;
+
+        let cycles = (end_tsc - start_tsc) as f64;
+        cycles / elapsed_ns // GHz = cycles/nanosecond
+    }
+}
+
+#[cfg(not(target_arch = "x86_64"))]
+fn detect_tsc_frequency() -> f64 {
+    log::warn!("TSC frequency detection not available on non-x86_64 platforms");
+    0.0
 }
 
 impl CacheInfo {
     pub fn detect() -> Self {
         let physical_cores = num_cpus::get_physical();
-        
+
+        // Detect TSC frequency once at startup (100ms measurement)
+        let tsc_frequency_ghz = detect_tsc_frequency();
+
         // Try multiple detection methods in order of preference
-        
+
         // 1. Try comprehensive raw_cpuid detection (best for modern CPUs)
         log::debug!("Attempting comprehensive raw_cpuid cache detection...");
-        if let Some(cache_info) = detect_via_raw_cpuid_comprehensive(physical_cores) {
+        if let Some(mut cache_info) = detect_via_raw_cpuid_comprehensive(physical_cores) {
+            cache_info.tsc_frequency_ghz = tsc_frequency_ghz;
             return cache_info;
         }
-        
+
         // 2. Try Windows WMI (Windows only) - placeholder for future
         #[cfg(target_os = "windows")]
         {
             log::debug!("Attempting Windows WMI cache detection...");
-            if let Some(cache_info) = detect_via_windows_wmi(physical_cores) {
+            if let Some(mut cache_info) = detect_via_windows_wmi(physical_cores) {
+                cache_info.tsc_frequency_ghz = tsc_frequency_ghz;
                 return cache_info;
             }
         }
-        
+
         // 3. Last resort: hardcoded detection for known CPUs
         log::debug!("Attempting hardcoded CPU detection...");
-        if let Some(cache_info) = detect_via_hardcoded_database(physical_cores) {
+        if let Some(mut cache_info) = detect_via_hardcoded_database(physical_cores) {
+            cache_info.tsc_frequency_ghz = tsc_frequency_ghz;
             return cache_info;
         }
-        
+
         // Use defaults as last resort
         log::warn!("All cache detection methods failed, using defaults");
         let mut default = Self {
             core_count: physical_cores,
+            tsc_frequency_ghz,
             ..Default::default()
         };
         default.recalculate_totals();
@@ -94,21 +127,22 @@ impl CacheInfo {
     pub fn print_info(&self) {
         log::info!("Cache Architecture Detected ({})", self.detection_method);
         log::info!("  Cores: {} physical", self.core_count);
-        log::info!("  L1 Data Cache: {:.1} KB total ({:.1} KB × {} cores)", 
+        log::info!("  L1 Data Cache: {:.1} KB total ({:.1} KB × {} cores)",
                   self.l1_data_cache as f64 / KB_F64,
                   self.per_core_l1d as f64 / KB_F64,
                   self.core_count);
-        log::info!("  L1 Instruction Cache: {:.1} KB total ({:.1} KB × {} cores)", 
+        log::info!("  L1 Instruction Cache: {:.1} KB total ({:.1} KB × {} cores)",
                   self.l1_instruction_cache as f64 / KB_F64,
                   self.per_core_l1i as f64 / KB_F64,
                   self.core_count);
-        log::info!("  L2 Cache: {:.1} KB total ({:.1} KB × {} cores)", 
+        log::info!("  L2 Cache: {:.1} KB total ({:.1} KB × {} cores)",
                   self.l2_cache as f64 / KB_F64,
                   self.per_core_l2 as f64 / KB_F64,
                   self.core_count);
         log::info!("  L3 Cache: {:.1} MB (shared)", self.l3_cache as f64 / MB_F64);
         log::info!("  Total Cache: {:.1} MB", self.total_cache as f64 / MB_F64);
         log::info!("  Cache Line Size: {} bytes", self.cache_line_size);
+        log::info!("  TSC Frequency: {:.3} GHz", self.tsc_frequency_ghz);
     }
 
     pub fn get_optimal_window_size(&self, test_type: &str) -> usize {
@@ -207,6 +241,7 @@ fn detect_via_raw_cpuid_comprehensive(physical_cores: usize) -> Option<CacheInfo
         l1_instruction_cache: 0,
         l2_cache: 0,
         total_cache: 0,
+        tsc_frequency_ghz: 0.0,  // Will be set by caller
     };
     
     let mut found_any = false;
@@ -430,6 +465,7 @@ fn detect_via_hardcoded_database(physical_cores: usize) -> Option<CacheInfo> {
         l1_instruction_cache: 0,
         l2_cache: 0,
         total_cache: 0,
+        tsc_frequency_ghz: 0.0,  // Will be set by caller
     };
     
     cache_info.recalculate_totals();

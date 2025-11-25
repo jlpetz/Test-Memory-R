@@ -123,21 +123,6 @@ impl LatencyTestStats {
     }
 }
 
-/// Get CPU TSC frequency in GHz by measurement
-#[cfg(target_arch = "x86_64")]
-unsafe fn get_cpu_frequency_ghz() -> f64 {
-    use std::arch::x86_64::_rdtsc;
-
-    // Measure over 100ms for accuracy
-    let start_tsc = _rdtsc();
-    let start_time = Instant::now();
-    std::thread::sleep(std::time::Duration::from_millis(100));
-    let end_tsc = _rdtsc();
-    let elapsed_ns = start_time.elapsed().as_nanos() as f64;
-
-    let cycles = (end_tsc - start_tsc) as f64;
-    cycles / elapsed_ns // GHz = cycles/nanosecond
-}
 
 /// Setup random pointer-chasing pattern in memory
 /// Each u64 location stores the address (as usize cast to u64) of the next random location
@@ -181,8 +166,11 @@ pub unsafe fn read_latency_multi(
     let test_name = "ReadLatency";
     let start = Instant::now();
 
-    let cpu_ghz = get_cpu_frequency_ghz();
-    log::info!("[Thread {}] {} - TSC frequency: {:.3} GHz", thread_id, test_name, cpu_ghz);
+    // Use TSC frequency detected at startup
+    let cpu_ghz = config.tsc_frequency_ghz;
+    if cpu_ghz == 0.0 {
+        panic!("TSC frequency not detected! Cannot run latency tests on non-x86_64 platforms.");
+    }
 
     let total_allocated: usize = blocks.iter().map(|b| b.buffer.size()).sum();
     let window_size = config.calculate_window_size(test_name, total_allocated);
@@ -326,8 +314,11 @@ pub unsafe fn write_latency_multi(
     let test_name = "WriteLatency";
     let start = Instant::now();
 
-    let cpu_ghz = get_cpu_frequency_ghz();
-    log::info!("[Thread {}] {} - TSC frequency: {:.3} GHz", thread_id, test_name, cpu_ghz);
+    // Use TSC frequency detected at startup
+    let cpu_ghz = config.tsc_frequency_ghz;
+    if cpu_ghz == 0.0 {
+        panic!("TSC frequency not detected! Cannot run latency tests on non-x86_64 platforms.");
+    }
 
     let total_allocated: usize = blocks.iter().map(|b| b.buffer.size()).sum();
     let window_size = config.calculate_window_size(test_name, total_allocated);
@@ -481,8 +472,11 @@ pub unsafe fn copy_latency_multi(
     let test_name = "CopyLatency";
     let start = Instant::now();
 
-    let cpu_ghz = get_cpu_frequency_ghz();
-    log::info!("[Thread {}] {} - TSC frequency: {:.3} GHz", thread_id, test_name, cpu_ghz);
+    // Use TSC frequency detected at startup
+    let cpu_ghz = config.tsc_frequency_ghz;
+    if cpu_ghz == 0.0 {
+        panic!("TSC frequency not detected! Cannot run latency tests on non-x86_64 platforms.");
+    }
 
     let total_allocated: usize = blocks.iter().map(|b| b.buffer.size()).sum();
     let window_size = config.calculate_window_size(test_name, total_allocated);
