@@ -33,7 +33,10 @@ pub trait ReportFormatter: Send + Sync {
     
     /// Prepare cache info table
     fn prepare_cache_info_table(&self, cache_info: &CacheInfo) -> TableData;
-    
+
+    /// Prepare TSC calibration info table
+    fn prepare_tsc_info_table(&self, tsc_info: &TscCalibrationInfo) -> TableData;
+
     /// Format progress line
     fn format_progress_line(&self, progress: &TestProgressReport) -> String;
     
@@ -287,7 +290,62 @@ impl ReportFormatter for DefaultFormatter {
                 "-".to_string(),
             ])
     }
-    
+
+    fn prepare_tsc_info_table(&self, tsc_info: &TscCalibrationInfo) -> TableData {
+        // Use clear status indicators: ✅ = good, ❌ = bad/unreliable
+        let converge_status = if tsc_info.converged {
+            "✅ Converged"
+        } else {
+            "❌ Timed out (not converged)"
+        };
+
+        // Invariant TSC = constant rate (good for timing)
+        // Variable TSC = rate changes with CPU state (unreliable for timing!)
+        let invariant_str = if tsc_info.is_invariant {
+            "✅ Invariant (constant rate)"
+        } else {
+            "❌ Variable (unreliable for timing!)"
+        };
+
+        // Round to nearest MHz for "likely" frequency display
+        let freq_mhz = tsc_info.frequency_ghz * 1000.0;
+        let rounded_mhz = freq_mhz.round();
+        let rounded_ghz = rounded_mhz / 1000.0;
+
+        TableData::new()
+            .with_title("TSC Calibration")
+            .add_header("Property", ColumnAlignment::Left)
+            .add_header("Value", ColumnAlignment::Right)
+            .add_row(vec![
+                "Measured Freq".to_string(),
+                format!("{:.6} GHz", tsc_info.frequency_ghz),
+            ])
+            .add_row(vec![
+                "Likely Freq".to_string(),
+                format!("{:.0} MHz ({:.3} GHz)", rounded_mhz, rounded_ghz),
+            ])
+            .add_row(vec![
+                "Detection Method".to_string(),
+                tsc_info.detection_method.clone(),
+            ])
+            .add_row(vec![
+                "TSC Type".to_string(),
+                invariant_str.to_string(),
+            ])
+            .add_row(vec![
+                "Confidence".to_string(),
+                format!("{:.0}%", tsc_info.confidence_percent),
+            ])
+            .add_row(vec![
+                "Calibration".to_string(),
+                format!("{} samples in {}ms ({})", tsc_info.samples, tsc_info.calibration_time_ms, converge_status),
+            ])
+            .add_row(vec![
+                "Std Deviation".to_string(),
+                format!("{:.6} GHz", tsc_info.std_dev_ghz),
+            ])
+    }
+
     fn format_progress_line(&self, progress: &TestProgressReport) -> String {
         let cycle_info = match progress.total_cycles {
             Some(total) => format!("Cycle {}/{}", progress.current_cycle, total),
@@ -1580,14 +1638,8 @@ impl ReportFormatter for DefaultFormatter {
     }
 
     fn prepare_latency_per_thread_table(&self, level: &LatencyLevelSummary) -> TableData {
-        let window_str = if level.window_size_bytes >= 1024 * 1024 {
-            format!("{} MB", level.window_size_bytes / (1024 * 1024))
-        } else {
-            format!("{} KB", level.window_size_bytes / 1024)
-        };
-
+        // No title - test name and window size are already shown in the main test header and config line
         let mut table = TableData::new()
-            .with_title(format!("{} Latency - {} window/thread", level.target_name, window_str))
             .add_header("Thread", ColumnAlignment::Right)
             .add_header("CPU", ColumnAlignment::Right)
             .add_header("Samples", ColumnAlignment::Right)

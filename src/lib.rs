@@ -10,6 +10,7 @@ pub mod layout;
 pub mod runner;
 pub mod simd;
 pub mod cache;
+pub mod tsc; // TSC frequency detection (x86_64)
 pub mod results; // New results module
 pub mod table;
 pub mod formatting;

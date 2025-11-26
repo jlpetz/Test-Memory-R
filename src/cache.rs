@@ -1,6 +1,6 @@
 use raw_cpuid::CpuId;
 use crate::constants::{KB, MB, KB_F64, MB_F64, MB_64};
-use std::time::Instant;
+use crate::tsc::TscInfo;
 
 #[derive(Debug, Clone)]
 pub struct CacheInfo {
@@ -15,7 +15,8 @@ pub struct CacheInfo {
     pub per_core_l1i: usize,
     pub per_core_l2: usize,
     pub core_count: usize,
-    pub tsc_frequency_ghz: f64,  // TSC frequency detected once at startup
+    pub tsc_frequency_ghz: f64,  // TSC frequency (kept for backward compat)
+    pub tsc_info: TscInfo,        // Full TSC detection info
 }
 
 #[derive(Debug, Clone)]
@@ -45,40 +46,19 @@ impl Default for CacheInfo {
             per_core_l1i: 32 * KB,
             per_core_l2: 256 * KB,
             core_count: 1,
-            tsc_frequency_ghz: 0.0,  // Will be detected at startup
+            tsc_frequency_ghz: 0.0,
+            tsc_info: TscInfo::default(),
         }
     }
-}
-
-/// Detect CPU TSC frequency in GHz by measuring over 100ms
-#[cfg(target_arch = "x86_64")]
-fn detect_tsc_frequency() -> f64 {
-    use std::arch::x86_64::_rdtsc;
-
-    unsafe {
-        let start_tsc = _rdtsc();
-        let start_time = Instant::now();
-        std::thread::sleep(std::time::Duration::from_millis(100));
-        let end_tsc = _rdtsc();
-        let elapsed_ns = start_time.elapsed().as_nanos() as f64;
-
-        let cycles = (end_tsc - start_tsc) as f64;
-        cycles / elapsed_ns // GHz = cycles/nanosecond
-    }
-}
-
-#[cfg(not(target_arch = "x86_64"))]
-fn detect_tsc_frequency() -> f64 {
-    log::warn!("TSC frequency detection not available on non-x86_64 platforms");
-    0.0
 }
 
 impl CacheInfo {
     pub fn detect() -> Self {
         let physical_cores = num_cpus::get_physical();
 
-        // Detect TSC frequency once at startup (100ms measurement)
-        let tsc_frequency_ghz = detect_tsc_frequency();
+        // Detect TSC frequency using the new multi-method detection
+        let tsc_info = TscInfo::detect();
+        let tsc_frequency_ghz = tsc_info.frequency_ghz;
 
         // Try multiple detection methods in order of preference
 
@@ -86,6 +66,7 @@ impl CacheInfo {
         log::debug!("Attempting comprehensive raw_cpuid cache detection...");
         if let Some(mut cache_info) = detect_via_raw_cpuid_comprehensive(physical_cores) {
             cache_info.tsc_frequency_ghz = tsc_frequency_ghz;
+            cache_info.tsc_info = tsc_info;
             return cache_info;
         }
 
@@ -95,6 +76,7 @@ impl CacheInfo {
             log::debug!("Attempting Windows WMI cache detection...");
             if let Some(mut cache_info) = detect_via_windows_wmi(physical_cores) {
                 cache_info.tsc_frequency_ghz = tsc_frequency_ghz;
+                cache_info.tsc_info = tsc_info;
                 return cache_info;
             }
         }
@@ -103,6 +85,7 @@ impl CacheInfo {
         log::debug!("Attempting hardcoded CPU detection...");
         if let Some(mut cache_info) = detect_via_hardcoded_database(physical_cores) {
             cache_info.tsc_frequency_ghz = tsc_frequency_ghz;
+            cache_info.tsc_info = tsc_info;
             return cache_info;
         }
 
@@ -111,6 +94,7 @@ impl CacheInfo {
         let mut default = Self {
             core_count: physical_cores,
             tsc_frequency_ghz,
+            tsc_info,
             ..Default::default()
         };
         default.recalculate_totals();
@@ -142,7 +126,17 @@ impl CacheInfo {
         log::info!("  L3 Cache: {:.1} MB (shared)", self.l3_cache as f64 / MB_F64);
         log::info!("  Total Cache: {:.1} MB", self.total_cache as f64 / MB_F64);
         log::info!("  Cache Line Size: {} bytes", self.cache_line_size);
-        log::info!("  TSC Frequency: {:.3} GHz", self.tsc_frequency_ghz);
+        // TSC details
+        log::info!("  TSC Frequency: {:.3} GHz ({})",
+                   self.tsc_info.frequency_ghz,
+                   self.tsc_info.detection_method);
+        if self.tsc_info.is_invariant {
+            log::info!("  TSC Type: Invariant (constant rate)");
+        }
+        if let Some(secondary) = self.tsc_info.secondary_frequency_ghz {
+            log::info!("  TSC Validation: {:.3} GHz (secondary), confidence {:.0}%",
+                       secondary, self.tsc_info.confidence * 100.0);
+        }
     }
 
     pub fn get_optimal_window_size(&self, test_type: &str) -> usize {
@@ -242,6 +236,7 @@ fn detect_via_raw_cpuid_comprehensive(physical_cores: usize) -> Option<CacheInfo
         l2_cache: 0,
         total_cache: 0,
         tsc_frequency_ghz: 0.0,  // Will be set by caller
+        tsc_info: TscInfo::default(),  // Will be set by caller
     };
     
     let mut found_any = false;
@@ -466,6 +461,7 @@ fn detect_via_hardcoded_database(physical_cores: usize) -> Option<CacheInfo> {
         l2_cache: 0,
         total_cache: 0,
         tsc_frequency_ghz: 0.0,  // Will be set by caller
+        tsc_info: TscInfo::default(),  // Will be set by caller
     };
     
     cache_info.recalculate_totals();

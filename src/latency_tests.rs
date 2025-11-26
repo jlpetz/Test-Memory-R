@@ -289,7 +289,7 @@ pub unsafe fn read_latency_multi(
         total_operations: total_bytes_processed as u64 / 8,
         cycles_completed: cycle,
         cycles_planned: timing.cycles,
-        stopped_by_time_limit: timing.cycles.map_or(false, |limit| cycle < limit),
+        stopped_by_time_limit: timing.cycles.map_or(true, |limit| cycle < limit),
     };
 
     // Log per-thread results with all percentiles
@@ -447,7 +447,7 @@ pub unsafe fn write_latency_multi(
         total_operations: total_bytes_processed as u64 / 8,
         cycles_completed: cycle,
         cycles_planned: timing.cycles,
-        stopped_by_time_limit: timing.cycles.map_or(false, |limit| cycle < limit),
+        stopped_by_time_limit: timing.cycles.map_or(true, |limit| cycle < limit),
     };
 
     // Log per-thread results with all percentiles
@@ -505,16 +505,22 @@ pub unsafe fn copy_latency_multi(
     let mut cycle = 0u32;
 
     // Use window size to determine working set - allows targeting different cache levels
-    // For copy, we use half for source and half for destination
-    let working_set_bytes = window_size;
-    let working_set_u64 = (working_set_bytes / std::mem::size_of::<u64>()) / 2; // Half for src, half for dst
+    // For copy, EACH buffer (src and dst) must be the full window size to ensure
+    // we're hitting the target cache level. If we split the window in half, each buffer
+    // might fit in a smaller cache level, giving misleadingly fast results.
+    // Example: 4MB window split = 2MB each, but L2 is 1MB, so 2MB barely exceeds L2
+    // With full 4MB each, we guarantee L3 hits for L3-targeted tests.
+    let working_set_bytes = window_size * 2; // Double to account for src + dst
+    let working_set_u64 = working_set_bytes / std::mem::size_of::<u64>() / 2; // Each buffer = window_size
     let iterations_per_sample = 1000usize;
 
-    log::info!("[Thread {}] {} - Working set: {} bytes ({} elements src + dst) targeting {}",
-        thread_id, test_name, working_set_bytes, working_set_u64 * 2,
-        if working_set_bytes <= 32 * 1024 { "L1 cache" }
-        else if working_set_bytes <= 1024 * 1024 { "L2 cache" }
-        else if working_set_bytes <= 16 * 1024 * 1024 { "L3 cache" }
+    // Each buffer is window_size, total is 2x window_size
+    let per_buffer_bytes = window_size;
+    log::info!("[Thread {}] {} - Working set: {} bytes per buffer ({} elements each, {} total) targeting {}",
+        thread_id, test_name, per_buffer_bytes, working_set_u64, working_set_u64 * 2,
+        if per_buffer_bytes <= 32 * 1024 { "L1 cache" }
+        else if per_buffer_bytes <= 1024 * 1024 { "L2 cache" }
+        else if per_buffer_bytes <= 16 * 1024 * 1024 { "L3 cache" }
         else { "DRAM" });
 
     // Setup pointer-chasing pattern in first half (source)
@@ -525,6 +531,16 @@ pub unsafe fn copy_latency_multi(
         let base = test_block.block.buffer.as_mut_ptr() as *mut u64;
         let block_len = test_block.test_size / std::mem::size_of::<u64>();
         let half_len = (block_len / 2).min(working_set_u64);
+
+        // Warn if block is too small for the intended working set
+        // Copy needs block >= 2 * window_size (half for src, half for dst)
+        if half_len < working_set_u64 {
+            let actual_per_buffer = half_len * std::mem::size_of::<u64>();
+            let intended_per_buffer = working_set_u64 * std::mem::size_of::<u64>();
+            log::warn!("[Thread {}] {} - Block too small! Using {} bytes per buffer instead of {} (may test wrong cache level)",
+                thread_id, test_name, actual_per_buffer, intended_per_buffer);
+        }
+
         setup_pointer_chase(base, half_len, thread_id);
         chain_positions.push(base); // Start at beginning
         dst_bases.push(base.add(half_len));
@@ -605,7 +621,7 @@ pub unsafe fn copy_latency_multi(
         total_operations: total_bytes_processed as u64 / 16,
         cycles_completed: cycle,
         cycles_planned: timing.cycles,
-        stopped_by_time_limit: timing.cycles.map_or(false, |limit| cycle < limit),
+        stopped_by_time_limit: timing.cycles.map_or(true, |limit| cycle < limit),
     };
 
     // Log per-thread results with all percentiles

@@ -74,6 +74,36 @@ impl std::fmt::Display for AllocationStrategy {
     }
 }
 
+/// Page size level for constraint checking (ordered: Regular < Large < Huge)
+#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord)]
+pub enum PageSizeLevel {
+    Regular = 0,
+    Large = 1,
+    Huge = 2,
+}
+
+impl PageSizeLevel {
+    /// Parse page size level from string (matches config format)
+    pub fn from_str(s: &str) -> Self {
+        match s.to_lowercase().as_str() {
+            "huge" | "1gb" => PageSizeLevel::Huge,
+            "large" | "2mb" => PageSizeLevel::Large,
+            _ => PageSizeLevel::Regular, // "regular", "4kb", or default
+        }
+    }
+}
+
+/// Check if a page size level is allowed given min/max constraints
+pub fn is_page_size_allowed(
+    level: PageSizeLevel,
+    min_page_size: &str,
+    max_page_size: &str,
+) -> bool {
+    let min = PageSizeLevel::from_str(min_page_size);
+    let max = PageSizeLevel::from_str(max_page_size);
+    level >= min && level <= max
+}
+
 impl MemoryAllocator {
     pub fn new(backend_type: BackendType) -> Result<Self, String> {
         let backend: Arc<dyn Backend> = match backend_type {
@@ -460,9 +490,18 @@ impl MemoryAllocator {
         runtime_config: &crate::RuntimeConfig,
     ) -> Result<Vec<AllocatedChunk>, String> {
         let mut allocated_chunks = Vec::new();
-        
+
+        // Get page size constraints from config
+        let min_page = &runtime_config.memory_allocation.min_page_size;
+        let max_page = &runtime_config.memory_allocation.max_page_size;
+        let huge_allowed = is_page_size_allowed(PageSizeLevel::Huge, min_page, max_page);
+        let large_allowed = is_page_size_allowed(PageSizeLevel::Large, min_page, max_page);
+
+        log::info!("NUMA {}: Page size constraints: min={}, max={} (huge={}, large={})",
+                 numa_node, min_page, max_page, huge_allowed, large_allowed);
+
         // Phase 1: PageTypeFirst - Try planned chunks + additional sizes with huge pages
-        if runtime_config.large_pages_available {
+        if runtime_config.large_pages_available && huge_allowed {
             log::info!("NUMA {}: Phase 1 - PageTypeFirst: Try planned chunks + extra sizes with huge pages", numa_node);
             
             // First, try all planned chunks with huge pages

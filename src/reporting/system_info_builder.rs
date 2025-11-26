@@ -1,6 +1,6 @@
 /// System info report builder - converts TMR's internal system info to reporting format
 /// Reuses cached memory info to avoid duplicate Windows API calls
-use crate::reporting::models::{SystemInfoReport, CpuInfo, CacheInfo, MemoryInfo, TopologyInfo, NumaNodeInfo};
+use crate::reporting::models::{SystemInfoReport, CpuInfo, CacheInfo, MemoryInfo, TopologyInfo, NumaNodeInfo, TscCalibrationInfo};
 use crate::cache::SystemInfo;
 use crate::cpu_topology::CpuTopologyInfo;
 use crate::memory::allocation_strategy::SystemMemoryInfo;
@@ -54,6 +54,15 @@ pub fn build_system_info_report(
         (hybrid, p_count, e_count)
     };
     
+    // Build TSC calibration info
+    let tsc = &cache.tsc_info;
+    let (samples, calibration_time_ms, std_dev_ghz, converged) =
+        if let Some(ref stats) = tsc.calibration_stats {
+            (stats.samples, stats.calibration_time_ms, stats.std_dev_ghz(), stats.converged)
+        } else {
+            (0, 0, 0.0, false)
+        };
+
     SystemInfoReport {
         cpu_info: CpuInfo {
             brand: system_info.cpu_brand.clone(),
@@ -93,6 +102,16 @@ pub fn build_system_info_report(
             numa_nodes,
             assigned_cpus: assigned_cpus.to_vec(),
             detection_method: "Auto".to_string(),
+        },
+        tsc_info: TscCalibrationInfo {
+            frequency_ghz: tsc.frequency_ghz,
+            detection_method: tsc.detection_method.to_string(),
+            is_invariant: tsc.is_invariant,
+            confidence_percent: tsc.confidence * 100.0,
+            samples,
+            calibration_time_ms,
+            std_dev_ghz,
+            converged,
         },
     }
 }

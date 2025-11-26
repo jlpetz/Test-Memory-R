@@ -1320,7 +1320,7 @@ pub unsafe fn stuck_bit_test_multi(
                 total_operations,
                 cycles_completed: cycle,
                 cycles_planned: timing.cycles,
-                stopped_by_time_limit: timing.cycles.map_or(false, |limit| cycle < limit),
+                stopped_by_time_limit: timing.cycles.map_or(true, |limit| cycle < limit),
             };
         }
     }
@@ -1673,7 +1673,7 @@ unsafe fn stuck_bit_test_128_impl(
                 bytes_processed: total_bytes_processed, elapsed_ms: elapsed, thread_id,
                 error_count: total_error_count, total_operations,
                 cycles_completed: cycle, cycles_planned: timing.cycles,
-                stopped_by_time_limit: timing.cycles.map_or(false, |limit| cycle < limit),
+                stopped_by_time_limit: timing.cycles.map_or(true, |limit| cycle < limit),
             };
         }
     }
@@ -1930,7 +1930,7 @@ unsafe fn stuck_bit_test_256_impl(
                 bytes_processed: total_bytes_processed, elapsed_ms: elapsed, thread_id,
                 error_count: total_error_count, total_operations,
                 cycles_completed: cycle, cycles_planned: timing.cycles,
-                stopped_by_time_limit: timing.cycles.map_or(false, |limit| cycle < limit),
+                stopped_by_time_limit: timing.cycles.map_or(true, |limit| cycle < limit),
             };
         }
     }
@@ -2185,7 +2185,7 @@ unsafe fn stuck_bit_test_512_impl(
                 bytes_processed: total_bytes_processed, elapsed_ms: elapsed, thread_id,
                 error_count: total_error_count, total_operations,
                 cycles_completed: cycle, cycles_planned: timing.cycles,
-                stopped_by_time_limit: timing.cycles.map_or(false, |limit| cycle < limit),
+                stopped_by_time_limit: timing.cycles.map_or(true, |limit| cycle < limit),
             };
         }
     }
@@ -2410,7 +2410,7 @@ pub unsafe fn refresh_stable_multi(
                 total_operations,
                 cycles_completed: cycle,
                 cycles_planned: timing.cycles,
-                stopped_by_time_limit: timing.cycles.map_or(false, |limit| cycle < limit),
+                stopped_by_time_limit: timing.cycles.map_or(true, |limit| cycle < limit),
             };
         }
     }
@@ -2636,7 +2636,7 @@ unsafe fn refresh_stable_128_impl(
                 total_operations: (total_bytes_processed / std::mem::size_of::<u64x2>()) as u64,
                 cycles_completed: cycle,
                 cycles_planned: timing.cycles,
-                stopped_by_time_limit: timing.cycles.map_or(false, |limit| cycle < limit),
+                stopped_by_time_limit: timing.cycles.map_or(true, |limit| cycle < limit),
             };
         }
     }
@@ -2861,7 +2861,7 @@ unsafe fn refresh_stable_256_impl(
                 total_operations: (total_bytes_processed / std::mem::size_of::<u64x4>()) as u64,
                 cycles_completed: cycle,
                 cycles_planned: timing.cycles,
-                stopped_by_time_limit: timing.cycles.map_or(false, |limit| cycle < limit),
+                stopped_by_time_limit: timing.cycles.map_or(true, |limit| cycle < limit),
             };
         }
     }
@@ -3086,7 +3086,7 @@ unsafe fn refresh_stable_512_impl(
                 total_operations: (total_bytes_processed / std::mem::size_of::<u64x8>()) as u64,
                 cycles_completed: cycle,
                 cycles_planned: timing.cycles,
-                stopped_by_time_limit: timing.cycles.map_or(false, |limit| cycle < limit),
+                stopped_by_time_limit: timing.cycles.map_or(true, |limit| cycle < limit),
             };
         }
     }
@@ -3344,7 +3344,7 @@ pub unsafe fn cache_busting_multi(
                 total_operations,
                 cycles_completed: cycle,
                 cycles_planned: timing.cycles,
-                stopped_by_time_limit: timing.cycles.map_or(false, |limit| cycle < limit),
+                stopped_by_time_limit: timing.cycles.map_or(true, |limit| cycle < limit),
             };
         }
     }
@@ -3561,7 +3561,7 @@ pub unsafe fn random_torture_multi(
                 total_operations,
                 cycles_completed: cycle,
                 cycles_planned: timing.cycles,
-                stopped_by_time_limit: timing.cycles.map_or(false, |limit| cycle < limit),
+                stopped_by_time_limit: timing.cycles.map_or(true, |limit| cycle < limit),
             };
         }
     }
@@ -3710,7 +3710,7 @@ pub unsafe fn stride_access_multi(
                 bytes_processed: total_bytes_processed, elapsed_ms: elapsed, thread_id,
                 error_count: total_error_count, total_operations,
                 cycles_completed: cycle, cycles_planned: timing.cycles,
-                stopped_by_time_limit: timing.cycles.map_or(false, |limit| cycle < limit),
+                stopped_by_time_limit: timing.cycles.map_or(true, |limit| cycle < limit),
             };
         }
     }
@@ -3874,7 +3874,7 @@ pub unsafe fn bandwidth_saturation_multi(
                 total_operations,
                 cycles_completed: cycle,
                 cycles_planned: timing.cycles,
-                stopped_by_time_limit: timing.cycles.map_or(false, |limit| cycle < limit),
+                stopped_by_time_limit: timing.cycles.map_or(true, |limit| cycle < limit),
             };
         }
     }
@@ -4109,7 +4109,7 @@ pub unsafe fn block_move_multi(
                 total_operations,
                 cycles_completed: cycle,
                 cycles_planned: timing.cycles,
-                stopped_by_time_limit: timing.cycles.map_or(false, |limit| cycle < limit),
+                stopped_by_time_limit: timing.cycles.map_or(true, |limit| cycle < limit),
             };
         }
     }

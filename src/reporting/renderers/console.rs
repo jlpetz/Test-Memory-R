@@ -95,14 +95,13 @@ impl Renderer for ConsoleRenderer {
         
         // Print the table
         builder.print();
-        
+
         // Print footer if present (directly connected to table)
         if let Some(footer) = &table.footer {
             println!("{}", footer);
-        } else {
-            println!(); // Add blank line only if no footer for proper spacing
         }
-        
+        // No automatic blank line - caller controls spacing
+
         Ok(())
     }
     

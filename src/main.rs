@@ -8,7 +8,6 @@ use env_logger::Builder;
 use windows::Win32::Storage::FileSystem::{GetFileVersionInfoW, GetFileVersionInfoSizeW, VerQueryValueW};
 
 use tmr::{create_demo_configs, load_config, ErrorMode};
-use tmr::constants::MB_F64;
 use tmr::params;  // Centralized parameter registry
 // Note: Legacy MemoryLayout still needed for runner interface
 use tmr::memory::allocation_strategy::EnhancedMemoryStrategy;
@@ -373,6 +372,18 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
 					alloc_config.remap_mode = "batch".to_string();
 					log::debug!("CLI override: remap_mode = batch");
 				}
+				"minpage" => {
+					if let params::ParamValue::String(page_str) = value {
+						alloc_config.min_page_size = page_str.to_string();
+						log::debug!("CLI override: min_page_size = {}", page_str);
+					}
+				}
+				"maxpage" => {
+					if let params::ParamValue::String(page_str) = value {
+						alloc_config.max_page_size = page_str.to_string();
+						log::debug!("CLI override: max_page_size = {}", page_str);
+					}
+				}
 				_ => {} // Ignore unknown overrides
 			}
 		}
@@ -665,37 +676,9 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
 	}
 	println!();
 	
-    // Detect and display system architecture (includes CPU info and cache)
+    // Get system info for later use (formatted output comes via reporter below)
     let system_info = tmr::tests::get_system_info();
-    println!("System information and Cache Architecture detection:");
-    println!("  CPU: {} ({})", system_info.cpu_brand, system_info.cpu_vendor);
-    println!("  Family: {}, Model: {}, Stepping: {}", 
-              system_info.cpu_family, system_info.cpu_model, system_info.cpu_stepping);
-    println!("  Cores: {} physical, {} logical{}", 
-              system_info.physical_cores, 
-              system_info.logical_cores,
-              if system_info.has_hyperthreading { " (Hyperthreading enabled)" } else { "" });
-
     let cache_info = system_info.get_cache_info();
-    println!("  Cache Architecture ({}):", cache_info.detection_method);
-    println!("    L1 Data: {:.1} KB total ({:.1} KB × {} cores)", 
-        cache_info.l1_data_cache as f64 / 1024.0,
-        cache_info.per_core_l1d as f64 / 1024.0,
-        cache_info.core_count);
-    println!("    L1 Instruction: {:.1} KB total ({:.1} KB × {} cores)", 
-        cache_info.l1_instruction_cache as f64 / 1024.0,
-        cache_info.per_core_l1i as f64 / 1024.0,
-        cache_info.core_count);
-    println!("    L2: {:.1} KB total ({:.1} KB × {} cores)", 
-        cache_info.l2_cache as f64 / 1024.0,
-        cache_info.per_core_l2 as f64 / 1024.0,
-        cache_info.core_count);
-    println!("    L3: {:.1} MB (shared)", 
-        cache_info.l3_cache as f64 / MB_F64);
-    println!("    Line Size: {} bytes | Total Cache: {:.1} MB", 
-        cache_info.cache_line_size,
-        cache_info.total_cache as f64 / MB_F64);
-    println!();
 
 	// Display CPU topology right after system information
 	// Add this after the cache architecture display (around line 220-230):
@@ -782,6 +765,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         config_opt.as_ref(),
         final_test_filter,
         streams_override,
+        cache_info,
     );
 
     let total_time = start_time.elapsed();
@@ -1097,6 +1081,16 @@ fn build_config_from_validated_params(
     }
     if params::get_bool(validated, "--batch-remap", false) {
         alloc_config.remap_mode = "batch".to_string();
+    }
+
+    // Handle page size overrides
+    if let Some(params::ParamValue::String(page_str)) = validated.get("minpage") {
+        alloc_config.min_page_size = page_str.to_string();
+        println!("  Minimum Page Size: {}", page_str);
+    }
+    if let Some(params::ParamValue::String(page_str)) = validated.get("maxpage") {
+        alloc_config.max_page_size = page_str.to_string();
+        println!("  Maximum Page Size: {}", page_str);
     }
 
     // Handle topology (has side effect of setting global state)

@@ -235,6 +235,41 @@ impl ParamRegistry {
             parser: |_| Ok(ParamValue::Bool(true)),
         });
 
+        // Page size parameters
+        params.insert("minpage", ParamDef {
+            key: "minpage",
+            is_flag: false,
+            default: ParamValue::String("large".to_string()),
+            help: "Minimum page size (regular/4kb, large/2mb, huge/1gb)",
+            example: "minpage=regular",
+            can_override_config: true,
+            parser: |v| {
+                match v.to_lowercase().as_str() {
+                    "regular" | "4kb" | "large" | "2mb" | "huge" | "1gb" => {
+                        Ok(ParamValue::String(v.to_lowercase()))
+                    }
+                    _ => Err(format!("Invalid page size '{}'. Valid: regular/4kb, large/2mb, huge/1gb", v)),
+                }
+            },
+        });
+
+        params.insert("maxpage", ParamDef {
+            key: "maxpage",
+            is_flag: false,
+            default: ParamValue::String("huge".to_string()),
+            help: "Maximum page size (regular/4kb, large/2mb, huge/1gb)",
+            example: "maxpage=regular",
+            can_override_config: true,
+            parser: |v| {
+                match v.to_lowercase().as_str() {
+                    "regular" | "4kb" | "large" | "2mb" | "huge" | "1gb" => {
+                        Ok(ParamValue::String(v.to_lowercase()))
+                    }
+                    _ => Err(format!("Invalid page size '{}'. Valid: regular/4kb, large/2mb, huge/1gb", v)),
+                }
+            },
+        });
+
         // Config file parameter
         params.insert("config", ParamDef {
             key: "config",

@@ -47,6 +47,20 @@ pub struct SystemInfoReport {
     pub cache_info: CacheInfo,
     pub memory_info: MemoryInfo,
     pub topology_info: TopologyInfo,
+    pub tsc_info: TscCalibrationInfo,
+}
+
+/// TSC (Time Stamp Counter) calibration information
+#[derive(Debug, Clone)]
+pub struct TscCalibrationInfo {
+    pub frequency_ghz: f64,
+    pub detection_method: String,
+    pub is_invariant: bool,
+    pub confidence_percent: f64,
+    pub samples: u32,
+    pub calibration_time_ms: u64,
+    pub std_dev_ghz: f64,
+    pub converged: bool,
 }
 
 /// CPU information

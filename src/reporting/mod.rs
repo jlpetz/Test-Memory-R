@@ -30,15 +30,19 @@ impl<R: Renderer> Reporter<R> {
     /// Report system information
     pub fn report_system_info(&mut self, report: &SystemInfoReport) -> Result<()> {
         self.renderer.render_heading("System Information")?;
-        
+
         // CPU info
         let cpu_table = self.formatter.prepare_cpu_info_table(&report.cpu_info);
         self.renderer.render_table(&cpu_table)?;
-        
+
         // Cache info
         let cache_table = self.formatter.prepare_cache_info_table(&report.cache_info);
         self.renderer.render_table(&cache_table)?;
-        
+
+        // TSC calibration info
+        let tsc_table = self.formatter.prepare_tsc_info_table(&report.tsc_info);
+        self.renderer.render_table(&tsc_table)?;
+
         Ok(())
     }
 
@@ -190,13 +194,17 @@ impl<R: Renderer> Reporter<R> {
     
     /// Report latency test summary results (multi-threaded)
     pub fn report_latency_summary(&mut self, report: &LatencyTestSummaryReport) -> Result<()> {
-        self.renderer.render_heading("Latency Test Results")?;
+        // Simple label - test name and window are already shown in the main test header and config line
+        println!("🔍 Latency");
 
         // Per-level detailed tables (per-thread breakdown with ALL row)
         for level in &report.levels_tested {
             let per_thread_table = self.formatter.prepare_latency_per_thread_table(level);
             self.renderer.render_table(&per_thread_table)?;
         }
+
+        // Blank line to separate from next test
+        println!();
 
         Ok(())
     }
