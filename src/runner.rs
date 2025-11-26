@@ -125,7 +125,9 @@ pub enum TestFunction {
 pub fn run_tests_with_layout(layout: EnhancedMemoryLayout, error_mode: ErrorMode) -> bool {
     let alloc_config = MemoryAllocationConfig::default();
     let runtime_config = detect_runtime_capabilities(&alloc_config);
-    run_tests_with_layout_and_timing(layout, error_mode, TestSuiteTiming::default(), runtime_config, None)
+    // Use global cached system info for cache_info
+    let cache_info = crate::tests::get_system_info().get_cache_info();
+    run_tests_with_layout_and_timing(layout, error_mode, TestSuiteTiming::default(), runtime_config, None, cache_info)
 }
 
 pub fn run_tests_with_layout_and_timing(
@@ -134,8 +136,9 @@ pub fn run_tests_with_layout_and_timing(
     suite_timing: TestSuiteTiming,
     runtime_config: RuntimeConfig,
     config: Option<&crate::config::ModernConfig>,
+    cache_info: &CacheInfo,
 ) -> bool {
-    run_tests_with_layout_and_timing_filtered(layout, error_mode, suite_timing, runtime_config, config, None, None)
+    run_tests_with_layout_and_timing_filtered(layout, error_mode, suite_timing, runtime_config, config, None, None, cache_info)
 }
 
 pub fn run_tests_with_layout_and_timing_filtered(
@@ -146,6 +149,7 @@ pub fn run_tests_with_layout_and_timing_filtered(
     config: Option<&crate::config::ModernConfig>,
     single_test_filter: Option<&str>,
     streams_override: Option<usize>,
+    cache_info: &CacheInfo,
 ) -> bool {
     setup_signal_handler();
     
@@ -264,7 +268,7 @@ pub fn run_tests_with_layout_and_timing_filtered(
     // Calculate progress tracking information and resolve auto-dispatch tests
     // Use config-driven tests if config is provided, otherwise use hard-coded defaults
     let mut test_definitions = if let Some(cfg) = config {
-        match create_test_definitions_from_config(cfg) {
+        match create_test_definitions_from_config(cfg, cache_info) {
             Ok(tests) => {
                 log::info!("Using config-driven test sequence with {} tests", tests.len());
                 tests
@@ -273,12 +277,12 @@ pub fn run_tests_with_layout_and_timing_filtered(
                 println!("❌ Failed to load tests from config: {}", e);
                 println!("   Falling back to default test suite");
                 log::error!("Config test loading failed: {}", e);
-                create_test_definitions()
+                create_test_definitions(cache_info)
             }
         }
     } else {
         log::info!("Using default hard-coded test suite");
-        create_test_definitions()
+        create_test_definitions(cache_info)
     };
 
     // Apply single test filter if provided (supports wildcards and comma-separated patterns)
@@ -320,7 +324,7 @@ pub fn run_tests_with_layout_and_timing_filtered(
 
         if test_definitions.is_empty() {
             println!("❌ No tests match filter '{}'. Available tests:", test_name_filter);
-            for def in create_test_definitions() {
+            for def in create_test_definitions(cache_info) {
                 println!("  - {}", def.actual_name);
             }
             return false;
@@ -348,10 +352,14 @@ pub fn run_tests_with_layout_and_timing_filtered(
     
     progress.set_cycle_info(1, suite_timing.global_cycles, tests_per_cycle);
 
+    // cache_info is passed from main.rs (detected once at startup via get_system_info())
+    // Used for calculating window sizes in CacheLevel mode during display and test execution
+
     // Print test configuration summary with resolved auto-dispatch names
     {
         use crate::reporting::{create_console_reporter, converters};
-        let report = converters::create_test_configuration_report_v2(&test_definitions, &suite_timing);
+        let thread_count = allocated_blocks.len();
+        let report = converters::create_test_configuration_report_v2(&test_definitions, &suite_timing, &cache_info, thread_count);
         let mut reporter = create_console_reporter();
         if let Err(e) = reporter.report_test_configuration(&report) {
             log::error!("Failed to display test configuration report: {}", e);
@@ -403,7 +411,8 @@ pub fn run_tests_with_layout_and_timing_filtered(
             &progress,
             &test_run_result,
             &all_test_cpu_stats,
-            cycle as u64
+            cycle as u64,
+            &cache_info,
         );
         
         if !success.load(Ordering::Relaxed) {
@@ -476,6 +485,7 @@ fn execute_test_cycle(
     test_run_result: &Arc<Mutex<TestRunResult>>,
     all_test_cpu_stats: &Arc<Mutex<HashMap<String, Vec<(usize, usize, u64, u128, u64, u64, u32)>>>>,
     cycle: u64,
+    cache_info: &CacheInfo,
 ) {
     use crate::progress::TestSummary;
     use crate::constants::MB_F64;
@@ -622,8 +632,32 @@ fn execute_test_cycle(
             0.0
         };
 
+        // Calculate consolidated P50 and spread for latency tests
+        let latency_info = if !latency_results.is_empty() {
+            // Collect all latencies from all threads
+            let all_latencies: Vec<f64> = latency_results.iter()
+                .flat_map(|(_, _, stats)| stats.latencies_ns.clone())
+                .collect();
+
+            if !all_latencies.is_empty() {
+                let mut sorted = all_latencies;
+                sorted.sort_by(|a, b| a.partial_cmp(b).unwrap());
+                let len = sorted.len();
+                let percentile = |p: f64| sorted[((len as f64 - 1.0) * p / 100.0) as usize];
+                let p50 = percentile(50.0);
+                let p5 = percentile(5.0);
+                let p95 = percentile(95.0);
+                let spread = if p5 > 0.0 { p95 / p5 } else { 0.0 };
+                format!(", P50: {:.1}ns, Spread: {:.2}x", p50, spread)
+            } else {
+                String::new()
+            }
+        } else {
+            String::new()
+        };
+
         // Create test report header with results and indicators
-        println!("📊 Test report - Cycle {} - {}: {:.1}s, {} errors, {:.2} GiB @ {:.1} MiB/s, {} ops @ {} ops/s{}",
+        println!("📊 Test report - Cycle {} - {}: {:.1}s, {} errors, {:.2} GiB @ {:.1} MiB/s, {} ops @ {} ops/s{}{}",
                  cycle,
                  test_def.display_name,
                  test_duration.as_secs_f64(),
@@ -632,14 +666,21 @@ fn execute_test_cycle(
                  (total_bytes_for_test as f64 / (1024.0 * 1024.0)) / test_duration.as_secs_f64(),
                  format_ops(total_operations_for_test),
                  format_ops(ops_per_sec as u64),
+                 latency_info,
                  cycles_info);
 
-        // Add config line
-        println!("   Config: streams={}, window={:?}, chunk={:?}, locality={}",
-                 test_def.config.streams,
-                 test_def.config.window_mode,
-                 test_def.config.chunk_mode,
-                 if test_def.config.requires_locality { "yes" } else { "no" });
+        // Add config line with calculated window size (uses passed cache_info to avoid re-detection)
+        {
+            use crate::reporting::formatters::{ReportFormatter, DefaultFormatter};
+            let formatter = DefaultFormatter::new();
+            let window_str = formatter.format_window_mode_with_size(&test_def.config.window_mode, cache_info, thread_count);
+            let chunk_str = formatter.format_chunk_mode(&test_def.config.chunk_mode);
+            println!("   Config: streams={}, window={}, chunk={}, locality={}",
+                     test_def.config.streams,
+                     window_str,
+                     chunk_str,
+                     if test_def.config.requires_locality { "yes" } else { "no" });
+        }
 
         // Update progress tracker with test completion
         use crate::tests::{TestStats, TestAction};
@@ -671,9 +712,9 @@ fn execute_test_cycle(
         if !latency_results.is_empty() {
             use crate::reporting::create_console_reporter;
 
-            // Convert to LatencyTestSummaryReport for reporting
-            let cache_info = CacheInfo::detect();
-            let level_summary = convert_to_latency_level_summary(test_name, &latency_results, test_config);
+            // Convert to LatencyTestSummaryReport for reporting (uses passed cache_info)
+            let latency_thread_count = latency_results.len();
+            let level_summary = convert_to_latency_level_summary(test_name, &latency_results, test_config, cache_info, latency_thread_count);
 
             let summary_report = LatencyTestSummaryReport {
                 detected_cache: DetectedCacheInfo {
@@ -687,10 +728,14 @@ fn execute_test_cycle(
             };
 
             // Use existing reporting infrastructure - just display the single level
+            // (report_latency_summary adds trailing blank line for test separation)
             let mut reporter = create_console_reporter();
             if let Err(e) = reporter.report_latency_summary(&summary_report) {
                 log::error!("Failed to display latency report: {}", e);
             }
+        } else {
+            // Bandwidth-only test - add blank line to separate from next test
+            println!();
         }
 
         // Resume progress output now that report is complete
@@ -703,12 +748,53 @@ fn execute_test_cycle(
 		}
 
         // Create TestSummary for this test and add to cycle collection
+        // Include latency data if this was a latency test
+        let (latency_samples, latency_p5, latency_p10, latency_p25, latency_p50,
+             latency_p75, latency_p90, latency_p95, latency_p99, latency_p99_9, latency_spread) =
+            if !latency_results.is_empty() {
+                // Aggregate latency stats across all threads
+                let total_samples: usize = latency_results.iter().map(|(_, _, stats)| stats.sample_count).sum();
+                let all_latencies: Vec<f64> = latency_results.iter()
+                    .flat_map(|(_, _, stats)| stats.latencies_ns.clone())
+                    .collect();
+
+                if !all_latencies.is_empty() {
+                    let mut sorted = all_latencies.clone();
+                    sorted.sort_by(|a: &f64, b: &f64| a.partial_cmp(b).unwrap());
+                    let len = sorted.len();
+                    let percentile = |p: f64| sorted[((len as f64 - 1.0) * p / 100.0) as usize];
+                    let p5 = percentile(5.0);
+                    let p95 = percentile(95.0);
+                    let spread = if p5 > 0.0 { p95 / p5 } else { 0.0 };
+
+                    (Some(total_samples as u64), Some(percentile(5.0)), Some(percentile(10.0)),
+                     Some(percentile(25.0)), Some(percentile(50.0)), Some(percentile(75.0)),
+                     Some(percentile(90.0)), Some(percentile(95.0)), Some(percentile(99.0)),
+                     Some(percentile(99.9)), Some(spread))
+                } else {
+                    (None, None, None, None, None, None, None, None, None, None, None)
+                }
+            } else {
+                (None, None, None, None, None, None, None, None, None, None, None)
+            };
+
         cycle_test_summaries.push(TestSummary {
             name: test_display_name.to_string(), // Use display_name to preserve _A suffix for AUTO tests
             duration_ms: test_duration.as_millis(),
             bytes_processed: total_bytes_for_test,
             throughput_mib_s,
             errors: total_errors_for_test,
+            latency_samples,
+            latency_p5_ns: latency_p5,
+            latency_p10_ns: latency_p10,
+            latency_p25_ns: latency_p25,
+            latency_p50_ns: latency_p50,
+            latency_p75_ns: latency_p75,
+            latency_p90_ns: latency_p90,
+            latency_p95_ns: latency_p95,
+            latency_p99_ns: latency_p99,
+            latency_p99_9_ns: latency_p99_9,
+            latency_spread,
         });
 
         // Early exit on errors if required
@@ -800,9 +886,8 @@ fn resolve_auto_dispatch_test(test_name: &str) -> Option<(&'static str, TestFunc
     Some((concrete_name, test_function))
 }
 
-fn create_test_definitions() -> Vec<TestDefinition> {
-    // Detect TSC frequency once at startup for latency tests
-    let cache_info = CacheInfo::detect();
+fn create_test_definitions(cache_info: &CacheInfo) -> Vec<TestDefinition> {
+    // TSC frequency from the passed cache_info (detected once at startup)
     let tsc_freq = cache_info.tsc_frequency_ghz;
 
     // Helper to validate and adjust streams at config creation time
@@ -1120,7 +1205,7 @@ fn create_test_definitions() -> Vec<TestDefinition> {
                 false,
                 false
             ).with_timing(TestTiming::duration_only(10))
-             .with_streams(1), "L1-Read")
+             .with_tsc(tsc_freq).with_streams(1), "L1-Read")
              .with_memory_type(None)
         ),
 
@@ -1133,7 +1218,7 @@ fn create_test_definitions() -> Vec<TestDefinition> {
                 false,
                 false
             ).with_timing(TestTiming::duration_only(10))
-             .with_streams(1), "L1-Write")
+             .with_tsc(tsc_freq).with_streams(1), "L1-Write")
              .with_memory_type(None)
         ),
 
@@ -1146,7 +1231,7 @@ fn create_test_definitions() -> Vec<TestDefinition> {
                 false,
                 false
             ).with_timing(TestTiming::duration_only(10))
-             .with_streams(1), "L1-Copy")
+             .with_tsc(tsc_freq).with_streams(1), "L1-Copy")
              .with_memory_type(None)
         ),
 
@@ -1160,7 +1245,7 @@ fn create_test_definitions() -> Vec<TestDefinition> {
                 false,
                 false
             ).with_timing(TestTiming::duration_only(10))
-             .with_streams(1), "L2-Read")
+             .with_tsc(tsc_freq).with_streams(1), "L2-Read")
              .with_memory_type(None)
         ),
 
@@ -1173,7 +1258,7 @@ fn create_test_definitions() -> Vec<TestDefinition> {
                 false,
                 false
             ).with_timing(TestTiming::duration_only(10))
-             .with_streams(1), "L2-Write")
+             .with_tsc(tsc_freq).with_streams(1), "L2-Write")
              .with_memory_type(None)
         ),
 
@@ -1186,7 +1271,7 @@ fn create_test_definitions() -> Vec<TestDefinition> {
                 false,
                 false
             ).with_timing(TestTiming::duration_only(10))
-             .with_streams(1), "L2-Copy")
+             .with_tsc(tsc_freq).with_streams(1), "L2-Copy")
              .with_memory_type(None)
         ),
 
@@ -1200,7 +1285,7 @@ fn create_test_definitions() -> Vec<TestDefinition> {
                 false,
                 false
             ).with_timing(TestTiming::duration_only(10))
-             .with_streams(1), "L3-Read")
+             .with_tsc(tsc_freq).with_streams(1), "L3-Read")
              .with_memory_type(None)
         ),
 
@@ -1213,7 +1298,7 @@ fn create_test_definitions() -> Vec<TestDefinition> {
                 false,
                 false
             ).with_timing(TestTiming::duration_only(10))
-             .with_streams(1), "L3-Write")
+             .with_tsc(tsc_freq).with_streams(1), "L3-Write")
              .with_memory_type(None)
         ),
 
@@ -1226,7 +1311,7 @@ fn create_test_definitions() -> Vec<TestDefinition> {
                 false,
                 false
             ).with_timing(TestTiming::duration_only(10))
-             .with_streams(1), "L3-Copy")
+             .with_tsc(tsc_freq).with_streams(1), "L3-Copy")
              .with_memory_type(None)
         ),
 
@@ -1240,7 +1325,7 @@ fn create_test_definitions() -> Vec<TestDefinition> {
                 false,
                 false
             ).with_timing(TestTiming::duration_only(10))
-             .with_streams(1), "DRAM-Read")
+             .with_tsc(tsc_freq).with_streams(1), "DRAM-Read")
              .with_memory_type(None)
         ),
 
@@ -1253,7 +1338,7 @@ fn create_test_definitions() -> Vec<TestDefinition> {
                 false,
                 false
             ).with_timing(TestTiming::duration_only(10))
-             .with_streams(1), "DRAM-Write")
+             .with_tsc(tsc_freq).with_streams(1), "DRAM-Write")
              .with_memory_type(None)
         ),
 
@@ -1266,7 +1351,7 @@ fn create_test_definitions() -> Vec<TestDefinition> {
                 false,
                 false
             ).with_timing(TestTiming::duration_only(10))
-             .with_streams(1), "DRAM-Copy")
+             .with_tsc(tsc_freq).with_streams(1), "DRAM-Copy")
              .with_memory_type(None)
         ),
 
@@ -1280,7 +1365,7 @@ fn create_test_definitions() -> Vec<TestDefinition> {
                 false,
                 false
             ).with_timing(TestTiming::duration_only(10))
-             .with_streams(1), "DRAMFull-Read")
+             .with_tsc(tsc_freq).with_streams(1), "DRAMFull-Read")
              .with_memory_type(None)
         ),
 
@@ -1293,7 +1378,7 @@ fn create_test_definitions() -> Vec<TestDefinition> {
                 false,
                 false
             ).with_timing(TestTiming::duration_only(10))
-             .with_streams(1), "DRAMFull-Write")
+             .with_tsc(tsc_freq).with_streams(1), "DRAMFull-Write")
              .with_memory_type(None)
         ),
 
@@ -1306,7 +1391,7 @@ fn create_test_definitions() -> Vec<TestDefinition> {
                 false,
                 false
             ).with_timing(TestTiming::duration_only(10))
-             .with_streams(1), "DRAMFull-Copy")
+             .with_tsc(tsc_freq).with_streams(1), "DRAMFull-Copy")
              .with_memory_type(None)
         ),
     ];
@@ -1338,7 +1423,8 @@ fn create_test_definitions() -> Vec<TestDefinition> {
 }
 
 /// Create test definitions from config file (config-driven test execution)
-fn create_test_definitions_from_config(config: &crate::config::ModernConfig) -> Result<Vec<TestDefinition>, String> {
+fn create_test_definitions_from_config(config: &crate::config::ModernConfig, cache_info: &CacheInfo) -> Result<Vec<TestDefinition>, String> {
+    let _tsc_freq = cache_info.tsc_frequency_ghz; // Available for latency tests in config
     let mut resolved_tests = Vec::new();
 
     // Helper to validate and adjust streams
@@ -1570,6 +1656,8 @@ fn convert_to_latency_level_summary(
     test_name: &str,
     latency_results: &[(usize, usize, LatencyTestStats)],
     test_config: &TestMemoryConfig,
+    cache_info: &CacheInfo,
+    thread_count: usize,
 ) -> LatencyLevelSummary {
     // Collect per-thread results
     let mut per_thread_results = Vec::new();
@@ -1640,11 +1728,17 @@ fn convert_to_latency_level_summary(
         }
     };
 
-    // Estimate window size from config (best effort)
+    // Calculate window size from config - now properly supports CacheLevel
     let window_size_bytes = match &test_config.window_mode {
         WindowMode::FixedSize { size_mb } => (*size_mb as usize) * 1024 * 1024,
         WindowMode::FixedBytes { size_bytes } => *size_bytes,
-        _ => 0, // CacheLevel will be calculated at runtime
+        WindowMode::CacheLevel { target } => target.calculate_window_size(cache_info, thread_count),
+        WindowMode::FullAllocation => 0, // Unknown at this point
+        WindowMode::CacheRelative { multiplier } => {
+            // Total cache * multiplier / thread_count
+            let total_cache = cache_info.per_core_l1d + cache_info.per_core_l2 + cache_info.l3_cache;
+            ((total_cache as f64 * multiplier) / thread_count.max(1) as f64) as usize
+        }
     };
 
     LatencyLevelSummary {
@@ -1910,230 +2004,5 @@ pub fn print_current_memory_status() -> Option<SystemMemoryInfo> {
             eprintln!("⚠️ Failed to retrieve system memory status");
             None
         }
-    }
-}
-
-/// Run latency test suite targeting specific cache levels
-/// Tests L1, L2, L3, and DRAM with smart window sizing based on detected cache
-pub fn run_latency_test_suite(
-    layout: EnhancedMemoryLayout,
-    targets: Option<Vec<CacheTarget>>,
-) -> LatencyTestSummaryReport {
-    // Detect cache info
-    let cache_info = CacheInfo::detect();
-    let detected_cache = DetectedCacheInfo {
-        l1d_per_core_kb: cache_info.per_core_l1d / 1024,
-        l2_per_core_kb: cache_info.per_core_l2 / 1024,
-        l3_shared_mb: cache_info.l3_cache / (1024 * 1024),
-        detection_method: cache_info.detection_method.clone(),
-    };
-
-    // Default targets if none specified
-    // Tests cache hierarchy plus two DRAM scenarios:
-    // - DRAM: high TLB hit rate (typical latency)
-    // - DRAM-Full: TLB stress (worst-case latency including TLB miss overhead)
-    let targets = targets.unwrap_or_else(|| vec![
-        CacheTarget::L1_DEFAULT,
-        CacheTarget::L2_DEFAULT,
-        CacheTarget::L3_DEFAULT,
-        CacheTarget::DRAM_DEFAULT,
-        CacheTarget::DRAM_FULL_DEFAULT,
-    ]);
-
-    let thread_count = layout.thread_count();
-
-    println!("\n🔬 Latency Test Suite");
-    println!("═══════════════════════════════════════════════════════════════════════════════");
-    println!("Detected: L1D {} KB/core, L2 {} KB/core, L3 {} MB shared ({})",
-        detected_cache.l1d_per_core_kb,
-        detected_cache.l2_per_core_kb,
-        detected_cache.l3_shared_mb,
-        detected_cache.detection_method);
-    println!("Threads: {}", thread_count);
-    println!();
-
-    // Show what we're going to test
-    println!("Testing levels:");
-    for target in &targets {
-        let window_size = target.calculate_window_size(&cache_info, thread_count);
-        let window_str = if window_size >= 1024 * 1024 {
-            format!("{} MB", window_size / (1024 * 1024))
-        } else {
-            format!("{} KB", window_size / 1024)
-        };
-        println!("  {} -> {} per thread", target.name(), window_str);
-    }
-    println!();
-
-    // Allocate memory for threads
-    let alloc_config = MemoryAllocationConfig::default();
-    let runtime_config = detect_runtime_capabilities(&alloc_config);
-
-    let thread_blocks = layout.get_thread_blocks();
-    let allocated_blocks = match allocate_all_blocks_new(&thread_blocks, &runtime_config) {
-        Ok(blocks) => blocks,
-        Err(e) => {
-            log::error!("Failed to allocate memory: {}", e);
-            return LatencyTestSummaryReport {
-                detected_cache,
-                thread_count,
-                levels_tested: vec![],
-            };
-        }
-    };
-
-    // Create thread pool with allocated blocks
-    let pinning_config = CpuPinningConfig::default();
-    println!("Creating thread pool with {} persistent workers...", thread_count);
-    let (thread_pool, _work_result_receiver) = ThreadPool::new(
-        allocated_blocks,
-        &pinning_config,
-        thread_count,
-        runtime_config.cpu_list.as_deref(),
-    );
-
-    // Get CPU assignments for result reporting
-    let _cpu_assignments: std::collections::HashMap<usize, usize> = thread_pool
-        .get_cpu_assignments()
-        .iter()
-        .map(|(tid, cpu, _numa)| (*tid, *cpu))
-        .collect();
-
-    // Collect results for each cache level
-    let mut levels_tested = Vec::new();
-
-    for target in &targets {
-        let window_size = target.calculate_window_size(&cache_info, thread_count);
-
-        println!("📊 Testing {} (window: {} per thread)...",
-            target.name(),
-            if window_size >= 1024 * 1024 {
-                format!("{} MB", window_size / (1024 * 1024))
-            } else {
-                format!("{} KB", window_size / 1024)
-            });
-
-        // Create test config with the calculated window size in bytes (for sub-MB precision)
-        let config = TestMemoryConfig::new(
-            WindowMode::FixedBytes { size_bytes: window_size },
-            ChunkMode::AutoOptimal,
-            false,
-            false,
-        ).with_timing(TestTiming::duration_only(10)); // 10 second test per level
-
-        // Execute latency test using thread pool
-        let latency_receiver = thread_pool.execute_latency_test(
-            "LatencyTest",
-            &config,
-            ErrorMode::Log,
-        );
-
-        // Collect results from all threads
-        let mut per_thread_results = Vec::new();
-        for _ in 0..thread_count {
-            match latency_receiver.recv() {
-                Ok(result) => {
-                    let percentiles = latency_stats_to_percentiles(&result.stats);
-                    per_thread_results.push(LatencyThreadResult {
-                        thread_id: result.thread_id,
-                        cpu_id: result.cpu_id,
-                        sample_count: result.stats.sample_count,
-                        percentiles,
-                    });
-                }
-                Err(e) => {
-                    log::error!("Failed to receive latency result: {}", e);
-                }
-            }
-        }
-
-        // Sort by thread ID
-        per_thread_results.sort_by_key(|r| r.thread_id);
-
-        // Calculate consolidated percentiles
-        let consolidated = consolidate_percentiles(&per_thread_results);
-        let total_samples: usize = per_thread_results.iter().map(|r| r.sample_count).sum();
-
-        levels_tested.push(LatencyLevelSummary {
-            target_name: target.name(),
-            level_name: target.level_name().to_string(),
-            window_size_bytes: window_size,
-            total_samples,
-            per_thread_results,
-            consolidated,
-        });
-
-        if SHUTDOWN_REQUESTED.load(Ordering::Relaxed) {
-            println!("\n🛑 Shutdown requested, ending test suite early");
-            break;
-        }
-    }
-
-    // Shutdown thread pool and clean up
-    let (_blocks, _assignments) = thread_pool.shutdown();
-
-    LatencyTestSummaryReport {
-        detected_cache,
-        thread_count,
-        levels_tested,
-    }
-}
-
-/// Convert LatencyTestStats to LatencyPercentiles
-fn latency_stats_to_percentiles(stats: &LatencyTestStats) -> LatencyPercentiles {
-    let min = stats.latencies_ns.first().copied().unwrap_or(0.0);
-    let max = stats.latencies_ns.last().copied().unwrap_or(0.0);
-
-    LatencyPercentiles {
-        min_ns: min,
-        p1_ns: stats.p1_ns,
-        p5_ns: stats.p5_ns,
-        p10_ns: stats.p10_ns,
-        p25_ns: stats.p25_ns,
-        p50_ns: stats.p50_ns,
-        p75_ns: stats.p75_ns,
-        p90_ns: stats.p90_ns,
-        p95_ns: stats.p95_ns,
-        p99_ns: stats.p99_ns,
-        p99_9_ns: stats.p99_9_ns,
-        max_ns: max,
-        spread_ratio: stats.spread_ratio,
-    }
-}
-
-/// Consolidate percentiles from multiple threads
-/// Uses simple averaging of percentiles (could be improved with proper merging)
-fn consolidate_percentiles(results: &[LatencyThreadResult]) -> LatencyPercentiles {
-    if results.is_empty() {
-        return LatencyPercentiles {
-            min_ns: 0.0, p1_ns: 0.0, p5_ns: 0.0, p10_ns: 0.0, p25_ns: 0.0,
-            p50_ns: 0.0, p75_ns: 0.0, p90_ns: 0.0, p95_ns: 0.0, p99_ns: 0.0,
-            p99_9_ns: 0.0, max_ns: 0.0, spread_ratio: 1.0,
-        };
-    }
-
-    let n = results.len() as f64;
-
-    // For consolidated view, take min of mins, max of maxes, average of percentiles
-    let min_ns = results.iter().map(|r| r.percentiles.min_ns).fold(f64::MAX, f64::min);
-    let max_ns = results.iter().map(|r| r.percentiles.max_ns).fold(f64::MIN, f64::max);
-
-    let p1_ns = results.iter().map(|r| r.percentiles.p1_ns).sum::<f64>() / n;
-    let p5_ns = results.iter().map(|r| r.percentiles.p5_ns).sum::<f64>() / n;
-    let p10_ns = results.iter().map(|r| r.percentiles.p10_ns).sum::<f64>() / n;
-    let p25_ns = results.iter().map(|r| r.percentiles.p25_ns).sum::<f64>() / n;
-    let p50_ns = results.iter().map(|r| r.percentiles.p50_ns).sum::<f64>() / n;
-    let p75_ns = results.iter().map(|r| r.percentiles.p75_ns).sum::<f64>() / n;
-    let p90_ns = results.iter().map(|r| r.percentiles.p90_ns).sum::<f64>() / n;
-    let p95_ns = results.iter().map(|r| r.percentiles.p95_ns).sum::<f64>() / n;
-    let p99_ns = results.iter().map(|r| r.percentiles.p99_ns).sum::<f64>() / n;
-    let p99_9_ns = results.iter().map(|r| r.percentiles.p99_9_ns).sum::<f64>() / n;
-
-    let spread_ratio = if p5_ns > 0.0 { p95_ns / p5_ns } else { 1.0 };
-
-    LatencyPercentiles {
-        min_ns, p1_ns, p5_ns, p10_ns, p25_ns, p50_ns,
-        p75_ns, p90_ns, p95_ns, p99_ns, p99_9_ns, max_ns,
-        spread_ratio,
     }
 }
