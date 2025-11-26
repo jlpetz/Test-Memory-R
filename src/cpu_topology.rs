@@ -539,11 +539,24 @@ pub fn detect_cpu_topology() -> Vec<CpuTopologyInfo> {
 }
 
 
-pub fn display_cpu_topology(cpu_list: &[usize], cpus_to_skip: usize) {
+pub fn display_cpu_topology(cpu_list: &[usize], cpus_to_skip: usize, avoid_smt: bool) {
     use crate::reporting::{create_console_reporter, models::{CpuTopologyReport, CpuTopologyEntry, TopologySummary}};
-    
+
     let topology = get_cpu_topology();
     let is_hybrid = is_hybrid_cpu(topology);
+
+    // Build set of physical cores that have assigned CPUs (for SMT exclusion marking)
+    let assigned_physical_cores: std::collections::HashSet<usize> = if avoid_smt {
+        cpu_list.iter()
+            .filter_map(|&cpu_id| {
+                topology.iter()
+                    .find(|c| c.logical_id == cpu_id)
+                    .map(|c| c.physical_core_id)
+            })
+            .collect()
+    } else {
+        std::collections::HashSet::new()
+    };
     
     // First, identify which physical cores are being skipped
     let mut skipped_physical_cores = std::collections::HashSet::new();
@@ -598,13 +611,14 @@ pub fn display_cpu_topology(cpu_list: &[usize], cpus_to_skip: usize) {
     let mut skipped_count = 0;
     let mut assigned_count = 0;
     let mut available_count = 0;
+    let mut smt_excluded_count = 0;
     let mut p_core_count = 0;
     let mut e_core_count = 0;
-    
+
     // Count unique physical cores by type
     let mut counted_cores = std::collections::HashSet::new();
     let mut cpu_entries = Vec::new();
-    
+
     for cpu_info in topology {
         if !counted_cores.contains(&cpu_info.physical_core_id) {
             counted_cores.insert(cpu_info.physical_core_id);
@@ -614,7 +628,7 @@ pub fn display_cpu_topology(cpu_list: &[usize], cpus_to_skip: usize) {
                 CoreType::Unknown => {},
             }
         }
-        
+
         // Determine status based on physical core
         let (status, thread_id) = if skipped_physical_cores.contains(&cpu_info.physical_core_id) {
             skipped_count += 1;
@@ -622,6 +636,10 @@ pub fn display_cpu_topology(cpu_list: &[usize], cpus_to_skip: usize) {
         } else if let Some(thread_idx) = cpu_list.iter().position(|&cpu| cpu == cpu_info.logical_id) {
             assigned_count += 1;
             ("Assigned", Some(thread_idx))
+        } else if avoid_smt && assigned_physical_cores.contains(&cpu_info.physical_core_id) {
+            // This CPU is an SMT sibling of an assigned core, excluded due to cputype=cores
+            smt_excluded_count += 1;
+            ("SMT Excluded", None)
         } else {
             available_count += 1;
             ("Available", None)
@@ -660,6 +678,7 @@ pub fn display_cpu_topology(cpu_list: &[usize], cpus_to_skip: usize) {
         assigned_count,
         available_count,
         skipped_count,
+        smt_excluded_count,
     };
     
     let report = CpuTopologyReport {

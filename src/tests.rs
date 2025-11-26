@@ -47,12 +47,12 @@ impl CacheTarget {
     pub const L1_DEFAULT: Self = Self::L1 { divisor: 2 };
     /// L2 with default divisor of 2 (50% of per-core L2)
     pub const L2_DEFAULT: Self = Self::L2 { divisor: 2 };
-    /// L3 with default divisor of 4 (25% of per-thread L3 share - conservative for shared cache)
-    pub const L3_DEFAULT: Self = Self::L3 { divisor: 4 };
-    /// DRAM with default multiplier of 4 (4x per-thread L3 share) - high TLB hit, typical latency
+    /// L3 with default divisor of 2 (50% of L3 for single-thread, ignored for multi-thread)
+    pub const L3_DEFAULT: Self = Self::L3 { divisor: 2 };
+    /// DRAM with default multiplier of 4 - per-thread window = (L3 / threads) * 4
     pub const DRAM_DEFAULT: Self = Self::DRAM { multiplier: 4 };
-    /// DRAM-Full with default multiplier of 4 (4x total L3) - large working set, worst-case latency
-    pub const DRAM_FULL_DEFAULT: Self = Self::DRAMFull { multiplier: 4 };
+    /// DRAM-Full uses entire thread allocation (multiplier ignored)
+    pub const DRAM_FULL_DEFAULT: Self = Self::DRAMFull { multiplier: 0 };
 
     /// Calculate actual window size in bytes based on cache info and thread count
     pub fn calculate_window_size(&self, cache_info: &CacheInfo, thread_count: usize) -> usize {
@@ -64,25 +64,34 @@ impl CacheTarget {
                 cache_info.per_core_l2 / (*divisor as usize)
             }
             CacheTarget::L3 { divisor } => {
-                // Shared cache - divide by threads first, then apply divisor
-                let per_thread = cache_info.l3_cache / thread_count.max(1);
-                let l3_target = per_thread / (*divisor as usize);
-                // L3 window MUST exceed L2 size, otherwise we just hit L2 cache!
-                // Ensure at least 2x L2 to guarantee L3 cache hits
-                let min_l3_size = cache_info.per_core_l2 * 2;
-                l3_target.max(min_l3_size)
+                if thread_count == 1 {
+                    // Single-thread: apply divisor (default /2 = 50% of L3)
+                    // Leaves headroom and ensures we're testing L3, not thrashing it
+                    let l3_target = cache_info.l3_cache / (*divisor as usize);
+                    // Minimum: must exceed L2 to avoid L2 hits
+                    let min_l3_size = cache_info.per_core_l2 + (64 * 1024);
+                    l3_target.max(min_l3_size)
+                } else {
+                    // Multi-thread: use full per-thread share (divisor ignored)
+                    // Total working set = L3, ensuring all threads fit in L3 together
+                    let per_thread = cache_info.l3_cache / thread_count;
+                    // Minimum: must exceed L2 to avoid L2 hits
+                    let min_l3_size = cache_info.per_core_l2 + (64 * 1024);
+                    per_thread.max(min_l3_size)
+                }
             }
             CacheTarget::DRAM { multiplier } => {
-                // High TLB hit scenario - uses per-thread L3 share
-                // Smaller working set per thread = good TLB coverage = typical DRAM latency
+                // DRAM test - each thread gets (L3 / threads) * multiplier
+                // Combined working set = L3 * multiplier, ensuring all threads exceed L3 together
+                // Example: 6 threads, 16MB L3, multiplier=4 → 10.67MB each, 64MB total
                 let per_thread_l3 = cache_info.l3_cache / thread_count.max(1);
                 per_thread_l3 * (*multiplier as usize)
             }
-            CacheTarget::DRAMFull { multiplier } => {
-                // TLB stress scenario - uses total L3 size (not divided by threads)
-                // Larger working set per thread = TLB pressure = worst-case DRAM latency
-                // This tests full memory subsystem including TLB miss overhead
-                cache_info.l3_cache * (*multiplier as usize)
+            CacheTarget::DRAMFull { multiplier: _ } => {
+                // Full allocation test - returns sentinel to signal "use entire allocated block"
+                // Caller (TestMemoryConfig::calculate_window_size) handles this specially
+                // This tests the full memory assigned to each thread, regardless of L3 size
+                usize::MAX
             }
         }
     }
@@ -94,7 +103,24 @@ impl CacheTarget {
             CacheTarget::L2 { divisor } => format!("L2/{}", divisor),
             CacheTarget::L3 { divisor } => format!("L3/{}", divisor),
             CacheTarget::DRAM { multiplier } => format!("DRAM*{}", multiplier),
-            CacheTarget::DRAMFull { multiplier } => format!("DRAM-Full*{}", multiplier),
+            CacheTarget::DRAMFull { multiplier: _ } => "DRAM-Full".to_string(),
+        }
+    }
+
+    /// Get a human-readable name that reflects actual calculation with thread count
+    pub fn name_with_threads(&self, thread_count: usize) -> String {
+        match self {
+            CacheTarget::L1 { divisor } => format!("L1/{}", divisor),
+            CacheTarget::L2 { divisor } => format!("L2/{}", divisor),
+            CacheTarget::L3 { divisor } => {
+                if thread_count == 1 {
+                    format!("L3/{}", divisor)
+                } else {
+                    format!("L3/{}", thread_count)
+                }
+            }
+            CacheTarget::DRAM { multiplier } => format!("DRAM*{}", multiplier),
+            CacheTarget::DRAMFull { multiplier: _ } => "DRAM-Full".to_string(),
         }
     }
 
@@ -436,6 +462,7 @@ pub struct TestMemoryConfig {
     pub memory_type: Option<MemoryType>,
     pub error_check_interval: ErrorCheckInterval,  // Controls error checking frequency
     pub tsc_frequency_ghz: f64,     // TSC frequency detected at startup (for latency tests)
+    pub thread_count: usize,        // Total thread count for cache-aware window calculations
 }
 
 impl TestMemoryConfig {
@@ -450,9 +477,10 @@ impl TestMemoryConfig {
             pattern_mode: None,
             pattern_param0: None,
             pattern_param1: None,
-			memory_type: None,
+            memory_type: None,
             error_check_interval: ErrorCheckInterval::PER_CHUNK,  // Default: check at chunk boundaries
             tsc_frequency_ghz: 0.0,  // MUST be set from detected CacheInfo before running latency tests
+            thread_count: 1,  // Default to 1, should be set by runner for accurate cache calculations
         }
     }
     
@@ -737,6 +765,11 @@ impl TestMemoryConfig {
         self
     }
 
+    pub fn with_thread_count(mut self, thread_count: usize) -> Self {
+        self.thread_count = thread_count.max(1);
+        self
+    }
+
     // Calculate window size with corrected logic
     pub fn calculate_window_size(&self, test_name: &str, allocated_size: usize) -> usize {
         match &self.window_mode {
@@ -761,11 +794,15 @@ impl TestMemoryConfig {
                 cache_based_size.min(allocated_size)
             }
             WindowMode::CacheLevel { target } => {
-                // Calculate window size based on cache target
-                // Note: thread_count is not available here, use 1 for single-thread calculation
+                // Calculate window size based on cache target using actual thread count
                 let cache_info = get_cache_info();
-                let calculated = target.calculate_window_size(cache_info, 1);
-                calculated.min(allocated_size)
+                let calculated = target.calculate_window_size(cache_info, self.thread_count);
+                // DRAMFull returns usize::MAX as sentinel to indicate "use full allocation"
+                if calculated == usize::MAX {
+                    allocated_size
+                } else {
+                    calculated.min(allocated_size)
+                }
             }
         }
     }

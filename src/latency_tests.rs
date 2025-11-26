@@ -164,7 +164,6 @@ pub unsafe fn read_latency_multi(
     _progress: Option<&TestProgress>,
 ) -> LatencyTestStats {
     let test_name = "ReadLatency";
-    let start = Instant::now();
 
     // Use TSC frequency detected at startup
     let cpu_ghz = config.tsc_frequency_ghz;
@@ -224,6 +223,9 @@ pub unsafe fn read_latency_multi(
         setup_pointer_chase(base, len, thread_id);
         chain_positions.push(base); // Start at beginning
     }
+
+    // Start timing AFTER setup - setup time should not count against test duration
+    let start = Instant::now();
 
     // Main measurement loop
     loop {
@@ -312,7 +314,6 @@ pub unsafe fn write_latency_multi(
     _progress: Option<&TestProgress>,
 ) -> LatencyTestStats {
     let test_name = "WriteLatency";
-    let start = Instant::now();
 
     // Use TSC frequency detected at startup
     let cpu_ghz = config.tsc_frequency_ghz;
@@ -375,6 +376,9 @@ pub unsafe fn write_latency_multi(
         chain_bases.push(base);
         write_bases.push(base.add(len));
     }
+
+    // Start timing AFTER setup - setup time should not count against test duration
+    let start = Instant::now();
 
     // Main measurement loop
     loop {
@@ -470,7 +474,6 @@ pub unsafe fn copy_latency_multi(
     _progress: Option<&TestProgress>,
 ) -> LatencyTestStats {
     let test_name = "CopyLatency";
-    let start = Instant::now();
 
     // Use TSC frequency detected at startup
     let cpu_ghz = config.tsc_frequency_ghz;
@@ -505,16 +508,14 @@ pub unsafe fn copy_latency_multi(
     let mut cycle = 0u32;
 
     // Use window size to determine working set - allows targeting different cache levels
-    // For copy, EACH buffer (src and dst) must be the full window size to ensure
-    // we're hitting the target cache level. If we split the window in half, each buffer
-    // might fit in a smaller cache level, giving misleadingly fast results.
-    // Example: 4MB window split = 2MB each, but L2 is 1MB, so 2MB barely exceeds L2
-    // With full 4MB each, we guarantee L3 hits for L3-targeted tests.
+    // For copy, each buffer (src and dst) must be the full window size to ensure
+    // we're hitting the target cache level. Total memory = 2× window.
+    // Note: Multi-threaded copy tests may exceed cache capacity and spill to higher levels.
     let working_set_bytes = window_size * 2; // Double to account for src + dst
     let working_set_u64 = working_set_bytes / std::mem::size_of::<u64>() / 2; // Each buffer = window_size
     let iterations_per_sample = 1000usize;
 
-    // Each buffer is window_size, total is 2x window_size
+    // Each buffer is window_size, total is 2× window_size
     let per_buffer_bytes = window_size;
     log::info!("[Thread {}] {} - Working set: {} bytes per buffer ({} elements each, {} total) targeting {}",
         thread_id, test_name, per_buffer_bytes, working_set_u64, working_set_u64 * 2,
@@ -548,6 +549,9 @@ pub unsafe fn copy_latency_multi(
 
     // Track destination position separately (wraps around)
     let mut dst_positions: Vec<usize> = vec![0; test_blocks.len()];
+
+    // Start timing AFTER setup - setup time should not count against test duration
+    let start = Instant::now();
 
     // Main measurement loop
     loop {

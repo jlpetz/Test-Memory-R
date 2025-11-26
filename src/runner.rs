@@ -377,6 +377,12 @@ pub fn run_tests_with_layout_and_timing_filtered(
 
     // Create thread pool with pre-allocated blocks
     let thread_count = allocated_blocks.len();
+
+    // Set thread_count on all test configs for accurate cache-level window calculations
+    for test_def in &mut test_definitions {
+        test_def.config.thread_count = thread_count;
+    }
+
     let pinning_config = CpuPinningConfig::default();
     
     println!("\nCreating thread pool with {} persistent workers...", thread_count);

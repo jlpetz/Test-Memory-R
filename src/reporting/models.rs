@@ -390,6 +390,7 @@ pub struct TopologySummary {
     pub assigned_count: usize,
     pub available_count: usize,
     pub skipped_count: usize,
+    pub smt_excluded_count: usize,
 }
 
 /// System memory analysis report

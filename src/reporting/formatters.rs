@@ -943,12 +943,22 @@ impl ReportFormatter for DefaultFormatter {
             }
         }
         
-        summary_parts.push(format!(
-            "Assigned: {}, Available: {}, Skipped: {}",
-            report.summary.assigned_count,
-            report.summary.available_count,
-            report.summary.skipped_count
-        ));
+        if report.summary.smt_excluded_count > 0 {
+            summary_parts.push(format!(
+                "Assigned: {}, Available: {}, SMT Excluded: {}, Skipped: {}",
+                report.summary.assigned_count,
+                report.summary.available_count,
+                report.summary.smt_excluded_count,
+                report.summary.skipped_count
+            ));
+        } else {
+            summary_parts.push(format!(
+                "Assigned: {}, Available: {}, Skipped: {}",
+                report.summary.assigned_count,
+                report.summary.available_count,
+                report.summary.skipped_count
+            ));
+        }
         
         table.with_footer(summary_parts.join("\n"))
     }
@@ -1146,7 +1156,12 @@ impl ReportFormatter for DefaultFormatter {
             WindowMode::CacheLevel { target } => {
                 // Calculate the actual window size using the target's method
                 let size = target.calculate_window_size(cache_info, thread_count);
-                format!("{} ({})", self.format_bytes(size as u64), target.name())
+                // DRAMFull returns usize::MAX as sentinel for "use full allocation"
+                if size == usize::MAX {
+                    format!("Full Alloc ({})", target.name_with_threads(thread_count))
+                } else {
+                    format!("{} ({})", self.format_bytes(size as u64), target.name_with_threads(thread_count))
+                }
             }
         }
     }

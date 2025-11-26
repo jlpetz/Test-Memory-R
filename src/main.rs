@@ -464,7 +464,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
 		"cores" => num_cpus::get_physical(),
 		_ => num_cpus::get(),
 	};
-	
+
 	// When using cores mode, we should automatically avoid SMT doubling
 	let avoid_smt = cputype == "cores";
 	if avoid_smt {
@@ -473,8 +473,59 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
 		println!("  CPU Type: {}", cputype);
 	}
 
-	let percent = cpus.trim_end_matches('%').parse::<u32>().unwrap_or(100);
-	let threads = ((total_cpus as u32 * percent) / 100).max(1).min(total_cpus as u32) as usize;
+	// Calculate available CPUs after accounting for skipped cores
+	let available_cpus = if pinning_config.cpus_to_skip > 0 {
+		// Get topology to count logical CPUs on skipped physical cores
+		let topology = get_cpu_topology();
+		let mut cores_by_id: std::collections::HashMap<usize, usize> = std::collections::HashMap::new();
+		for cpu in topology {
+			*cores_by_id.entry(cpu.physical_core_id).or_insert(0) += 1;
+		}
+		// Sort core IDs to determine which cores get skipped (E-cores first for hybrid)
+		let is_hybrid = is_hybrid_cpu(get_cpu_topology());
+		let mut sorted_cores: Vec<_> = cores_by_id.iter().collect();
+		if is_hybrid {
+			// For hybrid, E-cores are skipped first - sort by core type then ID
+			let topo = get_cpu_topology();
+			sorted_cores.sort_by(|a, b| {
+				let a_type = topo.iter().find(|c| c.physical_core_id == *a.0).map(|c| c.core_type);
+				let b_type = topo.iter().find(|c| c.physical_core_id == *b.0).map(|c| c.core_type);
+				// E-cores (Efficiency) should come first for skipping
+				match (a_type, b_type) {
+					(Some(CoreType::Efficiency(_)), Some(CoreType::Performance(_))) => std::cmp::Ordering::Less,
+					(Some(CoreType::Performance(_)), Some(CoreType::Efficiency(_))) => std::cmp::Ordering::Greater,
+					_ => a.0.cmp(b.0),
+				}
+			});
+		} else {
+			sorted_cores.sort_by_key(|(id, _)| *id);
+		}
+		// Count logical CPUs on skipped physical cores
+		let skipped_logical: usize = sorted_cores.iter()
+			.take(pinning_config.cpus_to_skip)
+			.map(|(_, count)| *count)
+			.sum();
+		let available = if avoid_smt {
+			// For cores mode, available = physical cores - skipped
+			total_cpus.saturating_sub(pinning_config.cpus_to_skip)
+		} else {
+			// For threads mode, available = logical threads - skipped logical
+			total_cpus.saturating_sub(skipped_logical)
+		};
+		available.max(1)
+	} else {
+		total_cpus
+	};
+
+	let threads = if cpus.ends_with('%') {
+		// Percentage of available CPUs
+		let percent = cpus.trim_end_matches('%').parse::<u32>().unwrap_or(100);
+		// Round to nearest instead of truncating: +50 before dividing by 100
+		((available_cpus as u32 * percent + 50) / 100).max(1).min(available_cpus as u32) as usize
+	} else {
+		// Absolute count
+		cpus.parse::<usize>().unwrap_or(available_cpus).min(available_cpus).max(1)
+	};
 		
 	let (actual_threads, cpu_list) = if pinning_config.enable_pinning {
 		// Override avoid_smt_doubling if cputype=cores
@@ -497,8 +548,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         ErrorMode::Panic => println!("Panic on error (debug mode)"),
     }
 	
-	println!("  CPU Type: {}", cputype);
-	println!("  Using {}/{} {} for testing", actual_threads, total_cpus, cputype);
+	println!("  Using {}/{} {} for testing", actual_threads, available_cpus, cputype);
 	if pinning_config.enable_pinning {
 		println!("  CPU Assignment: {:?}", cpu_list);
 		if pinning_config.cpus_to_skip > 0 {
@@ -683,7 +733,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
 	// Display CPU topology right after system information
 	// Add this after the cache architecture display (around line 220-230):
 	if pinning_config.enable_pinning {
-		display_cpu_topology(&cpu_list, pinning_config.cpus_to_skip);
+		display_cpu_topology(&cpu_list, pinning_config.cpus_to_skip, avoid_smt);
 	} else {
 		println!("\nCPU Thread Assignment: No pinning - threads will be scheduled by OS");
 	}
@@ -879,55 +929,73 @@ fn calculate_thread_allocation(
         let p_cores_to_skip = cores_to_skip.min(p_cores.len());
         let p_cores_to_use = p_cores.iter().skip(p_cores_to_skip);
         
-        // Assign from P-cores first
-        for (_, logical_cpus) in p_cores_to_use {
-            if avoid_smt_doubling {
-                // Take only first logical CPU per core
-                if let Some((cpu_id, _)) = logical_cpus.first()
-                    && selected_cpus.len() < requested_threads {
-                        selected_cpus.push(*cpu_id);
-                    }
-            } else {
-                // Take all logical CPUs from this core
-                for (cpu_id, _) in logical_cpus {
-                    if selected_cpus.len() < requested_threads {
-                        selected_cpus.push(*cpu_id);
-                    }
-                }
+        // Round-robin assignment: spread threads across physical cores first,
+        // then fill in SMT siblings if more threads are needed.
+        // This ensures better utilization when using partial CPU counts (e.g., cpus=50%)
+
+        // Collect cores we'll use (respecting skip settings)
+        let p_cores_vec: Vec<_> = p_cores_to_use.collect();
+        let e_cores_vec: Vec<_> = e_cores_to_use.collect();
+
+        // Pass 1: Take first thread from each P-core
+        for (_, logical_cpus) in &p_cores_vec {
+            if selected_cpus.len() >= requested_threads { break; }
+            if let Some((cpu_id, _)) = logical_cpus.first() {
+                selected_cpus.push(*cpu_id);
             }
         }
-        
-        // If we still need more threads and have E-cores available
-        if selected_cpus.len() < requested_threads {
-            for (_, logical_cpus) in e_cores_to_use {
-                for (cpu_id, _) in logical_cpus {
-                    if selected_cpus.len() < requested_threads {
-                        selected_cpus.push(*cpu_id);
-                    }
+
+        // Pass 2: Take first thread from each E-core
+        for (_, logical_cpus) in &e_cores_vec {
+            if selected_cpus.len() >= requested_threads { break; }
+            if let Some((cpu_id, _)) = logical_cpus.first() {
+                selected_cpus.push(*cpu_id);
+            }
+        }
+
+        // Pass 3 & 4: If not avoiding SMT and still need more, take SMT siblings
+        if !avoid_smt_doubling && selected_cpus.len() < requested_threads {
+            // Take SMT siblings from P-cores
+            for (_, logical_cpus) in &p_cores_vec {
+                for (cpu_id, _) in logical_cpus.iter().skip(1) {
+                    if selected_cpus.len() >= requested_threads { break; }
+                    selected_cpus.push(*cpu_id);
+                }
+            }
+
+            // Take SMT siblings from E-cores
+            for (_, logical_cpus) in &e_cores_vec {
+                for (cpu_id, _) in logical_cpus.iter().skip(1) {
+                    if selected_cpus.len() >= requested_threads { break; }
+                    selected_cpus.push(*cpu_id);
                 }
             }
         }
     } else {
-        // Non-hybrid CPU - use existing logic
+        // Non-hybrid CPU - use round-robin assignment
         let mut physical_cores: Vec<_> = cores_map.keys().cloned().collect();
         physical_cores.sort();
-        
-        for (core_idx, physical_core) in physical_cores.iter().enumerate() {
-            if core_idx < cores_to_skip {
-                continue;
-            }
-            
+
+        // Skip the first N cores
+        let cores_to_use: Vec<_> = physical_cores.iter().skip(cores_to_skip).cloned().collect();
+
+        // Pass 1: Take first thread from each physical core (round-robin)
+        for physical_core in &cores_to_use {
+            if selected_cpus.len() >= requested_threads { break; }
             if let Some(logical_cpus) = cores_map.get(physical_core) {
-                if avoid_smt_doubling {
-                    if let Some((cpu_id, _)) = logical_cpus.first()
-                        && selected_cpus.len() < requested_threads {
-                            selected_cpus.push(*cpu_id);
-                        }
-                } else {
-                    for (cpu_id, _) in logical_cpus {
-                        if selected_cpus.len() < requested_threads {
-                            selected_cpus.push(*cpu_id);
-                        }
+                if let Some((cpu_id, _)) = logical_cpus.first() {
+                    selected_cpus.push(*cpu_id);
+                }
+            }
+        }
+
+        // Pass 2: If not avoiding SMT and still need more, take SMT siblings
+        if !avoid_smt_doubling && selected_cpus.len() < requested_threads {
+            for physical_core in &cores_to_use {
+                if let Some(logical_cpus) = cores_map.get(physical_core) {
+                    for (cpu_id, _) in logical_cpus.iter().skip(1) {
+                        if selected_cpus.len() >= requested_threads { break; }
+                        selected_cpus.push(*cpu_id);
                     }
                 }
             }
