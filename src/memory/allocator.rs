@@ -627,10 +627,10 @@ impl MemoryAllocator {
         // Phase 2: PageTypeFirst - Complete planned chunks first, then try additional sizes
         let allocated_so_far: usize = allocated_chunks.iter().map(|c| c.chunk_size).sum();
         let total_needed = plan.iter().map(|(size, count)| size * count).sum::<usize>();
-        
-        if allocated_so_far < total_needed && runtime_config.large_pages_available {
+
+        if allocated_so_far < total_needed && runtime_config.large_pages_available && large_allowed {
             log::info!("NUMA {}: Phase 2 - Complete planned chunks first, then fill remaining", numa_node);
-            
+
             // Phase 2a: Complete any planned chunks that weren't fully allocated in Phase 1
             log::info!("NUMA {}: Phase 2a - Completing planned chunks with large pages", numa_node);
             
@@ -754,9 +754,10 @@ impl MemoryAllocator {
             }
         }
         
-        // Phase 3: Regular pages as last resort - try ALL chunk sizes 
+        // Phase 3: Regular pages as last resort - try ALL chunk sizes
+        let regular_allowed = is_page_size_allowed(PageSizeLevel::Regular, min_page, max_page);
         let allocated_final: usize = allocated_chunks.iter().map(|c| c.chunk_size).sum();
-        if allocated_final < total_needed {
+        if allocated_final < total_needed && regular_allowed {
             let remaining_needed = total_needed - allocated_final;
             log::info!("NUMA {}: Phase 3 - Using regular pages for remaining {} bytes", numa_node, remaining_needed);
             
@@ -820,7 +821,7 @@ impl MemoryAllocator {
         Ok(allocated_chunks)
     }
     
-    /// Execute plan with BlockSizeFirst strategy  
+    /// Execute plan with BlockSizeFirst strategy
     fn execute_plan_block_size_first(
         &mut self,
         plan: &[(usize, usize)],
@@ -828,15 +829,25 @@ impl MemoryAllocator {
         runtime_config: &crate::RuntimeConfig,
     ) -> Result<Vec<AllocatedChunk>, String> {
         let mut allocated_chunks = Vec::new();
-        
+
+        // Get page size constraints from config
+        let min_page = &runtime_config.memory_allocation.min_page_size;
+        let max_page = &runtime_config.memory_allocation.max_page_size;
+        let huge_allowed = is_page_size_allowed(PageSizeLevel::Huge, min_page, max_page);
+        let large_allowed = is_page_size_allowed(PageSizeLevel::Large, min_page, max_page);
+        let regular_allowed = is_page_size_allowed(PageSizeLevel::Regular, min_page, max_page);
+
+        log::info!("NUMA {}: Page size constraints: min={}, max={} (huge={}, large={}, regular={})",
+                 numa_node, min_page, max_page, huge_allowed, large_allowed, regular_allowed);
+
         // Phase 1: For each block size, try huge then large (skip regular)
         log::info!("NUMA {}: Phase 1 - Block-size-first with huge/large pages only", numa_node);
-        
+
         for &(block_size, total_blocks_planned) in plan {
             let mut blocks_allocated = 0;
-            
-            // Try huge pages if size is eligible
-            if block_size >= HUGE_PAGE_SIZE_USIZE && runtime_config.large_pages_available {
+
+            // Try huge pages if size is eligible and allowed
+            if block_size >= HUGE_PAGE_SIZE_USIZE && runtime_config.large_pages_available && huge_allowed {
                 log::info!("NUMA {}: Trying {} × {}MB with huge pages",
                          numa_node, total_blocks_planned, block_size / (1024 * 1024));
 
@@ -872,9 +883,9 @@ impl MemoryAllocator {
                 }
             }
             
-            // Try large pages for remaining blocks
+            // Try large pages for remaining blocks (if allowed)
             let remaining_blocks = total_blocks_planned - blocks_allocated;
-            if remaining_blocks > 0 && block_size >= 16 * 1024 * 1024 && runtime_config.large_pages_available {
+            if remaining_blocks > 0 && block_size >= 16 * 1024 * 1024 && runtime_config.large_pages_available && large_allowed {
                 log::info!("NUMA {}: Trying {} × {}MB with large pages",
                          numa_node, remaining_blocks, block_size / (1024 * 1024));
                 
@@ -911,11 +922,11 @@ impl MemoryAllocator {
             }
         }
         
-        // Phase 2: Regular pages as absolute last resort
+        // Phase 2: Regular pages as absolute last resort (if allowed)
         let allocated_so_far: usize = allocated_chunks.iter().map(|c| c.chunk_size).sum();
         let total_needed = plan.iter().map(|(size, count)| size * count).sum::<usize>();
-        
-        if allocated_so_far < total_needed {
+
+        if allocated_so_far < total_needed && regular_allowed {
             log::info!("NUMA {}: Phase 2 - Regular pages as last resort", numa_node);
             
             for &(block_size, total_blocks_planned) in plan {
