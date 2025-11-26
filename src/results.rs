@@ -51,6 +51,29 @@ pub struct TestResult {
     pub throughput_mib_s: f64,
     pub throughput_gib_s: f64,
     pub errors: u64,
+    // Latency metrics (Some for latency tests, None for other tests)
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub latency_samples: Option<u64>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub latency_p5_ns: Option<f64>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub latency_p10_ns: Option<f64>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub latency_p25_ns: Option<f64>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub latency_p50_ns: Option<f64>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub latency_p75_ns: Option<f64>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub latency_p90_ns: Option<f64>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub latency_p95_ns: Option<f64>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub latency_p99_ns: Option<f64>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub latency_p99_9_ns: Option<f64>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub latency_spread: Option<f64>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -81,6 +104,29 @@ pub struct TestAverage {
     pub avg_throughput_mib_s: f64,
     pub avg_throughput_gib_s: f64,
     pub total_errors: u64,
+    // Latency metrics (averaged across cycles, Some for latency tests, None for other tests)
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub latency_samples: Option<u64>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub latency_p5_ns: Option<f64>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub latency_p10_ns: Option<f64>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub latency_p25_ns: Option<f64>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub latency_p50_ns: Option<f64>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub latency_p75_ns: Option<f64>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub latency_p90_ns: Option<f64>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub latency_p95_ns: Option<f64>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub latency_p99_ns: Option<f64>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub latency_p99_9_ns: Option<f64>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub latency_spread: Option<f64>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -198,6 +244,18 @@ impl TestRunResult {
                 throughput_mib_s: summary.throughput_mib_s,
                 throughput_gib_s: summary.throughput_mib_s / 1024.0,
                 errors: summary.errors,
+                // Copy latency data from TestSummary
+                latency_samples: summary.latency_samples,
+                latency_p5_ns: summary.latency_p5_ns,
+                latency_p10_ns: summary.latency_p10_ns,
+                latency_p25_ns: summary.latency_p25_ns,
+                latency_p50_ns: summary.latency_p50_ns,
+                latency_p75_ns: summary.latency_p75_ns,
+                latency_p90_ns: summary.latency_p90_ns,
+                latency_p95_ns: summary.latency_p95_ns,
+                latency_p99_ns: summary.latency_p99_ns,
+                latency_p99_9_ns: summary.latency_p99_9_ns,
+                latency_spread: summary.latency_spread,
             }
         }).collect();
 
@@ -237,35 +295,107 @@ impl TestRunResult {
     }
 
     fn calculate_per_test_averages(&mut self) {
-        let mut test_aggregates: HashMap<String, (usize, u128, u64, u64)> = HashMap::new(); // test_number, total_duration_ms, total_bytes, total_errors
+        // Aggregation struct to track per-test statistics including latency
+        #[derive(Default)]
+        struct TestAggregate {
+            test_number: usize,
+            total_duration_ms: u128,
+            total_bytes: u64,
+            total_errors: u64,
+            // Latency aggregation
+            latency_count: u64,  // Number of cycles with latency data
+            latency_samples_sum: u64,
+            latency_p5_sum: f64,
+            latency_p10_sum: f64,
+            latency_p25_sum: f64,
+            latency_p50_sum: f64,
+            latency_p75_sum: f64,
+            latency_p90_sum: f64,
+            latency_p95_sum: f64,
+            latency_p99_sum: f64,
+            latency_p99_9_sum: f64,
+            latency_spread_sum: f64,
+        }
+
+        let mut test_aggregates: HashMap<String, TestAggregate> = HashMap::new();
 
         for cycle in &self.cycles {
             for test in &cycle.tests {
-                let entry = test_aggregates.entry(test.name.clone()).or_insert((test.test_number, 0, 0, 0));
-                entry.1 += test.duration_ms;
-                entry.2 += test.bytes_processed;
-                entry.3 += test.errors;
+                let entry = test_aggregates.entry(test.name.clone()).or_default();
+                if entry.test_number == 0 {
+                    entry.test_number = test.test_number;
+                }
+                entry.total_duration_ms += test.duration_ms;
+                entry.total_bytes += test.bytes_processed;
+                entry.total_errors += test.errors;
+
+                // Aggregate latency data if present
+                if let Some(samples) = test.latency_samples {
+                    entry.latency_count += 1;
+                    entry.latency_samples_sum += samples;
+                    entry.latency_p5_sum += test.latency_p5_ns.unwrap_or(0.0);
+                    entry.latency_p10_sum += test.latency_p10_ns.unwrap_or(0.0);
+                    entry.latency_p25_sum += test.latency_p25_ns.unwrap_or(0.0);
+                    entry.latency_p50_sum += test.latency_p50_ns.unwrap_or(0.0);
+                    entry.latency_p75_sum += test.latency_p75_ns.unwrap_or(0.0);
+                    entry.latency_p90_sum += test.latency_p90_ns.unwrap_or(0.0);
+                    entry.latency_p95_sum += test.latency_p95_ns.unwrap_or(0.0);
+                    entry.latency_p99_sum += test.latency_p99_ns.unwrap_or(0.0);
+                    entry.latency_p99_9_sum += test.latency_p99_9_ns.unwrap_or(0.0);
+                    entry.latency_spread_sum += test.latency_spread.unwrap_or(0.0);
+                }
             }
         }
 
         let cycle_count = self.cycles.len() as u128;
-        self.overall_stats.per_test_averages = test_aggregates.into_iter().map(|(name, (test_number, total_duration, total_bytes, total_errors))| {
-            let avg_duration_ms = total_duration / cycle_count;
-            let avg_bytes = total_bytes / cycle_count as u64;
+        self.overall_stats.per_test_averages = test_aggregates.into_iter().map(|(name, agg)| {
+            let avg_duration_ms = agg.total_duration_ms / cycle_count;
+            let avg_bytes = agg.total_bytes / cycle_count as u64;
             let avg_throughput_mib = if avg_duration_ms > 0 {
                 (avg_bytes as f64 / MB_F64) / (avg_duration_ms as f64 / 1000.0)
             } else {
                 0.0
             };
 
+            // Calculate averaged latency metrics if present
+            let (latency_samples, latency_p5, latency_p10, latency_p25, latency_p50,
+                 latency_p75, latency_p90, latency_p95, latency_p99, latency_p99_9, latency_spread) =
+                if agg.latency_count > 0 {
+                    let n = agg.latency_count as f64;
+                    (Some(agg.latency_samples_sum / agg.latency_count),
+                     Some(agg.latency_p5_sum / n),
+                     Some(agg.latency_p10_sum / n),
+                     Some(agg.latency_p25_sum / n),
+                     Some(agg.latency_p50_sum / n),
+                     Some(agg.latency_p75_sum / n),
+                     Some(agg.latency_p90_sum / n),
+                     Some(agg.latency_p95_sum / n),
+                     Some(agg.latency_p99_sum / n),
+                     Some(agg.latency_p99_9_sum / n),
+                     Some(agg.latency_spread_sum / n))
+                } else {
+                    (None, None, None, None, None, None, None, None, None, None, None)
+                };
+
             TestAverage {
-                test_number,
+                test_number: agg.test_number,
                 name,
                 avg_duration_ms,
                 avg_bytes_processed: avg_bytes,
                 avg_throughput_mib_s: avg_throughput_mib,
                 avg_throughput_gib_s: avg_throughput_mib / 1024.0,
-                total_errors,
+                total_errors: agg.total_errors,
+                latency_samples,
+                latency_p5_ns: latency_p5,
+                latency_p10_ns: latency_p10,
+                latency_p25_ns: latency_p25,
+                latency_p50_ns: latency_p50,
+                latency_p75_ns: latency_p75,
+                latency_p90_ns: latency_p90,
+                latency_p95_ns: latency_p95,
+                latency_p99_ns: latency_p99,
+                latency_p99_9_ns: latency_p99_9,
+                latency_spread,
             }
         }).collect();
 

@@ -207,9 +207,12 @@ pub fn create_test_configuration_report(
 }
 
 /// Convert TestDefinition structs to test configuration report (updated version)
+/// Now accepts cache_info and thread_count to calculate actual window sizes for CacheLevel targets
 pub fn create_test_configuration_report_v2(
     test_definitions: &[crate::runner::TestDefinition],
     suite_timing: &crate::runner::TestSuiteTiming,
+    cache_info: &crate::cache::CacheInfo,
+    thread_count: usize,
 ) -> TestConfigurationReport {
     use crate::reporting::formatters::{ReportFormatter, DefaultFormatter};
     let formatter = DefaultFormatter::new();
@@ -231,7 +234,8 @@ pub fn create_test_configuration_report_v2(
             (None, None) => "default".to_string(),  // Match old behavior
         };
 
-        let window_mode = formatter.format_window_mode(&config.window_mode);
+        // Use the new formatter with calculated sizes for CacheLevel targets
+        let window_mode = formatter.format_window_mode_with_size(&config.window_mode, cache_info, thread_count);
         let chunk_mode = formatter.format_chunk_mode(&config.chunk_mode);
 
         // Match old flag order: Locality first, then Misaligned
@@ -369,37 +373,104 @@ pub fn create_final_test_summary_report(
         0.0
     };
     
-    // Aggregate per-test performance
-    let mut test_aggregates: std::collections::HashMap<String, (u64, u128, u64)> = std::collections::HashMap::new();
-    
+    // Aggregate per-test performance including latency data
+    #[derive(Default)]
+    struct TestAggregate {
+        total_bytes: u64,
+        total_duration_ms: u128,
+        total_errors: u64,
+        // Latency aggregation (sum for averaging)
+        latency_count: u64,  // Number of cycles with latency data
+        latency_samples_sum: u64,
+        latency_p5_sum: f64,
+        latency_p10_sum: f64,
+        latency_p25_sum: f64,
+        latency_p50_sum: f64,
+        latency_p75_sum: f64,
+        latency_p90_sum: f64,
+        latency_p95_sum: f64,
+        latency_p99_sum: f64,
+        latency_p99_9_sum: f64,
+        latency_spread_sum: f64,
+    }
+
+    let mut test_aggregates: std::collections::HashMap<String, TestAggregate> = std::collections::HashMap::new();
+
     for cycle in cycle_stats {
         for test_summary in &cycle.test_stats {
-            let entry = test_aggregates.entry(test_summary.name.clone()).or_insert((0, 0, 0));
-            entry.0 += test_summary.bytes_processed;
-            entry.1 += test_summary.duration_ms;
-            entry.2 += test_summary.errors;
+            let entry = test_aggregates.entry(test_summary.name.clone()).or_default();
+            entry.total_bytes += test_summary.bytes_processed;
+            entry.total_duration_ms += test_summary.duration_ms;
+            entry.total_errors += test_summary.errors;
+
+            // Aggregate latency data if present
+            if let Some(samples) = test_summary.latency_samples {
+                entry.latency_count += 1;
+                entry.latency_samples_sum += samples;
+                entry.latency_p5_sum += test_summary.latency_p5_ns.unwrap_or(0.0);
+                entry.latency_p10_sum += test_summary.latency_p10_ns.unwrap_or(0.0);
+                entry.latency_p25_sum += test_summary.latency_p25_ns.unwrap_or(0.0);
+                entry.latency_p50_sum += test_summary.latency_p50_ns.unwrap_or(0.0);
+                entry.latency_p75_sum += test_summary.latency_p75_ns.unwrap_or(0.0);
+                entry.latency_p90_sum += test_summary.latency_p90_ns.unwrap_or(0.0);
+                entry.latency_p95_sum += test_summary.latency_p95_ns.unwrap_or(0.0);
+                entry.latency_p99_sum += test_summary.latency_p99_ns.unwrap_or(0.0);
+                entry.latency_p99_9_sum += test_summary.latency_p99_9_ns.unwrap_or(0.0);
+                entry.latency_spread_sum += test_summary.latency_spread.unwrap_or(0.0);
+            }
         }
     }
-    
+
     let mut per_test_summaries = Vec::new();
     for (test_name, _, _) in test_definitions.iter() {
-        if let Some((total_bytes, total_duration_ms, total_errors)) = test_aggregates.get(*test_name) {
+        if let Some(agg) = test_aggregates.get(*test_name) {
             let cycle_count = cycle_stats.len() as u64;
-            let avg_bytes = *total_bytes / cycle_count;
-            let avg_duration_ms = *total_duration_ms / cycle_count as u128;
+            let avg_bytes = agg.total_bytes / cycle_count;
+            let avg_duration_ms = agg.total_duration_ms / cycle_count as u128;
             let avg_throughput_mib_s = if avg_duration_ms > 0 {
                 (avg_bytes as f64 / (1024.0 * 1024.0)) / (avg_duration_ms as f64 / 1000.0)
             } else {
                 0.0
             };
-            
+
+            // Calculate averaged latency metrics if present
+            let (latency_samples, latency_p5, latency_p10, latency_p25, latency_p50,
+                 latency_p75, latency_p90, latency_p95, latency_p99, latency_p99_9, latency_spread) =
+                if agg.latency_count > 0 {
+                    let n = agg.latency_count as f64;
+                    (Some(agg.latency_samples_sum / agg.latency_count),
+                     Some(agg.latency_p5_sum / n),
+                     Some(agg.latency_p10_sum / n),
+                     Some(agg.latency_p25_sum / n),
+                     Some(agg.latency_p50_sum / n),
+                     Some(agg.latency_p75_sum / n),
+                     Some(agg.latency_p90_sum / n),
+                     Some(agg.latency_p95_sum / n),
+                     Some(agg.latency_p99_sum / n),
+                     Some(agg.latency_p99_9_sum / n),
+                     Some(agg.latency_spread_sum / n))
+                } else {
+                    (None, None, None, None, None, None, None, None, None, None, None)
+                };
+
             per_test_summaries.push(TestSummaryEntry {
                 name: test_name.to_string(),
                 average_duration_secs: avg_duration_ms as f64 / 1000.0,
                 total_data_gib: bytes_to_gib_f64(avg_bytes),
                 average_throughput_mib_s: avg_throughput_mib_s,
                 average_throughput_gib_s: avg_throughput_mib_s / 1024.0,
-                total_errors: *total_errors,
+                total_errors: agg.total_errors,
+                latency_samples,
+                latency_p5_ns: latency_p5,
+                latency_p10_ns: latency_p10,
+                latency_p25_ns: latency_p25,
+                latency_p50_ns: latency_p50,
+                latency_p75_ns: latency_p75,
+                latency_p90_ns: latency_p90,
+                latency_p95_ns: latency_p95,
+                latency_p99_ns: latency_p99,
+                latency_p99_9_ns: latency_p99_9,
+                latency_spread,
             });
         }
     }
@@ -832,6 +903,18 @@ pub fn create_overall_stats_summary_report(
             average_throughput_mib_s: avg.avg_throughput_mib_s,
             average_throughput_gib_s: avg.avg_throughput_gib_s,
             total_errors: avg.total_errors,
+            // Copy latency data from TestAverage
+            latency_samples: avg.latency_samples,
+            latency_p5_ns: avg.latency_p5_ns,
+            latency_p10_ns: avg.latency_p10_ns,
+            latency_p25_ns: avg.latency_p25_ns,
+            latency_p50_ns: avg.latency_p50_ns,
+            latency_p75_ns: avg.latency_p75_ns,
+            latency_p90_ns: avg.latency_p90_ns,
+            latency_p95_ns: avg.latency_p95_ns,
+            latency_p99_ns: avg.latency_p99_ns,
+            latency_p99_9_ns: avg.latency_p99_9_ns,
+            latency_spread: avg.latency_spread,
         })
         .collect();
 

@@ -83,6 +83,8 @@ pub trait ReportFormatter: Send + Sync {
     /// Format memory strategy components
     fn format_allocation_mode(&self, mode: &crate::memory::allocation_strategy::AllocationMode) -> String;
     fn format_window_mode(&self, mode: &crate::tests::WindowMode) -> String;
+    /// Format window mode with calculated size for CacheLevel targets
+    fn format_window_mode_with_size(&self, mode: &crate::tests::WindowMode, cache_info: &crate::cache::CacheInfo, thread_count: usize) -> String;
     fn format_chunk_mode(&self, mode: &crate::tests::ChunkMode) -> String;
     
     /// Prepare test configuration table
@@ -1066,6 +1068,30 @@ impl ReportFormatter for DefaultFormatter {
             }
         }
     }
+
+    fn format_window_mode_with_size(&self, mode: &crate::tests::WindowMode, cache_info: &crate::cache::CacheInfo, thread_count: usize) -> String {
+        use crate::tests::WindowMode;
+        match mode {
+            WindowMode::FullAllocation => "FullAllocation".to_string(),
+            WindowMode::FixedSize { size_mb } => {
+                format!("{} MB", size_mb)
+            }
+            WindowMode::FixedBytes { size_bytes } => {
+                self.format_bytes(*size_bytes as u64)
+            }
+            WindowMode::CacheRelative { multiplier } => {
+                // Calculate actual size
+                let total_cache = cache_info.per_core_l1d + cache_info.per_core_l2 + cache_info.l3_cache;
+                let size = ((total_cache as f64 * multiplier) / thread_count.max(1) as f64) as u64;
+                format!("{} (CacheRel {:.1}x)", self.format_bytes(size), multiplier)
+            }
+            WindowMode::CacheLevel { target } => {
+                // Calculate the actual window size using the target's method
+                let size = target.calculate_window_size(cache_info, thread_count);
+                format!("{} ({})", self.format_bytes(size as u64), target.name())
+            }
+        }
+    }
     
     fn format_chunk_mode(&self, mode: &crate::tests::ChunkMode) -> String {
         use crate::tests::ChunkMode;
@@ -1205,14 +1231,34 @@ impl ReportFormatter for DefaultFormatter {
     }
     
     fn prepare_final_summary_performance_table(&self, report: &FinalTestSummaryReport) -> TableData {
+        // Check if any test has latency data
+        let has_latency = report.per_test_summaries.iter().any(|t| t.latency_samples.is_some());
+
         let mut table = TableData::new()
             .with_title("Final Test Summary - Per-Test Performance")
             .add_header("#", ColumnAlignment::Center)
             .add_header("Test Name", ColumnAlignment::Left)
-            .add_header("Avg Duration", ColumnAlignment::Right)
-            .add_header("Total Data", ColumnAlignment::Right)
-            .add_header("Avg Throughput", ColumnAlignment::Right)
-            .add_header("Errors", ColumnAlignment::Center);
+            .add_header("Duration", ColumnAlignment::Right)
+            .add_header("Data", ColumnAlignment::Right)
+            .add_header("Throughput", ColumnAlignment::Right);
+
+        // Add latency columns only if any test has latency data
+        if has_latency {
+            table = table
+                .add_header("Samples", ColumnAlignment::Right)
+                .add_header("P5", ColumnAlignment::Right)
+                .add_header("P10", ColumnAlignment::Right)
+                .add_header("P25", ColumnAlignment::Right)
+                .add_header("P50", ColumnAlignment::Right)
+                .add_header("P75", ColumnAlignment::Right)
+                .add_header("P90", ColumnAlignment::Right)
+                .add_header("P95", ColumnAlignment::Right)
+                .add_header("P99", ColumnAlignment::Right)
+                .add_header("P99.9", ColumnAlignment::Right)
+                .add_header("Spread", ColumnAlignment::Right);
+        }
+
+        table = table.add_header("Err", ColumnAlignment::Center);
 
         for (idx, test) in report.per_test_summaries.iter().enumerate() {
             let error_display = if test.total_errors > 0 {
@@ -1221,19 +1267,39 @@ impl ReportFormatter for DefaultFormatter {
                 "✅".to_string()
             };
 
-            table = table.add_row(vec![
+            let mut row = vec![
                 format!("{}", idx + 1),
                 test.name.clone(),
                 format!("{:.1}s", test.average_duration_secs),
                 format!("{:.2} GiB", test.total_data_gib),
-                format!("{:.1} MiB/s ({:.2} GiB/s)",
-                        test.average_throughput_mib_s,
-                        test.average_throughput_gib_s),
-                error_display,
-            ]);
+                format!("{:.0} MiB/s", test.average_throughput_mib_s),
+            ];
+
+            // Add latency values if we have latency columns
+            if has_latency {
+                row.push(test.latency_samples.map(|s| format!("{}", s)).unwrap_or_else(|| "-".to_string()));
+                row.push(test.latency_p5_ns.map(|v| format!("{:.1}", v)).unwrap_or_else(|| "-".to_string()));
+                row.push(test.latency_p10_ns.map(|v| format!("{:.1}", v)).unwrap_or_else(|| "-".to_string()));
+                row.push(test.latency_p25_ns.map(|v| format!("{:.1}", v)).unwrap_or_else(|| "-".to_string()));
+                row.push(test.latency_p50_ns.map(|v| format!("{:.1}", v)).unwrap_or_else(|| "-".to_string()));
+                row.push(test.latency_p75_ns.map(|v| format!("{:.1}", v)).unwrap_or_else(|| "-".to_string()));
+                row.push(test.latency_p90_ns.map(|v| format!("{:.1}", v)).unwrap_or_else(|| "-".to_string()));
+                row.push(test.latency_p95_ns.map(|v| format!("{:.1}", v)).unwrap_or_else(|| "-".to_string()));
+                row.push(test.latency_p99_ns.map(|v| format!("{:.1}", v)).unwrap_or_else(|| "-".to_string()));
+                row.push(test.latency_p99_9_ns.map(|v| format!("{:.1}", v)).unwrap_or_else(|| "-".to_string()));
+                row.push(test.latency_spread.map(|v| format!("{:.2}x", v)).unwrap_or_else(|| "-".to_string()));
+            }
+
+            row.push(error_display);
+            table = table.add_row(row);
         }
 
-        table.with_footer(format!("Averaged across {} cycles", report.cycles_completed))
+        let footer = if has_latency {
+            format!("Averaged across {} cycles. Latency values in nanoseconds.", report.cycles_completed)
+        } else {
+            format!("Averaged across {} cycles", report.cycles_completed)
+        };
+        table.with_footer(footer)
     }
     
     /// Prepare block size distribution table (Table 1)

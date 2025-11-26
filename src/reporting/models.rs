@@ -468,6 +468,18 @@ pub struct TestSummaryEntry {
     pub average_throughput_mib_s: f64,
     pub average_throughput_gib_s: f64,
     pub total_errors: u64,
+    // Latency metrics (Some for latency tests, None for other tests)
+    pub latency_samples: Option<u64>,
+    pub latency_p5_ns: Option<f64>,
+    pub latency_p10_ns: Option<f64>,
+    pub latency_p25_ns: Option<f64>,
+    pub latency_p50_ns: Option<f64>,
+    pub latency_p75_ns: Option<f64>,
+    pub latency_p90_ns: Option<f64>,
+    pub latency_p95_ns: Option<f64>,
+    pub latency_p99_ns: Option<f64>,
+    pub latency_p99_9_ns: Option<f64>,
+    pub latency_spread: Option<f64>,  // P95/P5 ratio
 }
 
 /// Consolidated memory report combining current status and allocation planning
