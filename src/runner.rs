@@ -2,6 +2,7 @@ use crate::{ErrorMode, EnhancedMemoryLayout, ProgressTracker, BlockInfo};
 use crate::constants::{HUGE_PAGE_SIZE, LARGE_PAGE_SIZE, REGULAR_PAGE_SIZE};
 use crate::tests::{WindowMode, ChunkMode, CacheTarget};
 use crate::MemoryAllocationConfig;
+use globset::{Glob, GlobMatcher};
 use crate::tests::{TestStats, TestMemoryConfig, TestTiming, TestProgress};
 use crate::tests::{
     mirror_move_multi,
@@ -285,40 +286,28 @@ pub fn run_tests_with_layout_and_timing_filtered(
         create_test_definitions(cache_info)
     };
 
-    // Apply single test filter if provided (supports wildcards and comma-separated patterns)
+    // Apply single test filter if provided (supports glob patterns and comma-separated patterns)
     if let Some(test_name_filter) = single_test_filter {
-        let matches_filter = |name: &str, filter: &str| -> bool {
-            if filter.contains('*') {
-                // Wildcard matching
-                if filter.starts_with('*') && filter.ends_with('*') {
-                    // *pattern* - contains
-                    let pattern = &filter[1..filter.len()-1];
-                    name.contains(pattern)
-                } else if filter.starts_with('*') {
-                    // *pattern - ends with
-                    let pattern = &filter[1..];
-                    name.ends_with(pattern)
-                } else if filter.ends_with('*') {
-                    // pattern* - starts with
-                    let pattern = &filter[..filter.len()-1];
-                    name.starts_with(pattern)
-                } else {
-                    // Exact match if * is in middle (not supported, treat as exact)
-                    name == filter
-                }
-            } else {
-                // Exact match
-                name == filter
-            }
-        };
-
-        // Support comma-separated patterns: "L*,DRAM-*"
+        // Support comma-separated patterns: "Lat-*,Mem-*-Read"
         let patterns: Vec<&str> = test_name_filter.split(',').map(|s| s.trim()).collect();
 
+        // Compile glob matchers for each pattern
+        let matchers: Vec<GlobMatcher> = patterns.iter()
+            .filter_map(|pattern| {
+                match Glob::new(pattern) {
+                    Ok(glob) => Some(glob.compile_matcher()),
+                    Err(e) => {
+                        log::warn!("Invalid glob pattern '{}': {}", pattern, e);
+                        None
+                    }
+                }
+            })
+            .collect();
+
         test_definitions.retain(|def| {
-            patterns.iter().any(|pattern| {
-                matches_filter(&def.display_name, pattern) ||
-                def.original_name.map(|n| matches_filter(n, pattern)).unwrap_or(false)
+            matchers.iter().any(|matcher| {
+                matcher.is_match(&def.display_name) ||
+                def.original_name.map(|n| matcher.is_match(n)).unwrap_or(false)
             })
         });
 
