@@ -64,17 +64,23 @@ impl CacheTarget {
                 cache_info.per_core_l2 / (*divisor as usize)
             }
             CacheTarget::L3 { divisor } => {
+                // For VMs: apply extra /2 factor because reported L3 is shared with other VMs
+                // Physical: L3/2 (default), VM: L3/4 (effective)
+                let vm_factor = if cache_info.is_virtual_machine { 2 } else { 1 };
+                let effective_divisor = (*divisor as usize) * vm_factor;
+
                 if thread_count == 1 {
-                    // Single-thread: apply divisor (default /2 = 50% of L3)
+                    // Single-thread: apply divisor (default /2 = 50% of L3, or /4 for VMs)
                     // Leaves headroom and ensures we're testing L3, not thrashing it
-                    let l3_target = cache_info.l3_cache / (*divisor as usize);
+                    let l3_target = cache_info.l3_cache / effective_divisor;
                     // Minimum: must exceed L2 to avoid L2 hits
                     let min_l3_size = cache_info.per_core_l2 + (64 * 1024);
                     l3_target.max(min_l3_size)
                 } else {
-                    // Multi-thread: use full per-thread share (divisor ignored)
-                    // Total working set = L3, ensuring all threads fit in L3 together
-                    let per_thread = cache_info.l3_cache / thread_count;
+                    // Multi-thread: use full per-thread share with VM adjustment
+                    // Total working set = L3/vm_factor, ensuring all threads fit in available L3 together
+                    let effective_l3 = cache_info.l3_cache / vm_factor;
+                    let per_thread = effective_l3 / thread_count;
                     // Minimum: must exceed L2 to avoid L2 hits
                     let min_l3_size = cache_info.per_core_l2 + (64 * 1024);
                     per_thread.max(min_l3_size)
@@ -109,14 +115,24 @@ impl CacheTarget {
 
     /// Get a human-readable name that reflects actual calculation with thread count
     pub fn name_with_threads(&self, thread_count: usize) -> String {
+        self.name_with_context(thread_count, false)
+    }
+
+    /// Get a human-readable name that reflects actual calculation with thread count and VM status
+    pub fn name_with_context(&self, thread_count: usize, is_vm: bool) -> String {
         match self {
             CacheTarget::L1 { divisor } => format!("L1/{}", divisor),
             CacheTarget::L2 { divisor } => format!("L2/{}", divisor),
             CacheTarget::L3 { divisor } => {
+                // For VMs, effective divisor is doubled
+                let vm_factor = if is_vm { 2 } else { 1 };
                 if thread_count == 1 {
-                    format!("L3/{}", divisor)
+                    let effective = (*divisor as usize) * vm_factor;
+                    format!("L3/{}", effective)
                 } else {
-                    format!("L3/{}", thread_count)
+                    // Multi-thread uses thread count, but VM still halves the base
+                    let effective = thread_count * vm_factor;
+                    format!("L3/{}", effective)
                 }
             }
             CacheTarget::DRAM { multiplier } => format!("DRAM*{}", multiplier),

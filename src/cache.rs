@@ -17,6 +17,8 @@ pub struct CacheInfo {
     pub core_count: usize,
     pub tsc_frequency_ghz: f64,  // TSC frequency (kept for backward compat)
     pub tsc_info: TscInfo,        // Full TSC detection info
+    pub is_virtual_machine: bool, // Running under hypervisor (VM)
+    pub hypervisor_name: Option<String>, // Hypervisor vendor if detected
 }
 
 #[derive(Debug, Clone)]
@@ -48,6 +50,8 @@ impl Default for CacheInfo {
             core_count: 1,
             tsc_frequency_ghz: 0.0,
             tsc_info: TscInfo::default(),
+            is_virtual_machine: false,
+            hypervisor_name: None,
         }
     }
 }
@@ -60,6 +64,9 @@ impl CacheInfo {
         let tsc_info = TscInfo::detect();
         let tsc_frequency_ghz = tsc_info.frequency_ghz;
 
+        // Detect if running in a VM
+        let (is_vm, hypervisor_name) = detect_hypervisor();
+
         // Try multiple detection methods in order of preference
 
         // 1. Try comprehensive raw_cpuid detection (best for modern CPUs)
@@ -67,6 +74,8 @@ impl CacheInfo {
         if let Some(mut cache_info) = detect_via_raw_cpuid_comprehensive(physical_cores) {
             cache_info.tsc_frequency_ghz = tsc_frequency_ghz;
             cache_info.tsc_info = tsc_info;
+            cache_info.is_virtual_machine = is_vm;
+            cache_info.hypervisor_name = hypervisor_name;
             return cache_info;
         }
 
@@ -77,6 +86,8 @@ impl CacheInfo {
             if let Some(mut cache_info) = detect_via_windows_wmi(physical_cores) {
                 cache_info.tsc_frequency_ghz = tsc_frequency_ghz;
                 cache_info.tsc_info = tsc_info;
+                cache_info.is_virtual_machine = is_vm;
+                cache_info.hypervisor_name = hypervisor_name;
                 return cache_info;
             }
         }
@@ -86,6 +97,8 @@ impl CacheInfo {
         if let Some(mut cache_info) = detect_via_hardcoded_database(physical_cores) {
             cache_info.tsc_frequency_ghz = tsc_frequency_ghz;
             cache_info.tsc_info = tsc_info;
+            cache_info.is_virtual_machine = is_vm;
+            cache_info.hypervisor_name = hypervisor_name;
             return cache_info;
         }
 
@@ -95,6 +108,8 @@ impl CacheInfo {
             core_count: physical_cores,
             tsc_frequency_ghz,
             tsc_info,
+            is_virtual_machine: is_vm,
+            hypervisor_name,
             ..Default::default()
         };
         default.recalculate_totals();
@@ -237,6 +252,8 @@ fn detect_via_raw_cpuid_comprehensive(physical_cores: usize) -> Option<CacheInfo
         total_cache: 0,
         tsc_frequency_ghz: 0.0,  // Will be set by caller
         tsc_info: TscInfo::default(),  // Will be set by caller
+        is_virtual_machine: false,  // Will be set by caller
+        hypervisor_name: None,  // Will be set by caller
     };
     
     let mut found_any = false;
@@ -462,9 +479,35 @@ fn detect_via_hardcoded_database(physical_cores: usize) -> Option<CacheInfo> {
         total_cache: 0,
         tsc_frequency_ghz: 0.0,  // Will be set by caller
         tsc_info: TscInfo::default(),  // Will be set by caller
+        is_virtual_machine: false,  // Will be set by caller
+        hypervisor_name: None,  // Will be set by caller
     };
-    
+
     cache_info.recalculate_totals();
     log::info!("Using hardcoded cache values for {} (Family {}, Model {})", brand, family, model);
     Some(cache_info)
+}
+
+/// Detect if running under a hypervisor (VM) using CPUID
+/// Returns (is_vm, hypervisor_name)
+fn detect_hypervisor() -> (bool, Option<String>) {
+    let cpuid = CpuId::new();
+
+    // Check CPUID.01H:ECX.bit31 - Hypervisor Present bit
+    // This bit is set by hypervisors to indicate we're running in a VM
+    // raw_cpuid exposes this via has_hypervisor() on FeatureInfo
+    if let Some(feature_info) = cpuid.get_feature_info() {
+        if feature_info.has_hypervisor() {
+            // We're in a VM - try to identify the hypervisor via CPUID leaf 0x40000000
+            let hypervisor_name = cpuid.get_hypervisor_info()
+                .map(|info| format!("{:?}", info.identify()));
+
+            log::info!("Hypervisor detected: {} (running in VM)",
+                      hypervisor_name.as_deref().unwrap_or("Unknown"));
+            return (true, hypervisor_name);
+        }
+    }
+
+    log::debug!("No hypervisor detected (running on physical hardware)");
+    (false, None)
 }

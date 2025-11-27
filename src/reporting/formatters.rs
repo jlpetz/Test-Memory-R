@@ -1156,11 +1156,12 @@ impl ReportFormatter for DefaultFormatter {
             WindowMode::CacheLevel { target } => {
                 // Calculate the actual window size using the target's method
                 let size = target.calculate_window_size(cache_info, thread_count);
+                let is_vm = cache_info.is_virtual_machine;
                 // DRAMFull returns usize::MAX as sentinel for "use full allocation"
                 if size == usize::MAX {
-                    format!("Full Alloc ({})", target.name_with_threads(thread_count))
+                    format!("Full Alloc ({})", target.name_with_context(thread_count, is_vm))
                 } else {
-                    format!("{} ({})", self.format_bytes(size as u64), target.name_with_threads(thread_count))
+                    format!("{} ({})", self.format_bytes(size as u64), target.name_with_context(thread_count, is_vm))
                 }
             }
         }
