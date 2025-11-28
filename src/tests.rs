@@ -503,7 +503,7 @@ impl TestMemoryConfig {
     /// Get operation metadata for a specific test
     pub fn get_operation_metadata(&self, test_name: &str) -> OperationMetadata {
         match test_name {
-            "StuckBitTest" => OperationMetadata {
+            "Mem-StuckBit" => OperationMetadata {
                 reads_per_op: 3,  // 3 verification reads per cycle per element
                 writes_per_op: 3,  // 3 pattern writes per cycle per element
                 verifies_per_op: 3,  // Same as reads for this test
@@ -516,7 +516,7 @@ impl TestMemoryConfig {
                 streams: 1,
                 locality_sensitive: false,
             },
-            "StuckBitTest128" => OperationMetadata {
+            "Mem-StuckBit128" => OperationMetadata {
                 reads_per_op: 3,  // 3 verification reads per cycle per element
                 writes_per_op: 3,  // 3 pattern writes per cycle per element
                 verifies_per_op: 3,  // Same as reads for this test
@@ -529,7 +529,7 @@ impl TestMemoryConfig {
                 streams: 1,
                 locality_sensitive: false,
             },
-            "StuckBitTest256" => OperationMetadata {
+            "Mem-StuckBit256" => OperationMetadata {
                 reads_per_op: 3,  // 3 verification reads per cycle per element
                 writes_per_op: 3,  // 3 pattern writes per cycle per element
                 verifies_per_op: 3,  // Same as reads for this test
@@ -542,7 +542,7 @@ impl TestMemoryConfig {
                 streams: 1,
                 locality_sensitive: false,
             },
-            "StuckBitTest512" => OperationMetadata {
+            "Mem-StuckBit512" => OperationMetadata {
                 reads_per_op: 3,  // 3 verification reads per cycle per element
                 writes_per_op: 3,  // 3 pattern writes per cycle per element
                 verifies_per_op: 3,  // Same as reads for this test
@@ -555,7 +555,7 @@ impl TestMemoryConfig {
                 streams: 1,
                 locality_sensitive: false,
             },
-            "MirrorMove" => OperationMetadata {
+            "Mem-Mirror" => OperationMetadata {
                 reads_per_op: 2,  // Load + restore read per element
                 writes_per_op: 2,  // Stream + restore write per element
                 verifies_per_op: 1,  // Individual element verification (detailed error reporting)
@@ -568,7 +568,7 @@ impl TestMemoryConfig {
                 streams: self.streams,
                 locality_sensitive: false,
             },
-            "MirrorMove128" => OperationMetadata {
+            "Mem-Mirror128" => OperationMetadata {
                 reads_per_op: 2,  // Load + restore read per element
                 writes_per_op: 2,  // Stream + restore write per element
                 verifies_per_op: 1,  // XOR verification per element
@@ -581,7 +581,7 @@ impl TestMemoryConfig {
                 streams: self.streams,
                 locality_sensitive: false,
             },
-            "MirrorMove256" => OperationMetadata {
+            "Mem-Mirror256" => OperationMetadata {
                 reads_per_op: 2,
                 writes_per_op: 2,
                 verifies_per_op: 1,
@@ -594,7 +594,7 @@ impl TestMemoryConfig {
                 streams: self.streams,
                 locality_sensitive: false,
             },
-            "MirrorMove512" => OperationMetadata {
+            "Mem-Mirror512" => OperationMetadata {
                 reads_per_op: 2,
                 writes_per_op: 2,
                 verifies_per_op: 1,
@@ -607,7 +607,7 @@ impl TestMemoryConfig {
                 streams: self.streams,
                 locality_sensitive: false,
             },
-            "SimpleTest" => OperationMetadata {
+            "Mem-Simple" => OperationMetadata {
                 reads_per_op: 1,  // Verify read per element
                 writes_per_op: 1,  // Pattern write per element
                 verifies_per_op: 1,  // Same as reads
@@ -620,7 +620,7 @@ impl TestMemoryConfig {
                 streams: self.streams,
                 locality_sensitive: false,
             },
-            "RefreshStable" => OperationMetadata {
+            "Mem-Refresh" => OperationMetadata {
                 reads_per_op: 1,  // Verify read per element
                 writes_per_op: 1,  // Pattern write per element
                 verifies_per_op: 1,  // Same as reads
@@ -633,7 +633,7 @@ impl TestMemoryConfig {
                 streams: 1,
                 locality_sensitive: true,
             },
-            "RefreshStable128" => OperationMetadata {
+            "Mem-Refresh128" => OperationMetadata {
                 reads_per_op: 1,  // Verify read per element
                 writes_per_op: 1,  // Pattern write per element
                 verifies_per_op: 1,  // Same as reads
@@ -646,7 +646,7 @@ impl TestMemoryConfig {
                 streams: 1,
                 locality_sensitive: true,
             },
-            "RefreshStable256" => OperationMetadata {
+            "Mem-Refresh256" => OperationMetadata {
                 reads_per_op: 1,  // Verify read per element
                 writes_per_op: 1,  // Pattern write per element
                 verifies_per_op: 1,  // Same as reads
@@ -659,7 +659,7 @@ impl TestMemoryConfig {
                 streams: 1,
                 locality_sensitive: true,
             },
-            "RefreshStable512" => OperationMetadata {
+            "Mem-Refresh512" => OperationMetadata {
                 reads_per_op: 1,  // Verify read per element
                 writes_per_op: 1,  // Pattern write per element
                 verifies_per_op: 1,  // Same as reads
@@ -672,7 +672,7 @@ impl TestMemoryConfig {
                 streams: 1,
                 locality_sensitive: true,
             },
-            "CacheBusting" => OperationMetadata {
+            "Mem-CacheBust" => OperationMetadata {
                 reads_per_op: 1,
                 writes_per_op: 1,
                 verifies_per_op: 1,
@@ -685,7 +685,7 @@ impl TestMemoryConfig {
                 streams: self.streams,
                 locality_sensitive: false,
             },
-            "RandomTorture" => OperationMetadata {
+            "Mem-Random" => OperationMetadata {
                 reads_per_op: 1,  // Random verification read
                 writes_per_op: 0,  // No writes in hot loop
                 verifies_per_op: 1,  // Same as reads
@@ -698,7 +698,7 @@ impl TestMemoryConfig {
                 streams: self.streams,
                 locality_sensitive: false,
             },
-            "StrideAccess" => OperationMetadata {
+            "Mem-Stride" => OperationMetadata {
                 reads_per_op: 1,
                 writes_per_op: 1,
                 verifies_per_op: 1,
@@ -711,7 +711,7 @@ impl TestMemoryConfig {
                 streams: self.streams,
                 locality_sensitive: false,
             },
-            "BandwidthSat" => OperationMetadata {
+            "Spd-Saturate" => OperationMetadata {
                 reads_per_op: 1,  // Sequential read
                 writes_per_op: 1,  // Sequential write
                 verifies_per_op: 0,  // No verification
@@ -724,7 +724,7 @@ impl TestMemoryConfig {
                 streams: self.streams,
                 locality_sensitive: false,
             },
-            "BlockMove" => OperationMetadata {
+            "Mem-BlockMove" => OperationMetadata {
                 reads_per_op: 2,  // Source read + destination verify read
                 writes_per_op: 1,  // Destination write
                 verifies_per_op: 1,  // Destination verify
@@ -826,13 +826,13 @@ impl TestMemoryConfig {
     // Calculate locality-specific window for tests that need it
     fn calculate_locality_window_size(&self, test_name: &str, allocated_size: usize) -> usize {
         let cache_info = get_cache_info();
-        
+
         let optimal_size = match test_name {
-            "CacheBusting" => (cache_info.l3_cache / 2).max(cache_info.l2_cache * 4),
-            "RefreshStable" => cache_info.l2_cache * 2, // Small window for refresh testing
+            "Mem-CacheBust" => (cache_info.l3_cache / 2).max(cache_info.l2_cache * 4),
+            "Mem-Refresh" => cache_info.l2_cache * 2, // Small window for refresh testing
             _ => cache_info.total_cache * 2,
         };
-        
+
         optimal_size.min(allocated_size)
     }
 
@@ -891,24 +891,24 @@ impl TestMemoryConfig {
     fn calculate_minimum_chunk_size(&self, test_name: &str, streams: u32) -> usize {
         // SIMD operation size requirements - explicit for each test to catch missing implementations
         let simd_requirement = match test_name {
-            "MirrorMove" => 8,       // Basic u64 operations (scalar)
-            "MirrorMove128" => 16,   // 128-bit operations
-            "MirrorMove256" => 32,   // 256-bit operations  
-            "MirrorMove512" => 64,   // 512-bit operations
-            "StuckBitTest" => 8,                // Basic u64 operations
-            "StuckBitTest128" => 16,            // 128-bit SIMD operations
-            "StuckBitTest256" => 32,            // 256-bit SIMD operations
-            "StuckBitTest512" => 64,            // 512-bit SIMD operations
-            "SimpleTest" => 8,                 // Basic u64 operations
-            "RefreshStable" => 8,              // Basic u64 operations
-            "RefreshStable128" => 16,          // 128-bit SIMD operations
-            "RefreshStable256" => 32,          // 256-bit SIMD operations
-            "RefreshStable512" => 64,          // 512-bit SIMD operations
-            "CacheBusting" => 64,        // Cache line operations
-            "RandomTorture" => 8,       // Basic u64 operations
-            "StrideAccess" => 8,               // Basic u64 operations
-            "BandwidthSat" => 128,     // Large block operations
-            "BlockMove" => 64,                  // Block operations
+            "Mem-Mirror" => 8,       // Basic u64 operations (scalar)
+            "Mem-Mirror128" => 16,   // 128-bit operations
+            "Mem-Mirror256" => 32,   // 256-bit operations
+            "Mem-Mirror512" => 64,   // 512-bit operations
+            "Mem-StuckBit" => 8,                // Basic u64 operations
+            "Mem-StuckBit128" => 16,            // 128-bit SIMD operations
+            "Mem-StuckBit256" => 32,            // 256-bit SIMD operations
+            "Mem-StuckBit512" => 64,            // 512-bit SIMD operations
+            "Mem-Simple" => 8,                 // Basic u64 operations
+            "Mem-Refresh" => 8,              // Basic u64 operations
+            "Mem-Refresh128" => 16,          // 128-bit SIMD operations
+            "Mem-Refresh256" => 32,          // 256-bit SIMD operations
+            "Mem-Refresh512" => 64,          // 512-bit SIMD operations
+            "Mem-CacheBust" => 64,        // Cache line operations
+            "Mem-Random" => 8,       // Basic u64 operations
+            "Mem-Stride" => 8,               // Basic u64 operations
+            "Spd-Saturate" => 128,     // Large block operations
+            "Mem-BlockMove" => 64,                  // Block operations
             _ => panic!("Unknown test '{}' - add explicit SIMD requirement to calculate_minimum_chunk_size()", test_name),
         };
         
@@ -1191,7 +1191,7 @@ pub unsafe fn stuck_bit_test_multi(
     config: &TestMemoryConfig,
     progress: Option<&TestProgress>,
 ) -> TestStats {
-    let test_name = "StuckBitTest";
+    let test_name = "Mem-StuckBit";
     let start = Instant::now();
 
     // Calculate total allocated memory
@@ -1394,7 +1394,7 @@ pub unsafe fn stuck_bit_test_128_multi(
     config: &TestMemoryConfig,
     progress: Option<&TestProgress>,
 ) -> TestStats {
-    let test_name = "StuckBitTest128";
+    let test_name = "Mem-StuckBit128";
 
     // Runtime CPU feature check
     if !is_x86_feature_detected!("sse2") {
@@ -1430,7 +1430,7 @@ unsafe fn stuck_bit_test_128_impl(
     progress: Option<&TestProgress>,
 ) -> TestStats {
 
-    let test_name = "StuckBitTest128";
+    let test_name = "Mem-StuckBit128";
 
     let start = Instant::now();
 
@@ -1743,7 +1743,7 @@ pub unsafe fn stuck_bit_test_256_multi(
     config: &TestMemoryConfig,
     progress: Option<&TestProgress>,
 ) -> TestStats {
-    let test_name = "StuckBitTest256";
+    let test_name = "Mem-StuckBit256";
 
     // Runtime CPU feature check
     if !is_x86_feature_detected!("avx2") {
@@ -1776,7 +1776,7 @@ unsafe fn stuck_bit_test_256_impl(
     use std::sync::atomic::Ordering;
     use std::time::Instant;
 
-    let test_name = "StuckBitTest256";
+    let test_name = "Mem-StuckBit256";
 
     let total_allocated: usize = blocks.iter().map(|b| b.buffer.size()).sum();
     let window_size = config.calculate_window_size(test_name, total_allocated);
@@ -2010,7 +2010,7 @@ pub unsafe fn stuck_bit_test_512_multi(
     config: &TestMemoryConfig,
     progress: Option<&TestProgress>,
 ) -> TestStats {
-    let test_name = "StuckBitTest512";
+    let test_name = "Mem-StuckBit512";
 
     // Runtime CPU feature check
     if !is_x86_feature_detected!("avx512f") {
@@ -2043,7 +2043,7 @@ unsafe fn stuck_bit_test_512_impl(
     use std::sync::atomic::Ordering;
     use std::time::Instant;
 
-    let test_name = "StuckBitTest512";
+    let test_name = "Mem-StuckBit512";
 
     let total_allocated: usize = blocks.iter().map(|b| b.buffer.size()).sum();
     let window_size = config.calculate_window_size(test_name, total_allocated);
@@ -2315,7 +2315,7 @@ pub unsafe fn refresh_stable_multi(
     config: &TestMemoryConfig,
     progress: Option<&TestProgress>,
 ) -> TestStats {
-    let test_name = "RefreshStable";
+    let test_name = "Mem-Refresh";
     let start = Instant::now();
 
     // Calculate total allocated memory
@@ -2484,7 +2484,7 @@ pub unsafe fn refresh_stable_128_multi(
     config: &TestMemoryConfig,
     progress: Option<&TestProgress>,
 ) -> TestStats {
-    let test_name = "RefreshStable128";
+    let test_name = "Mem-Refresh128";
 
     // Runtime CPU feature check
     if !is_x86_feature_detected!("sse2") {
@@ -2519,7 +2519,7 @@ unsafe fn refresh_stable_128_impl(
     config: &TestMemoryConfig,
     progress: Option<&TestProgress>,
 ) -> TestStats {
-    let test_name = "RefreshStable128";
+    let test_name = "Mem-Refresh128";
 
     let start = Instant::now();
 
@@ -2709,7 +2709,7 @@ pub unsafe fn refresh_stable_256_multi(
     config: &TestMemoryConfig,
     progress: Option<&TestProgress>,
 ) -> TestStats {
-    let test_name = "RefreshStable256";
+    let test_name = "Mem-Refresh256";
 
     // Runtime CPU feature check
     if !is_x86_feature_detected!("avx2") {
@@ -2744,7 +2744,7 @@ unsafe fn refresh_stable_256_impl(
     config: &TestMemoryConfig,
     progress: Option<&TestProgress>,
 ) -> TestStats {
-    let test_name = "RefreshStable256";
+    let test_name = "Mem-Refresh256";
 
     let start = Instant::now();
 
@@ -2934,7 +2934,7 @@ pub unsafe fn refresh_stable_512_multi(
     config: &TestMemoryConfig,
     progress: Option<&TestProgress>,
 ) -> TestStats {
-    let test_name = "RefreshStable512";
+    let test_name = "Mem-Refresh512";
 
     // Runtime CPU feature check
     if !is_x86_feature_detected!("avx512f") {
@@ -2969,7 +2969,7 @@ unsafe fn refresh_stable_512_impl(
     config: &TestMemoryConfig,
     progress: Option<&TestProgress>,
 ) -> TestStats {
-    let test_name = "RefreshStable512";
+    let test_name = "Mem-Refresh512";
 
     let start = Instant::now();
 
@@ -3192,7 +3192,7 @@ pub unsafe fn cache_busting_multi(
     config: &TestMemoryConfig,
     progress: Option<&TestProgress>,
 ) -> TestStats {
-    let test_name = "CacheBusting";
+    let test_name = "Mem-CacheBust";
     let start = Instant::now();
 
     // Calculate total allocated memory
@@ -3424,7 +3424,7 @@ pub unsafe fn random_torture_multi(
     config: &TestMemoryConfig,
     progress: Option<&TestProgress>,
 ) -> TestStats {
-    let test_name = "RandomTorture";
+    let test_name = "Mem-Random";
     let start = Instant::now();
 
     // Calculate total allocated memory
@@ -3633,7 +3633,7 @@ pub unsafe fn stride_access_multi(
     config: &TestMemoryConfig,
     progress: Option<&TestProgress>,
 ) -> TestStats {
-    let test_name = "StrideAccess";
+    let test_name = "Mem-Stride";
     let start = Instant::now();
     let total_allocated: usize = blocks.iter().map(|b| b.buffer.size()).sum();
     let window_size = config.calculate_window_size(test_name, total_allocated);
@@ -3778,7 +3778,7 @@ pub unsafe fn bandwidth_saturation_multi(
     config: &TestMemoryConfig,
     progress: Option<&TestProgress>,
 ) -> TestStats {
-    let test_name = "BandwidthSat";
+    let test_name = "Spd-Saturate";
     let start = Instant::now();
     let total_allocated: usize = blocks.iter().map(|b| b.buffer.size()).sum();
     let window_size = config.calculate_window_size(test_name, total_allocated);
@@ -3942,7 +3942,7 @@ pub unsafe fn block_move_multi(
     config: &TestMemoryConfig,
     progress: Option<&TestProgress>,
 ) -> TestStats {
-    let test_name = "BlockMove";
+    let test_name = "Mem-BlockMove";
     let start = Instant::now();
     let total_allocated: usize = blocks.iter().map(|b| b.buffer.size()).sum();
     let window_size = config.calculate_window_size(test_name, total_allocated);
@@ -4261,7 +4261,7 @@ pub unsafe fn simple_test_multi(
     config: &TestMemoryConfig,
     progress: Option<&TestProgress>,
 ) -> TestStats {
-    let test_name = "SimpleTest";
+    let test_name = "Mem-Simple";
 
     if blocks.is_empty() {
         return TestStats {
@@ -4466,22 +4466,17 @@ unsafe fn simple_test_stream1_multi(
         }
     }
 
-    let elapsed = start.elapsed().as_millis();
-    let stopped_by_time = timing.duration_secs.map_or(false, |max_secs| {
-        test_start.elapsed().as_secs() >= max_secs as u64
-    });
-
     TestStats {
         name: test_name,
         action: TestAction::WriteVerify,
         bytes_processed: total_bytes_processed,
-        elapsed_ms: elapsed,
+        elapsed_ms: start.elapsed().as_millis(),
         thread_id,
         error_count: total_error_count,
         total_operations,
         cycles_completed: cycle,
         cycles_planned: timing.cycles,
-        stopped_by_time_limit: stopped_by_time,
+        stopped_by_time_limit: timing.cycles.map_or(true, |limit| cycle < limit),
     }
 }
 
@@ -4675,10 +4670,6 @@ unsafe fn simple_test_stream2_multi(
     }
 
     let elapsed = start.elapsed().as_millis();
-    let stopped_by_time = timing.duration_secs.map_or(false, |max_secs| {
-        test_start.elapsed().as_secs() >= max_secs as u64
-    });
-
     TestStats {
         name: test_name,
         action: TestAction::WriteVerify,
@@ -4689,7 +4680,7 @@ unsafe fn simple_test_stream2_multi(
         total_operations,
         cycles_completed: cycle,
         cycles_planned: timing.cycles,
-        stopped_by_time_limit: stopped_by_time,
+        stopped_by_time_limit: timing.cycles.map_or(true, |limit| cycle < limit),
     }
 }
 
@@ -4909,10 +4900,6 @@ unsafe fn simple_test_stream4_multi(
     }
 
     let elapsed = start.elapsed().as_millis();
-    let stopped_by_time = timing.duration_secs.map_or(false, |max_secs| {
-        test_start.elapsed().as_secs() >= max_secs as u64
-    });
-
     TestStats {
         name: test_name,
         action: TestAction::WriteVerify,
@@ -4923,7 +4910,7 @@ unsafe fn simple_test_stream4_multi(
         total_operations,
         cycles_completed: cycle,
         cycles_planned: timing.cycles,
-        stopped_by_time_limit: stopped_by_time,
+        stopped_by_time_limit: timing.cycles.map_or(true, |limit| cycle < limit),
     }
 }
 
@@ -5126,10 +5113,6 @@ unsafe fn simple_test_stream_n_multi(
     }
 
     let elapsed = start.elapsed().as_millis();
-    let stopped_by_time = timing.duration_secs.map_or(false, |max_secs| {
-        test_start.elapsed().as_secs() >= max_secs as u64
-    });
-
     TestStats {
         name: test_name,
         action: TestAction::WriteVerify,
@@ -5140,7 +5123,7 @@ unsafe fn simple_test_stream_n_multi(
         total_operations,
         cycles_completed: cycle,
         cycles_planned: timing.cycles,
-        stopped_by_time_limit: stopped_by_time,
+        stopped_by_time_limit: timing.cycles.map_or(true, |limit| cycle < limit),
     }
 }
 
@@ -5154,7 +5137,7 @@ pub unsafe fn mirror_move_multi(
     config: &TestMemoryConfig,
     progress: Option<&TestProgress>,
 ) -> TestStats {
-    let test_name = "MirrorMove";
+    let test_name = "Mem-Mirror";
 
     if blocks.is_empty() {
         return TestStats {
@@ -5403,9 +5386,6 @@ pub unsafe fn mirror_move_multi(
     }
 
     let elapsed = start.elapsed().as_millis();
-    let stopped_by_time = timing.duration_secs.map_or(false, |max_secs| {
-        test_start.elapsed().as_secs() >= max_secs as u64
-    });
 
     log::info!("[Thread {}] {} completed: {} cycles, {} errors, {:.2} MB processed in {} ms",
               thread_id, test_name, cycle, total_error_count,
@@ -5421,7 +5401,7 @@ pub unsafe fn mirror_move_multi(
         total_operations,
         cycles_completed: cycle,
         cycles_planned: timing.cycles,
-        stopped_by_time_limit: stopped_by_time,
+        stopped_by_time_limit: timing.cycles.map_or(true, |limit| cycle < limit),
     }
 }
 
@@ -5436,7 +5416,7 @@ unsafe fn mirror_move_128_stream1_multi(
     config: &TestMemoryConfig,
     progress: Option<&TestProgress>,
 ) -> TestStats {
-    let test_name = "MirrorMove128";
+    let test_name = "Mem-Mirror128";
 
     // Runtime CPU feature check
     if !is_x86_feature_detected!("sse4.1") {
@@ -5472,7 +5452,7 @@ unsafe fn mirror_move_128_stream1_impl(
     config: &TestMemoryConfig,
     progress: Option<&TestProgress>,
 ) -> TestStats {
-    let test_name = "MirrorMove128";
+    let test_name = "Mem-Mirror128";
 
     if blocks.is_empty() {
         return TestStats {
@@ -5579,26 +5559,68 @@ unsafe fn mirror_move_128_stream1_impl(
                     idx2 -= 1;
                 }
 
-                // 2. Verify mirrored data
+                // 2. Verify with configurable error checking frequency
+                let mut error_accumulator = i32x4::splat(0);
+                let mut i = chunk_start;
                 let chunk_sum = chunk_start + chunk_end - 1;
-                for i in chunk_start..chunk_end {
-                    let mirrored_idx = chunk_sum - i;
+                let mut element_count = 0usize;
+                let mut cycle_errors = 0u64;
 
-                    // OPTIMIZED: 1 broadcast + 1 mullo + 1 add (replaces 4 scalar muls + 4 adds)
-                    let idx_broadcast = i32x4::splat(mirrored_idx as i32);
-                    let idx_scaled = idx_broadcast * multipliers ;  // idx × [1,2,3,4]
-                    let expected = idx_scaled + pattern_base ;         // (idx×M) + (base×M)
+                // Pre-compute check mask for hot loop optimization
+                match config.error_check_interval.get_check_mask() {
+                    Some(check_mask) => {
+                        while i < chunk_end {
+                            let mirrored_idx = chunk_sum - i;
 
-                    let actual = *base.add(i);
+                            // OPTIMIZED: 1 broadcast + 1 mullo + 1 add (replaces 4 scalar muls + 4 adds)
+                            let idx_broadcast = i32x4::splat(mirrored_idx as i32);
+                            let idx_scaled = idx_broadcast * multipliers;  // idx × [1,2,3,4]
+                            let expected = idx_scaled + pattern_base;         // (idx×M) + (base×M)
 
-                    // Compare for efficient error detection using SIMD mask
-                    if expected.simd_ne(actual).any() {
-                        block_errors += 1;
-                        if block_errors <= 10 {
-                            log::error!("{}: memory error at index {} in block", test_name, i);
+                            let actual = *base.add(i);
+                            let diff = expected ^ actual;
+                            error_accumulator = error_accumulator | diff;
+
+                            element_count += 1;
+                            i += 1;
+
+                            // Check errors at configured intervals (zero-branch hot loop optimization)
+                            if (element_count as u32 & check_mask) == 0 {
+                                if error_accumulator.simd_ne(i32x4::splat(0)).any() {
+                                    cycle_errors += 1;
+                                    log::error!("{}: memory error detected in cycle {} chunk {} element {} (thread {})",
+                                               test_name, cycle, chunk_start, element_count, thread_id);
+                                    error_accumulator = i32x4::splat(0);
+                                }
+                            }
+                        }
+                    }
+                    None => {
+                        // PER_CHUNK mode - no intermediate checks, maximum performance
+                        while i < chunk_end {
+                            let mirrored_idx = chunk_sum - i;
+
+                            // OPTIMIZED: 1 broadcast + 1 mullo + 1 add (replaces 4 scalar muls + 4 adds)
+                            let idx_broadcast = i32x4::splat(mirrored_idx as i32);
+                            let idx_scaled = idx_broadcast * multipliers;  // idx × [1,2,3,4]
+                            let expected = idx_scaled + pattern_base;         // (idx×M) + (base×M)
+
+                            let actual = *base.add(i);
+                            let diff = expected ^ actual;
+                            error_accumulator = error_accumulator | diff;
+                            i += 1;
                         }
                     }
                 }
+
+                // Final error check (always performed regardless of mode)
+                if error_accumulator.simd_ne(i32x4::splat(0)).any() {
+                    cycle_errors += 1;
+                    log::error!("{}: memory error detected in cycle {} chunk {} (thread {})",
+                               test_name, cycle, chunk_start, thread_id);
+                }
+
+                block_errors += cycle_errors;
 
                 // 3. Mirror back to restore original pattern
                 idx1 = chunk_start;
@@ -5696,22 +5718,17 @@ unsafe fn mirror_move_128_stream1_impl(
         }
     }
 
-    let elapsed = start.elapsed().as_millis();
-    let stopped_by_time = timing.duration_secs.map_or(false, |max_secs| {
-        test_start.elapsed().as_secs() >= max_secs as u64
-    });
-
     TestStats {
         name: test_name,
         action: TestAction::WriteWaitVerify,
         bytes_processed: total_bytes_processed,
-        elapsed_ms: elapsed,
+        elapsed_ms: start.elapsed().as_millis(),
         thread_id,
         error_count: total_error_count,
         total_operations,
         cycles_completed: cycle,
         cycles_planned: timing.cycles,
-        stopped_by_time_limit: stopped_by_time,
+        stopped_by_time_limit: timing.cycles.map_or(true, |limit| cycle < limit),
     }
 }
 
@@ -5893,31 +5910,78 @@ unsafe fn mirror_move_128_stream_n_impl(
                     }
                 }
 
-                // 2. Verify mirrored data (check each stream)
-                for stream_id in 0..streams {
-                    let stream_start = chunk_start + (stream_id * elements_per_stream);
-                    let stream_end = stream_start + elements_per_stream;
-                    let stream_sum = stream_start + stream_end - 1;
+                // 2. Verify with configurable error checking frequency - multi-stream
+                let mut error_accumulator = i32x4::splat(0);
+                let mut element_count = 0usize;
+                let mut cycle_errors = 0u64;
 
-                    for i in stream_start..stream_end {
-                        let mirrored_idx = stream_sum - i;
+                match config.error_check_interval.get_check_mask() {
+                    Some(check_mask) => {
+                        for stream_id in 0..streams {
+                            let stream_start = chunk_start + (stream_id * elements_per_stream);
+                            let stream_end = stream_start + elements_per_stream;
+                            let stream_sum = stream_start + stream_end - 1;
 
-                        // OPTIMIZED: 1 broadcast + 1 mullo + 1 add (replaces 4 scalar muls + 4 adds)
-                        let idx_broadcast = i32x4::splat(mirrored_idx as i32);
-                        let idx_scaled = idx_broadcast * multipliers ;  // idx × [1,2,3,4]
-                        let expected = idx_scaled + pattern_base ;         // (idx×M) + (base×M)
+                            let mut i = stream_start;
+                            while i < stream_end {
+                                let mirrored_idx = stream_sum - i;
 
-                        let actual = *base.add(i);
+                                // OPTIMIZED: 1 broadcast + 1 mullo + 1 add (replaces 4 scalar muls + 4 adds)
+                                let idx_broadcast = i32x4::splat(mirrored_idx as i32);
+                                let idx_scaled = idx_broadcast * multipliers;  // idx × [1,2,3,4]
+                                let expected = idx_scaled + pattern_base;         // (idx×M) + (base×M)
 
-                        // Compare for efficient error detection using SIMD mask
-                        if expected.simd_ne(actual).any() {
-                            block_errors += 1;
-                            if block_errors <= 10 {
-                                log::error!("{}: memory error at index {} in stream {}", test_name, i, stream_id);
+                                let actual = *base.add(i);
+                                let diff = expected ^ actual;
+                                error_accumulator = error_accumulator | diff;
+
+                                element_count += 1;
+                                i += 1;
+
+                                if (element_count as u32 & check_mask) == 0 {
+                                    if error_accumulator.simd_ne(i32x4::splat(0)).any() {
+                                        cycle_errors += 1;
+                                        log::error!("{}: memory error detected in cycle {} chunk {} stream {} element {} (thread {})",
+                                                   test_name, cycle, chunk_start, stream_id, element_count, thread_id);
+                                        error_accumulator = i32x4::splat(0);
+                                    }
+                                }
+                            }
+                        }
+                    }
+                    None => {
+                        // PER_CHUNK mode - no intermediate checks, maximum performance
+                        for stream_id in 0..streams {
+                            let stream_start = chunk_start + (stream_id * elements_per_stream);
+                            let stream_end = stream_start + elements_per_stream;
+                            let stream_sum = stream_start + stream_end - 1;
+
+                            let mut i = stream_start;
+                            while i < stream_end {
+                                let mirrored_idx = stream_sum - i;
+
+                                // OPTIMIZED: 1 broadcast + 1 mullo + 1 add (replaces 4 scalar muls + 4 adds)
+                                let idx_broadcast = i32x4::splat(mirrored_idx as i32);
+                                let idx_scaled = idx_broadcast * multipliers;  // idx × [1,2,3,4]
+                                let expected = idx_scaled + pattern_base;         // (idx×M) + (base×M)
+
+                                let actual = *base.add(i);
+                                let diff = expected ^ actual;
+                                error_accumulator = error_accumulator | diff;
+                                i += 1;
                             }
                         }
                     }
                 }
+
+                // Final error check (always performed regardless of mode)
+                if error_accumulator.simd_ne(i32x4::splat(0)).any() {
+                    cycle_errors += 1;
+                    log::error!("{}: memory error detected in cycle {} chunk {} (thread {})",
+                               test_name, cycle, chunk_start, thread_id);
+                }
+
+                block_errors += cycle_errors;
 
                 // 3. Mirror back to restore original pattern (N-way streams)
                 for stream_id in 0..streams {
@@ -6020,22 +6084,17 @@ unsafe fn mirror_move_128_stream_n_impl(
         }
     }
 
-    let elapsed = start.elapsed().as_millis();
-    let stopped_by_time = timing.duration_secs.map_or(false, |max_secs| {
-        test_start.elapsed().as_secs() >= max_secs as u64
-    });
-
     TestStats {
         name: test_name,
         action: TestAction::WriteWaitVerify,
         bytes_processed: total_bytes_processed,
-        elapsed_ms: elapsed,
+        elapsed_ms: start.elapsed().as_millis(),
         thread_id,
         error_count: total_error_count,
         total_operations,
         cycles_completed: cycle,
         cycles_planned: timing.cycles,
-        stopped_by_time_limit: stopped_by_time,
+        stopped_by_time_limit: timing.cycles.map_or(true, |limit| cycle < limit),
     }
 }
 
@@ -6048,7 +6107,7 @@ pub unsafe fn mirror_move_128_multi(
     config: &TestMemoryConfig,
     progress: Option<&TestProgress>,
 ) -> TestStats {
-    let test_name = "MirrorMove128";
+    let test_name = "Mem-Mirror128";
 
     // Dispatch based on stream configuration
     let streams = config.streams.max(1) as usize;
@@ -6076,7 +6135,7 @@ unsafe fn mirror_move_256_stream1_multi(
     config: &TestMemoryConfig,
     progress: Option<&TestProgress>,
 ) -> TestStats {
-    let test_name = "MirrorMove256";
+    let test_name = "Mem-Mirror256";
 
     // Runtime CPU feature check
     if !is_x86_feature_detected!("avx2") {
@@ -6112,7 +6171,7 @@ unsafe fn mirror_move_256_stream1_impl(
     progress: Option<&TestProgress>,
 ) -> TestStats {
 
-    let test_name = "MirrorMove256";
+    let test_name = "Mem-Mirror256";
     let test_start = Instant::now();
 
     // Calculate window and prepare blocks
@@ -6343,20 +6402,17 @@ unsafe fn mirror_move_256_stream1_impl(
         // Check timing limits
         let elapsed_secs = test_start.elapsed().as_secs() as u32;
         if !timing.should_continue(cycle, elapsed_secs) {
-            let stopped_by_time = timing.cycles.map_or(false, |limit| cycle < limit);
-            let elapsed_ms = test_start.elapsed().as_millis();
-
             return TestStats {
                 name: test_name,
                 action: TestAction::WriteWaitVerify,
                 bytes_processed: total_bytes_processed as usize,
-                elapsed_ms,
+                elapsed_ms: test_start.elapsed().as_millis(),
                 thread_id,
                 error_count: total_error_count,
                 total_operations,
                 cycles_completed: cycle,
                 cycles_planned: timing.cycles,
-                stopped_by_time_limit: stopped_by_time,
+                stopped_by_time_limit: timing.cycles.map_or(true, |limit| cycle < limit),
             };
         }
     }
@@ -6663,20 +6719,17 @@ unsafe fn mirror_move_256_stream_n_impl(
         // Check timing limits
         let elapsed_secs = test_start.elapsed().as_secs() as u32;
         if !timing.should_continue(cycle, elapsed_secs) {
-            let stopped_by_time = timing.cycles.map_or(false, |limit| cycle < limit);
-            let elapsed_ms = test_start.elapsed().as_millis();
-
             return TestStats {
                 name: test_name,
                 action: TestAction::WriteWaitVerify,
                 bytes_processed: total_bytes_processed as usize,
-                elapsed_ms,
+                elapsed_ms: test_start.elapsed().as_millis(),
                 thread_id,
                 error_count: total_error_count,
                 total_operations,
                 cycles_completed: cycle,
                 cycles_planned: timing.cycles,
-                stopped_by_time_limit: stopped_by_time,
+                stopped_by_time_limit: timing.cycles.map_or(true, |limit| cycle < limit),
             };
         }
     }
@@ -6692,7 +6745,7 @@ pub unsafe fn mirror_move_256_multi(
     config: &TestMemoryConfig,
     progress: Option<&TestProgress>,
 ) -> TestStats {
-    let test_name = "MirrorMove256";
+    let test_name = "Mem-Mirror256";
     let streams = config.streams.max(1) as usize;
 
     if streams == 1 {
@@ -6717,7 +6770,7 @@ unsafe fn mirror_move_512_stream1_multi(
     config: &TestMemoryConfig,
     progress: Option<&TestProgress>,
 ) -> TestStats {
-    let test_name = "MirrorMove512";
+    let test_name = "Mem-Mirror512";
 
     // Runtime CPU feature check
     if !is_x86_feature_detected!("avx512f") {
@@ -6753,7 +6806,7 @@ unsafe fn mirror_move_512_stream1_impl(
     progress: Option<&TestProgress>,
 ) -> TestStats {
 
-    let test_name = "MirrorMove512";
+    let test_name = "Mem-Mirror512";
 
     let test_start = Instant::now();
 
@@ -6983,20 +7036,17 @@ unsafe fn mirror_move_512_stream1_impl(
         // Check timing limits
         let elapsed_secs = test_start.elapsed().as_secs() as u32;
         if !timing.should_continue(cycle, elapsed_secs) {
-            let stopped_by_time = timing.cycles.map_or(false, |limit| cycle < limit);
-            let elapsed_ms = test_start.elapsed().as_millis();
-
             return TestStats {
                 name: test_name,
                 action: TestAction::WriteWaitVerify,
                 bytes_processed: total_bytes_processed as usize,
-                elapsed_ms,
+                elapsed_ms: test_start.elapsed().as_millis(),
                 thread_id,
                 error_count: total_error_count,
                 total_operations,
                 cycles_completed: cycle,
                 cycles_planned: timing.cycles,
-                stopped_by_time_limit: stopped_by_time,
+                stopped_by_time_limit: timing.cycles.map_or(true, |limit| cycle < limit),
             };
         }
     }
@@ -7298,20 +7348,17 @@ unsafe fn mirror_move_512_stream_n_impl(
         // Check timing limits
         let elapsed_secs = test_start.elapsed().as_secs() as u32;
         if !timing.should_continue(cycle, elapsed_secs) {
-            let stopped_by_time = timing.cycles.map_or(false, |limit| cycle < limit);
-            let elapsed_ms = test_start.elapsed().as_millis();
-
             return TestStats {
                 name: test_name,
                 action: TestAction::WriteWaitVerify,
                 bytes_processed: total_bytes_processed as usize,
-                elapsed_ms,
+                elapsed_ms: test_start.elapsed().as_millis(),
                 thread_id,
                 error_count: total_error_count,
                 total_operations,
                 cycles_completed: cycle,
                 cycles_planned: timing.cycles,
-                stopped_by_time_limit: stopped_by_time,
+                stopped_by_time_limit: timing.cycles.map_or(true, |limit| cycle < limit),
             };
         }
     }
@@ -7327,7 +7374,7 @@ pub unsafe fn mirror_move_512_multi(
     config: &TestMemoryConfig,
     progress: Option<&TestProgress>,
 ) -> TestStats {
-    let test_name = "MirrorMove512";
+    let test_name = "Mem-Mirror512";
     let streams = config.streams.max(1) as usize;
 
     if streams == 1 {

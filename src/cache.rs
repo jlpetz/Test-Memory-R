@@ -156,10 +156,10 @@ impl CacheInfo {
 
     pub fn get_optimal_window_size(&self, test_type: &str) -> usize {
         match test_type {
-            "CacheBusting" => (self.l3_cache / 2).max(self.l2_cache * 4),
-            "RandomTorture" => self.l3_cache * 2,
-            "BandwidthSat" => (self.total_cache * 2).max(MB_64),
-            "MirrorMove128" | "MirrorMove256" | "MirrorMove512" => {
+            "Mem-CacheBust" => (self.l3_cache / 2).max(self.l2_cache * 4),
+            "Mem-Random" => self.l3_cache * 2,
+            "Spd-Saturate" => (self.total_cache * 2).max(MB_64),
+            "Mem-Mirror128" | "Mem-Mirror256" | "Mem-Mirror512" => {
                 self.l3_cache.max(32 * MB)
             }
             _ => (self.total_cache * 2).max(MB_64),

@@ -516,7 +516,7 @@ impl ModernConfig {
             let allow_misaligned = test.allow_misaligned.unwrap_or(false);
             let requires_locality = test.requires_locality.unwrap_or({
                 // Auto-detect based on function name
-                matches!(test.function.as_str(), "CacheBusting" | "RefreshStable")
+                matches!(test.function.as_str(), "Mem-CacheBust" | "Mem-Refresh")
             });
             
             let timing = TestTiming {
@@ -560,7 +560,7 @@ impl ModernConfig {
                     let allow_misaligned = test.allow_misaligned.unwrap_or(false);
                     let requires_locality = test.requires_locality.unwrap_or({
                         // Auto-detect based on function name
-                        matches!(test.function.as_str(), "CacheBusting" | "RefreshStable")
+                        matches!(test.function.as_str(), "Mem-CacheBust" | "Mem-Refresh")
                     });
                     
                     let timing = TestTiming {
@@ -697,7 +697,7 @@ pub fn create_demo_config() -> Self {
             // Critical: Full memory stuck bit test
             TestConfig {
                 enabled: true,
-                function: "StuckBitTest".to_string(),
+                function: "Mem-StuckBit".to_string(),
                 cycles: Some(1),                       // 1 cycle is thorough enough
                 duration_secs: None,
                 min_duration_secs: None,
@@ -715,11 +715,11 @@ pub fn create_demo_config() -> Self {
                 pattern_param1: None,
                 parameter: None,
             },
-            
-            // RefreshStable - needs small window for refresh timing
+
+            // Mem-Refresh - needs small window for refresh timing
             TestConfig {
                 enabled: true,
-                function: "RefreshStable".to_string(),
+                function: "Mem-Refresh".to_string(),
                 cycles: Some(1),
                 duration_secs: None,
                 min_duration_secs: None,
@@ -738,10 +738,10 @@ pub fn create_demo_config() -> Self {
                 parameter: None,
             },
             
-            // SimpleTest - general pattern test with TM5 compatibility
+            // Mem-Simple - general pattern test with TM5 compatibility
             TestConfig {
                 enabled: true,
-                function: "SimpleTest".to_string(),
+                function: "Mem-Simple".to_string(),
                 cycles: Some(1),
                 duration_secs: None,
                 min_duration_secs: None,
@@ -760,10 +760,10 @@ pub fn create_demo_config() -> Self {
                 parameter: None,
             },
             
-            // MirrorMove128 - SIMD test with optimal locality
+            // Mem-Mirror128 - SIMD test with optimal locality
             TestConfig {
                 enabled: true,
-                function: "MirrorMove128".to_string(),
+                function: "Mem-Mirror128".to_string(),
                 cycles: Some(1),
                 duration_secs: None,
                 min_duration_secs: None,
@@ -782,10 +782,10 @@ pub fn create_demo_config() -> Self {
                 parameter: None,
             },
             
-            // MirrorMove256 - AVX2 with dual streams
+            // Mem-Mirror256 - AVX2 with dual streams
             TestConfig {
                 enabled: true,
-                function: "MirrorMove256".to_string(),
+                function: "Mem-Mirror256".to_string(),
                 cycles: Some(1),
                 duration_secs: None,
                 min_duration_secs: None,
@@ -804,10 +804,10 @@ pub fn create_demo_config() -> Self {
                 parameter: None,
             },
             
-            // CacheBusting - specifically sized for cache stress
+            // Mem-CacheBust - specifically sized for cache stress
             TestConfig {
                 enabled: true,
-                function: "CacheBusting".to_string(),
+                function: "Mem-CacheBust".to_string(),
                 cycles: Some(1),
                 duration_secs: None,
                 min_duration_secs: None,
@@ -826,10 +826,10 @@ pub fn create_demo_config() -> Self {
                 parameter: None,
             },
             
-            // RandomTorture - full memory random access
+            // Mem-Random - full memory random access
             TestConfig {
                 enabled: true,
-                function: "RandomTorture".to_string(),
+                function: "Mem-Random".to_string(),
                 cycles: Some(1),
                 duration_secs: None,
                 min_duration_secs: None,
@@ -848,10 +848,10 @@ pub fn create_demo_config() -> Self {
                 parameter: None,
             },
             
-            // StrideAccess - test various stride patterns
+            // Mem-Stride - test various stride patterns
             TestConfig {
                 enabled: true,
-                function: "StrideAccess".to_string(),
+                function: "Mem-Stride".to_string(),
                 cycles: Some(1),
                 duration_secs: None,
                 min_duration_secs: None,
@@ -870,10 +870,10 @@ pub fn create_demo_config() -> Self {
                 parameter: None,
             },
             
-            // BandwidthSat - maximum bandwidth test
+            // Spd-Saturate - maximum bandwidth test
             TestConfig {
                 enabled: true,
-                function: "BandwidthSat".to_string(),
+                function: "Spd-Saturate".to_string(),
                 cycles: Some(1),
                 duration_secs: None,
                 min_duration_secs: None,
@@ -892,10 +892,10 @@ pub fn create_demo_config() -> Self {
                 parameter: None,
             },
             
-            // BlockMove - memory copy test
+            // Mem-BlockMove - memory copy test
             TestConfig {
                 enabled: true,
-                function: "BlockMove".to_string(),
+                function: "Mem-BlockMove".to_string(),
                 cycles: Some(1),
                 duration_secs: None,
                 min_duration_secs: None,
@@ -917,7 +917,7 @@ pub fn create_demo_config() -> Self {
             // Legacy TM5-style test showing "window-size" block mode
             TestConfig {
                 enabled: true,
-                function: "SimpleTest".to_string(),
+                function: "Mem-Simple".to_string(),
                 cycles: Some(1),
                 duration_secs: None,
                 min_duration_secs: None,
@@ -983,7 +983,7 @@ pub fn create_demo_config() -> Self {
             test_sequence: vec![
                 TestConfig {
                     enabled: true,
-                    function: "StuckBitTest".to_string(),
+                    function: "Mem-StuckBit".to_string(),
                     cycles: Some(1),
                     duration_secs: None,
                     min_duration_secs: None,
@@ -1003,7 +1003,7 @@ pub fn create_demo_config() -> Self {
                 },
                 TestConfig {
                     enabled: true,
-                    function: "SimpleTest".to_string(),
+                    function: "Mem-Simple".to_string(),
                     cycles: Some(1),
                     duration_secs: None,
                     min_duration_secs: None,
@@ -1229,13 +1229,27 @@ impl LegacyConfig {
 
 fn map_legacy_function(legacy_name: &str) -> Result<String, String> {
     match legacy_name {
-        "RefreshStable" => Ok("RefreshStable".to_string()),
-        "SimpleTest" => Ok("SimpleTest".to_string()),
-        "MirrorMove" => Ok("MirrorMove128".to_string()),  // TM5 base MirrorMove -> TMR 128-bit SIMD
-        "MirrorMove128" => Ok("MirrorMove128".to_string()),
-        "MirrorMove256" => Ok("MirrorMove256".to_string()),
-        "MirrorMove512" => Ok("MirrorMove512".to_string()),
-        "BlockMove" => Ok("BlockMove".to_string()),
+        // TM5 legacy names -> new prefixed names
+        "RefreshStable" => Ok("Mem-Refresh".to_string()),
+        "SimpleTest" => Ok("Mem-Simple".to_string()),
+        "MirrorMove" => Ok("Mem-Mirror128".to_string()),  // TM5 base MirrorMove -> TMR 128-bit SIMD
+        "MirrorMove128" => Ok("Mem-Mirror128".to_string()),
+        "MirrorMove256" => Ok("Mem-Mirror256".to_string()),
+        "MirrorMove512" => Ok("Mem-Mirror512".to_string()),
+        "BlockMove" => Ok("Mem-BlockMove".to_string()),
+        // Also accept new names directly
+        "Mem-Refresh" => Ok("Mem-Refresh".to_string()),
+        "Mem-Simple" => Ok("Mem-Simple".to_string()),
+        "Mem-Mirror" => Ok("Mem-Mirror".to_string()),
+        "Mem-Mirror128" => Ok("Mem-Mirror128".to_string()),
+        "Mem-Mirror256" => Ok("Mem-Mirror256".to_string()),
+        "Mem-Mirror512" => Ok("Mem-Mirror512".to_string()),
+        "Mem-BlockMove" => Ok("Mem-BlockMove".to_string()),
+        "Mem-StuckBit" => Ok("Mem-StuckBit".to_string()),
+        "Mem-CacheBust" => Ok("Mem-CacheBust".to_string()),
+        "Mem-Random" => Ok("Mem-Random".to_string()),
+        "Mem-Stride" => Ok("Mem-Stride".to_string()),
+        "Spd-Saturate" => Ok("Spd-Saturate".to_string()),
         _ => Err(format!("Unknown legacy test function: '{}'", legacy_name))
     }
 }
@@ -1322,7 +1336,7 @@ pub fn create_demo_configs() -> Result<(), String> {
     println!("  Stage 3: Block/Chunk Size - Auto-optimized per test with alignment");
     println!("  Access Patterns: 1-16 configurable streams (TM5 jump/parameter equivalent)");
     println!("  Timing: Per-test cycles/duration limits + global suite limits");
-    println!("  Critical: StuckBitTest ensures full memory coverage for bit errors");
+    println!("  Critical: Mem-StuckBit ensures full memory coverage for bit errors");
 
     Ok(())
 }

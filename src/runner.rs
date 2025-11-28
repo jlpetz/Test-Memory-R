@@ -824,60 +824,60 @@ fn resolve_auto_dispatch_test(test_name: &str) -> Option<(&'static str, TestFunc
     if !test_name.ends_with("Auto") {
         return None;
     }
-    
-    // Strip "Auto" suffix to get base name
+
+    // Strip "Auto" suffix to get base name (e.g., "Mem-MirrorAuto" -> "Mem-Mirror")
     let base_name = &test_name[..test_name.len() - 4];
-    
+
     // Determine best SIMD variant based on CPU capabilities
     let (variant_suffix, test_function): (&str, TestFunction) = if is_x86_feature_detected!("avx512f") {
         ("512", match base_name {
-            "MirrorMove" => TestFunction::MultiBlock(mirror_move_512_multi),
-            "StuckBitTest" => TestFunction::MultiBlock(stuck_bit_test_512_multi),
-            "RefreshStable" => TestFunction::MultiBlock(refresh_stable_512_multi),
+            "Mem-Mirror" => TestFunction::MultiBlock(mirror_move_512_multi),
+            "Mem-StuckBit" => TestFunction::MultiBlock(stuck_bit_test_512_multi),
+            "Mem-Refresh" => TestFunction::MultiBlock(refresh_stable_512_multi),
             _ => return None,
         })
     } else if is_x86_feature_detected!("avx2") {
         ("256", match base_name {
-            "MirrorMove" => TestFunction::MultiBlock(mirror_move_256_multi),
-            "StuckBitTest" => TestFunction::MultiBlock(stuck_bit_test_256_multi),
-            "RefreshStable" => TestFunction::MultiBlock(refresh_stable_256_multi),
+            "Mem-Mirror" => TestFunction::MultiBlock(mirror_move_256_multi),
+            "Mem-StuckBit" => TestFunction::MultiBlock(stuck_bit_test_256_multi),
+            "Mem-Refresh" => TestFunction::MultiBlock(refresh_stable_256_multi),
             _ => return None,
         })
     } else if is_x86_feature_detected!("sse2") {
         ("128", match base_name {
-            "MirrorMove" => TestFunction::MultiBlock(mirror_move_128_multi),
-            "StuckBitTest" => TestFunction::MultiBlock(stuck_bit_test_128_multi),
-            "RefreshStable" => TestFunction::MultiBlock(refresh_stable_128_multi),
+            "Mem-Mirror" => TestFunction::MultiBlock(mirror_move_128_multi),
+            "Mem-StuckBit" => TestFunction::MultiBlock(stuck_bit_test_128_multi),
+            "Mem-Refresh" => TestFunction::MultiBlock(refresh_stable_128_multi),
             _ => return None,
         })
     } else {
         // Fallback to scalar version
         ("", match base_name {
-            "MirrorMove" => TestFunction::MultiBlock(mirror_move_multi),
-            "StuckBitTest" => TestFunction::MultiBlock(stuck_bit_test_multi),
-            "RefreshStable" => TestFunction::MultiBlock(refresh_stable_multi),
+            "Mem-Mirror" => TestFunction::MultiBlock(mirror_move_multi),
+            "Mem-StuckBit" => TestFunction::MultiBlock(stuck_bit_test_multi),
+            "Mem-Refresh" => TestFunction::MultiBlock(refresh_stable_multi),
             _ => return None,
         })
     };
-    
+
     // Construct the resolved concrete test name
     let concrete_name: &'static str = match (base_name, variant_suffix) {
-        ("MirrorMove", "512") => "MirrorMove512",
-        ("MirrorMove", "256") => "MirrorMove256", 
-        ("MirrorMove", "128") => "MirrorMove128",
-        ("MirrorMove", "") => "MirrorMove",
-        ("StuckBitTest", "512") => "StuckBitTest512",
-        ("StuckBitTest", "256") => "StuckBitTest256",
-        ("StuckBitTest", "128") => "StuckBitTest128",
-        ("StuckBitTest", "") => "StuckBitTest",
-        ("StuckBitTestAuto", "") => "StuckBitTestAuto",
-        ("RefreshStable", "512") => "RefreshStable512",
-        ("RefreshStable", "256") => "RefreshStable256",
-        ("RefreshStable", "128") => "RefreshStable128",
-        ("RefreshStable", "") => "RefreshStable",
+        ("Mem-Mirror", "512") => "Mem-Mirror512",
+        ("Mem-Mirror", "256") => "Mem-Mirror256",
+        ("Mem-Mirror", "128") => "Mem-Mirror128",
+        ("Mem-Mirror", "") => "Mem-Mirror",
+        ("Mem-StuckBit", "512") => "Mem-StuckBit512",
+        ("Mem-StuckBit", "256") => "Mem-StuckBit256",
+        ("Mem-StuckBit", "128") => "Mem-StuckBit128",
+        ("Mem-StuckBit", "") => "Mem-StuckBit",
+        ("Mem-StuckBitAuto", "") => "Mem-StuckBitAuto",
+        ("Mem-Refresh", "512") => "Mem-Refresh512",
+        ("Mem-Refresh", "256") => "Mem-Refresh256",
+        ("Mem-Refresh", "128") => "Mem-Refresh128",
+        ("Mem-Refresh", "") => "Mem-Refresh",
         _ => return None,
     };
-    
+
     Some((concrete_name, test_function))
 }
 
@@ -899,7 +899,7 @@ fn create_test_definitions(cache_info: &CacheInfo) -> Vec<TestDefinition> {
     let test_definitions = vec![
         // === CRITICAL: Full Memory Stuck Bit Test ===
         (
-            "StuckBitTest",
+            "Mem-StuckBit",
             TestFunction::MultiBlock(stuck_bit_test_multi),
             validate_streams(TestMemoryConfig::new(
                 WindowMode::FullAllocation,
@@ -907,13 +907,13 @@ fn create_test_definitions(cache_info: &CacheInfo) -> Vec<TestDefinition> {
                 false,
                 false
             ).with_timing(TestTiming::cycles_only(1))
-             .with_streams(1), "StuckBitTest")
+             .with_streams(1), "Mem-StuckBit")
              .with_memory_type(None)
         ),
 
         // === StuckBitTest SIMD variants ===
         (
-            "StuckBitTest128",
+            "Mem-StuckBit128",
             TestFunction::MultiBlock(stuck_bit_test_128_multi),
             validate_streams(TestMemoryConfig::new(
                 WindowMode::FullAllocation,
@@ -921,12 +921,12 @@ fn create_test_definitions(cache_info: &CacheInfo) -> Vec<TestDefinition> {
                 false,
                 false
             ).with_timing(TestTiming::cycles_only(1))
-             .with_streams(1), "StuckBitTest128")
+             .with_streams(1), "Mem-StuckBit128")
              .with_memory_type(None)
         ),
 
         (
-            "StuckBitTest256",
+            "Mem-StuckBit256",
             TestFunction::MultiBlock(stuck_bit_test_256_multi),
             validate_streams(TestMemoryConfig::new(
                 WindowMode::FullAllocation,
@@ -934,12 +934,12 @@ fn create_test_definitions(cache_info: &CacheInfo) -> Vec<TestDefinition> {
                 false,
                 false
             ).with_timing(TestTiming::cycles_only(1))
-             .with_streams(1), "StuckBitTest256")
+             .with_streams(1), "Mem-StuckBit256")
              .with_memory_type(None)
         ),
 
         (
-            "StuckBitTest512",
+            "Mem-StuckBit512",
             TestFunction::MultiBlock(stuck_bit_test_512_multi),
             validate_streams(TestMemoryConfig::new(
                 WindowMode::FullAllocation,
@@ -947,14 +947,14 @@ fn create_test_definitions(cache_info: &CacheInfo) -> Vec<TestDefinition> {
                 false,
                 false
             ).with_timing(TestTiming::cycles_only(1))
-             .with_streams(1), "StuckBitTest512")
+             .with_streams(1), "Mem-StuckBit512")
              .with_memory_type(None)
         ),
 
         // === StuckBitTest Auto-dispatch (AVX-512 > AVX2 > SSE2 > scalar) ===
         // Placed last so results match the actual variant performance
         (
-            "StuckBitTestAuto",
+            "Mem-StuckBitAuto",
             TestFunction::MultiBlock(stuck_bit_test_auto_multi),
             validate_streams(TestMemoryConfig::new(
                 WindowMode::FullAllocation,
@@ -962,13 +962,13 @@ fn create_test_definitions(cache_info: &CacheInfo) -> Vec<TestDefinition> {
                 false,
                 false
             ).with_timing(TestTiming::cycles_only(1))
-             .with_streams(1), "StuckBitTestAuto")
+             .with_streams(1), "Mem-StuckBitAuto")
              .with_memory_type(None)
         ),
 
         // === Base mirror move test (MultiBlock implementation) ===
         (
-            "MirrorMove",
+            "Mem-Mirror",
             TestFunction::MultiBlock(mirror_move_multi),
             validate_streams(TestMemoryConfig::new(
                 WindowMode::FixedSize { size_mb: 64 },
@@ -976,13 +976,13 @@ fn create_test_definitions(cache_info: &CacheInfo) -> Vec<TestDefinition> {
                 false,
                 true
             ).with_timing(TestTiming::duration_only(10))
-             .with_streams(1), "MirrorMove")
+             .with_streams(1), "Mem-Mirror")
              .with_memory_type(None)
         ),
 
         // === SIMD variants with different vector sizes ===
         (
-            "MirrorMove128",
+            "Mem-Mirror128",
             TestFunction::MultiBlock(mirror_move_128_multi),
             validate_streams(TestMemoryConfig::new(
                 WindowMode::FixedSize { size_mb: 64 },
@@ -990,12 +990,12 @@ fn create_test_definitions(cache_info: &CacheInfo) -> Vec<TestDefinition> {
                 false,
                 true
             ).with_timing(TestTiming::duration_only(10))
-             .with_streams(1), "MirrorMove128")
+             .with_streams(1), "Mem-Mirror128")
              .with_memory_type(None)
         ),
 
         (
-            "MirrorMove256",
+            "Mem-Mirror256",
             TestFunction::MultiBlock(mirror_move_256_multi),
             validate_streams(TestMemoryConfig::new(
                 WindowMode::FixedSize { size_mb: 128 },
@@ -1003,12 +1003,12 @@ fn create_test_definitions(cache_info: &CacheInfo) -> Vec<TestDefinition> {
                 false,
                 true
             ).with_timing(TestTiming::duration_only(10))
-             .with_streams(2), "MirrorMove256")
+             .with_streams(2), "Mem-Mirror256")
              .with_memory_type(None)
         ),
 
         (
-            "MirrorMove512",
+            "Mem-Mirror512",
             TestFunction::MultiBlock(mirror_move_512_multi),
             validate_streams(TestMemoryConfig::new(
                 WindowMode::FixedSize { size_mb: 256 },
@@ -1016,7 +1016,7 @@ fn create_test_definitions(cache_info: &CacheInfo) -> Vec<TestDefinition> {
                 false,
                 true
             ).with_timing(TestTiming::duration_only(10))
-             .with_streams(4), "MirrorMove512")
+             .with_streams(4), "Mem-Mirror512")
              .with_memory_type(None)
         ),
 
@@ -1024,7 +1024,7 @@ fn create_test_definitions(cache_info: &CacheInfo) -> Vec<TestDefinition> {
         // Auto-dispatches to best SIMD variant at runtime (AVX-512 > AVX2 > SSE2 > scalar)
         // Placed last so results match the actual variant performance
         (
-            "MirrorMoveAuto",
+            "Mem-MirrorAuto",
             TestFunction::MultiBlock(mirror_move_auto_multi),
             validate_streams(TestMemoryConfig::new(
                 WindowMode::FixedSize { size_mb: 64 },
@@ -1032,13 +1032,13 @@ fn create_test_definitions(cache_info: &CacheInfo) -> Vec<TestDefinition> {
                 false,
                 true
             ).with_timing(TestTiming::duration_only(10))
-             .with_streams(1), "MirrorMoveAuto")
+             .with_streams(1), "Mem-MirrorAuto")
              .with_memory_type(None)
         ),
         
         // === Simple test with configurable patterns ===
         (
-            "SimpleTest",
+            "Mem-Simple",
             TestFunction::MultiBlock(simple_test_multi),
             validate_streams(TestMemoryConfig::new(
                 WindowMode::FullAllocation,
@@ -1046,13 +1046,13 @@ fn create_test_definitions(cache_info: &CacheInfo) -> Vec<TestDefinition> {
                 false,
                 false
             ).with_timing(TestTiming::hybrid(100, 30))
-             .with_streams(1), "SimpleTest")
+             .with_streams(1), "Mem-Simple")
              .with_memory_type(None)
         ),
 
         // === Refresh stability tests (MultiBlock implementations) ===
         (
-            "RefreshStable",
+            "Mem-Refresh",
             TestFunction::MultiBlock(refresh_stable_multi),
             validate_streams(TestMemoryConfig::new(
                 WindowMode::CacheRelative { multiplier: 2.0 },
@@ -1060,12 +1060,12 @@ fn create_test_definitions(cache_info: &CacheInfo) -> Vec<TestDefinition> {
                 false,
                 true
             ).with_timing(TestTiming::duration_only(15))
-             .with_streams(1), "RefreshStable")
+             .with_streams(1), "Mem-Refresh")
              .with_memory_type(None)
         ),
 
         (
-            "RefreshStable128",
+            "Mem-Refresh128",
             TestFunction::MultiBlock(refresh_stable_128_multi),
             validate_streams(TestMemoryConfig::new(
                 WindowMode::CacheRelative { multiplier: 2.0 },
@@ -1073,12 +1073,12 @@ fn create_test_definitions(cache_info: &CacheInfo) -> Vec<TestDefinition> {
                 false,
                 true
             ).with_timing(TestTiming::duration_only(15))
-             .with_streams(1), "RefreshStable128")
+             .with_streams(1), "Mem-Refresh128")
              .with_memory_type(None)
         ),
 
         (
-            "RefreshStable256",
+            "Mem-Refresh256",
             TestFunction::MultiBlock(refresh_stable_256_multi),
             validate_streams(TestMemoryConfig::new(
                 WindowMode::CacheRelative { multiplier: 2.0 },
@@ -1086,12 +1086,12 @@ fn create_test_definitions(cache_info: &CacheInfo) -> Vec<TestDefinition> {
                 false,
                 true
             ).with_timing(TestTiming::duration_only(15))
-             .with_streams(1), "RefreshStable256")
+             .with_streams(1), "Mem-Refresh256")
              .with_memory_type(None)
         ),
 
         (
-            "RefreshStable512",
+            "Mem-Refresh512",
             TestFunction::MultiBlock(refresh_stable_512_multi),
             validate_streams(TestMemoryConfig::new(
                 WindowMode::CacheRelative { multiplier: 2.0 },
@@ -1099,14 +1099,14 @@ fn create_test_definitions(cache_info: &CacheInfo) -> Vec<TestDefinition> {
                 false,
                 true
             ).with_timing(TestTiming::duration_only(15))
-             .with_streams(1), "RefreshStable512")
+             .with_streams(1), "Mem-Refresh512")
              .with_memory_type(None)
         ),
 
         // === RefreshStable Auto-dispatch (AVX-512 > AVX2 > SSE2 > scalar) ===
         // Placed last so results match the actual variant performance
         (
-            "RefreshStableAuto",
+            "Mem-RefreshAuto",
             TestFunction::MultiBlock(refresh_stable_auto_multi),
             validate_streams(TestMemoryConfig::new(
                 WindowMode::CacheRelative { multiplier: 2.0 },
@@ -1114,13 +1114,13 @@ fn create_test_definitions(cache_info: &CacheInfo) -> Vec<TestDefinition> {
                 false,
                 true
             ).with_timing(TestTiming::duration_only(15))
-             .with_streams(1), "RefreshStableAuto")
+             .with_streams(1), "Mem-RefreshAuto")
              .with_memory_type(None)
         ),
 
         // === Performance stress tests ===
         (
-            "CacheBusting",
+            "Mem-CacheBust",
             TestFunction::MultiBlock(cache_busting_multi),
             validate_streams(TestMemoryConfig::new(
                 WindowMode::CacheRelative { multiplier: 0.5 },
@@ -1128,12 +1128,12 @@ fn create_test_definitions(cache_info: &CacheInfo) -> Vec<TestDefinition> {
                 true,
                 true
             ).with_timing(TestTiming::duration_only(20))
-             .with_streams(4), "CacheBusting")
+             .with_streams(4), "Mem-CacheBust")
              .with_memory_type(None)
         ),
-        
+
         (
-            "RandomTorture",
+            "Mem-Random",
             TestFunction::MultiBlock(random_torture_multi),
             validate_streams(TestMemoryConfig::new(
                 WindowMode::FullAllocation,
@@ -1141,12 +1141,12 @@ fn create_test_definitions(cache_info: &CacheInfo) -> Vec<TestDefinition> {
                 true,
                 false
             ).with_timing(TestTiming::duration_only(25))
-             .with_streams(8), "RandomTorture")
+             .with_streams(8), "Mem-Random")
              .with_memory_type(None)
         ),
-        
+
         (
-            "StrideAccess",
+            "Mem-Stride",
             TestFunction::MultiBlock(stride_access_multi),
             validate_streams(TestMemoryConfig::new(
                 WindowMode::FullAllocation,
@@ -1154,12 +1154,12 @@ fn create_test_definitions(cache_info: &CacheInfo) -> Vec<TestDefinition> {
                 false,
                 false
             ).with_timing(TestTiming::cycles_only(1))
-             .with_streams(4), "StrideAccess")
+             .with_streams(4), "Mem-Stride")
              .with_memory_type(None)
         ),
-        
+
         (
-            "BandwidthSat",
+            "Spd-Saturate",
             TestFunction::MultiBlock(bandwidth_saturation_multi),
             validate_streams(TestMemoryConfig::new(
                 WindowMode::FullAllocation,
@@ -1167,12 +1167,12 @@ fn create_test_definitions(cache_info: &CacheInfo) -> Vec<TestDefinition> {
                 false,
                 false
             ).with_timing(TestTiming::duration_only(15))
-             .with_streams(1), "BandwidthSat")
+             .with_streams(1), "Spd-Saturate")
              .with_memory_type(None)
         ),
-        
+
         (
-            "BlockMove",
+            "Mem-BlockMove",
             TestFunction::MultiBlock(block_move_multi),
             validate_streams(TestMemoryConfig::new(
                 WindowMode::FullAllocation,
@@ -1180,19 +1180,19 @@ fn create_test_definitions(cache_info: &CacheInfo) -> Vec<TestDefinition> {
                 false,
                 true
             ).with_timing(TestTiming::duration_only(20))
-             .with_streams(1), "BlockMove")
+             .with_streams(1), "Mem-BlockMove")
              .with_memory_type(None)
         ),
 
         // === Cache Hierarchy Latency Tests ===
         // Uses WindowMode::CacheLevel for automatic sizing based on detected cache
-        // Naming: {Level}-{Operation} for easy filtering
-        // --cache-latency: L*, DRAM-* (12 tests: L1/L2/L3/DRAM × Read/Write/Copy)
-        // --ram-latency: DRAM* (6 tests: DRAM/DRAMFull × Read/Write/Copy)
+        // Naming: Lat-{Level}-{Operation} for easy filtering
+        // tests=Lat-* (15 tests: L1/L2/L3/DRAM/DRAMFull × Read/Write/Copy)
+        // tests=Lat-L3-* (3 tests: L3 × Read/Write/Copy)
 
         // L1 Cache - Read, Write, Copy
         (
-            "L1-Read",
+            "Lat-L1-Read",
             TestFunction::Latency(read_latency_multi),
             validate_streams(TestMemoryConfig::new(
                 WindowMode::CacheLevel { target: CacheTarget::L1_DEFAULT },
@@ -1200,12 +1200,12 @@ fn create_test_definitions(cache_info: &CacheInfo) -> Vec<TestDefinition> {
                 false,
                 false
             ).with_timing(TestTiming::duration_only(10))
-             .with_tsc(tsc_freq).with_streams(1), "L1-Read")
+             .with_tsc(tsc_freq).with_streams(1), "Lat-L1-Read")
              .with_memory_type(None)
         ),
 
         (
-            "L1-Write",
+            "Lat-L1-Write",
             TestFunction::Latency(write_latency_multi),
             validate_streams(TestMemoryConfig::new(
                 WindowMode::CacheLevel { target: CacheTarget::L1_DEFAULT },
@@ -1213,12 +1213,12 @@ fn create_test_definitions(cache_info: &CacheInfo) -> Vec<TestDefinition> {
                 false,
                 false
             ).with_timing(TestTiming::duration_only(10))
-             .with_tsc(tsc_freq).with_streams(1), "L1-Write")
+             .with_tsc(tsc_freq).with_streams(1), "Lat-L1-Write")
              .with_memory_type(None)
         ),
 
         (
-            "L1-Copy",
+            "Lat-L1-Copy",
             TestFunction::Latency(copy_latency_multi),
             validate_streams(TestMemoryConfig::new(
                 WindowMode::CacheLevel { target: CacheTarget::L1_DEFAULT },
@@ -1226,13 +1226,13 @@ fn create_test_definitions(cache_info: &CacheInfo) -> Vec<TestDefinition> {
                 false,
                 false
             ).with_timing(TestTiming::duration_only(10))
-             .with_tsc(tsc_freq).with_streams(1), "L1-Copy")
+             .with_tsc(tsc_freq).with_streams(1), "Lat-L1-Copy")
              .with_memory_type(None)
         ),
 
         // L2 Cache - Read, Write, Copy
         (
-            "L2-Read",
+            "Lat-L2-Read",
             TestFunction::Latency(read_latency_multi),
             validate_streams(TestMemoryConfig::new(
                 WindowMode::CacheLevel { target: CacheTarget::L2_DEFAULT },
@@ -1240,12 +1240,12 @@ fn create_test_definitions(cache_info: &CacheInfo) -> Vec<TestDefinition> {
                 false,
                 false
             ).with_timing(TestTiming::duration_only(10))
-             .with_tsc(tsc_freq).with_streams(1), "L2-Read")
+             .with_tsc(tsc_freq).with_streams(1), "Lat-L2-Read")
              .with_memory_type(None)
         ),
 
         (
-            "L2-Write",
+            "Lat-L2-Write",
             TestFunction::Latency(write_latency_multi),
             validate_streams(TestMemoryConfig::new(
                 WindowMode::CacheLevel { target: CacheTarget::L2_DEFAULT },
@@ -1253,12 +1253,12 @@ fn create_test_definitions(cache_info: &CacheInfo) -> Vec<TestDefinition> {
                 false,
                 false
             ).with_timing(TestTiming::duration_only(10))
-             .with_tsc(tsc_freq).with_streams(1), "L2-Write")
+             .with_tsc(tsc_freq).with_streams(1), "Lat-L2-Write")
              .with_memory_type(None)
         ),
 
         (
-            "L2-Copy",
+            "Lat-L2-Copy",
             TestFunction::Latency(copy_latency_multi),
             validate_streams(TestMemoryConfig::new(
                 WindowMode::CacheLevel { target: CacheTarget::L2_DEFAULT },
@@ -1266,13 +1266,13 @@ fn create_test_definitions(cache_info: &CacheInfo) -> Vec<TestDefinition> {
                 false,
                 false
             ).with_timing(TestTiming::duration_only(10))
-             .with_tsc(tsc_freq).with_streams(1), "L2-Copy")
+             .with_tsc(tsc_freq).with_streams(1), "Lat-L2-Copy")
              .with_memory_type(None)
         ),
 
         // L3 Cache - Read, Write, Copy
         (
-            "L3-Read",
+            "Lat-L3-Read",
             TestFunction::Latency(read_latency_multi),
             validate_streams(TestMemoryConfig::new(
                 WindowMode::CacheLevel { target: CacheTarget::L3_DEFAULT },
@@ -1280,12 +1280,12 @@ fn create_test_definitions(cache_info: &CacheInfo) -> Vec<TestDefinition> {
                 false,
                 false
             ).with_timing(TestTiming::duration_only(10))
-             .with_tsc(tsc_freq).with_streams(1), "L3-Read")
+             .with_tsc(tsc_freq).with_streams(1), "Lat-L3-Read")
              .with_memory_type(None)
         ),
 
         (
-            "L3-Write",
+            "Lat-L3-Write",
             TestFunction::Latency(write_latency_multi),
             validate_streams(TestMemoryConfig::new(
                 WindowMode::CacheLevel { target: CacheTarget::L3_DEFAULT },
@@ -1293,12 +1293,12 @@ fn create_test_definitions(cache_info: &CacheInfo) -> Vec<TestDefinition> {
                 false,
                 false
             ).with_timing(TestTiming::duration_only(10))
-             .with_tsc(tsc_freq).with_streams(1), "L3-Write")
+             .with_tsc(tsc_freq).with_streams(1), "Lat-L3-Write")
              .with_memory_type(None)
         ),
 
         (
-            "L3-Copy",
+            "Lat-L3-Copy",
             TestFunction::Latency(copy_latency_multi),
             validate_streams(TestMemoryConfig::new(
                 WindowMode::CacheLevel { target: CacheTarget::L3_DEFAULT },
@@ -1306,13 +1306,13 @@ fn create_test_definitions(cache_info: &CacheInfo) -> Vec<TestDefinition> {
                 false,
                 false
             ).with_timing(TestTiming::duration_only(10))
-             .with_tsc(tsc_freq).with_streams(1), "L3-Copy")
+             .with_tsc(tsc_freq).with_streams(1), "Lat-L3-Copy")
              .with_memory_type(None)
         ),
 
         // DRAM - High TLB hit rate (typical latency) - Read, Write, Copy
         (
-            "DRAM-Read",
+            "Lat-DRAM-Read",
             TestFunction::Latency(read_latency_multi),
             validate_streams(TestMemoryConfig::new(
                 WindowMode::CacheLevel { target: CacheTarget::DRAM_DEFAULT },
@@ -1320,12 +1320,12 @@ fn create_test_definitions(cache_info: &CacheInfo) -> Vec<TestDefinition> {
                 false,
                 false
             ).with_timing(TestTiming::duration_only(10))
-             .with_tsc(tsc_freq).with_streams(1), "DRAM-Read")
+             .with_tsc(tsc_freq).with_streams(1), "Lat-DRAM-Read")
              .with_memory_type(None)
         ),
 
         (
-            "DRAM-Write",
+            "Lat-DRAM-Write",
             TestFunction::Latency(write_latency_multi),
             validate_streams(TestMemoryConfig::new(
                 WindowMode::CacheLevel { target: CacheTarget::DRAM_DEFAULT },
@@ -1333,12 +1333,12 @@ fn create_test_definitions(cache_info: &CacheInfo) -> Vec<TestDefinition> {
                 false,
                 false
             ).with_timing(TestTiming::duration_only(10))
-             .with_tsc(tsc_freq).with_streams(1), "DRAM-Write")
+             .with_tsc(tsc_freq).with_streams(1), "Lat-DRAM-Write")
              .with_memory_type(None)
         ),
 
         (
-            "DRAM-Copy",
+            "Lat-DRAM-Copy",
             TestFunction::Latency(copy_latency_multi),
             validate_streams(TestMemoryConfig::new(
                 WindowMode::CacheLevel { target: CacheTarget::DRAM_DEFAULT },
@@ -1346,13 +1346,13 @@ fn create_test_definitions(cache_info: &CacheInfo) -> Vec<TestDefinition> {
                 false,
                 false
             ).with_timing(TestTiming::duration_only(10))
-             .with_tsc(tsc_freq).with_streams(1), "DRAM-Copy")
+             .with_tsc(tsc_freq).with_streams(1), "Lat-DRAM-Copy")
              .with_memory_type(None)
         ),
 
         // DRAMFull - Low TLB hit rate (stress with page miss overhead) - Read, Write, Copy
         (
-            "DRAMFull-Read",
+            "Lat-DRAMFull-Read",
             TestFunction::Latency(read_latency_multi),
             validate_streams(TestMemoryConfig::new(
                 WindowMode::CacheLevel { target: CacheTarget::DRAM_FULL_DEFAULT },
@@ -1360,12 +1360,12 @@ fn create_test_definitions(cache_info: &CacheInfo) -> Vec<TestDefinition> {
                 false,
                 false
             ).with_timing(TestTiming::duration_only(10))
-             .with_tsc(tsc_freq).with_streams(1), "DRAMFull-Read")
+             .with_tsc(tsc_freq).with_streams(1), "Lat-DRAMFull-Read")
              .with_memory_type(None)
         ),
 
         (
-            "DRAMFull-Write",
+            "Lat-DRAMFull-Write",
             TestFunction::Latency(write_latency_multi),
             validate_streams(TestMemoryConfig::new(
                 WindowMode::CacheLevel { target: CacheTarget::DRAM_FULL_DEFAULT },
@@ -1373,12 +1373,12 @@ fn create_test_definitions(cache_info: &CacheInfo) -> Vec<TestDefinition> {
                 false,
                 false
             ).with_timing(TestTiming::duration_only(10))
-             .with_tsc(tsc_freq).with_streams(1), "DRAMFull-Write")
+             .with_tsc(tsc_freq).with_streams(1), "Lat-DRAMFull-Write")
              .with_memory_type(None)
         ),
 
         (
-            "DRAMFull-Copy",
+            "Lat-DRAMFull-Copy",
             TestFunction::Latency(copy_latency_multi),
             validate_streams(TestMemoryConfig::new(
                 WindowMode::CacheLevel { target: CacheTarget::DRAM_FULL_DEFAULT },
@@ -1386,7 +1386,7 @@ fn create_test_definitions(cache_info: &CacheInfo) -> Vec<TestDefinition> {
                 false,
                 false
             ).with_timing(TestTiming::duration_only(10))
-             .with_tsc(tsc_freq).with_streams(1), "DRAMFull-Copy")
+             .with_tsc(tsc_freq).with_streams(1), "Lat-DRAMFull-Copy")
              .with_memory_type(None)
         ),
     ];
