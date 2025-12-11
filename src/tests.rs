@@ -6111,7 +6111,6 @@ unsafe fn mirror_move_128_stream_n_impl(
     }
 }
 
-/// MirrorMove128 - MultiBlock dispatcher (SSE2 optimized, routes to stream variants)
 /// MirrorMove128 - PUBLIC MultiBlock dispatcher
 /// Routes to stream1 or stream_n based on configuration
 pub unsafe fn mirror_move_128_multi(
