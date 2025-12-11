@@ -442,6 +442,15 @@ pub fn print_help(program_name: &str) {
     println!("  memory=20%                           # Reserve 20% of system memory");
     println!("  memory=2GiB                         # Reserve 2 GiB");
     println!("  memory=2048MB                       # TM5-compatible allocation (2048MB from available)");
+    println!("  memory=10%-from-available           # Reserve 10% from currently available memory");
+    println!("  memory=8GiB-from-total              # Reserve 8 GiB from total system memory");
+    println!("  memory=64GiB-target                 # Target 64 GiB allocation (may fail if unavailable)");
+    println!("  memory=10%-from-available:start=+2GiB");
+    println!("                                        # Reserve 10%, start 2GiB above used memory");
+    println!("  memory=10%-from-available:start=split:5%:95%");
+    println!("                                        # Reserve 10%, split: 5% pre-buffer, 95% post");
+    println!("  memory=20%-from-available:start=split:auto");
+    println!("                                        # Reserve 20%, auto-split for post-boot testing");
     println!("  cycles=5                            # Run 5 complete test cycles");
     println!("  duration=600                        # Maximum 10 minutes runtime");
     println!("  cpus=50%                            # Use 50% of available CPUs");
