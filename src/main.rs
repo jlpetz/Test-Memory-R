@@ -30,34 +30,31 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
 
     let mut args: Vec<String> = env::args().collect();
 
-    // Handle --single-test=TestName by extracting the test name
-    let mut single_test: Option<String> = None;
+    // Handle test= parameter for filtering tests by pattern
+    let mut test_filter_param: Option<String> = None;
     for arg in &args {
-        if let Some(test_name) = arg.strip_prefix("--single-test=") {
-            single_test = Some(test_name.to_string());
-            println!("🎯 Single Test Mode: {}", test_name);
-            println!("  Running only {} with default 30-second duration", test_name);
+        if let Some(test_pattern) = arg.strip_prefix("test=") {
+            test_filter_param = Some(test_pattern.to_string());
+            println!("🎯 Test Filter: {}", test_pattern);
+            println!("  Running tests matching pattern");
+            println!("  Default: cycles=1 for quick targeted runs");
             println!("  CLI overrides supported (e.g. duration=60 cycles=5)\n");
         }
     }
 
-    // If single-test mode, inject timing defaults and remove the parameter
-    if single_test.is_some() {
-        // Add timing defaults if not specified
-        if !args.iter().any(|a| a.starts_with("duration=")) {
-            args.push("duration=30".to_string());
+    // Inject cycles=1 default when test= filter is used (for quick targeted runs)
+    // This only applies if cycles= was not explicitly specified
+    if test_filter_param.is_some() {
+        let has_explicit_cycles = args.iter().any(|a| a.starts_with("cycles="));
+        if !has_explicit_cycles {
+            args.push("cycles=1".to_string());
         }
-        if !args.iter().any(|a| a.starts_with("cycles=")) {
-            args.push("cycles=1".to_string());  // Single cycle with 30s time limit
-        }
-        // Remove --single-test parameter from args
-        args.retain(|a| !a.starts_with("--single-test="));
     }
 
     // Validate that all -- flags are recognized before processing
     // This catches typos and deprecated flags early with helpful error messages
     let known_flags = [
-        "--single-test=", "--ram-latency", "--cache-latency", "--quick-test",
+        "--ram-latency", "--cache-latency", "--quick-test",
         "--create-demo-configs", "--compare-results", "--debug-topology",
         "--show-topology", "--setup-large-pages", "--help", "-h", "--version", "-v"
     ];
@@ -804,8 +801,8 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
 
     // Unified test execution path - works for bandwidth tests, latency tests, or mixed
     // test_filter may be set by --ram-latency or --cache-latency to run specific test subsets
-    // single_test may be set by --single-test=TestName for individual test execution
-    let final_test_filter = test_filter.as_deref().or(single_test.as_deref());
+    // test_filter_param may be set by test=Pattern for CLI filtering
+    let final_test_filter = test_filter.as_deref().or(test_filter_param.as_deref());
 
     let success = run_tests_with_layout_and_timing_filtered(
         enhanced_layout,

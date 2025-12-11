@@ -20,6 +20,9 @@ use crate::latency_tests::{
     read_latency_multi, write_latency_multi, copy_latency_multi,  // Full latency tests with percentiles
     LatencyTestStats,
 };
+use crate::bandwidth_tests::{
+    read_bandwidth_multi, write_bandwidth_multi, copy_bandwidth_multi,
+};
 use crate::cache::CacheInfo;
 use crate::reporting::models::{
     LatencyTestSummaryReport, LatencyLevelSummary, LatencyThreadResult,
@@ -367,7 +370,7 @@ pub fn run_tests_with_layout_and_timing_filtered(
     // Create thread pool with pre-allocated blocks
     let thread_count = allocated_blocks.len();
 
-    // Set thread_count on all test configs for accurate cache-level window calculations
+    // Set thread_count on all test configs for cache-aware window calculations
     for test_def in &mut test_definitions {
         test_def.config.thread_count = thread_count;
     }
@@ -1387,6 +1390,215 @@ fn create_test_definitions(cache_info: &CacheInfo) -> Vec<TestDefinition> {
                 false
             ).with_timing(TestTiming::duration_only(10))
              .with_tsc(tsc_freq).with_streams(1), "Lat-DRAMFull-Copy")
+             .with_memory_type(None)
+        ),
+
+        // === Sequential Bandwidth Tests ===
+        // Measures peak sequential memory bandwidth (unlike latency tests which use random access)
+        // Naming: Spd-{Level}-{Operation} (Spd = Speed/Bandwidth)
+        // Uses WindowMode::CacheLevel for automatic sizing based on detected cache
+        // tests=Spd-* (all 18 bandwidth tests: L1/L2/L3/DRAMSmall/DRAMFull × Read/Write/Copy)
+        // tests=Spd-L3-* (3 tests: L3 × Read/Write/Copy)
+        // tests=Spd-DRAM* (6 tests: DRAMSmall + DRAMFull)
+        // tests=*DRAMSmall* or *DRAMFull* for specific DRAM variants
+
+        // L1 Cache Bandwidth - Read, Write, Copy
+        (
+            "Spd-L1-Read",
+            TestFunction::MultiBlock(read_bandwidth_multi),
+            validate_streams(TestMemoryConfig::new(
+                WindowMode::CacheLevel { target: CacheTarget::L1_DEFAULT },
+                ChunkMode::AutoOptimal,
+                false,
+                false
+            ).with_timing(TestTiming::duration_only(10))
+             .with_streams(1), "Spd-L1-Read")
+             .with_memory_type(None)
+        ),
+
+        (
+            "Spd-L1-Write",
+            TestFunction::MultiBlock(write_bandwidth_multi),
+            validate_streams(TestMemoryConfig::new(
+                WindowMode::CacheLevel { target: CacheTarget::L1_DEFAULT },
+                ChunkMode::AutoOptimal,
+                false,
+                false
+            ).with_timing(TestTiming::duration_only(10))
+             .with_streams(1), "Spd-L1-Write")
+             .with_memory_type(None)
+        ),
+
+        (
+            "Spd-L1-Copy",
+            TestFunction::MultiBlock(copy_bandwidth_multi),
+            validate_streams(TestMemoryConfig::new(
+                WindowMode::CacheLevel { target: CacheTarget::L1_DEFAULT },
+                ChunkMode::AutoOptimal,
+                false,
+                false
+            ).with_timing(TestTiming::duration_only(10))
+             .with_streams(1), "Spd-L1-Copy")
+             .with_memory_type(None)
+        ),
+
+        // L2 Cache Bandwidth - Read, Write, Copy
+        (
+            "Spd-L2-Read",
+            TestFunction::MultiBlock(read_bandwidth_multi),
+            validate_streams(TestMemoryConfig::new(
+                WindowMode::CacheLevel { target: CacheTarget::L2_DEFAULT },
+                ChunkMode::AutoOptimal,
+                false,
+                false
+            ).with_timing(TestTiming::duration_only(10))
+             .with_streams(1), "Spd-L2-Read")
+             .with_memory_type(None)
+        ),
+
+        (
+            "Spd-L2-Write",
+            TestFunction::MultiBlock(write_bandwidth_multi),
+            validate_streams(TestMemoryConfig::new(
+                WindowMode::CacheLevel { target: CacheTarget::L2_DEFAULT },
+                ChunkMode::AutoOptimal,
+                false,
+                false
+            ).with_timing(TestTiming::duration_only(10))
+             .with_streams(1), "Spd-L2-Write")
+             .with_memory_type(None)
+        ),
+
+        (
+            "Spd-L2-Copy",
+            TestFunction::MultiBlock(copy_bandwidth_multi),
+            validate_streams(TestMemoryConfig::new(
+                WindowMode::CacheLevel { target: CacheTarget::L2_DEFAULT },
+                ChunkMode::AutoOptimal,
+                false,
+                false
+            ).with_timing(TestTiming::duration_only(10))
+             .with_streams(1), "Spd-L2-Copy")
+             .with_memory_type(None)
+        ),
+
+        // L3 Cache Bandwidth - Read, Write, Copy
+        (
+            "Spd-L3-Read",
+            TestFunction::MultiBlock(read_bandwidth_multi),
+            validate_streams(TestMemoryConfig::new(
+                WindowMode::CacheLevel { target: CacheTarget::L3_DEFAULT },
+                ChunkMode::AutoOptimal,
+                false,
+                false
+            ).with_timing(TestTiming::duration_only(10))
+             .with_streams(1), "Spd-L3-Read")
+             .with_memory_type(None)
+        ),
+
+        (
+            "Spd-L3-Write",
+            TestFunction::MultiBlock(write_bandwidth_multi),
+            validate_streams(TestMemoryConfig::new(
+                WindowMode::CacheLevel { target: CacheTarget::L3_DEFAULT },
+                ChunkMode::AutoOptimal,
+                false,
+                false
+            ).with_timing(TestTiming::duration_only(10))
+             .with_streams(1), "Spd-L3-Write")
+             .with_memory_type(None)
+        ),
+
+        (
+            "Spd-L3-Copy",
+            TestFunction::MultiBlock(copy_bandwidth_multi),
+            validate_streams(TestMemoryConfig::new(
+                WindowMode::CacheLevel { target: CacheTarget::L3_DEFAULT },
+                ChunkMode::AutoOptimal,
+                false,
+                false
+            ).with_timing(TestTiming::duration_only(10))
+             .with_streams(1), "Spd-L3-Copy")
+             .with_memory_type(None)
+        ),
+
+        // DRAMSmall Bandwidth - Smaller working set, high TLB hit rate - Read, Write, Copy
+        (
+            "Spd-DRAMSmall-Read",
+            TestFunction::MultiBlock(read_bandwidth_multi),
+            validate_streams(TestMemoryConfig::new(
+                WindowMode::CacheLevel { target: CacheTarget::DRAM_DEFAULT },
+                ChunkMode::AutoOptimal,
+                false,
+                false
+            ).with_timing(TestTiming::duration_only(10))
+             .with_streams(1), "Spd-DRAMSmall-Read")
+             .with_memory_type(None)
+        ),
+
+        (
+            "Spd-DRAMSmall-Write",
+            TestFunction::MultiBlock(write_bandwidth_multi),
+            validate_streams(TestMemoryConfig::new(
+                WindowMode::CacheLevel { target: CacheTarget::DRAM_DEFAULT },
+                ChunkMode::AutoOptimal,
+                false,
+                false
+            ).with_timing(TestTiming::duration_only(10))
+             .with_streams(1), "Spd-DRAMSmall-Write")
+             .with_memory_type(None)
+        ),
+
+        (
+            "Spd-DRAMSmall-Copy",
+            TestFunction::MultiBlock(copy_bandwidth_multi),
+            validate_streams(TestMemoryConfig::new(
+                WindowMode::CacheLevel { target: CacheTarget::DRAM_DEFAULT },
+                ChunkMode::AutoOptimal,
+                false,
+                false
+            ).with_timing(TestTiming::duration_only(10))
+             .with_streams(1), "Spd-DRAMSmall-Copy")
+             .with_memory_type(None)
+        ),
+
+        // DRAMFull Bandwidth - Full allocation, includes TLB miss overhead - Read, Write, Copy
+        (
+            "Spd-DRAMFull-Read",
+            TestFunction::MultiBlock(read_bandwidth_multi),
+            validate_streams(TestMemoryConfig::new(
+                WindowMode::CacheLevel { target: CacheTarget::DRAM_FULL_DEFAULT },
+                ChunkMode::AutoOptimal,
+                false,
+                false
+            ).with_timing(TestTiming::duration_only(10))
+             .with_streams(1), "Spd-DRAMFull-Read")
+             .with_memory_type(None)
+        ),
+
+        (
+            "Spd-DRAMFull-Write",
+            TestFunction::MultiBlock(write_bandwidth_multi),
+            validate_streams(TestMemoryConfig::new(
+                WindowMode::CacheLevel { target: CacheTarget::DRAM_FULL_DEFAULT },
+                ChunkMode::AutoOptimal,
+                false,
+                false
+            ).with_timing(TestTiming::duration_only(10))
+             .with_streams(1), "Spd-DRAMFull-Write")
+             .with_memory_type(None)
+        ),
+
+        (
+            "Spd-DRAMFull-Copy",
+            TestFunction::MultiBlock(copy_bandwidth_multi),
+            validate_streams(TestMemoryConfig::new(
+                WindowMode::CacheLevel { target: CacheTarget::DRAM_FULL_DEFAULT },
+                ChunkMode::AutoOptimal,
+                false,
+                false
+            ).with_timing(TestTiming::duration_only(10))
+             .with_streams(1), "Spd-DRAMFull-Copy")
              .with_memory_type(None)
         ),
     ];

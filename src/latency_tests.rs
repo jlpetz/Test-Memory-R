@@ -208,10 +208,7 @@ pub unsafe fn read_latency_multi(
 
     log::info!("[Thread {}] {} - Working set: {} bytes ({} elements) targeting {}",
         thread_id, test_name, working_set_bytes, working_set_u64,
-        if working_set_bytes <= 32 * 1024 { "L1 cache" }
-        else if working_set_bytes <= 1024 * 1024 { "L2 cache" }
-        else if working_set_bytes <= 16 * 1024 * 1024 { "L3 cache" }
-        else { "DRAM" });
+        config.window_mode.target_level_name());
 
     // Setup pointer-chasing pattern for each block (limited to working set size)
     // Also initialize starting positions for continuous traversal
@@ -356,10 +353,7 @@ pub unsafe fn write_latency_multi(
 
     log::info!("[Thread {}] {} - Working set: {} bytes ({} elements: {} chain + {} write) targeting {}",
         thread_id, test_name, working_set_bytes, half_working_set_u64 * 2, half_working_set_u64, half_working_set_u64,
-        if working_set_bytes <= 32 * 1024 { "L1 cache" }
-        else if working_set_bytes <= 1024 * 1024 { "L2 cache" }
-        else if working_set_bytes <= 16 * 1024 * 1024 { "L3 cache" }
-        else { "DRAM" });
+        config.window_mode.target_level_name());
 
     // Setup pointer-chasing pattern in first half (chain region - read only)
     // Second half is used for writes so we don't destroy the chain
@@ -519,10 +513,7 @@ pub unsafe fn copy_latency_multi(
     let per_buffer_bytes = window_size;
     log::info!("[Thread {}] {} - Working set: {} bytes per buffer ({} elements each, {} total) targeting {}",
         thread_id, test_name, per_buffer_bytes, working_set_u64, working_set_u64 * 2,
-        if per_buffer_bytes <= 32 * 1024 { "L1 cache" }
-        else if per_buffer_bytes <= 1024 * 1024 { "L2 cache" }
-        else if per_buffer_bytes <= 16 * 1024 * 1024 { "L3 cache" }
-        else { "DRAM" });
+        config.window_mode.target_level_name());
 
     // Setup pointer-chasing pattern in first half (source)
     // Also initialize starting positions for continuous traversal

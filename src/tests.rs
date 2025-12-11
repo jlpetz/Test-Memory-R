@@ -21,6 +21,19 @@ pub enum WindowMode {
     CacheLevel { target: CacheTarget }, // Target specific cache level with smart sizing
 }
 
+impl WindowMode {
+    /// Get target level name for logging (e.g., "L1", "L2", "L3", "DRAM", "DRAM-Full", or "Memory")
+    pub fn target_level_name(&self) -> &'static str {
+        match self {
+            WindowMode::CacheLevel { target } => target.level_name(),
+            WindowMode::FullAllocation => "DRAM",
+            WindowMode::FixedSize { .. } => "Memory",
+            WindowMode::FixedBytes { .. } => "Memory",
+            WindowMode::CacheRelative { .. } => "Cache",
+        }
+    }
+}
+
 /// Cache level targeting for latency tests
 /// Sizes are calculated at runtime based on detected cache and thread count
 #[derive(Debug, Clone, Copy, PartialEq)]
@@ -499,7 +512,7 @@ impl TestMemoryConfig {
             thread_count: 1,  // Default to 1, should be set by runner for accurate cache calculations
         }
     }
-    
+
     /// Get operation metadata for a specific test
     pub fn get_operation_metadata(&self, test_name: &str) -> OperationMetadata {
         match test_name {
@@ -6099,6 +6112,8 @@ unsafe fn mirror_move_128_stream_n_impl(
 }
 
 /// MirrorMove128 - MultiBlock dispatcher (SSE2 optimized, routes to stream variants)
+/// MirrorMove128 - PUBLIC MultiBlock dispatcher
+/// Routes to stream1 or stream_n based on configuration
 pub unsafe fn mirror_move_128_multi(
     blocks: &[crate::runner::AllocationBlock],
     thread_id: usize,
@@ -6232,7 +6247,7 @@ unsafe fn mirror_move_256_stream1_impl(
     }
 
     let mut cycle = 0u32;
-    let mut total_bytes_processed = 0u64;
+    let mut total_bytes_processed = 0usize;
     let mut total_error_count = 0u64;
     let mut total_operations = 0u64;
 
@@ -6380,7 +6395,7 @@ unsafe fn mirror_move_256_stream1_impl(
             }
 
             total_error_count += cycle_errors;
-            total_bytes_processed += (test_block.test_size * 5) as u64; // Mirror (R+W) + verify (R) + mirror back (R+W) = 3R + 2W
+            total_bytes_processed += test_block.test_size * 5; // Mirror (R+W) + verify (R) + mirror back (R+W) = 3R + 2W
             total_operations += len as u64;
         }
 
@@ -6389,7 +6404,7 @@ unsafe fn mirror_move_256_stream1_impl(
             let now = Instant::now();
             if now.duration_since(last_progress_update).as_millis() >= update_interval_ms {
                 progress.cycles_completed.store(cycle, Ordering::Relaxed);
-                progress.bytes_processed.store(total_bytes_processed, Ordering::Relaxed);
+                progress.bytes_processed.store(total_bytes_processed as u64, Ordering::Relaxed);
                 progress.errors_found.store(total_error_count, Ordering::Relaxed);
                 progress.last_update_ms.store(
                     test_start.elapsed().as_millis() as u64,
@@ -6526,7 +6541,7 @@ unsafe fn mirror_move_256_stream_n_impl(
     }
 
     let mut cycle = 0u32;
-    let mut total_bytes_processed = 0u64;
+    let mut total_bytes_processed = 0usize;
     let mut total_error_count = 0u64;
     let mut total_operations = 0u64;
 
@@ -6697,7 +6712,7 @@ unsafe fn mirror_move_256_stream_n_impl(
             }
 
             total_error_count += cycle_errors;
-            total_bytes_processed += (test_block.test_size * 5) as u64; // Mirror (R+W) + verify (R) + mirror back (R+W) = 3R + 2W
+            total_bytes_processed += test_block.test_size * 5; // Mirror (R+W) + verify (R) + mirror back (R+W) = 3R + 2W
             total_operations += len as u64;
         }
 
@@ -6706,7 +6721,7 @@ unsafe fn mirror_move_256_stream_n_impl(
             let now = Instant::now();
             if now.duration_since(last_progress_update).as_millis() >= update_interval_ms {
                 progress.cycles_completed.store(cycle, Ordering::Relaxed);
-                progress.bytes_processed.store(total_bytes_processed, Ordering::Relaxed);
+                progress.bytes_processed.store(total_bytes_processed as u64, Ordering::Relaxed);
                 progress.errors_found.store(total_error_count, Ordering::Relaxed);
                 progress.last_update_ms.store(
                     test_start.elapsed().as_millis() as u64,
@@ -6866,7 +6881,7 @@ unsafe fn mirror_move_512_stream1_impl(
     }
 
     let mut cycle = 0u32;
-    let mut total_bytes_processed = 0u64;
+    let mut total_bytes_processed = 0usize;
     let mut total_error_count = 0u64;
     let mut total_operations = 0u64;
 
@@ -6874,7 +6889,7 @@ unsafe fn mirror_move_512_stream1_impl(
     let update_interval_ms = 250u128; // 4 updates/sec
     let mut last_progress_update = Instant::now();
 
-    // Main cycle loop - shared timer across all blocks
+    // Main cycle loop - shared timer across all blocks (AVX512 stream1)
     loop {
         cycle += 1;
 
@@ -7014,7 +7029,7 @@ unsafe fn mirror_move_512_stream1_impl(
             }
 
             total_error_count += cycle_errors;
-            total_bytes_processed += (test_block.test_size * 5) as u64; // Mirror (R+W) + verify (R) + mirror back (R+W) = 3R + 2W
+            total_bytes_processed += test_block.test_size * 5; // Mirror (R+W) + verify (R) + mirror back (R+W) = 3R + 2W
             total_operations += len as u64;
         }
 
@@ -7023,7 +7038,7 @@ unsafe fn mirror_move_512_stream1_impl(
             let now = Instant::now();
             if now.duration_since(last_progress_update).as_millis() >= update_interval_ms {
                 progress.cycles_completed.store(cycle, Ordering::Relaxed);
-                progress.bytes_processed.store(total_bytes_processed, Ordering::Relaxed);
+                progress.bytes_processed.store(total_bytes_processed as u64, Ordering::Relaxed);
                 progress.errors_found.store(total_error_count, Ordering::Relaxed);
                 progress.last_update_ms.store(
                     test_start.elapsed().as_millis() as u64,
@@ -7157,7 +7172,7 @@ unsafe fn mirror_move_512_stream_n_impl(
     }
 
     let mut cycle = 0u32;
-    let mut total_bytes_processed = 0u64;
+    let mut total_bytes_processed = 0usize;
     let mut total_error_count = 0u64;
     let mut total_operations = 0u64;
 
@@ -7165,7 +7180,7 @@ unsafe fn mirror_move_512_stream_n_impl(
     let update_interval_ms = 250u128;
     let mut last_progress_update = Instant::now();
 
-    // Main cycle loop - shared timer across all blocks
+    // Main cycle loop - shared timer across all blocks (AVX512 stream_n)
     loop {
         cycle += 1;
 
@@ -7326,7 +7341,7 @@ unsafe fn mirror_move_512_stream_n_impl(
             }
 
             total_error_count += cycle_errors;
-            total_bytes_processed += (test_block.test_size * 5) as u64; // Mirror (R+W) + verify (R) + mirror back (R+W) = 3R + 2W
+            total_bytes_processed += test_block.test_size * 5; // Mirror (R+W) + verify (R) + mirror back (R+W) = 3R + 2W
             total_operations += len as u64;
         }
 
@@ -7335,7 +7350,7 @@ unsafe fn mirror_move_512_stream_n_impl(
             let now = Instant::now();
             if now.duration_since(last_progress_update).as_millis() >= update_interval_ms {
                 progress.cycles_completed.store(cycle, Ordering::Relaxed);
-                progress.bytes_processed.store(total_bytes_processed, Ordering::Relaxed);
+                progress.bytes_processed.store(total_bytes_processed as u64, Ordering::Relaxed);
                 progress.errors_found.store(total_error_count, Ordering::Relaxed);
                 progress.last_update_ms.store(
                     test_start.elapsed().as_millis() as u64,

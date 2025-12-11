@@ -444,6 +444,26 @@ impl MemoryAllocator {
         log::info!("Plan-based allocation complete: Memory distributed to {} threads", 
                   all_allocated_blocks.len());
         
+        // Validate that we actually allocated memory
+        if all_allocated_blocks.is_empty() {
+            return Err("Failed to allocate any memory blocks. This may be due to:\n\
+                       1. Insufficient available memory\n\
+                       2. Large page privilege not granted (restart required after granting privilege)\n\
+                       3. System memory fragmentation preventing large allocations\n\
+                       Try: Restart your session/system after granting large page privilege, or use allocator=plan-blocksize-pref".to_string());
+        }
+        
+        // Validate that all threads got memory
+        let threads_without_memory: Vec<_> = thread_blocks.keys()
+            .filter(|tid| !all_allocated_blocks.contains_key(tid))
+            .collect();
+        
+        if !threads_without_memory.is_empty() {
+            return Err(format!("Failed to allocate memory for {} thread(s): {:?}\n\
+                               Some threads received memory but others did not. This indicates partial allocation failure.",
+                               threads_without_memory.len(), threads_without_memory));
+        }
+        
         Ok(all_allocated_blocks)
     }
     
