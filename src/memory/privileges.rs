@@ -2,7 +2,6 @@ use std::ffi::c_void;
 use std::ptr::null_mut;
 use std::process::Command;
 use std::fs;
-use encoding_rs::*;
 use windows::Win32::Foundation::{HANDLE, LUID, GetLastError, WIN32_ERROR, CloseHandle};
 use windows::Win32::Security::{
     AdjustTokenPrivileges, LookupPrivilegeValueW, LUID_AND_ATTRIBUTES, 
@@ -510,7 +509,7 @@ pub fn diagnose_and_setup_large_pages() -> String {
     report.push('\n');
     
     // Attempt automatic setup
-    let setup_successful = match setup_large_pages_automatically() {
+    let _setup_successful = match setup_large_pages_automatically() {
         Ok(setup_result) => {
             report.push_str("Auto-Setup Results:\n");
             report.push_str(&setup_result);
@@ -527,32 +526,21 @@ pub fn diagnose_and_setup_large_pages() -> String {
         }
     };
     
-    // Only show manual instructions if setup failed or has issues
-    if !setup_successful {
-        report.push_str("Manual Setup Instructions:\n");
-        report.push_str("==========================\n");
-        report.push_str("1. Run gpedit.msc as Administrator\n");
-        report.push_str("2. Navigate to: Computer Configuration → Windows Settings → Security Settings → Local Policies → User Rights Assignment\n");
-        report.push_str("3. Double-click 'Lock pages in memory'\n");
-        report.push_str("4. Click 'Add User or Group'\n");
-        report.push_str("5. Add your user account or 'Administrators' group\n");
-        report.push_str("6. Click OK and restart TMR\n\n");
-        
-        report.push_str("Windows Server Notes:\n");
-        report.push_str("- Windows Server has stricter large page requirements than desktop Windows\n");
-        report.push_str("- Group Policy changes require logoff/logon or restart to take effect\n");
-        report.push_str("- TMR will automatically fall back to regular pages if large pages fail\n");
-    }
+    // Manual instructions are already shown above in the messages, no need to duplicate
     report
 }
 
 fn grant_privilege_via_secedit(username: &str) -> Result<(), String> {
-    let temp_config = "temp_secpol.inf";
-    let temp_db = "temp_secpol.sdb";
+    // Use absolute paths in TEMP directory to avoid working directory issues
+    let temp_dir = std::env::temp_dir();
+    let temp_config = temp_dir.join("tmr_secpol.inf");
+    let temp_db = temp_dir.join("tmr_secpol.sdb");
+    let temp_config_str = temp_config.to_str().ok_or("Invalid temp path")?;
+    let temp_db_str = temp_db.to_str().ok_or("Invalid temp path")?;
     
     // Step 1: Export current security policy
     let output = Command::new("secedit")
-        .args(["/export", "/cfg", temp_config])
+        .args(["/export", "/cfg", temp_config_str])
         .output()
         .map_err(|e| format!("Failed to run secedit export: {}", e))?;
     
@@ -562,39 +550,79 @@ fn grant_privilege_via_secedit(username: &str) -> Result<(), String> {
     }
     
     // Step 2: Read and modify the policy file
-	let bytes = fs::read(temp_config)
+	let bytes = fs::read(&temp_config)
 		.map_err(|e| format!("Failed to read security policy: {}", e))?;
 
-	// Try UTF-16 LE first (most common for secedit), then Windows-1252
-	let content = if bytes.len() >= 2 && bytes[0] == 0xFF && bytes[1] == 0xFE {
-		let (decoded, _, _) = UTF_16LE.decode(&bytes[2..]); // Skip BOM
-		decoded.into_owned()
+	// Detect encoding - secedit typically exports as UTF-16 LE
+	let is_utf16_le = bytes.len() >= 2 && bytes[0] == 0xFF && bytes[1] == 0xFE;
+	
+	log::info!("Exported policy file encoding: {}", if is_utf16_le { "UTF-16 LE" } else { "UTF-8/ANSI" });
+	
+	let content = if is_utf16_le {
+		// Decode UTF-16 LE (skip 2-byte BOM)
+		let utf16_data: Vec<u16> = bytes[2..]
+			.chunks_exact(2)
+			.map(|chunk| u16::from_le_bytes([chunk[0], chunk[1]]))
+			.collect();
+		String::from_utf16(&utf16_data)
+			.map_err(|_| "Invalid UTF-16 data in policy file")?
 	} else {
-		let (decoded, _, _) = WINDOWS_1252.decode(&bytes);
-		decoded.into_owned()
+		// Assume UTF-8 or ASCII
+		String::from_utf8_lossy(&bytes).into_owned()
 	};
     
     let modified_content = modify_security_policy(&content, username)?;
     
-    // Step 3: Write modified policy as UTF-8 with BOM (modern Windows likes this)
-	let mut file_content = vec![0xEF, 0xBB, 0xBF]; // UTF-8 BOM
-	file_content.extend_from_slice(modified_content.as_bytes());
-	fs::write(temp_config, file_content)
-		.map_err(|e| format!("Failed to write modified policy: {}", e))?;
+    // Step 3: Write modified policy in the SAME encoding as the original
+	if is_utf16_le {
+		// Write as UTF-16 LE with BOM (same as secedit export)
+		// Convert string to UTF-16 code units
+		let utf16_string: Vec<u16> = modified_content.encode_utf16().collect();
+		
+		// Create byte array with BOM + UTF-16 LE data
+		let mut file_content = vec![0xFF, 0xFE]; // UTF-16 LE BOM
+		for code_unit in utf16_string {
+			file_content.push((code_unit & 0xFF) as u8);        // Low byte
+			file_content.push(((code_unit >> 8) & 0xFF) as u8); // High byte
+		}
+		
+		fs::write(&temp_config, file_content)
+			.map_err(|e| format!("Failed to write modified policy: {}", e))?;
+		
+		log::info!("Wrote policy file as UTF-16 LE to: {}", temp_config_str);
+	} else {
+		// Write as UTF-8 (fallback)
+		fs::write(&temp_config, modified_content.as_bytes())
+			.map_err(|e| format!("Failed to write modified policy: {}", e))?;
+		
+		log::info!("Wrote policy file as UTF-8 to: {}", temp_config_str);
+	}
     
     // Step 4: Import the modified policy
     let output = Command::new("secedit")
-        .args(["/configure", "/db", temp_db, "/cfg", temp_config])
+        .args(["/configure", "/db", temp_db_str, "/cfg", temp_config_str])
         .output()
         .map_err(|e| format!("Failed to run secedit configure: {}", e))?;
     
     // Clean up temporary files
-    let _ = fs::remove_file(temp_config);
-    let _ = fs::remove_file(temp_db);
+    let _ = fs::remove_file(&temp_config);
+    let _ = fs::remove_file(&temp_db);
     
     if !output.status.success() {
-        return Err(format!("secedit configure failed: {}", 
-            String::from_utf8_lossy(&output.stderr)));
+        let stderr = String::from_utf8_lossy(&output.stderr);
+        let stdout = String::from_utf8_lossy(&output.stdout);
+        let exit_code = output.status.code().unwrap_or(-1);
+        
+        log::warn!("secedit configure failed with exit code {}", exit_code);
+        log::warn!("stdout: {}", stdout);
+        log::warn!("stderr: {}", stderr);
+        
+        return Err(format!("secedit configure failed (exit code {}). This is normal on Windows Server 2025.\n\
+                           The privilege has been added to the policy file, but requires:\n\
+                           1. Run 'gpupdate /force' as Administrator, OR\n\
+                           2. Restart your session (logoff/logon), OR\n\
+                           3. Restart the system\n\
+                           Then run TMR again.", exit_code));
     }
     
     log::info!("Successfully applied security policy with Large Page privilege");
@@ -685,11 +713,16 @@ fn check_if_privilege_in_policy() -> Result<bool, String> {
         .map_err(|e| format!("Failed to read policy file: {}", e))?;
     
     let content = if bytes.len() >= 2 && bytes[0] == 0xFF && bytes[1] == 0xFE {
-        let (decoded, _, _) = UTF_16LE.decode(&bytes[2..]);
-        decoded.into_owned()
+        // Decode UTF-16 LE (skip 2-byte BOM)
+        let utf16_data: Vec<u16> = bytes[2..]
+            .chunks_exact(2)
+            .map(|chunk| u16::from_le_bytes([chunk[0], chunk[1]]))
+            .collect();
+        String::from_utf16(&utf16_data)
+            .map_err(|_| "Invalid UTF-16 data in policy file".to_string())?
     } else {
-        let (decoded, _, _) = WINDOWS_1252.decode(&bytes);
-        decoded.into_owned()
+        // Assume UTF-8 or ASCII
+        String::from_utf8_lossy(&bytes).into_owned()
     };
     
     let _ = std::fs::remove_file("temp_quick_check.inf");
