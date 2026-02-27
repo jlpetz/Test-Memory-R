@@ -308,54 +308,53 @@ fn detect_via_raw_cpuid_comprehensive(physical_cores: usize) -> Option<CacheInfo
         log::debug!("raw_cpuid: Detected AMD CPU, trying extended topology");
         
         // Try AMD's extended cache topology
-        unsafe {
-            for subleaf in 0..16 {
-                let result = std::arch::x86_64::__cpuid_count(0x8000001D, subleaf);
-                
-                if result.eax == 0 {
-                    break; // No more cache levels
+        // Note: __cpuid_count is safe in edition 2024
+        for subleaf in 0..16 {
+            let result = std::arch::x86_64::__cpuid_count(0x8000001D, subleaf);
+            
+            if result.eax == 0 {
+                break; // No more cache levels
+            }
+            
+            let cache_type = result.eax & 0x1F;
+            let cache_level = (result.eax >> 5) & 0x7;
+            let _self_init = (result.eax >> 8) & 0x1;
+            let _fully_assoc = (result.eax >> 9) & 0x1;
+            let num_sharing = ((result.eax >> 14) & 0xFFF) + 1;
+            
+            let line_size = (result.ebx & 0xFFF) + 1;
+            let partitions = ((result.ebx >> 12) & 0x3FF) + 1;
+            let ways = ((result.ebx >> 22) & 0x3FF) + 1;
+            let sets = result.ecx + 1;
+            
+            let cache_size = (ways * partitions * line_size * sets) as usize;
+            
+            log::debug!("raw_cpuid AMD 0x8000001D[{}]: L{} type={} size={}KB, sharing={}", 
+                       subleaf, cache_level, cache_type, cache_size / KB, num_sharing);
+            
+            // Cache type: 1=Data, 2=Instruction, 3=Unified
+            match (cache_level, cache_type) {
+                (1, 1) => { // L1 Data
+                    cache_info.per_core_l1d = cache_size;
+                    found_any = true;
                 }
-                
-                let cache_type = result.eax & 0x1F;
-                let cache_level = (result.eax >> 5) & 0x7;
-                let _self_init = (result.eax >> 8) & 0x1;
-                let _fully_assoc = (result.eax >> 9) & 0x1;
-                let num_sharing = ((result.eax >> 14) & 0xFFF) + 1;
-                
-                let line_size = (result.ebx & 0xFFF) + 1;
-                let partitions = ((result.ebx >> 12) & 0x3FF) + 1;
-                let ways = ((result.ebx >> 22) & 0x3FF) + 1;
-                let sets = result.ecx + 1;
-                
-                let cache_size = (ways * partitions * line_size * sets) as usize;
-                
-                log::debug!("raw_cpuid AMD 0x8000001D[{}]: L{} type={} size={}KB, sharing={}", 
-                           subleaf, cache_level, cache_type, cache_size / KB, num_sharing);
-                
-                // Cache type: 1=Data, 2=Instruction, 3=Unified
-                match (cache_level, cache_type) {
-                    (1, 1) => { // L1 Data
-                        cache_info.per_core_l1d = cache_size;
-                        found_any = true;
-                    }
-                    (1, 2) => { // L1 Instruction
-                        cache_info.per_core_l1i = cache_size;
-                        found_any = true;
-                    }
-                    (2, 3) => { // L2 Unified
-                        cache_info.per_core_l2 = cache_size;
-                        found_any = true;
-                    }
-                    (3, 3) => { // L3 Unified
-                        cache_info.l3_cache = cache_size;
-                        found_any = true;
-                    }
-                    _ => {}
+                (1, 2) => { // L1 Instruction
+                    cache_info.per_core_l1i = cache_size;
+                    found_any = true;
                 }
-                
-                if line_size > 0 && line_size <= 256 {
-                    cache_info.cache_line_size = line_size as usize;
+                (2, 3) => { // L2 Unified
+                    cache_info.per_core_l2 = cache_size;
+                    found_any = true;
                 }
+                (3, 3) => { // L3 Unified
+                    cache_info.l3_cache = cache_size;
+                    found_any = true;
+                }
+                _ => {}
+            }
+            
+            if line_size > 0 && line_size <= 256 {
+                cache_info.cache_line_size = line_size as usize;
             }
         }
         
@@ -366,31 +365,30 @@ fn detect_via_raw_cpuid_comprehensive(physical_cores: usize) -> Option<CacheInfo
     
     // Method 3: Legacy AMD extended L2/L3 info (0x80000006)
     if cache_info.l3_cache == 0 {
-        unsafe {
-            let result = std::arch::x86_64::__cpuid(0x80000006);
+        // Note: __cpuid is safe in edition 2024
+        let result = std::arch::x86_64::__cpuid(0x80000006);
+        
+        // ECX contains L3 cache info
+        let _l3_line_size = result.ecx & 0xFF;
+        let _l3_assoc = (result.ecx >> 12) & 0xF;
+        let l3_size_kb = (result.ecx >> 18) & 0x3FFF;
+        
+        if l3_size_kb > 0 {
+            cache_info.l3_cache = (l3_size_kb as usize) * 512 * KB; // Units of 512KB
+            found_any = true;
+            log::debug!("raw_cpuid 0x80000006: L3 cache {}MB", cache_info.l3_cache / MB);
             
-            // ECX contains L3 cache info
-            let _l3_line_size = result.ecx & 0xFF;
-            let _l3_assoc = (result.ecx >> 12) & 0xF;
-            let l3_size_kb = (result.ecx >> 18) & 0x3FFF;
-            
-            if l3_size_kb > 0 {
-                cache_info.l3_cache = (l3_size_kb as usize) * 512 * KB; // Units of 512KB
-                found_any = true;
-                log::debug!("raw_cpuid 0x80000006: L3 cache {}MB", cache_info.l3_cache / MB);
-                
-                if cache_info.detection_method.is_empty() {
-                    cache_info.detection_method = "raw_cpuid legacy AMD".to_string();
-                }
+            if cache_info.detection_method.is_empty() {
+                cache_info.detection_method = "raw_cpuid legacy AMD".to_string();
             }
-            
-            // EDX contains L2 cache info if not already found
-            if cache_info.per_core_l2 == 0 {
-                let l2_size_kb = (result.edx >> 16) & 0xFFFF;
-                if l2_size_kb > 0 {
-                    cache_info.per_core_l2 = (l2_size_kb as usize) * 1024;
-                    found_any = true;
-                }
+        }
+        
+        // EDX contains L2 cache info if not already found
+        if cache_info.per_core_l2 == 0 {
+            let l2_size_kb = (result.edx >> 16) & 0xFFFF;
+            if l2_size_kb > 0 {
+                cache_info.per_core_l2 = (l2_size_kb as usize) * 1024;
+                found_any = true;
             }
         }
     }

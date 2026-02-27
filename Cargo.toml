@@ -32,6 +32,9 @@ ctrlc = "3.5"         # For CTRL+C signal handling
 raw-cpuid = "11.6"
 globset = "0.4"
 
+[dev-dependencies]
+proptest = "1.4"  # Property-based testing for calibration correctness properties
+
 # --------------------------------------------
 # BUILD PROFILES
 # --------------------------------------------

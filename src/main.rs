@@ -54,7 +54,8 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     // Validate that all -- flags are recognized before processing
     // This catches typos and deprecated flags early with helpful error messages
     let known_flags = [
-        "--ram-latency", "--cache-latency", "--quick-test",
+        "--ram-latency", "--cache-latency", "--quick-test", "--calibrate-cache", "--calibrate-cache-ext",
+        "--calibration-file", "--output",
         "--create-demo-configs", "--compare-results", "--debug-topology",
         "--show-topology", "--setup-large-pages", "--help", "-h", "--version", "-v"
     ];
@@ -218,6 +219,100 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
 						println!("\n⚠️  Large pages are still not available: {}", e);
 						println!("TMR will still work but will use standard pages.");
 						println!("This may require a system restart if privileges were just granted.");
+					}
+				}
+				return Ok(());
+			}
+			"--calibrate-cache" => {
+				println!("🔬 TMR Adaptive Cache Calibration");
+				println!("==================================\n");
+				
+				// Detect cache info
+				let cache_info = tmr::CacheInfo::detect();
+				cache_info.print_info();
+				println!();
+				
+				// Check for maxpage= override in remaining args
+				let mut config = tmr::calibration::CalibrationConfig::default();
+				for arg in &args[2..] {
+					if let Some(page_str) = arg.strip_prefix("maxpage=") {
+						config.page_size = page_str.to_lowercase();
+						println!("📄 Page size override: {}\n", config.page_size);
+					}
+				}
+				
+				// Run calibration
+				let calibration_test = tmr::calibration::CalibrationTest::with_config(cache_info.clone(), config);
+				match calibration_test.run() {
+					Ok(results) => {
+						tmr::calibration::CalibrationTest::display_results(&results, &cache_info);
+						
+						// Check for --output flag to save results
+						if let Some(output_idx) = args.iter().position(|a| a == "--output") {
+							if let Some(output_path) = args.get(output_idx + 1) {
+								match serde_json::to_string_pretty(&results) {
+									Ok(json) => {
+										match std::fs::write(output_path, json) {
+											Ok(()) => println!("✅ Results saved to: {}", output_path),
+											Err(e) => println!("❌ Failed to write results: {}", e),
+										}
+									}
+									Err(e) => println!("❌ Failed to serialize results: {}", e),
+								}
+							} else {
+								println!("❌ --output requires a file path");
+							}
+						}
+					}
+					Err(e) => {
+						println!("❌ Calibration failed: {}", e);
+					}
+				}
+				return Ok(());
+			}
+			"--calibrate-cache-ext" => {
+				println!("🔬 TMR Adaptive Cache Calibration (Extended - Phase 2)");
+				println!("======================================================\n");
+				
+				// Detect cache info
+				let cache_info = tmr::CacheInfo::detect();
+				cache_info.print_info();
+				println!();
+				
+				// Check for maxpage= override in remaining args
+				let mut config = tmr::calibration::CalibrationConfig::default();
+				for arg in &args[2..] {
+					if let Some(page_str) = arg.strip_prefix("maxpage=") {
+						config.page_size = page_str.to_lowercase();
+						println!("📄 Page size override: {}\n", config.page_size);
+					}
+				}
+				
+				// Run extended calibration (phase 1 sweep + phase 2 fine-grain)
+				let calibration_test = tmr::calibration::CalibrationTest::with_config(cache_info.clone(), config);
+				match calibration_test.run_extended() {
+					Ok(results) => {
+						tmr::calibration::CalibrationTest::display_results(&results, &cache_info);
+						
+						// Check for --output flag to save results
+						if let Some(output_idx) = args.iter().position(|a| a == "--output") {
+							if let Some(output_path) = args.get(output_idx + 1) {
+								match serde_json::to_string_pretty(&results) {
+									Ok(json) => {
+										match std::fs::write(output_path, json) {
+											Ok(()) => println!("✅ Results saved to: {}", output_path),
+											Err(e) => println!("❌ Failed to write results: {}", e),
+										}
+									}
+									Err(e) => println!("❌ Failed to serialize results: {}", e),
+								}
+							} else {
+								println!("❌ --output requires a file path");
+							}
+						}
+					}
+					Err(e) => {
+						println!("❌ Extended calibration failed: {}", e);
 					}
 				}
 				return Ok(());
