@@ -1750,29 +1750,7 @@ impl CalibrationTest {
     /// Stability is measured by combining spread ratio and window stddev
     /// max_latency: exclude probes spilling to next tier
     /// min_latency: ensure probe is actually hitting this tier (not previous)
-    fn find_most_stable_in_range(&self, sweep: &[SweepProbe], min_size: usize, max_size: usize, max_latency: Option<f64>, min_latency: Option<f64>) -> Option<SweepProbe> {
-        let candidates: Vec<_> = sweep.iter()
-            .filter(|p| {
-                p.size >= min_size && 
-                p.size <= max_size &&
-                max_latency.map_or(true, |max| p.median_ns <= max) &&
-                min_latency.map_or(true, |min| p.median_ns >= min)
-            })
-            .collect();
-        
-        if candidates.is_empty() {
-            return None;
-        }
-        
-        // Find the probe with the best (lowest) stability score
-        candidates.into_iter()
-            .min_by(|a, b| {
-                a.stability_score()
-                    .partial_cmp(&b.stability_score())
-                    .unwrap_or(std::cmp::Ordering::Equal)
-            })
-            .cloned()
-    }
+
     
     /// Find the largest stable size (for FullDRAM)
     /// Stable = spread < 2.0
