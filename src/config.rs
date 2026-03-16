@@ -263,12 +263,90 @@ pub struct TestConfig {
     
     // Access pattern configuration
     pub streams: Option<u32>,               // Number of access streams (equivalent to TM5 jump/parameter)
-    
+
     // Legacy TM5 compatibility (preserved but not used in new logic)
     pub pattern_mode: Option<u32>,
     pub pattern_param0: Option<u64>,
     pub pattern_param1: Option<u64>,
     pub parameter: Option<u32>,             // Legacy parameter field (mapped to streams on load)
+
+    // v2: Enable v2 test variants when true (uses corrected parameter interpretation)
+    #[serde(default)]
+    pub use_v2_tests: Option<bool>,
+}
+
+/// Correctly interpreted TM5 parameter context for v2 tests.
+///
+/// TM5's `Parameter` field means different things per test type:
+/// - **SimpleTest**: stride in cache lines (Parameter * 64 / 8 = u64 elements)
+/// - **MirrorMove**: subblock count (1-4, how many mirror regions)
+/// - **MirrorMove128**: page stride in bytes ((Parameter + 1) * 128)
+///
+/// The v1 code incorrectly funneled all of these into `streams`.
+#[derive(Debug, Clone)]
+pub struct TestParameterContext {
+    /// Raw TM5 parameter value, preserved for debugging.
+    pub raw_parameter: u32,
+    /// SimpleTest: stride in u64 elements. `Parameter * 64 / 8 = Parameter * 8`.
+    /// 0 means sequential (no striding).
+    pub stride_elements: Option<usize>,
+    /// MirrorMove: number of subblocks (1-4). Each subblock is mirrored independently.
+    pub subblock_count: Option<u32>,
+    /// MirrorMove128: page stride in bytes. `(Parameter + 1) * 128`.
+    pub page_stride_bytes: Option<usize>,
+}
+
+/// Interpret TM5 Parameter correctly based on test function name.
+///
+/// This replaces `map_parameter_to_streams()` which incorrectly treated all
+/// parameters as stream counts.
+pub fn interpret_tm5_parameter(function: &str, parameter: u32) -> TestParameterContext {
+    match function {
+        "SimpleTest" | "Mem-Simple" | "Mem-SimpleV2" => {
+            TestParameterContext {
+                raw_parameter: parameter,
+                stride_elements: if parameter == 0 {
+                    None // Sequential access
+                } else {
+                    // TM5: stride = Parameter * 64 bytes / 8 bytes per u64 = Parameter * 8
+                    Some(parameter as usize * 8)
+                },
+                subblock_count: None,
+                page_stride_bytes: None,
+            }
+        }
+        "MirrorMove" | "Mem-Mirror" | "Mem-MirrorV2" | "Mem-MirrorV2-Auto" => {
+            TestParameterContext {
+                raw_parameter: parameter,
+                stride_elements: None,
+                subblock_count: Some(parameter.clamp(1, 4)),
+                page_stride_bytes: None,
+            }
+        }
+        "MirrorMove128" | "MirrorMove256" | "MirrorMove512"
+        | "Mem-Mirror128" | "Mem-Mirror256" | "Mem-Mirror512"
+        | "Mem-MirrorV2-128" | "Mem-MirrorV2-256" | "Mem-MirrorV2-512" => {
+            TestParameterContext {
+                raw_parameter: parameter,
+                stride_elements: None,
+                subblock_count: None,
+                page_stride_bytes: if parameter == 0 {
+                    None // No page striding
+                } else {
+                    Some((parameter as usize + 1) * 128)
+                },
+            }
+        }
+        _ => {
+            // Unknown test type — preserve raw parameter, no interpretation
+            TestParameterContext {
+                raw_parameter: parameter,
+                stride_elements: None,
+                subblock_count: None,
+                page_stride_bytes: None,
+            }
+        }
+    }
 }
 
 // Legacy config parser (v1.0 - TestMem5 format) - unchanged structure
@@ -518,18 +596,25 @@ impl ModernConfig {
                 // Auto-detect based on function name
                 matches!(test.function.as_str(), "Mem-CacheBust" | "Mem-Refresh")
             });
-            
+
             let timing = TestTiming {
                 cycles: test.cycles.or(self.system.timing.default_test_cycles),
                 duration_secs: test.duration_secs.or(self.system.timing.default_test_duration_secs),
                 min_duration_secs: test.min_duration_secs,
             };
-            
-            let config = TestMemoryConfig::new(window_mode, chunk_mode, allow_misaligned, requires_locality)
+
+            let mut config = TestMemoryConfig::new(window_mode, chunk_mode, allow_misaligned, requires_locality)
                 .with_timing(timing)
                 .with_streams(test.streams.unwrap_or(1)) // Default to 1 stream (equivalent to TM5 jump=1)
                 .with_pattern_config(test.pattern_mode, test.pattern_param0, test.pattern_param1);
-            
+
+            // v2: Attach correctly interpreted parameter context
+            if let Some(param) = test.parameter {
+                config = config.with_parameter_context(
+                    interpret_tm5_parameter(&test.function, param)
+                );
+            }
+
             (test.function.as_str(), config)
         }).collect()
     }
@@ -550,7 +635,7 @@ impl ModernConfig {
     /// Get test configs following TM5 test sequence order and repetition
     fn get_tm5_sequence_configs(&self, sequence: &[u32]) -> Vec<(&str, TestMemoryConfig)> {
         let mut result = Vec::new();
-        
+
         for &test_index in sequence {
             // Find the test by index (TM5 uses 0-based indexing)
             if let Some(test) = self.test_sequence.get(test_index as usize) {
@@ -562,18 +647,25 @@ impl ModernConfig {
                         // Auto-detect based on function name
                         matches!(test.function.as_str(), "Mem-CacheBust" | "Mem-Refresh")
                     });
-                    
+
                     let timing = TestTiming {
                         cycles: test.cycles.or(self.system.timing.default_test_cycles),
                         duration_secs: test.duration_secs.or(self.system.timing.default_test_duration_secs),
                         min_duration_secs: test.min_duration_secs,
                     };
-                    
-                    let config = TestMemoryConfig::new(window_mode, chunk_mode, allow_misaligned, requires_locality)
+
+                    let mut config = TestMemoryConfig::new(window_mode, chunk_mode, allow_misaligned, requires_locality)
                         .with_timing(timing)
                         .with_streams(test.streams.unwrap_or(1))
                         .with_pattern_config(test.pattern_mode, test.pattern_param0, test.pattern_param1);
-                    
+
+                    // v2: Attach correctly interpreted parameter context
+                    if let Some(param) = test.parameter {
+                        config = config.with_parameter_context(
+                            interpret_tm5_parameter(&test.function, param)
+                        );
+                    }
+
                     result.push((test.function.as_str(), config));
                 }
             } else {
@@ -714,6 +806,7 @@ pub fn create_demo_config() -> Self {
                 pattern_param0: None,
                 pattern_param1: None,
                 parameter: None,
+                use_v2_tests: None,
             },
 
             // Mem-Refresh - needs small window for refresh timing
@@ -736,6 +829,7 @@ pub fn create_demo_config() -> Self {
                 pattern_param0: None,
                 pattern_param1: None,
                 parameter: None,
+                use_v2_tests: None,
             },
             
             // Mem-Simple - general pattern test with TM5 compatibility
@@ -758,6 +852,7 @@ pub fn create_demo_config() -> Self {
                 pattern_param0: Some(0x1E5F),
                 pattern_param1: Some(0x45357354),
                 parameter: None,
+                use_v2_tests: None,
             },
             
             // Mem-Mirror128 - SIMD test with optimal locality
@@ -780,6 +875,7 @@ pub fn create_demo_config() -> Self {
                 pattern_param0: None,
                 pattern_param1: None,
                 parameter: None,
+                use_v2_tests: None,
             },
             
             // Mem-Mirror256 - AVX2 with dual streams
@@ -802,6 +898,7 @@ pub fn create_demo_config() -> Self {
                 pattern_param0: None,
                 pattern_param1: None,
                 parameter: None,
+                use_v2_tests: None,
             },
             
             // Mem-CacheBust - specifically sized for cache stress
@@ -824,6 +921,7 @@ pub fn create_demo_config() -> Self {
                 pattern_param0: None,
                 pattern_param1: None,
                 parameter: None,
+                use_v2_tests: None,
             },
             
             // Mem-Random - full memory random access
@@ -846,6 +944,7 @@ pub fn create_demo_config() -> Self {
                 pattern_param0: None,
                 pattern_param1: None,
                 parameter: None,
+                use_v2_tests: None,
             },
             
             // Mem-Stride - test various stride patterns
@@ -868,6 +967,7 @@ pub fn create_demo_config() -> Self {
                 pattern_param0: None,
                 pattern_param1: None,
                 parameter: None,
+                use_v2_tests: None,
             },
             
             // Spd-Saturate - maximum bandwidth test
@@ -890,6 +990,7 @@ pub fn create_demo_config() -> Self {
                 pattern_param0: None,
                 pattern_param1: None,
                 parameter: None,
+                use_v2_tests: None,
             },
             
             // Mem-BlockMove - memory copy test
@@ -912,6 +1013,7 @@ pub fn create_demo_config() -> Self {
                 pattern_param0: None,
                 pattern_param1: None,
                 parameter: None,
+                use_v2_tests: None,
             },
             
             // Legacy TM5-style test showing "window-size" block mode
@@ -934,6 +1036,7 @@ pub fn create_demo_config() -> Self {
                 pattern_param0: Some(0),
                 pattern_param1: Some(0),
                 parameter: None,
+                use_v2_tests: None,
             },
         ],
         legacy_metadata: None,
@@ -1000,6 +1103,7 @@ pub fn create_demo_config() -> Self {
                     pattern_param0: None,
                     pattern_param1: None,
                     parameter: None,
+                    use_v2_tests: None,
                 },
                 TestConfig {
                     enabled: true,
@@ -1020,6 +1124,7 @@ pub fn create_demo_config() -> Self {
                     pattern_param0: Some(0x1E5F),
                     pattern_param1: Some(0x45357354),
                     parameter: None,
+                    use_v2_tests: None,
                 },
             ],
             legacy_metadata: None,
@@ -1171,6 +1276,7 @@ impl LegacyConfig {
                 pattern_param0: Some(test.pattern_param0),
                 pattern_param1: Some(test.pattern_param1),
                 parameter: Some(test.parameter),
+                use_v2_tests: None,
             });
         }
     }
@@ -1250,6 +1356,13 @@ fn map_legacy_function(legacy_name: &str) -> Result<String, String> {
         "Mem-Random" => Ok("Mem-Random".to_string()),
         "Mem-Stride" => Ok("Mem-Stride".to_string()),
         "Spd-Saturate" => Ok("Spd-Saturate".to_string()),
+        // v2 test names (accepted directly)
+        "Mem-SimpleV2" => Ok("Mem-SimpleV2".to_string()),
+        "Mem-MirrorV2" => Ok("Mem-MirrorV2".to_string()),
+        "Mem-MirrorV2-128" => Ok("Mem-MirrorV2-128".to_string()),
+        "Mem-MirrorV2-256" => Ok("Mem-MirrorV2-256".to_string()),
+        "Mem-MirrorV2-512" => Ok("Mem-MirrorV2-512".to_string()),
+        "Mem-MirrorV2-Auto" => Ok("Mem-MirrorV2-Auto".to_string()),
         _ => Err(format!("Unknown legacy test function: '{}'", legacy_name))
     }
 }

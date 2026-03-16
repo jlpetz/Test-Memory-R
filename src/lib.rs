@@ -23,6 +23,8 @@ pub mod params; // Centralized parameter registry
 pub mod latency_tests; // Latency measurement tests
 pub mod bandwidth_tests; // Bandwidth measurement tests
 pub mod calibration; // Adaptive cache calibration
+pub mod pattern_gen; // v2 pattern generation (LCG, Mode 0/1/2)
+pub mod test_harness; // v2 zero-cost test orchestration harness
 
 // Common result type for the crate
 pub type Result<T> = std::result::Result<T, Box<dyn std::error::Error>>;

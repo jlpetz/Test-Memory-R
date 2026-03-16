@@ -14,7 +14,12 @@ use crate::tests::{
     simple_test_multi,
     cache_busting_multi,
     random_torture_multi,
-    stride_access_multi, bandwidth_saturation_multi, block_move_multi
+    stride_access_multi, bandwidth_saturation_multi, block_move_multi,
+    // v2 tests
+    simple_test_v2_multi,
+    mirror_move_v2_multi,
+    mirror_move_v2_128_multi, mirror_move_v2_256_multi, mirror_move_v2_512_multi,
+    mirror_move_v2_auto_multi,
 };
 use crate::latency_tests::{
     read_latency_multi, write_latency_multi, copy_latency_multi,  // Full latency tests with percentiles
@@ -835,6 +840,7 @@ fn resolve_auto_dispatch_test(test_name: &str) -> Option<(&'static str, TestFunc
     let (variant_suffix, test_function): (&str, TestFunction) = if is_x86_feature_detected!("avx512f") {
         ("512", match base_name {
             "Mem-Mirror" => TestFunction::MultiBlock(mirror_move_512_multi),
+            "Mem-MirrorV2-" => TestFunction::MultiBlock(mirror_move_v2_512_multi),
             "Mem-StuckBit" => TestFunction::MultiBlock(stuck_bit_test_512_multi),
             "Mem-Refresh" => TestFunction::MultiBlock(refresh_stable_512_multi),
             _ => return None,
@@ -842,6 +848,7 @@ fn resolve_auto_dispatch_test(test_name: &str) -> Option<(&'static str, TestFunc
     } else if is_x86_feature_detected!("avx2") {
         ("256", match base_name {
             "Mem-Mirror" => TestFunction::MultiBlock(mirror_move_256_multi),
+            "Mem-MirrorV2-" => TestFunction::MultiBlock(mirror_move_v2_256_multi),
             "Mem-StuckBit" => TestFunction::MultiBlock(stuck_bit_test_256_multi),
             "Mem-Refresh" => TestFunction::MultiBlock(refresh_stable_256_multi),
             _ => return None,
@@ -849,6 +856,7 @@ fn resolve_auto_dispatch_test(test_name: &str) -> Option<(&'static str, TestFunc
     } else if is_x86_feature_detected!("sse2") {
         ("128", match base_name {
             "Mem-Mirror" => TestFunction::MultiBlock(mirror_move_128_multi),
+            "Mem-MirrorV2-" => TestFunction::MultiBlock(mirror_move_v2_128_multi),
             "Mem-StuckBit" => TestFunction::MultiBlock(stuck_bit_test_128_multi),
             "Mem-Refresh" => TestFunction::MultiBlock(refresh_stable_128_multi),
             _ => return None,
@@ -857,6 +865,7 @@ fn resolve_auto_dispatch_test(test_name: &str) -> Option<(&'static str, TestFunc
         // Fallback to scalar version
         ("", match base_name {
             "Mem-Mirror" => TestFunction::MultiBlock(mirror_move_multi),
+            "Mem-MirrorV2-" => TestFunction::MultiBlock(mirror_move_v2_multi),
             "Mem-StuckBit" => TestFunction::MultiBlock(stuck_bit_test_multi),
             "Mem-Refresh" => TestFunction::MultiBlock(refresh_stable_multi),
             _ => return None,
@@ -869,6 +878,10 @@ fn resolve_auto_dispatch_test(test_name: &str) -> Option<(&'static str, TestFunc
         ("Mem-Mirror", "256") => "Mem-Mirror256",
         ("Mem-Mirror", "128") => "Mem-Mirror128",
         ("Mem-Mirror", "") => "Mem-Mirror",
+        ("Mem-MirrorV2-", "512") => "Mem-MirrorV2-512",
+        ("Mem-MirrorV2-", "256") => "Mem-MirrorV2-256",
+        ("Mem-MirrorV2-", "128") => "Mem-MirrorV2-128",
+        ("Mem-MirrorV2-", "") => "Mem-MirrorV2",
         ("Mem-StuckBit", "512") => "Mem-StuckBit512",
         ("Mem-StuckBit", "256") => "Mem-StuckBit256",
         ("Mem-StuckBit", "128") => "Mem-StuckBit128",
@@ -1184,6 +1197,89 @@ fn create_test_definitions(cache_info: &CacheInfo) -> Vec<TestDefinition> {
                 true
             ).with_timing(TestTiming::duration_only(20))
              .with_streams(1), "Mem-BlockMove")
+             .with_memory_type(None)
+        ),
+
+        // === v2 Tests — fixed PRNG, correct parameter interpretation, u64 MirrorMove ===
+
+        // Mem-SimpleV2: matches v1 Mem-Simple config (FullAllocation, 4MB chunk, 100cycles/30s)
+        (
+            "Mem-SimpleV2",
+            TestFunction::MultiBlock(simple_test_v2_multi),
+            validate_streams(TestMemoryConfig::new(
+                WindowMode::FullAllocation,
+                ChunkMode::FixedSize { size_mb: 4 },
+                false,
+                false
+            ).with_timing(TestTiming::hybrid(100, 30))
+             .with_streams(1), "Mem-SimpleV2")
+             .with_memory_type(None)
+        ),
+
+        // Mem-MirrorV2*: matches v1 Mem-Mirror config (FixedSize 64MB window, 4MB chunk, 10s)
+        (
+            "Mem-MirrorV2",
+            TestFunction::MultiBlock(mirror_move_v2_multi),
+            validate_streams(TestMemoryConfig::new(
+                WindowMode::FixedSize { size_mb: 64 },
+                ChunkMode::FixedSize { size_mb: 4 },
+                false,
+                true
+            ).with_timing(TestTiming::duration_only(10))
+             .with_streams(1), "Mem-MirrorV2")
+             .with_memory_type(None)
+        ),
+
+        // v2 SIMD configs match v1 counterparts for fair A/B comparison
+        (
+            "Mem-MirrorV2-128",
+            TestFunction::MultiBlock(mirror_move_v2_128_multi),
+            validate_streams(TestMemoryConfig::new(
+                WindowMode::FixedSize { size_mb: 64 },
+                ChunkMode::FixedSize { size_mb: 8 },
+                false,
+                true
+            ).with_timing(TestTiming::duration_only(10))
+             .with_streams(1), "Mem-MirrorV2-128")
+             .with_memory_type(None)
+        ),
+
+        (
+            "Mem-MirrorV2-256",
+            TestFunction::MultiBlock(mirror_move_v2_256_multi),
+            validate_streams(TestMemoryConfig::new(
+                WindowMode::FixedSize { size_mb: 128 },
+                ChunkMode::FixedSize { size_mb: 8 },
+                false,
+                true
+            ).with_timing(TestTiming::duration_only(10))
+             .with_streams(1), "Mem-MirrorV2-256")
+             .with_memory_type(None)
+        ),
+
+        (
+            "Mem-MirrorV2-512",
+            TestFunction::MultiBlock(mirror_move_v2_512_multi),
+            validate_streams(TestMemoryConfig::new(
+                WindowMode::FixedSize { size_mb: 256 },
+                ChunkMode::FixedSize { size_mb: 8 },
+                false,
+                true
+            ).with_timing(TestTiming::duration_only(10))
+             .with_streams(1), "Mem-MirrorV2-512")
+             .with_memory_type(None)
+        ),
+
+        (
+            "Mem-MirrorV2-Auto",
+            TestFunction::MultiBlock(mirror_move_v2_auto_multi),
+            validate_streams(TestMemoryConfig::new(
+                WindowMode::FixedSize { size_mb: 64 },
+                ChunkMode::FixedSize { size_mb: 8 },
+                false,
+                true
+            ).with_timing(TestTiming::duration_only(10))
+             .with_streams(1), "Mem-MirrorV2-Auto")
              .with_memory_type(None)
         ),
 

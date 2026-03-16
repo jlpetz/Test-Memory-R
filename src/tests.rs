@@ -492,6 +492,9 @@ pub struct TestMemoryConfig {
     pub error_check_interval: ErrorCheckInterval,  // Controls error checking frequency
     pub tsc_frequency_ghz: f64,     // TSC frequency detected at startup (for latency tests)
     pub thread_count: usize,        // Total thread count for cache-aware window calculations
+    /// v2: Correctly interpreted TM5 parameter context (stride, subblocks, page stride).
+    /// None for v1 tests or TMR-native configs that don't originate from TM5.
+    pub parameter_context: Option<crate::config::TestParameterContext>,
 }
 
 impl TestMemoryConfig {
@@ -510,6 +513,7 @@ impl TestMemoryConfig {
             error_check_interval: ErrorCheckInterval::PER_CHUNK,  // Default: check at chunk boundaries
             tsc_frequency_ghz: 0.0,  // MUST be set from detected CacheInfo before running latency tests
             thread_count: 1,  // Default to 1, should be set by runner for accurate cache calculations
+            parameter_context: None,  // v2: set by config loader for TM5-derived configs
         }
     }
 
@@ -799,6 +803,11 @@ impl TestMemoryConfig {
         self
     }
 
+    pub fn with_parameter_context(mut self, ctx: crate::config::TestParameterContext) -> Self {
+        self.parameter_context = Some(ctx);
+        self
+    }
+
     // Calculate window size with corrected logic
     pub fn calculate_window_size(&self, test_name: &str, allocated_size: usize) -> usize {
         match &self.window_mode {
@@ -922,6 +931,13 @@ impl TestMemoryConfig {
             "Mem-Stride" => 8,               // Basic u64 operations
             "Spd-Saturate" => 128,     // Large block operations
             "Mem-BlockMove" => 64,                  // Block operations
+            // v2 tests
+            "Mem-SimpleV2" => 8,                     // Basic u64 operations (scalar, auto-vectorized)
+            "Mem-MirrorV2" => 8,                     // u64 scalar mirror
+            "Mem-MirrorV2-128" => 16,                // u64x2 (128-bit)
+            "Mem-MirrorV2-256" => 32,                // u64x4 (256-bit)
+            "Mem-MirrorV2-512" => 64,                // u64x8 (512-bit)
+            "Mem-MirrorV2-Auto" => 64,               // Auto-dispatched, assume AVX-512 possible
             _ => panic!("Unknown test '{}' - add explicit SIMD requirement to calculate_minimum_chunk_size()", test_name),
         };
         
@@ -7408,22 +7424,962 @@ pub unsafe fn mirror_move_512_multi(
 /// Caller must ensure `ptr` is valid for reads/writes of `size` bytes.
 
 // ============================================================================
+// v2 Test Implementations — new functions alongside v1 for A/B comparison
+// ============================================================================
+//
+// Key differences from v1:
+// - Mode 2 PRNG is a real LCG chain (not a static seed)
+// - Parameter field correctly interpreted (stride, subblocks, page stride)
+// - MirrorMove uses u64 lanes instead of i32
+// - Uses run_test_v2 harness to eliminate boilerplate duplication
+// - Strided access support for SimpleTest
+
+use crate::pattern_gen;
+use crate::test_harness::{run_test_v2, run_test_v2_with_init, ChunkCtx};
+
+// ─── SimpleTest v2 ───────────────────────────────────────────────────────────
+
+/// SimpleTest v2 entry point — correct Mode 2 LCG + strided access.
+///
+/// # Safety
+/// Caller must ensure all blocks contain valid, aligned, writable memory.
+pub unsafe fn simple_test_v2_multi(
+    blocks: &[crate::runner::AllocationBlock],
+    thread_id: usize,
+    error_mode: ErrorMode,
+    timing: &TestTiming,
+    config: &TestMemoryConfig,
+    progress: Option<&TestProgress>,
+) -> TestStats {
+    // Determine stride from parameter_context (v2 correct interpretation)
+    let stride = config.parameter_context.as_ref()
+        .and_then(|ctx| ctx.stride_elements)
+        .unwrap_or(0);
+
+    // Determine pattern mode and params
+    let pattern_mode = config.pattern_mode.unwrap_or(0);
+    let param0 = config.pattern_param0.unwrap_or(0xDEADBEEFDEADBEEF);
+    let param1 = config.pattern_param1.unwrap_or(0xCAFEBABECAFEBABE);
+
+    if stride > 0 {
+        simple_test_v2_strided(blocks, thread_id, error_mode, timing, config, progress,
+                               pattern_mode, param0, param1, stride)
+    } else {
+        simple_test_v2_sequential(blocks, thread_id, error_mode, timing, config, progress,
+                                  pattern_mode, param0, param1)
+    }
+}
+
+/// Sequential SimpleTest v2 — Mode 0/1/2 with correct LCG.
+unsafe fn simple_test_v2_sequential(
+    blocks: &[crate::runner::AllocationBlock],
+    thread_id: usize,
+    error_mode: ErrorMode,
+    timing: &TestTiming,
+    config: &TestMemoryConfig,
+    progress: Option<&TestProgress>,
+    pattern_mode: u32,
+    param0: u64,
+    param1: u64,
+) -> TestStats {
+    let test_name = "Mem-SimpleV2";
+
+    match pattern_mode {
+        2 => {
+            // Mode 2: LCG — THE FIX. Uses real PRNG chain instead of static seed.
+            let multiplier = param0;
+            let addend = param1;
+            // Initial seed from thread_id for per-thread uniqueness
+            let initial_seed = (thread_id as u64).wrapping_mul(0x9E3779B97F4A7C15).wrapping_add(1);
+
+            run_test_v2(
+                blocks, thread_id, error_mode, timing, config, progress,
+                test_name, TestAction::WriteVerify,
+                // Init: first write (same as test_fn — ensures memory has valid patterns before cycle loop)
+                |ctx: &ChunkCtx| {
+                    let mut state = pattern_gen::lcg_next(
+                        initial_seed.wrapping_add(ctx.chunk_start as u64),
+                        multiplier, addend,
+                    );
+                    for idx in ctx.chunk_start..ctx.chunk_end {
+                        *ctx.ptr.add(idx) = state;
+                        state = pattern_gen::lcg_next(state, multiplier, addend);
+                    }
+                },
+                // Test: write LCG sequence (every cycle, matching v1 write+verify structure)
+                |ctx: &ChunkCtx| {
+                    let mut state = pattern_gen::lcg_next(
+                        initial_seed.wrapping_add(ctx.chunk_start as u64),
+                        multiplier, addend,
+                    );
+                    for idx in ctx.chunk_start..ctx.chunk_end {
+                        *ctx.ptr.add(idx) = state;
+                        state = pattern_gen::lcg_next(state, multiplier, addend);
+                    }
+                },
+                // Verify: regenerate LCG and compare (with error_check_interval for v1 parity)
+                |ctx: &ChunkCtx| -> u64 {
+                    let mut total_errors = 0u64;
+                    let mut state = pattern_gen::lcg_next(
+                        initial_seed.wrapping_add(ctx.chunk_start as u64),
+                        multiplier, addend,
+                    );
+                    match ctx.check_mask {
+                        Some(check_mask) => {
+                            let mut interval_errors = 0u64;
+                            let mut element_count = 0u32;
+                            for idx in ctx.chunk_start..ctx.chunk_end {
+                                let actual = *ctx.ptr.add(idx);
+                                if actual != state {
+                                    interval_errors += 1;
+                                    if interval_errors <= 10 {
+                                        log::error!("{}: error at idx {} - expected {:#x}, got {:#x}",
+                                                   test_name, idx, state, actual);
+                                    }
+                                }
+                                state = pattern_gen::lcg_next(state, multiplier, addend);
+                                element_count += 1;
+                                if (element_count & check_mask) == 0 {
+                                    if interval_errors > 0 {
+                                        total_errors += interval_errors;
+                                        interval_errors = 0;
+                                    }
+                                }
+                            }
+                            total_errors += interval_errors;
+                        }
+                        None => {
+                            for idx in ctx.chunk_start..ctx.chunk_end {
+                                let actual = *ctx.ptr.add(idx);
+                                if actual != state {
+                                    total_errors += 1;
+                                    if total_errors <= 10 {
+                                        log::error!("{}: error at idx {} - expected {:#x}, got {:#x}",
+                                                   test_name, idx, state, actual);
+                                    }
+                                }
+                                state = pattern_gen::lcg_next(state, multiplier, addend);
+                            }
+                        }
+                    }
+                    total_errors
+                },
+            )
+        }
+        1 => {
+            // Mode 1: inverted constant
+            let combined = param0 ^ param1;
+            run_test_v2(
+                blocks, thread_id, error_mode, timing, config, progress,
+                test_name, TestAction::WriteVerify,
+                // Init: first write
+                |ctx: &ChunkCtx| {
+                    for idx in ctx.chunk_start..ctx.chunk_end {
+                        *ctx.ptr.add(idx) = pattern_gen::pattern_mode1(idx as u64, combined);
+                    }
+                },
+                // Test: write patterns (every cycle)
+                |ctx: &ChunkCtx| {
+                    for idx in ctx.chunk_start..ctx.chunk_end {
+                        *ctx.ptr.add(idx) = pattern_gen::pattern_mode1(idx as u64, combined);
+                    }
+                },
+                // Verify: read and compare (with error_check_interval for v1 parity)
+                |ctx: &ChunkCtx| -> u64 {
+                    let mut total_errors = 0u64;
+                    match ctx.check_mask {
+                        Some(check_mask) => {
+                            let mut interval_errors = 0u64;
+                            let mut element_count = 0u32;
+                            for idx in ctx.chunk_start..ctx.chunk_end {
+                                let expected = pattern_gen::pattern_mode1(idx as u64, combined);
+                                let actual = *ctx.ptr.add(idx);
+                                if actual != expected {
+                                    interval_errors += 1;
+                                    if interval_errors <= 10 {
+                                        log::error!("{}: error at idx {} - expected {:#x}, got {:#x}",
+                                                   test_name, idx, expected, actual);
+                                    }
+                                }
+                                element_count += 1;
+                                if (element_count & check_mask) == 0 {
+                                    if interval_errors > 0 {
+                                        total_errors += interval_errors;
+                                        interval_errors = 0;
+                                    }
+                                }
+                            }
+                            total_errors += interval_errors;
+                        }
+                        None => {
+                            for idx in ctx.chunk_start..ctx.chunk_end {
+                                let expected = pattern_gen::pattern_mode1(idx as u64, combined);
+                                let actual = *ctx.ptr.add(idx);
+                                if actual != expected {
+                                    total_errors += 1;
+                                    if total_errors <= 10 {
+                                        log::error!("{}: error at idx {} - expected {:#x}, got {:#x}",
+                                                   test_name, idx, expected, actual);
+                                    }
+                                }
+                            }
+                        }
+                    }
+                    total_errors
+                },
+            )
+        }
+        _ => {
+            // Mode 0: address-derived (default)
+            let base = param0;
+            run_test_v2(
+                blocks, thread_id, error_mode, timing, config, progress,
+                test_name, TestAction::WriteVerify,
+                // Init: first write
+                |ctx: &ChunkCtx| {
+                    for idx in ctx.chunk_start..ctx.chunk_end {
+                        *ctx.ptr.add(idx) = pattern_gen::pattern_mode0(idx as u64, base);
+                    }
+                },
+                // Test: write patterns (every cycle)
+                |ctx: &ChunkCtx| {
+                    for idx in ctx.chunk_start..ctx.chunk_end {
+                        *ctx.ptr.add(idx) = pattern_gen::pattern_mode0(idx as u64, base);
+                    }
+                },
+                // Verify: read and compare (with error_check_interval for v1 parity)
+                |ctx: &ChunkCtx| -> u64 {
+                    let mut total_errors = 0u64;
+                    match ctx.check_mask {
+                        Some(check_mask) => {
+                            let mut interval_errors = 0u64;
+                            let mut element_count = 0u32;
+                            for idx in ctx.chunk_start..ctx.chunk_end {
+                                let expected = pattern_gen::pattern_mode0(idx as u64, base);
+                                let actual = *ctx.ptr.add(idx);
+                                if actual != expected {
+                                    interval_errors += 1;
+                                    if interval_errors <= 10 {
+                                        log::error!("{}: error at idx {} - expected {:#x}, got {:#x}",
+                                                   test_name, idx, expected, actual);
+                                    }
+                                }
+                                element_count += 1;
+                                if (element_count & check_mask) == 0 {
+                                    if interval_errors > 0 {
+                                        total_errors += interval_errors;
+                                        interval_errors = 0;
+                                    }
+                                }
+                            }
+                            total_errors += interval_errors;
+                        }
+                        None => {
+                            for idx in ctx.chunk_start..ctx.chunk_end {
+                                let expected = pattern_gen::pattern_mode0(idx as u64, base);
+                                let actual = *ctx.ptr.add(idx);
+                                if actual != expected {
+                                    total_errors += 1;
+                                    if total_errors <= 10 {
+                                        log::error!("{}: error at idx {} - expected {:#x}, got {:#x}",
+                                                   test_name, idx, expected, actual);
+                                    }
+                                }
+                            }
+                        }
+                    }
+                    total_errors
+                },
+            )
+        }
+    }
+}
+
+/// Strided SimpleTest v2 — tests DRAM row-stress patterns via strided access.
+///
+/// TM5's Parameter field specifies stride in cache lines. When Parameter=254:
+/// stride = 254 * 8 = 2032 u64 elements = 16,256 bytes per step.
+/// This forces access across different DRAM rows, stressing row buffer conflicts.
+unsafe fn simple_test_v2_strided(
+    blocks: &[crate::runner::AllocationBlock],
+    thread_id: usize,
+    error_mode: ErrorMode,
+    timing: &TestTiming,
+    config: &TestMemoryConfig,
+    progress: Option<&TestProgress>,
+    pattern_mode: u32,
+    param0: u64,
+    param1: u64,
+    stride: usize,
+) -> TestStats {
+    let test_name = "Mem-SimpleV2";
+    let base = match pattern_mode {
+        1 => param0 ^ param1,
+        _ => param0,
+    };
+
+    // For strided access, we use Mode 0 pattern (address-derived) since
+    // LCG chains don't compose well with non-sequential access.
+    // The stride itself provides the row-stress value, not the pattern.
+    run_test_v2(
+        blocks, thread_id, error_mode, timing, config, progress,
+        test_name, TestAction::WriteVerify,
+        // Init: first write with stride pattern covering all elements
+        |ctx: &ChunkCtx| {
+            let len = ctx.chunk_end - ctx.chunk_start;
+            if len == 0 { return; }
+            for sub_offset in 0..stride.min(len) {
+                let mut idx = ctx.chunk_start + sub_offset;
+                while idx < ctx.chunk_end {
+                    *ctx.ptr.add(idx) = pattern_gen::pattern_mode0(idx as u64, base);
+                    idx += stride;
+                }
+            }
+        },
+        // Test: write with stride (every cycle, matching v1 write+verify structure)
+        |ctx: &ChunkCtx| {
+            let len = ctx.chunk_end - ctx.chunk_start;
+            if len == 0 { return; }
+            for sub_offset in 0..stride.min(len) {
+                let mut idx = ctx.chunk_start + sub_offset;
+                while idx < ctx.chunk_end {
+                    *ctx.ptr.add(idx) = pattern_gen::pattern_mode0(idx as u64, base);
+                    idx += stride;
+                }
+            }
+        },
+        // Verify: same strided order (with error_check_interval for v1 parity)
+        |ctx: &ChunkCtx| -> u64 {
+            let mut total_errors = 0u64;
+            let len = ctx.chunk_end - ctx.chunk_start;
+            if len == 0 { return 0; }
+            match ctx.check_mask {
+                Some(check_mask) => {
+                    let mut interval_errors = 0u64;
+                    let mut element_count = 0u32;
+                    for sub_offset in 0..stride.min(len) {
+                        let mut idx = ctx.chunk_start + sub_offset;
+                        while idx < ctx.chunk_end {
+                            let expected = pattern_gen::pattern_mode0(idx as u64, base);
+                            let actual = *ctx.ptr.add(idx);
+                            if actual != expected {
+                                interval_errors += 1;
+                                if interval_errors <= 10 {
+                                    log::error!("{}: strided error at idx {} (stride={}) - expected {:#x}, got {:#x}",
+                                               test_name, idx, stride, expected, actual);
+                                }
+                            }
+                            element_count += 1;
+                            if (element_count & check_mask) == 0 {
+                                if interval_errors > 0 {
+                                    total_errors += interval_errors;
+                                    interval_errors = 0;
+                                }
+                            }
+                            idx += stride;
+                        }
+                    }
+                    total_errors += interval_errors;
+                }
+                None => {
+                    for sub_offset in 0..stride.min(len) {
+                        let mut idx = ctx.chunk_start + sub_offset;
+                        while idx < ctx.chunk_end {
+                            let expected = pattern_gen::pattern_mode0(idx as u64, base);
+                            let actual = *ctx.ptr.add(idx);
+                            if actual != expected {
+                                total_errors += 1;
+                                if total_errors <= 10 {
+                                    log::error!("{}: strided error at idx {} (stride={}) - expected {:#x}, got {:#x}",
+                                               test_name, idx, stride, expected, actual);
+                                }
+                            }
+                            idx += stride;
+                        }
+                    }
+                }
+            }
+            total_errors
+        },
+    )
+}
+
+// ─── MirrorMove v2 — u64 migration ──────────────────────────────────────────
+
+/// MirrorMove v2 scalar — u64 patterns with full 64-bit coverage.
+///
+/// # Safety
+/// Caller must ensure all blocks contain valid, aligned, writable memory.
+pub unsafe fn mirror_move_v2_multi(
+    blocks: &[crate::runner::AllocationBlock],
+    thread_id: usize,
+    error_mode: ErrorMode,
+    timing: &TestTiming,
+    config: &TestMemoryConfig,
+    progress: Option<&TestProgress>,
+) -> TestStats {
+    let test_name = "Mem-MirrorV2";
+    // Use upper 32 bits for thread separation (vs old << 16)
+    let thread_base = pattern_gen::mirror_thread_base(thread_id);
+
+    run_test_v2_with_init(
+        blocks, thread_id, error_mode, timing, config, progress,
+        test_name, TestAction::WriteWaitVerify,
+        5, // bytes multiplier: 2 mirrors (2R+2W) + verify (1R) = 5 passes
+        // Init: write forward patterns once (TM5: RS_Set fills before test sequence)
+        |ctx: &ChunkCtx| {
+            for i in ctx.chunk_start..ctx.chunk_end {
+                *ctx.ptr.add(i) = pattern_gen::mirror_pattern_u64(i as u64, thread_base);
+            }
+        },
+        // Test: round-trip mirror swap (TM5: single loop that crosses midpoint)
+        // Mirror then unmirror — data returns to original position each cycle
+        |ctx: &ChunkCtx| {
+            // First pass: mirror (reverse the chunk)
+            let mut lo = ctx.chunk_start;
+            let mut hi = ctx.chunk_end - 1;
+            while lo < hi {
+                let a = *ctx.ptr.add(lo);
+                let b = *ctx.ptr.add(hi);
+                *ctx.ptr.add(lo) = b;
+                *ctx.ptr.add(hi) = a;
+                lo += 1;
+                hi -= 1;
+            }
+            // Second pass: unmirror (restore original order)
+            lo = ctx.chunk_start;
+            hi = ctx.chunk_end - 1;
+            while lo < hi {
+                let a = *ctx.ptr.add(lo);
+                let b = *ctx.ptr.add(hi);
+                *ctx.ptr.add(lo) = b;
+                *ctx.ptr.add(hi) = a;
+                lo += 1;
+                hi -= 1;
+            }
+        },
+        // Verify: check original (forward) patterns + repair chunk on error
+        // (with error_check_interval for v1 parity)
+        |ctx: &ChunkCtx| -> u64 {
+            let mut total_errors = 0u64;
+            match ctx.check_mask {
+                Some(check_mask) => {
+                    let mut interval_errors = 0u64;
+                    let mut element_count = 0u32;
+                    for i in ctx.chunk_start..ctx.chunk_end {
+                        let expected = pattern_gen::mirror_pattern_u64(i as u64, thread_base);
+                        let actual = *ctx.ptr.add(i);
+                        if actual != expected {
+                            interval_errors += 1;
+                            if interval_errors <= 10 {
+                                log::error!("{}: error at idx {} - expected {:#x}, got {:#x}",
+                                           test_name, i, expected, actual);
+                            }
+                        }
+                        element_count += 1;
+                        if (element_count & check_mask) == 0 {
+                            if interval_errors > 0 {
+                                total_errors += interval_errors;
+                                interval_errors = 0;
+                            }
+                        }
+                    }
+                    total_errors += interval_errors;
+                }
+                None => {
+                    for i in ctx.chunk_start..ctx.chunk_end {
+                        let expected = pattern_gen::mirror_pattern_u64(i as u64, thread_base);
+                        let actual = *ctx.ptr.add(i);
+                        if actual != expected {
+                            total_errors += 1;
+                            if total_errors <= 10 {
+                                log::error!("{}: error at idx {} - expected {:#x}, got {:#x}",
+                                           test_name, i, expected, actual);
+                            }
+                        }
+                    }
+                }
+            }
+            // Repair this chunk if errors detected (TM5: RS_Set on failure)
+            if total_errors > 0 {
+                for i in ctx.chunk_start..ctx.chunk_end {
+                    *ctx.ptr.add(i) = pattern_gen::mirror_pattern_u64(i as u64, thread_base);
+                }
+            }
+            total_errors
+        },
+    )
+}
+
+/// MirrorMove v2 SSE2 (u64x2) — 128-bit SIMD with u64 lanes.
+///
+/// # Safety
+/// Caller must ensure all blocks contain valid, aligned, writable memory.
+pub unsafe fn mirror_move_v2_128_multi(
+    blocks: &[crate::runner::AllocationBlock],
+    thread_id: usize,
+    error_mode: ErrorMode,
+    timing: &TestTiming,
+    config: &TestMemoryConfig,
+    progress: Option<&TestProgress>,
+) -> TestStats {
+    if is_x86_feature_detected!("sse2") {
+        mirror_move_v2_128_impl(blocks, thread_id, error_mode, timing, config, progress)
+    } else {
+        mirror_move_v2_multi(blocks, thread_id, error_mode, timing, config, progress)
+    }
+}
+
+#[target_feature(enable = "sse2")]
+unsafe fn mirror_move_v2_128_impl(
+    blocks: &[crate::runner::AllocationBlock],
+    thread_id: usize,
+    error_mode: ErrorMode,
+    timing: &TestTiming,
+    config: &TestMemoryConfig,
+    progress: Option<&TestProgress>,
+) -> TestStats {
+    let test_name = "Mem-MirrorV2-128";
+    let thread_base = pattern_gen::mirror_thread_base(thread_id);
+    let simd_elements = 2usize; // u64x2
+
+    // Pre-compute SIMD constants for pattern generation.
+    const MIRROR_CONST: u64 = 0x0123456789ABCDEFu64;
+    let base_vec = u64x2::splat(thread_base);
+    let const_vec = u64x2::splat(MIRROR_CONST);
+    let lane_offsets = u64x2::from_array([0, 1]);
+    let step = u64x2::splat((simd_elements as u64).wrapping_mul(MIRROR_CONST));
+
+    run_test_v2_with_init(
+        blocks, thread_id, error_mode, timing, config, progress,
+        test_name, TestAction::WriteWaitVerify, 5,
+        // Init: SIMD pattern writes (u64x2 stores, 16 bytes per iteration)
+        |ctx: &ChunkCtx| {
+            let len = ctx.chunk_end - ctx.chunk_start;
+            debug_assert!(len % simd_elements == 0, "chunk not aligned to SIMD width");
+            let mut expected = (u64x2::splat(ctx.chunk_start as u64) + lane_offsets + base_vec) * const_vec;
+            for i in (ctx.chunk_start..ctx.chunk_end).step_by(simd_elements) {
+                *(ctx.ptr.add(i) as *mut u64x2) = expected;
+                expected += step;
+            }
+        },
+        // Test: round-trip mirror using SIMD loads/stores (u64x2 = 16 bytes per swap)
+        |ctx: &ChunkCtx| {
+            let simd_w = simd_elements;
+            let len = ctx.chunk_end - ctx.chunk_start;
+            let simd_pairs = len / (simd_w * 2);
+
+            // First pass: mirror via SIMD
+            let mut lo = ctx.chunk_start;
+            let mut hi = ctx.chunk_end - simd_w;
+            for _ in 0..simd_pairs {
+                let a = *(ctx.ptr.add(lo) as *const u64x2);
+                let b = *(ctx.ptr.add(hi) as *const u64x2);
+                *(ctx.ptr.add(lo) as *mut u64x2) = b;
+                *(ctx.ptr.add(hi) as *mut u64x2) = a;
+                lo += simd_w;
+                hi -= simd_w;
+            }
+
+            // Second pass: unmirror via SIMD (identical structure)
+            lo = ctx.chunk_start;
+            hi = ctx.chunk_end - simd_w;
+            for _ in 0..simd_pairs {
+                let a = *(ctx.ptr.add(lo) as *const u64x2);
+                let b = *(ctx.ptr.add(hi) as *const u64x2);
+                *(ctx.ptr.add(lo) as *mut u64x2) = b;
+                *(ctx.ptr.add(hi) as *mut u64x2) = a;
+                lo += simd_w;
+                hi -= simd_w;
+            }
+        },
+        // Verify: SIMD incrementing pattern (1 SIMD add per iteration, no scalar multiply)
+        |ctx: &ChunkCtx| -> u64 {
+            let len = ctx.chunk_end - ctx.chunk_start;
+            debug_assert!(len % simd_elements == 0, "chunk not aligned to SIMD width");
+            let mut total_errors = 0u64;
+
+            let mut expected = (u64x2::splat(ctx.chunk_start as u64) + lane_offsets + base_vec) * const_vec;
+
+            match ctx.check_mask {
+                Some(check_mask) => {
+                    let mut error_acc = u64x2::splat(0);
+                    let mut element_count = 0u32;
+                    for i in (ctx.chunk_start..ctx.chunk_end).step_by(simd_elements) {
+                        let actual = *(ctx.ptr.add(i) as *const u64x2);
+                        error_acc |= actual ^ expected;
+                        expected += step;
+                        element_count += 1;
+                        if (element_count & check_mask) == 0 {
+                            if error_acc.simd_ne(u64x2::splat(0)).any() {
+                                total_errors += 1;
+                                error_acc = u64x2::splat(0);
+                            }
+                        }
+                    }
+                    if error_acc.simd_ne(u64x2::splat(0)).any() {
+                        total_errors += 1;
+                    }
+                }
+                None => {
+                    let mut error_acc = u64x2::splat(0);
+                    for i in (ctx.chunk_start..ctx.chunk_end).step_by(simd_elements) {
+                        let actual = *(ctx.ptr.add(i) as *const u64x2);
+                        error_acc |= actual ^ expected;
+                        expected += step;
+                    }
+                    if error_acc.simd_ne(u64x2::splat(0)).any() {
+                        total_errors += 1;
+                    }
+                }
+            }
+
+            // Repair this chunk if errors detected
+            if total_errors > 0 {
+                let mut repair = (u64x2::splat(ctx.chunk_start as u64) + lane_offsets + base_vec) * const_vec;
+                for i in (ctx.chunk_start..ctx.chunk_end).step_by(simd_elements) {
+                    *(ctx.ptr.add(i) as *mut u64x2) = repair;
+                    repair += step;
+                }
+            }
+            total_errors
+        },
+    )
+}
+
+/// MirrorMove v2 AVX2 (u64x4) — 256-bit SIMD with u64 lanes.
+///
+/// # Safety
+/// Caller must ensure all blocks contain valid, aligned, writable memory.
+pub unsafe fn mirror_move_v2_256_multi(
+    blocks: &[crate::runner::AllocationBlock],
+    thread_id: usize,
+    error_mode: ErrorMode,
+    timing: &TestTiming,
+    config: &TestMemoryConfig,
+    progress: Option<&TestProgress>,
+) -> TestStats {
+    if is_x86_feature_detected!("avx2") {
+        mirror_move_v2_256_impl(blocks, thread_id, error_mode, timing, config, progress)
+    } else {
+        mirror_move_v2_128_multi(blocks, thread_id, error_mode, timing, config, progress)
+    }
+}
+
+#[target_feature(enable = "avx2")]
+unsafe fn mirror_move_v2_256_impl(
+    blocks: &[crate::runner::AllocationBlock],
+    thread_id: usize,
+    error_mode: ErrorMode,
+    timing: &TestTiming,
+    config: &TestMemoryConfig,
+    progress: Option<&TestProgress>,
+) -> TestStats {
+    let test_name = "Mem-MirrorV2-256";
+    let thread_base = pattern_gen::mirror_thread_base(thread_id);
+    let simd_elements = 4usize; // u64x4
+
+    // Pre-compute SIMD constants for pattern generation.
+    const MIRROR_CONST: u64 = 0x0123456789ABCDEFu64;
+    let base_vec = u64x4::splat(thread_base);
+    let const_vec = u64x4::splat(MIRROR_CONST);
+    let lane_offsets = u64x4::from_array([0, 1, 2, 3]);
+    let step = u64x4::splat((simd_elements as u64).wrapping_mul(MIRROR_CONST));
+
+    run_test_v2_with_init(
+        blocks, thread_id, error_mode, timing, config, progress,
+        test_name, TestAction::WriteWaitVerify, 5,
+        // Init: SIMD pattern writes (u64x4 stores, 32 bytes per iteration)
+        |ctx: &ChunkCtx| {
+            let len = ctx.chunk_end - ctx.chunk_start;
+            debug_assert!(len % simd_elements == 0, "chunk not aligned to SIMD width");
+            let mut expected = (u64x4::splat(ctx.chunk_start as u64) + lane_offsets + base_vec) * const_vec;
+            for i in (ctx.chunk_start..ctx.chunk_end).step_by(simd_elements) {
+                *(ctx.ptr.add(i) as *mut u64x4) = expected;
+                expected += step;
+            }
+        },
+        // Test: round-trip mirror using SIMD loads/stores (u64x4 = 32 bytes per swap)
+        |ctx: &ChunkCtx| {
+            let simd_w = simd_elements;
+            let len = ctx.chunk_end - ctx.chunk_start;
+            let simd_pairs = len / (simd_w * 2);
+
+            // First pass: mirror via SIMD
+            let mut lo = ctx.chunk_start;
+            let mut hi = ctx.chunk_end - simd_w;
+            for _ in 0..simd_pairs {
+                let a = *(ctx.ptr.add(lo) as *const u64x4);
+                let b = *(ctx.ptr.add(hi) as *const u64x4);
+                *(ctx.ptr.add(lo) as *mut u64x4) = b;
+                *(ctx.ptr.add(hi) as *mut u64x4) = a;
+                lo += simd_w;
+                hi -= simd_w;
+            }
+
+            // Second pass: unmirror via SIMD (identical structure)
+            lo = ctx.chunk_start;
+            hi = ctx.chunk_end - simd_w;
+            for _ in 0..simd_pairs {
+                let a = *(ctx.ptr.add(lo) as *const u64x4);
+                let b = *(ctx.ptr.add(hi) as *const u64x4);
+                *(ctx.ptr.add(lo) as *mut u64x4) = b;
+                *(ctx.ptr.add(hi) as *mut u64x4) = a;
+                lo += simd_w;
+                hi -= simd_w;
+            }
+        },
+        // Verify: SIMD incrementing pattern (1 SIMD add per iteration, no scalar multiply)
+        |ctx: &ChunkCtx| -> u64 {
+            let len = ctx.chunk_end - ctx.chunk_start;
+            debug_assert!(len % simd_elements == 0, "chunk not aligned to SIMD width");
+            let mut total_errors = 0u64;
+
+            let mut expected = (u64x4::splat(ctx.chunk_start as u64) + lane_offsets + base_vec) * const_vec;
+
+            match ctx.check_mask {
+                Some(check_mask) => {
+                    let mut error_acc = u64x4::splat(0);
+                    let mut element_count = 0u32;
+                    for i in (ctx.chunk_start..ctx.chunk_end).step_by(simd_elements) {
+                        let actual = *(ctx.ptr.add(i) as *const u64x4);
+                        error_acc |= actual ^ expected;
+                        expected += step;
+                        element_count += 1;
+                        if (element_count & check_mask) == 0 {
+                            if error_acc.simd_ne(u64x4::splat(0)).any() {
+                                total_errors += 1;
+                                error_acc = u64x4::splat(0);
+                            }
+                        }
+                    }
+                    if error_acc.simd_ne(u64x4::splat(0)).any() {
+                        total_errors += 1;
+                    }
+                }
+                None => {
+                    let mut error_acc = u64x4::splat(0);
+                    for i in (ctx.chunk_start..ctx.chunk_end).step_by(simd_elements) {
+                        let actual = *(ctx.ptr.add(i) as *const u64x4);
+                        error_acc |= actual ^ expected;
+                        expected += step;
+                    }
+                    if error_acc.simd_ne(u64x4::splat(0)).any() {
+                        total_errors += 1;
+                    }
+                }
+            }
+
+            // Repair this chunk if errors detected
+            if total_errors > 0 {
+                let mut repair = (u64x4::splat(ctx.chunk_start as u64) + lane_offsets + base_vec) * const_vec;
+                for i in (ctx.chunk_start..ctx.chunk_end).step_by(simd_elements) {
+                    *(ctx.ptr.add(i) as *mut u64x4) = repair;
+                    repair += step;
+                }
+            }
+            total_errors
+        },
+    )
+}
+
+/// MirrorMove v2 AVX-512 (u64x8) — 512-bit SIMD with u64 lanes.
+///
+/// # Safety
+/// Caller must ensure all blocks contain valid, aligned, writable memory.
+pub unsafe fn mirror_move_v2_512_multi(
+    blocks: &[crate::runner::AllocationBlock],
+    thread_id: usize,
+    error_mode: ErrorMode,
+    timing: &TestTiming,
+    config: &TestMemoryConfig,
+    progress: Option<&TestProgress>,
+) -> TestStats {
+    if is_x86_feature_detected!("avx512f") {
+        mirror_move_v2_512_impl(blocks, thread_id, error_mode, timing, config, progress)
+    } else {
+        mirror_move_v2_256_multi(blocks, thread_id, error_mode, timing, config, progress)
+    }
+}
+
+#[target_feature(enable = "avx512f")]
+unsafe fn mirror_move_v2_512_impl(
+    blocks: &[crate::runner::AllocationBlock],
+    thread_id: usize,
+    error_mode: ErrorMode,
+    timing: &TestTiming,
+    config: &TestMemoryConfig,
+    progress: Option<&TestProgress>,
+) -> TestStats {
+    let test_name = "Mem-MirrorV2-512";
+    let thread_base = pattern_gen::mirror_thread_base(thread_id);
+    let simd_elements = 8usize; // u64x8
+
+    // Pre-compute SIMD constants for pattern generation.
+    // Pattern: (element_idx + thread_base) * CONST — linear, so stride is constant.
+    const MIRROR_CONST: u64 = 0x0123456789ABCDEFu64;
+    let base_vec = u64x8::splat(thread_base);
+    let const_vec = u64x8::splat(MIRROR_CONST);
+    let lane_offsets = u64x8::from_array([0, 1, 2, 3, 4, 5, 6, 7]);
+    let step = u64x8::splat((simd_elements as u64).wrapping_mul(MIRROR_CONST));
+
+    run_test_v2_with_init(
+        blocks, thread_id, error_mode, timing, config, progress,
+        test_name, TestAction::WriteWaitVerify, 5,
+        // Init: SIMD pattern writes (u64x8 stores, 64 bytes per iteration)
+        |ctx: &ChunkCtx| {
+            let len = ctx.chunk_end - ctx.chunk_start;
+            debug_assert!(len % simd_elements == 0, "chunk not aligned to SIMD width");
+            let mut expected = (u64x8::splat(ctx.chunk_start as u64) + lane_offsets + base_vec) * const_vec;
+            for i in (ctx.chunk_start..ctx.chunk_end).step_by(simd_elements) {
+                *(ctx.ptr.add(i) as *mut u64x8) = expected;
+                expected += step;
+            }
+        },
+        // Test: round-trip mirror using SIMD loads/stores (u64x8 = 64 bytes per swap)
+        |ctx: &ChunkCtx| {
+            let simd_w = simd_elements;
+            let len = ctx.chunk_end - ctx.chunk_start;
+            let simd_pairs = len / (simd_w * 2);
+
+            // First pass: mirror via SIMD
+            let mut lo = ctx.chunk_start;
+            let mut hi = ctx.chunk_end - simd_w;
+            for _ in 0..simd_pairs {
+                let a = *(ctx.ptr.add(lo) as *const u64x8);
+                let b = *(ctx.ptr.add(hi) as *const u64x8);
+                *(ctx.ptr.add(lo) as *mut u64x8) = b;
+                *(ctx.ptr.add(hi) as *mut u64x8) = a;
+                lo += simd_w;
+                hi -= simd_w;
+            }
+
+            // Second pass: unmirror via SIMD (identical structure)
+            lo = ctx.chunk_start;
+            hi = ctx.chunk_end - simd_w;
+            for _ in 0..simd_pairs {
+                let a = *(ctx.ptr.add(lo) as *const u64x8);
+                let b = *(ctx.ptr.add(hi) as *const u64x8);
+                *(ctx.ptr.add(lo) as *mut u64x8) = b;
+                *(ctx.ptr.add(hi) as *mut u64x8) = a;
+                lo += simd_w;
+                hi -= simd_w;
+            }
+        },
+        // Verify: SIMD incrementing pattern (1 SIMD add per iteration, no scalar multiply)
+        |ctx: &ChunkCtx| -> u64 {
+            let len = ctx.chunk_end - ctx.chunk_start;
+            debug_assert!(len % simd_elements == 0, "chunk not aligned to SIMD width");
+            let mut total_errors = 0u64;
+
+            // Compute initial expected pattern for this chunk's start index
+            let mut expected = (u64x8::splat(ctx.chunk_start as u64) + lane_offsets + base_vec) * const_vec;
+
+            match ctx.check_mask {
+                Some(check_mask) => {
+                    let mut error_acc = u64x8::splat(0);
+                    let mut element_count = 0u32;
+                    for i in (ctx.chunk_start..ctx.chunk_end).step_by(simd_elements) {
+                        let actual = *(ctx.ptr.add(i) as *const u64x8);
+                        error_acc |= actual ^ expected;
+                        expected += step;
+                        element_count += 1;
+                        if (element_count & check_mask) == 0 {
+                            if !error_acc.simd_eq(u64x8::splat(0)).all() {
+                                total_errors += 1;
+                                error_acc = u64x8::splat(0);
+                            }
+                        }
+                    }
+                    if !error_acc.simd_eq(u64x8::splat(0)).all() {
+                        total_errors += 1;
+                    }
+                }
+                None => {
+                    let mut error_acc = u64x8::splat(0);
+                    for i in (ctx.chunk_start..ctx.chunk_end).step_by(simd_elements) {
+                        let actual = *(ctx.ptr.add(i) as *const u64x8);
+                        error_acc |= actual ^ expected;
+                        expected += step;
+                    }
+                    if !error_acc.simd_eq(u64x8::splat(0)).all() {
+                        total_errors += 1;
+                    }
+                }
+            }
+
+            // Repair this chunk if errors detected
+            if total_errors > 0 {
+                let mut repair = (u64x8::splat(ctx.chunk_start as u64) + lane_offsets + base_vec) * const_vec;
+                for i in (ctx.chunk_start..ctx.chunk_end).step_by(simd_elements) {
+                    *(ctx.ptr.add(i) as *mut u64x8) = repair;
+                    repair += step;
+                }
+            }
+            total_errors
+        },
+    )
+}
+
+// MirrorMove v2 auto-dispatch — selects best SIMD variant at runtime.
+crate::auto_dispatch!(
+    pub mirror_move_v2_auto_multi,
+    mirror_move_v2_multi,
+    mirror_move_v2_128_multi,
+    mirror_move_v2_256_multi,
+    mirror_move_v2_512_multi
+);
+
+// ============================================================================
 // Test Registry - Maps config test names to actual function implementations
 // ============================================================================
 
-/// Map test name (from config or CLI) to its function implementation
-/// This is the single source of truth for test name → function mapping
+/// Map test name (from config or CLI) to its function implementation.
+/// This is the single source of truth for test name → function mapping.
 pub fn get_test_function_by_name(name: &str) -> Option<crate::runner::TestFunction> {
+    use crate::runner::TestFunction;
 
     match name {
         // Stuck Bit Tests
+        "Mem-StuckBit" => Some(TestFunction::MultiBlock(stuck_bit_test_multi)),
+        "Mem-StuckBit128" => Some(TestFunction::MultiBlock(stuck_bit_test_128_multi)),
+        "Mem-StuckBit256" => Some(TestFunction::MultiBlock(stuck_bit_test_256_multi)),
+        "Mem-StuckBit512" => Some(TestFunction::MultiBlock(stuck_bit_test_512_multi)),
+        "Mem-StuckBitAuto" => Some(TestFunction::MultiBlock(stuck_bit_test_auto_multi)),
 
-        // Mirror Move Tests
+        // Mirror Move Tests (v1)
+        "Mem-Mirror" => Some(TestFunction::MultiBlock(mirror_move_multi)),
+        "Mem-Mirror128" => Some(TestFunction::MultiBlock(mirror_move_128_multi)),
+        "Mem-Mirror256" => Some(TestFunction::MultiBlock(mirror_move_256_multi)),
+        "Mem-Mirror512" => Some(TestFunction::MultiBlock(mirror_move_512_multi)),
+        "Mem-MirrorAuto" => Some(TestFunction::MultiBlock(mirror_move_auto_multi)),
 
-        // Simple Test
+        // Mirror Move Tests (v2 — u64 lanes)
+        "Mem-MirrorV2" => Some(TestFunction::MultiBlock(mirror_move_v2_multi)),
+        "Mem-MirrorV2-128" => Some(TestFunction::MultiBlock(mirror_move_v2_128_multi)),
+        "Mem-MirrorV2-256" => Some(TestFunction::MultiBlock(mirror_move_v2_256_multi)),
+        "Mem-MirrorV2-512" => Some(TestFunction::MultiBlock(mirror_move_v2_512_multi)),
+        "Mem-MirrorV2-Auto" => Some(TestFunction::MultiBlock(mirror_move_v2_auto_multi)),
 
+        // Simple Test (v1)
+        "Mem-Simple" => Some(TestFunction::MultiBlock(simple_test_multi)),
+
+        // Simple Test (v2 — correct LCG + strided access)
+        "Mem-SimpleV2" => Some(TestFunction::MultiBlock(simple_test_v2_multi)),
+
+        // Refresh Tests
+        "Mem-Refresh" => Some(TestFunction::MultiBlock(refresh_stable_multi)),
+        "Mem-Refresh128" => Some(TestFunction::MultiBlock(refresh_stable_128_multi)),
+        "Mem-Refresh256" => Some(TestFunction::MultiBlock(refresh_stable_256_multi)),
+        "Mem-Refresh512" => Some(TestFunction::MultiBlock(refresh_stable_512_multi)),
+        "Mem-RefreshAuto" => Some(TestFunction::MultiBlock(refresh_stable_auto_multi)),
 
         // Performance & Stress Tests
+        "Mem-CacheBust" => Some(TestFunction::MultiBlock(cache_busting_multi)),
+        "Mem-Random" => Some(TestFunction::MultiBlock(random_torture_multi)),
+        "Mem-Stride" => Some(TestFunction::MultiBlock(stride_access_multi)),
+        "Spd-Saturate" => Some(TestFunction::MultiBlock(bandwidth_saturation_multi)),
+        "Mem-BlockMove" => Some(TestFunction::MultiBlock(block_move_multi)),
 
         _ => None,
     }
