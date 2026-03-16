@@ -7806,6 +7806,338 @@ unsafe fn simple_test_v2_strided(
 
 // ─── MirrorMove v2 — u64 migration ──────────────────────────────────────────
 
+// ─── SwapMode: determines mirror access pattern from TM5 Parameter ──────────
+
+/// Mirror swap pattern, derived from config's TestParameterContext.
+///
+/// - `Full`: Mirror entire region as one piece (Parameter=0 or 1)
+/// - `Subblocks(n)`: Split into n subblocks, mirror each in lockstep (Parameter=2-4)
+/// - `PageStride(param)`: Strided access with interleave passes (MirrorMove128 Parameter=N)
+///   The `param` value is scaled by SIMD width at use site.
+#[derive(Debug, Clone, Copy)]
+enum SwapMode {
+    Full,
+    Subblocks(usize),
+    PageStride(usize),
+}
+
+impl SwapMode {
+    /// Derive swap mode from test config's parameter_context.
+    fn from_config(config: &TestMemoryConfig) -> Self {
+        if let Some(ctx) = &config.parameter_context {
+            if let Some(stride_bytes) = ctx.page_stride_bytes {
+                if stride_bytes > 0 {
+                    // Store raw parameter for SIMD-width scaling at use site.
+                    // TM5 formula: page_stride_bytes = (param+1)*128, so param = stride_bytes/128 - 1
+                    // But we have raw_parameter directly.
+                    return SwapMode::PageStride(ctx.raw_parameter as usize);
+                }
+            }
+            if let Some(sub_count) = ctx.subblock_count {
+                if sub_count >= 2 {
+                    return SwapMode::Subblocks(sub_count as usize);
+                }
+            }
+        }
+        SwapMode::Full
+    }
+}
+
+// ─── SIMD MirrorMove v2 Macros ──────────────────────────────────────────────
+//
+// These macros stamp out the Init, Swap, and Verify phases for any SIMD width.
+// Each macro is parameterized by SIMD type and element count. The master macro
+// `mirror_move_v2_impl!` combines them into a complete test function.
+
+/// SIMD Init: write incrementing pattern using SIMD stores.
+/// Pattern: (element_idx + thread_base) * MIRROR_CONST — linear, so stride is constant.
+macro_rules! mirror_init_simd {
+    ($simd_type:ty, $simd_w:expr, $ctx:expr,
+     $base_vec:expr, $const_vec:expr, $lane_offsets:expr, $step:expr) => {{
+        let _len = $ctx.chunk_end - $ctx.chunk_start;
+        debug_assert!(_len % $simd_w == 0, "chunk not aligned to SIMD width");
+        let mut expected = (<$simd_type>::splat($ctx.chunk_start as u64)
+            + $lane_offsets + $base_vec) * $const_vec;
+        for i in ($ctx.chunk_start..$ctx.chunk_end).step_by($simd_w) {
+            *($ctx.ptr.add(i) as *mut $simd_type) = expected;
+            expected += $step;
+        }
+    }}
+}
+
+/// SIMD Swap — subblocks mode: split chunk into N subblocks, mirror each in lockstep.
+/// N=1 is equivalent to full mirror. N=2-4 creates cross-region cache pressure.
+///
+/// Uses computed indices per iteration — LLVM strength-reduces the multiplies to
+/// additive increments internally while keeping all values in registers (no array spills).
+macro_rules! mirror_swap_subblocks {
+    ($simd_type:ty, $simd_w:expr, $ctx:expr, $n_sub:expr) => {{
+        let chunk_len = $ctx.chunk_end - $ctx.chunk_start;
+        let sub_size = chunk_len / $n_sub;
+        let pairs = sub_size / ($simd_w * 2);
+
+        // Forward mirror: all subblocks advance in lockstep
+        for iter in 0..pairs {
+            for sub in 0..$n_sub {
+                let lo = $ctx.chunk_start + sub * sub_size + iter * $simd_w;
+                let hi = $ctx.chunk_start + (sub + 1) * sub_size - (iter + 1) * $simd_w;
+                let a = *($ctx.ptr.add(lo) as *const $simd_type);
+                let b = *($ctx.ptr.add(hi) as *const $simd_type);
+                *($ctx.ptr.add(lo) as *mut $simd_type) = b;
+                *($ctx.ptr.add(hi) as *mut $simd_type) = a;
+            }
+        }
+        // Reverse mirror (unmirror): restore original positions
+        for iter in 0..pairs {
+            for sub in 0..$n_sub {
+                let lo = $ctx.chunk_start + sub * sub_size + iter * $simd_w;
+                let hi = $ctx.chunk_start + (sub + 1) * sub_size - (iter + 1) * $simd_w;
+                let a = *($ctx.ptr.add(lo) as *const $simd_type);
+                let b = *($ctx.ptr.add(hi) as *const $simd_type);
+                *($ctx.ptr.add(lo) as *mut $simd_type) = b;
+                *($ctx.ptr.add(hi) as *mut $simd_type) = a;
+            }
+        }
+    }}
+}
+
+/// SIMD Swap — page stride mode: strided mirror with interleave passes.
+/// `param` is the raw TM5 Parameter value. Stride scales with SIMD width:
+/// block = simd_w elements, stride = param * simd_w, total = (param+1) * simd_w.
+macro_rules! mirror_swap_strided {
+    ($simd_type:ty, $simd_w:expr, $ctx:expr, $param:expr) => {{
+        let block_elements: usize = $simd_w;
+        let stride_elements: usize = $param * block_elements;
+        let total_stride: usize = stride_elements + block_elements;
+        let interleave_passes: usize = if block_elements > 0 { total_stride / block_elements } else { 1 };
+
+        // Forward strided mirror
+        for pass in 0..interleave_passes {
+            let offset = pass * block_elements;
+            let mut lo = $ctx.chunk_start + offset;
+            let hi_base = $ctx.chunk_end;
+            // hi starts from the end, offset inward by the same pass offset
+            let mut hi = if hi_base >= block_elements + offset {
+                hi_base - block_elements - offset
+            } else {
+                continue;
+            };
+            while lo < hi {
+                let a = *($ctx.ptr.add(lo) as *const $simd_type);
+                let b = *($ctx.ptr.add(hi) as *const $simd_type);
+                *($ctx.ptr.add(lo) as *mut $simd_type) = b;
+                *($ctx.ptr.add(hi) as *mut $simd_type) = a;
+                lo += total_stride;
+                if hi < total_stride { break; }
+                hi -= total_stride;
+            }
+        }
+        // Reverse strided mirror (unmirror)
+        for pass in 0..interleave_passes {
+            let offset = pass * block_elements;
+            let mut lo = $ctx.chunk_start + offset;
+            let hi_base = $ctx.chunk_end;
+            let mut hi = if hi_base >= block_elements + offset {
+                hi_base - block_elements - offset
+            } else {
+                continue;
+            };
+            while lo < hi {
+                let a = *($ctx.ptr.add(lo) as *const $simd_type);
+                let b = *($ctx.ptr.add(hi) as *const $simd_type);
+                *($ctx.ptr.add(lo) as *mut $simd_type) = b;
+                *($ctx.ptr.add(hi) as *mut $simd_type) = a;
+                lo += total_stride;
+                if hi < total_stride { break; }
+                hi -= total_stride;
+            }
+        }
+    }}
+}
+
+/// SIMD Swap — full mirror: simple two-pointer walk, no arrays, no subblock overhead.
+/// Keeps lo/hi as scalar registers for optimal codegen on the most common path.
+macro_rules! mirror_swap_full {
+    ($simd_type:ty, $simd_w:expr, $ctx:expr) => {{
+        let mut lo = $ctx.chunk_start;
+        let mut hi = $ctx.chunk_end - $simd_w;
+
+        // Forward mirror
+        while lo < hi {
+            let a = *($ctx.ptr.add(lo) as *const $simd_type);
+            let b = *($ctx.ptr.add(hi) as *const $simd_type);
+            *($ctx.ptr.add(lo) as *mut $simd_type) = b;
+            *($ctx.ptr.add(hi) as *mut $simd_type) = a;
+            lo += $simd_w;
+            hi -= $simd_w;
+        }
+
+        // Reverse mirror (unmirror)
+        lo = $ctx.chunk_start;
+        hi = $ctx.chunk_end - $simd_w;
+        while lo < hi {
+            let a = *($ctx.ptr.add(lo) as *const $simd_type);
+            let b = *($ctx.ptr.add(hi) as *const $simd_type);
+            *($ctx.ptr.add(lo) as *mut $simd_type) = b;
+            *($ctx.ptr.add(hi) as *mut $simd_type) = a;
+            lo += $simd_w;
+            hi -= $simd_w;
+        }
+    }}
+}
+
+/// SIMD Swap dispatcher: routes to full, subblocks, or strided based on SwapMode.
+macro_rules! mirror_swap_simd {
+    ($simd_type:ty, $simd_w:expr, $ctx:expr, $swap_mode:expr) => {{
+        match $swap_mode {
+            SwapMode::Full => {
+                mirror_swap_full!($simd_type, $simd_w, $ctx);
+            }
+            SwapMode::Subblocks(n) => {
+                mirror_swap_subblocks!($simd_type, $simd_w, $ctx, n);
+            }
+            SwapMode::PageStride(param) => {
+                mirror_swap_strided!($simd_type, $simd_w, $ctx, param);
+            }
+        }
+    }}
+}
+
+/// SIMD Verify: incrementing pattern with XOR+OR accumulator.
+/// Unified error check: `.simd_ne(zero).any()` across all widths.
+///
+/// When check_mask is set, processes in fixed-size batches to eliminate
+/// per-iteration counter and branch from the hot loop. The inner batch
+/// loop has a known trip count, enabling better code generation.
+macro_rules! mirror_verify_simd {
+    ($simd_type:ty, $simd_w:expr, $ctx:expr,
+     $base_vec:expr, $const_vec:expr, $lane_offsets:expr, $step:expr, $zero:expr) => {{
+        let _len = $ctx.chunk_end - $ctx.chunk_start;
+        debug_assert!(_len % $simd_w == 0, "chunk not aligned to SIMD width");
+        let mut total_errors = 0u64;
+
+        let mut expected = (<$simd_type>::splat($ctx.chunk_start as u64)
+            + $lane_offsets + $base_vec) * $const_vec;
+
+        match $ctx.check_mask {
+            Some(check_mask) => {
+                // Batch processing: accumulate for exactly (check_mask+1) vectors,
+                // then check once. No per-iteration counter or branch.
+                let vectors_per_check = (check_mask as usize) + 1;
+                let batch_elements = vectors_per_check * $simd_w;
+                let mut pos = $ctx.chunk_start;
+                let aligned_end = $ctx.chunk_end - ($ctx.chunk_end - $ctx.chunk_start) % batch_elements;
+
+                // Main batched loop: known trip count per batch
+                while pos < aligned_end {
+                    let mut error_acc = $zero;
+                    let batch_end = pos + batch_elements;
+                    for i in (pos..batch_end).step_by($simd_w) {
+                        let actual = *($ctx.ptr.add(i) as *const $simd_type);
+                        error_acc |= actual ^ expected;
+                        expected += $step;
+                    }
+                    if error_acc.simd_ne($zero).any() {
+                        total_errors += 1;
+                    }
+                    pos = batch_end;
+                }
+
+                // Remainder (fewer than one full batch)
+                if pos < $ctx.chunk_end {
+                    let mut error_acc = $zero;
+                    for i in (pos..$ctx.chunk_end).step_by($simd_w) {
+                        let actual = *($ctx.ptr.add(i) as *const $simd_type);
+                        error_acc |= actual ^ expected;
+                        expected += $step;
+                    }
+                    if error_acc.simd_ne($zero).any() {
+                        total_errors += 1;
+                    }
+                }
+            }
+            None => {
+                let mut error_acc = $zero;
+                for i in ($ctx.chunk_start..$ctx.chunk_end).step_by($simd_w) {
+                    let actual = *($ctx.ptr.add(i) as *const $simd_type);
+                    error_acc |= actual ^ expected;
+                    expected += $step;
+                }
+                if error_acc.simd_ne($zero).any() {
+                    total_errors += 1;
+                }
+            }
+        }
+
+        // Repair on error: re-write correct pattern to this chunk
+        if total_errors > 0 {
+            mirror_init_simd!($simd_type, $simd_w, $ctx,
+                $base_vec, $const_vec, $lane_offsets, $step);
+        }
+        total_errors
+    }}
+}
+
+/// Master macro: stamps out a complete MirrorMove v2 impl function for a given SIMD width.
+/// Generates an `unsafe fn` with `#[target_feature]` that handles all swap modes.
+macro_rules! mirror_move_v2_impl {
+    (
+        $fn_name:ident,
+        $test_name:literal,
+        $simd_type:ty,
+        $simd_w:expr,
+        $lane_offsets:expr,
+        $target_feature:literal
+    ) => {
+        #[target_feature(enable = $target_feature)]
+        unsafe fn $fn_name(
+            blocks: &[crate::runner::AllocationBlock],
+            thread_id: usize,
+            error_mode: ErrorMode,
+            timing: &TestTiming,
+            config: &TestMemoryConfig,
+            progress: Option<&TestProgress>,
+        ) -> TestStats {
+            let test_name = $test_name;
+            let thread_base = pattern_gen::mirror_thread_base(thread_id);
+            let simd_elements: usize = $simd_w;
+
+            // Pre-compute SIMD constants for pattern generation.
+            const MIRROR_CONST: u64 = 0x0123456789ABCDEFu64;
+            let base_vec = <$simd_type>::splat(thread_base);
+            let const_vec = <$simd_type>::splat(MIRROR_CONST);
+            let lane_offsets = <$simd_type>::from_array($lane_offsets);
+            let step = <$simd_type>::splat((simd_elements as u64).wrapping_mul(MIRROR_CONST));
+            let zero = <$simd_type>::splat(0);
+
+            // Determine swap mode from config parameter
+            let swap_mode = SwapMode::from_config(config);
+
+            run_test_v2_with_init(
+                blocks, thread_id, error_mode, timing, config, progress,
+                test_name, TestAction::WriteWaitVerify, 5,
+
+                // Init: SIMD pattern writes
+                |ctx: &ChunkCtx| {
+                    mirror_init_simd!($simd_type, simd_elements, ctx,
+                        base_vec, const_vec, lane_offsets, step);
+                },
+
+                // Test: mirror swap (supports Full, Subblocks, PageStride)
+                |ctx: &ChunkCtx| {
+                    mirror_swap_simd!($simd_type, simd_elements, ctx, swap_mode);
+                },
+
+                // Verify: SIMD incrementing pattern + accumulator
+                |ctx: &ChunkCtx| -> u64 {
+                    mirror_verify_simd!($simd_type, simd_elements, ctx,
+                        base_vec, const_vec, lane_offsets, step, zero)
+                },
+            )
+        }
+    }
+}
+
 /// MirrorMove v2 scalar — u64 patterns with full 64-bit coverage.
 ///
 /// # Safety
@@ -7930,122 +8262,7 @@ pub unsafe fn mirror_move_v2_128_multi(
     }
 }
 
-#[target_feature(enable = "sse2")]
-unsafe fn mirror_move_v2_128_impl(
-    blocks: &[crate::runner::AllocationBlock],
-    thread_id: usize,
-    error_mode: ErrorMode,
-    timing: &TestTiming,
-    config: &TestMemoryConfig,
-    progress: Option<&TestProgress>,
-) -> TestStats {
-    let test_name = "Mem-MirrorV2-128";
-    let thread_base = pattern_gen::mirror_thread_base(thread_id);
-    let simd_elements = 2usize; // u64x2
-
-    // Pre-compute SIMD constants for pattern generation.
-    const MIRROR_CONST: u64 = 0x0123456789ABCDEFu64;
-    let base_vec = u64x2::splat(thread_base);
-    let const_vec = u64x2::splat(MIRROR_CONST);
-    let lane_offsets = u64x2::from_array([0, 1]);
-    let step = u64x2::splat((simd_elements as u64).wrapping_mul(MIRROR_CONST));
-
-    run_test_v2_with_init(
-        blocks, thread_id, error_mode, timing, config, progress,
-        test_name, TestAction::WriteWaitVerify, 5,
-        // Init: SIMD pattern writes (u64x2 stores, 16 bytes per iteration)
-        |ctx: &ChunkCtx| {
-            let len = ctx.chunk_end - ctx.chunk_start;
-            debug_assert!(len % simd_elements == 0, "chunk not aligned to SIMD width");
-            let mut expected = (u64x2::splat(ctx.chunk_start as u64) + lane_offsets + base_vec) * const_vec;
-            for i in (ctx.chunk_start..ctx.chunk_end).step_by(simd_elements) {
-                *(ctx.ptr.add(i) as *mut u64x2) = expected;
-                expected += step;
-            }
-        },
-        // Test: round-trip mirror using SIMD loads/stores (u64x2 = 16 bytes per swap)
-        |ctx: &ChunkCtx| {
-            let simd_w = simd_elements;
-            let len = ctx.chunk_end - ctx.chunk_start;
-            let simd_pairs = len / (simd_w * 2);
-
-            // First pass: mirror via SIMD
-            let mut lo = ctx.chunk_start;
-            let mut hi = ctx.chunk_end - simd_w;
-            for _ in 0..simd_pairs {
-                let a = *(ctx.ptr.add(lo) as *const u64x2);
-                let b = *(ctx.ptr.add(hi) as *const u64x2);
-                *(ctx.ptr.add(lo) as *mut u64x2) = b;
-                *(ctx.ptr.add(hi) as *mut u64x2) = a;
-                lo += simd_w;
-                hi -= simd_w;
-            }
-
-            // Second pass: unmirror via SIMD (identical structure)
-            lo = ctx.chunk_start;
-            hi = ctx.chunk_end - simd_w;
-            for _ in 0..simd_pairs {
-                let a = *(ctx.ptr.add(lo) as *const u64x2);
-                let b = *(ctx.ptr.add(hi) as *const u64x2);
-                *(ctx.ptr.add(lo) as *mut u64x2) = b;
-                *(ctx.ptr.add(hi) as *mut u64x2) = a;
-                lo += simd_w;
-                hi -= simd_w;
-            }
-        },
-        // Verify: SIMD incrementing pattern (1 SIMD add per iteration, no scalar multiply)
-        |ctx: &ChunkCtx| -> u64 {
-            let len = ctx.chunk_end - ctx.chunk_start;
-            debug_assert!(len % simd_elements == 0, "chunk not aligned to SIMD width");
-            let mut total_errors = 0u64;
-
-            let mut expected = (u64x2::splat(ctx.chunk_start as u64) + lane_offsets + base_vec) * const_vec;
-
-            match ctx.check_mask {
-                Some(check_mask) => {
-                    let mut error_acc = u64x2::splat(0);
-                    let mut element_count = 0u32;
-                    for i in (ctx.chunk_start..ctx.chunk_end).step_by(simd_elements) {
-                        let actual = *(ctx.ptr.add(i) as *const u64x2);
-                        error_acc |= actual ^ expected;
-                        expected += step;
-                        element_count += 1;
-                        if (element_count & check_mask) == 0 {
-                            if error_acc.simd_ne(u64x2::splat(0)).any() {
-                                total_errors += 1;
-                                error_acc = u64x2::splat(0);
-                            }
-                        }
-                    }
-                    if error_acc.simd_ne(u64x2::splat(0)).any() {
-                        total_errors += 1;
-                    }
-                }
-                None => {
-                    let mut error_acc = u64x2::splat(0);
-                    for i in (ctx.chunk_start..ctx.chunk_end).step_by(simd_elements) {
-                        let actual = *(ctx.ptr.add(i) as *const u64x2);
-                        error_acc |= actual ^ expected;
-                        expected += step;
-                    }
-                    if error_acc.simd_ne(u64x2::splat(0)).any() {
-                        total_errors += 1;
-                    }
-                }
-            }
-
-            // Repair this chunk if errors detected
-            if total_errors > 0 {
-                let mut repair = (u64x2::splat(ctx.chunk_start as u64) + lane_offsets + base_vec) * const_vec;
-                for i in (ctx.chunk_start..ctx.chunk_end).step_by(simd_elements) {
-                    *(ctx.ptr.add(i) as *mut u64x2) = repair;
-                    repair += step;
-                }
-            }
-            total_errors
-        },
-    )
-}
+mirror_move_v2_impl!(mirror_move_v2_128_impl, "Mem-MirrorV2-128", u64x2, 2, [0, 1], "sse2");
 
 /// MirrorMove v2 AVX2 (u64x4) — 256-bit SIMD with u64 lanes.
 ///
@@ -8066,122 +8283,7 @@ pub unsafe fn mirror_move_v2_256_multi(
     }
 }
 
-#[target_feature(enable = "avx2")]
-unsafe fn mirror_move_v2_256_impl(
-    blocks: &[crate::runner::AllocationBlock],
-    thread_id: usize,
-    error_mode: ErrorMode,
-    timing: &TestTiming,
-    config: &TestMemoryConfig,
-    progress: Option<&TestProgress>,
-) -> TestStats {
-    let test_name = "Mem-MirrorV2-256";
-    let thread_base = pattern_gen::mirror_thread_base(thread_id);
-    let simd_elements = 4usize; // u64x4
-
-    // Pre-compute SIMD constants for pattern generation.
-    const MIRROR_CONST: u64 = 0x0123456789ABCDEFu64;
-    let base_vec = u64x4::splat(thread_base);
-    let const_vec = u64x4::splat(MIRROR_CONST);
-    let lane_offsets = u64x4::from_array([0, 1, 2, 3]);
-    let step = u64x4::splat((simd_elements as u64).wrapping_mul(MIRROR_CONST));
-
-    run_test_v2_with_init(
-        blocks, thread_id, error_mode, timing, config, progress,
-        test_name, TestAction::WriteWaitVerify, 5,
-        // Init: SIMD pattern writes (u64x4 stores, 32 bytes per iteration)
-        |ctx: &ChunkCtx| {
-            let len = ctx.chunk_end - ctx.chunk_start;
-            debug_assert!(len % simd_elements == 0, "chunk not aligned to SIMD width");
-            let mut expected = (u64x4::splat(ctx.chunk_start as u64) + lane_offsets + base_vec) * const_vec;
-            for i in (ctx.chunk_start..ctx.chunk_end).step_by(simd_elements) {
-                *(ctx.ptr.add(i) as *mut u64x4) = expected;
-                expected += step;
-            }
-        },
-        // Test: round-trip mirror using SIMD loads/stores (u64x4 = 32 bytes per swap)
-        |ctx: &ChunkCtx| {
-            let simd_w = simd_elements;
-            let len = ctx.chunk_end - ctx.chunk_start;
-            let simd_pairs = len / (simd_w * 2);
-
-            // First pass: mirror via SIMD
-            let mut lo = ctx.chunk_start;
-            let mut hi = ctx.chunk_end - simd_w;
-            for _ in 0..simd_pairs {
-                let a = *(ctx.ptr.add(lo) as *const u64x4);
-                let b = *(ctx.ptr.add(hi) as *const u64x4);
-                *(ctx.ptr.add(lo) as *mut u64x4) = b;
-                *(ctx.ptr.add(hi) as *mut u64x4) = a;
-                lo += simd_w;
-                hi -= simd_w;
-            }
-
-            // Second pass: unmirror via SIMD (identical structure)
-            lo = ctx.chunk_start;
-            hi = ctx.chunk_end - simd_w;
-            for _ in 0..simd_pairs {
-                let a = *(ctx.ptr.add(lo) as *const u64x4);
-                let b = *(ctx.ptr.add(hi) as *const u64x4);
-                *(ctx.ptr.add(lo) as *mut u64x4) = b;
-                *(ctx.ptr.add(hi) as *mut u64x4) = a;
-                lo += simd_w;
-                hi -= simd_w;
-            }
-        },
-        // Verify: SIMD incrementing pattern (1 SIMD add per iteration, no scalar multiply)
-        |ctx: &ChunkCtx| -> u64 {
-            let len = ctx.chunk_end - ctx.chunk_start;
-            debug_assert!(len % simd_elements == 0, "chunk not aligned to SIMD width");
-            let mut total_errors = 0u64;
-
-            let mut expected = (u64x4::splat(ctx.chunk_start as u64) + lane_offsets + base_vec) * const_vec;
-
-            match ctx.check_mask {
-                Some(check_mask) => {
-                    let mut error_acc = u64x4::splat(0);
-                    let mut element_count = 0u32;
-                    for i in (ctx.chunk_start..ctx.chunk_end).step_by(simd_elements) {
-                        let actual = *(ctx.ptr.add(i) as *const u64x4);
-                        error_acc |= actual ^ expected;
-                        expected += step;
-                        element_count += 1;
-                        if (element_count & check_mask) == 0 {
-                            if error_acc.simd_ne(u64x4::splat(0)).any() {
-                                total_errors += 1;
-                                error_acc = u64x4::splat(0);
-                            }
-                        }
-                    }
-                    if error_acc.simd_ne(u64x4::splat(0)).any() {
-                        total_errors += 1;
-                    }
-                }
-                None => {
-                    let mut error_acc = u64x4::splat(0);
-                    for i in (ctx.chunk_start..ctx.chunk_end).step_by(simd_elements) {
-                        let actual = *(ctx.ptr.add(i) as *const u64x4);
-                        error_acc |= actual ^ expected;
-                        expected += step;
-                    }
-                    if error_acc.simd_ne(u64x4::splat(0)).any() {
-                        total_errors += 1;
-                    }
-                }
-            }
-
-            // Repair this chunk if errors detected
-            if total_errors > 0 {
-                let mut repair = (u64x4::splat(ctx.chunk_start as u64) + lane_offsets + base_vec) * const_vec;
-                for i in (ctx.chunk_start..ctx.chunk_end).step_by(simd_elements) {
-                    *(ctx.ptr.add(i) as *mut u64x4) = repair;
-                    repair += step;
-                }
-            }
-            total_errors
-        },
-    )
-}
+mirror_move_v2_impl!(mirror_move_v2_256_impl, "Mem-MirrorV2-256", u64x4, 4, [0, 1, 2, 3], "avx2");
 
 /// MirrorMove v2 AVX-512 (u64x8) — 512-bit SIMD with u64 lanes.
 ///
@@ -8202,124 +8304,7 @@ pub unsafe fn mirror_move_v2_512_multi(
     }
 }
 
-#[target_feature(enable = "avx512f")]
-unsafe fn mirror_move_v2_512_impl(
-    blocks: &[crate::runner::AllocationBlock],
-    thread_id: usize,
-    error_mode: ErrorMode,
-    timing: &TestTiming,
-    config: &TestMemoryConfig,
-    progress: Option<&TestProgress>,
-) -> TestStats {
-    let test_name = "Mem-MirrorV2-512";
-    let thread_base = pattern_gen::mirror_thread_base(thread_id);
-    let simd_elements = 8usize; // u64x8
-
-    // Pre-compute SIMD constants for pattern generation.
-    // Pattern: (element_idx + thread_base) * CONST — linear, so stride is constant.
-    const MIRROR_CONST: u64 = 0x0123456789ABCDEFu64;
-    let base_vec = u64x8::splat(thread_base);
-    let const_vec = u64x8::splat(MIRROR_CONST);
-    let lane_offsets = u64x8::from_array([0, 1, 2, 3, 4, 5, 6, 7]);
-    let step = u64x8::splat((simd_elements as u64).wrapping_mul(MIRROR_CONST));
-
-    run_test_v2_with_init(
-        blocks, thread_id, error_mode, timing, config, progress,
-        test_name, TestAction::WriteWaitVerify, 5,
-        // Init: SIMD pattern writes (u64x8 stores, 64 bytes per iteration)
-        |ctx: &ChunkCtx| {
-            let len = ctx.chunk_end - ctx.chunk_start;
-            debug_assert!(len % simd_elements == 0, "chunk not aligned to SIMD width");
-            let mut expected = (u64x8::splat(ctx.chunk_start as u64) + lane_offsets + base_vec) * const_vec;
-            for i in (ctx.chunk_start..ctx.chunk_end).step_by(simd_elements) {
-                *(ctx.ptr.add(i) as *mut u64x8) = expected;
-                expected += step;
-            }
-        },
-        // Test: round-trip mirror using SIMD loads/stores (u64x8 = 64 bytes per swap)
-        |ctx: &ChunkCtx| {
-            let simd_w = simd_elements;
-            let len = ctx.chunk_end - ctx.chunk_start;
-            let simd_pairs = len / (simd_w * 2);
-
-            // First pass: mirror via SIMD
-            let mut lo = ctx.chunk_start;
-            let mut hi = ctx.chunk_end - simd_w;
-            for _ in 0..simd_pairs {
-                let a = *(ctx.ptr.add(lo) as *const u64x8);
-                let b = *(ctx.ptr.add(hi) as *const u64x8);
-                *(ctx.ptr.add(lo) as *mut u64x8) = b;
-                *(ctx.ptr.add(hi) as *mut u64x8) = a;
-                lo += simd_w;
-                hi -= simd_w;
-            }
-
-            // Second pass: unmirror via SIMD (identical structure)
-            lo = ctx.chunk_start;
-            hi = ctx.chunk_end - simd_w;
-            for _ in 0..simd_pairs {
-                let a = *(ctx.ptr.add(lo) as *const u64x8);
-                let b = *(ctx.ptr.add(hi) as *const u64x8);
-                *(ctx.ptr.add(lo) as *mut u64x8) = b;
-                *(ctx.ptr.add(hi) as *mut u64x8) = a;
-                lo += simd_w;
-                hi -= simd_w;
-            }
-        },
-        // Verify: SIMD incrementing pattern (1 SIMD add per iteration, no scalar multiply)
-        |ctx: &ChunkCtx| -> u64 {
-            let len = ctx.chunk_end - ctx.chunk_start;
-            debug_assert!(len % simd_elements == 0, "chunk not aligned to SIMD width");
-            let mut total_errors = 0u64;
-
-            // Compute initial expected pattern for this chunk's start index
-            let mut expected = (u64x8::splat(ctx.chunk_start as u64) + lane_offsets + base_vec) * const_vec;
-
-            match ctx.check_mask {
-                Some(check_mask) => {
-                    let mut error_acc = u64x8::splat(0);
-                    let mut element_count = 0u32;
-                    for i in (ctx.chunk_start..ctx.chunk_end).step_by(simd_elements) {
-                        let actual = *(ctx.ptr.add(i) as *const u64x8);
-                        error_acc |= actual ^ expected;
-                        expected += step;
-                        element_count += 1;
-                        if (element_count & check_mask) == 0 {
-                            if !error_acc.simd_eq(u64x8::splat(0)).all() {
-                                total_errors += 1;
-                                error_acc = u64x8::splat(0);
-                            }
-                        }
-                    }
-                    if !error_acc.simd_eq(u64x8::splat(0)).all() {
-                        total_errors += 1;
-                    }
-                }
-                None => {
-                    let mut error_acc = u64x8::splat(0);
-                    for i in (ctx.chunk_start..ctx.chunk_end).step_by(simd_elements) {
-                        let actual = *(ctx.ptr.add(i) as *const u64x8);
-                        error_acc |= actual ^ expected;
-                        expected += step;
-                    }
-                    if !error_acc.simd_eq(u64x8::splat(0)).all() {
-                        total_errors += 1;
-                    }
-                }
-            }
-
-            // Repair this chunk if errors detected
-            if total_errors > 0 {
-                let mut repair = (u64x8::splat(ctx.chunk_start as u64) + lane_offsets + base_vec) * const_vec;
-                for i in (ctx.chunk_start..ctx.chunk_end).step_by(simd_elements) {
-                    *(ctx.ptr.add(i) as *mut u64x8) = repair;
-                    repair += step;
-                }
-            }
-            total_errors
-        },
-    )
-}
+mirror_move_v2_impl!(mirror_move_v2_512_impl, "Mem-MirrorV2-512", u64x8, 8, [0, 1, 2, 3, 4, 5, 6, 7], "avx512f");
 
 // MirrorMove v2 auto-dispatch — selects best SIMD variant at runtime.
 crate::auto_dispatch!(

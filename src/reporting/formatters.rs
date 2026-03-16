@@ -1187,6 +1187,7 @@ impl ReportFormatter for DefaultFormatter {
             .add_header("Test Name", ColumnAlignment::Left)
             .add_header("Timing", ColumnAlignment::Right)
             .add_header("Streams", ColumnAlignment::Right)
+            .add_header("Parameter", ColumnAlignment::Left)
             .add_header("Window Mode", ColumnAlignment::Left)
             .add_header("Block Mode", ColumnAlignment::Left)
             .add_header("Flags", ColumnAlignment::Left);
@@ -1197,6 +1198,7 @@ impl ReportFormatter for DefaultFormatter {
                 test.name.clone(),
                 test.timing.clone(),
                 test.streams.to_string(),
+                test.parameter.clone(),
                 test.window_mode.clone(),
                 test.chunk_mode.clone(),
                 test.flags.join(", "),

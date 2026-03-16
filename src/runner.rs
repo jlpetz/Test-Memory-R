@@ -147,7 +147,7 @@ pub fn run_tests_with_layout_and_timing(
     config: Option<&crate::config::ModernConfig>,
     cache_info: &CacheInfo,
 ) -> bool {
-    run_tests_with_layout_and_timing_filtered(layout, error_mode, suite_timing, runtime_config, config, None, None, cache_info)
+    run_tests_with_layout_and_timing_filtered(layout, error_mode, suite_timing, runtime_config, config, None, None, None, cache_info)
 }
 
 pub fn run_tests_with_layout_and_timing_filtered(
@@ -158,6 +158,7 @@ pub fn run_tests_with_layout_and_timing_filtered(
     config: Option<&crate::config::ModernConfig>,
     single_test_filter: Option<&str>,
     streams_override: Option<usize>,
+    parameter_override: Option<&str>,
     cache_info: &CacheInfo,
 ) -> bool {
     setup_signal_handler();
@@ -342,6 +343,37 @@ pub fn run_tests_with_layout_and_timing_filtered(
         log::info!("🔧 Applying CLI streams override: {} stream(s)", streams);
         for def in test_definitions.iter_mut() {
             def.config.streams = streams as u32;
+        }
+    }
+
+    // Apply parameter override if provided (CLI parameter overrides subblock/stride config)
+    if let Some(param_str) = parameter_override {
+        log::info!("🔧 Applying CLI parameter override: {}", param_str);
+        for def in test_definitions.iter_mut() {
+            match param_str {
+                "none" => {
+                    def.config.parameter_context = None;
+                }
+                s if s.starts_with("subblocks:") => {
+                    let n: u32 = s.split(':').nth(1).unwrap_or("2").parse().unwrap_or(2);
+                    def.config.parameter_context = Some(crate::config::TestParameterContext {
+                        raw_parameter: n,
+                        stride_elements: None,
+                        subblock_count: Some(n),
+                        page_stride_bytes: None,
+                    });
+                }
+                s if s.starts_with("stride:") => {
+                    let n: u32 = s.split(':').nth(1).unwrap_or("1").parse().unwrap_or(1);
+                    def.config.parameter_context = Some(crate::config::TestParameterContext {
+                        raw_parameter: n,
+                        stride_elements: None,
+                        subblock_count: None,
+                        page_stride_bytes: Some((n as usize + 1) * 128),
+                    });
+                }
+                _ => {}
+            }
         }
     }
 
@@ -678,8 +710,24 @@ fn execute_test_cycle(
             let formatter = DefaultFormatter::new();
             let window_str = formatter.format_window_mode_with_size(&test_def.config.window_mode, cache_info, thread_count);
             let chunk_str = formatter.format_chunk_mode(&test_def.config.chunk_mode);
-            println!("   Config: streams={}, window={}, chunk={}, locality={}",
+            let param_str = match &test_def.config.parameter_context {
+                Some(c) => {
+                    if let Some(stride) = c.page_stride_bytes {
+                        if stride > 0 { format!("PageStride({})", c.raw_parameter) }
+                        else { "-".to_string() }
+                    } else if let Some(sub) = c.subblock_count {
+                        if sub >= 2 { format!("Subblocks({})", sub) }
+                        else { "-".to_string() }
+                    } else if let Some(stride_el) = c.stride_elements {
+                        if stride_el > 0 { format!("Stride({})", stride_el) }
+                        else { "-".to_string() }
+                    } else { "-".to_string() }
+                }
+                None => "-".to_string(),
+            };
+            println!("   Config: streams={}, parameter={}, window={}, chunk={}, locality={}",
                      test_def.config.streams,
+                     param_str,
                      window_str,
                      chunk_str,
                      if test_def.config.requires_locality { "yes" } else { "no" });
@@ -1253,7 +1301,13 @@ fn create_test_definitions(cache_info: &CacheInfo) -> Vec<TestDefinition> {
                 false,
                 true
             ).with_timing(TestTiming::duration_only(10))
-             .with_streams(1), "Mem-MirrorV2-256")
+             .with_streams(2)
+             .with_parameter_context(crate::config::TestParameterContext {
+                 raw_parameter: 2,
+                 stride_elements: None,
+                 subblock_count: Some(2),
+                 page_stride_bytes: None,
+             }), "Mem-MirrorV2-256")
              .with_memory_type(None)
         ),
 
@@ -1266,7 +1320,13 @@ fn create_test_definitions(cache_info: &CacheInfo) -> Vec<TestDefinition> {
                 false,
                 true
             ).with_timing(TestTiming::duration_only(10))
-             .with_streams(1), "Mem-MirrorV2-512")
+             .with_streams(4)
+             .with_parameter_context(crate::config::TestParameterContext {
+                 raw_parameter: 4,
+                 stride_elements: None,
+                 subblock_count: Some(4),
+                 page_stride_bytes: None,
+             }), "Mem-MirrorV2-512")
              .with_memory_type(None)
         ),
 

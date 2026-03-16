@@ -892,6 +892,13 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
 		None
 	};
 
+	// Extract parameter override if provided (overrides subblock/stride config)
+	let parameter_override = if params::has_param(&validated_params, "parameter") {
+		Some(params::get_string(&validated_params, "parameter", "none"))
+	} else {
+		None
+	};
+
     let start_time = std::time::Instant::now();
 
     // Unified test execution path - works for bandwidth tests, latency tests, or mixed
@@ -907,6 +914,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         config_opt.as_ref(),
         final_test_filter,
         streams_override,
+        parameter_override.as_deref(),
         cache_info,
     );
 

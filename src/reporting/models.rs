@@ -424,6 +424,7 @@ pub struct TestConfigurationEntry {
     pub name: String,
     pub timing: String,
     pub streams: usize,
+    pub parameter: String,
     pub window_mode: String,
     pub chunk_mode: String,
     pub flags: Vec<String>,

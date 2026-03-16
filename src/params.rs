@@ -214,6 +214,39 @@ impl ParamRegistry {
             },
         });
 
+        params.insert("parameter", ParamDef {
+            key: "parameter",
+            is_flag: false,
+            default: ParamValue::None,
+            help: "Override test parameter context (none, subblocks:N, stride:N)",
+            example: "parameter=none",
+            can_override_config: true,
+            parser: |v| {
+                match v.to_lowercase().as_str() {
+                    "none" | "off" | "-" => Ok(ParamValue::String("none".to_string())),
+                    s if s.starts_with("subblocks:") || s.starts_with("sub:") => {
+                        let num_str = s.split(':').nth(1).unwrap_or("0");
+                        let n = num_str.parse::<u32>()
+                            .map_err(|_| format!("Invalid subblock count '{}'. Use subblocks:2 or subblocks:4", num_str))?;
+                        if n < 2 || n > 4 {
+                            return Err(format!("Subblock count must be 2-4, got {}", n));
+                        }
+                        Ok(ParamValue::String(format!("subblocks:{}", n)))
+                    }
+                    s if s.starts_with("stride:") || s.starts_with("pagestride:") => {
+                        let num_str = s.split(':').nth(1).unwrap_or("0");
+                        let n = num_str.parse::<u32>()
+                            .map_err(|_| format!("Invalid stride parameter '{}'. Use stride:510", num_str))?;
+                        if n == 0 {
+                            return Err("Stride parameter must be > 0".to_string());
+                        }
+                        Ok(ParamValue::String(format!("stride:{}", n)))
+                    }
+                    _ => Err(format!("Invalid parameter '{}'. Valid: none, subblocks:N (2-4), stride:N", v)),
+                }
+            },
+        });
+
         // Driver-related parameters
         flags.insert("--driver-chunking", ParamDef {
             key: "--driver-chunking",
@@ -462,6 +495,9 @@ pub fn print_help(program_name: &str) {
     println!("    plan-pagesize-pref                #   Plan-based: page type priority (default)");
     println!("    plan-blocksize-pref               #   Plan-based: block size priority");
     println!("  errors=halt                         # Error handling (log/halt/panic)");
+    println!("  parameter=none                      # Clear test parameter (no subblocks/stride)");
+    println!("  parameter=subblocks:4               # Override: 4 subblocks for MirrorMove");
+    println!("  parameter=stride:510                # Override: page stride for MirrorMove");
     println!("  topology=windowsv2                  # CPU detection method (auto/windows/windowsv2/cpuid)");
     println!("  --driver-chunking                   # Enable driver-side memory chunking");
     println!("  --batch-remap                       # Enable batch remapping mode");

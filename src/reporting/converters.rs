@@ -7,6 +7,30 @@ use crate::progress::{TestSummary, CycleStats};
 use crate::constants::{PageType, bytes_to_gib_f64};
 use std::collections::HashSet;
 
+fn format_parameter_context(ctx: &Option<crate::config::TestParameterContext>) -> String {
+    match ctx {
+        Some(c) => {
+            if let Some(stride) = c.page_stride_bytes {
+                if stride > 0 {
+                    return format!("PageStride({})", c.raw_parameter);
+                }
+            }
+            if let Some(sub) = c.subblock_count {
+                if sub >= 2 {
+                    return format!("Subblocks({})", sub);
+                }
+            }
+            if let Some(stride_el) = c.stride_elements {
+                if stride_el > 0 {
+                    return format!("Stride({})", stride_el);
+                }
+            }
+            "-".to_string()
+        }
+        None => "-".to_string(),
+    }
+}
+
 impl From<&SystemMemoryInfo> for MemoryInfo {
     fn from(info: &SystemMemoryInfo) -> Self {
         MemoryInfo {
@@ -188,11 +212,14 @@ pub fn create_test_configuration_report(
             flags.push("Locality".to_string());
         }
 
+        let parameter = format_parameter_context(&config.parameter_context);
+
         TestConfigurationEntry {
             number: i + 1,
             name: name.to_string(),
             timing,
             streams: config.streams as usize,
+            parameter,
             window_mode,
             chunk_mode,
             flags,
@@ -247,11 +274,14 @@ pub fn create_test_configuration_report_v2(
             flags.push("Misaligned".to_string());
         }
 
+        let parameter = format_parameter_context(&config.parameter_context);
+
         TestConfigurationEntry {
             number: i + 1,
             name: test_def.display_name.clone(),  // Use display_name to get _A suffix
             timing,
             streams: config.streams as usize,
+            parameter,
             window_mode,
             chunk_mode,
             flags,
