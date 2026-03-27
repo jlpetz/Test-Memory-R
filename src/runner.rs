@@ -11,15 +11,19 @@ use crate::tests::{
     stuck_bit_test_auto_multi,
     refresh_stable_multi, refresh_stable_128_multi, refresh_stable_256_multi, refresh_stable_512_multi,
     refresh_stable_auto_multi,
-    simple_test_multi,
+    simple_test_nt_128_multi, simple_test_nt_256_multi, simple_test_nt_512_multi,
+    simple_test_nt_auto_multi,
     cache_busting_multi,
     random_torture_multi,
     stride_access_multi, bandwidth_saturation_multi, block_move_multi,
     // v2 tests
     simple_test_v2_multi,
+    simple_test_v2_128_multi, simple_test_v2_256_multi, simple_test_v2_512_multi,
+    simple_test_v2_auto_multi,
     mirror_move_v2_multi,
     mirror_move_v2_128_multi, mirror_move_v2_256_multi, mirror_move_v2_512_multi,
     mirror_move_v2_auto_multi,
+    bench_init_multi,
 };
 use crate::latency_tests::{
     read_latency_multi, write_latency_multi, copy_latency_multi,  // Full latency tests with percentiles
@@ -147,7 +151,7 @@ pub fn run_tests_with_layout_and_timing(
     config: Option<&crate::config::ModernConfig>,
     cache_info: &CacheInfo,
 ) -> bool {
-    run_tests_with_layout_and_timing_filtered(layout, error_mode, suite_timing, runtime_config, config, None, None, None, cache_info)
+    run_tests_with_layout_and_timing_filtered(layout, error_mode, suite_timing, runtime_config, config, None, None, None, None, None, None, None, cache_info)
 }
 
 pub fn run_tests_with_layout_and_timing_filtered(
@@ -159,6 +163,10 @@ pub fn run_tests_with_layout_and_timing_filtered(
     single_test_filter: Option<&str>,
     streams_override: Option<usize>,
     parameter_override: Option<&str>,
+    pattern_mode_override: Option<u32>,
+    verify_reps_override: Option<u32>,
+    test_reps_override: Option<u32>,
+    wrc_override: Option<u32>,
     cache_info: &CacheInfo,
 ) -> bool {
     setup_signal_handler();
@@ -358,6 +366,7 @@ pub fn run_tests_with_layout_and_timing_filtered(
                     let n: u32 = s.split(':').nth(1).unwrap_or("2").parse().unwrap_or(2);
                     def.config.parameter_context = Some(crate::config::TestParameterContext {
                         raw_parameter: n,
+                        stride_cachelines: None,
                         stride_elements: None,
                         subblock_count: Some(n),
                         page_stride_bytes: None,
@@ -367,6 +376,7 @@ pub fn run_tests_with_layout_and_timing_filtered(
                     let n: u32 = s.split(':').nth(1).unwrap_or("1").parse().unwrap_or(1);
                     def.config.parameter_context = Some(crate::config::TestParameterContext {
                         raw_parameter: n,
+                        stride_cachelines: None,
                         stride_elements: None,
                         subblock_count: None,
                         page_stride_bytes: Some((n as usize + 1) * 128),
@@ -374,6 +384,38 @@ pub fn run_tests_with_layout_and_timing_filtered(
                 }
                 _ => {}
             }
+        }
+    }
+
+    // Apply pattern-mode override if provided
+    if let Some(mode) = pattern_mode_override {
+        log::info!("Applying CLI pattern-mode override: {}", mode);
+        for def in test_definitions.iter_mut() {
+            def.config.pattern_mode = Some(mode);
+        }
+    }
+
+    // Apply verify-reps override if provided
+    if let Some(reps) = verify_reps_override {
+        log::info!("Applying CLI verify-reps override: {}", reps);
+        for def in test_definitions.iter_mut() {
+            def.config.verify_reps = reps;
+        }
+    }
+
+    // Apply test-reps override if provided
+    if let Some(reps) = test_reps_override {
+        log::info!("Applying CLI test-reps override: {}", reps);
+        for def in test_definitions.iter_mut() {
+            def.config.test_reps = reps;
+        }
+    }
+
+    // Apply write-read-cycles override if provided
+    if let Some(wrc) = wrc_override {
+        log::info!("Applying CLI write-read-cycles override: {}", wrc);
+        for def in test_definitions.iter_mut() {
+            def.config.write_read_cycles = wrc;
         }
     }
 
@@ -407,9 +449,11 @@ pub fn run_tests_with_layout_and_timing_filtered(
     // Create thread pool with pre-allocated blocks
     let thread_count = allocated_blocks.len();
 
-    // Set thread_count on all test configs for cache-aware window calculations
+    // Set thread_count and cache_line_bytes on all test configs
+    let cache_info = crate::tests::get_cache_info();
     for test_def in &mut test_definitions {
         test_def.config.thread_count = thread_count;
+        test_def.config.cache_line_bytes = cache_info.cache_line_size;
     }
 
     let pinning_config = CpuPinningConfig::default();
@@ -725,12 +769,31 @@ fn execute_test_cycle(
                 }
                 None => "-".to_string(),
             };
-            println!("   Config: streams={}, parameter={}, window={}, chunk={}, locality={}",
+            let mode_str = match test_def.config.pattern_mode {
+                Some(m) => match m {
+                    0 => "TM5-0".to_string(),
+                    1 => "TM5-1".to_string(),
+                    2 => "TM5-2".to_string(),
+                    10 => "TMR-0".to_string(),
+                    11 => "TMR-1".to_string(),
+                    12 => "TMR-2".to_string(),
+                    other => format!("{}", other),
+                },
+                None => "-".to_string(),
+            };
+            let reps_str = if test_def.config.test_reps != 1 || test_def.config.verify_reps != 1 || test_def.config.write_read_cycles != 1 {
+                format!(", test_reps={}, verify_reps={}, wrc={}", test_def.config.test_reps, test_def.config.verify_reps, test_def.config.write_read_cycles)
+            } else {
+                String::new()
+            };
+            println!("   Config: streams={}, parameter={}, mode={}, window={}, chunk={}, locality={}{}",
                      test_def.config.streams,
                      param_str,
+                     mode_str,
                      window_str,
                      chunk_str,
-                     if test_def.config.requires_locality { "yes" } else { "no" });
+                     if test_def.config.requires_locality { "yes" } else { "no" },
+                     reps_str);
         }
 
         // Update progress tracker with test completion
@@ -889,6 +952,8 @@ fn resolve_auto_dispatch_test(test_name: &str) -> Option<(&'static str, TestFunc
         ("512", match base_name {
             "Mem-Mirror" => TestFunction::MultiBlock(mirror_move_512_multi),
             "Mem-MirrorV2-" => TestFunction::MultiBlock(mirror_move_v2_512_multi),
+            "Mem-SimpleV2-" => TestFunction::MultiBlock(simple_test_v2_512_multi),
+            "Mem-SimpleNT-" => TestFunction::MultiBlock(simple_test_nt_512_multi),
             "Mem-StuckBit" => TestFunction::MultiBlock(stuck_bit_test_512_multi),
             "Mem-Refresh" => TestFunction::MultiBlock(refresh_stable_512_multi),
             _ => return None,
@@ -897,6 +962,8 @@ fn resolve_auto_dispatch_test(test_name: &str) -> Option<(&'static str, TestFunc
         ("256", match base_name {
             "Mem-Mirror" => TestFunction::MultiBlock(mirror_move_256_multi),
             "Mem-MirrorV2-" => TestFunction::MultiBlock(mirror_move_v2_256_multi),
+            "Mem-SimpleV2-" => TestFunction::MultiBlock(simple_test_v2_256_multi),
+            "Mem-SimpleNT-" => TestFunction::MultiBlock(simple_test_nt_256_multi),
             "Mem-StuckBit" => TestFunction::MultiBlock(stuck_bit_test_256_multi),
             "Mem-Refresh" => TestFunction::MultiBlock(refresh_stable_256_multi),
             _ => return None,
@@ -905,15 +972,19 @@ fn resolve_auto_dispatch_test(test_name: &str) -> Option<(&'static str, TestFunc
         ("128", match base_name {
             "Mem-Mirror" => TestFunction::MultiBlock(mirror_move_128_multi),
             "Mem-MirrorV2-" => TestFunction::MultiBlock(mirror_move_v2_128_multi),
+            "Mem-SimpleV2-" => TestFunction::MultiBlock(simple_test_v2_128_multi),
+            "Mem-SimpleNT-" => TestFunction::MultiBlock(simple_test_nt_128_multi),
             "Mem-StuckBit" => TestFunction::MultiBlock(stuck_bit_test_128_multi),
             "Mem-Refresh" => TestFunction::MultiBlock(refresh_stable_128_multi),
             _ => return None,
         })
     } else {
-        // Fallback to scalar version
+        // Fallback to scalar version (NT has no scalar — use SSE2 which is always available on x86-64)
         ("", match base_name {
             "Mem-Mirror" => TestFunction::MultiBlock(mirror_move_multi),
             "Mem-MirrorV2-" => TestFunction::MultiBlock(mirror_move_v2_multi),
+            "Mem-SimpleV2-" => TestFunction::MultiBlock(simple_test_v2_multi),
+            "Mem-SimpleNT-" => TestFunction::MultiBlock(simple_test_nt_128_multi),
             "Mem-StuckBit" => TestFunction::MultiBlock(stuck_bit_test_multi),
             "Mem-Refresh" => TestFunction::MultiBlock(refresh_stable_multi),
             _ => return None,
@@ -930,6 +1001,14 @@ fn resolve_auto_dispatch_test(test_name: &str) -> Option<(&'static str, TestFunc
         ("Mem-MirrorV2-", "256") => "Mem-MirrorV2-256",
         ("Mem-MirrorV2-", "128") => "Mem-MirrorV2-128",
         ("Mem-MirrorV2-", "") => "Mem-MirrorV2",
+        ("Mem-SimpleV2-", "512") => "Mem-SimpleV2-512",
+        ("Mem-SimpleV2-", "256") => "Mem-SimpleV2-256",
+        ("Mem-SimpleV2-", "128") => "Mem-SimpleV2-128",
+        ("Mem-SimpleV2-", "") => "Mem-SimpleV2",
+        ("Mem-SimpleNT-", "512") => "Mem-SimpleNT-512",
+        ("Mem-SimpleNT-", "256") => "Mem-SimpleNT-256",
+        ("Mem-SimpleNT-", "128") => "Mem-SimpleNT-128",
+        ("Mem-SimpleNT-", "") => "Mem-SimpleNT-128",
         ("Mem-StuckBit", "512") => "Mem-StuckBit512",
         ("Mem-StuckBit", "256") => "Mem-StuckBit256",
         ("Mem-StuckBit", "128") => "Mem-StuckBit128",
@@ -1100,17 +1179,56 @@ fn create_test_definitions(cache_info: &CacheInfo) -> Vec<TestDefinition> {
              .with_memory_type(None)
         ),
         
-        // === Simple test with configurable patterns ===
+        // === SimpleTest NT (non-temporal stores) — bandwidth comparison ===
         (
-            "Mem-Simple",
-            TestFunction::MultiBlock(simple_test_multi),
+            "Mem-SimpleNT-128",
+            TestFunction::MultiBlock(simple_test_nt_128_multi),
             validate_streams(TestMemoryConfig::new(
                 WindowMode::FullAllocation,
                 ChunkMode::FixedSize { size_mb: 4 },
                 false,
                 false
             ).with_timing(TestTiming::hybrid(100, 30))
-             .with_streams(1), "Mem-Simple")
+             .with_streams(1), "Mem-SimpleNT-128")
+             .with_memory_type(None)
+        ),
+
+        (
+            "Mem-SimpleNT-256",
+            TestFunction::MultiBlock(simple_test_nt_256_multi),
+            validate_streams(TestMemoryConfig::new(
+                WindowMode::FullAllocation,
+                ChunkMode::FixedSize { size_mb: 4 },
+                false,
+                false
+            ).with_timing(TestTiming::hybrid(100, 30))
+             .with_streams(1), "Mem-SimpleNT-256")
+             .with_memory_type(None)
+        ),
+
+        (
+            "Mem-SimpleNT-512",
+            TestFunction::MultiBlock(simple_test_nt_512_multi),
+            validate_streams(TestMemoryConfig::new(
+                WindowMode::FullAllocation,
+                ChunkMode::FixedSize { size_mb: 4 },
+                false,
+                false
+            ).with_timing(TestTiming::hybrid(100, 30))
+             .with_streams(1), "Mem-SimpleNT-512")
+             .with_memory_type(None)
+        ),
+
+        (
+            "Mem-SimpleNT-Auto",
+            TestFunction::MultiBlock(simple_test_nt_auto_multi),
+            validate_streams(TestMemoryConfig::new(
+                WindowMode::FullAllocation,
+                ChunkMode::FixedSize { size_mb: 4 },
+                false,
+                false
+            ).with_timing(TestTiming::hybrid(100, 30))
+             .with_streams(1), "Mem-SimpleNT-Auto")
              .with_memory_type(None)
         ),
 
@@ -1264,6 +1382,59 @@ fn create_test_definitions(cache_info: &CacheInfo) -> Vec<TestDefinition> {
              .with_memory_type(None)
         ),
 
+        // Mem-SimpleV2 SIMD: matches scalar config for A/B comparison
+        (
+            "Mem-SimpleV2-128",
+            TestFunction::MultiBlock(simple_test_v2_128_multi),
+            validate_streams(TestMemoryConfig::new(
+                WindowMode::FullAllocation,
+                ChunkMode::FixedSize { size_mb: 4 },
+                false,
+                false
+            ).with_timing(TestTiming::hybrid(100, 30))
+             .with_streams(1), "Mem-SimpleV2-128")
+             .with_memory_type(None)
+        ),
+
+        (
+            "Mem-SimpleV2-256",
+            TestFunction::MultiBlock(simple_test_v2_256_multi),
+            validate_streams(TestMemoryConfig::new(
+                WindowMode::FullAllocation,
+                ChunkMode::FixedSize { size_mb: 4 },
+                false,
+                false
+            ).with_timing(TestTiming::hybrid(100, 30))
+             .with_streams(1), "Mem-SimpleV2-256")
+             .with_memory_type(None)
+        ),
+
+        (
+            "Mem-SimpleV2-512",
+            TestFunction::MultiBlock(simple_test_v2_512_multi),
+            validate_streams(TestMemoryConfig::new(
+                WindowMode::FullAllocation,
+                ChunkMode::FixedSize { size_mb: 4 },
+                false,
+                false
+            ).with_timing(TestTiming::hybrid(100, 30))
+             .with_streams(1), "Mem-SimpleV2-512")
+             .with_memory_type(None)
+        ),
+
+        (
+            "Mem-SimpleV2-Auto",
+            TestFunction::MultiBlock(simple_test_v2_auto_multi),
+            validate_streams(TestMemoryConfig::new(
+                WindowMode::FullAllocation,
+                ChunkMode::FixedSize { size_mb: 4 },
+                false,
+                false
+            ).with_timing(TestTiming::hybrid(100, 30))
+             .with_streams(1), "Mem-SimpleV2-Auto")
+             .with_memory_type(None)
+        ),
+
         // Mem-MirrorV2*: matches v1 Mem-Mirror config (FixedSize 64MB window, 4MB chunk, 10s)
         (
             "Mem-MirrorV2",
@@ -1304,6 +1475,7 @@ fn create_test_definitions(cache_info: &CacheInfo) -> Vec<TestDefinition> {
              .with_streams(2)
              .with_parameter_context(crate::config::TestParameterContext {
                  raw_parameter: 2,
+                 stride_cachelines: None,
                  stride_elements: None,
                  subblock_count: Some(2),
                  page_stride_bytes: None,
@@ -1323,6 +1495,7 @@ fn create_test_definitions(cache_info: &CacheInfo) -> Vec<TestDefinition> {
              .with_streams(4)
              .with_parameter_context(crate::config::TestParameterContext {
                  raw_parameter: 4,
+                 stride_cachelines: None,
                  stride_elements: None,
                  subblock_count: Some(4),
                  page_stride_bytes: None,
@@ -1340,6 +1513,82 @@ fn create_test_definitions(cache_info: &CacheInfo) -> Vec<TestDefinition> {
                 true
             ).with_timing(TestTiming::duration_only(10))
              .with_streams(1), "Mem-MirrorV2-Auto")
+             .with_memory_type(None)
+        ),
+
+        // === Bench-Init: Pattern Generation Throughput Benchmarks ===
+        // test=Bench-Init-* runs all 6, test=Bench-Init-TM5-* runs TM5-faithful only
+        // Uses FullAllocation, 4MB chunk, 10 cycles — measures raw write throughput per mode
+        (
+            "Bench-Init-TM5-0",
+            TestFunction::MultiBlock(bench_init_multi),
+            validate_streams(TestMemoryConfig::new(
+                WindowMode::FullAllocation,
+                ChunkMode::FixedSize { size_mb: 4 },
+                false, false
+            ).with_timing(TestTiming::cycles_only(10))
+             .with_pattern_config(Some(0), None, None)
+             .with_streams(1), "Bench-Init-TM5-0")
+             .with_memory_type(None)
+        ),
+        (
+            "Bench-Init-TM5-1",
+            TestFunction::MultiBlock(bench_init_multi),
+            validate_streams(TestMemoryConfig::new(
+                WindowMode::FullAllocation,
+                ChunkMode::FixedSize { size_mb: 4 },
+                false, false
+            ).with_timing(TestTiming::cycles_only(10))
+             .with_pattern_config(Some(1), None, None)
+             .with_streams(1), "Bench-Init-TM5-1")
+             .with_memory_type(None)
+        ),
+        (
+            "Bench-Init-TM5-2",
+            TestFunction::MultiBlock(bench_init_multi),
+            validate_streams(TestMemoryConfig::new(
+                WindowMode::FullAllocation,
+                ChunkMode::FixedSize { size_mb: 4 },
+                false, false
+            ).with_timing(TestTiming::cycles_only(10))
+             .with_pattern_config(Some(2), Some(0x5DEECE66D), Some(0xB))
+             .with_streams(1), "Bench-Init-TM5-2")
+             .with_memory_type(None)
+        ),
+        (
+            "Bench-Init-TMR-0",
+            TestFunction::MultiBlock(bench_init_multi),
+            validate_streams(TestMemoryConfig::new(
+                WindowMode::FullAllocation,
+                ChunkMode::FixedSize { size_mb: 4 },
+                false, false
+            ).with_timing(TestTiming::cycles_only(10))
+             .with_pattern_config(Some(10), None, None)
+             .with_streams(1), "Bench-Init-TMR-0")
+             .with_memory_type(None)
+        ),
+        (
+            "Bench-Init-TMR-1",
+            TestFunction::MultiBlock(bench_init_multi),
+            validate_streams(TestMemoryConfig::new(
+                WindowMode::FullAllocation,
+                ChunkMode::FixedSize { size_mb: 4 },
+                false, false
+            ).with_timing(TestTiming::cycles_only(10))
+             .with_pattern_config(Some(11), None, None)
+             .with_streams(1), "Bench-Init-TMR-1")
+             .with_memory_type(None)
+        ),
+        (
+            "Bench-Init-TMR-2",
+            TestFunction::MultiBlock(bench_init_multi),
+            validate_streams(TestMemoryConfig::new(
+                WindowMode::FullAllocation,
+                ChunkMode::FixedSize { size_mb: 4 },
+                false, false
+            ).with_timing(TestTiming::cycles_only(10))
+             .with_pattern_config(Some(12), Some(0xDEADBEEFDEADBEEF), Some(0xCAFEBABECAFEBABE))
+             .with_streams(1), "Bench-Init-TMR-2")
              .with_memory_type(None)
         ),
 

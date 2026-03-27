@@ -899,6 +899,34 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
 		None
 	};
 
+	// Extract pattern-mode override if provided
+	let pattern_mode_override = if params::has_param(&validated_params, "pattern-mode") {
+		Some(params::get_u32(&validated_params, "pattern-mode", 0))
+	} else {
+		None
+	};
+
+	// Extract verify-reps override if provided
+	let verify_reps_override = if params::has_param(&validated_params, "verify-reps") {
+		Some(params::get_u32(&validated_params, "verify-reps", 1))
+	} else {
+		None
+	};
+
+	// Extract test-reps override if provided
+	let test_reps_override = if params::has_param(&validated_params, "test-reps") {
+		Some(params::get_u32(&validated_params, "test-reps", 1))
+	} else {
+		None
+	};
+
+	// Extract write-read-cycles override if provided
+	let wrc_override = if params::has_param(&validated_params, "write-read-cycles") {
+		Some(params::get_u32(&validated_params, "write-read-cycles", 1))
+	} else {
+		None
+	};
+
     let start_time = std::time::Instant::now();
 
     // Unified test execution path - works for bandwidth tests, latency tests, or mixed
@@ -915,6 +943,10 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         final_test_filter,
         streams_override,
         parameter_override.as_deref(),
+        pattern_mode_override,
+        verify_reps_override,
+        test_reps_override,
+        wrc_override,
         cache_info,
     );
 

@@ -31,7 +31,12 @@ pub struct LegacyMetadata {
     pub tm5_test_sequence: Vec<u32>,
     pub tm5_cycles: u32,
     pub tm5_time_percent: u32,
+    /// Memory channel count from TM5 .cfg (default 2). Used in stride formula.
+    #[serde(default = "default_channels")]
+    pub tm5_channels: u32,
 }
+
+fn default_channels() -> u32 { 2 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct ConfigMetadata {
@@ -278,7 +283,8 @@ pub struct TestConfig {
 /// Correctly interpreted TM5 parameter context for v2 tests.
 ///
 /// TM5's `Parameter` field means different things per test type:
-/// - **SimpleTest**: stride in cache lines (Parameter * 64 / 8 = u64 elements)
+/// - **SimpleTest**: stride in cache lines. TM5 formula: `Channels * Parameter - 1` cache lines.
+///   Converted to u64 elements: `stride_cachelines * (cache_line_bytes / 8)`.
 /// - **MirrorMove**: subblock count (1-4, how many mirror regions)
 /// - **MirrorMove128**: page stride in bytes ((Parameter + 1) * 128)
 ///
@@ -287,8 +293,12 @@ pub struct TestConfig {
 pub struct TestParameterContext {
     /// Raw TM5 parameter value, preserved for debugging.
     pub raw_parameter: u32,
-    /// SimpleTest: stride in u64 elements. `Parameter * 64 / 8 = Parameter * 8`.
-    /// 0 means sequential (no striding).
+    /// SimpleTest: stride in cache lines (64-byte units).
+    /// TM5: `Channels * Parameter - 1`. TMR JSON: direct value.
+    /// 0 or None means sequential (no striding).
+    pub stride_cachelines: Option<usize>,
+    /// SimpleTest: stride in u64 elements (derived from stride_cachelines at runtime).
+    /// `stride_cachelines * (cache_line_bytes / 8)`.
     pub stride_elements: Option<usize>,
     /// MirrorMove: number of subblocks (1-4). Each subblock is mirrored independently.
     pub subblock_count: Option<u32>,
@@ -300,26 +310,52 @@ pub struct TestParameterContext {
 ///
 /// This replaces `map_parameter_to_streams()` which incorrectly treated all
 /// parameters as stream counts.
+///
+/// `channels`: memory channel count (default 2 for DDR5 dual-channel).
+/// TM5 SimpleTest stride formula: `JumpStep = BlkSize * (Channels * Parameter - 1)`
+/// where BlkSize=64 bytes (cache line). In cache line units: `Channels * Parameter - 1`.
 pub fn interpret_tm5_parameter(function: &str, parameter: u32) -> TestParameterContext {
+    interpret_tm5_parameter_with_channels(function, parameter, 2)
+}
+
+/// Interpret TM5 Parameter with explicit channel count.
+pub fn interpret_tm5_parameter_with_channels(function: &str, parameter: u32, channels: u32) -> TestParameterContext {
     match function {
         "SimpleTest" | "Mem-Simple" | "Mem-SimpleV2" => {
-            TestParameterContext {
-                raw_parameter: parameter,
-                stride_elements: if parameter == 0 {
-                    None // Sequential access
-                } else {
-                    // TM5: stride = Parameter * 64 bytes / 8 bytes per u64 = Parameter * 8
-                    Some(parameter as usize * 8)
-                },
-                subblock_count: None,
-                page_stride_bytes: None,
+            if parameter == 0 {
+                TestParameterContext {
+                    raw_parameter: parameter,
+                    stride_cachelines: None,
+                    stride_elements: None,
+                    subblock_count: None,
+                    page_stride_bytes: None,
+                }
+            } else {
+                // TM5: JumpStep = BlkSize * (Channels * Parameter - 1)
+                // In cache line units: Channels * Parameter - 1
+                // In u64 elements: stride_cachelines * 8 (assuming 64-byte cache line / 8 bytes per u64)
+                let stride_cl = (channels as usize * parameter as usize).saturating_sub(1);
+                TestParameterContext {
+                    raw_parameter: parameter,
+                    stride_cachelines: Some(stride_cl),
+                    stride_elements: Some(stride_cl * 8), // 64-byte cache line / 8 bytes per u64
+                    subblock_count: None,
+                    page_stride_bytes: None,
+                }
             }
         }
         "MirrorMove" | "Mem-Mirror" | "Mem-MirrorV2" | "Mem-MirrorV2-Auto" => {
+            // TM5 MirrorMove only branches on exactly 2, 3, or 4 subblocks.
+            // Any other value (0, 1, 16384, etc.) falls through to single-block mirror (1).
+            let subblocks = match parameter {
+                2 | 3 | 4 => parameter,
+                _ => 1,
+            };
             TestParameterContext {
                 raw_parameter: parameter,
+                stride_cachelines: None,
                 stride_elements: None,
-                subblock_count: Some(parameter.clamp(1, 4)),
+                subblock_count: Some(subblocks),
                 page_stride_bytes: None,
             }
         }
@@ -328,6 +364,7 @@ pub fn interpret_tm5_parameter(function: &str, parameter: u32) -> TestParameterC
         | "Mem-MirrorV2-128" | "Mem-MirrorV2-256" | "Mem-MirrorV2-512" => {
             TestParameterContext {
                 raw_parameter: parameter,
+                stride_cachelines: None,
                 stride_elements: None,
                 subblock_count: None,
                 page_stride_bytes: if parameter == 0 {
@@ -341,6 +378,7 @@ pub fn interpret_tm5_parameter(function: &str, parameter: u32) -> TestParameterC
             // Unknown test type — preserve raw parameter, no interpretation
             TestParameterContext {
                 raw_parameter: parameter,
+                stride_cachelines: None,
                 stride_elements: None,
                 subblock_count: None,
                 page_stride_bytes: None,
@@ -372,6 +410,9 @@ pub struct LegacyMainSection {
 pub struct LegacyMemorySetup {
     pub testing_window_size_mb: u32,
     pub reserved_memory_mb: u32,
+    /// Memory channel count from .cfg (TM5: 1-3, default 2).
+    /// Used in SimpleTest stride formula: `Channels * Parameter - 1` cache lines.
+    pub channels: u32,
 }
 
 #[derive(Debug, Clone)]
@@ -588,6 +629,7 @@ impl ModernConfig {
     }
     
     pub fn get_test_configs(&self) -> Vec<(&str, TestMemoryConfig)> {
+        let channels = self.legacy_metadata.as_ref().map_or(2, |m| m.tm5_channels);
         self.test_sequence.iter().filter(|t| t.enabled).map(|test| {
             let window_mode = self.parse_test_window_mode(test);
             let chunk_mode = self.parse_test_chunk_mode(test);
@@ -611,8 +653,15 @@ impl ModernConfig {
             // v2: Attach correctly interpreted parameter context
             if let Some(param) = test.parameter {
                 config = config.with_parameter_context(
-                    interpret_tm5_parameter(&test.function, param)
+                    interpret_tm5_parameter_with_channels(&test.function, param, channels)
                 );
+            }
+
+            // TM5 SimpleTest: dLoopCounter=5 (write once, verify 5 times),
+            // ST_WriteReadCycles=4 (repeat the write+verify sequence 4 times per chunk)
+            if test.function.starts_with("Mem-Simple") || test.function == "SimpleTest" {
+                config.verify_reps = 5;
+                config.write_read_cycles = 4;
             }
 
             (test.function.as_str(), config)
@@ -634,6 +683,7 @@ impl ModernConfig {
     
     /// Get test configs following TM5 test sequence order and repetition
     fn get_tm5_sequence_configs(&self, sequence: &[u32]) -> Vec<(&str, TestMemoryConfig)> {
+        let channels = self.legacy_metadata.as_ref().map_or(2, |m| m.tm5_channels);
         let mut result = Vec::new();
 
         for &test_index in sequence {
@@ -662,8 +712,15 @@ impl ModernConfig {
                     // v2: Attach correctly interpreted parameter context
                     if let Some(param) = test.parameter {
                         config = config.with_parameter_context(
-                            interpret_tm5_parameter(&test.function, param)
+                            interpret_tm5_parameter_with_channels(&test.function, param, channels)
                         );
+                    }
+
+                    // TM5 SimpleTest: dLoopCounter=5 (write once, verify 5 times),
+                    // ST_WriteReadCycles=4 (repeat the write+verify sequence 4 times per chunk)
+                    if test.function.starts_with("Mem-Simple") || test.function == "SimpleTest" {
+                        config.verify_reps = 5;
+                        config.write_read_cycles = 4;
                     }
 
                     result.push((test.function.as_str(), config));
@@ -835,7 +892,7 @@ pub fn create_demo_config() -> Self {
             // Mem-Simple - general pattern test with TM5 compatibility
             TestConfig {
                 enabled: true,
-                function: "Mem-Simple".to_string(),
+                function: "Mem-SimpleV2".to_string(),
                 cycles: Some(1),
                 duration_secs: None,
                 min_duration_secs: None,
@@ -1019,7 +1076,7 @@ pub fn create_demo_config() -> Self {
             // Legacy TM5-style test showing "window-size" block mode
             TestConfig {
                 enabled: true,
-                function: "Mem-Simple".to_string(),
+                function: "Mem-SimpleV2".to_string(),
                 cycles: Some(1),
                 duration_secs: None,
                 min_duration_secs: None,
@@ -1107,7 +1164,7 @@ pub fn create_demo_config() -> Self {
                 },
                 TestConfig {
                     enabled: true,
-                    function: "Mem-Simple".to_string(),
+                    function: "Mem-SimpleV2".to_string(),
                     cycles: Some(1),
                     duration_secs: None,
                     min_duration_secs: None,
@@ -1188,6 +1245,7 @@ impl LegacyConfig {
                 .get("Reserved Memory for Windows (Mb)")
                 .and_then(|s| s.parse().ok())
                 .unwrap_or(128),
+            channels: memory.get("Channels").and_then(|s| s.parse().ok()).unwrap_or(2).clamp(1, 8),
         };
 
         // Parse tests
@@ -1327,6 +1385,7 @@ impl LegacyConfig {
             tm5_test_sequence: self.main_section.test_sequence.clone(),
             tm5_cycles: self.main_section.cycles,
             tm5_time_percent: self.main_section.time_percent,
+            tm5_channels: self.memory_setup.channels,
         }),
     })
 }
@@ -1337,7 +1396,7 @@ fn map_legacy_function(legacy_name: &str) -> Result<String, String> {
     match legacy_name {
         // TM5 legacy names -> new prefixed names
         "RefreshStable" => Ok("Mem-Refresh".to_string()),
-        "SimpleTest" => Ok("Mem-Simple".to_string()),
+        "SimpleTest" => Ok("Mem-SimpleV2".to_string()),
         "MirrorMove" => Ok("Mem-Mirror128".to_string()),  // TM5 base MirrorMove -> TMR 128-bit SIMD
         "MirrorMove128" => Ok("Mem-Mirror128".to_string()),
         "MirrorMove256" => Ok("Mem-Mirror256".to_string()),
@@ -1345,7 +1404,7 @@ fn map_legacy_function(legacy_name: &str) -> Result<String, String> {
         "BlockMove" => Ok("Mem-BlockMove".to_string()),
         // Also accept new names directly
         "Mem-Refresh" => Ok("Mem-Refresh".to_string()),
-        "Mem-Simple" => Ok("Mem-Simple".to_string()),
+        "Mem-Simple" => Ok("Mem-SimpleV2".to_string()),
         "Mem-Mirror" => Ok("Mem-Mirror".to_string()),
         "Mem-Mirror128" => Ok("Mem-Mirror128".to_string()),
         "Mem-Mirror256" => Ok("Mem-Mirror256".to_string()),

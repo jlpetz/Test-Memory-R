@@ -495,6 +495,19 @@ pub struct TestMemoryConfig {
     /// v2: Correctly interpreted TM5 parameter context (stride, subblocks, page stride).
     /// None for v1 tests or TMR-native configs that don't originate from TM5.
     pub parameter_context: Option<crate::config::TestParameterContext>,
+    /// Cache line size in bytes (from CacheInfo, typically 64). Used by TM5-faithful pattern
+    /// modes for cache-line-boundary complement toggle and page evolution.
+    pub cache_line_bytes: usize,
+    /// Number of verify passes per cycle (TM5 write-then-multi-read).
+    /// TM5 typically uses dLoopCounter=5. Default 1 = single verify per cycle.
+    pub verify_reps: u32,
+    /// Number of test operation repetitions per cycle (e.g., MirrorMove mirror round-trips).
+    /// Default 1 = single test op per cycle.
+    pub test_reps: u32,
+    /// Number of write+verify cycles per chunk. TM5 SimpleTest uses ST_WriteReadCycles=4:
+    /// each chunk gets (1 write + 5 reads) × 4 = tight repeated access stress.
+    /// Default 1 for non-TM5 tests. Set to 4 for TM5-faithful SimpleTest behavior.
+    pub write_read_cycles: u32,
 }
 
 impl TestMemoryConfig {
@@ -514,6 +527,10 @@ impl TestMemoryConfig {
             tsc_frequency_ghz: 0.0,  // MUST be set from detected CacheInfo before running latency tests
             thread_count: 1,  // Default to 1, should be set by runner for accurate cache calculations
             parameter_context: None,  // v2: set by config loader for TM5-derived configs
+            cache_line_bytes: 64,  // Default 64, set from CacheInfo at startup
+            verify_reps: 1,  // Default 1, set from TM5 config or CLI
+            test_reps: 1,  // Default 1, set from TM5 config or CLI
+            write_read_cycles: 1,  // Default 1, TM5 SimpleTest uses 4
         }
     }
 
@@ -624,17 +641,21 @@ impl TestMemoryConfig {
                 streams: self.streams,
                 locality_sensitive: false,
             },
-            "Mem-Simple" => OperationMetadata {
-                reads_per_op: 1,  // Verify read per element
-                writes_per_op: 1,  // Pattern write per element
-                verifies_per_op: 1,  // Same as reads
-                simd_ops_per_op: 0,
-                fence_ops_per_op: 1,  // Per cycle
-                cache_ops_per_op: 0,
-                simd_type: SIMDType::None,
+            "Mem-SimpleNT-128" | "Mem-SimpleNT-256" | "Mem-SimpleNT-512" | "Mem-SimpleNT-Auto" => OperationMetadata {
+                reads_per_op: 1,  // Verify read (regular loads)
+                writes_per_op: 1,  // NT store (bypasses cache)
+                verifies_per_op: 1,
+                simd_ops_per_op: 1,
+                fence_ops_per_op: 1,  // sfence per chunk
+                cache_ops_per_op: 0,  // NT stores bypass cache
+                simd_type: match test_name {
+                    "Mem-SimpleNT-512" => SIMDType::AVX512_512,
+                    "Mem-SimpleNT-256" => SIMDType::AVX2_256,
+                    _ => SIMDType::SSE2_128,
+                },
                 access_pattern: AccessPattern::Sequential,
                 memory_coverage: 1.0,
-                streams: self.streams,
+                streams: 1,
                 locality_sensitive: false,
             },
             "Mem-Refresh" => OperationMetadata {
@@ -921,7 +942,10 @@ impl TestMemoryConfig {
             "Mem-StuckBit128" => 16,            // 128-bit SIMD operations
             "Mem-StuckBit256" => 32,            // 256-bit SIMD operations
             "Mem-StuckBit512" => 64,            // 512-bit SIMD operations
-            "Mem-Simple" => 8,                 // Basic u64 operations
+            "Mem-SimpleNT-128" => 16,          // 128-bit NT SIMD
+            "Mem-SimpleNT-256" => 32,          // 256-bit NT SIMD
+            "Mem-SimpleNT-512" => 64,          // 512-bit NT SIMD
+            "Mem-SimpleNT-Auto" => 64,         // Auto-dispatched NT SIMD
             "Mem-Refresh" => 8,              // Basic u64 operations
             "Mem-Refresh128" => 16,          // 128-bit SIMD operations
             "Mem-Refresh256" => 32,          // 256-bit SIMD operations
@@ -933,11 +957,18 @@ impl TestMemoryConfig {
             "Mem-BlockMove" => 64,                  // Block operations
             // v2 tests
             "Mem-SimpleV2" => 8,                     // Basic u64 operations (scalar, auto-vectorized)
+            "Mem-SimpleV2-128" => 16,                // u64x2 (128-bit)
+            "Mem-SimpleV2-256" => 32,                // u64x4 (256-bit)
+            "Mem-SimpleV2-512" => 64,                // u64x8 (512-bit)
+            "Mem-SimpleV2-Auto" => 64,               // Auto-dispatched, assume AVX-512 possible
             "Mem-MirrorV2" => 8,                     // u64 scalar mirror
             "Mem-MirrorV2-128" => 16,                // u64x2 (128-bit)
             "Mem-MirrorV2-256" => 32,                // u64x4 (256-bit)
             "Mem-MirrorV2-512" => 64,                // u64x8 (512-bit)
             "Mem-MirrorV2-Auto" => 64,               // Auto-dispatched, assume AVX-512 possible
+            // Bench-Init tests (all scalar u64)
+            "Bench-Init-TM5-0" | "Bench-Init-TM5-1" | "Bench-Init-TM5-2"
+            | "Bench-Init-TMR-0" | "Bench-Init-TMR-1" | "Bench-Init-TMR-2" => 8,
             _ => panic!("Unknown test '{}' - add explicit SIMD requirement to calculate_minimum_chunk_size()", test_name),
         };
         
@@ -4278,883 +4309,6 @@ fn validate_chunk_divisibility(
     }
 }
 
-/// Multi-block version of simple_test that handles interleaving internally
-/// Dispatches to the appropriate stream implementation based on config.streams
-/// # Safety
-/// Caller must ensure all blocks contain valid memory for testing
-pub unsafe fn simple_test_multi(
-    blocks: &[crate::runner::AllocationBlock],
-    thread_id: usize,
-    error_mode: ErrorMode,
-    timing: &TestTiming,
-    config: &TestMemoryConfig,
-    progress: Option<&TestProgress>,
-) -> TestStats {
-    let test_name = "Mem-Simple";
-
-    if blocks.is_empty() {
-        return TestStats {
-            name: test_name,
-            action: TestAction::WriteVerify,
-            bytes_processed: 0,
-            elapsed_ms: 0,
-            thread_id,
-            error_count: 0,
-            total_operations: 0,
-            cycles_completed: 0,
-            cycles_planned: timing.cycles,
-            stopped_by_time_limit: false,
-        };
-    }
-
-    // Calculate pattern base once
-    let pattern_base = if let (Some(mode), Some(param0), Some(param1)) = (config.pattern_mode, config.pattern_param0, config.pattern_param1) {
-        match mode {
-            1 => param0 ^ param1,
-            2 => (param0 << 32) | (param1 & 0xFFFFFFFF),
-            _ => 0xDEADBEEFDEADBEEF,
-        }
-    } else {
-        0xDEADBEEFDEADBEEF
-    };
-
-    // Dispatch to appropriate stream implementation
-    match config.streams {
-        1 => simple_test_stream1_multi(blocks, thread_id, error_mode, timing, config, progress, pattern_base, test_name),
-        2 => simple_test_stream2_multi(blocks, thread_id, error_mode, timing, config, progress, pattern_base, test_name),
-        4 => simple_test_stream4_multi(blocks, thread_id, error_mode, timing, config, progress, pattern_base, test_name),
-        _ => simple_test_stream_n_multi(blocks, thread_id, error_mode, timing, config, progress, pattern_base, test_name),
-    }
-}
-
-/// SimpleTest Stream1 - MultiBlock version (linear sequential access)
-unsafe fn simple_test_stream1_multi(
-    blocks: &[crate::runner::AllocationBlock],
-    thread_id: usize,
-    error_mode: ErrorMode,
-    timing: &TestTiming,
-    config: &TestMemoryConfig,
-    progress: Option<&TestProgress>,
-    pattern_base: u64,
-    test_name: &'static str,
-) -> TestStats {
-    // Calculate window size and prepare blocks with window limits
-    let total_allocated: usize = blocks.iter().map(|b| b.buffer.size()).sum();
-    let window_size = config.calculate_window_size(test_name, total_allocated);
-    let test_blocks = prepare_blocks_for_window(blocks, window_size, test_name);
-
-    if test_blocks.is_empty() {
-        log::warn!("{}: No blocks prepared for testing (window too small?)", test_name);
-        return TestStats {
-            name: test_name,
-            action: TestAction::WriteVerify,
-            bytes_processed: 0,
-            elapsed_ms: 0,
-            thread_id,
-            error_count: 0,
-            total_operations: 0,
-            cycles_completed: 0,
-            cycles_planned: timing.cycles,
-            stopped_by_time_limit: false,
-        };
-    }
-
-    // Track totals across all blocks
-    let mut total_bytes_processed = 0usize;
-    let mut total_error_count = 0u64;
-    let mut total_operations = 0u64;
-
-    // Single shared timer for ALL blocks
-    let test_start = Instant::now();
-    let start = Instant::now();
-    let mut cycle = 0u32;
-
-    // Progress reporting setup
-    let update_interval_ms = 1000;
-    let mut last_progress_update = Instant::now();
-
-    // Main test loop - interleaves across blocks
-    loop {
-        cycle += 1;
-
-        // Test each block in sequence for this cycle (interleaved: 1,2,3,1,2,3...)
-        for test_block in test_blocks.iter() {
-            let ptr = test_block.block.buffer.as_mut_ptr() as *mut u64;
-            let len = test_block.test_size / std::mem::size_of::<u64>();
-
-            // Calculate chunk size for this block's test_size
-            let ideal_chunk_size = calculate_ideal_chunk_size(config, test_name, test_block.test_size);
-            let chunk_size_bytes = get_safe_chunk_size(ideal_chunk_size, test_block.test_size);
-            let chunk_size_elements = chunk_size_bytes / std::mem::size_of::<u64>();
-
-            let mut block_errors = 0u64;
-
-            // Process block in chunks for responsive shutdown
-            for chunk_start in (0..len).step_by(chunk_size_elements) {
-                let chunk_end = (chunk_start + chunk_size_elements).min(len);
-
-                // Write phase for this chunk (stream 1: linear sequential)
-                for idx in chunk_start..chunk_end {
-                    *ptr.add(idx) = idx as u64 ^ pattern_base;
-                }
-
-                std::sync::atomic::fence(Ordering::SeqCst);
-
-                // Verify phase for this chunk
-                for idx in chunk_start..chunk_end {
-                    let v = *ptr.add(idx);
-                    let expected = idx as u64 ^ pattern_base;
-                    if v != expected {
-                        block_errors += 1;
-                        log::error!("{}: memory error at index {} - expected {:#x}, got {:#x}",
-                                   test_name, idx, expected, v);
-                    }
-                }
-
-                // Check for shutdown after each chunk
-                if SHUTDOWN_REQUESTED.load(Ordering::Relaxed) {
-                    total_error_count += block_errors;
-                    total_bytes_processed += (chunk_end - chunk_start) * std::mem::size_of::<u64>() * 2;
-                    let elapsed = start.elapsed().as_millis();
-                    return TestStats {
-                        name: test_name,
-                        action: TestAction::WriteVerify,
-                        bytes_processed: total_bytes_processed,
-                        elapsed_ms: elapsed,
-                        thread_id,
-                        error_count: total_error_count,
-                        total_operations,
-                        cycles_completed: cycle,
-                        cycles_planned: timing.cycles,
-                        stopped_by_time_limit: false,
-                    };
-                }
-            }
-
-            total_error_count += block_errors;
-            total_bytes_processed += test_block.test_size * 2; // write + read
-            total_operations += len as u64 * 2;
-
-            // Handle errors based on mode
-            if block_errors > 0 {
-                match error_mode {
-                    ErrorMode::Panic => panic!("{}: {} memory errors detected", test_name, block_errors),
-                    ErrorMode::Halt => {
-                        let elapsed = start.elapsed().as_millis();
-                        return TestStats {
-                            name: test_name,
-                            action: TestAction::WriteVerify,
-                            bytes_processed: total_bytes_processed,
-                            elapsed_ms: elapsed,
-                            thread_id,
-                            error_count: total_error_count,
-                            total_operations,
-                            cycles_completed: cycle,
-                            cycles_planned: timing.cycles,
-                            stopped_by_time_limit: false,
-                        };
-                    }
-                    ErrorMode::Log => { /* Continue */ }
-                }
-            }
-
-            // Check for shutdown between blocks
-            if SHUTDOWN_REQUESTED.load(Ordering::Relaxed) {
-                let elapsed = start.elapsed().as_millis();
-                return TestStats {
-                    name: test_name,
-                    action: TestAction::WriteVerify,
-                    bytes_processed: total_bytes_processed,
-                    elapsed_ms: elapsed,
-                    thread_id,
-                    error_count: total_error_count,
-                    total_operations,
-                    cycles_completed: cycle,
-                    cycles_planned: timing.cycles,
-                    stopped_by_time_limit: false,
-                };
-            }
-        }
-
-        // Update progress if provided
-        if let Some(progress) = progress {
-            let now = Instant::now();
-            if now.duration_since(last_progress_update).as_millis() >= update_interval_ms {
-                progress.cycles_completed.store(cycle, Ordering::Relaxed);
-                progress.bytes_processed.store(total_bytes_processed as u64, Ordering::Relaxed);
-                progress.errors_found.store(total_error_count, Ordering::Relaxed);
-                progress.last_update_ms.store(now.duration_since(start).as_millis() as u64, Ordering::Relaxed);
-                last_progress_update = now;
-            }
-        }
-
-        // Check timing - shared across ALL blocks
-        let elapsed_secs = test_start.elapsed().as_secs() as u32;
-        if !timing.should_continue(cycle, elapsed_secs) {
-            break;
-        }
-    }
-
-    TestStats {
-        name: test_name,
-        action: TestAction::WriteVerify,
-        bytes_processed: total_bytes_processed,
-        elapsed_ms: start.elapsed().as_millis(),
-        thread_id,
-        error_count: total_error_count,
-        total_operations,
-        cycles_completed: cycle,
-        cycles_planned: timing.cycles,
-        stopped_by_time_limit: timing.cycles.map_or(true, |limit| cycle < limit),
-    }
-}
-
-/// SimpleTest Stream2 - MultiBlock version (2-way interleaved access)
-unsafe fn simple_test_stream2_multi(
-    blocks: &[crate::runner::AllocationBlock],
-    thread_id: usize,
-    error_mode: ErrorMode,
-    timing: &TestTiming,
-    config: &TestMemoryConfig,
-    progress: Option<&TestProgress>,
-    pattern_base: u64,
-    test_name: &'static str,
-) -> TestStats {
-    // Calculate window size and prepare blocks with window limits
-    let total_allocated: usize = blocks.iter().map(|b| b.buffer.size()).sum();
-    let window_size = config.calculate_window_size(test_name, total_allocated);
-    let test_blocks = prepare_blocks_for_window(blocks, window_size, test_name);
-
-    if test_blocks.is_empty() {
-        log::warn!("{}: No blocks prepared for testing (window too small?)", test_name);
-        return TestStats {
-            name: test_name,
-            action: TestAction::WriteVerify,
-            bytes_processed: 0,
-            elapsed_ms: 0,
-            thread_id,
-            error_count: 0,
-            total_operations: 0,
-            cycles_completed: 0,
-            cycles_planned: timing.cycles,
-            stopped_by_time_limit: false,
-        };
-    }
-
-    // Track totals across all blocks
-    let mut total_bytes_processed = 0usize;
-    let mut total_error_count = 0u64;
-    let mut total_operations = 0u64;
-
-    // Single shared timer for ALL blocks
-    let test_start = Instant::now();
-    let start = Instant::now();
-    let mut cycle = 0u32;
-
-    // Progress reporting setup
-    let update_interval_ms = 1000;
-    let mut last_progress_update = Instant::now();
-
-    // Validate chunk divisibility for ALL blocks ONCE before starting (not in hot loop)
-    // Different block sizes may have different chunk sizes, so validate each
-    for test_block in test_blocks.iter() {
-        let ideal_chunk_size = calculate_ideal_chunk_size(config, test_name, test_block.test_size);
-        let chunk_size_bytes = get_safe_chunk_size(ideal_chunk_size, test_block.test_size);
-        let chunk_size_elements = chunk_size_bytes / std::mem::size_of::<u64>();
-        validate_chunk_divisibility(test_name, 2, chunk_size_elements);
-    }
-
-    // Main test loop - interleaves across blocks
-    loop {
-        cycle += 1;
-
-        // Test each block in sequence for this cycle (interleaved: 1,2,3,1,2,3...)
-        for test_block in test_blocks.iter() {
-            let ptr = test_block.block.buffer.as_mut_ptr() as *mut u64;
-            let len = test_block.test_size / std::mem::size_of::<u64>();
-
-            // Calculate chunk size for this block's test_size
-            let ideal_chunk_size = calculate_ideal_chunk_size(config, test_name, test_block.test_size);
-            let chunk_size_bytes = get_safe_chunk_size(ideal_chunk_size, test_block.test_size);
-            let chunk_size_elements = chunk_size_bytes / std::mem::size_of::<u64>();
-
-            let mut block_errors = 0u64;
-
-            // Process block in chunks for responsive shutdown
-            for chunk_start in (0..len).step_by(chunk_size_elements) {
-                let chunk_end = (chunk_start + chunk_size_elements).min(len);
-                let chunk_len = chunk_end - chunk_start;
-                let chunk_half = chunk_len / 2;
-                let mid_point = chunk_start + chunk_half;
-
-                // Write both halves with different patterns (stream 2: 2-way interleave)
-                for idx in chunk_start..mid_point {
-                    *ptr.add(idx) = idx as u64 ^ pattern_base;
-                    *ptr.add(idx + chunk_half) = (idx + chunk_half) as u64 ^ !pattern_base;
-                }
-
-                std::sync::atomic::fence(Ordering::SeqCst);
-
-                // Verify both halves
-                for idx in chunk_start..mid_point {
-                    let v1 = *ptr.add(idx);
-                    let v2 = *ptr.add(idx + chunk_half);
-                    let expected1 = idx as u64 ^ pattern_base;
-                    let expected2 = (idx + chunk_half) as u64 ^ !pattern_base;
-
-                    if v1 != expected1 {
-                        block_errors += 1;
-                        log::error!("{}: memory error at index {} - expected {:#x}, got {:#x}",
-                                   test_name, idx, expected1, v1);
-                    }
-                    if v2 != expected2 {
-                        block_errors += 1;
-                        log::error!("{}: memory error at index {} - expected {:#x}, got {:#x}",
-                                   test_name, idx + chunk_half, expected2, v2);
-                    }
-                }
-
-                // Check for shutdown after each chunk
-                if SHUTDOWN_REQUESTED.load(Ordering::Relaxed) {
-                    total_error_count += block_errors;
-                    total_bytes_processed += chunk_len * std::mem::size_of::<u64>() * 2;
-                    let elapsed = start.elapsed().as_millis();
-                    return TestStats {
-                        name: test_name,
-                        action: TestAction::WriteVerify,
-                        bytes_processed: total_bytes_processed,
-                        elapsed_ms: elapsed,
-                        thread_id,
-                        error_count: total_error_count,
-                        total_operations,
-                        cycles_completed: cycle,
-                        cycles_planned: timing.cycles,
-                        stopped_by_time_limit: false,
-                    };
-                }
-            }
-
-            total_error_count += block_errors;
-            total_bytes_processed += test_block.test_size * 2; // write + read
-            total_operations += len as u64 * 2;
-
-            // Handle errors based on mode
-            if block_errors > 0 {
-                match error_mode {
-                    ErrorMode::Panic => panic!("{}: {} memory errors detected", test_name, block_errors),
-                    ErrorMode::Halt => {
-                        let elapsed = start.elapsed().as_millis();
-                        return TestStats {
-                            name: test_name,
-                            action: TestAction::WriteVerify,
-                            bytes_processed: total_bytes_processed,
-                            elapsed_ms: elapsed,
-                            thread_id,
-                            error_count: total_error_count,
-                            total_operations,
-                            cycles_completed: cycle,
-                            cycles_planned: timing.cycles,
-                            stopped_by_time_limit: false,
-                        };
-                    }
-                    ErrorMode::Log => { /* Continue */ }
-                }
-            }
-
-            // Check for shutdown between blocks
-            if SHUTDOWN_REQUESTED.load(Ordering::Relaxed) {
-                let elapsed = start.elapsed().as_millis();
-                return TestStats {
-                    name: test_name,
-                    action: TestAction::WriteVerify,
-                    bytes_processed: total_bytes_processed,
-                    elapsed_ms: elapsed,
-                    thread_id,
-                    error_count: total_error_count,
-                    total_operations,
-                    cycles_completed: cycle,
-                    cycles_planned: timing.cycles,
-                    stopped_by_time_limit: false,
-                };
-            }
-        }
-
-        // Update progress if provided
-        if let Some(progress) = progress {
-            let now = Instant::now();
-            if now.duration_since(last_progress_update).as_millis() >= update_interval_ms {
-                progress.cycles_completed.store(cycle, Ordering::Relaxed);
-                progress.bytes_processed.store(total_bytes_processed as u64, Ordering::Relaxed);
-                progress.errors_found.store(total_error_count, Ordering::Relaxed);
-                progress.last_update_ms.store(now.duration_since(start).as_millis() as u64, Ordering::Relaxed);
-                last_progress_update = now;
-            }
-        }
-
-        // Check timing - shared across ALL blocks
-        let elapsed_secs = test_start.elapsed().as_secs() as u32;
-        if !timing.should_continue(cycle, elapsed_secs) {
-            break;
-        }
-    }
-
-    let elapsed = start.elapsed().as_millis();
-    TestStats {
-        name: test_name,
-        action: TestAction::WriteVerify,
-        bytes_processed: total_bytes_processed,
-        elapsed_ms: elapsed,
-        thread_id,
-        error_count: total_error_count,
-        total_operations,
-        cycles_completed: cycle,
-        cycles_planned: timing.cycles,
-        stopped_by_time_limit: timing.cycles.map_or(true, |limit| cycle < limit),
-    }
-}
-
-/// SimpleTest Stream4 - MultiBlock version (4-way interleaved access)
-unsafe fn simple_test_stream4_multi(
-    blocks: &[crate::runner::AllocationBlock],
-    thread_id: usize,
-    error_mode: ErrorMode,
-    timing: &TestTiming,
-    config: &TestMemoryConfig,
-    progress: Option<&TestProgress>,
-    pattern_base: u64,
-    test_name: &'static str,
-) -> TestStats {
-    // Calculate window size and prepare blocks with window limits
-    let total_allocated: usize = blocks.iter().map(|b| b.buffer.size()).sum();
-    let window_size = config.calculate_window_size(test_name, total_allocated);
-    let test_blocks = prepare_blocks_for_window(blocks, window_size, test_name);
-
-    if test_blocks.is_empty() {
-        log::warn!("{}: No blocks prepared for testing (window too small?)", test_name);
-        return TestStats {
-            name: test_name,
-            action: TestAction::WriteVerify,
-            bytes_processed: 0,
-            elapsed_ms: 0,
-            thread_id,
-            error_count: 0,
-            total_operations: 0,
-            cycles_completed: 0,
-            cycles_planned: timing.cycles,
-            stopped_by_time_limit: false,
-        };
-    }
-
-    // Track totals across all blocks
-    let mut total_bytes_processed = 0usize;
-    let mut total_error_count = 0u64;
-    let mut total_operations = 0u64;
-
-    // Single shared timer for ALL blocks
-    let test_start = Instant::now();
-    let start = Instant::now();
-    let mut cycle = 0u32;
-
-    // Progress reporting setup
-    let update_interval_ms = 1000;
-    let mut last_progress_update = Instant::now();
-
-    // Validate chunk divisibility for ALL blocks ONCE before starting (not in hot loop)
-    // Different block sizes may have different chunk sizes, so validate each
-    for test_block in test_blocks.iter() {
-        let ideal_chunk_size = calculate_ideal_chunk_size(config, test_name, test_block.test_size);
-        let chunk_size_bytes = get_safe_chunk_size(ideal_chunk_size, test_block.test_size);
-        let chunk_size_elements = chunk_size_bytes / std::mem::size_of::<u64>();
-        validate_chunk_divisibility(test_name, 4, chunk_size_elements);
-    }
-
-    // Main test loop - interleaves across blocks
-    loop {
-        cycle += 1;
-
-        // Test each block in sequence for this cycle (interleaved: 1,2,3,1,2,3...)
-        for test_block in test_blocks.iter() {
-            let ptr = test_block.block.buffer.as_mut_ptr() as *mut u64;
-            let len = test_block.test_size / std::mem::size_of::<u64>();
-
-            // Calculate chunk size for this block's test_size
-            let ideal_chunk_size = calculate_ideal_chunk_size(config, test_name, test_block.test_size);
-            let chunk_size_bytes = get_safe_chunk_size(ideal_chunk_size, test_block.test_size);
-            let chunk_size_elements = chunk_size_bytes / std::mem::size_of::<u64>();
-
-            let mut block_errors = 0u64;
-
-            // Process block in chunks for responsive shutdown
-            for chunk_start in (0..len).step_by(chunk_size_elements) {
-                let chunk_end = (chunk_start + chunk_size_elements).min(len);
-                let chunk_len = chunk_end - chunk_start;
-                let quarter = chunk_len / 4;
-
-                // Write four quarters with different rotated patterns (stream 4: 4-way interleave)
-                for q_idx in 0..quarter {
-                    let idx0 = chunk_start + q_idx;
-                    let idx1 = chunk_start + quarter + q_idx;
-                    let idx2 = chunk_start + 2 * quarter + q_idx;
-                    let idx3 = chunk_start + 3 * quarter + q_idx;
-
-                    *ptr.add(idx0) = idx0 as u64 ^ pattern_base;
-                    *ptr.add(idx1) = idx1 as u64 ^ pattern_base.rotate_left(16);
-                    *ptr.add(idx2) = idx2 as u64 ^ pattern_base.rotate_left(32);
-                    *ptr.add(idx3) = idx3 as u64 ^ pattern_base.rotate_left(48);
-                }
-
-                std::sync::atomic::fence(Ordering::SeqCst);
-
-                // Verify four quarters
-                for q_idx in 0..quarter {
-                    let idx0 = chunk_start + q_idx;
-                    let idx1 = chunk_start + quarter + q_idx;
-                    let idx2 = chunk_start + 2 * quarter + q_idx;
-                    let idx3 = chunk_start + 3 * quarter + q_idx;
-
-                    let v0 = *ptr.add(idx0);
-                    let v1 = *ptr.add(idx1);
-                    let v2 = *ptr.add(idx2);
-                    let v3 = *ptr.add(idx3);
-
-                    let expected0 = idx0 as u64 ^ pattern_base;
-                    let expected1 = idx1 as u64 ^ pattern_base.rotate_left(16);
-                    let expected2 = idx2 as u64 ^ pattern_base.rotate_left(32);
-                    let expected3 = idx3 as u64 ^ pattern_base.rotate_left(48);
-
-                    if v0 != expected0 {
-                        block_errors += 1;
-                        log::error!("{}: memory error at index {} - expected {:#x}, got {:#x}",
-                                   test_name, idx0, expected0, v0);
-                    }
-                    if v1 != expected1 {
-                        block_errors += 1;
-                        log::error!("{}: memory error at index {} - expected {:#x}, got {:#x}",
-                                   test_name, idx1, expected1, v1);
-                    }
-                    if v2 != expected2 {
-                        block_errors += 1;
-                        log::error!("{}: memory error at index {} - expected {:#x}, got {:#x}",
-                                   test_name, idx2, expected2, v2);
-                    }
-                    if v3 != expected3 {
-                        block_errors += 1;
-                        log::error!("{}: memory error at index {} - expected {:#x}, got {:#x}",
-                                   test_name, idx3, expected3, v3);
-                    }
-                }
-
-                // Check for shutdown after each chunk
-                if SHUTDOWN_REQUESTED.load(Ordering::Relaxed) {
-                    total_error_count += block_errors;
-                    total_bytes_processed += chunk_len * std::mem::size_of::<u64>() * 2;
-                    let elapsed = start.elapsed().as_millis();
-                    return TestStats {
-                        name: test_name,
-                        action: TestAction::WriteVerify,
-                        bytes_processed: total_bytes_processed,
-                        elapsed_ms: elapsed,
-                        thread_id,
-                        error_count: total_error_count,
-                        total_operations,
-                        cycles_completed: cycle,
-                        cycles_planned: timing.cycles,
-                        stopped_by_time_limit: false,
-                    };
-                }
-            }
-
-            total_error_count += block_errors;
-            total_bytes_processed += test_block.test_size * 2; // write + read
-            total_operations += len as u64 * 2;
-
-            // Handle errors based on mode
-            if block_errors > 0 {
-                match error_mode {
-                    ErrorMode::Panic => panic!("{}: {} memory errors detected", test_name, block_errors),
-                    ErrorMode::Halt => {
-                        let elapsed = start.elapsed().as_millis();
-                        return TestStats {
-                            name: test_name,
-                            action: TestAction::WriteVerify,
-                            bytes_processed: total_bytes_processed,
-                            elapsed_ms: elapsed,
-                            thread_id,
-                            error_count: total_error_count,
-                            total_operations,
-                            cycles_completed: cycle,
-                            cycles_planned: timing.cycles,
-                            stopped_by_time_limit: false,
-                        };
-                    }
-                    ErrorMode::Log => { /* Continue */ }
-                }
-            }
-
-            // Check for shutdown between blocks
-            if SHUTDOWN_REQUESTED.load(Ordering::Relaxed) {
-                let elapsed = start.elapsed().as_millis();
-                return TestStats {
-                    name: test_name,
-                    action: TestAction::WriteVerify,
-                    bytes_processed: total_bytes_processed,
-                    elapsed_ms: elapsed,
-                    thread_id,
-                    error_count: total_error_count,
-                    total_operations,
-                    cycles_completed: cycle,
-                    cycles_planned: timing.cycles,
-                    stopped_by_time_limit: false,
-                };
-            }
-        }
-
-        // Update progress if provided
-        if let Some(progress) = progress {
-            let now = Instant::now();
-            if now.duration_since(last_progress_update).as_millis() >= update_interval_ms {
-                progress.cycles_completed.store(cycle, Ordering::Relaxed);
-                progress.bytes_processed.store(total_bytes_processed as u64, Ordering::Relaxed);
-                progress.errors_found.store(total_error_count, Ordering::Relaxed);
-                progress.last_update_ms.store(now.duration_since(start).as_millis() as u64, Ordering::Relaxed);
-                last_progress_update = now;
-            }
-        }
-
-        // Check timing - shared across ALL blocks
-        let elapsed_secs = test_start.elapsed().as_secs() as u32;
-        if !timing.should_continue(cycle, elapsed_secs) {
-            break;
-        }
-    }
-
-    let elapsed = start.elapsed().as_millis();
-    TestStats {
-        name: test_name,
-        action: TestAction::WriteVerify,
-        bytes_processed: total_bytes_processed,
-        elapsed_ms: elapsed,
-        thread_id,
-        error_count: total_error_count,
-        total_operations,
-        cycles_completed: cycle,
-        cycles_planned: timing.cycles,
-        stopped_by_time_limit: timing.cycles.map_or(true, |limit| cycle < limit),
-    }
-}
-
-/// SimpleTest StreamN - MultiBlock version (N-way interleaved access)
-unsafe fn simple_test_stream_n_multi(
-    blocks: &[crate::runner::AllocationBlock],
-    thread_id: usize,
-    error_mode: ErrorMode,
-    timing: &TestTiming,
-    config: &TestMemoryConfig,
-    progress: Option<&TestProgress>,
-    pattern_base: u64,
-    test_name: &'static str,
-) -> TestStats {
-    // Calculate window size and prepare blocks with window limits
-    let total_allocated: usize = blocks.iter().map(|b| b.buffer.size()).sum();
-    let window_size = config.calculate_window_size(test_name, total_allocated);
-    let test_blocks = prepare_blocks_for_window(blocks, window_size, test_name);
-
-    if test_blocks.is_empty() {
-        log::warn!("{}: No blocks prepared for testing (window too small?)", test_name);
-        return TestStats {
-            name: test_name,
-            action: TestAction::WriteVerify,
-            bytes_processed: 0,
-            elapsed_ms: 0,
-            thread_id,
-            error_count: 0,
-            total_operations: 0,
-            cycles_completed: 0,
-            cycles_planned: timing.cycles,
-            stopped_by_time_limit: false,
-        };
-    }
-
-    let n = config.streams as usize;
-
-    // Precompute rotation step ONCE (hot loop optimization)
-    // Ensures each stream gets unique rotation: N=8 → step=8, N=16 → step=4
-    let rotation_step = 64 / n;
-
-    // Track totals across all blocks
-    let mut total_bytes_processed = 0usize;
-    let mut total_error_count = 0u64;
-    let mut total_operations = 0u64;
-
-    // Single shared timer for ALL blocks
-    let test_start = Instant::now();
-    let start = Instant::now();
-    let mut cycle = 0u32;
-
-    // Progress reporting setup
-    let update_interval_ms = 1000;
-    let mut last_progress_update = Instant::now();
-
-    // Validate chunk divisibility for ALL blocks ONCE before starting (not in hot loop)
-    // Different block sizes may have different chunk sizes, so validate each
-    for test_block in test_blocks.iter() {
-        let ideal_chunk_size = calculate_ideal_chunk_size(config, test_name, test_block.test_size);
-        let chunk_size_bytes = get_safe_chunk_size(ideal_chunk_size, test_block.test_size);
-        let chunk_size_elements = chunk_size_bytes / std::mem::size_of::<u64>();
-        validate_chunk_divisibility(test_name, config.streams, chunk_size_elements);
-    }
-
-    // Main test loop - interleaves across blocks
-    loop {
-        cycle += 1;
-
-        // Test each block in sequence for this cycle (interleaved: 1,2,3,1,2,3...)
-        for test_block in test_blocks.iter() {
-            let ptr = test_block.block.buffer.as_mut_ptr() as *mut u64;
-            let len = test_block.test_size / std::mem::size_of::<u64>();
-
-            // Calculate chunk size for this block's test_size
-            let ideal_chunk_size = calculate_ideal_chunk_size(config, test_name, test_block.test_size);
-            let chunk_size_bytes = get_safe_chunk_size(ideal_chunk_size, test_block.test_size);
-            let chunk_size_elements = chunk_size_bytes / std::mem::size_of::<u64>();
-
-            let mut block_errors = 0u64;
-
-            // Process block in chunks for responsive shutdown
-            for chunk_start in (0..len).step_by(chunk_size_elements) {
-                let chunk_end = (chunk_start + chunk_size_elements).min(len);
-                let chunk_len = chunk_end - chunk_start;
-                let segment_size = chunk_len / n;
-
-                // Write N segments with different rotated patterns (stream N: N-way interleave)
-                for seg_offset in 0..segment_size {
-                    for stream_idx in 0..n {
-                        let idx = chunk_start + (stream_idx * segment_size) + seg_offset;
-                        if idx < chunk_end {
-                            let rotation = (stream_idx * rotation_step) as u32;
-                            *ptr.add(idx) = idx as u64 ^ pattern_base.rotate_left(rotation);
-                        }
-                    }
-                }
-
-                std::sync::atomic::fence(Ordering::SeqCst);
-
-                // Verify N segments
-                for seg_offset in 0..segment_size {
-                    for stream_idx in 0..n {
-                        let idx = chunk_start + (stream_idx * segment_size) + seg_offset;
-                        if idx < chunk_end {
-                            let rotation = (stream_idx * rotation_step) as u32;
-                            let v = *ptr.add(idx);
-                            let expected = idx as u64 ^ pattern_base.rotate_left(rotation);
-
-                            if v != expected {
-                                block_errors += 1;
-                                log::error!("{}: memory error at index {} - expected {:#x}, got {:#x}",
-                                           test_name, idx, expected, v);
-                            }
-                        }
-                    }
-                }
-
-                // Check for shutdown after each chunk
-                if SHUTDOWN_REQUESTED.load(Ordering::Relaxed) {
-                    total_error_count += block_errors;
-                    total_bytes_processed += chunk_len * std::mem::size_of::<u64>() * 2;
-                    let elapsed = start.elapsed().as_millis();
-                    return TestStats {
-                        name: test_name,
-                        action: TestAction::WriteVerify,
-                        bytes_processed: total_bytes_processed,
-                        elapsed_ms: elapsed,
-                        thread_id,
-                        error_count: total_error_count,
-                        total_operations,
-                        cycles_completed: cycle,
-                        cycles_planned: timing.cycles,
-                        stopped_by_time_limit: false,
-                    };
-                }
-            }
-
-            total_error_count += block_errors;
-            total_bytes_processed += test_block.test_size * 2; // write + read
-            total_operations += len as u64 * 2;
-
-            // Handle errors based on mode
-            if block_errors > 0 {
-                match error_mode {
-                    ErrorMode::Panic => panic!("{}: {} memory errors detected", test_name, block_errors),
-                    ErrorMode::Halt => {
-                        let elapsed = start.elapsed().as_millis();
-                        return TestStats {
-                            name: test_name,
-                            action: TestAction::WriteVerify,
-                            bytes_processed: total_bytes_processed,
-                            elapsed_ms: elapsed,
-                            thread_id,
-                            error_count: total_error_count,
-                            total_operations,
-                            cycles_completed: cycle,
-                            cycles_planned: timing.cycles,
-                            stopped_by_time_limit: false,
-                        };
-                    }
-                    ErrorMode::Log => { /* Continue */ }
-                }
-            }
-
-            // Check for shutdown between blocks
-            if SHUTDOWN_REQUESTED.load(Ordering::Relaxed) {
-                let elapsed = start.elapsed().as_millis();
-                return TestStats {
-                    name: test_name,
-                    action: TestAction::WriteVerify,
-                    bytes_processed: total_bytes_processed,
-                    elapsed_ms: elapsed,
-                    thread_id,
-                    error_count: total_error_count,
-                    total_operations,
-                    cycles_completed: cycle,
-                    cycles_planned: timing.cycles,
-                    stopped_by_time_limit: false,
-                };
-            }
-        }
-
-        // Update progress if provided
-        if let Some(progress) = progress {
-            let now = Instant::now();
-            if now.duration_since(last_progress_update).as_millis() >= update_interval_ms {
-                progress.cycles_completed.store(cycle, Ordering::Relaxed);
-                progress.bytes_processed.store(total_bytes_processed as u64, Ordering::Relaxed);
-                progress.errors_found.store(total_error_count, Ordering::Relaxed);
-                progress.last_update_ms.store(now.duration_since(start).as_millis() as u64, Ordering::Relaxed);
-                last_progress_update = now;
-            }
-        }
-
-        // Check timing - shared across ALL blocks
-        let elapsed_secs = test_start.elapsed().as_secs() as u32;
-        if !timing.should_continue(cycle, elapsed_secs) {
-            break;
-        }
-    }
-
-    let elapsed = start.elapsed().as_millis();
-    TestStats {
-        name: test_name,
-        action: TestAction::WriteVerify,
-        bytes_processed: total_bytes_processed,
-        elapsed_ms: elapsed,
-        thread_id,
-        error_count: total_error_count,
-        total_operations,
-        cycles_completed: cycle,
-        cycles_planned: timing.cycles,
-        stopped_by_time_limit: timing.cycles.map_or(true, |limit| cycle < limit),
-    }
-}
 
 /// MirrorMove test - MultiBlock version
 /// Tests memory by mirroring data and verifying the mirror operation
@@ -7483,10 +6637,147 @@ unsafe fn simple_test_v2_sequential(
     param1: u64,
 ) -> TestStats {
     let test_name = "Mem-SimpleV2";
+    let cl_shift = pattern_gen::cache_line_shift(config.cache_line_bytes);
+    let cl_elements = config.cache_line_bytes / std::mem::size_of::<u64>();
 
     match pattern_mode {
+        0 => {
+            // Mode 0 (TM5-faithful): bit dispersion + branchless 4KB page complement
+            run_test_v2(
+                blocks, thread_id, error_mode, timing, config, progress,
+                test_name, TestAction::WriteVerify, config.test_reps, config.verify_reps,
+                |ctx: &ChunkCtx| {
+                    let seed = pattern_gen::block_seed(ctx.ptr as usize, ctx.thread_id, ctx.cycle);
+                    for idx in ctx.chunk_start..ctx.chunk_end {
+                        *ctx.ptr.add(idx) = pattern_gen::pattern_mode0(idx as u64, seed);
+                    }
+                },
+                |ctx: &ChunkCtx| {
+                    let seed = pattern_gen::block_seed(ctx.ptr as usize, ctx.thread_id, ctx.cycle);
+                    for idx in ctx.chunk_start..ctx.chunk_end {
+                        *ctx.ptr.add(idx) = pattern_gen::pattern_mode0(idx as u64, seed);
+                    }
+                },
+                |ctx: &ChunkCtx| -> u64 {
+                    let seed = pattern_gen::block_seed(ctx.ptr as usize, ctx.thread_id, ctx.cycle);
+                    let mut total_errors = 0u64;
+                    for idx in ctx.chunk_start..ctx.chunk_end {
+                        let expected = pattern_gen::pattern_mode0(idx as u64, seed);
+                        let actual = *ctx.ptr.add(idx);
+                        if actual != expected {
+                            total_errors += 1;
+                            if total_errors <= 10 {
+                                log::error!("{}: error at idx {} - expected {:#x}, got {:#x}",
+                                           test_name, idx, expected, actual);
+                            }
+                        }
+                    }
+                    total_errors
+                },
+            )
+        }
+        1 => {
+            // Mode 1 (TM5-faithful): linear step + cache-line complement
+            run_test_v2(
+                blocks, thread_id, error_mode, timing, config, progress,
+                test_name, TestAction::WriteVerify, config.test_reps, config.verify_reps,
+                |ctx: &ChunkCtx| {
+                    let seed = pattern_gen::block_seed(ctx.ptr as usize, ctx.thread_id, ctx.cycle);
+                    for idx in ctx.chunk_start..ctx.chunk_end {
+                        *ctx.ptr.add(idx) = pattern_gen::pattern_mode1(idx as u64, seed, cl_shift);
+                    }
+                },
+                |ctx: &ChunkCtx| {
+                    let seed = pattern_gen::block_seed(ctx.ptr as usize, ctx.thread_id, ctx.cycle);
+                    for idx in ctx.chunk_start..ctx.chunk_end {
+                        *ctx.ptr.add(idx) = pattern_gen::pattern_mode1(idx as u64, seed, cl_shift);
+                    }
+                },
+                |ctx: &ChunkCtx| -> u64 {
+                    let seed = pattern_gen::block_seed(ctx.ptr as usize, ctx.thread_id, ctx.cycle);
+                    let mut total_errors = 0u64;
+                    for idx in ctx.chunk_start..ctx.chunk_end {
+                        let expected = pattern_gen::pattern_mode1(idx as u64, seed, cl_shift);
+                        let actual = *ctx.ptr.add(idx);
+                        if actual != expected {
+                            total_errors += 1;
+                            if total_errors <= 10 {
+                                log::error!("{}: error at idx {} - expected {:#x}, got {:#x}",
+                                           test_name, idx, expected, actual);
+                            }
+                        }
+                    }
+                    total_errors
+                },
+            )
+        }
         2 => {
-            // Mode 2: LCG — THE FIX. Uses real PRNG chain instead of static seed.
+            // Mode 2 (TM5-faithful): two-level evolving pattern (PMULLW-style)
+            run_test_v2(
+                blocks, thread_id, error_mode, timing, config, progress,
+                test_name, TestAction::WriteVerify, config.test_reps, config.verify_reps,
+                |ctx: &ChunkCtx| {
+                    let base_seed = pattern_gen::block_seed(ctx.ptr as usize, ctx.thread_id, ctx.cycle);
+                    let mut page_seed = base_seed;
+                    let mut page_step = base_seed.wrapping_mul(0x5DEECE66D);
+                    let mut idx = ctx.chunk_start;
+                    while idx < ctx.chunk_end {
+                        let page_end = (idx + cl_elements).min(ctx.chunk_end);
+                        for i in idx..page_end {
+                            *ctx.ptr.add(i) = pattern_gen::mode2_element(page_seed, (i - idx) as u64, page_step);
+                        }
+                        let (ns, nst) = pattern_gen::mode2_evolve(page_seed, page_step, param0, param1);
+                        page_seed = ns;
+                        page_step = nst;
+                        idx = page_end;
+                    }
+                },
+                |ctx: &ChunkCtx| {
+                    let base_seed = pattern_gen::block_seed(ctx.ptr as usize, ctx.thread_id, ctx.cycle);
+                    let mut page_seed = base_seed;
+                    let mut page_step = base_seed.wrapping_mul(0x5DEECE66D);
+                    let mut idx = ctx.chunk_start;
+                    while idx < ctx.chunk_end {
+                        let page_end = (idx + cl_elements).min(ctx.chunk_end);
+                        for i in idx..page_end {
+                            *ctx.ptr.add(i) = pattern_gen::mode2_element(page_seed, (i - idx) as u64, page_step);
+                        }
+                        let (ns, nst) = pattern_gen::mode2_evolve(page_seed, page_step, param0, param1);
+                        page_seed = ns;
+                        page_step = nst;
+                        idx = page_end;
+                    }
+                },
+                |ctx: &ChunkCtx| -> u64 {
+                    let base_seed = pattern_gen::block_seed(ctx.ptr as usize, ctx.thread_id, ctx.cycle);
+                    let mut page_seed = base_seed;
+                    let mut page_step = base_seed.wrapping_mul(0x5DEECE66D);
+                    let mut total_errors = 0u64;
+                    let mut idx = ctx.chunk_start;
+                    while idx < ctx.chunk_end {
+                        let page_end = (idx + cl_elements).min(ctx.chunk_end);
+                        for i in idx..page_end {
+                            let expected = pattern_gen::mode2_element(page_seed, (i - idx) as u64, page_step);
+                            let actual = *ctx.ptr.add(i);
+                            if actual != expected {
+                                total_errors += 1;
+                                if total_errors <= 10 {
+                                    log::error!("{}: error at idx {} - expected {:#x}, got {:#x}",
+                                               test_name, i, expected, actual);
+                                }
+                            }
+                        }
+                        let (ns, nst) = pattern_gen::mode2_evolve(page_seed, page_step, param0, param1);
+                        page_seed = ns;
+                        page_step = nst;
+                        idx = page_end;
+                    }
+                    total_errors
+                },
+            )
+        }
+        12 => {
+            // Mode 12 (TMR-native): LCG chain — real PRNG.
             let multiplier = param0;
             let addend = param1;
             // Initial seed from thread_id for per-thread uniqueness
@@ -7494,7 +6785,7 @@ unsafe fn simple_test_v2_sequential(
 
             run_test_v2(
                 blocks, thread_id, error_mode, timing, config, progress,
-                test_name, TestAction::WriteVerify,
+                test_name, TestAction::WriteVerify, config.test_reps, config.verify_reps,
                 // Init: first write (same as test_fn — ensures memory has valid patterns before cycle loop)
                 |ctx: &ChunkCtx| {
                     let mut state = pattern_gen::lcg_next(
@@ -7566,22 +6857,22 @@ unsafe fn simple_test_v2_sequential(
                 },
             )
         }
-        1 => {
-            // Mode 1: inverted constant
+        11 => {
+            // Mode 11 (TMR-native): inverted constant
             let combined = param0 ^ param1;
             run_test_v2(
                 blocks, thread_id, error_mode, timing, config, progress,
-                test_name, TestAction::WriteVerify,
+                test_name, TestAction::WriteVerify, config.test_reps, config.verify_reps,
                 // Init: first write
                 |ctx: &ChunkCtx| {
                     for idx in ctx.chunk_start..ctx.chunk_end {
-                        *ctx.ptr.add(idx) = pattern_gen::pattern_mode1(idx as u64, combined);
+                        *ctx.ptr.add(idx) = pattern_gen::pattern_mode11(idx as u64, combined);
                     }
                 },
                 // Test: write patterns (every cycle)
                 |ctx: &ChunkCtx| {
                     for idx in ctx.chunk_start..ctx.chunk_end {
-                        *ctx.ptr.add(idx) = pattern_gen::pattern_mode1(idx as u64, combined);
+                        *ctx.ptr.add(idx) = pattern_gen::pattern_mode11(idx as u64, combined);
                     }
                 },
                 // Verify: read and compare (with error_check_interval for v1 parity)
@@ -7592,7 +6883,7 @@ unsafe fn simple_test_v2_sequential(
                             let mut interval_errors = 0u64;
                             let mut element_count = 0u32;
                             for idx in ctx.chunk_start..ctx.chunk_end {
-                                let expected = pattern_gen::pattern_mode1(idx as u64, combined);
+                                let expected = pattern_gen::pattern_mode11(idx as u64, combined);
                                 let actual = *ctx.ptr.add(idx);
                                 if actual != expected {
                                     interval_errors += 1;
@@ -7613,7 +6904,7 @@ unsafe fn simple_test_v2_sequential(
                         }
                         None => {
                             for idx in ctx.chunk_start..ctx.chunk_end {
-                                let expected = pattern_gen::pattern_mode1(idx as u64, combined);
+                                let expected = pattern_gen::pattern_mode11(idx as u64, combined);
                                 let actual = *ctx.ptr.add(idx);
                                 if actual != expected {
                                     total_errors += 1;
@@ -7629,22 +6920,22 @@ unsafe fn simple_test_v2_sequential(
                 },
             )
         }
-        _ => {
-            // Mode 0: address-derived (default)
+        10 | _ => {
+            // Mode 10 (TMR-native): address-derived unique (default fallback)
             let base = param0;
             run_test_v2(
                 blocks, thread_id, error_mode, timing, config, progress,
-                test_name, TestAction::WriteVerify,
+                test_name, TestAction::WriteVerify, config.test_reps, config.verify_reps,
                 // Init: first write
                 |ctx: &ChunkCtx| {
                     for idx in ctx.chunk_start..ctx.chunk_end {
-                        *ctx.ptr.add(idx) = pattern_gen::pattern_mode0(idx as u64, base);
+                        *ctx.ptr.add(idx) = pattern_gen::pattern_mode10(idx as u64, base);
                     }
                 },
                 // Test: write patterns (every cycle)
                 |ctx: &ChunkCtx| {
                     for idx in ctx.chunk_start..ctx.chunk_end {
-                        *ctx.ptr.add(idx) = pattern_gen::pattern_mode0(idx as u64, base);
+                        *ctx.ptr.add(idx) = pattern_gen::pattern_mode10(idx as u64, base);
                     }
                 },
                 // Verify: read and compare (with error_check_interval for v1 parity)
@@ -7655,7 +6946,7 @@ unsafe fn simple_test_v2_sequential(
                             let mut interval_errors = 0u64;
                             let mut element_count = 0u32;
                             for idx in ctx.chunk_start..ctx.chunk_end {
-                                let expected = pattern_gen::pattern_mode0(idx as u64, base);
+                                let expected = pattern_gen::pattern_mode10(idx as u64, base);
                                 let actual = *ctx.ptr.add(idx);
                                 if actual != expected {
                                     interval_errors += 1;
@@ -7676,7 +6967,7 @@ unsafe fn simple_test_v2_sequential(
                         }
                         None => {
                             for idx in ctx.chunk_start..ctx.chunk_end {
-                                let expected = pattern_gen::pattern_mode0(idx as u64, base);
+                                let expected = pattern_gen::pattern_mode10(idx as u64, base);
                                 let actual = *ctx.ptr.add(idx);
                                 if actual != expected {
                                     total_errors += 1;
@@ -7713,43 +7004,64 @@ unsafe fn simple_test_v2_strided(
     stride: usize,
 ) -> TestStats {
     let test_name = "Mem-SimpleV2";
-    let base = match pattern_mode {
-        1 => param0 ^ param1,
+    // For strided access, stateful modes (2, 12) fall back to positional mode 10.
+    // LCG chains don't compose with non-sequential access. Positional modes (0/1/10/11) work fine.
+    let effective_mode = match pattern_mode {
+        0 | 1 | 10 | 11 => pattern_mode,
+        _ => 10, // Stateful modes fall back to TMR-native positional
+    };
+    let base = match effective_mode {
+        11 => param0 ^ param1,
         _ => param0,
     };
+    let cl_shift = pattern_gen::cache_line_shift(config.cache_line_bytes);
 
-    // For strided access, we use Mode 0 pattern (address-derived) since
-    // LCG chains don't compose well with non-sequential access.
-    // The stride itself provides the row-stress value, not the pattern.
+    // Dispatch pattern function once outside hot loop (avoids per-element branch)
+    let gen_pattern: fn(u64, u64, u32) -> u64 = match effective_mode {
+        0 => |idx, seed, _cl| pattern_gen::pattern_mode0(idx, seed),
+        1 => |idx, seed, cl| pattern_gen::pattern_mode1(idx, seed, cl),
+        11 => |idx, combined, _cl| pattern_gen::pattern_mode11(idx, combined),
+        _ => |idx, base, _cl| pattern_gen::pattern_mode10(idx, base),
+    };
+
     run_test_v2(
         blocks, thread_id, error_mode, timing, config, progress,
-        test_name, TestAction::WriteVerify,
+        test_name, TestAction::WriteVerify, config.test_reps, config.verify_reps,
         // Init: first write with stride pattern covering all elements
         |ctx: &ChunkCtx| {
+            let seed = if effective_mode <= 1 {
+                pattern_gen::block_seed(ctx.ptr as usize, ctx.thread_id, ctx.cycle)
+            } else { base };
             let len = ctx.chunk_end - ctx.chunk_start;
             if len == 0 { return; }
             for sub_offset in 0..stride.min(len) {
                 let mut idx = ctx.chunk_start + sub_offset;
                 while idx < ctx.chunk_end {
-                    *ctx.ptr.add(idx) = pattern_gen::pattern_mode0(idx as u64, base);
+                    *ctx.ptr.add(idx) = gen_pattern(idx as u64, seed, cl_shift);
                     idx += stride;
                 }
             }
         },
         // Test: write with stride (every cycle, matching v1 write+verify structure)
         |ctx: &ChunkCtx| {
+            let seed = if effective_mode <= 1 {
+                pattern_gen::block_seed(ctx.ptr as usize, ctx.thread_id, ctx.cycle)
+            } else { base };
             let len = ctx.chunk_end - ctx.chunk_start;
             if len == 0 { return; }
             for sub_offset in 0..stride.min(len) {
                 let mut idx = ctx.chunk_start + sub_offset;
                 while idx < ctx.chunk_end {
-                    *ctx.ptr.add(idx) = pattern_gen::pattern_mode0(idx as u64, base);
+                    *ctx.ptr.add(idx) = gen_pattern(idx as u64, seed, cl_shift);
                     idx += stride;
                 }
             }
         },
         // Verify: same strided order (with error_check_interval for v1 parity)
         |ctx: &ChunkCtx| -> u64 {
+            let seed = if effective_mode <= 1 {
+                pattern_gen::block_seed(ctx.ptr as usize, ctx.thread_id, ctx.cycle)
+            } else { base };
             let mut total_errors = 0u64;
             let len = ctx.chunk_end - ctx.chunk_start;
             if len == 0 { return 0; }
@@ -7760,7 +7072,7 @@ unsafe fn simple_test_v2_strided(
                     for sub_offset in 0..stride.min(len) {
                         let mut idx = ctx.chunk_start + sub_offset;
                         while idx < ctx.chunk_end {
-                            let expected = pattern_gen::pattern_mode0(idx as u64, base);
+                            let expected = gen_pattern(idx as u64, seed, cl_shift);
                             let actual = *ctx.ptr.add(idx);
                             if actual != expected {
                                 interval_errors += 1;
@@ -7785,7 +7097,7 @@ unsafe fn simple_test_v2_strided(
                     for sub_offset in 0..stride.min(len) {
                         let mut idx = ctx.chunk_start + sub_offset;
                         while idx < ctx.chunk_end {
-                            let expected = pattern_gen::pattern_mode0(idx as u64, base);
+                            let expected = gen_pattern(idx as u64, seed, cl_shift);
                             let actual = *ctx.ptr.add(idx);
                             if actual != expected {
                                 total_errors += 1;
@@ -8115,7 +7427,10 @@ macro_rules! mirror_move_v2_impl {
 
             run_test_v2_with_init(
                 blocks, thread_id, error_mode, timing, config, progress,
-                test_name, TestAction::WriteWaitVerify, 5,
+                test_name, TestAction::WriteWaitVerify,
+                4,  // bytes_per_test_op: 2R + 2W per mirror round-trip
+                config.test_reps,  // test_reps: mirror round-trips before verify
+                config.verify_reps,  // verify_reps: verification passes
 
                 // Init: SIMD pattern writes
                 |ctx: &ChunkCtx| {
@@ -8157,7 +7472,9 @@ pub unsafe fn mirror_move_v2_multi(
     run_test_v2_with_init(
         blocks, thread_id, error_mode, timing, config, progress,
         test_name, TestAction::WriteWaitVerify,
-        5, // bytes multiplier: 2 mirrors (2R+2W) + verify (1R) = 5 passes
+        4, // bytes_per_test_op: 2R + 2W per mirror round-trip
+        config.test_reps,  // test_reps: mirror round-trips before verify
+        config.verify_reps,  // verify_reps: verification passes
         // Init: write forward patterns once (TM5: RS_Set fills before test sequence)
         |ctx: &ChunkCtx| {
             for i in ctx.chunk_start..ctx.chunk_end {
@@ -8315,6 +7632,971 @@ crate::auto_dispatch!(
     mirror_move_v2_512_multi
 );
 
+// ─── SIMD SimpleTest v2 Macros ──────────────────────────────────────────────
+//
+// These macros stamp out SIMD Write and Verify phases for SimpleTest at any width.
+// Two code paths: positional (Mode 0/1: idx ^ base) and LCG (Mode 2: PRNG chain).
+// The master macro `simple_test_v2_impl!` combines them into a complete test function.
+
+/// SIMD Write for positional patterns (Mode 0/1): stores (idx ^ base) per element.
+/// Pattern is purely position-based, so no state to carry between chunks.
+macro_rules! simple_write_positional_simd {
+    ($simd_type:ty, $simd_w:expr, $ctx:expr, $base_vec:expr, $lane_offsets:expr) => {{
+        let _len = $ctx.chunk_end - $ctx.chunk_start;
+        debug_assert!(_len % $simd_w == 0, "chunk not aligned to SIMD width");
+        let step = <$simd_type>::splat($simd_w as u64);
+        let mut idx_vec = <$simd_type>::splat($ctx.chunk_start as u64) + $lane_offsets;
+        for i in ($ctx.chunk_start..$ctx.chunk_end).step_by($simd_w) {
+            *($ctx.ptr.add(i) as *mut $simd_type) = idx_vec ^ $base_vec;
+            idx_vec += step;
+        }
+    }}
+}
+
+/// SIMD Verify for positional patterns (Mode 0/1): XOR+OR accumulator.
+/// Batched error checking matches MirrorMove verify for consistent codegen.
+macro_rules! simple_verify_positional_simd {
+    ($simd_type:ty, $simd_w:expr, $ctx:expr,
+     $base_vec:expr, $lane_offsets:expr, $zero:expr) => {{
+        let _len = $ctx.chunk_end - $ctx.chunk_start;
+        debug_assert!(_len % $simd_w == 0, "chunk not aligned to SIMD width");
+        let step = <$simd_type>::splat($simd_w as u64);
+        let mut idx_vec = <$simd_type>::splat($ctx.chunk_start as u64) + $lane_offsets;
+        let mut total_errors = 0u64;
+
+        match $ctx.check_mask {
+            Some(check_mask) => {
+                let vectors_per_check = (check_mask as usize) + 1;
+                let batch_elements = vectors_per_check * $simd_w;
+                let mut pos = $ctx.chunk_start;
+                let aligned_end = $ctx.chunk_end - ($ctx.chunk_end - $ctx.chunk_start) % batch_elements;
+
+                while pos < aligned_end {
+                    let mut error_acc = $zero;
+                    let batch_end = pos + batch_elements;
+                    for i in (pos..batch_end).step_by($simd_w) {
+                        let actual = *($ctx.ptr.add(i) as *const $simd_type);
+                        error_acc |= actual ^ (idx_vec ^ $base_vec);
+                        idx_vec += step;
+                    }
+                    if error_acc.simd_ne($zero).any() {
+                        total_errors += 1;
+                    }
+                    pos = batch_end;
+                }
+
+                if pos < $ctx.chunk_end {
+                    let mut error_acc = $zero;
+                    for i in (pos..$ctx.chunk_end).step_by($simd_w) {
+                        let actual = *($ctx.ptr.add(i) as *const $simd_type);
+                        error_acc |= actual ^ (idx_vec ^ $base_vec);
+                        idx_vec += step;
+                    }
+                    if error_acc.simd_ne($zero).any() {
+                        total_errors += 1;
+                    }
+                }
+            }
+            None => {
+                let mut error_acc = $zero;
+                for i in ($ctx.chunk_start..$ctx.chunk_end).step_by($simd_w) {
+                    let actual = *($ctx.ptr.add(i) as *const $simd_type);
+                    error_acc |= actual ^ (idx_vec ^ $base_vec);
+                    idx_vec += step;
+                }
+                if error_acc.simd_ne($zero).any() {
+                    total_errors += 1;
+                }
+            }
+        }
+        total_errors
+    }}
+}
+
+/// SIMD Write for LCG patterns (Mode 2): uses LcgSimdN for N-lane parallel PRNG.
+/// LCG state is seeded per chunk from chunk_start for deterministic replay.
+macro_rules! simple_write_lcg_simd {
+    ($lcg_type:ty, $simd_type:ty, $simd_w:expr, $ctx:expr,
+     $initial_seed:expr, $multiplier:expr, $addend:expr) => {{
+        let _len = $ctx.chunk_end - $ctx.chunk_start;
+        debug_assert!(_len % $simd_w == 0, "chunk not aligned to SIMD width");
+        let chunk_seed = pattern_gen::lcg_next(
+            $initial_seed.wrapping_add($ctx.chunk_start as u64),
+            $multiplier, $addend,
+        );
+        let mut lcg = <$lcg_type>::new(chunk_seed, $multiplier, $addend);
+        for i in ($ctx.chunk_start..$ctx.chunk_end).step_by($simd_w) {
+            *($ctx.ptr.add(i) as *mut $simd_type) = lcg.next();
+        }
+    }}
+}
+
+/// SIMD Verify for LCG patterns (Mode 2): replay LCG and XOR+OR accumulate.
+macro_rules! simple_verify_lcg_simd {
+    ($lcg_type:ty, $simd_type:ty, $simd_w:expr, $ctx:expr,
+     $initial_seed:expr, $multiplier:expr, $addend:expr, $zero:expr) => {{
+        let _len = $ctx.chunk_end - $ctx.chunk_start;
+        debug_assert!(_len % $simd_w == 0, "chunk not aligned to SIMD width");
+        let chunk_seed = pattern_gen::lcg_next(
+            $initial_seed.wrapping_add($ctx.chunk_start as u64),
+            $multiplier, $addend,
+        );
+        let mut lcg = <$lcg_type>::new(chunk_seed, $multiplier, $addend);
+        let mut total_errors = 0u64;
+
+        match $ctx.check_mask {
+            Some(check_mask) => {
+                let vectors_per_check = (check_mask as usize) + 1;
+                let batch_elements = vectors_per_check * $simd_w;
+                let mut pos = $ctx.chunk_start;
+                let aligned_end = $ctx.chunk_end - ($ctx.chunk_end - $ctx.chunk_start) % batch_elements;
+
+                while pos < aligned_end {
+                    let mut error_acc = $zero;
+                    let batch_end = pos + batch_elements;
+                    for i in (pos..batch_end).step_by($simd_w) {
+                        let actual = *($ctx.ptr.add(i) as *const $simd_type);
+                        error_acc |= actual ^ lcg.next();
+                    }
+                    if error_acc.simd_ne($zero).any() {
+                        total_errors += 1;
+                    }
+                    pos = batch_end;
+                }
+
+                if pos < $ctx.chunk_end {
+                    let mut error_acc = $zero;
+                    for i in (pos..$ctx.chunk_end).step_by($simd_w) {
+                        let actual = *($ctx.ptr.add(i) as *const $simd_type);
+                        error_acc |= actual ^ lcg.next();
+                    }
+                    if error_acc.simd_ne($zero).any() {
+                        total_errors += 1;
+                    }
+                }
+            }
+            None => {
+                let mut error_acc = $zero;
+                for i in ($ctx.chunk_start..$ctx.chunk_end).step_by($simd_w) {
+                    let actual = *($ctx.ptr.add(i) as *const $simd_type);
+                    error_acc |= actual ^ lcg.next();
+                }
+                if error_acc.simd_ne($zero).any() {
+                    total_errors += 1;
+                }
+            }
+        }
+        total_errors
+    }}
+}
+
+/// SIMD Write for positional patterns with stride — block-strided access.
+/// Writes contiguous SIMD blocks spaced apart by stride, with interleave passes
+/// for full coverage. Same approach as MirrorMove's `mirror_swap_strided!`.
+///
+/// ```text
+/// stride_param=3, simd_w=8:  total_stride = (3+1)*8 = 32 elements
+///
+/// Pass 0: [████████]________________________[████████]________________________
+///         pos 0                              pos 32
+/// Pass 1: ________[████████]________________________[████████]________________
+///         pos 8                              pos 40
+/// Pass 2: ________________[████████]________________________[████████]________
+///         pos 16                             pos 48
+/// Pass 3: ________________________[████████]________________________[████████]
+///         pos 24                             pos 56
+/// ```
+macro_rules! simple_write_strided_positional_simd {
+    ($simd_type:ty, $simd_w:expr, $ctx:expr,
+     $base_vec:expr, $lane_offsets:expr, $stride_param:expr) => {{
+        let block_elements: usize = $simd_w;
+        let stride_elements: usize = $stride_param * block_elements;
+        let total_stride: usize = stride_elements + block_elements;
+        let interleave_passes: usize = total_stride / block_elements;
+
+        for pass in 0..interleave_passes {
+            let offset = pass * block_elements;
+            let mut pos = $ctx.chunk_start + offset;
+            while pos + block_elements <= $ctx.chunk_end {
+                let idx_vec = <$simd_type>::splat(pos as u64) + $lane_offsets;
+                *($ctx.ptr.add(pos) as *mut $simd_type) = idx_vec ^ $base_vec;
+                pos += total_stride;
+            }
+        }
+    }}
+}
+
+/// SIMD Verify for positional patterns with stride — block-strided access.
+/// Walks the same strided pattern as write, XOR+OR accumulates errors.
+macro_rules! simple_verify_strided_positional_simd {
+    ($simd_type:ty, $simd_w:expr, $ctx:expr,
+     $base_vec:expr, $lane_offsets:expr, $zero:expr, $stride_param:expr) => {{
+        let block_elements: usize = $simd_w;
+        let stride_elements: usize = $stride_param * block_elements;
+        let total_stride: usize = stride_elements + block_elements;
+        let interleave_passes: usize = total_stride / block_elements;
+        let mut total_errors = 0u64;
+        let mut error_acc = $zero;
+
+        for pass in 0..interleave_passes {
+            let offset = pass * block_elements;
+            let mut pos = $ctx.chunk_start + offset;
+            while pos + block_elements <= $ctx.chunk_end {
+                let idx_vec = <$simd_type>::splat(pos as u64) + $lane_offsets;
+                let expected = idx_vec ^ $base_vec;
+                let actual = *($ctx.ptr.add(pos) as *const $simd_type);
+                error_acc |= actual ^ expected;
+                pos += total_stride;
+            }
+        }
+
+        if error_acc.simd_ne($zero).any() {
+            total_errors += 1;
+        }
+        total_errors
+    }}
+}
+
+/// SIMD Write for LCG patterns with stride — block-strided, re-seeded per block.
+/// Each SIMD block gets an independent LCG seeded from its position, producing W
+/// pseudo-random values per block. The stride provides DRAM row stress while SIMD
+/// gives write throughput within each block.
+macro_rules! simple_write_strided_lcg_simd {
+    ($lcg_type:ty, $simd_type:ty, $simd_w:expr, $ctx:expr,
+     $initial_seed:expr, $multiplier:expr, $addend:expr, $stride_param:expr) => {{
+        let block_elements: usize = $simd_w;
+        let stride_elements: usize = $stride_param * block_elements;
+        let total_stride: usize = stride_elements + block_elements;
+        let interleave_passes: usize = total_stride / block_elements;
+
+        for pass in 0..interleave_passes {
+            let offset = pass * block_elements;
+            let mut pos = $ctx.chunk_start + offset;
+            while pos + block_elements <= $ctx.chunk_end {
+                let block_seed = pattern_gen::lcg_next(
+                    $initial_seed.wrapping_add(pos as u64),
+                    $multiplier, $addend,
+                );
+                let mut lcg = <$lcg_type>::new(block_seed, $multiplier, $addend);
+                *($ctx.ptr.add(pos) as *mut $simd_type) = lcg.next();
+                pos += total_stride;
+            }
+        }
+    }}
+}
+
+/// SIMD Verify for LCG patterns with stride — replay per-block LCG, XOR+OR accumulate.
+macro_rules! simple_verify_strided_lcg_simd {
+    ($lcg_type:ty, $simd_type:ty, $simd_w:expr, $ctx:expr,
+     $initial_seed:expr, $multiplier:expr, $addend:expr, $zero:expr, $stride_param:expr) => {{
+        let block_elements: usize = $simd_w;
+        let stride_elements: usize = $stride_param * block_elements;
+        let total_stride: usize = stride_elements + block_elements;
+        let interleave_passes: usize = total_stride / block_elements;
+        let mut total_errors = 0u64;
+        let mut error_acc = $zero;
+
+        for pass in 0..interleave_passes {
+            let offset = pass * block_elements;
+            let mut pos = $ctx.chunk_start + offset;
+            while pos + block_elements <= $ctx.chunk_end {
+                let block_seed = pattern_gen::lcg_next(
+                    $initial_seed.wrapping_add(pos as u64),
+                    $multiplier, $addend,
+                );
+                let mut lcg = <$lcg_type>::new(block_seed, $multiplier, $addend);
+                let actual = *($ctx.ptr.add(pos) as *const $simd_type);
+                error_acc |= actual ^ lcg.next();
+                pos += total_stride;
+            }
+        }
+
+        if error_acc.simd_ne($zero).any() {
+            total_errors += 1;
+        }
+        total_errors
+    }}
+}
+
+/// Master macro: stamps out a complete SIMD SimpleTest v2 function for a given width.
+/// Handles all 3 pattern modes: Mode 0 (idx^base), Mode 1 (idx^combined), Mode 2 (LCG).
+/// Generates 4 specialized `#[target_feature]` functions (one per pattern/stride combo)
+/// plus a lightweight dispatch function. This prevents LLVM from inlining all 4 code paths
+/// into one mega-function, which caused 9K+ lines of assembly, 46 `vzeroupper` calls,
+/// and instruction cache pressure that made wider SIMD slower than narrower.
+///
+/// Each specialized function contains exactly ONE run_test_v2 call with its closures,
+/// producing tight, focused assembly. The dispatch function has NO `#[target_feature]`
+/// so it compiles to a simple branch without pulling in SIMD register state.
+macro_rules! simple_test_v2_impl {
+    (
+        $dispatch_fn:ident,
+        $pos_seq_fn:ident,
+        $pos_str_fn:ident,
+        $lcg_seq_fn:ident,
+        $lcg_str_fn:ident,
+        $test_name:literal,
+        $simd_type:ty,
+        $simd_w:expr,
+        $lane_offsets:expr,
+        $lcg_type:ty,
+        $target_feature:literal
+    ) => {
+        /// Positional sequential — contiguous access with idx^base pattern.
+        #[target_feature(enable = $target_feature)]
+        unsafe fn $pos_seq_fn(
+            blocks: &[crate::runner::AllocationBlock],
+            thread_id: usize,
+            error_mode: ErrorMode,
+            timing: &TestTiming,
+            config: &TestMemoryConfig,
+            progress: Option<&TestProgress>,
+        ) -> TestStats {
+            let test_name = $test_name;
+            let simd_elements: usize = $simd_w;
+            let lane_offsets = <$simd_type>::from_array($lane_offsets);
+            let zero = <$simd_type>::splat(0);
+            let pattern_mode = config.pattern_mode.unwrap_or(0);
+            let param0 = config.pattern_param0.unwrap_or(0xDEADBEEFDEADBEEF);
+            let param1 = config.pattern_param1.unwrap_or(0xCAFEBABECAFEBABE);
+            let base = match pattern_mode {
+                1 | 11 => param0 ^ param1,
+                _ => param0,
+            };
+            let base_vec = <$simd_type>::splat(base);
+
+            run_test_v2(
+                blocks, thread_id, error_mode, timing, config, progress,
+                test_name, TestAction::WriteVerify, config.test_reps, config.verify_reps,
+                |ctx: &ChunkCtx| {
+                    simple_write_positional_simd!($simd_type, simd_elements, ctx,
+                        base_vec, lane_offsets);
+                },
+                |ctx: &ChunkCtx| {
+                    simple_write_positional_simd!($simd_type, simd_elements, ctx,
+                        base_vec, lane_offsets);
+                },
+                |ctx: &ChunkCtx| -> u64 {
+                    simple_verify_positional_simd!($simd_type, simd_elements, ctx,
+                        base_vec, lane_offsets, zero)
+                },
+            )
+        }
+
+        /// Positional strided — block-strided access with idx^base pattern.
+        #[target_feature(enable = $target_feature)]
+        unsafe fn $pos_str_fn(
+            blocks: &[crate::runner::AllocationBlock],
+            thread_id: usize,
+            error_mode: ErrorMode,
+            timing: &TestTiming,
+            config: &TestMemoryConfig,
+            progress: Option<&TestProgress>,
+        ) -> TestStats {
+            let test_name = $test_name;
+            let simd_elements: usize = $simd_w;
+            let lane_offsets = <$simd_type>::from_array($lane_offsets);
+            let zero = <$simd_type>::splat(0);
+            let pattern_mode = config.pattern_mode.unwrap_or(0);
+            let param0 = config.pattern_param0.unwrap_or(0xDEADBEEFDEADBEEF);
+            let param1 = config.pattern_param1.unwrap_or(0xCAFEBABECAFEBABE);
+            let stride_param = config.parameter_context.as_ref()
+                .and_then(|ctx| ctx.stride_elements)
+                .unwrap_or(0);
+            let base = match pattern_mode {
+                1 | 11 => param0 ^ param1,
+                _ => param0,
+            };
+            let base_vec = <$simd_type>::splat(base);
+
+            run_test_v2(
+                blocks, thread_id, error_mode, timing, config, progress,
+                test_name, TestAction::WriteVerify, config.test_reps, config.verify_reps,
+                |ctx: &ChunkCtx| {
+                    simple_write_strided_positional_simd!($simd_type, simd_elements, ctx,
+                        base_vec, lane_offsets, stride_param);
+                },
+                |ctx: &ChunkCtx| {
+                    simple_write_strided_positional_simd!($simd_type, simd_elements, ctx,
+                        base_vec, lane_offsets, stride_param);
+                },
+                |ctx: &ChunkCtx| -> u64 {
+                    simple_verify_strided_positional_simd!($simd_type, simd_elements, ctx,
+                        base_vec, lane_offsets, zero, stride_param)
+                },
+            )
+        }
+
+        /// LCG sequential — contiguous access with chained PRNG pattern.
+        #[target_feature(enable = $target_feature)]
+        unsafe fn $lcg_seq_fn(
+            blocks: &[crate::runner::AllocationBlock],
+            thread_id: usize,
+            error_mode: ErrorMode,
+            timing: &TestTiming,
+            config: &TestMemoryConfig,
+            progress: Option<&TestProgress>,
+        ) -> TestStats {
+            let test_name = $test_name;
+            let simd_elements: usize = $simd_w;
+            let zero = <$simd_type>::splat(0);
+            let multiplier = config.pattern_param0.unwrap_or(0xDEADBEEFDEADBEEF);
+            let addend = config.pattern_param1.unwrap_or(0xCAFEBABECAFEBABE);
+            let initial_seed = (thread_id as u64)
+                .wrapping_mul(0x9E3779B97F4A7C15)
+                .wrapping_add(1);
+
+            run_test_v2(
+                blocks, thread_id, error_mode, timing, config, progress,
+                test_name, TestAction::WriteVerify, config.test_reps, config.verify_reps,
+                |ctx: &ChunkCtx| {
+                    simple_write_lcg_simd!($lcg_type, $simd_type, simd_elements, ctx,
+                        initial_seed, multiplier, addend);
+                },
+                |ctx: &ChunkCtx| {
+                    simple_write_lcg_simd!($lcg_type, $simd_type, simd_elements, ctx,
+                        initial_seed, multiplier, addend);
+                },
+                |ctx: &ChunkCtx| -> u64 {
+                    simple_verify_lcg_simd!($lcg_type, $simd_type, simd_elements, ctx,
+                        initial_seed, multiplier, addend, zero)
+                },
+            )
+        }
+
+        /// LCG strided — block-strided access with re-seeded PRNG pattern.
+        #[target_feature(enable = $target_feature)]
+        unsafe fn $lcg_str_fn(
+            blocks: &[crate::runner::AllocationBlock],
+            thread_id: usize,
+            error_mode: ErrorMode,
+            timing: &TestTiming,
+            config: &TestMemoryConfig,
+            progress: Option<&TestProgress>,
+        ) -> TestStats {
+            let test_name = $test_name;
+            let simd_elements: usize = $simd_w;
+            let zero = <$simd_type>::splat(0);
+            let multiplier = config.pattern_param0.unwrap_or(0xDEADBEEFDEADBEEF);
+            let addend = config.pattern_param1.unwrap_or(0xCAFEBABECAFEBABE);
+            let stride_param = config.parameter_context.as_ref()
+                .and_then(|ctx| ctx.stride_elements)
+                .unwrap_or(0);
+            let initial_seed = (thread_id as u64)
+                .wrapping_mul(0x9E3779B97F4A7C15)
+                .wrapping_add(1);
+
+            run_test_v2(
+                blocks, thread_id, error_mode, timing, config, progress,
+                test_name, TestAction::WriteVerify, config.test_reps, config.verify_reps,
+                |ctx: &ChunkCtx| {
+                    simple_write_strided_lcg_simd!($lcg_type, $simd_type, simd_elements, ctx,
+                        initial_seed, multiplier, addend, stride_param);
+                },
+                |ctx: &ChunkCtx| {
+                    simple_write_strided_lcg_simd!($lcg_type, $simd_type, simd_elements, ctx,
+                        initial_seed, multiplier, addend, stride_param);
+                },
+                |ctx: &ChunkCtx| -> u64 {
+                    simple_verify_strided_lcg_simd!($lcg_type, $simd_type, simd_elements, ctx,
+                        initial_seed, multiplier, addend, zero, stride_param)
+                },
+            )
+        }
+
+        /// Dispatch — selects the right specialized function based on pattern mode and stride.
+        /// No `#[target_feature]` so this compiles to a simple branch without SIMD register state.
+        #[inline(always)]
+        unsafe fn $dispatch_fn(
+            blocks: &[crate::runner::AllocationBlock],
+            thread_id: usize,
+            error_mode: ErrorMode,
+            timing: &TestTiming,
+            config: &TestMemoryConfig,
+            progress: Option<&TestProgress>,
+        ) -> TestStats {
+            let is_lcg = config.pattern_mode.unwrap_or(0) == 12;
+            let has_stride = config.parameter_context.as_ref()
+                .and_then(|ctx| ctx.stride_elements)
+                .map_or(false, |s| s > 0);
+
+            match (is_lcg, has_stride) {
+                (true, true)   => $lcg_str_fn(blocks, thread_id, error_mode, timing, config, progress),
+                (true, false)  => $lcg_seq_fn(blocks, thread_id, error_mode, timing, config, progress),
+                (false, true)  => $pos_str_fn(blocks, thread_id, error_mode, timing, config, progress),
+                (false, false) => $pos_seq_fn(blocks, thread_id, error_mode, timing, config, progress),
+            }
+        }
+    }
+}
+
+// Stamp out SIMD SimpleTest v2 implementations for each width.
+// Each invocation generates 4 specialized #[target_feature] functions + 1 dispatch.
+simple_test_v2_impl!(simple_test_v2_128_impl,
+    simple_test_v2_128_pos_seq, simple_test_v2_128_pos_str,
+    simple_test_v2_128_lcg_seq, simple_test_v2_128_lcg_str,
+    "Mem-SimpleV2-128", u64x2, 2, [0, 1],
+    pattern_gen::LcgSimd2, "sse2");
+simple_test_v2_impl!(simple_test_v2_256_impl,
+    simple_test_v2_256_pos_seq, simple_test_v2_256_pos_str,
+    simple_test_v2_256_lcg_seq, simple_test_v2_256_lcg_str,
+    "Mem-SimpleV2-256", u64x4, 4, [0, 1, 2, 3],
+    pattern_gen::LcgSimd4, "avx2");
+simple_test_v2_impl!(simple_test_v2_512_impl,
+    simple_test_v2_512_pos_seq, simple_test_v2_512_pos_str,
+    simple_test_v2_512_lcg_seq, simple_test_v2_512_lcg_str,
+    "Mem-SimpleV2-512", u64x8, 8, [0, 1, 2, 3, 4, 5, 6, 7],
+    pattern_gen::LcgSimd8, "avx512f");
+
+/// SimpleTest v2 SSE2 (u64x2) — 128-bit SIMD.
+///
+/// # Safety
+/// Caller must ensure all blocks contain valid, aligned, writable memory.
+pub unsafe fn simple_test_v2_128_multi(
+    blocks: &[crate::runner::AllocationBlock],
+    thread_id: usize,
+    error_mode: ErrorMode,
+    timing: &TestTiming,
+    config: &TestMemoryConfig,
+    progress: Option<&TestProgress>,
+) -> TestStats {
+    if is_x86_feature_detected!("sse2") {
+        simple_test_v2_128_impl(blocks, thread_id, error_mode, timing, config, progress)
+    } else {
+        simple_test_v2_multi(blocks, thread_id, error_mode, timing, config, progress)
+    }
+}
+
+/// SimpleTest v2 AVX2 (u64x4) — 256-bit SIMD.
+///
+/// # Safety
+/// Caller must ensure all blocks contain valid, aligned, writable memory.
+pub unsafe fn simple_test_v2_256_multi(
+    blocks: &[crate::runner::AllocationBlock],
+    thread_id: usize,
+    error_mode: ErrorMode,
+    timing: &TestTiming,
+    config: &TestMemoryConfig,
+    progress: Option<&TestProgress>,
+) -> TestStats {
+    if is_x86_feature_detected!("avx2") {
+        simple_test_v2_256_impl(blocks, thread_id, error_mode, timing, config, progress)
+    } else {
+        simple_test_v2_128_multi(blocks, thread_id, error_mode, timing, config, progress)
+    }
+}
+
+/// SimpleTest v2 AVX-512 (u64x8) — 512-bit SIMD.
+///
+/// # Safety
+/// Caller must ensure all blocks contain valid, aligned, writable memory.
+pub unsafe fn simple_test_v2_512_multi(
+    blocks: &[crate::runner::AllocationBlock],
+    thread_id: usize,
+    error_mode: ErrorMode,
+    timing: &TestTiming,
+    config: &TestMemoryConfig,
+    progress: Option<&TestProgress>,
+) -> TestStats {
+    if is_x86_feature_detected!("avx512f") {
+        simple_test_v2_512_impl(blocks, thread_id, error_mode, timing, config, progress)
+    } else {
+        simple_test_v2_256_multi(blocks, thread_id, error_mode, timing, config, progress)
+    }
+}
+
+// SimpleTest v2 auto-dispatch — selects best SIMD variant at runtime.
+// SIMD variants handle both sequential and strided access (block-strided with interleave).
+crate::auto_dispatch!(
+    pub simple_test_v2_auto_multi,
+    simple_test_v2_multi,
+    simple_test_v2_128_multi,
+    simple_test_v2_256_multi,
+    simple_test_v2_512_multi
+);
+// =============================================================================
+// SimpleTestNT — Non-Temporal SIMD Bandwidth Tests
+// =============================================================================
+//
+// Uses streaming stores (_mm_stream_si128 / _mm256_stream_si256 / _mm512_stream_si512)
+// which bypass the CPU cache, writing directly to DRAM. This eliminates the
+// read-for-ownership (RFO) traffic that normal stores incur, roughly doubling
+// write bandwidth. Verify uses regular loads (reads through cache as normal).
+//
+// Compare Mem-SimpleNT-* against Mem-SimpleV2-* to see the impact of NT stores
+// vs regular (temporal) stores on the same positional pattern.
+//
+// WHY MANUAL UNROLL (not LLVM-driven):
+//
+// There is no way in current Rust/LLVM (as of LLVM 22.1, rustc 1.95-nightly) to
+// get both correct non-temporal stores AND LLVM-driven loop optimization. We tested
+// every available approach in an isolated benchmark (see ../nt-test/):
+//
+// 1. core::intrinsics::nontemporal_store — LLVM beautifully unrolls the loop but
+//    STRIPS the !nontemporal metadata during optimization passes. All stores become
+//    regular vmovdqa64/vmovaps. Tested on scalar u64, u64x8 constant, u64x8 with
+//    compute pattern — NT metadata is lost in every case. LLVM bug #56703 fixed
+//    ArgumentPromotionPass but other passes still strip it.
+//
+// 2. std::arch intrinsics (_mm512_stream_si512 etc.) — emit correct vmovntdq but
+//    as inline asm (#APP/#NO_APP blocks). LLVM treats these as opaque and will NOT
+//    unroll the loop automatically. Each iteration does only 1 store.
+//
+// 3. Manual asm!("vmovntdq ...") — same as #2, correct NT but no auto-unroll.
+//
+// 4. LLVM flag -C llvm-args=-unroll-count=4 — forces LLVM to unroll even with
+//    inline asm, but produces suboptimal code (extra leaq address calculations
+//    between each #APP/#NO_APP block). Also a global flag affecting ALL loops.
+//
+// SOLUTION: Manual 4x unroll using std::arch intrinsics. This gives us:
+//   - Correct NT stores (vmovntdq confirmed in assembly output)
+//   - 4 stores per loop iteration (amortizes loop overhead)
+//   - Clean address offsets (ptr+0, ptr+w, ptr+2w, ptr+3w)
+//
+// UNROLL FACTOR: 4x was chosen after benchmarking 1x/2x/4x/8x/16x across all
+// three widths (128/256/512). On a single thread, all factors hit the same ~24 GiB/s
+// memory bandwidth ceiling. In multi-threaded TMR with interleaved compute+verify,
+// 4x provides enough pipeline depth without excessive code bloat. Going higher
+// (8x/16x) showed no benefit and risks instruction cache pressure.
+//
+// SIMD WIDTH PERFORMANCE: 128-bit ≈ 256-bit >> 512-bit for NT stores.
+// 512-bit stores fill write-combine buffers faster (64B = 1 full cache line per
+// store) creating back-pressure when the memory controller can't drain fast enough.
+// This is a hardware characteristic, not fixable in software.
+//
+// WHY MACROS (not generic traits):
+// #[target_feature] does not propagate through generic function call boundaries.
+// A generic fn<T: SimdOps>() called from a #[target_feature(enable = "avx512f")]
+// function does NOT inherit AVX-512. The inner function compiles at baseline ISA.
+// Macros physically expand the code at the call site, guaranteeing correct codegen.
+//
+// =============================================================================
+
+/// NT (non-temporal) SIMD Write for positional patterns.
+/// Uses streaming stores to bypass cache, writing idx^base directly to DRAM.
+/// Requires _mm_sfence() after completion to ensure stores are globally visible.
+macro_rules! simple_write_nt_positional_simd {
+    ($simd_type:ty, $simd_w:expr, $ctx:expr, $base_vec:expr, $lane_offsets:expr,
+     $arch_type:ty, $stream_fn:path) => {{
+        let w = $simd_w;
+        let step1 = <$simd_type>::splat(w as u64);
+        let step4 = <$simd_type>::splat((w * 4) as u64);
+        let mut idx_vec = <$simd_type>::splat($ctx.chunk_start as u64) + $lane_offsets;
+        let len = $ctx.chunk_end - $ctx.chunk_start;
+        let unrolled_end = $ctx.chunk_start + (len / (w * 4)) * (w * 4);
+
+        // Unrolled main loop: 4 NT stores per iteration
+        let mut i = $ctx.chunk_start;
+        while i < unrolled_end {
+            let v0: $simd_type = idx_vec ^ $base_vec;
+            let idx1 = idx_vec + step1;
+            let v1: $simd_type = idx1 ^ $base_vec;
+            let idx2 = idx1 + step1;
+            let v2: $simd_type = idx2 ^ $base_vec;
+            let idx3 = idx2 + step1;
+            let v3: $simd_type = idx3 ^ $base_vec;
+            $stream_fn($ctx.ptr.add(i) as *mut $arch_type, std::mem::transmute(v0));
+            $stream_fn($ctx.ptr.add(i + w) as *mut $arch_type, std::mem::transmute(v1));
+            $stream_fn($ctx.ptr.add(i + w * 2) as *mut $arch_type, std::mem::transmute(v2));
+            $stream_fn($ctx.ptr.add(i + w * 3) as *mut $arch_type, std::mem::transmute(v3));
+            idx_vec += step4;
+            i += w * 4;
+        }
+
+        // Remainder: 1 NT store per iteration
+        while i < $ctx.chunk_end {
+            let val: $simd_type = idx_vec ^ $base_vec;
+            $stream_fn($ctx.ptr.add(i) as *mut $arch_type, std::mem::transmute(val));
+            idx_vec += step1;
+            i += w;
+        }
+        std::arch::x86_64::_mm_sfence();
+    }}
+}
+
+/// Stamps out a complete SimpleTestNT implementation for a given SIMD width.
+/// Generates one #[target_feature] impl function + one public wrapper.
+macro_rules! simple_test_nt_impl {
+    (
+        $impl_fn:ident,
+        $pub_fn:ident,
+        $test_name:literal,
+        $simd_type:ty,
+        $simd_w:expr,
+        $lane_offsets:expr,
+        $arch_type:ty,
+        $stream_fn:path,
+        $target_feature:literal
+    ) => {
+        #[target_feature(enable = $target_feature)]
+        unsafe fn $impl_fn(
+            blocks: &[crate::runner::AllocationBlock],
+            thread_id: usize,
+            error_mode: ErrorMode,
+            timing: &TestTiming,
+            config: &TestMemoryConfig,
+            progress: Option<&TestProgress>,
+        ) -> TestStats {
+            let test_name = $test_name;
+            let base = 0xDEADBEEFDEADBEEF_u64 ^ thread_id as u64;
+            let base_vec = <$simd_type>::splat(base);
+            let lane_offsets = <$simd_type>::from_array($lane_offsets);
+            let zero = <$simd_type>::splat(0);
+
+            run_test_v2(
+                blocks, thread_id, error_mode, timing, config, progress,
+                test_name, TestAction::WriteVerify, 1, 1,
+                // Init: NT write (fill memory with pattern, bypassing cache)
+                |ctx: &ChunkCtx| {
+                    simple_write_nt_positional_simd!($simd_type, $simd_w, ctx,
+                        base_vec, lane_offsets, $arch_type, $stream_fn);
+                },
+                // Test: NT write (re-write same pattern via streaming stores)
+                |ctx: &ChunkCtx| {
+                    simple_write_nt_positional_simd!($simd_type, $simd_w, ctx,
+                        base_vec, lane_offsets, $arch_type, $stream_fn);
+                },
+                // Verify: regular loads with XOR+OR accumulator
+                |ctx: &ChunkCtx| -> u64 {
+                    simple_verify_positional_simd!($simd_type, $simd_w, ctx,
+                        base_vec, lane_offsets, zero)
+                },
+            )
+        }
+
+        pub unsafe fn $pub_fn(
+            blocks: &[crate::runner::AllocationBlock],
+            thread_id: usize,
+            error_mode: ErrorMode,
+            timing: &TestTiming,
+            config: &TestMemoryConfig,
+            progress: Option<&TestProgress>,
+        ) -> TestStats {
+            $impl_fn(blocks, thread_id, error_mode, timing, config, progress)
+        }
+    }
+}
+
+// Stamp out NT implementations for each SIMD width.
+simple_test_nt_impl!(
+    simple_test_nt_128_impl, simple_test_nt_128_multi,
+    "Mem-SimpleNT-128", u64x2, 2, [0, 1],
+    std::arch::x86_64::__m128i, std::arch::x86_64::_mm_stream_si128,
+    "sse2"
+);
+
+simple_test_nt_impl!(
+    simple_test_nt_256_impl, simple_test_nt_256_multi,
+    "Mem-SimpleNT-256", u64x4, 4, [0, 1, 2, 3],
+    std::arch::x86_64::__m256i, std::arch::x86_64::_mm256_stream_si256,
+    "avx2"
+);
+
+simple_test_nt_impl!(
+    simple_test_nt_512_impl, simple_test_nt_512_multi,
+    "Mem-SimpleNT-512", u64x8, 8, [0, 1, 2, 3, 4, 5, 6, 7],
+    std::arch::x86_64::__m512i, std::arch::x86_64::_mm512_stream_si512,
+    "avx512f"
+);
+
+// SimpleTestNT auto-dispatch — selects best SIMD variant at runtime.
+crate::auto_dispatch!(
+    pub simple_test_nt_auto_multi,
+    simple_test_nt_128_multi,  // SSE2 fallback (baseline, always available)
+    simple_test_nt_128_multi,
+    simple_test_nt_256_multi,
+    simple_test_nt_512_multi
+);
+
+// v1 stream2/stream4/streamN variants removed — replaced by v2 stride + SimpleTestNT.
+// See git history for the original implementations.
+
+
+// ============================================================================
+// Bench-Init: Standalone pattern generation benchmarks (TODO #17)
+// Measures raw INIT/write throughput per pattern mode with no-op test/verify.
+// ============================================================================
+
+/// Bench-Init dispatcher: routes to the correct pattern mode based on config.pattern_mode.
+/// Each Bench-Init-* test sets pattern_mode in its config, then calls this.
+pub unsafe fn bench_init_multi(
+    blocks: &[crate::runner::AllocationBlock],
+    thread_id: usize,
+    error_mode: ErrorMode,
+    timing: &TestTiming,
+    config: &TestMemoryConfig,
+    progress: Option<&TestProgress>,
+) -> TestStats {
+    let mode = config.pattern_mode.unwrap_or(10);
+    let param0 = config.pattern_param0.unwrap_or(0xDEADBEEFDEADBEEF);
+    let param1 = config.pattern_param1.unwrap_or(0xCAFEBABECAFEBABE);
+    let cl_shift = pattern_gen::cache_line_shift(config.cache_line_bytes);
+
+    let test_name = match mode {
+        0 => "Bench-Init-TM5-0",
+        1 => "Bench-Init-TM5-1",
+        2 => "Bench-Init-TM5-2",
+        10 => "Bench-Init-TMR-0",
+        11 => "Bench-Init-TMR-1",
+        12 => "Bench-Init-TMR-2",
+        _ => "Bench-Init-Unknown",
+    };
+
+    match mode {
+        // --- TM5-faithful modes ---
+        0 => {
+            // Mode 0: bit dispersion + branchless 4KB page complement
+            run_test_v2(
+                blocks, thread_id, error_mode, timing, config, progress,
+                test_name, TestAction::Write, 1, 0,
+                // Init: full pattern write
+                |ctx: &ChunkCtx| {
+                    let seed = pattern_gen::block_seed(ctx.ptr as usize, ctx.thread_id, ctx.cycle);
+                    for idx in ctx.chunk_start..ctx.chunk_end {
+                        *ctx.ptr.add(idx) = pattern_gen::pattern_mode0(idx as u64, seed);
+                    }
+                },
+                // Test: re-write patterns (measures sustained write throughput)
+                |ctx: &ChunkCtx| {
+                    let seed = pattern_gen::block_seed(ctx.ptr as usize, ctx.thread_id, ctx.cycle);
+                    for idx in ctx.chunk_start..ctx.chunk_end {
+                        *ctx.ptr.add(idx) = pattern_gen::pattern_mode0(idx as u64, seed);
+                    }
+                },
+                // Verify: no-op
+                |_ctx: &ChunkCtx| -> u64 { 0 },
+            )
+        }
+        1 => {
+            // Mode 1: linear step + cache-line complement
+            run_test_v2(
+                blocks, thread_id, error_mode, timing, config, progress,
+                test_name, TestAction::Write, 1, 0,
+                |ctx: &ChunkCtx| {
+                    let seed = pattern_gen::block_seed(ctx.ptr as usize, ctx.thread_id, ctx.cycle);
+                    for idx in ctx.chunk_start..ctx.chunk_end {
+                        *ctx.ptr.add(idx) = pattern_gen::pattern_mode1(idx as u64, seed, cl_shift);
+                    }
+                },
+                |ctx: &ChunkCtx| {
+                    let seed = pattern_gen::block_seed(ctx.ptr as usize, ctx.thread_id, ctx.cycle);
+                    for idx in ctx.chunk_start..ctx.chunk_end {
+                        *ctx.ptr.add(idx) = pattern_gen::pattern_mode1(idx as u64, seed, cl_shift);
+                    }
+                },
+                |_ctx: &ChunkCtx| -> u64 { 0 },
+            )
+        }
+        2 => {
+            // Mode 2: per-page seed+step evolution (PMULLW-style)
+            let cl_elements = config.cache_line_bytes / std::mem::size_of::<u64>();
+            run_test_v2(
+                blocks, thread_id, error_mode, timing, config, progress,
+                test_name, TestAction::Write, 1, 0,
+                |ctx: &ChunkCtx| {
+                    let base_seed = pattern_gen::block_seed(ctx.ptr as usize, ctx.thread_id, ctx.cycle);
+                    let mut page_seed = base_seed;
+                    let mut page_step = base_seed.wrapping_mul(0x5DEECE66D);
+                    let mut idx = ctx.chunk_start;
+                    while idx < ctx.chunk_end {
+                        let page_end = (idx + cl_elements).min(ctx.chunk_end);
+                        for i in idx..page_end {
+                            *ctx.ptr.add(i) = pattern_gen::mode2_element(page_seed, (i - idx) as u64, page_step);
+                        }
+                        let (ns, nst) = pattern_gen::mode2_evolve(page_seed, page_step, param0, param1);
+                        page_seed = ns;
+                        page_step = nst;
+                        idx = page_end;
+                    }
+                },
+                |ctx: &ChunkCtx| {
+                    let base_seed = pattern_gen::block_seed(ctx.ptr as usize, ctx.thread_id, ctx.cycle);
+                    let mut page_seed = base_seed;
+                    let mut page_step = base_seed.wrapping_mul(0x5DEECE66D);
+                    let mut idx = ctx.chunk_start;
+                    while idx < ctx.chunk_end {
+                        let page_end = (idx + cl_elements).min(ctx.chunk_end);
+                        for i in idx..page_end {
+                            *ctx.ptr.add(i) = pattern_gen::mode2_element(page_seed, (i - idx) as u64, page_step);
+                        }
+                        let (ns, nst) = pattern_gen::mode2_evolve(page_seed, page_step, param0, param1);
+                        page_seed = ns;
+                        page_step = nst;
+                        idx = page_end;
+                    }
+                },
+                |_ctx: &ChunkCtx| -> u64 { 0 },
+            )
+        }
+        // --- TMR-native modes ---
+        10 => {
+            // Mode 10: idx ^ base (address-derived unique)
+            let base = 0xDEADBEEFDEADBEEF_u64;
+            run_test_v2(
+                blocks, thread_id, error_mode, timing, config, progress,
+                test_name, TestAction::Write, 1, 0,
+                |ctx: &ChunkCtx| {
+                    for idx in ctx.chunk_start..ctx.chunk_end {
+                        *ctx.ptr.add(idx) = pattern_gen::pattern_mode10(idx as u64, base);
+                    }
+                },
+                |ctx: &ChunkCtx| {
+                    for idx in ctx.chunk_start..ctx.chunk_end {
+                        *ctx.ptr.add(idx) = pattern_gen::pattern_mode10(idx as u64, base);
+                    }
+                },
+                |_ctx: &ChunkCtx| -> u64 { 0 },
+            )
+        }
+        11 => {
+            // Mode 11: idx ^ combined (param0 ^ param1)
+            let combined = param0 ^ param1;
+            run_test_v2(
+                blocks, thread_id, error_mode, timing, config, progress,
+                test_name, TestAction::Write, 1, 0,
+                |ctx: &ChunkCtx| {
+                    for idx in ctx.chunk_start..ctx.chunk_end {
+                        *ctx.ptr.add(idx) = pattern_gen::pattern_mode11(idx as u64, combined);
+                    }
+                },
+                |ctx: &ChunkCtx| {
+                    for idx in ctx.chunk_start..ctx.chunk_end {
+                        *ctx.ptr.add(idx) = pattern_gen::pattern_mode11(idx as u64, combined);
+                    }
+                },
+                |_ctx: &ChunkCtx| -> u64 { 0 },
+            )
+        }
+        12 | _ => {
+            // Mode 12: LCG chain (real PRNG)
+            let multiplier = param0;
+            let addend = param1;
+            let initial_seed = (thread_id as u64).wrapping_mul(0x9E3779B97F4A7C15).wrapping_add(1);
+            run_test_v2(
+                blocks, thread_id, error_mode, timing, config, progress,
+                test_name, TestAction::Write, 1, 0,
+                |ctx: &ChunkCtx| {
+                    let mut state = pattern_gen::lcg_next(
+                        initial_seed.wrapping_add(ctx.chunk_start as u64), multiplier, addend);
+                    for idx in ctx.chunk_start..ctx.chunk_end {
+                        *ctx.ptr.add(idx) = state;
+                        state = pattern_gen::lcg_next(state, multiplier, addend);
+                    }
+                },
+                |ctx: &ChunkCtx| {
+                    let mut state = pattern_gen::lcg_next(
+                        initial_seed.wrapping_add(ctx.chunk_start as u64), multiplier, addend);
+                    for idx in ctx.chunk_start..ctx.chunk_end {
+                        *ctx.ptr.add(idx) = state;
+                        state = pattern_gen::lcg_next(state, multiplier, addend);
+                    }
+                },
+                |_ctx: &ChunkCtx| -> u64 { 0 },
+            )
+        }
+    }
+}
+
 // ============================================================================
 // Test Registry - Maps config test names to actual function implementations
 // ============================================================================
@@ -8346,11 +8628,18 @@ pub fn get_test_function_by_name(name: &str) -> Option<crate::runner::TestFuncti
         "Mem-MirrorV2-512" => Some(TestFunction::MultiBlock(mirror_move_v2_512_multi)),
         "Mem-MirrorV2-Auto" => Some(TestFunction::MultiBlock(mirror_move_v2_auto_multi)),
 
-        // Simple Test (v1)
-        "Mem-Simple" => Some(TestFunction::MultiBlock(simple_test_multi)),
+        // SimpleTest NT (non-temporal stores — manual 4x unroll, std::arch intrinsics)
+        "Mem-SimpleNT-128" => Some(TestFunction::MultiBlock(simple_test_nt_128_multi)),
+        "Mem-SimpleNT-256" => Some(TestFunction::MultiBlock(simple_test_nt_256_multi)),
+        "Mem-SimpleNT-512" => Some(TestFunction::MultiBlock(simple_test_nt_512_multi)),
+        "Mem-SimpleNT-Auto" => Some(TestFunction::MultiBlock(simple_test_nt_auto_multi)),
 
         // Simple Test (v2 — correct LCG + strided access)
         "Mem-SimpleV2" => Some(TestFunction::MultiBlock(simple_test_v2_multi)),
+        "Mem-SimpleV2-128" => Some(TestFunction::MultiBlock(simple_test_v2_128_multi)),
+        "Mem-SimpleV2-256" => Some(TestFunction::MultiBlock(simple_test_v2_256_multi)),
+        "Mem-SimpleV2-512" => Some(TestFunction::MultiBlock(simple_test_v2_512_multi)),
+        "Mem-SimpleV2-Auto" => Some(TestFunction::MultiBlock(simple_test_v2_auto_multi)),
 
         // Refresh Tests
         "Mem-Refresh" => Some(TestFunction::MultiBlock(refresh_stable_multi)),
@@ -8365,6 +8654,11 @@ pub fn get_test_function_by_name(name: &str) -> Option<crate::runner::TestFuncti
         "Mem-Stride" => Some(TestFunction::MultiBlock(stride_access_multi)),
         "Spd-Saturate" => Some(TestFunction::MultiBlock(bandwidth_saturation_multi)),
         "Mem-BlockMove" => Some(TestFunction::MultiBlock(block_move_multi)),
+
+        // Bench-Init: Pattern generation throughput benchmarks
+        "Bench-Init-TM5-0" | "Bench-Init-TM5-1" | "Bench-Init-TM5-2"
+        | "Bench-Init-TMR-0" | "Bench-Init-TMR-1" | "Bench-Init-TMR-2"
+            => Some(TestFunction::MultiBlock(bench_init_multi)),
 
         _ => None,
     }

@@ -6,7 +6,13 @@
 # optimal performance on your build machine.
 
 [build]
-rustflags = ["-C", "target-cpu=native"]
+rustflags = ["-C", "target-cpu=x86-64-v2"]
+# NOTE: Use x86-64-v2 (SSE4.2 baseline) so #[target_feature] properly gates each
+# ISA level: SSE2 functions stay 128-bit, AVX2 functions get 256-bit, AVX-512
+# functions get 512-bit. Using v3+ would leak AVX2 into the baseline, making the
+# "SSE2" functions use 256-bit instructions and defeating runtime SIMD dispatch.
+# Use "native" only for local development benchmarking on a known CPU.
+# rustflags = ["-C", "target-cpu=native"]
 
 # ==============================================================================
 # x86-64 MICROARCHITECTURE LEVELS (Baseline Targets)

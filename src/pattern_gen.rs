@@ -3,15 +3,32 @@
 //! All functions are `#[inline(always)]` to ensure they compile into the caller's
 //! hot loop with zero overhead. No traits, no dynamic dispatch.
 //!
-//! # Pattern Modes (TM5 compatibility)
+//! # Pattern Mode Numbering
 //!
-//! - **Mode 0**: Address-derived unique pattern (`idx ^ constant`). TMR-native, not TM5
-//!   topology-aware. Provides unique coverage per address with minimal computation.
-//! - **Mode 1**: Inverted constant per cycle. TM5 flips pattern between write passes
-//!   using `param0 ^ param1`.
-//! - **Mode 2**: LCG (Linear Congruential Generator). Each element is produced by
-//!   `state = state * multiplier + addend`. This is THE FIX for the broken Mode 2
-//!   which previously constructed a static seed instead of running the LCG chain.
+//! - **Modes 0, 1, 2**: TM5-faithful implementations. Match original TM5 behavior
+//!   (adapted to 64-bit). Used by default when loading TM5 .cfg files.
+//! - **Modes 10, 11, 12**: TMR-native modern alternatives. Simpler, sometimes faster,
+//!   but don't match TM5's specific stress patterns.
+//!
+//! ## TM5-Faithful Modes
+//!
+//! - **Mode 0**: Address-derived static fill with rotation + complement per 4KB page.
+//!   TM5 rotates 16-bit seed per word, alternates normal/complement per page.
+//!   TMR: 64-bit multiply dispersion, complement toggle every 512 u64 elements.
+//! - **Mode 1**: Linear step + complement toggle per cache line. TM5 applies
+//!   PADDD step per element and XOR complement every 64 bytes.
+//!   TMR: wrapping_sub step per element, complement every cache line.
+//! - **Mode 2**: Two-level evolving pattern. TM5 uses PMULLW per-page evolution
+//!   with step that also evolves. TMR: 64-bit wrapping_mul evolution per cache line
+//!   with evolving step. Stateful (caller tracks page seed/step).
+//!
+//! ## TMR-Native Modes
+//!
+//! - **Mode 10**: Unique-per-address XOR (`idx ^ base`). Substitutes for Mode 0.
+//! - **Mode 11**: Simple XOR with combined constant (`idx ^ combined`). Substitutes for Mode 1.
+//! - **Mode 12**: Flat LCG chain (`state = state * m + a`). Substitutes for Mode 2.
+//!
+//! See `doc/pattern_gen_modes.md` for detailed descriptions.
 //!
 //! # SIMD LCG Strategy
 //!
@@ -22,28 +39,131 @@
 
 use std::simd::*;
 
-// ─── Scalar Pattern Functions ────────────────────────────────────────────────
+// ─── Block Seed Derivation ──────────────────────────────────────────────────
 
-/// Mode 0: address-derived unique pattern (TMR-native).
-/// Each element gets a unique value based on its index XORed with a constant base.
-/// Fast, simple, good bit coverage per address.
+/// Compute a deterministic block seed from block virtual address, thread ID, and cycle.
+/// Replaces TM5's physical page number hash (shr addr, 12). Computed once per block per cycle.
+///
+/// Uses Murmur-style finalizer for good avalanche: every input bit affects all output bits.
+/// All three inputs (address, thread, cycle) contribute uniquely to avoid patterns.
+#[inline]
+pub fn block_seed(block_addr: usize, thread_id: usize, cycle: u32) -> u64 {
+    let mut h = (block_addr as u64).wrapping_mul(0x9E3779B97F4A7C15);
+    h ^= (thread_id as u64).wrapping_mul(0x517CC1B727220A95);
+    h ^= (cycle as u64).wrapping_mul(0x6C62272E07BB0142);
+    h ^= h >> 33;
+    h = h.wrapping_mul(0xFF51AFD7ED558CCD);
+    h ^= h >> 33;
+    h
+}
+
+/// Compute `log2(elements_per_cache_line)` as a shift amount.
+/// `cache_line_bytes` must be a power of 2 (always true for real CPUs).
+/// Result: number of right-shift bits to convert element index to cache line index.
+///
+/// Example: cache_line_bytes=64, element_size=8 → elements=8 → shift=3.
+#[inline]
+pub fn cache_line_shift(cache_line_bytes: usize) -> u32 {
+    let elements = cache_line_bytes / std::mem::size_of::<u64>();
+    elements.trailing_zeros()
+}
+
+// ─── TM5-Faithful Pattern Modes (0, 1, 2) ──────────────────────────────────
+
+/// Mode 0 (TM5-faithful): Address-derived pattern with bit dispersion + complement.
+///
+/// TM5: Derives 16-bit seed from page number, ROL per word position, alternates
+/// normal/complement per 4KB page. Static within a page (no per-cache-line evolution).
+///
+/// TMR port: Wrapping multiply by golden-ratio prime for 64-bit bit dispersion
+/// (SIMD-friendly replacement for per-element ROL). Complement toggles every 4KB page
+/// (512 u64 elements), matching TM5's `test dPageAddr, 1000h` behavior.
+///
+/// TMR alternative: Mode 10 (unique-per-address XOR).
 #[inline(always)]
-pub fn pattern_mode0(idx: u64, base: u64) -> u64 {
+pub fn pattern_mode0(idx: u64, block_seed: u64) -> u64 {
+    let base = block_seed ^ idx.wrapping_mul(0x9E3779B97F4A7C15);
+    // Complement toggle every 4KB page (512 u64 = 4096 bytes).
+    // Branchless: mask = 0 for even pages, all-ones for odd pages.
+    let mask = 0u64.wrapping_sub((idx >> 9) & 1); // >>9 = /512
+    base ^ mask
+}
+
+/// Mode 1 (TM5-faithful): Linear step + complement toggle per cache line.
+///
+/// TM5: PADDD with step=[-3,-1,0,0] (packed 32-bit) per element, XOR complement
+/// (Const_m1) every 64 bytes (cache line).
+///
+/// TMR port: 64-bit wrapping subtraction by 3 per element (simplification of TM5's
+/// packed 32-bit step). Complement toggles every cache line. `cl_shift` controls the
+/// cache line boundary (e.g., 3 for 64-byte lines with u64 elements).
+///
+/// TMR alternative: Mode 11 (simple XOR with combined constant).
+///
+/// # Arguments
+/// * `cl_shift` - Bit shift for cache line size (from `cache_line_shift()`).
+#[inline(always)]
+pub fn pattern_mode1(idx: u64, block_seed: u64, cl_shift: u32) -> u64 {
+    let cache_line = idx >> cl_shift;
+    let stepped = block_seed.wrapping_sub(idx.wrapping_mul(3));
+    // Branchless complement toggle per cache line
+    let mask = 0u64.wrapping_sub(cache_line & 1);
+    stepped ^ mask
+}
+
+/// Mode 2 (TM5-faithful): Evolve page seed and step at each cache line boundary.
+///
+/// TM5: Per-page, applies PMULLW(xmm, param0) + PADDD(xmm, param1). The step register
+/// (xmm6) is ALSO multiplied by the evolved pattern, so the step itself changes
+/// pseudo-randomly between pages.
+///
+/// TMR port: 64-bit wrapping_mul/add. Called once per cache line (every 8 u64 elements
+/// for 64-byte cache lines). Returns (new_seed, new_step).
+///
+/// TMR alternative: Mode 12 (flat LCG chain).
+#[inline(always)]
+pub fn mode2_evolve(seed: u64, step: u64, param0: u64, param1: u64) -> (u64, u64) {
+    let new_seed = seed.wrapping_mul(param0).wrapping_add(param1);
+    let new_step = step.wrapping_mul(new_seed);
+    (new_seed, new_step)
+}
+
+/// Mode 2 (TM5-faithful): Compute element value within a cache line.
+///
+/// TM5: Within a page, writes xmm0 then PADDD xmm0, xmm6 (adds step per 16-byte group).
+///
+/// TMR port: Element value = page_seed + element_offset * page_step. The `element_offset`
+/// is the position within the current cache line (0..elements_per_cache_line).
+#[inline(always)]
+pub fn mode2_element(page_seed: u64, element_offset: u64, page_step: u64) -> u64 {
+    page_seed.wrapping_add(element_offset.wrapping_mul(page_step))
+}
+
+// ─── TMR-Native Pattern Modes (10, 11, 12) ─────────────────────────────────
+
+/// Mode 10 (TMR-native): Address-derived unique pattern. Substitutes for Mode 0.
+///
+/// Each element gets a unique value based on its index XORed with a constant base.
+/// Fast, simple, good bit coverage per address. No page-level structure.
+#[inline(always)]
+pub fn pattern_mode10(idx: u64, base: u64) -> u64 {
     idx ^ base
 }
 
-/// Mode 1: inverted constant per cycle.
-/// TM5 flips pattern between write passes. The caller passes `param0 ^ param1`
-/// pre-computed as `combined`, then each element is `idx ^ combined`.
+/// Mode 11 (TMR-native): Simple XOR with pre-combined constant. Substitutes for Mode 1.
+///
+/// Caller passes `param0 ^ param1` pre-computed as `combined`, each element = `idx ^ combined`.
+/// No step evolution, no complement toggle.
 #[inline(always)]
-pub fn pattern_mode1(idx: u64, combined: u64) -> u64 {
+pub fn pattern_mode11(idx: u64, combined: u64) -> u64 {
     idx ^ combined
 }
 
-/// Mode 2: Single LCG step.
+/// Mode 12 (TMR-native) / shared LCG infrastructure: Single LCG step.
 /// `state = state * multiplier + addend`
 ///
-/// This is the core PRNG operation. For sequential use, chain calls:
+/// Core PRNG used by Mode 12 (flat LCG chain) and SIMD LCG variants.
+/// Also usable as building block for Mode 2 (TM5-faithful) page evolution.
 /// ```ignore
 /// state = lcg_next(state, multiplier, addend);
 /// *ptr = state;
@@ -234,18 +354,129 @@ pub fn mirror_thread_base(thread_id: usize) -> u64 {
 mod tests {
     use super::*;
 
+    // ── TMR-native mode tests (10, 11) ──
+
     #[test]
-    fn test_pattern_mode0_unique() {
+    fn test_pattern_mode10_unique() {
         let base = 0xDEADBEEFDEADBEEF;
-        // Each index produces a unique pattern
-        let p0 = pattern_mode0(0, base);
-        let p1 = pattern_mode0(1, base);
-        let p2 = pattern_mode0(2, base);
+        let p0 = pattern_mode10(0, base);
+        let p1 = pattern_mode10(1, base);
+        let p2 = pattern_mode10(2, base);
         assert_ne!(p0, p1);
         assert_ne!(p1, p2);
         assert_ne!(p0, p2);
+        assert_eq!(pattern_mode10(42, base), pattern_mode10(42, base));
+    }
+
+    // ── TM5-faithful mode tests (0, 1, 2) ──
+
+    #[test]
+    fn test_mode0_complement_toggle() {
+        let seed = 0xCAFEBABE12345678u64;
+        // Same 4KB page → no complement (idx 0..511)
+        let p0 = pattern_mode0(0, seed);
+        let p1 = pattern_mode0(1, seed);
+        assert_ne!(p0, p1, "Different indices should produce different values");
+
+        // Across 4KB page boundary → complement toggle
+        let p_even = pattern_mode0(0, seed);
+        let p_odd = pattern_mode0(512, seed); // next 4KB page
+        // The odd-page value should be the complement of what even-page would produce at that index
+        let even_at_512 = seed ^ (512u64).wrapping_mul(0x9E3779B97F4A7C15);
+        assert_eq!(p_odd, !even_at_512, "Odd pages should complement the pattern");
+        // And p_even should NOT be complemented
+        let even_at_0 = seed ^ (0u64).wrapping_mul(0x9E3779B97F4A7C15);
+        assert_eq!(p_even, even_at_0);
+    }
+
+    #[test]
+    fn test_mode0_deterministic() {
+        let seed = block_seed(0x1000, 3, 1);
+        assert_eq!(pattern_mode0(42, seed), pattern_mode0(42, seed));
+    }
+
+    #[test]
+    fn test_mode1_complement_per_cache_line() {
+        let seed = 0xAAAAAAAABBBBBBBBu64;
+        let cl_shift = cache_line_shift(64); // 64-byte cache line
+
+        // Elements 0..7 are cache line 0 (even → no complement)
+        // Elements 8..15 are cache line 1 (odd → complement)
+        let p7 = pattern_mode1(7, seed, cl_shift);
+        let p8 = pattern_mode1(8, seed, cl_shift);
+
+        // p7 is stepped, no complement
+        let expected_7 = seed.wrapping_sub(7 * 3);
+        assert_eq!(p7, expected_7);
+
+        // p8 is stepped + complement (cache line 1)
+        let expected_8 = !seed.wrapping_sub(8 * 3);
+        assert_eq!(p8, expected_8);
+    }
+
+    #[test]
+    fn test_mode1_step_changes_per_element() {
+        let seed = 0x1234567890ABCDEFu64;
+        let cl_shift = cache_line_shift(64);
+        let p0 = pattern_mode1(0, seed, cl_shift);
+        let p1 = pattern_mode1(1, seed, cl_shift);
+        let p2 = pattern_mode1(2, seed, cl_shift);
+        assert_ne!(p0, p1);
+        assert_ne!(p1, p2);
+    }
+
+    #[test]
+    fn test_mode2_evolve_changes_seed_and_step() {
+        let seed = 0x12345678u64;
+        let step = 0u64;
+        let param0 = 0x5DEECE66Du64;
+        let param1 = 0xBu64;
+
+        let (s1, st1) = mode2_evolve(seed, step, param0, param1);
+        assert_ne!(s1, seed, "Seed should change");
+        // Step starts at 0, but new_step = 0 * new_seed = 0 (first evolution)
+        // Use non-zero initial step:
+        let step2 = 7u64;
+        let (s2, st2) = mode2_evolve(seed, step2, param0, param1);
+        assert_ne!(st2, step2, "Step should evolve");
+        assert_ne!(st2, 0, "Step should be non-zero after evolution with non-zero input");
+
+        // Second evolution produces different results
+        let (s3, st3) = mode2_evolve(s2, st2, param0, param1);
+        assert_ne!(s3, s2);
+        assert_ne!(st3, st2);
+    }
+
+    #[test]
+    fn test_mode2_element_within_page() {
+        let page_seed = 0xDEADu64;
+        let page_step = 17u64;
+        // element_offset 0 → page_seed
+        assert_eq!(mode2_element(page_seed, 0, page_step), page_seed);
+        // element_offset 1 → page_seed + 1*step
+        assert_eq!(mode2_element(page_seed, 1, page_step), page_seed + 17);
+        // element_offset 7 → page_seed + 7*step
+        assert_eq!(mode2_element(page_seed, 7, page_step), page_seed + 7 * 17);
+    }
+
+    #[test]
+    fn test_block_seed_varies_by_inputs() {
+        let s1 = block_seed(0x1000, 0, 0);
+        let s2 = block_seed(0x2000, 0, 0); // different address
+        let s3 = block_seed(0x1000, 1, 0); // different thread
+        let s4 = block_seed(0x1000, 0, 1); // different cycle
+        assert_ne!(s1, s2);
+        assert_ne!(s1, s3);
+        assert_ne!(s1, s4);
         // Deterministic
-        assert_eq!(pattern_mode0(42, base), pattern_mode0(42, base));
+        assert_eq!(s1, block_seed(0x1000, 0, 0));
+    }
+
+    #[test]
+    fn test_cache_line_shift_values() {
+        assert_eq!(cache_line_shift(64), 3);  // 64/8 = 8 elements = 2^3
+        assert_eq!(cache_line_shift(128), 4); // 128/8 = 16 elements = 2^4
+        assert_eq!(cache_line_shift(32), 2);  // 32/8 = 4 elements = 2^2
     }
 
     #[test]

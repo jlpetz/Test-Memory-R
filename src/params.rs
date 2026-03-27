@@ -247,6 +247,75 @@ impl ParamRegistry {
             },
         });
 
+        // Pattern and repetition parameters
+        params.insert("pattern-mode", ParamDef {
+            key: "pattern-mode",
+            is_flag: false,
+            default: ParamValue::None,
+            help: "Override pattern mode (0-2: TM5-faithful, 10-12: TMR-native)",
+            example: "pattern-mode=0",
+            can_override_config: true,
+            parser: |v| {
+                let val = v.parse::<u32>()
+                    .map_err(|_| format!("Invalid pattern-mode '{}'. Must be 0-2 (TM5) or 10-12 (TMR-native)", v))?;
+                match val {
+                    0 | 1 | 2 | 10 | 11 | 12 => Ok(ParamValue::U32(val)),
+                    _ => Err(format!("Invalid pattern-mode {}. Valid: 0-2 (TM5-faithful), 10-12 (TMR-native)", val)),
+                }
+            },
+        });
+
+        params.insert("verify-reps", ParamDef {
+            key: "verify-reps",
+            is_flag: false,
+            default: ParamValue::U32(1),
+            help: "Number of verify passes per cycle (TM5 uses 5 for retention stress)",
+            example: "verify-reps=5",
+            can_override_config: true,
+            parser: |v| {
+                let val = v.parse::<u32>()
+                    .map_err(|_| format!("Invalid verify-reps '{}'. Must be 1-100", v))?;
+                if val == 0 || val > 100 {
+                    return Err(format!("verify-reps must be 1-100, got {}", val));
+                }
+                Ok(ParamValue::U32(val))
+            },
+        });
+
+        params.insert("test-reps", ParamDef {
+            key: "test-reps",
+            is_flag: false,
+            default: ParamValue::U32(1),
+            help: "Number of test operation repetitions per cycle (e.g., MirrorMove round-trips)",
+            example: "test-reps=3",
+            can_override_config: true,
+            parser: |v| {
+                let val = v.parse::<u32>()
+                    .map_err(|_| format!("Invalid test-reps '{}'. Must be 1-100", v))?;
+                if val == 0 || val > 100 {
+                    return Err(format!("test-reps must be 1-100, got {}", val));
+                }
+                Ok(ParamValue::U32(val))
+            },
+        });
+
+        params.insert("write-read-cycles", ParamDef {
+            key: "write-read-cycles",
+            is_flag: false,
+            default: ParamValue::U32(1),
+            help: "Write+verify cycles per chunk (TM5 SimpleTest uses 4: write once, verify 5× then repeat 4×)",
+            example: "write-read-cycles=4",
+            can_override_config: true,
+            parser: |v| {
+                let val = v.parse::<u32>()
+                    .map_err(|_| format!("Invalid write-read-cycles '{}'. Must be 1-100", v))?;
+                if val == 0 || val > 100 {
+                    return Err(format!("write-read-cycles must be 1-100, got {}", val));
+                }
+                Ok(ParamValue::U32(val))
+            },
+        });
+
         // Driver-related parameters
         flags.insert("--driver-chunking", ParamDef {
             key: "--driver-chunking",
@@ -498,6 +567,10 @@ pub fn print_help(program_name: &str) {
     println!("  parameter=none                      # Clear test parameter (no subblocks/stride)");
     println!("  parameter=subblocks:4               # Override: 4 subblocks for MirrorMove");
     println!("  parameter=stride:510                # Override: page stride for MirrorMove");
+    println!("  pattern-mode=0                      # Pattern mode: 0-2 (TM5-faithful), 10-12 (TMR-native)");
+    println!("  verify-reps=5                       # Verify passes per write (TM5 retention stress: 5)");
+    println!("  test-reps=3                         # Test op repetitions per write (MirrorMove round-trips)");
+    println!("  write-read-cycles=4                 # Write+verify cycles per chunk (TM5 SimpleTest: 4)");
     println!("  topology=windowsv2                  # CPU detection method (auto/windows/windowsv2/cpuid)");
     println!("  --driver-chunking                   # Enable driver-side memory chunking");
     println!("  --batch-remap                       # Enable batch remapping mode");
