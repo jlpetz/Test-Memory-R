@@ -508,6 +508,11 @@ pub struct TestMemoryConfig {
     /// each chunk gets (1 write + 5 reads) × 4 = tight repeated access stress.
     /// Default 1 for non-TM5 tests. Set to 4 for TM5-faithful SimpleTest behavior.
     pub write_read_cycles: u32,
+    /// Skip the init phase (dependent mode). When true, the harness assumes a prior test
+    /// in the plan already wrote the expected patterns. The init_fn closure is still provided
+    /// (for pattern knowledge / error repair) but not called at startup.
+    /// Plan validation ensures the required pattern gen test appeared earlier.
+    pub skip_init: bool,
 }
 
 impl TestMemoryConfig {
@@ -531,6 +536,7 @@ impl TestMemoryConfig {
             verify_reps: 1,  // Default 1, set from TM5 config or CLI
             test_reps: 1,  // Default 1, set from TM5 config or CLI
             write_read_cycles: 1,  // Default 1, TM5 SimpleTest uses 4
+            skip_init: false,  // Default: always run init (independent mode)
         }
     }
 
@@ -829,6 +835,11 @@ impl TestMemoryConfig {
         self
     }
 
+    pub fn with_skip_init(mut self, skip: bool) -> Self {
+        self.skip_init = skip;
+        self
+    }
+
     // Calculate window size with corrected logic
     pub fn calculate_window_size(&self, test_name: &str, allocated_size: usize) -> usize {
         match &self.window_mode {
@@ -966,9 +977,11 @@ impl TestMemoryConfig {
             "Mem-MirrorV2-256" => 32,                // u64x4 (256-bit)
             "Mem-MirrorV2-512" => 64,                // u64x8 (512-bit)
             "Mem-MirrorV2-Auto" => 64,               // Auto-dispatched, assume AVX-512 possible
-            // Bench-Init tests (all scalar u64)
+            // Bench-Init and Bench-Verify tests (all scalar u64)
             "Bench-Init-TM5-0" | "Bench-Init-TM5-1" | "Bench-Init-TM5-2"
-            | "Bench-Init-TMR-0" | "Bench-Init-TMR-1" | "Bench-Init-TMR-2" => 8,
+            | "Bench-Init-TMR-0" | "Bench-Init-TMR-1" | "Bench-Init-TMR-2"
+            | "Bench-Verify-TM5-0" | "Bench-Verify-TM5-1" | "Bench-Verify-TM5-2"
+            | "Bench-Verify-TMR-0" | "Bench-Verify-TMR-1" | "Bench-Verify-TMR-2" => 8,
             _ => panic!("Unknown test '{}' - add explicit SIMD requirement to calculate_minimum_chunk_size()", test_name),
         };
         
@@ -4228,28 +4241,15 @@ pub unsafe fn block_move_multi(
     }
 }
 
-// ================================================================================================
-// Legacy RefreshStable Implementations (Old Single-Block Pattern)
-// ================================================================================================
+// ============================================================================
+// Phased Test Implementations (run_phased_test harness)
+// ============================================================================
+//
+// v1 MirrorMove (i32 SIMD, manual boilerplate) removed — superseded by
+// MirrorMove v2 (u64 lanes, run_phased_test harness, SwapMode subblocks).
 
-/// # Safety
-/// Caller must ensure `ptr` is valid for reads/writes of `size` bytes.
-/// # Safety
-/// Caller must ensure `ptr` is valid for reads/writes of `size` bytes.
-
-/// # Safety
-/// Caller must ensure `ptr` is valid for reads/writes of `size` bytes.
-
-
-// === UPDATED TEST FUNCTIONS WITH STREAM SUPPORT ===
-
-
-/// # Safety
-/// Caller must ensure all blocks are valid for reads/writes.
-///
-/// MirrorMoveAuto MultiBlock implementation - auto-dispatches to best available SIMD variant.
-/// Detects CPU features at runtime and routes to AVX-512, AVX2, SSE2, or scalar implementation.
-pub unsafe fn mirror_move_auto_multi(
+// Placeholder to find end of removal block
+pub unsafe fn _v1_mirror_removed_marker(
     blocks: &[crate::runner::AllocationBlock],
     thread_id: usize,
     error_mode: ErrorMode,
@@ -6578,18 +6578,21 @@ pub unsafe fn mirror_move_512_multi(
 /// Caller must ensure `ptr` is valid for reads/writes of `size` bytes.
 
 // ============================================================================
-// v2 Test Implementations — new functions alongside v1 for A/B comparison
+// Phased Test Implementations (run_phased_test harness)
 // ============================================================================
 //
-// Key differences from v1:
+// These use the run_phased_test harness for zero-cost orchestration of
+// init → test × N → verify × M phases. Replaces duplicated boilerplate.
+//
+// Key improvements over v1 manual-loop tests:
 // - Mode 2 PRNG is a real LCG chain (not a static seed)
 // - Parameter field correctly interpreted (stride, subblocks, page stride)
 // - MirrorMove uses u64 lanes instead of i32
-// - Uses run_test_v2 harness to eliminate boilerplate duplication
 // - Strided access support for SimpleTest
+// - Configurable test_reps, verify_reps, write_read_cycles
 
 use crate::pattern_gen;
-use crate::test_harness::{run_test_v2, run_test_v2_with_init, ChunkCtx};
+use crate::test_harness::{run_phased_test, ChunkCtx};
 
 // ─── SimpleTest v2 ───────────────────────────────────────────────────────────
 
@@ -6643,9 +6646,9 @@ unsafe fn simple_test_v2_sequential(
     match pattern_mode {
         0 => {
             // Mode 0 (TM5-faithful): bit dispersion + branchless 4KB page complement
-            run_test_v2(
+            run_phased_test(
                 blocks, thread_id, error_mode, timing, config, progress,
-                test_name, TestAction::WriteVerify, config.test_reps, config.verify_reps,
+                test_name, TestAction::WriteVerify, 1, false, config.test_reps, config.verify_reps,
                 |ctx: &ChunkCtx| {
                     let seed = pattern_gen::block_seed(ctx.ptr as usize, ctx.thread_id, ctx.cycle);
                     for idx in ctx.chunk_start..ctx.chunk_end {
@@ -6678,9 +6681,9 @@ unsafe fn simple_test_v2_sequential(
         }
         1 => {
             // Mode 1 (TM5-faithful): linear step + cache-line complement
-            run_test_v2(
+            run_phased_test(
                 blocks, thread_id, error_mode, timing, config, progress,
-                test_name, TestAction::WriteVerify, config.test_reps, config.verify_reps,
+                test_name, TestAction::WriteVerify, 1, false, config.test_reps, config.verify_reps,
                 |ctx: &ChunkCtx| {
                     let seed = pattern_gen::block_seed(ctx.ptr as usize, ctx.thread_id, ctx.cycle);
                     for idx in ctx.chunk_start..ctx.chunk_end {
@@ -6713,9 +6716,9 @@ unsafe fn simple_test_v2_sequential(
         }
         2 => {
             // Mode 2 (TM5-faithful): two-level evolving pattern (PMULLW-style)
-            run_test_v2(
+            run_phased_test(
                 blocks, thread_id, error_mode, timing, config, progress,
-                test_name, TestAction::WriteVerify, config.test_reps, config.verify_reps,
+                test_name, TestAction::WriteVerify, 1, false, config.test_reps, config.verify_reps,
                 |ctx: &ChunkCtx| {
                     let base_seed = pattern_gen::block_seed(ctx.ptr as usize, ctx.thread_id, ctx.cycle);
                     let mut page_seed = base_seed;
@@ -6783,9 +6786,9 @@ unsafe fn simple_test_v2_sequential(
             // Initial seed from thread_id for per-thread uniqueness
             let initial_seed = (thread_id as u64).wrapping_mul(0x9E3779B97F4A7C15).wrapping_add(1);
 
-            run_test_v2(
+            run_phased_test(
                 blocks, thread_id, error_mode, timing, config, progress,
-                test_name, TestAction::WriteVerify, config.test_reps, config.verify_reps,
+                test_name, TestAction::WriteVerify, 1, false, config.test_reps, config.verify_reps,
                 // Init: first write (same as test_fn — ensures memory has valid patterns before cycle loop)
                 |ctx: &ChunkCtx| {
                     let mut state = pattern_gen::lcg_next(
@@ -6860,9 +6863,9 @@ unsafe fn simple_test_v2_sequential(
         11 => {
             // Mode 11 (TMR-native): inverted constant
             let combined = param0 ^ param1;
-            run_test_v2(
+            run_phased_test(
                 blocks, thread_id, error_mode, timing, config, progress,
-                test_name, TestAction::WriteVerify, config.test_reps, config.verify_reps,
+                test_name, TestAction::WriteVerify, 1, false, config.test_reps, config.verify_reps,
                 // Init: first write
                 |ctx: &ChunkCtx| {
                     for idx in ctx.chunk_start..ctx.chunk_end {
@@ -6923,9 +6926,9 @@ unsafe fn simple_test_v2_sequential(
         10 | _ => {
             // Mode 10 (TMR-native): address-derived unique (default fallback)
             let base = param0;
-            run_test_v2(
+            run_phased_test(
                 blocks, thread_id, error_mode, timing, config, progress,
-                test_name, TestAction::WriteVerify, config.test_reps, config.verify_reps,
+                test_name, TestAction::WriteVerify, 1, false, config.test_reps, config.verify_reps,
                 // Init: first write
                 |ctx: &ChunkCtx| {
                     for idx in ctx.chunk_start..ctx.chunk_end {
@@ -7024,9 +7027,9 @@ unsafe fn simple_test_v2_strided(
         _ => |idx, base, _cl| pattern_gen::pattern_mode10(idx, base),
     };
 
-    run_test_v2(
+    run_phased_test(
         blocks, thread_id, error_mode, timing, config, progress,
-        test_name, TestAction::WriteVerify, config.test_reps, config.verify_reps,
+        test_name, TestAction::WriteVerify, 1, false, config.test_reps, config.verify_reps,
         // Init: first write with stride pattern covering all elements
         |ctx: &ChunkCtx| {
             let seed = if effective_mode <= 1 {
@@ -7425,10 +7428,11 @@ macro_rules! mirror_move_v2_impl {
             // Determine swap mode from config parameter
             let swap_mode = SwapMode::from_config(config);
 
-            run_test_v2_with_init(
+            run_phased_test(
                 blocks, thread_id, error_mode, timing, config, progress,
                 test_name, TestAction::WriteWaitVerify,
                 4,  // bytes_per_test_op: 2R + 2W per mirror round-trip
+                false,  // skip_init: always init (independent mode)
                 config.test_reps,  // test_reps: mirror round-trips before verify
                 config.verify_reps,  // verify_reps: verification passes
 
@@ -7469,10 +7473,11 @@ pub unsafe fn mirror_move_v2_multi(
     // Use upper 32 bits for thread separation (vs old << 16)
     let thread_base = pattern_gen::mirror_thread_base(thread_id);
 
-    run_test_v2_with_init(
+    run_phased_test(
         blocks, thread_id, error_mode, timing, config, progress,
         test_name, TestAction::WriteWaitVerify,
         4, // bytes_per_test_op: 2R + 2W per mirror round-trip
+        false,  // skip_init: always init (independent mode)
         config.test_reps,  // test_reps: mirror round-trips before verify
         config.verify_reps,  // verify_reps: verification passes
         // Init: write forward patterns once (TM5: RS_Set fills before test sequence)
@@ -7925,7 +7930,7 @@ macro_rules! simple_verify_strided_lcg_simd {
 /// into one mega-function, which caused 9K+ lines of assembly, 46 `vzeroupper` calls,
 /// and instruction cache pressure that made wider SIMD slower than narrower.
 ///
-/// Each specialized function contains exactly ONE run_test_v2 call with its closures,
+/// Each specialized function contains exactly ONE run_phased_test call with its closures,
 /// producing tight, focused assembly. The dispatch function has NO `#[target_feature]`
 /// so it compiles to a simple branch without pulling in SIMD register state.
 macro_rules! simple_test_v2_impl {
@@ -7965,9 +7970,9 @@ macro_rules! simple_test_v2_impl {
             };
             let base_vec = <$simd_type>::splat(base);
 
-            run_test_v2(
+            run_phased_test(
                 blocks, thread_id, error_mode, timing, config, progress,
-                test_name, TestAction::WriteVerify, config.test_reps, config.verify_reps,
+                test_name, TestAction::WriteVerify, 1, false, config.test_reps, config.verify_reps,
                 |ctx: &ChunkCtx| {
                     simple_write_positional_simd!($simd_type, simd_elements, ctx,
                         base_vec, lane_offsets);
@@ -8009,9 +8014,9 @@ macro_rules! simple_test_v2_impl {
             };
             let base_vec = <$simd_type>::splat(base);
 
-            run_test_v2(
+            run_phased_test(
                 blocks, thread_id, error_mode, timing, config, progress,
-                test_name, TestAction::WriteVerify, config.test_reps, config.verify_reps,
+                test_name, TestAction::WriteVerify, 1, false, config.test_reps, config.verify_reps,
                 |ctx: &ChunkCtx| {
                     simple_write_strided_positional_simd!($simd_type, simd_elements, ctx,
                         base_vec, lane_offsets, stride_param);
@@ -8046,9 +8051,9 @@ macro_rules! simple_test_v2_impl {
                 .wrapping_mul(0x9E3779B97F4A7C15)
                 .wrapping_add(1);
 
-            run_test_v2(
+            run_phased_test(
                 blocks, thread_id, error_mode, timing, config, progress,
-                test_name, TestAction::WriteVerify, config.test_reps, config.verify_reps,
+                test_name, TestAction::WriteVerify, 1, false, config.test_reps, config.verify_reps,
                 |ctx: &ChunkCtx| {
                     simple_write_lcg_simd!($lcg_type, $simd_type, simd_elements, ctx,
                         initial_seed, multiplier, addend);
@@ -8086,9 +8091,9 @@ macro_rules! simple_test_v2_impl {
                 .wrapping_mul(0x9E3779B97F4A7C15)
                 .wrapping_add(1);
 
-            run_test_v2(
+            run_phased_test(
                 blocks, thread_id, error_mode, timing, config, progress,
-                test_name, TestAction::WriteVerify, config.test_reps, config.verify_reps,
+                test_name, TestAction::WriteVerify, 1, false, config.test_reps, config.verify_reps,
                 |ctx: &ChunkCtx| {
                     simple_write_strided_lcg_simd!($lcg_type, $simd_type, simd_elements, ctx,
                         initial_seed, multiplier, addend, stride_param);
@@ -8343,9 +8348,9 @@ macro_rules! simple_test_nt_impl {
             let lane_offsets = <$simd_type>::from_array($lane_offsets);
             let zero = <$simd_type>::splat(0);
 
-            run_test_v2(
+            run_phased_test(
                 blocks, thread_id, error_mode, timing, config, progress,
-                test_name, TestAction::WriteVerify, 1, 1,
+                test_name, TestAction::WriteVerify, 1, false, 1, 1,
                 // Init: NT write (fill memory with pattern, bypassing cache)
                 |ctx: &ChunkCtx| {
                     simple_write_nt_positional_simd!($simd_type, $simd_w, ctx,
@@ -8432,6 +8437,8 @@ pub unsafe fn bench_init_multi(
     let param1 = config.pattern_param1.unwrap_or(0xCAFEBABECAFEBABE);
     let cl_shift = pattern_gen::cache_line_shift(config.cache_line_bytes);
 
+    let skip_init = config.skip_init;
+
     let test_name = match mode {
         0 => "Bench-Init-TM5-0",
         1 => "Bench-Init-TM5-1",
@@ -8446,9 +8453,9 @@ pub unsafe fn bench_init_multi(
         // --- TM5-faithful modes ---
         0 => {
             // Mode 0: bit dispersion + branchless 4KB page complement
-            run_test_v2(
+            run_phased_test(
                 blocks, thread_id, error_mode, timing, config, progress,
-                test_name, TestAction::Write, 1, 0,
+                test_name, TestAction::Write, 1, skip_init, 1, 0,
                 // Init: full pattern write
                 |ctx: &ChunkCtx| {
                     let seed = pattern_gen::block_seed(ctx.ptr as usize, ctx.thread_id, ctx.cycle);
@@ -8469,9 +8476,9 @@ pub unsafe fn bench_init_multi(
         }
         1 => {
             // Mode 1: linear step + cache-line complement
-            run_test_v2(
+            run_phased_test(
                 blocks, thread_id, error_mode, timing, config, progress,
-                test_name, TestAction::Write, 1, 0,
+                test_name, TestAction::Write, 1, skip_init, 1, 0,
                 |ctx: &ChunkCtx| {
                     let seed = pattern_gen::block_seed(ctx.ptr as usize, ctx.thread_id, ctx.cycle);
                     for idx in ctx.chunk_start..ctx.chunk_end {
@@ -8490,9 +8497,9 @@ pub unsafe fn bench_init_multi(
         2 => {
             // Mode 2: per-page seed+step evolution (PMULLW-style)
             let cl_elements = config.cache_line_bytes / std::mem::size_of::<u64>();
-            run_test_v2(
+            run_phased_test(
                 blocks, thread_id, error_mode, timing, config, progress,
-                test_name, TestAction::Write, 1, 0,
+                test_name, TestAction::Write, 1, skip_init, 1, 0,
                 |ctx: &ChunkCtx| {
                     let base_seed = pattern_gen::block_seed(ctx.ptr as usize, ctx.thread_id, ctx.cycle);
                     let mut page_seed = base_seed;
@@ -8532,9 +8539,9 @@ pub unsafe fn bench_init_multi(
         10 => {
             // Mode 10: idx ^ base (address-derived unique)
             let base = 0xDEADBEEFDEADBEEF_u64;
-            run_test_v2(
+            run_phased_test(
                 blocks, thread_id, error_mode, timing, config, progress,
-                test_name, TestAction::Write, 1, 0,
+                test_name, TestAction::Write, 1, skip_init, 1, 0,
                 |ctx: &ChunkCtx| {
                     for idx in ctx.chunk_start..ctx.chunk_end {
                         *ctx.ptr.add(idx) = pattern_gen::pattern_mode10(idx as u64, base);
@@ -8551,9 +8558,9 @@ pub unsafe fn bench_init_multi(
         11 => {
             // Mode 11: idx ^ combined (param0 ^ param1)
             let combined = param0 ^ param1;
-            run_test_v2(
+            run_phased_test(
                 blocks, thread_id, error_mode, timing, config, progress,
-                test_name, TestAction::Write, 1, 0,
+                test_name, TestAction::Write, 1, skip_init, 1, 0,
                 |ctx: &ChunkCtx| {
                     for idx in ctx.chunk_start..ctx.chunk_end {
                         *ctx.ptr.add(idx) = pattern_gen::pattern_mode11(idx as u64, combined);
@@ -8572,9 +8579,9 @@ pub unsafe fn bench_init_multi(
             let multiplier = param0;
             let addend = param1;
             let initial_seed = (thread_id as u64).wrapping_mul(0x9E3779B97F4A7C15).wrapping_add(1);
-            run_test_v2(
+            run_phased_test(
                 blocks, thread_id, error_mode, timing, config, progress,
-                test_name, TestAction::Write, 1, 0,
+                test_name, TestAction::Write, 1, skip_init, 1, 0,
                 |ctx: &ChunkCtx| {
                     let mut state = pattern_gen::lcg_next(
                         initial_seed.wrapping_add(ctx.chunk_start as u64), multiplier, addend);
@@ -8592,6 +8599,255 @@ pub unsafe fn bench_init_multi(
                     }
                 },
                 |_ctx: &ChunkCtx| -> u64 { 0 },
+            )
+        }
+    }
+}
+
+// ============================================================================
+// Bench-Verify: Standalone pattern verification benchmarks
+// Measures raw VERIFY/read throughput per pattern mode with no-op test.
+// Can run independently (writes patterns first) or dependently (skip_init=true,
+// relies on a prior Bench-Init-* having written the matching patterns).
+// ============================================================================
+
+/// Bench-Verify dispatcher: routes to the correct pattern mode based on config.pattern_mode.
+/// In dependent mode (config.skip_init=true), skips the init write — assumes a matching
+/// Bench-Init-* test already wrote the patterns. The init closure is still provided so
+/// the harness has pattern knowledge for error repair if needed.
+pub unsafe fn bench_verify_multi(
+    blocks: &[crate::runner::AllocationBlock],
+    thread_id: usize,
+    error_mode: ErrorMode,
+    timing: &TestTiming,
+    config: &TestMemoryConfig,
+    progress: Option<&TestProgress>,
+) -> TestStats {
+    let mode = config.pattern_mode.unwrap_or(10);
+    let param0 = config.pattern_param0.unwrap_or(0xDEADBEEFDEADBEEF);
+    let param1 = config.pattern_param1.unwrap_or(0xCAFEBABECAFEBABE);
+    let cl_shift = pattern_gen::cache_line_shift(config.cache_line_bytes);
+    let skip_init = config.skip_init;
+
+    let test_name = match mode {
+        0 => "Bench-Verify-TM5-0",
+        1 => "Bench-Verify-TM5-1",
+        2 => "Bench-Verify-TM5-2",
+        10 => "Bench-Verify-TMR-0",
+        11 => "Bench-Verify-TMR-1",
+        12 => "Bench-Verify-TMR-2",
+        _ => "Bench-Verify-Unknown",
+    };
+
+    match mode {
+        // --- TM5-faithful modes ---
+        0 => {
+            // Mode 0: bit dispersion + branchless 4KB page complement
+            run_phased_test(
+                blocks, thread_id, error_mode, timing, config, progress,
+                test_name, TestAction::Verify, 1, skip_init, 0, 1,
+                // Init: write patterns (skipped in dependent mode, kept for repair knowledge)
+                |ctx: &ChunkCtx| {
+                    let seed = pattern_gen::block_seed(ctx.ptr as usize, ctx.thread_id, ctx.cycle);
+                    for idx in ctx.chunk_start..ctx.chunk_end {
+                        *ctx.ptr.add(idx) = pattern_gen::pattern_mode0(idx as u64, seed);
+                    }
+                },
+                // Test: no-op (we're benchmarking verify, not writes)
+                |_ctx: &ChunkCtx| {},
+                // Verify: read + compare (the actual benchmark)
+                |ctx: &ChunkCtx| -> u64 {
+                    let seed = pattern_gen::block_seed(ctx.ptr as usize, ctx.thread_id, ctx.cycle);
+                    let mut total_errors = 0u64;
+                    for idx in ctx.chunk_start..ctx.chunk_end {
+                        let expected = pattern_gen::pattern_mode0(idx as u64, seed);
+                        let actual = *ctx.ptr.add(idx);
+                        if actual != expected {
+                            total_errors += 1;
+                            if total_errors <= 10 {
+                                log::error!("{}: error at idx {} - expected {:#x}, got {:#x}",
+                                           test_name, idx, expected, actual);
+                            }
+                        }
+                    }
+                    total_errors
+                },
+            )
+        }
+        1 => {
+            // Mode 1: linear step + cache-line complement
+            run_phased_test(
+                blocks, thread_id, error_mode, timing, config, progress,
+                test_name, TestAction::Verify, 1, skip_init, 0, 1,
+                |ctx: &ChunkCtx| {
+                    let seed = pattern_gen::block_seed(ctx.ptr as usize, ctx.thread_id, ctx.cycle);
+                    for idx in ctx.chunk_start..ctx.chunk_end {
+                        *ctx.ptr.add(idx) = pattern_gen::pattern_mode1(idx as u64, seed, cl_shift);
+                    }
+                },
+                |_ctx: &ChunkCtx| {},
+                |ctx: &ChunkCtx| -> u64 {
+                    let seed = pattern_gen::block_seed(ctx.ptr as usize, ctx.thread_id, ctx.cycle);
+                    let mut total_errors = 0u64;
+                    for idx in ctx.chunk_start..ctx.chunk_end {
+                        let expected = pattern_gen::pattern_mode1(idx as u64, seed, cl_shift);
+                        let actual = *ctx.ptr.add(idx);
+                        if actual != expected {
+                            total_errors += 1;
+                            if total_errors <= 10 {
+                                log::error!("{}: error at idx {} - expected {:#x}, got {:#x}",
+                                           test_name, idx, expected, actual);
+                            }
+                        }
+                    }
+                    total_errors
+                },
+            )
+        }
+        2 => {
+            // Mode 2: per-page seed+step evolution (PMULLW-style)
+            let cl_elements = config.cache_line_bytes / std::mem::size_of::<u64>();
+            run_phased_test(
+                blocks, thread_id, error_mode, timing, config, progress,
+                test_name, TestAction::Verify, 1, skip_init, 0, 1,
+                |ctx: &ChunkCtx| {
+                    let base_seed = pattern_gen::block_seed(ctx.ptr as usize, ctx.thread_id, ctx.cycle);
+                    let mut page_seed = base_seed;
+                    let mut page_step = base_seed.wrapping_mul(0x5DEECE66D);
+                    let mut idx = ctx.chunk_start;
+                    while idx < ctx.chunk_end {
+                        let page_end = (idx + cl_elements).min(ctx.chunk_end);
+                        for i in idx..page_end {
+                            *ctx.ptr.add(i) = pattern_gen::mode2_element(page_seed, (i - idx) as u64, page_step);
+                        }
+                        let (ns, nst) = pattern_gen::mode2_evolve(page_seed, page_step, param0, param1);
+                        page_seed = ns;
+                        page_step = nst;
+                        idx = page_end;
+                    }
+                },
+                |_ctx: &ChunkCtx| {},
+                |ctx: &ChunkCtx| -> u64 {
+                    let base_seed = pattern_gen::block_seed(ctx.ptr as usize, ctx.thread_id, ctx.cycle);
+                    let mut page_seed = base_seed;
+                    let mut page_step = base_seed.wrapping_mul(0x5DEECE66D);
+                    let mut total_errors = 0u64;
+                    let mut idx = ctx.chunk_start;
+                    while idx < ctx.chunk_end {
+                        let page_end = (idx + cl_elements).min(ctx.chunk_end);
+                        for i in idx..page_end {
+                            let expected = pattern_gen::mode2_element(page_seed, (i - idx) as u64, page_step);
+                            let actual = *ctx.ptr.add(i);
+                            if actual != expected {
+                                total_errors += 1;
+                                if total_errors <= 10 {
+                                    log::error!("{}: error at idx {} - expected {:#x}, got {:#x}",
+                                               test_name, i, expected, actual);
+                                }
+                            }
+                        }
+                        let (ns, nst) = pattern_gen::mode2_evolve(page_seed, page_step, param0, param1);
+                        page_seed = ns;
+                        page_step = nst;
+                        idx = page_end;
+                    }
+                    total_errors
+                },
+            )
+        }
+        // --- TMR-native modes ---
+        10 => {
+            // Mode 10: idx ^ base (address-derived unique)
+            let base = 0xDEADBEEFDEADBEEF_u64;
+            run_phased_test(
+                blocks, thread_id, error_mode, timing, config, progress,
+                test_name, TestAction::Verify, 1, skip_init, 0, 1,
+                |ctx: &ChunkCtx| {
+                    for idx in ctx.chunk_start..ctx.chunk_end {
+                        *ctx.ptr.add(idx) = pattern_gen::pattern_mode10(idx as u64, base);
+                    }
+                },
+                |_ctx: &ChunkCtx| {},
+                |ctx: &ChunkCtx| -> u64 {
+                    let mut total_errors = 0u64;
+                    for idx in ctx.chunk_start..ctx.chunk_end {
+                        let expected = pattern_gen::pattern_mode10(idx as u64, base);
+                        let actual = *ctx.ptr.add(idx);
+                        if actual != expected {
+                            total_errors += 1;
+                            if total_errors <= 10 {
+                                log::error!("{}: error at idx {} - expected {:#x}, got {:#x}",
+                                           test_name, idx, expected, actual);
+                            }
+                        }
+                    }
+                    total_errors
+                },
+            )
+        }
+        11 => {
+            // Mode 11: idx ^ combined (param0 ^ param1)
+            let combined = param0 ^ param1;
+            run_phased_test(
+                blocks, thread_id, error_mode, timing, config, progress,
+                test_name, TestAction::Verify, 1, skip_init, 0, 1,
+                |ctx: &ChunkCtx| {
+                    for idx in ctx.chunk_start..ctx.chunk_end {
+                        *ctx.ptr.add(idx) = pattern_gen::pattern_mode11(idx as u64, combined);
+                    }
+                },
+                |_ctx: &ChunkCtx| {},
+                |ctx: &ChunkCtx| -> u64 {
+                    let mut total_errors = 0u64;
+                    for idx in ctx.chunk_start..ctx.chunk_end {
+                        let expected = pattern_gen::pattern_mode11(idx as u64, combined);
+                        let actual = *ctx.ptr.add(idx);
+                        if actual != expected {
+                            total_errors += 1;
+                            if total_errors <= 10 {
+                                log::error!("{}: error at idx {} - expected {:#x}, got {:#x}",
+                                           test_name, idx, expected, actual);
+                            }
+                        }
+                    }
+                    total_errors
+                },
+            )
+        }
+        12 | _ => {
+            // Mode 12: LCG chain (real PRNG)
+            let multiplier = param0;
+            let addend = param1;
+            let initial_seed = (thread_id as u64).wrapping_mul(0x9E3779B97F4A7C15).wrapping_add(1);
+            run_phased_test(
+                blocks, thread_id, error_mode, timing, config, progress,
+                test_name, TestAction::Verify, 1, skip_init, 0, 1,
+                |ctx: &ChunkCtx| {
+                    let mut state = pattern_gen::lcg_next(
+                        initial_seed.wrapping_add(ctx.chunk_start as u64), multiplier, addend);
+                    for idx in ctx.chunk_start..ctx.chunk_end {
+                        *ctx.ptr.add(idx) = state;
+                        state = pattern_gen::lcg_next(state, multiplier, addend);
+                    }
+                },
+                |_ctx: &ChunkCtx| {},
+                |ctx: &ChunkCtx| -> u64 {
+                    let mut total_errors = 0u64;
+                    let mut state = pattern_gen::lcg_next(
+                        initial_seed.wrapping_add(ctx.chunk_start as u64), multiplier, addend);
+                    for idx in ctx.chunk_start..ctx.chunk_end {
+                        let actual = *ctx.ptr.add(idx);
+                        if actual != state {
+                            total_errors += 1;
+                            if total_errors <= 10 {
+                                log::error!("{}: error at idx {} - expected {:#x}, got {:#x}",
+                                           test_name, idx, state, actual);
+                            }
+                        }
+                        state = pattern_gen::lcg_next(state, multiplier, addend);
+                    }
+                    total_errors
+                },
             )
         }
     }
@@ -8659,6 +8915,12 @@ pub fn get_test_function_by_name(name: &str) -> Option<crate::runner::TestFuncti
         "Bench-Init-TM5-0" | "Bench-Init-TM5-1" | "Bench-Init-TM5-2"
         | "Bench-Init-TMR-0" | "Bench-Init-TMR-1" | "Bench-Init-TMR-2"
             => Some(TestFunction::MultiBlock(bench_init_multi)),
+
+        // Bench-Verify: Pattern verification throughput benchmarks
+        // Can run independently (writes patterns first) or dependently (skip_init in config)
+        "Bench-Verify-TM5-0" | "Bench-Verify-TM5-1" | "Bench-Verify-TM5-2"
+        | "Bench-Verify-TMR-0" | "Bench-Verify-TMR-1" | "Bench-Verify-TMR-2"
+            => Some(TestFunction::MultiBlock(bench_verify_multi)),
 
         _ => None,
     }

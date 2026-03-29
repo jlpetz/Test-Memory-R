@@ -24,6 +24,7 @@ use crate::tests::{
     mirror_move_v2_128_multi, mirror_move_v2_256_multi, mirror_move_v2_512_multi,
     mirror_move_v2_auto_multi,
     bench_init_multi,
+    bench_verify_multi,
 };
 use crate::latency_tests::{
     read_latency_multi, write_latency_multi, copy_latency_multi,  // Full latency tests with percentiles
@@ -66,6 +67,152 @@ pub struct AllocationBlock {
 }
 
 // Test definition with display name support
+/// What a test does to the memory patterns after it runs.
+/// Used for plan-level validation of dependent test ordering.
+#[derive(Debug, Clone, PartialEq)]
+pub enum MemoryEffect {
+    /// Test writes a known pattern identified by (mode, param0, param1).
+    /// After this test, memory contains this pattern.
+    /// Examples: Bench-Init-*, SimpleTest (test_fn re-writes each cycle)
+    Writes(PatternId),
+    /// Test preserves existing memory contents (round-trip operations).
+    /// After this test, memory still contains whatever was there before.
+    /// Examples: MirrorMove (mirror + unmirror), Bench-Verify (read-only)
+    Preserves,
+    /// Test overwrites memory with test-specific patterns that don't match any
+    /// standard PatternId. Dependent tests cannot follow this.
+    /// Examples: StuckBit (writes 0xAAAA/0x5555), RefreshStable (writes fixed pattern)
+    Destroys,
+}
+
+/// Identifies a specific pattern written to memory.
+/// Two tests with the same PatternId write compatible patterns.
+#[derive(Debug, Clone, PartialEq)]
+pub struct PatternId {
+    pub mode: u32,
+    pub param0: u64,
+    pub param1: u64,
+}
+
+impl PatternId {
+    pub fn new(mode: u32, param0: u64, param1: u64) -> Self {
+        Self { mode, param0, param1 }
+    }
+
+    /// Create from a TestMemoryConfig's pattern settings.
+    pub fn from_config(config: &crate::tests::TestMemoryConfig) -> Self {
+        Self {
+            mode: config.pattern_mode.unwrap_or(10),
+            param0: config.pattern_param0.unwrap_or(0xDEADBEEFDEADBEEF),
+            param1: config.pattern_param1.unwrap_or(0xCAFEBABECAFEBABE),
+        }
+    }
+}
+
+impl std::fmt::Display for PatternId {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        write!(f, "mode={}", self.mode)
+    }
+}
+
+impl std::fmt::Display for MemoryEffect {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            MemoryEffect::Writes(pid) => write!(f, "Writes({})", pid),
+            MemoryEffect::Preserves => write!(f, "Preserves"),
+            MemoryEffect::Destroys => write!(f, "Destroys"),
+        }
+    }
+}
+
+/// Derive the memory effect of a test from its name and config.
+///
+/// Classification:
+/// - **Writes**: Tests that write a known, repeatable pattern (SimpleTest, SimpleTestNT, Bench-Init)
+/// - **Preserves**: Tests that leave memory intact (MirrorMove round-trip, Bench-Verify read-only)
+/// - **Destroys**: Tests that overwrite with non-standard patterns (StuckBit, Refresh, CacheBust, etc.)
+///   Latency and bandwidth tests also destroy — they use internal patterns not tracked by PatternId.
+fn derive_memory_effect(test_name: &str, config: &crate::tests::TestMemoryConfig) -> MemoryEffect {
+    // Tests that write a known, config-derived pattern
+    if test_name.starts_with("Mem-SimpleV2")
+        || test_name.starts_with("Mem-SimpleNT")
+        || test_name.starts_with("Bench-Init")
+    {
+        return MemoryEffect::Writes(PatternId::from_config(config));
+    }
+
+    // Tests that preserve existing memory contents (round-trip or read-only)
+    if test_name.starts_with("Mem-Mirror")
+        || test_name.starts_with("Bench-Verify")
+    {
+        return MemoryEffect::Preserves;
+    }
+
+    // Everything else destroys: StuckBit, Refresh, CacheBust, Random, Stride,
+    // BlockMove, Saturate, latency tests, bandwidth tests
+    MemoryEffect::Destroys
+}
+
+/// Validate a test plan's dependency chain.
+///
+/// Walks the test list in order, tracking what pattern is currently in memory.
+/// Reports warnings for tests that use `skip_init=true` (dependent mode) but
+/// either have no pattern in memory or the wrong pattern.
+///
+/// Returns a list of (test_index, warning_message) for any issues found.
+pub fn validate_test_plan(tests: &[TestDefinition]) -> Vec<(usize, String)> {
+    let mut warnings = Vec::new();
+    // Track what pattern is currently in memory (None = unknown/destroyed)
+    let mut current_pattern: Option<PatternId> = None;
+
+    for (i, test) in tests.iter().enumerate() {
+        let is_dependent = test.config.skip_init;
+
+        if is_dependent {
+            // Dependent test skips its own init — needs compatible pattern already in memory.
+            // Exception: Writes tests (like Bench-Init) with skip_init just skip the init_fn
+            // and do their writes in test_fn — they don't depend on prior memory state.
+            let needs_existing_pattern = matches!(&test.memory_effect, MemoryEffect::Preserves);
+
+            if needs_existing_pattern {
+                let expected = PatternId::from_config(&test.config);
+                match &current_pattern {
+                    Some(current) if *current == expected => {
+                        // Pattern matches — dependency satisfied
+                    }
+                    Some(current) => {
+                        warnings.push((i, format!(
+                            "'{}' (dependent) expects pattern {} but memory has {}",
+                            test.display_name, expected, current
+                        )));
+                    }
+                    None => {
+                        warnings.push((i, format!(
+                            "'{}' (dependent) expects pattern {} but no prior test wrote a known pattern",
+                            test.display_name, expected
+                        )));
+                    }
+                }
+            }
+        }
+
+        // Update memory state based on what this test does
+        match &test.memory_effect {
+            MemoryEffect::Writes(pattern) => {
+                current_pattern = Some(pattern.clone());
+            }
+            MemoryEffect::Preserves => {
+                // Memory unchanged — current_pattern stays as-is
+            }
+            MemoryEffect::Destroys => {
+                current_pattern = None;
+            }
+        }
+    }
+
+    warnings
+}
+
 #[derive(Debug, Clone)]
 pub struct TestDefinition {
     pub actual_name: &'static str,    // Used for function resolution and stats tracking
@@ -73,6 +220,8 @@ pub struct TestDefinition {
     pub function: TestFunction,
     pub config: TestMemoryConfig,
     pub original_name: Option<&'static str>, // Preserves original name for Auto variants (e.g., "StuckBitTestAuto")
+    /// What this test does to memory patterns. Used for plan-level dependency validation.
+    pub memory_effect: MemoryEffect,
 }
 
 // Work item for thread pool
@@ -419,8 +568,26 @@ pub fn run_tests_with_layout_and_timing_filtered(
         }
     }
 
+    // Validate test plan dependency chain
+    for (i, def) in test_definitions.iter().enumerate() {
+        log::debug!("Test plan [{}] '{}': effect={}, skip_init={}",
+            i + 1, def.display_name, def.memory_effect, def.config.skip_init);
+    }
+    let plan_warnings = validate_test_plan(&test_definitions);
+    if !plan_warnings.is_empty() {
+        println!("\n--- Test Plan Dependency Warnings ---");
+        for (idx, msg) in &plan_warnings {
+            println!("  [{}] {}", idx + 1, msg);
+        }
+        println!("  Dependent tests with unmet dependencies will run their own init phase.");
+        println!("-------------------------------------\n");
+        for (idx, msg) in &plan_warnings {
+            log::warn!("Plan validation [test {}]: {}", idx + 1, msg);
+        }
+    }
+
     let tests_per_cycle = test_definitions.len() as u64;
-    
+
     progress.set_cycle_info(1, suite_timing.global_cycles, tests_per_cycle);
 
     // cache_info is passed from main.rs (detected once at startup via get_system_info())
@@ -1518,7 +1685,8 @@ fn create_test_definitions(cache_info: &CacheInfo) -> Vec<TestDefinition> {
 
         // === Bench-Init: Pattern Generation Throughput Benchmarks ===
         // test=Bench-Init-* runs all 6, test=Bench-Init-TM5-* runs TM5-faithful only
-        // Uses FullAllocation, 4MB chunk, 10 cycles — measures raw write throughput per mode
+        // skip_init=true: init_fn not called at startup, test_fn does the pattern write.
+        // This avoids double-writing (init + test_fn) — only the test_fn writes are measured.
         (
             "Bench-Init-TM5-0",
             TestFunction::MultiBlock(bench_init_multi),
@@ -1528,6 +1696,7 @@ fn create_test_definitions(cache_info: &CacheInfo) -> Vec<TestDefinition> {
                 false, false
             ).with_timing(TestTiming::cycles_only(10))
              .with_pattern_config(Some(0), None, None)
+             .with_skip_init(true)
              .with_streams(1), "Bench-Init-TM5-0")
              .with_memory_type(None)
         ),
@@ -1540,6 +1709,7 @@ fn create_test_definitions(cache_info: &CacheInfo) -> Vec<TestDefinition> {
                 false, false
             ).with_timing(TestTiming::cycles_only(10))
              .with_pattern_config(Some(1), None, None)
+             .with_skip_init(true)
              .with_streams(1), "Bench-Init-TM5-1")
              .with_memory_type(None)
         ),
@@ -1552,6 +1722,7 @@ fn create_test_definitions(cache_info: &CacheInfo) -> Vec<TestDefinition> {
                 false, false
             ).with_timing(TestTiming::cycles_only(10))
              .with_pattern_config(Some(2), Some(0x5DEECE66D), Some(0xB))
+             .with_skip_init(true)
              .with_streams(1), "Bench-Init-TM5-2")
              .with_memory_type(None)
         ),
@@ -1564,6 +1735,7 @@ fn create_test_definitions(cache_info: &CacheInfo) -> Vec<TestDefinition> {
                 false, false
             ).with_timing(TestTiming::cycles_only(10))
              .with_pattern_config(Some(10), None, None)
+             .with_skip_init(true)
              .with_streams(1), "Bench-Init-TMR-0")
              .with_memory_type(None)
         ),
@@ -1576,6 +1748,7 @@ fn create_test_definitions(cache_info: &CacheInfo) -> Vec<TestDefinition> {
                 false, false
             ).with_timing(TestTiming::cycles_only(10))
              .with_pattern_config(Some(11), None, None)
+             .with_skip_init(true)
              .with_streams(1), "Bench-Init-TMR-1")
              .with_memory_type(None)
         ),
@@ -1588,7 +1761,84 @@ fn create_test_definitions(cache_info: &CacheInfo) -> Vec<TestDefinition> {
                 false, false
             ).with_timing(TestTiming::cycles_only(10))
              .with_pattern_config(Some(12), Some(0xDEADBEEFDEADBEEF), Some(0xCAFEBABECAFEBABE))
+             .with_skip_init(true)
              .with_streams(1), "Bench-Init-TMR-2")
+             .with_memory_type(None)
+        ),
+
+        // === Bench-Verify: Pattern Verification Throughput Benchmarks ===
+        // Independent mode (default): writes patterns then measures verify throughput
+        // Dependent mode: set skip_init=true in config, requires matching Bench-Init-* earlier in plan
+        (
+            "Bench-Verify-TM5-0",
+            TestFunction::MultiBlock(bench_verify_multi),
+            validate_streams(TestMemoryConfig::new(
+                WindowMode::FullAllocation,
+                ChunkMode::FixedSize { size_mb: 4 },
+                false, false
+            ).with_timing(TestTiming::cycles_only(10))
+             .with_pattern_config(Some(0), None, None)
+             .with_streams(1), "Bench-Verify-TM5-0")
+             .with_memory_type(None)
+        ),
+        (
+            "Bench-Verify-TM5-1",
+            TestFunction::MultiBlock(bench_verify_multi),
+            validate_streams(TestMemoryConfig::new(
+                WindowMode::FullAllocation,
+                ChunkMode::FixedSize { size_mb: 4 },
+                false, false
+            ).with_timing(TestTiming::cycles_only(10))
+             .with_pattern_config(Some(1), None, None)
+             .with_streams(1), "Bench-Verify-TM5-1")
+             .with_memory_type(None)
+        ),
+        (
+            "Bench-Verify-TM5-2",
+            TestFunction::MultiBlock(bench_verify_multi),
+            validate_streams(TestMemoryConfig::new(
+                WindowMode::FullAllocation,
+                ChunkMode::FixedSize { size_mb: 4 },
+                false, false
+            ).with_timing(TestTiming::cycles_only(10))
+             .with_pattern_config(Some(2), Some(0x5DEECE66D), Some(0xB))
+             .with_streams(1), "Bench-Verify-TM5-2")
+             .with_memory_type(None)
+        ),
+        (
+            "Bench-Verify-TMR-0",
+            TestFunction::MultiBlock(bench_verify_multi),
+            validate_streams(TestMemoryConfig::new(
+                WindowMode::FullAllocation,
+                ChunkMode::FixedSize { size_mb: 4 },
+                false, false
+            ).with_timing(TestTiming::cycles_only(10))
+             .with_pattern_config(Some(10), None, None)
+             .with_streams(1), "Bench-Verify-TMR-0")
+             .with_memory_type(None)
+        ),
+        (
+            "Bench-Verify-TMR-1",
+            TestFunction::MultiBlock(bench_verify_multi),
+            validate_streams(TestMemoryConfig::new(
+                WindowMode::FullAllocation,
+                ChunkMode::FixedSize { size_mb: 4 },
+                false, false
+            ).with_timing(TestTiming::cycles_only(10))
+             .with_pattern_config(Some(11), None, None)
+             .with_streams(1), "Bench-Verify-TMR-1")
+             .with_memory_type(None)
+        ),
+        (
+            "Bench-Verify-TMR-2",
+            TestFunction::MultiBlock(bench_verify_multi),
+            validate_streams(TestMemoryConfig::new(
+                WindowMode::FullAllocation,
+                ChunkMode::FixedSize { size_mb: 4 },
+                false, false
+            ).with_timing(TestTiming::cycles_only(10))
+             .with_pattern_config(Some(12), Some(0xDEADBEEFDEADBEEF), Some(0xCAFEBABECAFEBABE))
+             .with_streams(1), "Bench-Verify-TMR-2")
              .with_memory_type(None)
         ),
 
@@ -2013,24 +2263,28 @@ fn create_test_definitions(cache_info: &CacheInfo) -> Vec<TestDefinition> {
     for (test_name, test_function, config) in test_definitions {
         if let Some((resolved_name, resolved_function)) = resolve_auto_dispatch_test(test_name) {
             log::info!("Auto-dispatch: {} → {} (based on CPU capabilities)", test_name, resolved_name);
+            let effect = derive_memory_effect(resolved_name, &config);
             resolved_tests.push(TestDefinition {
                 actual_name: resolved_name,
                 display_name: format!("{}_A", resolved_name), // Add _A suffix for auto-dispatch
                 function: resolved_function,
                 config,
                 original_name: Some(test_name), // Preserve original "StuckBitTestAuto" name
+                memory_effect: effect,
             });
         } else {
+            let effect = derive_memory_effect(test_name, &config);
             resolved_tests.push(TestDefinition {
                 actual_name: test_name,
                 display_name: test_name.to_string(),
                 function: test_function,
                 config,
                 original_name: None,
+                memory_effect: effect,
             });
         }
     }
-    
+
     resolved_tests
 }
 
@@ -2066,22 +2320,26 @@ fn create_test_definitions_from_config(config: &crate::config::ModernConfig, cac
             log::info!("Auto-dispatch: {} → {} (based on CPU capabilities)", test_name, resolved_name);
             // Convert to 'static str by leaking (safe for test names, small and finite set)
             let static_original_name: &'static str = Box::leak(test_name.to_string().into_boxed_str());
+            let effect = derive_memory_effect(resolved_name, &test_config);
             resolved_tests.push(TestDefinition {
                 actual_name: resolved_name,
                 display_name: format!("{}_A", resolved_name),
                 function: resolved_function,
                 config: test_config,
                 original_name: Some(static_original_name), // Preserve original Auto name
+                memory_effect: effect,
             });
         } else {
             // Convert to 'static str by leaking (safe for test names, small and finite set)
             let static_name: &'static str = Box::leak(test_name.to_string().into_boxed_str());
+            let effect = derive_memory_effect(test_name, &test_config);
             resolved_tests.push(TestDefinition {
                 actual_name: static_name,
                 display_name: test_name.to_string(),
                 function: test_function,
                 config: test_config,
                 original_name: None,
+                memory_effect: effect,
             });
         }
     }

@@ -1,4 +1,4 @@
-//! Zero-cost test orchestration harness for TMR v2 tests.
+//! Zero-cost phased test orchestration harness for TMR memory tests.
 //!
 //! This replaces the duplicated boilerplate in each test function with a single
 //! generic function that monomorphizes per call site. Unlike the failed
@@ -48,7 +48,7 @@ impl ChunkCtx {
     }
 }
 
-/// Run a v2 test with monomorphized closures for init, test, and verify phases.
+/// Run a phased test with monomorphized closures for init, test, and verify phases.
 ///
 /// This handles ALL orchestration boilerplate:
 /// - Block preparation with window limits
@@ -57,16 +57,27 @@ impl ChunkCtx {
 /// - Error accumulation and mode handling
 /// - Progress reporting
 /// - Stats collection
+/// - Accurate bytes accounting based on actual operations performed
 ///
 /// # Type Parameters
 ///
-/// - `Init`: Called once per block at the start to write initial patterns.
-///   Signature: `fn(ctx: &ChunkCtx)` — write patterns to `ctx.ptr[ctx.chunk_start..ctx.chunk_end]`
-/// - `Test`: Called per chunk per cycle for the "shake" operation (mirror swap, etc).
+/// - `Init`: Called once per block at startup to write initial patterns (unless `skip_init`).
+///   Always provided even when skipped — verify closures may need the same pattern knowledge
+///   for error repair. Signature: `fn(ctx: &ChunkCtx)`
+/// - `Test`: Called per chunk per cycle for the "shake" operation (mirror swap, pattern write, etc).
 ///   May be a no-op closure `|_| {}` for tests that only write+verify.
-///   Signature: `fn(ctx: &ChunkCtx)` — mutate memory in `ctx.ptr[ctx.chunk_start..ctx.chunk_end]`
+///   Signature: `fn(ctx: &ChunkCtx)`
 /// - `Verify`: Called per chunk per cycle to verify patterns. Returns error count for this chunk.
-///   Signature: `fn(ctx: &ChunkCtx) -> u64` — verify and return error count
+///   Signature: `fn(ctx: &ChunkCtx) -> u64`
+///
+/// # Parameters
+///
+/// - `bytes_per_test_op`: Memory touched per test_fn call as a multiplier of block size.
+///   1 for simple write (SimpleTest), 4 for MirrorMove (2R + 2W per round-trip).
+///   Used for bytes accounting only — does not affect test behavior.
+/// - `skip_init`: When true, init_fn is NOT called at startup. Used for dependent tests
+///   where a prior test in the plan already wrote the expected patterns. Init_fn is still
+///   provided for pattern knowledge (verify/repair needs it).
 ///
 /// # test_reps / verify_reps (TM5 repetition control)
 ///
@@ -82,14 +93,20 @@ impl ChunkCtx {
 ///
 /// Per cycle per chunk: `(test_fn × test_reps → fence → verify_fn × verify_reps) × write_read_cycles`
 ///
-/// TM5 SimpleTest total per chunk: (1 write + 5 reads) × 4 = 4 writes + 20 reads
+/// # Bytes Accounting
+///
+/// ```text
+/// init_bytes = if skip_init { 0 } else { block_size }  (one write pass)
+/// cycle_bytes = (bytes_per_test_op × test_reps + verify_reps) × block_size × write_read_cycles
+/// total = init_bytes + cycle_bytes × cycles_completed
+/// ```
 ///
 /// # Safety
 ///
 /// Caller must ensure all blocks contain valid, aligned, writable memory.
 #[inline(always)]
 #[allow(clippy::too_many_arguments)]
-pub unsafe fn run_test_v2<Init, Test, Verify>(
+pub unsafe fn run_phased_test<Init, Test, Verify>(
     blocks: &[AllocationBlock],
     thread_id: usize,
     error_mode: ErrorMode,
@@ -98,6 +115,8 @@ pub unsafe fn run_test_v2<Init, Test, Verify>(
     progress: Option<&TestProgress>,
     test_name: &'static str,
     action: TestAction,
+    bytes_per_test_op: usize,
+    skip_init: bool,
     test_reps: u32,
     verify_reps: u32,
     mut init_fn: Init,
@@ -179,19 +198,26 @@ where
         BlockMeta { ptr, len_elements, chunk_size_elements, test_size_bytes: tb.test_size }
     }).collect();
 
-    // Initialize all blocks with patterns (timed, matching v1 behavior)
-    for meta in block_metas.iter() {
-        let ctx = ChunkCtx {
-            ptr: meta.ptr,
-            chunk_start: 0,
-            chunk_end: meta.len_elements,
-            cycle: 0,
-            thread_id,
-            check_mask,
-        };
-        init_fn(&ctx);
+    // Initialize all blocks with patterns (unless dependent mode — prior test already wrote them)
+    if !skip_init {
+        for meta in block_metas.iter() {
+            let ctx = ChunkCtx {
+                ptr: meta.ptr,
+                chunk_start: 0,
+                chunk_end: meta.len_elements,
+                cycle: 0,
+                thread_id,
+                check_mask,
+            };
+            init_fn(&ctx);
+        }
+        std::sync::atomic::fence(Ordering::SeqCst);
+
+        // Account for init: one write pass over all blocks
+        for meta in block_metas.iter() {
+            total_bytes_processed += meta.test_size_bytes;
+        }
     }
-    std::sync::atomic::fence(Ordering::SeqCst);
 
     // Main test loop — interleaves across blocks
     'outer: loop {
@@ -232,17 +258,17 @@ where
                 // Check for shutdown
                 if SHUTDOWN_REQUESTED.load(Ordering::Relaxed) {
                     total_error_count += block_errors;
-                    let ops_per_wrc = test_reps as usize + verify_reps as usize;
+                    let ops_per_wrc = bytes_per_test_op * test_reps as usize + verify_reps as usize;
                     total_bytes_processed += (chunk_end - chunk_start) * std::mem::size_of::<u64>() * ops_per_wrc * wrc as usize;
                     break 'outer;
                 }
             }
 
             total_error_count += block_errors;
-            // Per write_read_cycle: test_reps writes + verify_reps reads
-            let ops_per_wrc = test_reps as usize + verify_reps as usize;
+            // Per write_read_cycle: bytes_per_test_op × test_reps writes + verify_reps reads
+            let ops_per_wrc = bytes_per_test_op * test_reps as usize + verify_reps as usize;
             total_bytes_processed += meta.test_size_bytes * ops_per_wrc * config.write_read_cycles as usize;
-            total_operations += meta.len_elements as u64 * ops_per_wrc as u64 * config.write_read_cycles as u64;
+            total_operations += meta.len_elements as u64 * (test_reps as u64 + verify_reps as u64) * config.write_read_cycles as u64;
 
             // Handle errors
             if block_errors > 0 {
@@ -281,214 +307,6 @@ where
             break;
         }
 
-        if SHUTDOWN_REQUESTED.load(Ordering::Relaxed) {
-            break;
-        }
-    }
-
-    TestStats {
-        name: test_name,
-        action,
-        bytes_processed: total_bytes_processed,
-        elapsed_ms: start.elapsed().as_millis(),
-        thread_id,
-        error_count: total_error_count,
-        total_operations,
-        cycles_completed: cycle,
-        cycles_planned: timing.cycles,
-        stopped_by_time_limit: timing.cycles.map_or(true, |limit| cycle < limit),
-    }
-}
-
-/// Run a v2 test that needs a separate init phase (written once, then test+verify loop).
-/// The `bytes_per_test_op` is bytes touched per test_fn call relative to block size
-/// (e.g., 4 for MirrorMove: 2R mirror + 2W mirror-back per round-trip).
-/// `test_reps`: number of test_fn calls per cycle (e.g., multiple mirror round-trips).
-/// `verify_reps`: number of verify passes per cycle (default 1).
-/// Total bytes per block per cycle = test_size * (bytes_per_test_op * test_reps + verify_reps).
-#[inline(always)]
-#[allow(clippy::too_many_arguments)]
-pub unsafe fn run_test_v2_with_init<Init, Test, Verify>(
-    blocks: &[AllocationBlock],
-    thread_id: usize,
-    error_mode: ErrorMode,
-    timing: &TestTiming,
-    config: &TestMemoryConfig,
-    progress: Option<&TestProgress>,
-    test_name: &'static str,
-    action: TestAction,
-    bytes_per_test_op: usize,
-    test_reps: u32,
-    verify_reps: u32,
-    mut init_fn: Init,
-    mut test_fn: Test,
-    mut verify_fn: Verify,
-) -> TestStats
-where
-    Init: FnMut(&ChunkCtx),
-    Test: FnMut(&ChunkCtx),
-    Verify: FnMut(&ChunkCtx) -> u64,
-{
-    if blocks.is_empty() {
-        return TestStats {
-            name: test_name,
-            action,
-            bytes_processed: 0,
-            elapsed_ms: 0,
-            thread_id,
-            error_count: 0,
-            total_operations: 0,
-            cycles_completed: 0,
-            cycles_planned: timing.cycles,
-            stopped_by_time_limit: false,
-        };
-    }
-
-    let total_allocated: usize = blocks.iter().map(|b| b.buffer.size()).sum();
-    let window_size = config.calculate_window_size(test_name, total_allocated);
-    let test_blocks = prepare_blocks_for_window(blocks, window_size, test_name);
-
-    if test_blocks.is_empty() {
-        log::warn!("{}: No blocks prepared for testing", test_name);
-        return TestStats {
-            name: test_name,
-            action,
-            bytes_processed: 0,
-            elapsed_ms: 0,
-            thread_id,
-            error_count: 0,
-            total_operations: 0,
-            cycles_completed: 0,
-            cycles_planned: timing.cycles,
-            stopped_by_time_limit: false,
-        };
-    }
-
-    // Pre-compute error check interval mask from config (v1 parity)
-    let check_mask = config.error_check_interval.get_check_mask();
-
-    let mut total_bytes_processed = 0usize;
-    let mut total_error_count = 0u64;
-    let mut total_operations = 0u64;
-
-    // Start timer BEFORE init — v1 includes the first write in its cycle timing,
-    // so v2 must include init in elapsed time for fair A/B comparison.
-    let test_start = Instant::now();
-    let start = Instant::now();
-    let mut cycle = 0u32;
-
-    // Progress reporting — 250ms matches v1 SIMD update frequency
-    let update_interval_ms = 250u128;
-    let mut last_progress_update = Instant::now();
-
-    // Pre-compute per-block metadata once (ptr, len, chunk_size don't change between cycles)
-    struct BlockMeta2 {
-        ptr: *mut u64,
-        len_elements: usize,
-        chunk_size_elements: usize,
-        test_size_bytes: usize,
-    }
-    let block_metas: Vec<BlockMeta2> = test_blocks.iter().map(|tb| {
-        let ptr = tb.block.buffer.as_mut_ptr() as *mut u64;
-        let len_elements = tb.test_size / std::mem::size_of::<u64>();
-        let ideal = calculate_ideal_chunk_size(config, test_name, tb.test_size);
-        let chunk_bytes = get_safe_chunk_size(ideal, tb.test_size);
-        let chunk_size_elements = chunk_bytes / std::mem::size_of::<u64>();
-        BlockMeta2 { ptr, len_elements, chunk_size_elements, test_size_bytes: tb.test_size }
-    }).collect();
-
-    // Initialize all blocks (timed, matching v1 behavior)
-    for meta in block_metas.iter() {
-        let ctx = ChunkCtx {
-            ptr: meta.ptr,
-            chunk_start: 0,
-            chunk_end: meta.len_elements,
-            cycle: 0,
-            thread_id,
-            check_mask,
-        };
-        init_fn(&ctx);
-    }
-    std::sync::atomic::fence(Ordering::SeqCst);
-
-    'outer: loop {
-        cycle += 1;
-
-        for meta in block_metas.iter() {
-            let mut block_errors = 0u64;
-
-            for chunk_start in (0..meta.len_elements).step_by(meta.chunk_size_elements) {
-                let chunk_end = (chunk_start + meta.chunk_size_elements).min(meta.len_elements);
-                let ctx = ChunkCtx {
-                    ptr: meta.ptr,
-                    chunk_start,
-                    chunk_end,
-                    cycle,
-                    thread_id,
-                    check_mask,
-                };
-
-                // TM5-faithful loop: (write + multi-read) × write_read_cycles
-                let wrc = config.write_read_cycles;
-                for _ in 0..wrc {
-                    // Test/write phase — run test_reps times (e.g., N mirror round-trips)
-                    for _ in 0..test_reps {
-                        test_fn(&ctx);
-                    }
-                    std::sync::atomic::fence(Ordering::SeqCst);
-
-                    // Verify phase — run verify_reps times
-                    for _ in 0..verify_reps {
-                        let errors = verify_fn(&ctx);
-                        block_errors += errors;
-                    }
-                }
-
-                if SHUTDOWN_REQUESTED.load(Ordering::Relaxed) {
-                    total_error_count += block_errors;
-                    let ops_per_wrc = bytes_per_test_op * test_reps as usize + verify_reps as usize;
-                    total_bytes_processed += (chunk_end - chunk_start) * std::mem::size_of::<u64>() * ops_per_wrc * wrc as usize;
-                    break 'outer;
-                }
-            }
-
-            total_error_count += block_errors;
-            let ops_per_wrc = bytes_per_test_op * test_reps as usize + verify_reps as usize;
-            total_bytes_processed += meta.test_size_bytes * ops_per_wrc * config.write_read_cycles as usize;
-            total_operations += meta.len_elements as u64 * (test_reps as u64 + verify_reps as u64) * config.write_read_cycles as u64;
-
-            if block_errors > 0 {
-                match error_mode {
-                    ErrorMode::Panic => {
-                        panic!("{}: {} memory errors detected on thread {}", test_name, block_errors, thread_id);
-                    }
-                    ErrorMode::Halt => {
-                        break 'outer;
-                    }
-                    ErrorMode::Log => {}
-                }
-            }
-
-            if SHUTDOWN_REQUESTED.load(Ordering::Relaxed) {
-                break 'outer;
-            }
-        }
-
-        if let Some(progress) = progress {
-            let now = Instant::now();
-            if now.duration_since(last_progress_update).as_millis() >= update_interval_ms {
-                progress.cycles_completed.store(cycle, Ordering::Relaxed);
-                progress.bytes_processed.store(total_bytes_processed as u64, Ordering::Relaxed);
-                progress.errors_found.store(total_error_count, Ordering::Relaxed);
-                progress.last_update_ms.store(now.duration_since(start).as_millis() as u64, Ordering::Relaxed);
-                last_progress_update = now;
-            }
-        }
-
-        let elapsed_secs = test_start.elapsed().as_secs() as u32;
-        if !timing.should_continue(cycle, elapsed_secs) {
-            break;
-        }
         if SHUTDOWN_REQUESTED.load(Ordering::Relaxed) {
             break;
         }
