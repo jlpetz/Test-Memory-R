@@ -360,7 +360,6 @@ pub fn interpret_tm5_parameter_with_channels(function: &str, parameter: u32, cha
             }
         }
         "MirrorMove128" | "MirrorMove256" | "MirrorMove512"
-        | "Mem-Mirror128" | "Mem-Mirror256" | "Mem-Mirror512"
         | "Mem-MirrorV2-128" | "Mem-MirrorV2-256" | "Mem-MirrorV2-512" => {
             TestParameterContext {
                 raw_parameter: parameter,
@@ -912,10 +911,10 @@ pub fn create_demo_config() -> Self {
                 use_v2_tests: None,
             },
             
-            // Mem-Mirror128 - SIMD test with optimal locality
+            // Mem-MirrorV2-128 - SIMD test with optimal locality
             TestConfig {
                 enabled: true,
-                function: "Mem-Mirror128".to_string(),
+                function: "Mem-MirrorV2-128".to_string(),
                 cycles: Some(1),
                 duration_secs: None,
                 min_duration_secs: None,
@@ -935,10 +934,10 @@ pub fn create_demo_config() -> Self {
                 use_v2_tests: None,
             },
             
-            // Mem-Mirror256 - AVX2 with dual streams
+            // Mem-MirrorV2-256 - AVX2 with dual streams
             TestConfig {
                 enabled: true,
-                function: "Mem-Mirror256".to_string(),
+                function: "Mem-MirrorV2-256".to_string(),
                 cycles: Some(1),
                 duration_secs: None,
                 min_duration_secs: None,
@@ -1397,18 +1396,18 @@ fn map_legacy_function(legacy_name: &str) -> Result<String, String> {
         // TM5 legacy names -> new prefixed names
         "RefreshStable" => Ok("Mem-Refresh".to_string()),
         "SimpleTest" => Ok("Mem-SimpleV2".to_string()),
-        "MirrorMove" => Ok("Mem-Mirror128".to_string()),  // TM5 base MirrorMove -> TMR 128-bit SIMD
-        "MirrorMove128" => Ok("Mem-Mirror128".to_string()),
-        "MirrorMove256" => Ok("Mem-Mirror256".to_string()),
-        "MirrorMove512" => Ok("Mem-Mirror512".to_string()),
+        "MirrorMove" => Ok("Mem-MirrorV2-128".to_string()),  // TM5 base MirrorMove -> v2 128-bit SIMD
+        "MirrorMove128" => Ok("Mem-MirrorV2-128".to_string()),
+        "MirrorMove256" => Ok("Mem-MirrorV2-256".to_string()),
+        "MirrorMove512" => Ok("Mem-MirrorV2-512".to_string()),
         "BlockMove" => Ok("Mem-BlockMove".to_string()),
         // Also accept new names directly
         "Mem-Refresh" => Ok("Mem-Refresh".to_string()),
         "Mem-Simple" => Ok("Mem-SimpleV2".to_string()),
-        "Mem-Mirror" => Ok("Mem-Mirror".to_string()),
-        "Mem-Mirror128" => Ok("Mem-Mirror128".to_string()),
-        "Mem-Mirror256" => Ok("Mem-Mirror256".to_string()),
-        "Mem-Mirror512" => Ok("Mem-Mirror512".to_string()),
+        "Mem-Mirror" => Ok("Mem-MirrorV2".to_string()),
+        "Mem-Mirror128" => Ok("Mem-MirrorV2-128".to_string()),
+        "Mem-Mirror256" => Ok("Mem-MirrorV2-256".to_string()),
+        "Mem-Mirror512" => Ok("Mem-MirrorV2-512".to_string()),
         "Mem-BlockMove" => Ok("Mem-BlockMove".to_string()),
         "Mem-StuckBit" => Ok("Mem-StuckBit".to_string()),
         "Mem-CacheBust" => Ok("Mem-CacheBust".to_string()),

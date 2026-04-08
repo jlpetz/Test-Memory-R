@@ -159,6 +159,25 @@ pub fn pattern_mode11(idx: u64, combined: u64) -> u64 {
     idx ^ combined
 }
 
+/// Mode 13 (TMR-native): Positional pseudo-random hash.
+///
+/// Combines the pseudo-random quality of Mode 12 (LCG) with the positional independence
+/// of Modes 10/11. Each element is computed purely from `(idx, seed)` — no sequential
+/// dependency, no carry-state needed across chunks, trivially SIMD-parallelizable.
+///
+/// Uses splitmix64 finalizer (same bit mixing as java.util.SplittableRandom).
+/// Excellent avalanche: every output bit depends on every input bit.
+#[inline(always)]
+pub fn pattern_mode13(idx: u64, seed: u64) -> u64 {
+    let mut h = idx.wrapping_add(seed);
+    h ^= h >> 30;
+    h = h.wrapping_mul(0xbf58476d1ce4e5b9);
+    h ^= h >> 27;
+    h = h.wrapping_mul(0x94d049bb133111eb);
+    h ^= h >> 31;
+    h
+}
+
 /// Mode 12 (TMR-native) / shared LCG infrastructure: Single LCG step.
 /// `state = state * multiplier + addend`
 ///

@@ -595,58 +595,6 @@ impl TestMemoryConfig {
                 streams: 1,
                 locality_sensitive: false,
             },
-            "Mem-Mirror" => OperationMetadata {
-                reads_per_op: 2,  // Load + restore read per element
-                writes_per_op: 2,  // Stream + restore write per element
-                verifies_per_op: 1,  // Individual element verification (detailed error reporting)
-                simd_ops_per_op: 0,  // Scalar implementation
-                fence_ops_per_op: 1,  // Per cycle
-                cache_ops_per_op: 2,  // Pattern with intentional cache behavior
-                simd_type: SIMDType::None,
-                access_pattern: AccessPattern::Mirror,
-                memory_coverage: 1.0,
-                streams: self.streams,
-                locality_sensitive: false,
-            },
-            "Mem-Mirror128" => OperationMetadata {
-                reads_per_op: 2,  // Load + restore read per element
-                writes_per_op: 2,  // Stream + restore write per element
-                verifies_per_op: 1,  // XOR verification per element
-                simd_ops_per_op: 6,  // load + stream + verify + load + stream + fence
-                fence_ops_per_op: 1,  // Per cycle
-                cache_ops_per_op: 2,  // stream operations per element
-                simd_type: SIMDType::SSE2_128,
-                access_pattern: AccessPattern::Mirror,
-                memory_coverage: 1.0,
-                streams: self.streams,
-                locality_sensitive: false,
-            },
-            "Mem-Mirror256" => OperationMetadata {
-                reads_per_op: 2,
-                writes_per_op: 2,
-                verifies_per_op: 1,
-                simd_ops_per_op: 6,
-                fence_ops_per_op: 1,
-                cache_ops_per_op: 2,
-                simd_type: SIMDType::AVX2_256,
-                access_pattern: AccessPattern::Mirror,
-                memory_coverage: 1.0,
-                streams: self.streams,
-                locality_sensitive: false,
-            },
-            "Mem-Mirror512" => OperationMetadata {
-                reads_per_op: 2,
-                writes_per_op: 2,
-                verifies_per_op: 1,
-                simd_ops_per_op: 6,
-                fence_ops_per_op: 1,
-                cache_ops_per_op: 2,
-                simd_type: SIMDType::AVX512_512,
-                access_pattern: AccessPattern::Mirror,
-                memory_coverage: 1.0,
-                streams: self.streams,
-                locality_sensitive: false,
-            },
             "Mem-SimpleNT-128" | "Mem-SimpleNT-256" | "Mem-SimpleNT-512" | "Mem-SimpleNT-Auto" => OperationMetadata {
                 reads_per_op: 1,  // Verify read (regular loads)
                 writes_per_op: 1,  // NT store (bypasses cache)
@@ -945,10 +893,6 @@ impl TestMemoryConfig {
     fn calculate_minimum_chunk_size(&self, test_name: &str, streams: u32) -> usize {
         // SIMD operation size requirements - explicit for each test to catch missing implementations
         let simd_requirement = match test_name {
-            "Mem-Mirror" => 8,       // Basic u64 operations (scalar)
-            "Mem-Mirror128" => 16,   // 128-bit operations
-            "Mem-Mirror256" => 32,   // 256-bit operations
-            "Mem-Mirror512" => 64,   // 512-bit operations
             "Mem-StuckBit" => 8,                // Basic u64 operations
             "Mem-StuckBit128" => 16,            // 128-bit SIMD operations
             "Mem-StuckBit256" => 32,            // 256-bit SIMD operations
@@ -979,9 +923,9 @@ impl TestMemoryConfig {
             "Mem-MirrorV2-Auto" => 64,               // Auto-dispatched, assume AVX-512 possible
             // Bench-Init and Bench-Verify tests (all scalar u64)
             "Bench-Init-TM5-0" | "Bench-Init-TM5-1" | "Bench-Init-TM5-2"
-            | "Bench-Init-TMR-0" | "Bench-Init-TMR-1" | "Bench-Init-TMR-2"
+            | "Bench-Init-TMR-0" | "Bench-Init-TMR-1" | "Bench-Init-TMR-2" | "Bench-Init-TMR-3"
             | "Bench-Verify-TM5-0" | "Bench-Verify-TM5-1" | "Bench-Verify-TM5-2"
-            | "Bench-Verify-TMR-0" | "Bench-Verify-TMR-1" | "Bench-Verify-TMR-2" => 8,
+            | "Bench-Verify-TMR-0" | "Bench-Verify-TMR-1" | "Bench-Verify-TMR-2" | "Bench-Verify-TMR-3" => 8,
             _ => panic!("Unknown test '{}' - add explicit SIMD requirement to calculate_minimum_chunk_size()", test_name),
         };
         
@@ -4245,2349 +4189,13 @@ pub unsafe fn block_move_multi(
 // Phased Test Implementations (run_phased_test harness)
 // ============================================================================
 //
-// v1 MirrorMove (i32 SIMD, manual boilerplate) removed — superseded by
-// MirrorMove v2 (u64 lanes, run_phased_test harness, SwapMode subblocks).
-
-// Placeholder to find end of removal block
-pub unsafe fn _v1_mirror_removed_marker(
-    blocks: &[crate::runner::AllocationBlock],
-    thread_id: usize,
-    error_mode: ErrorMode,
-    timing: &TestTiming,
-    config: &TestMemoryConfig,
-    progress: Option<&TestProgress>,
-) -> TestStats {
-    // Auto-dispatch to best available SIMD implementation
-    if is_x86_feature_detected!("avx512f") {
-        mirror_move_512_multi(blocks, thread_id, error_mode, timing, config, progress)
-    } else if is_x86_feature_detected!("avx2") {
-        mirror_move_256_multi(blocks, thread_id, error_mode, timing, config, progress)
-    } else if is_x86_feature_detected!("sse2") {
-        mirror_move_128_multi(blocks, thread_id, error_mode, timing, config, progress)
-    } else {
-        // Fallback to scalar implementation
-        mirror_move_multi(blocks, thread_id, error_mode, timing, config, progress)
-    }
-}
-
-/// # Safety
-/// Caller must ensure `ptr` is valid for reads/writes of `size` bytes.
-/// 
-/// SSE2 128-bit SIMD MirrorMove implementation.
-/// 
-/// Error Reporting Style: Binary chunk-level reporting (matches TM5 SIMD approach)
-/// - Uses SIMD error accumulation across entire chunk
-/// - Reports 1 error per failed chunk regardless of actual error count within chunk
-/// - Optimized for maximum performance in hot loops
-/// # Safety
-/// Caller must ensure `ptr` is valid for reads/writes of `size` bytes.
-/// # Safety
-/// Caller must ensure `ptr` is valid for reads/writes of `size` bytes.
-/// # Safety
-/// Caller must ensure `ptr` is valid for reads/writes of `size` bytes.
-
-/// Validate chunk divisibility for multi-stream tests
-/// Ensures chunk sizes are evenly divisible by stream count
-/// Note: Stream power-of-2 validation happens at config creation time
-fn validate_chunk_divisibility(
-    test_name: &str,
-    streams: u32,
-    chunk_size_elements: usize,
-) {
-    // Validate chunk is evenly divisible by stream count
-    // This should always pass since chunks are power-of-2 and streams are power-of-2,
-    // but we check defensively to catch any edge cases
-    if streams > 1 && chunk_size_elements % (streams as usize) != 0 {
-        panic!(
-            "{}: Chunk size {} elements not evenly divisible by {} streams (remainder: {} elements). \
-             This should never happen if chunk and stream are both power-of-2. This is a bug.",
-            test_name,
-            chunk_size_elements,
-            streams,
-            chunk_size_elements % (streams as usize)
-        );
-    }
-}
-
-
-/// MirrorMove test - MultiBlock version
-/// Tests memory by mirroring data and verifying the mirror operation
-pub unsafe fn mirror_move_multi(
-    blocks: &[crate::runner::AllocationBlock],
-    thread_id: usize,
-    error_mode: ErrorMode,
-    timing: &TestTiming,
-    config: &TestMemoryConfig,
-    progress: Option<&TestProgress>,
-) -> TestStats {
-    let test_name = "Mem-Mirror";
-
-    if blocks.is_empty() {
-        return TestStats {
-            name: test_name,
-            action: TestAction::WriteWaitVerify,
-            bytes_processed: 0,
-            elapsed_ms: 0,
-            thread_id,
-            error_count: 0,
-            total_operations: 0,
-            cycles_completed: 0,
-            cycles_planned: timing.cycles,
-            stopped_by_time_limit: false,
-        };
-    }
-
-    // Calculate window size and prepare blocks with window limits
-    let total_allocated: usize = blocks.iter().map(|b| b.buffer.size()).sum();
-    let window_size = config.calculate_window_size(test_name, total_allocated);
-    let test_blocks = prepare_blocks_for_window(blocks, window_size, test_name);
-
-    if test_blocks.is_empty() {
-        log::warn!("{}: No blocks prepared for testing (window too small?)", test_name);
-        return TestStats {
-            name: test_name,
-            action: TestAction::WriteWaitVerify,
-            bytes_processed: 0,
-            elapsed_ms: 0,
-            thread_id,
-            error_count: 0,
-            total_operations: 0,
-            cycles_completed: 0,
-            cycles_planned: timing.cycles,
-            stopped_by_time_limit: false,
-        };
-    }
-
-    // Pre-compute pattern base outside all loops
-    let thread_pattern_base = (thread_id as u64) << 16;
-
-    // Track totals across all blocks
-    let mut total_bytes_processed = 0usize;
-    let mut total_error_count = 0u64;
-    let mut total_operations = 0u64;
-
-    // Single shared timer for ALL blocks
-    let test_start = Instant::now();
-    let start = Instant::now();
-    let mut cycle = 0u32;
-
-    // Progress reporting setup
-    let update_interval_ms = 1000;
-    let mut last_progress_update = Instant::now();
-
-    // Initialize all test blocks with thread-specific patterns (only the test_size portion)
-    for test_block in test_blocks.iter() {
-        let ptr = test_block.block.buffer.as_mut_ptr() as *mut u64;
-        let len = test_block.test_size / std::mem::size_of::<u64>();
-
-        for i in 0..len {
-            let pattern = (i as u64).wrapping_add(thread_pattern_base).wrapping_mul(0x0123456789ABCDEFu64);
-            *ptr.add(i) = pattern;
-        }
-        std::sync::atomic::fence(Ordering::SeqCst);
-    }
-
-    // Main test loop - interleaves across blocks
-    loop {
-        cycle += 1;
-
-        // Test each block in sequence for this cycle (interleaved: 1,2,3,1,2,3...)
-        for test_block in test_blocks.iter() {
-            let ptr = test_block.block.buffer.as_mut_ptr() as *mut u64;
-            let len = test_block.test_size / std::mem::size_of::<u64>();
-
-            // Calculate chunk size for this block's test_size
-            let ideal_chunk_size = calculate_ideal_chunk_size(config, test_name, test_block.test_size);
-            let chunk_size_bytes = get_safe_chunk_size(ideal_chunk_size, test_block.test_size);
-            let chunk_size_elements = chunk_size_bytes / std::mem::size_of::<u64>();
-
-            let mut block_errors = 0u64;
-
-            // Process block in chunks
-            for chunk_start in (0..len).step_by(chunk_size_elements) {
-                let chunk_end = (chunk_start + chunk_size_elements).min(len);
-
-                // 1. Mirror operation
-                let mut idx1 = chunk_start;
-                let mut idx2 = chunk_end - 1;
-                while idx1 < idx2 {
-                    let val1 = *ptr.add(idx1);
-                    let val2 = *ptr.add(idx2);
-                    *ptr.add(idx2) = val1;
-                    *ptr.add(idx1) = val2;
-                    idx1 += 1;
-                    idx2 -= 1;
-                }
-
-                std::sync::atomic::fence(Ordering::SeqCst);
-
-                // 2. Verify mirrored data with configurable error checking
-                let mut element_count = 0usize;
-                let mut chunk_errors = 0u64;
-
-                match config.error_check_interval.get_check_mask() {
-                    Some(check_mask) => {
-                        // Intermediate error checking - check at configured intervals
-                        for idx in chunk_start..chunk_end {
-                            let mirrored_idx = chunk_start + chunk_end - 1 - idx;
-                            let expected_pattern = (mirrored_idx as u64).wrapping_add(thread_pattern_base).wrapping_mul(0x0123456789ABCDEFu64);
-                            let actual_value = *ptr.add(idx);
-
-                            if actual_value != expected_pattern {
-                                chunk_errors += 1;
-                                if chunk_errors <= 10 {  // Limit error logging
-                                    log::error!("{}: memory error at index {} - expected {:#x}, got {:#x}",
-                                               test_name, idx, expected_pattern, actual_value);
-                                }
-                            }
-
-                            element_count += 1;
-
-                            // Check errors at configured intervals (zero-branch hot loop optimization)
-                            if (element_count as u32 & check_mask) == 0 {
-                                if chunk_errors > 0 {
-                                    block_errors += chunk_errors;
-                                    log::error!("{}: {} errors detected at element {} (thread {})",
-                                               test_name, chunk_errors, element_count, thread_id);
-                                    chunk_errors = 0;  // Reset for next interval
-                                }
-                            }
-                        }
-
-                        // Final check for any remaining errors
-                        if chunk_errors > 0 {
-                            block_errors += chunk_errors;
-                        }
-                    }
-                    None => {
-                        // PER_CHUNK mode - no intermediate checks, maximum performance
-                        for idx in chunk_start..chunk_end {
-                            let mirrored_idx = chunk_start + chunk_end - 1 - idx;
-                            let expected_pattern = (mirrored_idx as u64).wrapping_add(thread_pattern_base).wrapping_mul(0x0123456789ABCDEFu64);
-                            let actual_value = *ptr.add(idx);
-
-                            if actual_value != expected_pattern {
-                                chunk_errors += 1;
-                                if chunk_errors <= 10 {  // Limit error logging
-                                    log::error!("{}: memory error at index {} - expected {:#x}, got {:#x}",
-                                               test_name, idx, expected_pattern, actual_value);
-                                }
-                            }
-                        }
-
-                        // Check errors only once at end of chunk
-                        if chunk_errors > 0 {
-                            block_errors += chunk_errors;
-                        }
-                    }
-                }
-
-                // 3. Mirror back to restore original pattern
-                idx1 = chunk_start;
-                idx2 = chunk_end - 1;
-                while idx1 < idx2 {
-                    let val1 = *ptr.add(idx1);
-                    let val2 = *ptr.add(idx2);
-                    *ptr.add(idx2) = val1;
-                    *ptr.add(idx1) = val2;
-                    idx1 += 1;
-                    idx2 -= 1;
-                }
-
-                std::sync::atomic::fence(Ordering::SeqCst);
-
-                // Check for shutdown
-                if SHUTDOWN_REQUESTED.load(Ordering::Relaxed) {
-                    total_error_count += block_errors;
-                    total_bytes_processed += (chunk_end - chunk_start) * std::mem::size_of::<u64>() * 3;
-                    let elapsed = start.elapsed().as_millis();
-                    return TestStats {
-                        name: test_name,
-                        action: TestAction::WriteWaitVerify,
-                        bytes_processed: total_bytes_processed,
-                        elapsed_ms: elapsed,
-                        thread_id,
-                        error_count: total_error_count,
-                        total_operations,
-                        cycles_completed: cycle,
-                        cycles_planned: timing.cycles,
-                        stopped_by_time_limit: false,
-                    };
-                }
-            }
-
-            total_error_count += block_errors;
-            total_bytes_processed += test_block.test_size * 5; // mirror (R+W) + verify (R) + restore (R+W) = 3R + 2W
-            total_operations += len as u64;
-
-            // Handle errors based on mode
-            if block_errors > 0 {
-                match error_mode {
-                    ErrorMode::Panic => panic!("{}: {} memory errors detected", test_name, block_errors),
-                    ErrorMode::Halt => {
-                        let elapsed = start.elapsed().as_millis();
-                        return TestStats {
-                            name: test_name,
-                            action: TestAction::WriteWaitVerify,
-                            bytes_processed: total_bytes_processed,
-                            elapsed_ms: elapsed,
-                            thread_id,
-                            error_count: total_error_count,
-                            total_operations,
-                            cycles_completed: cycle,
-                            cycles_planned: timing.cycles,
-                            stopped_by_time_limit: false,
-                        };
-                    }
-                    ErrorMode::Log => { /* Continue */ }
-                }
-            }
-        }
-
-        // Update progress if provided
-        if let Some(progress) = progress {
-            let now = Instant::now();
-            if now.duration_since(last_progress_update).as_millis() >= update_interval_ms {
-                progress.cycles_completed.store(cycle, Ordering::Relaxed);
-                progress.bytes_processed.store(total_bytes_processed as u64, Ordering::Relaxed);
-                progress.errors_found.store(total_error_count, Ordering::Relaxed);
-                progress.last_update_ms.store(now.duration_since(start).as_millis() as u64, Ordering::Relaxed);
-                last_progress_update = now;
-            }
-        }
-
-        // Check timing - shared across ALL blocks
-        let elapsed_secs = test_start.elapsed().as_secs() as u32;
-        if !timing.should_continue(cycle, elapsed_secs) {
-            break;
-        }
-
-        // Check for shutdown
-        if SHUTDOWN_REQUESTED.load(Ordering::Relaxed) {
-            break;
-        }
-    }
-
-    let elapsed = start.elapsed().as_millis();
-
-    log::info!("[Thread {}] {} completed: {} cycles, {} errors, {:.2} MB processed in {} ms",
-              thread_id, test_name, cycle, total_error_count,
-              total_bytes_processed as f64 / MB_F64, elapsed);
-
-    TestStats {
-        name: test_name,
-        action: TestAction::WriteWaitVerify,
-        bytes_processed: total_bytes_processed,
-        elapsed_ms: elapsed,
-        thread_id,
-        error_count: total_error_count,
-        total_operations,
-        cycles_completed: cycle,
-        cycles_planned: timing.cycles,
-        stopped_by_time_limit: timing.cycles.map_or(true, |limit| cycle < limit),
-    }
-}
-
-/// MirrorMove128 Stream1 - MultiBlock version (SSE2 optimized, single stream)
-/// MirrorMove128 Stream1 - SSE2 optimized - MultiBlock pattern
-/// Runtime-checked wrapper for SSE2 availability
-unsafe fn mirror_move_128_stream1_multi(
-    blocks: &[crate::runner::AllocationBlock],
-    thread_id: usize,
-    error_mode: ErrorMode,
-    timing: &TestTiming,
-    config: &TestMemoryConfig,
-    progress: Option<&TestProgress>,
-) -> TestStats {
-    let test_name = "Mem-Mirror128";
-
-    // Runtime CPU feature check
-    if !is_x86_feature_detected!("sse4.1") {
-        log::warn!("{}: SSE4.1 not supported, test skipped", test_name);
-        return TestStats {
-            name: test_name,
-            action: TestAction::WriteWaitVerify,
-            bytes_processed: 0,
-            elapsed_ms: 0,
-            thread_id,
-            error_count: 0,
-            total_operations: 0,
-            cycles_completed: 0,
-            cycles_planned: timing.cycles,
-            stopped_by_time_limit: false,
-        };
-    }
-
-    // Call the SSE4.1 optimized implementation
-    mirror_move_128_stream1_impl(blocks, thread_id, error_mode, timing, config, progress)
-}
-
-/// MirrorMove128 Stream1 - SSE4.1 optimized implementation
-/// This function is annotated with #[target_feature] to enable full compiler optimization
-/// Upgraded from SSE2 to SSE4.1 for _mm_mullo_epi32 vector multiply support
-#[inline]
-#[target_feature(enable = "sse4.1")]
-unsafe fn mirror_move_128_stream1_impl(
-    blocks: &[crate::runner::AllocationBlock],
-    thread_id: usize,
-    error_mode: ErrorMode,
-    timing: &TestTiming,
-    config: &TestMemoryConfig,
-    progress: Option<&TestProgress>,
-) -> TestStats {
-    let test_name = "Mem-Mirror128";
-
-    if blocks.is_empty() {
-        return TestStats {
-            name: test_name,
-            action: TestAction::WriteWaitVerify,
-            bytes_processed: 0,
-            elapsed_ms: 0,
-            thread_id,
-            error_count: 0,
-            total_operations: 0,
-            cycles_completed: 0,
-            cycles_planned: timing.cycles,
-            stopped_by_time_limit: false,
-        };
-    }
-
-    // Calculate window size and prepare blocks with window limits
-    let total_allocated: usize = blocks.iter().map(|b| b.buffer.size()).sum();
-    let window_size = config.calculate_window_size(test_name, total_allocated);
-    let test_blocks = prepare_blocks_for_window(blocks, window_size, test_name);
-
-    if test_blocks.is_empty() {
-        log::warn!("{}: No blocks prepared for testing (window too small?)", test_name);
-        return TestStats {
-            name: test_name,
-            action: TestAction::WriteWaitVerify,
-            bytes_processed: 0,
-            elapsed_ms: 0,
-            thread_id,
-            error_count: 0,
-            total_operations: 0,
-            cycles_completed: 0,
-            cycles_planned: timing.cycles,
-            stopped_by_time_limit: false,
-        };
-    }
-
-    // Pre-compute pattern base outside all loops
-    let thread_pattern_base = (thread_id as i32) << 16;
-
-    // VECTOR OPTIMIZATION: Pre-compute pattern components for initialization
-    let multipliers = i32x4::from_array([4, 3, 2, 1]);
-    let base_broadcast = i32x4::splat(thread_pattern_base);
-    let pattern_base = base_broadcast * multipliers ;  // base × [1,2,3,4]
-
-    // Track totals across all blocks
-    let mut total_bytes_processed = 0usize;
-    let mut total_error_count = 0u64;
-    let mut total_operations = 0u64;
-
-    // Single shared timer for ALL blocks
-    let test_start = Instant::now();
-    let start = Instant::now();
-    let mut cycle = 0u32;
-
-    // Progress reporting setup
-    let update_interval_ms = 1000;
-    let mut last_progress_update = Instant::now();
-
-    // Initialize all test blocks with thread-specific patterns (only the test_size portion)
-    for test_block in test_blocks.iter() {
-        let base = test_block.block.buffer.as_mut_ptr() as *mut i32x4;
-        let len = test_block.test_size / std::mem::size_of::<i32x4>();
-
-        for i in 0..len {
-            // OPTIMIZED: 1 broadcast + 1 mullo + 1 add (replaces 4 scalar muls + 4 adds)
-            let idx_broadcast = i32x4::splat(i as i32);
-            let idx_scaled = idx_broadcast * multipliers ;  // i × [1,2,3,4]
-            let pattern = idx_scaled + pattern_base ;         // (i×M) + (base×M)
-            *base.add(i) = pattern;
-        }
-    }
-
-    // Main test loop - interleaves across blocks
-    loop {
-        cycle += 1;
-
-        // Test each block in sequence for this cycle (interleaved: 1,2,3,1,2,3...)
-        for test_block in test_blocks.iter() {
-            let base = test_block.block.buffer.as_mut_ptr() as *mut i32x4;
-            let len = test_block.test_size / std::mem::size_of::<i32x4>();
-
-            // Calculate chunk size for this block's test_size
-            let ideal_chunk_size = calculate_ideal_chunk_size(config, test_name, test_block.test_size);
-            let chunk_size_bytes = get_safe_chunk_size(ideal_chunk_size, test_block.test_size);
-            let chunk_size_elements = chunk_size_bytes / std::mem::size_of::<i32x4>();
-
-            let mut block_errors = 0u64;
-
-            // Process block in chunks
-            for chunk_start in (0..len).step_by(chunk_size_elements) {
-                let chunk_end = (chunk_start + chunk_size_elements).min(len);
-                let chunk_len = chunk_end - chunk_start;
-
-                // 1. Mirror operation
-                let mut idx1 = chunk_start;
-                let mut idx2 = chunk_start + chunk_len - 1;
-                while idx1 < idx2 {
-                    let val1 = *base.add(idx1);
-                    let val2 = *base.add(idx2);
-                    *base.add(idx2) = val1;  // Cache-backed store
-                    *base.add(idx1) = val2;  // Cache-backed store
-                    idx1 += 1;
-                    idx2 -= 1;
-                }
-
-                // 2. Verify with configurable error checking frequency
-                let mut error_accumulator = i32x4::splat(0);
-                let mut i = chunk_start;
-                let chunk_sum = chunk_start + chunk_end - 1;
-                let mut element_count = 0usize;
-                let mut cycle_errors = 0u64;
-
-                // Pre-compute check mask for hot loop optimization
-                match config.error_check_interval.get_check_mask() {
-                    Some(check_mask) => {
-                        while i < chunk_end {
-                            let mirrored_idx = chunk_sum - i;
-
-                            // OPTIMIZED: 1 broadcast + 1 mullo + 1 add (replaces 4 scalar muls + 4 adds)
-                            let idx_broadcast = i32x4::splat(mirrored_idx as i32);
-                            let idx_scaled = idx_broadcast * multipliers;  // idx × [1,2,3,4]
-                            let expected = idx_scaled + pattern_base;         // (idx×M) + (base×M)
-
-                            let actual = *base.add(i);
-                            let diff = expected ^ actual;
-                            error_accumulator = error_accumulator | diff;
-
-                            element_count += 1;
-                            i += 1;
-
-                            // Check errors at configured intervals (zero-branch hot loop optimization)
-                            if (element_count as u32 & check_mask) == 0 {
-                                if error_accumulator.simd_ne(i32x4::splat(0)).any() {
-                                    cycle_errors += 1;
-                                    log::error!("{}: memory error detected in cycle {} chunk {} element {} (thread {})",
-                                               test_name, cycle, chunk_start, element_count, thread_id);
-                                    error_accumulator = i32x4::splat(0);
-                                }
-                            }
-                        }
-                    }
-                    None => {
-                        // PER_CHUNK mode - no intermediate checks, maximum performance
-                        while i < chunk_end {
-                            let mirrored_idx = chunk_sum - i;
-
-                            // OPTIMIZED: 1 broadcast + 1 mullo + 1 add (replaces 4 scalar muls + 4 adds)
-                            let idx_broadcast = i32x4::splat(mirrored_idx as i32);
-                            let idx_scaled = idx_broadcast * multipliers;  // idx × [1,2,3,4]
-                            let expected = idx_scaled + pattern_base;         // (idx×M) + (base×M)
-
-                            let actual = *base.add(i);
-                            let diff = expected ^ actual;
-                            error_accumulator = error_accumulator | diff;
-                            i += 1;
-                        }
-                    }
-                }
-
-                // Final error check (always performed regardless of mode)
-                if error_accumulator.simd_ne(i32x4::splat(0)).any() {
-                    cycle_errors += 1;
-                    log::error!("{}: memory error detected in cycle {} chunk {} (thread {})",
-                               test_name, cycle, chunk_start, thread_id);
-                }
-
-                block_errors += cycle_errors;
-
-                // 3. Mirror back to restore original pattern
-                idx1 = chunk_start;
-                idx2 = chunk_start + chunk_len - 1;
-                while idx1 < idx2 {
-                    let val1 = *base.add(idx1);
-                    let val2 = *base.add(idx2);
-                    *base.add(idx2) = val1;  // Cache-backed store
-                    *base.add(idx1) = val2;  // Cache-backed store
-                    idx1 += 1;
-                    idx2 -= 1;
-                }
-
-                // Check for shutdown
-                if SHUTDOWN_REQUESTED.load(Ordering::Relaxed) {
-                    total_error_count += block_errors;
-                    total_bytes_processed += (chunk_end - chunk_start) * std::mem::size_of::<u64x2>() * 2;
-                    let elapsed = start.elapsed().as_millis();
-                    return TestStats {
-                        name: test_name,
-                        action: TestAction::WriteWaitVerify,
-                        bytes_processed: total_bytes_processed,
-                        elapsed_ms: elapsed,
-                        thread_id,
-                        error_count: total_error_count,
-                        total_operations,
-                        cycles_completed: cycle,
-                        cycles_planned: timing.cycles,
-                        stopped_by_time_limit: false,
-                    };
-                }
-            }
-
-            total_error_count += block_errors;
-            total_bytes_processed += test_block.test_size * 5; // mirror (R+W) + verify (R) + mirror back (R+W) = 3R + 2W
-            total_operations += len as u64 * 2;
-
-            // Handle errors based on mode
-            if block_errors > 0 {
-                match error_mode {
-                    ErrorMode::Panic => panic!("{}: {} memory errors detected", test_name, block_errors),
-                    ErrorMode::Halt => {
-                        let elapsed = start.elapsed().as_millis();
-                        return TestStats {
-                            name: test_name,
-                            action: TestAction::WriteWaitVerify,
-                            bytes_processed: total_bytes_processed,
-                            elapsed_ms: elapsed,
-                            thread_id,
-                            error_count: total_error_count,
-                            total_operations,
-                            cycles_completed: cycle,
-                            cycles_planned: timing.cycles,
-                            stopped_by_time_limit: false,
-                        };
-                    }
-                    ErrorMode::Log => { /* Continue */ }
-                }
-            }
-
-            // Check for shutdown between blocks
-            if SHUTDOWN_REQUESTED.load(Ordering::Relaxed) {
-                let elapsed = start.elapsed().as_millis();
-                return TestStats {
-                    name: test_name,
-                    action: TestAction::WriteWaitVerify,
-                    bytes_processed: total_bytes_processed,
-                    elapsed_ms: elapsed,
-                    thread_id,
-                    error_count: total_error_count,
-                    total_operations,
-                    cycles_completed: cycle,
-                    cycles_planned: timing.cycles,
-                    stopped_by_time_limit: false,
-                };
-            }
-        }
-
-        // Progress reporting (per cycle, not per block)
-        if let Some(progress) = progress {
-            let now = Instant::now();
-            if now.duration_since(last_progress_update).as_millis() >= update_interval_ms {
-                progress.cycles_completed.store(cycle, Ordering::Relaxed);
-                progress.bytes_processed.store(total_bytes_processed as u64, Ordering::Relaxed);
-                progress.errors_found.store(total_error_count, Ordering::Relaxed);
-                progress.last_update_ms.store(now.duration_since(start).as_millis() as u64, Ordering::Relaxed);
-                last_progress_update = now;
-            }
-        }
-
-        // Check timing - shared across ALL blocks
-        let elapsed_secs = test_start.elapsed().as_secs() as u32;
-        if !timing.should_continue(cycle, elapsed_secs) {
-            break;
-        }
-    }
-
-    TestStats {
-        name: test_name,
-        action: TestAction::WriteWaitVerify,
-        bytes_processed: total_bytes_processed,
-        elapsed_ms: start.elapsed().as_millis(),
-        thread_id,
-        error_count: total_error_count,
-        total_operations,
-        cycles_completed: cycle,
-        cycles_planned: timing.cycles,
-        stopped_by_time_limit: timing.cycles.map_or(true, |limit| cycle < limit),
-    }
-}
-
-/// MirrorMove128 StreamN - SSE2 optimized - MultiBlock pattern
-/// Runtime-checked wrapper for SSE2 availability
-unsafe fn mirror_move_128_stream_n_multi(
-    blocks: &[crate::runner::AllocationBlock],
-    thread_id: usize,
-    error_mode: ErrorMode,
-    timing: &TestTiming,
-    config: &TestMemoryConfig,
-    progress: Option<&TestProgress>,
-    streams: usize,
-    test_name: &'static str,
-) -> TestStats {
-    // Runtime CPU feature check
-    if !is_x86_feature_detected!("sse2") {
-        log::warn!("{}: SSE2 not supported, test skipped", test_name);
-        return TestStats {
-            name: test_name,
-            action: TestAction::WriteWaitVerify,
-            bytes_processed: 0,
-            elapsed_ms: 0,
-            thread_id,
-            error_count: 0,
-            total_operations: 0,
-            cycles_completed: 0,
-            cycles_planned: timing.cycles,
-            stopped_by_time_limit: false,
-        };
-    }
-
-    // Call the SSE4.1 optimized implementation
-    mirror_move_128_stream_n_impl(blocks, thread_id, error_mode, timing, config, progress, streams, test_name)
-}
-
-/// MirrorMove128 StreamN - SSE4.1 optimized implementation
-/// This function is annotated with #[target_feature] to enable full compiler optimization
-/// Upgraded from SSE2 to SSE4.1 for _mm_mullo_epi32 vector multiply support
-#[inline]
-#[target_feature(enable = "sse4.1")]
-unsafe fn mirror_move_128_stream_n_impl(
-    blocks: &[crate::runner::AllocationBlock],
-    thread_id: usize,
-    error_mode: ErrorMode,
-    timing: &TestTiming,
-    config: &TestMemoryConfig,
-    progress: Option<&TestProgress>,
-    streams: usize,
-    test_name: &'static str,
-) -> TestStats {
-    if blocks.is_empty() {
-        return TestStats {
-            name: test_name,
-            action: TestAction::WriteWaitVerify,
-            bytes_processed: 0,
-            elapsed_ms: 0,
-            thread_id,
-            error_count: 0,
-            total_operations: 0,
-            cycles_completed: 0,
-            cycles_planned: timing.cycles,
-            stopped_by_time_limit: false,
-        };
-    }
-
-    // Calculate window size and prepare blocks with window limits
-    let total_allocated: usize = blocks.iter().map(|b| b.buffer.size()).sum();
-    let window_size = config.calculate_window_size(test_name, total_allocated);
-    let test_blocks = prepare_blocks_for_window(blocks, window_size, test_name);
-
-    if test_blocks.is_empty() {
-        log::warn!("{}: No blocks prepared for testing (window too small?)", test_name);
-        return TestStats {
-            name: test_name,
-            action: TestAction::WriteWaitVerify,
-            bytes_processed: 0,
-            elapsed_ms: 0,
-            thread_id,
-            error_count: 0,
-            total_operations: 0,
-            cycles_completed: 0,
-            cycles_planned: timing.cycles,
-            stopped_by_time_limit: false,
-        };
-    }
-
-    // Pre-compute pattern base and stream shift
-    let thread_pattern_base = (thread_id as i32) << 16;
-    let stream_shift = streams.trailing_zeros();
-
-    // VECTOR OPTIMIZATION: Pre-compute pattern components for initialization
-    let multipliers = i32x4::from_array([4, 3, 2, 1]);
-    let base_broadcast = i32x4::splat(thread_pattern_base);
-    let pattern_base = base_broadcast * multipliers ;  // base × [1,2,3,4]
-
-    // Track totals across all blocks
-    let mut total_bytes_processed = 0usize;
-    let mut total_error_count = 0u64;
-    let mut total_operations = 0u64;
-
-    // Single shared timer for ALL blocks
-    let test_start = Instant::now();
-    let start = Instant::now();
-    let mut cycle = 0u32;
-
-    // Progress reporting setup
-    let update_interval_ms = 1000;
-    let mut last_progress_update = Instant::now();
-
-    // Initialize all test blocks with thread-specific patterns
-    for test_block in test_blocks.iter() {
-        let base = test_block.block.buffer.as_mut_ptr() as *mut i32x4;
-        let len = test_block.test_size / std::mem::size_of::<i32x4>();
-
-        for i in 0..len {
-            // OPTIMIZED: 1 broadcast + 1 mullo + 1 add (replaces 4 scalar muls + 4 adds)
-            let idx_broadcast = i32x4::splat(i as i32);
-            let idx_scaled = idx_broadcast * multipliers ;  // i × [1,2,3,4]
-            let pattern = idx_scaled + pattern_base ;         // (i×M) + (base×M)
-            *base.add(i) = pattern;
-        }
-    }
-
-    // Validate chunk divisibility for ALL blocks ONCE before starting
-    for test_block in test_blocks.iter() {
-        let ideal_chunk_size = calculate_ideal_chunk_size(config, test_name, test_block.test_size);
-        let chunk_size_bytes = get_safe_chunk_size(ideal_chunk_size, test_block.test_size);
-        let chunk_size_elements = chunk_size_bytes / std::mem::size_of::<i32x4>();
-
-        // Validate chunk is divisible by stream count
-        if streams > 1 && chunk_size_elements % streams != 0 {
-            panic!(
-                "{}: Chunk size {} elements not evenly divisible by {} streams. \
-                 This should never happen if chunk and stream are both power-of-2.",
-                test_name, chunk_size_elements, streams
-            );
-        }
-    }
-
-    // Main test loop - interleaves across blocks
-    loop {
-        cycle += 1;
-
-        // Test each block in sequence for this cycle
-        for test_block in test_blocks.iter() {
-            let base = test_block.block.buffer.as_mut_ptr() as *mut i32x4;
-            let len = test_block.test_size / std::mem::size_of::<i32x4>();
-
-            // Calculate chunk size for this block's test_size
-            let ideal_chunk_size = calculate_ideal_chunk_size(config, test_name, test_block.test_size);
-            let chunk_size_bytes = get_safe_chunk_size(ideal_chunk_size, test_block.test_size);
-            let chunk_size_elements = chunk_size_bytes / std::mem::size_of::<i32x4>();
-
-            let mut block_errors = 0u64;
-
-            // Process block in chunks
-            for chunk_start in (0..len).step_by(chunk_size_elements) {
-                let chunk_end = (chunk_start + chunk_size_elements).min(len);
-                let chunk_len = chunk_end - chunk_start;
-
-                // Pre-compute stream boundaries for this chunk
-                let elements_per_stream = chunk_len >> stream_shift;
-
-                // 1. Mirror operation - N-way streams (mirror within each stream)
-                for stream_id in 0..streams {
-                    let stream_start = chunk_start + (stream_id * elements_per_stream);
-                    let stream_end = stream_start + elements_per_stream;
-
-                    let mut idx1 = stream_start;
-                    let mut idx2 = stream_end - 1;
-                    while idx1 < idx2 {
-                        let val1 = *base.add(idx1);
-                        let val2 = *base.add(idx2);
-                        *base.add(idx2) = val1;  // Cache-backed store
-                        *base.add(idx1) = val2;  // Cache-backed store
-                        idx1 += 1;
-                        idx2 -= 1;
-                    }
-                }
-
-                // 2. Verify with configurable error checking frequency - multi-stream
-                let mut error_accumulator = i32x4::splat(0);
-                let mut element_count = 0usize;
-                let mut cycle_errors = 0u64;
-
-                match config.error_check_interval.get_check_mask() {
-                    Some(check_mask) => {
-                        for stream_id in 0..streams {
-                            let stream_start = chunk_start + (stream_id * elements_per_stream);
-                            let stream_end = stream_start + elements_per_stream;
-                            let stream_sum = stream_start + stream_end - 1;
-
-                            let mut i = stream_start;
-                            while i < stream_end {
-                                let mirrored_idx = stream_sum - i;
-
-                                // OPTIMIZED: 1 broadcast + 1 mullo + 1 add (replaces 4 scalar muls + 4 adds)
-                                let idx_broadcast = i32x4::splat(mirrored_idx as i32);
-                                let idx_scaled = idx_broadcast * multipliers;  // idx × [1,2,3,4]
-                                let expected = idx_scaled + pattern_base;         // (idx×M) + (base×M)
-
-                                let actual = *base.add(i);
-                                let diff = expected ^ actual;
-                                error_accumulator = error_accumulator | diff;
-
-                                element_count += 1;
-                                i += 1;
-
-                                if (element_count as u32 & check_mask) == 0 {
-                                    if error_accumulator.simd_ne(i32x4::splat(0)).any() {
-                                        cycle_errors += 1;
-                                        log::error!("{}: memory error detected in cycle {} chunk {} stream {} element {} (thread {})",
-                                                   test_name, cycle, chunk_start, stream_id, element_count, thread_id);
-                                        error_accumulator = i32x4::splat(0);
-                                    }
-                                }
-                            }
-                        }
-                    }
-                    None => {
-                        // PER_CHUNK mode - no intermediate checks, maximum performance
-                        for stream_id in 0..streams {
-                            let stream_start = chunk_start + (stream_id * elements_per_stream);
-                            let stream_end = stream_start + elements_per_stream;
-                            let stream_sum = stream_start + stream_end - 1;
-
-                            let mut i = stream_start;
-                            while i < stream_end {
-                                let mirrored_idx = stream_sum - i;
-
-                                // OPTIMIZED: 1 broadcast + 1 mullo + 1 add (replaces 4 scalar muls + 4 adds)
-                                let idx_broadcast = i32x4::splat(mirrored_idx as i32);
-                                let idx_scaled = idx_broadcast * multipliers;  // idx × [1,2,3,4]
-                                let expected = idx_scaled + pattern_base;         // (idx×M) + (base×M)
-
-                                let actual = *base.add(i);
-                                let diff = expected ^ actual;
-                                error_accumulator = error_accumulator | diff;
-                                i += 1;
-                            }
-                        }
-                    }
-                }
-
-                // Final error check (always performed regardless of mode)
-                if error_accumulator.simd_ne(i32x4::splat(0)).any() {
-                    cycle_errors += 1;
-                    log::error!("{}: memory error detected in cycle {} chunk {} (thread {})",
-                               test_name, cycle, chunk_start, thread_id);
-                }
-
-                block_errors += cycle_errors;
-
-                // 3. Mirror back to restore original pattern (N-way streams)
-                for stream_id in 0..streams {
-                    let stream_start = chunk_start + (stream_id * elements_per_stream);
-                    let stream_end = stream_start + elements_per_stream;
-
-                    let mut idx1 = stream_start;
-                    let mut idx2 = stream_end - 1;
-                    while idx1 < idx2 {
-                        let val1 = *base.add(idx1);
-                        let val2 = *base.add(idx2);
-                        *base.add(idx2) = val1;  // Cache-backed store
-                        *base.add(idx1) = val2;  // Cache-backed store
-                        idx1 += 1;
-                        idx2 -= 1;
-                    }
-                }
-
-                // Check for shutdown
-                if SHUTDOWN_REQUESTED.load(Ordering::Relaxed) {
-                    total_error_count += block_errors;
-                    total_bytes_processed += (chunk_end - chunk_start) * std::mem::size_of::<i32x4>() * 2;
-                    let elapsed = start.elapsed().as_millis();
-                    return TestStats {
-                        name: test_name,
-                        action: TestAction::WriteWaitVerify,
-                        bytes_processed: total_bytes_processed,
-                        elapsed_ms: elapsed,
-                        thread_id,
-                        error_count: total_error_count,
-                        total_operations,
-                        cycles_completed: cycle,
-                        cycles_planned: timing.cycles,
-                        stopped_by_time_limit: false,
-                    };
-                }
-            }
-
-            total_error_count += block_errors;
-            total_bytes_processed += test_block.test_size * 5; // mirror (R+W) + verify (R) + mirror back (R+W) = 3R + 2W
-            total_operations += len as u64 * 2;
-
-            // Handle errors based on mode
-            if block_errors > 0 {
-                match error_mode {
-                    ErrorMode::Panic => panic!("{}: {} memory errors detected", test_name, block_errors),
-                    ErrorMode::Halt => {
-                        let elapsed = start.elapsed().as_millis();
-                        return TestStats {
-                            name: test_name,
-                            action: TestAction::WriteWaitVerify,
-                            bytes_processed: total_bytes_processed,
-                            elapsed_ms: elapsed,
-                            thread_id,
-                            error_count: total_error_count,
-                            total_operations,
-                            cycles_completed: cycle,
-                            cycles_planned: timing.cycles,
-                            stopped_by_time_limit: false,
-                        };
-                    }
-                    ErrorMode::Log => { /* Continue */ }
-                }
-            }
-
-            // Check for shutdown between blocks
-            if SHUTDOWN_REQUESTED.load(Ordering::Relaxed) {
-                let elapsed = start.elapsed().as_millis();
-                return TestStats {
-                    name: test_name,
-                    action: TestAction::WriteWaitVerify,
-                    bytes_processed: total_bytes_processed,
-                    elapsed_ms: elapsed,
-                    thread_id,
-                    error_count: total_error_count,
-                    total_operations,
-                    cycles_completed: cycle,
-                    cycles_planned: timing.cycles,
-                    stopped_by_time_limit: false,
-                };
-            }
-        }
-
-        // Progress reporting (per cycle, not per block)
-        if let Some(progress) = progress {
-            let now = Instant::now();
-            if now.duration_since(last_progress_update).as_millis() >= update_interval_ms {
-                progress.cycles_completed.store(cycle, Ordering::Relaxed);
-                progress.bytes_processed.store(total_bytes_processed as u64, Ordering::Relaxed);
-                progress.errors_found.store(total_error_count, Ordering::Relaxed);
-                progress.last_update_ms.store(now.duration_since(start).as_millis() as u64, Ordering::Relaxed);
-                last_progress_update = now;
-            }
-        }
-
-        // Check timing - shared across ALL blocks
-        let elapsed_secs = test_start.elapsed().as_secs() as u32;
-        if !timing.should_continue(cycle, elapsed_secs) {
-            break;
-        }
-    }
-
-    TestStats {
-        name: test_name,
-        action: TestAction::WriteWaitVerify,
-        bytes_processed: total_bytes_processed,
-        elapsed_ms: start.elapsed().as_millis(),
-        thread_id,
-        error_count: total_error_count,
-        total_operations,
-        cycles_completed: cycle,
-        cycles_planned: timing.cycles,
-        stopped_by_time_limit: timing.cycles.map_or(true, |limit| cycle < limit),
-    }
-}
-
-/// MirrorMove128 - PUBLIC MultiBlock dispatcher
-/// Routes to stream1 or stream_n based on configuration
-pub unsafe fn mirror_move_128_multi(
-    blocks: &[crate::runner::AllocationBlock],
-    thread_id: usize,
-    error_mode: ErrorMode,
-    timing: &TestTiming,
-    config: &TestMemoryConfig,
-    progress: Option<&TestProgress>,
-) -> TestStats {
-    let test_name = "Mem-Mirror128";
-
-    // Dispatch based on stream configuration
-    let streams = config.streams.max(1) as usize;
-
-    if streams == 1 {
-        mirror_move_128_stream1_multi(blocks, thread_id, error_mode, timing, config, progress)
-    } else {
-        mirror_move_128_stream_n_multi(blocks, thread_id, error_mode, timing, config, progress, streams, test_name)
-    }
-}
-
-// ============================================================================
-// MirrorMove256 (AVX2) - MultiBlock Implementations
-// ============================================================================
-
-/// MirrorMove256 Stream1 - Single stream (linear sequential) - MultiBlock pattern
-/// Tests all blocks with shared timer and interleaved execution
-///
-/// This is the runtime-checked wrapper that calls the optimized implementation
-unsafe fn mirror_move_256_stream1_multi(
-    blocks: &[crate::runner::AllocationBlock],
-    thread_id: usize,
-    error_mode: ErrorMode,
-    timing: &TestTiming,
-    config: &TestMemoryConfig,
-    progress: Option<&TestProgress>,
-) -> TestStats {
-    let test_name = "Mem-Mirror256";
-
-    // Runtime CPU feature check
-    if !is_x86_feature_detected!("avx2") {
-        log::warn!("{}: AVX2 not available, returning zero stats", test_name);
-        return TestStats {
-            name: test_name,
-            action: TestAction::ReadWrite,
-            bytes_processed: 0,
-            elapsed_ms: 0,
-            thread_id,
-            error_count: 0,
-            total_operations: 0,
-            cycles_completed: 0,
-            cycles_planned: None,
-            stopped_by_time_limit: false,
-        };
-    }
-
-    // Call the optimized AVX2 implementation
-    mirror_move_256_stream1_impl(blocks, thread_id, error_mode, timing, config, progress)
-}
-
-/// MirrorMove256 Stream1 - AVX2-optimized implementation
-/// CRITICAL: #[target_feature] enables full compiler optimization of SIMD code
-#[inline]
-#[target_feature(enable = "avx2")]
-unsafe fn mirror_move_256_stream1_impl(
-    blocks: &[crate::runner::AllocationBlock],
-    thread_id: usize,
-    error_mode: ErrorMode,
-    timing: &TestTiming,
-    config: &TestMemoryConfig,
-    progress: Option<&TestProgress>,
-) -> TestStats {
-
-    let test_name = "Mem-Mirror256";
-    let test_start = Instant::now();
-
-    // Calculate window and prepare blocks
-    let total_allocated: usize = blocks.iter().map(|b| b.buffer.size()).sum();
-    let window_size = config.calculate_window_size(test_name, total_allocated);
-    let test_blocks = prepare_blocks_for_window(blocks, window_size, test_name);
-
-    if test_blocks.is_empty() {
-        log::warn!("{}: No blocks to test", test_name);
-        return TestStats {
-            name: test_name,
-            action: TestAction::ReadWrite,
-            bytes_processed: 0,
-            elapsed_ms: 0,
-            thread_id,
-            error_count: 0,
-            total_operations: 0,
-            cycles_completed: 0,
-            cycles_planned: None,
-            stopped_by_time_limit: false,
-        };
-    }
-
-    // Pre-compute pattern base outside all loops
-    let thread_pattern_base = (thread_id as i32) << 16;
-
-    // VECTOR OPTIMIZATION: Pre-compute pattern components for initialization
-    let multipliers = i32x8::from_array([8, 7, 6, 5, 4, 3, 2, 1]);
-    let base_broadcast = i32x8::splat(thread_pattern_base);
-    let pattern_base = base_broadcast * multipliers ;  // base × [1,2,3,4,5,6,7,8]
-
-    // Initialize memory with AVX2 patterns for each block
-    for test_block in test_blocks.iter() {
-        let base = test_block.block.buffer.as_mut_ptr() as *mut i32x8;
-        let len = test_block.test_size / std::mem::size_of::<i32x8>();
-
-        for i in 0..len {
-            // OPTIMIZED: 1 broadcast + 1 mullo + 1 add (replaces 8 scalar muls + 8 adds)
-            let idx_broadcast = i32x8::splat(i as i32);
-            let idx_scaled = idx_broadcast * multipliers ;  // i × [1,2,3,4,5,6,7,8]
-            let pattern = idx_scaled + pattern_base ;         // (i×M) + (base×M)
-            *base.add(i) = pattern;
-        }
-        // NOTE: _mm_sfence() removed - not needed for temporal stores (cache coherency handles ordering)
-        // TODO: If using TMR-MD Uncached/WC memory OR non-temporal stores, may need to restore fence
-    }
-
-    // Validate chunk divisibility for ALL blocks ONCE before starting (not in hot loop)
-    // Different block sizes may have different chunk sizes, so validate each
-    for test_block in test_blocks.iter() {
-        let ideal_chunk_size = calculate_ideal_chunk_size(config, test_name, test_block.test_size);
-        let chunk_size_bytes = get_safe_chunk_size(ideal_chunk_size, test_block.test_size);
-        let chunk_size_elements = chunk_size_bytes / std::mem::size_of::<i32x8>();
-
-        // Stream1 has streams=1, so chunk doesn't need to be divisible by streams
-        // But we validate anyway for consistency
-        validate_chunk_divisibility(test_name, 1, chunk_size_elements);
-    }
-
-    let mut cycle = 0u32;
-    let mut total_bytes_processed = 0usize;
-    let mut total_error_count = 0u64;
-    let mut total_operations = 0u64;
-
-    // Progress tracking
-    let update_interval_ms = 250u128; // 4 updates/sec
-    let mut last_progress_update = Instant::now();
-
-    // Main cycle loop - shared timer across all blocks
-    loop {
-        cycle += 1;
-
-        // Test all blocks in interleaved manner (1,2,3,1,2,3...)
-        for test_block in test_blocks.iter() {
-            let base = test_block.block.buffer.as_mut_ptr() as *mut i32x8;
-            let len = test_block.test_size / std::mem::size_of::<i32x8>();
-
-            // Calculate chunk size for this block's test_size
-            let ideal_chunk_size = calculate_ideal_chunk_size(config, test_name, test_block.test_size);
-            let chunk_size_bytes = get_safe_chunk_size(ideal_chunk_size, test_block.test_size);
-            let chunk_size_elements = chunk_size_bytes / std::mem::size_of::<i32x8>();
-
-            let mut cycle_errors = 0u64;
-
-            for chunk_start in (0..len).step_by(chunk_size_elements) {
-                let chunk_end = (chunk_start + chunk_size_elements).min(len);
-                let chunk_len = chunk_end - chunk_start;
-
-                // 1. Mirror operation - single stream with two-pointer optimization
-                let mut idx1 = chunk_start;
-                let mut idx2 = chunk_start + chunk_len - 1;
-                while idx1 < idx2 {
-                    let val1 = *base.add(idx1);
-                    let val2 = *base.add(idx2);
-                    *base.add(idx2) = val1;  // Cache-backed store
-                    *base.add(idx1) = val2;  // Cache-backed store
-                    idx1 += 1;
-                    idx2 -= 1;
-                }
-
-                // 2. Verify with configurable error checking frequency
-                let mut error_accumulator = i32x8::splat(0);
-                let mut i = chunk_start;
-                let chunk_sum = chunk_start + chunk_end - 1;
-                let mut element_count = 0usize;
-
-                // VECTOR OPTIMIZATION: Pre-compute pattern components ONCE
-                // Formula: (idx + base) × M = (idx × M) + (base × M)
-                let multipliers = i32x8::from_array([8, 7, 6, 5, 4, 3, 2, 1]);
-                let base_broadcast = i32x8::splat(thread_pattern_base);
-                let pattern_base = base_broadcast * multipliers ;  // base × [1,2,3,4,5,6,7,8]
-
-                // Pre-compute check mask for hot loop optimization
-                match config.error_check_interval.get_check_mask() {
-                    Some(check_mask) => {
-                        while i < chunk_end {
-                            let mirrored_idx = chunk_sum - i;
-
-                            // OPTIMIZED: 1 broadcast + 1 mullo + 1 add (replaces 8 scalar muls + 8 adds)
-                            let idx_broadcast = i32x8::splat(mirrored_idx as i32);
-                            let idx_scaled = idx_broadcast * multipliers ;  // idx × [1,2,3,4,5,6,7,8]
-                            let expected = idx_scaled + pattern_base ;         // (idx×M) + (base×M)
-
-                            let actual = *base.add(i);
-                            let diff = expected ^ actual ;
-                            error_accumulator = error_accumulator | diff ;
-
-                            element_count += 1;
-                            i += 1;
-
-                            // Check errors at configured intervals (zero-branch hot loop optimization)
-                            if (element_count as u32 & check_mask) == 0 {
-                                if error_accumulator.simd_ne(i32x8::splat(0)).any() {
-                                    cycle_errors += 1;
-                                    log::error!("{}: memory error detected in cycle {} chunk {} element {} (thread {})",
-                                               test_name, cycle, chunk_start, element_count, thread_id);
-                                    error_accumulator = i32x8::splat(0);
-                                }
-                            }
-                        }
-                    }
-                    None => {
-                        // PER_CHUNK mode - no intermediate checks, maximum performance
-                        while i < chunk_end {
-                            let mirrored_idx = chunk_sum - i;
-
-                            // OPTIMIZED: 1 broadcast + 1 mullo + 1 add (replaces 8 scalar muls + 8 adds)
-                            let idx_broadcast = i32x8::splat(mirrored_idx as i32);
-                            let idx_scaled = idx_broadcast * multipliers ;  // idx × [1,2,3,4,5,6,7,8]
-                            let expected = idx_scaled + pattern_base ;         // (idx×M) + (base×M)
-
-                            let actual = *base.add(i);
-                            let diff = expected ^ actual ;
-                            error_accumulator = error_accumulator | diff ;
-                            i += 1;
-                        }
-                    }
-                }
-
-                // Final error check (always performed regardless of mode)
-                if error_accumulator.simd_ne(i32x8::splat(0)).any() {
-                    cycle_errors += 1;
-                    log::error!("{}: memory error detected in cycle {} chunk {} (thread {})",
-                               test_name, cycle, chunk_start, thread_id);
-                }
-
-                // 3. Mirror back to restore - same two-pointer optimization
-                let mut idx1 = chunk_start;
-                let mut idx2 = chunk_start + chunk_len - 1;
-                while idx1 < idx2 {
-                    let val1 = *base.add(idx1);
-                    let val2 = *base.add(idx2);
-                    *base.add(idx2) = val1;  // Cache-backed store
-                    *base.add(idx1) = val2;  // Cache-backed store
-                    idx1 += 1;
-                    idx2 -= 1;
-                }
-
-                // Optimized error handling - check ONCE at end of chunk
-                if cycle_errors > 0 {
-                    match error_mode {
-                        ErrorMode::Panic => {
-                            panic!("{}: memory error detected in cycle {} (thread {})", test_name, cycle, thread_id);
-                        }
-                        ErrorMode::Halt => {
-                            let elapsed = test_start.elapsed().as_millis();
-                            total_error_count += cycle_errors;
-                            return TestStats {
-                                name: test_name,
-                                action: TestAction::WriteWaitVerify,
-                                bytes_processed: total_bytes_processed as usize,
-                                elapsed_ms: elapsed,
-                                thread_id,
-                                error_count: total_error_count,
-                                total_operations,
-                                cycles_completed: cycle,
-                                cycles_planned: timing.cycles,
-                                stopped_by_time_limit: false,
-                            };
-                        }
-                        ErrorMode::Log => {
-                            // Already logged, continue
-                        }
-                    }
-                }
-            }
-
-            total_error_count += cycle_errors;
-            total_bytes_processed += test_block.test_size * 5; // Mirror (R+W) + verify (R) + mirror back (R+W) = 3R + 2W
-            total_operations += len as u64;
-        }
-
-        // Update progress tracker
-        if let Some(progress) = progress {
-            let now = Instant::now();
-            if now.duration_since(last_progress_update).as_millis() >= update_interval_ms {
-                progress.cycles_completed.store(cycle, Ordering::Relaxed);
-                progress.bytes_processed.store(total_bytes_processed as u64, Ordering::Relaxed);
-                progress.errors_found.store(total_error_count, Ordering::Relaxed);
-                progress.last_update_ms.store(
-                    test_start.elapsed().as_millis() as u64,
-                    Ordering::Relaxed
-                );
-                last_progress_update = now;
-            }
-        }
-
-        // Check timing limits
-        let elapsed_secs = test_start.elapsed().as_secs() as u32;
-        if !timing.should_continue(cycle, elapsed_secs) {
-            return TestStats {
-                name: test_name,
-                action: TestAction::WriteWaitVerify,
-                bytes_processed: total_bytes_processed as usize,
-                elapsed_ms: test_start.elapsed().as_millis(),
-                thread_id,
-                error_count: total_error_count,
-                total_operations,
-                cycles_completed: cycle,
-                cycles_planned: timing.cycles,
-                stopped_by_time_limit: timing.cycles.map_or(true, |limit| cycle < limit),
-            };
-        }
-    }
-}
-
-/// MirrorMove256 StreamN - N-way segmented mirroring - MultiBlock pattern
-/// Tests all blocks with shared timer and interleaved execution
-///
-/// This is the runtime-checked wrapper that calls the optimized implementation
-unsafe fn mirror_move_256_stream_n_multi(
-    blocks: &[crate::runner::AllocationBlock],
-    thread_id: usize,
-    error_mode: ErrorMode,
-    timing: &TestTiming,
-    config: &TestMemoryConfig,
-    progress: Option<&TestProgress>,
-    streams: usize,
-    test_name: &'static str,
-) -> TestStats {
-    // Runtime CPU feature check
-    if !is_x86_feature_detected!("avx2") {
-        log::warn!("{}: AVX2 not available, returning zero stats", test_name);
-        return TestStats {
-            name: test_name,
-            action: TestAction::ReadWrite,
-            bytes_processed: 0,
-            elapsed_ms: 0,
-            thread_id,
-            error_count: 0,
-            total_operations: 0,
-            cycles_completed: 0,
-            cycles_planned: None,
-            stopped_by_time_limit: false,
-        };
-    }
-
-    // Call the optimized AVX2 implementation
-    mirror_move_256_stream_n_impl(blocks, thread_id, error_mode, timing, config, progress, streams, test_name)
-}
-
-/// MirrorMove256 StreamN - AVX2-optimized implementation
-/// CRITICAL: #[target_feature] enables full compiler optimization of SIMD code
-#[inline]
-#[target_feature(enable = "avx2")]
-unsafe fn mirror_move_256_stream_n_impl(
-    blocks: &[crate::runner::AllocationBlock],
-    thread_id: usize,
-    error_mode: ErrorMode,
-    timing: &TestTiming,
-    config: &TestMemoryConfig,
-    progress: Option<&TestProgress>,
-    streams: usize,
-    test_name: &'static str,
-) -> TestStats {
-
-    let test_start = Instant::now();
-    let stream_shift = streams.trailing_zeros();
-
-    // Calculate window and prepare blocks
-    let total_allocated: usize = blocks.iter().map(|b| b.buffer.size()).sum();
-    let window_size = config.calculate_window_size(test_name, total_allocated);
-    let test_blocks = prepare_blocks_for_window(blocks, window_size, test_name);
-
-    if test_blocks.is_empty() {
-        log::warn!("{}: No blocks to test", test_name);
-        return TestStats {
-            name: test_name,
-            action: TestAction::ReadWrite,
-            bytes_processed: 0,
-            elapsed_ms: 0,
-            thread_id,
-            error_count: 0,
-            total_operations: 0,
-            cycles_completed: 0,
-            cycles_planned: None,
-            stopped_by_time_limit: false,
-        };
-    }
-
-    // Pre-compute pattern base outside all loops
-    let thread_pattern_base = (thread_id as i32) << 16;
-
-    // VECTOR OPTIMIZATION: Pre-compute pattern components for initialization
-    let multipliers = i32x8::from_array([8, 7, 6, 5, 4, 3, 2, 1]);
-    let base_broadcast = i32x8::splat(thread_pattern_base);
-    let pattern_base = base_broadcast * multipliers ;  // base × [1,2,3,4,5,6,7,8]
-
-    // Initialize memory with AVX2 patterns for each block
-    for test_block in test_blocks.iter() {
-        let base = test_block.block.buffer.as_mut_ptr() as *mut i32x8;
-        let len = test_block.test_size / std::mem::size_of::<i32x8>();
-
-        for i in 0..len {
-            // OPTIMIZED: 1 broadcast + 1 mullo + 1 add (replaces 8 scalar muls + 8 adds)
-            let idx_broadcast = i32x8::splat(i as i32);
-            let idx_scaled = idx_broadcast * multipliers ;  // i × [1,2,3,4,5,6,7,8]
-            let pattern = idx_scaled + pattern_base ;         // (i×M) + (base×M)
-            *base.add(i) = pattern;
-        }
-        // NOTE: _mm_sfence() removed - not needed for temporal stores (cache coherency handles ordering)
-        // TODO: If using TMR-MD Uncached/WC memory OR non-temporal stores, may need to restore fence
-    }
-
-    // Validate chunk divisibility for ALL blocks ONCE before starting
-    for test_block in test_blocks.iter() {
-        let ideal_chunk_size = calculate_ideal_chunk_size(config, test_name, test_block.test_size);
-        let chunk_size_bytes = get_safe_chunk_size(ideal_chunk_size, test_block.test_size);
-        let chunk_size_elements = chunk_size_bytes / std::mem::size_of::<i32x8>();
-
-        validate_chunk_divisibility(test_name, config.streams, chunk_size_elements);
-    }
-
-    let mut cycle = 0u32;
-    let mut total_bytes_processed = 0usize;
-    let mut total_error_count = 0u64;
-    let mut total_operations = 0u64;
-
-    // Progress tracking
-    let update_interval_ms = 250u128;
-    let mut last_progress_update = Instant::now();
-
-    // Main cycle loop - shared timer across all blocks
-    loop {
-        cycle += 1;
-
-        // Test all blocks in interleaved manner
-        for test_block in test_blocks.iter() {
-            let base = test_block.block.buffer.as_mut_ptr() as *mut i32x8;
-            let len = test_block.test_size / std::mem::size_of::<i32x8>();
-
-            // Calculate chunk size for this block's test_size
-            let ideal_chunk_size = calculate_ideal_chunk_size(config, test_name, test_block.test_size);
-            let chunk_size_bytes = get_safe_chunk_size(ideal_chunk_size, test_block.test_size);
-            let chunk_size_elements = chunk_size_bytes / std::mem::size_of::<i32x8>();
-
-            let mut cycle_errors = 0u64;
-
-            for chunk_start in (0..len).step_by(chunk_size_elements) {
-                let chunk_end = (chunk_start + chunk_size_elements).min(len);
-                let chunk_len = chunk_end - chunk_start;
-
-                // Pre-compute stream boundaries for this chunk
-                let elements_per_stream = chunk_len >> stream_shift;
-
-                // 1. Mirror operation - multi-stream
-                for stream_id in 0..streams {
-                    let stream_start = chunk_start + (stream_id * elements_per_stream);
-                    let stream_end = stream_start + elements_per_stream;
-
-                    let mut idx1 = stream_start;
-                    let mut idx2 = stream_end - 1;
-                    while idx1 < idx2 {
-                        let val1 = *base.add(idx1);
-                        let val2 = *base.add(idx2);
-                        *base.add(idx2) = val1;  // Cache-backed store
-                        *base.add(idx1) = val2;  // Cache-backed store
-                        idx1 += 1;
-                        idx2 -= 1;
-                    }
-                }
-
-                // 2. Verify with configurable error checking frequency - multi-stream
-                let mut error_accumulator = i32x8::splat(0);
-                let mut element_count = 0usize;
-
-                // VECTOR OPTIMIZATION: Pre-compute pattern components ONCE
-                // Formula: (idx + base) × M = (idx × M) + (base × M)
-                let multipliers = i32x8::from_array([8, 7, 6, 5, 4, 3, 2, 1]);
-                let base_broadcast = i32x8::splat(thread_pattern_base);
-                let pattern_base = base_broadcast * multipliers ;  // base × [1,2,3,4,5,6,7,8]
-
-                match config.error_check_interval.get_check_mask() {
-                    Some(check_mask) => {
-                        for stream_id in 0..streams {
-                            let stream_start = chunk_start + (stream_id * elements_per_stream);
-                            let stream_end = stream_start + elements_per_stream;
-                            let stream_sum = stream_start + stream_end - 1;
-
-                            let mut i = stream_start;
-                            while i < stream_end {
-                                let mirrored_idx = stream_sum - i;
-
-                                // OPTIMIZED: 1 broadcast + 1 mullo + 1 add (replaces 8 scalar muls + 8 adds)
-                                let idx_broadcast = i32x8::splat(mirrored_idx as i32);
-                                let idx_scaled = idx_broadcast * multipliers ;  // idx × [1,2,3,4,5,6,7,8]
-                                let expected = idx_scaled + pattern_base ;         // (idx×M) + (base×M)
-
-                                let actual = *base.add(i);
-                                let diff = expected ^ actual ;
-                                error_accumulator = error_accumulator | diff ;
-
-                                element_count += 1;
-                                i += 1;
-
-                                if (element_count as u32 & check_mask) == 0 {
-                                    if error_accumulator.simd_ne(i32x8::splat(0)).any() {
-                                        cycle_errors += 1;
-                                        log::error!("{}: memory error detected in cycle {} chunk {} stream {} element {} (thread {})",
-                                                   test_name, cycle, chunk_start, stream_id, element_count, thread_id);
-                                        error_accumulator = i32x8::splat(0);
-                                    }
-                                }
-                            }
-                        }
-                    }
-                    None => {
-                        // PER_CHUNK mode
-                        for stream_id in 0..streams {
-                            let stream_start = chunk_start + (stream_id * elements_per_stream);
-                            let stream_end = stream_start + elements_per_stream;
-                            let stream_sum = stream_start + stream_end - 1;
-
-                            let mut i = stream_start;
-                            while i < stream_end {
-                                let mirrored_idx = stream_sum - i;
-
-                                // OPTIMIZED: 1 broadcast + 1 mullo + 1 add (replaces 8 scalar muls + 8 adds)
-                                let idx_broadcast = i32x8::splat(mirrored_idx as i32);
-                                let idx_scaled = idx_broadcast * multipliers ;  // idx × [1,2,3,4,5,6,7,8]
-                                let expected = idx_scaled + pattern_base ;         // (idx×M) + (base×M)
-
-                                let actual = *base.add(i);
-                                let diff = expected ^ actual ;
-                                error_accumulator = error_accumulator | diff ;
-                                i += 1;
-                            }
-                        }
-                    }
-                }
-
-                // Final error check
-                if error_accumulator.simd_ne(i32x8::splat(0)).any() {
-                    cycle_errors += 1;
-                    log::error!("{}: memory error detected in cycle {} chunk {} (thread {})",
-                               test_name, cycle, chunk_start, thread_id);
-                }
-
-                // 3. Mirror back to restore - multi-stream
-                for stream_id in 0..streams {
-                    let stream_start = chunk_start + (stream_id * elements_per_stream);
-                    let stream_end = stream_start + elements_per_stream;
-
-                    let mut idx1 = stream_start;
-                    let mut idx2 = stream_end - 1;
-                    while idx1 < idx2 {
-                        let val1 = *base.add(idx1);
-                        let val2 = *base.add(idx2);
-                        *base.add(idx2) = val1;  // Cache-backed store
-                        *base.add(idx1) = val2;  // Cache-backed store
-                        idx1 += 1;
-                        idx2 -= 1;
-                    }
-                }
-
-                // Error handling
-                if cycle_errors > 0 {
-                    match error_mode {
-                        ErrorMode::Panic => {
-                            panic!("{}: memory error detected in cycle {} (thread {})", test_name, cycle, thread_id);
-                        }
-                        ErrorMode::Halt => {
-                            let elapsed = test_start.elapsed().as_millis();
-                            total_error_count += cycle_errors;
-                            return TestStats {
-                                name: test_name,
-                                action: TestAction::WriteWaitVerify,
-                                bytes_processed: total_bytes_processed as usize,
-                                elapsed_ms: elapsed,
-                                thread_id,
-                                error_count: total_error_count,
-                                total_operations,
-                                cycles_completed: cycle,
-                                cycles_planned: timing.cycles,
-                                stopped_by_time_limit: false,
-                            };
-                        }
-                        ErrorMode::Log => {
-                            // Already logged, continue
-                        }
-                    }
-                }
-            }
-
-            total_error_count += cycle_errors;
-            total_bytes_processed += test_block.test_size * 5; // Mirror (R+W) + verify (R) + mirror back (R+W) = 3R + 2W
-            total_operations += len as u64;
-        }
-
-        // Update progress tracker
-        if let Some(progress) = progress {
-            let now = Instant::now();
-            if now.duration_since(last_progress_update).as_millis() >= update_interval_ms {
-                progress.cycles_completed.store(cycle, Ordering::Relaxed);
-                progress.bytes_processed.store(total_bytes_processed as u64, Ordering::Relaxed);
-                progress.errors_found.store(total_error_count, Ordering::Relaxed);
-                progress.last_update_ms.store(
-                    test_start.elapsed().as_millis() as u64,
-                    Ordering::Relaxed
-                );
-                last_progress_update = now;
-            }
-        }
-
-        // Check timing limits
-        let elapsed_secs = test_start.elapsed().as_secs() as u32;
-        if !timing.should_continue(cycle, elapsed_secs) {
-            return TestStats {
-                name: test_name,
-                action: TestAction::WriteWaitVerify,
-                bytes_processed: total_bytes_processed as usize,
-                elapsed_ms: test_start.elapsed().as_millis(),
-                thread_id,
-                error_count: total_error_count,
-                total_operations,
-                cycles_completed: cycle,
-                cycles_planned: timing.cycles,
-                stopped_by_time_limit: timing.cycles.map_or(true, |limit| cycle < limit),
-            };
-        }
-    }
-}
-
-/// MirrorMove256 - PUBLIC MultiBlock dispatcher
-/// Routes to stream1 or stream_n based on configuration
-pub unsafe fn mirror_move_256_multi(
-    blocks: &[crate::runner::AllocationBlock],
-    thread_id: usize,
-    error_mode: ErrorMode,
-    timing: &TestTiming,
-    config: &TestMemoryConfig,
-    progress: Option<&TestProgress>,
-) -> TestStats {
-    let test_name = "Mem-Mirror256";
-    let streams = config.streams.max(1) as usize;
-
-    if streams == 1 {
-        mirror_move_256_stream1_multi(blocks, thread_id, error_mode, timing, config, progress)
-    } else {
-        mirror_move_256_stream_n_multi(blocks, thread_id, error_mode, timing, config, progress, streams, test_name)
-    }
-}
-
-// ============================================================================
-// MirrorMove512 (AVX-512) - MultiBlock Implementations
-// ============================================================================
-
-/// MirrorMove512 Stream1 - Single stream (linear sequential) - MultiBlock pattern
-/// Tests all blocks with shared timer and interleaved execution
-/// Runtime-checked wrapper for AVX-512 availability
-unsafe fn mirror_move_512_stream1_multi(
-    blocks: &[crate::runner::AllocationBlock],
-    thread_id: usize,
-    error_mode: ErrorMode,
-    timing: &TestTiming,
-    config: &TestMemoryConfig,
-    progress: Option<&TestProgress>,
-) -> TestStats {
-    let test_name = "Mem-Mirror512";
-
-    // Runtime CPU feature check
-    if !is_x86_feature_detected!("avx512f") {
-        log::warn!("{}: AVX-512 not available, returning zero stats", test_name);
-        return TestStats {
-            name: test_name,
-            action: TestAction::ReadWrite,
-            bytes_processed: 0,
-            elapsed_ms: 0,
-            thread_id,
-            error_count: 0,
-            total_operations: 0,
-            cycles_completed: 0,
-            cycles_planned: None,
-            stopped_by_time_limit: false,
-        };
-    }
-
-    // Call the AVX-512 optimized implementation
-    mirror_move_512_stream1_impl(blocks, thread_id, error_mode, timing, config, progress)
-}
-
-/// MirrorMove512 Stream1 - AVX-512 optimized implementation
-/// This function is annotated with #[target_feature] to enable full compiler optimization
-#[inline]
-#[target_feature(enable = "avx512f")]
-unsafe fn mirror_move_512_stream1_impl(
-    blocks: &[crate::runner::AllocationBlock],
-    thread_id: usize,
-    error_mode: ErrorMode,
-    timing: &TestTiming,
-    config: &TestMemoryConfig,
-    progress: Option<&TestProgress>,
-) -> TestStats {
-
-    let test_name = "Mem-Mirror512";
-
-    let test_start = Instant::now();
-
-    // Calculate window and prepare blocks
-    let total_allocated: usize = blocks.iter().map(|b| b.buffer.size()).sum();
-    let window_size = config.calculate_window_size(test_name, total_allocated);
-    let test_blocks = prepare_blocks_for_window(blocks, window_size, test_name);
-
-    if test_blocks.is_empty() {
-        log::warn!("{}: No blocks to test", test_name);
-        return TestStats {
-            name: test_name,
-            action: TestAction::ReadWrite,
-            bytes_processed: 0,
-            elapsed_ms: 0,
-            thread_id,
-            error_count: 0,
-            total_operations: 0,
-            cycles_completed: 0,
-            cycles_planned: None,
-            stopped_by_time_limit: false,
-        };
-    }
-
-    // Pre-compute pattern base outside all loops
-    let thread_pattern_base = (thread_id as i32) << 16;
-
-    // VECTOR OPTIMIZATION: Pre-compute pattern components for initialization
-    let multipliers = i32x16::from_array([16, 15, 14, 13, 12, 11, 10, 9, 8, 7, 6, 5, 4, 3, 2, 1]);
-    let base_broadcast = i32x16::splat(thread_pattern_base);
-    let pattern_base = base_broadcast * multipliers ;  // base × [1..16]
-
-    // Initialize memory with AVX-512 patterns for each block
-    for test_block in test_blocks.iter() {
-        let base = test_block.block.buffer.as_mut_ptr() as *mut i32x16;
-        let len = test_block.test_size / std::mem::size_of::<i32x16>();
-
-        for i in 0..len {
-            // OPTIMIZED: 1 broadcast + 1 mullo + 1 add (replaces 16 scalar muls + 16 adds)
-            let idx_broadcast = i32x16::splat(i as i32);
-            let idx_scaled = idx_broadcast * multipliers ;  // i × [1..16]
-            let pattern = idx_scaled + pattern_base ;         // (i×M) + (base×M)
-            *base.add(i) = pattern;
-        }
-    }
-
-    // Validate chunk divisibility for ALL blocks ONCE before starting (not in hot loop)
-    // Different block sizes may have different chunk sizes, so validate each
-    for test_block in test_blocks.iter() {
-        let ideal_chunk_size = calculate_ideal_chunk_size(config, test_name, test_block.test_size);
-        let chunk_size_bytes = get_safe_chunk_size(ideal_chunk_size, test_block.test_size);
-        let chunk_size_elements = chunk_size_bytes / std::mem::size_of::<i32x16>();
-
-        // Stream1 has streams=1, so chunk doesn't need to be divisible by streams
-        // But we validate anyway for consistency
-        validate_chunk_divisibility(test_name, 1, chunk_size_elements);
-    }
-
-    let mut cycle = 0u32;
-    let mut total_bytes_processed = 0usize;
-    let mut total_error_count = 0u64;
-    let mut total_operations = 0u64;
-
-    // Progress tracking
-    let update_interval_ms = 250u128; // 4 updates/sec
-    let mut last_progress_update = Instant::now();
-
-    // Main cycle loop - shared timer across all blocks (AVX512 stream1)
-    loop {
-        cycle += 1;
-
-        // Test all blocks in interleaved manner (1,2,3,1,2,3...)
-        for test_block in test_blocks.iter() {
-            let base = test_block.block.buffer.as_mut_ptr() as *mut i32x16;
-            let len = test_block.test_size / std::mem::size_of::<i32x16>();
-
-            // Calculate chunk size for this block's test_size
-            let ideal_chunk_size = calculate_ideal_chunk_size(config, test_name, test_block.test_size);
-            let chunk_size_bytes = get_safe_chunk_size(ideal_chunk_size, test_block.test_size);
-            let chunk_size_elements = chunk_size_bytes / std::mem::size_of::<i32x16>();
-
-            let mut cycle_errors = 0u64;
-
-            for chunk_start in (0..len).step_by(chunk_size_elements) {
-                let chunk_end = (chunk_start + chunk_size_elements).min(len);
-                let chunk_len = chunk_end - chunk_start;
-
-                // 1. Mirror operation - single stream with two-pointer optimization
-                let mut idx1 = chunk_start;
-                let mut idx2 = chunk_start + chunk_len - 1;
-                while idx1 < idx2 {
-                    let val1 = *base.add(idx1);
-                    let val2 = *base.add(idx2);
-                    *base.add(idx2) = val1;  // Cache-backed store
-                    *base.add(idx1) = val2;  // Cache-backed store
-                    idx1 += 1;
-                    idx2 -= 1;
-                }
-                // NOTE: _mm_sfence() removed - not needed for temporal stores (cache coherency handles ordering)
-        // TODO: If using TMR-MD Uncached/WC memory OR non-temporal stores, may need to restore fence
-
-                // 2. Verify with configurable error checking frequency
-                let mut error_accumulator = i32x16::splat(0);
-                let mut i = chunk_start;
-                let chunk_sum = chunk_start + chunk_end - 1;
-                let mut element_count = 0usize;
-
-                // Pre-compute check mask for hot loop optimization
-                match config.error_check_interval.get_check_mask() {
-                    Some(check_mask) => {
-                        while i < chunk_end {
-                            // Pre-compute mirrored index (hot loop optimization)
-                            let mirrored_idx = chunk_sum - i;
-
-                            // OPTIMIZED: 1 broadcast + 1 mullo + 1 add (replaces 16 scalar muls + 16 adds)
-                            let idx_broadcast = i32x16::splat(mirrored_idx as i32);
-                            let idx_scaled = idx_broadcast * multipliers ;  // idx × [1..16]
-                            let expected = idx_scaled + pattern_base ;         // (idx×M) + (base×M)
-
-                            let actual = *base.add(i);
-                            let diff = expected ^ actual ;
-                            error_accumulator = error_accumulator | diff ;
-
-                            element_count += 1;
-                            i += 1;
-
-                            // Check errors at configured intervals (zero-branch hot loop optimization)
-                            if (element_count as u32 & check_mask) == 0 {
-                                if error_accumulator.simd_ne(i32x16::splat(0)).any() {
-                                    cycle_errors += 1;
-                                    log::error!("{}: memory error detected in cycle {} chunk {} element {} (thread {})",
-                                               test_name, cycle, chunk_start, element_count, thread_id);
-                                    error_accumulator = i32x16::splat(0);
-                                }
-                            }
-                        }
-                    }
-                    None => {
-                        // PER_CHUNK mode - no intermediate checks, maximum performance
-                        while i < chunk_end {
-                            // Pre-compute mirrored index (hot loop optimization)
-                            let mirrored_idx = chunk_sum - i;
-
-                            // OPTIMIZED: 1 broadcast + 1 mullo + 1 add (replaces 16 scalar muls + 16 adds)
-                            let idx_broadcast = i32x16::splat(mirrored_idx as i32);
-                            let idx_scaled = idx_broadcast * multipliers ;  // idx × [1..16]
-                            let expected = idx_scaled + pattern_base ;         // (idx×M) + (base×M)
-
-                            let actual = *base.add(i);
-                            let diff = expected ^ actual ;
-                            error_accumulator = error_accumulator | diff ;
-                            i += 1;
-                        }
-                    }
-                }
-
-                // Final error check (always performed regardless of mode)
-                if error_accumulator.simd_ne(i32x16::splat(0)).any() {
-                    cycle_errors += 1;
-                    log::error!("{}: memory error detected in cycle {} chunk {} (thread {})",
-                               test_name, cycle, chunk_start, thread_id);
-                }
-
-                // 3. Mirror back to restore - same two-pointer optimization
-                let mut idx1 = chunk_start;
-                let mut idx2 = chunk_start + chunk_len - 1;
-                while idx1 < idx2 {
-                    let val1 = *base.add(idx1);
-                    let val2 = *base.add(idx2);
-                    *base.add(idx2) = val1;  // Cache-backed store
-                    *base.add(idx1) = val2;  // Cache-backed store
-                    idx1 += 1;
-                    idx2 -= 1;
-                }
-                // NOTE: _mm_sfence() removed - not needed for temporal stores (cache coherency handles ordering)
-        // TODO: If using TMR-MD Uncached/WC memory OR non-temporal stores, may need to restore fence
-
-                // Optimized error handling - check ONCE at end of chunk
-                if cycle_errors > 0 {
-                    match error_mode {
-                        ErrorMode::Panic => {
-                            panic!("{}: memory error detected in cycle {} (thread {})", test_name, cycle, thread_id);
-                        }
-                        ErrorMode::Halt => {
-                            let elapsed = test_start.elapsed().as_millis();
-                            total_error_count += cycle_errors;
-                            return TestStats {
-                                name: test_name,
-                                action: TestAction::WriteWaitVerify,
-                                bytes_processed: total_bytes_processed as usize,
-                                elapsed_ms: elapsed,
-                                thread_id,
-                                error_count: total_error_count,
-                                total_operations,
-                                cycles_completed: cycle,
-                                cycles_planned: timing.cycles,
-                                stopped_by_time_limit: false,
-                            };
-                        }
-                        ErrorMode::Log => {
-                            // Already logged, continue
-                        }
-                    }
-                }
-            }
-
-            total_error_count += cycle_errors;
-            total_bytes_processed += test_block.test_size * 5; // Mirror (R+W) + verify (R) + mirror back (R+W) = 3R + 2W
-            total_operations += len as u64;
-        }
-
-        // Update progress tracker
-        if let Some(progress) = progress {
-            let now = Instant::now();
-            if now.duration_since(last_progress_update).as_millis() >= update_interval_ms {
-                progress.cycles_completed.store(cycle, Ordering::Relaxed);
-                progress.bytes_processed.store(total_bytes_processed as u64, Ordering::Relaxed);
-                progress.errors_found.store(total_error_count, Ordering::Relaxed);
-                progress.last_update_ms.store(
-                    test_start.elapsed().as_millis() as u64,
-                    Ordering::Relaxed
-                );
-                last_progress_update = now;
-            }
-        }
-
-        // Check timing limits
-        let elapsed_secs = test_start.elapsed().as_secs() as u32;
-        if !timing.should_continue(cycle, elapsed_secs) {
-            return TestStats {
-                name: test_name,
-                action: TestAction::WriteWaitVerify,
-                bytes_processed: total_bytes_processed as usize,
-                elapsed_ms: test_start.elapsed().as_millis(),
-                thread_id,
-                error_count: total_error_count,
-                total_operations,
-                cycles_completed: cycle,
-                cycles_planned: timing.cycles,
-                stopped_by_time_limit: timing.cycles.map_or(true, |limit| cycle < limit),
-            };
-        }
-    }
-}
-
-/// MirrorMove512 StreamN - N-way segmented mirroring - MultiBlock pattern
-/// Tests all blocks with shared timer and interleaved execution
-/// Runtime-checked wrapper for AVX-512 availability
-unsafe fn mirror_move_512_stream_n_multi(
-    blocks: &[crate::runner::AllocationBlock],
-    thread_id: usize,
-    error_mode: ErrorMode,
-    timing: &TestTiming,
-    config: &TestMemoryConfig,
-    progress: Option<&TestProgress>,
-    streams: usize,
-    test_name: &'static str,
-) -> TestStats {
-    // Runtime CPU feature check
-    if !is_x86_feature_detected!("avx512f") {
-        log::warn!("{}: AVX-512 not available, returning zero stats", test_name);
-        return TestStats {
-            name: test_name,
-            action: TestAction::ReadWrite,
-            bytes_processed: 0,
-            elapsed_ms: 0,
-            thread_id,
-            error_count: 0,
-            total_operations: 0,
-            cycles_completed: 0,
-            cycles_planned: None,
-            stopped_by_time_limit: false,
-        };
-    }
-
-    // Call the AVX-512 optimized implementation
-    mirror_move_512_stream_n_impl(blocks, thread_id, error_mode, timing, config, progress, streams, test_name)
-}
-
-/// MirrorMove512 StreamN - AVX-512 optimized implementation
-/// This function is annotated with #[target_feature] to enable full compiler optimization
-#[inline]
-#[target_feature(enable = "avx512f")]
-unsafe fn mirror_move_512_stream_n_impl(
-    blocks: &[crate::runner::AllocationBlock],
-    thread_id: usize,
-    error_mode: ErrorMode,
-    timing: &TestTiming,
-    config: &TestMemoryConfig,
-    progress: Option<&TestProgress>,
-    streams: usize,
-    test_name: &'static str,
-) -> TestStats {
-
-    let test_start = Instant::now();
-    let stream_shift = streams.trailing_zeros();
-
-    // Calculate window and prepare blocks
-    let total_allocated: usize = blocks.iter().map(|b| b.buffer.size()).sum();
-    let window_size = config.calculate_window_size(test_name, total_allocated);
-    let test_blocks = prepare_blocks_for_window(blocks, window_size, test_name);
-
-    if test_blocks.is_empty() {
-        log::warn!("{}: No blocks to test", test_name);
-        return TestStats {
-            name: test_name,
-            action: TestAction::ReadWrite,
-            bytes_processed: 0,
-            elapsed_ms: 0,
-            thread_id,
-            error_count: 0,
-            total_operations: 0,
-            cycles_completed: 0,
-            cycles_planned: None,
-            stopped_by_time_limit: false,
-        };
-    }
-
-    // Pre-compute pattern base outside all loops
-    let thread_pattern_base = (thread_id as i32) << 16;
-
-    // VECTOR OPTIMIZATION: Pre-compute pattern components for initialization
-    let multipliers = i32x16::from_array([16, 15, 14, 13, 12, 11, 10, 9, 8, 7, 6, 5, 4, 3, 2, 1]);
-    let base_broadcast = i32x16::splat(thread_pattern_base);
-    let pattern_base = base_broadcast * multipliers ;  // base × [1..16]
-
-    // Initialize memory with AVX-512 patterns for each block
-    for test_block in test_blocks.iter() {
-        let base = test_block.block.buffer.as_mut_ptr() as *mut i32x16;
-        let len = test_block.test_size / std::mem::size_of::<i32x16>();
-
-        for i in 0..len {
-            // OPTIMIZED: 1 broadcast + 1 mullo + 1 add (replaces 16 scalar muls + 16 adds)
-            let idx_broadcast = i32x16::splat(i as i32);
-            let idx_scaled = idx_broadcast * multipliers ;  // i × [1..16]
-            let pattern = idx_scaled + pattern_base ;         // (i×M) + (base×M)
-            *base.add(i) = pattern;
-        }
-    }
-
-    // Validate chunk divisibility for ALL blocks ONCE before starting
-    for test_block in test_blocks.iter() {
-        let ideal_chunk_size = calculate_ideal_chunk_size(config, test_name, test_block.test_size);
-        let chunk_size_bytes = get_safe_chunk_size(ideal_chunk_size, test_block.test_size);
-        let chunk_size_elements = chunk_size_bytes / std::mem::size_of::<i32x16>();
-
-        validate_chunk_divisibility(test_name, config.streams, chunk_size_elements);
-    }
-
-    let mut cycle = 0u32;
-    let mut total_bytes_processed = 0usize;
-    let mut total_error_count = 0u64;
-    let mut total_operations = 0u64;
-
-    // Progress tracking
-    let update_interval_ms = 250u128;
-    let mut last_progress_update = Instant::now();
-
-    // Main cycle loop - shared timer across all blocks (AVX512 stream_n)
-    loop {
-        cycle += 1;
-
-        // Test all blocks in interleaved manner
-        for test_block in test_blocks.iter() {
-            let base = test_block.block.buffer.as_mut_ptr() as *mut i32x16;
-            let len = test_block.test_size / std::mem::size_of::<i32x16>();
-
-            // Calculate chunk size for this block's test_size
-            let ideal_chunk_size = calculate_ideal_chunk_size(config, test_name, test_block.test_size);
-            let chunk_size_bytes = get_safe_chunk_size(ideal_chunk_size, test_block.test_size);
-            let chunk_size_elements = chunk_size_bytes / std::mem::size_of::<i32x16>();
-
-            let mut cycle_errors = 0u64;
-
-            for chunk_start in (0..len).step_by(chunk_size_elements) {
-                let chunk_end = (chunk_start + chunk_size_elements).min(len);
-                let chunk_len = chunk_end - chunk_start;
-
-                // Pre-compute stream boundaries for this chunk
-                let elements_per_stream = chunk_len >> stream_shift;
-
-                // 1. Mirror operation - multi-stream
-                for stream_id in 0..streams {
-                    let stream_start = chunk_start + (stream_id * elements_per_stream);
-                    let stream_end = stream_start + elements_per_stream;
-
-                    let mut idx1 = stream_start;
-                    let mut idx2 = stream_end - 1;
-                    while idx1 < idx2 {
-                        let val1 = *base.add(idx1);
-                        let val2 = *base.add(idx2);
-                        *base.add(idx2) = val1;  // Cache-backed store
-                        *base.add(idx1) = val2;  // Cache-backed store
-                        idx1 += 1;
-                        idx2 -= 1;
-                    }
-                }
-                // NOTE: _mm_sfence() removed - not needed for temporal stores (cache coherency handles ordering)
-        // TODO: If using TMR-MD Uncached/WC memory OR non-temporal stores, may need to restore fence
-
-                // 2. Verify with configurable error checking frequency - multi-stream
-                let mut error_accumulator = i32x16::splat(0);
-                let mut element_count = 0usize;
-
-                match config.error_check_interval.get_check_mask() {
-                    Some(check_mask) => {
-                        for stream_id in 0..streams {
-                            let stream_start = chunk_start + (stream_id * elements_per_stream);
-                            let stream_end = stream_start + elements_per_stream;
-                            let stream_sum = stream_start + stream_end - 1;
-
-                            let mut i = stream_start;
-                            while i < stream_end {
-                                let mirrored_idx = stream_sum - i;
-
-                                // OPTIMIZED: 1 broadcast + 1 mullo + 1 add (replaces 16 scalar muls + 16 adds)
-                                let idx_broadcast = i32x16::splat(mirrored_idx as i32);
-                                let idx_scaled = idx_broadcast * multipliers ;  // idx × [1..16]
-                                let expected = idx_scaled + pattern_base ;         // (idx×M) + (base×M)
-
-                                let actual = *base.add(i);
-                                let diff = expected ^ actual ;
-                                error_accumulator = error_accumulator | diff ;
-
-                                element_count += 1;
-                                i += 1;
-
-                                if (element_count as u32 & check_mask) == 0 {
-                                    if error_accumulator.simd_ne(i32x16::splat(0)).any() {
-                                        cycle_errors += 1;
-                                        log::error!("{}: memory error detected in cycle {} chunk {} stream {} element {} (thread {})",
-                                                   test_name, cycle, chunk_start, stream_id, element_count, thread_id);
-                                        error_accumulator = i32x16::splat(0);
-                                    }
-                                }
-                            }
-                        }
-                    }
-                    None => {
-                        // PER_CHUNK mode
-                        for stream_id in 0..streams {
-                            let stream_start = chunk_start + (stream_id * elements_per_stream);
-                            let stream_end = stream_start + elements_per_stream;
-                            let stream_sum = stream_start + stream_end - 1;
-
-                            let mut i = stream_start;
-                            while i < stream_end {
-                                let mirrored_idx = stream_sum - i;
-
-                                // OPTIMIZED: 1 broadcast + 1 mullo + 1 add (replaces 16 scalar muls + 16 adds)
-                                let idx_broadcast = i32x16::splat(mirrored_idx as i32);
-                                let idx_scaled = idx_broadcast * multipliers ;  // idx × [1..16]
-                                let expected = idx_scaled + pattern_base ;         // (idx×M) + (base×M)
-
-                                let actual = *base.add(i);
-                                let diff = expected ^ actual ;
-                                error_accumulator = error_accumulator | diff ;
-                                i += 1;
-                            }
-                        }
-                    }
-                }
-
-                // Final error check
-                if error_accumulator.simd_ne(i32x16::splat(0)).any() {
-                    cycle_errors += 1;
-                    log::error!("{}: memory error detected in cycle {} chunk {} (thread {})",
-                               test_name, cycle, chunk_start, thread_id);
-                }
-
-                // 3. Mirror back to restore - multi-stream
-                for stream_id in 0..streams {
-                    let stream_start = chunk_start + (stream_id * elements_per_stream);
-                    let stream_end = stream_start + elements_per_stream;
-
-                    let mut idx1 = stream_start;
-                    let mut idx2 = stream_end - 1;
-                    while idx1 < idx2 {
-                        let val1 = *base.add(idx1);
-                        let val2 = *base.add(idx2);
-                        *base.add(idx2) = val1;  // Cache-backed store
-                        *base.add(idx1) = val2;  // Cache-backed store
-                        idx1 += 1;
-                        idx2 -= 1;
-                    }
-                }
-                // NOTE: _mm_sfence() removed - not needed for temporal stores (cache coherency handles ordering)
-        // TODO: If using TMR-MD Uncached/WC memory OR non-temporal stores, may need to restore fence
-
-                // Error handling
-                if cycle_errors > 0 {
-                    match error_mode {
-                        ErrorMode::Panic => {
-                            panic!("{}: memory error detected in cycle {} (thread {})", test_name, cycle, thread_id);
-                        }
-                        ErrorMode::Halt => {
-                            let elapsed = test_start.elapsed().as_millis();
-                            total_error_count += cycle_errors;
-                            return TestStats {
-                                name: test_name,
-                                action: TestAction::WriteWaitVerify,
-                                bytes_processed: total_bytes_processed as usize,
-                                elapsed_ms: elapsed,
-                                thread_id,
-                                error_count: total_error_count,
-                                total_operations,
-                                cycles_completed: cycle,
-                                cycles_planned: timing.cycles,
-                                stopped_by_time_limit: false,
-                            };
-                        }
-                        ErrorMode::Log => {
-                            // Already logged, continue
-                        }
-                    }
-                }
-            }
-
-            total_error_count += cycle_errors;
-            total_bytes_processed += test_block.test_size * 5; // Mirror (R+W) + verify (R) + mirror back (R+W) = 3R + 2W
-            total_operations += len as u64;
-        }
-
-        // Update progress tracker
-        if let Some(progress) = progress {
-            let now = Instant::now();
-            if now.duration_since(last_progress_update).as_millis() >= update_interval_ms {
-                progress.cycles_completed.store(cycle, Ordering::Relaxed);
-                progress.bytes_processed.store(total_bytes_processed as u64, Ordering::Relaxed);
-                progress.errors_found.store(total_error_count, Ordering::Relaxed);
-                progress.last_update_ms.store(
-                    test_start.elapsed().as_millis() as u64,
-                    Ordering::Relaxed
-                );
-                last_progress_update = now;
-            }
-        }
-
-        // Check timing limits
-        let elapsed_secs = test_start.elapsed().as_secs() as u32;
-        if !timing.should_continue(cycle, elapsed_secs) {
-            return TestStats {
-                name: test_name,
-                action: TestAction::WriteWaitVerify,
-                bytes_processed: total_bytes_processed as usize,
-                elapsed_ms: test_start.elapsed().as_millis(),
-                thread_id,
-                error_count: total_error_count,
-                total_operations,
-                cycles_completed: cycle,
-                cycles_planned: timing.cycles,
-                stopped_by_time_limit: timing.cycles.map_or(true, |limit| cycle < limit),
-            };
-        }
-    }
-}
-
-/// MirrorMove512 - PUBLIC MultiBlock dispatcher
-/// Routes to stream1 or stream_n based on configuration
-pub unsafe fn mirror_move_512_multi(
-    blocks: &[crate::runner::AllocationBlock],
-    thread_id: usize,
-    error_mode: ErrorMode,
-    timing: &TestTiming,
-    config: &TestMemoryConfig,
-    progress: Option<&TestProgress>,
-) -> TestStats {
-    let test_name = "Mem-Mirror512";
-    let streams = config.streams.max(1) as usize;
-
-    if streams == 1 {
-        mirror_move_512_stream1_multi(blocks, thread_id, error_mode, timing, config, progress)
-    } else {
-        mirror_move_512_stream_n_multi(blocks, thread_id, error_mode, timing, config, progress, streams, test_name)
-    }
-}
-
-// Stream 1: Linear sequential access pattern
-
-/// # Safety
-/// Caller must ensure `ptr` is valid for reads/writes of `size` bytes.
-
-/// # Safety
-/// Caller must ensure `ptr` is valid for reads/writes of `size` bytes.
-/// Caller must ensure `ptr` is valid for reads/writes of `size` bytes.
-
-// ============================================================================
-// Phased Test Implementations (run_phased_test harness)
-// ============================================================================
-//
 // These use the run_phased_test harness for zero-cost orchestration of
 // init → test × N → verify × M phases. Replaces duplicated boilerplate.
 //
 // Key improvements over v1 manual-loop tests:
 // - Mode 2 PRNG is a real LCG chain (not a static seed)
 // - Parameter field correctly interpreted (stride, subblocks, page stride)
-// - MirrorMove uses u64 lanes instead of i32
+// - All tests use u64 lanes (v1 MirrorMove i32 removed)
 // - Strided access support for SimpleTest
 // - Configurable test_reps, verify_reps, write_read_cycles
 
@@ -8446,31 +6054,33 @@ pub unsafe fn bench_init_multi(
         10 => "Bench-Init-TMR-0",
         11 => "Bench-Init-TMR-1",
         12 => "Bench-Init-TMR-2",
+        13 => "Bench-Init-TMR-3",
         _ => "Bench-Init-Unknown",
     };
 
     match mode {
         // --- TM5-faithful modes ---
+        // NOTE: block_seed uses cycle=0 (not ctx.cycle) so that the pattern written
+        // here is stable across cycles. Bench-Verify depends on matching the exact
+        // same seed — if we varied by cycle, the last-written cycle would be unknown
+        // to Bench-Verify, causing massive false-positive errors.
         0 => {
             // Mode 0: bit dispersion + branchless 4KB page complement
             run_phased_test(
                 blocks, thread_id, error_mode, timing, config, progress,
                 test_name, TestAction::Write, 1, skip_init, 1, 0,
-                // Init: full pattern write
                 |ctx: &ChunkCtx| {
-                    let seed = pattern_gen::block_seed(ctx.ptr as usize, ctx.thread_id, ctx.cycle);
+                    let seed = pattern_gen::block_seed(ctx.ptr as usize, ctx.thread_id, 0);
                     for idx in ctx.chunk_start..ctx.chunk_end {
                         *ctx.ptr.add(idx) = pattern_gen::pattern_mode0(idx as u64, seed);
                     }
                 },
-                // Test: re-write patterns (measures sustained write throughput)
                 |ctx: &ChunkCtx| {
-                    let seed = pattern_gen::block_seed(ctx.ptr as usize, ctx.thread_id, ctx.cycle);
+                    let seed = pattern_gen::block_seed(ctx.ptr as usize, ctx.thread_id, 0);
                     for idx in ctx.chunk_start..ctx.chunk_end {
                         *ctx.ptr.add(idx) = pattern_gen::pattern_mode0(idx as u64, seed);
                     }
                 },
-                // Verify: no-op
                 |_ctx: &ChunkCtx| -> u64 { 0 },
             )
         }
@@ -8480,13 +6090,13 @@ pub unsafe fn bench_init_multi(
                 blocks, thread_id, error_mode, timing, config, progress,
                 test_name, TestAction::Write, 1, skip_init, 1, 0,
                 |ctx: &ChunkCtx| {
-                    let seed = pattern_gen::block_seed(ctx.ptr as usize, ctx.thread_id, ctx.cycle);
+                    let seed = pattern_gen::block_seed(ctx.ptr as usize, ctx.thread_id, 0);
                     for idx in ctx.chunk_start..ctx.chunk_end {
                         *ctx.ptr.add(idx) = pattern_gen::pattern_mode1(idx as u64, seed, cl_shift);
                     }
                 },
                 |ctx: &ChunkCtx| {
-                    let seed = pattern_gen::block_seed(ctx.ptr as usize, ctx.thread_id, ctx.cycle);
+                    let seed = pattern_gen::block_seed(ctx.ptr as usize, ctx.thread_id, 0);
                     for idx in ctx.chunk_start..ctx.chunk_end {
                         *ctx.ptr.add(idx) = pattern_gen::pattern_mode1(idx as u64, seed, cl_shift);
                     }
@@ -8496,12 +6106,16 @@ pub unsafe fn bench_init_multi(
         }
         2 => {
             // Mode 2: per-page seed+step evolution (PMULLW-style)
+            // Stateful: carry evolve state across chunks so init and test_fn produce
+            // the same continuous chain. Re-seed at chunk_start==0 (new block).
             let cl_elements = config.cache_line_bytes / std::mem::size_of::<u64>();
+            let mut test_page_seed: u64 = 0;
+            let mut test_page_step: u64 = 0;
             run_phased_test(
                 blocks, thread_id, error_mode, timing, config, progress,
                 test_name, TestAction::Write, 1, skip_init, 1, 0,
                 |ctx: &ChunkCtx| {
-                    let base_seed = pattern_gen::block_seed(ctx.ptr as usize, ctx.thread_id, ctx.cycle);
+                    let base_seed = pattern_gen::block_seed(ctx.ptr as usize, ctx.thread_id, 0);
                     let mut page_seed = base_seed;
                     let mut page_step = base_seed.wrapping_mul(0x5DEECE66D);
                     let mut idx = ctx.chunk_start;
@@ -8517,9 +6131,12 @@ pub unsafe fn bench_init_multi(
                     }
                 },
                 |ctx: &ChunkCtx| {
-                    let base_seed = pattern_gen::block_seed(ctx.ptr as usize, ctx.thread_id, ctx.cycle);
-                    let mut page_seed = base_seed;
-                    let mut page_step = base_seed.wrapping_mul(0x5DEECE66D);
+                    let (mut page_seed, mut page_step) = if ctx.chunk_start == 0 {
+                        let base_seed = pattern_gen::block_seed(ctx.ptr as usize, ctx.thread_id, 0);
+                        (base_seed, base_seed.wrapping_mul(0x5DEECE66D))
+                    } else {
+                        (test_page_seed, test_page_step)
+                    };
                     let mut idx = ctx.chunk_start;
                     while idx < ctx.chunk_end {
                         let page_end = (idx + cl_elements).min(ctx.chunk_end);
@@ -8531,6 +6148,8 @@ pub unsafe fn bench_init_multi(
                         page_step = nst;
                         idx = page_end;
                     }
+                    test_page_seed = page_seed;
+                    test_page_step = page_step;
                 },
                 |_ctx: &ChunkCtx| -> u64 { 0 },
             )
@@ -8574,29 +6193,57 @@ pub unsafe fn bench_init_multi(
                 |_ctx: &ChunkCtx| -> u64 { 0 },
             )
         }
+        13 => {
+            // Mode 13: Positional pseudo-random hash (splitmix64).
+            // High entropy like LCG but each element computed independently from (idx, seed).
+            // No sequential dependency, no carry-state, chunk-agnostic.
+            let seed = param0;
+            run_phased_test(
+                blocks, thread_id, error_mode, timing, config, progress,
+                test_name, TestAction::Write, 1, skip_init, 1, 0,
+                |ctx: &ChunkCtx| {
+                    for idx in ctx.chunk_start..ctx.chunk_end {
+                        *ctx.ptr.add(idx) = pattern_gen::pattern_mode13(idx as u64, seed);
+                    }
+                },
+                |ctx: &ChunkCtx| {
+                    for idx in ctx.chunk_start..ctx.chunk_end {
+                        *ctx.ptr.add(idx) = pattern_gen::pattern_mode13(idx as u64, seed);
+                    }
+                },
+                |_ctx: &ChunkCtx| -> u64 { 0 },
+            )
+        }
         12 | _ => {
             // Mode 12: LCG chain (real PRNG)
+            // LCG is sequential — carry state across chunks so init, test_fn, and
+            // bench_verify's verify_fn all produce the same continuous chain.
             let multiplier = param0;
             let addend = param1;
             let initial_seed = (thread_id as u64).wrapping_mul(0x9E3779B97F4A7C15).wrapping_add(1);
+            let mut test_lcg_state: u64 = 0;
             run_phased_test(
                 blocks, thread_id, error_mode, timing, config, progress,
                 test_name, TestAction::Write, 1, skip_init, 1, 0,
                 |ctx: &ChunkCtx| {
                     let mut state = pattern_gen::lcg_next(
-                        initial_seed.wrapping_add(ctx.chunk_start as u64), multiplier, addend);
+                        initial_seed, multiplier, addend);
                     for idx in ctx.chunk_start..ctx.chunk_end {
                         *ctx.ptr.add(idx) = state;
                         state = pattern_gen::lcg_next(state, multiplier, addend);
                     }
                 },
                 |ctx: &ChunkCtx| {
-                    let mut state = pattern_gen::lcg_next(
-                        initial_seed.wrapping_add(ctx.chunk_start as u64), multiplier, addend);
+                    let mut state = if ctx.chunk_start == 0 {
+                        pattern_gen::lcg_next(initial_seed, multiplier, addend)
+                    } else {
+                        test_lcg_state
+                    };
                     for idx in ctx.chunk_start..ctx.chunk_end {
                         *ctx.ptr.add(idx) = state;
                         state = pattern_gen::lcg_next(state, multiplier, addend);
                     }
+                    test_lcg_state = state;
                 },
                 |_ctx: &ChunkCtx| -> u64 { 0 },
             )
@@ -8636,28 +6283,28 @@ pub unsafe fn bench_verify_multi(
         10 => "Bench-Verify-TMR-0",
         11 => "Bench-Verify-TMR-1",
         12 => "Bench-Verify-TMR-2",
+        13 => "Bench-Verify-TMR-3",
         _ => "Bench-Verify-Unknown",
     };
 
     match mode {
         // --- TM5-faithful modes ---
+        // NOTE: block_seed uses cycle=0 (not ctx.cycle) to match Bench-Init's stable seed.
+        // Both init and verify must produce identical seeds regardless of cycle number.
         0 => {
             // Mode 0: bit dispersion + branchless 4KB page complement
             run_phased_test(
                 blocks, thread_id, error_mode, timing, config, progress,
                 test_name, TestAction::Verify, 1, skip_init, 0, 1,
-                // Init: write patterns (skipped in dependent mode, kept for repair knowledge)
                 |ctx: &ChunkCtx| {
-                    let seed = pattern_gen::block_seed(ctx.ptr as usize, ctx.thread_id, ctx.cycle);
+                    let seed = pattern_gen::block_seed(ctx.ptr as usize, ctx.thread_id, 0);
                     for idx in ctx.chunk_start..ctx.chunk_end {
                         *ctx.ptr.add(idx) = pattern_gen::pattern_mode0(idx as u64, seed);
                     }
                 },
-                // Test: no-op (we're benchmarking verify, not writes)
                 |_ctx: &ChunkCtx| {},
-                // Verify: read + compare (the actual benchmark)
                 |ctx: &ChunkCtx| -> u64 {
-                    let seed = pattern_gen::block_seed(ctx.ptr as usize, ctx.thread_id, ctx.cycle);
+                    let seed = pattern_gen::block_seed(ctx.ptr as usize, ctx.thread_id, 0);
                     let mut total_errors = 0u64;
                     for idx in ctx.chunk_start..ctx.chunk_end {
                         let expected = pattern_gen::pattern_mode0(idx as u64, seed);
@@ -8680,14 +6327,14 @@ pub unsafe fn bench_verify_multi(
                 blocks, thread_id, error_mode, timing, config, progress,
                 test_name, TestAction::Verify, 1, skip_init, 0, 1,
                 |ctx: &ChunkCtx| {
-                    let seed = pattern_gen::block_seed(ctx.ptr as usize, ctx.thread_id, ctx.cycle);
+                    let seed = pattern_gen::block_seed(ctx.ptr as usize, ctx.thread_id, 0);
                     for idx in ctx.chunk_start..ctx.chunk_end {
                         *ctx.ptr.add(idx) = pattern_gen::pattern_mode1(idx as u64, seed, cl_shift);
                     }
                 },
                 |_ctx: &ChunkCtx| {},
                 |ctx: &ChunkCtx| -> u64 {
-                    let seed = pattern_gen::block_seed(ctx.ptr as usize, ctx.thread_id, ctx.cycle);
+                    let seed = pattern_gen::block_seed(ctx.ptr as usize, ctx.thread_id, 0);
                     let mut total_errors = 0u64;
                     for idx in ctx.chunk_start..ctx.chunk_end {
                         let expected = pattern_gen::pattern_mode1(idx as u64, seed, cl_shift);
@@ -8706,12 +6353,17 @@ pub unsafe fn bench_verify_multi(
         }
         2 => {
             // Mode 2: per-page seed+step evolution (PMULLW-style)
+            // Stateful: page_seed/page_step evolve per cache line. Init writes the full
+            // block as one continuous chain. Verify runs per-chunk, so we carry the evolve
+            // state across chunk calls. Re-seed when chunk_start==0 (new block).
             let cl_elements = config.cache_line_bytes / std::mem::size_of::<u64>();
+            let mut verify_page_seed: u64 = 0;
+            let mut verify_page_step: u64 = 0;
             run_phased_test(
                 blocks, thread_id, error_mode, timing, config, progress,
                 test_name, TestAction::Verify, 1, skip_init, 0, 1,
                 |ctx: &ChunkCtx| {
-                    let base_seed = pattern_gen::block_seed(ctx.ptr as usize, ctx.thread_id, ctx.cycle);
+                    let base_seed = pattern_gen::block_seed(ctx.ptr as usize, ctx.thread_id, 0);
                     let mut page_seed = base_seed;
                     let mut page_step = base_seed.wrapping_mul(0x5DEECE66D);
                     let mut idx = ctx.chunk_start;
@@ -8728,9 +6380,12 @@ pub unsafe fn bench_verify_multi(
                 },
                 |_ctx: &ChunkCtx| {},
                 |ctx: &ChunkCtx| -> u64 {
-                    let base_seed = pattern_gen::block_seed(ctx.ptr as usize, ctx.thread_id, ctx.cycle);
-                    let mut page_seed = base_seed;
-                    let mut page_step = base_seed.wrapping_mul(0x5DEECE66D);
+                    let (mut page_seed, mut page_step) = if ctx.chunk_start == 0 {
+                        let base_seed = pattern_gen::block_seed(ctx.ptr as usize, ctx.thread_id, 0);
+                        (base_seed, base_seed.wrapping_mul(0x5DEECE66D))
+                    } else {
+                        (verify_page_seed, verify_page_step)
+                    };
                     let mut total_errors = 0u64;
                     let mut idx = ctx.chunk_start;
                     while idx < ctx.chunk_end {
@@ -8751,6 +6406,8 @@ pub unsafe fn bench_verify_multi(
                         page_step = nst;
                         idx = page_end;
                     }
+                    verify_page_seed = page_seed;
+                    verify_page_step = page_step;
                     total_errors
                 },
             )
@@ -8814,17 +6471,53 @@ pub unsafe fn bench_verify_multi(
                 },
             )
         }
+        13 => {
+            // Mode 13: Positional pseudo-random hash (splitmix64).
+            // High entropy like LCG but each element computed independently from (idx, seed).
+            // No sequential dependency, no carry-state, chunk-agnostic.
+            let seed = param0;
+            run_phased_test(
+                blocks, thread_id, error_mode, timing, config, progress,
+                test_name, TestAction::Verify, 1, skip_init, 0, 1,
+                |ctx: &ChunkCtx| {
+                    for idx in ctx.chunk_start..ctx.chunk_end {
+                        *ctx.ptr.add(idx) = pattern_gen::pattern_mode13(idx as u64, seed);
+                    }
+                },
+                |_ctx: &ChunkCtx| {},
+                |ctx: &ChunkCtx| -> u64 {
+                    let mut total_errors = 0u64;
+                    for idx in ctx.chunk_start..ctx.chunk_end {
+                        let expected = pattern_gen::pattern_mode13(idx as u64, seed);
+                        let actual = *ctx.ptr.add(idx);
+                        if actual != expected {
+                            total_errors += 1;
+                            if total_errors <= 10 {
+                                log::error!("{}: error at idx {} - expected {:#x}, got {:#x}",
+                                           test_name, idx, expected, actual);
+                            }
+                        }
+                    }
+                    total_errors
+                },
+            )
+        }
         12 | _ => {
             // Mode 12: LCG chain (real PRNG)
+            // LCG is sequential — state[N] depends on the full chain from state[0].
+            // Init writes the full block as one continuous chain. Verify runs per-chunk,
+            // so we carry the LCG state across chunk calls via a captured mutable variable.
+            // Re-seed when chunk_start==0 (new block), continue otherwise.
             let multiplier = param0;
             let addend = param1;
             let initial_seed = (thread_id as u64).wrapping_mul(0x9E3779B97F4A7C15).wrapping_add(1);
+            let mut verify_lcg_state: u64 = 0;
             run_phased_test(
                 blocks, thread_id, error_mode, timing, config, progress,
                 test_name, TestAction::Verify, 1, skip_init, 0, 1,
                 |ctx: &ChunkCtx| {
                     let mut state = pattern_gen::lcg_next(
-                        initial_seed.wrapping_add(ctx.chunk_start as u64), multiplier, addend);
+                        initial_seed, multiplier, addend);
                     for idx in ctx.chunk_start..ctx.chunk_end {
                         *ctx.ptr.add(idx) = state;
                         state = pattern_gen::lcg_next(state, multiplier, addend);
@@ -8832,9 +6525,12 @@ pub unsafe fn bench_verify_multi(
                 },
                 |_ctx: &ChunkCtx| {},
                 |ctx: &ChunkCtx| -> u64 {
+                    let mut state = if ctx.chunk_start == 0 {
+                        pattern_gen::lcg_next(initial_seed, multiplier, addend)
+                    } else {
+                        verify_lcg_state
+                    };
                     let mut total_errors = 0u64;
-                    let mut state = pattern_gen::lcg_next(
-                        initial_seed.wrapping_add(ctx.chunk_start as u64), multiplier, addend);
                     for idx in ctx.chunk_start..ctx.chunk_end {
                         let actual = *ctx.ptr.add(idx);
                         if actual != state {
@@ -8846,6 +6542,7 @@ pub unsafe fn bench_verify_multi(
                         }
                         state = pattern_gen::lcg_next(state, multiplier, addend);
                     }
+                    verify_lcg_state = state;
                     total_errors
                 },
             )
@@ -8871,11 +6568,6 @@ pub fn get_test_function_by_name(name: &str) -> Option<crate::runner::TestFuncti
         "Mem-StuckBitAuto" => Some(TestFunction::MultiBlock(stuck_bit_test_auto_multi)),
 
         // Mirror Move Tests (v1)
-        "Mem-Mirror" => Some(TestFunction::MultiBlock(mirror_move_multi)),
-        "Mem-Mirror128" => Some(TestFunction::MultiBlock(mirror_move_128_multi)),
-        "Mem-Mirror256" => Some(TestFunction::MultiBlock(mirror_move_256_multi)),
-        "Mem-Mirror512" => Some(TestFunction::MultiBlock(mirror_move_512_multi)),
-        "Mem-MirrorAuto" => Some(TestFunction::MultiBlock(mirror_move_auto_multi)),
 
         // Mirror Move Tests (v2 — u64 lanes)
         "Mem-MirrorV2" => Some(TestFunction::MultiBlock(mirror_move_v2_multi)),
@@ -8914,12 +6606,14 @@ pub fn get_test_function_by_name(name: &str) -> Option<crate::runner::TestFuncti
         // Bench-Init: Pattern generation throughput benchmarks
         "Bench-Init-TM5-0" | "Bench-Init-TM5-1" | "Bench-Init-TM5-2"
         | "Bench-Init-TMR-0" | "Bench-Init-TMR-1" | "Bench-Init-TMR-2"
+        | "Bench-Init-TMR-3"
             => Some(TestFunction::MultiBlock(bench_init_multi)),
 
         // Bench-Verify: Pattern verification throughput benchmarks
         // Can run independently (writes patterns first) or dependently (skip_init in config)
         "Bench-Verify-TM5-0" | "Bench-Verify-TM5-1" | "Bench-Verify-TM5-2"
         | "Bench-Verify-TMR-0" | "Bench-Verify-TMR-1" | "Bench-Verify-TMR-2"
+        | "Bench-Verify-TMR-3"
             => Some(TestFunction::MultiBlock(bench_verify_multi)),
 
         _ => None,

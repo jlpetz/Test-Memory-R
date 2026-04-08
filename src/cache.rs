@@ -159,7 +159,7 @@ impl CacheInfo {
             "Mem-CacheBust" => (self.l3_cache / 2).max(self.l2_cache * 4),
             "Mem-Random" => self.l3_cache * 2,
             "Spd-Saturate" => (self.total_cache * 2).max(MB_64),
-            "Mem-Mirror128" | "Mem-Mirror256" | "Mem-Mirror512" => {
+            "Mem-MirrorV2-128" | "Mem-MirrorV2-256" | "Mem-MirrorV2-512" => {
                 self.l3_cache.max(32 * MB)
             }
             _ => (self.total_cache * 2).max(MB_64),

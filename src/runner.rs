@@ -5,8 +5,6 @@ use crate::MemoryAllocationConfig;
 use globset::{Glob, GlobMatcher};
 use crate::tests::{TestStats, TestMemoryConfig, TestTiming, TestProgress};
 use crate::tests::{
-    mirror_move_multi,
-    mirror_move_128_multi, mirror_move_256_multi, mirror_move_512_multi, mirror_move_auto_multi,
     stuck_bit_test_multi, stuck_bit_test_128_multi, stuck_bit_test_256_multi, stuck_bit_test_512_multi,
     stuck_bit_test_auto_multi,
     refresh_stable_multi, refresh_stable_128_multi, refresh_stable_256_multi, refresh_stable_512_multi,
@@ -1111,13 +1109,12 @@ fn resolve_auto_dispatch_test(test_name: &str) -> Option<(&'static str, TestFunc
         return None;
     }
 
-    // Strip "Auto" suffix to get base name (e.g., "Mem-MirrorAuto" -> "Mem-Mirror")
+    // Strip "Auto" suffix to get base name (e.g., "Mem-MirrorV2-Auto" -> "Mem-MirrorV2-")
     let base_name = &test_name[..test_name.len() - 4];
 
     // Determine best SIMD variant based on CPU capabilities
     let (variant_suffix, test_function): (&str, TestFunction) = if is_x86_feature_detected!("avx512f") {
         ("512", match base_name {
-            "Mem-Mirror" => TestFunction::MultiBlock(mirror_move_512_multi),
             "Mem-MirrorV2-" => TestFunction::MultiBlock(mirror_move_v2_512_multi),
             "Mem-SimpleV2-" => TestFunction::MultiBlock(simple_test_v2_512_multi),
             "Mem-SimpleNT-" => TestFunction::MultiBlock(simple_test_nt_512_multi),
@@ -1127,7 +1124,6 @@ fn resolve_auto_dispatch_test(test_name: &str) -> Option<(&'static str, TestFunc
         })
     } else if is_x86_feature_detected!("avx2") {
         ("256", match base_name {
-            "Mem-Mirror" => TestFunction::MultiBlock(mirror_move_256_multi),
             "Mem-MirrorV2-" => TestFunction::MultiBlock(mirror_move_v2_256_multi),
             "Mem-SimpleV2-" => TestFunction::MultiBlock(simple_test_v2_256_multi),
             "Mem-SimpleNT-" => TestFunction::MultiBlock(simple_test_nt_256_multi),
@@ -1137,7 +1133,6 @@ fn resolve_auto_dispatch_test(test_name: &str) -> Option<(&'static str, TestFunc
         })
     } else if is_x86_feature_detected!("sse2") {
         ("128", match base_name {
-            "Mem-Mirror" => TestFunction::MultiBlock(mirror_move_128_multi),
             "Mem-MirrorV2-" => TestFunction::MultiBlock(mirror_move_v2_128_multi),
             "Mem-SimpleV2-" => TestFunction::MultiBlock(simple_test_v2_128_multi),
             "Mem-SimpleNT-" => TestFunction::MultiBlock(simple_test_nt_128_multi),
@@ -1148,7 +1143,6 @@ fn resolve_auto_dispatch_test(test_name: &str) -> Option<(&'static str, TestFunc
     } else {
         // Fallback to scalar version (NT has no scalar — use SSE2 which is always available on x86-64)
         ("", match base_name {
-            "Mem-Mirror" => TestFunction::MultiBlock(mirror_move_multi),
             "Mem-MirrorV2-" => TestFunction::MultiBlock(mirror_move_v2_multi),
             "Mem-SimpleV2-" => TestFunction::MultiBlock(simple_test_v2_multi),
             "Mem-SimpleNT-" => TestFunction::MultiBlock(simple_test_nt_128_multi),
@@ -1160,10 +1154,6 @@ fn resolve_auto_dispatch_test(test_name: &str) -> Option<(&'static str, TestFunc
 
     // Construct the resolved concrete test name
     let concrete_name: &'static str = match (base_name, variant_suffix) {
-        ("Mem-Mirror", "512") => "Mem-Mirror512",
-        ("Mem-Mirror", "256") => "Mem-Mirror256",
-        ("Mem-Mirror", "128") => "Mem-Mirror128",
-        ("Mem-Mirror", "") => "Mem-Mirror",
         ("Mem-MirrorV2-", "512") => "Mem-MirrorV2-512",
         ("Mem-MirrorV2-", "256") => "Mem-MirrorV2-256",
         ("Mem-MirrorV2-", "128") => "Mem-MirrorV2-128",
@@ -1276,76 +1266,6 @@ fn create_test_definitions(cache_info: &CacheInfo) -> Vec<TestDefinition> {
              .with_memory_type(None)
         ),
 
-        // === Base mirror move test (MultiBlock implementation) ===
-        (
-            "Mem-Mirror",
-            TestFunction::MultiBlock(mirror_move_multi),
-            validate_streams(TestMemoryConfig::new(
-                WindowMode::FixedSize { size_mb: 64 },
-                ChunkMode::FixedSize { size_mb: 4 },
-                false,
-                true
-            ).with_timing(TestTiming::duration_only(10))
-             .with_streams(1), "Mem-Mirror")
-             .with_memory_type(None)
-        ),
-
-        // === SIMD variants with different vector sizes ===
-        (
-            "Mem-Mirror128",
-            TestFunction::MultiBlock(mirror_move_128_multi),
-            validate_streams(TestMemoryConfig::new(
-                WindowMode::FixedSize { size_mb: 64 },
-                ChunkMode::FixedSize { size_mb: 8 },
-                false,
-                true
-            ).with_timing(TestTiming::duration_only(10))
-             .with_streams(1), "Mem-Mirror128")
-             .with_memory_type(None)
-        ),
-
-        (
-            "Mem-Mirror256",
-            TestFunction::MultiBlock(mirror_move_256_multi),
-            validate_streams(TestMemoryConfig::new(
-                WindowMode::FixedSize { size_mb: 128 },
-                ChunkMode::FixedSize { size_mb: 8 },
-                false,
-                true
-            ).with_timing(TestTiming::duration_only(10))
-             .with_streams(2), "Mem-Mirror256")
-             .with_memory_type(None)
-        ),
-
-        (
-            "Mem-Mirror512",
-            TestFunction::MultiBlock(mirror_move_512_multi),
-            validate_streams(TestMemoryConfig::new(
-                WindowMode::FixedSize { size_mb: 256 },
-                ChunkMode::FixedSize { size_mb: 8 },
-                false,
-                true
-            ).with_timing(TestTiming::duration_only(10))
-             .with_streams(4), "Mem-Mirror512")
-             .with_memory_type(None)
-        ),
-
-        // === Auto-dispatch SIMD test (resolved at runtime) ===
-        // Auto-dispatches to best SIMD variant at runtime (AVX-512 > AVX2 > SSE2 > scalar)
-        // Placed last so results match the actual variant performance
-        (
-            "Mem-MirrorAuto",
-            TestFunction::MultiBlock(mirror_move_auto_multi),
-            validate_streams(TestMemoryConfig::new(
-                WindowMode::FixedSize { size_mb: 64 },
-                ChunkMode::FixedSize { size_mb: 8 },
-                false,
-                true
-            ).with_timing(TestTiming::duration_only(10))
-             .with_streams(1), "Mem-MirrorAuto")
-             .with_memory_type(None)
-        ),
-        
         // === SimpleTest NT (non-temporal stores) — bandwidth comparison ===
         (
             "Mem-SimpleNT-128",
@@ -1765,6 +1685,19 @@ fn create_test_definitions(cache_info: &CacheInfo) -> Vec<TestDefinition> {
              .with_streams(1), "Bench-Init-TMR-2")
              .with_memory_type(None)
         ),
+        (
+            "Bench-Init-TMR-3",
+            TestFunction::MultiBlock(bench_init_multi),
+            validate_streams(TestMemoryConfig::new(
+                WindowMode::FullAllocation,
+                ChunkMode::FixedSize { size_mb: 4 },
+                false, false
+            ).with_timing(TestTiming::cycles_only(10))
+             .with_pattern_config(Some(13), Some(0xC0FFEE42C0FFEE42), None)
+             .with_skip_init(true)
+             .with_streams(1), "Bench-Init-TMR-3")
+             .with_memory_type(None)
+        ),
 
         // === Bench-Verify: Pattern Verification Throughput Benchmarks ===
         // Independent mode (default): writes patterns then measures verify throughput
@@ -1839,6 +1772,18 @@ fn create_test_definitions(cache_info: &CacheInfo) -> Vec<TestDefinition> {
             ).with_timing(TestTiming::cycles_only(10))
              .with_pattern_config(Some(12), Some(0xDEADBEEFDEADBEEF), Some(0xCAFEBABECAFEBABE))
              .with_streams(1), "Bench-Verify-TMR-2")
+             .with_memory_type(None)
+        ),
+        (
+            "Bench-Verify-TMR-3",
+            TestFunction::MultiBlock(bench_verify_multi),
+            validate_streams(TestMemoryConfig::new(
+                WindowMode::FullAllocation,
+                ChunkMode::FixedSize { size_mb: 4 },
+                false, false
+            ).with_timing(TestTiming::cycles_only(10))
+             .with_pattern_config(Some(13), Some(0xC0FFEE42C0FFEE42), None)
+             .with_streams(1), "Bench-Verify-TMR-3")
              .with_memory_type(None)
         ),
 
