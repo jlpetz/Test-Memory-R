@@ -427,9 +427,19 @@ impl MemoryAllocator {
                 }
             };
             
-            log::info!("NUMA {}: Plan execution complete - {} chunks allocated", 
-                      numa_node, allocated_chunks.len());
-            
+            let total_chunk_bytes: usize = allocated_chunks.iter().map(|c| c.chunk_size).sum();
+            log::info!("NUMA {}: Plan execution complete - {} chunks allocated ({:.2}GB of {:.2}GB target)",
+                      numa_node, allocated_chunks.len(),
+                      bytes_to_gib_f64(total_chunk_bytes as u64),
+                      bytes_to_gib_f64(total_needed as u64));
+            if total_chunk_bytes > total_needed {
+                log::warn!("NUMA {}: ⚠️ Over-allocation before distribution: {:.2}GB allocated for {:.2}GB target ({:.2}GB excess will be orphaned)",
+                         numa_node,
+                         bytes_to_gib_f64(total_chunk_bytes as u64),
+                         bytes_to_gib_f64(total_needed as u64),
+                         bytes_to_gib_f64((total_chunk_bytes - total_needed) as u64));
+            }
+
             // Distribute chunks to threads (ensuring fairness based on plan)
             let thread_allocations = self.distribute_planned_chunks(
                 allocated_chunks, &plan, numa_threads, &thread_numa_assignments, thread_blocks
@@ -645,29 +655,37 @@ impl MemoryAllocator {
         }
         
         // Phase 2: PageTypeFirst - Complete planned chunks first, then try additional sizes
+        // Use byte deficit (not per-size slot counting) to avoid over-allocation when
+        // Phase 1b grabbed chunks of sizes not in the plan.
         let allocated_so_far: usize = allocated_chunks.iter().map(|c| c.chunk_size).sum();
         let total_needed = plan.iter().map(|(size, count)| size * count).sum::<usize>();
+        let mut byte_deficit = total_needed.saturating_sub(allocated_so_far);
 
-        if allocated_so_far < total_needed && runtime_config.large_pages_available && large_allowed {
-            log::info!("NUMA {}: Phase 2 - Complete planned chunks first, then fill remaining", numa_node);
+        if byte_deficit > 0 && runtime_config.large_pages_available && large_allowed {
+            log::info!("NUMA {}: Phase 2 - Complete planned chunks first, then fill remaining (deficit: {} bytes)",
+                     numa_node, byte_deficit);
 
             // Phase 2a: Complete any planned chunks that weren't fully allocated in Phase 1
             log::info!("NUMA {}: Phase 2a - Completing planned chunks with large pages", numa_node);
-            
+
             for &(block_size, total_blocks_planned) in plan {
+                if byte_deficit == 0 { break; }
                 if block_size >= 16 * 1024 * 1024 { // Only sizes suitable for large pages
                     // Count how many of this planned size we already have
                     let already_allocated = allocated_chunks.iter()
                         .filter(|c| c.chunk_size == block_size)
                         .count();
-                    
-                    let still_needed = total_blocks_planned.saturating_sub(already_allocated);
-                    
+
+                    let plan_still_needed = total_blocks_planned.saturating_sub(already_allocated);
+                    // Cap by byte deficit to prevent over-allocation
+                    let max_by_deficit = byte_deficit / block_size;
+                    let still_needed = plan_still_needed.min(max_by_deficit);
+
                     if still_needed > 0 {
-                        log::info!("NUMA {}: Completing planned {} × {}MB blocks (have {}, need {})",
+                        log::info!("NUMA {}: Completing planned {} × {}MB blocks (have {}, need {}, capped to {} by deficit)",
                                  numa_node, total_blocks_planned, block_size / (1024 * 1024),
-                                 already_allocated, still_needed);
-                        
+                                 already_allocated, plan_still_needed, still_needed);
+
                         let mut allocated_this_size = 0;
                         for _ in 0..still_needed {
                             let config = AllocationConfig {
@@ -680,7 +698,7 @@ impl MemoryAllocator {
                                 base_address: None,
                                 alignment: Some(2 * 1024 * 1024), // 2MB alignment for large pages
                             };
-                            
+
                             match self.allocate(&config) {
                                 Ok(buffer) => {
                                     log::info!("✅ NUMA {}: {}MB chunk allocated (2MB large)",
@@ -690,6 +708,7 @@ impl MemoryAllocator {
                                         chunk_size: block_size,
                                         numa_node,
                                     });
+                                    byte_deficit = byte_deficit.saturating_sub(block_size);
                                     allocated_this_size += 1;
                                 }
                                 Err(e) => {
@@ -699,7 +718,7 @@ impl MemoryAllocator {
                                 }
                             }
                         }
-                        
+
                         if allocated_this_size > 0 {
                             log::info!("NUMA {}: Successfully completed {} of {} remaining {}MB blocks",
                                      numa_node, allocated_this_size, still_needed, block_size / (1024 * 1024));
@@ -707,27 +726,25 @@ impl MemoryAllocator {
                     }
                 }
             }
-            
+
             // Phase 2b: Fill any remaining space with other chunk sizes (PageTypeFirst benefit)
-            let allocated_after_2a: usize = allocated_chunks.iter().map(|c| c.chunk_size).sum();
-            if allocated_after_2a < total_needed {
-                let remaining_needed = total_needed - allocated_after_2a;
+            if byte_deficit > 0 {
                 log::info!("NUMA {}: Phase 2b - Fill remaining {} bytes with any large page chunks",
-                         numa_node, remaining_needed);
+                         numa_node, byte_deficit);
                 
                 let all_chunk_sizes_mb = [4096, 2048, 1024, 512, 256, 128, 64, 32, 16];
-                let mut remaining = remaining_needed;
-                
+
                 for &chunk_mb in &all_chunk_sizes_mb {
+                    if byte_deficit == 0 { break; }
                     let chunk_size = (chunk_mb as usize) * 1024 * 1024;
-                    
-                    // Only try sizes that are 16MB+ (suitable for large pages) and fit in remaining
-                    if chunk_size >= 16 * 1024 * 1024 && remaining >= chunk_size {
-                        let max_chunks = remaining / chunk_size;
+
+                    // Only try sizes that are 16MB+ (suitable for large pages) and fit in deficit
+                    if chunk_size >= 16 * 1024 * 1024 && byte_deficit >= chunk_size {
+                        let max_chunks = byte_deficit / chunk_size;
                         if max_chunks > 0 {
                             log::info!("NUMA {}: Filling remaining with up to {} × {}MB large pages",
                                      numa_node, max_chunks, chunk_mb);
-                            
+
                             let mut allocated_this_size = 0;
                             for _ in 0..max_chunks {
                                 let config = AllocationConfig {
@@ -740,7 +757,7 @@ impl MemoryAllocator {
                                     base_address: None,
                                     alignment: Some(2 * 1024 * 1024), // 2MB alignment for large pages
                                 };
-                                
+
                                 match self.allocate(&config) {
                                     Ok(buffer) => {
                                         log::info!("✅ NUMA {}: {}MB chunk allocated (2MB large)",
@@ -750,7 +767,7 @@ impl MemoryAllocator {
                                             chunk_size: chunk_size,
                                             numa_node,
                                         });
-                                        remaining -= chunk_size;
+                                        byte_deficit = byte_deficit.saturating_sub(chunk_size);
                                         allocated_this_size += 1;
                                     }
                                     Err(e) => {
@@ -760,7 +777,7 @@ impl MemoryAllocator {
                                     }
                                 }
                             }
-                            
+
                             if allocated_this_size > 0 {
                                 log::info!("NUMA {}: Successfully filled {} × {}MB with large pages",
                                          numa_node, allocated_this_size, chunk_mb);
@@ -768,31 +785,32 @@ impl MemoryAllocator {
                         }
                     }
                 }
-                
+
                 log::info!("NUMA {}: Phase 2b complete, {} bytes still needed",
-                         numa_node, remaining);
+                         numa_node, byte_deficit);
             }
         }
         
         // Phase 3: Regular pages as last resort - try ALL chunk sizes
         let regular_allowed = is_page_size_allowed(PageSizeLevel::Regular, min_page, max_page);
+        // Recompute deficit from actual allocations (byte_deficit may not be in scope if Phase 2 was skipped)
         let allocated_final: usize = allocated_chunks.iter().map(|c| c.chunk_size).sum();
-        if allocated_final < total_needed && regular_allowed {
-            let remaining_needed = total_needed - allocated_final;
-            log::info!("NUMA {}: Phase 3 - Using regular pages for remaining {} bytes", numa_node, remaining_needed);
-            
+        let mut remaining = total_needed.saturating_sub(allocated_final);
+        if remaining > 0 && regular_allowed {
+            log::info!("NUMA {}: Phase 3 - Using regular pages for remaining {} bytes", numa_node, remaining);
+
             let all_chunk_sizes_mb = [4096, 2048, 1024, 512, 256, 128, 64, 32, 16];
-            let mut remaining = remaining_needed;
-            
+
             for &chunk_mb in &all_chunk_sizes_mb {
+                if remaining == 0 { break; }
                 let chunk_size = (chunk_mb as usize) * 1024 * 1024;
-                
+
                 if remaining >= chunk_size {
                     let max_chunks = remaining / chunk_size;
                     if max_chunks > 0 {
                         log::info!("NUMA {}: Trying up to {} × {}MB with regular pages",
                                  numa_node, max_chunks, chunk_mb);
-                        
+
                         let mut allocated_this_size = 0;
                         for _ in 0..max_chunks {
                             let config = AllocationConfig {
@@ -805,7 +823,7 @@ impl MemoryAllocator {
                                 base_address: None,
                                 alignment: Some(64 * 1024),
                             };
-                            
+
                             match self.allocate(&config) {
                                 Ok(buffer) => {
                                     log::info!("✅ NUMA {}: {}MB chunk allocated (4KB regular)",
@@ -815,7 +833,7 @@ impl MemoryAllocator {
                                         chunk_size: chunk_size,
                                         numa_node,
                                     });
-                                    remaining -= chunk_size;
+                                    remaining = remaining.saturating_sub(chunk_size);
                                     allocated_this_size += 1;
                                 }
                                 Err(e) => {
@@ -825,7 +843,7 @@ impl MemoryAllocator {
                                 }
                             }
                         }
-                        
+
                         if allocated_this_size > 0 {
                             log::info!("NUMA {}: Successfully allocated {} × {}MB with regular pages",
                                      numa_node, allocated_this_size, chunk_mb);
@@ -833,14 +851,26 @@ impl MemoryAllocator {
                     }
                 }
             }
-            
+
             log::info!("NUMA {}: Phase 3 complete, {} bytes still unallocated",
                      numa_node, remaining);
         }
-        
+
+        // Final allocation sanity check
+        let final_allocated: usize = allocated_chunks.iter().map(|c| c.chunk_size).sum();
+        if final_allocated > total_needed {
+            log::warn!("NUMA {}: Over-allocation detected! Allocated {} bytes but only {} needed ({} bytes excess)",
+                     numa_node, final_allocated, total_needed, final_allocated - total_needed);
+        } else if final_allocated < total_needed {
+            log::warn!("NUMA {}: Under-allocation: {} bytes allocated of {} needed ({} bytes short)",
+                     numa_node, final_allocated, total_needed, total_needed - final_allocated);
+        } else {
+            log::info!("NUMA {}: Allocation complete: {} bytes allocated (exact match)", numa_node, final_allocated);
+        }
+
         Ok(allocated_chunks)
     }
-    
+
     /// Execute plan with BlockSizeFirst strategy
     fn execute_plan_block_size_first(
         &mut self,
@@ -994,10 +1024,23 @@ impl MemoryAllocator {
                 }
             }
         }
-        
+
+        // Final allocation sanity check
+        let final_allocated: usize = allocated_chunks.iter().map(|c| c.chunk_size).sum();
+        let total_needed_bytes = plan.iter().map(|(size, count)| size * count).sum::<usize>();
+        if final_allocated > total_needed_bytes {
+            log::warn!("NUMA {}: Over-allocation detected! Allocated {} bytes but only {} needed ({} bytes excess)",
+                     numa_node, final_allocated, total_needed_bytes, final_allocated - total_needed_bytes);
+        } else if final_allocated < total_needed_bytes {
+            log::warn!("NUMA {}: Under-allocation: {} bytes allocated of {} needed ({} bytes short)",
+                     numa_node, final_allocated, total_needed_bytes, total_needed_bytes - final_allocated);
+        } else {
+            log::info!("NUMA {}: Allocation complete: {} bytes allocated (exact match)", numa_node, final_allocated);
+        }
+
         Ok(allocated_chunks)
     }
-    
+
     /// Distribute planned chunks fairly to threads according to the plan
     /// Groups consecutive blocks per thread (e.g., 16×2GB blocks: thread0 gets blocks 0&1, thread1 gets blocks 2&3, etc.)
     fn distribute_planned_chunks(
@@ -1143,20 +1186,41 @@ impl MemoryAllocator {
             }
         }
         
-        // Log final distribution
+        // Log final distribution with per-thread deviation warnings
         log::info!("Plan-based distribution complete:");
+        let mut total_distributed: usize = 0;
+        let mut total_target: usize = 0;
         for &thread_id in numa_threads {
             let thread_total: usize = thread_allocations.get(&thread_id)
                 .map(|blocks| blocks.iter().map(|b| b.buffer.size()).sum())
                 .unwrap_or(0);
             let target = thread_assignments[&thread_id].0;
-            
-            log::info!("Thread {}: {:.2}GB allocated (target: {:.2}GB)",
-                     thread_id,
-                     bytes_to_gib_f64(thread_total as u64),
-                     bytes_to_gib_f64(target as u64));
+            total_distributed += thread_total;
+            total_target += target;
+
+            if thread_total > target {
+                log::warn!("Thread {}: {:.2}GB allocated (target: {:.2}GB) — ⚠️ over-distributed by {:.2}GB",
+                         thread_id,
+                         bytes_to_gib_f64(thread_total as u64),
+                         bytes_to_gib_f64(target as u64),
+                         bytes_to_gib_f64((thread_total - target) as u64));
+            } else if thread_total < target {
+                log::warn!("Thread {}: {:.2}GB allocated (target: {:.2}GB) — ⚠️ under-distributed by {:.2}GB",
+                         thread_id,
+                         bytes_to_gib_f64(thread_total as u64),
+                         bytes_to_gib_f64(target as u64),
+                         bytes_to_gib_f64((target - thread_total) as u64));
+            } else {
+                log::info!("Thread {}: {:.2}GB allocated (target: {:.2}GB)",
+                         thread_id,
+                         bytes_to_gib_f64(thread_total as u64),
+                         bytes_to_gib_f64(target as u64));
+            }
         }
-        
+        log::info!("Distribution summary: {:.2}GB distributed to threads of {:.2}GB target",
+                 bytes_to_gib_f64(total_distributed as u64),
+                 bytes_to_gib_f64(total_target as u64));
+
         Ok(thread_allocations)
     }
     
