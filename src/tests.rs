@@ -60,7 +60,7 @@ impl CacheTarget {
     pub const L1_DEFAULT: Self = Self::L1 { divisor: 2 };
     /// L2 with default divisor of 2 (50% of per-core L2)
     pub const L2_DEFAULT: Self = Self::L2 { divisor: 2 };
-    /// L3 with default divisor of 2 (50% of L3 for single-thread, ignored for multi-thread)
+    /// L3 with default divisor of 2 (physical: L3/2, VM: L3/12 to match calibrated effective size)
     pub const L3_DEFAULT: Self = Self::L3 { divisor: 2 };
     /// DRAM with default multiplier of 4 - per-thread window = (L3 / threads) * 4
     pub const DRAM_DEFAULT: Self = Self::DRAM { multiplier: 4 };
@@ -77,8 +77,11 @@ impl CacheTarget {
                 cache_info.per_core_l2 / (*divisor as usize)
             }
             CacheTarget::L3 { divisor } => {
-                // For VMs: apply extra /2 factor because reported L3 is shared with other VMs
-                // Physical: L3/2 (default), VM: L3/4 (effective)
+                // For VMs: apply extra /2 factor because reported L3 is shared with other VMs.
+                // Calibration shows effective L3 is much smaller than CPUID-reported on VMs,
+                // but sequential bandwidth tests with prefetcher tolerate larger windows than
+                // the random-access calibration boundary suggests. vm_factor=2 is a reasonable
+                // compromise. TODO: Replace with calibrated cache sizes (see TODO #21).
                 let vm_factor = if cache_info.is_virtual_machine { 2 } else { 1 };
                 let effective_divisor = (*divisor as usize) * vm_factor;
 
@@ -137,13 +140,11 @@ impl CacheTarget {
             CacheTarget::L1 { divisor } => format!("L1/{}", divisor),
             CacheTarget::L2 { divisor } => format!("L2/{}", divisor),
             CacheTarget::L3 { divisor } => {
-                // For VMs, effective divisor is doubled
                 let vm_factor = if is_vm { 2 } else { 1 };
                 if thread_count == 1 {
                     let effective = (*divisor as usize) * vm_factor;
                     format!("L3/{}", effective)
                 } else {
-                    // Multi-thread uses thread count, but VM still halves the base
                     let effective = thread_count * vm_factor;
                     format!("L3/{}", effective)
                 }
@@ -703,19 +704,6 @@ impl TestMemoryConfig {
                 streams: self.streams,
                 locality_sensitive: false,
             },
-            "Spd-Saturate" => OperationMetadata {
-                reads_per_op: 1,  // Sequential read
-                writes_per_op: 1,  // Sequential write
-                verifies_per_op: 0,  // No verification
-                simd_ops_per_op: 0,
-                fence_ops_per_op: 1,  // Per cycle
-                cache_ops_per_op: 0,
-                simd_type: SIMDType::None,
-                access_pattern: AccessPattern::Sequential,
-                memory_coverage: 1.0,
-                streams: self.streams,
-                locality_sensitive: false,
-            },
             "Mem-BlockMove" => OperationMetadata {
                 reads_per_op: 2,  // Source read + destination verify read
                 writes_per_op: 1,  // Destination write
@@ -727,6 +715,48 @@ impl TestMemoryConfig {
                 access_pattern: AccessPattern::BlockCopy,
                 memory_coverage: 0.5,  // Uses half of allocation (source to dest)
                 streams: self.streams,
+                locality_sensitive: false,
+            },
+            // Sequential bandwidth tests — Write
+            s if s.starts_with("Spd-") && s.contains("-Write") => OperationMetadata {
+                reads_per_op: 0,
+                writes_per_op: 1,
+                verifies_per_op: 0,
+                simd_ops_per_op: 1,
+                fence_ops_per_op: if s.contains("DRAM") { 1 } else { 0 },
+                cache_ops_per_op: 0,
+                simd_type: SIMDType::AVX512_512,
+                access_pattern: AccessPattern::Sequential,
+                memory_coverage: 1.0,
+                streams: 1,
+                locality_sensitive: false,
+            },
+            // Sequential bandwidth tests — Read
+            s if s.starts_with("Spd-") && s.contains("-Read") => OperationMetadata {
+                reads_per_op: 1,
+                writes_per_op: 0,
+                verifies_per_op: 0,
+                simd_ops_per_op: 1,
+                fence_ops_per_op: 0,
+                cache_ops_per_op: 0,
+                simd_type: SIMDType::AVX512_512,
+                access_pattern: AccessPattern::Sequential,
+                memory_coverage: 1.0,
+                streams: 1,
+                locality_sensitive: false,
+            },
+            // Sequential bandwidth tests — Copy
+            s if s.starts_with("Spd-") && s.contains("-Copy") => OperationMetadata {
+                reads_per_op: 1,
+                writes_per_op: 1,
+                verifies_per_op: 0,
+                simd_ops_per_op: 1,
+                fence_ops_per_op: if s.contains("DRAM") { 1 } else { 0 },
+                cache_ops_per_op: 0,
+                simd_type: SIMDType::AVX512_512,
+                access_pattern: AccessPattern::Sequential,
+                memory_coverage: 0.5,  // Split-half: read first half, write second half
+                streams: 1,
                 locality_sensitive: false,
             },
             _ => panic!("Unknown test '{}' - add explicit metadata to get_operation_metadata()", test_name),
@@ -790,7 +820,7 @@ impl TestMemoryConfig {
 
     // Calculate window size with corrected logic
     pub fn calculate_window_size(&self, test_name: &str, allocated_size: usize) -> usize {
-        match &self.window_mode {
+        let size = match &self.window_mode {
             WindowMode::FullAllocation => {
                 // Use full allocation unless test specifically requires locality
                 if self.requires_locality {
@@ -822,7 +852,19 @@ impl TestMemoryConfig {
                     calculated.min(allocated_size)
                 }
             }
+        };
+
+        // Round down to 64-byte boundary to avoid SIMD tests faulting (AVX-512 requires 64-byte alignment)
+        let aligned = (size / 64) * 64;
+        if aligned != size {
+            log::warn!(
+                "{}: window size {} bytes not 64-byte aligned ({:?}) — \
+                 rounded down to {} bytes to avoid SIMD tests faulting.",
+                test_name, size, self.window_mode, aligned
+            );
         }
+
+        aligned
     }
     
     // Calculate locality-specific window for tests that need it
@@ -908,7 +950,6 @@ impl TestMemoryConfig {
             "Mem-CacheBust" => 64,        // Cache line operations
             "Mem-Random" => 8,       // Basic u64 operations
             "Mem-Stride" => 8,               // Basic u64 operations
-            "Spd-Saturate" => 128,     // Large block operations
             "Mem-BlockMove" => 64,                  // Block operations
             // v2 tests
             "Mem-SimpleV2" => 8,                     // Basic u64 operations (scalar, auto-vectorized)
@@ -926,6 +967,8 @@ impl TestMemoryConfig {
             | "Bench-Init-TMR-0" | "Bench-Init-TMR-1" | "Bench-Init-TMR-2" | "Bench-Init-TMR-3"
             | "Bench-Verify-TM5-0" | "Bench-Verify-TM5-1" | "Bench-Verify-TM5-2"
             | "Bench-Verify-TMR-0" | "Bench-Verify-TMR-1" | "Bench-Verify-TMR-2" | "Bench-Verify-TMR-3" => 8,
+            // Sequential bandwidth tests (all SIMD variants: 128/256/512/Auto)
+            s if s.starts_with("Spd-") => 64,
             _ => panic!("Unknown test '{}' - add explicit SIMD requirement to calculate_minimum_chunk_size()", test_name),
         };
         
@@ -3786,170 +3829,6 @@ pub unsafe fn stride_access_multi(
     }
 }
 
-/// BandwidthSat MultiBlock - saturate memory bandwidth.
-pub unsafe fn bandwidth_saturation_multi(
-    blocks: &[crate::runner::AllocationBlock],
-    thread_id: usize,
-    _error_mode: ErrorMode,
-    timing: &TestTiming,
-    config: &TestMemoryConfig,
-    progress: Option<&TestProgress>,
-) -> TestStats {
-    let test_name = "Spd-Saturate";
-    let start = Instant::now();
-    let total_allocated: usize = blocks.iter().map(|b| b.buffer.size()).sum();
-    let window_size = config.calculate_window_size(test_name, total_allocated);
-    let test_blocks = prepare_blocks_for_window(blocks, window_size, test_name);
-    let total_test_size: usize = test_blocks.iter().map(|b| b.test_size).sum();
-
-    log::info!("[Thread {}] Running {} on {:.2} MB of memory (window: {:.2} MB)",
-              thread_id, test_name, total_test_size as f64 / MB_F64, window_size as f64 / MB_F64);
-
-    let streams = config.streams.max(1) as usize;
-    let stream_shift = streams.trailing_zeros();
-    let mut cycle = 0u32;
-    let test_start = Instant::now();
-    let mut total_bytes_processed = 0usize;
-    let mut last_progress_update = Instant::now();
-
-    loop {
-        cycle += 1;
-
-        for test_block in test_blocks.iter() {
-            let base = test_block.block.buffer.as_mut_ptr() as *mut u64;
-            let len = test_block.test_size / std::mem::size_of::<u64>();
-
-            // Calculate chunk size for responsive shutdown
-            let ideal_chunk_size = calculate_ideal_chunk_size(config, test_name, test_block.test_size);
-            let chunk_size_bytes = get_safe_chunk_size(ideal_chunk_size, test_block.test_size);
-            let chunk_size_elements = chunk_size_bytes / std::mem::size_of::<u64>();
-
-            // Process memory in chunks for responsive shutdown
-            for chunk_start in (0..len).step_by(chunk_size_elements) {
-                let chunk_end = (chunk_start + chunk_size_elements).min(len);
-
-                // Pure memory bandwidth test with configurable streams
-                match config.streams {
-                    1 => {
-                        // Single stream - maximum sequential bandwidth within chunk
-                        let pattern = 0x5555AAAA5555AAAAu64.wrapping_add(thread_id as u64).wrapping_add(cycle as u64);
-
-                        // Write phase for chunk
-                        for i in chunk_start..chunk_end {
-                            *base.add(i) = pattern.wrapping_add(i as u64);
-                        }
-
-                        std::sync::atomic::fence(Ordering::SeqCst);
-
-                        // Read phase for chunk
-                        let mut checksum = 0u64;
-                        for i in chunk_start..chunk_end {
-                            checksum = checksum.wrapping_add(*base.add(i));
-                        }
-
-                        // Prevent optimization
-                        std::ptr::write_volatile(&mut checksum, checksum);
-                    }
-                    _ => {
-                        // Multiple streams - interleaved access for bandwidth within chunk
-                        let chunk_len = chunk_end - chunk_start;
-                        let stream_size = chunk_len >> stream_shift;
-
-                        // Write phase with multiple streams within chunk
-                        for stream in 0..streams {
-                            let pattern = 0x5555AAAA5555AAAAu64
-                                .wrapping_add(thread_id as u64)
-                                .wrapping_add(cycle as u64)
-                                .wrapping_add((stream as u64) << 32);
-
-                            let start_idx = chunk_start + stream * stream_size;
-                            let end_idx = if stream == config.streams as usize - 1 {
-                                chunk_end // Last stream handles remainder
-                            } else {
-                                chunk_start + (stream + 1) * stream_size
-                            };
-
-                            for i in start_idx..end_idx {
-                                *base.add(i) = pattern.wrapping_add(i as u64);
-                            }
-                        }
-
-                        std::sync::atomic::fence(Ordering::SeqCst);
-
-                        // Read phase with multiple streams within chunk
-                        let mut checksums = vec![0u64; config.streams as usize];
-                        for stream in 0..streams {
-                            let start_idx = chunk_start + stream * stream_size;
-                            let end_idx = if stream == config.streams as usize - 1 {
-                                chunk_end
-                            } else {
-                                chunk_start + (stream + 1) * stream_size
-                            };
-
-                            for i in start_idx..end_idx {
-                                checksums[stream] = checksums[stream].wrapping_add(*base.add(i));
-                            }
-                        }
-
-                        // Prevent optimization
-                        for checksum in &mut checksums {
-                            std::ptr::write_volatile(checksum, *checksum);
-                        }
-                    }
-                }
-
-                // Check for shutdown after each chunk (responsive shutdown!)
-                if SHUTDOWN_REQUESTED.load(Ordering::Relaxed) {
-                    total_bytes_processed += (chunk_end - chunk_start) * std::mem::size_of::<u64>() * 2;
-                    let elapsed = start.elapsed().as_millis();
-                    return TestStats {
-                        name: test_name,
-                        action: TestAction::ReadWrite,
-                        bytes_processed: total_bytes_processed,
-                        elapsed_ms: elapsed,
-                        thread_id,
-                        error_count: 0,
-                        total_operations: cycle as u64 * (chunk_end - chunk_start) as u64,
-                        cycles_completed: cycle,
-                        cycles_planned: timing.cycles,
-                        stopped_by_time_limit: false,
-                    };
-                }
-            }
-
-            total_bytes_processed += test_block.test_size * 2; // Read + Write
-        }
-
-        if let Some(progress) = progress {
-            let now = Instant::now();
-            if now.duration_since(last_progress_update).as_millis() >= 250 {
-                progress.cycles_completed.store(cycle, Ordering::Relaxed);
-                progress.bytes_processed.store(total_bytes_processed as u64, Ordering::Relaxed);
-                progress.last_update_ms.store(start.elapsed().as_millis() as u64, Ordering::Relaxed);
-                last_progress_update = now;
-            }
-        }
-
-        let elapsed_secs = test_start.elapsed().as_secs() as u32;
-        if !timing.should_continue(cycle, elapsed_secs) {
-            let elapsed = start.elapsed().as_millis();
-            let total_operations: u64 = cycle as u64 * (total_test_size / std::mem::size_of::<u64>()) as u64;
-            return TestStats {
-                name: test_name,
-                action: TestAction::ReadWrite,
-                bytes_processed: total_bytes_processed,
-                elapsed_ms: elapsed,
-                thread_id,
-                error_count: 0,
-                total_operations,
-                cycles_completed: cycle,
-                cycles_planned: timing.cycles,
-                stopped_by_time_limit: timing.cycles.map_or(true, |limit| cycle < limit),
-            };
-        }
-    }
-}
-
 /// BlockMove MultiBlock - sequential block memory moves.
 pub unsafe fn block_move_multi(
     blocks: &[crate::runner::AllocationBlock],
@@ -6600,8 +6479,23 @@ pub fn get_test_function_by_name(name: &str) -> Option<crate::runner::TestFuncti
         "Mem-CacheBust" => Some(TestFunction::MultiBlock(cache_busting_multi)),
         "Mem-Random" => Some(TestFunction::MultiBlock(random_torture_multi)),
         "Mem-Stride" => Some(TestFunction::MultiBlock(stride_access_multi)),
-        "Spd-Saturate" => Some(TestFunction::MultiBlock(bandwidth_saturation_multi)),
         "Mem-BlockMove" => Some(TestFunction::MultiBlock(block_move_multi)),
+
+        // Sequential Bandwidth Tests (Spd-*-Auto → auto-dispatched)
+        // Cached (L1/L2/L3) variants
+        "Spd-L1-Read-Auto" | "Spd-L2-Read-Auto" | "Spd-L3-Read-Auto"
+            => Some(TestFunction::MultiBlock(crate::bandwidth_tests::spd_read_auto_multi)),
+        "Spd-L1-Write-Auto" | "Spd-L2-Write-Auto" | "Spd-L3-Write-Auto"
+            => Some(TestFunction::MultiBlock(crate::bandwidth_tests::spd_write_auto_multi)),
+        "Spd-L1-Copy-Auto" | "Spd-L2-Copy-Auto" | "Spd-L3-Copy-Auto"
+            => Some(TestFunction::MultiBlock(crate::bandwidth_tests::spd_copy_auto_multi)),
+        // DRAM variants (NT writes)
+        "Spd-DRAMSmall-Read-Auto" | "Spd-DRAMFull-Read-Auto"
+            => Some(TestFunction::MultiBlock(crate::bandwidth_tests::spd_read_auto_multi)),
+        "Spd-DRAMSmall-Write-Auto" | "Spd-DRAMFull-Write-Auto"
+            => Some(TestFunction::MultiBlock(crate::bandwidth_tests::spd_write_nt_auto_multi)),
+        "Spd-DRAMSmall-Copy-Auto" | "Spd-DRAMFull-Copy-Auto"
+            => Some(TestFunction::MultiBlock(crate::bandwidth_tests::spd_copy_nt_auto_multi)),
 
         // Bench-Init: Pattern generation throughput benchmarks
         "Bench-Init-TM5-0" | "Bench-Init-TM5-1" | "Bench-Init-TM5-2"

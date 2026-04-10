@@ -13,7 +13,7 @@ use crate::tests::{
     simple_test_nt_auto_multi,
     cache_busting_multi,
     random_torture_multi,
-    stride_access_multi, bandwidth_saturation_multi, block_move_multi,
+    stride_access_multi, block_move_multi,
     // v2 tests
     simple_test_v2_multi,
     simple_test_v2_128_multi, simple_test_v2_256_multi, simple_test_v2_512_multi,
@@ -29,7 +29,14 @@ use crate::latency_tests::{
     LatencyTestStats,
 };
 use crate::bandwidth_tests::{
-    read_bandwidth_multi, write_bandwidth_multi, copy_bandwidth_multi,
+    spd_read_auto_multi, spd_write_auto_multi, spd_write_nt_auto_multi,
+    spd_copy_auto_multi, spd_copy_nt_auto_multi,
+    // Concrete SIMD variants for auto-dispatch resolution
+    spd_read_128_multi, spd_read_256_multi, spd_read_512_multi,
+    spd_write_128_multi, spd_write_256_multi, spd_write_512_multi,
+    spd_write_nt_128_multi, spd_write_nt_256_multi, spd_write_nt_512_multi,
+    spd_copy_128_multi, spd_copy_256_multi, spd_copy_512_multi,
+    spd_copy_nt_128_multi, spd_copy_nt_256_multi, spd_copy_nt_512_multi,
 };
 use crate::cache::CacheInfo;
 use crate::reporting::models::{
@@ -1103,7 +1110,7 @@ fn execute_test_cycle(
     }
 }
 
-// Generic auto-dispatch resolver - converts "*Auto" test names to best SIMD variant
+// Generic auto-dispatch resolver - converts "*-Auto" test names to best SIMD variant
 fn resolve_auto_dispatch_test(test_name: &str) -> Option<(&'static str, TestFunction)> {
     if !test_name.ends_with("Auto") {
         return None;
@@ -1111,6 +1118,24 @@ fn resolve_auto_dispatch_test(test_name: &str) -> Option<(&'static str, TestFunc
 
     // Strip "Auto" suffix to get base name (e.g., "Mem-MirrorV2-Auto" -> "Mem-MirrorV2-")
     let base_name = &test_name[..test_name.len() - 4];
+
+    // Helper: classify Spd-* base_name into operation type
+    // base_name after stripping "Auto" has trailing dash: "Spd-L1-Read-", "Spd-DRAMFull-Write-"
+    let spd_op = if base_name.starts_with("Spd-") {
+        if base_name.ends_with("-Read-") {
+            Some("read")
+        } else if base_name.ends_with("-Write-") {
+            let is_nt = base_name.contains("DRAM");
+            Some(if is_nt { "write_nt" } else { "write" })
+        } else if base_name.ends_with("-Copy-") {
+            let is_nt = base_name.contains("DRAM");
+            Some(if is_nt { "copy_nt" } else { "copy" })
+        } else {
+            None
+        }
+    } else {
+        None
+    };
 
     // Determine best SIMD variant based on CPU capabilities
     let (variant_suffix, test_function): (&str, TestFunction) = if is_x86_feature_detected!("avx512f") {
@@ -1120,7 +1145,14 @@ fn resolve_auto_dispatch_test(test_name: &str) -> Option<(&'static str, TestFunc
             "Mem-SimpleNT-" => TestFunction::MultiBlock(simple_test_nt_512_multi),
             "Mem-StuckBit" => TestFunction::MultiBlock(stuck_bit_test_512_multi),
             "Mem-Refresh" => TestFunction::MultiBlock(refresh_stable_512_multi),
-            _ => return None,
+            _ => match spd_op {
+                Some("read") => TestFunction::MultiBlock(spd_read_512_multi),
+                Some("write") => TestFunction::MultiBlock(spd_write_512_multi),
+                Some("write_nt") => TestFunction::MultiBlock(spd_write_nt_512_multi),
+                Some("copy") => TestFunction::MultiBlock(spd_copy_512_multi),
+                Some("copy_nt") => TestFunction::MultiBlock(spd_copy_nt_512_multi),
+                _ => return None,
+            },
         })
     } else if is_x86_feature_detected!("avx2") {
         ("256", match base_name {
@@ -1129,7 +1161,14 @@ fn resolve_auto_dispatch_test(test_name: &str) -> Option<(&'static str, TestFunc
             "Mem-SimpleNT-" => TestFunction::MultiBlock(simple_test_nt_256_multi),
             "Mem-StuckBit" => TestFunction::MultiBlock(stuck_bit_test_256_multi),
             "Mem-Refresh" => TestFunction::MultiBlock(refresh_stable_256_multi),
-            _ => return None,
+            _ => match spd_op {
+                Some("read") => TestFunction::MultiBlock(spd_read_256_multi),
+                Some("write") => TestFunction::MultiBlock(spd_write_256_multi),
+                Some("write_nt") => TestFunction::MultiBlock(spd_write_nt_256_multi),
+                Some("copy") => TestFunction::MultiBlock(spd_copy_256_multi),
+                Some("copy_nt") => TestFunction::MultiBlock(spd_copy_nt_256_multi),
+                _ => return None,
+            },
         })
     } else if is_x86_feature_detected!("sse2") {
         ("128", match base_name {
@@ -1138,44 +1177,105 @@ fn resolve_auto_dispatch_test(test_name: &str) -> Option<(&'static str, TestFunc
             "Mem-SimpleNT-" => TestFunction::MultiBlock(simple_test_nt_128_multi),
             "Mem-StuckBit" => TestFunction::MultiBlock(stuck_bit_test_128_multi),
             "Mem-Refresh" => TestFunction::MultiBlock(refresh_stable_128_multi),
-            _ => return None,
+            _ => match spd_op {
+                Some("read") => TestFunction::MultiBlock(spd_read_128_multi),
+                Some("write") => TestFunction::MultiBlock(spd_write_128_multi),
+                Some("write_nt") => TestFunction::MultiBlock(spd_write_nt_128_multi),
+                Some("copy") => TestFunction::MultiBlock(spd_copy_128_multi),
+                Some("copy_nt") => TestFunction::MultiBlock(spd_copy_nt_128_multi),
+                _ => return None,
+            },
         })
     } else {
-        // Fallback to scalar version (NT has no scalar — use SSE2 which is always available on x86-64)
-        ("", match base_name {
-            "Mem-MirrorV2-" => TestFunction::MultiBlock(mirror_move_v2_multi),
-            "Mem-SimpleV2-" => TestFunction::MultiBlock(simple_test_v2_multi),
+        // Fallback to scalar: no scalar Spd-* variants exist, use 128 (SSE2 always available on x86-64)
+        ("128", match base_name {
+            "Mem-MirrorV2-" => { return Some(("Mem-MirrorV2", TestFunction::MultiBlock(mirror_move_v2_multi))); },
+            "Mem-SimpleV2-" => { return Some(("Mem-SimpleV2", TestFunction::MultiBlock(simple_test_v2_multi))); },
             "Mem-SimpleNT-" => TestFunction::MultiBlock(simple_test_nt_128_multi),
-            "Mem-StuckBit" => TestFunction::MultiBlock(stuck_bit_test_multi),
-            "Mem-Refresh" => TestFunction::MultiBlock(refresh_stable_multi),
-            _ => return None,
+            "Mem-StuckBit" => { return Some(("Mem-StuckBit", TestFunction::MultiBlock(stuck_bit_test_multi))); },
+            "Mem-Refresh" => { return Some(("Mem-Refresh", TestFunction::MultiBlock(refresh_stable_multi))); },
+            _ => match spd_op {
+                Some("read") => TestFunction::MultiBlock(spd_read_128_multi),
+                Some("write") => TestFunction::MultiBlock(spd_write_128_multi),
+                Some("write_nt") => TestFunction::MultiBlock(spd_write_nt_128_multi),
+                Some("copy") => TestFunction::MultiBlock(spd_copy_128_multi),
+                Some("copy_nt") => TestFunction::MultiBlock(spd_copy_nt_128_multi),
+                _ => return None,
+            },
         })
     };
 
     // Construct the resolved concrete test name
-    let concrete_name: &'static str = match (base_name, variant_suffix) {
-        ("Mem-MirrorV2-", "512") => "Mem-MirrorV2-512",
-        ("Mem-MirrorV2-", "256") => "Mem-MirrorV2-256",
-        ("Mem-MirrorV2-", "128") => "Mem-MirrorV2-128",
-        ("Mem-MirrorV2-", "") => "Mem-MirrorV2",
-        ("Mem-SimpleV2-", "512") => "Mem-SimpleV2-512",
-        ("Mem-SimpleV2-", "256") => "Mem-SimpleV2-256",
-        ("Mem-SimpleV2-", "128") => "Mem-SimpleV2-128",
-        ("Mem-SimpleV2-", "") => "Mem-SimpleV2",
-        ("Mem-SimpleNT-", "512") => "Mem-SimpleNT-512",
-        ("Mem-SimpleNT-", "256") => "Mem-SimpleNT-256",
-        ("Mem-SimpleNT-", "128") => "Mem-SimpleNT-128",
-        ("Mem-SimpleNT-", "") => "Mem-SimpleNT-128",
-        ("Mem-StuckBit", "512") => "Mem-StuckBit512",
-        ("Mem-StuckBit", "256") => "Mem-StuckBit256",
-        ("Mem-StuckBit", "128") => "Mem-StuckBit128",
-        ("Mem-StuckBit", "") => "Mem-StuckBit",
-        ("Mem-StuckBitAuto", "") => "Mem-StuckBitAuto",
-        ("Mem-Refresh", "512") => "Mem-Refresh512",
-        ("Mem-Refresh", "256") => "Mem-Refresh256",
-        ("Mem-Refresh", "128") => "Mem-Refresh128",
-        ("Mem-Refresh", "") => "Mem-Refresh",
-        _ => return None,
+    // For Spd-* tests: strip trailing dash from base, append variant (e.g. "Spd-L1-Read-" -> "Spd-L1-Read-512")
+    let concrete_name: &'static str = if base_name.starts_with("Spd-") {
+        // base_name is e.g. "Spd-L1-Read-" — construct "Spd-L1-Read-{128,256,512}"
+        match (base_name, variant_suffix) {
+            ("Spd-L1-Read-", "512") => "Spd-L1-Read-512",
+            ("Spd-L1-Read-", "256") => "Spd-L1-Read-256",
+            ("Spd-L1-Read-", "128") => "Spd-L1-Read-128",
+            ("Spd-L1-Write-", "512") => "Spd-L1-Write-512",
+            ("Spd-L1-Write-", "256") => "Spd-L1-Write-256",
+            ("Spd-L1-Write-", "128") => "Spd-L1-Write-128",
+            ("Spd-L1-Copy-", "512") => "Spd-L1-Copy-512",
+            ("Spd-L1-Copy-", "256") => "Spd-L1-Copy-256",
+            ("Spd-L1-Copy-", "128") => "Spd-L1-Copy-128",
+            ("Spd-L2-Read-", "512") => "Spd-L2-Read-512",
+            ("Spd-L2-Read-", "256") => "Spd-L2-Read-256",
+            ("Spd-L2-Read-", "128") => "Spd-L2-Read-128",
+            ("Spd-L2-Write-", "512") => "Spd-L2-Write-512",
+            ("Spd-L2-Write-", "256") => "Spd-L2-Write-256",
+            ("Spd-L2-Write-", "128") => "Spd-L2-Write-128",
+            ("Spd-L2-Copy-", "512") => "Spd-L2-Copy-512",
+            ("Spd-L2-Copy-", "256") => "Spd-L2-Copy-256",
+            ("Spd-L2-Copy-", "128") => "Spd-L2-Copy-128",
+            ("Spd-L3-Read-", "512") => "Spd-L3-Read-512",
+            ("Spd-L3-Read-", "256") => "Spd-L3-Read-256",
+            ("Spd-L3-Read-", "128") => "Spd-L3-Read-128",
+            ("Spd-L3-Write-", "512") => "Spd-L3-Write-512",
+            ("Spd-L3-Write-", "256") => "Spd-L3-Write-256",
+            ("Spd-L3-Write-", "128") => "Spd-L3-Write-128",
+            ("Spd-L3-Copy-", "512") => "Spd-L3-Copy-512",
+            ("Spd-L3-Copy-", "256") => "Spd-L3-Copy-256",
+            ("Spd-L3-Copy-", "128") => "Spd-L3-Copy-128",
+            ("Spd-DRAMSmall-Read-", "512") => "Spd-DRAMSmall-Read-512",
+            ("Spd-DRAMSmall-Read-", "256") => "Spd-DRAMSmall-Read-256",
+            ("Spd-DRAMSmall-Read-", "128") => "Spd-DRAMSmall-Read-128",
+            ("Spd-DRAMSmall-Write-", "512") => "Spd-DRAMSmall-Write-512",
+            ("Spd-DRAMSmall-Write-", "256") => "Spd-DRAMSmall-Write-256",
+            ("Spd-DRAMSmall-Write-", "128") => "Spd-DRAMSmall-Write-128",
+            ("Spd-DRAMSmall-Copy-", "512") => "Spd-DRAMSmall-Copy-512",
+            ("Spd-DRAMSmall-Copy-", "256") => "Spd-DRAMSmall-Copy-256",
+            ("Spd-DRAMSmall-Copy-", "128") => "Spd-DRAMSmall-Copy-128",
+            ("Spd-DRAMFull-Read-", "512") => "Spd-DRAMFull-Read-512",
+            ("Spd-DRAMFull-Read-", "256") => "Spd-DRAMFull-Read-256",
+            ("Spd-DRAMFull-Read-", "128") => "Spd-DRAMFull-Read-128",
+            ("Spd-DRAMFull-Write-", "512") => "Spd-DRAMFull-Write-512",
+            ("Spd-DRAMFull-Write-", "256") => "Spd-DRAMFull-Write-256",
+            ("Spd-DRAMFull-Write-", "128") => "Spd-DRAMFull-Write-128",
+            ("Spd-DRAMFull-Copy-", "512") => "Spd-DRAMFull-Copy-512",
+            ("Spd-DRAMFull-Copy-", "256") => "Spd-DRAMFull-Copy-256",
+            ("Spd-DRAMFull-Copy-", "128") => "Spd-DRAMFull-Copy-128",
+            _ => return None,
+        }
+    } else {
+        match (base_name, variant_suffix) {
+            ("Mem-MirrorV2-", "512") => "Mem-MirrorV2-512",
+            ("Mem-MirrorV2-", "256") => "Mem-MirrorV2-256",
+            ("Mem-MirrorV2-", "128") => "Mem-MirrorV2-128",
+            ("Mem-SimpleV2-", "512") => "Mem-SimpleV2-512",
+            ("Mem-SimpleV2-", "256") => "Mem-SimpleV2-256",
+            ("Mem-SimpleV2-", "128") => "Mem-SimpleV2-128",
+            ("Mem-SimpleNT-", "512") => "Mem-SimpleNT-512",
+            ("Mem-SimpleNT-", "256") => "Mem-SimpleNT-256",
+            ("Mem-SimpleNT-", "128") => "Mem-SimpleNT-128",
+            ("Mem-StuckBit", "512") => "Mem-StuckBit512",
+            ("Mem-StuckBit", "256") => "Mem-StuckBit256",
+            ("Mem-StuckBit", "128") => "Mem-StuckBit128",
+            ("Mem-Refresh", "512") => "Mem-Refresh512",
+            ("Mem-Refresh", "256") => "Mem-Refresh256",
+            ("Mem-Refresh", "128") => "Mem-Refresh128",
+            _ => return None,
+        }
     };
 
     Some((concrete_name, test_function))
@@ -1424,19 +1524,6 @@ fn create_test_definitions(cache_info: &CacheInfo) -> Vec<TestDefinition> {
                 false
             ).with_timing(TestTiming::cycles_only(1))
              .with_streams(4), "Mem-Stride")
-             .with_memory_type(None)
-        ),
-
-        (
-            "Spd-Saturate",
-            TestFunction::MultiBlock(bandwidth_saturation_multi),
-            validate_streams(TestMemoryConfig::new(
-                WindowMode::FullAllocation,
-                ChunkMode::FixedSize { size_mb: 32 },
-                false,
-                false
-            ).with_timing(TestTiming::duration_only(15))
-             .with_streams(1), "Spd-Saturate")
              .with_memory_type(None)
         ),
 
@@ -1993,212 +2080,211 @@ fn create_test_definitions(cache_info: &CacheInfo) -> Vec<TestDefinition> {
              .with_memory_type(None)
         ),
 
-        // === Sequential Bandwidth Tests ===
+        // === Sequential Bandwidth Tests (Auto-dispatch) ===
         // Measures peak sequential memory bandwidth (unlike latency tests which use random access)
-        // Naming: Spd-{Level}-{Operation} (Spd = Speed/Bandwidth)
+        // Naming: Spd-{Level}-{Operation}-Auto → resolves to Spd-{Level}-{Operation}-{128,256,512}_A
         // Uses WindowMode::CacheLevel for automatic sizing based on detected cache
-        // tests=Spd-* (all 18 bandwidth tests: L1/L2/L3/DRAMSmall/DRAMFull × Read/Write/Copy)
+        // tests=Spd-* (all 15 bandwidth tests: L1/L2/L3/DRAMSmall/DRAMFull × Read/Write/Copy)
         // tests=Spd-L3-* (3 tests: L3 × Read/Write/Copy)
         // tests=Spd-DRAM* (6 tests: DRAMSmall + DRAMFull)
-        // tests=*DRAMSmall* or *DRAMFull* for specific DRAM variants
 
         // L1 Cache Bandwidth - Read, Write, Copy
         (
-            "Spd-L1-Read",
-            TestFunction::MultiBlock(read_bandwidth_multi),
+            "Spd-L1-Read-Auto",
+            TestFunction::MultiBlock(spd_read_auto_multi),
             validate_streams(TestMemoryConfig::new(
                 WindowMode::CacheLevel { target: CacheTarget::L1_DEFAULT },
                 ChunkMode::AutoOptimal,
                 false,
                 false
             ).with_timing(TestTiming::duration_only(10))
-             .with_streams(1), "Spd-L1-Read")
+             .with_streams(1), "Spd-L1-Read-Auto")
              .with_memory_type(None)
         ),
 
         (
-            "Spd-L1-Write",
-            TestFunction::MultiBlock(write_bandwidth_multi),
+            "Spd-L1-Write-Auto",
+            TestFunction::MultiBlock(spd_write_auto_multi),
             validate_streams(TestMemoryConfig::new(
                 WindowMode::CacheLevel { target: CacheTarget::L1_DEFAULT },
                 ChunkMode::AutoOptimal,
                 false,
                 false
             ).with_timing(TestTiming::duration_only(10))
-             .with_streams(1), "Spd-L1-Write")
+             .with_streams(1), "Spd-L1-Write-Auto")
              .with_memory_type(None)
         ),
 
         (
-            "Spd-L1-Copy",
-            TestFunction::MultiBlock(copy_bandwidth_multi),
+            "Spd-L1-Copy-Auto",
+            TestFunction::MultiBlock(spd_copy_auto_multi),
             validate_streams(TestMemoryConfig::new(
                 WindowMode::CacheLevel { target: CacheTarget::L1_DEFAULT },
                 ChunkMode::AutoOptimal,
                 false,
                 false
             ).with_timing(TestTiming::duration_only(10))
-             .with_streams(1), "Spd-L1-Copy")
+             .with_streams(1), "Spd-L1-Copy-Auto")
              .with_memory_type(None)
         ),
 
         // L2 Cache Bandwidth - Read, Write, Copy
         (
-            "Spd-L2-Read",
-            TestFunction::MultiBlock(read_bandwidth_multi),
+            "Spd-L2-Read-Auto",
+            TestFunction::MultiBlock(spd_read_auto_multi),
             validate_streams(TestMemoryConfig::new(
                 WindowMode::CacheLevel { target: CacheTarget::L2_DEFAULT },
                 ChunkMode::AutoOptimal,
                 false,
                 false
             ).with_timing(TestTiming::duration_only(10))
-             .with_streams(1), "Spd-L2-Read")
+             .with_streams(1), "Spd-L2-Read-Auto")
              .with_memory_type(None)
         ),
 
         (
-            "Spd-L2-Write",
-            TestFunction::MultiBlock(write_bandwidth_multi),
+            "Spd-L2-Write-Auto",
+            TestFunction::MultiBlock(spd_write_auto_multi),
             validate_streams(TestMemoryConfig::new(
                 WindowMode::CacheLevel { target: CacheTarget::L2_DEFAULT },
                 ChunkMode::AutoOptimal,
                 false,
                 false
             ).with_timing(TestTiming::duration_only(10))
-             .with_streams(1), "Spd-L2-Write")
+             .with_streams(1), "Spd-L2-Write-Auto")
              .with_memory_type(None)
         ),
 
         (
-            "Spd-L2-Copy",
-            TestFunction::MultiBlock(copy_bandwidth_multi),
+            "Spd-L2-Copy-Auto",
+            TestFunction::MultiBlock(spd_copy_auto_multi),
             validate_streams(TestMemoryConfig::new(
                 WindowMode::CacheLevel { target: CacheTarget::L2_DEFAULT },
                 ChunkMode::AutoOptimal,
                 false,
                 false
             ).with_timing(TestTiming::duration_only(10))
-             .with_streams(1), "Spd-L2-Copy")
+             .with_streams(1), "Spd-L2-Copy-Auto")
              .with_memory_type(None)
         ),
 
         // L3 Cache Bandwidth - Read, Write, Copy
         (
-            "Spd-L3-Read",
-            TestFunction::MultiBlock(read_bandwidth_multi),
+            "Spd-L3-Read-Auto",
+            TestFunction::MultiBlock(spd_read_auto_multi),
             validate_streams(TestMemoryConfig::new(
                 WindowMode::CacheLevel { target: CacheTarget::L3_DEFAULT },
                 ChunkMode::AutoOptimal,
                 false,
                 false
             ).with_timing(TestTiming::duration_only(10))
-             .with_streams(1), "Spd-L3-Read")
+             .with_streams(1), "Spd-L3-Read-Auto")
              .with_memory_type(None)
         ),
 
         (
-            "Spd-L3-Write",
-            TestFunction::MultiBlock(write_bandwidth_multi),
+            "Spd-L3-Write-Auto",
+            TestFunction::MultiBlock(spd_write_auto_multi),
             validate_streams(TestMemoryConfig::new(
                 WindowMode::CacheLevel { target: CacheTarget::L3_DEFAULT },
                 ChunkMode::AutoOptimal,
                 false,
                 false
             ).with_timing(TestTiming::duration_only(10))
-             .with_streams(1), "Spd-L3-Write")
+             .with_streams(1), "Spd-L3-Write-Auto")
              .with_memory_type(None)
         ),
 
         (
-            "Spd-L3-Copy",
-            TestFunction::MultiBlock(copy_bandwidth_multi),
+            "Spd-L3-Copy-Auto",
+            TestFunction::MultiBlock(spd_copy_auto_multi),
             validate_streams(TestMemoryConfig::new(
                 WindowMode::CacheLevel { target: CacheTarget::L3_DEFAULT },
                 ChunkMode::AutoOptimal,
                 false,
                 false
             ).with_timing(TestTiming::duration_only(10))
-             .with_streams(1), "Spd-L3-Copy")
+             .with_streams(1), "Spd-L3-Copy-Auto")
              .with_memory_type(None)
         ),
 
         // DRAMSmall Bandwidth - Smaller working set, high TLB hit rate - Read, Write, Copy
         (
-            "Spd-DRAMSmall-Read",
-            TestFunction::MultiBlock(read_bandwidth_multi),
+            "Spd-DRAMSmall-Read-Auto",
+            TestFunction::MultiBlock(spd_read_auto_multi),
             validate_streams(TestMemoryConfig::new(
                 WindowMode::CacheLevel { target: CacheTarget::DRAM_DEFAULT },
                 ChunkMode::AutoOptimal,
                 false,
                 false
             ).with_timing(TestTiming::duration_only(10))
-             .with_streams(1), "Spd-DRAMSmall-Read")
+             .with_streams(1), "Spd-DRAMSmall-Read-Auto")
              .with_memory_type(None)
         ),
 
         (
-            "Spd-DRAMSmall-Write",
-            TestFunction::MultiBlock(write_bandwidth_multi),
+            "Spd-DRAMSmall-Write-Auto",
+            TestFunction::MultiBlock(spd_write_nt_auto_multi),
             validate_streams(TestMemoryConfig::new(
                 WindowMode::CacheLevel { target: CacheTarget::DRAM_DEFAULT },
                 ChunkMode::AutoOptimal,
                 false,
                 false
             ).with_timing(TestTiming::duration_only(10))
-             .with_streams(1), "Spd-DRAMSmall-Write")
+             .with_streams(1), "Spd-DRAMSmall-Write-Auto")
              .with_memory_type(None)
         ),
 
         (
-            "Spd-DRAMSmall-Copy",
-            TestFunction::MultiBlock(copy_bandwidth_multi),
+            "Spd-DRAMSmall-Copy-Auto",
+            TestFunction::MultiBlock(spd_copy_nt_auto_multi),
             validate_streams(TestMemoryConfig::new(
                 WindowMode::CacheLevel { target: CacheTarget::DRAM_DEFAULT },
                 ChunkMode::AutoOptimal,
                 false,
                 false
             ).with_timing(TestTiming::duration_only(10))
-             .with_streams(1), "Spd-DRAMSmall-Copy")
+             .with_streams(1), "Spd-DRAMSmall-Copy-Auto")
              .with_memory_type(None)
         ),
 
         // DRAMFull Bandwidth - Full allocation, includes TLB miss overhead - Read, Write, Copy
         (
-            "Spd-DRAMFull-Read",
-            TestFunction::MultiBlock(read_bandwidth_multi),
+            "Spd-DRAMFull-Read-Auto",
+            TestFunction::MultiBlock(spd_read_auto_multi),
             validate_streams(TestMemoryConfig::new(
                 WindowMode::CacheLevel { target: CacheTarget::DRAM_FULL_DEFAULT },
                 ChunkMode::AutoOptimal,
                 false,
                 false
             ).with_timing(TestTiming::duration_only(10))
-             .with_streams(1), "Spd-DRAMFull-Read")
+             .with_streams(1), "Spd-DRAMFull-Read-Auto")
              .with_memory_type(None)
         ),
 
         (
-            "Spd-DRAMFull-Write",
-            TestFunction::MultiBlock(write_bandwidth_multi),
+            "Spd-DRAMFull-Write-Auto",
+            TestFunction::MultiBlock(spd_write_nt_auto_multi),
             validate_streams(TestMemoryConfig::new(
                 WindowMode::CacheLevel { target: CacheTarget::DRAM_FULL_DEFAULT },
                 ChunkMode::AutoOptimal,
                 false,
                 false
             ).with_timing(TestTiming::duration_only(10))
-             .with_streams(1), "Spd-DRAMFull-Write")
+             .with_streams(1), "Spd-DRAMFull-Write-Auto")
              .with_memory_type(None)
         ),
 
         (
-            "Spd-DRAMFull-Copy",
-            TestFunction::MultiBlock(copy_bandwidth_multi),
+            "Spd-DRAMFull-Copy-Auto",
+            TestFunction::MultiBlock(spd_copy_nt_auto_multi),
             validate_streams(TestMemoryConfig::new(
                 WindowMode::CacheLevel { target: CacheTarget::DRAM_FULL_DEFAULT },
                 ChunkMode::AutoOptimal,
                 false,
                 false
             ).with_timing(TestTiming::duration_only(10))
-             .with_streams(1), "Spd-DRAMFull-Copy")
+             .with_streams(1), "Spd-DRAMFull-Copy-Auto")
              .with_memory_type(None)
         ),
     ];

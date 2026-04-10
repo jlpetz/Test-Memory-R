@@ -21,7 +21,93 @@ use tmr::config::{MemoryAllocationConfig, CpuPinningConfig};
 // Global file logger for dual console+file logging
 static FILE_LOGGER: std::sync::OnceLock<Arc<Mutex<Option<std::fs::File>>>> = std::sync::OnceLock::new();
 
+/// Vectored Exception Handler — catches hardware crashes (access violations, illegal
+/// instructions, stack overflows) that Rust's panic handler cannot see.
+/// Logs the faulting instruction, target address, and access type before the process dies.
+unsafe extern "system" fn crash_exception_handler(
+    info: *mut windows::Win32::System::Diagnostics::Debug::EXCEPTION_POINTERS,
+) -> i32 {
+    use windows::Win32::Foundation::{
+        EXCEPTION_ACCESS_VIOLATION, STATUS_ILLEGAL_INSTRUCTION,
+        STATUS_STACK_OVERFLOW, STATUS_STACK_BUFFER_OVERRUN,
+    };
+
+    if info.is_null() { return 0; } // EXCEPTION_CONTINUE_SEARCH
+    let ptrs = unsafe { &*info };
+    if ptrs.ExceptionRecord.is_null() { return 0; }
+    let record = unsafe { &*ptrs.ExceptionRecord };
+
+    let code = record.ExceptionCode;
+    let ip = record.ExceptionAddress as usize;
+
+    // Only handle fatal exceptions — let debugger breakpoints etc. pass through
+    let label = if code == EXCEPTION_ACCESS_VIOLATION {
+        "ACCESS_VIOLATION"
+    } else if code == STATUS_ILLEGAL_INSTRUCTION {
+        "ILLEGAL_INSTRUCTION"
+    } else if code == STATUS_STACK_OVERFLOW {
+        "STACK_OVERFLOW"
+    } else if code == STATUS_STACK_BUFFER_OVERRUN {
+        "STACK_BUFFER_OVERRUN"
+    } else {
+        return 0; // Not our problem — pass to next handler
+    };
+
+    // Compute RVA from module base (works regardless of ASLR)
+    let module_base = unsafe {
+        windows::Win32::System::LibraryLoader::GetModuleHandleA(None)
+            .map(|h| h.0 as usize).unwrap_or(0)
+    };
+    let rva = if module_base > 0 && ip >= module_base { ip - module_base } else { ip };
+
+    // For access violations, ExceptionInformation[0] = access type, [1] = target address
+    if code == EXCEPTION_ACCESS_VIOLATION && record.NumberParameters >= 2 {
+        let access_type = match record.ExceptionInformation[0] {
+            0 => "READ from",
+            1 => "WRITE to",
+            8 => "DEP violation at",
+            _ => "UNKNOWN access at",
+        };
+        let target_addr = record.ExceptionInformation[1];
+        eprintln!("\n!!! FATAL: {} (0x{:08X}) at IP={:#x} (RVA={:#x})", label, code.0, ip, rva);
+        eprintln!("!!!   {} address {:#x}", access_type, target_addr);
+    } else {
+        eprintln!("\n!!! FATAL: {} (0x{:08X}) at IP={:#x} (RVA={:#x})", label, code.0, ip, rva);
+    }
+    eprintln!("!!! Module base: {:#x}", module_base);
+
+    // Return EXCEPTION_CONTINUE_SEARCH (0) — let the default handler terminate the process
+    // after we've logged. Using 1 (EXCEPTION_CONTINUE_EXECUTION) would loop forever.
+    0
+}
+
 fn main() -> Result<(), Box<dyn std::error::Error>> {
+    // --- Crash handling: install BEFORE anything else ---
+
+    // 1. Rust panic hook — ensures panic messages reach stderr + log before abort
+    std::panic::set_hook(Box::new(|info| {
+        let msg = if let Some(s) = info.payload().downcast_ref::<&str>() {
+            s.to_string()
+        } else if let Some(s) = info.payload().downcast_ref::<String>() {
+            s.clone()
+        } else {
+            "unknown panic".to_string()
+        };
+        let location = info.location()
+            .map(|l| format!("{}:{}:{}", l.file(), l.line(), l.column()))
+            .unwrap_or_else(|| "unknown location".to_string());
+        eprintln!("\n!!! PANIC at {}: {}", location, msg);
+        log::error!("PANIC at {}: {}", location, msg);
+    }));
+
+    // 2. Windows VEH — catches hardware exceptions (segfaults, illegal instructions)
+    unsafe {
+        windows::Win32::System::Diagnostics::Debug::AddVectoredExceptionHandler(
+            1, // first=1: our handler runs BEFORE any other handlers
+            Some(crash_exception_handler),
+        );
+    }
+
     // Initialize enhanced logging with file output
     setup_logging();
 

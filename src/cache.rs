@@ -158,7 +158,6 @@ impl CacheInfo {
         match test_type {
             "Mem-CacheBust" => (self.l3_cache / 2).max(self.l2_cache * 4),
             "Mem-Random" => self.l3_cache * 2,
-            "Spd-Saturate" => (self.total_cache * 2).max(MB_64),
             "Mem-MirrorV2-128" | "Mem-MirrorV2-256" | "Mem-MirrorV2-512" => {
                 self.l3_cache.max(32 * MB)
             }
@@ -262,10 +261,10 @@ fn detect_via_raw_cpuid_comprehensive(physical_cores: usize) -> Option<CacheInfo
     if let Some(cache_params) = cpuid.get_cache_parameters() {
         log::debug!("raw_cpuid: Found cache parameters via leaf 4");
         for cache in cache_params {
-            let size = cache.associativity() * 
-                      cache.physical_line_partitions() * 
-                      cache.coherency_line_size() * 
-                      (cache.sets() + 1);
+            let size = cache.associativity() *
+                      cache.physical_line_partitions() *
+                      cache.coherency_line_size() *
+                      cache.sets();
             
             let cache_type = cache.cache_type();
             let level = cache.level();

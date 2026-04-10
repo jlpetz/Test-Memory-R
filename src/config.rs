@@ -1026,29 +1026,6 @@ pub fn create_demo_config() -> Self {
                 use_v2_tests: None,
             },
             
-            // Spd-Saturate - maximum bandwidth test
-            TestConfig {
-                enabled: true,
-                function: "Spd-Saturate".to_string(),
-                cycles: Some(1),
-                duration_secs: None,
-                min_duration_secs: None,
-                window_mode: Some("full-allocation".to_string()), // Max bandwidth
-                window_size_mb: None,
-                window_cache_multiplier: None,
-                chunk_mode: Some("fixed-size".to_string()),
-                block_size_mb: Some(32),               // Large blocks for bandwidth
-                block_window_fraction: None,
-                allow_misaligned: Some(false),
-                requires_locality: Some(false),
-                streams: Some(1),                      // Single stream for max bandwidth
-                pattern_mode: None,
-                pattern_param0: None,
-                pattern_param1: None,
-                parameter: None,
-                use_v2_tests: None,
-            },
-            
             // Mem-BlockMove - memory copy test
             TestConfig {
                 enabled: true,
@@ -1413,7 +1390,6 @@ fn map_legacy_function(legacy_name: &str) -> Result<String, String> {
         "Mem-CacheBust" => Ok("Mem-CacheBust".to_string()),
         "Mem-Random" => Ok("Mem-Random".to_string()),
         "Mem-Stride" => Ok("Mem-Stride".to_string()),
-        "Spd-Saturate" => Ok("Spd-Saturate".to_string()),
         // v2 test names (accepted directly)
         "Mem-SimpleV2" => Ok("Mem-SimpleV2".to_string()),
         "Mem-MirrorV2" => Ok("Mem-MirrorV2".to_string()),

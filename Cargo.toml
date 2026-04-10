@@ -21,6 +21,7 @@ windows = { version = "0.62", features = [
 	"Win32_System_WindowsProgramming", # Sometimes needed for NUMA
 	"Win32_System_SystemServices",
 	"Win32_System_Registry",
+	"Win32_System_LibraryLoader",
 ] }
 num_cpus = "1.17"
 log = "0.4"
