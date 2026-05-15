@@ -15,16 +15,18 @@ pub mod results; // New results module
 pub mod table;
 pub mod formatting;
 pub mod thread_pool;
-pub mod test_framework;
 pub mod driver;
 pub mod cpu_topology;
 pub mod reporting;
 pub mod params; // Centralized parameter registry
 pub mod latency_tests; // Latency measurement tests
+pub mod latency_tests_v2; // v2 latency tests: Layout A/B reads + NT write saturation PoC
 pub mod bandwidth_tests; // Bandwidth measurement tests
 pub mod calibration; // Adaptive cache calibration
 pub mod pattern_gen; // v2 pattern generation (LCG, Mode 0/1/2)
 pub mod test_harness; // v2 zero-cost test orchestration harness
+pub mod app_config; // Persistent application config (tmr-cfg.json)
+pub mod smbios; // SMBIOS table parser (system identity, memory modules)
 
 // Common result type for the crate
 pub type Result<T> = std::result::Result<T, Box<dyn std::error::Error>>;
@@ -37,6 +39,7 @@ pub use memory::{MemoryAllocator, MemoryBuffer, AllocationConfig, BackendType, M
 pub use memory::{diagnose_and_setup_large_pages, auto_grant_large_page_privilege, check_restart_needed};
 pub use driver::{reset_driver, DriverStatus, display_driver_info, check_and_display_driver_status, refresh_driver_status, display_driver_stats, is_driver_connected, compare_app_vs_driver_stats, reset_app_driver_stats, display_app_driver_stats_table, set_use_remap_all};
 pub use tests::TestMemoryConfig;
+pub use tests::{set_calibration_data, set_active_threads_per_core};
 pub use progress::ProgressTracker;
 pub use layout::{EnhancedMemoryLayout, BlockInfo};
 pub use tests::{WindowMode, ChunkMode};

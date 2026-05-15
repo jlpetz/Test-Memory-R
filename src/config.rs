@@ -55,10 +55,15 @@ pub struct SystemConfig {
     pub error_mode: String,
     pub timing: TimingConfig,
     pub large_pages: bool,
-	#[serde(default)]  // Add this for backward compatibility
-	pub cpu_pinning: CpuPinningConfig,  // Add this
-	#[serde(default)]  // Add this for backward compatibility
-    pub memory_allocation: MemoryAllocationConfig,  // Add this
+	#[serde(default)]
+	pub cpu_pinning: CpuPinningConfig,
+	#[serde(default)]
+    pub memory_allocation: MemoryAllocationConfig,
+    /// Memory channel count for stride calculation (default 2 for consumer DDR5 dual-channel).
+    /// Higher values produce larger strides to match DDR interleave boundaries.
+    /// Consumer: 2, Server: 4-12+.
+    #[serde(default = "default_channels")]
+    pub channels: u32,
 }
 
 // Define CpuPinningConfig in config.rs
@@ -266,14 +271,17 @@ pub struct TestConfig {
     pub allow_misaligned: Option<bool>,     // Allow unaligned accesses
     pub requires_locality: Option<bool>,    // Test needs temporal locality
     
-    // Access pattern configuration
-    pub streams: Option<u32>,               // Number of access streams (equivalent to TM5 jump/parameter)
+    // TMR-native test parameters (each used by specific tests, see doc/test_parameters.md)
+    pub stride_patterns: Option<u32>,       // CacheBust: number of interleaved stride pattern variants
+    pub rng_sequences: Option<u32>,         // RandomTorture: number of independent RNG sequences
+    pub subdivisions: Option<u32>,          // StrideAccess: number of chunk subdivisions
+    pub copy_directions: Option<u32>,       // BlockMove: number of copy direction patterns
 
-    // Legacy TM5 compatibility (preserved but not used in new logic)
+    // TM5 pattern configuration (preserved for TM5-faithful pattern generation)
     pub pattern_mode: Option<u32>,
     pub pattern_param0: Option<u64>,
     pub pattern_param1: Option<u64>,
-    pub parameter: Option<u32>,             // Legacy parameter field (mapped to streams on load)
+    pub parameter: Option<u32>,             // Raw TM5 parameter — interpreted via TestParameterContext
 
     // v2: Enable v2 test variants when true (uses corrected parameter interpretation)
     #[serde(default)]
@@ -288,8 +296,8 @@ pub struct TestConfig {
 /// - **MirrorMove**: subblock count (1-4, how many mirror regions)
 /// - **MirrorMove128**: page stride in bytes ((Parameter + 1) * 128)
 ///
-/// The v1 code incorrectly funneled all of these into `streams`.
-#[derive(Debug, Clone)]
+/// The v1 code incorrectly funneled all of these into a single field.
+#[derive(Debug, Clone, Default)]
 pub struct TestParameterContext {
     /// Raw TM5 parameter value, preserved for debugging.
     pub raw_parameter: u32,
@@ -304,11 +312,19 @@ pub struct TestParameterContext {
     pub subblock_count: Option<u32>,
     /// MirrorMove128: page stride in bytes. `(Parameter + 1) * 128`.
     pub page_stride_bytes: Option<usize>,
+    /// CacheBust: number of interleaved stride pattern variants (default 4).
+    pub stride_patterns: Option<u32>,
+    /// RandomTorture: number of independent RNG sequences (default 8).
+    pub rng_sequences: Option<u32>,
+    /// StrideAccess: number of chunk subdivisions (default 4).
+    pub subdivisions: Option<u32>,
+    /// BlockMove: number of copy direction patterns (default 1).
+    pub copy_directions: Option<u32>,
 }
 
 /// Interpret TM5 Parameter correctly based on test function name.
 ///
-/// This replaces `map_parameter_to_streams()` which incorrectly treated all
+/// This replaces the old parameter mapping which incorrectly treated all
 /// parameters as stream counts.
 ///
 /// `channels`: memory channel count (default 2 for DDR5 dual-channel).
@@ -325,22 +341,16 @@ pub fn interpret_tm5_parameter_with_channels(function: &str, parameter: u32, cha
             if parameter == 0 {
                 TestParameterContext {
                     raw_parameter: parameter,
-                    stride_cachelines: None,
-                    stride_elements: None,
-                    subblock_count: None,
-                    page_stride_bytes: None,
+                    ..Default::default()
                 }
             } else {
                 // TM5: JumpStep = BlkSize * (Channels * Parameter - 1)
-                // In cache line units: Channels * Parameter - 1
-                // In u64 elements: stride_cachelines * 8 (assuming 64-byte cache line / 8 bytes per u64)
                 let stride_cl = (channels as usize * parameter as usize).saturating_sub(1);
                 TestParameterContext {
                     raw_parameter: parameter,
                     stride_cachelines: Some(stride_cl),
                     stride_elements: Some(stride_cl * 8), // 64-byte cache line / 8 bytes per u64
-                    subblock_count: None,
-                    page_stride_bytes: None,
+                    ..Default::default()
                 }
             }
         }
@@ -353,34 +363,27 @@ pub fn interpret_tm5_parameter_with_channels(function: &str, parameter: u32, cha
             };
             TestParameterContext {
                 raw_parameter: parameter,
-                stride_cachelines: None,
-                stride_elements: None,
                 subblock_count: Some(subblocks),
-                page_stride_bytes: None,
+                ..Default::default()
             }
         }
         "MirrorMove128" | "MirrorMove256" | "MirrorMove512"
         | "Mem-MirrorV2-128" | "Mem-MirrorV2-256" | "Mem-MirrorV2-512" => {
             TestParameterContext {
                 raw_parameter: parameter,
-                stride_cachelines: None,
-                stride_elements: None,
-                subblock_count: None,
                 page_stride_bytes: if parameter == 0 {
-                    None // No page striding
+                    None
                 } else {
                     Some((parameter as usize + 1) * 128)
                 },
+                ..Default::default()
             }
         }
         _ => {
             // Unknown test type — preserve raw parameter, no interpretation
             TestParameterContext {
                 raw_parameter: parameter,
-                stride_cachelines: None,
-                stride_elements: None,
-                subblock_count: None,
-                page_stride_bytes: None,
+                ..Default::default()
             }
         }
     }
@@ -431,14 +434,7 @@ impl ModernConfig {
     pub fn load_from_file(path: &str) -> Result<Self, String> {
         let content = fs::read_to_string(path).map_err(|e| format!("Failed to read config file: {}", e))?;
 
-        let mut config: ModernConfig = serde_json::from_str(&content).map_err(|e| format!("Failed to parse JSON config: {}", e))?;
-
-        // Handle backward compatibility: if parameter exists but streams doesn't, copy it
-        for test in &mut config.test_sequence {
-            if test.streams.is_none() && test.parameter.is_some() {
-                test.streams = test.parameter;
-            }
-        }
+        let config: ModernConfig = serde_json::from_str(&content).map_err(|e| format!("Failed to parse JSON config: {}", e))?;
 
         // Validate config version compatibility
         match config.config_format_version.as_str() {
@@ -510,9 +506,9 @@ impl ModernConfig {
                 _ => report.push_str("default timing"),
             }
             
-            // Streams
-            if let Some(streams) = test.streams {
-                report.push_str(&format!(", {}streams", streams));
+            // TMR-native test parameters
+            if let Some(sp) = test.stride_patterns {
+                report.push_str(&format!(", stride_patterns={}", sp));
             }
             
             // Window override
@@ -628,7 +624,12 @@ impl ModernConfig {
     }
     
     pub fn get_test_configs(&self) -> Vec<(&str, TestMemoryConfig)> {
-        let channels = self.legacy_metadata.as_ref().map_or(2, |m| m.tm5_channels);
+        // Channels: prefer JSON system.channels, fall back to legacy TM5 metadata, default 2
+        let channels = if self.system.channels > 0 {
+            self.system.channels
+        } else {
+            self.legacy_metadata.as_ref().map_or(2, |m| m.tm5_channels)
+        };
         self.test_sequence.iter().filter(|t| t.enabled).map(|test| {
             let window_mode = self.parse_test_window_mode(test);
             let chunk_mode = self.parse_test_chunk_mode(test);
@@ -646,7 +647,6 @@ impl ModernConfig {
 
             let mut config = TestMemoryConfig::new(window_mode, chunk_mode, allow_misaligned, requires_locality)
                 .with_timing(timing)
-                .with_streams(test.streams.unwrap_or(1)) // Default to 1 stream (equivalent to TM5 jump=1)
                 .with_pattern_config(test.pattern_mode, test.pattern_param0, test.pattern_param1);
 
             // v2: Attach correctly interpreted parameter context
@@ -654,6 +654,17 @@ impl ModernConfig {
                 config = config.with_parameter_context(
                     interpret_tm5_parameter_with_channels(&test.function, param, channels)
                 );
+            }
+
+            // Fold TMR-native test parameters into parameter_context
+            if test.stride_patterns.is_some() || test.rng_sequences.is_some()
+                || test.subdivisions.is_some() || test.copy_directions.is_some()
+            {
+                let ctx = config.parameter_context.get_or_insert(TestParameterContext::default());
+                if let Some(v) = test.stride_patterns { ctx.stride_patterns = Some(v); }
+                if let Some(v) = test.rng_sequences { ctx.rng_sequences = Some(v); }
+                if let Some(v) = test.subdivisions { ctx.subdivisions = Some(v); }
+                if let Some(v) = test.copy_directions { ctx.copy_directions = Some(v); }
             }
 
             // TM5 SimpleTest: dLoopCounter=5 (write once, verify 5 times),
@@ -682,7 +693,12 @@ impl ModernConfig {
     
     /// Get test configs following TM5 test sequence order and repetition
     fn get_tm5_sequence_configs(&self, sequence: &[u32]) -> Vec<(&str, TestMemoryConfig)> {
-        let channels = self.legacy_metadata.as_ref().map_or(2, |m| m.tm5_channels);
+        // Channels: prefer JSON system.channels, fall back to legacy TM5 metadata, default 2
+        let channels = if self.system.channels > 0 {
+            self.system.channels
+        } else {
+            self.legacy_metadata.as_ref().map_or(2, |m| m.tm5_channels)
+        };
         let mut result = Vec::new();
 
         for &test_index in sequence {
@@ -705,7 +721,6 @@ impl ModernConfig {
 
                     let mut config = TestMemoryConfig::new(window_mode, chunk_mode, allow_misaligned, requires_locality)
                         .with_timing(timing)
-                        .with_streams(test.streams.unwrap_or(1))
                         .with_pattern_config(test.pattern_mode, test.pattern_param0, test.pattern_param1);
 
                     // v2: Attach correctly interpreted parameter context
@@ -713,6 +728,17 @@ impl ModernConfig {
                         config = config.with_parameter_context(
                             interpret_tm5_parameter_with_channels(&test.function, param, channels)
                         );
+                    }
+
+                    // Fold TMR-native test parameters into parameter_context
+                    if test.stride_patterns.is_some() || test.rng_sequences.is_some()
+                        || test.subdivisions.is_some() || test.copy_directions.is_some()
+                    {
+                        let ctx = config.parameter_context.get_or_insert(TestParameterContext::default());
+                        if let Some(v) = test.stride_patterns { ctx.stride_patterns = Some(v); }
+                        if let Some(v) = test.rng_sequences { ctx.rng_sequences = Some(v); }
+                        if let Some(v) = test.subdivisions { ctx.subdivisions = Some(v); }
+                        if let Some(v) = test.copy_directions { ctx.copy_directions = Some(v); }
                     }
 
                     // TM5 SimpleTest: dLoopCounter=5 (write once, verify 5 times),
@@ -838,8 +864,9 @@ pub fn create_demo_config() -> Self {
                 default_test_duration_secs: None,
             },
             large_pages: true,
-			cpu_pinning: CpuPinningConfig::default(),  // Add this
-			memory_allocation: MemoryAllocationConfig::default(),  // Add this
+			cpu_pinning: CpuPinningConfig::default(),
+			memory_allocation: MemoryAllocationConfig::default(),
+            channels: 2,
         },
         test_sequence: vec![
             // Critical: Full memory stuck bit test
@@ -857,7 +884,10 @@ pub fn create_demo_config() -> Self {
                 block_window_fraction: Some(0.0625),   // 1/16th for efficiency
                 allow_misaligned: Some(false),
                 requires_locality: Some(false),
-                streams: Some(1),
+                stride_patterns: None,
+                rng_sequences: None,
+                subdivisions: None,
+                copy_directions: None,
                 pattern_mode: None,
                 pattern_param0: None,
                 pattern_param1: None,
@@ -880,7 +910,10 @@ pub fn create_demo_config() -> Self {
                 block_window_fraction: None,
                 allow_misaligned: Some(false),
                 requires_locality: Some(true),
-                streams: Some(1),
+                stride_patterns: None,
+                rng_sequences: None,
+                subdivisions: None,
+                copy_directions: None,
                 pattern_mode: None,
                 pattern_param0: None,
                 pattern_param1: None,
@@ -903,7 +936,10 @@ pub fn create_demo_config() -> Self {
                 block_window_fraction: None,
                 allow_misaligned: Some(false),
                 requires_locality: Some(false),
-                streams: Some(1),
+                stride_patterns: None,
+                rng_sequences: None,
+                subdivisions: None,
+                copy_directions: None,
                 pattern_mode: Some(1),
                 pattern_param0: Some(0x1E5F),
                 pattern_param1: Some(0x45357354),
@@ -926,7 +962,10 @@ pub fn create_demo_config() -> Self {
                 block_window_fraction: None,
                 allow_misaligned: Some(false),
                 requires_locality: Some(true),
-                streams: Some(1),
+                stride_patterns: None,
+                rng_sequences: None,
+                subdivisions: None,
+                copy_directions: None,
                 pattern_mode: None,
                 pattern_param0: None,
                 pattern_param1: None,
@@ -934,7 +973,7 @@ pub fn create_demo_config() -> Self {
                 use_v2_tests: None,
             },
             
-            // Mem-MirrorV2-256 - AVX2 with dual streams
+            // Mem-MirrorV2-256 - AVX2 with dual subblocks
             TestConfig {
                 enabled: true,
                 function: "Mem-MirrorV2-256".to_string(),
@@ -949,7 +988,10 @@ pub fn create_demo_config() -> Self {
                 block_window_fraction: None,
                 allow_misaligned: Some(false),
                 requires_locality: Some(true),
-                streams: Some(2),                      // Dual stream for AVX2
+                stride_patterns: None,
+                rng_sequences: None,
+                subdivisions: None,
+                copy_directions: None,
                 pattern_mode: None,
                 pattern_param0: None,
                 pattern_param1: None,
@@ -972,7 +1014,10 @@ pub fn create_demo_config() -> Self {
                 block_window_fraction: None,
                 allow_misaligned: Some(false),
                 requires_locality: Some(true),
-                streams: Some(4),                      // 4 streams for cache stress
+                stride_patterns: Some(4),              // 4 interleaved stride patterns
+                rng_sequences: None,
+                subdivisions: None,
+                copy_directions: None,
                 pattern_mode: None,
                 pattern_param0: None,
                 pattern_param1: None,
@@ -995,7 +1040,10 @@ pub fn create_demo_config() -> Self {
                 block_window_fraction: None,
                 allow_misaligned: Some(true),          // Maximum stress
                 requires_locality: Some(false),
-                streams: Some(8),                      // 8 streams for chaos
+                stride_patterns: None,
+                rng_sequences: Some(8),                // 8 independent RNG sequences
+                subdivisions: None,
+                copy_directions: None,
                 pattern_mode: None,
                 pattern_param0: None,
                 pattern_param1: None,
@@ -1018,7 +1066,10 @@ pub fn create_demo_config() -> Self {
                 block_window_fraction: None,
                 allow_misaligned: Some(false),
                 requires_locality: Some(false),
-                streams: Some(4),                      // 4 streams for patterns
+                stride_patterns: None,
+                rng_sequences: None,
+                subdivisions: Some(4),                 // 4 chunk subdivisions
+                copy_directions: None,
                 pattern_mode: None,
                 pattern_param0: None,
                 pattern_param1: None,
@@ -1041,7 +1092,10 @@ pub fn create_demo_config() -> Self {
                 block_window_fraction: None,
                 allow_misaligned: Some(false),
                 requires_locality: Some(false),
-                streams: Some(2),                      // Dual stream copy pattern
+                stride_patterns: None,
+                rng_sequences: None,
+                subdivisions: None,
+                copy_directions: Some(2),              // Forward + backward copy
                 pattern_mode: None,
                 pattern_param0: None,
                 pattern_param1: None,
@@ -1064,7 +1118,10 @@ pub fn create_demo_config() -> Self {
                 block_window_fraction: None,
                 allow_misaligned: Some(false),
                 requires_locality: Some(false),
-                streams: Some(1),
+                stride_patterns: None,
+                rng_sequences: None,
+                subdivisions: None,
+                copy_directions: None,
                 pattern_mode: Some(0),
                 pattern_param0: Some(0),
                 pattern_param1: Some(0),
@@ -1113,8 +1170,9 @@ pub fn create_demo_config() -> Self {
                     default_test_duration_secs: None,
                 },
                 large_pages: true,
-				cpu_pinning: CpuPinningConfig::default(),  // Add this
-				memory_allocation: MemoryAllocationConfig::default(),  // Add this
+				cpu_pinning: CpuPinningConfig::default(),
+				memory_allocation: MemoryAllocationConfig::default(),
+                channels: 2,
 	            },
             test_sequence: vec![
                 TestConfig {
@@ -1131,7 +1189,10 @@ pub fn create_demo_config() -> Self {
                     block_window_fraction: None,
                     allow_misaligned: Some(false),
                     requires_locality: Some(false),
-                    streams: Some(1),                      // Single stream
+                    stride_patterns: None,
+                    rng_sequences: None,
+                    subdivisions: None,
+                    copy_directions: None,
                     pattern_mode: None,
                     pattern_param0: None,
                     pattern_param1: None,
@@ -1152,7 +1213,10 @@ pub fn create_demo_config() -> Self {
                     block_window_fraction: None,
                     allow_misaligned: Some(false),
                     requires_locality: Some(false),
-                    streams: Some(1),                      // Single stream
+                    stride_patterns: None,
+                    rng_sequences: None,
+                    subdivisions: None,
+                    copy_directions: None,
                     pattern_mode: Some(1),
                     pattern_param0: Some(0x1E5F),
                     pattern_param1: Some(0x45357354),
@@ -1302,8 +1366,10 @@ impl LegacyConfig {
                 allow_misaligned: Some(false), // Legacy configs assume aligned access
                 requires_locality: Some(matches!(test.function.as_str(), "RefreshStable")),
                 
-                // Map parameter to streams
-                streams: Some(Self::map_parameter_to_streams(&test.function, test.parameter)),
+                stride_patterns: None,
+                rng_sequences: None,
+                subdivisions: None,
+                copy_directions: None,
                 
                 // Preserve legacy test parameters
                 pattern_mode: Some(test.pattern_mode),
@@ -1353,8 +1419,9 @@ impl LegacyConfig {
                 default_test_duration_secs: None,
             },
             large_pages: true,
-			cpu_pinning: CpuPinningConfig::default(),  // Add this
-			memory_allocation: MemoryAllocationConfig::default(),  // Add this
+			cpu_pinning: CpuPinningConfig::default(),
+			memory_allocation: MemoryAllocationConfig::default(),
+            channels: self.memory_setup.channels,
         },
         test_sequence,
         legacy_metadata: Some(LegacyMetadata {
@@ -1401,36 +1468,6 @@ fn map_legacy_function(legacy_name: &str) -> Result<String, String> {
     }
 }
 
-    // Map TM5 parameter values to modern streams concept
-    fn map_parameter_to_streams(function: &str, parameter: u32) -> u32 {
-        match function {
-            "MirrorMove" | "MirrorMove128" | "MirrorMove256" | "MirrorMove512" => {
-                // For MirrorMove tests, parameter directly maps to thread simulation count
-                match parameter {
-                    0 | 1 => 1,      // Single stream
-                    2 => 2,          // Dual stream
-                    3 => 3,          // Triple stream
-                    4 => 4,          // Quad stream
-                    254 => 2,        // Special dual stream pattern
-                    510 => 2,        // Special dual stream pattern
-                    16384 => 16,     // 16 streams
-                    _ => {
-                        // For other values, try to map sensibly
-                        if parameter > 100 {
-                            4 // Default to quad stream for large values
-                        } else {
-                            parameter.min(16) // Cap at 16 streams
-                        }
-                    }
-                }
-            }
-            "SimpleTest" => {
-                // SimpleTest doesn't use parameter for streams, default to 1
-                1
-            }
-            _ => 1, // Default single stream
-        }
-    }
 }
 
 // Configuration loader that handles both formats
@@ -1466,22 +1503,19 @@ pub fn create_demo_configs() -> Result<(), String> {
     tm5_config.save_to_file("demo_tm5_compatible.json")?;
 
     println!("✅ Created demo_comprehensive_test.json - Modern comprehensive memory testing");
-    println!("   Features: Full memory stuck bit test + timed stress tests with streams");
+    println!("   Features: Full memory stuck bit test + timed stress tests");
     println!("   Timing: 3 cycles, ~2-3 minutes per cycle with comprehensive coverage");
     println!("   Memory: Uses full allocation for critical tests, optimized windows for others");
-    println!("   Streams: Configurable access patterns (1-16 streams) for different test scenarios");
     println!();
     println!("✅ Created demo_tm5_compatible.json - TM5-compatible configuration");
     println!("   Features: TM5-style allocation with modern stuck bit test added");
     println!("   Timing: 3 cycles, faster execution for compatibility");
     println!("   Memory: Maximum allocation minus 128MB reserve, 880MB testing window");
-    println!("   Streams: Single stream mode for compatibility");
     println!();
     println!("Configuration Architecture Summary:");
     println!("  Stage 1: Memory Allocation - Maximum available memory per thread");
     println!("  Stage 2: Testing Window - Configurable window within allocation");
     println!("  Stage 3: Block/Chunk Size - Auto-optimized per test with alignment");
-    println!("  Access Patterns: 1-16 configurable streams (TM5 jump/parameter equivalent)");
     println!("  Timing: Per-test cycles/duration limits + global suite limits");
     println!("  Critical: Mem-StuckBit ensures full memory coverage for bit errors");
 

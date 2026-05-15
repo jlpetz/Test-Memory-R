@@ -434,17 +434,21 @@ macro_rules! spd_copy_impl {
                     let working_bytes = (raw_bytes / align) * align;
                     let half_bytes = working_bytes / 2;
 
-                    let src = base;
-                    let dst = base.add(half_bytes);
+                    let half_a = base;
+                    let half_b = base.add(half_bytes);
 
-                    spd_copy_hot!(src, dst, half_bytes, $arch_type, $load_fn, $store_fn);
-
+                    // Bidirectional: A→B then B→A = full window processed per cycle
+                    spd_copy_hot!(half_a, half_b, half_bytes, $arch_type, $load_fn, $store_fn);
+                    if $need_sfence {
+                        std::arch::x86_64::_mm_sfence();
+                    }
+                    spd_copy_hot!(half_b, half_a, half_bytes, $arch_type, $load_fn, $store_fn);
                     if $need_sfence {
                         std::arch::x86_64::_mm_sfence();
                     }
 
-                    // Total traffic = read bytes + write bytes
-                    total_bytes += (half_bytes * 2) as u64;
+                    // Total traffic = 2 × (read half + write half) = full window
+                    total_bytes += (working_bytes * 2) as u64;
                 }
 
                 if let Some(prog) = progress {
@@ -489,7 +493,7 @@ macro_rules! spd_copy_impl {
 
 spd_write_impl!(
     spd_write_128_impl, spd_write_128_multi,
-    "sse2",
+    "sse4.2,sse4.1,ssse3,sse3,sse2,popcnt",
     std::arch::x86_64::__m128i,
     std::arch::x86_64::_mm_set1_epi64x,
     std::arch::x86_64::_mm_store_si128,
@@ -498,7 +502,7 @@ spd_write_impl!(
 
 spd_write_impl!(
     spd_write_256_impl, spd_write_256_multi,
-    "avx2",
+    "avx2,avx,fma,bmi1,bmi2",
     std::arch::x86_64::__m256i,
     std::arch::x86_64::_mm256_set1_epi64x,
     std::arch::x86_64::_mm256_store_si256,
@@ -507,7 +511,7 @@ spd_write_impl!(
 
 spd_write_impl!(
     spd_write_512_impl, spd_write_512_multi,
-    "avx512f",
+    "avx512f,avx512bw,avx512cd,avx512dq,avx512vl,avx2,avx,fma,bmi1,bmi2",
     std::arch::x86_64::__m512i,
     std::arch::x86_64::_mm512_set1_epi64,
     std::arch::x86_64::_mm512_store_si512,
@@ -529,7 +533,7 @@ crate::auto_dispatch!(
 
 spd_write_impl!(
     spd_write_nt_128_impl, spd_write_nt_128_multi,
-    "sse2",
+    "sse4.2,sse4.1,ssse3,sse3,sse2,popcnt",
     std::arch::x86_64::__m128i,
     std::arch::x86_64::_mm_set1_epi64x,
     std::arch::x86_64::_mm_stream_si128,
@@ -538,7 +542,7 @@ spd_write_impl!(
 
 spd_write_impl!(
     spd_write_nt_256_impl, spd_write_nt_256_multi,
-    "avx2",
+    "avx2,avx,fma,bmi1,bmi2",
     std::arch::x86_64::__m256i,
     std::arch::x86_64::_mm256_set1_epi64x,
     std::arch::x86_64::_mm256_stream_si256,
@@ -547,7 +551,7 @@ spd_write_impl!(
 
 spd_write_impl!(
     spd_write_nt_512_impl, spd_write_nt_512_multi,
-    "avx512f",
+    "avx512f,avx512bw,avx512cd,avx512dq,avx512vl,avx2,avx,fma,bmi1,bmi2",
     std::arch::x86_64::__m512i,
     std::arch::x86_64::_mm512_set1_epi64,
     std::arch::x86_64::_mm512_stream_si512,
@@ -568,7 +572,7 @@ crate::auto_dispatch!(
 
 spd_read_impl!(
     spd_read_128_impl, spd_read_128_multi,
-    "sse2",
+    "sse4.2,sse4.1,ssse3,sse3,sse2,popcnt",
     std::arch::x86_64::__m128i,
     std::arch::x86_64::_mm_load_si128,
     std::arch::x86_64::_mm_xor_si128,
@@ -577,7 +581,7 @@ spd_read_impl!(
 
 spd_read_impl!(
     spd_read_256_impl, spd_read_256_multi,
-    "avx2",
+    "avx2,avx,fma,bmi1,bmi2",
     std::arch::x86_64::__m256i,
     std::arch::x86_64::_mm256_load_si256,
     std::arch::x86_64::_mm256_xor_si256,
@@ -586,7 +590,7 @@ spd_read_impl!(
 
 spd_read_impl!(
     spd_read_512_impl, spd_read_512_multi,
-    "avx512f",
+    "avx512f,avx512bw,avx512cd,avx512dq,avx512vl,avx2,avx,fma,bmi1,bmi2",
     std::arch::x86_64::__m512i,
     std::arch::x86_64::_mm512_load_si512,
     std::arch::x86_64::_mm512_xor_si512,
@@ -608,7 +612,7 @@ crate::auto_dispatch!(
 
 spd_copy_impl!(
     spd_copy_128_impl, spd_copy_128_multi,
-    "sse2",
+    "sse4.2,sse4.1,ssse3,sse3,sse2,popcnt",
     std::arch::x86_64::__m128i,
     std::arch::x86_64::_mm_load_si128,
     std::arch::x86_64::_mm_store_si128,
@@ -617,7 +621,7 @@ spd_copy_impl!(
 
 spd_copy_impl!(
     spd_copy_256_impl, spd_copy_256_multi,
-    "avx2",
+    "avx2,avx,fma,bmi1,bmi2",
     std::arch::x86_64::__m256i,
     std::arch::x86_64::_mm256_load_si256,
     std::arch::x86_64::_mm256_store_si256,
@@ -626,7 +630,7 @@ spd_copy_impl!(
 
 spd_copy_impl!(
     spd_copy_512_impl, spd_copy_512_multi,
-    "avx512f",
+    "avx512f,avx512bw,avx512cd,avx512dq,avx512vl,avx2,avx,fma,bmi1,bmi2",
     std::arch::x86_64::__m512i,
     std::arch::x86_64::_mm512_load_si512,
     std::arch::x86_64::_mm512_store_si512,
@@ -648,7 +652,7 @@ crate::auto_dispatch!(
 
 spd_copy_impl!(
     spd_copy_nt_128_impl, spd_copy_nt_128_multi,
-    "sse2",
+    "sse4.2,sse4.1,ssse3,sse3,sse2,popcnt",
     std::arch::x86_64::__m128i,
     std::arch::x86_64::_mm_load_si128,
     std::arch::x86_64::_mm_stream_si128,
@@ -657,7 +661,7 @@ spd_copy_impl!(
 
 spd_copy_impl!(
     spd_copy_nt_256_impl, spd_copy_nt_256_multi,
-    "avx2",
+    "avx2,avx,fma,bmi1,bmi2",
     std::arch::x86_64::__m256i,
     std::arch::x86_64::_mm256_load_si256,
     std::arch::x86_64::_mm256_stream_si256,
@@ -666,7 +670,7 @@ spd_copy_impl!(
 
 spd_copy_impl!(
     spd_copy_nt_512_impl, spd_copy_nt_512_multi,
-    "avx512f",
+    "avx512f,avx512bw,avx512cd,avx512dq,avx512vl,avx2,avx,fma,bmi1,bmi2",
     std::arch::x86_64::__m512i,
     std::arch::x86_64::_mm512_load_si512,
     std::arch::x86_64::_mm512_stream_si512,

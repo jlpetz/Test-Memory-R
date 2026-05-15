@@ -2,7 +2,7 @@
 //!
 //! This replaces the duplicated boilerplate in each test function with a single
 //! generic function that monomorphizes per call site. Unlike the failed
-//! `test_framework.rs` approach which used `dyn TestPattern` (vtable dispatch in
+//! previous `test_framework.rs` approach which used `dyn TestPattern` (vtable dispatch in
 //! hot loop → no inlining → no SIMD), this uses concrete generic types that the
 //! compiler fully specializes.
 //!

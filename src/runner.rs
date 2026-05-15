@@ -28,6 +28,27 @@ use crate::latency_tests::{
     read_latency_multi, write_latency_multi, copy_latency_multi,  // Full latency tests with percentiles
     LatencyTestStats,
 };
+use crate::latency_tests_v2::{
+    // Layout A read (1 chain step + 1 SIMD-width data load per iteration)
+    lat_v2_read_128_multi, lat_v2_read_256_multi, lat_v2_read_512_multi, lat_v2_read_auto_multi,
+    // Layout A write (1 chain step + 1 SIMD-width cached store per iteration)
+    lat_v2_write_128_multi, lat_v2_write_256_multi, lat_v2_write_512_multi, lat_v2_write_auto_multi,
+    // Layout A copy (1 chain step + 1 SIMD-width read-modify-write per iteration)
+    lat_v2_copy_128_multi, lat_v2_copy_256_multi, lat_v2_copy_512_multi, lat_v2_copy_auto_multi,
+    // Layout B packed read (1 chain step + 6 SIMD-width data loads per iteration)
+    lat_v2p_read_128_multi, lat_v2p_read_256_multi, lat_v2p_read_512_multi, lat_v2p_read_auto_multi,
+    // Layout B packed write (1 chain step + 6 SIMD-width cached stores per iteration)
+    lat_v2p_write_128_multi, lat_v2p_write_256_multi, lat_v2p_write_512_multi, lat_v2p_write_auto_multi,
+    // Layout B packed copy (1 chain step + 6 SIMD-width read-modify-write per iteration)
+    lat_v2p_copy_128_multi, lat_v2p_copy_256_multi, lat_v2p_copy_512_multi, lat_v2p_copy_auto_multi,
+    // Layout B packed write FULL — writes entire 64B cache line per cell at every width
+    lat_v2p_write_full_128_multi, lat_v2p_write_full_256_multi, lat_v2p_write_full_512_multi, lat_v2p_write_full_auto_multi,
+    // Layout B packed copy FULL — RMW entire 64B cache line per cell at every width
+    lat_v2p_copy_full_128_multi, lat_v2p_copy_full_256_multi, lat_v2p_copy_full_512_multi, lat_v2p_copy_full_auto_multi,
+    // NT-write saturation PoC (Scalar = 8-byte MOVNTI, validates WCB-fill hypothesis)
+    lat_ntw_write_scalar_multi,
+    lat_ntw_write_128_multi, lat_ntw_write_256_multi, lat_ntw_write_512_multi, lat_ntw_write_auto_multi,
+};
 use crate::bandwidth_tests::{
     spd_read_auto_multi, spd_write_auto_multi, spd_write_nt_auto_multi,
     spd_copy_auto_multi, spd_copy_nt_auto_multi,
@@ -273,7 +294,6 @@ impl TestSuiteTiming {
 
 // Test function signatures
 type TestFunctionSimple = unsafe fn(*mut u8, usize, usize, ErrorMode, &TestTiming) -> TestStats;
-type TestFunctionWithStreams = unsafe fn(*mut u8, usize, usize, ErrorMode, &TestTiming, u32) -> TestStats;
 type TestFunctionWithConfig = unsafe fn(*mut u8, usize, usize, ErrorMode, &TestTiming, &TestMemoryConfig) -> TestStats;
 type TestFunctionMultiBlock = unsafe fn(&[AllocationBlock], usize, ErrorMode, &TestTiming, &TestMemoryConfig, Option<&TestProgress>) -> TestStats;
 type TestFunctionLatency = unsafe fn(&[AllocationBlock], usize, ErrorMode, &TestTiming, &TestMemoryConfig, Option<&TestProgress>) -> LatencyTestStats;
@@ -282,7 +302,6 @@ type TestFunctionLatency = unsafe fn(&[AllocationBlock], usize, ErrorMode, &Test
 #[derive(Debug, Clone)]
 pub enum TestFunction {
     Simple(TestFunctionSimple),
-    WithStreams(TestFunctionWithStreams),
     WithConfig(TestFunctionWithConfig),
     MultiBlock(TestFunctionMultiBlock),
     /// Latency tests return extended stats with percentiles
@@ -315,12 +334,12 @@ pub fn run_tests_with_layout_and_timing_filtered(
     runtime_config: RuntimeConfig,
     config: Option<&crate::config::ModernConfig>,
     single_test_filter: Option<&str>,
-    streams_override: Option<usize>,
     parameter_override: Option<&str>,
     pattern_mode_override: Option<u32>,
     verify_reps_override: Option<u32>,
     test_reps_override: Option<u32>,
     wrc_override: Option<u32>,
+    channels_override: Option<u32>,
     cache_info: &CacheInfo,
 ) -> bool {
     setup_signal_handler();
@@ -478,6 +497,7 @@ pub fn run_tests_with_layout_and_timing_filtered(
         test_definitions.retain(|def| {
             matchers.iter().any(|matcher| {
                 matcher.is_match(&def.display_name) ||
+                matcher.is_match(def.actual_name) ||
                 def.original_name.map(|n| matcher.is_match(n)).unwrap_or(false)
             })
         });
@@ -495,16 +515,8 @@ pub fn run_tests_with_layout_and_timing_filtered(
         } else {
             log::info!("🎯 Running {} tests matching filter '{}'", test_definitions.len(), test_name_filter);
             for def in &test_definitions {
-                log::info!("  - {}", def.display_name);
+                log::debug!("  - {}", def.display_name);
             }
-        }
-    }
-
-    // Apply streams override if provided (CLI parameter overrides hard-coded config)
-    if let Some(streams) = streams_override {
-        log::info!("🔧 Applying CLI streams override: {} stream(s)", streams);
-        for def in test_definitions.iter_mut() {
-            def.config.streams = streams as u32;
         }
     }
 
@@ -520,20 +532,16 @@ pub fn run_tests_with_layout_and_timing_filtered(
                     let n: u32 = s.split(':').nth(1).unwrap_or("2").parse().unwrap_or(2);
                     def.config.parameter_context = Some(crate::config::TestParameterContext {
                         raw_parameter: n,
-                        stride_cachelines: None,
-                        stride_elements: None,
                         subblock_count: Some(n),
-                        page_stride_bytes: None,
+                        ..Default::default()
                     });
                 }
                 s if s.starts_with("stride:") => {
                     let n: u32 = s.split(':').nth(1).unwrap_or("1").parse().unwrap_or(1);
                     def.config.parameter_context = Some(crate::config::TestParameterContext {
                         raw_parameter: n,
-                        stride_cachelines: None,
-                        stride_elements: None,
-                        subblock_count: None,
                         page_stride_bytes: Some((n as usize + 1) * 128),
+                        ..Default::default()
                     });
                 }
                 _ => {}
@@ -573,6 +581,41 @@ pub fn run_tests_with_layout_and_timing_filtered(
         }
     }
 
+    // Apply channels override if provided (affects stride calculation in SimpleTest)
+    if let Some(channels) = channels_override {
+        log::info!("Applying CLI channels override: {} channel(s)", channels);
+        for def in test_definitions.iter_mut() {
+            if let Some(ref mut ctx) = def.config.parameter_context {
+                // Recompute stride if this test has stride_cachelines (SimpleTest)
+                if ctx.stride_cachelines.is_some() && ctx.raw_parameter > 0 {
+                    let stride_cl = (channels as usize * ctx.raw_parameter as usize).saturating_sub(1);
+                    ctx.stride_cachelines = Some(stride_cl);
+                    ctx.stride_elements = Some(stride_cl * (def.config.cache_line_bytes / 8));
+                    log::debug!("  {} stride recalculated: {} cache lines ({} channels × {} parameter - 1)",
+                        def.display_name, stride_cl, channels, ctx.raw_parameter);
+                }
+            }
+        }
+    }
+
+    // Validate test parameter values (must be >= 1 and power-of-2 where required)
+    for def in &test_definitions {
+        if let Some(ref ctx) = def.config.parameter_context {
+            let validate_param = |name: &str, val: u32, require_pow2: bool| {
+                if val < 1 {
+                    panic!("{}: {} must be >= 1, got {}", def.display_name, name, val);
+                }
+                if require_pow2 && val > 1 && !val.is_power_of_two() {
+                    panic!("{}: {} must be power-of-2 when > 1, got {}", def.display_name, name, val);
+                }
+            };
+            if let Some(v) = ctx.stride_patterns { validate_param("stride_patterns", v, true); }
+            if let Some(v) = ctx.rng_sequences { validate_param("rng_sequences", v, true); }
+            if let Some(v) = ctx.subdivisions { validate_param("subdivisions", v, true); }
+            if let Some(v) = ctx.copy_directions { validate_param("copy_directions", v, false); }
+        }
+    }
+
     // Validate test plan dependency chain
     for (i, def) in test_definitions.iter().enumerate() {
         log::debug!("Test plan [{}] '{}': effect={}, skip_init={}",
@@ -597,6 +640,16 @@ pub fn run_tests_with_layout_and_timing_filtered(
 
     // cache_info is passed from main.rs (detected once at startup via get_system_info())
     // Used for calculating window sizes in CacheLevel mode during display and test execution
+
+    // Display channels configuration before test table
+    {
+        let effective_channels = channels_override
+            .or_else(|| config.map(|c| c.system.channels))
+            .unwrap_or(2);
+        let cl_bytes = cache_info.cache_line_size;
+        println!("⚙  Memory Channels: {} (affects SimpleTest stride: [channels × param - 1] × {}B cache line)",
+            effective_channels, cl_bytes);
+    }
 
     // Print test configuration summary with resolved auto-dispatch names
     {
@@ -958,8 +1011,7 @@ fn execute_test_cycle(
             } else {
                 String::new()
             };
-            println!("   Config: streams={}, parameter={}, mode={}, window={}, chunk={}, locality={}{}",
-                     test_def.config.streams,
+            println!("   Config: parameter={}, mode={}, window={}, chunk={}, locality={}{}",
                      param_str,
                      mode_str,
                      window_str,
@@ -1114,6 +1166,223 @@ fn execute_test_cycle(
 fn resolve_auto_dispatch_test(test_name: &str) -> Option<(&'static str, TestFunction)> {
     if !test_name.ends_with("Auto") {
         return None;
+    }
+
+    // Lat-V2/V2P/NTW family — Latency-typed auto-dispatch
+    // Test names are "Lat-V2-{tier}-Read-Auto", "Lat-V2P-{tier}-Read-Auto", "Lat-NTW-DRAM-Write-Auto"
+    // Resolved names follow the same pattern with -{128,256,512} replacing -Auto
+    if test_name.starts_with("Lat-V2-") || test_name.starts_with("Lat-V2P-") || test_name.starts_with("Lat-NTW-") {
+        let width: &str = if is_x86_feature_detected!("avx512f") {
+            "512"
+        } else if is_x86_feature_detected!("avx2") {
+            "256"
+        } else {
+            "128"
+        };
+
+        // Build resolved name: replace trailing "Auto" with width
+        let resolved: &'static str = match (test_name, width) {
+            // Layout A — Lat-V2-*-Read
+            ("Lat-V2-L1-Read-Auto", "512") => "Lat-V2-L1-Read-512",
+            ("Lat-V2-L1-Read-Auto", "256") => "Lat-V2-L1-Read-256",
+            ("Lat-V2-L1-Read-Auto", "128") => "Lat-V2-L1-Read-128",
+            ("Lat-V2-L2-Read-Auto", "512") => "Lat-V2-L2-Read-512",
+            ("Lat-V2-L2-Read-Auto", "256") => "Lat-V2-L2-Read-256",
+            ("Lat-V2-L2-Read-Auto", "128") => "Lat-V2-L2-Read-128",
+            ("Lat-V2-L3-Read-Auto", "512") => "Lat-V2-L3-Read-512",
+            ("Lat-V2-L3-Read-Auto", "256") => "Lat-V2-L3-Read-256",
+            ("Lat-V2-L3-Read-Auto", "128") => "Lat-V2-L3-Read-128",
+            ("Lat-V2-DRAM-Read-Auto", "512") => "Lat-V2-DRAM-Read-512",
+            ("Lat-V2-DRAM-Read-Auto", "256") => "Lat-V2-DRAM-Read-256",
+            ("Lat-V2-DRAM-Read-Auto", "128") => "Lat-V2-DRAM-Read-128",
+            ("Lat-V2-DRAMFull-Read-Auto", "512") => "Lat-V2-DRAMFull-Read-512",
+            ("Lat-V2-DRAMFull-Read-Auto", "256") => "Lat-V2-DRAMFull-Read-256",
+            ("Lat-V2-DRAMFull-Read-Auto", "128") => "Lat-V2-DRAMFull-Read-128",
+            // Layout A Write — single cached store per chain step (baseline)
+            ("Lat-V2-L1-Write-Auto", "512") => "Lat-V2-L1-Write-512",
+            ("Lat-V2-L1-Write-Auto", "256") => "Lat-V2-L1-Write-256",
+            ("Lat-V2-L1-Write-Auto", "128") => "Lat-V2-L1-Write-128",
+            ("Lat-V2-L2-Write-Auto", "512") => "Lat-V2-L2-Write-512",
+            ("Lat-V2-L2-Write-Auto", "256") => "Lat-V2-L2-Write-256",
+            ("Lat-V2-L2-Write-Auto", "128") => "Lat-V2-L2-Write-128",
+            ("Lat-V2-L3-Write-Auto", "512") => "Lat-V2-L3-Write-512",
+            ("Lat-V2-L3-Write-Auto", "256") => "Lat-V2-L3-Write-256",
+            ("Lat-V2-L3-Write-Auto", "128") => "Lat-V2-L3-Write-128",
+            ("Lat-V2-DRAM-Write-Auto", "512") => "Lat-V2-DRAM-Write-512",
+            ("Lat-V2-DRAM-Write-Auto", "256") => "Lat-V2-DRAM-Write-256",
+            ("Lat-V2-DRAM-Write-Auto", "128") => "Lat-V2-DRAM-Write-128",
+            ("Lat-V2-DRAMFull-Write-Auto", "512") => "Lat-V2-DRAMFull-Write-512",
+            ("Lat-V2-DRAMFull-Write-Auto", "256") => "Lat-V2-DRAMFull-Write-256",
+            ("Lat-V2-DRAMFull-Write-Auto", "128") => "Lat-V2-DRAMFull-Write-128",
+            // Layout A Copy — single read-modify-write per chain step (baseline)
+            ("Lat-V2-L1-Copy-Auto", "512") => "Lat-V2-L1-Copy-512",
+            ("Lat-V2-L1-Copy-Auto", "256") => "Lat-V2-L1-Copy-256",
+            ("Lat-V2-L1-Copy-Auto", "128") => "Lat-V2-L1-Copy-128",
+            ("Lat-V2-L2-Copy-Auto", "512") => "Lat-V2-L2-Copy-512",
+            ("Lat-V2-L2-Copy-Auto", "256") => "Lat-V2-L2-Copy-256",
+            ("Lat-V2-L2-Copy-Auto", "128") => "Lat-V2-L2-Copy-128",
+            ("Lat-V2-L3-Copy-Auto", "512") => "Lat-V2-L3-Copy-512",
+            ("Lat-V2-L3-Copy-Auto", "256") => "Lat-V2-L3-Copy-256",
+            ("Lat-V2-L3-Copy-Auto", "128") => "Lat-V2-L3-Copy-128",
+            ("Lat-V2-DRAM-Copy-Auto", "512") => "Lat-V2-DRAM-Copy-512",
+            ("Lat-V2-DRAM-Copy-Auto", "256") => "Lat-V2-DRAM-Copy-256",
+            ("Lat-V2-DRAM-Copy-Auto", "128") => "Lat-V2-DRAM-Copy-128",
+            ("Lat-V2-DRAMFull-Copy-Auto", "512") => "Lat-V2-DRAMFull-Copy-512",
+            ("Lat-V2-DRAMFull-Copy-Auto", "256") => "Lat-V2-DRAMFull-Copy-256",
+            ("Lat-V2-DRAMFull-Copy-Auto", "128") => "Lat-V2-DRAMFull-Copy-128",
+            // Layout B — Lat-V2P-*-Read
+            ("Lat-V2P-L1-Read-Auto", "512") => "Lat-V2P-L1-Read-512",
+            ("Lat-V2P-L1-Read-Auto", "256") => "Lat-V2P-L1-Read-256",
+            ("Lat-V2P-L1-Read-Auto", "128") => "Lat-V2P-L1-Read-128",
+            ("Lat-V2P-L2-Read-Auto", "512") => "Lat-V2P-L2-Read-512",
+            ("Lat-V2P-L2-Read-Auto", "256") => "Lat-V2P-L2-Read-256",
+            ("Lat-V2P-L2-Read-Auto", "128") => "Lat-V2P-L2-Read-128",
+            ("Lat-V2P-L3-Read-Auto", "512") => "Lat-V2P-L3-Read-512",
+            ("Lat-V2P-L3-Read-Auto", "256") => "Lat-V2P-L3-Read-256",
+            ("Lat-V2P-L3-Read-Auto", "128") => "Lat-V2P-L3-Read-128",
+            ("Lat-V2P-DRAM-Read-Auto", "512") => "Lat-V2P-DRAM-Read-512",
+            ("Lat-V2P-DRAM-Read-Auto", "256") => "Lat-V2P-DRAM-Read-256",
+            ("Lat-V2P-DRAM-Read-Auto", "128") => "Lat-V2P-DRAM-Read-128",
+            ("Lat-V2P-DRAMFull-Read-Auto", "512") => "Lat-V2P-DRAMFull-Read-512",
+            ("Lat-V2P-DRAMFull-Read-Auto", "256") => "Lat-V2P-DRAMFull-Read-256",
+            ("Lat-V2P-DRAMFull-Read-Auto", "128") => "Lat-V2P-DRAMFull-Read-128",
+            // Layout B Write — packed cached writes (Path B store-buffer pressure PoC)
+            ("Lat-V2P-L1-Write-Auto", "512") => "Lat-V2P-L1-Write-512",
+            ("Lat-V2P-L1-Write-Auto", "256") => "Lat-V2P-L1-Write-256",
+            ("Lat-V2P-L1-Write-Auto", "128") => "Lat-V2P-L1-Write-128",
+            ("Lat-V2P-L2-Write-Auto", "512") => "Lat-V2P-L2-Write-512",
+            ("Lat-V2P-L2-Write-Auto", "256") => "Lat-V2P-L2-Write-256",
+            ("Lat-V2P-L2-Write-Auto", "128") => "Lat-V2P-L2-Write-128",
+            ("Lat-V2P-L3-Write-Auto", "512") => "Lat-V2P-L3-Write-512",
+            ("Lat-V2P-L3-Write-Auto", "256") => "Lat-V2P-L3-Write-256",
+            ("Lat-V2P-L3-Write-Auto", "128") => "Lat-V2P-L3-Write-128",
+            ("Lat-V2P-DRAM-Write-Auto", "512") => "Lat-V2P-DRAM-Write-512",
+            ("Lat-V2P-DRAM-Write-Auto", "256") => "Lat-V2P-DRAM-Write-256",
+            ("Lat-V2P-DRAM-Write-Auto", "128") => "Lat-V2P-DRAM-Write-128",
+            ("Lat-V2P-DRAMFull-Write-Auto", "512") => "Lat-V2P-DRAMFull-Write-512",
+            ("Lat-V2P-DRAMFull-Write-Auto", "256") => "Lat-V2P-DRAMFull-Write-256",
+            ("Lat-V2P-DRAMFull-Write-Auto", "128") => "Lat-V2P-DRAMFull-Write-128",
+            // Layout B Copy — packed read-modify-write (warms lines into L1 before stores)
+            ("Lat-V2P-L1-Copy-Auto", "512") => "Lat-V2P-L1-Copy-512",
+            ("Lat-V2P-L1-Copy-Auto", "256") => "Lat-V2P-L1-Copy-256",
+            ("Lat-V2P-L1-Copy-Auto", "128") => "Lat-V2P-L1-Copy-128",
+            ("Lat-V2P-L2-Copy-Auto", "512") => "Lat-V2P-L2-Copy-512",
+            ("Lat-V2P-L2-Copy-Auto", "256") => "Lat-V2P-L2-Copy-256",
+            ("Lat-V2P-L2-Copy-Auto", "128") => "Lat-V2P-L2-Copy-128",
+            ("Lat-V2P-L3-Copy-Auto", "512") => "Lat-V2P-L3-Copy-512",
+            ("Lat-V2P-L3-Copy-Auto", "256") => "Lat-V2P-L3-Copy-256",
+            ("Lat-V2P-L3-Copy-Auto", "128") => "Lat-V2P-L3-Copy-128",
+            ("Lat-V2P-DRAM-Copy-Auto", "512") => "Lat-V2P-DRAM-Copy-512",
+            ("Lat-V2P-DRAM-Copy-Auto", "256") => "Lat-V2P-DRAM-Copy-256",
+            ("Lat-V2P-DRAM-Copy-Auto", "128") => "Lat-V2P-DRAM-Copy-128",
+            ("Lat-V2P-DRAMFull-Copy-Auto", "512") => "Lat-V2P-DRAMFull-Copy-512",
+            ("Lat-V2P-DRAMFull-Copy-Auto", "256") => "Lat-V2P-DRAMFull-Copy-256",
+            ("Lat-V2P-DRAMFull-Copy-Auto", "128") => "Lat-V2P-DRAMFull-Copy-128",
+            // Layout B WriteFull — full-cache-line cached writes (byte-coverage isolation)
+            ("Lat-V2P-L1-WriteFull-Auto", "512") => "Lat-V2P-L1-WriteFull-512",
+            ("Lat-V2P-L1-WriteFull-Auto", "256") => "Lat-V2P-L1-WriteFull-256",
+            ("Lat-V2P-L1-WriteFull-Auto", "128") => "Lat-V2P-L1-WriteFull-128",
+            ("Lat-V2P-L2-WriteFull-Auto", "512") => "Lat-V2P-L2-WriteFull-512",
+            ("Lat-V2P-L2-WriteFull-Auto", "256") => "Lat-V2P-L2-WriteFull-256",
+            ("Lat-V2P-L2-WriteFull-Auto", "128") => "Lat-V2P-L2-WriteFull-128",
+            ("Lat-V2P-L3-WriteFull-Auto", "512") => "Lat-V2P-L3-WriteFull-512",
+            ("Lat-V2P-L3-WriteFull-Auto", "256") => "Lat-V2P-L3-WriteFull-256",
+            ("Lat-V2P-L3-WriteFull-Auto", "128") => "Lat-V2P-L3-WriteFull-128",
+            ("Lat-V2P-DRAM-WriteFull-Auto", "512") => "Lat-V2P-DRAM-WriteFull-512",
+            ("Lat-V2P-DRAM-WriteFull-Auto", "256") => "Lat-V2P-DRAM-WriteFull-256",
+            ("Lat-V2P-DRAM-WriteFull-Auto", "128") => "Lat-V2P-DRAM-WriteFull-128",
+            ("Lat-V2P-DRAMFull-WriteFull-Auto", "512") => "Lat-V2P-DRAMFull-WriteFull-512",
+            ("Lat-V2P-DRAMFull-WriteFull-Auto", "256") => "Lat-V2P-DRAMFull-WriteFull-256",
+            ("Lat-V2P-DRAMFull-WriteFull-Auto", "128") => "Lat-V2P-DRAMFull-WriteFull-128",
+            // Layout B CopyFull — full-cache-line RMW (byte-coverage isolation for Copy)
+            ("Lat-V2P-L1-CopyFull-Auto", "512") => "Lat-V2P-L1-CopyFull-512",
+            ("Lat-V2P-L1-CopyFull-Auto", "256") => "Lat-V2P-L1-CopyFull-256",
+            ("Lat-V2P-L1-CopyFull-Auto", "128") => "Lat-V2P-L1-CopyFull-128",
+            ("Lat-V2P-L2-CopyFull-Auto", "512") => "Lat-V2P-L2-CopyFull-512",
+            ("Lat-V2P-L2-CopyFull-Auto", "256") => "Lat-V2P-L2-CopyFull-256",
+            ("Lat-V2P-L2-CopyFull-Auto", "128") => "Lat-V2P-L2-CopyFull-128",
+            ("Lat-V2P-L3-CopyFull-Auto", "512") => "Lat-V2P-L3-CopyFull-512",
+            ("Lat-V2P-L3-CopyFull-Auto", "256") => "Lat-V2P-L3-CopyFull-256",
+            ("Lat-V2P-L3-CopyFull-Auto", "128") => "Lat-V2P-L3-CopyFull-128",
+            ("Lat-V2P-DRAM-CopyFull-Auto", "512") => "Lat-V2P-DRAM-CopyFull-512",
+            ("Lat-V2P-DRAM-CopyFull-Auto", "256") => "Lat-V2P-DRAM-CopyFull-256",
+            ("Lat-V2P-DRAM-CopyFull-Auto", "128") => "Lat-V2P-DRAM-CopyFull-128",
+            ("Lat-V2P-DRAMFull-CopyFull-Auto", "512") => "Lat-V2P-DRAMFull-CopyFull-512",
+            ("Lat-V2P-DRAMFull-CopyFull-Auto", "256") => "Lat-V2P-DRAMFull-CopyFull-256",
+            ("Lat-V2P-DRAMFull-CopyFull-Auto", "128") => "Lat-V2P-DRAMFull-CopyFull-128",
+            // NT-Write saturation
+            ("Lat-NTW-DRAM-Write-Auto", "512") => "Lat-NTW-DRAM-Write-512",
+            ("Lat-NTW-DRAM-Write-Auto", "256") => "Lat-NTW-DRAM-Write-256",
+            ("Lat-NTW-DRAM-Write-Auto", "128") => "Lat-NTW-DRAM-Write-128",
+            _ => return None,
+        };
+
+        // Pick the function family based on the test prefix and operation
+        let is_write_full = test_name.contains("-WriteFull-");
+        let is_copy_full = test_name.contains("-CopyFull-");
+        let is_write = !is_write_full && test_name.contains("-Write-");
+        let is_copy = !is_copy_full && test_name.contains("-Copy-");
+        let func: TestFunction = if test_name.starts_with("Lat-V2P-") {
+            if is_copy_full {
+                TestFunction::Latency(match width {
+                    "512" => lat_v2p_copy_full_512_multi,
+                    "256" => lat_v2p_copy_full_256_multi,
+                    _ => lat_v2p_copy_full_128_multi,
+                })
+            } else if is_write_full {
+                TestFunction::Latency(match width {
+                    "512" => lat_v2p_write_full_512_multi,
+                    "256" => lat_v2p_write_full_256_multi,
+                    _ => lat_v2p_write_full_128_multi,
+                })
+            } else if is_copy {
+                TestFunction::Latency(match width {
+                    "512" => lat_v2p_copy_512_multi,
+                    "256" => lat_v2p_copy_256_multi,
+                    _ => lat_v2p_copy_128_multi,
+                })
+            } else if is_write {
+                TestFunction::Latency(match width {
+                    "512" => lat_v2p_write_512_multi,
+                    "256" => lat_v2p_write_256_multi,
+                    _ => lat_v2p_write_128_multi,
+                })
+            } else {
+                TestFunction::Latency(match width {
+                    "512" => lat_v2p_read_512_multi,
+                    "256" => lat_v2p_read_256_multi,
+                    _ => lat_v2p_read_128_multi,
+                })
+            }
+        } else if test_name.starts_with("Lat-V2-") {
+            if is_copy {
+                TestFunction::Latency(match width {
+                    "512" => lat_v2_copy_512_multi,
+                    "256" => lat_v2_copy_256_multi,
+                    _ => lat_v2_copy_128_multi,
+                })
+            } else if is_write {
+                TestFunction::Latency(match width {
+                    "512" => lat_v2_write_512_multi,
+                    "256" => lat_v2_write_256_multi,
+                    _ => lat_v2_write_128_multi,
+                })
+            } else {
+                TestFunction::Latency(match width {
+                    "512" => lat_v2_read_512_multi,
+                    "256" => lat_v2_read_256_multi,
+                    _ => lat_v2_read_128_multi,
+                })
+            }
+        } else {
+            // Lat-NTW-*
+            TestFunction::Latency(match width {
+                "512" => lat_ntw_write_512_multi,
+                "256" => lat_ntw_write_256_multi,
+                _ => lat_ntw_write_128_multi,
+            })
+        };
+        return Some((resolved, func));
     }
 
     // Strip "Auto" suffix to get base name (e.g., "Mem-MirrorV2-Auto" -> "Mem-MirrorV2-")
@@ -1285,29 +1554,17 @@ fn create_test_definitions(cache_info: &CacheInfo) -> Vec<TestDefinition> {
     // TSC frequency from the passed cache_info (detected once at startup)
     let tsc_freq = cache_info.tsc_frequency_ghz;
 
-    // Helper to validate and adjust streams at config creation time
-    let validate_streams = |mut config: TestMemoryConfig, test_name: &str| -> TestMemoryConfig {
-        if !config.streams.is_power_of_two() {
-            let original = config.streams;
-            config.streams = config.streams.next_power_of_two();
-            println!("⚠️  {}: Adjusting stream count {} → {} (power-of-2 required)",
-                     test_name, original, config.streams);
-        }
-        config
-    };
-    
     let test_definitions = vec![
         // === CRITICAL: Full Memory Stuck Bit Test ===
         (
             "Mem-StuckBit",
             TestFunction::MultiBlock(stuck_bit_test_multi),
-            validate_streams(TestMemoryConfig::new(
+            TestMemoryConfig::new(
                 WindowMode::FullAllocation,
                 ChunkMode::WindowFraction { fraction: 0.0625 },
                 false,
                 false
             ).with_timing(TestTiming::cycles_only(1))
-             .with_streams(1), "Mem-StuckBit")
              .with_memory_type(None)
         ),
 
@@ -1315,39 +1572,36 @@ fn create_test_definitions(cache_info: &CacheInfo) -> Vec<TestDefinition> {
         (
             "Mem-StuckBit128",
             TestFunction::MultiBlock(stuck_bit_test_128_multi),
-            validate_streams(TestMemoryConfig::new(
+            TestMemoryConfig::new(
                 WindowMode::FullAllocation,
                 ChunkMode::WindowFraction { fraction: 0.0625 },
                 false,
                 false
             ).with_timing(TestTiming::cycles_only(1))
-             .with_streams(1), "Mem-StuckBit128")
              .with_memory_type(None)
         ),
 
         (
             "Mem-StuckBit256",
             TestFunction::MultiBlock(stuck_bit_test_256_multi),
-            validate_streams(TestMemoryConfig::new(
+            TestMemoryConfig::new(
                 WindowMode::FullAllocation,
                 ChunkMode::WindowFraction { fraction: 0.0625 },
                 false,
                 false
             ).with_timing(TestTiming::cycles_only(1))
-             .with_streams(1), "Mem-StuckBit256")
              .with_memory_type(None)
         ),
 
         (
             "Mem-StuckBit512",
             TestFunction::MultiBlock(stuck_bit_test_512_multi),
-            validate_streams(TestMemoryConfig::new(
+            TestMemoryConfig::new(
                 WindowMode::FullAllocation,
                 ChunkMode::WindowFraction { fraction: 0.0625 },
                 false,
                 false
             ).with_timing(TestTiming::cycles_only(1))
-             .with_streams(1), "Mem-StuckBit512")
              .with_memory_type(None)
         ),
 
@@ -1356,13 +1610,12 @@ fn create_test_definitions(cache_info: &CacheInfo) -> Vec<TestDefinition> {
         (
             "Mem-StuckBitAuto",
             TestFunction::MultiBlock(stuck_bit_test_auto_multi),
-            validate_streams(TestMemoryConfig::new(
+            TestMemoryConfig::new(
                 WindowMode::FullAllocation,
                 ChunkMode::WindowFraction { fraction: 0.0625 },
                 false,
                 false
             ).with_timing(TestTiming::cycles_only(1))
-             .with_streams(1), "Mem-StuckBitAuto")
              .with_memory_type(None)
         ),
 
@@ -1370,52 +1623,48 @@ fn create_test_definitions(cache_info: &CacheInfo) -> Vec<TestDefinition> {
         (
             "Mem-SimpleNT-128",
             TestFunction::MultiBlock(simple_test_nt_128_multi),
-            validate_streams(TestMemoryConfig::new(
+            TestMemoryConfig::new(
                 WindowMode::FullAllocation,
                 ChunkMode::FixedSize { size_mb: 4 },
                 false,
                 false
             ).with_timing(TestTiming::hybrid(100, 30))
-             .with_streams(1), "Mem-SimpleNT-128")
              .with_memory_type(None)
         ),
 
         (
             "Mem-SimpleNT-256",
             TestFunction::MultiBlock(simple_test_nt_256_multi),
-            validate_streams(TestMemoryConfig::new(
+            TestMemoryConfig::new(
                 WindowMode::FullAllocation,
                 ChunkMode::FixedSize { size_mb: 4 },
                 false,
                 false
             ).with_timing(TestTiming::hybrid(100, 30))
-             .with_streams(1), "Mem-SimpleNT-256")
              .with_memory_type(None)
         ),
 
         (
             "Mem-SimpleNT-512",
             TestFunction::MultiBlock(simple_test_nt_512_multi),
-            validate_streams(TestMemoryConfig::new(
+            TestMemoryConfig::new(
                 WindowMode::FullAllocation,
                 ChunkMode::FixedSize { size_mb: 4 },
                 false,
                 false
             ).with_timing(TestTiming::hybrid(100, 30))
-             .with_streams(1), "Mem-SimpleNT-512")
              .with_memory_type(None)
         ),
 
         (
             "Mem-SimpleNT-Auto",
             TestFunction::MultiBlock(simple_test_nt_auto_multi),
-            validate_streams(TestMemoryConfig::new(
+            TestMemoryConfig::new(
                 WindowMode::FullAllocation,
                 ChunkMode::FixedSize { size_mb: 4 },
                 false,
                 false
             ).with_timing(TestTiming::hybrid(100, 30))
-             .with_streams(1), "Mem-SimpleNT-Auto")
              .with_memory_type(None)
         ),
 
@@ -1423,52 +1672,48 @@ fn create_test_definitions(cache_info: &CacheInfo) -> Vec<TestDefinition> {
         (
             "Mem-Refresh",
             TestFunction::MultiBlock(refresh_stable_multi),
-            validate_streams(TestMemoryConfig::new(
+            TestMemoryConfig::new(
                 WindowMode::CacheRelative { multiplier: 2.0 },
                 ChunkMode::FixedSize { size_mb: 2048 },
                 false,
                 true
             ).with_timing(TestTiming::duration_only(15))
-             .with_streams(1), "Mem-Refresh")
              .with_memory_type(None)
         ),
 
         (
             "Mem-Refresh128",
             TestFunction::MultiBlock(refresh_stable_128_multi),
-            validate_streams(TestMemoryConfig::new(
+            TestMemoryConfig::new(
                 WindowMode::CacheRelative { multiplier: 2.0 },
                 ChunkMode::FixedSize { size_mb: 2048 },
                 false,
                 true
             ).with_timing(TestTiming::duration_only(15))
-             .with_streams(1), "Mem-Refresh128")
              .with_memory_type(None)
         ),
 
         (
             "Mem-Refresh256",
             TestFunction::MultiBlock(refresh_stable_256_multi),
-            validate_streams(TestMemoryConfig::new(
+            TestMemoryConfig::new(
                 WindowMode::CacheRelative { multiplier: 2.0 },
                 ChunkMode::FixedSize { size_mb: 2048 },
                 false,
                 true
             ).with_timing(TestTiming::duration_only(15))
-             .with_streams(1), "Mem-Refresh256")
              .with_memory_type(None)
         ),
 
         (
             "Mem-Refresh512",
             TestFunction::MultiBlock(refresh_stable_512_multi),
-            validate_streams(TestMemoryConfig::new(
+            TestMemoryConfig::new(
                 WindowMode::CacheRelative { multiplier: 2.0 },
                 ChunkMode::FixedSize { size_mb: 2048 },
                 false,
                 true
             ).with_timing(TestTiming::duration_only(15))
-             .with_streams(1), "Mem-Refresh512")
              .with_memory_type(None)
         ),
 
@@ -1477,13 +1722,12 @@ fn create_test_definitions(cache_info: &CacheInfo) -> Vec<TestDefinition> {
         (
             "Mem-RefreshAuto",
             TestFunction::MultiBlock(refresh_stable_auto_multi),
-            validate_streams(TestMemoryConfig::new(
+            TestMemoryConfig::new(
                 WindowMode::CacheRelative { multiplier: 2.0 },
                 ChunkMode::FixedSize { size_mb: 2048 },
                 false,
                 true
             ).with_timing(TestTiming::duration_only(15))
-             .with_streams(1), "Mem-RefreshAuto")
              .with_memory_type(None)
         ),
 
@@ -1491,52 +1735,68 @@ fn create_test_definitions(cache_info: &CacheInfo) -> Vec<TestDefinition> {
         (
             "Mem-CacheBust",
             TestFunction::MultiBlock(cache_busting_multi),
-            validate_streams(TestMemoryConfig::new(
+            TestMemoryConfig::new(
                 WindowMode::CacheRelative { multiplier: 0.5 },
                 ChunkMode::FixedSize { size_mb: 1 },
                 true,
                 true
             ).with_timing(TestTiming::duration_only(20))
-             .with_streams(4), "Mem-CacheBust")
+             .with_parameter_context(crate::config::TestParameterContext {
+                 raw_parameter: 4,
+                 stride_patterns: Some(4),
+                 ..Default::default()
+             })
              .with_memory_type(None)
         ),
 
         (
             "Mem-Random",
             TestFunction::MultiBlock(random_torture_multi),
-            validate_streams(TestMemoryConfig::new(
+            TestMemoryConfig::new(
                 WindowMode::FullAllocation,
                 ChunkMode::FixedSize { size_mb: 8 },
                 true,
                 false
             ).with_timing(TestTiming::duration_only(25))
-             .with_streams(8), "Mem-Random")
+             .with_parameter_context(crate::config::TestParameterContext {
+                 raw_parameter: 8,
+                 rng_sequences: Some(8),
+                 ..Default::default()
+             })
              .with_memory_type(None)
         ),
 
         (
             "Mem-Stride",
             TestFunction::MultiBlock(stride_access_multi),
-            validate_streams(TestMemoryConfig::new(
+            TestMemoryConfig::new(
                 WindowMode::FullAllocation,
                 ChunkMode::FixedSize { size_mb: 2 },
                 false,
                 false
             ).with_timing(TestTiming::cycles_only(1))
-             .with_streams(4), "Mem-Stride")
+             .with_parameter_context(crate::config::TestParameterContext {
+                 raw_parameter: 4,
+                 subdivisions: Some(4),
+                 ..Default::default()
+             })
              .with_memory_type(None)
         ),
 
         (
             "Mem-BlockMove",
             TestFunction::MultiBlock(block_move_multi),
-            validate_streams(TestMemoryConfig::new(
+            TestMemoryConfig::new(
                 WindowMode::FullAllocation,
                 ChunkMode::FixedSize { size_mb: 16 },
                 false,
                 true
             ).with_timing(TestTiming::duration_only(20))
-             .with_streams(1), "Mem-BlockMove")
+             .with_parameter_context(crate::config::TestParameterContext {
+                 raw_parameter: 1,
+                 copy_directions: Some(1),
+                 ..Default::default()
+             })
              .with_memory_type(None)
         ),
 
@@ -1546,13 +1806,12 @@ fn create_test_definitions(cache_info: &CacheInfo) -> Vec<TestDefinition> {
         (
             "Mem-SimpleV2",
             TestFunction::MultiBlock(simple_test_v2_multi),
-            validate_streams(TestMemoryConfig::new(
+            TestMemoryConfig::new(
                 WindowMode::FullAllocation,
                 ChunkMode::FixedSize { size_mb: 4 },
                 false,
                 false
             ).with_timing(TestTiming::hybrid(100, 30))
-             .with_streams(1), "Mem-SimpleV2")
              .with_memory_type(None)
         ),
 
@@ -1560,52 +1819,48 @@ fn create_test_definitions(cache_info: &CacheInfo) -> Vec<TestDefinition> {
         (
             "Mem-SimpleV2-128",
             TestFunction::MultiBlock(simple_test_v2_128_multi),
-            validate_streams(TestMemoryConfig::new(
+            TestMemoryConfig::new(
                 WindowMode::FullAllocation,
                 ChunkMode::FixedSize { size_mb: 4 },
                 false,
                 false
             ).with_timing(TestTiming::hybrid(100, 30))
-             .with_streams(1), "Mem-SimpleV2-128")
              .with_memory_type(None)
         ),
 
         (
             "Mem-SimpleV2-256",
             TestFunction::MultiBlock(simple_test_v2_256_multi),
-            validate_streams(TestMemoryConfig::new(
+            TestMemoryConfig::new(
                 WindowMode::FullAllocation,
                 ChunkMode::FixedSize { size_mb: 4 },
                 false,
                 false
             ).with_timing(TestTiming::hybrid(100, 30))
-             .with_streams(1), "Mem-SimpleV2-256")
              .with_memory_type(None)
         ),
 
         (
             "Mem-SimpleV2-512",
             TestFunction::MultiBlock(simple_test_v2_512_multi),
-            validate_streams(TestMemoryConfig::new(
+            TestMemoryConfig::new(
                 WindowMode::FullAllocation,
                 ChunkMode::FixedSize { size_mb: 4 },
                 false,
                 false
             ).with_timing(TestTiming::hybrid(100, 30))
-             .with_streams(1), "Mem-SimpleV2-512")
              .with_memory_type(None)
         ),
 
         (
             "Mem-SimpleV2-Auto",
             TestFunction::MultiBlock(simple_test_v2_auto_multi),
-            validate_streams(TestMemoryConfig::new(
+            TestMemoryConfig::new(
                 WindowMode::FullAllocation,
                 ChunkMode::FixedSize { size_mb: 4 },
                 false,
                 false
             ).with_timing(TestTiming::hybrid(100, 30))
-             .with_streams(1), "Mem-SimpleV2-Auto")
              .with_memory_type(None)
         ),
 
@@ -1613,13 +1868,12 @@ fn create_test_definitions(cache_info: &CacheInfo) -> Vec<TestDefinition> {
         (
             "Mem-MirrorV2",
             TestFunction::MultiBlock(mirror_move_v2_multi),
-            validate_streams(TestMemoryConfig::new(
+            TestMemoryConfig::new(
                 WindowMode::FixedSize { size_mb: 64 },
                 ChunkMode::FixedSize { size_mb: 4 },
                 false,
                 true
             ).with_timing(TestTiming::duration_only(10))
-             .with_streams(1), "Mem-MirrorV2")
              .with_memory_type(None)
         ),
 
@@ -1627,66 +1881,58 @@ fn create_test_definitions(cache_info: &CacheInfo) -> Vec<TestDefinition> {
         (
             "Mem-MirrorV2-128",
             TestFunction::MultiBlock(mirror_move_v2_128_multi),
-            validate_streams(TestMemoryConfig::new(
+            TestMemoryConfig::new(
                 WindowMode::FixedSize { size_mb: 64 },
                 ChunkMode::FixedSize { size_mb: 8 },
                 false,
                 true
             ).with_timing(TestTiming::duration_only(10))
-             .with_streams(1), "Mem-MirrorV2-128")
              .with_memory_type(None)
         ),
 
         (
             "Mem-MirrorV2-256",
             TestFunction::MultiBlock(mirror_move_v2_256_multi),
-            validate_streams(TestMemoryConfig::new(
+            TestMemoryConfig::new(
                 WindowMode::FixedSize { size_mb: 128 },
                 ChunkMode::FixedSize { size_mb: 8 },
                 false,
                 true
             ).with_timing(TestTiming::duration_only(10))
-             .with_streams(2)
              .with_parameter_context(crate::config::TestParameterContext {
                  raw_parameter: 2,
-                 stride_cachelines: None,
-                 stride_elements: None,
                  subblock_count: Some(2),
-                 page_stride_bytes: None,
-             }), "Mem-MirrorV2-256")
+                 ..Default::default()
+             })
              .with_memory_type(None)
         ),
 
         (
             "Mem-MirrorV2-512",
             TestFunction::MultiBlock(mirror_move_v2_512_multi),
-            validate_streams(TestMemoryConfig::new(
+            TestMemoryConfig::new(
                 WindowMode::FixedSize { size_mb: 256 },
                 ChunkMode::FixedSize { size_mb: 8 },
                 false,
                 true
             ).with_timing(TestTiming::duration_only(10))
-             .with_streams(4)
              .with_parameter_context(crate::config::TestParameterContext {
                  raw_parameter: 4,
-                 stride_cachelines: None,
-                 stride_elements: None,
                  subblock_count: Some(4),
-                 page_stride_bytes: None,
-             }), "Mem-MirrorV2-512")
+                 ..Default::default()
+             })
              .with_memory_type(None)
         ),
 
         (
             "Mem-MirrorV2-Auto",
             TestFunction::MultiBlock(mirror_move_v2_auto_multi),
-            validate_streams(TestMemoryConfig::new(
+            TestMemoryConfig::new(
                 WindowMode::FixedSize { size_mb: 64 },
                 ChunkMode::FixedSize { size_mb: 8 },
                 false,
                 true
             ).with_timing(TestTiming::duration_only(10))
-             .with_streams(1), "Mem-MirrorV2-Auto")
              .with_memory_type(None)
         ),
 
@@ -1697,92 +1943,85 @@ fn create_test_definitions(cache_info: &CacheInfo) -> Vec<TestDefinition> {
         (
             "Bench-Init-TM5-0",
             TestFunction::MultiBlock(bench_init_multi),
-            validate_streams(TestMemoryConfig::new(
+            TestMemoryConfig::new(
                 WindowMode::FullAllocation,
                 ChunkMode::FixedSize { size_mb: 4 },
                 false, false
             ).with_timing(TestTiming::cycles_only(10))
              .with_pattern_config(Some(0), None, None)
              .with_skip_init(true)
-             .with_streams(1), "Bench-Init-TM5-0")
              .with_memory_type(None)
         ),
         (
             "Bench-Init-TM5-1",
             TestFunction::MultiBlock(bench_init_multi),
-            validate_streams(TestMemoryConfig::new(
+            TestMemoryConfig::new(
                 WindowMode::FullAllocation,
                 ChunkMode::FixedSize { size_mb: 4 },
                 false, false
             ).with_timing(TestTiming::cycles_only(10))
              .with_pattern_config(Some(1), None, None)
              .with_skip_init(true)
-             .with_streams(1), "Bench-Init-TM5-1")
              .with_memory_type(None)
         ),
         (
             "Bench-Init-TM5-2",
             TestFunction::MultiBlock(bench_init_multi),
-            validate_streams(TestMemoryConfig::new(
+            TestMemoryConfig::new(
                 WindowMode::FullAllocation,
                 ChunkMode::FixedSize { size_mb: 4 },
                 false, false
             ).with_timing(TestTiming::cycles_only(10))
              .with_pattern_config(Some(2), Some(0x5DEECE66D), Some(0xB))
              .with_skip_init(true)
-             .with_streams(1), "Bench-Init-TM5-2")
              .with_memory_type(None)
         ),
         (
             "Bench-Init-TMR-0",
             TestFunction::MultiBlock(bench_init_multi),
-            validate_streams(TestMemoryConfig::new(
+            TestMemoryConfig::new(
                 WindowMode::FullAllocation,
                 ChunkMode::FixedSize { size_mb: 4 },
                 false, false
             ).with_timing(TestTiming::cycles_only(10))
              .with_pattern_config(Some(10), None, None)
              .with_skip_init(true)
-             .with_streams(1), "Bench-Init-TMR-0")
              .with_memory_type(None)
         ),
         (
             "Bench-Init-TMR-1",
             TestFunction::MultiBlock(bench_init_multi),
-            validate_streams(TestMemoryConfig::new(
+            TestMemoryConfig::new(
                 WindowMode::FullAllocation,
                 ChunkMode::FixedSize { size_mb: 4 },
                 false, false
             ).with_timing(TestTiming::cycles_only(10))
              .with_pattern_config(Some(11), None, None)
              .with_skip_init(true)
-             .with_streams(1), "Bench-Init-TMR-1")
              .with_memory_type(None)
         ),
         (
             "Bench-Init-TMR-2",
             TestFunction::MultiBlock(bench_init_multi),
-            validate_streams(TestMemoryConfig::new(
+            TestMemoryConfig::new(
                 WindowMode::FullAllocation,
                 ChunkMode::FixedSize { size_mb: 4 },
                 false, false
             ).with_timing(TestTiming::cycles_only(10))
              .with_pattern_config(Some(12), Some(0xDEADBEEFDEADBEEF), Some(0xCAFEBABECAFEBABE))
              .with_skip_init(true)
-             .with_streams(1), "Bench-Init-TMR-2")
              .with_memory_type(None)
         ),
         (
             "Bench-Init-TMR-3",
             TestFunction::MultiBlock(bench_init_multi),
-            validate_streams(TestMemoryConfig::new(
+            TestMemoryConfig::new(
                 WindowMode::FullAllocation,
                 ChunkMode::FixedSize { size_mb: 4 },
                 false, false
             ).with_timing(TestTiming::cycles_only(10))
              .with_pattern_config(Some(13), Some(0xC0FFEE42C0FFEE42), None)
              .with_skip_init(true)
-             .with_streams(1), "Bench-Init-TMR-3")
              .with_memory_type(None)
         ),
 
@@ -1792,85 +2031,78 @@ fn create_test_definitions(cache_info: &CacheInfo) -> Vec<TestDefinition> {
         (
             "Bench-Verify-TM5-0",
             TestFunction::MultiBlock(bench_verify_multi),
-            validate_streams(TestMemoryConfig::new(
+            TestMemoryConfig::new(
                 WindowMode::FullAllocation,
                 ChunkMode::FixedSize { size_mb: 4 },
                 false, false
             ).with_timing(TestTiming::cycles_only(10))
              .with_pattern_config(Some(0), None, None)
-             .with_streams(1), "Bench-Verify-TM5-0")
              .with_memory_type(None)
         ),
         (
             "Bench-Verify-TM5-1",
             TestFunction::MultiBlock(bench_verify_multi),
-            validate_streams(TestMemoryConfig::new(
+            TestMemoryConfig::new(
                 WindowMode::FullAllocation,
                 ChunkMode::FixedSize { size_mb: 4 },
                 false, false
             ).with_timing(TestTiming::cycles_only(10))
              .with_pattern_config(Some(1), None, None)
-             .with_streams(1), "Bench-Verify-TM5-1")
              .with_memory_type(None)
         ),
         (
             "Bench-Verify-TM5-2",
             TestFunction::MultiBlock(bench_verify_multi),
-            validate_streams(TestMemoryConfig::new(
+            TestMemoryConfig::new(
                 WindowMode::FullAllocation,
                 ChunkMode::FixedSize { size_mb: 4 },
                 false, false
             ).with_timing(TestTiming::cycles_only(10))
              .with_pattern_config(Some(2), Some(0x5DEECE66D), Some(0xB))
-             .with_streams(1), "Bench-Verify-TM5-2")
              .with_memory_type(None)
         ),
         (
             "Bench-Verify-TMR-0",
             TestFunction::MultiBlock(bench_verify_multi),
-            validate_streams(TestMemoryConfig::new(
+            TestMemoryConfig::new(
                 WindowMode::FullAllocation,
                 ChunkMode::FixedSize { size_mb: 4 },
                 false, false
             ).with_timing(TestTiming::cycles_only(10))
              .with_pattern_config(Some(10), None, None)
-             .with_streams(1), "Bench-Verify-TMR-0")
              .with_memory_type(None)
         ),
         (
             "Bench-Verify-TMR-1",
             TestFunction::MultiBlock(bench_verify_multi),
-            validate_streams(TestMemoryConfig::new(
+            TestMemoryConfig::new(
                 WindowMode::FullAllocation,
                 ChunkMode::FixedSize { size_mb: 4 },
                 false, false
             ).with_timing(TestTiming::cycles_only(10))
              .with_pattern_config(Some(11), None, None)
-             .with_streams(1), "Bench-Verify-TMR-1")
              .with_memory_type(None)
         ),
         (
             "Bench-Verify-TMR-2",
             TestFunction::MultiBlock(bench_verify_multi),
-            validate_streams(TestMemoryConfig::new(
+            TestMemoryConfig::new(
                 WindowMode::FullAllocation,
                 ChunkMode::FixedSize { size_mb: 4 },
                 false, false
             ).with_timing(TestTiming::cycles_only(10))
              .with_pattern_config(Some(12), Some(0xDEADBEEFDEADBEEF), Some(0xCAFEBABECAFEBABE))
-             .with_streams(1), "Bench-Verify-TMR-2")
              .with_memory_type(None)
         ),
         (
             "Bench-Verify-TMR-3",
             TestFunction::MultiBlock(bench_verify_multi),
-            validate_streams(TestMemoryConfig::new(
+            TestMemoryConfig::new(
                 WindowMode::FullAllocation,
                 ChunkMode::FixedSize { size_mb: 4 },
                 false, false
             ).with_timing(TestTiming::cycles_only(10))
              .with_pattern_config(Some(13), Some(0xC0FFEE42C0FFEE42), None)
-             .with_streams(1), "Bench-Verify-TMR-3")
              .with_memory_type(None)
         ),
 
@@ -1884,39 +2116,39 @@ fn create_test_definitions(cache_info: &CacheInfo) -> Vec<TestDefinition> {
         (
             "Lat-L1-Read",
             TestFunction::Latency(read_latency_multi),
-            validate_streams(TestMemoryConfig::new(
+            TestMemoryConfig::new(
                 WindowMode::CacheLevel { target: CacheTarget::L1_DEFAULT },
                 ChunkMode::AutoOptimal,
                 false,
                 false
             ).with_timing(TestTiming::duration_only(10))
-             .with_tsc(tsc_freq).with_streams(1), "Lat-L1-Read")
+             .with_tsc(tsc_freq)
              .with_memory_type(None)
         ),
 
         (
             "Lat-L1-Write",
             TestFunction::Latency(write_latency_multi),
-            validate_streams(TestMemoryConfig::new(
+            TestMemoryConfig::new(
                 WindowMode::CacheLevel { target: CacheTarget::L1_DEFAULT },
                 ChunkMode::AutoOptimal,
                 false,
                 false
             ).with_timing(TestTiming::duration_only(10))
-             .with_tsc(tsc_freq).with_streams(1), "Lat-L1-Write")
+             .with_tsc(tsc_freq)
              .with_memory_type(None)
         ),
 
         (
             "Lat-L1-Copy",
             TestFunction::Latency(copy_latency_multi),
-            validate_streams(TestMemoryConfig::new(
+            TestMemoryConfig::new(
                 WindowMode::CacheLevel { target: CacheTarget::L1_DEFAULT },
                 ChunkMode::AutoOptimal,
                 false,
                 false
             ).with_timing(TestTiming::duration_only(10))
-             .with_tsc(tsc_freq).with_streams(1), "Lat-L1-Copy")
+             .with_tsc(tsc_freq)
              .with_memory_type(None)
         ),
 
@@ -1924,39 +2156,39 @@ fn create_test_definitions(cache_info: &CacheInfo) -> Vec<TestDefinition> {
         (
             "Lat-L2-Read",
             TestFunction::Latency(read_latency_multi),
-            validate_streams(TestMemoryConfig::new(
+            TestMemoryConfig::new(
                 WindowMode::CacheLevel { target: CacheTarget::L2_DEFAULT },
                 ChunkMode::AutoOptimal,
                 false,
                 false
             ).with_timing(TestTiming::duration_only(10))
-             .with_tsc(tsc_freq).with_streams(1), "Lat-L2-Read")
+             .with_tsc(tsc_freq)
              .with_memory_type(None)
         ),
 
         (
             "Lat-L2-Write",
             TestFunction::Latency(write_latency_multi),
-            validate_streams(TestMemoryConfig::new(
+            TestMemoryConfig::new(
                 WindowMode::CacheLevel { target: CacheTarget::L2_DEFAULT },
                 ChunkMode::AutoOptimal,
                 false,
                 false
             ).with_timing(TestTiming::duration_only(10))
-             .with_tsc(tsc_freq).with_streams(1), "Lat-L2-Write")
+             .with_tsc(tsc_freq)
              .with_memory_type(None)
         ),
 
         (
             "Lat-L2-Copy",
             TestFunction::Latency(copy_latency_multi),
-            validate_streams(TestMemoryConfig::new(
+            TestMemoryConfig::new(
                 WindowMode::CacheLevel { target: CacheTarget::L2_DEFAULT },
                 ChunkMode::AutoOptimal,
                 false,
                 false
             ).with_timing(TestTiming::duration_only(10))
-             .with_tsc(tsc_freq).with_streams(1), "Lat-L2-Copy")
+             .with_tsc(tsc_freq)
              .with_memory_type(None)
         ),
 
@@ -1964,39 +2196,39 @@ fn create_test_definitions(cache_info: &CacheInfo) -> Vec<TestDefinition> {
         (
             "Lat-L3-Read",
             TestFunction::Latency(read_latency_multi),
-            validate_streams(TestMemoryConfig::new(
+            TestMemoryConfig::new(
                 WindowMode::CacheLevel { target: CacheTarget::L3_DEFAULT },
                 ChunkMode::AutoOptimal,
                 false,
                 false
             ).with_timing(TestTiming::duration_only(10))
-             .with_tsc(tsc_freq).with_streams(1), "Lat-L3-Read")
+             .with_tsc(tsc_freq)
              .with_memory_type(None)
         ),
 
         (
             "Lat-L3-Write",
             TestFunction::Latency(write_latency_multi),
-            validate_streams(TestMemoryConfig::new(
+            TestMemoryConfig::new(
                 WindowMode::CacheLevel { target: CacheTarget::L3_DEFAULT },
                 ChunkMode::AutoOptimal,
                 false,
                 false
             ).with_timing(TestTiming::duration_only(10))
-             .with_tsc(tsc_freq).with_streams(1), "Lat-L3-Write")
+             .with_tsc(tsc_freq)
              .with_memory_type(None)
         ),
 
         (
             "Lat-L3-Copy",
             TestFunction::Latency(copy_latency_multi),
-            validate_streams(TestMemoryConfig::new(
+            TestMemoryConfig::new(
                 WindowMode::CacheLevel { target: CacheTarget::L3_DEFAULT },
                 ChunkMode::AutoOptimal,
                 false,
                 false
             ).with_timing(TestTiming::duration_only(10))
-             .with_tsc(tsc_freq).with_streams(1), "Lat-L3-Copy")
+             .with_tsc(tsc_freq)
              .with_memory_type(None)
         ),
 
@@ -2004,39 +2236,39 @@ fn create_test_definitions(cache_info: &CacheInfo) -> Vec<TestDefinition> {
         (
             "Lat-DRAM-Read",
             TestFunction::Latency(read_latency_multi),
-            validate_streams(TestMemoryConfig::new(
+            TestMemoryConfig::new(
                 WindowMode::CacheLevel { target: CacheTarget::DRAM_DEFAULT },
                 ChunkMode::AutoOptimal,
                 false,
                 false
             ).with_timing(TestTiming::duration_only(10))
-             .with_tsc(tsc_freq).with_streams(1), "Lat-DRAM-Read")
+             .with_tsc(tsc_freq)
              .with_memory_type(None)
         ),
 
         (
             "Lat-DRAM-Write",
             TestFunction::Latency(write_latency_multi),
-            validate_streams(TestMemoryConfig::new(
+            TestMemoryConfig::new(
                 WindowMode::CacheLevel { target: CacheTarget::DRAM_DEFAULT },
                 ChunkMode::AutoOptimal,
                 false,
                 false
             ).with_timing(TestTiming::duration_only(10))
-             .with_tsc(tsc_freq).with_streams(1), "Lat-DRAM-Write")
+             .with_tsc(tsc_freq)
              .with_memory_type(None)
         ),
 
         (
             "Lat-DRAM-Copy",
             TestFunction::Latency(copy_latency_multi),
-            validate_streams(TestMemoryConfig::new(
+            TestMemoryConfig::new(
                 WindowMode::CacheLevel { target: CacheTarget::DRAM_DEFAULT },
                 ChunkMode::AutoOptimal,
                 false,
                 false
             ).with_timing(TestTiming::duration_only(10))
-             .with_tsc(tsc_freq).with_streams(1), "Lat-DRAM-Copy")
+             .with_tsc(tsc_freq)
              .with_memory_type(None)
         ),
 
@@ -2044,40 +2276,1081 @@ fn create_test_definitions(cache_info: &CacheInfo) -> Vec<TestDefinition> {
         (
             "Lat-DRAMFull-Read",
             TestFunction::Latency(read_latency_multi),
-            validate_streams(TestMemoryConfig::new(
+            TestMemoryConfig::new(
                 WindowMode::CacheLevel { target: CacheTarget::DRAM_FULL_DEFAULT },
                 ChunkMode::AutoOptimal,
                 false,
                 false
             ).with_timing(TestTiming::duration_only(10))
-             .with_tsc(tsc_freq).with_streams(1), "Lat-DRAMFull-Read")
+             .with_tsc(tsc_freq)
              .with_memory_type(None)
         ),
 
         (
             "Lat-DRAMFull-Write",
             TestFunction::Latency(write_latency_multi),
-            validate_streams(TestMemoryConfig::new(
+            TestMemoryConfig::new(
                 WindowMode::CacheLevel { target: CacheTarget::DRAM_FULL_DEFAULT },
                 ChunkMode::AutoOptimal,
                 false,
                 false
             ).with_timing(TestTiming::duration_only(10))
-             .with_tsc(tsc_freq).with_streams(1), "Lat-DRAMFull-Write")
+             .with_tsc(tsc_freq)
              .with_memory_type(None)
         ),
 
         (
             "Lat-DRAMFull-Copy",
             TestFunction::Latency(copy_latency_multi),
-            validate_streams(TestMemoryConfig::new(
+            TestMemoryConfig::new(
                 WindowMode::CacheLevel { target: CacheTarget::DRAM_FULL_DEFAULT },
                 ChunkMode::AutoOptimal,
                 false,
                 false
             ).with_timing(TestTiming::duration_only(10))
-             .with_tsc(tsc_freq).with_streams(1), "Lat-DRAMFull-Copy")
+             .with_tsc(tsc_freq)
              .with_memory_type(None)
+        ),
+
+        // === V2 Latency Tests (PoC for #24) ===
+        // Three new test families exploring better measurement strategies:
+        //   Lat-V2-*-Read    — Layout A: 1 chain cell + 1 data cell pair (1 read per chain step)
+        //   Lat-V2P-*-Read   — Layout B packed: 1 chain cell + 6 data cells (6 reads per step, MLP)
+        //   Lat-NTW-DRAM-Write — NT streaming write saturation (single tier — NT bypasses cache)
+        //
+        // Each variant registered with -Auto (CPU-best dispatch) plus -128/-256/-512 explicit
+        // widths so users can compare widths side-by-side via test= filter, matching the
+        // Mem-MirrorV2 / Mem-SimpleV2 convention.
+
+        // Layout A — Lat-V2-Read (5 tiers × {Auto,128,256,512} = 20 tests)
+        (
+            "Lat-V2-L1-Read-Auto",
+            TestFunction::Latency(lat_v2_read_auto_multi),
+            TestMemoryConfig::new(WindowMode::CacheLevel { target: CacheTarget::L1_DEFAULT }, ChunkMode::AutoOptimal, false, false)
+                .with_timing(TestTiming::duration_only(10)).with_tsc(tsc_freq).with_memory_type(None)
+        ),
+        (
+            "Lat-V2-L1-Read-128",
+            TestFunction::Latency(lat_v2_read_128_multi),
+            TestMemoryConfig::new(WindowMode::CacheLevel { target: CacheTarget::L1_DEFAULT }, ChunkMode::AutoOptimal, false, false)
+                .with_timing(TestTiming::duration_only(10)).with_tsc(tsc_freq).with_memory_type(None)
+        ),
+        (
+            "Lat-V2-L1-Read-256",
+            TestFunction::Latency(lat_v2_read_256_multi),
+            TestMemoryConfig::new(WindowMode::CacheLevel { target: CacheTarget::L1_DEFAULT }, ChunkMode::AutoOptimal, false, false)
+                .with_timing(TestTiming::duration_only(10)).with_tsc(tsc_freq).with_memory_type(None)
+        ),
+        (
+            "Lat-V2-L1-Read-512",
+            TestFunction::Latency(lat_v2_read_512_multi),
+            TestMemoryConfig::new(WindowMode::CacheLevel { target: CacheTarget::L1_DEFAULT }, ChunkMode::AutoOptimal, false, false)
+                .with_timing(TestTiming::duration_only(10)).with_tsc(tsc_freq).with_memory_type(None)
+        ),
+        (
+            "Lat-V2-L2-Read-Auto",
+            TestFunction::Latency(lat_v2_read_auto_multi),
+            TestMemoryConfig::new(WindowMode::CacheLevel { target: CacheTarget::L2_DEFAULT }, ChunkMode::AutoOptimal, false, false)
+                .with_timing(TestTiming::duration_only(10)).with_tsc(tsc_freq).with_memory_type(None)
+        ),
+        (
+            "Lat-V2-L2-Read-128",
+            TestFunction::Latency(lat_v2_read_128_multi),
+            TestMemoryConfig::new(WindowMode::CacheLevel { target: CacheTarget::L2_DEFAULT }, ChunkMode::AutoOptimal, false, false)
+                .with_timing(TestTiming::duration_only(10)).with_tsc(tsc_freq).with_memory_type(None)
+        ),
+        (
+            "Lat-V2-L2-Read-256",
+            TestFunction::Latency(lat_v2_read_256_multi),
+            TestMemoryConfig::new(WindowMode::CacheLevel { target: CacheTarget::L2_DEFAULT }, ChunkMode::AutoOptimal, false, false)
+                .with_timing(TestTiming::duration_only(10)).with_tsc(tsc_freq).with_memory_type(None)
+        ),
+        (
+            "Lat-V2-L2-Read-512",
+            TestFunction::Latency(lat_v2_read_512_multi),
+            TestMemoryConfig::new(WindowMode::CacheLevel { target: CacheTarget::L2_DEFAULT }, ChunkMode::AutoOptimal, false, false)
+                .with_timing(TestTiming::duration_only(10)).with_tsc(tsc_freq).with_memory_type(None)
+        ),
+        (
+            "Lat-V2-L3-Read-Auto",
+            TestFunction::Latency(lat_v2_read_auto_multi),
+            TestMemoryConfig::new(WindowMode::CacheLevel { target: CacheTarget::L3_DEFAULT }, ChunkMode::AutoOptimal, false, false)
+                .with_timing(TestTiming::duration_only(10)).with_tsc(tsc_freq).with_memory_type(None)
+        ),
+        (
+            "Lat-V2-L3-Read-128",
+            TestFunction::Latency(lat_v2_read_128_multi),
+            TestMemoryConfig::new(WindowMode::CacheLevel { target: CacheTarget::L3_DEFAULT }, ChunkMode::AutoOptimal, false, false)
+                .with_timing(TestTiming::duration_only(10)).with_tsc(tsc_freq).with_memory_type(None)
+        ),
+        (
+            "Lat-V2-L3-Read-256",
+            TestFunction::Latency(lat_v2_read_256_multi),
+            TestMemoryConfig::new(WindowMode::CacheLevel { target: CacheTarget::L3_DEFAULT }, ChunkMode::AutoOptimal, false, false)
+                .with_timing(TestTiming::duration_only(10)).with_tsc(tsc_freq).with_memory_type(None)
+        ),
+        (
+            "Lat-V2-L3-Read-512",
+            TestFunction::Latency(lat_v2_read_512_multi),
+            TestMemoryConfig::new(WindowMode::CacheLevel { target: CacheTarget::L3_DEFAULT }, ChunkMode::AutoOptimal, false, false)
+                .with_timing(TestTiming::duration_only(10)).with_tsc(tsc_freq).with_memory_type(None)
+        ),
+        (
+            "Lat-V2-DRAM-Read-Auto",
+            TestFunction::Latency(lat_v2_read_auto_multi),
+            TestMemoryConfig::new(WindowMode::CacheLevel { target: CacheTarget::DRAM_DEFAULT }, ChunkMode::AutoOptimal, false, false)
+                .with_timing(TestTiming::duration_only(10)).with_tsc(tsc_freq).with_memory_type(None)
+        ),
+        (
+            "Lat-V2-DRAM-Read-128",
+            TestFunction::Latency(lat_v2_read_128_multi),
+            TestMemoryConfig::new(WindowMode::CacheLevel { target: CacheTarget::DRAM_DEFAULT }, ChunkMode::AutoOptimal, false, false)
+                .with_timing(TestTiming::duration_only(10)).with_tsc(tsc_freq).with_memory_type(None)
+        ),
+        (
+            "Lat-V2-DRAM-Read-256",
+            TestFunction::Latency(lat_v2_read_256_multi),
+            TestMemoryConfig::new(WindowMode::CacheLevel { target: CacheTarget::DRAM_DEFAULT }, ChunkMode::AutoOptimal, false, false)
+                .with_timing(TestTiming::duration_only(10)).with_tsc(tsc_freq).with_memory_type(None)
+        ),
+        (
+            "Lat-V2-DRAM-Read-512",
+            TestFunction::Latency(lat_v2_read_512_multi),
+            TestMemoryConfig::new(WindowMode::CacheLevel { target: CacheTarget::DRAM_DEFAULT }, ChunkMode::AutoOptimal, false, false)
+                .with_timing(TestTiming::duration_only(10)).with_tsc(tsc_freq).with_memory_type(None)
+        ),
+        (
+            "Lat-V2-DRAMFull-Read-Auto",
+            TestFunction::Latency(lat_v2_read_auto_multi),
+            TestMemoryConfig::new(WindowMode::CacheLevel { target: CacheTarget::DRAM_FULL_DEFAULT }, ChunkMode::AutoOptimal, false, false)
+                .with_timing(TestTiming::duration_only(10)).with_tsc(tsc_freq).with_memory_type(None)
+        ),
+        (
+            "Lat-V2-DRAMFull-Read-128",
+            TestFunction::Latency(lat_v2_read_128_multi),
+            TestMemoryConfig::new(WindowMode::CacheLevel { target: CacheTarget::DRAM_FULL_DEFAULT }, ChunkMode::AutoOptimal, false, false)
+                .with_timing(TestTiming::duration_only(10)).with_tsc(tsc_freq).with_memory_type(None)
+        ),
+        (
+            "Lat-V2-DRAMFull-Read-256",
+            TestFunction::Latency(lat_v2_read_256_multi),
+            TestMemoryConfig::new(WindowMode::CacheLevel { target: CacheTarget::DRAM_FULL_DEFAULT }, ChunkMode::AutoOptimal, false, false)
+                .with_timing(TestTiming::duration_only(10)).with_tsc(tsc_freq).with_memory_type(None)
+        ),
+        (
+            "Lat-V2-DRAMFull-Read-512",
+            TestFunction::Latency(lat_v2_read_512_multi),
+            TestMemoryConfig::new(WindowMode::CacheLevel { target: CacheTarget::DRAM_FULL_DEFAULT }, ChunkMode::AutoOptimal, false, false)
+                .with_timing(TestTiming::duration_only(10)).with_tsc(tsc_freq).with_memory_type(None)
+        ),
+
+        // Layout A Write — Lat-V2-Write (5 tiers × {Auto,128,256,512} = 20 tests)
+        // Single SIMD-width cached store per chain step. Baseline: predicted to track
+        // Lat-V2-Read at every tier because one in-flight write fits behind any chain
+        // miss. Validates that store-buffer pressure requires concurrency density.
+        (
+            "Lat-V2-L1-Write-Auto",
+            TestFunction::Latency(lat_v2_write_auto_multi),
+            TestMemoryConfig::new(WindowMode::CacheLevel { target: CacheTarget::L1_DEFAULT }, ChunkMode::AutoOptimal, false, false)
+                .with_timing(TestTiming::duration_only(10)).with_tsc(tsc_freq).with_memory_type(None)
+        ),
+        (
+            "Lat-V2-L1-Write-128",
+            TestFunction::Latency(lat_v2_write_128_multi),
+            TestMemoryConfig::new(WindowMode::CacheLevel { target: CacheTarget::L1_DEFAULT }, ChunkMode::AutoOptimal, false, false)
+                .with_timing(TestTiming::duration_only(10)).with_tsc(tsc_freq).with_memory_type(None)
+        ),
+        (
+            "Lat-V2-L1-Write-256",
+            TestFunction::Latency(lat_v2_write_256_multi),
+            TestMemoryConfig::new(WindowMode::CacheLevel { target: CacheTarget::L1_DEFAULT }, ChunkMode::AutoOptimal, false, false)
+                .with_timing(TestTiming::duration_only(10)).with_tsc(tsc_freq).with_memory_type(None)
+        ),
+        (
+            "Lat-V2-L1-Write-512",
+            TestFunction::Latency(lat_v2_write_512_multi),
+            TestMemoryConfig::new(WindowMode::CacheLevel { target: CacheTarget::L1_DEFAULT }, ChunkMode::AutoOptimal, false, false)
+                .with_timing(TestTiming::duration_only(10)).with_tsc(tsc_freq).with_memory_type(None)
+        ),
+        (
+            "Lat-V2-L2-Write-Auto",
+            TestFunction::Latency(lat_v2_write_auto_multi),
+            TestMemoryConfig::new(WindowMode::CacheLevel { target: CacheTarget::L2_DEFAULT }, ChunkMode::AutoOptimal, false, false)
+                .with_timing(TestTiming::duration_only(10)).with_tsc(tsc_freq).with_memory_type(None)
+        ),
+        (
+            "Lat-V2-L2-Write-128",
+            TestFunction::Latency(lat_v2_write_128_multi),
+            TestMemoryConfig::new(WindowMode::CacheLevel { target: CacheTarget::L2_DEFAULT }, ChunkMode::AutoOptimal, false, false)
+                .with_timing(TestTiming::duration_only(10)).with_tsc(tsc_freq).with_memory_type(None)
+        ),
+        (
+            "Lat-V2-L2-Write-256",
+            TestFunction::Latency(lat_v2_write_256_multi),
+            TestMemoryConfig::new(WindowMode::CacheLevel { target: CacheTarget::L2_DEFAULT }, ChunkMode::AutoOptimal, false, false)
+                .with_timing(TestTiming::duration_only(10)).with_tsc(tsc_freq).with_memory_type(None)
+        ),
+        (
+            "Lat-V2-L2-Write-512",
+            TestFunction::Latency(lat_v2_write_512_multi),
+            TestMemoryConfig::new(WindowMode::CacheLevel { target: CacheTarget::L2_DEFAULT }, ChunkMode::AutoOptimal, false, false)
+                .with_timing(TestTiming::duration_only(10)).with_tsc(tsc_freq).with_memory_type(None)
+        ),
+        (
+            "Lat-V2-L3-Write-Auto",
+            TestFunction::Latency(lat_v2_write_auto_multi),
+            TestMemoryConfig::new(WindowMode::CacheLevel { target: CacheTarget::L3_DEFAULT }, ChunkMode::AutoOptimal, false, false)
+                .with_timing(TestTiming::duration_only(10)).with_tsc(tsc_freq).with_memory_type(None)
+        ),
+        (
+            "Lat-V2-L3-Write-128",
+            TestFunction::Latency(lat_v2_write_128_multi),
+            TestMemoryConfig::new(WindowMode::CacheLevel { target: CacheTarget::L3_DEFAULT }, ChunkMode::AutoOptimal, false, false)
+                .with_timing(TestTiming::duration_only(10)).with_tsc(tsc_freq).with_memory_type(None)
+        ),
+        (
+            "Lat-V2-L3-Write-256",
+            TestFunction::Latency(lat_v2_write_256_multi),
+            TestMemoryConfig::new(WindowMode::CacheLevel { target: CacheTarget::L3_DEFAULT }, ChunkMode::AutoOptimal, false, false)
+                .with_timing(TestTiming::duration_only(10)).with_tsc(tsc_freq).with_memory_type(None)
+        ),
+        (
+            "Lat-V2-L3-Write-512",
+            TestFunction::Latency(lat_v2_write_512_multi),
+            TestMemoryConfig::new(WindowMode::CacheLevel { target: CacheTarget::L3_DEFAULT }, ChunkMode::AutoOptimal, false, false)
+                .with_timing(TestTiming::duration_only(10)).with_tsc(tsc_freq).with_memory_type(None)
+        ),
+        (
+            "Lat-V2-DRAM-Write-Auto",
+            TestFunction::Latency(lat_v2_write_auto_multi),
+            TestMemoryConfig::new(WindowMode::CacheLevel { target: CacheTarget::DRAM_DEFAULT }, ChunkMode::AutoOptimal, false, false)
+                .with_timing(TestTiming::duration_only(10)).with_tsc(tsc_freq).with_memory_type(None)
+        ),
+        (
+            "Lat-V2-DRAM-Write-128",
+            TestFunction::Latency(lat_v2_write_128_multi),
+            TestMemoryConfig::new(WindowMode::CacheLevel { target: CacheTarget::DRAM_DEFAULT }, ChunkMode::AutoOptimal, false, false)
+                .with_timing(TestTiming::duration_only(10)).with_tsc(tsc_freq).with_memory_type(None)
+        ),
+        (
+            "Lat-V2-DRAM-Write-256",
+            TestFunction::Latency(lat_v2_write_256_multi),
+            TestMemoryConfig::new(WindowMode::CacheLevel { target: CacheTarget::DRAM_DEFAULT }, ChunkMode::AutoOptimal, false, false)
+                .with_timing(TestTiming::duration_only(10)).with_tsc(tsc_freq).with_memory_type(None)
+        ),
+        (
+            "Lat-V2-DRAM-Write-512",
+            TestFunction::Latency(lat_v2_write_512_multi),
+            TestMemoryConfig::new(WindowMode::CacheLevel { target: CacheTarget::DRAM_DEFAULT }, ChunkMode::AutoOptimal, false, false)
+                .with_timing(TestTiming::duration_only(10)).with_tsc(tsc_freq).with_memory_type(None)
+        ),
+        (
+            "Lat-V2-DRAMFull-Write-Auto",
+            TestFunction::Latency(lat_v2_write_auto_multi),
+            TestMemoryConfig::new(WindowMode::CacheLevel { target: CacheTarget::DRAM_FULL_DEFAULT }, ChunkMode::AutoOptimal, false, false)
+                .with_timing(TestTiming::duration_only(10)).with_tsc(tsc_freq).with_memory_type(None)
+        ),
+        (
+            "Lat-V2-DRAMFull-Write-128",
+            TestFunction::Latency(lat_v2_write_128_multi),
+            TestMemoryConfig::new(WindowMode::CacheLevel { target: CacheTarget::DRAM_FULL_DEFAULT }, ChunkMode::AutoOptimal, false, false)
+                .with_timing(TestTiming::duration_only(10)).with_tsc(tsc_freq).with_memory_type(None)
+        ),
+        (
+            "Lat-V2-DRAMFull-Write-256",
+            TestFunction::Latency(lat_v2_write_256_multi),
+            TestMemoryConfig::new(WindowMode::CacheLevel { target: CacheTarget::DRAM_FULL_DEFAULT }, ChunkMode::AutoOptimal, false, false)
+                .with_timing(TestTiming::duration_only(10)).with_tsc(tsc_freq).with_memory_type(None)
+        ),
+        (
+            "Lat-V2-DRAMFull-Write-512",
+            TestFunction::Latency(lat_v2_write_512_multi),
+            TestMemoryConfig::new(WindowMode::CacheLevel { target: CacheTarget::DRAM_FULL_DEFAULT }, ChunkMode::AutoOptimal, false, false)
+                .with_timing(TestTiming::duration_only(10)).with_tsc(tsc_freq).with_memory_type(None)
+        ),
+
+        // Layout A Copy — Lat-V2-Copy (5 tiers × {Auto,128,256,512} = 20 tests)
+        // Single read-modify-write per chain step. Baseline: predicted to track Lat-V2-Read
+        // closely because the load+XOR+store dependency chain is short and one in-flight
+        // RMW fits behind any chain miss. Validates L1 dependency-chain limit findings.
+        (
+            "Lat-V2-L1-Copy-Auto",
+            TestFunction::Latency(lat_v2_copy_auto_multi),
+            TestMemoryConfig::new(WindowMode::CacheLevel { target: CacheTarget::L1_DEFAULT }, ChunkMode::AutoOptimal, false, false)
+                .with_timing(TestTiming::duration_only(10)).with_tsc(tsc_freq).with_memory_type(None)
+        ),
+        (
+            "Lat-V2-L1-Copy-128",
+            TestFunction::Latency(lat_v2_copy_128_multi),
+            TestMemoryConfig::new(WindowMode::CacheLevel { target: CacheTarget::L1_DEFAULT }, ChunkMode::AutoOptimal, false, false)
+                .with_timing(TestTiming::duration_only(10)).with_tsc(tsc_freq).with_memory_type(None)
+        ),
+        (
+            "Lat-V2-L1-Copy-256",
+            TestFunction::Latency(lat_v2_copy_256_multi),
+            TestMemoryConfig::new(WindowMode::CacheLevel { target: CacheTarget::L1_DEFAULT }, ChunkMode::AutoOptimal, false, false)
+                .with_timing(TestTiming::duration_only(10)).with_tsc(tsc_freq).with_memory_type(None)
+        ),
+        (
+            "Lat-V2-L1-Copy-512",
+            TestFunction::Latency(lat_v2_copy_512_multi),
+            TestMemoryConfig::new(WindowMode::CacheLevel { target: CacheTarget::L1_DEFAULT }, ChunkMode::AutoOptimal, false, false)
+                .with_timing(TestTiming::duration_only(10)).with_tsc(tsc_freq).with_memory_type(None)
+        ),
+        (
+            "Lat-V2-L2-Copy-Auto",
+            TestFunction::Latency(lat_v2_copy_auto_multi),
+            TestMemoryConfig::new(WindowMode::CacheLevel { target: CacheTarget::L2_DEFAULT }, ChunkMode::AutoOptimal, false, false)
+                .with_timing(TestTiming::duration_only(10)).with_tsc(tsc_freq).with_memory_type(None)
+        ),
+        (
+            "Lat-V2-L2-Copy-128",
+            TestFunction::Latency(lat_v2_copy_128_multi),
+            TestMemoryConfig::new(WindowMode::CacheLevel { target: CacheTarget::L2_DEFAULT }, ChunkMode::AutoOptimal, false, false)
+                .with_timing(TestTiming::duration_only(10)).with_tsc(tsc_freq).with_memory_type(None)
+        ),
+        (
+            "Lat-V2-L2-Copy-256",
+            TestFunction::Latency(lat_v2_copy_256_multi),
+            TestMemoryConfig::new(WindowMode::CacheLevel { target: CacheTarget::L2_DEFAULT }, ChunkMode::AutoOptimal, false, false)
+                .with_timing(TestTiming::duration_only(10)).with_tsc(tsc_freq).with_memory_type(None)
+        ),
+        (
+            "Lat-V2-L2-Copy-512",
+            TestFunction::Latency(lat_v2_copy_512_multi),
+            TestMemoryConfig::new(WindowMode::CacheLevel { target: CacheTarget::L2_DEFAULT }, ChunkMode::AutoOptimal, false, false)
+                .with_timing(TestTiming::duration_only(10)).with_tsc(tsc_freq).with_memory_type(None)
+        ),
+        (
+            "Lat-V2-L3-Copy-Auto",
+            TestFunction::Latency(lat_v2_copy_auto_multi),
+            TestMemoryConfig::new(WindowMode::CacheLevel { target: CacheTarget::L3_DEFAULT }, ChunkMode::AutoOptimal, false, false)
+                .with_timing(TestTiming::duration_only(10)).with_tsc(tsc_freq).with_memory_type(None)
+        ),
+        (
+            "Lat-V2-L3-Copy-128",
+            TestFunction::Latency(lat_v2_copy_128_multi),
+            TestMemoryConfig::new(WindowMode::CacheLevel { target: CacheTarget::L3_DEFAULT }, ChunkMode::AutoOptimal, false, false)
+                .with_timing(TestTiming::duration_only(10)).with_tsc(tsc_freq).with_memory_type(None)
+        ),
+        (
+            "Lat-V2-L3-Copy-256",
+            TestFunction::Latency(lat_v2_copy_256_multi),
+            TestMemoryConfig::new(WindowMode::CacheLevel { target: CacheTarget::L3_DEFAULT }, ChunkMode::AutoOptimal, false, false)
+                .with_timing(TestTiming::duration_only(10)).with_tsc(tsc_freq).with_memory_type(None)
+        ),
+        (
+            "Lat-V2-L3-Copy-512",
+            TestFunction::Latency(lat_v2_copy_512_multi),
+            TestMemoryConfig::new(WindowMode::CacheLevel { target: CacheTarget::L3_DEFAULT }, ChunkMode::AutoOptimal, false, false)
+                .with_timing(TestTiming::duration_only(10)).with_tsc(tsc_freq).with_memory_type(None)
+        ),
+        (
+            "Lat-V2-DRAM-Copy-Auto",
+            TestFunction::Latency(lat_v2_copy_auto_multi),
+            TestMemoryConfig::new(WindowMode::CacheLevel { target: CacheTarget::DRAM_DEFAULT }, ChunkMode::AutoOptimal, false, false)
+                .with_timing(TestTiming::duration_only(10)).with_tsc(tsc_freq).with_memory_type(None)
+        ),
+        (
+            "Lat-V2-DRAM-Copy-128",
+            TestFunction::Latency(lat_v2_copy_128_multi),
+            TestMemoryConfig::new(WindowMode::CacheLevel { target: CacheTarget::DRAM_DEFAULT }, ChunkMode::AutoOptimal, false, false)
+                .with_timing(TestTiming::duration_only(10)).with_tsc(tsc_freq).with_memory_type(None)
+        ),
+        (
+            "Lat-V2-DRAM-Copy-256",
+            TestFunction::Latency(lat_v2_copy_256_multi),
+            TestMemoryConfig::new(WindowMode::CacheLevel { target: CacheTarget::DRAM_DEFAULT }, ChunkMode::AutoOptimal, false, false)
+                .with_timing(TestTiming::duration_only(10)).with_tsc(tsc_freq).with_memory_type(None)
+        ),
+        (
+            "Lat-V2-DRAM-Copy-512",
+            TestFunction::Latency(lat_v2_copy_512_multi),
+            TestMemoryConfig::new(WindowMode::CacheLevel { target: CacheTarget::DRAM_DEFAULT }, ChunkMode::AutoOptimal, false, false)
+                .with_timing(TestTiming::duration_only(10)).with_tsc(tsc_freq).with_memory_type(None)
+        ),
+        (
+            "Lat-V2-DRAMFull-Copy-Auto",
+            TestFunction::Latency(lat_v2_copy_auto_multi),
+            TestMemoryConfig::new(WindowMode::CacheLevel { target: CacheTarget::DRAM_FULL_DEFAULT }, ChunkMode::AutoOptimal, false, false)
+                .with_timing(TestTiming::duration_only(10)).with_tsc(tsc_freq).with_memory_type(None)
+        ),
+        (
+            "Lat-V2-DRAMFull-Copy-128",
+            TestFunction::Latency(lat_v2_copy_128_multi),
+            TestMemoryConfig::new(WindowMode::CacheLevel { target: CacheTarget::DRAM_FULL_DEFAULT }, ChunkMode::AutoOptimal, false, false)
+                .with_timing(TestTiming::duration_only(10)).with_tsc(tsc_freq).with_memory_type(None)
+        ),
+        (
+            "Lat-V2-DRAMFull-Copy-256",
+            TestFunction::Latency(lat_v2_copy_256_multi),
+            TestMemoryConfig::new(WindowMode::CacheLevel { target: CacheTarget::DRAM_FULL_DEFAULT }, ChunkMode::AutoOptimal, false, false)
+                .with_timing(TestTiming::duration_only(10)).with_tsc(tsc_freq).with_memory_type(None)
+        ),
+        (
+            "Lat-V2-DRAMFull-Copy-512",
+            TestFunction::Latency(lat_v2_copy_512_multi),
+            TestMemoryConfig::new(WindowMode::CacheLevel { target: CacheTarget::DRAM_FULL_DEFAULT }, ChunkMode::AutoOptimal, false, false)
+                .with_timing(TestTiming::duration_only(10)).with_tsc(tsc_freq).with_memory_type(None)
+        ),
+
+        // Layout B Packed — Lat-V2P-Read (5 tiers × {Auto,128,256,512} = 20 tests)
+        (
+            "Lat-V2P-L1-Read-Auto",
+            TestFunction::Latency(lat_v2p_read_auto_multi),
+            TestMemoryConfig::new(WindowMode::CacheLevel { target: CacheTarget::L1_DEFAULT }, ChunkMode::AutoOptimal, false, false)
+                .with_timing(TestTiming::duration_only(10)).with_tsc(tsc_freq).with_memory_type(None)
+        ),
+        (
+            "Lat-V2P-L1-Read-128",
+            TestFunction::Latency(lat_v2p_read_128_multi),
+            TestMemoryConfig::new(WindowMode::CacheLevel { target: CacheTarget::L1_DEFAULT }, ChunkMode::AutoOptimal, false, false)
+                .with_timing(TestTiming::duration_only(10)).with_tsc(tsc_freq).with_memory_type(None)
+        ),
+        (
+            "Lat-V2P-L1-Read-256",
+            TestFunction::Latency(lat_v2p_read_256_multi),
+            TestMemoryConfig::new(WindowMode::CacheLevel { target: CacheTarget::L1_DEFAULT }, ChunkMode::AutoOptimal, false, false)
+                .with_timing(TestTiming::duration_only(10)).with_tsc(tsc_freq).with_memory_type(None)
+        ),
+        (
+            "Lat-V2P-L1-Read-512",
+            TestFunction::Latency(lat_v2p_read_512_multi),
+            TestMemoryConfig::new(WindowMode::CacheLevel { target: CacheTarget::L1_DEFAULT }, ChunkMode::AutoOptimal, false, false)
+                .with_timing(TestTiming::duration_only(10)).with_tsc(tsc_freq).with_memory_type(None)
+        ),
+        (
+            "Lat-V2P-L2-Read-Auto",
+            TestFunction::Latency(lat_v2p_read_auto_multi),
+            TestMemoryConfig::new(WindowMode::CacheLevel { target: CacheTarget::L2_DEFAULT }, ChunkMode::AutoOptimal, false, false)
+                .with_timing(TestTiming::duration_only(10)).with_tsc(tsc_freq).with_memory_type(None)
+        ),
+        (
+            "Lat-V2P-L2-Read-128",
+            TestFunction::Latency(lat_v2p_read_128_multi),
+            TestMemoryConfig::new(WindowMode::CacheLevel { target: CacheTarget::L2_DEFAULT }, ChunkMode::AutoOptimal, false, false)
+                .with_timing(TestTiming::duration_only(10)).with_tsc(tsc_freq).with_memory_type(None)
+        ),
+        (
+            "Lat-V2P-L2-Read-256",
+            TestFunction::Latency(lat_v2p_read_256_multi),
+            TestMemoryConfig::new(WindowMode::CacheLevel { target: CacheTarget::L2_DEFAULT }, ChunkMode::AutoOptimal, false, false)
+                .with_timing(TestTiming::duration_only(10)).with_tsc(tsc_freq).with_memory_type(None)
+        ),
+        (
+            "Lat-V2P-L2-Read-512",
+            TestFunction::Latency(lat_v2p_read_512_multi),
+            TestMemoryConfig::new(WindowMode::CacheLevel { target: CacheTarget::L2_DEFAULT }, ChunkMode::AutoOptimal, false, false)
+                .with_timing(TestTiming::duration_only(10)).with_tsc(tsc_freq).with_memory_type(None)
+        ),
+        (
+            "Lat-V2P-L3-Read-Auto",
+            TestFunction::Latency(lat_v2p_read_auto_multi),
+            TestMemoryConfig::new(WindowMode::CacheLevel { target: CacheTarget::L3_DEFAULT }, ChunkMode::AutoOptimal, false, false)
+                .with_timing(TestTiming::duration_only(10)).with_tsc(tsc_freq).with_memory_type(None)
+        ),
+        (
+            "Lat-V2P-L3-Read-128",
+            TestFunction::Latency(lat_v2p_read_128_multi),
+            TestMemoryConfig::new(WindowMode::CacheLevel { target: CacheTarget::L3_DEFAULT }, ChunkMode::AutoOptimal, false, false)
+                .with_timing(TestTiming::duration_only(10)).with_tsc(tsc_freq).with_memory_type(None)
+        ),
+        (
+            "Lat-V2P-L3-Read-256",
+            TestFunction::Latency(lat_v2p_read_256_multi),
+            TestMemoryConfig::new(WindowMode::CacheLevel { target: CacheTarget::L3_DEFAULT }, ChunkMode::AutoOptimal, false, false)
+                .with_timing(TestTiming::duration_only(10)).with_tsc(tsc_freq).with_memory_type(None)
+        ),
+        (
+            "Lat-V2P-L3-Read-512",
+            TestFunction::Latency(lat_v2p_read_512_multi),
+            TestMemoryConfig::new(WindowMode::CacheLevel { target: CacheTarget::L3_DEFAULT }, ChunkMode::AutoOptimal, false, false)
+                .with_timing(TestTiming::duration_only(10)).with_tsc(tsc_freq).with_memory_type(None)
+        ),
+        (
+            "Lat-V2P-DRAM-Read-Auto",
+            TestFunction::Latency(lat_v2p_read_auto_multi),
+            TestMemoryConfig::new(WindowMode::CacheLevel { target: CacheTarget::DRAM_DEFAULT }, ChunkMode::AutoOptimal, false, false)
+                .with_timing(TestTiming::duration_only(10)).with_tsc(tsc_freq).with_memory_type(None)
+        ),
+        (
+            "Lat-V2P-DRAM-Read-128",
+            TestFunction::Latency(lat_v2p_read_128_multi),
+            TestMemoryConfig::new(WindowMode::CacheLevel { target: CacheTarget::DRAM_DEFAULT }, ChunkMode::AutoOptimal, false, false)
+                .with_timing(TestTiming::duration_only(10)).with_tsc(tsc_freq).with_memory_type(None)
+        ),
+        (
+            "Lat-V2P-DRAM-Read-256",
+            TestFunction::Latency(lat_v2p_read_256_multi),
+            TestMemoryConfig::new(WindowMode::CacheLevel { target: CacheTarget::DRAM_DEFAULT }, ChunkMode::AutoOptimal, false, false)
+                .with_timing(TestTiming::duration_only(10)).with_tsc(tsc_freq).with_memory_type(None)
+        ),
+        (
+            "Lat-V2P-DRAM-Read-512",
+            TestFunction::Latency(lat_v2p_read_512_multi),
+            TestMemoryConfig::new(WindowMode::CacheLevel { target: CacheTarget::DRAM_DEFAULT }, ChunkMode::AutoOptimal, false, false)
+                .with_timing(TestTiming::duration_only(10)).with_tsc(tsc_freq).with_memory_type(None)
+        ),
+        (
+            "Lat-V2P-DRAMFull-Read-Auto",
+            TestFunction::Latency(lat_v2p_read_auto_multi),
+            TestMemoryConfig::new(WindowMode::CacheLevel { target: CacheTarget::DRAM_FULL_DEFAULT }, ChunkMode::AutoOptimal, false, false)
+                .with_timing(TestTiming::duration_only(10)).with_tsc(tsc_freq).with_memory_type(None)
+        ),
+        (
+            "Lat-V2P-DRAMFull-Read-128",
+            TestFunction::Latency(lat_v2p_read_128_multi),
+            TestMemoryConfig::new(WindowMode::CacheLevel { target: CacheTarget::DRAM_FULL_DEFAULT }, ChunkMode::AutoOptimal, false, false)
+                .with_timing(TestTiming::duration_only(10)).with_tsc(tsc_freq).with_memory_type(None)
+        ),
+        (
+            "Lat-V2P-DRAMFull-Read-256",
+            TestFunction::Latency(lat_v2p_read_256_multi),
+            TestMemoryConfig::new(WindowMode::CacheLevel { target: CacheTarget::DRAM_FULL_DEFAULT }, ChunkMode::AutoOptimal, false, false)
+                .with_timing(TestTiming::duration_only(10)).with_tsc(tsc_freq).with_memory_type(None)
+        ),
+        (
+            "Lat-V2P-DRAMFull-Read-512",
+            TestFunction::Latency(lat_v2p_read_512_multi),
+            TestMemoryConfig::new(WindowMode::CacheLevel { target: CacheTarget::DRAM_FULL_DEFAULT }, ChunkMode::AutoOptimal, false, false)
+                .with_timing(TestTiming::duration_only(10)).with_tsc(tsc_freq).with_memory_type(None)
+        ),
+
+        // Layout B Write — Lat-V2P-Write (5 tiers × {Auto,128,256,512} = 20 tests)
+        // Path B PoC: 6 SIMD-width cached stores per chain step. Tests whether the store
+        // buffer becomes a measurable bottleneck under sustained random write pressure
+        // at DRAM tier. If results match Lat-V2P-Read closely, cached writes remain
+        // hidden by the store buffer (expected on x86). If DRAM tier rises notably above
+        // the Read baseline, store-buffer pressure is visible.
+        (
+            "Lat-V2P-L1-Write-Auto",
+            TestFunction::Latency(lat_v2p_write_auto_multi),
+            TestMemoryConfig::new(WindowMode::CacheLevel { target: CacheTarget::L1_DEFAULT }, ChunkMode::AutoOptimal, false, false)
+                .with_timing(TestTiming::duration_only(10)).with_tsc(tsc_freq).with_memory_type(None)
+        ),
+        (
+            "Lat-V2P-L1-Write-128",
+            TestFunction::Latency(lat_v2p_write_128_multi),
+            TestMemoryConfig::new(WindowMode::CacheLevel { target: CacheTarget::L1_DEFAULT }, ChunkMode::AutoOptimal, false, false)
+                .with_timing(TestTiming::duration_only(10)).with_tsc(tsc_freq).with_memory_type(None)
+        ),
+        (
+            "Lat-V2P-L1-Write-256",
+            TestFunction::Latency(lat_v2p_write_256_multi),
+            TestMemoryConfig::new(WindowMode::CacheLevel { target: CacheTarget::L1_DEFAULT }, ChunkMode::AutoOptimal, false, false)
+                .with_timing(TestTiming::duration_only(10)).with_tsc(tsc_freq).with_memory_type(None)
+        ),
+        (
+            "Lat-V2P-L1-Write-512",
+            TestFunction::Latency(lat_v2p_write_512_multi),
+            TestMemoryConfig::new(WindowMode::CacheLevel { target: CacheTarget::L1_DEFAULT }, ChunkMode::AutoOptimal, false, false)
+                .with_timing(TestTiming::duration_only(10)).with_tsc(tsc_freq).with_memory_type(None)
+        ),
+        (
+            "Lat-V2P-L2-Write-Auto",
+            TestFunction::Latency(lat_v2p_write_auto_multi),
+            TestMemoryConfig::new(WindowMode::CacheLevel { target: CacheTarget::L2_DEFAULT }, ChunkMode::AutoOptimal, false, false)
+                .with_timing(TestTiming::duration_only(10)).with_tsc(tsc_freq).with_memory_type(None)
+        ),
+        (
+            "Lat-V2P-L2-Write-128",
+            TestFunction::Latency(lat_v2p_write_128_multi),
+            TestMemoryConfig::new(WindowMode::CacheLevel { target: CacheTarget::L2_DEFAULT }, ChunkMode::AutoOptimal, false, false)
+                .with_timing(TestTiming::duration_only(10)).with_tsc(tsc_freq).with_memory_type(None)
+        ),
+        (
+            "Lat-V2P-L2-Write-256",
+            TestFunction::Latency(lat_v2p_write_256_multi),
+            TestMemoryConfig::new(WindowMode::CacheLevel { target: CacheTarget::L2_DEFAULT }, ChunkMode::AutoOptimal, false, false)
+                .with_timing(TestTiming::duration_only(10)).with_tsc(tsc_freq).with_memory_type(None)
+        ),
+        (
+            "Lat-V2P-L2-Write-512",
+            TestFunction::Latency(lat_v2p_write_512_multi),
+            TestMemoryConfig::new(WindowMode::CacheLevel { target: CacheTarget::L2_DEFAULT }, ChunkMode::AutoOptimal, false, false)
+                .with_timing(TestTiming::duration_only(10)).with_tsc(tsc_freq).with_memory_type(None)
+        ),
+        (
+            "Lat-V2P-L3-Write-Auto",
+            TestFunction::Latency(lat_v2p_write_auto_multi),
+            TestMemoryConfig::new(WindowMode::CacheLevel { target: CacheTarget::L3_DEFAULT }, ChunkMode::AutoOptimal, false, false)
+                .with_timing(TestTiming::duration_only(10)).with_tsc(tsc_freq).with_memory_type(None)
+        ),
+        (
+            "Lat-V2P-L3-Write-128",
+            TestFunction::Latency(lat_v2p_write_128_multi),
+            TestMemoryConfig::new(WindowMode::CacheLevel { target: CacheTarget::L3_DEFAULT }, ChunkMode::AutoOptimal, false, false)
+                .with_timing(TestTiming::duration_only(10)).with_tsc(tsc_freq).with_memory_type(None)
+        ),
+        (
+            "Lat-V2P-L3-Write-256",
+            TestFunction::Latency(lat_v2p_write_256_multi),
+            TestMemoryConfig::new(WindowMode::CacheLevel { target: CacheTarget::L3_DEFAULT }, ChunkMode::AutoOptimal, false, false)
+                .with_timing(TestTiming::duration_only(10)).with_tsc(tsc_freq).with_memory_type(None)
+        ),
+        (
+            "Lat-V2P-L3-Write-512",
+            TestFunction::Latency(lat_v2p_write_512_multi),
+            TestMemoryConfig::new(WindowMode::CacheLevel { target: CacheTarget::L3_DEFAULT }, ChunkMode::AutoOptimal, false, false)
+                .with_timing(TestTiming::duration_only(10)).with_tsc(tsc_freq).with_memory_type(None)
+        ),
+        (
+            "Lat-V2P-DRAM-Write-Auto",
+            TestFunction::Latency(lat_v2p_write_auto_multi),
+            TestMemoryConfig::new(WindowMode::CacheLevel { target: CacheTarget::DRAM_DEFAULT }, ChunkMode::AutoOptimal, false, false)
+                .with_timing(TestTiming::duration_only(10)).with_tsc(tsc_freq).with_memory_type(None)
+        ),
+        (
+            "Lat-V2P-DRAM-Write-128",
+            TestFunction::Latency(lat_v2p_write_128_multi),
+            TestMemoryConfig::new(WindowMode::CacheLevel { target: CacheTarget::DRAM_DEFAULT }, ChunkMode::AutoOptimal, false, false)
+                .with_timing(TestTiming::duration_only(10)).with_tsc(tsc_freq).with_memory_type(None)
+        ),
+        (
+            "Lat-V2P-DRAM-Write-256",
+            TestFunction::Latency(lat_v2p_write_256_multi),
+            TestMemoryConfig::new(WindowMode::CacheLevel { target: CacheTarget::DRAM_DEFAULT }, ChunkMode::AutoOptimal, false, false)
+                .with_timing(TestTiming::duration_only(10)).with_tsc(tsc_freq).with_memory_type(None)
+        ),
+        (
+            "Lat-V2P-DRAM-Write-512",
+            TestFunction::Latency(lat_v2p_write_512_multi),
+            TestMemoryConfig::new(WindowMode::CacheLevel { target: CacheTarget::DRAM_DEFAULT }, ChunkMode::AutoOptimal, false, false)
+                .with_timing(TestTiming::duration_only(10)).with_tsc(tsc_freq).with_memory_type(None)
+        ),
+        (
+            "Lat-V2P-DRAMFull-Write-Auto",
+            TestFunction::Latency(lat_v2p_write_auto_multi),
+            TestMemoryConfig::new(WindowMode::CacheLevel { target: CacheTarget::DRAM_FULL_DEFAULT }, ChunkMode::AutoOptimal, false, false)
+                .with_timing(TestTiming::duration_only(10)).with_tsc(tsc_freq).with_memory_type(None)
+        ),
+        (
+            "Lat-V2P-DRAMFull-Write-128",
+            TestFunction::Latency(lat_v2p_write_128_multi),
+            TestMemoryConfig::new(WindowMode::CacheLevel { target: CacheTarget::DRAM_FULL_DEFAULT }, ChunkMode::AutoOptimal, false, false)
+                .with_timing(TestTiming::duration_only(10)).with_tsc(tsc_freq).with_memory_type(None)
+        ),
+        (
+            "Lat-V2P-DRAMFull-Write-256",
+            TestFunction::Latency(lat_v2p_write_256_multi),
+            TestMemoryConfig::new(WindowMode::CacheLevel { target: CacheTarget::DRAM_FULL_DEFAULT }, ChunkMode::AutoOptimal, false, false)
+                .with_timing(TestTiming::duration_only(10)).with_tsc(tsc_freq).with_memory_type(None)
+        ),
+        (
+            "Lat-V2P-DRAMFull-Write-512",
+            TestFunction::Latency(lat_v2p_write_512_multi),
+            TestMemoryConfig::new(WindowMode::CacheLevel { target: CacheTarget::DRAM_FULL_DEFAULT }, ChunkMode::AutoOptimal, false, false)
+                .with_timing(TestTiming::duration_only(10)).with_tsc(tsc_freq).with_memory_type(None)
+        ),
+
+        // Layout B Copy — Lat-V2P-Copy (5 tiers × {Auto,128,256,512} = 20 tests)
+        // Read-modify-write: each chain step loads 6 random data cells, XORs them, stores
+        // back. Loads warm lines into L1 first, so stores hit cached lines without RFO.
+        // Tests realistic "copy traffic" — predicted to fall between Read and Write since
+        // the load+store-on-same-line path avoids the store-buffer pressure that pure
+        // random writes hit at L2/L3.
+        (
+            "Lat-V2P-L1-Copy-Auto",
+            TestFunction::Latency(lat_v2p_copy_auto_multi),
+            TestMemoryConfig::new(WindowMode::CacheLevel { target: CacheTarget::L1_DEFAULT }, ChunkMode::AutoOptimal, false, false)
+                .with_timing(TestTiming::duration_only(10)).with_tsc(tsc_freq).with_memory_type(None)
+        ),
+        (
+            "Lat-V2P-L1-Copy-128",
+            TestFunction::Latency(lat_v2p_copy_128_multi),
+            TestMemoryConfig::new(WindowMode::CacheLevel { target: CacheTarget::L1_DEFAULT }, ChunkMode::AutoOptimal, false, false)
+                .with_timing(TestTiming::duration_only(10)).with_tsc(tsc_freq).with_memory_type(None)
+        ),
+        (
+            "Lat-V2P-L1-Copy-256",
+            TestFunction::Latency(lat_v2p_copy_256_multi),
+            TestMemoryConfig::new(WindowMode::CacheLevel { target: CacheTarget::L1_DEFAULT }, ChunkMode::AutoOptimal, false, false)
+                .with_timing(TestTiming::duration_only(10)).with_tsc(tsc_freq).with_memory_type(None)
+        ),
+        (
+            "Lat-V2P-L1-Copy-512",
+            TestFunction::Latency(lat_v2p_copy_512_multi),
+            TestMemoryConfig::new(WindowMode::CacheLevel { target: CacheTarget::L1_DEFAULT }, ChunkMode::AutoOptimal, false, false)
+                .with_timing(TestTiming::duration_only(10)).with_tsc(tsc_freq).with_memory_type(None)
+        ),
+        (
+            "Lat-V2P-L2-Copy-Auto",
+            TestFunction::Latency(lat_v2p_copy_auto_multi),
+            TestMemoryConfig::new(WindowMode::CacheLevel { target: CacheTarget::L2_DEFAULT }, ChunkMode::AutoOptimal, false, false)
+                .with_timing(TestTiming::duration_only(10)).with_tsc(tsc_freq).with_memory_type(None)
+        ),
+        (
+            "Lat-V2P-L2-Copy-128",
+            TestFunction::Latency(lat_v2p_copy_128_multi),
+            TestMemoryConfig::new(WindowMode::CacheLevel { target: CacheTarget::L2_DEFAULT }, ChunkMode::AutoOptimal, false, false)
+                .with_timing(TestTiming::duration_only(10)).with_tsc(tsc_freq).with_memory_type(None)
+        ),
+        (
+            "Lat-V2P-L2-Copy-256",
+            TestFunction::Latency(lat_v2p_copy_256_multi),
+            TestMemoryConfig::new(WindowMode::CacheLevel { target: CacheTarget::L2_DEFAULT }, ChunkMode::AutoOptimal, false, false)
+                .with_timing(TestTiming::duration_only(10)).with_tsc(tsc_freq).with_memory_type(None)
+        ),
+        (
+            "Lat-V2P-L2-Copy-512",
+            TestFunction::Latency(lat_v2p_copy_512_multi),
+            TestMemoryConfig::new(WindowMode::CacheLevel { target: CacheTarget::L2_DEFAULT }, ChunkMode::AutoOptimal, false, false)
+                .with_timing(TestTiming::duration_only(10)).with_tsc(tsc_freq).with_memory_type(None)
+        ),
+        (
+            "Lat-V2P-L3-Copy-Auto",
+            TestFunction::Latency(lat_v2p_copy_auto_multi),
+            TestMemoryConfig::new(WindowMode::CacheLevel { target: CacheTarget::L3_DEFAULT }, ChunkMode::AutoOptimal, false, false)
+                .with_timing(TestTiming::duration_only(10)).with_tsc(tsc_freq).with_memory_type(None)
+        ),
+        (
+            "Lat-V2P-L3-Copy-128",
+            TestFunction::Latency(lat_v2p_copy_128_multi),
+            TestMemoryConfig::new(WindowMode::CacheLevel { target: CacheTarget::L3_DEFAULT }, ChunkMode::AutoOptimal, false, false)
+                .with_timing(TestTiming::duration_only(10)).with_tsc(tsc_freq).with_memory_type(None)
+        ),
+        (
+            "Lat-V2P-L3-Copy-256",
+            TestFunction::Latency(lat_v2p_copy_256_multi),
+            TestMemoryConfig::new(WindowMode::CacheLevel { target: CacheTarget::L3_DEFAULT }, ChunkMode::AutoOptimal, false, false)
+                .with_timing(TestTiming::duration_only(10)).with_tsc(tsc_freq).with_memory_type(None)
+        ),
+        (
+            "Lat-V2P-L3-Copy-512",
+            TestFunction::Latency(lat_v2p_copy_512_multi),
+            TestMemoryConfig::new(WindowMode::CacheLevel { target: CacheTarget::L3_DEFAULT }, ChunkMode::AutoOptimal, false, false)
+                .with_timing(TestTiming::duration_only(10)).with_tsc(tsc_freq).with_memory_type(None)
+        ),
+        (
+            "Lat-V2P-DRAM-Copy-Auto",
+            TestFunction::Latency(lat_v2p_copy_auto_multi),
+            TestMemoryConfig::new(WindowMode::CacheLevel { target: CacheTarget::DRAM_DEFAULT }, ChunkMode::AutoOptimal, false, false)
+                .with_timing(TestTiming::duration_only(10)).with_tsc(tsc_freq).with_memory_type(None)
+        ),
+        (
+            "Lat-V2P-DRAM-Copy-128",
+            TestFunction::Latency(lat_v2p_copy_128_multi),
+            TestMemoryConfig::new(WindowMode::CacheLevel { target: CacheTarget::DRAM_DEFAULT }, ChunkMode::AutoOptimal, false, false)
+                .with_timing(TestTiming::duration_only(10)).with_tsc(tsc_freq).with_memory_type(None)
+        ),
+        (
+            "Lat-V2P-DRAM-Copy-256",
+            TestFunction::Latency(lat_v2p_copy_256_multi),
+            TestMemoryConfig::new(WindowMode::CacheLevel { target: CacheTarget::DRAM_DEFAULT }, ChunkMode::AutoOptimal, false, false)
+                .with_timing(TestTiming::duration_only(10)).with_tsc(tsc_freq).with_memory_type(None)
+        ),
+        (
+            "Lat-V2P-DRAM-Copy-512",
+            TestFunction::Latency(lat_v2p_copy_512_multi),
+            TestMemoryConfig::new(WindowMode::CacheLevel { target: CacheTarget::DRAM_DEFAULT }, ChunkMode::AutoOptimal, false, false)
+                .with_timing(TestTiming::duration_only(10)).with_tsc(tsc_freq).with_memory_type(None)
+        ),
+        (
+            "Lat-V2P-DRAMFull-Copy-Auto",
+            TestFunction::Latency(lat_v2p_copy_auto_multi),
+            TestMemoryConfig::new(WindowMode::CacheLevel { target: CacheTarget::DRAM_FULL_DEFAULT }, ChunkMode::AutoOptimal, false, false)
+                .with_timing(TestTiming::duration_only(10)).with_tsc(tsc_freq).with_memory_type(None)
+        ),
+        (
+            "Lat-V2P-DRAMFull-Copy-128",
+            TestFunction::Latency(lat_v2p_copy_128_multi),
+            TestMemoryConfig::new(WindowMode::CacheLevel { target: CacheTarget::DRAM_FULL_DEFAULT }, ChunkMode::AutoOptimal, false, false)
+                .with_timing(TestTiming::duration_only(10)).with_tsc(tsc_freq).with_memory_type(None)
+        ),
+        (
+            "Lat-V2P-DRAMFull-Copy-256",
+            TestFunction::Latency(lat_v2p_copy_256_multi),
+            TestMemoryConfig::new(WindowMode::CacheLevel { target: CacheTarget::DRAM_FULL_DEFAULT }, ChunkMode::AutoOptimal, false, false)
+                .with_timing(TestTiming::duration_only(10)).with_tsc(tsc_freq).with_memory_type(None)
+        ),
+        (
+            "Lat-V2P-DRAMFull-Copy-512",
+            TestFunction::Latency(lat_v2p_copy_512_multi),
+            TestMemoryConfig::new(WindowMode::CacheLevel { target: CacheTarget::DRAM_FULL_DEFAULT }, ChunkMode::AutoOptimal, false, false)
+                .with_timing(TestTiming::duration_only(10)).with_tsc(tsc_freq).with_memory_type(None)
+        ),
+
+        // Layout B WriteFull — full-cache-line cached writes (5 tiers × {Auto,128,256,512} = 20 tests)
+        // Compares to Lat-V2P-Write to isolate the byte-coverage variable. Same chain
+        // structure but every width writes the full 64-byte cache line per cell.
+        (
+            "Lat-V2P-L1-WriteFull-Auto",
+            TestFunction::Latency(lat_v2p_write_full_auto_multi),
+            TestMemoryConfig::new(WindowMode::CacheLevel { target: CacheTarget::L1_DEFAULT }, ChunkMode::AutoOptimal, false, false)
+                .with_timing(TestTiming::duration_only(10)).with_tsc(tsc_freq).with_memory_type(None)
+        ),
+        (
+            "Lat-V2P-L1-WriteFull-128",
+            TestFunction::Latency(lat_v2p_write_full_128_multi),
+            TestMemoryConfig::new(WindowMode::CacheLevel { target: CacheTarget::L1_DEFAULT }, ChunkMode::AutoOptimal, false, false)
+                .with_timing(TestTiming::duration_only(10)).with_tsc(tsc_freq).with_memory_type(None)
+        ),
+        (
+            "Lat-V2P-L1-WriteFull-256",
+            TestFunction::Latency(lat_v2p_write_full_256_multi),
+            TestMemoryConfig::new(WindowMode::CacheLevel { target: CacheTarget::L1_DEFAULT }, ChunkMode::AutoOptimal, false, false)
+                .with_timing(TestTiming::duration_only(10)).with_tsc(tsc_freq).with_memory_type(None)
+        ),
+        (
+            "Lat-V2P-L1-WriteFull-512",
+            TestFunction::Latency(lat_v2p_write_full_512_multi),
+            TestMemoryConfig::new(WindowMode::CacheLevel { target: CacheTarget::L1_DEFAULT }, ChunkMode::AutoOptimal, false, false)
+                .with_timing(TestTiming::duration_only(10)).with_tsc(tsc_freq).with_memory_type(None)
+        ),
+        (
+            "Lat-V2P-L2-WriteFull-Auto",
+            TestFunction::Latency(lat_v2p_write_full_auto_multi),
+            TestMemoryConfig::new(WindowMode::CacheLevel { target: CacheTarget::L2_DEFAULT }, ChunkMode::AutoOptimal, false, false)
+                .with_timing(TestTiming::duration_only(10)).with_tsc(tsc_freq).with_memory_type(None)
+        ),
+        (
+            "Lat-V2P-L2-WriteFull-128",
+            TestFunction::Latency(lat_v2p_write_full_128_multi),
+            TestMemoryConfig::new(WindowMode::CacheLevel { target: CacheTarget::L2_DEFAULT }, ChunkMode::AutoOptimal, false, false)
+                .with_timing(TestTiming::duration_only(10)).with_tsc(tsc_freq).with_memory_type(None)
+        ),
+        (
+            "Lat-V2P-L2-WriteFull-256",
+            TestFunction::Latency(lat_v2p_write_full_256_multi),
+            TestMemoryConfig::new(WindowMode::CacheLevel { target: CacheTarget::L2_DEFAULT }, ChunkMode::AutoOptimal, false, false)
+                .with_timing(TestTiming::duration_only(10)).with_tsc(tsc_freq).with_memory_type(None)
+        ),
+        (
+            "Lat-V2P-L2-WriteFull-512",
+            TestFunction::Latency(lat_v2p_write_full_512_multi),
+            TestMemoryConfig::new(WindowMode::CacheLevel { target: CacheTarget::L2_DEFAULT }, ChunkMode::AutoOptimal, false, false)
+                .with_timing(TestTiming::duration_only(10)).with_tsc(tsc_freq).with_memory_type(None)
+        ),
+        (
+            "Lat-V2P-L3-WriteFull-Auto",
+            TestFunction::Latency(lat_v2p_write_full_auto_multi),
+            TestMemoryConfig::new(WindowMode::CacheLevel { target: CacheTarget::L3_DEFAULT }, ChunkMode::AutoOptimal, false, false)
+                .with_timing(TestTiming::duration_only(10)).with_tsc(tsc_freq).with_memory_type(None)
+        ),
+        (
+            "Lat-V2P-L3-WriteFull-128",
+            TestFunction::Latency(lat_v2p_write_full_128_multi),
+            TestMemoryConfig::new(WindowMode::CacheLevel { target: CacheTarget::L3_DEFAULT }, ChunkMode::AutoOptimal, false, false)
+                .with_timing(TestTiming::duration_only(10)).with_tsc(tsc_freq).with_memory_type(None)
+        ),
+        (
+            "Lat-V2P-L3-WriteFull-256",
+            TestFunction::Latency(lat_v2p_write_full_256_multi),
+            TestMemoryConfig::new(WindowMode::CacheLevel { target: CacheTarget::L3_DEFAULT }, ChunkMode::AutoOptimal, false, false)
+                .with_timing(TestTiming::duration_only(10)).with_tsc(tsc_freq).with_memory_type(None)
+        ),
+        (
+            "Lat-V2P-L3-WriteFull-512",
+            TestFunction::Latency(lat_v2p_write_full_512_multi),
+            TestMemoryConfig::new(WindowMode::CacheLevel { target: CacheTarget::L3_DEFAULT }, ChunkMode::AutoOptimal, false, false)
+                .with_timing(TestTiming::duration_only(10)).with_tsc(tsc_freq).with_memory_type(None)
+        ),
+        (
+            "Lat-V2P-DRAM-WriteFull-Auto",
+            TestFunction::Latency(lat_v2p_write_full_auto_multi),
+            TestMemoryConfig::new(WindowMode::CacheLevel { target: CacheTarget::DRAM_DEFAULT }, ChunkMode::AutoOptimal, false, false)
+                .with_timing(TestTiming::duration_only(10)).with_tsc(tsc_freq).with_memory_type(None)
+        ),
+        (
+            "Lat-V2P-DRAM-WriteFull-128",
+            TestFunction::Latency(lat_v2p_write_full_128_multi),
+            TestMemoryConfig::new(WindowMode::CacheLevel { target: CacheTarget::DRAM_DEFAULT }, ChunkMode::AutoOptimal, false, false)
+                .with_timing(TestTiming::duration_only(10)).with_tsc(tsc_freq).with_memory_type(None)
+        ),
+        (
+            "Lat-V2P-DRAM-WriteFull-256",
+            TestFunction::Latency(lat_v2p_write_full_256_multi),
+            TestMemoryConfig::new(WindowMode::CacheLevel { target: CacheTarget::DRAM_DEFAULT }, ChunkMode::AutoOptimal, false, false)
+                .with_timing(TestTiming::duration_only(10)).with_tsc(tsc_freq).with_memory_type(None)
+        ),
+        (
+            "Lat-V2P-DRAM-WriteFull-512",
+            TestFunction::Latency(lat_v2p_write_full_512_multi),
+            TestMemoryConfig::new(WindowMode::CacheLevel { target: CacheTarget::DRAM_DEFAULT }, ChunkMode::AutoOptimal, false, false)
+                .with_timing(TestTiming::duration_only(10)).with_tsc(tsc_freq).with_memory_type(None)
+        ),
+        (
+            "Lat-V2P-DRAMFull-WriteFull-Auto",
+            TestFunction::Latency(lat_v2p_write_full_auto_multi),
+            TestMemoryConfig::new(WindowMode::CacheLevel { target: CacheTarget::DRAM_FULL_DEFAULT }, ChunkMode::AutoOptimal, false, false)
+                .with_timing(TestTiming::duration_only(10)).with_tsc(tsc_freq).with_memory_type(None)
+        ),
+        (
+            "Lat-V2P-DRAMFull-WriteFull-128",
+            TestFunction::Latency(lat_v2p_write_full_128_multi),
+            TestMemoryConfig::new(WindowMode::CacheLevel { target: CacheTarget::DRAM_FULL_DEFAULT }, ChunkMode::AutoOptimal, false, false)
+                .with_timing(TestTiming::duration_only(10)).with_tsc(tsc_freq).with_memory_type(None)
+        ),
+        (
+            "Lat-V2P-DRAMFull-WriteFull-256",
+            TestFunction::Latency(lat_v2p_write_full_256_multi),
+            TestMemoryConfig::new(WindowMode::CacheLevel { target: CacheTarget::DRAM_FULL_DEFAULT }, ChunkMode::AutoOptimal, false, false)
+                .with_timing(TestTiming::duration_only(10)).with_tsc(tsc_freq).with_memory_type(None)
+        ),
+        (
+            "Lat-V2P-DRAMFull-WriteFull-512",
+            TestFunction::Latency(lat_v2p_write_full_512_multi),
+            TestMemoryConfig::new(WindowMode::CacheLevel { target: CacheTarget::DRAM_FULL_DEFAULT }, ChunkMode::AutoOptimal, false, false)
+                .with_timing(TestTiming::duration_only(10)).with_tsc(tsc_freq).with_memory_type(None)
+        ),
+
+        // Layout B CopyFull — full-cache-line RMW (5 tiers × {Auto,128,256,512} = 20 tests)
+        // Compares to Lat-V2P-Copy to isolate the byte-coverage variable. Tests whether
+        // the L3 bimodal distribution is byte-coverage driven or SIMD-path driven.
+        (
+            "Lat-V2P-L1-CopyFull-Auto",
+            TestFunction::Latency(lat_v2p_copy_full_auto_multi),
+            TestMemoryConfig::new(WindowMode::CacheLevel { target: CacheTarget::L1_DEFAULT }, ChunkMode::AutoOptimal, false, false)
+                .with_timing(TestTiming::duration_only(10)).with_tsc(tsc_freq).with_memory_type(None)
+        ),
+        (
+            "Lat-V2P-L1-CopyFull-128",
+            TestFunction::Latency(lat_v2p_copy_full_128_multi),
+            TestMemoryConfig::new(WindowMode::CacheLevel { target: CacheTarget::L1_DEFAULT }, ChunkMode::AutoOptimal, false, false)
+                .with_timing(TestTiming::duration_only(10)).with_tsc(tsc_freq).with_memory_type(None)
+        ),
+        (
+            "Lat-V2P-L1-CopyFull-256",
+            TestFunction::Latency(lat_v2p_copy_full_256_multi),
+            TestMemoryConfig::new(WindowMode::CacheLevel { target: CacheTarget::L1_DEFAULT }, ChunkMode::AutoOptimal, false, false)
+                .with_timing(TestTiming::duration_only(10)).with_tsc(tsc_freq).with_memory_type(None)
+        ),
+        (
+            "Lat-V2P-L1-CopyFull-512",
+            TestFunction::Latency(lat_v2p_copy_full_512_multi),
+            TestMemoryConfig::new(WindowMode::CacheLevel { target: CacheTarget::L1_DEFAULT }, ChunkMode::AutoOptimal, false, false)
+                .with_timing(TestTiming::duration_only(10)).with_tsc(tsc_freq).with_memory_type(None)
+        ),
+        (
+            "Lat-V2P-L2-CopyFull-Auto",
+            TestFunction::Latency(lat_v2p_copy_full_auto_multi),
+            TestMemoryConfig::new(WindowMode::CacheLevel { target: CacheTarget::L2_DEFAULT }, ChunkMode::AutoOptimal, false, false)
+                .with_timing(TestTiming::duration_only(10)).with_tsc(tsc_freq).with_memory_type(None)
+        ),
+        (
+            "Lat-V2P-L2-CopyFull-128",
+            TestFunction::Latency(lat_v2p_copy_full_128_multi),
+            TestMemoryConfig::new(WindowMode::CacheLevel { target: CacheTarget::L2_DEFAULT }, ChunkMode::AutoOptimal, false, false)
+                .with_timing(TestTiming::duration_only(10)).with_tsc(tsc_freq).with_memory_type(None)
+        ),
+        (
+            "Lat-V2P-L2-CopyFull-256",
+            TestFunction::Latency(lat_v2p_copy_full_256_multi),
+            TestMemoryConfig::new(WindowMode::CacheLevel { target: CacheTarget::L2_DEFAULT }, ChunkMode::AutoOptimal, false, false)
+                .with_timing(TestTiming::duration_only(10)).with_tsc(tsc_freq).with_memory_type(None)
+        ),
+        (
+            "Lat-V2P-L2-CopyFull-512",
+            TestFunction::Latency(lat_v2p_copy_full_512_multi),
+            TestMemoryConfig::new(WindowMode::CacheLevel { target: CacheTarget::L2_DEFAULT }, ChunkMode::AutoOptimal, false, false)
+                .with_timing(TestTiming::duration_only(10)).with_tsc(tsc_freq).with_memory_type(None)
+        ),
+        (
+            "Lat-V2P-L3-CopyFull-Auto",
+            TestFunction::Latency(lat_v2p_copy_full_auto_multi),
+            TestMemoryConfig::new(WindowMode::CacheLevel { target: CacheTarget::L3_DEFAULT }, ChunkMode::AutoOptimal, false, false)
+                .with_timing(TestTiming::duration_only(10)).with_tsc(tsc_freq).with_memory_type(None)
+        ),
+        (
+            "Lat-V2P-L3-CopyFull-128",
+            TestFunction::Latency(lat_v2p_copy_full_128_multi),
+            TestMemoryConfig::new(WindowMode::CacheLevel { target: CacheTarget::L3_DEFAULT }, ChunkMode::AutoOptimal, false, false)
+                .with_timing(TestTiming::duration_only(10)).with_tsc(tsc_freq).with_memory_type(None)
+        ),
+        (
+            "Lat-V2P-L3-CopyFull-256",
+            TestFunction::Latency(lat_v2p_copy_full_256_multi),
+            TestMemoryConfig::new(WindowMode::CacheLevel { target: CacheTarget::L3_DEFAULT }, ChunkMode::AutoOptimal, false, false)
+                .with_timing(TestTiming::duration_only(10)).with_tsc(tsc_freq).with_memory_type(None)
+        ),
+        (
+            "Lat-V2P-L3-CopyFull-512",
+            TestFunction::Latency(lat_v2p_copy_full_512_multi),
+            TestMemoryConfig::new(WindowMode::CacheLevel { target: CacheTarget::L3_DEFAULT }, ChunkMode::AutoOptimal, false, false)
+                .with_timing(TestTiming::duration_only(10)).with_tsc(tsc_freq).with_memory_type(None)
+        ),
+        (
+            "Lat-V2P-DRAM-CopyFull-Auto",
+            TestFunction::Latency(lat_v2p_copy_full_auto_multi),
+            TestMemoryConfig::new(WindowMode::CacheLevel { target: CacheTarget::DRAM_DEFAULT }, ChunkMode::AutoOptimal, false, false)
+                .with_timing(TestTiming::duration_only(10)).with_tsc(tsc_freq).with_memory_type(None)
+        ),
+        (
+            "Lat-V2P-DRAM-CopyFull-128",
+            TestFunction::Latency(lat_v2p_copy_full_128_multi),
+            TestMemoryConfig::new(WindowMode::CacheLevel { target: CacheTarget::DRAM_DEFAULT }, ChunkMode::AutoOptimal, false, false)
+                .with_timing(TestTiming::duration_only(10)).with_tsc(tsc_freq).with_memory_type(None)
+        ),
+        (
+            "Lat-V2P-DRAM-CopyFull-256",
+            TestFunction::Latency(lat_v2p_copy_full_256_multi),
+            TestMemoryConfig::new(WindowMode::CacheLevel { target: CacheTarget::DRAM_DEFAULT }, ChunkMode::AutoOptimal, false, false)
+                .with_timing(TestTiming::duration_only(10)).with_tsc(tsc_freq).with_memory_type(None)
+        ),
+        (
+            "Lat-V2P-DRAM-CopyFull-512",
+            TestFunction::Latency(lat_v2p_copy_full_512_multi),
+            TestMemoryConfig::new(WindowMode::CacheLevel { target: CacheTarget::DRAM_DEFAULT }, ChunkMode::AutoOptimal, false, false)
+                .with_timing(TestTiming::duration_only(10)).with_tsc(tsc_freq).with_memory_type(None)
+        ),
+        (
+            "Lat-V2P-DRAMFull-CopyFull-Auto",
+            TestFunction::Latency(lat_v2p_copy_full_auto_multi),
+            TestMemoryConfig::new(WindowMode::CacheLevel { target: CacheTarget::DRAM_FULL_DEFAULT }, ChunkMode::AutoOptimal, false, false)
+                .with_timing(TestTiming::duration_only(10)).with_tsc(tsc_freq).with_memory_type(None)
+        ),
+        (
+            "Lat-V2P-DRAMFull-CopyFull-128",
+            TestFunction::Latency(lat_v2p_copy_full_128_multi),
+            TestMemoryConfig::new(WindowMode::CacheLevel { target: CacheTarget::DRAM_FULL_DEFAULT }, ChunkMode::AutoOptimal, false, false)
+                .with_timing(TestTiming::duration_only(10)).with_tsc(tsc_freq).with_memory_type(None)
+        ),
+        (
+            "Lat-V2P-DRAMFull-CopyFull-256",
+            TestFunction::Latency(lat_v2p_copy_full_256_multi),
+            TestMemoryConfig::new(WindowMode::CacheLevel { target: CacheTarget::DRAM_FULL_DEFAULT }, ChunkMode::AutoOptimal, false, false)
+                .with_timing(TestTiming::duration_only(10)).with_tsc(tsc_freq).with_memory_type(None)
+        ),
+        (
+            "Lat-V2P-DRAMFull-CopyFull-512",
+            TestFunction::Latency(lat_v2p_copy_full_512_multi),
+            TestMemoryConfig::new(WindowMode::CacheLevel { target: CacheTarget::DRAM_FULL_DEFAULT }, ChunkMode::AutoOptimal, false, false)
+                .with_timing(TestTiming::duration_only(10)).with_tsc(tsc_freq).with_memory_type(None)
+        ),
+
+        // NT Write saturation — Lat-NTW-DRAM-Write ({Auto,Scalar,128,256,512} = 5 tests)
+        // NT stores bypass cache hierarchy — only the DRAM tier exists. Width variants exposed
+        // because per-store commit time differs (wider stores fill cache lines in fewer ops).
+        // Scalar variant uses 8-byte MOVNTI to validate the WCB-fill-ratio hypothesis.
+        (
+            "Lat-NTW-DRAM-Write-Auto",
+            TestFunction::Latency(lat_ntw_write_auto_multi),
+            TestMemoryConfig::new(WindowMode::CacheLevel { target: CacheTarget::DRAM_DEFAULT }, ChunkMode::AutoOptimal, false, false)
+                .with_timing(TestTiming::duration_only(10)).with_tsc(tsc_freq).with_memory_type(None)
+        ),
+        (
+            "Lat-NTW-DRAM-Write-Scalar",
+            TestFunction::Latency(lat_ntw_write_scalar_multi),
+            TestMemoryConfig::new(WindowMode::CacheLevel { target: CacheTarget::DRAM_DEFAULT }, ChunkMode::AutoOptimal, false, false)
+                .with_timing(TestTiming::duration_only(10)).with_tsc(tsc_freq).with_memory_type(None)
+        ),
+        (
+            "Lat-NTW-DRAM-Write-128",
+            TestFunction::Latency(lat_ntw_write_128_multi),
+            TestMemoryConfig::new(WindowMode::CacheLevel { target: CacheTarget::DRAM_DEFAULT }, ChunkMode::AutoOptimal, false, false)
+                .with_timing(TestTiming::duration_only(10)).with_tsc(tsc_freq).with_memory_type(None)
+        ),
+        (
+            "Lat-NTW-DRAM-Write-256",
+            TestFunction::Latency(lat_ntw_write_256_multi),
+            TestMemoryConfig::new(WindowMode::CacheLevel { target: CacheTarget::DRAM_DEFAULT }, ChunkMode::AutoOptimal, false, false)
+                .with_timing(TestTiming::duration_only(10)).with_tsc(tsc_freq).with_memory_type(None)
+        ),
+        (
+            "Lat-NTW-DRAM-Write-512",
+            TestFunction::Latency(lat_ntw_write_512_multi),
+            TestMemoryConfig::new(WindowMode::CacheLevel { target: CacheTarget::DRAM_DEFAULT }, ChunkMode::AutoOptimal, false, false)
+                .with_timing(TestTiming::duration_only(10)).with_tsc(tsc_freq).with_memory_type(None)
         ),
 
         // === Sequential Bandwidth Tests (Auto-dispatch) ===
@@ -2092,39 +3365,36 @@ fn create_test_definitions(cache_info: &CacheInfo) -> Vec<TestDefinition> {
         (
             "Spd-L1-Read-Auto",
             TestFunction::MultiBlock(spd_read_auto_multi),
-            validate_streams(TestMemoryConfig::new(
+            TestMemoryConfig::new(
                 WindowMode::CacheLevel { target: CacheTarget::L1_DEFAULT },
                 ChunkMode::AutoOptimal,
                 false,
                 false
             ).with_timing(TestTiming::duration_only(10))
-             .with_streams(1), "Spd-L1-Read-Auto")
              .with_memory_type(None)
         ),
 
         (
             "Spd-L1-Write-Auto",
             TestFunction::MultiBlock(spd_write_auto_multi),
-            validate_streams(TestMemoryConfig::new(
+            TestMemoryConfig::new(
                 WindowMode::CacheLevel { target: CacheTarget::L1_DEFAULT },
                 ChunkMode::AutoOptimal,
                 false,
                 false
             ).with_timing(TestTiming::duration_only(10))
-             .with_streams(1), "Spd-L1-Write-Auto")
              .with_memory_type(None)
         ),
 
         (
             "Spd-L1-Copy-Auto",
             TestFunction::MultiBlock(spd_copy_auto_multi),
-            validate_streams(TestMemoryConfig::new(
+            TestMemoryConfig::new(
                 WindowMode::CacheLevel { target: CacheTarget::L1_DEFAULT },
                 ChunkMode::AutoOptimal,
                 false,
                 false
             ).with_timing(TestTiming::duration_only(10))
-             .with_streams(1), "Spd-L1-Copy-Auto")
              .with_memory_type(None)
         ),
 
@@ -2132,39 +3402,36 @@ fn create_test_definitions(cache_info: &CacheInfo) -> Vec<TestDefinition> {
         (
             "Spd-L2-Read-Auto",
             TestFunction::MultiBlock(spd_read_auto_multi),
-            validate_streams(TestMemoryConfig::new(
+            TestMemoryConfig::new(
                 WindowMode::CacheLevel { target: CacheTarget::L2_DEFAULT },
                 ChunkMode::AutoOptimal,
                 false,
                 false
             ).with_timing(TestTiming::duration_only(10))
-             .with_streams(1), "Spd-L2-Read-Auto")
              .with_memory_type(None)
         ),
 
         (
             "Spd-L2-Write-Auto",
             TestFunction::MultiBlock(spd_write_auto_multi),
-            validate_streams(TestMemoryConfig::new(
+            TestMemoryConfig::new(
                 WindowMode::CacheLevel { target: CacheTarget::L2_DEFAULT },
                 ChunkMode::AutoOptimal,
                 false,
                 false
             ).with_timing(TestTiming::duration_only(10))
-             .with_streams(1), "Spd-L2-Write-Auto")
              .with_memory_type(None)
         ),
 
         (
             "Spd-L2-Copy-Auto",
             TestFunction::MultiBlock(spd_copy_auto_multi),
-            validate_streams(TestMemoryConfig::new(
+            TestMemoryConfig::new(
                 WindowMode::CacheLevel { target: CacheTarget::L2_DEFAULT },
                 ChunkMode::AutoOptimal,
                 false,
                 false
             ).with_timing(TestTiming::duration_only(10))
-             .with_streams(1), "Spd-L2-Copy-Auto")
              .with_memory_type(None)
         ),
 
@@ -2172,39 +3439,36 @@ fn create_test_definitions(cache_info: &CacheInfo) -> Vec<TestDefinition> {
         (
             "Spd-L3-Read-Auto",
             TestFunction::MultiBlock(spd_read_auto_multi),
-            validate_streams(TestMemoryConfig::new(
+            TestMemoryConfig::new(
                 WindowMode::CacheLevel { target: CacheTarget::L3_DEFAULT },
                 ChunkMode::AutoOptimal,
                 false,
                 false
             ).with_timing(TestTiming::duration_only(10))
-             .with_streams(1), "Spd-L3-Read-Auto")
              .with_memory_type(None)
         ),
 
         (
             "Spd-L3-Write-Auto",
             TestFunction::MultiBlock(spd_write_auto_multi),
-            validate_streams(TestMemoryConfig::new(
+            TestMemoryConfig::new(
                 WindowMode::CacheLevel { target: CacheTarget::L3_DEFAULT },
                 ChunkMode::AutoOptimal,
                 false,
                 false
             ).with_timing(TestTiming::duration_only(10))
-             .with_streams(1), "Spd-L3-Write-Auto")
              .with_memory_type(None)
         ),
 
         (
             "Spd-L3-Copy-Auto",
             TestFunction::MultiBlock(spd_copy_auto_multi),
-            validate_streams(TestMemoryConfig::new(
+            TestMemoryConfig::new(
                 WindowMode::CacheLevel { target: CacheTarget::L3_DEFAULT },
                 ChunkMode::AutoOptimal,
                 false,
                 false
             ).with_timing(TestTiming::duration_only(10))
-             .with_streams(1), "Spd-L3-Copy-Auto")
              .with_memory_type(None)
         ),
 
@@ -2212,39 +3476,36 @@ fn create_test_definitions(cache_info: &CacheInfo) -> Vec<TestDefinition> {
         (
             "Spd-DRAMSmall-Read-Auto",
             TestFunction::MultiBlock(spd_read_auto_multi),
-            validate_streams(TestMemoryConfig::new(
+            TestMemoryConfig::new(
                 WindowMode::CacheLevel { target: CacheTarget::DRAM_DEFAULT },
                 ChunkMode::AutoOptimal,
                 false,
                 false
             ).with_timing(TestTiming::duration_only(10))
-             .with_streams(1), "Spd-DRAMSmall-Read-Auto")
              .with_memory_type(None)
         ),
 
         (
             "Spd-DRAMSmall-Write-Auto",
             TestFunction::MultiBlock(spd_write_nt_auto_multi),
-            validate_streams(TestMemoryConfig::new(
+            TestMemoryConfig::new(
                 WindowMode::CacheLevel { target: CacheTarget::DRAM_DEFAULT },
                 ChunkMode::AutoOptimal,
                 false,
                 false
             ).with_timing(TestTiming::duration_only(10))
-             .with_streams(1), "Spd-DRAMSmall-Write-Auto")
              .with_memory_type(None)
         ),
 
         (
             "Spd-DRAMSmall-Copy-Auto",
             TestFunction::MultiBlock(spd_copy_nt_auto_multi),
-            validate_streams(TestMemoryConfig::new(
+            TestMemoryConfig::new(
                 WindowMode::CacheLevel { target: CacheTarget::DRAM_DEFAULT },
                 ChunkMode::AutoOptimal,
                 false,
                 false
             ).with_timing(TestTiming::duration_only(10))
-             .with_streams(1), "Spd-DRAMSmall-Copy-Auto")
              .with_memory_type(None)
         ),
 
@@ -2252,39 +3513,36 @@ fn create_test_definitions(cache_info: &CacheInfo) -> Vec<TestDefinition> {
         (
             "Spd-DRAMFull-Read-Auto",
             TestFunction::MultiBlock(spd_read_auto_multi),
-            validate_streams(TestMemoryConfig::new(
+            TestMemoryConfig::new(
                 WindowMode::CacheLevel { target: CacheTarget::DRAM_FULL_DEFAULT },
                 ChunkMode::AutoOptimal,
                 false,
                 false
             ).with_timing(TestTiming::duration_only(10))
-             .with_streams(1), "Spd-DRAMFull-Read-Auto")
              .with_memory_type(None)
         ),
 
         (
             "Spd-DRAMFull-Write-Auto",
             TestFunction::MultiBlock(spd_write_nt_auto_multi),
-            validate_streams(TestMemoryConfig::new(
+            TestMemoryConfig::new(
                 WindowMode::CacheLevel { target: CacheTarget::DRAM_FULL_DEFAULT },
                 ChunkMode::AutoOptimal,
                 false,
                 false
             ).with_timing(TestTiming::duration_only(10))
-             .with_streams(1), "Spd-DRAMFull-Write-Auto")
              .with_memory_type(None)
         ),
 
         (
             "Spd-DRAMFull-Copy-Auto",
             TestFunction::MultiBlock(spd_copy_nt_auto_multi),
-            validate_streams(TestMemoryConfig::new(
+            TestMemoryConfig::new(
                 WindowMode::CacheLevel { target: CacheTarget::DRAM_FULL_DEFAULT },
                 ChunkMode::AutoOptimal,
                 false,
                 false
             ).with_timing(TestTiming::duration_only(10))
-             .with_streams(1), "Spd-DRAMFull-Copy-Auto")
              .with_memory_type(None)
         ),
     ];
@@ -2293,7 +3551,7 @@ fn create_test_definitions(cache_info: &CacheInfo) -> Vec<TestDefinition> {
     let mut resolved_tests = Vec::new();
     for (test_name, test_function, config) in test_definitions {
         if let Some((resolved_name, resolved_function)) = resolve_auto_dispatch_test(test_name) {
-            log::info!("Auto-dispatch: {} → {} (based on CPU capabilities)", test_name, resolved_name);
+            log::debug!("Auto-dispatch: {} → {} (based on CPU capabilities)", test_name, resolved_name);
             let effect = derive_memory_effect(resolved_name, &config);
             resolved_tests.push(TestDefinition {
                 actual_name: resolved_name,
@@ -2324,23 +3582,10 @@ fn create_test_definitions_from_config(config: &crate::config::ModernConfig, cac
     let _tsc_freq = cache_info.tsc_frequency_ghz; // Available for latency tests in config
     let mut resolved_tests = Vec::new();
 
-    // Helper to validate and adjust streams
-    let validate_streams = |mut test_config: TestMemoryConfig, test_name: &str| -> TestMemoryConfig {
-        if !test_config.streams.is_power_of_two() {
-            let original = test_config.streams;
-            test_config.streams = test_config.streams.next_power_of_two();
-            println!("⚠️  {}: Adjusting stream count {} → {} (power-of-2 required)",
-                     test_name, original, test_config.streams);
-        }
-        test_config
-    };
-
     // Get enabled tests from config
     let test_configs = config.get_test_configs();
 
-    for (test_name, mut test_config) in test_configs {
-        // Validate streams
-        test_config = validate_streams(test_config, test_name);
+    for (test_name, test_config) in test_configs {
 
         // Look up function by name using the test registry
         let test_function = crate::tests::get_test_function_by_name(test_name)
@@ -2348,7 +3593,7 @@ fn create_test_definitions_from_config(config: &crate::config::ModernConfig, cac
 
         // Check for auto-dispatch
         if let Some((resolved_name, resolved_function)) = resolve_auto_dispatch_test(test_name) {
-            log::info!("Auto-dispatch: {} → {} (based on CPU capabilities)", test_name, resolved_name);
+            log::debug!("Auto-dispatch: {} → {} (based on CPU capabilities)", test_name, resolved_name);
             // Convert to 'static str by leaking (safe for test names, small and finite set)
             let static_original_name: &'static str = Box::leak(test_name.to_string().into_boxed_str());
             let effect = derive_memory_effect(resolved_name, &test_config);
@@ -2534,7 +3779,6 @@ pub fn run_test_with_memory_stages(
     let stats = unsafe {
         match test_func {
             TestFunction::Simple(f) => f(ptr, size, thread_id, error_mode, &test_config.timing),
-            TestFunction::WithStreams(f) => f(ptr, size, thread_id, error_mode, &test_config.timing, test_config.streams),
             TestFunction::WithConfig(f) => f(ptr, size, thread_id, error_mode, &test_config.timing, test_config),
             TestFunction::MultiBlock(_) => {
                 // MultiBlock tests need to be called from thread_pool with all blocks

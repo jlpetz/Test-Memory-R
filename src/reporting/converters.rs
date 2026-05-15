@@ -20,10 +20,24 @@ fn format_parameter_context(ctx: &Option<crate::config::TestParameterContext>) -
                     return format!("Subblocks({})", sub);
                 }
             }
-            if let Some(stride_el) = c.stride_elements {
-                if stride_el > 0 {
-                    return format!("Stride({})", stride_el);
+            if let Some(stride_cl) = c.stride_cachelines {
+                if stride_cl > 0 {
+                    let stride_bytes = stride_cl * 64; // cache line = 64 bytes
+                    return format!("Stride({}cl/{}B)", stride_cl, stride_bytes);
                 }
+            }
+            // TMR-native test parameters
+            if let Some(sp) = c.stride_patterns {
+                return format!("StridePat({})", sp);
+            }
+            if let Some(rng) = c.rng_sequences {
+                return format!("RngSeq({})", rng);
+            }
+            if let Some(sub) = c.subdivisions {
+                return format!("Subdiv({})", sub);
+            }
+            if let Some(cd) = c.copy_directions {
+                return format!("CopyDir({})", cd);
             }
             "-".to_string()
         }
@@ -218,7 +232,6 @@ pub fn create_test_configuration_report(
             number: i + 1,
             name: name.to_string(),
             timing,
-            streams: config.streams as usize,
             parameter,
             window_mode,
             chunk_mode,
@@ -280,7 +293,6 @@ pub fn create_test_configuration_report_v2(
             number: i + 1,
             name: test_def.display_name.clone(),  // Use display_name to get _A suffix
             timing,
-            streams: config.streams as usize,
             parameter,
             window_mode,
             chunk_mode,

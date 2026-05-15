@@ -14,6 +14,23 @@ use std::collections::HashMap;
 use crate::cache::CacheInfo;
 
 // ============================================================================
+// Serde helpers — round floats for config readability
+// ============================================================================
+
+fn serialize_round_2dp<S: serde::Serializer>(val: &f64, s: S) -> Result<S::Ok, S::Error> {
+    s.serialize_f64((*val * 100.0).round() / 100.0)
+}
+
+fn serialize_round_3dp<S: serde::Serializer>(val: &f64, s: S) -> Result<S::Ok, S::Error> {
+    s.serialize_f64((*val * 1000.0).round() / 1000.0)
+}
+
+/// Accept any f64 on deserialize (don't enforce rounding on load)
+fn deserialize_f64_lenient<'de, D: serde::Deserializer<'de>>(d: D) -> Result<f64, D::Error> {
+    f64::deserialize(d)
+}
+
+// ============================================================================
 // Helper Functions
 // ============================================================================
 
@@ -133,7 +150,7 @@ impl Default for CalibrationConfig {
 // ============================================================================
 
 /// CPU signature for validating calibration results match current system
-#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize, Default)]
 pub struct CpuSignature {
     /// CPU vendor string (e.g., "AuthenticAMD", "GenuineIntel")
     pub vendor: String,
@@ -141,10 +158,19 @@ pub struct CpuSignature {
     pub brand: String,
     /// L1 Data cache size per core in bytes
     pub l1d_size: usize,
+    /// Human-readable L1D size (e.g. "48.0 KB")
+    #[serde(default, skip_serializing_if = "String::is_empty")]
+    pub l1d_human: String,
     /// L2 cache size per core in bytes
     pub l2_size: usize,
+    /// Human-readable L2 size (e.g. "2.0 MB")
+    #[serde(default, skip_serializing_if = "String::is_empty")]
+    pub l2_human: String,
     /// L3 cache size (shared) in bytes
     pub l3_size: usize,
+    /// Human-readable L3 size (e.g. "480.0 MB")
+    #[serde(default, skip_serializing_if = "String::is_empty")]
+    pub l3_human: String,
 }
 
 impl CpuSignature {
@@ -165,8 +191,11 @@ impl CpuSignature {
             vendor,
             brand,
             l1d_size: cache_info.per_core_l1d,
+            l1d_human: format_size(cache_info.per_core_l1d),
             l2_size: cache_info.per_core_l2,
+            l2_human: format_size(cache_info.per_core_l2),
             l3_size: cache_info.l3_cache,
+            l3_human: format_size(cache_info.l3_cache),
         }
     }
 
@@ -205,9 +234,11 @@ pub struct TierCalibrationResult {
     pub tier: CacheTier,
     /// Optimal workload size in bytes
     pub optimal_size: usize,
-    /// Median latency at optimal size in nanoseconds
+    /// Median latency at optimal size in nanoseconds (rounded to 2dp for config readability)
+    #[serde(serialize_with = "serialize_round_2dp", deserialize_with = "deserialize_f64_lenient")]
     pub median_latency_ns: f64,
-    /// Spread ratio (P95/P5) at optimal size
+    /// Spread ratio (P95/P5) at optimal size (rounded to 3dp for config readability)
+    #[serde(serialize_with = "serialize_round_3dp", deserialize_with = "deserialize_f64_lenient")]
     pub spread_ratio: f64,
     /// Number of probes attempted
     pub probes_attempted: u32,
@@ -226,7 +257,8 @@ pub struct CalibrationResults {
     pub cpu_signature: CpuSignature,
     /// Results for each tier
     pub tiers: HashMap<CacheTier, TierCalibrationResult>,
-    /// Total calibration time in milliseconds
+    /// Total calibration time in milliseconds (runtime only, not persisted to config)
+    #[serde(skip)]
     pub total_time_ms: u64,
     /// Page size used for calibration allocation
     #[serde(default = "default_page_size")]
@@ -588,8 +620,12 @@ use std::arch::x86_64::__rdtscp;
 pub struct ProbeEngine {
     /// TSC frequency in GHz (cycles per nanosecond)
     tsc_frequency_ghz: f64,
-    /// Memory buffer for pointer-chase pattern
+    /// Memory buffer for pointer-chase pattern (owned — used for standalone calibration)
     memory_buffer: Option<MemoryBuffer>,
+    /// External buffer pointer (borrowed — used when calibrating with test plan memory)
+    /// When set, probe() uses this instead of memory_buffer. Caller must ensure
+    /// the buffer outlives the ProbeEngine and is not concurrently modified.
+    external_ptr: Option<*mut u64>,
     /// Maximum working set size (buffer size)
     max_working_set: usize,
     /// Whether the engine has been initialized
@@ -602,6 +638,7 @@ impl ProbeEngine {
         Self {
             tsc_frequency_ghz,
             memory_buffer: None,
+            external_ptr: None,
             max_working_set: 0,
             initialized: false,
         }
@@ -673,6 +710,44 @@ impl ProbeEngine {
         }
     }
 
+    /// Initialize from an existing MemoryBuffer (no allocation).
+    /// Used when calibrating with test plan memory — same page types, no extra alloc/dealloc.
+    /// The buffer must outlive the ProbeEngine and must not be concurrently modified.
+    pub fn initialize_from_buffer(&mut self, buffer: &mut MemoryBuffer) -> Result<(), String> {
+        if self.initialized {
+            return Ok(());
+        }
+
+        let max_size = buffer.size();
+        if max_size < 64 {
+            return Err(format!("Buffer too small for calibration: {} bytes", max_size));
+        }
+
+        let base = buffer.as_mut_ptr() as *mut u64;
+        let len = max_size / std::mem::size_of::<u64>();
+
+        log::info!("ProbeEngine: Using external buffer ({} bytes, {} u64 elements)", max_size, len);
+
+        unsafe {
+            Self::setup_pointer_chase(base, len, 0);
+        }
+
+        self.external_ptr = Some(base);
+        self.max_working_set = max_size;
+        self.initialized = true;
+        Ok(())
+    }
+
+    /// Get the base pointer for probe operations.
+    /// Returns the external buffer pointer if set, otherwise the owned buffer.
+    fn get_base_ptr(&mut self) -> *mut u64 {
+        if let Some(ext) = self.external_ptr {
+            ext
+        } else {
+            self.memory_buffer.as_mut().unwrap().as_mut_ptr() as *mut u64
+        }
+    }
+
     /// Setup random pointer-chasing pattern in memory
     /// Each u64 location stores the address of the next random location
     /// This creates a random walk through memory that defeats prefetchers
@@ -720,8 +795,7 @@ impl ProbeEngine {
             };
         }
 
-        let buffer = self.memory_buffer.as_mut().unwrap();
-        let base = buffer.as_mut_ptr() as *mut u64;
+        let base = self.get_base_ptr();
         
         // Limit workload to what we have allocated
         let actual_size = workload_size.min(self.max_working_set);
@@ -1158,11 +1232,24 @@ impl CalibrationTest {
         }
     }
 
-    /// Run the calibration test using a sweep-based approach
-    /// 
-    /// Instead of calibrating each tier separately, we run ONE continuous sweep
-    /// from small to large sizes, then analyze the results to find tipping points.
+    /// Run the calibration test using a sweep-based approach (allocates its own memory)
     pub fn run(&self) -> Result<CalibrationResults, String> {
+        let max_working_set = self.get_tier_size(CacheTier::FullDram);
+        let mut probe_engine = ProbeEngine::new(self.tsc_frequency_ghz);
+        probe_engine.initialize_with_page_size(max_working_set, &self.config.page_size)?;
+        self.run_sweep_calibration(&mut probe_engine)
+    }
+
+    /// Run calibration using an existing memory buffer (no separate allocation).
+    /// Used when calibrating with test plan memory — same page types, no extra alloc/dealloc.
+    pub fn run_with_buffer(&self, buffer: &mut MemoryBuffer) -> Result<CalibrationResults, String> {
+        let mut probe_engine = ProbeEngine::new(self.tsc_frequency_ghz);
+        probe_engine.initialize_from_buffer(buffer)?;
+        self.run_sweep_calibration(&mut probe_engine)
+    }
+
+    /// Core sweep calibration logic (shared by run() and run_with_buffer())
+    fn run_sweep_calibration(&self, probe_engine: &mut ProbeEngine) -> Result<CalibrationResults, String> {
         let start_time = Instant::now();
 
         log::info!("Starting adaptive cache calibration (sweep mode)...");
@@ -1171,24 +1258,13 @@ impl CalibrationTest {
             self.cache_info.per_core_l2 / 1024,
             self.cache_info.l3_cache / (1024 * 1024));
 
-        // Calculate max working set (FullDRAM size)
-        let max_working_set = self.get_tier_size(CacheTier::FullDram);
-        
-        // Initialize probe engine
-        let mut probe_engine = ProbeEngine::new(self.tsc_frequency_ghz);
-        probe_engine.initialize_with_page_size(max_working_set, &self.config.page_size)?;
-
-        // Cache sizes
         let l1_size = self.cache_info.per_core_l1d;
         let l2_size = self.cache_info.per_core_l2;
         let l3_size = self.cache_info.l3_cache;
 
-        // Run the sweep from small to large
-        let sweep_results = self.run_sweep(&mut probe_engine, l1_size, l2_size, l3_size);
-        
-        // Analyze sweep to find optimal sizes for each tier
+        let sweep_results = self.run_sweep(probe_engine, l1_size, l2_size, l3_size);
         let mut results = self.analyze_sweep(&sweep_results, l1_size, l2_size, l3_size);
-        
+
         results.page_size = self.config.page_size.clone();
         results.total_time_ms = start_time.elapsed().as_millis() as u64;
 
@@ -1197,8 +1273,23 @@ impl CalibrationTest {
         Ok(results)
     }
     
-    /// Run extended calibration: Phase 1 sweep + Phase 2 fine-grain around tipping points
+    /// Run extended calibration (allocates its own memory)
     pub fn run_extended(&self) -> Result<CalibrationResults, String> {
+        let max_working_set = self.get_tier_size(CacheTier::FullDram);
+        let mut probe_engine = ProbeEngine::new(self.tsc_frequency_ghz);
+        probe_engine.initialize_with_page_size(max_working_set, &self.config.page_size)?;
+        self.run_extended_calibration(&mut probe_engine)
+    }
+
+    /// Run extended calibration using an existing memory buffer
+    pub fn run_extended_with_buffer(&self, buffer: &mut MemoryBuffer) -> Result<CalibrationResults, String> {
+        let mut probe_engine = ProbeEngine::new(self.tsc_frequency_ghz);
+        probe_engine.initialize_from_buffer(buffer)?;
+        self.run_extended_calibration(&mut probe_engine)
+    }
+
+    /// Core extended calibration logic (shared by run_extended() and run_extended_with_buffer())
+    fn run_extended_calibration(&self, probe_engine: &mut ProbeEngine) -> Result<CalibrationResults, String> {
         let start_time = Instant::now();
 
         log::info!("Starting extended cache calibration (phase 1 + phase 2)...");
@@ -1207,24 +1298,20 @@ impl CalibrationTest {
             self.cache_info.per_core_l2 / 1024,
             self.cache_info.l3_cache / (1024 * 1024));
 
-        let max_working_set = self.get_tier_size(CacheTier::FullDram);
-        let mut probe_engine = ProbeEngine::new(self.tsc_frequency_ghz);
-        probe_engine.initialize_with_page_size(max_working_set, &self.config.page_size)?;
-
         let l1_size = self.cache_info.per_core_l1d;
         let l2_size = self.cache_info.per_core_l2;
         let l3_size = self.cache_info.l3_cache;
 
         // Phase 1: Coarse sweep (same as --calibrate-cache)
         log::info!("═══ Phase 1: Coarse sweep ═══");
-        let sweep_results = self.run_sweep(&mut probe_engine, l1_size, l2_size, l3_size);
+        let sweep_results = self.run_sweep(probe_engine, l1_size, l2_size, l3_size);
         let tipping_points = self.find_tipping_points(&sweep_results);
-        
+
         for (size, lat_before, lat_after) in &tipping_points {
             log::info!("  Tipping point at {}: {:.1}ns → {:.1}ns ({:.1}x jump)",
                 format_size(*size), lat_before, lat_after, lat_after / lat_before);
         }
-        
+
         let tp_sizes: Vec<usize> = tipping_points.iter().map(|(s, _, _)| *s).collect();
         let tp_l1_l2 = tp_sizes.first().copied().unwrap_or(l1_size);
         let tp_l2_l3 = tp_sizes.get(1).copied().unwrap_or(l2_size);
@@ -1233,20 +1320,20 @@ impl CalibrationTest {
         // Phase 2: Fine-grain sweep around each tipping point
         // Cap sweep ranges to CPU cache sizes — workload must fit in the tier
         log::info!("\n═══ Phase 2: Fine-grain verification ═══");
-        
+
         let repeats = 3u32;
         let fine_step = 1.05; // 5% steps
         let stable_spread = 1.5;
-        
+
         // Cap upper bounds: min of tipping point and CPU cache size
         let l1_cap = tp_l1_l2.min(l1_size);
         let l2_cap = tp_l2_l3.min(l2_size);
         let l3_cap = tp_l3_dram.min(l3_size);
-        
+
         // Search window: from 50% below cap to the cap
-        let fine_l1 = self.run_fine_sweep(&mut probe_engine, l1_cap / 2, l1_cap, fine_step, repeats, "L1→L2");
-        let fine_l2 = self.run_fine_sweep(&mut probe_engine, l2_cap / 2, l2_cap, fine_step, repeats, "L2→L3");
-        let fine_l3 = self.run_fine_sweep(&mut probe_engine, l3_cap / 2, l3_cap, fine_step, repeats, "L3→DRAM");
+        let fine_l1 = self.run_fine_sweep(probe_engine, l1_cap / 2, l1_cap, fine_step, repeats, "L1→L2");
+        let fine_l2 = self.run_fine_sweep(probe_engine, l2_cap / 2, l2_cap, fine_step, repeats, "L2→L3");
+        let fine_l3 = self.run_fine_sweep(probe_engine, l3_cap / 2, l3_cap, fine_step, repeats, "L3→DRAM");
         
         // Build results using phase 2 data
         let cpu_signature = CpuSignature::from_cache_info(&self.cache_info);
@@ -1871,6 +1958,7 @@ mod tests {
             l1d_size: 32 * 1024,
             l2_size: 512 * 1024,
             l3_size: 32 * 1024 * 1024,
+            ..Default::default()
         };
         assert!(sig.matches(&sig));
     }
@@ -1883,6 +1971,7 @@ mod tests {
             l1d_size: 32 * 1024,
             l2_size: 512 * 1024,
             l3_size: 32 * 1024 * 1024,
+            ..Default::default()
         };
         let sig2 = CpuSignature {
             vendor: "VendorB".to_string(),
@@ -1890,6 +1979,7 @@ mod tests {
             l1d_size: 32 * 1024,
             l2_size: 512 * 1024,
             l3_size: 32 * 1024 * 1024,
+            ..Default::default()
         };
         assert!(!sig1.matches(&sig2));
     }
@@ -1902,6 +1992,7 @@ mod tests {
             l1d_size: 32 * 1024,
             l2_size: 512 * 1024,
             l3_size: 32 * 1024 * 1024,
+            ..Default::default()
         };
         let mut results = CalibrationResults::new(sig);
         assert!(!results.is_complete());

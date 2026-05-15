@@ -141,9 +141,10 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     // This catches typos and deprecated flags early with helpful error messages
     let known_flags = [
         "--ram-latency", "--cache-latency", "--quick-test", "--calibrate-cache", "--calibrate-cache-ext",
-        "--calibration-file", "--output",
+        "--calibration-file", "--output", "--no-calibration",
         "--create-demo-configs", "--compare-results", "--debug-topology",
-        "--show-topology", "--setup-large-pages", "--help", "-h", "--version", "-v"
+        "--show-topology", "--setup-large-pages", "--startup-debug",
+        "--help", "-h", "--version", "-v"
     ];
 
     let unknown_flags: Vec<String> = args.iter()
@@ -312,12 +313,14 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
 			"--calibrate-cache" => {
 				println!("🔬 TMR Adaptive Cache Calibration");
 				println!("==================================\n");
-				
-				// Detect cache info
-				let cache_info = tmr::CacheInfo::detect();
+
+				// Detect system info once (includes cache info, TSC, hypervisor)
+				let system_info = tmr::SystemInfo::detect();
+				let cache_info = system_info.get_cache_info().clone();
 				cache_info.print_info();
+				let smbios = tmr::smbios::SmbiosData::detect();
 				println!();
-				
+
 				// Check for maxpage= override in remaining args
 				let mut config = tmr::calibration::CalibrationConfig::default();
 				for arg in &args[2..] {
@@ -326,32 +329,47 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
 						println!("📄 Page size override: {}\n", config.page_size);
 					}
 				}
-				
+
 				// Run calibration
 				let calibration_test = tmr::calibration::CalibrationTest::with_config(cache_info.clone(), config);
 				match calibration_test.run() {
 					Ok(results) => {
 						tmr::calibration::CalibrationTest::display_results(&results, &cache_info);
-						
+
+						// Save to tmr-cfg.json — compare with existing if present
+						let cfg_path = tmr::app_config::AppConfig::default_path();
+						let mut app_config = tmr::app_config::AppConfig::load(&cfg_path);
+						let should_save = prompt_calibration_save(&app_config.calibration, &results, "standard");
+						if should_save {
+							app_config.update_machine_id(&system_info, &smbios);
+							app_config.calibration = Some(results.clone());
+							match app_config.save(&cfg_path) {
+								Ok(()) => println!("Calibration saved to {}", cfg_path.display()),
+								Err(e) => println!("Warning: Failed to save calibration: {}", e),
+							}
+						} else {
+							println!("Calibration not saved (kept existing).");
+						}
+
 						// Check for --output flag to save results
 						if let Some(output_idx) = args.iter().position(|a| a == "--output") {
 							if let Some(output_path) = args.get(output_idx + 1) {
 								match serde_json::to_string_pretty(&results) {
 									Ok(json) => {
 										match std::fs::write(output_path, json) {
-											Ok(()) => println!("✅ Results saved to: {}", output_path),
-											Err(e) => println!("❌ Failed to write results: {}", e),
+											Ok(()) => println!("Results saved to: {}", output_path),
+											Err(e) => println!("Failed to write results: {}", e),
 										}
 									}
-									Err(e) => println!("❌ Failed to serialize results: {}", e),
+									Err(e) => println!("Failed to serialize results: {}", e),
 								}
 							} else {
-								println!("❌ --output requires a file path");
+								println!("--output requires a file path");
 							}
 						}
 					}
 					Err(e) => {
-						println!("❌ Calibration failed: {}", e);
+						println!("Calibration failed: {}", e);
 					}
 				}
 				return Ok(());
@@ -359,12 +377,14 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
 			"--calibrate-cache-ext" => {
 				println!("🔬 TMR Adaptive Cache Calibration (Extended - Phase 2)");
 				println!("======================================================\n");
-				
-				// Detect cache info
-				let cache_info = tmr::CacheInfo::detect();
+
+				// Detect system info once (includes cache info, TSC, hypervisor)
+				let system_info = tmr::SystemInfo::detect();
+				let cache_info = system_info.get_cache_info().clone();
 				cache_info.print_info();
+				let smbios = tmr::smbios::SmbiosData::detect();
 				println!();
-				
+
 				// Check for maxpage= override in remaining args
 				let mut config = tmr::calibration::CalibrationConfig::default();
 				for arg in &args[2..] {
@@ -373,32 +393,47 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
 						println!("📄 Page size override: {}\n", config.page_size);
 					}
 				}
-				
+
 				// Run extended calibration (phase 1 sweep + phase 2 fine-grain)
 				let calibration_test = tmr::calibration::CalibrationTest::with_config(cache_info.clone(), config);
 				match calibration_test.run_extended() {
 					Ok(results) => {
 						tmr::calibration::CalibrationTest::display_results(&results, &cache_info);
-						
+
+						// Save to tmr-cfg.json — compare with existing if present
+						let cfg_path = tmr::app_config::AppConfig::default_path();
+						let mut app_config = tmr::app_config::AppConfig::load(&cfg_path);
+						let should_save = prompt_calibration_save(&app_config.calibration_extended, &results, "extended");
+						if should_save {
+							app_config.update_machine_id(&system_info, &smbios);
+							app_config.calibration_extended = Some(results.clone());
+							match app_config.save(&cfg_path) {
+								Ok(()) => println!("Extended calibration saved to {}", cfg_path.display()),
+								Err(e) => println!("Warning: Failed to save calibration: {}", e),
+							}
+						} else {
+							println!("Calibration not saved (kept existing).");
+						}
+
 						// Check for --output flag to save results
 						if let Some(output_idx) = args.iter().position(|a| a == "--output") {
 							if let Some(output_path) = args.get(output_idx + 1) {
 								match serde_json::to_string_pretty(&results) {
 									Ok(json) => {
 										match std::fs::write(output_path, json) {
-											Ok(()) => println!("✅ Results saved to: {}", output_path),
-											Err(e) => println!("❌ Failed to write results: {}", e),
+											Ok(()) => println!("Results saved to: {}", output_path),
+											Err(e) => println!("Failed to write results: {}", e),
 										}
 									}
-									Err(e) => println!("❌ Failed to serialize results: {}", e),
+									Err(e) => println!("Failed to serialize results: {}", e),
 								}
 							} else {
-								println!("❌ --output requires a file path");
+								println!("--output requires a file path");
 							}
 						}
 					}
 					Err(e) => {
-						println!("❌ Extended calibration failed: {}", e);
+						println!("Extended calibration failed: {}", e);
 					}
 				}
 				return Ok(());
@@ -908,6 +943,40 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     let system_info = tmr::tests::get_system_info();
     let cache_info = system_info.get_cache_info();
 
+	// Set SMT sharing factor: 2 if hyperthreading AND using threads mode, 1 otherwise
+	let smt_threads = if system_info.has_hyperthreading && !avoid_smt { 2 } else { 1 };
+	tmr::set_active_threads_per_core(smt_threads);
+
+	// Detect SMBIOS data for identity validation
+	let smbios = tmr::smbios::SmbiosData::detect();
+
+	// Load calibration from tmr-cfg.json (unless --no-calibration)
+	let no_calibration = args.iter().any(|a| a == "--no-calibration");
+	if !no_calibration {
+		let cfg_path = tmr::app_config::AppConfig::default_path();
+		let app_config = tmr::app_config::AppConfig::load(&cfg_path);
+		if app_config.is_calibration_valid(system_info, &smbios) {
+			if let Some(cal) = app_config.get_best_calibration() {
+				let cal_type = if app_config.calibration_extended.is_some() { "extended" } else { "standard" };
+				let timestamp = cal.timestamp.format("%Y-%m-%d %H:%M");
+				println!("  Calibration: Loaded ({}, {})", cal_type, timestamp);
+				tmr::set_calibration_data(Some(cal.clone()));
+			} else {
+				println!("  Calibration: None (run --calibrate-cache to calibrate)");
+				tmr::set_calibration_data(None);
+			}
+		} else if app_config.machine_id.is_some() {
+			println!("  Calibration: Stale (hardware changed, re-run --calibrate-cache)");
+			tmr::set_calibration_data(None);
+		} else {
+			println!("  Calibration: None (run --calibrate-cache to calibrate)");
+			tmr::set_calibration_data(None);
+		}
+	} else {
+		println!("  Calibration: Disabled (--no-calibration)");
+		tmr::set_calibration_data(None);
+	}
+
 	// Display CPU topology right after system information
 	// Add this after the cache architecture display (around line 220-230):
 	if pinning_config.enable_pinning {
@@ -971,9 +1040,9 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
 	runtime_config.cpu_list = Some(cpu_list);
 	runtime_config.enhanced_memory_strategy = enhanced_memory_strategy.clone();
 
-	// Extract streams parameter if provided (overrides hard-coded config)
-	let streams_override = if params::has_param(&validated_params, "streams") {
-		Some(params::get_usize(&validated_params, "streams", 1))
+	// Extract channels parameter if provided (overrides config default of 2)
+	let channels_override = if params::has_param(&validated_params, "channels") {
+		Some(params::get_usize(&validated_params, "channels", 2) as u32)
 	} else {
 		None
 	};
@@ -1013,6 +1082,14 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
 		None
 	};
 
+    // --startup-debug: run full startup sequence but skip test execution
+    if args.iter().any(|a| a == "--startup-debug") {
+        println!("\n================================================================================");
+        println!("  --startup-debug: Startup sequence complete. Skipping test execution.");
+        println!("================================================================================");
+        return Ok(());
+    }
+
     let start_time = std::time::Instant::now();
 
     // Unified test execution path - works for bandwidth tests, latency tests, or mixed
@@ -1027,12 +1104,12 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         runtime_config,
         config_opt.as_ref(),
         final_test_filter,
-        streams_override,
         parameter_override.as_deref(),
         pattern_mode_override,
         verify_reps_override,
         test_reps_override,
         wrc_override,
+        channels_override,
         cache_info,
     );
 
@@ -1098,6 +1175,94 @@ pub fn check_dma_driver_status() {
                 println!("    Action: Update TMR or the kernel driver to matching versions");
             }
         }
+    }
+}
+
+/// Compare new calibration results with existing and prompt user to accept/reject.
+/// Returns true if the new results should be saved.
+/// If no existing results, saves automatically (no prompt).
+fn prompt_calibration_save(
+    existing: &Option<tmr::calibration::CalibrationResults>,
+    new_results: &tmr::calibration::CalibrationResults,
+    cal_type: &str,
+) -> bool {
+    let existing = match existing {
+        Some(e) => e,
+        None => {
+            println!("\nNo existing {} calibration — saving new results.", cal_type);
+            return true;
+        }
+    };
+
+    // Show comparison table
+    println!("\n📊 Calibration Comparison (existing vs new)");
+    println!("───────────────────────────────────────────────────────────────────────────");
+    println!("{:<10} {:>12} {:>12} {:>8}  {:>10} {:>10} {:>8}",
+        "Tier", "Old Size", "New Size", "Delta", "Old Lat", "New Lat", "Delta");
+    println!("───────────────────────────────────────────────────────────────────────────");
+
+    for tier in tmr::calibration::CacheTier::all_tiers() {
+        let old_tier = existing.tiers.get(tier);
+        let new_tier = new_results.tiers.get(tier);
+
+        match (old_tier, new_tier) {
+            (Some(old), Some(new)) => {
+                let size_pct = if old.optimal_size > 0 {
+                    ((new.optimal_size as f64 / old.optimal_size as f64) - 1.0) * 100.0
+                } else { 0.0 };
+                let lat_pct = if old.median_latency_ns > 0.0 {
+                    ((new.median_latency_ns / old.median_latency_ns) - 1.0) * 100.0
+                } else { 0.0 };
+
+                println!("{:<10} {:>12} {:>12} {:>+7.1}%  {:>9.1}ns {:>9.1}ns {:>+7.1}%",
+                    tier.name(),
+                    format_calibration_size(old.optimal_size),
+                    format_calibration_size(new.optimal_size),
+                    size_pct,
+                    old.median_latency_ns,
+                    new.median_latency_ns,
+                    lat_pct,
+                );
+            }
+            (None, Some(new)) => {
+                println!("{:<10} {:>12} {:>12} {:>8}  {:>10} {:>9.1}ns {:>8}",
+                    tier.name(), "-", format_calibration_size(new.optimal_size), "new",
+                    "-", new.median_latency_ns, "new");
+            }
+            (Some(old), None) => {
+                println!("{:<10} {:>12} {:>12} {:>8}  {:>9.1}ns {:>10} {:>8}",
+                    tier.name(), format_calibration_size(old.optimal_size), "-", "gone",
+                    old.median_latency_ns, "-", "gone");
+            }
+            (None, None) => {}
+        }
+    }
+    println!("───────────────────────────────────────────────────────────────────────────");
+    println!("  Existing: {} ({})", existing.timestamp.format("%Y-%m-%d %H:%M"), existing.page_size);
+    println!("  New:      {} ({})", new_results.timestamp.format("%Y-%m-%d %H:%M"), new_results.page_size);
+
+    // Prompt
+    print!("\nSave new {} calibration? [Y/n]: ", cal_type);
+    let _ = stdout().flush();
+    let mut input = String::new();
+    match stdin().read_line(&mut input) {
+        Ok(_) => {
+            let answer = input.trim().to_lowercase();
+            answer.is_empty() || answer == "y" || answer == "yes"
+        }
+        Err(_) => true, // On read error, default to saving
+    }
+}
+
+fn format_calibration_size(bytes: usize) -> String {
+    if bytes >= 1024 * 1024 * 1024 {
+        format!("{:.1} GB", bytes as f64 / (1024.0 * 1024.0 * 1024.0))
+    } else if bytes >= 1024 * 1024 {
+        format!("{:.1} MB", bytes as f64 / (1024.0 * 1024.0))
+    } else if bytes >= 1024 {
+        format!("{:.1} KB", bytes as f64 / 1024.0)
+    } else {
+        format!("{} B", bytes)
     }
 }
 

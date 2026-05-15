@@ -194,22 +194,19 @@ impl ParamRegistry {
             },
         });
 
-        params.insert("streams", ParamDef {
-            key: "streams",
+        params.insert("channels", ParamDef {
+            key: "channels",
             is_flag: false,
-            default: ParamValue::Usize(1),
-            help: "Number of concurrent memory streams (must be power of 2: 1, 2, 4, 8, etc.)",
-            example: "streams=4",
+            default: ParamValue::Usize(2),
+            help: "Memory channel count for stride calculation (default 2 for consumer DDR5 dual-channel)",
+            example: "channels=4",
             can_override_config: true,
             parser: |v| {
                 let val = v.parse::<usize>()
-                    .map_err(|_| format!("Invalid streams value '{}'", v))?;
-
-                // Validate power of 2
-                if val == 0 || (val & (val - 1)) != 0 {
-                    return Err(format!("Streams must be a power of 2 (1, 2, 4, 8, etc.), got {}", val));
+                    .map_err(|_| format!("Invalid channels value '{}'", v))?;
+                if val < 1 {
+                    return Err("Channels must be at least 1".to_string());
                 }
-
                 Ok(ParamValue::Usize(val))
             },
         });
@@ -501,7 +498,9 @@ pub fn parse_and_validate_args(args: &[String]) -> Result<HashMap<String, ParamV
             || arg.starts_with("--setup-large-pages")
             || arg.starts_with("--quick-test")
             || arg.starts_with("--ram-latency")
-            || arg.starts_with("--cache-latency") {
+            || arg.starts_with("--cache-latency")
+            || arg.starts_with("--no-calibration")
+            || arg.starts_with("--startup-debug") {
             continue;
         }
 
@@ -574,6 +573,7 @@ pub fn print_help(program_name: &str) {
     println!("  topology=windowsv2                  # CPU detection method (auto/windows/windowsv2/cpuid)");
     println!("  --driver-chunking                   # Enable driver-side memory chunking");
     println!("  --batch-remap                       # Enable batch remapping mode");
+    println!("  --no-calibration                    # Skip loading calibration data (use CPUID heuristics)");
     println!();
     println!("CONFIG FILE OVERRIDES:");
     println!("  All parameters can override config file values:");

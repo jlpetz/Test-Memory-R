@@ -254,7 +254,7 @@ fn detect_via_raw_cpuid_comprehensive(physical_cores: usize) -> Option<CacheInfo
         is_virtual_machine: false,  // Will be set by caller
         hypervisor_name: None,  // Will be set by caller
     };
-    
+
     let mut found_any = false;
     
     // Method 1: Try deterministic cache parameters (CPUID leaf 4)

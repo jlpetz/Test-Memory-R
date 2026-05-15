@@ -67,52 +67,107 @@ impl CacheTarget {
     /// DRAM-Full uses entire thread allocation (multiplier ignored)
     pub const DRAM_FULL_DEFAULT: Self = Self::DRAMFull { multiplier: 0 };
 
-    /// Calculate actual window size in bytes based on cache info and thread count
+    /// Map CacheTarget to the corresponding calibration CacheTier
+    fn to_calibration_tier(&self) -> Option<crate::calibration::CacheTier> {
+        match self {
+            CacheTarget::L1 { .. } => Some(crate::calibration::CacheTier::L1),
+            CacheTarget::L2 { .. } => Some(crate::calibration::CacheTier::L2),
+            CacheTarget::L3 { .. } => Some(crate::calibration::CacheTier::L3),
+            CacheTarget::DRAM { .. } => Some(crate::calibration::CacheTier::Dram),
+            CacheTarget::DRAMFull { .. } => None, // Always uses full allocation
+        }
+    }
+
+    /// Calculate window size using calibration data (measured tier boundaries).
+    /// Returns None if calibration data is unavailable or missing the needed tier.
+    fn calculate_from_calibration(
+        &self,
+        cal: &crate::calibration::CalibrationResults,
+        _cache_info: &CacheInfo,
+        thread_count: usize,
+    ) -> Option<usize> {
+        let tier = self.to_calibration_tier()?;
+        let tier_result = cal.tiers.get(&tier)?;
+
+        // The calibrated optimal_size is the largest working set that stays in this tier
+        // (single-threaded measurement). Only topology sharing matters — no CPUID heuristics.
+        // Final 64-byte alignment is applied downstream in TestMemoryConfig::calculate_window_size.
+        let calibrated = tier_result.optimal_size;
+
+        let size = match self {
+            CacheTarget::L1 { .. } | CacheTarget::L2 { .. } => {
+                // Per-core caches shared with SMT sibling
+                calibrated / get_active_threads_per_core()
+            }
+            CacheTarget::L3 { .. } => {
+                // Shared across all cores — divide by thread count
+                calibrated / thread_count.max(1)
+            }
+            CacheTarget::DRAM { multiplier } => {
+                // DRAM: each thread's working set must independently exceed total L3 to
+                // guarantee DRAM access. No thread divisor — sharing L3 across threads
+                // would make the per-thread region too small for a clean DRAM measurement
+                // under multi-thread cache competition.
+                let cal_l3 = cal.tiers.get(&crate::calibration::CacheTier::L3)
+                    .map(|t| t.optimal_size)
+                    .unwrap_or(calibrated);
+                cal_l3 * (*multiplier as usize)
+            }
+            CacheTarget::DRAMFull { .. } => return None, // Handled by sentinel
+        };
+
+        log::debug!("Calibrated window: {:?} → {} bytes (calibrated_optimal={}, threads={}, smt={})",
+            tier, size, calibrated, thread_count, get_active_threads_per_core());
+
+        Some(size)
+    }
+
+    /// Calculate actual window size in bytes based on cache info and thread count.
+    /// Uses calibration data when available, falls back to CPUID heuristics.
     pub fn calculate_window_size(&self, cache_info: &CacheInfo, thread_count: usize) -> usize {
+        // Try calibrated sizing first
+        if let Some(cal) = get_calibration_data() {
+            if let Some(size) = self.calculate_from_calibration(cal, cache_info, thread_count) {
+                return size;
+            }
+        }
+
+        // CPUID-based fallback
+        self.calculate_window_size_cpuid(cache_info, thread_count)
+    }
+
+    /// CPUID-based window sizing (original heuristic path)
+    fn calculate_window_size_cpuid(&self, cache_info: &CacheInfo, thread_count: usize) -> usize {
         match self {
             CacheTarget::L1 { divisor } => {
-                cache_info.per_core_l1d / (*divisor as usize)
+                let per_thread = cache_info.per_core_l1d / get_active_threads_per_core();
+                per_thread / (*divisor as usize)
             }
             CacheTarget::L2 { divisor } => {
-                cache_info.per_core_l2 / (*divisor as usize)
+                let per_thread = cache_info.per_core_l2 / get_active_threads_per_core();
+                per_thread / (*divisor as usize)
             }
             CacheTarget::L3 { divisor } => {
-                // For VMs: apply extra /2 factor because reported L3 is shared with other VMs.
-                // Calibration shows effective L3 is much smaller than CPUID-reported on VMs,
-                // but sequential bandwidth tests with prefetcher tolerate larger windows than
-                // the random-access calibration boundary suggests. vm_factor=2 is a reasonable
-                // compromise. TODO: Replace with calibrated cache sizes (see TODO #21).
+                // For VMs: apply extra /2 factor because reported L3 is shared with other VMs
                 let vm_factor = if cache_info.is_virtual_machine { 2 } else { 1 };
                 let effective_divisor = (*divisor as usize) * vm_factor;
 
                 if thread_count == 1 {
-                    // Single-thread: apply divisor (default /2 = 50% of L3, or /4 for VMs)
-                    // Leaves headroom and ensures we're testing L3, not thrashing it
                     let l3_target = cache_info.l3_cache / effective_divisor;
-                    // Minimum: must exceed L2 to avoid L2 hits
                     let min_l3_size = cache_info.per_core_l2 + (64 * 1024);
                     l3_target.max(min_l3_size)
                 } else {
-                    // Multi-thread: use full per-thread share with VM adjustment
-                    // Total working set = L3/vm_factor, ensuring all threads fit in available L3 together
                     let effective_l3 = cache_info.l3_cache / vm_factor;
                     let per_thread = effective_l3 / thread_count;
-                    // Minimum: must exceed L2 to avoid L2 hits
                     let min_l3_size = cache_info.per_core_l2 + (64 * 1024);
                     per_thread.max(min_l3_size)
                 }
             }
             CacheTarget::DRAM { multiplier } => {
-                // DRAM test - each thread gets (L3 / threads) * multiplier
-                // Combined working set = L3 * multiplier, ensuring all threads exceed L3 together
-                // Example: 6 threads, 16MB L3, multiplier=4 → 10.67MB each, 64MB total
-                let per_thread_l3 = cache_info.l3_cache / thread_count.max(1);
-                per_thread_l3 * (*multiplier as usize)
+                // No thread divisor — each thread independently exceeds L3 (see calibration path)
+                cache_info.l3_cache * (*multiplier as usize)
             }
             CacheTarget::DRAMFull { multiplier: _ } => {
-                // Full allocation test - returns sentinel to signal "use entire allocated block"
-                // Caller (TestMemoryConfig::calculate_window_size) handles this specially
-                // This tests the full memory assigned to each thread, regardless of L3 size
                 usize::MAX
             }
         }
@@ -134,22 +189,40 @@ impl CacheTarget {
         self.name_with_context(thread_count, false)
     }
 
-    /// Get a human-readable name that reflects actual calculation with thread count and VM status
+    /// Get a human-readable name that reflects actual calculation with thread count and VM status.
+    /// Shows `[cal]` suffix when calibration data is active for this tier.
     pub fn name_with_context(&self, thread_count: usize, is_vm: bool) -> String {
+        let has_cal = get_calibration_data()
+            .and_then(|cal| {
+                let tier = self.to_calibration_tier()?;
+                cal.tiers.get(&tier)
+            })
+            .is_some();
+        let suffix = if has_cal { " [cal]" } else { "" };
+
         match self {
-            CacheTarget::L1 { divisor } => format!("L1/{}", divisor),
-            CacheTarget::L2 { divisor } => format!("L2/{}", divisor),
+            CacheTarget::L1 { divisor } => format!("L1/{}{}", divisor, suffix),
+            CacheTarget::L2 { divisor } => format!("L2/{}{}", divisor, suffix),
             CacheTarget::L3 { divisor } => {
-                let vm_factor = if is_vm { 2 } else { 1 };
-                if thread_count == 1 {
-                    let effective = (*divisor as usize) * vm_factor;
-                    format!("L3/{}", effective)
+                if has_cal {
+                    // Calibrated: show thread count division (no CPUID heuristic divisor)
+                    if thread_count == 1 {
+                        format!("L3 [cal]")
+                    } else {
+                        format!("L3/{} [cal]", thread_count)
+                    }
                 } else {
-                    let effective = thread_count * vm_factor;
-                    format!("L3/{}", effective)
+                    let vm_factor = if is_vm { 2 } else { 1 };
+                    if thread_count == 1 {
+                        let effective = (*divisor as usize) * vm_factor;
+                        format!("L3/{}", effective)
+                    } else {
+                        let effective = thread_count * vm_factor;
+                        format!("L3/{}", effective)
+                    }
                 }
             }
-            CacheTarget::DRAM { multiplier } => format!("DRAM*{}", multiplier),
+            CacheTarget::DRAM { multiplier } => format!("DRAM*{}{}", multiplier, suffix),
             CacheTarget::DRAMFull { multiplier: _ } => "DRAM-Full".to_string(),
         }
     }
@@ -274,6 +347,35 @@ impl ErrorCheckInterval {
 
 // Global system info that gets detected once at runtime
 static SYSTEM_INFO: OnceLock<SystemInfo> = OnceLock::new();
+
+// Global calibration data — set from tmr-cfg.json on startup, used by CacheTarget sizing
+static CALIBRATION_DATA: OnceLock<Option<crate::calibration::CalibrationResults>> = OnceLock::new();
+
+// Active SMT threads per physical core (1 if cputype=cores or no HT, 2 if cputype=threads with HT)
+// Set by main.rs after topology + cputype are resolved. Defaults to 1 if not set.
+static ACTIVE_THREADS_PER_CORE: OnceLock<usize> = OnceLock::new();
+
+/// Set the global calibration data (called once at startup from tmr-cfg.json)
+pub fn set_calibration_data(data: Option<crate::calibration::CalibrationResults>) {
+    let _ = CALIBRATION_DATA.set(data);
+}
+
+/// Get the global calibration data if available
+pub fn get_calibration_data() -> Option<&'static crate::calibration::CalibrationResults> {
+    CALIBRATION_DATA.get().and_then(|opt| opt.as_ref())
+}
+
+/// Set the active SMT threads per core (called once by main.rs after topology detection)
+/// - 2 if hyperthreading enabled AND cputype=threads (both siblings active)
+/// - 1 if cputype=cores (only one thread per physical core) or no SMT
+pub fn set_active_threads_per_core(count: usize) {
+    let _ = ACTIVE_THREADS_PER_CORE.set(count);
+}
+
+/// Get the active SMT threads per core (defaults to 1 if not set)
+pub fn get_active_threads_per_core() -> usize {
+    ACTIVE_THREADS_PER_CORE.get().copied().unwrap_or(1)
+}
 
 pub fn get_system_info() -> &'static SystemInfo {
     SYSTEM_INFO.get_or_init(|| {
@@ -406,7 +508,6 @@ pub struct OperationMetadata {
     pub simd_type: SIMDType,
     pub access_pattern: AccessPattern,
     pub memory_coverage: f64,  // Fraction of allocated memory touched per operation
-    pub streams: u32,
     pub locality_sensitive: bool,
 }
 
@@ -485,7 +586,6 @@ pub struct TestMemoryConfig {
     pub allow_misaligned: bool,
     pub requires_locality: bool,    // True if test needs temporal locality (small window)
     pub timing: TestTiming,
-    pub streams: u32,               // Number of access streams (equivalent to TM5 jump/parameter)
     pub pattern_mode: Option<u32>,  // TM5 pattern mode
     pub pattern_param0: Option<u64>, // TM5 pattern parameter 0
     pub pattern_param1: Option<u64>, // TM5 pattern parameter 1
@@ -524,7 +624,6 @@ impl TestMemoryConfig {
             allow_misaligned,
             requires_locality,
             timing: TestTiming::default(),
-            streams: 1, // Default to single stream (equivalent to TM5 jump=1)
             pattern_mode: None,
             pattern_param0: None,
             pattern_param1: None,
@@ -554,7 +653,6 @@ impl TestMemoryConfig {
                 simd_type: SIMDType::None,
                 access_pattern: AccessPattern::Sequential,
                 memory_coverage: 1.0,
-                streams: 1,
                 locality_sensitive: false,
             },
             "Mem-StuckBit128" => OperationMetadata {
@@ -567,7 +665,6 @@ impl TestMemoryConfig {
                 simd_type: SIMDType::SSE2_128,
                 access_pattern: AccessPattern::Sequential,
                 memory_coverage: 1.0,
-                streams: 1,
                 locality_sensitive: false,
             },
             "Mem-StuckBit256" => OperationMetadata {
@@ -580,7 +677,6 @@ impl TestMemoryConfig {
                 simd_type: SIMDType::AVX2_256,
                 access_pattern: AccessPattern::Sequential,
                 memory_coverage: 1.0,
-                streams: 1,
                 locality_sensitive: false,
             },
             "Mem-StuckBit512" => OperationMetadata {
@@ -593,7 +689,6 @@ impl TestMemoryConfig {
                 simd_type: SIMDType::AVX512_512,
                 access_pattern: AccessPattern::Sequential,
                 memory_coverage: 1.0,
-                streams: 1,
                 locality_sensitive: false,
             },
             "Mem-SimpleNT-128" | "Mem-SimpleNT-256" | "Mem-SimpleNT-512" | "Mem-SimpleNT-Auto" => OperationMetadata {
@@ -610,7 +705,6 @@ impl TestMemoryConfig {
                 },
                 access_pattern: AccessPattern::Sequential,
                 memory_coverage: 1.0,
-                streams: 1,
                 locality_sensitive: false,
             },
             "Mem-Refresh" => OperationMetadata {
@@ -623,7 +717,6 @@ impl TestMemoryConfig {
                 simd_type: SIMDType::None,
                 access_pattern: AccessPattern::Sequential,
                 memory_coverage: 1.0,
-                streams: 1,
                 locality_sensitive: true,
             },
             "Mem-Refresh128" => OperationMetadata {
@@ -636,7 +729,6 @@ impl TestMemoryConfig {
                 simd_type: SIMDType::SSE2_128,
                 access_pattern: AccessPattern::Sequential,
                 memory_coverage: 1.0,
-                streams: 1,
                 locality_sensitive: true,
             },
             "Mem-Refresh256" => OperationMetadata {
@@ -649,7 +741,6 @@ impl TestMemoryConfig {
                 simd_type: SIMDType::AVX2_256,
                 access_pattern: AccessPattern::Sequential,
                 memory_coverage: 1.0,
-                streams: 1,
                 locality_sensitive: true,
             },
             "Mem-Refresh512" => OperationMetadata {
@@ -662,7 +753,6 @@ impl TestMemoryConfig {
                 simd_type: SIMDType::AVX512_512,
                 access_pattern: AccessPattern::Sequential,
                 memory_coverage: 1.0,
-                streams: 1,
                 locality_sensitive: true,
             },
             "Mem-CacheBust" => OperationMetadata {
@@ -675,7 +765,6 @@ impl TestMemoryConfig {
                 simd_type: SIMDType::None,
                 access_pattern: AccessPattern::CacheBusting,
                 memory_coverage: 1.0,  // All memory touched with stride pattern for cache busting
-                streams: self.streams,
                 locality_sensitive: false,
             },
             "Mem-Random" => OperationMetadata {
@@ -688,7 +777,6 @@ impl TestMemoryConfig {
                 simd_type: SIMDType::None,
                 access_pattern: AccessPattern::Random,
                 memory_coverage: 0.1,  // Random coverage varies, use conservative estimate
-                streams: self.streams,
                 locality_sensitive: false,
             },
             "Mem-Stride" => OperationMetadata {
@@ -701,7 +789,6 @@ impl TestMemoryConfig {
                 simd_type: SIMDType::None,
                 access_pattern: AccessPattern::Strided(1024),  // Average stride
                 memory_coverage: 0.85,  // Aggregate across all strides
-                streams: self.streams,
                 locality_sensitive: false,
             },
             "Mem-BlockMove" => OperationMetadata {
@@ -714,7 +801,6 @@ impl TestMemoryConfig {
                 simd_type: SIMDType::None,
                 access_pattern: AccessPattern::BlockCopy,
                 memory_coverage: 0.5,  // Uses half of allocation (source to dest)
-                streams: self.streams,
                 locality_sensitive: false,
             },
             // Sequential bandwidth tests — Write
@@ -728,7 +814,6 @@ impl TestMemoryConfig {
                 simd_type: SIMDType::AVX512_512,
                 access_pattern: AccessPattern::Sequential,
                 memory_coverage: 1.0,
-                streams: 1,
                 locality_sensitive: false,
             },
             // Sequential bandwidth tests — Read
@@ -742,7 +827,6 @@ impl TestMemoryConfig {
                 simd_type: SIMDType::AVX512_512,
                 access_pattern: AccessPattern::Sequential,
                 memory_coverage: 1.0,
-                streams: 1,
                 locality_sensitive: false,
             },
             // Sequential bandwidth tests — Copy
@@ -756,7 +840,6 @@ impl TestMemoryConfig {
                 simd_type: SIMDType::AVX512_512,
                 access_pattern: AccessPattern::Sequential,
                 memory_coverage: 0.5,  // Split-half: read first half, write second half
-                streams: 1,
                 locality_sensitive: false,
             },
             _ => panic!("Unknown test '{}' - add explicit metadata to get_operation_metadata()", test_name),
@@ -778,19 +861,6 @@ impl TestMemoryConfig {
         self
     }
 
-    pub fn with_streams(mut self, streams: u32) -> Self {
-        // Validate streams is power-of-2 for multi-stream tests
-        if streams > 1 && !streams.is_power_of_two() {
-            panic!(
-                "Stream count {} must be power-of-2 (1, 2, 4, 8, 16, etc.) for proper memory interleaving. \
-                 This is a configuration error.",
-                streams
-            );
-        }
-        self.streams = streams;
-        self
-    }
-    
     pub fn with_error_check_interval(mut self, interval: ErrorCheckInterval) -> Self {
         self.error_check_interval = interval;
         self
@@ -854,12 +924,13 @@ impl TestMemoryConfig {
             }
         };
 
-        // Round down to 64-byte boundary to avoid SIMD tests faulting (AVX-512 requires 64-byte alignment)
+        // Round down to 64-byte boundary so SIMD operations (especially NT stores) don't fault.
+        // This is the single source of alignment for all window modes — calibrated values are
+        // raw measurements and topology divisions can produce non-aligned results, both expected.
         let aligned = (size / 64) * 64;
         if aligned != size {
-            log::warn!(
-                "{}: window size {} bytes not 64-byte aligned ({:?}) — \
-                 rounded down to {} bytes to avoid SIMD tests faulting.",
+            log::debug!(
+                "{}: window size {} bytes not 64-byte aligned ({:?}) — rounded down to {} bytes",
                 test_name, size, self.window_mode, aligned
             );
         }
@@ -906,8 +977,16 @@ impl TestMemoryConfig {
             }
         };
 
-        // Calculate minimum chunk size considering SIMD operations and stream requirements
-        let minimum_chunk_size = self.calculate_minimum_chunk_size(test_name, self.streams);
+        // Calculate minimum chunk size considering SIMD operations and variant requirements
+        // Extract the relevant variant count from parameter_context (stride_patterns, rng_sequences, subdivisions, copy_directions)
+        let variant_count = self.parameter_context.as_ref().map(|ctx| {
+            ctx.stride_patterns
+                .or(ctx.rng_sequences)
+                .or(ctx.subdivisions)
+                .or(ctx.copy_directions)
+                .unwrap_or(1)
+        }).unwrap_or(1);
+        let minimum_chunk_size = self.calculate_minimum_chunk_size(test_name, variant_count);
         
         // Cap at window size first
         let window_capped_size = raw_chunk_size.min(window_size);
@@ -921,8 +1000,8 @@ impl TestMemoryConfig {
             let final_mb = final_chunk_size as f64 / MB as f64;
             
             if final_chunk_size > raw_chunk_size {
-                log::debug!("🔧 Chunk size corrected for {}: {:.2}MB → {:.2}MB (minimum required for {} streams + SIMD alignment)", 
-                           test_name, raw_mb, final_mb, self.streams);
+                log::debug!("🔧 Chunk size corrected for {}: {:.2}MB → {:.2}MB (minimum required for {} variants + SIMD alignment)",
+                           test_name, raw_mb, final_mb, variant_count);
             } else {
                 log::debug!("🔧 Chunk size capped for {}: {:.2}MB → {:.2}MB (limited by window size)", 
                            test_name, raw_mb, final_mb);
@@ -932,7 +1011,7 @@ impl TestMemoryConfig {
         final_chunk_size
     }
     
-    fn calculate_minimum_chunk_size(&self, test_name: &str, streams: u32) -> usize {
+    fn calculate_minimum_chunk_size(&self, test_name: &str, variant_count: u32) -> usize {
         // SIMD operation size requirements - explicit for each test to catch missing implementations
         let simd_requirement = match test_name {
             "Mem-StuckBit" => 8,                // Basic u64 operations
@@ -972,14 +1051,14 @@ impl TestMemoryConfig {
             _ => panic!("Unknown test '{}' - add explicit SIMD requirement to calculate_minimum_chunk_size()", test_name),
         };
         
-        // Stream division requirement: each stream needs at least simd_requirement bytes
-        let stream_requirement = simd_requirement * streams.max(1) as usize;
-        
+        // Variant division requirement: each variant needs at least simd_requirement bytes
+        let variant_requirement = simd_requirement * variant_count.max(1) as usize;
+
         // Performance minimum: 64KB for reasonable cache behavior
         let performance_minimum = 64 * 1024; // 64KB
-        
-        // Ensure result is aligned to u64 boundaries and power-of-2 element count for fast stream operations
-        let minimum_bytes = stream_requirement.max(performance_minimum);
+
+        // Ensure result is aligned to u64 boundaries and power-of-2 element count for fast variant operations
+        let minimum_bytes = variant_requirement.max(performance_minimum);
         let elements = minimum_bytes / std::mem::size_of::<u64>();
         let power_of_2_elements = elements.next_power_of_two();
         
@@ -1137,23 +1216,14 @@ pub fn prepare_blocks_for_window<'a>(
         }
     }
 
-    // Log window behavior - use INFO level so users can see what's happening
     if accumulated > window_size {
-        log::info!(
-            "{}: Window {:.2} MiB exceeded by {:.2} MiB (testing complete blocks only)",
+        log::debug!(
+            "{}: Block total {:.2} MiB > window {:.2} MiB — processing large single block up to window limit",
             test_name,
-            window_size as f64 / MB_F64,
-            (accumulated - window_size) as f64 / MB_F64
+            accumulated as f64 / MB_F64,
+            window_size as f64 / MB_F64
         );
     }
-
-    log::info!(
-        "{}: Prepared {} block(s) for testing, total {:.2} MiB (window: {:.2} MiB)",
-        test_name,
-        result.len(),
-        accumulated as f64 / MB_F64,
-        window_size as f64 / MB_F64
-    );
 
     result
 }
@@ -1480,7 +1550,7 @@ pub unsafe fn stuck_bit_test_128_multi(
 /// StuckBitTest128 - SSE2 optimized implementation
 /// This function is annotated with #[target_feature] to enable full compiler optimization
 #[inline]
-#[target_feature(enable = "sse2")]
+#[target_feature(enable = "sse4.2,sse4.1,ssse3,sse3,sse2,popcnt")]
 unsafe fn stuck_bit_test_128_impl(
     blocks: &[crate::runner::AllocationBlock],
     thread_id: usize,
@@ -1824,7 +1894,7 @@ pub unsafe fn stuck_bit_test_256_multi(
 /// StuckBitTest256 - AVX2 optimized implementation
 /// This function is annotated with #[target_feature] to enable full compiler optimization
 #[inline]
-#[target_feature(enable = "avx2")]
+#[target_feature(enable = "avx2,avx,fma,bmi1,bmi2")]
 unsafe fn stuck_bit_test_256_impl(
     blocks: &[crate::runner::AllocationBlock],
     thread_id: usize,
@@ -2091,7 +2161,7 @@ pub unsafe fn stuck_bit_test_512_multi(
 /// StuckBitTest512 - AVX-512 optimized implementation
 /// This function is annotated with #[target_feature] to enable full compiler optimization
 #[inline]
-#[target_feature(enable = "avx512f")]
+#[target_feature(enable = "avx512f,avx512bw,avx512cd,avx512dq,avx512vl,avx2,avx,fma,bmi1,bmi2")]
 unsafe fn stuck_bit_test_512_impl(
     blocks: &[crate::runner::AllocationBlock],
     thread_id: usize,
@@ -2570,7 +2640,7 @@ pub unsafe fn refresh_stable_128_multi(
 /// RefreshStable128 - SSE2 optimized implementation
 /// This function is annotated with #[target_feature] to enable full compiler optimization
 #[inline]
-#[target_feature(enable = "sse2")]
+#[target_feature(enable = "sse4.2,sse4.1,ssse3,sse3,sse2,popcnt")]
 unsafe fn refresh_stable_128_impl(
     blocks: &[crate::runner::AllocationBlock],
     thread_id: usize,
@@ -2795,7 +2865,7 @@ pub unsafe fn refresh_stable_256_multi(
 /// RefreshStable256 - AVX2 optimized implementation
 /// This function is annotated with #[target_feature] to enable full compiler optimization
 #[inline]
-#[target_feature(enable = "avx2")]
+#[target_feature(enable = "avx2,avx,fma,bmi1,bmi2")]
 unsafe fn refresh_stable_256_impl(
     blocks: &[crate::runner::AllocationBlock],
     thread_id: usize,
@@ -3020,7 +3090,7 @@ pub unsafe fn refresh_stable_512_multi(
 /// RefreshStable512 - AVX-512 optimized implementation
 /// This function is annotated with #[target_feature] to enable full compiler optimization
 #[inline]
-#[target_feature(enable = "avx512f")]
+#[target_feature(enable = "avx512f,avx512bw,avx512cd,avx512dq,avx512vl,avx2,avx,fma,bmi1,bmi2")]
 unsafe fn refresh_stable_512_impl(
     blocks: &[crate::runner::AllocationBlock],
     thread_id: usize,
@@ -3269,7 +3339,9 @@ pub unsafe fn cache_busting_multi(
               total_test_size as f64 / MB_F64,
               window_size as f64 / MB_F64);
 
-    let streams = config.streams.max(1) as usize;
+    let stride_patterns = config.parameter_context.as_ref()
+        .and_then(|c| c.stride_patterns)
+        .expect("CacheBust requires stride_patterns in parameter_context") as usize;
 
     // Pre-calculate stride constants outside all loops
     let base_stride = CACHE_BUSTING_STRIDE / std::mem::size_of::<u64>();
@@ -3301,10 +3373,10 @@ pub unsafe fn cache_busting_multi(
             while processed < len {
                 let chunk_end = (processed + chunk_size_operations).min(len);
 
-                // Apply stream-based access patterns within chunk
-                match config.streams {
+                // Apply stride-pattern-based access patterns within chunk
+                match stride_patterns {
                     1 => {
-                        // Single stream with large strides to bust cache
+                        // Single pattern with large strides to bust cache
                         for offset in 0..base_stride.min(chunk_end - processed) {
                             let mut i = processed + offset;
                             while i < chunk_end {
@@ -3333,12 +3405,11 @@ pub unsafe fn cache_busting_multi(
                         }
                     }
                     _ => {
-                        // Multiple streams with different patterns - divide offsets among streams
-                        // Each stream handles a subset of offsets, but ALL offsets are covered
+                        // Multiple patterns - divide offsets among stride variants
+                        // Each variant handles a subset of offsets, but ALL offsets are covered
                         for offset in 0..base_stride.min(chunk_end - processed) {
-                            // Assign this offset to a stream using round-robin
-                            let stream = (offset % streams as usize) as u64;
-                            let pattern = pattern_base.wrapping_add(stream * 0x1111111111111111u64);
+                            let variant = (offset % stride_patterns) as u64;
+                            let pattern = pattern_base.wrapping_add(variant * 0x1111111111111111u64);
 
                             let mut i = processed + offset;
                             while i < chunk_end {
@@ -3350,10 +3421,10 @@ pub unsafe fn cache_busting_multi(
 
                         std::sync::atomic::fence(Ordering::SeqCst);
 
-                        // Verify all offsets with their respective stream patterns
+                        // Verify all offsets with their respective variant patterns
                         for offset in 0..base_stride.min(chunk_end - processed) {
-                            let stream = (offset % streams as usize) as u64;
-                            let pattern = pattern_base.wrapping_add(stream * 0x1111111111111111u64);
+                            let variant = (offset % stride_patterns) as u64;
+                            let pattern = pattern_base.wrapping_add(variant * 0x1111111111111111u64);
 
                             let mut i = processed + offset;
                             while i < chunk_end {
@@ -3473,7 +3544,7 @@ pub unsafe fn cache_busting_multi(
 /// - Initializes memory with sequential pattern (index as value)
 /// - Performs random reads using XORshift RNG
 /// - Verifies each random read matches expected value
-/// - Supports multiple streams with different RNG seeds
+/// - Supports multiple RNG sequences with different seeds
 ///
 /// Tests blocks in interleaved fashion with shared timer to fix N×duration bug.
 pub unsafe fn random_torture_multi(
@@ -3541,22 +3612,25 @@ pub unsafe fn random_torture_multi(
             let chunk_size_bytes = get_safe_chunk_size(ideal_chunk_size, test_block.test_size);
             let chunk_size_operations = chunk_size_bytes / std::mem::size_of::<u64>();
 
-            // Random access torture with configurable streams
+            // Random access torture with configurable RNG sequences
+            let rng_sequences = config.parameter_context.as_ref()
+                .and_then(|c| c.rng_sequences)
+                .expect("RandomTorture requires rng_sequences in parameter_context");
             let base_iterations = (len / 1000).clamp(5000, 50000);
-            let streams_max = config.streams.max(1) as usize;
-            let stream_shift = streams_max.trailing_zeros();
-            let iterations_per_stream = (base_iterations >> stream_shift).max(1);
+            let seq_count = rng_sequences.max(1) as usize;
+            let seq_shift = seq_count.trailing_zeros();
+            let iterations_per_seq = (base_iterations >> seq_shift).max(1);
 
-            // Process streams in chunks for responsive shutdown
-            for stream in 0..config.streams {
+            // Process RNG sequences in chunks for responsive shutdown
+            for seq in 0..rng_sequences {
                 let mut rng_state = 0x123456789ABCDEFu64
                     .wrapping_add(thread_id as u64)
                     .wrapping_add(cycle as u64)
-                    .wrapping_add((stream as u64).wrapping_mul(0x8765432187654321u64));
+                    .wrapping_add((seq as u64).wrapping_mul(0x8765432187654321u64));
 
-                // Random read verification for this stream - chunked for responsive shutdown
-                for chunk_start in (0..iterations_per_stream).step_by(chunk_size_operations) {
-                    let chunk_end = (chunk_start + chunk_size_operations).min(iterations_per_stream);
+                // Random read verification for this sequence - chunked for responsive shutdown
+                for chunk_start in (0..iterations_per_seq).step_by(chunk_size_operations) {
+                    let chunk_end = (chunk_start + chunk_size_operations).min(iterations_per_seq);
 
                     for _iteration in chunk_start..chunk_end {
                         rng_state ^= rng_state << 13;
@@ -3570,11 +3644,11 @@ pub unsafe fn random_torture_multi(
                         if actual != expected {
                             cycle_errors += 1;
                             log::error!(
-                                "{}: memory error at index {}, iteration {}, stream {}, expected {}, actual {}",
+                                "{}: memory error at index {}, iteration {}, rng_seq {}, expected {}, actual {}",
                                 test_name,
                                 idx,
                                 _iteration,
-                                stream,
+                                seq,
                                 expected,
                                 actual
                             );
@@ -3585,8 +3659,8 @@ pub unsafe fn random_torture_multi(
                     if cycle_errors > 0 {
                         match error_mode {
                             ErrorMode::Panic => {
-                                panic!("{}: {} memory errors detected in stream {} (see logs above)",
-                                      test_name, cycle_errors, stream);
+                                panic!("{}: {} memory errors detected in rng_seq {} (see logs above)",
+                                      test_name, cycle_errors, seq);
                             }
                             ErrorMode::Halt => {
                                 let elapsed = start.elapsed().as_millis();
@@ -3633,8 +3707,8 @@ pub unsafe fn random_torture_multi(
             }
 
             // Update bytes processed for this block
-            let bytes_this_cycle = iterations_per_stream
-                .saturating_mul(config.streams as usize)
+            let bytes_this_cycle = iterations_per_seq
+                .saturating_mul(rng_sequences as usize)
                 .saturating_mul(std::mem::size_of::<u64>());
             total_bytes_processed = total_bytes_processed.saturating_add(bytes_this_cycle);
         }
@@ -3660,9 +3734,11 @@ pub unsafe fn random_torture_multi(
 
             // Calculate total operations
             let base_iterations = (total_test_size / std::mem::size_of::<u64>() / 1000).clamp(5000, 50000);
-            let streams_max = config.streams.max(1) as usize;
-            let iterations_per_stream = (base_iterations >> streams_max.trailing_zeros()).max(1);
-            let total_operations: u64 = cycle as u64 * (iterations_per_stream * config.streams as usize) as u64;
+            let rng_seq_count = config.parameter_context.as_ref()
+                .and_then(|c| c.rng_sequences)
+                .expect("RandomTorture requires rng_sequences in parameter_context") as usize;
+            let iterations_per_seq_final = (base_iterations >> rng_seq_count.trailing_zeros()).max(1);
+            let total_operations: u64 = cycle as u64 * (iterations_per_seq_final * rng_seq_count) as u64;
 
             return TestStats {
                 name: test_name,
@@ -3703,8 +3779,10 @@ pub unsafe fn stride_access_multi(
     log::info!("[Thread {}] Running {} on {:.2} MB of memory (window: {:.2} MB)",
               thread_id, test_name, total_test_size as f64 / MB_F64, window_size as f64 / MB_F64);
 
-    let streams = config.streams.max(1) as usize;
-    let stream_shift = streams.trailing_zeros();
+    let subdivisions = config.parameter_context.as_ref()
+        .and_then(|c| c.subdivisions)
+        .expect("StrideAccess requires subdivisions in parameter_context") as usize;
+    let subdiv_shift = subdivisions.trailing_zeros();
     let mut cycle = 0u32;
     let test_start = Instant::now();
     let mut total_error_count = 0u64;
@@ -3730,28 +3808,28 @@ pub unsafe fn stride_access_multi(
                 for chunk_start in (0..len).step_by(chunk_size_elements) {
                     let chunk_end = (chunk_start + chunk_size_elements).min(len);
                     let chunk_len = chunk_end - chunk_start;
-                    let elements_per_stream = chunk_len >> stream_shift;
+                    let elements_per_subdiv = chunk_len >> subdiv_shift;
 
-                    for stream in 0..streams {
-                        let pattern = pattern_base.wrapping_add((stride as u64) << 32).wrapping_add((stream as u64) << 48);
-                        let stream_start = chunk_start + stream * elements_per_stream;
-                        let stream_end = stream_start + elements_per_stream;
-                        let mut pos = stream_start;
-                        while pos < stream_end {
+                    for subdiv in 0..subdivisions {
+                        let pattern = pattern_base.wrapping_add((stride as u64) << 32).wrapping_add((subdiv as u64) << 48);
+                        let subdiv_start = chunk_start + subdiv * elements_per_subdiv;
+                        let subdiv_end = subdiv_start + elements_per_subdiv;
+                        let mut pos = subdiv_start;
+                        while pos < subdiv_end {
                             *base.add(pos) = pattern.wrapping_add(pos as u64);
                             pos += stride;
-                            if pos >= stream_end { break; }
+                            if pos >= subdiv_end { break; }
                         }
                     }
 
                     std::sync::atomic::fence(Ordering::SeqCst);
 
-                    for stream in 0..streams {
-                        let pattern = pattern_base.wrapping_add((stride as u64) << 32).wrapping_add((stream as u64) << 48);
-                        let stream_start = chunk_start + stream * elements_per_stream;
-                        let stream_end = stream_start + elements_per_stream;
-                        let mut pos = stream_start;
-                        while pos < stream_end {
+                    for subdiv in 0..subdivisions {
+                        let pattern = pattern_base.wrapping_add((stride as u64) << 32).wrapping_add((subdiv as u64) << 48);
+                        let subdiv_start = chunk_start + subdiv * elements_per_subdiv;
+                        let subdiv_end = subdiv_start + elements_per_subdiv;
+                        let mut pos = subdiv_start;
+                        while pos < subdiv_end {
                             let expected = pattern.wrapping_add(pos as u64);
                             let actual = *base.add(pos);
                             if actual != expected {
@@ -3759,7 +3837,7 @@ pub unsafe fn stride_access_multi(
                                 log::error!("{}: memory error at index {} - expected {:#x}, got {:#x}", test_name, pos, expected, actual);
                             }
                             pos += stride;
-                            if pos >= stream_end { break; }
+                            if pos >= subdiv_end { break; }
                         }
                     }
 
@@ -3890,17 +3968,20 @@ pub unsafe fn block_move_multi(
             while processed < len {
                 let chunk_end = (processed + chunk_size_operations).min(len);
 
-                // Copy from source to destination with stream patterns
-                match config.streams {
+                // Copy from source to destination with direction patterns
+                let copy_dirs = config.parameter_context.as_ref()
+                    .and_then(|c| c.copy_directions)
+                    .expect("BlockMove requires copy_directions in parameter_context");
+                match copy_dirs {
                     1 => {
-                        // Single stream: Simple forward copy
+                        // Single direction: Simple forward copy
                         for i in processed..chunk_end {
                             let val = *src_base.add(i);
                             *dst_base.add(i) = val;
                         }
                     }
                     2 => {
-                        // Two streams: Copy forward and backward simultaneously
+                        // Two directions: Copy forward and backward simultaneously
                         let chunk_size = chunk_end - processed;
                         let mid = processed + chunk_size / 2;
 
@@ -3916,7 +3997,7 @@ pub unsafe fn block_move_multi(
                         }
                     }
                     4 => {
-                        // Four streams: Interleaved block copy with different patterns
+                        // Four directions: Interleaved block copy with different patterns
                         let chunk_size = chunk_end - processed;
                         let block_size = chunk_size / 4;
 
@@ -3953,10 +4034,10 @@ pub unsafe fn block_move_multi(
                         }
                     }
                     _ => {
-                        // Many streams: Strided copy pattern
-                        let streams = config.streams as usize;
-                        for stream in 0..streams {
-                            for i in (processed + stream..chunk_end).step_by(streams) {
+                        // Many directions: Strided copy pattern
+                        let dirs = copy_dirs as usize;
+                        for dir in 0..dirs {
+                            for i in (processed + dir..chunk_end).step_by(dirs) {
                                 *dst_base.add(i) = *src_base.add(i);
                             }
                         }
@@ -5071,7 +5152,7 @@ pub unsafe fn mirror_move_v2_128_multi(
     }
 }
 
-mirror_move_v2_impl!(mirror_move_v2_128_impl, "Mem-MirrorV2-128", u64x2, 2, [0, 1], "sse2");
+mirror_move_v2_impl!(mirror_move_v2_128_impl, "Mem-MirrorV2-128", u64x2, 2, [0, 1], "sse4.2,sse4.1,ssse3,sse3,sse2,popcnt");
 
 /// MirrorMove v2 AVX2 (u64x4) — 256-bit SIMD with u64 lanes.
 ///
@@ -5092,7 +5173,7 @@ pub unsafe fn mirror_move_v2_256_multi(
     }
 }
 
-mirror_move_v2_impl!(mirror_move_v2_256_impl, "Mem-MirrorV2-256", u64x4, 4, [0, 1, 2, 3], "avx2");
+mirror_move_v2_impl!(mirror_move_v2_256_impl, "Mem-MirrorV2-256", u64x4, 4, [0, 1, 2, 3], "avx2,avx,fma,bmi1,bmi2");
 
 /// MirrorMove v2 AVX-512 (u64x8) — 512-bit SIMD with u64 lanes.
 ///
@@ -5113,7 +5194,7 @@ pub unsafe fn mirror_move_v2_512_multi(
     }
 }
 
-mirror_move_v2_impl!(mirror_move_v2_512_impl, "Mem-MirrorV2-512", u64x8, 8, [0, 1, 2, 3, 4, 5, 6, 7], "avx512f");
+mirror_move_v2_impl!(mirror_move_v2_512_impl, "Mem-MirrorV2-512", u64x8, 8, [0, 1, 2, 3, 4, 5, 6, 7], "avx512f,avx512bw,avx512cd,avx512dq,avx512vl,avx2,avx,fma,bmi1,bmi2");
 
 // MirrorMove v2 auto-dispatch — selects best SIMD variant at runtime.
 crate::auto_dispatch!(
@@ -5628,17 +5709,17 @@ simple_test_v2_impl!(simple_test_v2_128_impl,
     simple_test_v2_128_pos_seq, simple_test_v2_128_pos_str,
     simple_test_v2_128_lcg_seq, simple_test_v2_128_lcg_str,
     "Mem-SimpleV2-128", u64x2, 2, [0, 1],
-    pattern_gen::LcgSimd2, "sse2");
+    pattern_gen::LcgSimd2, "sse4.2,sse4.1,ssse3,sse3,sse2,popcnt");
 simple_test_v2_impl!(simple_test_v2_256_impl,
     simple_test_v2_256_pos_seq, simple_test_v2_256_pos_str,
     simple_test_v2_256_lcg_seq, simple_test_v2_256_lcg_str,
     "Mem-SimpleV2-256", u64x4, 4, [0, 1, 2, 3],
-    pattern_gen::LcgSimd4, "avx2");
+    pattern_gen::LcgSimd4, "avx2,avx,fma,bmi1,bmi2");
 simple_test_v2_impl!(simple_test_v2_512_impl,
     simple_test_v2_512_pos_seq, simple_test_v2_512_pos_str,
     simple_test_v2_512_lcg_seq, simple_test_v2_512_lcg_str,
     "Mem-SimpleV2-512", u64x8, 8, [0, 1, 2, 3, 4, 5, 6, 7],
-    pattern_gen::LcgSimd8, "avx512f");
+    pattern_gen::LcgSimd8, "avx512f,avx512bw,avx512cd,avx512dq,avx512vl,avx2,avx,fma,bmi1,bmi2");
 
 /// SimpleTest v2 SSE2 (u64x2) — 128-bit SIMD.
 ///
@@ -5874,21 +5955,21 @@ simple_test_nt_impl!(
     simple_test_nt_128_impl, simple_test_nt_128_multi,
     "Mem-SimpleNT-128", u64x2, 2, [0, 1],
     std::arch::x86_64::__m128i, std::arch::x86_64::_mm_stream_si128,
-    "sse2"
+    "sse4.2,sse4.1,ssse3,sse3,sse2,popcnt"
 );
 
 simple_test_nt_impl!(
     simple_test_nt_256_impl, simple_test_nt_256_multi,
     "Mem-SimpleNT-256", u64x4, 4, [0, 1, 2, 3],
     std::arch::x86_64::__m256i, std::arch::x86_64::_mm256_stream_si256,
-    "avx2"
+    "avx2,avx,fma,bmi1,bmi2"
 );
 
 simple_test_nt_impl!(
     simple_test_nt_512_impl, simple_test_nt_512_multi,
     "Mem-SimpleNT-512", u64x8, 8, [0, 1, 2, 3, 4, 5, 6, 7],
     std::arch::x86_64::__m512i, std::arch::x86_64::_mm512_stream_si512,
-    "avx512f"
+    "avx512f,avx512bw,avx512cd,avx512dq,avx512vl,avx2,avx,fma,bmi1,bmi2"
 );
 
 // SimpleTestNT auto-dispatch — selects best SIMD variant at runtime.

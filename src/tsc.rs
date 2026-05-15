@@ -176,8 +176,14 @@ impl TscInfo {
         );
 
         // Determine best result with validation
-        let (frequency_ghz, detection_method, confidence, secondary) =
+        let (raw_frequency_ghz, detection_method, confidence, secondary) =
             validate_and_select(cpuid_15_result, cpuid_16_result, timing_freq, &timing_stats);
+
+        // Snap to nearest MHz — CPU base frequencies are always integer MHz multiples.
+        // Sub-MHz differences (e.g. 2.700018 vs 2.700016) are measurement noise from
+        // timing calibration. Without this, the config file stores noisy floats that
+        // differ on every boot, falsely invalidating calibration.
+        let frequency_ghz = snap_to_nearest_mhz(raw_frequency_ghz);
 
         log::info!("  TSC: Selected {:.3} GHz via {} (confidence: {:.0}%)",
                    frequency_ghz, detection_method, confidence * 100.0);
@@ -351,6 +357,14 @@ fn detect_via_timing_calibration() -> (f64, CalibrationStats) {
     }
 
     (stats.mean_ghz, stats)
+}
+
+/// Snap a GHz frequency to the nearest MHz (3 decimal places).
+/// CPU TSC frequencies are always integer MHz multiples (e.g. 2700 MHz = 2.700 GHz).
+/// Sub-MHz variation is measurement noise from timing calibration.
+/// This prevents false config mismatches between boots.
+fn snap_to_nearest_mhz(ghz: f64) -> f64 {
+    (ghz * 1000.0).round() / 1000.0
 }
 
 /// Validate results and select best frequency

@@ -206,7 +206,7 @@ pub unsafe fn read_latency_multi(
     let working_set_u64 = working_set_bytes / std::mem::size_of::<u64>();
     let iterations_per_sample = 1000usize; // Fixed iterations for consistent measurements
 
-    log::info!("[Thread {}] {} - Working set: {} bytes ({} elements) targeting {}",
+    log::debug!("[Thread {}] {} - Working set: {} bytes ({} elements) targeting {}",
         thread_id, test_name, working_set_bytes, working_set_u64,
         config.window_mode.target_level_name());
 
@@ -351,7 +351,7 @@ pub unsafe fn write_latency_multi(
     let half_working_set_u64 = (working_set_bytes / std::mem::size_of::<u64>()) / 2;
     let iterations_per_sample = 1000usize;
 
-    log::info!("[Thread {}] {} - Working set: {} bytes ({} elements: {} chain + {} write) targeting {}",
+    log::debug!("[Thread {}] {} - Working set: {} bytes ({} elements: {} chain + {} write) targeting {}",
         thread_id, test_name, working_set_bytes, half_working_set_u64 * 2, half_working_set_u64, half_working_set_u64,
         config.window_mode.target_level_name());
 
@@ -502,16 +502,15 @@ pub unsafe fn copy_latency_multi(
     let mut cycle = 0u32;
 
     // Use window size to determine working set - allows targeting different cache levels
-    // For copy, each buffer (src and dst) must be the full window size to ensure
-    // we're hitting the target cache level. Total memory = 2× window.
-    // Note: Multi-threaded copy tests may exceed cache capacity and spill to higher levels.
-    let working_set_bytes = window_size * 2; // Double to account for src + dst
-    let working_set_u64 = working_set_bytes / std::mem::size_of::<u64>() / 2; // Each buffer = window_size
+    // Split window in half: src (pointer chain) + dst (write target) = total footprint stays
+    // within the target tier. Matches Lat-Write's split strategy for comparable results.
+    let working_set_bytes = window_size;
+    let working_set_u64 = working_set_bytes / std::mem::size_of::<u64>() / 2; // Each buffer = window/2
     let iterations_per_sample = 1000usize;
 
-    // Each buffer is window_size, total is 2× window_size
-    let per_buffer_bytes = window_size;
-    log::info!("[Thread {}] {} - Working set: {} bytes per buffer ({} elements each, {} total) targeting {}",
+    // Each buffer is window/2 (src chain + dst writes), total footprint = window
+    let per_buffer_bytes = working_set_u64 * std::mem::size_of::<u64>();
+    log::debug!("[Thread {}] {} - Working set: {} bytes per buffer ({} elements each, {} total) targeting {}",
         thread_id, test_name, per_buffer_bytes, working_set_u64, working_set_u64 * 2,
         config.window_mode.target_level_name());
 
@@ -524,12 +523,11 @@ pub unsafe fn copy_latency_multi(
         let block_len = test_block.test_size / std::mem::size_of::<u64>();
         let half_len = (block_len / 2).min(working_set_u64);
 
-        // Warn if block is too small for the intended working set
-        // Copy needs block >= 2 * window_size (half for src, half for dst)
+        // Block needs >= window bytes (split in half for src chain + dst writes)
         if half_len < working_set_u64 {
             let actual_per_buffer = half_len * std::mem::size_of::<u64>();
             let intended_per_buffer = working_set_u64 * std::mem::size_of::<u64>();
-            log::warn!("[Thread {}] {} - Block too small! Using {} bytes per buffer instead of {} (may test wrong cache level)",
+            log::debug!("[Thread {}] {} - Block smaller than window: using {} bytes per buffer instead of {} (clamped to block half)",
                 thread_id, test_name, actual_per_buffer, intended_per_buffer);
         }
 
@@ -564,12 +562,12 @@ pub unsafe fn copy_latency_multi(
             let mut src_ptr = chain_positions[block_idx];
             let mut dst_offset = dst_positions[block_idx];
             for _ in 0..iterations {
-                let next_addr = *src_ptr;  // Read next source address
-                let value = *src_ptr;  // Read value from source
-                let dst_ptr = dst_base.add(dst_offset % half_len);
+                let value = *src_ptr;  // Read pointer (also serves as data value)
+                let dst_ptr = dst_base.add(dst_offset);
                 *dst_ptr = value;  // Write to destination
-                src_ptr = next_addr as *mut u64;  // Move source
-                dst_offset += 1;  // Move destination (wrap around)
+                src_ptr = value as *mut u64;  // Move source (chain follows the value)
+                dst_offset += 1;
+                if dst_offset >= half_len { dst_offset = 0; }  // Predictable branch — replaces idiv
             }
 
             let end_cycles = __rdtscp(&mut aux);
