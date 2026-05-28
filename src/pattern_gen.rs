@@ -451,10 +451,10 @@ mod tests {
         let param0 = 0x5DEECE66Du64;
         let param1 = 0xBu64;
 
-        let (s1, st1) = mode2_evolve(seed, step, param0, param1);
+        // Step is intentionally ignored here: with step=0, new_step = 0 * new_seed = 0,
+        // so it stays unchanged. Step evolution is exercised below with a non-zero seed step.
+        let (s1, _st1) = mode2_evolve(seed, step, param0, param1);
         assert_ne!(s1, seed, "Seed should change");
-        // Step starts at 0, but new_step = 0 * new_seed = 0 (first evolution)
-        // Use non-zero initial step:
         let step2 = 7u64;
         let (s2, st2) = mode2_evolve(seed, step2, param0, param1);
         assert_ne!(st2, step2, "Step should evolve");

@@ -1,6 +1,6 @@
 use crate::{ErrorMode};
 use crate::constants::{gib_to_bytes, BYTES_PER_MIB};
-use crate::tests::{WindowMode, ChunkMode};
+use crate::tests::{WindowMode, ChunkMode, CacheTarget, parse_size_string};
 use crate::memory::allocation_strategy::{EnhancedMemoryStrategy, AllocationMode, ReserveAmount, StartAddressMode};
 use crate::runner::TestSuiteTiming;
 use crate::tests::{TestTiming, TestMemoryConfig};
@@ -211,24 +211,205 @@ impl Default for CpuPinningConfig {
     }
 }
 
+impl WindowSpec {
+    pub fn full_allocation() -> Self {
+        WindowSpec { mode: "full_allocation".to_string(), ..Default::default() }
+    }
+    pub fn cache(target: &str) -> Self {
+        WindowSpec { mode: "cache".to_string(), target: Some(target.to_string()), ..Default::default() }
+    }
+    pub fn cache_total(fraction: f64) -> Self {
+        WindowSpec { mode: "cache_total".to_string(), fraction: Some(fraction), ..Default::default() }
+    }
+    pub fn absolute(size: &str) -> Self {
+        WindowSpec { mode: "absolute".to_string(), size: Some(size.to_string()), ..Default::default() }
+    }
+}
+
+impl ChunkSpec {
+    pub fn auto() -> Self {
+        ChunkSpec { mode: "auto".to_string(), ..Default::default() }
+    }
+    pub fn cache(target: &str) -> Self {
+        ChunkSpec { mode: "cache".to_string(), target: Some(target.to_string()), ..Default::default() }
+    }
+    pub fn cache_total(fraction: f64) -> Self {
+        ChunkSpec { mode: "cache_total".to_string(), fraction: Some(fraction), ..Default::default() }
+    }
+    pub fn absolute(size: &str) -> Self {
+        ChunkSpec { mode: "absolute".to_string(), size: Some(size.to_string()), ..Default::default() }
+    }
+    pub fn fraction(fraction: f64) -> Self {
+        ChunkSpec { mode: "fraction".to_string(), fraction: Some(fraction), ..Default::default() }
+    }
+}
+
+/// Convert a WindowSpec into a runtime WindowMode. Returns Err with a human-readable
+/// reason on malformed input. Mode names are case-insensitive.
+pub fn spec_to_window_mode(spec: &WindowSpec) -> Result<WindowMode, String> {
+    match spec.mode.to_ascii_lowercase().as_str() {
+        "full_allocation" | "full-allocation" | "full" => Ok(WindowMode::FullAllocation),
+        "cache" => {
+            let target_str = spec.target.as_deref()
+                .ok_or_else(|| "window mode 'cache' requires 'target' field (e.g. \"L3/2\", \"DRAM*4\")".to_string())?;
+            let target = CacheTarget::parse(target_str)
+                .ok_or_else(|| format!("invalid cache target '{}'", target_str))?;
+            Ok(WindowMode::Cache { target })
+        }
+        "cache_total" | "cache-total" => {
+            let fraction = spec.fraction
+                .ok_or_else(|| "window mode 'cache_total' requires 'fraction' field".to_string())?;
+            if fraction <= 0.0 {
+                return Err(format!("cache_total fraction must be > 0 (got {})", fraction));
+            }
+            Ok(WindowMode::CacheTotal { fraction })
+        }
+        "absolute" => {
+            let size_str = spec.size.as_deref()
+                .ok_or_else(|| "window mode 'absolute' requires 'size' field (e.g. \"880MB\", \"4GiB\")".to_string())?;
+            let size_bytes = parse_size_string(size_str)?;
+            Ok(WindowMode::Absolute { size_bytes })
+        }
+        other => Err(format!("unknown window mode '{}'; valid: full_allocation, cache, cache_total, absolute", other)),
+    }
+}
+
+/// Convert a ChunkSpec into a runtime ChunkMode. Same conventions as spec_to_window_mode
+/// plus the `fraction` mode (fraction of resolved window).
+pub fn spec_to_chunk_mode(spec: &ChunkSpec) -> Result<ChunkMode, String> {
+    match spec.mode.to_ascii_lowercase().as_str() {
+        "auto" => Ok(ChunkMode::Auto),
+        "cache" => {
+            let target_str = spec.target.as_deref()
+                .ok_or_else(|| "chunk mode 'cache' requires 'target' field (e.g. \"L3/2\", \"DRAM*4\")".to_string())?;
+            let target = CacheTarget::parse(target_str)
+                .ok_or_else(|| format!("invalid cache target '{}'", target_str))?;
+            Ok(ChunkMode::Cache { target })
+        }
+        "cache_total" | "cache-total" => {
+            let fraction = spec.fraction
+                .ok_or_else(|| "chunk mode 'cache_total' requires 'fraction' field".to_string())?;
+            if fraction <= 0.0 {
+                return Err(format!("cache_total fraction must be > 0 (got {})", fraction));
+            }
+            Ok(ChunkMode::CacheTotal { fraction })
+        }
+        "absolute" => {
+            let size_str = spec.size.as_deref()
+                .ok_or_else(|| "chunk mode 'absolute' requires 'size' field (e.g. \"16MB\", \"64KiB\")".to_string())?;
+            let size_bytes = parse_size_string(size_str)?;
+            Ok(ChunkMode::Absolute { size_bytes })
+        }
+        "fraction" => {
+            let fraction = spec.fraction
+                .ok_or_else(|| "chunk mode 'fraction' requires 'fraction' field (0.0-1.0 of resolved window)".to_string())?;
+            if !(0.0..=1.0).contains(&fraction) {
+                return Err(format!("chunk fraction must be in [0, 1] (got {})", fraction));
+            }
+            Ok(ChunkMode::Fraction { fraction })
+        }
+        other => Err(format!("unknown chunk mode '{}'; valid: auto, cache, cache_total, absolute, fraction", other)),
+    }
+}
+
+/// Render a WindowSpec for display in summary reports.
+pub fn describe_window_spec(spec: &WindowSpec) -> String {
+    match spec.mode.to_ascii_lowercase().as_str() {
+        "full_allocation" | "full-allocation" | "full" => "FullAllocation".to_string(),
+        "cache" => match spec.target.as_deref() {
+            Some(t) => format!("Cache({})", t),
+            None => "Cache(?)".to_string(),
+        },
+        "cache_total" | "cache-total" => match spec.fraction {
+            Some(f) => format!("CacheTotal({:.2}x)", f),
+            None => "CacheTotal(?)".to_string(),
+        },
+        "absolute" => match spec.size.as_deref() {
+            Some(s) => format!("Absolute({})", s),
+            None => "Absolute(?)".to_string(),
+        },
+        other => format!("Unknown({})", other),
+    }
+}
+
+/// Render a ChunkSpec for display in summary reports.
+pub fn describe_chunk_spec(spec: &ChunkSpec) -> String {
+    match spec.mode.to_ascii_lowercase().as_str() {
+        "auto" => "Auto".to_string(),
+        "cache" => match spec.target.as_deref() {
+            Some(t) => format!("Cache({})", t),
+            None => "Cache(?)".to_string(),
+        },
+        "cache_total" | "cache-total" => match spec.fraction {
+            Some(f) => format!("CacheTotal({:.2}x)", f),
+            None => "CacheTotal(?)".to_string(),
+        },
+        "absolute" => match spec.size.as_deref() {
+            Some(s) => format!("Absolute({})", s),
+            None => "Absolute(?)".to_string(),
+        },
+        "fraction" => match spec.fraction {
+            Some(f) => format!("Fraction({:.1}%)", f * 100.0),
+            None => "Fraction(?)".to_string(),
+        },
+        other => format!("Unknown({})", other),
+    }
+}
+
+/// Window specification — nested JSON shape: `{ "mode": "...", ... }`.
+/// See `doc/window_chunk_modes.md` for full syntax.
+///
+/// Modes:
+/// - `full_allocation` — use entire per-thread allocation (no other fields needed)
+/// - `cache` — tier-aware sizing; requires `target` (e.g. `"L3/2"`, `"DRAM*4"`)
+/// - `cache_total` — coarse `(L1+L2+L3) × fraction`; requires `fraction`
+/// - `absolute` — hard byte size; requires `size` (string like `"880MB"`, `"4GiB"`)
+#[derive(Debug, Clone, Serialize, Deserialize, Default)]
+pub struct WindowSpec {
+    pub mode: String,
+    /// CacheTarget string for `cache` mode (e.g. `"L3/2"`, `"DRAM*4"`).
+    #[serde(default)]
+    pub target: Option<String>,
+    /// Fraction for `cache_total` mode.
+    #[serde(default)]
+    pub fraction: Option<f64>,
+    /// Size string for `absolute` mode (`"880MB"`, `"4GiB"`, etc.).
+    #[serde(default)]
+    pub size: Option<String>,
+}
+
+/// Chunk specification — same nested shape as WindowSpec but with extra `fraction` mode.
+///
+/// Modes:
+/// - `auto` — per-test heuristic
+/// - `cache` — tier-aware; requires `target`
+/// - `cache_total` — coarse cache fraction; requires `fraction`
+/// - `absolute` — hard byte size; requires `size`
+/// - `fraction` — fraction of resolved window; requires `fraction`
+#[derive(Debug, Clone, Serialize, Deserialize, Default)]
+pub struct ChunkSpec {
+    pub mode: String,
+    #[serde(default)]
+    pub target: Option<String>,
+    #[serde(default)]
+    pub fraction: Option<f64>,
+    #[serde(default)]
+    pub size: Option<String>,
+}
+
 // Simplified memory strategy configuration
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct MemoryStrategyConfig {
     // Stage 1: Allocation strategy
     pub allocation_mode: String, // "max_available", "percentage_reserve", "fixed_reserve"
     pub reserve_mb: Option<u32>,       // For max_available mode
-    pub reserve_percent: Option<f64>,  // For percentage_reserve mode  
+    pub reserve_percent: Option<f64>,  // For percentage_reserve mode
     pub reserve_gib: Option<f64>,      // For fixed_reserve mode
-    
-    // Stage 2: Default window sizing
-    pub default_window_mode: String,   // "full_allocation", "fixed_size", "cache_relative"
-    pub default_window_size_mb: Option<u32>, // For fixed_size mode
-    pub window_cache_multiplier: Option<f64>, // For cache_relative mode
-    
-    // Stage 3: Default block sizing  
-    pub default_chunk_mode: String,    // "auto_optimal", "fixed_size", "window_fraction"
-    pub default_chunk_size_mb: Option<u32>, // For fixed_size mode
-    pub block_window_fraction: Option<f64>,  // For window_fraction mode
+
+    /// Default window spec — applied when a test does not override it.
+    pub default_window: WindowSpec,
+    /// Default chunk spec — applied when a test does not override it.
+    pub default_chunk: ChunkSpec,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -258,16 +439,14 @@ pub struct TestConfig {
     pub cycles: Option<u32>,
     pub duration_secs: Option<u32>,
     pub min_duration_secs: Option<u32>,
-    
-    // Stage 2 & 3 per-test overrides
-    pub window_mode: Option<String>,        // Override default window mode
-    pub window_size_mb: Option<u32>,        // For fixed window mode
-    pub window_cache_multiplier: Option<f64>, // For cache relative mode
-    
-    pub chunk_mode: Option<String>,         // Override default block mode  
-    pub block_size_mb: Option<u32>,         // For fixed block mode
-    pub block_window_fraction: Option<f64>, // For window fraction mode
-    
+
+    /// Per-test window spec override. Same shape as `system.memory_strategy.default_window`.
+    #[serde(default)]
+    pub window: Option<WindowSpec>,
+    /// Per-test chunk spec override. Same shape as `system.memory_strategy.default_chunk`.
+    #[serde(default)]
+    pub chunk: Option<ChunkSpec>,
+
     pub allow_misaligned: Option<bool>,     // Allow unaligned accesses
     pub requires_locality: Option<bool>,    // Test needs temporal locality
     
@@ -475,9 +654,9 @@ impl ModernConfig {
                 self.system.memory_strategy.reserve_gib.unwrap_or(0.0))),
             _ => report.push_str("Unknown"),
         }
-        report.push_str(&format!(", Window: {}, Block: {}\n", 
-            self.system.memory_strategy.default_window_mode,
-            self.system.memory_strategy.default_chunk_mode
+        report.push_str(&format!(", Window: {}, Chunk: {}\n",
+            describe_window_spec(&self.system.memory_strategy.default_window),
+            describe_chunk_spec(&self.system.memory_strategy.default_chunk)
         ));
         
         // Timing
@@ -512,29 +691,13 @@ impl ModernConfig {
             }
             
             // Window override
-            if let Some(mode) = &test.window_mode {
-                report.push_str(&format!(", Window:{}", mode));
-                if mode == "fixed_size" {
-                    if let Some(mb) = test.window_size_mb {
-                        report.push_str(&format!(" {}MB", mb));
-                    }
-                } else if mode == "cache_relative"
-                    && let Some(mult) = test.window_cache_multiplier {
-                        report.push_str(&format!(" {}x", mult));
-                    }
+            if let Some(spec) = &test.window {
+                report.push_str(&format!(", Window:{}", describe_window_spec(spec)));
             }
-            
+
             // Block override
-            if let Some(mode) = &test.chunk_mode {
-                report.push_str(&format!(", Block:{}", mode));
-                if mode == "fixed_size" {
-                    if let Some(mb) = test.block_size_mb {
-                        report.push_str(&format!(" {}MB", mb));
-                    }
-                } else if mode == "window_fraction"
-                    && let Some(frac) = test.block_window_fraction {
-                        report.push_str(&format!(" {:.1}%", frac * 100.0));
-                    }
+            if let Some(spec) = &test.chunk {
+                report.push_str(&format!(", Block:{}", describe_chunk_spec(spec)));
             }
             
             if test.allow_misaligned == Some(true) {
@@ -579,32 +742,22 @@ impl ModernConfig {
         }
     }
     
-    // Parse default window mode for tests (moved out of allocation strategy)
+    // Parse default window spec into runtime WindowMode
     pub fn get_default_window_mode(&self) -> WindowMode {
-        match self.system.memory_strategy.default_window_mode.as_str() {
-            "full_allocation" => WindowMode::FullAllocation,
-            "fixed_size" => WindowMode::FixedSize { 
-                size_mb: self.system.memory_strategy.default_window_size_mb.unwrap_or(880) 
-            },
-            "cache_relative" => WindowMode::CacheRelative { 
-                multiplier: self.system.memory_strategy.window_cache_multiplier.unwrap_or(2.0) 
-            },
-            _ => WindowMode::FullAllocation,
-        }
+        spec_to_window_mode(&self.system.memory_strategy.default_window)
+            .unwrap_or_else(|e| {
+                log::warn!("Invalid default window spec ({}); using full_allocation", e);
+                WindowMode::FullAllocation
+            })
     }
-    
-    // Parse default chunk mode for tests (moved out of allocation strategy)
+
+    // Parse default chunk spec into runtime ChunkMode
     pub fn get_default_chunk_mode(&self) -> ChunkMode {
-        match self.system.memory_strategy.default_chunk_mode.as_str() {
-            "auto_optimal" => ChunkMode::AutoOptimal,
-            "fixed_size" => ChunkMode::FixedSize { 
-                size_mb: self.system.memory_strategy.default_chunk_size_mb.unwrap_or(16) 
-            },
-            "window_fraction" => ChunkMode::WindowFraction { 
-                fraction: self.system.memory_strategy.block_window_fraction.unwrap_or(0.125) 
-            },
-            _ => ChunkMode::AutoOptimal,
-        }
+        spec_to_chunk_mode(&self.system.memory_strategy.default_chunk)
+            .unwrap_or_else(|e| {
+                log::warn!("Invalid default chunk spec ({}); using auto", e);
+                ChunkMode::Auto
+            })
     }
 
     pub fn to_error_mode(&self) -> ErrorMode {
@@ -764,63 +917,29 @@ impl ModernConfig {
     }
     
 fn parse_test_window_mode(&self, test: &TestConfig) -> WindowMode {
-    if let Some(ref mode) = test.window_mode {
-        match mode.as_str() {
-            "full_allocation" | "full-allocation" => WindowMode::FullAllocation,
-            "fixed_size" | "fixed-size" => WindowMode::FixedSize { 
-                size_mb: test.window_size_mb.unwrap_or(64) 
-            },
-            "cache_relative" | "cache-relative" => WindowMode::CacheRelative { 
-                multiplier: test.window_cache_multiplier.unwrap_or(2.0) 
-            },
-            "global_window" | "global-window" | "0" => {
-                // Use the global default window
+    if let Some(ref spec) = test.window {
+        match spec_to_window_mode(spec) {
+            Ok(mode) => mode,
+            Err(e) => {
+                log::warn!("Invalid per-test window spec for '{}' ({}); falling back to global default",
+                    test.function, e);
                 self.get_default_window_mode()
             }
-            _ => {
-                log::warn!("Unknown window mode '{}', using default", mode);
-                self.get_default_window_mode()
-            }
-        }
-    } else if let Some(size_mb) = test.window_size_mb {
-        // Legacy behavior: if size is specified without mode
-        if size_mb == 0 {
-            // 0 means use global window
-            self.get_default_window_mode()
-        } else {
-            WindowMode::FixedSize { size_mb }
         }
     } else {
         self.get_default_window_mode()
     }
 }
-    
+
 fn parse_test_chunk_mode(&self, test: &TestConfig) -> ChunkMode {
-    if let Some(ref mode) = test.chunk_mode {
-        match mode.as_str() {
-            "auto_optimal" | "auto-optimal" => ChunkMode::AutoOptimal,
-            "fixed_size" | "fixed-size" => ChunkMode::FixedSize { 
-                size_mb: test.block_size_mb.unwrap_or(16) 
-            },
-            "window_fraction" | "window-fraction" => ChunkMode::WindowFraction { 
-                fraction: test.block_window_fraction.unwrap_or(0.125) 
-            },
-            "window_size" | "window-size" | "0" => {
-                // Use window size as block size (TM5 behavior for 0)
-                ChunkMode::WindowFraction { fraction: 1.0 }
-            }
-            _ => {
-                log::warn!("Unknown chunk mode '{}', using default", mode);
+    if let Some(ref spec) = test.chunk {
+        match spec_to_chunk_mode(spec) {
+            Ok(mode) => mode,
+            Err(e) => {
+                log::warn!("Invalid per-test chunk spec for '{}' ({}); falling back to global default",
+                    test.function, e);
                 self.get_default_chunk_mode()
             }
-        }
-    } else if let Some(size_mb) = test.block_size_mb {
-        // Legacy behavior: if size is specified without mode
-        if size_mb == 0 {
-            // 0 means use window size (TM5 behavior)
-            ChunkMode::WindowFraction { fraction: 1.0 }
-        } else {
-            ChunkMode::FixedSize { size_mb }
         }
     } else {
         self.get_default_chunk_mode()
@@ -845,12 +964,8 @@ pub fn create_demo_config() -> Self {
                 reserve_mb: None,
                 reserve_percent: Some(10.0),           // Reserve 10% for OS
                 reserve_gib: None,
-                default_window_mode: "full_allocation".to_string(),
-                default_window_size_mb: None,
-                window_cache_multiplier: None,
-                default_chunk_mode: "auto_optimal".to_string(),
-                default_chunk_size_mb: None,
-                block_window_fraction: None,
+                default_window: WindowSpec::full_allocation(),
+                default_chunk: ChunkSpec::auto(),
             },
             cpu_config: CpuConfig {
                 cpu_type: "cores".to_string(),
@@ -876,12 +991,8 @@ pub fn create_demo_config() -> Self {
                 cycles: Some(1),                       // 1 cycle is thorough enough
                 duration_secs: None,
                 min_duration_secs: None,
-                window_mode: Some("full-allocation".to_string()), // Must test ALL memory
-                window_size_mb: None,
-                window_cache_multiplier: None,
-                chunk_mode: Some("window-fraction".to_string()),
-                block_size_mb: None,
-                block_window_fraction: Some(0.0625),   // 1/16th for efficiency
+                window: Some(WindowSpec::full_allocation()), // Must test ALL memory
+                chunk: Some(ChunkSpec::fraction(0.0625)),    // 1/16th for efficiency
                 allow_misaligned: Some(false),
                 requires_locality: Some(false),
                 stride_patterns: None,
@@ -902,12 +1013,8 @@ pub fn create_demo_config() -> Self {
                 cycles: Some(1),
                 duration_secs: None,
                 min_duration_secs: None,
-                window_mode: Some("cache-relative".to_string()),
-                window_size_mb: None,
-                window_cache_multiplier: Some(2.0),    // 2x cache for refresh testing
-                chunk_mode: Some("fixed-size".to_string()),
-                block_size_mb: Some(1),                // Small 1MB blocks
-                block_window_fraction: None,
+                window: Some(WindowSpec::cache_total(2.0)), // 2x cache for refresh testing
+                chunk: Some(ChunkSpec::absolute("1MB")),    // Small 1MB blocks
                 allow_misaligned: Some(false),
                 requires_locality: Some(true),
                 stride_patterns: None,
@@ -928,12 +1035,8 @@ pub fn create_demo_config() -> Self {
                 cycles: Some(1),
                 duration_secs: None,
                 min_duration_secs: None,
-                window_mode: Some("fixed-size".to_string()),
-                window_size_mb: Some(880),             // TM5 default window
-                window_cache_multiplier: None,
-                chunk_mode: Some("fixed-size".to_string()),
-                block_size_mb: Some(16),               // TM5 typical block size
-                block_window_fraction: None,
+                window: Some(WindowSpec::absolute("880MB")), // TM5 default window
+                chunk: Some(ChunkSpec::absolute("16MB")),    // TM5 typical block size
                 allow_misaligned: Some(false),
                 requires_locality: Some(false),
                 stride_patterns: None,
@@ -946,7 +1049,7 @@ pub fn create_demo_config() -> Self {
                 parameter: None,
                 use_v2_tests: None,
             },
-            
+
             // Mem-MirrorV2-128 - SIMD test with optimal locality
             TestConfig {
                 enabled: true,
@@ -954,12 +1057,8 @@ pub fn create_demo_config() -> Self {
                 cycles: Some(1),
                 duration_secs: None,
                 min_duration_secs: None,
-                window_mode: Some("fixed-size".to_string()),
-                window_size_mb: Some(64),              // Good SIMD locality
-                window_cache_multiplier: None,
-                chunk_mode: Some("fixed-size".to_string()),
-                block_size_mb: Some(16),               // 16MB for 128-bit alignment
-                block_window_fraction: None,
+                window: Some(WindowSpec::absolute("64MB")),  // Good SIMD locality
+                chunk: Some(ChunkSpec::absolute("16MB")),    // 16MB for 128-bit alignment
                 allow_misaligned: Some(false),
                 requires_locality: Some(true),
                 stride_patterns: None,
@@ -980,12 +1079,8 @@ pub fn create_demo_config() -> Self {
                 cycles: Some(1),
                 duration_secs: None,
                 min_duration_secs: None,
-                window_mode: Some("fixed-size".to_string()),
-                window_size_mb: Some(128),             // Larger for AVX2
-                window_cache_multiplier: None,
-                chunk_mode: Some("fixed-size".to_string()),
-                block_size_mb: Some(32),               // 32MB for 256-bit alignment
-                block_window_fraction: None,
+                window: Some(WindowSpec::absolute("128MB")), // Larger for AVX2
+                chunk: Some(ChunkSpec::absolute("32MB")),    // 32MB for 256-bit alignment
                 allow_misaligned: Some(false),
                 requires_locality: Some(true),
                 stride_patterns: None,
@@ -1006,12 +1101,8 @@ pub fn create_demo_config() -> Self {
                 cycles: Some(1),
                 duration_secs: None,
                 min_duration_secs: None,
-                window_mode: Some("cache-relative".to_string()),
-                window_size_mb: None,
-                window_cache_multiplier: Some(0.5),    // Half cache to ensure busting
-                chunk_mode: Some("fixed-size".to_string()),
-                block_size_mb: Some(1),                // 1MB blocks for cache lines
-                block_window_fraction: None,
+                window: Some(WindowSpec::cache_total(0.5)), // Half total cache to ensure busting
+                chunk: Some(ChunkSpec::absolute("1MB")),    // 1MB blocks for cache lines
                 allow_misaligned: Some(false),
                 requires_locality: Some(true),
                 stride_patterns: Some(4),              // 4 interleaved stride patterns
@@ -1032,12 +1123,8 @@ pub fn create_demo_config() -> Self {
                 cycles: Some(1),
                 duration_secs: None,
                 min_duration_secs: None,
-                window_mode: Some("full-allocation".to_string()), // Need full memory
-                window_size_mb: None,
-                window_cache_multiplier: None,
-                chunk_mode: Some("fixed-size".to_string()),
-                block_size_mb: Some(8),                // 8MB blocks
-                block_window_fraction: None,
+                window: Some(WindowSpec::full_allocation()), // Need full memory
+                chunk: Some(ChunkSpec::absolute("8MB")),    // 8MB blocks
                 allow_misaligned: Some(true),          // Maximum stress
                 requires_locality: Some(false),
                 stride_patterns: None,
@@ -1058,12 +1145,8 @@ pub fn create_demo_config() -> Self {
                 cycles: Some(1),
                 duration_secs: None,
                 min_duration_secs: None,
-                window_mode: Some("full-allocation".to_string()),
-                window_size_mb: None,
-                window_cache_multiplier: None,
-                chunk_mode: Some("auto-optimal".to_string()), // Let TMR optimize
-                block_size_mb: None,
-                block_window_fraction: None,
+                window: Some(WindowSpec::full_allocation()),
+                chunk: Some(ChunkSpec::auto()),             // Let TMR optimize
                 allow_misaligned: Some(false),
                 requires_locality: Some(false),
                 stride_patterns: None,
@@ -1084,12 +1167,8 @@ pub fn create_demo_config() -> Self {
                 cycles: Some(1),
                 duration_secs: None,
                 min_duration_secs: None,
-                window_mode: Some("full-allocation".to_string()), // Need src+dst space
-                window_size_mb: None,
-                window_cache_multiplier: None,
-                chunk_mode: Some("fixed-size".to_string()),
-                block_size_mb: Some(16),               // 16MB blocks
-                block_window_fraction: None,
+                window: Some(WindowSpec::full_allocation()), // Need src+dst space
+                chunk: Some(ChunkSpec::absolute("16MB")),    // 16MB blocks
                 allow_misaligned: Some(false),
                 requires_locality: Some(false),
                 stride_patterns: None,
@@ -1110,12 +1189,8 @@ pub fn create_demo_config() -> Self {
                 cycles: Some(1),
                 duration_secs: None,
                 min_duration_secs: None,
-                window_mode: Some("global-window".to_string()), // Use global default
-                window_size_mb: None,
-                window_cache_multiplier: None,
-                chunk_mode: Some("window-size".to_string()),    // Block = window (TM5 0)
-                block_size_mb: None,
-                block_window_fraction: None,
+                window: None,                                // Use global default
+                chunk: Some(ChunkSpec::fraction(1.0)),       // Block = window (TM5 0)
                 allow_misaligned: Some(false),
                 requires_locality: Some(false),
                 stride_patterns: None,
@@ -1151,12 +1226,8 @@ pub fn create_demo_config() -> Self {
                     reserve_mb: Some(128),                 // TM5-style fixed reserve
                     reserve_percent: None,
                     reserve_gib: None,
-                    default_window_mode: "fixed_size".to_string(),
-                    default_window_size_mb: Some(880),     // TM5 default window
-                    window_cache_multiplier: None,
-                    default_chunk_mode: "auto_optimal".to_string(),
-                    default_chunk_size_mb: None,
-                    block_window_fraction: None,
+                    default_window: WindowSpec::absolute("880MB"), // TM5 default window
+                    default_chunk: ChunkSpec::auto(),
                 },
                 cpu_config: CpuConfig {
                     cpu_type: "cores".to_string(),
@@ -1181,12 +1252,8 @@ pub fn create_demo_config() -> Self {
                     cycles: Some(1),
                     duration_secs: None,
                     min_duration_secs: None,
-                    window_mode: Some("full_allocation".to_string()), // Override to test all memory
-                    window_size_mb: None,
-                    window_cache_multiplier: None,
-                    chunk_mode: None,                      // Use default auto-optimal
-                    block_size_mb: None,
-                    block_window_fraction: None,
+                    window: Some(WindowSpec::full_allocation()), // Override to test all memory
+                    chunk: None,                                 // Use default auto
                     allow_misaligned: Some(false),
                     requires_locality: Some(false),
                     stride_patterns: None,
@@ -1205,12 +1272,8 @@ pub fn create_demo_config() -> Self {
                     cycles: Some(1),
                     duration_secs: None,
                     min_duration_secs: None,
-                    window_mode: None,                     // Use default fixed 880MB
-                    window_size_mb: None,
-                    window_cache_multiplier: None,
-                    chunk_mode: Some("fixed_size".to_string()),
-                    block_size_mb: Some(16),               // TM5-style block size
-                    block_window_fraction: None,
+                    window: None,                                // Use default 880MB
+                    chunk: Some(ChunkSpec::absolute("16MB")),    // TM5-style block size
                     allow_misaligned: Some(false),
                     requires_locality: Some(false),
                     stride_patterns: None,
@@ -1346,22 +1409,14 @@ impl LegacyConfig {
                 min_duration_secs: None,
                 
                 // Handle TM5 window behavior - no overrides for legacy
-                window_mode: None,  // Use global default
-                window_size_mb: None,
-                window_cache_multiplier: None,
-                
-                // Handle TM5 block size with new special values
-                chunk_mode: if test.test_chunk_size_mb == 0 {
-                    Some("window-size".to_string())  // 0 = use window size
+                window: None,  // Use global default
+
+                // Handle TM5 block size: 0 = use window size, else absolute MB
+                chunk: Some(if test.test_chunk_size_mb == 0 {
+                    ChunkSpec::fraction(1.0)  // 0 = use entire window
                 } else {
-                    Some("fixed_size".to_string())
-                },
-                block_size_mb: if test.test_chunk_size_mb == 0 {
-                    None  // "window-size" mode doesn't need a value
-                } else {
-                    Some(test.test_chunk_size_mb)
-                },
-                block_window_fraction: None,
+                    ChunkSpec::absolute(&format!("{}MB", test.test_chunk_size_mb))
+                }),
                 
                 allow_misaligned: Some(false), // Legacy configs assume aligned access
                 requires_locality: Some(matches!(test.function.as_str(), "RefreshStable")),
@@ -1398,14 +1453,8 @@ impl LegacyConfig {
                 reserve_mb: Some(self.memory_setup.reserved_memory_mb),
                 reserve_percent: None,
                 reserve_gib: None,
-                
-                default_window_mode: "fixed_size".to_string(),
-                default_window_size_mb: Some(self.memory_setup.testing_window_size_mb),
-                window_cache_multiplier: None,
-                
-                default_chunk_mode: "auto_optimal".to_string(),
-                default_chunk_size_mb: None,
-                block_window_fraction: None,
+                default_window: WindowSpec::absolute(&format!("{}MB", self.memory_setup.testing_window_size_mb)),
+                default_chunk: ChunkSpec::auto(),
             },
             cpu_config: CpuConfig {
                 cpu_type: if self.main_section.cores > 0 { "cores" } else { "threads" }.to_string(),

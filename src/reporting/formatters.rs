@@ -1118,21 +1118,14 @@ impl ReportFormatter for DefaultFormatter {
         use crate::tests::WindowMode;
         match mode {
             WindowMode::FullAllocation => "FullAllocation".to_string(),
-            WindowMode::FixedSize { size_mb } => {
-                format!("FixedSize ({} MB)", size_mb)
+            WindowMode::Absolute { size_bytes } => {
+                format!("Absolute ({})", self.format_bytes(*size_bytes as u64))
             }
-            WindowMode::FixedBytes { size_bytes } => {
-                if *size_bytes >= 1024 * 1024 {
-                    format!("FixedBytes ({} MB)", size_bytes / (1024 * 1024))
-                } else {
-                    format!("FixedBytes ({} KB)", size_bytes / 1024)
-                }
+            WindowMode::CacheTotal { fraction } => {
+                format!("CacheTotal ({:.2}x)", fraction)
             }
-            WindowMode::CacheRelative { multiplier } => {
-                format!("CacheRelative ({:.1}x)", multiplier)
-            }
-            WindowMode::CacheLevel { target } => {
-                format!("CacheLevel ({})", target.name())
+            WindowMode::Cache { target } => {
+                format!("Cache ({})", target.name())
             }
         }
     }
@@ -1141,19 +1134,16 @@ impl ReportFormatter for DefaultFormatter {
         use crate::tests::WindowMode;
         match mode {
             WindowMode::FullAllocation => "FullAllocation".to_string(),
-            WindowMode::FixedSize { size_mb } => {
-                format!("{} MB", size_mb)
-            }
-            WindowMode::FixedBytes { size_bytes } => {
+            WindowMode::Absolute { size_bytes } => {
                 self.format_bytes(*size_bytes as u64)
             }
-            WindowMode::CacheRelative { multiplier } => {
-                // Calculate actual size
+            WindowMode::CacheTotal { fraction } => {
+                // Naive sum-of-tiers — no thread division (CacheTotal is intentionally coarse)
                 let total_cache = cache_info.per_core_l1d + cache_info.per_core_l2 + cache_info.l3_cache;
-                let size = ((total_cache as f64 * multiplier) / thread_count.max(1) as f64) as u64;
-                format!("{} (CacheRel {:.1}x)", self.format_bytes(size), multiplier)
+                let size = (total_cache as f64 * fraction) as u64;
+                format!("{} (CacheTotal {:.2}x)", self.format_bytes(size), fraction)
             }
-            WindowMode::CacheLevel { target } => {
+            WindowMode::Cache { target } => {
                 // Calculate the actual window size using the target's method
                 let size = target.calculate_window_size(cache_info, thread_count);
                 let is_vm = cache_info.is_virtual_machine;
@@ -1166,16 +1156,22 @@ impl ReportFormatter for DefaultFormatter {
             }
         }
     }
-    
+
     fn format_chunk_mode(&self, mode: &crate::tests::ChunkMode) -> String {
         use crate::tests::ChunkMode;
         match mode {
-            ChunkMode::AutoOptimal => "AutoOptimal".to_string(),
-            ChunkMode::FixedSize { size_mb } => {
-                format!("FixedSize ({} MB)", size_mb)
+            ChunkMode::Auto => "Auto".to_string(),
+            ChunkMode::Absolute { size_bytes } => {
+                format!("Absolute ({})", self.format_bytes(*size_bytes as u64))
             }
-            ChunkMode::WindowFraction { fraction } => {
-                format!("WindowFraction ({:.1}%)", fraction * 100.0)
+            ChunkMode::Fraction { fraction } => {
+                format!("Fraction ({:.1}%)", fraction * 100.0)
+            }
+            ChunkMode::CacheTotal { fraction } => {
+                format!("CacheTotal ({:.2}x)", fraction)
+            }
+            ChunkMode::Cache { target } => {
+                format!("Cache ({})", target.name())
             }
         }
     }

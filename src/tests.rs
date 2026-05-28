@@ -14,58 +14,133 @@ const CACHE_BUSTING_STRIDE: usize = PAGE_SIZE_4KB;
 // Test memory configuration enums (moved from layout.rs - these are test concerns, not allocation concerns)
 #[derive(Debug, Clone)]
 pub enum WindowMode {
-    FullAllocation,                    // Use entire allocation per thread (default for most tests)
-    FixedSize { size_mb: u32 },       // Fixed window size for quick tests or TM5 compatibility
-    FixedBytes { size_bytes: usize },  // Fixed window size in bytes for sub-MB precision (latency tests)
-    CacheRelative { multiplier: f64 }, // Relative to total cache size for cache-sensitive tests
-    CacheLevel { target: CacheTarget }, // Target specific cache level with smart sizing
+    /// Use entire per-thread allocation (no window — sweep all memory).
+    FullAllocation,
+    /// Tier-aware sizing. Target string parsed via `CacheTarget::parse()`
+    /// (e.g. "L3/2", "L3*4", "DRAM*8"). Divides per-thread share for L3,
+    /// per-SMT-sibling share for L1/L2. Calibration-aware when tmr-cfg.json data exists.
+    Cache { target: CacheTarget },
+    /// Coarse `(L1+L2+L3) × fraction` working-set size. NOT tier-aware, NOT thread-aware.
+    /// Originally designed as a "spill-the-whole-hierarchy" floor (multiplier > 1).
+    /// Use `Cache` for precise tier targeting; this is for portable cross-machine ratios.
+    CacheTotal { fraction: f64 },
+    /// Hard-coded byte size. Replaces former FixedSize (MB) and FixedBytes.
+    /// JSON: "absolute" mode with size string "880MB", "4GiB", "448B", etc.
+    Absolute { size_bytes: usize },
 }
 
 impl WindowMode {
     /// Get target level name for logging (e.g., "L1", "L2", "L3", "DRAM", "DRAM-Full", or "Memory")
     pub fn target_level_name(&self) -> &'static str {
         match self {
-            WindowMode::CacheLevel { target } => target.level_name(),
+            WindowMode::Cache { target } => target.level_name(),
             WindowMode::FullAllocation => "DRAM",
-            WindowMode::FixedSize { .. } => "Memory",
-            WindowMode::FixedBytes { .. } => "Memory",
-            WindowMode::CacheRelative { .. } => "Cache",
+            WindowMode::Absolute { .. } => "Memory",
+            WindowMode::CacheTotal { .. } => "Cache",
         }
     }
 }
 
-/// Cache level targeting for latency tests
-/// Sizes are calculated at runtime based on detected cache and thread count
-#[derive(Debug, Clone, Copy, PartialEq)]
-pub enum CacheTarget {
-    /// Target L1 data cache (per-core)
-    /// divisor: power of 2 (1, 2, 4, 8) - divides per-core L1 size
-    L1 { divisor: u8 },
-    /// Target L2 cache (per-core)
-    /// divisor: power of 2 (1, 2, 4, 8) - divides per-core L2 size
-    L2 { divisor: u8 },
-    /// Target L3 cache (shared, auto-divided by thread count)
-    /// divisor: power of 2 (1, 2, 4, 8) - divides per-thread L3 share
-    L3 { divisor: u8 },
-    /// Target DRAM with high TLB hit rate (typical latency)
-    /// Uses per-thread L3 share * multiplier - smaller working set per thread
-    DRAM { multiplier: u8 },
-    /// Target DRAM with TLB stress (worst-case latency)
-    /// Uses total L3 * multiplier - larger working set exceeds TLB coverage
-    DRAMFull { multiplier: u8 },
+/// Parse a size string like "880MB", "4GiB", "448B", "64KiB" into bytes.
+///
+/// Supported suffixes (case-insensitive):
+/// - `B` — bytes
+/// - `KB` = 1000 / `KiB` = 1024
+/// - `MB` = 1000² / `MiB` = 1024²
+/// - `GB` = 1000³ / `GiB` = 1024³
+///
+/// **Default for unsuffixed values is MB** (TM5 backward-compat: `testing_window_size_mb=64`
+/// becomes `"64"` which means 64 MiB). Pure numeric strings should pass through cleanly.
+///
+/// Returns Err with a human-readable reason on malformed input.
+pub fn parse_size_string(s: &str) -> Result<usize, String> {
+    let s = s.trim();
+    if s.is_empty() {
+        return Err("empty size string".to_string());
+    }
+
+    // Find where the numeric prefix ends
+    let split_idx = s
+        .find(|c: char| !c.is_ascii_digit() && c != '.' && c != '_')
+        .unwrap_or(s.len());
+    let (num_part, suffix) = s.split_at(split_idx);
+    let num_part = num_part.replace('_', "");
+    let suffix = suffix.trim().to_ascii_uppercase();
+
+    let value: f64 = num_part
+        .parse()
+        .map_err(|_| format!("invalid number in size string: '{}'", s))?;
+    if value < 0.0 {
+        return Err(format!("size cannot be negative: '{}'", s));
+    }
+
+    let multiplier: u64 = match suffix.as_str() {
+        "" => 1024 * 1024, // unsuffixed defaults to MiB (TM5 compat)
+        "B" => 1,
+        "KB" => 1000,
+        "KIB" | "K" => 1024,
+        "MB" => 1000 * 1000,
+        "MIB" | "M" => 1024 * 1024,
+        "GB" => 1000 * 1000 * 1000,
+        "GIB" | "G" => 1024 * 1024 * 1024,
+        other => return Err(format!("unknown size suffix '{}' in '{}'", other, s)),
+    };
+
+    Ok((value * multiplier as f64) as usize)
 }
 
+/// Cache level targeting for window/chunk sizing.
+///
+/// Each tier accepts a `scale: f64` interpreted relative to that tier's natural size:
+/// - L1/L2: per-core size ÷ active SMT siblings × scale
+/// - L3: per-thread share (total L3 ÷ thread_count) × scale
+/// - DRAM: total L3 × scale (no thread divisor — each thread independently spills)
+///
+/// `DRAMFull` is a sentinel meaning "use the full thread allocation" (no scale).
+///
+/// Sanity range for scale: 0.01..=100.0. Both `*N` and `/N` syntax accepted in parser
+/// (e.g. `L3/2` → scale 0.5; `L3*0.5` → scale 0.5; `DRAM*8` → scale 8.0; `DRAM/2` → scale 0.5).
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub enum CacheTarget {
+    /// Target L1 data cache (per-core, ÷ SMT siblings).
+    L1 { scale: f64 },
+    /// Target L2 cache (per-core, ÷ SMT siblings).
+    L2 { scale: f64 },
+    /// Target L3 cache (shared, ÷ thread_count).
+    L3 { scale: f64 },
+    /// Target DRAM. Per-thread working set = total L3 × scale.
+    /// No thread divisor — sharing L3 across threads would shrink the per-thread region.
+    DRAM { scale: f64 },
+    /// Sentinel: use the entire per-thread allocation.
+    DRAMFull,
+}
+
+/// Minimum and maximum sanity bounds for cache target scale values.
+const CACHE_SCALE_MIN: f64 = 0.01;
+const CACHE_SCALE_MAX: f64 = 100.0;
+
 impl CacheTarget {
-    /// L1 with default divisor of 2 (50% of per-core L1)
-    pub const L1_DEFAULT: Self = Self::L1 { divisor: 2 };
-    /// L2 with default divisor of 2 (50% of per-core L2)
-    pub const L2_DEFAULT: Self = Self::L2 { divisor: 2 };
-    /// L3 with default divisor of 2 (physical: L3/2, VM: L3/12 to match calibrated effective size)
-    pub const L3_DEFAULT: Self = Self::L3 { divisor: 2 };
-    /// DRAM with default multiplier of 4 - per-thread window = (L3 / threads) * 4
-    pub const DRAM_DEFAULT: Self = Self::DRAM { multiplier: 4 };
-    /// DRAM-Full uses entire thread allocation (multiplier ignored)
-    pub const DRAM_FULL_DEFAULT: Self = Self::DRAMFull { multiplier: 0 };
+    /// L1 with default scale 0.5 (50% of per-core L1).
+    pub const L1_DEFAULT: Self = Self::L1 { scale: 0.5 };
+    /// L2 with default scale 0.5 (50% of per-core L2).
+    pub const L2_DEFAULT: Self = Self::L2 { scale: 0.5 };
+    /// L3 with default scale 0.5 (50% of per-thread L3 share).
+    pub const L3_DEFAULT: Self = Self::L3 { scale: 0.5 };
+    /// DRAM with default scale 4.0 (per-thread = total L3 × 4).
+    pub const DRAM_DEFAULT: Self = Self::DRAM { scale: 4.0 };
+    /// DRAM-Full uses the entire thread allocation.
+    pub const DRAM_FULL_DEFAULT: Self = Self::DRAMFull;
+
+    /// Get the scale for this target (None for DRAMFull which has no scale).
+    pub fn scale(&self) -> Option<f64> {
+        match self {
+            CacheTarget::L1 { scale }
+            | CacheTarget::L2 { scale }
+            | CacheTarget::L3 { scale }
+            | CacheTarget::DRAM { scale } => Some(*scale),
+            CacheTarget::DRAMFull => None,
+        }
+    }
 
     /// Map CacheTarget to the corresponding calibration CacheTier
     fn to_calibration_tier(&self) -> Option<crate::calibration::CacheTier> {
@@ -74,7 +149,7 @@ impl CacheTarget {
             CacheTarget::L2 { .. } => Some(crate::calibration::CacheTier::L2),
             CacheTarget::L3 { .. } => Some(crate::calibration::CacheTier::L3),
             CacheTarget::DRAM { .. } => Some(crate::calibration::CacheTier::Dram),
-            CacheTarget::DRAMFull { .. } => None, // Always uses full allocation
+            CacheTarget::DRAMFull => None, // Always uses full allocation
         }
     }
 
@@ -92,28 +167,30 @@ impl CacheTarget {
         // The calibrated optimal_size is the largest working set that stays in this tier
         // (single-threaded measurement). Only topology sharing matters — no CPUID heuristics.
         // Final 64-byte alignment is applied downstream in TestMemoryConfig::calculate_window_size.
-        let calibrated = tier_result.optimal_size;
+        let calibrated = tier_result.optimal_size as f64;
 
         let size = match self {
-            CacheTarget::L1 { .. } | CacheTarget::L2 { .. } => {
+            CacheTarget::L1 { scale } | CacheTarget::L2 { scale } => {
                 // Per-core caches shared with SMT sibling
-                calibrated / get_active_threads_per_core()
+                let per_thread = calibrated / get_active_threads_per_core() as f64;
+                (per_thread * scale) as usize
             }
-            CacheTarget::L3 { .. } => {
+            CacheTarget::L3 { scale } => {
                 // Shared across all cores — divide by thread count
-                calibrated / thread_count.max(1)
+                let per_thread = calibrated / thread_count.max(1) as f64;
+                (per_thread * scale) as usize
             }
-            CacheTarget::DRAM { multiplier } => {
-                // DRAM: each thread's working set must independently exceed total L3 to
-                // guarantee DRAM access. No thread divisor — sharing L3 across threads
+            CacheTarget::DRAM { scale } => {
+                // DRAM: each thread's working set is sized off the L3-spill threshold
+                // (calibrated total L3). No thread divisor — sharing L3 across threads
                 // would make the per-thread region too small for a clean DRAM measurement
                 // under multi-thread cache competition.
                 let cal_l3 = cal.tiers.get(&crate::calibration::CacheTier::L3)
-                    .map(|t| t.optimal_size)
+                    .map(|t| t.optimal_size as f64)
                     .unwrap_or(calibrated);
-                cal_l3 * (*multiplier as usize)
+                (cal_l3 * scale) as usize
             }
-            CacheTarget::DRAMFull { .. } => return None, // Handled by sentinel
+            CacheTarget::DRAMFull => return None, // Handled by sentinel
         };
 
         log::debug!("Calibrated window: {:?} → {} bytes (calibrated_optimal={}, threads={}, smt={})",
@@ -139,36 +216,52 @@ impl CacheTarget {
     /// CPUID-based window sizing (original heuristic path)
     fn calculate_window_size_cpuid(&self, cache_info: &CacheInfo, thread_count: usize) -> usize {
         match self {
-            CacheTarget::L1 { divisor } => {
-                let per_thread = cache_info.per_core_l1d / get_active_threads_per_core();
-                per_thread / (*divisor as usize)
+            CacheTarget::L1 { scale } => {
+                let per_thread = cache_info.per_core_l1d as f64 / get_active_threads_per_core() as f64;
+                (per_thread * scale) as usize
             }
-            CacheTarget::L2 { divisor } => {
-                let per_thread = cache_info.per_core_l2 / get_active_threads_per_core();
-                per_thread / (*divisor as usize)
+            CacheTarget::L2 { scale } => {
+                let per_thread = cache_info.per_core_l2 as f64 / get_active_threads_per_core() as f64;
+                (per_thread * scale) as usize
             }
-            CacheTarget::L3 { divisor } => {
+            CacheTarget::L3 { scale } => {
                 // For VMs: apply extra /2 factor because reported L3 is shared with other VMs
-                let vm_factor = if cache_info.is_virtual_machine { 2 } else { 1 };
-                let effective_divisor = (*divisor as usize) * vm_factor;
+                let vm_factor = if cache_info.is_virtual_machine { 2.0 } else { 1.0 };
+                let min_l3_size = cache_info.per_core_l2 + (64 * 1024);
 
-                if thread_count == 1 {
-                    let l3_target = cache_info.l3_cache / effective_divisor;
-                    let min_l3_size = cache_info.per_core_l2 + (64 * 1024);
-                    l3_target.max(min_l3_size)
+                let per_thread = if thread_count == 1 {
+                    cache_info.l3_cache as f64 / vm_factor
                 } else {
-                    let effective_l3 = cache_info.l3_cache / vm_factor;
-                    let per_thread = effective_l3 / thread_count;
-                    let min_l3_size = cache_info.per_core_l2 + (64 * 1024);
-                    per_thread.max(min_l3_size)
-                }
+                    (cache_info.l3_cache as f64 / vm_factor) / thread_count as f64
+                };
+                ((per_thread * scale) as usize).max(min_l3_size)
             }
-            CacheTarget::DRAM { multiplier } => {
+            CacheTarget::DRAM { scale } => {
                 // No thread divisor — each thread independently exceeds L3 (see calibration path)
-                cache_info.l3_cache * (*multiplier as usize)
+                (cache_info.l3_cache as f64 * scale) as usize
             }
-            CacheTarget::DRAMFull { multiplier: _ } => {
+            CacheTarget::DRAMFull => {
                 usize::MAX
+            }
+        }
+    }
+
+    /// Format the scale fragment, choosing `*N` or `/N` based on which reads cleaner.
+    /// Returns "" for scale = 1.0.
+    fn format_scale(scale: f64) -> String {
+        if (scale - 1.0).abs() < 1e-9 {
+            return String::new();
+        }
+        if scale > 1.0 {
+            format!("*{}", trim_float(scale))
+        } else {
+            // Prefer integer divisor when scale is exactly 1/N for small N
+            let inv = 1.0 / scale;
+            let inv_rounded = inv.round();
+            if (inv - inv_rounded).abs() < 1e-6 && inv_rounded >= 2.0 && inv_rounded <= 1024.0 {
+                format!("/{}", inv_rounded as u32)
+            } else {
+                format!("*{}", trim_float(scale))
             }
         }
     }
@@ -176,11 +269,11 @@ impl CacheTarget {
     /// Get a human-readable name for this target
     pub fn name(&self) -> String {
         match self {
-            CacheTarget::L1 { divisor } => format!("L1/{}", divisor),
-            CacheTarget::L2 { divisor } => format!("L2/{}", divisor),
-            CacheTarget::L3 { divisor } => format!("L3/{}", divisor),
-            CacheTarget::DRAM { multiplier } => format!("DRAM*{}", multiplier),
-            CacheTarget::DRAMFull { multiplier: _ } => "DRAM-Full".to_string(),
+            CacheTarget::L1 { scale } => format!("L1{}", Self::format_scale(*scale)),
+            CacheTarget::L2 { scale } => format!("L2{}", Self::format_scale(*scale)),
+            CacheTarget::L3 { scale } => format!("L3{}", Self::format_scale(*scale)),
+            CacheTarget::DRAM { scale } => format!("DRAM{}", Self::format_scale(*scale)),
+            CacheTarget::DRAMFull => "DRAM-Full".to_string(),
         }
     }
 
@@ -201,100 +294,126 @@ impl CacheTarget {
         let suffix = if has_cal { " [cal]" } else { "" };
 
         match self {
-            CacheTarget::L1 { divisor } => format!("L1/{}{}", divisor, suffix),
-            CacheTarget::L2 { divisor } => format!("L2/{}{}", divisor, suffix),
-            CacheTarget::L3 { divisor } => {
+            CacheTarget::L1 { scale } => format!("L1{}{}", Self::format_scale(*scale), suffix),
+            CacheTarget::L2 { scale } => format!("L2{}{}", Self::format_scale(*scale), suffix),
+            CacheTarget::L3 { scale } => {
                 if has_cal {
-                    // Calibrated: show thread count division (no CPUID heuristic divisor)
+                    // Calibrated: show thread count division (calibration optimal_size already
+                    // captures the true L3 ceiling, so the only post-divisor is thread sharing)
+                    let scale_frag = Self::format_scale(*scale);
                     if thread_count == 1 {
-                        format!("L3 [cal]")
+                        format!("L3{} [cal]", scale_frag)
                     } else {
-                        format!("L3/{} [cal]", thread_count)
+                        format!("L3/{}{} [cal]", thread_count, scale_frag)
                     }
                 } else {
                     let vm_factor = if is_vm { 2 } else { 1 };
-                    if thread_count == 1 {
-                        let effective = (*divisor as usize) * vm_factor;
-                        format!("L3/{}", effective)
+                    let scale_frag = Self::format_scale(*scale);
+                    let total_div = if thread_count == 1 { vm_factor } else { thread_count * vm_factor };
+                    if total_div == 1 {
+                        format!("L3{}", scale_frag)
                     } else {
-                        let effective = thread_count * vm_factor;
-                        format!("L3/{}", effective)
+                        format!("L3/{}{}", total_div, scale_frag)
                     }
                 }
             }
-            CacheTarget::DRAM { multiplier } => format!("DRAM*{}{}", multiplier, suffix),
-            CacheTarget::DRAMFull { multiplier: _ } => "DRAM-Full".to_string(),
+            CacheTarget::DRAM { scale } => format!("DRAM{}{}", Self::format_scale(*scale), suffix),
+            CacheTarget::DRAMFull => "DRAM-Full".to_string(),
         }
     }
 
-    /// Get the base level name (without divisor/multiplier)
+    /// Get the base level name (without scale)
     pub fn level_name(&self) -> &'static str {
         match self {
             CacheTarget::L1 { .. } => "L1",
             CacheTarget::L2 { .. } => "L2",
             CacheTarget::L3 { .. } => "L3",
             CacheTarget::DRAM { .. } => "DRAM",
-            CacheTarget::DRAMFull { .. } => "DRAM-Full",
+            CacheTarget::DRAMFull => "DRAM-Full",
         }
     }
 
-    /// Parse from string like "L1", "L1/2", "L2/4", "DRAM", "DRAM*8", "DRAM-FULL*2"
+    /// Parse from string like "L1", "L1/2", "L2*0.8", "L3/4", "DRAM", "DRAM*8", "DRAM/2", "DRAM-FULL".
+    /// Both `/N` and `*N` operators are accepted on every tier; values may be decimal.
     pub fn parse(s: &str) -> Option<Self> {
         let s = s.trim().to_uppercase();
 
+        // DRAM-FULL must come before DRAM (longer prefix first). It's scaleless.
+        if s == "DRAM-FULL" || s == "DRAMFULL" || s == "RAM-FULL" || s == "RAMFULL" {
+            return Some(CacheTarget::DRAMFull);
+        }
+
         if let Some(rest) = s.strip_prefix("L1") {
-            let divisor = Self::parse_divisor(rest).unwrap_or(2);
-            Some(CacheTarget::L1 { divisor })
+            let scale = Self::parse_scale(rest).unwrap_or(0.5);
+            Some(CacheTarget::L1 { scale })
         } else if let Some(rest) = s.strip_prefix("L2") {
-            let divisor = Self::parse_divisor(rest).unwrap_or(2);
-            Some(CacheTarget::L2 { divisor })
+            let scale = Self::parse_scale(rest).unwrap_or(0.5);
+            Some(CacheTarget::L2 { scale })
         } else if let Some(rest) = s.strip_prefix("L3") {
-            let divisor = Self::parse_divisor(rest).unwrap_or(4);
-            Some(CacheTarget::L3 { divisor })
-        } else if let Some(rest) = s.strip_prefix("DRAM-FULL") {
-            // Must check DRAM-FULL before DRAM (longer prefix first)
-            let multiplier = Self::parse_multiplier(rest).unwrap_or(2);
-            Some(CacheTarget::DRAMFull { multiplier })
-        } else if let Some(rest) = s.strip_prefix("DRAMFULL") {
-            // Alternative without hyphen
-            let multiplier = Self::parse_multiplier(rest).unwrap_or(2);
-            Some(CacheTarget::DRAMFull { multiplier })
+            let scale = Self::parse_scale(rest).unwrap_or(0.5);
+            Some(CacheTarget::L3 { scale })
         } else if let Some(rest) = s.strip_prefix("DRAM") {
-            let multiplier = Self::parse_multiplier(rest).unwrap_or(4);
-            Some(CacheTarget::DRAM { multiplier })
+            let scale = Self::parse_scale(rest).unwrap_or(4.0);
+            Some(CacheTarget::DRAM { scale })
         } else if s == "RAM" {
             // Alias for DRAM
             Some(CacheTarget::DRAM_DEFAULT)
-        } else if s == "RAM-FULL" || s == "RAMFULL" {
-            // Alias for DRAM-FULL
-            Some(CacheTarget::DRAM_FULL_DEFAULT)
         } else {
             None
         }
     }
 
-    fn parse_divisor(s: &str) -> Option<u8> {
+    /// Parse a scale fragment like `/2`, `*8`, `*0.8`. Empty string returns None
+    /// (so caller can apply the tier-specific default). Returns None for out-of-range
+    /// values (must be in CACHE_SCALE_MIN..=CACHE_SCALE_MAX) or unparseable input.
+    fn parse_scale(s: &str) -> Option<f64> {
+        let s = s.trim();
         if s.is_empty() {
             return None;
         }
-        let s = s.trim_start_matches('/');
-        s.parse::<u8>().ok().filter(|&d| d.is_power_of_two() && d >= 1)
+        let (op, rest) = match s.chars().next()? {
+            '/' => ('/', &s[1..]),
+            '*' => ('*', &s[1..]),
+            _ => return None,
+        };
+        let n: f64 = rest.trim().parse().ok()?;
+        if !n.is_finite() || n <= 0.0 {
+            return None;
+        }
+        let scale = if op == '/' { 1.0 / n } else { n };
+        if (CACHE_SCALE_MIN..=CACHE_SCALE_MAX).contains(&scale) {
+            Some(scale)
+        } else {
+            None
+        }
     }
+}
 
-    fn parse_multiplier(s: &str) -> Option<u8> {
-        if s.is_empty() {
-            return None;
-        }
-        let s = s.trim_start_matches('*');
-        s.parse::<u8>().ok().filter(|&m| m >= 1)
+/// Format a float for display, trimming trailing zeros (e.g., 2.0 → "2", 0.5 → "0.5").
+fn trim_float(v: f64) -> String {
+    if (v - v.round()).abs() < 1e-9 {
+        format!("{}", v.round() as i64)
+    } else {
+        // Use up to 4 decimal places, then trim trailing zeros
+        let s = format!("{:.4}", v);
+        let s = s.trim_end_matches('0').trim_end_matches('.');
+        s.to_string()
     }
 }
 
 #[derive(Debug, Clone)]
 pub enum ChunkMode {
-    AutoOptimal,                       // Auto-calculate optimal chunk size per test
-    FixedSize { size_mb: u32 },       // Fixed chunk size for consistent behavior
-    WindowFraction { fraction: f64 },  // Fraction of window size for proportional chunking
+    /// Per-test heuristic chunk sizing.
+    Auto,
+    /// Tier-aware sizing — same target syntax as `WindowMode::Cache`.
+    /// L3/N keeps writes warm through verify; DRAM*N forces eviction (refresh stress).
+    Cache { target: CacheTarget },
+    /// `(L1+L2+L3) × fraction`. NOT tier-aware. Coarse parity with `WindowMode::CacheTotal`.
+    CacheTotal { fraction: f64 },
+    /// Hard-coded byte size. Replaces former FixedSize (MB).
+    Absolute { size_bytes: usize },
+    /// Fraction of the resolved window size. Independent of cache hierarchy.
+    Fraction { fraction: f64 },
 }
 
 /// Controls error checking frequency within tests using power-of-2 intervals
@@ -899,19 +1018,15 @@ impl TestMemoryConfig {
                     allocated_size
                 }
             }
-            WindowMode::FixedSize { size_mb } => {
-                let fixed_size = (*size_mb as usize) * MB;
-                fixed_size.min(allocated_size)
-            }
-            WindowMode::FixedBytes { size_bytes } => {
+            WindowMode::Absolute { size_bytes } => {
                 (*size_bytes).min(allocated_size)
             }
-            WindowMode::CacheRelative { multiplier } => {
+            WindowMode::CacheTotal { fraction } => {
                 let cache_info = get_cache_info();
-                let cache_based_size = (cache_info.total_cache as f64 * multiplier) as usize;
+                let cache_based_size = (cache_info.total_cache as f64 * fraction) as usize;
                 cache_based_size.min(allocated_size)
             }
-            WindowMode::CacheLevel { target } => {
+            WindowMode::Cache { target } => {
                 // Calculate window size based on cache target using actual thread count
                 let cache_info = get_cache_info();
                 let calculated = target.calculate_window_size(cache_info, self.thread_count);
@@ -956,15 +1071,14 @@ impl TestMemoryConfig {
         let cache_info = get_cache_info();
         
         let raw_chunk_size = match &self.chunk_mode {
-            ChunkMode::FixedSize { size_mb } => {
-                let fixed_size = (*size_mb as usize) * MB;
+            ChunkMode::Absolute { size_bytes } => {
                 if self.allow_misaligned {
-                    fixed_size
+                    *size_bytes
                 } else {
-                    align_to_boundary(fixed_size, cache_info.cache_line_size)
+                    align_to_boundary(*size_bytes, cache_info.cache_line_size)
                 }
             }
-            ChunkMode::WindowFraction { fraction } => {
+            ChunkMode::Fraction { fraction } => {
                 let fraction_size = (window_size as f64 * fraction) as usize;
                 if self.allow_misaligned {
                     fraction_size
@@ -972,8 +1086,27 @@ impl TestMemoryConfig {
                     align_to_boundary(fraction_size, cache_info.cache_line_size)
                 }
             }
-            ChunkMode::AutoOptimal => {
+            ChunkMode::CacheTotal { fraction } => {
+                let cache_based = (cache_info.total_cache as f64 * fraction) as usize;
+                if self.allow_misaligned {
+                    cache_based
+                } else {
+                    align_to_boundary(cache_based, cache_info.cache_line_size)
+                }
+            }
+            ChunkMode::Auto => {
                 self.calculate_optimal_block_for_test(test_name, window_size, cache_info)
+            }
+            ChunkMode::Cache { target } => {
+                // Reuse the calibration-aware sizing path. DRAMFull returns usize::MAX
+                // as a sentinel meaning "use the whole window".
+                let calculated = target.calculate_window_size(cache_info, self.thread_count);
+                let raw = if calculated == usize::MAX { window_size } else { calculated };
+                if self.allow_misaligned {
+                    raw
+                } else {
+                    align_to_boundary(raw, cache_info.cache_line_size)
+                }
             }
         };
 
