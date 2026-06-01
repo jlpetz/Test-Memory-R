@@ -1,5 +1,6 @@
 #![allow(unsafe_op_in_unsafe_fn)]
 #![feature(portable_simd)]
+#![feature(clflushopt_target_feature)]
 
 pub mod config;
 pub mod constants;

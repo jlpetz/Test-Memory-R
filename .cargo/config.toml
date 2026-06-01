@@ -6,11 +6,32 @@
 # optimal performance on your build machine.
 
 [build]
-rustflags = ["-C", "target-cpu=x86-64-v2"]
-# NOTE: Use x86-64-v2 (SSE4.2 baseline) so #[target_feature] properly gates each
-# ISA level: SSE2 functions stay 128-bit, AVX2 functions get 256-bit, AVX-512
-# functions get 512-bit. Using v3+ would leak AVX2 into the baseline, making the
-# "SSE2" functions use 256-bit instructions and defeating runtime SIMD dispatch.
+rustflags = ["-C", "target-cpu=x86-64-v3"]
+# NOTE: Baseline is x86-64-v3 (AVX2, 2015+) for better whole-app codegen on the cold/glue
+# code (chunk math, reporting, config). Hot-path SIMD width is NOT controlled by the
+# baseline — it is pinned by explicit std::simd vector TYPES (u64x2/u64x4/u64x8). A u64x8
+# is a 512-bit op regardless of baseline; an AVX-512 variant still gets 512-bit via its
+# own #[target_feature]. The baseline only caps the autovectorizer on *untyped* loops.
+#
+# CONSEQUENCE — the "scalar" test variants are NOT truly scalar at a v3 baseline: LLVM may
+# autovectorize them up to 256-bit (AVX2). They are correctness/portability fallbacks, not
+# a guaranteed-narrow measurement. A real scalar width (for width-vs-fault benchmarking)
+# needs explicit read_volatile/write_volatile or a serial dependency chain — the baseline
+# never gave it to us (at v2 they were already 128-bit SSE, not scalar).
+#
+# CLFLUSHOPT is NOT in ANY psABI level (v1-v4) — it is a standalone CPUID feature flag,
+# so the v3 baseline does not enable it. We DO NOT set "+clflushopt" here: TMR emits
+# clflushopt via inline asm!("clflushopt ...") (see flush_range_to_dram in tests.rs),
+# which the assembler accepts directly with NO target-feature flag and NO unstable gate.
+# Rust's stdarch exposes no _mm_clflushopt intrinsic (only the slow SSE2 _mm_clflush), and
+# the LLVM-intrinsic route needs two discouraged nightly features for identical perf — so
+# asm is the chosen path (benchmarked in ../clflush-test). Because the binary CONTAINS
+# clflushopt, TMR GATES AT STARTUP (main.rs): it requires AVX2 + CLFLUSHOPT (the latter via
+# raw CPUID leaf 7 EBX bit 23, since std's is_x86_feature_detected! doesn't expose
+# clflushopt) and exits cleanly if absent rather than #UD-faulting. This drops pre-2015
+# CPUs (Intel pre-Skylake incl. Haswell/Broadwell which have AVX2 but no CLFLUSHOPT; AMD
+# pre-Excavator/pre-Zen) — all DDR3/DDR4 era and irrelevant to a DDR5 tester.
+#
 # Use "native" only for local development benchmarking on a known CPU.
 # rustflags = ["-C", "target-cpu=native"]
 

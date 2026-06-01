@@ -2,7 +2,7 @@
 
 **Date**: 2026-05-15
 **Test platform**: AWS EC2 r8i.2xlarge (Intel Xeon 6975P-C, AVX-512), 6 threads
-**Related**: `nt_write_partial_lines.md` (NT-write commit time), `nt_stores.md` (NT codegen)
+**Related**: `nt_stores.md` (NT codegen + partial-vs-full-line commit time)
 
 ## Summary
 
@@ -336,6 +336,5 @@ microarchitectures.
 
 ## See also
 
-- `nt_write_partial_lines.md` — partial vs full cache line NT write hardware path
-- `nt_stores.md` — codegen issues with NT writes in Rust/LLVM
+- `nt_stores.md` — NT codegen in Rust/LLVM + partial-vs-full cache line NT write hardware path
 - Lat-V2P test source: `src/latency_tests_v2.rs`

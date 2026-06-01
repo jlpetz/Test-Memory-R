@@ -1059,7 +1059,12 @@ impl TestMemoryConfig {
 
         let optimal_size = match test_name {
             "Mem-CacheBust" => (cache_info.l3_cache / 2).max(cache_info.l2_cache * 4),
-            "Mem-Refresh" => cache_info.l2_cache * 2, // Small window for refresh testing
+            // Refresh now flushes each chunk to DRAM before the per-chunk 64ms
+            // sleep, so window size controls how many DRAM cells get a retention
+            // check. L3*2 covers far more cells than the old l2*2 while keeping
+            // the (per-chunk) sleep count bounded — full-allocation would multiply
+            // runtime by the chunk count.
+            "Mem-Refresh" => cache_info.l3_cache * 2,
             _ => cache_info.total_cache * 2,
         };
 
@@ -1258,6 +1263,55 @@ impl TestMemoryConfig {
 
 fn align_to_boundary(size: usize, alignment: usize) -> usize {
     size.div_ceil(alignment) * alignment
+}
+
+/// Flush a byte range out of the cache hierarchy so subsequent reads round-trip
+/// through DRAM. Issues CLFLUSHOPT over each cache line, then a trailing MFENCE
+/// to drain all outstanding flushes before any later load can issue.
+///
+/// This is the user-mode equivalent of UC memory: it defeats cache masking
+/// (where a verify-load hits the still-hot L1/L2/L3 copy and silently misses a
+/// DRAM bit error). Use it between a write phase and a verify phase whenever the
+/// verify must observe what actually landed in DRAM — refresh/bit-fade tests, or
+/// any cache-resident working set. See `doc/cache_management.md`.
+///
+/// CLFLUSHOPT is emitted unconditionally: the startup CPUID gate (`main.rs`)
+/// guarantees the feature, so there is no `_mm_clflush` fallback. The function
+/// carries `#[target_feature(enable = "clflushopt")]` (gated by the unstable
+/// `clflushopt_target_feature`, landed in nightly via rustc PR #157098).
+///
+/// We still emit the instruction via inline `asm!` rather than the
+/// `_mm_clflushopt` intrinsic, for two reasons. (1) The intrinsic (stdarch PR
+/// #2141) has not yet synced into nightly, so it does not exist to call. (2)
+/// Even once it does, the asm form keeps CLFLUSHOPT in the same idiom as the
+/// NT-store paths (`doc/nt_stores.md`); when flush and NT stores share a hot
+/// loop, one consistent `#APP` boundary avoids the intrinsic→asm→intrinsic
+/// `#APP`/`#NO_APP` churn that blocks scheduling. The two forms emit identical
+/// machine code, so the choice is about loop context, not performance. We do
+/// NOT use the SSE2 `_mm_clflush` — it emits the slow, globally-serialized
+/// CLFLUSH (~15× slower; see `../clflush-test`).
+///
+/// Not unrolled: clflushopt is throughput-bound on its own issue rate, so manual
+/// unroll buys nothing (and is slightly worse at small ranges — benchmarked in
+/// `../clflush-test`). `cache_line_bytes` comes from the detected `CacheInfo`
+/// (e.g. `config.cache_line_bytes`) — do not hardcode 64.
+///
+/// # Safety
+/// `base..base+len_bytes` must be a valid, mapped range for the duration of the call.
+#[inline]
+#[target_feature(enable = "clflushopt")]
+pub unsafe fn flush_range_to_dram(base: *const u8, len_bytes: usize, cache_line_bytes: usize) {
+    let line = cache_line_bytes.max(1);
+    let line_count = len_bytes.div_ceil(line);
+    for i in 0..line_count {
+        let addr = unsafe { base.add(i * line) };
+        unsafe {
+            core::arch::asm!("clflushopt [{a}]", a = in(reg) addr, options(nostack, preserves_flags));
+        }
+    }
+    // Mandatory: CLFLUSHOPT is weakly ordered. Without this fence a verify-load
+    // could issue while flushes are still draining and read stale cached data.
+    unsafe { std::arch::x86_64::_mm_mfence(); }
 }
 
 /// Round down to nearest power of 2 (for optimal bit masking in hot loops)
@@ -2627,6 +2681,14 @@ pub unsafe fn refresh_stable_multi(
                     *base.add(i) = pattern;
                 }
 
+                // Flush the written chunk to DRAM so the verify after the sleep
+                // round-trips through DRAM instead of reading a cache-resident
+                // copy. Without this the refresh/bit-fade test is silently inert:
+                // the cached line masks any decay that happened in DRAM.
+                let chunk_ptr = base.add(processed) as *const u8;
+                let chunk_bytes = (chunk_end - processed) * std::mem::size_of::<u64>();
+                flush_range_to_dram(chunk_ptr, chunk_bytes, config.cache_line_bytes);
+
                 std::sync::atomic::fence(Ordering::SeqCst);
                 std::thread::sleep(std::time::Duration::from_millis(64)); // DRAM refresh cycle timing
 
@@ -2830,6 +2892,12 @@ unsafe fn refresh_stable_128_impl(
                 for i in processed..chunk_end {
                     *base.add(i) = pattern;
                 }
+
+                // Flush the written chunk to DRAM so the post-sleep verify reads
+                // DRAM, not a cache-resident copy that would mask bit-fade.
+                let chunk_ptr = base.add(processed) as *const u8;
+                let chunk_bytes = (chunk_end - processed) * std::mem::size_of::<u64x2>();
+                flush_range_to_dram(chunk_ptr, chunk_bytes, config.cache_line_bytes);
 
                 std::sync::atomic::fence(Ordering::SeqCst);
                 std::thread::sleep(std::time::Duration::from_millis(64));
@@ -3056,6 +3124,12 @@ unsafe fn refresh_stable_256_impl(
                     *base.add(i) = pattern;
                 }
 
+                // Flush the written chunk to DRAM so the post-sleep verify reads
+                // DRAM, not a cache-resident copy that would mask bit-fade.
+                let chunk_ptr = base.add(processed) as *const u8;
+                let chunk_bytes = (chunk_end - processed) * std::mem::size_of::<u64x4>();
+                flush_range_to_dram(chunk_ptr, chunk_bytes, config.cache_line_bytes);
+
                 std::sync::atomic::fence(Ordering::SeqCst);
                 std::thread::sleep(std::time::Duration::from_millis(64));
 
@@ -3280,6 +3354,12 @@ unsafe fn refresh_stable_512_impl(
                 for i in processed..chunk_end {
                     *base.add(i) = pattern;
                 }
+
+                // Flush the written chunk to DRAM so the post-sleep verify reads
+                // DRAM, not a cache-resident copy that would mask bit-fade.
+                let chunk_ptr = base.add(processed) as *const u8;
+                let chunk_bytes = (chunk_end - processed) * std::mem::size_of::<u64x8>();
+                flush_range_to_dram(chunk_ptr, chunk_bytes, config.cache_line_bytes);
 
                 std::sync::atomic::fence(Ordering::SeqCst);
                 std::thread::sleep(std::time::Duration::from_millis(64));

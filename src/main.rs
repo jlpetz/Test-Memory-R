@@ -1,3 +1,5 @@
+#![feature(clflushopt_target_feature)]
+
 use std::env;
 use std::collections::HashMap;
 use std::io::{stdin, stdout};
@@ -81,6 +83,34 @@ unsafe extern "system" fn crash_exception_handler(
     0
 }
 
+/// Verify the running CPU has the instruction-set features TMR is built against.
+///
+/// TMR compiles at the `x86-64-v3` baseline (AVX2) and emits CLFLUSHOPT unconditionally
+/// in the cache-flush path. CLFLUSHOPT is a standalone CPUID feature (not part of any
+/// psABI microarch level), so it must be checked at runtime. Missing either feature means
+/// the binary would hit an illegal-instruction fault during testing — so we detect it up
+/// front, explain why, and exit cleanly. This excludes pre-2015 CPUs (Intel pre-Skylake,
+/// incl. Haswell/Broadwell which have AVX2 but no CLFLUSHOPT; AMD pre-Excavator/pre-Zen),
+/// all of which are DDR3/DDR4-era and out of scope for a DDR5 tester.
+fn require_cpu_features() {
+    let mut missing: Vec<&str> = Vec::new();
+    if !is_x86_feature_detected!("avx2") {
+        missing.push("AVX2");
+    }
+    // clflushopt detection landed in std behind the unstable `clflushopt_target_feature`
+    // gate (rustc PR #157098) — gated at the crate root above.
+    if !is_x86_feature_detected!("clflushopt") {
+        missing.push("CLFLUSHOPT");
+    }
+
+    if !missing.is_empty() {
+        eprintln!("FATAL: this CPU is missing required instruction set features: {}", missing.join(", "));
+        eprintln!("TMR is built for x86-64-v3 (AVX2) + CLFLUSHOPT — a 2015-or-newer CPU");
+        eprintln!("(Intel Skylake+ / AMD Excavator+ / any Zen). Pre-2015 CPUs are not supported.");
+        std::process::exit(1);
+    }
+}
+
 fn main() -> Result<(), Box<dyn std::error::Error>> {
     // --- Crash handling: install BEFORE anything else ---
 
@@ -107,6 +137,11 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
             Some(crash_exception_handler),
         );
     }
+
+    // 3. CPU capability gate — TMR is built for x86-64-v3 (AVX2) and requires CLFLUSHOPT
+    //    (not part of any psABI level, so the compiler baseline can't guarantee it). Reject
+    //    unsupported CPUs cleanly here rather than letting them #UD-fault mid-test.
+    require_cpu_features();
 
     // Initialize enhanced logging with file output
     setup_logging();
