@@ -84,7 +84,7 @@ pub enum PageSizeLevel {
 
 impl PageSizeLevel {
     /// Parse page size level from string (matches config format)
-    pub fn from_str(s: &str) -> Self {
+    pub fn from_config_str(s: &str) -> Self {
         match s.to_lowercase().as_str() {
             "huge" | "1gb" => PageSizeLevel::Huge,
             "large" | "2mb" => PageSizeLevel::Large,
@@ -99,8 +99,8 @@ pub fn is_page_size_allowed(
     min_page_size: &str,
     max_page_size: &str,
 ) -> bool {
-    let min = PageSizeLevel::from_str(min_page_size);
-    let max = PageSizeLevel::from_str(max_page_size);
+    let min = PageSizeLevel::from_config_str(min_page_size);
+    let max = PageSizeLevel::from_config_str(max_page_size);
     level >= min && level <= max
 }
 
@@ -604,7 +604,7 @@ impl MemoryAllocator {
                     log::info!("NUMA {}: No additional huge page sizes needed (all sizes already in plan)", numa_node);
                 } else {
                     for &size_mb in &additional_huge_sizes_mb {
-                    let chunk_size = (size_mb as usize) * 1024 * 1024;
+                    let chunk_size = size_mb * 1024 * 1024;
                     
                     if remaining >= chunk_size {
                         let max_chunks = remaining / chunk_size;
@@ -630,7 +630,7 @@ impl MemoryAllocator {
                                              numa_node, size_mb);
                                     allocated_chunks.push(AllocatedChunk {
                                         buffer,
-                                        chunk_size: chunk_size,
+                                        chunk_size,
                                         numa_node,
                                     });
                                     remaining -= chunk_size;
@@ -764,7 +764,7 @@ impl MemoryAllocator {
                                                  numa_node, chunk_mb);
                                         allocated_chunks.push(AllocatedChunk {
                                             buffer,
-                                            chunk_size: chunk_size,
+                                            chunk_size,
                                             numa_node,
                                         });
                                         byte_deficit = byte_deficit.saturating_sub(chunk_size);
@@ -830,7 +830,7 @@ impl MemoryAllocator {
                                              numa_node, chunk_mb);
                                     allocated_chunks.push(AllocatedChunk {
                                         buffer,
-                                        chunk_size: chunk_size,
+                                        chunk_size,
                                         numa_node,
                                     });
                                     remaining = remaining.saturating_sub(chunk_size);
@@ -1133,10 +1133,10 @@ impl MemoryAllocator {
             }
             
             // Sort by gap size (largest gaps first) for better fairness
-            thread_gaps.sort_by(|a, b| b.1.cmp(&a.1));
-            
+            thread_gaps.sort_by_key(|b| std::cmp::Reverse(b.1));
+
             // Sort remaining chunks by size (largest first) for efficient filling
-            all_chunks.sort_by(|a, b| b.chunk_size.cmp(&a.chunk_size));
+            all_chunks.sort_by_key(|b| std::cmp::Reverse(b.chunk_size));
             
             let mut remaining_chunks = all_chunks;
             for (thread_id, gap) in thread_gaps {
@@ -1238,34 +1238,37 @@ impl MemoryAllocator {
         
         for (&numa_node, &total_needed) in total_size_per_numa {
             let mut remaining = total_needed;
-            
+            let phase_params = PageTypeAllocParams {
+                numa_node,
+                chunk_sizes_mb: &chunk_sizes_mb,
+                runtime_config,
+                thread_count,
+            };
+
             log::info!("NUMA node {}: Allocating {:.2} GiB in power-of-2 chunks", 
                       numa_node, bytes_to_gib_f64(total_needed as u64));
             
             // Phase 1: Huge pages (1GB) - try all chunk sizes with huge pages first
             if runtime_config.large_pages_available {
                 log::info!("NUMA {}: Phase 1 - Trying huge pages (1GB)", numa_node);
-                Self::allocate_with_page_type(
-                    self, &mut allocated_chunks, &mut remaining, numa_node, 
-                    &chunk_sizes_mb, "huge", runtime_config, thread_count
+                self.allocate_with_page_type(
+                    &mut allocated_chunks, &mut remaining, "huge", &phase_params
                 )?;
             }
             
             // Phase 2: Large pages (2MB) - restart chunk sizes for large pages
             if remaining > 0 && runtime_config.large_pages_available {
                 log::info!("NUMA {}: Phase 2 - Trying large pages (2MB)", numa_node);
-                Self::allocate_with_page_type(
-                    self, &mut allocated_chunks, &mut remaining, numa_node, 
-                    &chunk_sizes_mb, "large", runtime_config, thread_count
+                self.allocate_with_page_type(
+                    &mut allocated_chunks, &mut remaining, "large", &phase_params
                 )?;
             }
             
             // Phase 3: Regular pages (4KB) - restart chunk sizes for regular pages
             if remaining > 0 {
                 log::info!("NUMA {}: Phase 3 - Trying regular pages (4KB)", numa_node);
-                Self::allocate_with_page_type(
-                    self, &mut allocated_chunks, &mut remaining, numa_node, 
-                    &chunk_sizes_mb, "regular", runtime_config, thread_count
+                self.allocate_with_page_type(
+                    &mut allocated_chunks, &mut remaining, "regular", &phase_params
                 )?;
             }
             
@@ -1491,15 +1494,13 @@ impl MemoryAllocator {
     
     /// Helper function to allocate with a specific page type, trying all chunk sizes
     fn allocate_with_page_type(
-        allocator: &mut Self,
+        &mut self,
         allocated_chunks: &mut Vec<AllocatedChunk>,
         remaining: &mut usize,
-        numa_node: u32,
-        chunk_sizes_mb: &[u32],
         page_type: &str,
-        runtime_config: &crate::RuntimeConfig,
-        thread_count: usize,
+        params: &PageTypeAllocParams,
     ) -> Result<(), String> {
+        let PageTypeAllocParams { numa_node, chunk_sizes_mb, runtime_config, thread_count } = *params;
         for &chunk_mb in chunk_sizes_mb {
             let chunk_size = (chunk_mb as usize) * 1024 * 1024;
             
@@ -1560,7 +1561,7 @@ impl MemoryAllocator {
                     alignment: Some(Self::get_alignment_for_chunk_size(chunk_size)),
                 };
                 
-                match allocator.allocate(&config) {
+                match self.allocate(&config) {
                     Ok(buffer) => {
                         let actual_page_type = if buffer.uses_huge_pages() { "1GB huge" } 
                                                else if buffer.uses_large_pages() { "2MB large" } 
@@ -1612,6 +1613,16 @@ struct AllocatedChunk {
     buffer: MemoryBuffer,
     chunk_size: usize,
     numa_node: u32,
+}
+
+/// Invariant inputs to a single page-type allocation phase (huge/large/regular).
+/// These stay constant across the phases for one NUMA node; only the page type
+/// and the running accumulators differ per call.
+struct PageTypeAllocParams<'a> {
+    numa_node: u32,
+    chunk_sizes_mb: &'a [u32],
+    runtime_config: &'a crate::RuntimeConfig,
+    thread_count: usize,
 }
 
 impl Default for AllocationConfig {

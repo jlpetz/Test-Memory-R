@@ -79,7 +79,49 @@ use std::time::Instant;
 use std::sync::mpsc::Receiver;
 
 // Use the proper ThreadPool from thread_pool.rs
-use crate::thread_pool::{ThreadPool, WorkResult};
+use crate::thread_pool::{ThreadPool, WorkResult, CpuAssignment};
+
+/// Per-thread result row collected during a test run:
+/// `(thread_id, cpu_id, bytes, elapsed_ms, errors, operations, cycles_completed)`.
+type CpuStatRow = (usize, usize, u64, u128, u64, u64, u32);
+/// Per-test map from test name to its collected per-thread stat rows.
+type TestCpuStats = HashMap<String, Vec<CpuStatRow>>;
+
+/// Stable per-suite execution context shared across every test cycle. Only the
+/// cycle number changes between cycles, so it's passed separately; everything
+/// else is bundled here to keep `execute_test_cycle`'s signature manageable.
+struct CycleContext<'a> {
+    test_definitions: &'a [TestDefinition],
+    thread_pool: &'a ThreadPool,
+    result_receiver: &'a Receiver<WorkResult>,
+    thread_count: usize,
+    error_mode: ErrorMode,
+    progress: &'a Arc<ProgressTracker>,
+    test_run_result: &'a Arc<Mutex<TestRunResult>>,
+    all_test_cpu_stats: &'a Arc<Mutex<TestCpuStats>>,
+    cache_info: &'a CacheInfo,
+}
+
+/// CLI-derived overrides controlling which tests run and how their parameters
+/// are tweaked. Bundled so the run entry point keeps a manageable signature.
+/// All fields are optional — `None` means "use the value from the config/defaults".
+#[derive(Default, Clone, Copy)]
+pub struct TestRunOverrides<'a> {
+    /// Run only the test(s) matching this name/glob filter.
+    pub single_test_filter: Option<&'a str>,
+    /// Override the per-test `parameter` string.
+    pub parameter_override: Option<&'a str>,
+    /// Override the pattern-generation mode.
+    pub pattern_mode_override: Option<u32>,
+    /// Override the verify-repetition count.
+    pub verify_reps_override: Option<u32>,
+    /// Override the test-repetition count.
+    pub test_reps_override: Option<u32>,
+    /// Override the write-read-cycle count.
+    pub wrc_override: Option<u32>,
+    /// Override the channel count used by stride formulas.
+    pub channels_override: Option<u32>,
+}
 
 // Global flags for shutdown handling
 pub static SHUTDOWN_REQUESTED: AtomicBool = AtomicBool::new(false);
@@ -324,7 +366,7 @@ pub fn run_tests_with_layout_and_timing(
     config: Option<&crate::config::ModernConfig>,
     cache_info: &CacheInfo,
 ) -> bool {
-    run_tests_with_layout_and_timing_filtered(layout, error_mode, suite_timing, runtime_config, config, None, None, None, None, None, None, None, cache_info)
+    run_tests_with_layout_and_timing_filtered(layout, error_mode, suite_timing, runtime_config, config, TestRunOverrides::default(), cache_info)
 }
 
 pub fn run_tests_with_layout_and_timing_filtered(
@@ -333,22 +375,26 @@ pub fn run_tests_with_layout_and_timing_filtered(
     suite_timing: TestSuiteTiming,
     runtime_config: RuntimeConfig,
     config: Option<&crate::config::ModernConfig>,
-    single_test_filter: Option<&str>,
-    parameter_override: Option<&str>,
-    pattern_mode_override: Option<u32>,
-    verify_reps_override: Option<u32>,
-    test_reps_override: Option<u32>,
-    wrc_override: Option<u32>,
-    channels_override: Option<u32>,
+    overrides: TestRunOverrides,
     cache_info: &CacheInfo,
 ) -> bool {
+    let TestRunOverrides {
+        single_test_filter,
+        parameter_override,
+        pattern_mode_override,
+        verify_reps_override,
+        test_reps_override,
+        wrc_override,
+        channels_override,
+    } = overrides;
+
     setup_signal_handler();
     
     layout.print_layout();
 
     let progress = Arc::new(ProgressTracker::new());
     let success = Arc::new(AtomicBool::new(true));
-	let all_test_cpu_stats: Arc<Mutex<HashMap<String, Vec<(usize, usize, u64, u128, u64, u64, u32)>>>> = Arc::new(Mutex::new(HashMap::new()));
+	let all_test_cpu_stats: Arc<Mutex<TestCpuStats>> = Arc::new(Mutex::new(HashMap::new()));
 
     let mut thread_blocks: HashMap<usize, Vec<BlockInfo>> = HashMap::new();
     for block in layout.blocks {
@@ -655,7 +701,7 @@ pub fn run_tests_with_layout_and_timing_filtered(
     {
         use crate::reporting::{create_console_reporter, converters};
         let thread_count = allocated_blocks.len();
-        let report = converters::create_test_configuration_report_v2(&test_definitions, &suite_timing, &cache_info, thread_count);
+        let report = converters::create_test_configuration_report_v2(&test_definitions, &suite_timing, cache_info, thread_count);
         let mut reporter = create_console_reporter();
         if let Err(e) = reporter.report_test_configuration(&report) {
             log::error!("Failed to display test configuration report: {}", e);
@@ -696,29 +742,29 @@ pub fn run_tests_with_layout_and_timing_filtered(
     
     // Execute the main test cycles
     let cycles = suite_timing.global_cycles.unwrap_or(1);
+    let cycle_ctx = CycleContext {
+        test_definitions: &test_definitions,
+        thread_pool: &thread_pool,
+        result_receiver: &result_receiver,
+        thread_count,
+        error_mode,
+        progress: &progress,
+        test_run_result: &test_run_result,
+        all_test_cpu_stats: &all_test_cpu_stats,
+        cache_info,
+    };
     for cycle in 1..=cycles {
         if SHUTDOWN_REQUESTED.load(Ordering::Relaxed) {
             println!("\n🛑 Shutdown requested, ending test suite early");
             break;
         }
-        
+
         progress.set_phase(&format!("Cycle {} of {}", cycle, cycles));
         println!("\n🔄 Starting test cycle {} of {}", cycle, cycles);
-        
+
         // Execute all tests in sequence for this cycle
-        execute_test_cycle(
-            &test_definitions,
-            &thread_pool,
-            &result_receiver,
-            thread_count,
-            error_mode,
-            &progress,
-            &test_run_result,
-            &all_test_cpu_stats,
-            cycle as u64,
-            &cache_info,
-        );
-        
+        execute_test_cycle(&cycle_ctx, cycle as u64);
+
         if !success.load(Ordering::Relaxed) {
             break;
         }
@@ -779,18 +825,19 @@ pub fn run_tests_with_layout_and_timing_filtered(
     final_success
 }
 
-fn execute_test_cycle(
-    test_definitions: &[TestDefinition],
-    thread_pool: &ThreadPool,
-    result_receiver: &Receiver<WorkResult>,
-    thread_count: usize,
-    error_mode: ErrorMode,
-    progress: &Arc<ProgressTracker>,
-    test_run_result: &Arc<Mutex<TestRunResult>>,
-    all_test_cpu_stats: &Arc<Mutex<HashMap<String, Vec<(usize, usize, u64, u128, u64, u64, u32)>>>>,
-    cycle: u64,
-    cache_info: &CacheInfo,
-) {
+fn execute_test_cycle(ctx: &CycleContext, cycle: u64) {
+    let &CycleContext {
+        test_definitions,
+        thread_pool,
+        result_receiver,
+        thread_count,
+        error_mode,
+        progress,
+        test_run_result,
+        all_test_cpu_stats,
+        cache_info,
+    } = ctx;
+
     use crate::progress::TestSummary;
     use crate::constants::MB_F64;
 
@@ -1082,7 +1129,7 @@ fn execute_test_cycle(
 		// Store aggregated stats for this test
 		{
 			let mut stats_map = all_test_cpu_stats.lock().unwrap();
-			stats_map.entry(test_name.to_string()).or_insert_with(Vec::new).extend(test_stats);
+			stats_map.entry(test_name.to_string()).or_default().extend(test_stats);
 		}
 
         // Create TestSummary for this test and add to cycle collection
@@ -1737,7 +1784,7 @@ fn create_test_definitions(cache_info: &CacheInfo) -> Vec<TestDefinition> {
             TestFunction::MultiBlock(cache_busting_multi),
             TestMemoryConfig::new(
                 WindowMode::CacheTotal { fraction: 0.5 },
-                ChunkMode::Absolute { size_bytes: 1 * MB },
+                ChunkMode::Absolute { size_bytes: MB },
                 true,
                 true
             ).with_timing(TestTiming::duration_only(20))
@@ -3772,7 +3819,7 @@ pub fn run_test_with_memory_stages(
     thread_id: usize,
     error_mode: ErrorMode,
 ) -> Result<TestStats, String> {
-    let ptr = allocated_block.buffer.as_mut_ptr() as *mut u8;
+    let ptr = allocated_block.buffer.as_mut_ptr();
     let size = allocated_block.buffer.size();
     
     // Execute the test based on the function type
@@ -3935,8 +3982,8 @@ fn allocate_all_blocks_new(thread_blocks: &HashMap<usize, Vec<BlockInfo>>, runti
 }
 
 fn print_detailed_cpu_performance_summary(
-    final_stats: &HashMap<String, Vec<(usize, usize, u64, u128, u64, u64, u32)>>,
-    cpu_assignments: &[(usize, usize, u32)],  // (thread_id, logical_cpu, numa_node)
+    final_stats: &TestCpuStats,
+    cpu_assignments: &[CpuAssignment],  // (thread_id, logical_cpu, numa_node)
     _suite_duration: std::time::Duration
 ) {
     use crate::reporting::{Reporter, models::*, formatters::DefaultFormatter, renderers::ConsoleRenderer};
@@ -3951,7 +3998,7 @@ fn print_detailed_cpu_performance_summary(
     // Aggregate stats across ALL tests by thread_id
     let mut thread_aggregates: HashMap<usize, (u64, u128, u64)> = HashMap::new();  // (bytes, time_ms, errors)
 
-    for (_test_name, stats) in final_stats {
+    for stats in final_stats.values() {
         for &(thread_id, _cpu_id, bytes, elapsed_ms, errors, _operations, _cycles) in stats {
             let entry = thread_aggregates.entry(thread_id).or_insert((0, 0, 0));
             entry.0 += bytes;

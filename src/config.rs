@@ -537,7 +537,7 @@ pub fn interpret_tm5_parameter_with_channels(function: &str, parameter: u32, cha
             // TM5 MirrorMove only branches on exactly 2, 3, or 4 subblocks.
             // Any other value (0, 1, 16384, etc.) falls through to single-block mirror (1).
             let subblocks = match parameter {
-                2 | 3 | 4 => parameter,
+                2..=4 => parameter,
                 _ => 1,
             };
             TestParameterContext {
@@ -834,11 +834,10 @@ impl ModernConfig {
     /// Get test configs in TM5 test sequence order (if available) with repetition support
     pub fn get_test_configs_with_sequence(&self) -> Vec<(&str, TestMemoryConfig)> {
         // Check if we have TM5 test sequence data
-        if let Some(ref metadata) = self.legacy_metadata {
-            if !metadata.tm5_test_sequence.is_empty() {
+        if let Some(ref metadata) = self.legacy_metadata
+            && !metadata.tm5_test_sequence.is_empty() {
                 return self.get_tm5_sequence_configs(&metadata.tm5_test_sequence);
             }
-        }
         
         // Fallback to standard sequential execution
         self.get_test_configs()

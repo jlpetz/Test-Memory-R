@@ -143,7 +143,7 @@ impl CacheTarget {
     }
 
     /// Map CacheTarget to the corresponding calibration CacheTier
-    fn to_calibration_tier(&self) -> Option<crate::calibration::CacheTier> {
+    fn to_calibration_tier(self) -> Option<crate::calibration::CacheTier> {
         match self {
             CacheTarget::L1 { .. } => Some(crate::calibration::CacheTier::L1),
             CacheTarget::L2 { .. } => Some(crate::calibration::CacheTier::L2),
@@ -203,11 +203,10 @@ impl CacheTarget {
     /// Uses calibration data when available, falls back to CPUID heuristics.
     pub fn calculate_window_size(&self, cache_info: &CacheInfo, thread_count: usize) -> usize {
         // Try calibrated sizing first
-        if let Some(cal) = get_calibration_data() {
-            if let Some(size) = self.calculate_from_calibration(cal, cache_info, thread_count) {
+        if let Some(cal) = get_calibration_data()
+            && let Some(size) = self.calculate_from_calibration(cal, cache_info, thread_count) {
                 return size;
             }
-        }
 
         // CPUID-based fallback
         self.calculate_window_size_cpuid(cache_info, thread_count)
@@ -258,7 +257,7 @@ impl CacheTarget {
             // Prefer integer divisor when scale is exactly 1/N for small N
             let inv = 1.0 / scale;
             let inv_rounded = inv.round();
-            if (inv - inv_rounded).abs() < 1e-6 && inv_rounded >= 2.0 && inv_rounded <= 1024.0 {
+            if (inv - inv_rounded).abs() < 1e-6 && (2.0..=1024.0).contains(&inv_rounded) {
                 format!("/{}", inv_rounded as u32)
             } else {
                 format!("*{}", trim_float(scale))
@@ -565,6 +564,12 @@ pub struct TestProgress {
     pub bytes_processed: std::sync::atomic::AtomicU64,
     pub errors_found: std::sync::atomic::AtomicU64,
     pub last_update_ms: std::sync::atomic::AtomicU64,  // Timestamp of last update
+}
+
+impl Default for TestProgress {
+    fn default() -> Self {
+        Self::new()
+    }
 }
 
 impl TestProgress {
@@ -1487,9 +1492,6 @@ pub fn aggregate_operation_counts(counts: &[DetailedOperationCount]) -> Detailed
 
 // === NEW: Full Memory Stuck Bit Test ===
 /// # Safety
-/// Caller must ensure `ptr` is valid for reads/writes of `size` bytes.
-
-/// # Safety
 /// Caller must ensure all blocks are valid for reads/writes.
 ///
 /// StuckBitTest MultiBlock implementation - tests for stuck bits using alternating patterns.
@@ -1690,7 +1692,7 @@ pub unsafe fn stuck_bit_test_multi(
                 total_operations,
                 cycles_completed: cycle,
                 cycles_planned: timing.cycles,
-                stopped_by_time_limit: timing.cycles.map_or(true, |limit| cycle < limit),
+                stopped_by_time_limit: timing.cycles.is_none_or(|limit| cycle < limit),
             };
         }
     }
@@ -1822,19 +1824,18 @@ unsafe fn stuck_bit_test_128_impl(
                         for i in processed..chunk_end {
                             let value = *base.add(i);
                             let diff = value ^ pattern1 ;
-                            error_accumulator = error_accumulator | diff ;
+                            error_accumulator |= diff ;
 
                             element_count += 1;
 
                             // Check errors at configured intervals (zero-branch hot loop optimization)
-                            if (element_count as u32 & check_mask) == 0 {
-                                if error_accumulator.simd_ne(u64x2::splat(0)).any() {
+                            if (element_count as u32 & check_mask) == 0
+                                && error_accumulator.simd_ne(u64x2::splat(0)).any() {
                                     cycle_errors += 1;
                                     log::error!("{}: memory error detected in phase 1 element {} (thread {})",
                                                test_name, element_count, thread_id);
                                     error_accumulator = u64x2::splat(0);
                                 }
-                            }
                         }
                     }
                     None => {
@@ -1842,7 +1843,7 @@ unsafe fn stuck_bit_test_128_impl(
                         for i in processed..chunk_end {
                             let value = *base.add(i);
                             let diff = value ^ pattern1 ;
-                            error_accumulator = error_accumulator | diff ;
+                            error_accumulator |= diff ;
                         }
                     }
                 }
@@ -1870,19 +1871,18 @@ unsafe fn stuck_bit_test_128_impl(
                         for i in processed..chunk_end {
                             let value = *base.add(i);
                             let diff = value ^ pattern2 ;
-                            error_accumulator = error_accumulator | diff ;
+                            error_accumulator |= diff ;
 
                             element_count += 1;
 
                             // Check errors at configured intervals (zero-branch hot loop optimization)
-                            if (element_count as u32 & check_mask) == 0 {
-                                if error_accumulator.simd_ne(u64x2::splat(0)).any() {
+                            if (element_count as u32 & check_mask) == 0
+                                && error_accumulator.simd_ne(u64x2::splat(0)).any() {
                                     cycle_errors += 1;
                                     log::error!("{}: memory error detected in phase 2 element {} (thread {})",
                                                test_name, element_count, thread_id);
                                     error_accumulator = u64x2::splat(0);
                                 }
-                            }
                         }
                     }
                     None => {
@@ -1890,7 +1890,7 @@ unsafe fn stuck_bit_test_128_impl(
                         for i in processed..chunk_end {
                             let value = *base.add(i);
                             let diff = value ^ pattern2 ;
-                            error_accumulator = error_accumulator | diff ;
+                            error_accumulator |= diff ;
                         }
                     }
                 }
@@ -1918,19 +1918,18 @@ unsafe fn stuck_bit_test_128_impl(
                         for i in processed..chunk_end {
                             let value = *base.add(i);
                             let diff = value ^ pattern1 ;
-                            error_accumulator = error_accumulator | diff ;
+                            error_accumulator |= diff ;
 
                             element_count += 1;
 
                             // Check errors at configured intervals (zero-branch hot loop optimization)
-                            if (element_count as u32 & check_mask) == 0 {
-                                if error_accumulator.simd_ne(u64x2::splat(0)).any() {
+                            if (element_count as u32 & check_mask) == 0
+                                && error_accumulator.simd_ne(u64x2::splat(0)).any() {
                                     cycle_errors += 1;
                                     log::error!("{}: memory error detected in phase 3 element {} (thread {})",
                                                test_name, element_count, thread_id);
                                     error_accumulator = u64x2::splat(0);
                                 }
-                            }
                         }
                     }
                     None => {
@@ -1938,7 +1937,7 @@ unsafe fn stuck_bit_test_128_impl(
                         for i in processed..chunk_end {
                             let value = *base.add(i);
                             let diff = value ^ pattern1 ;
-                            error_accumulator = error_accumulator | diff ;
+                            error_accumulator |= diff ;
                         }
                     }
                 }
@@ -2043,7 +2042,7 @@ unsafe fn stuck_bit_test_128_impl(
                 bytes_processed: total_bytes_processed, elapsed_ms: elapsed, thread_id,
                 error_count: total_error_count, total_operations,
                 cycles_completed: cycle, cycles_planned: timing.cycles,
-                stopped_by_time_limit: timing.cycles.map_or(true, |limit| cycle < limit),
+                stopped_by_time_limit: timing.cycles.is_none_or(|limit| cycle < limit),
             };
         }
     }
@@ -2154,21 +2153,20 @@ unsafe fn stuck_bit_test_256_impl(
                         for i in processed..chunk_end {
                             let value = *base.add(i);
                             let diff = value ^ pattern1 ;
-                            error_accumulator = error_accumulator | diff ;
+                            error_accumulator |= diff ;
                             element_count += 1;
-                            if (element_count as u32 & check_mask) == 0 {
-                                if error_accumulator.simd_ne(u64x4::splat(0)).any() {
+                            if (element_count as u32 & check_mask) == 0
+                                && error_accumulator.simd_ne(u64x4::splat(0)).any() {
                                     cycle_errors += 1;
                                     error_accumulator = u64x4::splat(0);
                                 }
-                            }
                         }
                     }
                     None => {
                         for i in processed..chunk_end {
                             let value = *base.add(i);
                             let diff = value ^ pattern1 ;
-                            error_accumulator = error_accumulator | diff ;
+                            error_accumulator |= diff ;
                         }
                     }
                 }
@@ -2190,21 +2188,20 @@ unsafe fn stuck_bit_test_256_impl(
                         for i in processed..chunk_end {
                             let value = *base.add(i);
                             let diff = value ^ pattern2 ;
-                            error_accumulator = error_accumulator | diff ;
+                            error_accumulator |= diff ;
                             element_count += 1;
-                            if (element_count as u32 & check_mask) == 0 {
-                                if error_accumulator.simd_ne(u64x4::splat(0)).any() {
+                            if (element_count as u32 & check_mask) == 0
+                                && error_accumulator.simd_ne(u64x4::splat(0)).any() {
                                     cycle_errors += 1;
                                     error_accumulator = u64x4::splat(0);
                                 }
-                            }
                         }
                     }
                     None => {
                         for i in processed..chunk_end {
                             let value = *base.add(i);
                             let diff = value ^ pattern2 ;
-                            error_accumulator = error_accumulator | diff ;
+                            error_accumulator |= diff ;
                         }
                     }
                 }
@@ -2226,21 +2223,20 @@ unsafe fn stuck_bit_test_256_impl(
                         for i in processed..chunk_end {
                             let value = *base.add(i);
                             let diff = value ^ pattern1 ;
-                            error_accumulator = error_accumulator | diff ;
+                            error_accumulator |= diff ;
                             element_count += 1;
-                            if (element_count as u32 & check_mask) == 0 {
-                                if error_accumulator.simd_ne(u64x4::splat(0)).any() {
+                            if (element_count as u32 & check_mask) == 0
+                                && error_accumulator.simd_ne(u64x4::splat(0)).any() {
                                     cycle_errors += 1;
                                     error_accumulator = u64x4::splat(0);
                                 }
-                            }
                         }
                     }
                     None => {
                         for i in processed..chunk_end {
                             let value = *base.add(i);
                             let diff = value ^ pattern1 ;
-                            error_accumulator = error_accumulator | diff ;
+                            error_accumulator |= diff ;
                         }
                     }
                 }
@@ -2300,7 +2296,7 @@ unsafe fn stuck_bit_test_256_impl(
                 bytes_processed: total_bytes_processed, elapsed_ms: elapsed, thread_id,
                 error_count: total_error_count, total_operations,
                 cycles_completed: cycle, cycles_planned: timing.cycles,
-                stopped_by_time_limit: timing.cycles.map_or(true, |limit| cycle < limit),
+                stopped_by_time_limit: timing.cycles.is_none_or(|limit| cycle < limit),
             };
         }
     }
@@ -2421,7 +2417,7 @@ unsafe fn stuck_bit_test_512_impl(
                         for i in processed..chunk_end {
                             let value = *base.add(i);
                             let diff = value ^ pattern1 ;
-                            error_accumulator = error_accumulator | diff ;
+                            error_accumulator |= diff ;
                             element_count += 1;
                             if (element_count as u32 & check_mask) == 0 {
                                 if !error_accumulator.simd_eq(u64x8::splat(0)).all() { cycle_errors += 1; }
@@ -2433,7 +2429,7 @@ unsafe fn stuck_bit_test_512_impl(
                         for i in processed..chunk_end {
                             let value = *base.add(i);
                             let diff = value ^ pattern1 ;
-                            error_accumulator = error_accumulator | diff ;
+                            error_accumulator |= diff ;
                         }
                     }
                 }
@@ -2453,7 +2449,7 @@ unsafe fn stuck_bit_test_512_impl(
                         for i in processed..chunk_end {
                             let value = *base.add(i);
                             let diff = value ^ pattern2 ;
-                            error_accumulator = error_accumulator | diff ;
+                            error_accumulator |= diff ;
                             element_count += 1;
                             if (element_count as u32 & check_mask) == 0 {
                                 if !error_accumulator.simd_eq(u64x8::splat(0)).all() { cycle_errors += 1; }
@@ -2465,7 +2461,7 @@ unsafe fn stuck_bit_test_512_impl(
                         for i in processed..chunk_end {
                             let value = *base.add(i);
                             let diff = value ^ pattern2 ;
-                            error_accumulator = error_accumulator | diff ;
+                            error_accumulator |= diff ;
                         }
                     }
                 }
@@ -2485,7 +2481,7 @@ unsafe fn stuck_bit_test_512_impl(
                         for i in processed..chunk_end {
                             let value = *base.add(i);
                             let diff = value ^ pattern1 ;
-                            error_accumulator = error_accumulator | diff ;
+                            error_accumulator |= diff ;
                             element_count += 1;
                             if (element_count as u32 & check_mask) == 0 {
                                 if !error_accumulator.simd_eq(u64x8::splat(0)).all() { cycle_errors += 1; }
@@ -2497,7 +2493,7 @@ unsafe fn stuck_bit_test_512_impl(
                         for i in processed..chunk_end {
                             let value = *base.add(i);
                             let diff = value ^ pattern1 ;
-                            error_accumulator = error_accumulator | diff ;
+                            error_accumulator |= diff ;
                         }
                     }
                 }
@@ -2555,7 +2551,7 @@ unsafe fn stuck_bit_test_512_impl(
                 bytes_processed: total_bytes_processed, elapsed_ms: elapsed, thread_id,
                 error_count: total_error_count, total_operations,
                 cycles_completed: cycle, cycles_planned: timing.cycles,
-                stopped_by_time_limit: timing.cycles.map_or(true, |limit| cycle < limit),
+                stopped_by_time_limit: timing.cycles.is_none_or(|limit| cycle < limit),
             };
         }
     }
@@ -2572,14 +2568,6 @@ unsafe fn stuck_bit_test_512_impl(
 }
 
 // === STUCK BIT TEST SIMD VARIANTS ===
-/// # Safety
-/// Caller must ensure `ptr` is valid for reads/writes of `size` bytes.
-
-/// # Safety
-/// Caller must ensure `ptr` is valid for reads/writes of `size` bytes.
-
-/// # Safety
-/// Caller must ensure `ptr` is valid for reads/writes of `size` bytes.
 
 /// StuckBitTestAuto - MultiBlock dispatcher
 /// Auto-selects best SIMD implementation: AVX-512 > AVX2 > SSE2 > scalar
@@ -2608,10 +2596,6 @@ pub unsafe fn stuck_bit_test_auto_multi(
     }
 }
 
-/// Auto-dispatch wrapper that selects the best SIMD implementation based on CPU capabilities
-/// # Safety
-/// Caller must ensure `ptr` is valid for reads/writes of `size` bytes.
-
 // ================================================================================================
 // RefreshStable MultiBlock Implementations
 // ================================================================================================
@@ -2624,6 +2608,7 @@ pub unsafe fn stuck_bit_test_auto_multi(
 /// - Verify pattern unchanged
 ///
 /// Tests blocks in interleaved fashion with shared timer to fix N×duration bug.
+#[doc = include_str!("test_fn_safety.md")]
 pub unsafe fn refresh_stable_multi(
     blocks: &[crate::runner::AllocationBlock],
     thread_id: usize,
@@ -2788,7 +2773,7 @@ pub unsafe fn refresh_stable_multi(
                 total_operations,
                 cycles_completed: cycle,
                 cycles_planned: timing.cycles,
-                stopped_by_time_limit: timing.cycles.map_or(true, |limit| cycle < limit),
+                stopped_by_time_limit: timing.cycles.is_none_or(|limit| cycle < limit),
             };
         }
     }
@@ -2912,19 +2897,18 @@ unsafe fn refresh_stable_128_impl(
                         for i in processed..chunk_end {
                             let value = *base.add(i);
                             let diff = value ^ pattern ;
-                            error_accumulator = error_accumulator | diff ;
+                            error_accumulator |= diff ;
 
                             element_count += 1;
 
                             // Check errors at configured intervals (zero-branch hot loop optimization)
-                            if (element_count as u32 & check_mask) == 0 {
-                                if error_accumulator.simd_ne(u64x2::splat(0)).any() {
+                            if (element_count as u32 & check_mask) == 0
+                                && error_accumulator.simd_ne(u64x2::splat(0)).any() {
                                     cycle_errors += 1;
                                     log::error!("{}: memory error detected element {} (thread {})",
                                                test_name, element_count, thread_id);
                                     error_accumulator = u64x2::splat(0);
                                 }
-                            }
                         }
                     }
                     None => {
@@ -2932,7 +2916,7 @@ unsafe fn refresh_stable_128_impl(
                         for i in processed..chunk_end {
                             let value = *base.add(i);
                             let diff = value ^ pattern ;
-                            error_accumulator = error_accumulator | diff ;
+                            error_accumulator |= diff ;
                         }
                     }
                 }
@@ -3020,7 +3004,7 @@ unsafe fn refresh_stable_128_impl(
                 total_operations: (total_bytes_processed / std::mem::size_of::<u64x2>()) as u64,
                 cycles_completed: cycle,
                 cycles_planned: timing.cycles,
-                stopped_by_time_limit: timing.cycles.map_or(true, |limit| cycle < limit),
+                stopped_by_time_limit: timing.cycles.is_none_or(|limit| cycle < limit),
             };
         }
     }
@@ -3143,19 +3127,18 @@ unsafe fn refresh_stable_256_impl(
                         for i in processed..chunk_end {
                             let value = *base.add(i);
                             let diff = value ^ pattern ;
-                            error_accumulator = error_accumulator | diff ;
+                            error_accumulator |= diff ;
 
                             element_count += 1;
 
                             // Check errors at configured intervals (zero-branch hot loop optimization)
-                            if (element_count as u32 & check_mask) == 0 {
-                                if error_accumulator.simd_ne(u64x4::splat(0)).any() {
+                            if (element_count as u32 & check_mask) == 0
+                                && error_accumulator.simd_ne(u64x4::splat(0)).any() {
                                     cycle_errors += 1;
                                     log::error!("{}: memory error detected element {} (thread {})",
                                                test_name, element_count, thread_id);
                                     error_accumulator = u64x4::splat(0);
                                 }
-                            }
                         }
                     }
                     None => {
@@ -3163,7 +3146,7 @@ unsafe fn refresh_stable_256_impl(
                         for i in processed..chunk_end {
                             let value = *base.add(i);
                             let diff = value ^ pattern ;
-                            error_accumulator = error_accumulator | diff ;
+                            error_accumulator |= diff ;
                         }
                     }
                 }
@@ -3251,7 +3234,7 @@ unsafe fn refresh_stable_256_impl(
                 total_operations: (total_bytes_processed / std::mem::size_of::<u64x4>()) as u64,
                 cycles_completed: cycle,
                 cycles_planned: timing.cycles,
-                stopped_by_time_limit: timing.cycles.map_or(true, |limit| cycle < limit),
+                stopped_by_time_limit: timing.cycles.is_none_or(|limit| cycle < limit),
             };
         }
     }
@@ -3374,19 +3357,18 @@ unsafe fn refresh_stable_512_impl(
                         for i in processed..chunk_end {
                             let value = *base.add(i);
                             let diff = value ^ pattern ;
-                            error_accumulator = error_accumulator | diff ;
+                            error_accumulator |= diff ;
 
                             element_count += 1;
 
                             // Check errors at configured intervals (zero-branch hot loop optimization)
-                            if (element_count as u32 & check_mask) == 0 {
-                                if !error_accumulator.simd_eq(u64x8::splat(0)).all() {
+                            if (element_count as u32 & check_mask) == 0
+                                && !error_accumulator.simd_eq(u64x8::splat(0)).all() {
                                     cycle_errors += 1;
                                     log::error!("{}: memory error detected element {} (thread {})",
                                                test_name, element_count, thread_id);
                                     error_accumulator = u64x8::splat(0);
                                 }
-                            }
                         }
                     }
                     None => {
@@ -3394,7 +3376,7 @@ unsafe fn refresh_stable_512_impl(
                         for i in processed..chunk_end {
                             let value = *base.add(i);
                             let diff = value ^ pattern ;
-                            error_accumulator = error_accumulator | diff ;
+                            error_accumulator |= diff ;
                         }
                     }
                 }
@@ -3482,7 +3464,7 @@ unsafe fn refresh_stable_512_impl(
                 total_operations: (total_bytes_processed / std::mem::size_of::<u64x8>()) as u64,
                 cycles_completed: cycle,
                 cycles_planned: timing.cycles,
-                stopped_by_time_limit: timing.cycles.map_or(true, |limit| cycle < limit),
+                stopped_by_time_limit: timing.cycles.is_none_or(|limit| cycle < limit),
             };
         }
     }
@@ -3527,6 +3509,7 @@ pub unsafe fn refresh_stable_auto_multi(
 /// - Supports single stream and multi-stream modes
 ///
 /// Tests blocks in interleaved fashion with shared timer to fix N×duration bug.
+#[doc = include_str!("test_fn_safety.md")]
 pub unsafe fn cache_busting_multi(
     blocks: &[crate::runner::AllocationBlock],
     thread_id: usize,
@@ -3741,7 +3724,7 @@ pub unsafe fn cache_busting_multi(
                 total_operations,
                 cycles_completed: cycle,
                 cycles_planned: timing.cycles,
-                stopped_by_time_limit: timing.cycles.map_or(true, |limit| cycle < limit),
+                stopped_by_time_limit: timing.cycles.is_none_or(|limit| cycle < limit),
             };
         }
     }
@@ -3760,6 +3743,7 @@ pub unsafe fn cache_busting_multi(
 /// - Supports multiple RNG sequences with different seeds
 ///
 /// Tests blocks in interleaved fashion with shared timer to fix N×duration bug.
+#[doc = include_str!("test_fn_safety.md")]
 pub unsafe fn random_torture_multi(
     blocks: &[crate::runner::AllocationBlock],
     thread_id: usize,
@@ -3963,7 +3947,7 @@ pub unsafe fn random_torture_multi(
                 total_operations,
                 cycles_completed: cycle,
                 cycles_planned: timing.cycles,
-                stopped_by_time_limit: timing.cycles.map_or(true, |limit| cycle < limit),
+                stopped_by_time_limit: timing.cycles.is_none_or(|limit| cycle < limit),
             };
         }
     }
@@ -3974,6 +3958,7 @@ pub unsafe fn random_torture_multi(
 // ================================================================================================
 
 /// StrideAccess MultiBlock implementation - tests various stride patterns.
+#[doc = include_str!("test_fn_safety.md")]
 pub unsafe fn stride_access_multi(
     blocks: &[crate::runner::AllocationBlock],
     thread_id: usize,
@@ -4114,13 +4099,14 @@ pub unsafe fn stride_access_multi(
                 bytes_processed: total_bytes_processed, elapsed_ms: elapsed, thread_id,
                 error_count: total_error_count, total_operations,
                 cycles_completed: cycle, cycles_planned: timing.cycles,
-                stopped_by_time_limit: timing.cycles.map_or(true, |limit| cycle < limit),
+                stopped_by_time_limit: timing.cycles.is_none_or(|limit| cycle < limit),
             };
         }
     }
 }
 
 /// BlockMove MultiBlock - sequential block memory moves.
+#[doc = include_str!("test_fn_safety.md")]
 pub unsafe fn block_move_multi(
     blocks: &[crate::runner::AllocationBlock],
     thread_id: usize,
@@ -4352,7 +4338,7 @@ pub unsafe fn block_move_multi(
                 total_operations,
                 cycles_completed: cycle,
                 cycles_planned: timing.cycles,
-                stopped_by_time_limit: timing.cycles.map_or(true, |limit| cycle < limit),
+                stopped_by_time_limit: timing.cycles.is_none_or(|limit| cycle < limit),
             };
         }
     }
@@ -4377,6 +4363,18 @@ use crate::test_harness::{run_phased_test, ChunkCtx};
 
 // ─── SimpleTest v2 ───────────────────────────────────────────────────────────
 
+/// Pattern-generation parameters for the SimpleTest v2 implementations.
+/// Bundles the mode selector, its two free parameters, and the access stride
+/// so the test functions keep to the standard 6-arg test signature + this config.
+#[derive(Clone, Copy)]
+struct SimplePatternConfig {
+    mode: u32,
+    param0: u64,
+    param1: u64,
+    /// Element stride for strided access; `0` means sequential.
+    stride: usize,
+}
+
 /// SimpleTest v2 entry point — correct Mode 2 LCG + strided access.
 ///
 /// # Safety
@@ -4395,20 +4393,22 @@ pub unsafe fn simple_test_v2_multi(
         .unwrap_or(0);
 
     // Determine pattern mode and params
-    let pattern_mode = config.pattern_mode.unwrap_or(0);
-    let param0 = config.pattern_param0.unwrap_or(0xDEADBEEFDEADBEEF);
-    let param1 = config.pattern_param1.unwrap_or(0xCAFEBABECAFEBABE);
+    let pattern = SimplePatternConfig {
+        mode: config.pattern_mode.unwrap_or(0),
+        param0: config.pattern_param0.unwrap_or(0xDEADBEEFDEADBEEF),
+        param1: config.pattern_param1.unwrap_or(0xCAFEBABECAFEBABE),
+        stride,
+    };
 
     if stride > 0 {
-        simple_test_v2_strided(blocks, thread_id, error_mode, timing, config, progress,
-                               pattern_mode, param0, param1, stride)
+        simple_test_v2_strided(blocks, thread_id, error_mode, timing, config, progress, pattern)
     } else {
-        simple_test_v2_sequential(blocks, thread_id, error_mode, timing, config, progress,
-                                  pattern_mode, param0, param1)
+        simple_test_v2_sequential(blocks, thread_id, error_mode, timing, config, progress, pattern)
     }
 }
 
 /// Sequential SimpleTest v2 — Mode 0/1/2 with correct LCG.
+#[doc = include_str!("test_fn_safety.md")]
 unsafe fn simple_test_v2_sequential(
     blocks: &[crate::runner::AllocationBlock],
     thread_id: usize,
@@ -4416,10 +4416,9 @@ unsafe fn simple_test_v2_sequential(
     timing: &TestTiming,
     config: &TestMemoryConfig,
     progress: Option<&TestProgress>,
-    pattern_mode: u32,
-    param0: u64,
-    param1: u64,
+    pattern: SimplePatternConfig,
 ) -> TestStats {
+    let SimplePatternConfig { mode: pattern_mode, param0, param1, .. } = pattern;
     let test_name = "Mem-SimpleV2";
     let cl_shift = pattern_gen::cache_line_shift(config.cache_line_bytes);
     let cl_elements = config.cache_line_bytes / std::mem::size_of::<u64>();
@@ -4614,12 +4613,11 @@ unsafe fn simple_test_v2_sequential(
                                 }
                                 state = pattern_gen::lcg_next(state, multiplier, addend);
                                 element_count += 1;
-                                if (element_count & check_mask) == 0 {
-                                    if interval_errors > 0 {
+                                if (element_count & check_mask) == 0
+                                    && interval_errors > 0 {
                                         total_errors += interval_errors;
                                         interval_errors = 0;
                                     }
-                                }
                             }
                             total_errors += interval_errors;
                         }
@@ -4677,12 +4675,11 @@ unsafe fn simple_test_v2_sequential(
                                     }
                                 }
                                 element_count += 1;
-                                if (element_count & check_mask) == 0 {
-                                    if interval_errors > 0 {
+                                if (element_count & check_mask) == 0
+                                    && interval_errors > 0 {
                                         total_errors += interval_errors;
                                         interval_errors = 0;
                                     }
-                                }
                             }
                             total_errors += interval_errors;
                         }
@@ -4704,7 +4701,7 @@ unsafe fn simple_test_v2_sequential(
                 },
             )
         }
-        10 | _ => {
+        _ => {
             // Mode 10 (TMR-native): address-derived unique (default fallback)
             let base = param0;
             run_phased_test(
@@ -4740,12 +4737,11 @@ unsafe fn simple_test_v2_sequential(
                                     }
                                 }
                                 element_count += 1;
-                                if (element_count & check_mask) == 0 {
-                                    if interval_errors > 0 {
+                                if (element_count & check_mask) == 0
+                                    && interval_errors > 0 {
                                         total_errors += interval_errors;
                                         interval_errors = 0;
                                     }
-                                }
                             }
                             total_errors += interval_errors;
                         }
@@ -4782,11 +4778,9 @@ unsafe fn simple_test_v2_strided(
     timing: &TestTiming,
     config: &TestMemoryConfig,
     progress: Option<&TestProgress>,
-    pattern_mode: u32,
-    param0: u64,
-    param1: u64,
-    stride: usize,
+    pattern: SimplePatternConfig,
 ) -> TestStats {
+    let SimplePatternConfig { mode: pattern_mode, param0, param1, stride } = pattern;
     let test_name = "Mem-SimpleV2";
     // For strided access, stateful modes (2, 12) fall back to positional mode 10.
     // LCG chains don't compose with non-sequential access. Positional modes (0/1/10/11) work fine.
@@ -4866,12 +4860,11 @@ unsafe fn simple_test_v2_strided(
                                 }
                             }
                             element_count += 1;
-                            if (element_count & check_mask) == 0 {
-                                if interval_errors > 0 {
+                            if (element_count & check_mask) == 0
+                                && interval_errors > 0 {
                                     total_errors += interval_errors;
                                     interval_errors = 0;
                                 }
-                            }
                             idx += stride;
                         }
                     }
@@ -4921,19 +4914,17 @@ impl SwapMode {
     /// Derive swap mode from test config's parameter_context.
     fn from_config(config: &TestMemoryConfig) -> Self {
         if let Some(ctx) = &config.parameter_context {
-            if let Some(stride_bytes) = ctx.page_stride_bytes {
-                if stride_bytes > 0 {
+            if let Some(stride_bytes) = ctx.page_stride_bytes
+                && stride_bytes > 0 {
                     // Store raw parameter for SIMD-width scaling at use site.
                     // TM5 formula: page_stride_bytes = (param+1)*128, so param = stride_bytes/128 - 1
                     // But we have raw_parameter directly.
                     return SwapMode::PageStride(ctx.raw_parameter as usize);
                 }
-            }
-            if let Some(sub_count) = ctx.subblock_count {
-                if sub_count >= 2 {
+            if let Some(sub_count) = ctx.subblock_count
+                && sub_count >= 2 {
                     return SwapMode::Subblocks(sub_count as usize);
                 }
-            }
         }
         SwapMode::Full
     }
@@ -5312,12 +5303,11 @@ pub unsafe fn mirror_move_v2_multi(
                             }
                         }
                         element_count += 1;
-                        if (element_count & check_mask) == 0 {
-                            if interval_errors > 0 {
+                        if (element_count & check_mask) == 0
+                            && interval_errors > 0 {
                                 total_errors += interval_errors;
                                 interval_errors = 0;
                             }
-                        }
                     }
                     total_errors += interval_errors;
                 }
@@ -6081,10 +6071,10 @@ macro_rules! simple_write_nt_positional_simd {
             let v2: $simd_type = idx2 ^ $base_vec;
             let idx3 = idx2 + step1;
             let v3: $simd_type = idx3 ^ $base_vec;
-            $stream_fn($ctx.ptr.add(i) as *mut $arch_type, std::mem::transmute(v0));
-            $stream_fn($ctx.ptr.add(i + w) as *mut $arch_type, std::mem::transmute(v1));
-            $stream_fn($ctx.ptr.add(i + w * 2) as *mut $arch_type, std::mem::transmute(v2));
-            $stream_fn($ctx.ptr.add(i + w * 3) as *mut $arch_type, std::mem::transmute(v3));
+            $stream_fn($ctx.ptr.add(i) as *mut $arch_type, std::mem::transmute::<$simd_type, $arch_type>(v0));
+            $stream_fn($ctx.ptr.add(i + w) as *mut $arch_type, std::mem::transmute::<$simd_type, $arch_type>(v1));
+            $stream_fn($ctx.ptr.add(i + w * 2) as *mut $arch_type, std::mem::transmute::<$simd_type, $arch_type>(v2));
+            $stream_fn($ctx.ptr.add(i + w * 3) as *mut $arch_type, std::mem::transmute::<$simd_type, $arch_type>(v3));
             idx_vec += step4;
             i += w * 4;
         }
@@ -6092,7 +6082,7 @@ macro_rules! simple_write_nt_positional_simd {
         // Remainder: 1 NT store per iteration
         while i < $ctx.chunk_end {
             let val: $simd_type = idx_vec ^ $base_vec;
-            $stream_fn($ctx.ptr.add(i) as *mut $arch_type, std::mem::transmute(val));
+            $stream_fn($ctx.ptr.add(i) as *mut $arch_type, std::mem::transmute::<$simd_type, $arch_type>(val));
             idx_vec += step1;
             i += w;
         }
@@ -6150,6 +6140,7 @@ macro_rules! simple_test_nt_impl {
             )
         }
 
+        #[doc = include_str!("test_fn_safety.md")]
         pub unsafe fn $pub_fn(
             blocks: &[crate::runner::AllocationBlock],
             thread_id: usize,
@@ -6205,6 +6196,7 @@ crate::auto_dispatch!(
 
 /// Bench-Init dispatcher: routes to the correct pattern mode based on config.pattern_mode.
 /// Each Bench-Init-* test sets pattern_mode in its config, then calls this.
+#[doc = include_str!("test_fn_safety.md")]
 pub unsafe fn bench_init_multi(
     blocks: &[crate::runner::AllocationBlock],
     thread_id: usize,
@@ -6387,7 +6379,7 @@ pub unsafe fn bench_init_multi(
                 |_ctx: &ChunkCtx| -> u64 { 0 },
             )
         }
-        12 | _ => {
+        _ => {
             // Mode 12: LCG chain (real PRNG)
             // LCG is sequential — carry state across chunks so init, test_fn, and
             // bench_verify's verify_fn all produce the same continuous chain.
@@ -6435,6 +6427,7 @@ pub unsafe fn bench_init_multi(
 /// In dependent mode (config.skip_init=true), skips the init write — assumes a matching
 /// Bench-Init-* test already wrote the patterns. The init closure is still provided so
 /// the harness has pattern knowledge for error repair if needed.
+#[doc = include_str!("test_fn_safety.md")]
 pub unsafe fn bench_verify_multi(
     blocks: &[crate::runner::AllocationBlock],
     thread_id: usize,
@@ -6675,7 +6668,7 @@ pub unsafe fn bench_verify_multi(
                 },
             )
         }
-        12 | _ => {
+        _ => {
             // Mode 12: LCG chain (real PRNG)
             // LCG is sequential — state[N] depends on the full chain from state[0].
             // Init writes the full block as one continuous chain. Verify runs per-chunk,

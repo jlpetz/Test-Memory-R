@@ -11,6 +11,8 @@ use std::sync::mpsc::{channel, Sender, Receiver};
 use std::thread;
 use std::time::Instant;
 
+/// A worker thread's CPU assignment: `(thread_id, logical_cpu, numa_node)`.
+pub type CpuAssignment = (usize, usize, u32);
 
 #[derive(Debug)]
 pub enum WorkItem {
@@ -77,7 +79,7 @@ pub type TestStatsTuple = (usize, usize, u64, u128, u64, u64, u32); // thread_id
 pub struct ThreadPool {
     workers: Vec<thread::JoinHandle<Vec<AllocationBlock>>>,
     senders: Vec<Sender<WorkItem>>,
-    cpu_assignments: Vec<(usize, usize, u32)>, // (thread_id, logical_cpu, numa_node)
+    cpu_assignments: Vec<CpuAssignment>, // (thread_id, logical_cpu, numa_node)
 }
 
 impl ThreadPool {
@@ -154,7 +156,7 @@ impl ThreadPool {
         (ThreadPool { workers, senders, cpu_assignments }, result_receiver)
     }
 
-    pub fn get_cpu_assignments(&self) -> &[(usize, usize, u32)] {
+    pub fn get_cpu_assignments(&self) -> &[CpuAssignment] {
         &self.cpu_assignments
     }
     
@@ -230,7 +232,7 @@ impl ThreadPool {
     }
     
     // Modified shutdown to return assignments along with blocks
-    pub fn shutdown(self) -> (HashMap<usize, Vec<AllocationBlock>>, Vec<(usize, usize, u32)>) {
+    pub fn shutdown(self) -> (HashMap<usize, Vec<AllocationBlock>>, Vec<CpuAssignment>) {
         let cpu_assignments = self.cpu_assignments;
         
         // Send shutdown signal to all workers
@@ -265,10 +267,6 @@ fn handle_test_errors(stats: &crate::tests::TestStats, error_mode: ErrorMode, te
     }
     Ok(())
 }
-
-/// Calculate which blocks to test based on window size
-/// Window limits TOTAL memory tested, not per-block
-/// Always includes complete blocks (rounds up to block boundary)
 
 // Worker thread main loop
 fn worker_thread_loop(context: &mut WorkerContext) {
@@ -306,11 +304,10 @@ fn worker_thread_loop(context: &mut WorkerContext) {
                 };
 
                 // Handle any errors from the test
-                if stats.error_count > 0 {
-                    if let Err(e) = handle_test_errors(&stats, error_mode, &test_name) {
+                if stats.error_count > 0
+                    && let Err(e) = handle_test_errors(&stats, error_mode, test_name) {
                         log::error!("[Thread {} on CPU {}] {}", context.thread_id, context.cpu_id, e);
                     }
-                }
 
                 let elapsed_ms = thread_start.elapsed().as_millis();
 
@@ -352,11 +349,10 @@ fn worker_thread_loop(context: &mut WorkerContext) {
                 };
 
                 // Handle any errors from the test
-                if stats.basic_stats.error_count > 0 {
-                    if let Err(e) = handle_test_errors(&stats.basic_stats, error_mode, test_name) {
+                if stats.basic_stats.error_count > 0
+                    && let Err(e) = handle_test_errors(&stats.basic_stats, error_mode, test_name) {
                         log::error!("[Thread {} on CPU {}] {}", context.thread_id, context.cpu_id, e);
                     }
-                }
 
                 let result = LatencyWorkResult {
                     thread_id: context.thread_id,

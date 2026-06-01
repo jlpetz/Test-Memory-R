@@ -46,6 +46,12 @@ impl ChunkCtx {
     pub fn len(&self) -> usize {
         self.chunk_end - self.chunk_start
     }
+
+    /// Returns true if the chunk spans no elements.
+    #[inline(always)]
+    pub fn is_empty(&self) -> bool {
+        self.chunk_end == self.chunk_start
+    }
 }
 
 /// Run a phased test with monomorphized closures for init, test, and verify phases.
@@ -322,7 +328,7 @@ where
         total_operations,
         cycles_completed: cycle,
         cycles_planned: timing.cycles,
-        stopped_by_time_limit: timing.cycles.map_or(true, |limit| cycle < limit),
+        stopped_by_time_limit: timing.cycles.is_none_or(|limit| cycle < limit),
     }
 }
 
@@ -347,6 +353,7 @@ macro_rules! auto_dispatch {
         $avx2:ident,
         $avx512:ident
     ) => {
+        #[doc = include_str!("test_fn_safety.md")]
         pub unsafe fn $name(
             blocks: &[$crate::runner::AllocationBlock],
             thread_id: usize,

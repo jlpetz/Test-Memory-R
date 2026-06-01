@@ -169,7 +169,7 @@ impl ReportFormatter for DefaultFormatter {
 
     fn format_bytes_signed(&self, bytes: i64) -> String {
         let sign = if bytes >= 0 { "+" } else { "" };  // Negative sign is automatic
-        let abs_bytes = bytes.abs() as u64;
+        let abs_bytes = bytes.unsigned_abs();
         let (value, unit) = if self.use_binary_units {
             // Binary units (GiB, MiB, KiB)
             if abs_bytes >= 1024_u64.pow(3) {
@@ -490,7 +490,7 @@ impl ReportFormatter for DefaultFormatter {
             let deviation_data_str = if timing.deviation_data_bytes >= 0 {
                 format!("+{}", self.format_bytes(timing.deviation_data_bytes as u64))
             } else {
-                format!("-{}", self.format_bytes(timing.deviation_data_bytes.abs() as u64))
+                format!("-{}", self.format_bytes(timing.deviation_data_bytes.unsigned_abs()))
             };
 
             let deviation_speed_str = if timing.deviation_speed_mib_s >= 0.0 {
@@ -1244,7 +1244,7 @@ impl ReportFormatter for DefaultFormatter {
             .add_header("Status", ColumnAlignment::Center);
         
         let mut entries = report.cpu_performances.clone();
-        entries.sort_by(|a, b| a.cpu_id.cmp(&b.cpu_id));
+        entries.sort_by_key(|a| a.cpu_id);
         
         for cpu in &entries {
             let variance_str = format!("{:+.1}%", cpu.variance_percent);

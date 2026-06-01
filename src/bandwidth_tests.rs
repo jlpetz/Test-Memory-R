@@ -254,6 +254,7 @@ macro_rules! spd_write_impl {
             }
         }
 
+        #[doc = include_str!("test_fn_safety.md")]
         pub unsafe fn $pub_fn(
             blocks: &[AllocationBlock], thread_id: usize, error_mode: ErrorMode,
             timing: &TestTiming, config: &TestMemoryConfig, progress: Option<&TestProgress>,
@@ -354,6 +355,7 @@ macro_rules! spd_read_impl {
             }
         }
 
+        #[doc = include_str!("test_fn_safety.md")]
         pub unsafe fn $pub_fn(
             blocks: &[AllocationBlock], thread_id: usize, error_mode: ErrorMode,
             timing: &TestTiming, config: &TestMemoryConfig, progress: Option<&TestProgress>,
@@ -477,6 +479,7 @@ macro_rules! spd_copy_impl {
             }
         }
 
+        #[doc = include_str!("test_fn_safety.md")]
         pub unsafe fn $pub_fn(
             blocks: &[AllocationBlock], thread_id: usize, error_mode: ErrorMode,
             timing: &TestTiming, config: &TestMemoryConfig, progress: Option<&TestProgress>,

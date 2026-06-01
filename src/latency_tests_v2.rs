@@ -165,6 +165,7 @@ macro_rules! lat_v2_read_impl {
         $reduce:expr  // closure: |vec| -> u64 to fold for black_box
     ) => {
         #[target_feature(enable = $target_feature)]
+        #[doc = include_str!("test_fn_safety.md")]
         pub unsafe fn $pub_fn(
             blocks: &[AllocationBlock],
             thread_id: usize,
@@ -273,6 +274,7 @@ macro_rules! lat_v2_write_impl {
         $store_fn:path
     ) => {
         #[target_feature(enable = $target_feature)]
+        #[doc = include_str!("test_fn_safety.md")]
         pub unsafe fn $pub_fn(
             blocks: &[AllocationBlock],
             thread_id: usize,
@@ -376,6 +378,7 @@ macro_rules! lat_v2_copy_impl {
         $set1_fn:path
     ) => {
         #[target_feature(enable = $target_feature)]
+        #[doc = include_str!("test_fn_safety.md")]
         pub unsafe fn $pub_fn(
             blocks: &[AllocationBlock],
             thread_id: usize,
@@ -473,6 +476,7 @@ macro_rules! lat_v2p_read_impl {
         $reduce:expr
     ) => {
         #[target_feature(enable = $target_feature)]
+        #[doc = include_str!("test_fn_safety.md")]
         pub unsafe fn $pub_fn(
             blocks: &[AllocationBlock],
             thread_id: usize,
@@ -596,6 +600,7 @@ macro_rules! lat_v2p_write_impl {
         $store_fn:path
     ) => {
         #[target_feature(enable = $target_feature)]
+        #[doc = include_str!("test_fn_safety.md")]
         pub unsafe fn $pub_fn(
             blocks: &[AllocationBlock],
             thread_id: usize,
@@ -721,6 +726,7 @@ macro_rules! lat_v2p_copy_impl {
         $set1_fn:path
     ) => {
         #[target_feature(enable = $target_feature)]
+        #[doc = include_str!("test_fn_safety.md")]
         pub unsafe fn $pub_fn(
             blocks: &[AllocationBlock],
             thread_id: usize,
@@ -842,6 +848,7 @@ macro_rules! lat_v2p_write_full_impl {
         $stores_per_cell:expr  // 4 for 128-bit, 2 for 256-bit, 1 for 512-bit
     ) => {
         #[target_feature(enable = $target_feature)]
+        #[doc = include_str!("test_fn_safety.md")]
         pub unsafe fn $pub_fn(
             blocks: &[AllocationBlock],
             thread_id: usize,
@@ -959,6 +966,7 @@ macro_rules! lat_v2p_copy_full_impl {
         $ops_per_cell:expr
     ) => {
         #[target_feature(enable = $target_feature)]
+        #[doc = include_str!("test_fn_safety.md")]
         pub unsafe fn $pub_fn(
             blocks: &[AllocationBlock],
             thread_id: usize,
@@ -1119,6 +1127,7 @@ lat_v2_read_impl!(
 
 /// Auto-dispatch wrapper for Layout A — picks the best available SIMD width at runtime.
 /// Returns LatencyTestStats (not TestStats) so it works with TestFunction::Latency.
+#[doc = include_str!("test_fn_safety.md")]
 pub unsafe fn lat_v2_read_auto_multi(
     blocks: &[AllocationBlock], thread_id: usize, error_mode: ErrorMode,
     timing: &TestTiming, config: &TestMemoryConfig, progress: Option<&TestProgress>,
@@ -1160,6 +1169,7 @@ lat_v2_write_impl!(
     std::arch::x86_64::_mm512_store_si512
 );
 
+#[doc = include_str!("test_fn_safety.md")]
 pub unsafe fn lat_v2_write_auto_multi(
     blocks: &[AllocationBlock], thread_id: usize, error_mode: ErrorMode,
     timing: &TestTiming, config: &TestMemoryConfig, progress: Option<&TestProgress>,
@@ -1207,6 +1217,7 @@ lat_v2_copy_impl!(
     std::arch::x86_64::_mm512_set1_epi64
 );
 
+#[doc = include_str!("test_fn_safety.md")]
 pub unsafe fn lat_v2_copy_auto_multi(
     blocks: &[AllocationBlock], thread_id: usize, error_mode: ErrorMode,
     timing: &TestTiming, config: &TestMemoryConfig, progress: Option<&TestProgress>,
@@ -1254,6 +1265,7 @@ lat_v2p_read_impl!(
     |v| reduce_m512i(v)
 );
 
+#[doc = include_str!("test_fn_safety.md")]
 pub unsafe fn lat_v2p_read_auto_multi(
     blocks: &[AllocationBlock], thread_id: usize, error_mode: ErrorMode,
     timing: &TestTiming, config: &TestMemoryConfig, progress: Option<&TestProgress>,
@@ -1295,6 +1307,7 @@ lat_v2p_write_impl!(
     std::arch::x86_64::_mm512_store_si512
 );
 
+#[doc = include_str!("test_fn_safety.md")]
 pub unsafe fn lat_v2p_write_auto_multi(
     blocks: &[AllocationBlock], thread_id: usize, error_mode: ErrorMode,
     timing: &TestTiming, config: &TestMemoryConfig, progress: Option<&TestProgress>,
@@ -1342,6 +1355,7 @@ lat_v2p_copy_impl!(
     std::arch::x86_64::_mm512_set1_epi64
 );
 
+#[doc = include_str!("test_fn_safety.md")]
 pub unsafe fn lat_v2p_copy_auto_multi(
     blocks: &[AllocationBlock], thread_id: usize, error_mode: ErrorMode,
     timing: &TestTiming, config: &TestMemoryConfig, progress: Option<&TestProgress>,
@@ -1386,6 +1400,7 @@ lat_v2p_write_full_impl!(
     1_usize  // 1 × 64 bytes = full 64-byte cache line
 );
 
+#[doc = include_str!("test_fn_safety.md")]
 pub unsafe fn lat_v2p_write_full_auto_multi(
     blocks: &[AllocationBlock], thread_id: usize, error_mode: ErrorMode,
     timing: &TestTiming, config: &TestMemoryConfig, progress: Option<&TestProgress>,
@@ -1436,6 +1451,7 @@ lat_v2p_copy_full_impl!(
     1_usize
 );
 
+#[doc = include_str!("test_fn_safety.md")]
 pub unsafe fn lat_v2p_copy_full_auto_multi(
     blocks: &[AllocationBlock], thread_id: usize, error_mode: ErrorMode,
     timing: &TestTiming, config: &TestMemoryConfig, progress: Option<&TestProgress>,
@@ -1475,6 +1491,7 @@ macro_rules! lat_ntw_write_impl {
         $vec_size:expr
     ) => {
         #[target_feature(enable = $target_feature)]
+        #[doc = include_str!("test_fn_safety.md")]
         pub unsafe fn $pub_fn(
             blocks: &[AllocationBlock],
             thread_id: usize,
@@ -1580,6 +1597,7 @@ macro_rules! lat_ntw_write_impl {
 /// store — fills only 1/8 of a cache line. Tests the lower bound of the WCB-fill-ratio
 /// hypothesis: stores that leave the most empty bytes per cache line should produce the
 /// slowest sustained commit time. Validates the progression Scalar < 128 ≤ 256 ≪ 512.
+#[doc = include_str!("test_fn_safety.md")]
 #[target_feature(enable = "sse4.2,sse4.1,ssse3,sse3,sse2,popcnt")]
 pub unsafe fn lat_ntw_write_scalar_multi(
     blocks: &[AllocationBlock],
@@ -1610,7 +1628,7 @@ pub unsafe fn lat_ntw_write_scalar_multi(
 
     let mut addr_tables: Vec<Vec<*mut i64>> = Vec::new();
     for tb in test_blocks.iter() {
-        let base = tb.block.buffer.as_mut_ptr() as *mut u8;
+        let base = tb.block.buffer.as_mut_ptr();
         let working_bytes = tb.test_size.min(window_size);
         let line_count = working_bytes / CACHE_LINE_BYTES;
         if line_count < 2 {
@@ -1697,6 +1715,7 @@ lat_ntw_write_impl!(
     64usize
 );
 
+#[doc = include_str!("test_fn_safety.md")]
 pub unsafe fn lat_ntw_write_auto_multi(
     blocks: &[AllocationBlock], thread_id: usize, error_mode: ErrorMode,
     timing: &TestTiming, config: &TestMemoryConfig, progress: Option<&TestProgress>,
@@ -1779,7 +1798,7 @@ fn finalize_stats(
             total_operations: total_ops,
             cycles_completed: cycle,
             cycles_planned: timing.cycles,
-            stopped_by_time_limit: timing.cycles.map_or(true, |limit| cycle < limit),
+            stopped_by_time_limit: timing.cycles.is_none_or(|limit| cycle < limit),
         },
         latencies_ns: sorted,
         sample_count: len,

@@ -685,14 +685,11 @@ fn modify_security_policy(content: &str, username: &str) -> Result<String, Strin
 pub fn check_restart_needed() -> bool {
     // If token shows NotAssigned but we're Administrator, check if privilege might be in policy
     match check_privilege_state() {
-        PrivilegeState::NotAssigned => {
-            if is_elevated() {
+        PrivilegeState::NotAssigned
+            if is_elevated() => {
                 // Quick check: try to export policy and see if SeLockMemoryPrivilege exists
                 check_if_privilege_in_policy().unwrap_or_default()
-            } else {
-                false
             }
-        }
         _ => false, // If privilege is in token (even disabled), no restart needed
     }
 }

@@ -155,6 +155,7 @@ unsafe fn setup_pointer_chase(base: *mut u64, len: usize, thread_id: usize) {
 }
 
 /// Read Latency Test - Uses pointer chasing for true random-access latency
+#[doc = include_str!("test_fn_safety.md")]
 pub unsafe fn read_latency_multi(
     blocks: &[AllocationBlock],
     thread_id: usize,
@@ -288,7 +289,7 @@ pub unsafe fn read_latency_multi(
         total_operations: total_bytes_processed as u64 / 8,
         cycles_completed: cycle,
         cycles_planned: timing.cycles,
-        stopped_by_time_limit: timing.cycles.map_or(true, |limit| cycle < limit),
+        stopped_by_time_limit: timing.cycles.is_none_or(|limit| cycle < limit),
     };
 
     // Log per-thread results with all percentiles
@@ -302,6 +303,7 @@ pub unsafe fn read_latency_multi(
 }
 
 /// Write Latency Test - Uses pointer chasing for addresses, writes simple values
+#[doc = include_str!("test_fn_safety.md")]
 pub unsafe fn write_latency_multi(
     blocks: &[AllocationBlock],
     thread_id: usize,
@@ -445,7 +447,7 @@ pub unsafe fn write_latency_multi(
         total_operations: total_bytes_processed as u64 / 8,
         cycles_completed: cycle,
         cycles_planned: timing.cycles,
-        stopped_by_time_limit: timing.cycles.map_or(true, |limit| cycle < limit),
+        stopped_by_time_limit: timing.cycles.is_none_or(|limit| cycle < limit),
     };
 
     // Log per-thread results with all percentiles
@@ -459,6 +461,7 @@ pub unsafe fn write_latency_multi(
 }
 
 /// Copy Latency Test - Uses pointer chasing for source addresses
+#[doc = include_str!("test_fn_safety.md")]
 pub unsafe fn copy_latency_multi(
     blocks: &[AllocationBlock],
     thread_id: usize,
@@ -614,7 +617,7 @@ pub unsafe fn copy_latency_multi(
         total_operations: total_bytes_processed as u64 / 16,
         cycles_completed: cycle,
         cycles_planned: timing.cycles,
-        stopped_by_time_limit: timing.cycles.map_or(true, |limit| cycle < limit),
+        stopped_by_time_limit: timing.cycles.is_none_or(|limit| cycle < limit),
     };
 
     // Log per-thread results with all percentiles
@@ -679,6 +682,7 @@ pub fn print_latency_summary(test_name: &str, results: &[LatencyTestStats]) {
 }
 
 // Wrappers for runner integration
+#[doc = include_str!("test_fn_safety.md")]
 pub unsafe fn read_latency_multi_wrapper(
     blocks: &[AllocationBlock],
     thread_id: usize,
@@ -690,6 +694,7 @@ pub unsafe fn read_latency_multi_wrapper(
     read_latency_multi(blocks, thread_id, error_mode, timing, config, progress).basic_stats
 }
 
+#[doc = include_str!("test_fn_safety.md")]
 pub unsafe fn write_latency_multi_wrapper(
     blocks: &[AllocationBlock],
     thread_id: usize,
@@ -701,6 +706,7 @@ pub unsafe fn write_latency_multi_wrapper(
     write_latency_multi(blocks, thread_id, error_mode, timing, config, progress).basic_stats
 }
 
+#[doc = include_str!("test_fn_safety.md")]
 pub unsafe fn copy_latency_multi_wrapper(
     blocks: &[AllocationBlock],
     thread_id: usize,

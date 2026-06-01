@@ -154,8 +154,7 @@ impl ProgressTracker {
         // Track errors per test
         self.add_test_errors(stats.name, stats.error_count);
 
-        if stats.elapsed_ms > 0 {
-            let throughput = (stats.bytes_processed as u128 * 1000) / stats.elapsed_ms;
+        if let Some(throughput) = (stats.bytes_processed as u128 * 1000).checked_div(stats.elapsed_ms) {
             self.current_throughput.store(throughput as u64, Ordering::Relaxed);
         }
     }
@@ -185,11 +184,9 @@ impl ProgressTracker {
         let total_runtime = self.start_time.elapsed();
 
         // Calculate progress percentage for current cycle only
-        let progress_pct = if tests_per_cycle > 0 {
-            ((completed * 100) / tests_per_cycle).min(100)
-        } else {
-            0
-        };
+        let progress_pct = (completed * 100)
+            .checked_div(tests_per_cycle)
+            .map_or(0, |p| p.min(100));
 
         ProgressStatus {
             completed_tests: completed,

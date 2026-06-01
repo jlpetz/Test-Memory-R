@@ -1,16 +1,16 @@
-/// Centralized parameter registry
-///
-/// This module provides a single source of truth for all command-line parameters:
-/// - Parameter names, types, and defaults
-/// - Help text and examples
-/// - Parsing and validation logic
-/// - Config file override support
-///
-/// Benefits of centralization:
-/// - DRY: Define each parameter exactly once
-/// - Consistency: Same parameter name/behavior everywhere
-/// - Maintainability: Add new parameters in one place
-/// - Validation: Centralized error handling
+//! Centralized parameter registry
+//!
+//! This module provides a single source of truth for all command-line parameters:
+//! - Parameter names, types, and defaults
+//! - Help text and examples
+//! - Parsing and validation logic
+//! - Config file override support
+//!
+//! Benefits of centralization:
+//! - DRY: Define each parameter exactly once
+//! - Consistency: Same parameter name/behavior everywhere
+//! - Maintainability: Add new parameters in one place
+//! - Validation: Centralized error handling
 
 use std::collections::HashMap;
 
@@ -52,6 +52,12 @@ pub struct ParamDef {
 pub struct ParamRegistry {
     params: HashMap<&'static str, ParamDef>,
     flags: HashMap<&'static str, ParamDef>,
+}
+
+impl Default for ParamRegistry {
+    fn default() -> Self {
+        Self::new()
+    }
 }
 
 impl ParamRegistry {
@@ -225,7 +231,7 @@ impl ParamRegistry {
                         let num_str = s.split(':').nth(1).unwrap_or("0");
                         let n = num_str.parse::<u32>()
                             .map_err(|_| format!("Invalid subblock count '{}'. Use subblocks:2 or subblocks:4", num_str))?;
-                        if n < 2 || n > 4 {
+                        if !(2..=4).contains(&n) {
                             return Err(format!("Subblock count must be 2-4, got {}", n));
                         }
                         Ok(ParamValue::String(format!("subblocks:{}", n)))

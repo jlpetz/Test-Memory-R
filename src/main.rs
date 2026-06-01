@@ -1138,13 +1138,15 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         suite_timing,
         runtime_config,
         config_opt.as_ref(),
-        final_test_filter,
-        parameter_override.as_deref(),
-        pattern_mode_override,
-        verify_reps_override,
-        test_reps_override,
-        wrc_override,
-        channels_override,
+        tmr::runner::TestRunOverrides {
+            single_test_filter: final_test_filter,
+            parameter_override: parameter_override.as_deref(),
+            pattern_mode_override,
+            verify_reps_override,
+            test_reps_override,
+            wrc_override,
+            channels_override,
+        },
         cache_info,
     );
 
@@ -1400,10 +1402,9 @@ fn calculate_thread_allocation(
         // Pass 1: Take first thread from each physical core (round-robin)
         for physical_core in &cores_to_use {
             if selected_cpus.len() >= requested_threads { break; }
-            if let Some(logical_cpus) = cores_map.get(physical_core) {
-                if let Some((cpu_id, _)) = logical_cpus.first() {
-                    selected_cpus.push(*cpu_id);
-                }
+            if let Some(logical_cpus) = cores_map.get(physical_core)
+                && let Some((cpu_id, _)) = logical_cpus.first() {
+                selected_cpus.push(*cpu_id);
             }
         }
 
@@ -1504,10 +1505,22 @@ fn setup_logging() {
     log::info!("Log level: {} - detailed logs also saved to {}", log_level, log_filename);
 }
 
+/// Parsed configuration bundle produced from validated CLI parameters:
+/// `(memory_strategy, error_mode, suite_timing, cputype, cpus, pinning, alloc)`.
+type ParsedRunConfig = (
+    EnhancedMemoryStrategy,
+    ErrorMode,
+    TestSuiteTiming,
+    String,
+    String,
+    CpuPinningConfig,
+    MemoryAllocationConfig,
+);
+
 /// Build configuration from validated parameters (using centralized registry)
 fn build_config_from_validated_params(
     validated: &HashMap<String, params::ParamValue>
-) -> Result<(EnhancedMemoryStrategy, ErrorMode, TestSuiteTiming, String, String, CpuPinningConfig, MemoryAllocationConfig), String> {
+) -> Result<ParsedRunConfig, String> {
     // Extract basic string parameters with defaults
     let cputype = params::get_string(validated, "cputype", "threads");
     let cpus = params::get_string(validated, "cpus", "100%");
@@ -1538,8 +1551,10 @@ fn build_config_from_validated_params(
     };
 
     // Build CPU pinning config
-    let mut pinning_config = CpuPinningConfig::default();
-    pinning_config.cpus_to_skip = params::get_usize(validated, "skip-cores", 1);
+    let mut pinning_config = CpuPinningConfig {
+        cpus_to_skip: params::get_usize(validated, "skip-cores", 1),
+        ..Default::default()
+    };
     if params::get_bool(validated, "--disable-pinning", false) {
         pinning_config.enable_pinning = false;
     }

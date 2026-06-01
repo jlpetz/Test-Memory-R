@@ -117,12 +117,11 @@ impl AppConfig {
     /// Save config to a JSON file (pretty-printed)
     pub fn save(&self, path: &std::path::Path) -> Result<(), String> {
         // Ensure parent directory exists
-        if let Some(parent) = path.parent() {
-            if !parent.exists() {
+        if let Some(parent) = path.parent()
+            && !parent.exists() {
                 std::fs::create_dir_all(parent)
                     .map_err(|e| format!("Failed to create directory {}: {}", parent.display(), e))?;
             }
-        }
 
         let json = serde_json::to_string_pretty(self)
             .map_err(|e| format!("Failed to serialize config: {}", e))?;
@@ -223,13 +222,12 @@ impl AppConfig {
         }
 
         // Check system UUID (motherboard/VM instance identity)
-        if let (Some(stored_uuid), Some(current_uuid)) = (&self.system_uuid, &Some(smbios.system.uuid.clone())) {
-            if !current_uuid.is_empty() && stored_uuid != current_uuid {
+        if let (Some(stored_uuid), Some(current_uuid)) = (&self.system_uuid, &Some(smbios.system.uuid.clone()))
+            && !current_uuid.is_empty() && stored_uuid != current_uuid {
                 log::warn!("System UUID mismatch (VM migration or motherboard swap): stored={}, current={}",
                     stored_uuid, current_uuid);
                 valid = false;
             }
-        }
 
         // Check memory configuration (DIMM swaps, XMP changes)
         if let Some(stored_mem_id) = &self.memory_id {
@@ -329,10 +327,12 @@ mod tests {
 
     #[test]
     fn test_roundtrip_with_fields() {
-        let mut config = AppConfig::default();
-        config.machine_id = Some("abc123".to_string());
-        config.last_config = Some("test.json".to_string());
-        config.auto_start = Some(true);
+        let config = AppConfig {
+            machine_id: Some("abc123".to_string()),
+            last_config: Some("test.json".to_string()),
+            auto_start: Some(true),
+            ..Default::default()
+        };
 
         let json = serde_json::to_string_pretty(&config).unwrap();
         let loaded: AppConfig = serde_json::from_str(&json).unwrap();
@@ -391,25 +391,27 @@ mod tests {
     fn test_roundtrip_identity_fields() {
         use crate::smbios::MemoryModule;
 
-        let mut config = AppConfig::default();
-        config.machine_id = Some("abc123def456".to_string());
-        config.system_uuid = Some("12345678-1234-1234-1234-123456789ABC".to_string());
-        config.memory_id = Some("fedcba9876543210".to_string());
-        config.tsc_frequency_ghz = Some(2.496012345);
-        config.memory_modules = Some(vec![
-            {
-                let cap: u64 = 32 * 1024 * 1024 * 1024;
-                MemoryModule {
-                    locator: "DIMM_A1".to_string(),
-                    manufacturer: "UnknownMemoryMaker".to_string(),
-                    serial_number: "12345678".to_string(),
-                    part_number: "123456789-12345".to_string(),
-                    speed_mts: 4800,
-                    capacity_bytes: cap,
-                    capacity_human: crate::smbios::format_capacity(cap),
-                }
-            },
-        ]);
+        let config = AppConfig {
+            machine_id: Some("abc123def456".to_string()),
+            system_uuid: Some("12345678-1234-1234-1234-123456789ABC".to_string()),
+            memory_id: Some("fedcba9876543210".to_string()),
+            tsc_frequency_ghz: Some(2.496012345),
+            memory_modules: Some(vec![
+                {
+                    let cap: u64 = 32 * 1024 * 1024 * 1024;
+                    MemoryModule {
+                        locator: "DIMM_A1".to_string(),
+                        manufacturer: "UnknownMemoryMaker".to_string(),
+                        serial_number: "12345678".to_string(),
+                        part_number: "123456789-12345".to_string(),
+                        speed_mts: 4800,
+                        capacity_bytes: cap,
+                        capacity_human: crate::smbios::format_capacity(cap),
+                    }
+                },
+            ]),
+            ..Default::default()
+        };
 
         let json = serde_json::to_string_pretty(&config).unwrap();
         let loaded: AppConfig = serde_json::from_str(&json).unwrap();

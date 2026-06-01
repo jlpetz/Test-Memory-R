@@ -461,7 +461,7 @@ fn convert_bios_date_to_iso(raw: &str) -> String {
         let month = parts[0];
         let day = parts[1];
         let year = parts[2];
-        if month.len() >= 1 && day.len() >= 1 && year.len() == 4 {
+        if !month.is_empty() && !day.is_empty() && year.len() == 4 {
             return format!("{}-{:0>2}-{:0>2}", year, month, day);
         }
     }

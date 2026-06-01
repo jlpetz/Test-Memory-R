@@ -350,8 +350,12 @@ impl Drop for DriverHandle {
     }
 }
 
+/// Cached result of initializing the driver: the shared handle plus its version info,
+/// or the error string from a failed init attempt.
+type DriverInitResult = Result<(Arc<DriverHandle>, DriverVersionInfo), String>;
+
 // Global driver handle that gets initialized once
-static DRIVER_HANDLE: Mutex<Option<Result<(Arc<DriverHandle>, DriverVersionInfo), String>>> = Mutex::new(None);
+static DRIVER_HANDLE: Mutex<Option<DriverInitResult>> = Mutex::new(None);
 
 pub fn get_global_driver_handle() -> Result<Arc<DriverHandle>, String> {
     let mut handle_guard = DRIVER_HANDLE.lock().map_err(|_| "Failed to lock driver handle".to_string())?;

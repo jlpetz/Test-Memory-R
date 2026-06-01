@@ -10,22 +10,19 @@ use std::collections::HashSet;
 fn format_parameter_context(ctx: &Option<crate::config::TestParameterContext>) -> String {
     match ctx {
         Some(c) => {
-            if let Some(stride) = c.page_stride_bytes {
-                if stride > 0 {
+            if let Some(stride) = c.page_stride_bytes
+                && stride > 0 {
                     return format!("PageStride({})", c.raw_parameter);
                 }
-            }
-            if let Some(sub) = c.subblock_count {
-                if sub >= 2 {
+            if let Some(sub) = c.subblock_count
+                && sub >= 2 {
                     return format!("Subblocks({})", sub);
                 }
-            }
-            if let Some(stride_cl) = c.stride_cachelines {
-                if stride_cl > 0 {
+            if let Some(stride_cl) = c.stride_cachelines
+                && stride_cl > 0 {
                     let stride_bytes = stride_cl * 64; // cache line = 64 bytes
                     return format!("Stride({}cl/{}B)", stride_cl, stride_bytes);
                 }
-            }
             // TMR-native test parameters
             if let Some(sp) = c.stride_patterns {
                 return format!("StridePat({})", sp);
@@ -689,7 +686,7 @@ fn analyze_block_allocations(
             average_per_thread: count as f64 / threads.len() as f64,
         });
     }
-    block_size_distribution.sort_by(|a, b| b.block_size_mb.cmp(&a.block_size_mb)); // Largest first
+    block_size_distribution.sort_by_key(|b| std::cmp::Reverse(b.block_size_mb)); // Largest first
     
     // Build NUMA distribution
     let mut numa_distribution = Vec::new();
@@ -703,7 +700,7 @@ fn analyze_block_allocations(
             page_types,
         });
     }
-    numa_distribution.sort_by(|a, b| a.node_id.cmp(&b.node_id));
+    numa_distribution.sort_by_key(|a| a.node_id);
     
     // Calculate page type summary
     let mut huge_stats = PageTypeStats { page_count: 0, total_bytes: 0, block_count: 0, threads_using: 0, percentage_of_total: 0.0 };
@@ -911,7 +908,7 @@ pub fn create_thread_timing_report(
     }
 
     // Sort by deviation descending (highest deviation first)
-    thread_timings.sort_by(|a, b| b.deviation_ms.cmp(&a.deviation_ms));
+    thread_timings.sort_by_key(|b| std::cmp::Reverse(b.deviation_ms));
 
     ThreadTimingReport {
         test_name: test_name.to_string(),

@@ -1833,12 +1833,6 @@ impl CalibrationTest {
             .cloned()
     }
     
-    /// Find the most stable probe within a size range
-    /// Stability is measured by combining spread ratio and window stddev
-    /// max_latency: exclude probes spilling to next tier
-    /// min_latency: ensure probe is actually hitting this tier (not previous)
-
-    
     /// Find the largest stable size (for FullDRAM)
     /// Stable = spread < 2.0
     fn find_largest_stable(&self, sweep: &[SweepProbe], min_size: usize) -> Option<SweepProbe> {

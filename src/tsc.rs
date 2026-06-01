@@ -434,8 +434,8 @@ fn validate_and_select(
     }
 
     // Case 3: CPUID values match each other (even if different from timing)
-    if let (Some((freq_15, _)), Some((freq_16, _))) = (cpuid_15.clone(), cpuid_16.clone()) {
-        if frequencies_match(freq_15, freq_16) {
+    if let (Some((freq_15, _)), Some((freq_16, _))) = (cpuid_15.clone(), cpuid_16.clone())
+        && frequencies_match(freq_15, freq_16) {
             log::info!("TSC: CPUID 0x15 and 0x16 agree, using hardware value");
             return (
                 freq_15,
@@ -444,7 +444,6 @@ fn validate_and_select(
                 Some(timing),
             );
         }
-    }
 
     // Case 4: Fall back to timing calibration with dynamic confidence
     // For AMD and other CPUs without CPUID frequency leaves, calibration is authoritative

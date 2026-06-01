@@ -493,8 +493,8 @@ fn detect_hypervisor() -> (bool, Option<String>) {
     // Check CPUID.01H:ECX.bit31 - Hypervisor Present bit
     // This bit is set by hypervisors to indicate we're running in a VM
     // raw_cpuid exposes this via has_hypervisor() on FeatureInfo
-    if let Some(feature_info) = cpuid.get_feature_info() {
-        if feature_info.has_hypervisor() {
+    if let Some(feature_info) = cpuid.get_feature_info()
+        && feature_info.has_hypervisor() {
             // We're in a VM - try to identify the hypervisor via CPUID leaf 0x40000000
             let hypervisor_name = cpuid.get_hypervisor_info()
                 .map(|info| format!("{:?}", info.identify()));
@@ -503,7 +503,6 @@ fn detect_hypervisor() -> (bool, Option<String>) {
                       hypervisor_name.as_deref().unwrap_or("Unknown"));
             return (true, hypervisor_name);
         }
-    }
 
     log::debug!("No hypervisor detected (running on physical hardware)");
     (false, None)
