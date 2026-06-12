@@ -1285,20 +1285,22 @@ fn align_to_boundary(size: usize, alignment: usize) -> usize {
 /// carries `#[target_feature(enable = "clflushopt")]` (gated by the unstable
 /// `clflushopt_target_feature`, landed in nightly via rustc PR #157098).
 ///
-/// We still emit the instruction via inline `asm!` rather than the
-/// `_mm_clflushopt` intrinsic, for two reasons. (1) The intrinsic (stdarch PR
-/// #2141) has not yet synced into nightly, so it does not exist to call. (2)
-/// Even once it does, the asm form keeps CLFLUSHOPT in the same idiom as the
-/// NT-store paths (`doc/nt_stores.md`); when flush and NT stores share a hot
-/// loop, one consistent `#APP` boundary avoids the intrinsic→asm→intrinsic
-/// `#APP`/`#NO_APP` churn that blocks scheduling. The two forms emit identical
-/// machine code, so the choice is about loop context, not performance. We do
-/// NOT use the SSE2 `_mm_clflush` — it emits the slow, globally-serialized
+/// This flush-only loop uses the `_mm_clflushopt` intrinsic (stdarch PR #2141,
+/// now synced into nightly behind `simd_x86_clflushopt`, tracking #157096),
+/// NOT inline `asm!`. The intrinsic lowers to a real LLVM `clflushopt` op, so
+/// LLVM can unroll and schedule the loop freely; the asm form is an opaque
+/// `#APP` block LLVM cannot see through (verified by `--emit asm`: the intrinsic
+/// loop unrolls, the asm loop does not). The asm idiom is reserved for a *mixed*
+/// flush + NT-store hot loop, where NT stores are themselves asm in stdarch
+/// (`doc/nt_stores.md`) and one consistent `#APP` boundary avoids
+/// intrinsic→asm→intrinsic `#APP`/`#NO_APP` churn — we have no such loop today.
+/// We do NOT use the SSE2 `_mm_clflush` — it emits the slow, globally-serialized
 /// CLFLUSH (~15× slower; see `../clflush-test`).
 ///
-/// Not unrolled: clflushopt is throughput-bound on its own issue rate, so manual
-/// unroll buys nothing (and is slightly worse at small ranges — benchmarked in
-/// `../clflush-test`). `cache_line_bytes` comes from the detected `CacheInfo`
+/// Not manually unrolled: clflushopt is throughput-bound on its own issue rate,
+/// so hand-unroll buys nothing (and is slightly worse at small ranges —
+/// benchmarked in `../clflush-test`); LLVM unrolls the intrinsic loop as it sees
+/// fit. `cache_line_bytes` comes from the detected `CacheInfo`
 /// (e.g. `config.cache_line_bytes`) — do not hardcode 64.
 ///
 /// # Safety
@@ -1511,31 +1513,13 @@ pub unsafe fn stuck_bit_test_multi(
     progress: Option<&TestProgress>,
 ) -> TestStats {
     let test_name = "Mem-StuckBit";
-    let start = Instant::now();
-
-    // Calculate total allocated memory
-    let total_allocated: usize = blocks.iter().map(|b| b.buffer.size()).sum();
-
-    // Window preparation - determines which blocks to test
-    let window_size = config.calculate_window_size(test_name, total_allocated);
-    let test_blocks = prepare_blocks_for_window(blocks, window_size, test_name);
-
-    let total_test_size: usize = test_blocks.iter().map(|b| b.test_size).sum();
-
-    log::info!("[Thread {}] Running {} on {:.2} MB of memory (window: {:.2} MB)",
-              thread_id, test_name,
-              total_test_size as f64 / MB_F64,
-              window_size as f64 / MB_F64);
-
-    let mut cycle = 0u32;
-    let test_start = Instant::now();
-    let mut total_error_count = 0u64;
-    let mut total_bytes_processed = 0usize;
-
-    let mut last_progress_update = Instant::now();
+    let (mut runner, test_blocks) = crate::test_scaffolding::TestRunner::new(
+        blocks, thread_id, error_mode, timing, config, progress,
+        test_name, TestAction::StuckBitTest,
+    );
 
     loop {
-        cycle += 1;
+        runner.begin_cycle();
         let mut cycle_errors = 0u64;
 
         // Interleave testing across all blocks with shared timer
@@ -1544,8 +1528,7 @@ pub unsafe fn stuck_bit_test_multi(
             let len = test_block.test_size / std::mem::size_of::<u64>();
 
             // Recalculate chunk size for THIS block's size
-            let ideal_chunk_size = calculate_ideal_chunk_size(config, test_name, test_block.test_size);
-            let chunk_size_bytes = get_safe_chunk_size(ideal_chunk_size, test_block.test_size);
+            let chunk_size_bytes = runner.chunk_size_bytes(test_block.test_size);
             let chunk_size_operations = (chunk_size_bytes / std::mem::size_of::<u64>()).max(1024);
 
             // Process this block in chunks
@@ -1607,93 +1590,31 @@ pub unsafe fn stuck_bit_test_multi(
                 }
 
                 // Handle errors if found
-                if cycle_errors > 0 {
-                    match error_mode {
-                        ErrorMode::Panic => {
-                            panic!("{}: panicking due to {} memory errors in cycle {}",
-                                  test_name, cycle_errors, cycle);
-                        }
-                        ErrorMode::Halt => {
-                            let elapsed = start.elapsed().as_millis();
-                            let total_operations = (total_bytes_processed / std::mem::size_of::<u64>()) as u64;
-
-                            return TestStats {
-                                name: test_name,
-                                action: TestAction::StuckBitTest,
-                                bytes_processed: total_bytes_processed,
-                                elapsed_ms: elapsed,
-                                thread_id,
-                                error_count: total_error_count + cycle_errors,
-                                total_operations,
-                                cycles_completed: cycle,
-                                cycles_planned: timing.cycles,
-                                stopped_by_time_limit: false,
-                            };
-                        }
-                        ErrorMode::Log => {
-                            // Continue testing - errors already logged
-                        }
-                    }
+                if runner.should_halt(cycle_errors) {
+                    let total_operations = (runner.bytes_processed() / std::mem::size_of::<u64>()) as u64;
+                    return runner.finish_aborted(cycle_errors, total_operations);
                 }
 
                 processed = chunk_end;
 
                 // Check for shutdown request
-                if SHUTDOWN_REQUESTED.load(Ordering::Relaxed) {
-                    let elapsed = start.elapsed().as_millis();
-                    let total_operations = (total_bytes_processed / std::mem::size_of::<u64>()) as u64;
-
-                    return TestStats {
-                        name: test_name,
-                        action: TestAction::StuckBitTest,
-                        bytes_processed: total_bytes_processed,
-                        elapsed_ms: elapsed,
-                        thread_id,
-                        error_count: total_error_count + cycle_errors,
-                        total_operations,
-                        cycles_completed: cycle,
-                        cycles_planned: timing.cycles,
-                        stopped_by_time_limit: false,
-                    };
+                if runner.shutdown_requested() {
+                    let total_operations = (runner.bytes_processed() / std::mem::size_of::<u64>()) as u64;
+                    return runner.finish_aborted(cycle_errors, total_operations);
                 }
             }
 
             // Update bytes processed for this block (3 writes + 3 reads)
-            total_bytes_processed += test_block.test_size * 6;
+            runner.add_bytes(test_block.test_size * 6);
         }
 
-        total_error_count += cycle_errors;
-
-        // Update progress tracker every 250ms
-        if let Some(progress) = progress {
-            let now = Instant::now();
-            if now.duration_since(last_progress_update).as_millis() >= 250 {
-                progress.cycles_completed.store(cycle, Ordering::Relaxed);
-                progress.bytes_processed.store(total_bytes_processed as u64, Ordering::Relaxed);
-                progress.errors_found.store(total_error_count, Ordering::Relaxed);
-                progress.last_update_ms.store(start.elapsed().as_millis() as u64, Ordering::Relaxed);
-                last_progress_update = now;
-            }
-        }
+        runner.commit_cycle_errors(cycle_errors);
+        runner.update_progress();
 
         // Check if should continue based on timing
-        let elapsed_secs = test_start.elapsed().as_secs() as u32;
-        if !timing.should_continue(cycle, elapsed_secs) {
-            let elapsed = start.elapsed().as_millis();
-            let total_operations = (total_bytes_processed / std::mem::size_of::<u64>()) as u64;
-
-            return TestStats {
-                name: test_name,
-                action: TestAction::StuckBitTest,
-                bytes_processed: total_bytes_processed,
-                elapsed_ms: elapsed,
-                thread_id,
-                error_count: total_error_count,
-                total_operations,
-                cycles_completed: cycle,
-                cycles_planned: timing.cycles,
-                stopped_by_time_limit: timing.cycles.is_none_or(|limit| cycle < limit),
-            };
+        if !runner.should_continue() {
+            let total_operations = (runner.bytes_processed() / std::mem::size_of::<u64>()) as u64;
+            return runner.finish_completed(total_operations);
         }
     }
 }
@@ -2618,31 +2539,13 @@ pub unsafe fn refresh_stable_multi(
     progress: Option<&TestProgress>,
 ) -> TestStats {
     let test_name = "Mem-Refresh";
-    let start = Instant::now();
-
-    // Calculate total allocated memory
-    let total_allocated: usize = blocks.iter().map(|b| b.buffer.size()).sum();
-
-    // Window preparation - determines which blocks to test
-    let window_size = config.calculate_window_size(test_name, total_allocated);
-    let test_blocks = prepare_blocks_for_window(blocks, window_size, test_name);
-
-    let total_test_size: usize = test_blocks.iter().map(|b| b.test_size).sum();
-
-    log::info!("[Thread {}] Running {} on {:.2} MB of memory (window: {:.2} MB)",
-              thread_id, test_name,
-              total_test_size as f64 / MB_F64,
-              window_size as f64 / MB_F64);
-
-    let mut cycle = 0u32;
-    let test_start = Instant::now();
-    let mut total_error_count = 0u64;
-    let mut total_bytes_processed = 0usize;
-
-    let mut last_progress_update = Instant::now();
+    let (mut runner, test_blocks) = crate::test_scaffolding::TestRunner::new(
+        blocks, thread_id, error_mode, timing, config, progress,
+        test_name, TestAction::WriteWaitVerify,
+    );
 
     loop {
-        cycle += 1;
+        runner.begin_cycle();
         let mut cycle_errors = 0u64;
 
         // Interleave testing across all blocks with shared timer
@@ -2651,8 +2554,7 @@ pub unsafe fn refresh_stable_multi(
             let len = test_block.test_size / std::mem::size_of::<u64>();
 
             // Recalculate chunk size for THIS block's size
-            let ideal_chunk_size = calculate_ideal_chunk_size(config, test_name, test_block.test_size);
-            let chunk_size_bytes = get_safe_chunk_size(ideal_chunk_size, test_block.test_size);
+            let chunk_size_bytes = runner.chunk_size_bytes(test_block.test_size);
             let chunk_size_operations = (chunk_size_bytes / std::mem::size_of::<u64>()).max(1024);
 
             // Process this block in chunks
@@ -2688,93 +2590,31 @@ pub unsafe fn refresh_stable_multi(
                 }
 
                 // Handle errors if found
-                if cycle_errors > 0 {
-                    match error_mode {
-                        ErrorMode::Panic => {
-                            panic!("{}: panicking due to {} memory errors in cycle {}",
-                                  test_name, cycle_errors, cycle);
-                        }
-                        ErrorMode::Halt => {
-                            let elapsed = start.elapsed().as_millis();
-                            let total_operations = (total_bytes_processed / std::mem::size_of::<u64>()) as u64;
-
-                            return TestStats {
-                                name: test_name,
-                                action: TestAction::WriteWaitVerify,
-                                bytes_processed: total_bytes_processed,
-                                elapsed_ms: elapsed,
-                                thread_id,
-                                error_count: total_error_count + cycle_errors,
-                                total_operations,
-                                cycles_completed: cycle,
-                                cycles_planned: timing.cycles,
-                                stopped_by_time_limit: false,
-                            };
-                        }
-                        ErrorMode::Log => {
-                            // Continue testing - errors already logged
-                        }
-                    }
+                if runner.should_halt(cycle_errors) {
+                    let total_operations = (runner.bytes_processed() / std::mem::size_of::<u64>()) as u64;
+                    return runner.finish_aborted(cycle_errors, total_operations);
                 }
 
                 processed = chunk_end;
 
                 // Check for shutdown request
-                if SHUTDOWN_REQUESTED.load(Ordering::Relaxed) {
-                    let elapsed = start.elapsed().as_millis();
-                    let total_operations = (total_bytes_processed / std::mem::size_of::<u64>()) as u64;
-
-                    return TestStats {
-                        name: test_name,
-                        action: TestAction::WriteWaitVerify,
-                        bytes_processed: total_bytes_processed,
-                        elapsed_ms: elapsed,
-                        thread_id,
-                        error_count: total_error_count + cycle_errors,
-                        total_operations,
-                        cycles_completed: cycle,
-                        cycles_planned: timing.cycles,
-                        stopped_by_time_limit: false,
-                    };
+                if runner.shutdown_requested() {
+                    let total_operations = (runner.bytes_processed() / std::mem::size_of::<u64>()) as u64;
+                    return runner.finish_aborted(cycle_errors, total_operations);
                 }
             }
 
             // Update bytes processed for this block (1 write + 1 read)
-            total_bytes_processed += test_block.test_size * 2;
+            runner.add_bytes(test_block.test_size * 2);
         }
 
-        total_error_count += cycle_errors;
-
-        // Update progress tracker every 250ms
-        if let Some(progress) = progress {
-            let now = Instant::now();
-            if now.duration_since(last_progress_update).as_millis() >= 250 {
-                progress.cycles_completed.store(cycle, Ordering::Relaxed);
-                progress.bytes_processed.store(total_bytes_processed as u64, Ordering::Relaxed);
-                progress.errors_found.store(total_error_count, Ordering::Relaxed);
-                progress.last_update_ms.store(start.elapsed().as_millis() as u64, Ordering::Relaxed);
-                last_progress_update = now;
-            }
-        }
+        runner.commit_cycle_errors(cycle_errors);
+        runner.update_progress();
 
         // Check if should continue based on timing
-        let elapsed_secs = test_start.elapsed().as_secs() as u32;
-        if !timing.should_continue(cycle, elapsed_secs) {
-            let elapsed = start.elapsed().as_millis();
-            let total_operations = (total_bytes_processed / std::mem::size_of::<u64>()) as u64;
-
-            return TestStats {
-                name: test_name,
-                action: TestAction::WriteWaitVerify,
-                bytes_processed: total_bytes_processed,
-                elapsed_ms: elapsed,
-                thread_id,
-                error_count: total_error_count,
-                total_operations,
-                cycles_completed: cycle,
-                cycles_planned: timing.cycles,
-                stopped_by_time_limit: timing.cycles.is_none_or(|limit| cycle < limit),
-            };
+        if !runner.should_continue() {
+            let total_operations = (runner.bytes_processed() / std::mem::size_of::<u64>()) as u64;
+            return runner.finish_completed(total_operations);
         }
     }
 }
@@ -3519,21 +3359,6 @@ pub unsafe fn cache_busting_multi(
     progress: Option<&TestProgress>,
 ) -> TestStats {
     let test_name = "Mem-CacheBust";
-    let start = Instant::now();
-
-    // Calculate total allocated memory
-    let total_allocated: usize = blocks.iter().map(|b| b.buffer.size()).sum();
-
-    // Window preparation - determines which blocks to test
-    let window_size = config.calculate_window_size(test_name, total_allocated);
-    let test_blocks = prepare_blocks_for_window(blocks, window_size, test_name);
-
-    let total_test_size: usize = test_blocks.iter().map(|b| b.test_size).sum();
-
-    log::info!("[Thread {}] Running {} on {:.2} MB of memory (window: {:.2} MB)",
-              thread_id, test_name,
-              total_test_size as f64 / MB_F64,
-              window_size as f64 / MB_F64);
 
     let stride_patterns = config.parameter_context.as_ref()
         .and_then(|c| c.stride_patterns)
@@ -3543,15 +3368,13 @@ pub unsafe fn cache_busting_multi(
     let base_stride = CACHE_BUSTING_STRIDE / std::mem::size_of::<u64>();
     let pattern_base = 0x0123456789ABCDEFu64.wrapping_add(thread_id as u64);
 
-    let mut cycle = 0u32;
-    let test_start = Instant::now();
-    let mut total_error_count = 0u64;
-    let mut total_bytes_processed = 0usize;
-
-    let mut last_progress_update = Instant::now();
+    let (mut runner, test_blocks) = crate::test_scaffolding::TestRunner::new(
+        blocks, thread_id, error_mode, timing, config, progress,
+        test_name, TestAction::CacheBusting,
+    );
 
     loop {
-        cycle += 1;
+        runner.begin_cycle();
         let mut cycle_errors = 0u64;
 
         // Interleave testing across all blocks with shared timer
@@ -3560,8 +3383,7 @@ pub unsafe fn cache_busting_multi(
             let len = test_block.test_size / std::mem::size_of::<u64>();
 
             // Recalculate chunk size for THIS block's size
-            let ideal_chunk_size = calculate_ideal_chunk_size(config, test_name, test_block.test_size);
-            let chunk_size_bytes = get_safe_chunk_size(ideal_chunk_size, test_block.test_size);
+            let chunk_size_bytes = runner.chunk_size_bytes(test_block.test_size);
             let chunk_size_operations = (chunk_size_bytes / std::mem::size_of::<u64>()).max(1024);
 
             // Process this block in chunks
@@ -3639,93 +3461,31 @@ pub unsafe fn cache_busting_multi(
                 }
 
                 // Handle errors if found
-                if cycle_errors > 0 {
-                    match error_mode {
-                        ErrorMode::Panic => {
-                            panic!("{}: panicking due to {} memory errors in cycle {}",
-                                  test_name, cycle_errors, cycle);
-                        }
-                        ErrorMode::Halt => {
-                            let elapsed = start.elapsed().as_millis();
-                            let total_operations = (total_bytes_processed / std::mem::size_of::<u64>()) as u64;
-
-                            return TestStats {
-                                name: test_name,
-                                action: TestAction::CacheBusting,
-                                bytes_processed: total_bytes_processed,
-                                elapsed_ms: elapsed,
-                                thread_id,
-                                error_count: total_error_count + cycle_errors,
-                                total_operations,
-                                cycles_completed: cycle,
-                                cycles_planned: timing.cycles,
-                                stopped_by_time_limit: false,
-                            };
-                        }
-                        ErrorMode::Log => {
-                            // Continue testing - errors already logged
-                        }
-                    }
+                if runner.should_halt(cycle_errors) {
+                    let total_operations = (runner.bytes_processed() / std::mem::size_of::<u64>()) as u64;
+                    return runner.finish_aborted(cycle_errors, total_operations);
                 }
 
                 processed = chunk_end;
 
                 // Check for shutdown request
-                if SHUTDOWN_REQUESTED.load(Ordering::Relaxed) {
-                    let elapsed = start.elapsed().as_millis();
-                    let total_operations = (total_bytes_processed / std::mem::size_of::<u64>()) as u64;
-
-                    return TestStats {
-                        name: test_name,
-                        action: TestAction::CacheBusting,
-                        bytes_processed: total_bytes_processed,
-                        elapsed_ms: elapsed,
-                        thread_id,
-                        error_count: total_error_count + cycle_errors,
-                        total_operations,
-                        cycles_completed: cycle,
-                        cycles_planned: timing.cycles,
-                        stopped_by_time_limit: false,
-                    };
+                if runner.shutdown_requested() {
+                    let total_operations = (runner.bytes_processed() / std::mem::size_of::<u64>()) as u64;
+                    return runner.finish_aborted(cycle_errors, total_operations);
                 }
             }
 
             // Update bytes processed for this block (write + verify = 2×)
-            total_bytes_processed += test_block.test_size * 2;
+            runner.add_bytes(test_block.test_size * 2);
         }
 
-        total_error_count += cycle_errors;
-
-        // Update progress tracker every 250ms
-        if let Some(progress) = progress {
-            let now = Instant::now();
-            if now.duration_since(last_progress_update).as_millis() >= 250 {
-                progress.cycles_completed.store(cycle, Ordering::Relaxed);
-                progress.bytes_processed.store(total_bytes_processed as u64, Ordering::Relaxed);
-                progress.errors_found.store(total_error_count, Ordering::Relaxed);
-                progress.last_update_ms.store(start.elapsed().as_millis() as u64, Ordering::Relaxed);
-                last_progress_update = now;
-            }
-        }
+        runner.commit_cycle_errors(cycle_errors);
+        runner.update_progress();
 
         // Check if should continue based on timing
-        let elapsed_secs = test_start.elapsed().as_secs() as u32;
-        if !timing.should_continue(cycle, elapsed_secs) {
-            let elapsed = start.elapsed().as_millis();
-            let total_operations = (total_bytes_processed / std::mem::size_of::<u64>()) as u64;
-
-            return TestStats {
-                name: test_name,
-                action: TestAction::CacheBusting,
-                bytes_processed: total_bytes_processed,
-                elapsed_ms: elapsed,
-                thread_id,
-                error_count: total_error_count,
-                total_operations,
-                cycles_completed: cycle,
-                cycles_planned: timing.cycles,
-                stopped_by_time_limit: timing.cycles.is_none_or(|limit| cycle < limit),
-            };
+        if !runner.should_continue() {
+            let total_operations = (runner.bytes_processed() / std::mem::size_of::<u64>()) as u64;
+            return runner.finish_completed(total_operations);
         }
     }
 }
@@ -3753,28 +3513,12 @@ pub unsafe fn random_torture_multi(
     progress: Option<&TestProgress>,
 ) -> TestStats {
     let test_name = "Mem-Random";
-    let start = Instant::now();
 
-    // Calculate total allocated memory
-    let total_allocated: usize = blocks.iter().map(|b| b.buffer.size()).sum();
-
-    // Window preparation - determines which blocks to test
-    let window_size = config.calculate_window_size(test_name, total_allocated);
-    let test_blocks = prepare_blocks_for_window(blocks, window_size, test_name);
-
+    let (mut runner, test_blocks) = crate::test_scaffolding::TestRunner::new(
+        blocks, thread_id, error_mode, timing, config, progress,
+        test_name, TestAction::RandomAccess,
+    );
     let total_test_size: usize = test_blocks.iter().map(|b| b.test_size).sum();
-
-    log::info!("[Thread {}] Running {} on {:.2} MB of memory (window: {:.2} MB)",
-              thread_id, test_name,
-              total_test_size as f64 / MB_F64,
-              window_size as f64 / MB_F64);
-
-    let mut cycle = 0u32;
-    let test_start = Instant::now();
-    let mut total_error_count = 0u64;
-    let mut total_bytes_processed = 0usize;
-
-    let mut last_progress_update = Instant::now();
 
     // Initialize all blocks with known pattern once
     for test_block in test_blocks.iter() {
@@ -3785,11 +3529,11 @@ pub unsafe fn random_torture_multi(
             *base.add(i) = i as u64;
         }
         std::sync::atomic::fence(Ordering::SeqCst);
-        total_bytes_processed += test_block.test_size;
+        runner.add_bytes(test_block.test_size);
     }
 
     loop {
-        cycle += 1;
+        let cycle = runner.begin_cycle();
         let mut cycle_errors = 0u64;
 
         // Interleave testing across all blocks with shared timer
@@ -3805,8 +3549,7 @@ pub unsafe fn random_torture_multi(
             let mask = len - 1;
 
             // Calculate chunk size for responsive shutdown
-            let ideal_chunk_size = calculate_ideal_chunk_size(config, test_name, test_block.test_size);
-            let chunk_size_bytes = get_safe_chunk_size(ideal_chunk_size, test_block.test_size);
+            let chunk_size_bytes = runner.chunk_size_bytes(test_block.test_size);
             let chunk_size_operations = chunk_size_bytes / std::mem::size_of::<u64>();
 
             // Random access torture with configurable RNG sequences
@@ -3853,52 +3596,15 @@ pub unsafe fn random_torture_multi(
                     }
 
                     // Handle errors if found
-                    if cycle_errors > 0 {
-                        match error_mode {
-                            ErrorMode::Panic => {
-                                panic!("{}: {} memory errors detected in rng_seq {} (see logs above)",
-                                      test_name, cycle_errors, seq);
-                            }
-                            ErrorMode::Halt => {
-                                let elapsed = start.elapsed().as_millis();
-                                let total_operations = cycle as u64 * (chunk_end - chunk_start) as u64;
-
-                                return TestStats {
-                                    name: test_name,
-                                    action: TestAction::RandomAccess,
-                                    bytes_processed: total_bytes_processed,
-                                    elapsed_ms: elapsed,
-                                    thread_id,
-                                    error_count: total_error_count + cycle_errors,
-                                    total_operations,
-                                    cycles_completed: cycle,
-                                    cycles_planned: timing.cycles,
-                                    stopped_by_time_limit: false,
-                                };
-                            }
-                            ErrorMode::Log => {
-                                // Continue - errors already logged
-                            }
-                        }
+                    if runner.should_halt(cycle_errors) {
+                        let total_operations = cycle as u64 * (chunk_end - chunk_start) as u64;
+                        return runner.finish_aborted(cycle_errors, total_operations);
                     }
 
                     // Check for shutdown request
-                    if SHUTDOWN_REQUESTED.load(Ordering::Relaxed) {
-                        let elapsed = start.elapsed().as_millis();
+                    if runner.shutdown_requested() {
                         let total_operations = cycle as u64 * (chunk_end - chunk_start) as u64;
-
-                        return TestStats {
-                            name: test_name,
-                            action: TestAction::RandomAccess,
-                            bytes_processed: total_bytes_processed,
-                            elapsed_ms: elapsed,
-                            thread_id,
-                            error_count: total_error_count + cycle_errors,
-                            total_operations,
-                            cycles_completed: cycle,
-                            cycles_planned: timing.cycles,
-                            stopped_by_time_limit: false,
-                        };
+                        return runner.finish_aborted(cycle_errors, total_operations);
                     }
                 }
             }
@@ -3907,28 +3613,14 @@ pub unsafe fn random_torture_multi(
             let bytes_this_cycle = iterations_per_seq
                 .saturating_mul(rng_sequences as usize)
                 .saturating_mul(std::mem::size_of::<u64>());
-            total_bytes_processed = total_bytes_processed.saturating_add(bytes_this_cycle);
+            runner.add_bytes(bytes_this_cycle);
         }
 
-        total_error_count += cycle_errors;
-
-        // Update progress tracker every 250ms
-        if let Some(progress) = progress {
-            let now = Instant::now();
-            if now.duration_since(last_progress_update).as_millis() >= 250 {
-                progress.cycles_completed.store(cycle, Ordering::Relaxed);
-                progress.bytes_processed.store(total_bytes_processed as u64, Ordering::Relaxed);
-                progress.errors_found.store(total_error_count, Ordering::Relaxed);
-                progress.last_update_ms.store(start.elapsed().as_millis() as u64, Ordering::Relaxed);
-                last_progress_update = now;
-            }
-        }
+        runner.commit_cycle_errors(cycle_errors);
+        runner.update_progress();
 
         // Check if should continue based on timing
-        let elapsed_secs = test_start.elapsed().as_secs() as u32;
-        if !timing.should_continue(cycle, elapsed_secs) {
-            let elapsed = start.elapsed().as_millis();
-
+        if !runner.should_continue() {
             // Calculate total operations
             let base_iterations = (total_test_size / std::mem::size_of::<u64>() / 1000).clamp(5000, 50000);
             let rng_seq_count = config.parameter_context.as_ref()
@@ -3937,18 +3629,7 @@ pub unsafe fn random_torture_multi(
             let iterations_per_seq_final = (base_iterations >> rng_seq_count.trailing_zeros()).max(1);
             let total_operations: u64 = cycle as u64 * (iterations_per_seq_final * rng_seq_count) as u64;
 
-            return TestStats {
-                name: test_name,
-                action: TestAction::RandomAccess,
-                bytes_processed: total_bytes_processed,
-                elapsed_ms: elapsed,
-                thread_id,
-                error_count: total_error_count,
-                total_operations,
-                cycles_completed: cycle,
-                cycles_planned: timing.cycles,
-                stopped_by_time_limit: timing.cycles.is_none_or(|limit| cycle < limit),
-            };
+            return runner.finish_completed(total_operations);
         }
     }
 }
@@ -3968,27 +3649,20 @@ pub unsafe fn stride_access_multi(
     progress: Option<&TestProgress>,
 ) -> TestStats {
     let test_name = "Mem-Stride";
-    let start = Instant::now();
-    let total_allocated: usize = blocks.iter().map(|b| b.buffer.size()).sum();
-    let window_size = config.calculate_window_size(test_name, total_allocated);
-    let test_blocks = prepare_blocks_for_window(blocks, window_size, test_name);
-    let total_test_size: usize = test_blocks.iter().map(|b| b.test_size).sum();
-
-    log::info!("[Thread {}] Running {} on {:.2} MB of memory (window: {:.2} MB)",
-              thread_id, test_name, total_test_size as f64 / MB_F64, window_size as f64 / MB_F64);
 
     let subdivisions = config.parameter_context.as_ref()
         .and_then(|c| c.subdivisions)
         .expect("StrideAccess requires subdivisions in parameter_context") as usize;
     let subdiv_shift = subdivisions.trailing_zeros();
-    let mut cycle = 0u32;
-    let test_start = Instant::now();
-    let mut total_error_count = 0u64;
-    let mut total_bytes_processed = 0usize;
-    let mut last_progress_update = Instant::now();
+
+    let (mut runner, test_blocks) = crate::test_scaffolding::TestRunner::new(
+        blocks, thread_id, error_mode, timing, config, progress,
+        test_name, TestAction::ReadWrite,
+    );
+    let total_test_size: usize = test_blocks.iter().map(|b| b.test_size).sum();
 
     loop {
-        cycle += 1;
+        let cycle = runner.begin_cycle();
         let mut cycle_errors = 0u64;
         let strides = [1, 16, 64, 256, 1024, 4096];
         let pattern_base = 0xFEDCBA9876543210u64.wrapping_add(thread_id as u64).wrapping_add(cycle as u64);
@@ -3996,8 +3670,7 @@ pub unsafe fn stride_access_multi(
         for test_block in test_blocks.iter() {
             let base = test_block.block.buffer.as_mut_ptr() as *mut u64;
             let len = test_block.test_size / std::mem::size_of::<u64>();
-            let ideal_chunk_size = calculate_ideal_chunk_size(config, test_name, test_block.test_size);
-            let chunk_size_bytes = get_safe_chunk_size(ideal_chunk_size, test_block.test_size);
+            let chunk_size_bytes = runner.chunk_size_bytes(test_block.test_size);
             let chunk_size_elements = chunk_size_bytes / std::mem::size_of::<u64>();
 
             'stride_loop: for &stride in &strides {
@@ -4039,25 +3712,14 @@ pub unsafe fn stride_access_multi(
                         }
                     }
 
-                    if cycle_errors > 0 {
-                        match error_mode {
-                            ErrorMode::Panic => panic!("{}: {} memory errors detected (see logs above)", test_name, cycle_errors),
-                            ErrorMode::Halt => break 'stride_loop,
-                            ErrorMode::Log => {}
-                        }
+                    if runner.should_halt(cycle_errors) {
+                        break 'stride_loop;
                     }
 
-                    if SHUTDOWN_REQUESTED.load(Ordering::Relaxed) {
-                        total_error_count += cycle_errors;
-                        total_bytes_processed += (chunk_end - chunk_start) * std::mem::size_of::<u64>() * 2;
-                        let elapsed = start.elapsed().as_millis();
-                        return TestStats {
-                            name: test_name, action: TestAction::ReadWrite,
-                            bytes_processed: total_bytes_processed, elapsed_ms: elapsed, thread_id,
-                            error_count: total_error_count,
-                            total_operations: cycle as u64 * (chunk_end - chunk_start) as u64,
-                            cycles_completed: cycle, cycles_planned: timing.cycles, stopped_by_time_limit: false,
-                        };
+                    if runner.shutdown_requested() {
+                        runner.add_bytes((chunk_end - chunk_start) * std::mem::size_of::<u64>() * 2);
+                        let total_operations = cycle as u64 * (chunk_end - chunk_start) as u64;
+                        return runner.finish_aborted(cycle_errors, total_operations);
                     }
                 }
             }
@@ -4068,24 +3730,13 @@ pub unsafe fn stride_access_multi(
                     bytes_this_cycle += (len / stride) * std::mem::size_of::<u64>() * 2;
                 }
             }
-            total_bytes_processed = total_bytes_processed.saturating_add(bytes_this_cycle);
+            runner.add_bytes(bytes_this_cycle);
         }
 
-        total_error_count += cycle_errors;
-        if let Some(progress) = progress {
-            let now = Instant::now();
-            if now.duration_since(last_progress_update).as_millis() >= 250 {
-                progress.cycles_completed.store(cycle, Ordering::Relaxed);
-                progress.bytes_processed.store(total_bytes_processed as u64, Ordering::Relaxed);
-                progress.errors_found.store(total_error_count, Ordering::Relaxed);
-                progress.last_update_ms.store(start.elapsed().as_millis() as u64, Ordering::Relaxed);
-                last_progress_update = now;
-            }
-        }
+        runner.commit_cycle_errors(cycle_errors);
+        runner.update_progress();
 
-        let elapsed_secs = test_start.elapsed().as_secs() as u32;
-        if !timing.should_continue(cycle, elapsed_secs) {
-            let elapsed = start.elapsed().as_millis();
+        if !runner.should_continue() {
             let strides = [1, 16, 64, 256, 1024, 4096];
             let mut total_elements_per_cycle = 0u64;
             for &stride in &strides {
@@ -4094,13 +3745,7 @@ pub unsafe fn stride_access_multi(
                 }
             }
             let total_operations: u64 = cycle as u64 * total_elements_per_cycle;
-            return TestStats {
-                name: test_name, action: TestAction::ReadWrite,
-                bytes_processed: total_bytes_processed, elapsed_ms: elapsed, thread_id,
-                error_count: total_error_count, total_operations,
-                cycles_completed: cycle, cycles_planned: timing.cycles,
-                stopped_by_time_limit: timing.cycles.is_none_or(|limit| cycle < limit),
-            };
+            return runner.finish_completed(total_operations);
         }
     }
 }
@@ -4116,20 +3761,12 @@ pub unsafe fn block_move_multi(
     progress: Option<&TestProgress>,
 ) -> TestStats {
     let test_name = "Mem-BlockMove";
-    let start = Instant::now();
-    let total_allocated: usize = blocks.iter().map(|b| b.buffer.size()).sum();
-    let window_size = config.calculate_window_size(test_name, total_allocated);
-    let test_blocks = prepare_blocks_for_window(blocks, window_size, test_name);
+
+    let (mut runner, test_blocks) = crate::test_scaffolding::TestRunner::new(
+        blocks, thread_id, error_mode, timing, config, progress,
+        test_name, TestAction::ReadWrite,
+    );
     let total_test_size: usize = test_blocks.iter().map(|b| b.test_size).sum();
-
-    log::info!("[Thread {}] Running {} on {:.2} MB of memory (window: {:.2} MB)",
-              thread_id, test_name, total_test_size as f64 / MB_F64, window_size as f64 / MB_F64);
-
-    let mut cycle = 0u32;
-    let test_start = Instant::now();
-    let mut total_error_count = 0u64;
-    let mut total_bytes_processed = 0usize;
-    let mut last_progress_update = Instant::now();
 
     // Initialize source memory in each block
     let pattern_base = 0xDEADBEEFCAFEBABEu64;
@@ -4147,7 +3784,7 @@ pub unsafe fn block_move_multi(
     std::sync::atomic::fence(Ordering::SeqCst);
 
     loop {
-        cycle += 1;
+        let cycle = runner.begin_cycle();
         let mut cycle_errors = 0u64;
 
         for test_block in test_blocks.iter() {
@@ -4158,8 +3795,7 @@ pub unsafe fn block_move_multi(
             let len = half_size / std::mem::size_of::<u64>();
 
             // Calculate chunk size for responsive shutdown
-            let ideal_chunk_size = calculate_ideal_chunk_size(config, test_name, test_block.test_size);
-            let chunk_size_bytes = get_safe_chunk_size(ideal_chunk_size, test_block.test_size);
+            let chunk_size_bytes = runner.chunk_size_bytes(test_block.test_size);
             let chunk_size_operations = chunk_size_bytes / (2 * std::mem::size_of::<u64>());
 
             // Process in chunks
@@ -4257,89 +3893,31 @@ pub unsafe fn block_move_multi(
                 }
 
                 // Handle errors
-                if cycle_errors > 0 {
-                    match error_mode {
-                        ErrorMode::Panic => {
-                            panic!("{}: {} errors detected in cycle {}", test_name, cycle_errors, cycle);
-                        }
-                        ErrorMode::Halt => {
-                            total_error_count += cycle_errors;
-                            let elapsed = start.elapsed().as_millis();
-                            return TestStats {
-                                name: test_name,
-                                action: TestAction::ReadWrite,
-                                bytes_processed: total_bytes_processed,
-                                elapsed_ms: elapsed,
-                                thread_id,
-                                error_count: total_error_count,
-                                total_operations: cycle as u64 * len as u64,
-                                cycles_completed: cycle,
-                                cycles_planned: timing.cycles,
-                                stopped_by_time_limit: false,
-                            };
-                        }
-                        ErrorMode::Log => {
-                            // Continue - errors already logged
-                        }
-                    }
+                if runner.should_halt(cycle_errors) {
+                    let total_operations = cycle as u64 * len as u64;
+                    return runner.finish_aborted(cycle_errors, total_operations);
                 }
 
                 // Check for shutdown
-                if SHUTDOWN_REQUESTED.load(Ordering::Relaxed) {
-                    total_error_count += cycle_errors;
-                    total_bytes_processed += (chunk_end - processed) * std::mem::size_of::<u64>() * 2;
-                    let elapsed = start.elapsed().as_millis();
-                    return TestStats {
-                        name: test_name,
-                        action: TestAction::ReadWrite,
-                        bytes_processed: total_bytes_processed,
-                        elapsed_ms: elapsed,
-                        thread_id,
-                        error_count: total_error_count,
-                        total_operations: cycle as u64 * (chunk_end - processed) as u64,
-                        cycles_completed: cycle,
-                        cycles_planned: timing.cycles,
-                        stopped_by_time_limit: false,
-                    };
+                if runner.shutdown_requested() {
+                    runner.add_bytes((chunk_end - processed) * std::mem::size_of::<u64>() * 2);
+                    let total_operations = cycle as u64 * (chunk_end - processed) as u64;
+                    return runner.finish_aborted(cycle_errors, total_operations);
                 }
 
                 processed = chunk_end;
             }
 
-            total_bytes_processed += test_block.test_size * 3 / 2; // Copy (R source + W dest = 1×) + Verify (R dest = 0.5×) = 1.5×
+            runner.add_bytes(test_block.test_size * 3 / 2); // Copy (R source + W dest = 1×) + Verify (R dest = 0.5×) = 1.5×
         }
 
-        total_error_count += cycle_errors;
-
-        // Progress updates
-        if let Some(progress) = progress {
-            let now = Instant::now();
-            if now.duration_since(last_progress_update).as_millis() >= 250 {
-                progress.cycles_completed.store(cycle, Ordering::Relaxed);
-                progress.bytes_processed.store(total_bytes_processed as u64, Ordering::Relaxed);
-                progress.errors_found.store(total_error_count, Ordering::Relaxed);
-                progress.last_update_ms.store(start.elapsed().as_millis() as u64, Ordering::Relaxed);
-                last_progress_update = now;
-            }
-        }
+        runner.commit_cycle_errors(cycle_errors);
+        runner.update_progress();
 
         // Check timing
-        let elapsed_secs = test_start.elapsed().as_secs() as u32;
-        if !timing.should_continue(cycle, elapsed_secs) {
-            let elapsed = start.elapsed().as_millis();
+        if !runner.should_continue() {
             let total_operations: u64 = cycle as u64 * (total_test_size / (std::mem::size_of::<u64>() * 2)) as u64;
-            return TestStats {
-                name: test_name,
-                action: TestAction::ReadWrite,
-                bytes_processed: total_bytes_processed,
-                elapsed_ms: elapsed,
-                thread_id,
-                error_count: total_error_count,
-                total_operations,
-                cycles_completed: cycle,
-                cycles_planned: timing.cycles,
-                stopped_by_time_limit: timing.cycles.is_none_or(|limit| cycle < limit),
-            };
+            return runner.finish_completed(total_operations);
         }
     }
 }

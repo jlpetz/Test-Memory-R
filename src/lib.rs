@@ -26,6 +26,7 @@ pub mod bandwidth_tests; // Bandwidth measurement tests
 pub mod calibration; // Adaptive cache calibration
 pub mod pattern_gen; // v2 pattern generation (LCG, Mode 0/1/2)
 pub mod test_harness; // v2 zero-cost test orchestration harness
+pub mod test_scaffolding; // shared zero-cost bookkeeping for loop-owning v1 tests (TODO #19 Part A)
 pub mod app_config; // Persistent application config (tmr-cfg.json)
 pub mod smbios; // SMBIOS table parser (system identity, memory modules)
 

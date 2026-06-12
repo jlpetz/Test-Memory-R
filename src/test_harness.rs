@@ -13,14 +13,12 @@
 //! - Closures capture SIMD constants by value → no indirection
 //! - No vtable, no boxing, no `dyn`
 
-use crate::runner::{AllocationBlock, SHUTDOWN_REQUESTED};
+use crate::runner::AllocationBlock;
 use crate::tests::{
     TestAction, TestMemoryConfig, TestProgress, TestStats, TestTiming,
-    calculate_ideal_chunk_size, get_safe_chunk_size, prepare_blocks_for_window,
 };
 use crate::ErrorMode;
 use std::sync::atomic::Ordering;
-use std::time::Instant;
 
 /// Chunk-level context passed to closures.
 /// Contains pre-computed values so closures don't need to recompute them.
@@ -149,10 +147,13 @@ where
         };
     }
 
-    // Prepare blocks with window limits
-    let total_allocated: usize = blocks.iter().map(|b| b.buffer.size()).sum();
-    let window_size = config.calculate_window_size(test_name, total_allocated);
-    let test_blocks = prepare_blocks_for_window(blocks, window_size, test_name);
+    // Block prep, window sizing, the info log, and the timers all live in TestRunner
+    // now — one source of truth shared with the Tier-2 loop-owning tests (TODO #19 A.3).
+    // The runner also starts the timer BEFORE init, preserving the v1 behaviour of
+    // counting the first write in cycle timing.
+    let (mut runner, test_blocks) = crate::test_scaffolding::TestRunner::new(
+        blocks, thread_id, error_mode, timing, config, progress, test_name, action,
+    );
 
     if test_blocks.is_empty() {
         log::warn!("{}: No blocks prepared for testing", test_name);
@@ -173,20 +174,9 @@ where
     // Pre-compute error check interval mask from config (v1 parity)
     let check_mask = config.error_check_interval.get_check_mask();
 
-    // Tracking
-    let mut total_bytes_processed = 0usize;
-    let mut total_error_count = 0u64;
+    // Operation counting is unique to the phased tests, so the runner doesn't own it.
+    // (Bytes and errors are accumulated through the runner.)
     let mut total_operations = 0u64;
-
-    // Start timer BEFORE init — v1 includes the first write in its cycle timing,
-    // so v2 must include init in elapsed time for fair A/B comparison.
-    let test_start = Instant::now();
-    let start = Instant::now();
-    let mut cycle = 0u32;
-
-    // Progress reporting — 250ms matches v1 SIMD update frequency
-    let update_interval_ms = 250u128;
-    let mut last_progress_update = Instant::now();
 
     // Pre-compute per-block metadata once (ptr, len, chunk_size don't change between cycles)
     struct BlockMeta {
@@ -198,8 +188,7 @@ where
     let block_metas: Vec<BlockMeta> = test_blocks.iter().map(|tb| {
         let ptr = tb.block.buffer.as_mut_ptr() as *mut u64;
         let len_elements = tb.test_size / std::mem::size_of::<u64>();
-        let ideal = calculate_ideal_chunk_size(config, test_name, tb.test_size);
-        let chunk_bytes = get_safe_chunk_size(ideal, tb.test_size);
+        let chunk_bytes = runner.chunk_size_bytes(tb.test_size);
         let chunk_size_elements = chunk_bytes / std::mem::size_of::<u64>();
         BlockMeta { ptr, len_elements, chunk_size_elements, test_size_bytes: tb.test_size }
     }).collect();
@@ -221,13 +210,14 @@ where
 
         // Account for init: one write pass over all blocks
         for meta in block_metas.iter() {
-            total_bytes_processed += meta.test_size_bytes;
+            runner.add_bytes(meta.test_size_bytes);
         }
     }
 
     // Main test loop — interleaves across blocks
-    'outer: loop {
-        cycle += 1;
+    loop {
+        let cycle = runner.begin_cycle();
+        let mut cycle_errors = 0u64;
 
         for meta in block_metas.iter() {
             let mut block_errors = 0u64;
@@ -261,74 +251,44 @@ where
                     }
                 }
 
-                // Check for shutdown
-                if SHUTDOWN_REQUESTED.load(Ordering::Relaxed) {
-                    total_error_count += block_errors;
+                // Check for shutdown (mid-chunk)
+                if runner.shutdown_requested() {
+                    cycle_errors += block_errors;
                     let ops_per_wrc = bytes_per_test_op * test_reps as usize + verify_reps as usize;
-                    total_bytes_processed += (chunk_end - chunk_start) * std::mem::size_of::<u64>() * ops_per_wrc * wrc as usize;
-                    break 'outer;
+                    runner.add_bytes((chunk_end - chunk_start) * std::mem::size_of::<u64>() * ops_per_wrc * wrc as usize);
+                    return runner.finish_aborted(cycle_errors, total_operations);
                 }
             }
 
-            total_error_count += block_errors;
+            cycle_errors += block_errors;
             // Per write_read_cycle: bytes_per_test_op × test_reps writes + verify_reps reads
             let ops_per_wrc = bytes_per_test_op * test_reps as usize + verify_reps as usize;
-            total_bytes_processed += meta.test_size_bytes * ops_per_wrc * config.write_read_cycles as usize;
+            runner.add_bytes(meta.test_size_bytes * ops_per_wrc * config.write_read_cycles as usize);
             total_operations += meta.len_elements as u64 * (test_reps as u64 + verify_reps as u64) * config.write_read_cycles as u64;
 
-            // Handle errors
-            if block_errors > 0 {
-                match error_mode {
-                    ErrorMode::Panic => {
-                        panic!("{}: {} memory errors detected on thread {}", test_name, block_errors, thread_id);
-                    }
-                    ErrorMode::Halt => {
-                        break 'outer;
-                    }
-                    ErrorMode::Log => { /* Continue */ }
-                }
+            // Error-mode dispatch: Panic panics, Halt aborts the test, Log continues.
+            if runner.should_halt(block_errors) {
+                return runner.finish_aborted(cycle_errors, total_operations);
             }
 
             // Check for shutdown between blocks
-            if SHUTDOWN_REQUESTED.load(Ordering::Relaxed) {
-                break 'outer;
+            if runner.shutdown_requested() {
+                return runner.finish_aborted(cycle_errors, total_operations);
             }
         }
 
-        // Progress update
-        if let Some(progress) = progress {
-            let now = Instant::now();
-            if now.duration_since(last_progress_update).as_millis() >= update_interval_ms {
-                progress.cycles_completed.store(cycle, Ordering::Relaxed);
-                progress.bytes_processed.store(total_bytes_processed as u64, Ordering::Relaxed);
-                progress.errors_found.store(total_error_count, Ordering::Relaxed);
-                progress.last_update_ms.store(now.duration_since(start).as_millis() as u64, Ordering::Relaxed);
-                last_progress_update = now;
-            }
+        runner.commit_cycle_errors(cycle_errors);
+        runner.update_progress();
+
+        // Timing/cycle gate
+        if !runner.should_continue() {
+            return runner.finish_completed(total_operations);
         }
 
-        // Check timing
-        let elapsed_secs = test_start.elapsed().as_secs() as u32;
-        if !timing.should_continue(cycle, elapsed_secs) {
-            break;
+        // Errors for this cycle are already committed, so a shutdown here adds none.
+        if runner.shutdown_requested() {
+            return runner.finish_aborted(0, total_operations);
         }
-
-        if SHUTDOWN_REQUESTED.load(Ordering::Relaxed) {
-            break;
-        }
-    }
-
-    TestStats {
-        name: test_name,
-        action,
-        bytes_processed: total_bytes_processed,
-        elapsed_ms: start.elapsed().as_millis(),
-        thread_id,
-        error_count: total_error_count,
-        total_operations,
-        cycles_completed: cycle,
-        cycles_planned: timing.cycles,
-        stopped_by_time_limit: timing.cycles.is_none_or(|limit| cycle < limit),
     }
 }
 

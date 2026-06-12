@@ -1,0 +1,214 @@
+//! Shared, zero-cost scaffolding for the loop-owning correctness tests.
+//!
+//! This is **not** an orchestrator (that mistake — a generic `TestPattern` trait +
+//! `run_interleaved_test()` — was tried and deleted 2026-04-13 because
+//! `#[target_feature]` does not propagate through trait/closure calls and SIMD
+//! silently dropped to baseline). Instead `TestRunner` is a bag of bookkeeping
+//! utilities the test composes while owning its entire hot inner loop.
+//!
+//! Every method here runs **between** chunks/blocks, never inside the SIMD loop:
+//! they are simple field reads/writes that inline trivially. The hot path stays
+//! byte-identical to the hand-written v1 tests — only the surrounding boilerplate
+//! (window sizing, block prep, timer/cycle loop, shutdown checks, throttled
+//! progress, error-mode dispatch, `TestStats` construction) moves in here.
+//!
+//! See TODO #19 Part A for the design and the three-tier execution model.
+
+use std::time::Instant;
+use std::sync::atomic::Ordering;
+
+use crate::ErrorMode;
+use crate::tests::{
+    TestBlock, TestStats, TestAction, TestTiming, TestProgress, TestMemoryConfig,
+    prepare_blocks_for_window, calculate_ideal_chunk_size, get_safe_chunk_size,
+};
+use crate::constants::MB_F64;
+use crate::runner::{AllocationBlock, SHUTDOWN_REQUESTED};
+
+/// Per-test bookkeeping shared by the loop-owning v1 tests.
+///
+/// Construct with [`TestRunner::new`], which also returns the prepared
+/// [`TestBlock`] list (kept as a local in the test so the test can hold an
+/// immutable borrow of it while calling `&mut self` methods on the runner).
+pub struct TestRunner<'a> {
+    test_name: &'static str,
+    action: TestAction,
+    thread_id: usize,
+    error_mode: ErrorMode,
+    timing: &'a TestTiming,
+    config: &'a TestMemoryConfig,
+    progress: Option<&'a TestProgress>,
+
+    start: Instant,
+    cycle: u32,
+    total_error_count: u64,
+    total_bytes_processed: usize,
+    last_progress_update: Instant,
+}
+
+impl<'a> TestRunner<'a> {
+    /// Prepare blocks for the window and start the timers.
+    ///
+    /// Returns `(runner, test_blocks)`. The test keeps `test_blocks` as a local
+    /// `Vec` (exactly as the v1 tests do today) so iterating it doesn't conflict
+    /// with `&mut self` accumulator calls on the runner.
+    #[allow(clippy::too_many_arguments)]
+    pub fn new(
+        blocks: &'a [AllocationBlock],
+        thread_id: usize,
+        error_mode: ErrorMode,
+        timing: &'a TestTiming,
+        config: &'a TestMemoryConfig,
+        progress: Option<&'a TestProgress>,
+        test_name: &'static str,
+        action: TestAction,
+    ) -> (Self, Vec<TestBlock<'a>>) {
+        let total_allocated: usize = blocks.iter().map(|b| b.buffer.size()).sum();
+        let window_size = config.calculate_window_size(test_name, total_allocated);
+        let test_blocks = prepare_blocks_for_window(blocks, window_size, test_name);
+        let total_test_size: usize = test_blocks.iter().map(|b| b.test_size).sum();
+
+        log::info!(
+            "[Thread {}] Running {} on {:.2} MB of memory (window: {:.2} MB)",
+            thread_id, test_name,
+            total_test_size as f64 / MB_F64,
+            window_size as f64 / MB_F64
+        );
+
+        let now = Instant::now();
+        let runner = TestRunner {
+            test_name,
+            action,
+            thread_id,
+            error_mode,
+            timing,
+            config,
+            progress,
+            start: now,
+            cycle: 0,
+            total_error_count: 0,
+            total_bytes_processed: 0,
+            last_progress_update: now,
+        };
+        (runner, test_blocks)
+    }
+
+    /// Safe chunk size in bytes for a block of `test_block_size`, matching the
+    /// v1 `get_safe_chunk_size(calculate_ideal_chunk_size(..))` pattern. The test
+    /// converts to its own element/operation units (and applies any `.max(..)`).
+    #[inline]
+    pub fn chunk_size_bytes(&self, test_block_size: usize) -> usize {
+        let ideal = calculate_ideal_chunk_size(self.config, self.test_name, test_block_size);
+        get_safe_chunk_size(ideal, test_block_size)
+    }
+
+    /// Increment and return the new cycle number. Call at the top of each outer cycle.
+    #[inline]
+    pub fn begin_cycle(&mut self) -> u32 {
+        self.cycle += 1;
+        self.cycle
+    }
+
+    #[inline]
+    pub fn cycle(&self) -> u32 { self.cycle }
+
+    /// Accumulate processed bytes (called per block, between chunks).
+    #[inline]
+    pub fn add_bytes(&mut self, n: usize) {
+        self.total_bytes_processed = self.total_bytes_processed.saturating_add(n);
+    }
+
+    #[inline]
+    pub fn bytes_processed(&self) -> usize { self.total_bytes_processed }
+
+    /// Fold this cycle's error count into the running total. Call once at cycle end.
+    #[inline]
+    pub fn commit_cycle_errors(&mut self, cycle_errors: u64) {
+        self.total_error_count += cycle_errors;
+    }
+
+    /// Error-mode dispatch for a mid-chunk error check.
+    ///
+    /// - `Panic`: panics immediately (debug builds / strict runs).
+    /// - `Halt`: returns `true` when `cycle_errors > 0` so the test can break its
+    ///   own (possibly labeled) loop and `finish_aborted`.
+    /// - `Log`: returns `false` (errors already logged in the hot loop).
+    #[inline]
+    pub fn should_halt(&self, cycle_errors: u64) -> bool {
+        if cycle_errors == 0 {
+            return false;
+        }
+        match self.error_mode {
+            ErrorMode::Panic => panic!(
+                "{}: {} memory errors detected in cycle {} (see logs above)",
+                self.test_name, cycle_errors, self.cycle
+            ),
+            ErrorMode::Halt => true,
+            ErrorMode::Log => false,
+        }
+    }
+
+    /// Cooperative shutdown check (Relaxed, between chunks — never in the SIMD loop).
+    #[inline]
+    pub fn shutdown_requested(&self) -> bool {
+        SHUTDOWN_REQUESTED.load(Ordering::Relaxed)
+    }
+
+    /// Throttled (250 ms) progress publish. No-op if no progress sink.
+    #[inline]
+    pub fn update_progress(&mut self) {
+        if let Some(progress) = self.progress {
+            let now = Instant::now();
+            if now.duration_since(self.last_progress_update).as_millis() >= 250 {
+                progress.cycles_completed.store(self.cycle, Ordering::Relaxed);
+                progress.bytes_processed.store(self.total_bytes_processed as u64, Ordering::Relaxed);
+                progress.errors_found.store(self.total_error_count, Ordering::Relaxed);
+                progress.last_update_ms.store(self.start.elapsed().as_millis() as u64, Ordering::Relaxed);
+                self.last_progress_update = now;
+            }
+        }
+    }
+
+    /// Timing/cycle gate. `true` => run another cycle.
+    #[inline]
+    pub fn should_continue(&self) -> bool {
+        let elapsed_secs = self.start.elapsed().as_secs() as u32;
+        self.timing.should_continue(self.cycle, elapsed_secs)
+    }
+
+    /// Build `TestStats` for a mid-cycle abort (Halt on error, or shutdown).
+    /// `error_count = running total + this cycle's errors`, `stopped_by_time_limit = false`.
+    #[inline]
+    pub fn finish_aborted(&self, cycle_errors: u64, total_operations: u64) -> TestStats {
+        TestStats {
+            name: self.test_name,
+            action: self.action,
+            bytes_processed: self.total_bytes_processed,
+            elapsed_ms: self.start.elapsed().as_millis(),
+            thread_id: self.thread_id,
+            error_count: self.total_error_count + cycle_errors,
+            total_operations,
+            cycles_completed: self.cycle,
+            cycles_planned: self.timing.cycles,
+            stopped_by_time_limit: false,
+        }
+    }
+
+    /// Build `TestStats` for a normal completion (timing/cycle limit reached).
+    /// Assumes the final cycle's errors were already folded via `commit_cycle_errors`.
+    #[inline]
+    pub fn finish_completed(&self, total_operations: u64) -> TestStats {
+        TestStats {
+            name: self.test_name,
+            action: self.action,
+            bytes_processed: self.total_bytes_processed,
+            elapsed_ms: self.start.elapsed().as_millis(),
+            thread_id: self.thread_id,
+            error_count: self.total_error_count,
+            total_operations,
+            cycles_completed: self.cycle,
+            cycles_planned: self.timing.cycles,
+            stopped_by_time_limit: self.timing.cycles.is_none_or(|limit| self.cycle < limit),
+        }
+    }
+}
