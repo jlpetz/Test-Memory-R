@@ -1,6 +1,7 @@
 #![allow(unsafe_op_in_unsafe_fn)]
 #![feature(portable_simd)]
 #![feature(clflushopt_target_feature)]
+#![feature(simd_x86_clflushopt)]
 
 pub mod config;
 pub mod constants;

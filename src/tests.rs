@@ -1312,9 +1312,7 @@ pub unsafe fn flush_range_to_dram(base: *const u8, len_bytes: usize, cache_line_
     let line_count = len_bytes.div_ceil(line);
     for i in 0..line_count {
         let addr = unsafe { base.add(i * line) };
-        unsafe {
-            core::arch::asm!("clflushopt [{a}]", a = in(reg) addr, options(nostack, preserves_flags));
-        }
+        unsafe { std::arch::x86_64::_mm_clflushopt(addr); }
     }
     // Mandatory: CLFLUSHOPT is weakly ordered. Without this fence a verify-load
     // could issue while flushes are still draining and read stale cached data.
