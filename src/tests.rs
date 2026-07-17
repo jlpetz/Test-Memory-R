@@ -2522,7 +2522,8 @@ pub unsafe fn stuck_bit_test_auto_multi(
 /// RefreshStable MultiBlock implementation - tests DRAM refresh stability.
 ///
 /// Pattern per cycle:
-/// - Write 0xA5A5A5A5A5A5A5A5 pattern
+/// - Write 0xA55AA55AA55AA55A pattern (non-byte-uniform — see the pattern-def
+///   comments below and #61 for why it must not be a single repeated byte)
 /// - Sleep 64ms (DRAM refresh cycle timing)
 /// - Verify pattern unchanged
 ///
@@ -2560,8 +2561,12 @@ pub unsafe fn refresh_stable_multi(
             while processed < len {
                 let chunk_end = (processed + chunk_size_operations).min(len);
 
-                // Write phase: 0xA5A5A5A5A5A5A5A5 pattern
-                let pattern = 0xA5A5A5A5A5A5A5A5u64;
+                // Write phase: 0xA55AA55AA55AA55A pattern.
+                // NOTE: byte value must NOT be uniform (all 8 bytes equal) or LLVM's
+                // LoopIdiomRecognize rewrites this fill into `memset`, collapsing the
+                // SIMD-width variants to one identical libcall. 0xA5/0x5A alternate the
+                // bytes while keeping the same 4-of-8-bits-set retention stress. See #61.
+                let pattern = 0xA55AA55AA55AA55Au64;
                 for i in processed..chunk_end {
                     *base.add(i) = pattern;
                 }
@@ -2685,7 +2690,9 @@ unsafe fn refresh_stable_128_impl(
               total_test_size as f64 / MB_F64,
               window_size as f64 / MB_F64);
 
-    let pattern = u64x2::splat(0xA5A5A5A5A5A5A5A5u64);
+    // Non-byte-uniform (0xA5/0x5A alternating) so the fill stays a real u64x2 store
+    // loop instead of being rewritten to `memset` by LoopIdiomRecognize. See #61.
+    let pattern = u64x2::splat(0xA55AA55AA55AA55Au64);
 
     let mut cycle = 0u32;
     let test_start = Instant::now();
@@ -2915,7 +2922,9 @@ unsafe fn refresh_stable_256_impl(
               total_test_size as f64 / MB_F64,
               window_size as f64 / MB_F64);
 
-    let pattern = u64x4::splat(0xA5A5A5A5A5A5A5A5u64);
+    // Non-byte-uniform (0xA5/0x5A alternating) so the fill stays a real u64x4 store
+    // loop instead of being rewritten to `memset` by LoopIdiomRecognize. See #61.
+    let pattern = u64x4::splat(0xA55AA55AA55AA55Au64);
 
     let mut cycle = 0u32;
     let test_start = Instant::now();
@@ -3145,7 +3154,9 @@ unsafe fn refresh_stable_512_impl(
               total_test_size as f64 / MB_F64,
               window_size as f64 / MB_F64);
 
-    let pattern = u64x8::splat(0xA5A5A5A5A5A5A5A5u64);
+    // Non-byte-uniform (0xA5/0x5A alternating) so the fill stays a real u64x8 store
+    // loop instead of being rewritten to `memset` by LoopIdiomRecognize. See #61.
+    let pattern = u64x8::splat(0xA55AA55AA55AA55Au64);
 
     let mut cycle = 0u32;
     let test_start = Instant::now();
