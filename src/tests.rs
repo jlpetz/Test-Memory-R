@@ -1,12 +1,10 @@
 use crate::ErrorMode;
 use crate::cache::{CacheInfo, SystemInfo};
 use crate::driver::MemoryType;
-use crate::runner::SHUTDOWN_REQUESTED;
 use crate::constants::{MB, MB_16, MB_32, MB_64, MB_F64, KB, PAGE_SIZE_4KB};
 use std::simd::*; // Docs here https://doc.rust-lang.org/std/simd/index.html
 use std::simd::cmp::SimdPartialEq;
 use std::sync::atomic::Ordering;
-use std::time::Instant;
 use std::sync::OnceLock;
 
 const CACHE_BUSTING_STRIDE: usize = PAGE_SIZE_4KB;
@@ -1494,14 +1492,147 @@ pub fn aggregate_operation_counts(counts: &[DetailedOperationCount]) -> Detailed
 /// # Safety
 /// Caller must ensure all blocks are valid for reads/writes.
 ///
+/// StuckBit alternating-bit patterns.
+///
+/// NOTE (TODO #61): these must NOT be byte-uniform (all 8 bytes equal) or LLVM's
+/// LoopIdiomRecognize rewrites the fill loop into `memset`, collapsing every SIMD-width
+/// variant to one identical libcall and erasing the width. `0xAA55...`/`0x55AA...` alternate
+/// the bytes while staying exact bitwise complements of each other — every bit is still
+/// tested as both 1 and 0 across the two phases (the stuck-at coverage is unchanged). The
+/// two constants XOR to all-ones (`P1 ^ P2 == !0`), i.e. P2 == !P1: a true inversion test.
+pub const STUCKBIT_P1: u64 = 0xAA55AA55AA55AA55u64; // 10101010 01010101 ... (per byte)
+pub const STUCKBIT_P2: u64 = 0x55AA55AA55AA55AAu64; // exact complement of P1
+
+/// Generates a StuckBit `_impl` at a given SIMD width. The `_multi` runtime-gate wrapper
+/// stays hand-written (it returns zero-stats when the feature is absent); this macro is the
+/// hot body it calls.
+///
+/// 3-phase alternating-bit test per chunk: write P1 → verify → write P2 → verify → write P1 →
+/// verify. Verify uses **4 independent accumulator chains** (MLP — see
+/// `memory/simd-loop-optimization.md`: single-chain starves memory-level parallelism, worst
+/// on Intel 256-bit; N=4 fixes it, free on 128/512). No intermediate `ErrorCheckInterval`
+/// mode — on error the chunk trips and TODO #27's two-tier verifier does exact localization.
+/// The scaffolding (`TestRunner`) owns window/timer/progress/stats/shutdown; the hot loop is
+/// byte-identical across widths modulo the `$simd_type`.
+macro_rules! stuck_bit_impl {
+    ($fn_name:ident, $test_name:literal, $simd_type:ty, $tf:literal) => {
+        #[doc = include_str!("test_fn_safety.md")]
+        #[inline]
+        #[target_feature(enable = $tf)]
+        unsafe fn $fn_name(
+            blocks: &[crate::runner::AllocationBlock],
+            thread_id: usize,
+            error_mode: ErrorMode,
+            timing: &TestTiming,
+            config: &TestMemoryConfig,
+            progress: Option<&TestProgress>,
+        ) -> TestStats {
+            let test_name = $test_name;
+            let lanes = std::mem::size_of::<$simd_type>();
+            let (mut runner, test_blocks) = crate::test_scaffolding::TestRunner::new(
+                blocks, thread_id, error_mode, timing, config, progress,
+                test_name, TestAction::StuckBitTest,
+            );
+
+            let p1 = <$simd_type>::splat(STUCKBIT_P1);
+            let p2 = <$simd_type>::splat(STUCKBIT_P2);
+
+            loop {
+                runner.begin_cycle();
+                let mut cycle_errors = 0u64;
+
+                for test_block in test_blocks.iter() {
+                    let base = test_block.block.buffer.as_mut_ptr() as *mut $simd_type;
+                    let len = test_block.test_size / lanes;
+
+                    let chunk_size_bytes = runner.chunk_size_bytes(test_block.test_size);
+                    let chunk_size_operations = (chunk_size_bytes / lanes).max(1024);
+
+                    let mut processed = 0;
+                    while processed < len {
+                        let chunk_end = (processed + chunk_size_operations).min(len);
+
+                        // Phase 1: write P1, verify. Phase 2: write P2, verify.
+                        // Phase 3: write P1 again, verify (catches transition-induced flips).
+                        stuck_bit_write_verify!($simd_type, base, processed, chunk_end, p1, &mut cycle_errors, test_name, thread_id, 1);
+                        stuck_bit_write_verify!($simd_type, base, processed, chunk_end, p2, &mut cycle_errors, test_name, thread_id, 2);
+                        stuck_bit_write_verify!($simd_type, base, processed, chunk_end, p1, &mut cycle_errors, test_name, thread_id, 3);
+
+                        if runner.should_halt(cycle_errors) {
+                            let total_operations = (runner.bytes_processed() / lanes) as u64;
+                            return runner.finish_aborted(cycle_errors, total_operations);
+                        }
+
+                        processed = chunk_end;
+
+                        if runner.shutdown_requested() {
+                            let total_operations = (runner.bytes_processed() / lanes) as u64;
+                            return runner.finish_aborted(cycle_errors, total_operations);
+                        }
+                    }
+
+                    // 3 writes + 3 reads per chunk over the whole block.
+                    runner.add_bytes(test_block.test_size * 6);
+                }
+
+                runner.commit_cycle_errors(cycle_errors);
+                runner.update_progress();
+                if !runner.should_continue() {
+                    let total_operations = (runner.bytes_processed() / lanes) as u64;
+                    return runner.finish_completed(total_operations);
+                }
+            }
+        }
+    };
+}
+
+/// One write+verify phase of StuckBit at a SIMD width. Writes `$pat` across the chunk, fences,
+/// then verifies with 4 independent XOR/OR accumulator chains (MLP), merged once at the end.
+/// Increments `$errs` per tripped chunk (coarse — #27 does exact localization). Expanded
+/// inside the `#[target_feature]` fn so the SIMD width is honored (no fn-call boundary).
+macro_rules! stuck_bit_write_verify {
+    ($simd_type:ty, $base:expr, $start:expr, $end:expr, $pat:expr, $errs:expr, $test_name:expr, $thread_id:expr, $phase:literal) => {{
+        // Write phase.
+        for i in $start..$end {
+            *$base.add(i) = $pat;
+        }
+        std::sync::atomic::fence(Ordering::SeqCst);
+
+        // Verify phase — 4 independent accumulator chains (MLP).
+        let mut a0 = <$simd_type>::splat(0);
+        let mut a1 = <$simd_type>::splat(0);
+        let mut a2 = <$simd_type>::splat(0);
+        let mut a3 = <$simd_type>::splat(0);
+        let mut i = $start;
+        while i + 4 <= $end {
+            a0 |= *$base.add(i) ^ $pat;
+            a1 |= *$base.add(i + 1) ^ $pat;
+            a2 |= *$base.add(i + 2) ^ $pat;
+            a3 |= *$base.add(i + 3) ^ $pat;
+            i += 4;
+        }
+        while i < $end {
+            a0 |= *$base.add(i) ^ $pat;
+            i += 1;
+        }
+        let acc = (a0 | a1) | (a2 | a3);
+        if acc.simd_ne(<$simd_type>::splat(0)).any() {
+            *$errs += 1;
+            log::error!("{}: memory error detected in phase {} chunk (thread {})",
+                        $test_name, $phase, $thread_id);
+        }
+    }};
+}
+
 /// StuckBitTest MultiBlock implementation - tests for stuck bits using alternating patterns.
 ///
 /// 3-Phase Pattern per cycle:
-/// - Phase 1: Write 0xAAAAAAAAAAAAAAAA (10101010...) → Verify
-/// - Phase 2: Write 0x5555555555555555 (01010101...) → Verify
-/// - Phase 3: Write 0xAAAAAAAAAAAAAAAA (10101010...) → Verify
+/// - Phase 1: Write STUCKBIT_P1 (0xAA55...) → Verify
+/// - Phase 2: Write STUCKBIT_P2 (0x55AA..., = !P1) → Verify
+/// - Phase 3: Write STUCKBIT_P1 again → Verify
 ///
 /// Tests blocks in interleaved fashion with shared timer to fix N×duration bug.
+#[doc = include_str!("test_fn_safety.md")]
 pub unsafe fn stuck_bit_test_multi(
     blocks: &[crate::runner::AllocationBlock],
     thread_id: usize,
@@ -1534,15 +1665,17 @@ pub unsafe fn stuck_bit_test_multi(
             while processed < len {
                 let chunk_end = (processed + chunk_size_operations).min(len);
 
-                // Phase 1: Write 0xAAAAAAAAAAAAAAAA (10101010...)
-                let pattern1 = 0xAAAAAAAAAAAAAAAAu64;
+                // Patterns must NOT be byte-uniform (would memset) — see STUCKBIT_P1 note.
+                let pattern1 = STUCKBIT_P1;
+                let pattern2 = STUCKBIT_P2;
+
+                // Phase 1: Write P1 (0xAA55...), verify
                 for i in processed..chunk_end {
                     *base.add(i) = pattern1;
                 }
 
                 std::sync::atomic::fence(Ordering::SeqCst);
 
-                // Phase 1 Verify
                 for i in processed..chunk_end {
                     let v = *base.add(i);
                     if v != pattern1 {
@@ -1552,15 +1685,13 @@ pub unsafe fn stuck_bit_test_multi(
                     }
                 }
 
-                // Phase 2: Write 0x5555555555555555 (01010101...)
-                let pattern2 = 0x5555555555555555u64;
+                // Phase 2: Write P2 (0x55AA..., = !P1), verify
                 for i in processed..chunk_end {
                     *base.add(i) = pattern2;
                 }
 
                 std::sync::atomic::fence(Ordering::SeqCst);
 
-                // Phase 2 Verify
                 for i in processed..chunk_end {
                     let v = *base.add(i);
                     if v != pattern2 {
@@ -1570,14 +1701,13 @@ pub unsafe fn stuck_bit_test_multi(
                     }
                 }
 
-                // Phase 3: Write back to 0xAAAAAAAAAAAAAAAA
+                // Phase 3: Write back to P1, verify
                 for i in processed..chunk_end {
                     *base.add(i) = pattern1;
                 }
 
                 std::sync::atomic::fence(Ordering::SeqCst);
 
-                // Phase 3 Verify
                 for i in processed..chunk_end {
                     let v = *base.add(i);
                     if v != pattern1 {
@@ -1655,317 +1785,7 @@ pub unsafe fn stuck_bit_test_128_multi(
     stuck_bit_test_128_impl(blocks, thread_id, error_mode, timing, config, progress)
 }
 
-/// StuckBitTest128 - SSE2 optimized implementation
-/// This function is annotated with #[target_feature] to enable full compiler optimization
-#[inline]
-#[target_feature(enable = "sse4.2,sse4.1,ssse3,sse3,sse2,popcnt")]
-unsafe fn stuck_bit_test_128_impl(
-    blocks: &[crate::runner::AllocationBlock],
-    thread_id: usize,
-    error_mode: ErrorMode,
-    timing: &TestTiming,
-    config: &TestMemoryConfig,
-    progress: Option<&TestProgress>,
-) -> TestStats {
-
-    let test_name = "Mem-StuckBit128";
-
-    let start = Instant::now();
-
-    // Calculate total allocated memory
-    let total_allocated: usize = blocks.iter().map(|b| b.buffer.size()).sum();
-
-    // Window preparation
-    let window_size = config.calculate_window_size(test_name, total_allocated);
-    let test_blocks = prepare_blocks_for_window(blocks, window_size, test_name);
-
-    let total_test_size: usize = test_blocks.iter().map(|b| b.test_size).sum();
-
-    log::info!("[Thread {}] Running {} on {:.2} MB of memory (window: {:.2} MB)",
-              thread_id, test_name,
-              total_test_size as f64 / MB_F64,
-              window_size as f64 / MB_F64);
-
-    let mut cycle = 0u32;
-    let test_start = Instant::now();
-    let mut total_error_count = 0u64;
-    let mut total_bytes_processed = 0usize;
-    let mut last_progress_update = Instant::now();
-
-    // Initialize patterns ONCE outside loop for performance
-    let pattern1 = u64x2::splat(0xAAAAAAAAAAAAAAAAu64);
-    let pattern2 = u64x2::splat(0x5555555555555555u64);
-
-    loop {
-        cycle += 1;
-        let mut cycle_errors = 0u64;
-
-        // Interleave testing across all blocks with shared timer
-        for test_block in test_blocks.iter() {
-            let base = test_block.block.buffer.as_mut_ptr() as *mut u64x2;
-            let len = test_block.test_size / std::mem::size_of::<u64x2>();
-
-            // Recalculate chunk size for THIS block's size
-            let ideal_chunk_size = calculate_ideal_chunk_size(config, test_name, test_block.test_size);
-            let chunk_size_bytes = get_safe_chunk_size(ideal_chunk_size, test_block.test_size);
-            let chunk_size_operations_raw = chunk_size_bytes / std::mem::size_of::<u64x2>();
-            let chunk_size_operations = chunk_size_operations_raw.max(1024);
-
-            let error_check_mode = match config.error_check_interval.get_check_mask() {
-                Some(mask) => format!("Intermediate (mask={})", mask),
-                None => "PER_CHUNK".to_string(),
-            };
-            log::debug!("{}: Thread {} - chunk_size_bytes={}, ops_raw={}, ops_after_max={} (actual bytes={}), error_check_mode={}",
-                       test_name, thread_id, chunk_size_bytes,
-                       chunk_size_operations_raw, chunk_size_operations,
-                       chunk_size_operations * std::mem::size_of::<u64x2>(),
-                       error_check_mode);
-
-            // Process this block in chunks
-            let mut processed = 0;
-            while processed < len {
-                let chunk_end = (processed + chunk_size_operations).min(len);
-
-                // Phase 1: Write 0xAAAA pattern using SSE2
-                for i in processed..chunk_end {
-                    *base.add(i) = pattern1;
-                }
-
-                std::sync::atomic::fence(Ordering::SeqCst);
-
-                // Phase 1 Verify - accumulator pattern with configurable error checking
-                let mut error_accumulator = u64x2::splat(0);
-                let mut element_count = 0usize;
-
-                // Pre-compute check mask for hot loop optimization
-                match config.error_check_interval.get_check_mask() {
-                    Some(check_mask) => {
-                        for i in processed..chunk_end {
-                            let value = *base.add(i);
-                            let diff = value ^ pattern1 ;
-                            error_accumulator |= diff ;
-
-                            element_count += 1;
-
-                            // Check errors at configured intervals (zero-branch hot loop optimization)
-                            if (element_count as u32 & check_mask) == 0
-                                && error_accumulator.simd_ne(u64x2::splat(0)).any() {
-                                    cycle_errors += 1;
-                                    log::error!("{}: memory error detected in phase 1 element {} (thread {})",
-                                               test_name, element_count, thread_id);
-                                    error_accumulator = u64x2::splat(0);
-                                }
-                        }
-                    }
-                    None => {
-                        // PER_CHUNK mode - no intermediate checks, maximum performance
-                        for i in processed..chunk_end {
-                            let value = *base.add(i);
-                            let diff = value ^ pattern1 ;
-                            error_accumulator |= diff ;
-                        }
-                    }
-                }
-
-                // Final error check for phase 1 (always performed regardless of mode)
-                if error_accumulator.simd_ne(u64x2::splat(0)).any() {
-                    cycle_errors += 1;
-                    log::error!("{}: memory error detected in phase 1 chunk (thread {})", test_name, thread_id);
-                }
-
-                // Phase 2: Write 0x5555 pattern using SSE2
-                for i in processed..chunk_end {
-                    *base.add(i) = pattern2;
-                }
-
-                std::sync::atomic::fence(Ordering::SeqCst);
-
-                // Phase 2 Verify - accumulator pattern with configurable error checking
-                let mut error_accumulator = u64x2::splat(0);
-                let mut element_count = 0usize;
-
-                // Pre-compute check mask for hot loop optimization
-                match config.error_check_interval.get_check_mask() {
-                    Some(check_mask) => {
-                        for i in processed..chunk_end {
-                            let value = *base.add(i);
-                            let diff = value ^ pattern2 ;
-                            error_accumulator |= diff ;
-
-                            element_count += 1;
-
-                            // Check errors at configured intervals (zero-branch hot loop optimization)
-                            if (element_count as u32 & check_mask) == 0
-                                && error_accumulator.simd_ne(u64x2::splat(0)).any() {
-                                    cycle_errors += 1;
-                                    log::error!("{}: memory error detected in phase 2 element {} (thread {})",
-                                               test_name, element_count, thread_id);
-                                    error_accumulator = u64x2::splat(0);
-                                }
-                        }
-                    }
-                    None => {
-                        // PER_CHUNK mode - no intermediate checks, maximum performance
-                        for i in processed..chunk_end {
-                            let value = *base.add(i);
-                            let diff = value ^ pattern2 ;
-                            error_accumulator |= diff ;
-                        }
-                    }
-                }
-
-                // Final error check for phase 2 (always performed regardless of mode)
-                if error_accumulator.simd_ne(u64x2::splat(0)).any() {
-                    cycle_errors += 1;
-                    log::error!("{}: memory error detected in phase 2 chunk (thread {})", test_name, thread_id);
-                }
-
-                // Phase 3: Write back to 0xAAAA pattern
-                for i in processed..chunk_end {
-                    *base.add(i) = pattern1;
-                }
-
-                std::sync::atomic::fence(Ordering::SeqCst);
-
-                // Phase 3 Verify - accumulator pattern with configurable error checking
-                let mut error_accumulator = u64x2::splat(0);
-                let mut element_count = 0usize;
-
-                // Pre-compute check mask for hot loop optimization
-                match config.error_check_interval.get_check_mask() {
-                    Some(check_mask) => {
-                        for i in processed..chunk_end {
-                            let value = *base.add(i);
-                            let diff = value ^ pattern1 ;
-                            error_accumulator |= diff ;
-
-                            element_count += 1;
-
-                            // Check errors at configured intervals (zero-branch hot loop optimization)
-                            if (element_count as u32 & check_mask) == 0
-                                && error_accumulator.simd_ne(u64x2::splat(0)).any() {
-                                    cycle_errors += 1;
-                                    log::error!("{}: memory error detected in phase 3 element {} (thread {})",
-                                               test_name, element_count, thread_id);
-                                    error_accumulator = u64x2::splat(0);
-                                }
-                        }
-                    }
-                    None => {
-                        // PER_CHUNK mode - no intermediate checks, maximum performance
-                        for i in processed..chunk_end {
-                            let value = *base.add(i);
-                            let diff = value ^ pattern1 ;
-                            error_accumulator |= diff ;
-                        }
-                    }
-                }
-
-                // Final error check for phase 3 (always performed regardless of mode)
-                if error_accumulator.simd_ne(u64x2::splat(0)).any() {
-                    cycle_errors += 1;
-                    log::error!("{}: memory error detected in phase 3 chunk (thread {})", test_name, thread_id);
-                }
-
-                processed = chunk_end;
-
-                // Optimized error handling - check ONCE at end of chunk (not between phases)
-                if cycle_errors > 0 {
-                    match error_mode {
-                        ErrorMode::Panic => panic!("{}: {} memory errors detected (see logs above)", test_name, cycle_errors),
-                        ErrorMode::Halt => {
-                            let elapsed = start.elapsed().as_millis();
-                            let total_operations = (total_bytes_processed / std::mem::size_of::<u64x2>()) as u64;
-                            return TestStats {
-                                name: test_name, action: TestAction::StuckBitTest,
-                                bytes_processed: total_bytes_processed, elapsed_ms: elapsed, thread_id,
-                                error_count: total_error_count + cycle_errors, total_operations,
-                                cycles_completed: cycle, cycles_planned: timing.cycles, stopped_by_time_limit: false,
-                            };
-                        }
-                        ErrorMode::Log => { /* Continue - already logged above */ }
-                    }
-                }
-
-                // Check for shutdown request after processing each chunk
-                if SHUTDOWN_REQUESTED.load(Ordering::Relaxed) {
-                    // Calculate partial bytes processed for early exit: 3 writes + 3 reads per chunk
-                    let partial_cycle_bytes = processed * std::mem::size_of::<u64x2>() * 6;
-                    total_bytes_processed += partial_cycle_bytes;
-                    total_error_count += cycle_errors;
-
-                    let elapsed = start.elapsed().as_millis();
-                    let total_operations: u64 = ((cycle - 1) as u64 * len as u64) + processed as u64;
-
-                    return TestStats {
-                        name: test_name, action: TestAction::StuckBitTest,
-                        bytes_processed: total_bytes_processed, elapsed_ms: elapsed, thread_id,
-                        error_count: total_error_count, total_operations,
-                        cycles_completed: cycle, cycles_planned: timing.cycles, stopped_by_time_limit: false,
-                    };
-                }
-            }
-
-            // Update bytes processed for this block (3 writes + 3 reads per cycle)
-            total_bytes_processed += test_block.test_size * 6;
-        }
-
-        // Handle errors according to error mode
-        if cycle_errors > 0 {
-            match error_mode {
-                ErrorMode::Panic => {
-                    panic!("{}: memory error detected in cycle {} (thread {})", test_name, cycle, thread_id);
-                }
-                ErrorMode::Halt => {
-                    let elapsed = test_start.elapsed().as_millis();
-                    total_error_count += cycle_errors;
-                    let total_operations = (total_bytes_processed / std::mem::size_of::<u64x2>()) as u64;
-                    return TestStats {
-                        name: test_name, action: TestAction::StuckBitTest,
-                        bytes_processed: total_bytes_processed, elapsed_ms: elapsed, thread_id,
-                        error_count: total_error_count, total_operations,
-                        cycles_completed: cycle, cycles_planned: timing.cycles,
-                        stopped_by_time_limit: false,
-                    };
-                }
-                ErrorMode::Log => {
-                    // Errors already logged, continue testing
-                }
-            }
-        }
-
-        total_error_count += cycle_errors;
-
-        // Update progress tracker every 250ms
-        if let Some(progress) = progress {
-            let now = Instant::now();
-            if now.duration_since(last_progress_update).as_millis() >= 250 {
-                progress.cycles_completed.store(cycle, Ordering::Relaxed);
-                progress.bytes_processed.store(total_bytes_processed as u64, Ordering::Relaxed);
-                progress.errors_found.store(total_error_count, Ordering::Relaxed);
-                progress.last_update_ms.store(start.elapsed().as_millis() as u64, Ordering::Relaxed);
-                last_progress_update = now;
-            }
-        }
-
-        // Check timing/cycles
-        let elapsed_secs = test_start.elapsed().as_secs() as u32;
-        if !timing.should_continue(cycle, elapsed_secs) {
-            let elapsed = start.elapsed().as_millis();
-
-            // Calculate total operations (total elements processed across all blocks)
-            let total_operations = (total_bytes_processed / std::mem::size_of::<u64x2>()) as u64;
-
-            return TestStats {
-                name: test_name, action: TestAction::StuckBitTest,
-                bytes_processed: total_bytes_processed, elapsed_ms: elapsed, thread_id,
-                error_count: total_error_count, total_operations,
-                cycles_completed: cycle, cycles_planned: timing.cycles,
-                stopped_by_time_limit: timing.cycles.is_none_or(|limit| cycle < limit),
-            };
-        }
-    }
-}
+stuck_bit_impl!(stuck_bit_test_128_impl, "Mem-StuckBit128", u64x2, "sse4.2,sse4.1,ssse3,sse3,sse2,popcnt");
 
 /// StuckBitTest256 - AVX2 optimized - MultiBlock pattern
 /// Runtime-checked wrapper for AVX2 availability
@@ -1996,240 +1816,7 @@ pub unsafe fn stuck_bit_test_256_multi(
     stuck_bit_test_256_impl(blocks, thread_id, error_mode, timing, config, progress)
 }
 
-/// StuckBitTest256 - AVX2 optimized implementation
-/// This function is annotated with #[target_feature] to enable full compiler optimization
-#[inline]
-#[target_feature(enable = "avx2,avx,fma,bmi1,bmi2")]
-unsafe fn stuck_bit_test_256_impl(
-    blocks: &[crate::runner::AllocationBlock],
-    thread_id: usize,
-    error_mode: ErrorMode,
-    timing: &TestTiming,
-    config: &TestMemoryConfig,
-    progress: Option<&TestProgress>,
-) -> TestStats {
-    use std::sync::atomic::Ordering;
-    use std::time::Instant;
-
-    let test_name = "Mem-StuckBit256";
-
-    let total_allocated: usize = blocks.iter().map(|b| b.buffer.size()).sum();
-    let window_size = config.calculate_window_size(test_name, total_allocated);
-    let test_blocks = prepare_blocks_for_window(blocks, window_size, test_name);
-
-    let start = Instant::now();
-    let test_start = Instant::now();
-    let mut total_bytes_processed = 0usize;
-    let mut total_error_count = 0u64;
-    let mut last_progress_update = Instant::now();
-
-    let pattern1 = u64x4::splat(0xAAAAAAAAAAAAAAAAu64);
-    let pattern2 = u64x4::splat(0x5555555555555555u64);
-
-    let mut cycle = 0u32;
-    loop {
-        cycle += 1;  // BUG FIX #2: Use 1-indexed cycles like StuckBitTest128
-
-        if crate::runner::SHUTDOWN_REQUESTED.load(Ordering::Relaxed) {
-            break;
-        }
-
-        let mut cycle_errors = 0u64;
-
-        for test_block in test_blocks.iter() {
-            let base = test_block.block.buffer.as_mut_ptr() as *mut u64x4;
-            let len = test_block.test_size / std::mem::size_of::<u64x4>();
-            let ideal_chunk_size = calculate_ideal_chunk_size(config, test_name, test_block.test_size);
-            let chunk_size_bytes = get_safe_chunk_size(ideal_chunk_size, test_block.test_size);
-            let chunk_size_operations_raw = chunk_size_bytes / std::mem::size_of::<u64x4>();
-            let chunk_size_operations = chunk_size_operations_raw.max(1024);
-
-            let error_check_mode = match config.error_check_interval.get_check_mask() {
-                Some(mask) => format!("Intermediate (mask={})", mask),
-                None => "PER_CHUNK".to_string(),
-            };
-            log::debug!("{}: Thread {} - chunk_size_bytes={}, ops_raw={}, ops_after_max={} (actual bytes={}), error_check_mode={}",
-                       test_name, thread_id, chunk_size_bytes,
-                       chunk_size_operations_raw, chunk_size_operations,
-                       chunk_size_operations * std::mem::size_of::<u64x4>(),
-                       error_check_mode);
-
-            let mut processed = 0;
-            while processed < len {
-                let chunk_end = (processed + chunk_size_operations).min(len);
-
-                // Phase 1: Write 0xAAAA
-                for i in processed..chunk_end {
-                    *base.add(i) = pattern1;
-                }
-                std::sync::atomic::fence(Ordering::SeqCst); // BUG FIX: Added missing fence
-
-                // Phase 1 Verify
-                let mut error_accumulator = u64x4::splat(0);
-                let mut element_count = 0usize;
-                match config.error_check_interval.get_check_mask() {
-                    Some(check_mask) => {
-                        for i in processed..chunk_end {
-                            let value = *base.add(i);
-                            let diff = value ^ pattern1 ;
-                            error_accumulator |= diff ;
-                            element_count += 1;
-                            if (element_count as u32 & check_mask) == 0
-                                && error_accumulator.simd_ne(u64x4::splat(0)).any() {
-                                    cycle_errors += 1;
-                                    error_accumulator = u64x4::splat(0);
-                                }
-                        }
-                    }
-                    None => {
-                        for i in processed..chunk_end {
-                            let value = *base.add(i);
-                            let diff = value ^ pattern1 ;
-                            error_accumulator |= diff ;
-                        }
-                    }
-                }
-                if error_accumulator.simd_ne(u64x4::splat(0)).any() {
-                    cycle_errors += 1;
-                }
-
-                // Phase 2: Write 0x5555
-                for i in processed..chunk_end {
-                    *base.add(i) = pattern2;
-                }
-                std::sync::atomic::fence(Ordering::SeqCst); // BUG FIX: Added missing fence
-
-                // Phase 2 Verify
-                error_accumulator = u64x4::splat(0);
-                element_count = 0;
-                match config.error_check_interval.get_check_mask() {
-                    Some(check_mask) => {
-                        for i in processed..chunk_end {
-                            let value = *base.add(i);
-                            let diff = value ^ pattern2 ;
-                            error_accumulator |= diff ;
-                            element_count += 1;
-                            if (element_count as u32 & check_mask) == 0
-                                && error_accumulator.simd_ne(u64x4::splat(0)).any() {
-                                    cycle_errors += 1;
-                                    error_accumulator = u64x4::splat(0);
-                                }
-                        }
-                    }
-                    None => {
-                        for i in processed..chunk_end {
-                            let value = *base.add(i);
-                            let diff = value ^ pattern2 ;
-                            error_accumulator |= diff ;
-                        }
-                    }
-                }
-                if error_accumulator.simd_ne(u64x4::splat(0)).any() {
-                    cycle_errors += 1;
-                }
-
-                // Phase 3: Write back to 0xAAAA
-                for i in processed..chunk_end {
-                    *base.add(i) = pattern1;
-                }
-                std::sync::atomic::fence(Ordering::SeqCst);
-
-                // Phase 3 Verify
-                error_accumulator = u64x4::splat(0);
-                element_count = 0;
-                match config.error_check_interval.get_check_mask() {
-                    Some(check_mask) => {
-                        for i in processed..chunk_end {
-                            let value = *base.add(i);
-                            let diff = value ^ pattern1 ;
-                            error_accumulator |= diff ;
-                            element_count += 1;
-                            if (element_count as u32 & check_mask) == 0
-                                && error_accumulator.simd_ne(u64x4::splat(0)).any() {
-                                    cycle_errors += 1;
-                                    error_accumulator = u64x4::splat(0);
-                                }
-                        }
-                    }
-                    None => {
-                        for i in processed..chunk_end {
-                            let value = *base.add(i);
-                            let diff = value ^ pattern1 ;
-                            error_accumulator |= diff ;
-                        }
-                    }
-                }
-                if error_accumulator.simd_ne(u64x4::splat(0)).any() {
-                    cycle_errors += 1;
-                }
-
-                processed = chunk_end;
-            }
-
-            total_bytes_processed += test_block.test_size * 6;
-        }
-
-        // Handle errors according to error mode
-        if cycle_errors > 0 {
-            match error_mode {
-                ErrorMode::Panic => {
-                    panic!("{}: memory error detected in cycle {} (thread {})", test_name, cycle, thread_id);
-                }
-                ErrorMode::Halt => {
-                    let elapsed = test_start.elapsed().as_millis();
-                    total_error_count += cycle_errors;
-                    let total_operations = (total_bytes_processed / std::mem::size_of::<u64x4>()) as u64;
-                    return TestStats {
-                        name: test_name, action: TestAction::StuckBitTest,
-                        bytes_processed: total_bytes_processed, elapsed_ms: elapsed, thread_id,
-                        error_count: total_error_count, total_operations,
-                        cycles_completed: cycle, cycles_planned: timing.cycles,
-                        stopped_by_time_limit: false,
-                    };
-                }
-                ErrorMode::Log => {
-                    // Errors already logged, continue testing
-                }
-            }
-        }
-
-        total_error_count += cycle_errors;
-
-        if let Some(progress) = progress {
-            let now = Instant::now();
-            if now.duration_since(last_progress_update).as_millis() >= 250 {
-                progress.cycles_completed.store(cycle, Ordering::Relaxed);
-                progress.bytes_processed.store(total_bytes_processed as u64, Ordering::Relaxed);
-                progress.errors_found.store(total_error_count, Ordering::Relaxed);
-                progress.last_update_ms.store(start.elapsed().as_millis() as u64, Ordering::Relaxed);
-                last_progress_update = now;
-            }
-        }
-
-        let elapsed_secs = test_start.elapsed().as_secs() as u32;
-        if !timing.should_continue(cycle, elapsed_secs) {
-            let elapsed = start.elapsed().as_millis();
-            let total_operations = (total_bytes_processed / std::mem::size_of::<u64x4>()) as u64;
-            return TestStats {
-                name: test_name, action: TestAction::StuckBitTest,
-                bytes_processed: total_bytes_processed, elapsed_ms: elapsed, thread_id,
-                error_count: total_error_count, total_operations,
-                cycles_completed: cycle, cycles_planned: timing.cycles,
-                stopped_by_time_limit: timing.cycles.is_none_or(|limit| cycle < limit),
-            };
-        }
-    }
-
-    let elapsed = start.elapsed().as_millis();
-    let total_operations = (total_bytes_processed / std::mem::size_of::<u64x4>()) as u64;
-    TestStats {
-        name: test_name, action: TestAction::StuckBitTest,
-        bytes_processed: total_bytes_processed, elapsed_ms: elapsed, thread_id,
-        error_count: total_error_count, total_operations,
-        cycles_completed: cycle, cycles_planned: timing.cycles,  // BUG FIX: Report actual cycles completed
-        stopped_by_time_limit: false,
-    }
-}
+stuck_bit_impl!(stuck_bit_test_256_impl, "Mem-StuckBit256", u64x4, "avx2,avx,fma,bmi1,bmi2");
 
 /// StuckBitTest512 - AVX-512 optimized - MultiBlock pattern
 /// Runtime-checked wrapper for AVX-512 availability
@@ -2260,231 +1847,7 @@ pub unsafe fn stuck_bit_test_512_multi(
     stuck_bit_test_512_impl(blocks, thread_id, error_mode, timing, config, progress)
 }
 
-/// StuckBitTest512 - AVX-512 optimized implementation
-/// This function is annotated with #[target_feature] to enable full compiler optimization
-#[inline]
-#[target_feature(enable = "avx512f,avx512bw,avx512cd,avx512dq,avx512vl,avx2,avx,fma,bmi1,bmi2")]
-unsafe fn stuck_bit_test_512_impl(
-    blocks: &[crate::runner::AllocationBlock],
-    thread_id: usize,
-    error_mode: ErrorMode,
-    timing: &TestTiming,
-    config: &TestMemoryConfig,
-    progress: Option<&TestProgress>,
-) -> TestStats {
-    use std::sync::atomic::Ordering;
-    use std::time::Instant;
-
-    let test_name = "Mem-StuckBit512";
-
-    let total_allocated: usize = blocks.iter().map(|b| b.buffer.size()).sum();
-    let window_size = config.calculate_window_size(test_name, total_allocated);
-    let test_blocks = prepare_blocks_for_window(blocks, window_size, test_name);
-
-    let start = Instant::now();
-    let test_start = Instant::now();
-    let mut total_bytes_processed = 0usize;
-    let mut total_error_count = 0u64;
-    let mut last_progress_update = Instant::now();
-
-    let pattern1 = u64x8::splat(0xAAAAAAAAAAAAAAAAu64);
-    let pattern2 = u64x8::splat(0x5555555555555555u64);
-
-    let mut cycle = 0u32;
-    loop {
-        cycle += 1;  // BUG FIX #2: Use 1-indexed cycles like StuckBitTest128
-
-        if crate::runner::SHUTDOWN_REQUESTED.load(Ordering::Relaxed) {
-            break;
-        }
-
-        let mut cycle_errors = 0u64;
-
-        for test_block in test_blocks.iter() {
-            let base = test_block.block.buffer.as_mut_ptr() as *mut u64x8;
-            let len = test_block.test_size / std::mem::size_of::<u64x8>();
-            let ideal_chunk_size = calculate_ideal_chunk_size(config, test_name, test_block.test_size);
-            let chunk_size_bytes = get_safe_chunk_size(ideal_chunk_size, test_block.test_size);
-            let chunk_size_operations_raw = chunk_size_bytes / std::mem::size_of::<u64x8>();
-            let chunk_size_operations = chunk_size_operations_raw.max(1024);
-
-            let error_check_mode = match config.error_check_interval.get_check_mask() {
-                Some(mask) => format!("Intermediate (mask={})", mask),
-                None => "PER_CHUNK".to_string(),
-            };
-            log::debug!("{}: Thread {} - chunk_size_bytes={}, ops_raw={}, ops_after_max={} (actual bytes={}), error_check_mode={}",
-                       test_name, thread_id, chunk_size_bytes,
-                       chunk_size_operations_raw, chunk_size_operations,
-                       chunk_size_operations * std::mem::size_of::<u64x8>(),
-                       error_check_mode);
-
-            let mut processed = 0;
-            while processed < len {
-                let chunk_end = (processed + chunk_size_operations).min(len);
-
-                // Phase 1: Write 0xAAAA
-                for i in processed..chunk_end {
-                    *base.add(i) = pattern1;
-                }
-                std::sync::atomic::fence(Ordering::SeqCst); // BUG FIX: Added missing fence
-
-                // Phase 1 Verify
-                let mut error_accumulator = u64x8::splat(0);
-                let mut element_count = 0usize;
-                match config.error_check_interval.get_check_mask() {
-                    Some(check_mask) => {
-                        for i in processed..chunk_end {
-                            let value = *base.add(i);
-                            let diff = value ^ pattern1 ;
-                            error_accumulator |= diff ;
-                            element_count += 1;
-                            if (element_count as u32 & check_mask) == 0 {
-                                if !error_accumulator.simd_eq(u64x8::splat(0)).all() { cycle_errors += 1; }
-                                error_accumulator = u64x8::splat(0);
-                            }
-                        }
-                    }
-                    None => {
-                        for i in processed..chunk_end {
-                            let value = *base.add(i);
-                            let diff = value ^ pattern1 ;
-                            error_accumulator |= diff ;
-                        }
-                    }
-                }
-                if !error_accumulator.simd_eq(u64x8::splat(0)).all() { cycle_errors += 1; }
-
-                // Phase 2: Write 0x5555
-                for i in processed..chunk_end {
-                    *base.add(i) = pattern2;
-                }
-                std::sync::atomic::fence(Ordering::SeqCst); // BUG FIX: Added missing fence
-
-                // Phase 2 Verify
-                error_accumulator = u64x8::splat(0);
-                element_count = 0;
-                match config.error_check_interval.get_check_mask() {
-                    Some(check_mask) => {
-                        for i in processed..chunk_end {
-                            let value = *base.add(i);
-                            let diff = value ^ pattern2 ;
-                            error_accumulator |= diff ;
-                            element_count += 1;
-                            if (element_count as u32 & check_mask) == 0 {
-                                if !error_accumulator.simd_eq(u64x8::splat(0)).all() { cycle_errors += 1; }
-                                error_accumulator = u64x8::splat(0);
-                            }
-                        }
-                    }
-                    None => {
-                        for i in processed..chunk_end {
-                            let value = *base.add(i);
-                            let diff = value ^ pattern2 ;
-                            error_accumulator |= diff ;
-                        }
-                    }
-                }
-                if !error_accumulator.simd_eq(u64x8::splat(0)).all() { cycle_errors += 1; }
-
-                // Phase 3: Write back to 0xAAAA
-                for i in processed..chunk_end {
-                    *base.add(i) = pattern1;
-                }
-                std::sync::atomic::fence(Ordering::SeqCst); // BUG FIX: Added missing fence
-
-                // Phase 3 Verify
-                error_accumulator = u64x8::splat(0);
-                element_count = 0;
-                match config.error_check_interval.get_check_mask() {
-                    Some(check_mask) => {
-                        for i in processed..chunk_end {
-                            let value = *base.add(i);
-                            let diff = value ^ pattern1 ;
-                            error_accumulator |= diff ;
-                            element_count += 1;
-                            if (element_count as u32 & check_mask) == 0 {
-                                if !error_accumulator.simd_eq(u64x8::splat(0)).all() { cycle_errors += 1; }
-                                error_accumulator = u64x8::splat(0);
-                            }
-                        }
-                    }
-                    None => {
-                        for i in processed..chunk_end {
-                            let value = *base.add(i);
-                            let diff = value ^ pattern1 ;
-                            error_accumulator |= diff ;
-                        }
-                    }
-                }
-                if !error_accumulator.simd_eq(u64x8::splat(0)).all() { cycle_errors += 1; }
-
-                processed = chunk_end;
-            }
-
-            total_bytes_processed += test_block.test_size * 6;
-        }
-
-        // Handle errors according to error mode
-        if cycle_errors > 0 {
-            match error_mode {
-                ErrorMode::Panic => {
-                    panic!("{}: memory error detected in cycle {} (thread {})", test_name, cycle, thread_id);
-                }
-                ErrorMode::Halt => {
-                    let elapsed = test_start.elapsed().as_millis();
-                    total_error_count += cycle_errors;
-                    let total_operations = (total_bytes_processed / std::mem::size_of::<u64x8>()) as u64;
-                    return TestStats {
-                        name: test_name, action: TestAction::StuckBitTest,
-                        bytes_processed: total_bytes_processed, elapsed_ms: elapsed, thread_id,
-                        error_count: total_error_count, total_operations,
-                        cycles_completed: cycle, cycles_planned: timing.cycles,
-                        stopped_by_time_limit: false,
-                    };
-                }
-                ErrorMode::Log => {
-                    // Errors already logged, continue testing
-                }
-            }
-        }
-
-        total_error_count += cycle_errors;
-
-        if let Some(progress) = progress {
-            let now = Instant::now();
-            if now.duration_since(last_progress_update).as_millis() >= 250 {
-                progress.cycles_completed.store(cycle, Ordering::Relaxed);
-                progress.bytes_processed.store(total_bytes_processed as u64, Ordering::Relaxed);
-                progress.errors_found.store(total_error_count, Ordering::Relaxed);
-                progress.last_update_ms.store(start.elapsed().as_millis() as u64, Ordering::Relaxed);
-                last_progress_update = now;
-            }
-        }
-
-        let elapsed_secs = test_start.elapsed().as_secs() as u32;
-        if !timing.should_continue(cycle, elapsed_secs) {
-            let elapsed = start.elapsed().as_millis();
-            let total_operations = (total_bytes_processed / std::mem::size_of::<u64x8>()) as u64;
-            return TestStats {
-                name: test_name, action: TestAction::StuckBitTest,
-                bytes_processed: total_bytes_processed, elapsed_ms: elapsed, thread_id,
-                error_count: total_error_count, total_operations,
-                cycles_completed: cycle, cycles_planned: timing.cycles,
-                stopped_by_time_limit: timing.cycles.is_none_or(|limit| cycle < limit),
-            };
-        }
-    }
-
-    let elapsed = start.elapsed().as_millis();
-    let total_operations = (total_bytes_processed / std::mem::size_of::<u64x8>()) as u64;
-    TestStats {
-        name: test_name, action: TestAction::StuckBitTest,
-        bytes_processed: total_bytes_processed, elapsed_ms: elapsed, thread_id,
-        error_count: total_error_count, total_operations,
-        cycles_completed: cycle, cycles_planned: timing.cycles,  // BUG FIX: Report actual cycles completed
-        stopped_by_time_limit: false,
-    }
-}
+stuck_bit_impl!(stuck_bit_test_512_impl, "Mem-StuckBit512", u64x8, "avx512f,avx512bw,avx512cd,avx512dq,avx512vl,avx2,avx,fma,bmi1,bmi2");
 
 // === STUCK BIT TEST SIMD VARIANTS ===
 
@@ -2518,6 +1881,122 @@ pub unsafe fn stuck_bit_test_auto_multi(
 // ================================================================================================
 // RefreshStable MultiBlock Implementations
 // ================================================================================================
+
+/// Refresh fill pattern. Non-byte-uniform (0xA5/0x5A alternating) so the fill stays a real
+/// SIMD store loop instead of being rewritten to `memset` by LoopIdiomRecognize (#61).
+pub const REFRESH_PATTERN: u64 = 0xA55AA55AA55AA55Au64;
+
+/// Generates a Refresh `_impl` at a given SIMD width (the `_multi` runtime gate stays
+/// hand-written and calls this). Per chunk: write pattern → CLFLUSHOPT the chunk to DRAM →
+/// MFENCE → sleep 64ms → verify. The flush is what makes the post-sleep verify actually read
+/// DRAM (defeats cache masking of bit-fade). Verify uses **4 independent accumulator chains**
+/// (MLP; see `memory/simd-loop-optimization.md`) — this is the cold-DRAM regime where MLP
+/// mattered most in benchmarking. No intermediate `ErrorCheckInterval` mode (TODO #27 does
+/// exact localization). `TestRunner` owns window/timer/progress/stats/shutdown.
+///
+/// The chunk-vector floor stays `.max(256)` (matching the pre-macro per-width code; note the
+/// scalar `refresh_stable_multi` uses its own operation-based floor).
+macro_rules! refresh_impl {
+    ($fn_name:ident, $test_name:literal, $simd_type:ty, $tf:literal) => {
+        #[doc = include_str!("test_fn_safety.md")]
+        #[inline]
+        #[target_feature(enable = $tf)]
+        unsafe fn $fn_name(
+            blocks: &[crate::runner::AllocationBlock],
+            thread_id: usize,
+            error_mode: ErrorMode,
+            timing: &TestTiming,
+            config: &TestMemoryConfig,
+            progress: Option<&TestProgress>,
+        ) -> TestStats {
+            let test_name = $test_name;
+            let lanes = std::mem::size_of::<$simd_type>();
+            let (mut runner, test_blocks) = crate::test_scaffolding::TestRunner::new(
+                blocks, thread_id, error_mode, timing, config, progress,
+                test_name, TestAction::WriteWaitVerify,
+            );
+
+            let pattern = <$simd_type>::splat(REFRESH_PATTERN);
+
+            loop {
+                runner.begin_cycle();
+                let mut cycle_errors = 0u64;
+
+                for test_block in test_blocks.iter() {
+                    let base = test_block.block.buffer.as_mut_ptr() as *mut $simd_type;
+                    let len = test_block.test_size / lanes;
+
+                    let chunk_size_bytes = runner.chunk_size_bytes(test_block.test_size);
+                    let chunk_size_vectors = (chunk_size_bytes / lanes).max(256);
+
+                    let mut processed = 0;
+                    while processed < len {
+                        let chunk_end = (processed + chunk_size_vectors).min(len);
+
+                        // Write phase.
+                        for i in processed..chunk_end {
+                            *base.add(i) = pattern;
+                        }
+
+                        // Flush the written chunk to DRAM so the post-sleep verify reads DRAM,
+                        // not a cache-resident copy that would mask bit-fade.
+                        let chunk_ptr = base.add(processed) as *const u8;
+                        let chunk_bytes = (chunk_end - processed) * lanes;
+                        flush_range_to_dram(chunk_ptr, chunk_bytes, config.cache_line_bytes);
+
+                        std::sync::atomic::fence(Ordering::SeqCst);
+                        std::thread::sleep(std::time::Duration::from_millis(64));
+
+                        // Verify — 4 independent accumulator chains (MLP).
+                        let mut a0 = <$simd_type>::splat(0);
+                        let mut a1 = <$simd_type>::splat(0);
+                        let mut a2 = <$simd_type>::splat(0);
+                        let mut a3 = <$simd_type>::splat(0);
+                        let mut i = processed;
+                        while i + 4 <= chunk_end {
+                            a0 |= *base.add(i) ^ pattern;
+                            a1 |= *base.add(i + 1) ^ pattern;
+                            a2 |= *base.add(i + 2) ^ pattern;
+                            a3 |= *base.add(i + 3) ^ pattern;
+                            i += 4;
+                        }
+                        while i < chunk_end {
+                            a0 |= *base.add(i) ^ pattern;
+                            i += 1;
+                        }
+                        let acc = (a0 | a1) | (a2 | a3);
+                        if acc.simd_ne(<$simd_type>::splat(0)).any() {
+                            cycle_errors += 1;
+                            log::error!("{}: memory error detected in chunk (thread {})", test_name, thread_id);
+                        }
+
+                        if runner.should_halt(cycle_errors) {
+                            let total_operations = (runner.bytes_processed() / lanes) as u64;
+                            return runner.finish_aborted(cycle_errors, total_operations);
+                        }
+
+                        processed = chunk_end;
+
+                        if runner.shutdown_requested() {
+                            let total_operations = (runner.bytes_processed() / lanes) as u64;
+                            return runner.finish_aborted(cycle_errors, total_operations);
+                        }
+                    }
+
+                    // 1 write + 1 read per chunk over the whole block.
+                    runner.add_bytes(test_block.test_size * 2);
+                }
+
+                runner.commit_cycle_errors(cycle_errors);
+                runner.update_progress();
+                if !runner.should_continue() {
+                    let total_operations = (runner.bytes_processed() / lanes) as u64;
+                    return runner.finish_completed(total_operations);
+                }
+            }
+        }
+    };
+}
 
 /// RefreshStable MultiBlock implementation - tests DRAM refresh stability.
 ///
@@ -2561,12 +2040,9 @@ pub unsafe fn refresh_stable_multi(
             while processed < len {
                 let chunk_end = (processed + chunk_size_operations).min(len);
 
-                // Write phase: 0xA55AA55AA55AA55A pattern.
-                // NOTE: byte value must NOT be uniform (all 8 bytes equal) or LLVM's
-                // LoopIdiomRecognize rewrites this fill into `memset`, collapsing the
-                // SIMD-width variants to one identical libcall. 0xA5/0x5A alternate the
-                // bytes while keeping the same 4-of-8-bits-set retention stress. See #61.
-                let pattern = 0xA55AA55AA55AA55Au64;
+                // Non-byte-uniform (see REFRESH_PATTERN / #61): stays a real store loop,
+                // not memset.
+                let pattern = REFRESH_PATTERN;
                 for i in processed..chunk_end {
                     *base.add(i) = pattern;
                 }
@@ -2660,200 +2136,7 @@ pub unsafe fn refresh_stable_128_multi(
     refresh_stable_128_impl(blocks, thread_id, error_mode, timing, config, progress)
 }
 
-/// RefreshStable128 - SSE2 optimized implementation
-/// This function is annotated with #[target_feature] to enable full compiler optimization
-#[inline]
-#[target_feature(enable = "sse4.2,sse4.1,ssse3,sse3,sse2,popcnt")]
-unsafe fn refresh_stable_128_impl(
-    blocks: &[crate::runner::AllocationBlock],
-    thread_id: usize,
-    error_mode: ErrorMode,
-    timing: &TestTiming,
-    config: &TestMemoryConfig,
-    progress: Option<&TestProgress>,
-) -> TestStats {
-    let test_name = "Mem-Refresh128";
-
-    let start = Instant::now();
-
-    // Calculate total allocated memory
-    let total_allocated: usize = blocks.iter().map(|b| b.buffer.size()).sum();
-
-    // Window preparation
-    let window_size = config.calculate_window_size(test_name, total_allocated);
-    let test_blocks = prepare_blocks_for_window(blocks, window_size, test_name);
-
-    let total_test_size: usize = test_blocks.iter().map(|b| b.test_size).sum();
-
-    log::info!("[Thread {}] Running {} on {:.2} MB of memory (window: {:.2} MB)",
-              thread_id, test_name,
-              total_test_size as f64 / MB_F64,
-              window_size as f64 / MB_F64);
-
-    // Non-byte-uniform (0xA5/0x5A alternating) so the fill stays a real u64x2 store
-    // loop instead of being rewritten to `memset` by LoopIdiomRecognize. See #61.
-    let pattern = u64x2::splat(0xA55AA55AA55AA55Au64);
-
-    let mut cycle = 0u32;
-    let test_start = Instant::now();
-    let mut total_error_count = 0u64;
-    let mut total_bytes_processed = 0usize;
-
-    let mut last_progress_update = Instant::now();
-
-    loop {
-        cycle += 1;
-        let mut cycle_errors = 0u64;
-
-        // Interleave testing across all blocks
-        for test_block in test_blocks.iter() {
-            let base = test_block.block.buffer.as_mut_ptr() as *mut u64x2;
-            let len = test_block.test_size / std::mem::size_of::<u64x2>();
-
-            let ideal_chunk_size = calculate_ideal_chunk_size(config, test_name, test_block.test_size);
-            let chunk_size_bytes = get_safe_chunk_size(ideal_chunk_size, test_block.test_size);
-            let chunk_size_vectors = (chunk_size_bytes / std::mem::size_of::<u64x2>()).max(256);
-
-            let mut processed = 0;
-            while processed < len {
-                let chunk_end = (processed + chunk_size_vectors).min(len);
-
-                // Write phase
-                for i in processed..chunk_end {
-                    *base.add(i) = pattern;
-                }
-
-                // Flush the written chunk to DRAM so the post-sleep verify reads
-                // DRAM, not a cache-resident copy that would mask bit-fade.
-                let chunk_ptr = base.add(processed) as *const u8;
-                let chunk_bytes = (chunk_end - processed) * std::mem::size_of::<u64x2>();
-                flush_range_to_dram(chunk_ptr, chunk_bytes, config.cache_line_bytes);
-
-                std::sync::atomic::fence(Ordering::SeqCst);
-                std::thread::sleep(std::time::Duration::from_millis(64));
-
-                // Verify phase - accumulator pattern with configurable error checking
-                let mut error_accumulator = u64x2::splat(0);
-                let mut element_count = 0usize;
-
-                // Pre-compute check mask for hot loop optimization
-                match config.error_check_interval.get_check_mask() {
-                    Some(check_mask) => {
-                        for i in processed..chunk_end {
-                            let value = *base.add(i);
-                            let diff = value ^ pattern ;
-                            error_accumulator |= diff ;
-
-                            element_count += 1;
-
-                            // Check errors at configured intervals (zero-branch hot loop optimization)
-                            if (element_count as u32 & check_mask) == 0
-                                && error_accumulator.simd_ne(u64x2::splat(0)).any() {
-                                    cycle_errors += 1;
-                                    log::error!("{}: memory error detected element {} (thread {})",
-                                               test_name, element_count, thread_id);
-                                    error_accumulator = u64x2::splat(0);
-                                }
-                        }
-                    }
-                    None => {
-                        // PER_CHUNK mode - no intermediate checks, maximum performance
-                        for i in processed..chunk_end {
-                            let value = *base.add(i);
-                            let diff = value ^ pattern ;
-                            error_accumulator |= diff ;
-                        }
-                    }
-                }
-
-                // Final error check (always performed regardless of mode)
-                if error_accumulator.simd_ne(u64x2::splat(0)).any() {
-                    cycle_errors += 1;
-                    log::error!("{}: memory error detected in chunk (thread {})", test_name, thread_id);
-                }
-
-                // Handle errors
-                if cycle_errors > 0 {
-                    match error_mode {
-                        ErrorMode::Panic => {
-                            panic!("{}: panicking due to {} memory errors in cycle {}",
-                                  test_name, cycle_errors, cycle);
-                        }
-                        ErrorMode::Halt => {
-                            let elapsed = start.elapsed().as_millis();
-                            return TestStats {
-                                name: test_name,
-                                action: TestAction::WriteWaitVerify,
-                                bytes_processed: total_bytes_processed,
-                                elapsed_ms: elapsed,
-                                thread_id,
-                                error_count: total_error_count + cycle_errors,
-                                total_operations: (total_bytes_processed / std::mem::size_of::<u64x2>()) as u64,
-                                cycles_completed: cycle,
-                                cycles_planned: timing.cycles,
-                                stopped_by_time_limit: false,
-                            };
-                        }
-                        ErrorMode::Log => {}
-                    }
-                }
-
-                processed = chunk_end;
-
-                // Check for shutdown
-                if SHUTDOWN_REQUESTED.load(Ordering::Relaxed) {
-                    let elapsed = start.elapsed().as_millis();
-                    return TestStats {
-                        name: test_name,
-                        action: TestAction::WriteWaitVerify,
-                        bytes_processed: total_bytes_processed,
-                        elapsed_ms: elapsed,
-                        thread_id,
-                        error_count: total_error_count + cycle_errors,
-                        total_operations: (total_bytes_processed / std::mem::size_of::<u64x2>()) as u64,
-                        cycles_completed: cycle,
-                        cycles_planned: timing.cycles,
-                        stopped_by_time_limit: false,
-                    };
-                }
-            }
-
-            total_bytes_processed += test_block.test_size * 2;
-        }
-
-        total_error_count += cycle_errors;
-
-        // Update progress
-        if let Some(progress) = progress {
-            let now = Instant::now();
-            if now.duration_since(last_progress_update).as_millis() >= 250 {
-                progress.cycles_completed.store(cycle, Ordering::Relaxed);
-                progress.bytes_processed.store(total_bytes_processed as u64, Ordering::Relaxed);
-                progress.errors_found.store(total_error_count, Ordering::Relaxed);
-                progress.last_update_ms.store(start.elapsed().as_millis() as u64, Ordering::Relaxed);
-                last_progress_update = now;
-            }
-        }
-
-        // Check timing
-        let elapsed_secs = test_start.elapsed().as_secs() as u32;
-        if !timing.should_continue(cycle, elapsed_secs) {
-            let elapsed = start.elapsed().as_millis();
-            return TestStats {
-                name: test_name,
-                action: TestAction::WriteWaitVerify,
-                bytes_processed: total_bytes_processed,
-                elapsed_ms: elapsed,
-                thread_id,
-                error_count: total_error_count,
-                total_operations: (total_bytes_processed / std::mem::size_of::<u64x2>()) as u64,
-                cycles_completed: cycle,
-                cycles_planned: timing.cycles,
-                stopped_by_time_limit: timing.cycles.is_none_or(|limit| cycle < limit),
-            };
-        }
-    }
-}
+refresh_impl!(refresh_stable_128_impl, "Mem-Refresh128", u64x2, "sse4.2,sse4.1,ssse3,sse3,sse2,popcnt");
 
 /// RefreshStable256 - AVX2 optimized - MultiBlock pattern
 /// Runtime-checked wrapper for AVX2 availability
@@ -2892,200 +2175,7 @@ pub unsafe fn refresh_stable_256_multi(
     refresh_stable_256_impl(blocks, thread_id, error_mode, timing, config, progress)
 }
 
-/// RefreshStable256 - AVX2 optimized implementation
-/// This function is annotated with #[target_feature] to enable full compiler optimization
-#[inline]
-#[target_feature(enable = "avx2,avx,fma,bmi1,bmi2")]
-unsafe fn refresh_stable_256_impl(
-    blocks: &[crate::runner::AllocationBlock],
-    thread_id: usize,
-    error_mode: ErrorMode,
-    timing: &TestTiming,
-    config: &TestMemoryConfig,
-    progress: Option<&TestProgress>,
-) -> TestStats {
-    let test_name = "Mem-Refresh256";
-
-    let start = Instant::now();
-
-    // Calculate total allocated memory
-    let total_allocated: usize = blocks.iter().map(|b| b.buffer.size()).sum();
-
-    // Window preparation
-    let window_size = config.calculate_window_size(test_name, total_allocated);
-    let test_blocks = prepare_blocks_for_window(blocks, window_size, test_name);
-
-    let total_test_size: usize = test_blocks.iter().map(|b| b.test_size).sum();
-
-    log::info!("[Thread {}] Running {} on {:.2} MB of memory (window: {:.2} MB)",
-              thread_id, test_name,
-              total_test_size as f64 / MB_F64,
-              window_size as f64 / MB_F64);
-
-    // Non-byte-uniform (0xA5/0x5A alternating) so the fill stays a real u64x4 store
-    // loop instead of being rewritten to `memset` by LoopIdiomRecognize. See #61.
-    let pattern = u64x4::splat(0xA55AA55AA55AA55Au64);
-
-    let mut cycle = 0u32;
-    let test_start = Instant::now();
-    let mut total_error_count = 0u64;
-    let mut total_bytes_processed = 0usize;
-
-    let mut last_progress_update = Instant::now();
-
-    loop {
-        cycle += 1;
-        let mut cycle_errors = 0u64;
-
-        // Interleave testing across all blocks
-        for test_block in test_blocks.iter() {
-            let base = test_block.block.buffer.as_mut_ptr() as *mut u64x4;
-            let len = test_block.test_size / std::mem::size_of::<u64x4>();
-
-            let ideal_chunk_size = calculate_ideal_chunk_size(config, test_name, test_block.test_size);
-            let chunk_size_bytes = get_safe_chunk_size(ideal_chunk_size, test_block.test_size);
-            let chunk_size_vectors = (chunk_size_bytes / std::mem::size_of::<u64x4>()).max(128);
-
-            let mut processed = 0;
-            while processed < len {
-                let chunk_end = (processed + chunk_size_vectors).min(len);
-
-                // Write phase
-                for i in processed..chunk_end {
-                    *base.add(i) = pattern;
-                }
-
-                // Flush the written chunk to DRAM so the post-sleep verify reads
-                // DRAM, not a cache-resident copy that would mask bit-fade.
-                let chunk_ptr = base.add(processed) as *const u8;
-                let chunk_bytes = (chunk_end - processed) * std::mem::size_of::<u64x4>();
-                flush_range_to_dram(chunk_ptr, chunk_bytes, config.cache_line_bytes);
-
-                std::sync::atomic::fence(Ordering::SeqCst);
-                std::thread::sleep(std::time::Duration::from_millis(64));
-
-                // Verify phase - accumulator pattern with configurable error checking
-                let mut error_accumulator = u64x4::splat(0);
-                let mut element_count = 0usize;
-
-                // Pre-compute check mask for hot loop optimization
-                match config.error_check_interval.get_check_mask() {
-                    Some(check_mask) => {
-                        for i in processed..chunk_end {
-                            let value = *base.add(i);
-                            let diff = value ^ pattern ;
-                            error_accumulator |= diff ;
-
-                            element_count += 1;
-
-                            // Check errors at configured intervals (zero-branch hot loop optimization)
-                            if (element_count as u32 & check_mask) == 0
-                                && error_accumulator.simd_ne(u64x4::splat(0)).any() {
-                                    cycle_errors += 1;
-                                    log::error!("{}: memory error detected element {} (thread {})",
-                                               test_name, element_count, thread_id);
-                                    error_accumulator = u64x4::splat(0);
-                                }
-                        }
-                    }
-                    None => {
-                        // PER_CHUNK mode - no intermediate checks, maximum performance
-                        for i in processed..chunk_end {
-                            let value = *base.add(i);
-                            let diff = value ^ pattern ;
-                            error_accumulator |= diff ;
-                        }
-                    }
-                }
-
-                // Final error check (always performed regardless of mode)
-                if error_accumulator.simd_ne(u64x4::splat(0)).any() {
-                    cycle_errors += 1;
-                    log::error!("{}: memory error detected in chunk (thread {})", test_name, thread_id);
-                }
-
-                // Handle errors
-                if cycle_errors > 0 {
-                    match error_mode {
-                        ErrorMode::Panic => {
-                            panic!("{}: panicking due to {} memory errors in cycle {}",
-                                  test_name, cycle_errors, cycle);
-                        }
-                        ErrorMode::Halt => {
-                            let elapsed = start.elapsed().as_millis();
-                            return TestStats {
-                                name: test_name,
-                                action: TestAction::WriteWaitVerify,
-                                bytes_processed: total_bytes_processed,
-                                elapsed_ms: elapsed,
-                                thread_id,
-                                error_count: total_error_count + cycle_errors,
-                                total_operations: (total_bytes_processed / std::mem::size_of::<u64x4>()) as u64,
-                                cycles_completed: cycle,
-                                cycles_planned: timing.cycles,
-                                stopped_by_time_limit: false,
-                            };
-                        }
-                        ErrorMode::Log => {}
-                    }
-                }
-
-                processed = chunk_end;
-
-                // Check for shutdown
-                if SHUTDOWN_REQUESTED.load(Ordering::Relaxed) {
-                    let elapsed = start.elapsed().as_millis();
-                    return TestStats {
-                        name: test_name,
-                        action: TestAction::WriteWaitVerify,
-                        bytes_processed: total_bytes_processed,
-                        elapsed_ms: elapsed,
-                        thread_id,
-                        error_count: total_error_count + cycle_errors,
-                        total_operations: (total_bytes_processed / std::mem::size_of::<u64x4>()) as u64,
-                        cycles_completed: cycle,
-                        cycles_planned: timing.cycles,
-                        stopped_by_time_limit: false,
-                    };
-                }
-            }
-
-            total_bytes_processed += test_block.test_size * 2;
-        }
-
-        total_error_count += cycle_errors;
-
-        // Update progress
-        if let Some(progress) = progress {
-            let now = Instant::now();
-            if now.duration_since(last_progress_update).as_millis() >= 250 {
-                progress.cycles_completed.store(cycle, Ordering::Relaxed);
-                progress.bytes_processed.store(total_bytes_processed as u64, Ordering::Relaxed);
-                progress.errors_found.store(total_error_count, Ordering::Relaxed);
-                progress.last_update_ms.store(start.elapsed().as_millis() as u64, Ordering::Relaxed);
-                last_progress_update = now;
-            }
-        }
-
-        // Check timing
-        let elapsed_secs = test_start.elapsed().as_secs() as u32;
-        if !timing.should_continue(cycle, elapsed_secs) {
-            let elapsed = start.elapsed().as_millis();
-            return TestStats {
-                name: test_name,
-                action: TestAction::WriteWaitVerify,
-                bytes_processed: total_bytes_processed,
-                elapsed_ms: elapsed,
-                thread_id,
-                error_count: total_error_count,
-                total_operations: (total_bytes_processed / std::mem::size_of::<u64x4>()) as u64,
-                cycles_completed: cycle,
-                cycles_planned: timing.cycles,
-                stopped_by_time_limit: timing.cycles.is_none_or(|limit| cycle < limit),
-            };
-        }
-    }
-}
+refresh_impl!(refresh_stable_256_impl, "Mem-Refresh256", u64x4, "avx2,avx,fma,bmi1,bmi2");
 
 /// RefreshStable512 - AVX-512 optimized - MultiBlock pattern
 /// Runtime-checked wrapper for AVX-512 availability
@@ -3124,200 +2214,7 @@ pub unsafe fn refresh_stable_512_multi(
     refresh_stable_512_impl(blocks, thread_id, error_mode, timing, config, progress)
 }
 
-/// RefreshStable512 - AVX-512 optimized implementation
-/// This function is annotated with #[target_feature] to enable full compiler optimization
-#[inline]
-#[target_feature(enable = "avx512f,avx512bw,avx512cd,avx512dq,avx512vl,avx2,avx,fma,bmi1,bmi2")]
-unsafe fn refresh_stable_512_impl(
-    blocks: &[crate::runner::AllocationBlock],
-    thread_id: usize,
-    error_mode: ErrorMode,
-    timing: &TestTiming,
-    config: &TestMemoryConfig,
-    progress: Option<&TestProgress>,
-) -> TestStats {
-    let test_name = "Mem-Refresh512";
-
-    let start = Instant::now();
-
-    // Calculate total allocated memory
-    let total_allocated: usize = blocks.iter().map(|b| b.buffer.size()).sum();
-
-    // Window preparation
-    let window_size = config.calculate_window_size(test_name, total_allocated);
-    let test_blocks = prepare_blocks_for_window(blocks, window_size, test_name);
-
-    let total_test_size: usize = test_blocks.iter().map(|b| b.test_size).sum();
-
-    log::info!("[Thread {}] Running {} on {:.2} MB of memory (window: {:.2} MB)",
-              thread_id, test_name,
-              total_test_size as f64 / MB_F64,
-              window_size as f64 / MB_F64);
-
-    // Non-byte-uniform (0xA5/0x5A alternating) so the fill stays a real u64x8 store
-    // loop instead of being rewritten to `memset` by LoopIdiomRecognize. See #61.
-    let pattern = u64x8::splat(0xA55AA55AA55AA55Au64);
-
-    let mut cycle = 0u32;
-    let test_start = Instant::now();
-    let mut total_error_count = 0u64;
-    let mut total_bytes_processed = 0usize;
-
-    let mut last_progress_update = Instant::now();
-
-    loop {
-        cycle += 1;
-        let mut cycle_errors = 0u64;
-
-        // Interleave testing across all blocks
-        for test_block in test_blocks.iter() {
-            let base = test_block.block.buffer.as_mut_ptr() as *mut u64x8;
-            let len = test_block.test_size / std::mem::size_of::<u64x8>();
-
-            let ideal_chunk_size = calculate_ideal_chunk_size(config, test_name, test_block.test_size);
-            let chunk_size_bytes = get_safe_chunk_size(ideal_chunk_size, test_block.test_size);
-            let chunk_size_vectors = (chunk_size_bytes / std::mem::size_of::<u64x8>()).max(64);
-
-            let mut processed = 0;
-            while processed < len {
-                let chunk_end = (processed + chunk_size_vectors).min(len);
-
-                // Write phase
-                for i in processed..chunk_end {
-                    *base.add(i) = pattern;
-                }
-
-                // Flush the written chunk to DRAM so the post-sleep verify reads
-                // DRAM, not a cache-resident copy that would mask bit-fade.
-                let chunk_ptr = base.add(processed) as *const u8;
-                let chunk_bytes = (chunk_end - processed) * std::mem::size_of::<u64x8>();
-                flush_range_to_dram(chunk_ptr, chunk_bytes, config.cache_line_bytes);
-
-                std::sync::atomic::fence(Ordering::SeqCst);
-                std::thread::sleep(std::time::Duration::from_millis(64));
-
-                // Verify phase - accumulator pattern with configurable error checking
-                let mut error_accumulator = u64x8::splat(0);
-                let mut element_count = 0usize;
-
-                // Pre-compute check mask for hot loop optimization
-                match config.error_check_interval.get_check_mask() {
-                    Some(check_mask) => {
-                        for i in processed..chunk_end {
-                            let value = *base.add(i);
-                            let diff = value ^ pattern ;
-                            error_accumulator |= diff ;
-
-                            element_count += 1;
-
-                            // Check errors at configured intervals (zero-branch hot loop optimization)
-                            if (element_count as u32 & check_mask) == 0
-                                && !error_accumulator.simd_eq(u64x8::splat(0)).all() {
-                                    cycle_errors += 1;
-                                    log::error!("{}: memory error detected element {} (thread {})",
-                                               test_name, element_count, thread_id);
-                                    error_accumulator = u64x8::splat(0);
-                                }
-                        }
-                    }
-                    None => {
-                        // PER_CHUNK mode - no intermediate checks, maximum performance
-                        for i in processed..chunk_end {
-                            let value = *base.add(i);
-                            let diff = value ^ pattern ;
-                            error_accumulator |= diff ;
-                        }
-                    }
-                }
-
-                // Final error check (always performed regardless of mode)
-                if !error_accumulator.simd_eq(u64x8::splat(0)).all() {
-                    cycle_errors += 1;
-                    log::error!("{}: memory error detected in chunk (thread {})", test_name, thread_id);
-                }
-
-                // Handle errors
-                if cycle_errors > 0 {
-                    match error_mode {
-                        ErrorMode::Panic => {
-                            panic!("{}: panicking due to {} memory errors in cycle {}",
-                                  test_name, cycle_errors, cycle);
-                        }
-                        ErrorMode::Halt => {
-                            let elapsed = start.elapsed().as_millis();
-                            return TestStats {
-                                name: test_name,
-                                action: TestAction::WriteWaitVerify,
-                                bytes_processed: total_bytes_processed,
-                                elapsed_ms: elapsed,
-                                thread_id,
-                                error_count: total_error_count + cycle_errors,
-                                total_operations: (total_bytes_processed / std::mem::size_of::<u64x8>()) as u64,
-                                cycles_completed: cycle,
-                                cycles_planned: timing.cycles,
-                                stopped_by_time_limit: false,
-                            };
-                        }
-                        ErrorMode::Log => {}
-                    }
-                }
-
-                processed = chunk_end;
-
-                // Check for shutdown
-                if SHUTDOWN_REQUESTED.load(Ordering::Relaxed) {
-                    let elapsed = start.elapsed().as_millis();
-                    return TestStats {
-                        name: test_name,
-                        action: TestAction::WriteWaitVerify,
-                        bytes_processed: total_bytes_processed,
-                        elapsed_ms: elapsed,
-                        thread_id,
-                        error_count: total_error_count + cycle_errors,
-                        total_operations: (total_bytes_processed / std::mem::size_of::<u64x8>()) as u64,
-                        cycles_completed: cycle,
-                        cycles_planned: timing.cycles,
-                        stopped_by_time_limit: false,
-                    };
-                }
-            }
-
-            total_bytes_processed += test_block.test_size * 2;
-        }
-
-        total_error_count += cycle_errors;
-
-        // Update progress
-        if let Some(progress) = progress {
-            let now = Instant::now();
-            if now.duration_since(last_progress_update).as_millis() >= 250 {
-                progress.cycles_completed.store(cycle, Ordering::Relaxed);
-                progress.bytes_processed.store(total_bytes_processed as u64, Ordering::Relaxed);
-                progress.errors_found.store(total_error_count, Ordering::Relaxed);
-                progress.last_update_ms.store(start.elapsed().as_millis() as u64, Ordering::Relaxed);
-                last_progress_update = now;
-            }
-        }
-
-        // Check timing
-        let elapsed_secs = test_start.elapsed().as_secs() as u32;
-        if !timing.should_continue(cycle, elapsed_secs) {
-            let elapsed = start.elapsed().as_millis();
-            return TestStats {
-                name: test_name,
-                action: TestAction::WriteWaitVerify,
-                bytes_processed: total_bytes_processed,
-                elapsed_ms: elapsed,
-                thread_id,
-                error_count: total_error_count,
-                total_operations: (total_bytes_processed / std::mem::size_of::<u64x8>()) as u64,
-                cycles_completed: cycle,
-                cycles_planned: timing.cycles,
-                stopped_by_time_limit: timing.cycles.is_none_or(|limit| cycle < limit),
-            };
-        }
-    }
-}
+refresh_impl!(refresh_stable_512_impl, "Mem-Refresh512", u64x8, "avx512f,avx512bw,avx512cd,avx512dq,avx512vl,avx2,avx,fma,bmi1,bmi2");
 
 /// RefreshStableAuto - MultiBlock dispatcher
 /// Auto-selects best SIMD implementation: AVX-512 > AVX2 > SSE2 > scalar
