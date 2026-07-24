@@ -878,8 +878,9 @@ pub fn create_thread_timing_report(
             0.0
         };
 
-        // Get physical core and NUMA node info
-        let physical_core_id = cpu_id / 2; // Simple approximation
+        // Get physical core and NUMA node info from the real detected topology
+        // (NOT cpu_id/2 — that hardcoded 2-way SMT and mislabeled cores on non-SMT CPUs).
+        let physical_core_id = crate::cpu_topology::get_physical_core_for_cpu(cpu_id);
         let numa_node = crate::cpu_topology::get_numa_node_for_cpu(cpu_id);
 
         ThreadTiming {

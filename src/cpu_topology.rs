@@ -170,6 +170,18 @@ pub fn get_numa_node_for_cpu_with_topology(cpu_id: usize, topology: &[CpuTopolog
         .unwrap_or(0)
 }
 
+/// Physical-core id for a logical CPU, from the real detected topology (the same source the
+/// CPU Topology table uses). Replaces the old `cpu_id / 2` approximation, which hardcoded
+/// 2-way SMT and mislabeled cores on non-SMT (e.g. AMD EPYC) or non-2-way-SMT parts.
+/// Falls back to the logical id (a sane 1:1 default) if the CPU isn't found.
+pub fn get_physical_core_for_cpu(cpu_id: usize) -> usize {
+    get_cpu_topology()
+        .iter()
+        .find(|cpu| cpu.logical_id == cpu_id)
+        .map(|cpu| cpu.physical_core_id)
+        .unwrap_or(cpu_id)
+}
+
 
 pub fn get_numa_node_for_cpu(cpu_id: usize) -> u32 {
     static NUMA_TOPOLOGY: OnceLock<NumaTopology> = OnceLock::new();
@@ -802,7 +814,13 @@ pub fn get_system_cpu_set_information() -> Result<Vec<EnhancedCpuInfo>, String> 
             let info = &*(buffer.as_ptr().add(offset) as *const SYSTEM_CPU_SET_INFORMATION);
             
             // CoreIndex from the API is actually the logical processor index
-            // We need to map this to physical core index
+            // We need to map this to physical core index.
+            // FIXME (topology): `logical/2` hardcodes 2-way SMT and is WRONG on non-SMT
+            // (AMD EPYC: 16L=16P) or non-2-way parts. This path (`get_system_cpu_set_information`
+            // → `detect_cpu_topology_v2`) is NOT the primary detector — `detect_cpu_topology`
+            // enumerates real per-core mappings and is what produces the correct topology table.
+            // Left as-is to avoid changing a secondary detection path blind; the display-side
+            // mapping now uses `get_physical_core_for_cpu` off the authoritative topology.
             let logical_index = info.Anonymous.CpuSet.CoreIndex as u32;
             let physical_core_index = logical_index / 2; // Assuming SMT with 2 threads per core
             
