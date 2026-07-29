@@ -576,8 +576,14 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
 					log::debug!("CLI override: cputype = {}", cputype);
 				}
 				"skip-cores" => {
-					pinning_config.cpus_to_skip = params::get_usize(&validated_params, "skip-cores", 1);
-					log::debug!("CLI override: cpus_to_skip = {}", pinning_config.cpus_to_skip);
+					// Stage 1 filter spec; resolved later against the real core count.
+					pinning_config.skip_spec = params::get_string(&validated_params, "skip-cores", "1");
+					log::debug!("CLI override: skip_spec = {}", pinning_config.skip_spec);
+				}
+				"cpu-stride" => {
+					// Stage 2 spacing spec.
+					pinning_config.stride_spec = params::get_string(&validated_params, "cpu-stride", "1");
+					log::debug!("CLI override: stride_spec = {}", pinning_config.stride_spec);
 				}
 				"--disable-pinning" => {
 					pinning_config.enable_pinning = false;
@@ -721,8 +727,37 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
 		println!("  CPU Type: {}", cputype);
 	}
 
+	// Stage 1 FILTER: resolve the skip-cores spec ("N" | "N%" | "A-B") into a leading-skip
+	// count and/or an excluded core-id range. The range form is how you isolate one memory
+	// domain on a multi-CCD part (e.g. skip-cores=0-7 tests only cores 8+).
+	let (resolved_skip, skip_excluded_range) =
+		tmr::cpu_selection::resolve_skip_spec(&pinning_config.skip_spec, total_cpus);
+	pinning_config.cpus_to_skip = resolved_skip;
+	if let Some((lo, hi)) = skip_excluded_range {
+		println!("  CPU Filter: excluding core id range {}-{} (Stage 1)", lo, hi);
+	}
+	// Cores removed by an excluded range shrink the available pool too.
+	let range_excluded_count = skip_excluded_range
+		.map(|(lo, hi)| {
+			let topo = get_cpu_topology();
+			if avoid_smt {
+				// cores mode: count distinct physical cores in the excluded range
+				topo.iter()
+					.filter(|c| c.physical_core_id >= lo && c.physical_core_id <= hi)
+					.map(|c| c.physical_core_id)
+					.collect::<std::collections::HashSet<_>>()
+					.len()
+			} else {
+				// threads mode: count logical CPUs on those cores
+				topo.iter()
+					.filter(|c| c.physical_core_id >= lo && c.physical_core_id <= hi)
+					.count()
+			}
+		})
+		.unwrap_or(0);
+
 	// Calculate available CPUs after accounting for skipped cores
-	let available_cpus = if pinning_config.cpus_to_skip > 0 {
+	let available_cpus_before_range = if pinning_config.cpus_to_skip > 0 {
 		// Get topology to count logical CPUs on skipped physical cores
 		let topology = get_cpu_topology();
 		let mut cores_by_id: std::collections::HashMap<usize, usize> = std::collections::HashMap::new();
@@ -765,11 +800,21 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
 		total_cpus
 	};
 
+	// Subtract cores removed by an excluded id-range to get the true Available pool.
+	let available_cpus = available_cpus_before_range
+		.saturating_sub(range_excluded_count)
+		.max(1);
+
+	// `cpus=` is RELATIVE to the post-filter Available pool: any value <= 100% is therefore
+	// always valid, which keeps configs portable across 4/6/8/16-core machines.
 	let threads = if cpus.ends_with('%') {
 		// Percentage of available CPUs
 		let percent = cpus.trim_end_matches('%').parse::<u32>().unwrap_or(100);
 		// Round to nearest instead of truncating: +50 before dividing by 100
-		((available_cpus as u32 * percent + 50) / 100).max(1).min(available_cpus as u32) as usize
+		let n = ((available_cpus as u32 * percent + 50) / 100).max(1).min(available_cpus as u32) as usize;
+		// Make the relative math explicit so `cpus=50%` after a skip isn't a surprise.
+		println!("  CPU Count: {}% of {} available = {} thread(s)", percent, available_cpus, n);
+		n
 	} else {
 		// Absolute count
 		cpus.parse::<usize>().unwrap_or(available_cpus).min(available_cpus).max(1)
@@ -778,12 +823,21 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
 	let (actual_threads, cpu_list) = if pinning_config.enable_pinning {
 		// Override avoid_smt_doubling if cputype=cores
 		let effective_avoid_smt = pinning_config.avoid_smt_doubling || avoid_smt;
-		
-		calculate_thread_allocation(
+
+		match tmr::cpu_selection::calculate_thread_allocation(
 			threads,
 			pinning_config.cpus_to_skip,
-			effective_avoid_smt
-		)
+			effective_avoid_smt,
+			skip_excluded_range,
+			&pinning_config.stride_spec,
+		) {
+			Ok(result) => result,
+			Err(e) => {
+				// Never silently right-size the request — tell the user and stop.
+				eprintln!("❌ CPU selection error: {}", e);
+				return Ok(());
+			}
+		}
 	} else {
 		// No pinning, use all requested threads
 		(threads, (0..threads).collect())
@@ -1304,125 +1358,6 @@ fn format_calibration_size(bytes: usize) -> String {
 }
 
 // In main.rs - Pre-calculate thread allocation
-fn calculate_thread_allocation(
-    requested_threads: usize,
-    cpus_to_skip: usize,
-    avoid_smt_doubling: bool,
-) -> (usize, Vec<usize>) {
-    let topology = get_cpu_topology(); // Use v2 here
-    let is_hybrid = is_hybrid_cpu(topology);
-    
-    // Group logical CPUs by physical core
-    let mut cores_map: HashMap<usize, Vec<(usize, CoreType)>> = HashMap::new();
-    for cpu in topology {
-        cores_map.entry(cpu.physical_core_id)
-            .or_default()
-            .push((cpu.logical_id, cpu.core_type));
-    }
-    
-    // Separate P-cores and E-cores
-	let mut p_cores: Vec<_> = cores_map.iter()
-		.filter(|(_, cpus)| cpus.iter().any(|(_, t)| matches!(t, CoreType::Performance(_))))
-		.map(|(id, cpus)| (*id, cpus.clone()))
-		.collect();
-
-	let mut e_cores: Vec<_> = cores_map.iter()
-		.filter(|(_, cpus)| cpus.iter().any(|(_, t)| matches!(t, CoreType::Efficiency(_))))
-		.map(|(id, cpus)| (*id, cpus.clone()))
-		.collect();
-    
-    p_cores.sort_by_key(|(id, _)| *id);
-    e_cores.sort_by_key(|(id, _)| *id);
-    
-    let mut selected_cpus = Vec::new();
-    let mut cores_to_skip = cpus_to_skip;
-    
-    if is_hybrid {
-        // Skip E-cores first (if we have any to skip)
-        let e_cores_to_skip = cores_to_skip.min(e_cores.len());
-        let e_cores_to_use = e_cores.iter().skip(e_cores_to_skip);
-        
-        // Update remaining cores to skip
-        cores_to_skip = cores_to_skip.saturating_sub(e_cores.len());
-        
-        // Then skip some P-cores if needed
-        let p_cores_to_skip = cores_to_skip.min(p_cores.len());
-        let p_cores_to_use = p_cores.iter().skip(p_cores_to_skip);
-        
-        // Round-robin assignment: spread threads across physical cores first,
-        // then fill in SMT siblings if more threads are needed.
-        // This ensures better utilization when using partial CPU counts (e.g., cpus=50%)
-
-        // Collect cores we'll use (respecting skip settings)
-        let p_cores_vec: Vec<_> = p_cores_to_use.collect();
-        let e_cores_vec: Vec<_> = e_cores_to_use.collect();
-
-        // Pass 1: Take first thread from each P-core
-        for (_, logical_cpus) in &p_cores_vec {
-            if selected_cpus.len() >= requested_threads { break; }
-            if let Some((cpu_id, _)) = logical_cpus.first() {
-                selected_cpus.push(*cpu_id);
-            }
-        }
-
-        // Pass 2: Take first thread from each E-core
-        for (_, logical_cpus) in &e_cores_vec {
-            if selected_cpus.len() >= requested_threads { break; }
-            if let Some((cpu_id, _)) = logical_cpus.first() {
-                selected_cpus.push(*cpu_id);
-            }
-        }
-
-        // Pass 3 & 4: If not avoiding SMT and still need more, take SMT siblings
-        if !avoid_smt_doubling && selected_cpus.len() < requested_threads {
-            // Take SMT siblings from P-cores
-            for (_, logical_cpus) in &p_cores_vec {
-                for (cpu_id, _) in logical_cpus.iter().skip(1) {
-                    if selected_cpus.len() >= requested_threads { break; }
-                    selected_cpus.push(*cpu_id);
-                }
-            }
-
-            // Take SMT siblings from E-cores
-            for (_, logical_cpus) in &e_cores_vec {
-                for (cpu_id, _) in logical_cpus.iter().skip(1) {
-                    if selected_cpus.len() >= requested_threads { break; }
-                    selected_cpus.push(*cpu_id);
-                }
-            }
-        }
-    } else {
-        // Non-hybrid CPU - use round-robin assignment
-        let mut physical_cores: Vec<_> = cores_map.keys().cloned().collect();
-        physical_cores.sort();
-
-        // Skip the first N cores
-        let cores_to_use: Vec<_> = physical_cores.iter().skip(cores_to_skip).cloned().collect();
-
-        // Pass 1: Take first thread from each physical core (round-robin)
-        for physical_core in &cores_to_use {
-            if selected_cpus.len() >= requested_threads { break; }
-            if let Some(logical_cpus) = cores_map.get(physical_core)
-                && let Some((cpu_id, _)) = logical_cpus.first() {
-                selected_cpus.push(*cpu_id);
-            }
-        }
-
-        // Pass 2: If not avoiding SMT and still need more, take SMT siblings
-        if !avoid_smt_doubling && selected_cpus.len() < requested_threads {
-            for physical_core in &cores_to_use {
-                if let Some(logical_cpus) = cores_map.get(physical_core) {
-                    for (cpu_id, _) in logical_cpus.iter().skip(1) {
-                        if selected_cpus.len() >= requested_threads { break; }
-                        selected_cpus.push(*cpu_id);
-                    }
-                }
-            }
-        }
-    }
-    
-    (selected_cpus.len(), selected_cpus)
-}
 
 fn setup_logging() {
     // Create logs directory if it doesn't exist
@@ -1550,9 +1485,11 @@ fn build_config_from_validated_params(
         EnhancedMemoryStrategy::default()
     };
 
-    // Build CPU pinning config
+    // Build CPU pinning config. skip_spec/stride_spec are the two-stage selection specs;
+    // cpus_to_skip is resolved from skip_spec later (needs the real core count).
     let mut pinning_config = CpuPinningConfig {
-        cpus_to_skip: params::get_usize(validated, "skip-cores", 1),
+        skip_spec: params::get_string(validated, "skip-cores", "1"),
+        stride_spec: params::get_string(validated, "cpu-stride", "1"),
         ..Default::default()
     };
     if params::get_bool(validated, "--disable-pinning", false) {

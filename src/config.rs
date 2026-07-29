@@ -67,17 +67,33 @@ pub struct SystemConfig {
 }
 
 // Define CpuPinningConfig in config.rs
+//
+// CPU selection is a two-stage pipeline:
+//   Stage 1 FILTER  — `skip_spec` decides which cores are *eligible* (Skipped vs Available)
+//   Stage 2 SPACING — `cpus=` count + `stride_spec` decide which eligible cores get *Assigned*
+// `cpus=` percentages are relative to the post-filter Available pool, so any value <= 100%
+// is always valid — that keeps configs portable across 4/6/8/16-core machines.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct CpuPinningConfig {
     pub enable_pinning: bool,
+    /// Resolved count of leading cores to skip. Kept for back-compat with existing JSON
+    /// configs and the topology display; derived from `skip_spec` when that is set.
     #[serde(default = "default_cpus_to_skip")]
     pub cpus_to_skip: usize,
     #[serde(default = "default_avoid_smt_doubling")]
     pub avoid_smt_doubling: bool,
+    /// Stage 1 filter spec: "N" | "N%" | "A-B" (inclusive core-id range to exclude).
+    #[serde(default = "default_skip_spec")]
+    pub skip_spec: String,
+    /// Stage 2 spacing spec: "1" (packed) | "N" (every Nth) | "even" (spread across pool).
+    #[serde(default = "default_stride_spec")]
+    pub stride_spec: String,
 }
 
 fn default_cpus_to_skip() -> usize { 1 }
 fn default_avoid_smt_doubling() -> bool { false }
+fn default_skip_spec() -> String { "1".to_string() }
+fn default_stride_spec() -> String { "1".to_string() }
 
 
 // Define MemoryAllocationConfig
@@ -207,6 +223,8 @@ impl Default for CpuPinningConfig {
             enable_pinning: true,
 			cpus_to_skip: 1,
 			avoid_smt_doubling: false,
+			skip_spec: default_skip_spec(),
+			stride_spec: default_stride_spec(),
         }
     }
 }

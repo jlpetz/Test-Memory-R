@@ -113,17 +113,67 @@ impl ParamRegistry {
             },
         });
 
+        // Stage 1 of CPU selection — FILTER which cores are eligible.
+        // Accepts: `N` (skip first N), `N%` (skip first N% of cores), or `A-B`
+        // (exclude the inclusive core-id range, e.g. skip-cores=0-7 tests only cores 8+).
+        // Ranges are the diagnostic tool for multi-CCD/NUMA-domain machines.
         params.insert("skip-cores", ParamDef {
             key: "skip-cores",
             is_flag: false,
             default: ParamValue::Usize(1),
-            help: "Number of CPUs to skip from the beginning (default: 1 to preserve OS responsiveness)",
-            example: "skip-cores=0",
+            help: "CPUs to exclude: N (first N), N% (first N%), or A-B (id range, e.g. 0-7)",
+            example: "skip-cores=0-7",
             can_override_config: true,
             parser: |v| {
-                v.parse::<usize>()
-                    .map(ParamValue::Usize)
-                    .map_err(|_| format!("Invalid skip-cores value '{}'", v))
+                // Keep as a string so the resolver can handle N / N% / A-B uniformly.
+                // Validate the shape here so bad input fails at parse time.
+                let s = v.trim();
+                if let Some((a, b)) = s.split_once('-') {
+                    let a = a.trim().parse::<usize>()
+                        .map_err(|_| format!("Invalid skip-cores range start '{}' in '{}'", a, s))?;
+                    let b = b.trim().parse::<usize>()
+                        .map_err(|_| format!("Invalid skip-cores range end '{}' in '{}'", b, s))?;
+                    if a > b {
+                        return Err(format!("Invalid skip-cores range '{}': start {} > end {}", s, a, b));
+                    }
+                    Ok(ParamValue::String(s.to_string()))
+                } else if let Some(pct) = s.strip_suffix('%') {
+                    let p = pct.trim().parse::<u32>()
+                        .map_err(|_| format!("Invalid skip-cores percentage '{}'", s))?;
+                    if p > 100 {
+                        return Err(format!("Invalid skip-cores '{}': percentage must be <= 100", s));
+                    }
+                    Ok(ParamValue::String(s.to_string()))
+                } else {
+                    s.parse::<usize>()
+                        .map(|_| ParamValue::String(s.to_string()))
+                        .map_err(|_| format!("Invalid skip-cores value '{}' (expected N, N%, or A-B)", s))
+                }
+            },
+        });
+
+        // Stage 2 of CPU selection — SPACING within the post-filter (available) pool.
+        // `1` = densely packed (default, current behaviour). `N` = take every Nth core.
+        // `even` = spread the requested count evenly across the whole available pool.
+        // Errors (never silently adjusts) if count × stride overflows the pool — use the
+        // `cpus=` percentage to right-size instead.
+        params.insert("cpu-stride", ParamDef {
+            key: "cpu-stride",
+            is_flag: false,
+            default: ParamValue::String("1".to_string()),
+            help: "Spacing within available CPUs: 1 (packed), N (every Nth), or 'even' (spread)",
+            example: "cpu-stride=2",
+            can_override_config: true,
+            parser: |v| {
+                let s = v.trim();
+                if s.eq_ignore_ascii_case("even") {
+                    return Ok(ParamValue::String("even".to_string()));
+                }
+                match s.parse::<usize>() {
+                    Ok(0) => Err("Invalid cpu-stride '0' (must be >= 1, or 'even')".to_string()),
+                    Ok(_) => Ok(ParamValue::String(s.to_string())),
+                    Err(_) => Err(format!("Invalid cpu-stride '{}' (expected a number >= 1, or 'even')", s)),
+                }
             },
         });
 
@@ -562,7 +612,11 @@ pub fn print_help(program_name: &str) {
     println!("  duration=600                        # Maximum 10 minutes runtime");
     println!("  cpus=50%                            # Use 50% of available CPUs");
     println!("  cputype=cores                       # Use physical cores (vs threads/SMT)");
-    println!("  skip-cores=1                        # Skip first N CPUs (default: 1 to preserve OS)");
+    println!("  skip-cores=1                        # Stage 1 FILTER: skip first N CPUs (default: 1 to preserve OS)");
+    println!("  skip-cores=25%                      #   ...or skip the leading N% (portable across core counts)");
+    println!("  skip-cores=0-7                      #   ...or exclude a core-id range (isolate a memory domain/CCD)");
+    println!("  cpu-stride=2                        # Stage 2 SPACING: use every Nth available CPU");
+    println!("  cpu-stride=even                     #   ...or spread the requested count evenly across the pool");
     println!("  --disable-pinning                   # Disable CPU thread pinning");
     println!("  allocator=plan-pagesize-pref        # Allocation strategy:");
     println!("    greedy                            #   Legacy: largest chunks first");
@@ -655,6 +709,8 @@ pub fn print_usage(program_name: &str) {
     println!("  {} cycles=5 duration=600        # 5 cycles OR 10 minutes max", program_name);
     println!("  {} cpus=50% cputype=cores       # Use 50% of CPU cores (cores=avoid SMT)", program_name);
     println!("  {} skip-cores=0                 # Don't skip any CPUs (default: skip first CPU)", program_name);
+    println!("  {} skip-cores=0-7 cpus=100%     # Test ONLY cores 8+ (isolate a memory domain on multi-CCD parts)", program_name);
+    println!("  {} cpus=50% cpu-stride=even     # Spread half the cores evenly (loads all memory domains equally)", program_name);
     println!("  {} --disable-pinning            # Disable CPU pinning (default: enabled)", program_name);
     println!("  {} errors=halt                  # Stop on first error", program_name);
     println!("  {} config=test.json             # Load comprehensive JSON config", program_name);

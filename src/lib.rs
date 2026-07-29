@@ -19,6 +19,7 @@ pub mod formatting;
 pub mod thread_pool;
 pub mod driver;
 pub mod cpu_topology;
+pub mod cpu_selection; // two-stage CPU selection: skip-cores filter + cpu-stride spacing
 pub mod reporting;
 pub mod params; // Centralized parameter registry
 pub mod latency_tests; // Latency measurement tests
