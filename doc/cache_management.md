@@ -370,6 +370,11 @@ them into DRAM tests. The two test types coexist; don't conflate them.
 - `doc/nt_stores.md` — NT store implementation details (why std::arch
   intrinsics + manual unroll is required), partial vs full-line NT write
   paths, and the asm-vs-intrinsic `#APP` churn / tool-selection strategy
+- `doc/simd_codegen_rules.md` — SIMD codegen rules and traps: byte-uniform
+  fills get rewritten to `memset` (erasing SIMD width), the N=4
+  multi-accumulator rule for latency-bound verify loops, vector register
+  budgets, macros-not-generics for per-width variants, and benchmark
+  methodology (flush outside the timed region, DCE traps)
 - `doc/store_buffer_pressure.md` — how store buffer dynamics affect
   benchmarks at different cache tiers
 - `doc/window_chunk_modes.md` — Window/Chunk hierarchy that determines

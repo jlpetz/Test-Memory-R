@@ -346,6 +346,9 @@ Track: https://github.com/llvm/llvm-project/issues/56703 (partial fix only).
 
 ## See also
 
+- `doc/simd_codegen_rules.md` — the other SIMD codegen traps: the byte-uniform → `memset`
+  idiom (silently erases SIMD width), the N=4 multi-accumulator rule, register budgets,
+  macro-vs-generics, benchmark methodology, and the upstream-issue audit
 - `doc/cache_management.md` — full cache-control decision matrix and primitive reference
 - `doc/store_buffer_pressure.md` — how store buffer dynamics affect benchmarks per tier
 - `Lat-NTW-DRAM-Write-*` test source: `src/latency_tests_v2.rs`
