@@ -253,6 +253,12 @@ Hard-won from the `refresh-test` work:
 
 ## Upstream Rust/LLVM issues — what actually affects TMR
 
+> **A systematic sweep of open `rust-lang/rust` + `rust-lang/stdarch` issues is tracked as
+> TODO #33.** The section below is only the spot-checks done so far, not that audit. The class
+> worth hunting is **silently lossy** behaviour — codegen that degrades with no error or warning
+> — because that is what bit us twice (NT stores, and the memset idiom above), and both were
+> caught only by reading assembly.
+
 Checked 2026-07-29. TMR's `std::arch` surface is deliberately tiny: loads/stores (incl. NT
 `stream`), `xor`, `set1`/`splat`, `setzero`, `extract`, and the `fence`/`clflush` family. Our
 `std::simd` surface is `splat`, `|=`, `^=`, `simd_ne`, `from_array`. All lower to single
