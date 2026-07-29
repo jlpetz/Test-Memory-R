@@ -559,10 +559,13 @@ fn grant_privilege_via_secedit(username: &str) -> Result<(), String> {
 	log::info!("Exported policy file encoding: {}", if is_utf16_le { "UTF-16 LE" } else { "UTF-8/ANSI" });
 	
 	let content = if is_utf16_le {
-		// Decode UTF-16 LE (skip 2-byte BOM)
+		// Decode UTF-16 LE (skip 2-byte BOM). `as_chunks::<2>()` yields fixed-size [u8; 2]
+		// arrays (no per-index bounds checks); `.0` drops any odd trailing byte, matching the
+		// previous `chunks_exact(2)` behaviour.
 		let utf16_data: Vec<u16> = bytes[2..]
-			.chunks_exact(2)
-			.map(|chunk| u16::from_le_bytes([chunk[0], chunk[1]]))
+			.as_chunks::<2>().0
+			.iter()
+			.map(|chunk| u16::from_le_bytes(*chunk))
 			.collect();
 		String::from_utf16(&utf16_data)
 			.map_err(|_| "Invalid UTF-16 data in policy file")?
@@ -710,10 +713,12 @@ fn check_if_privilege_in_policy() -> Result<bool, String> {
         .map_err(|e| format!("Failed to read policy file: {}", e))?;
     
     let content = if bytes.len() >= 2 && bytes[0] == 0xFF && bytes[1] == 0xFE {
-        // Decode UTF-16 LE (skip 2-byte BOM)
+        // Decode UTF-16 LE (skip 2-byte BOM) — see the note in the other decode site: fixed-size
+        // [u8; 2] chunks avoid per-index bounds checks; `.0` drops an odd trailing byte.
         let utf16_data: Vec<u16> = bytes[2..]
-            .chunks_exact(2)
-            .map(|chunk| u16::from_le_bytes([chunk[0], chunk[1]]))
+            .as_chunks::<2>().0
+            .iter()
+            .map(|chunk| u16::from_le_bytes(*chunk))
             .collect();
         String::from_utf16(&utf16_data)
             .map_err(|_| "Invalid UTF-16 data in policy file".to_string())?
