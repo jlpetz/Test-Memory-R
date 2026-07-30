@@ -1666,6 +1666,65 @@ fn create_test_definitions(cache_info: &CacheInfo) -> Vec<TestDefinition> {
              .with_memory_type(None)
         ),
 
+        // === StuckBit CLFLUSHOPT-verify variants (TODO #59) ===
+        // Same 3-phase alternating-bit test, but each chunk is flushed out of cache between
+        // write and verify, so the verify provably round-trips through DRAM instead of reading
+        // the line it just wrote. This is the user-mode replacement for UC driver memory: it
+        // stops a valid cached line masking a flipped DRAM bit, and makes "we tested DRAM" a
+        // guarantee rather than a side effect of chunk-size-vs-cache. Costs real bandwidth
+        // (reads go cold) — that is the intended trade, not a regression.
+        (
+            "Mem-StuckBit-Flush",
+            TestFunction::MultiBlock(stuck_bit_test_multi),
+            TestMemoryConfig::new(
+                WindowMode::FullAllocation,
+                ChunkMode::Fraction { fraction: 0.0625 },
+                false,
+                false
+            ).with_timing(TestTiming::cycles_only(1))
+             .with_memory_type(None)
+             .with_flush_before_verify(true)
+        ),
+
+        (
+            "Mem-StuckBit-Flush128",
+            TestFunction::MultiBlock(stuck_bit_test_128_multi),
+            TestMemoryConfig::new(
+                WindowMode::FullAllocation,
+                ChunkMode::Fraction { fraction: 0.0625 },
+                false,
+                false
+            ).with_timing(TestTiming::cycles_only(1))
+             .with_memory_type(None)
+             .with_flush_before_verify(true)
+        ),
+
+        (
+            "Mem-StuckBit-Flush256",
+            TestFunction::MultiBlock(stuck_bit_test_256_multi),
+            TestMemoryConfig::new(
+                WindowMode::FullAllocation,
+                ChunkMode::Fraction { fraction: 0.0625 },
+                false,
+                false
+            ).with_timing(TestTiming::cycles_only(1))
+             .with_memory_type(None)
+             .with_flush_before_verify(true)
+        ),
+
+        (
+            "Mem-StuckBit-Flush512",
+            TestFunction::MultiBlock(stuck_bit_test_512_multi),
+            TestMemoryConfig::new(
+                WindowMode::FullAllocation,
+                ChunkMode::Fraction { fraction: 0.0625 },
+                false,
+                false
+            ).with_timing(TestTiming::cycles_only(1))
+             .with_memory_type(None)
+             .with_flush_before_verify(true)
+        ),
+
         // === SimpleTest NT (non-temporal stores) — bandwidth comparison ===
         (
             "Mem-SimpleNT-128",

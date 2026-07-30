@@ -174,6 +174,9 @@ where
     // Pre-compute error check interval mask from config (v1 parity)
     let check_mask = config.error_check_interval.get_check_mask();
 
+    // Hoist config flags into locals — never read a struct field inside the hot loop.
+    let flush_before_verify = config.flush_before_verify;
+
     // Operation counting is unique to the phased tests, so the runner doesn't own it.
     // (Bytes and errors are accumulated through the runner.)
     let mut total_operations = 0u64;
@@ -243,6 +246,17 @@ where
                     }
 
                     std::sync::atomic::fence(Ordering::SeqCst);
+
+                    // Optional flush phase (TODO #59): evict this chunk so the verify below
+                    // round-trips through DRAM instead of reading the just-written cached copy.
+                    // Placed AFTER the fence (writes globally ordered) and BEFORE the reads —
+                    // flush_range_to_dram ends in its own MFENCE, so the flushes are drained
+                    // before any verify load can issue. Off by default; costs real bandwidth.
+                    if flush_before_verify {
+                        let chunk_ptr = ctx.ptr.add(chunk_start) as *const u8;
+                        let chunk_bytes = (chunk_end - chunk_start) * std::mem::size_of::<u64>();
+                        crate::tests::flush_range_to_dram(chunk_ptr, chunk_bytes, config.cache_line_bytes);
+                    }
 
                     // Verify phase — run verify_reps times (e.g., multi-read for retention stress)
                     for _ in 0..verify_reps {

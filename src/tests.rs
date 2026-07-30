@@ -736,6 +736,18 @@ pub struct TestMemoryConfig {
     /// (for pattern knowledge / error repair) but not called at startup.
     /// Plan validation ensures the required pattern gen test appeared earlier.
     pub skip_init: bool,
+    /// Flush each chunk out of the cache hierarchy (CLFLUSHOPT + MFENCE) between the write and
+    /// verify phases, so the verify **round-trips through DRAM** instead of reading the
+    /// still-hot copy the test just wrote (TODO #59).
+    ///
+    /// This is the user-mode replacement for UC/WC driver memory: without it, a flipped DRAM
+    /// bit can be masked by a valid cached line, and whether a verify reaches DRAM at all is an
+    /// accident of chunk-size-vs-cache rather than a guarantee. Costs real bandwidth (the reads
+    /// become cold), which is the point — enable it on tests whose job is to prove what actually
+    /// landed in DRAM.
+    ///
+    /// Default `false`: existing tests keep their current behaviour and timings.
+    pub flush_before_verify: bool,
 }
 
 impl TestMemoryConfig {
@@ -759,13 +771,21 @@ impl TestMemoryConfig {
             test_reps: 1,  // Default 1, set from TM5 config or CLI
             write_read_cycles: 1,  // Default 1, TM5 SimpleTest uses 4
             skip_init: false,  // Default: always run init (independent mode)
+            flush_before_verify: false,  // Default: keep existing (cache-resident) verify behaviour
         }
+    }
+
+    /// Builder: force the verify phase to read DRAM by flushing each chunk out of cache first
+    /// (CLFLUSHOPT + MFENCE between write and verify). See `flush_before_verify`.
+    pub fn with_flush_before_verify(mut self, flush: bool) -> Self {
+        self.flush_before_verify = flush;
+        self
     }
 
     /// Get operation metadata for a specific test
     pub fn get_operation_metadata(&self, test_name: &str) -> OperationMetadata {
         match test_name {
-            "Mem-StuckBit" => OperationMetadata {
+            "Mem-StuckBit" | "Mem-StuckBit-Flush" => OperationMetadata {
                 reads_per_op: 3,  // 3 verification reads per cycle per element
                 writes_per_op: 3,  // 3 pattern writes per cycle per element
                 verifies_per_op: 3,  // Same as reads for this test
@@ -777,7 +797,7 @@ impl TestMemoryConfig {
                 memory_coverage: 1.0,
                 locality_sensitive: false,
             },
-            "Mem-StuckBit128" => OperationMetadata {
+            "Mem-StuckBit128" | "Mem-StuckBit-Flush128" => OperationMetadata {
                 reads_per_op: 3,  // 3 verification reads per cycle per element
                 writes_per_op: 3,  // 3 pattern writes per cycle per element
                 verifies_per_op: 3,  // Same as reads for this test
@@ -789,7 +809,7 @@ impl TestMemoryConfig {
                 memory_coverage: 1.0,
                 locality_sensitive: false,
             },
-            "Mem-StuckBit256" => OperationMetadata {
+            "Mem-StuckBit256" | "Mem-StuckBit-Flush256" => OperationMetadata {
                 reads_per_op: 3,  // 3 verification reads per cycle per element
                 writes_per_op: 3,  // 3 pattern writes per cycle per element
                 verifies_per_op: 3,  // Same as reads for this test
@@ -801,7 +821,7 @@ impl TestMemoryConfig {
                 memory_coverage: 1.0,
                 locality_sensitive: false,
             },
-            "Mem-StuckBit512" => OperationMetadata {
+            "Mem-StuckBit512" | "Mem-StuckBit-Flush512" => OperationMetadata {
                 reads_per_op: 3,  // 3 verification reads per cycle per element
                 writes_per_op: 3,  // 3 pattern writes per cycle per element
                 verifies_per_op: 3,  // Same as reads for this test
@@ -1155,10 +1175,10 @@ impl TestMemoryConfig {
     fn calculate_minimum_chunk_size(&self, test_name: &str, variant_count: u32) -> usize {
         // SIMD operation size requirements - explicit for each test to catch missing implementations
         let simd_requirement = match test_name {
-            "Mem-StuckBit" => 8,                // Basic u64 operations
-            "Mem-StuckBit128" => 16,            // 128-bit SIMD operations
-            "Mem-StuckBit256" => 32,            // 256-bit SIMD operations
-            "Mem-StuckBit512" => 64,            // 512-bit SIMD operations
+            "Mem-StuckBit" | "Mem-StuckBit-Flush" => 8,           // Basic u64 operations
+            "Mem-StuckBit128" | "Mem-StuckBit-Flush128" => 16,    // 128-bit SIMD operations
+            "Mem-StuckBit256" | "Mem-StuckBit-Flush256" => 32,    // 256-bit SIMD operations
+            "Mem-StuckBit512" | "Mem-StuckBit-Flush512" => 64,    // 512-bit SIMD operations
             "Mem-SimpleNT-128" => 16,          // 128-bit NT SIMD
             "Mem-SimpleNT-256" => 32,          // 256-bit NT SIMD
             "Mem-SimpleNT-512" => 64,          // 512-bit NT SIMD
@@ -1537,6 +1557,10 @@ macro_rules! stuck_bit_impl {
             let p1 = <$simd_type>::splat(STUCKBIT_P1);
             let p2 = <$simd_type>::splat(STUCKBIT_P2);
 
+            // Hoist config flags into locals — never read a struct field inside the hot loop.
+            let flush_before_verify = config.flush_before_verify;
+            let line_bytes = config.cache_line_bytes;
+
             loop {
                 runner.begin_cycle();
                 let mut cycle_errors = 0u64;
@@ -1554,9 +1578,9 @@ macro_rules! stuck_bit_impl {
 
                         // Phase 1: write P1, verify. Phase 2: write P2, verify.
                         // Phase 3: write P1 again, verify (catches transition-induced flips).
-                        stuck_bit_write_verify!($simd_type, base, processed, chunk_end, p1, &mut cycle_errors, test_name, thread_id, 1);
-                        stuck_bit_write_verify!($simd_type, base, processed, chunk_end, p2, &mut cycle_errors, test_name, thread_id, 2);
-                        stuck_bit_write_verify!($simd_type, base, processed, chunk_end, p1, &mut cycle_errors, test_name, thread_id, 3);
+                        stuck_bit_write_verify!($simd_type, base, processed, chunk_end, p1, &mut cycle_errors, test_name, thread_id, 1, flush_before_verify, line_bytes);
+                        stuck_bit_write_verify!($simd_type, base, processed, chunk_end, p2, &mut cycle_errors, test_name, thread_id, 2, flush_before_verify, line_bytes);
+                        stuck_bit_write_verify!($simd_type, base, processed, chunk_end, p1, &mut cycle_errors, test_name, thread_id, 3, flush_before_verify, line_bytes);
 
                         if runner.should_halt(cycle_errors) {
                             let total_operations = (runner.bytes_processed() / lanes) as u64;
@@ -1591,12 +1615,23 @@ macro_rules! stuck_bit_impl {
 /// Increments `$errs` per tripped chunk (coarse — #27 does exact localization). Expanded
 /// inside the `#[target_feature]` fn so the SIMD width is honored (no fn-call boundary).
 macro_rules! stuck_bit_write_verify {
-    ($simd_type:ty, $base:expr, $start:expr, $end:expr, $pat:expr, $errs:expr, $test_name:expr, $thread_id:expr, $phase:literal) => {{
+    ($simd_type:ty, $base:expr, $start:expr, $end:expr, $pat:expr, $errs:expr, $test_name:expr, $thread_id:expr, $phase:literal, $flush:expr, $line_bytes:expr) => {{
         // Write phase.
         for i in $start..$end {
             *$base.add(i) = $pat;
         }
         std::sync::atomic::fence(Ordering::SeqCst);
+
+        // Optional flush phase (TODO #59): evict this chunk so the verify below round-trips
+        // through DRAM instead of reading the cache-resident copy we just wrote. Without it,
+        // whether the verify reaches DRAM is an accident of chunk-size-vs-cache. Placed after
+        // the fence (writes ordered) and before the reads; flush_range_to_dram ends in MFENCE
+        // so flushes drain before any verify load issues.
+        if $flush {
+            let chunk_ptr = $base.add($start) as *const u8;
+            let chunk_bytes = ($end - $start) * std::mem::size_of::<$simd_type>();
+            flush_range_to_dram(chunk_ptr, chunk_bytes, $line_bytes);
+        }
 
         // Verify phase — 4 independent accumulator chains (MLP).
         let mut a0 = <$simd_type>::splat(0);
@@ -1647,6 +1682,10 @@ pub unsafe fn stuck_bit_test_multi(
         test_name, TestAction::StuckBitTest,
     );
 
+    // Hoist config flags into locals — never read a struct field inside the hot loop.
+    let flush_before_verify = config.flush_before_verify;
+    let line_bytes = config.cache_line_bytes;
+
     loop {
         runner.begin_cycle();
         let mut cycle_errors = 0u64;
@@ -1669,12 +1708,25 @@ pub unsafe fn stuck_bit_test_multi(
                 let pattern1 = STUCKBIT_P1;
                 let pattern2 = STUCKBIT_P2;
 
+                // Optional flush so the verify reads DRAM, not the line we just wrote (#59).
+                // Expanded inline (not a fn) to keep it out of the hot path when disabled.
+                macro_rules! flush_chunk_if_enabled {
+                    () => {
+                        if flush_before_verify {
+                            let chunk_ptr = base.add(processed) as *const u8;
+                            let chunk_bytes = (chunk_end - processed) * std::mem::size_of::<u64>();
+                            flush_range_to_dram(chunk_ptr, chunk_bytes, line_bytes);
+                        }
+                    };
+                }
+
                 // Phase 1: Write P1 (0xAA55...), verify
                 for i in processed..chunk_end {
                     *base.add(i) = pattern1;
                 }
 
                 std::sync::atomic::fence(Ordering::SeqCst);
+                flush_chunk_if_enabled!();
 
                 for i in processed..chunk_end {
                     let v = *base.add(i);
@@ -1691,6 +1743,7 @@ pub unsafe fn stuck_bit_test_multi(
                 }
 
                 std::sync::atomic::fence(Ordering::SeqCst);
+                flush_chunk_if_enabled!();
 
                 for i in processed..chunk_end {
                     let v = *base.add(i);
@@ -1707,6 +1760,7 @@ pub unsafe fn stuck_bit_test_multi(
                 }
 
                 std::sync::atomic::fence(Ordering::SeqCst);
+                flush_chunk_if_enabled!();
 
                 for i in processed..chunk_end {
                     let v = *base.add(i);
