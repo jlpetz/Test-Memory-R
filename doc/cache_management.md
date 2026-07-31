@@ -367,8 +367,15 @@ them into DRAM tests. The two test types coexist; don't conflate them.
 
 ## Measured: what the flush actually buys (2026-07-30)
 
-`Mem-StuckBit128`, same binary, chunk size swept, flush off vs on. Intel Xeon
-6975P-C (Granite Rapids, 48 KiB L1d / 2 MiB L2 per core), MiB/s:
+`Mem-StuckBit128`, same binary, chunk size swept via **fixed absolute chunks**
+(`test_configs/flush_chunk_sweep.json`), flush off vs on. Intel Xeon 6975P-C
+(Granite Rapids, 48 KiB L1d / 2 MiB L2 per core), MiB/s. One run per
+configuration — treat single-digit-percent differences as noise; the effects
+below are 20-500%.
+
+**Scope note**: the `ChunkMode::Cache{L2}` sizing that `Mem-StuckBit-Flush*`
+now uses is *inferred* from this absolute-chunk data. It has not itself been
+benchmarked.
 
 ```
                  4 threads (1/core)          8 threads (SMT)
@@ -392,15 +399,23 @@ So the flush's real value is not "slower and therefore more thorough" — it is
 **making the test chunk-size-independent**. Corollaries:
 
 - Flush belongs where the chunk is **cache-resident**. `Mem-StuckBit-Flush*`
-  therefore uses `ChunkMode::Cache { L2, scale 0.5 }`, not the plain variants'
+  therefore uses `ChunkMode::Cache { L2, scale 1.0 }`, not the plain variants'
   ~6% fraction.
 - At large chunks (>= ~16 MiB here) natural eviction already forces DRAM
   reads, so flushing buys ~20-30% less bandwidth for **no change in what is
   tested**. Don't add it there.
-- **L2/2, not L1.** Flush at 64 KiB (23,061) is *slower* than at 256 MiB
-  (36,064) for identical work: the per-chunk fence + call + trailing MFENCE is
-  paid ~4096x more often per GiB, with too little work to overlap the drain
-  against. Tiny chunks pay the fixed cost without extra benefit.
+- **There is a lower bound too — don't go below ~1 MiB.** Flush at 64 KiB
+  (4T: 23,061; 8T: 31,680) is *slower* than at 256 MiB (36,064 / 45,250) for
+  identical work: the per-chunk fence + call + trailing MFENCE is paid ~4096x
+  more often per GiB, with too little work to overlap the drain against. Tiny
+  chunks pay the fixed cost without extra benefit. **No minimum-chunk floor
+  exists** beyond SIMD alignment (`calculate_minimum_chunk_size` returns
+  8-64 *bytes*), so nothing clamps a too-small cache target for you.
+- Mind the **SMT divisor** when picking a scale: `CacheTarget::L1`/`L2` divide
+  by *active threads per core* (`calculate_window_size_cpuid`), so `scale 0.5`
+  on a 2 MiB L2 gives 1 MiB at 1 thread/core but 512 KiB under SMT — i.e. it
+  silently drops into the fixed-cost-dominated zone above on exactly half the
+  run configurations. `scale 1.0` gives 2 MiB / 1 MiB, both in the flat zone.
 - The two chunk regimes are **not interchangeable measurements** — never
   compare a flush number against a non-flush number at a different chunk size.
 

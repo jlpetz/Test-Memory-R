@@ -1673,27 +1673,38 @@ fn create_test_definitions(cache_info: &CacheInfo) -> Vec<TestDefinition> {
         // cached line from masking a flipped DRAM bit.
         //
         // These deliberately use an L2-sized chunk, NOT the plain variants' ~6% fraction.
-        // Measured on Intel Granite Rapids (4T/8T, MiB/s, flush off → on):
+        // Measured on Intel Granite Rapids, 4T (1/core) and 8T (SMT), MiB/s, flush off → on:
         //     chunk    64 KiB   1 MiB   16 MiB   256 MiB
-        //     off      134500  120763    55725     42944
-        //     on        23061   36285    36629     36064
+        //     4T off   134500  120763    55725     42944
+        //     4T on     23061   36285    36629     36064
+        //     8T off   150104  134165    61726     56338
+        //     8T on     31680   48574    47846     45250
         // Two things to read off that: the penalty grows as chunks shrink (1.19× → 5.8×), and
-        // — the actual point — *flush=off varies 3.1× with chunk size while flush=on is flat
-        // within 1.6%*. Without the flush, what the test measures depends on chunk-vs-cache:
-        // at small chunks the "verify" reads SRAM written microseconds ago and never touches
-        // DRAM. So the flush belongs precisely where the chunk is cache-resident; at the plain
-        // variants' large chunks natural eviction already forces DRAM reads and flushing only
-        // buys ~20% less bandwidth for no change in what is tested.
+        // — the actual point — *flush=off varies ~3× with chunk size while flush=on is flat
+        // within 1.6% for chunks ≥ 1 MiB*. Without the flush, what the test measures depends on
+        // chunk-vs-cache: at small chunks the "verify" reads SRAM written microseconds ago and
+        // never touches DRAM. So the flush belongs precisely where the chunk is cache-resident;
+        // at the plain variants' large chunks natural eviction already forces DRAM reads and
+        // flushing only buys ~20% less bandwidth for no change in what is tested.
         //
-        // Cost note: flush at 64 KiB (23061) is slower than at 256 MiB (36064) for identical
-        // work — the per-chunk fence + call + trailing MFENCE is paid 4096× more often per GiB
-        // with too little work to overlap the drain. L2/2 is the sweet spot, not L1.
+        // Why `scale: 1.0` and not 0.5: `CacheTarget::L2` divides by *active threads per core*
+        // (see `calculate_window_size_cpuid`), so on this 2 MiB-L2 part 0.5 resolves to 1 MiB at
+        // 1 thread/core but only 512 KiB under SMT — and flush-on throughput *falls* below
+        // ~1 MiB (8T: 48574 @ 1 MiB → 31680 @ 64 KiB) because the per-chunk fence + call +
+        // trailing MFENCE is paid far more often per GiB with too little work to overlap the
+        // drain against. There is no minimum-chunk floor here beyond SIMD alignment, so nothing
+        // would clamp that. 1.0 lands at 2 MiB / 1 MiB respectively — both in the measured flat
+        // zone, still cache-resident by construction.
+        //
+        // NOT YET MEASURED: these numbers come from a fixed-absolute-chunk sweep of
+        // Mem-StuckBit128 (test_configs/flush_chunk_sweep.json). The Cache{L2} sizing itself is
+        // inferred from that data, not directly benchmarked.
         (
             "Mem-StuckBit-Flush",
             TestFunction::MultiBlock(stuck_bit_test_multi),
             TestMemoryConfig::new(
                 WindowMode::FullAllocation,
-                ChunkMode::Cache { target: CacheTarget::L2 { scale: 0.5 } },
+                ChunkMode::Cache { target: CacheTarget::L2 { scale: 1.0 } },
                 false,
                 false
             ).with_timing(TestTiming::cycles_only(1))
@@ -1706,7 +1717,7 @@ fn create_test_definitions(cache_info: &CacheInfo) -> Vec<TestDefinition> {
             TestFunction::MultiBlock(stuck_bit_test_128_multi),
             TestMemoryConfig::new(
                 WindowMode::FullAllocation,
-                ChunkMode::Cache { target: CacheTarget::L2 { scale: 0.5 } },
+                ChunkMode::Cache { target: CacheTarget::L2 { scale: 1.0 } },
                 false,
                 false
             ).with_timing(TestTiming::cycles_only(1))
@@ -1719,7 +1730,7 @@ fn create_test_definitions(cache_info: &CacheInfo) -> Vec<TestDefinition> {
             TestFunction::MultiBlock(stuck_bit_test_256_multi),
             TestMemoryConfig::new(
                 WindowMode::FullAllocation,
-                ChunkMode::Cache { target: CacheTarget::L2 { scale: 0.5 } },
+                ChunkMode::Cache { target: CacheTarget::L2 { scale: 1.0 } },
                 false,
                 false
             ).with_timing(TestTiming::cycles_only(1))
@@ -1732,7 +1743,7 @@ fn create_test_definitions(cache_info: &CacheInfo) -> Vec<TestDefinition> {
             TestFunction::MultiBlock(stuck_bit_test_512_multi),
             TestMemoryConfig::new(
                 WindowMode::FullAllocation,
-                ChunkMode::Cache { target: CacheTarget::L2 { scale: 0.5 } },
+                ChunkMode::Cache { target: CacheTarget::L2 { scale: 1.0 } },
                 false,
                 false
             ).with_timing(TestTiming::cycles_only(1))
