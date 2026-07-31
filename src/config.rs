@@ -467,7 +467,16 @@ pub struct TestConfig {
 
     pub allow_misaligned: Option<bool>,     // Allow unaligned accesses
     pub requires_locality: Option<bool>,    // Test needs temporal locality
-    
+
+    /// Flush each chunk out of cache (CLFLUSHOPT + MFENCE) between the write and verify phases,
+    /// so the verify round-trips through DRAM instead of reading the just-written cached copy
+    /// (#59). Defaults to false. Only meaningful where the window/chunk would otherwise stay
+    /// cache-resident — at large chunks natural eviction already forces DRAM reads, so enabling
+    /// it there costs bandwidth without changing what is tested.
+    #[serde(default)]
+    pub flush_before_verify: Option<bool>,
+
+
     // TMR-native test parameters (each used by specific tests, see doc/test_parameters.md)
     pub stride_patterns: Option<u32>,       // CacheBust: number of interleaved stride pattern variants
     pub rng_sequences: Option<u32>,         // RandomTorture: number of independent RNG sequences
@@ -818,7 +827,9 @@ impl ModernConfig {
 
             let mut config = TestMemoryConfig::new(window_mode, chunk_mode, allow_misaligned, requires_locality)
                 .with_timing(timing)
-                .with_pattern_config(test.pattern_mode, test.pattern_param0, test.pattern_param1);
+                .with_pattern_config(test.pattern_mode, test.pattern_param0, test.pattern_param1)
+                // #59: CLFLUSHOPT-verify, opt-in per test from the config
+                .with_flush_before_verify(test.flush_before_verify.unwrap_or(false));
 
             // v2: Attach correctly interpreted parameter context
             if let Some(param) = test.parameter {
@@ -1012,6 +1023,7 @@ pub fn create_demo_config() -> Self {
                 chunk: Some(ChunkSpec::fraction(0.0625)),    // 1/16th for efficiency
                 allow_misaligned: Some(false),
                 requires_locality: Some(false),
+                flush_before_verify: None,
                 stride_patterns: None,
                 rng_sequences: None,
                 subdivisions: None,
@@ -1034,6 +1046,7 @@ pub fn create_demo_config() -> Self {
                 chunk: Some(ChunkSpec::absolute("1MB")),    // Small 1MB blocks
                 allow_misaligned: Some(false),
                 requires_locality: Some(true),
+                flush_before_verify: None,
                 stride_patterns: None,
                 rng_sequences: None,
                 subdivisions: None,
@@ -1056,6 +1069,7 @@ pub fn create_demo_config() -> Self {
                 chunk: Some(ChunkSpec::absolute("16MB")),    // TM5 typical block size
                 allow_misaligned: Some(false),
                 requires_locality: Some(false),
+                flush_before_verify: None,
                 stride_patterns: None,
                 rng_sequences: None,
                 subdivisions: None,
@@ -1078,6 +1092,7 @@ pub fn create_demo_config() -> Self {
                 chunk: Some(ChunkSpec::absolute("16MB")),    // 16MB for 128-bit alignment
                 allow_misaligned: Some(false),
                 requires_locality: Some(true),
+                flush_before_verify: None,
                 stride_patterns: None,
                 rng_sequences: None,
                 subdivisions: None,
@@ -1100,6 +1115,7 @@ pub fn create_demo_config() -> Self {
                 chunk: Some(ChunkSpec::absolute("32MB")),    // 32MB for 256-bit alignment
                 allow_misaligned: Some(false),
                 requires_locality: Some(true),
+                flush_before_verify: None,
                 stride_patterns: None,
                 rng_sequences: None,
                 subdivisions: None,
@@ -1122,6 +1138,7 @@ pub fn create_demo_config() -> Self {
                 chunk: Some(ChunkSpec::absolute("1MB")),    // 1MB blocks for cache lines
                 allow_misaligned: Some(false),
                 requires_locality: Some(true),
+                flush_before_verify: None,
                 stride_patterns: Some(4),              // 4 interleaved stride patterns
                 rng_sequences: None,
                 subdivisions: None,
@@ -1144,6 +1161,7 @@ pub fn create_demo_config() -> Self {
                 chunk: Some(ChunkSpec::absolute("8MB")),    // 8MB blocks
                 allow_misaligned: Some(true),          // Maximum stress
                 requires_locality: Some(false),
+                flush_before_verify: None,
                 stride_patterns: None,
                 rng_sequences: Some(8),                // 8 independent RNG sequences
                 subdivisions: None,
@@ -1166,6 +1184,7 @@ pub fn create_demo_config() -> Self {
                 chunk: Some(ChunkSpec::auto()),             // Let TMR optimize
                 allow_misaligned: Some(false),
                 requires_locality: Some(false),
+                flush_before_verify: None,
                 stride_patterns: None,
                 rng_sequences: None,
                 subdivisions: Some(4),                 // 4 chunk subdivisions
@@ -1188,6 +1207,7 @@ pub fn create_demo_config() -> Self {
                 chunk: Some(ChunkSpec::absolute("16MB")),    // 16MB blocks
                 allow_misaligned: Some(false),
                 requires_locality: Some(false),
+                flush_before_verify: None,
                 stride_patterns: None,
                 rng_sequences: None,
                 subdivisions: None,
@@ -1210,6 +1230,7 @@ pub fn create_demo_config() -> Self {
                 chunk: Some(ChunkSpec::fraction(1.0)),       // Block = window (TM5 0)
                 allow_misaligned: Some(false),
                 requires_locality: Some(false),
+                flush_before_verify: None,
                 stride_patterns: None,
                 rng_sequences: None,
                 subdivisions: None,
@@ -1273,6 +1294,7 @@ pub fn create_demo_config() -> Self {
                     chunk: None,                                 // Use default auto
                     allow_misaligned: Some(false),
                     requires_locality: Some(false),
+                    flush_before_verify: None,
                     stride_patterns: None,
                     rng_sequences: None,
                     subdivisions: None,
@@ -1293,6 +1315,7 @@ pub fn create_demo_config() -> Self {
                     chunk: Some(ChunkSpec::absolute("16MB")),    // TM5-style block size
                     allow_misaligned: Some(false),
                     requires_locality: Some(false),
+                    flush_before_verify: None,
                     stride_patterns: None,
                     rng_sequences: None,
                     subdivisions: None,
@@ -1437,6 +1460,7 @@ impl LegacyConfig {
                 
                 allow_misaligned: Some(false), // Legacy configs assume aligned access
                 requires_locality: Some(matches!(test.function.as_str(), "RefreshStable")),
+                flush_before_verify: None,
                 
                 stride_patterns: None,
                 rng_sequences: None,

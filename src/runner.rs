@@ -1669,16 +1669,31 @@ fn create_test_definitions(cache_info: &CacheInfo) -> Vec<TestDefinition> {
         // === StuckBit CLFLUSHOPT-verify variants (TODO #59) ===
         // Same 3-phase alternating-bit test, but each chunk is flushed out of cache between
         // write and verify, so the verify provably round-trips through DRAM instead of reading
-        // the line it just wrote. This is the user-mode replacement for UC driver memory: it
-        // stops a valid cached line masking a flipped DRAM bit, and makes "we tested DRAM" a
-        // guarantee rather than a side effect of chunk-size-vs-cache. Costs real bandwidth
-        // (reads go cold) — that is the intended trade, not a regression.
+        // the line it just wrote. User-mode replacement for UC driver memory: stops a valid
+        // cached line from masking a flipped DRAM bit.
+        //
+        // These deliberately use an L2-sized chunk, NOT the plain variants' ~6% fraction.
+        // Measured on Intel Granite Rapids (4T/8T, MiB/s, flush off → on):
+        //     chunk    64 KiB   1 MiB   16 MiB   256 MiB
+        //     off      134500  120763    55725     42944
+        //     on        23061   36285    36629     36064
+        // Two things to read off that: the penalty grows as chunks shrink (1.19× → 5.8×), and
+        // — the actual point — *flush=off varies 3.1× with chunk size while flush=on is flat
+        // within 1.6%*. Without the flush, what the test measures depends on chunk-vs-cache:
+        // at small chunks the "verify" reads SRAM written microseconds ago and never touches
+        // DRAM. So the flush belongs precisely where the chunk is cache-resident; at the plain
+        // variants' large chunks natural eviction already forces DRAM reads and flushing only
+        // buys ~20% less bandwidth for no change in what is tested.
+        //
+        // Cost note: flush at 64 KiB (23061) is slower than at 256 MiB (36064) for identical
+        // work — the per-chunk fence + call + trailing MFENCE is paid 4096× more often per GiB
+        // with too little work to overlap the drain. L2/2 is the sweet spot, not L1.
         (
             "Mem-StuckBit-Flush",
             TestFunction::MultiBlock(stuck_bit_test_multi),
             TestMemoryConfig::new(
                 WindowMode::FullAllocation,
-                ChunkMode::Fraction { fraction: 0.0625 },
+                ChunkMode::Cache { target: CacheTarget::L2 { scale: 0.5 } },
                 false,
                 false
             ).with_timing(TestTiming::cycles_only(1))
@@ -1691,7 +1706,7 @@ fn create_test_definitions(cache_info: &CacheInfo) -> Vec<TestDefinition> {
             TestFunction::MultiBlock(stuck_bit_test_128_multi),
             TestMemoryConfig::new(
                 WindowMode::FullAllocation,
-                ChunkMode::Fraction { fraction: 0.0625 },
+                ChunkMode::Cache { target: CacheTarget::L2 { scale: 0.5 } },
                 false,
                 false
             ).with_timing(TestTiming::cycles_only(1))
@@ -1704,7 +1719,7 @@ fn create_test_definitions(cache_info: &CacheInfo) -> Vec<TestDefinition> {
             TestFunction::MultiBlock(stuck_bit_test_256_multi),
             TestMemoryConfig::new(
                 WindowMode::FullAllocation,
-                ChunkMode::Fraction { fraction: 0.0625 },
+                ChunkMode::Cache { target: CacheTarget::L2 { scale: 0.5 } },
                 false,
                 false
             ).with_timing(TestTiming::cycles_only(1))
@@ -1717,7 +1732,7 @@ fn create_test_definitions(cache_info: &CacheInfo) -> Vec<TestDefinition> {
             TestFunction::MultiBlock(stuck_bit_test_512_multi),
             TestMemoryConfig::new(
                 WindowMode::FullAllocation,
-                ChunkMode::Fraction { fraction: 0.0625 },
+                ChunkMode::Cache { target: CacheTarget::L2 { scale: 0.5 } },
                 false,
                 false
             ).with_timing(TestTiming::cycles_only(1))

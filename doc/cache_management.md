@@ -365,6 +365,50 @@ asked to run on a working set smaller than L3.
 bandwidth/latency tests are measuring *cache* performance. Flushing turns
 them into DRAM tests. The two test types coexist; don't conflate them.
 
+## Measured: what the flush actually buys (2026-07-30)
+
+`Mem-StuckBit128`, same binary, chunk size swept, flush off vs on. Intel Xeon
+6975P-C (Granite Rapids, 48 KiB L1d / 2 MiB L2 per core), MiB/s:
+
+```
+                 4 threads (1/core)          8 threads (SMT)
+  chunk        off      on   penalty       off      on   penalty
+  64 KiB   134,500  23,061    5.83x    150,104  31,680    4.74x
+   1 MiB   120,763  36,285    3.33x    134,165  48,574    2.76x
+  16 MiB    55,725  36,629    1.52x     61,726  47,846    1.29x
+ 256 MiB    42,944  36,064    1.19x     56,338  45,250    1.24x
+```
+
+The penalty column is the obvious read: flushing costs more the smaller the
+chunk. **The important read is the two data columns separately.**
+
+- **flush=off varies 3.1x with chunk size** (134,500 -> 42,944). What the test
+  measures is a *function of chunk-vs-cache*: at 64 KiB the "verify" reads
+  SRAM written microseconds ago and **never touches DRAM at all**.
+- **flush=on is flat within 1.6%** for chunks >= 1 MiB (36,285 / 36,629 /
+  36,064). It is a genuine DRAM round-trip at every chunk size.
+
+So the flush's real value is not "slower and therefore more thorough" — it is
+**making the test chunk-size-independent**. Corollaries:
+
+- Flush belongs where the chunk is **cache-resident**. `Mem-StuckBit-Flush*`
+  therefore uses `ChunkMode::Cache { L2, scale 0.5 }`, not the plain variants'
+  ~6% fraction.
+- At large chunks (>= ~16 MiB here) natural eviction already forces DRAM
+  reads, so flushing buys ~20-30% less bandwidth for **no change in what is
+  tested**. Don't add it there.
+- **L2/2, not L1.** Flush at 64 KiB (23,061) is *slower* than at 256 MiB
+  (36,064) for identical work: the per-chunk fence + call + trailing MFENCE is
+  paid ~4096x more often per GiB, with too little work to overlap the drain
+  against. Tiny chunks pay the fixed cost without extra benefit.
+- The two chunk regimes are **not interchangeable measurements** — never
+  compare a flush number against a non-flush number at a different chunk size.
+
+`Mem-Refresh` is the case where this is a *correctness* requirement, not a
+tuning choice: without the flush the 64 ms retention delay was defeated by a
+cached copy (that was the TODO #26 silent bug). The above is why the same
+mechanism is optional-and-situational for stuck-bit.
+
 ## See Also
 
 - `doc/nt_stores.md` — NT store implementation details (why std::arch

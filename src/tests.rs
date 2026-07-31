@@ -5270,6 +5270,14 @@ pub fn get_test_function_by_name(name: &str) -> Option<crate::runner::TestFuncti
         "Mem-StuckBit256" => Some(TestFunction::MultiBlock(stuck_bit_test_256_multi)),
         "Mem-StuckBit512" => Some(TestFunction::MultiBlock(stuck_bit_test_512_multi)),
         "Mem-StuckBitAuto" => Some(TestFunction::MultiBlock(stuck_bit_test_auto_multi)),
+        // CLFLUSHOPT-verify variants (#59). These map to the SAME functions — flushing is
+        // driven by `TestMemoryConfig.flush_before_verify`, not by the function. The hardcoded
+        // registrations set it via `.with_flush_before_verify(true)`; JSON configs set the
+        // per-test `flush_before_verify` field (so any test can opt in, not just these names).
+        "Mem-StuckBit-Flush" => Some(TestFunction::MultiBlock(stuck_bit_test_multi)),
+        "Mem-StuckBit-Flush128" => Some(TestFunction::MultiBlock(stuck_bit_test_128_multi)),
+        "Mem-StuckBit-Flush256" => Some(TestFunction::MultiBlock(stuck_bit_test_256_multi)),
+        "Mem-StuckBit-Flush512" => Some(TestFunction::MultiBlock(stuck_bit_test_512_multi)),
 
         // Mirror Move Tests (v1)
 

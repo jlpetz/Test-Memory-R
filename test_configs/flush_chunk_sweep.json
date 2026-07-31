@@ -1,0 +1,318 @@
+{
+  "config_format_version": "2.0",
+  "application_name": "Test Memory R (TMR)",
+  "metadata": {
+    "name": "flush-chunk-sweep",
+    "author": "tmr_user",
+    "version": "1.0",
+    "description": "Reproduces the #59 flush-cost-vs-chunk-size measurement: paired flush=false/true runs of Mem-StuckBit128 at 64KiB/1MiB/16MiB/256MiB chunks. Odd-numbered tests are flush=off, even are flush=on. See doc/cache_management.md for results.",
+    "created": "2025-01-03",
+    "tested_with_version": "1.0.0"
+  },
+  "system": {
+    "memory_strategy": {
+      "allocation_mode": "percentage_reserve",
+      "reserve_mb": null,
+      "reserve_percent": 10.0,
+      "reserve_gib": null,
+      "default_window": {
+        "mode": "full_allocation",
+        "target": null,
+        "fraction": null,
+        "size": null
+      },
+      "default_chunk": {
+        "mode": "auto",
+        "target": null,
+        "fraction": null,
+        "size": null
+      }
+    },
+    "cpu_config": {
+      "type": "cores",
+      "usage_percent": 100
+    },
+    "error_mode": "log",
+    "timing": {
+      "global_cycles": 1,
+      "global_duration_secs": null,
+      "default_test_cycles": 1,
+      "default_test_duration_secs": null
+    },
+    "large_pages": true,
+    "cpu_pinning": {
+      "enable_pinning": true,
+      "cpus_to_skip": 1,
+      "avoid_smt_doubling": false,
+      "skip_spec": "1",
+      "stride_spec": "1"
+    },
+    "memory_allocation": {
+      "use_driver": null,
+      "driver_chunking": false,
+      "remap_mode": "remap_all",
+      "min_page_size": "large",
+      "max_page_size": "huge",
+      "zero_memory": false,
+      "require_contiguous": true,
+      "allocation_strategy": "plan-pagesize-pref",
+      "default_memory_type": "write_back",
+      "allocation_timeout_ms": 10000,
+      "retry_interval_ms": 100,
+      "max_retries": 3,
+      "strict_numa": false
+    },
+    "channels": 2
+  },
+  "test_sequence": [
+    {
+      "enabled": true,
+      "function": "Mem-StuckBit128",
+      "cycles": 1,
+      "duration_secs": null,
+      "min_duration_secs": null,
+      "window": {
+        "mode": "full_allocation",
+        "target": null,
+        "fraction": null,
+        "size": null
+      },
+      "chunk": {
+        "mode": "absolute",
+        "target": null,
+        "fraction": null,
+        "size": "64KiB"
+      },
+      "allow_misaligned": false,
+      "requires_locality": false,
+      "flush_before_verify": false,
+      "stride_patterns": null,
+      "rng_sequences": null,
+      "subdivisions": null,
+      "copy_directions": null,
+      "pattern_mode": null,
+      "pattern_param0": null,
+      "pattern_param1": null,
+      "parameter": null,
+      "use_v2_tests": null
+    },
+    {
+      "enabled": true,
+      "function": "Mem-StuckBit128",
+      "cycles": 1,
+      "duration_secs": null,
+      "min_duration_secs": null,
+      "window": {
+        "mode": "full_allocation",
+        "target": null,
+        "fraction": null,
+        "size": null
+      },
+      "chunk": {
+        "mode": "absolute",
+        "target": null,
+        "fraction": null,
+        "size": "64KiB"
+      },
+      "allow_misaligned": false,
+      "requires_locality": false,
+      "flush_before_verify": true,
+      "stride_patterns": null,
+      "rng_sequences": null,
+      "subdivisions": null,
+      "copy_directions": null,
+      "pattern_mode": null,
+      "pattern_param0": null,
+      "pattern_param1": null,
+      "parameter": null,
+      "use_v2_tests": null
+    },
+    {
+      "enabled": true,
+      "function": "Mem-StuckBit128",
+      "cycles": 1,
+      "duration_secs": null,
+      "min_duration_secs": null,
+      "window": {
+        "mode": "full_allocation",
+        "target": null,
+        "fraction": null,
+        "size": null
+      },
+      "chunk": {
+        "mode": "absolute",
+        "target": null,
+        "fraction": null,
+        "size": "1MiB"
+      },
+      "allow_misaligned": false,
+      "requires_locality": false,
+      "flush_before_verify": false,
+      "stride_patterns": null,
+      "rng_sequences": null,
+      "subdivisions": null,
+      "copy_directions": null,
+      "pattern_mode": null,
+      "pattern_param0": null,
+      "pattern_param1": null,
+      "parameter": null,
+      "use_v2_tests": null
+    },
+    {
+      "enabled": true,
+      "function": "Mem-StuckBit128",
+      "cycles": 1,
+      "duration_secs": null,
+      "min_duration_secs": null,
+      "window": {
+        "mode": "full_allocation",
+        "target": null,
+        "fraction": null,
+        "size": null
+      },
+      "chunk": {
+        "mode": "absolute",
+        "target": null,
+        "fraction": null,
+        "size": "1MiB"
+      },
+      "allow_misaligned": false,
+      "requires_locality": false,
+      "flush_before_verify": true,
+      "stride_patterns": null,
+      "rng_sequences": null,
+      "subdivisions": null,
+      "copy_directions": null,
+      "pattern_mode": null,
+      "pattern_param0": null,
+      "pattern_param1": null,
+      "parameter": null,
+      "use_v2_tests": null
+    },
+    {
+      "enabled": true,
+      "function": "Mem-StuckBit128",
+      "cycles": 1,
+      "duration_secs": null,
+      "min_duration_secs": null,
+      "window": {
+        "mode": "full_allocation",
+        "target": null,
+        "fraction": null,
+        "size": null
+      },
+      "chunk": {
+        "mode": "absolute",
+        "target": null,
+        "fraction": null,
+        "size": "16MiB"
+      },
+      "allow_misaligned": false,
+      "requires_locality": false,
+      "flush_before_verify": false,
+      "stride_patterns": null,
+      "rng_sequences": null,
+      "subdivisions": null,
+      "copy_directions": null,
+      "pattern_mode": null,
+      "pattern_param0": null,
+      "pattern_param1": null,
+      "parameter": null,
+      "use_v2_tests": null
+    },
+    {
+      "enabled": true,
+      "function": "Mem-StuckBit128",
+      "cycles": 1,
+      "duration_secs": null,
+      "min_duration_secs": null,
+      "window": {
+        "mode": "full_allocation",
+        "target": null,
+        "fraction": null,
+        "size": null
+      },
+      "chunk": {
+        "mode": "absolute",
+        "target": null,
+        "fraction": null,
+        "size": "16MiB"
+      },
+      "allow_misaligned": false,
+      "requires_locality": false,
+      "flush_before_verify": true,
+      "stride_patterns": null,
+      "rng_sequences": null,
+      "subdivisions": null,
+      "copy_directions": null,
+      "pattern_mode": null,
+      "pattern_param0": null,
+      "pattern_param1": null,
+      "parameter": null,
+      "use_v2_tests": null
+    },
+    {
+      "enabled": true,
+      "function": "Mem-StuckBit128",
+      "cycles": 1,
+      "duration_secs": null,
+      "min_duration_secs": null,
+      "window": {
+        "mode": "full_allocation",
+        "target": null,
+        "fraction": null,
+        "size": null
+      },
+      "chunk": {
+        "mode": "absolute",
+        "target": null,
+        "fraction": null,
+        "size": "256MiB"
+      },
+      "allow_misaligned": false,
+      "requires_locality": false,
+      "flush_before_verify": false,
+      "stride_patterns": null,
+      "rng_sequences": null,
+      "subdivisions": null,
+      "copy_directions": null,
+      "pattern_mode": null,
+      "pattern_param0": null,
+      "pattern_param1": null,
+      "parameter": null,
+      "use_v2_tests": null
+    },
+    {
+      "enabled": true,
+      "function": "Mem-StuckBit128",
+      "cycles": 1,
+      "duration_secs": null,
+      "min_duration_secs": null,
+      "window": {
+        "mode": "full_allocation",
+        "target": null,
+        "fraction": null,
+        "size": null
+      },
+      "chunk": {
+        "mode": "absolute",
+        "target": null,
+        "fraction": null,
+        "size": "256MiB"
+      },
+      "allow_misaligned": false,
+      "requires_locality": false,
+      "flush_before_verify": true,
+      "stride_patterns": null,
+      "rng_sequences": null,
+      "subdivisions": null,
+      "copy_directions": null,
+      "pattern_mode": null,
+      "pattern_param0": null,
+      "pattern_param1": null,
+      "parameter": null,
+      "use_v2_tests": null
+    }
+  ],
+  "legacy_metadata": null
+}
