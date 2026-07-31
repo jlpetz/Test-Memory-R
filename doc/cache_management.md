@@ -16,8 +16,10 @@ fits the test's intent.
 | Bulk bandwidth at >L3 working set | Natural eviction | MFENCE between phases (cheap, defensive) |
 | Cache-tier-targeted bandwidth (L1/L2/L3) | Cache-resident BY DESIGN | SFENCE between phases |
 | Sequential correctness on huge workset | Natural eviction | MFENCE between write/verify phases |
-| **Refresh / bit-fade tests** | **CLFLUSHOPT REQUIRED** | MFENCE after flush, before verify |
-| **Stuck-bit with strict DRAM guarantee** | **CLFLUSHOPT REQUIRED** | MFENCE after flush, before verify |
+| **Refresh / bit-fade, window >= 2x cache** | Natural eviction sufficient; CLFLUSHOPT optional | MFENCE between write and sleep |
+| **Refresh / bit-fade, cache-resident window** | **CLFLUSHOPT REQUIRED** | MFENCE after flush, before verify |
+| **Repeated-access tests (SimpleTest write-read cycles)** | **CLFLUSHOPT REQUIRED to reach DRAM** | MFENCE after flush, before verify |
+| **Stuck-bit with strict DRAM guarantee** | CLFLUSHOPT optional (chunk-size dependent) | MFENCE after flush, before verify |
 | NT-store-based test | NT bypasses cache writing | SFENCE before re-store; MFENCE before verify-load |
 | Cross-thread page exchange | Producer/consumer ordering | MFENCE on each side |
 
@@ -419,10 +421,40 @@ So the flush's real value is not "slower and therefore more thorough" — it is
 - The two chunk regimes are **not interchangeable measurements** — never
   compare a flush number against a non-flush number at a different chunk size.
 
-`Mem-Refresh` is the case where this is a *correctness* requirement, not a
-tuning choice: without the flush the 64 ms retention delay was defeated by a
-cached copy (that was the TODO #26 silent bug). The above is why the same
-mechanism is optional-and-situational for stuck-bit.
+### Why Refresh does NOT need it unconditionally (revised 2026-07-31)
+
+TODO #26 fixed a real bug — the 64 ms retention delay was being defeated by a
+cached copy — but the fix landed as an *unconditional* flush, and that was
+over-correction. Three things make natural eviction sufficient at a sane window:
+
+1. **The window is `CacheTotal 2.0x` by design** — 2x the whole hierarchy. On a
+   482 MiB-cache box that is a 964 MiB window, so writing it evicts its own
+   earlier half. The multiplier exists precisely so this holds across machines
+   with different cache sizes.
+2. **L3 is shared across threads.** At 1 thread up to ~50% of the window could
+   still be resident; at 8 threads the per-thread L3 share is 1/8, so <= 6.4%
+   can be. More threads means less residency, and real runs are multi-threaded.
+3. **The verify sweeps forward, the same direction as the write.** So any
+   surviving tail line is read *last* — after the verify's own reads have pulled
+   roughly a whole window through the cache. The residual is simultaneously the
+   smallest part of the range and the least likely to still be cached. (Verifying
+   *backwards* would be the pathological case; forwards is self-cleaning.)
+
+With 8 concurrent worksets each 2x total cache against a shared, virtualized L3,
+a line surviving from write to verify is a fluke. Paying ~20-30% throughput on
+every run to insure against a fluke is a bad trade for a tool where **throughput
+is coverage per unit time** — faster cycles find more errors than a marginally
+stricter single pass.
+
+So it is now a flag (`flush_before_verify`), default **off**, with
+`Mem-Refresh-Flush` registered for when you want the DRAM round-trip
+architecturally guaranteed rather than dependent on replacement policy
+(non-inclusive caches, prefetchers, another VM's L3 pressure).
+
+**The flush is still mandatory where eviction cannot help**: any test that
+re-reads the chunk it just wrote. `SimpleTest`'s TM5-faithful
+`(1 write + N reads) x write_read_cycles` is exactly that shape — no window
+sizing defeats the cache when the re-reads target the chunk you just wrote.
 
 ## See Also
 

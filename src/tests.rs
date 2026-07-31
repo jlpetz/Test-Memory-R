@@ -869,7 +869,7 @@ impl TestMemoryConfig {
                 memory_coverage: 1.0,
                 locality_sensitive: false,
             },
-            "Mem-Refresh" => OperationMetadata {
+            "Mem-Refresh" | "Mem-Refresh-Flush" => OperationMetadata {
                 reads_per_op: 1,  // Verify read per element
                 writes_per_op: 1,  // Pattern write per element
                 verifies_per_op: 1,  // Same as reads
@@ -1107,7 +1107,7 @@ impl TestMemoryConfig {
             // check. L3*2 covers far more cells than the old l2*2 while keeping
             // the (per-chunk) sleep count bounded — full-allocation would multiply
             // runtime by the chunk count.
-            "Mem-Refresh" => cache_info.l3_cache * 2,
+            "Mem-Refresh" | "Mem-Refresh-Flush" => cache_info.l3_cache * 2,
             _ => cache_info.total_cache * 2,
         };
 
@@ -1203,7 +1203,7 @@ impl TestMemoryConfig {
             "Mem-SimpleNT-256" => 32,          // 256-bit NT SIMD
             "Mem-SimpleNT-512" => 64,          // 512-bit NT SIMD
             "Mem-SimpleNT-Auto" => 64,         // Auto-dispatched NT SIMD
-            "Mem-Refresh" => 8,              // Basic u64 operations
+            "Mem-Refresh" | "Mem-Refresh-Flush" => 8,   // Basic u64 operations
             "Mem-Refresh128" => 16,          // 128-bit SIMD operations
             "Mem-Refresh256" => 32,          // 256-bit SIMD operations
             "Mem-Refresh512" => 64,          // 512-bit SIMD operations
@@ -1991,6 +1991,8 @@ macro_rules! refresh_impl {
             );
 
             let pattern = <$simd_type>::splat(REFRESH_PATTERN);
+            // Hoisted out of the loops: never read a config field in the hot path.
+            let flush_before_verify = config.flush_before_verify;
 
             loop {
                 runner.begin_cycle();
@@ -2012,11 +2014,28 @@ macro_rules! refresh_impl {
                             *base.add(i) = pattern;
                         }
 
-                        // Flush the written chunk to DRAM so the post-sleep verify reads DRAM,
-                        // not a cache-resident copy that would mask bit-fade.
-                        let chunk_ptr = base.add(processed) as *const u8;
-                        let chunk_bytes = (chunk_end - processed) * lanes;
-                        flush_range_to_dram(chunk_ptr, chunk_bytes, config.cache_line_bytes);
+                        // Optional flush (TODO #59, opt-in): evict this chunk so the post-sleep
+                        // verify reads DRAM rather than a cache-resident copy that would mask
+                        // bit-fade. Default OFF — natural eviction already handles this here:
+                        //   - the window is `CacheTotal 2.0x`, i.e. 2× the whole hierarchy by
+                        //     design, so writing it evicts its own earlier half;
+                        //   - N threads run concurrently against a *shared* L3, cutting the
+                        //     per-thread residency further (on a 482 MiB-cache box: ≤50% of the
+                        //     window could survive at 1 thread, but ≤6.4% at 8);
+                        //   - the verify below sweeps *forward*, the same direction as the write,
+                        //     so any surviving tail line is read last — after the verify's own
+                        //     reads have pulled ~a whole window through the cache. The residual is
+                        //     both the smallest and the least-likely-resident part of the range.
+                        // So this buys insurance against a fluke at ~20-30% throughput. For a
+                        // tool where throughput *is* coverage-per-unit-time, faster cycles find
+                        // more errors than a marginally stricter single pass. Turn it on to make
+                        // the DRAM round-trip architecturally guaranteed instead of policy-
+                        // dependent (shared virtualized L3, non-inclusive caches, prefetchers).
+                        if flush_before_verify {
+                            let chunk_ptr = base.add(processed) as *const u8;
+                            let chunk_bytes = (chunk_end - processed) * lanes;
+                            flush_range_to_dram(chunk_ptr, chunk_bytes, config.cache_line_bytes);
+                        }
 
                         std::sync::atomic::fence(Ordering::SeqCst);
                         std::thread::sleep(std::time::Duration::from_millis(64));
@@ -5323,6 +5342,9 @@ pub fn get_test_function_by_name(name: &str) -> Option<crate::runner::TestFuncti
 
         // Refresh Tests
         "Mem-Refresh" => Some(TestFunction::MultiBlock(refresh_stable_multi)),
+        // Flush variant (#59): auto-dispatch fn; flushing is driven by
+        // `flush_before_verify`, which the hardcoded registration sets.
+        "Mem-Refresh-Flush" => Some(TestFunction::MultiBlock(refresh_stable_auto_multi)),
         "Mem-Refresh128" => Some(TestFunction::MultiBlock(refresh_stable_128_multi)),
         "Mem-Refresh256" => Some(TestFunction::MultiBlock(refresh_stable_256_multi)),
         "Mem-Refresh512" => Some(TestFunction::MultiBlock(refresh_stable_512_multi)),

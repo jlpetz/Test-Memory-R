@@ -1849,6 +1849,28 @@ fn create_test_definitions(cache_info: &CacheInfo) -> Vec<TestDefinition> {
              .with_memory_type(None)
         ),
 
+        // === Refresh CLFLUSHOPT-verify variant (TODO #59, opt-in) ===
+        // Same test with the pre-sleep flush enabled, making the DRAM round-trip architecturally
+        // guaranteed rather than relying on eviction policy. Not the default: the plain variants'
+        // `CacheTotal 2.0x` window, multi-thread shared-L3 pressure, and forward verify order
+        // already evict all but a small, least-likely-resident tail (see refresh_impl!). This
+        // costs ~20-30% throughput to close that gap — worth it when you want certainty rather
+        // than probability, not worth it for routine stability runs where throughput is coverage
+        // per unit time. Only the widest variant is registered; use `flush_before_verify` in a
+        // JSON config for other widths.
+        (
+            "Mem-Refresh-Flush",
+            TestFunction::MultiBlock(refresh_stable_auto_multi),
+            TestMemoryConfig::new(
+                WindowMode::CacheTotal { fraction: 2.0 },
+                ChunkMode::Absolute { size_bytes: 2048 * MB },
+                false,
+                true
+            ).with_timing(TestTiming::duration_only(15))
+             .with_memory_type(None)
+             .with_flush_before_verify(true)
+        ),
+
         // === RefreshStable Auto-dispatch (AVX-512 > AVX2 > SSE2 > scalar) ===
         // Placed last so results match the actual variant performance
         (
