@@ -1460,7 +1460,9 @@ fn resolve_auto_dispatch_test(test_name: &str) -> Option<(&'static str, TestFunc
             "Mem-SimpleV2-" => TestFunction::MultiBlock(simple_test_v2_512_multi),
             "Mem-SimpleNT-" => TestFunction::MultiBlock(simple_test_nt_512_multi),
             "Mem-StuckBit" => TestFunction::MultiBlock(stuck_bit_test_512_multi),
+            "Mem-StuckBit-Flush" => TestFunction::MultiBlock(stuck_bit_test_512_multi),
             "Mem-Refresh" => TestFunction::MultiBlock(refresh_stable_512_multi),
+            "Mem-Refresh-Flush" => TestFunction::MultiBlock(refresh_stable_512_multi),
             _ => match spd_op {
                 Some("read") => TestFunction::MultiBlock(spd_read_512_multi),
                 Some("write") => TestFunction::MultiBlock(spd_write_512_multi),
@@ -1476,7 +1478,9 @@ fn resolve_auto_dispatch_test(test_name: &str) -> Option<(&'static str, TestFunc
             "Mem-SimpleV2-" => TestFunction::MultiBlock(simple_test_v2_256_multi),
             "Mem-SimpleNT-" => TestFunction::MultiBlock(simple_test_nt_256_multi),
             "Mem-StuckBit" => TestFunction::MultiBlock(stuck_bit_test_256_multi),
+            "Mem-StuckBit-Flush" => TestFunction::MultiBlock(stuck_bit_test_256_multi),
             "Mem-Refresh" => TestFunction::MultiBlock(refresh_stable_256_multi),
+            "Mem-Refresh-Flush" => TestFunction::MultiBlock(refresh_stable_256_multi),
             _ => match spd_op {
                 Some("read") => TestFunction::MultiBlock(spd_read_256_multi),
                 Some("write") => TestFunction::MultiBlock(spd_write_256_multi),
@@ -1492,7 +1496,9 @@ fn resolve_auto_dispatch_test(test_name: &str) -> Option<(&'static str, TestFunc
             "Mem-SimpleV2-" => TestFunction::MultiBlock(simple_test_v2_128_multi),
             "Mem-SimpleNT-" => TestFunction::MultiBlock(simple_test_nt_128_multi),
             "Mem-StuckBit" => TestFunction::MultiBlock(stuck_bit_test_128_multi),
+            "Mem-StuckBit-Flush" => TestFunction::MultiBlock(stuck_bit_test_128_multi),
             "Mem-Refresh" => TestFunction::MultiBlock(refresh_stable_128_multi),
+            "Mem-Refresh-Flush" => TestFunction::MultiBlock(refresh_stable_128_multi),
             _ => match spd_op {
                 Some("read") => TestFunction::MultiBlock(spd_read_128_multi),
                 Some("write") => TestFunction::MultiBlock(spd_write_128_multi),
@@ -1509,7 +1515,9 @@ fn resolve_auto_dispatch_test(test_name: &str) -> Option<(&'static str, TestFunc
             "Mem-SimpleV2-" => { return Some(("Mem-SimpleV2", TestFunction::MultiBlock(simple_test_v2_multi))); },
             "Mem-SimpleNT-" => TestFunction::MultiBlock(simple_test_nt_128_multi),
             "Mem-StuckBit" => { return Some(("Mem-StuckBit", TestFunction::MultiBlock(stuck_bit_test_multi))); },
+            "Mem-StuckBit-Flush" => { return Some(("Mem-StuckBit-Flush", TestFunction::MultiBlock(stuck_bit_test_multi))); },
             "Mem-Refresh" => { return Some(("Mem-Refresh", TestFunction::MultiBlock(refresh_stable_multi))); },
+            "Mem-Refresh-Flush" => { return Some(("Mem-Refresh-Flush", TestFunction::MultiBlock(refresh_stable_multi))); },
             _ => match spd_op {
                 Some("read") => TestFunction::MultiBlock(spd_read_128_multi),
                 Some("write") => TestFunction::MultiBlock(spd_write_128_multi),
@@ -1587,9 +1595,15 @@ fn resolve_auto_dispatch_test(test_name: &str) -> Option<(&'static str, TestFunc
             ("Mem-StuckBit", "512") => "Mem-StuckBit512",
             ("Mem-StuckBit", "256") => "Mem-StuckBit256",
             ("Mem-StuckBit", "128") => "Mem-StuckBit128",
+            ("Mem-StuckBit-Flush", "512") => "Mem-StuckBit-Flush512",
+            ("Mem-StuckBit-Flush", "256") => "Mem-StuckBit-Flush256",
+            ("Mem-StuckBit-Flush", "128") => "Mem-StuckBit-Flush128",
             ("Mem-Refresh", "512") => "Mem-Refresh512",
             ("Mem-Refresh", "256") => "Mem-Refresh256",
             ("Mem-Refresh", "128") => "Mem-Refresh128",
+            ("Mem-Refresh-Flush", "512") => "Mem-Refresh-Flush512",
+            ("Mem-Refresh-Flush", "256") => "Mem-Refresh-Flush256",
+            ("Mem-Refresh-Flush", "128") => "Mem-Refresh-Flush128",
             _ => return None,
         }
     };
@@ -1666,7 +1680,7 @@ fn create_test_definitions(cache_info: &CacheInfo) -> Vec<TestDefinition> {
              .with_memory_type(None)
         ),
 
-        // === StuckBit CLFLUSHOPT-verify variants (TODO #59) ===
+        // === StuckBit CLFLUSHOPT-verify variant (TODO #59) ===
         // Same 3-phase alternating-bit test, but each chunk is flushed out of cache between
         // write and verify, so the verify provably round-trips through DRAM instead of reading
         // the line it just wrote. User-mode replacement for UC driver memory: stops a valid
@@ -1696,51 +1710,24 @@ fn create_test_definitions(cache_info: &CacheInfo) -> Vec<TestDefinition> {
         // would clamp that. 1.0 lands at 2 MiB / 1 MiB respectively — both in the measured flat
         // zone, still cache-resident by construction.
         //
-        // NOT YET MEASURED: these numbers come from a fixed-absolute-chunk sweep of
-        // Mem-StuckBit128 (test_configs/flush_chunk_sweep.json). The Cache{L2} sizing itself is
-        // inferred from that data, not directly benchmarked.
+        // Those numbers come from a fixed-absolute-chunk sweep of Mem-StuckBit128
+        // (test_configs/flush_chunk_sweep.json), i.e. they isolate "does the verify reach DRAM"
+        // by holding chunk size constant. Compared instead at *operational defaults* — plain at
+        // its ~6% fraction vs this at Cache{L2} — the guarantee turns out to be free
+        // (8T, MiB/s): scalar 43056 → 43763, 128 47681 → 45705, 256 48060 → 46965,
+        // 512 46301 → 47886. Two are faster; all four are inside this box's noise. Both configs
+        // are DRAM-bandwidth-bound and move the same total traffic, so the flush *reschedules*
+        // the writeback rather than adding to it. (Contrast Mem-Refresh-FlushAuto at -22%: there
+        // the write already streams to DRAM naturally, so the flush is pure added instruction
+        // cost.) Single run — treat the ±4% spread as "no measurable difference".
+        //
+        // Auto-dispatch (one preset, not four): under flush the widths converge to a 4.8% spread
+        // because all are DRAM-bound (see doc/simd_codegen_rules.md Rule 3), so per-width
+        // registrations would measure the same number repeatedly. Set `flush_before_verify` in a
+        // JSON config to pin a specific width.
         (
-            "Mem-StuckBit-Flush",
-            TestFunction::MultiBlock(stuck_bit_test_multi),
-            TestMemoryConfig::new(
-                WindowMode::FullAllocation,
-                ChunkMode::Cache { target: CacheTarget::L2 { scale: 1.0 } },
-                false,
-                false
-            ).with_timing(TestTiming::cycles_only(1))
-             .with_memory_type(None)
-             .with_flush_before_verify(true)
-        ),
-
-        (
-            "Mem-StuckBit-Flush128",
-            TestFunction::MultiBlock(stuck_bit_test_128_multi),
-            TestMemoryConfig::new(
-                WindowMode::FullAllocation,
-                ChunkMode::Cache { target: CacheTarget::L2 { scale: 1.0 } },
-                false,
-                false
-            ).with_timing(TestTiming::cycles_only(1))
-             .with_memory_type(None)
-             .with_flush_before_verify(true)
-        ),
-
-        (
-            "Mem-StuckBit-Flush256",
-            TestFunction::MultiBlock(stuck_bit_test_256_multi),
-            TestMemoryConfig::new(
-                WindowMode::FullAllocation,
-                ChunkMode::Cache { target: CacheTarget::L2 { scale: 1.0 } },
-                false,
-                false
-            ).with_timing(TestTiming::cycles_only(1))
-             .with_memory_type(None)
-             .with_flush_before_verify(true)
-        ),
-
-        (
-            "Mem-StuckBit-Flush512",
-            TestFunction::MultiBlock(stuck_bit_test_512_multi),
+            "Mem-StuckBit-FlushAuto",
+            TestFunction::MultiBlock(stuck_bit_test_auto_multi),
             TestMemoryConfig::new(
                 WindowMode::FullAllocation,
                 ChunkMode::Cache { target: CacheTarget::L2 { scale: 1.0 } },
@@ -1849,30 +1836,8 @@ fn create_test_definitions(cache_info: &CacheInfo) -> Vec<TestDefinition> {
              .with_memory_type(None)
         ),
 
-        // === Refresh CLFLUSHOPT-verify variant (TODO #59, opt-in) ===
-        // Same test with the pre-sleep flush enabled, making the DRAM round-trip architecturally
-        // guaranteed rather than relying on eviction policy. Not the default: the plain variants'
-        // `CacheTotal 2.0x` window, multi-thread shared-L3 pressure, and forward verify order
-        // already evict all but a small, least-likely-resident tail (see refresh_impl!). This
-        // costs ~20-30% throughput to close that gap — worth it when you want certainty rather
-        // than probability, not worth it for routine stability runs where throughput is coverage
-        // per unit time. Only the widest variant is registered; use `flush_before_verify` in a
-        // JSON config for other widths.
-        (
-            "Mem-Refresh-Flush",
-            TestFunction::MultiBlock(refresh_stable_auto_multi),
-            TestMemoryConfig::new(
-                WindowMode::CacheTotal { fraction: 2.0 },
-                ChunkMode::Absolute { size_bytes: 2048 * MB },
-                false,
-                true
-            ).with_timing(TestTiming::duration_only(15))
-             .with_memory_type(None)
-             .with_flush_before_verify(true)
-        ),
-
         // === RefreshStable Auto-dispatch (AVX-512 > AVX2 > SSE2 > scalar) ===
-        // Placed last so results match the actual variant performance
+        // Placed after the explicit widths so results match the actual variant performance
         (
             "Mem-RefreshAuto",
             TestFunction::MultiBlock(refresh_stable_auto_multi),
@@ -1883,6 +1848,34 @@ fn create_test_definitions(cache_info: &CacheInfo) -> Vec<TestDefinition> {
                 true
             ).with_timing(TestTiming::duration_only(15))
              .with_memory_type(None)
+        ),
+
+        // === Refresh CLFLUSHOPT-verify variant (TODO #59, opt-in) ===
+        // Same test with the pre-sleep flush enabled, making the DRAM round-trip architecturally
+        // guaranteed rather than relying on eviction policy. Not the default: the plain variants'
+        // `CacheTotal 2.0x` window, multi-thread shared-L3 pressure, and forward verify order
+        // already evict all but a small, least-likely-resident tail (see refresh_impl!).
+        //
+        // Measured cost (Intel Granite Rapids, 8T, MiB/s): Mem-Refresh512 45,797 and
+        // Mem-Refresh512_A 45,457 vs Mem-Refresh-Flush 35,293 — **-22%** for the guarantee.
+        // Worth it when you want certainty rather than probability; not worth it for routine
+        // stability runs, where throughput is coverage per unit time.
+        //
+        // Auto-dispatch (one preset, not four): under flush every width is DRAM-bound, so the
+        // widths converge and separate per-width registrations would measure the same number
+        // repeatedly. Set `flush_before_verify` in a JSON config to pin a specific width.
+        // Listed last so it reads as the variant of the plain suite above it.
+        (
+            "Mem-Refresh-FlushAuto",
+            TestFunction::MultiBlock(refresh_stable_auto_multi),
+            TestMemoryConfig::new(
+                WindowMode::CacheTotal { fraction: 2.0 },
+                ChunkMode::Absolute { size_bytes: 2048 * MB },
+                false,
+                true
+            ).with_timing(TestTiming::duration_only(15))
+             .with_memory_type(None)
+             .with_flush_before_verify(true)
         ),
 
         // === Performance stress tests ===

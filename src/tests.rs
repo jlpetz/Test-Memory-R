@@ -881,7 +881,7 @@ impl TestMemoryConfig {
                 memory_coverage: 1.0,
                 locality_sensitive: true,
             },
-            "Mem-Refresh128" => OperationMetadata {
+            "Mem-Refresh128" | "Mem-Refresh-Flush128" => OperationMetadata {
                 reads_per_op: 1,  // Verify read per element
                 writes_per_op: 1,  // Pattern write per element
                 verifies_per_op: 1,  // Same as reads
@@ -893,7 +893,7 @@ impl TestMemoryConfig {
                 memory_coverage: 1.0,
                 locality_sensitive: true,
             },
-            "Mem-Refresh256" => OperationMetadata {
+            "Mem-Refresh256" | "Mem-Refresh-Flush256" => OperationMetadata {
                 reads_per_op: 1,  // Verify read per element
                 writes_per_op: 1,  // Pattern write per element
                 verifies_per_op: 1,  // Same as reads
@@ -905,7 +905,7 @@ impl TestMemoryConfig {
                 memory_coverage: 1.0,
                 locality_sensitive: true,
             },
-            "Mem-Refresh512" => OperationMetadata {
+            "Mem-Refresh512" | "Mem-Refresh-Flush512" => OperationMetadata {
                 reads_per_op: 1,  // Verify read per element
                 writes_per_op: 1,  // Pattern write per element
                 verifies_per_op: 1,  // Same as reads
@@ -1107,7 +1107,9 @@ impl TestMemoryConfig {
             // check. L3*2 covers far more cells than the old l2*2 while keeping
             // the (per-chunk) sleep count bounded — full-allocation would multiply
             // runtime by the chunk count.
-            "Mem-Refresh" | "Mem-Refresh-Flush" => cache_info.l3_cache * 2,
+            "Mem-Refresh" | "Mem-Refresh128" | "Mem-Refresh256" | "Mem-Refresh512"
+            | "Mem-Refresh-Flush" | "Mem-Refresh-Flush128" | "Mem-Refresh-Flush256"
+            | "Mem-Refresh-Flush512" => cache_info.l3_cache * 2,
             _ => cache_info.total_cache * 2,
         };
 
@@ -1204,9 +1206,9 @@ impl TestMemoryConfig {
             "Mem-SimpleNT-512" => 64,          // 512-bit NT SIMD
             "Mem-SimpleNT-Auto" => 64,         // Auto-dispatched NT SIMD
             "Mem-Refresh" | "Mem-Refresh-Flush" => 8,   // Basic u64 operations
-            "Mem-Refresh128" => 16,          // 128-bit SIMD operations
-            "Mem-Refresh256" => 32,          // 256-bit SIMD operations
-            "Mem-Refresh512" => 64,          // 512-bit SIMD operations
+            "Mem-Refresh128" | "Mem-Refresh-Flush128" => 16,   // 128-bit SIMD operations
+            "Mem-Refresh256" | "Mem-Refresh-Flush256" => 32,   // 256-bit SIMD operations
+            "Mem-Refresh512" | "Mem-Refresh-Flush512" => 64,   // 512-bit SIMD operations
             "Mem-CacheBust" => 64,        // Cache line operations
             "Mem-Random" => 8,       // Basic u64 operations
             "Mem-Stride" => 8,               // Basic u64 operations
@@ -5314,6 +5316,7 @@ pub fn get_test_function_by_name(name: &str) -> Option<crate::runner::TestFuncti
         // registrations set it via `.with_flush_before_verify(true)`; JSON configs set the
         // per-test `flush_before_verify` field (so any test can opt in, not just these names).
         "Mem-StuckBit-Flush" => Some(TestFunction::MultiBlock(stuck_bit_test_multi)),
+        "Mem-StuckBit-FlushAuto" => Some(TestFunction::MultiBlock(stuck_bit_test_auto_multi)),
         "Mem-StuckBit-Flush128" => Some(TestFunction::MultiBlock(stuck_bit_test_128_multi)),
         "Mem-StuckBit-Flush256" => Some(TestFunction::MultiBlock(stuck_bit_test_256_multi)),
         "Mem-StuckBit-Flush512" => Some(TestFunction::MultiBlock(stuck_bit_test_512_multi)),
@@ -5344,7 +5347,11 @@ pub fn get_test_function_by_name(name: &str) -> Option<crate::runner::TestFuncti
         "Mem-Refresh" => Some(TestFunction::MultiBlock(refresh_stable_multi)),
         // Flush variant (#59): auto-dispatch fn; flushing is driven by
         // `flush_before_verify`, which the hardcoded registration sets.
-        "Mem-Refresh-Flush" => Some(TestFunction::MultiBlock(refresh_stable_auto_multi)),
+        "Mem-Refresh-Flush" => Some(TestFunction::MultiBlock(refresh_stable_multi)),
+        "Mem-Refresh-Flush128" => Some(TestFunction::MultiBlock(refresh_stable_128_multi)),
+        "Mem-Refresh-Flush256" => Some(TestFunction::MultiBlock(refresh_stable_256_multi)),
+        "Mem-Refresh-Flush512" => Some(TestFunction::MultiBlock(refresh_stable_512_multi)),
+        "Mem-Refresh-FlushAuto" => Some(TestFunction::MultiBlock(refresh_stable_auto_multi)),
         "Mem-Refresh128" => Some(TestFunction::MultiBlock(refresh_stable_128_multi)),
         "Mem-Refresh256" => Some(TestFunction::MultiBlock(refresh_stable_256_multi)),
         "Mem-Refresh512" => Some(TestFunction::MultiBlock(refresh_stable_512_multi)),
