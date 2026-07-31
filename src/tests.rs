@@ -748,6 +748,18 @@ pub struct TestMemoryConfig {
     ///
     /// Default `false`: existing tests keep their current behaviour and timings.
     pub flush_before_verify: bool,
+
+    /// Registration/display name for **logging only** — never for lookups.
+    ///
+    /// Test fns bake in their own hardcoded `$test_name` (e.g. `"Mem-StuckBit128"`), which is the
+    /// key used for window/chunk sizing and metadata lookups and must not change. But several
+    /// registrations share one fn: `Mem-StuckBit-Flush128` and the auto-dispatch `_A` variants
+    /// both run `stuck_bit_test_128_impl`. Logging the baked-in name therefore mislabels those
+    /// runs (`Mem-StuckBit-Flush128` was logging as `Mem-StuckBit128`).
+    ///
+    /// When set, `TestRunner::new` logs this instead. `None` falls back to the baked-in name, so
+    /// tests constructed outside the registry are unaffected.
+    pub display_name: Option<String>,
 }
 
 impl TestMemoryConfig {
@@ -772,6 +784,7 @@ impl TestMemoryConfig {
             write_read_cycles: 1,  // Default 1, TM5 SimpleTest uses 4
             skip_init: false,  // Default: always run init (independent mode)
             flush_before_verify: false,  // Default: keep existing (cache-resident) verify behaviour
+            display_name: None,  // Logging only; falls back to the test fn's baked-in name
         }
     }
 
@@ -779,6 +792,13 @@ impl TestMemoryConfig {
     /// (CLFLUSHOPT + MFENCE between write and verify). See `flush_before_verify`.
     pub fn with_flush_before_verify(mut self, flush: bool) -> Self {
         self.flush_before_verify = flush;
+        self
+    }
+
+    /// Builder: set the name used in per-thread log lines. Logging only — sizing and metadata
+    /// lookups still key off the test fn's baked-in name. See `display_name`.
+    pub fn with_display_name(mut self, name: impl Into<String>) -> Self {
+        self.display_name = Some(name.into());
         self
     }
 

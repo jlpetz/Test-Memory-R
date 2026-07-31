@@ -68,9 +68,13 @@ impl<'a> TestRunner<'a> {
         let test_blocks = prepare_blocks_for_window(blocks, window_size, test_name);
         let total_test_size: usize = test_blocks.iter().map(|b| b.test_size).sum();
 
+        // Log the registration name (carries the `_A` auto-dispatch suffix and distinguishes
+        // registrations that share one test fn, e.g. Mem-StuckBit-Flush128); fall back to the
+        // fn's baked-in name. Sizing above still keys off `test_name` — do not swap that.
+        let log_name = config.display_name.as_deref().unwrap_or(test_name);
         log::info!(
             "[Thread {}] Running {} on {:.2} MB of memory (window: {:.2} MB)",
-            thread_id, test_name,
+            thread_id, log_name,
             total_test_size as f64 / MB_F64,
             window_size as f64 / MB_F64
         );

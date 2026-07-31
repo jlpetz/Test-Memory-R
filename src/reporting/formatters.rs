@@ -89,7 +89,13 @@ pub trait ReportFormatter: Send + Sync {
     /// Format window mode with calculated size for CacheLevel targets
     fn format_window_mode_with_size(&self, mode: &crate::tests::WindowMode, cache_info: &crate::cache::CacheInfo, thread_count: usize) -> String;
     fn format_chunk_mode(&self, mode: &crate::tests::ChunkMode) -> String;
-    
+    /// Format chunk mode, appending the resolved byte size for `Cache` targets.
+    ///
+    /// `Cache` specs hide a real behavioural detail: `L1`/`L2` divide by *active threads per
+    /// core*, so `Cache (L2)` resolves to a different size with and without SMT. Absolute and
+    /// Fraction specs are self-explanatory and are left as-is.
+    fn format_chunk_mode_with_size(&self, mode: &crate::tests::ChunkMode, cache_info: &crate::cache::CacheInfo, thread_count: usize) -> String;
+
     /// Prepare test configuration table
     fn prepare_test_configuration_table(&self, report: &TestConfigurationReport) -> TableData;
     
@@ -1175,7 +1181,26 @@ impl ReportFormatter for DefaultFormatter {
             }
         }
     }
-    
+
+    fn format_chunk_mode_with_size(&self, mode: &crate::tests::ChunkMode, cache_info: &crate::cache::CacheInfo, thread_count: usize) -> String {
+        use crate::tests::ChunkMode;
+        match mode {
+            // Show the resolved size: `Cache (L2)` alone hides the SMT divisor (L1/L2 divide by
+            // active threads per core), so the same spec means 2 MiB at 1 thread/core and 1 MiB
+            // under SMT. Everything else already states its size in the spec.
+            ChunkMode::Cache { target } => {
+                let size = target.calculate_window_size(cache_info, thread_count);
+                if size == usize::MAX {
+                    format!("Cache ({}, full window)", target.name())
+                } else {
+                    format!("Cache ({}, {})", target.name(), self.format_bytes(size as u64))
+                }
+            }
+            other => self.format_chunk_mode(other),
+        }
+    }
+
+
     fn prepare_test_configuration_table(&self, report: &TestConfigurationReport) -> TableData {
         let mut table = TableData::new()
             .with_title("Test Configuration")

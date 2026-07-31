@@ -1025,7 +1025,7 @@ fn execute_test_cycle(ctx: &CycleContext, cycle: u64) {
             use crate::reporting::formatters::{ReportFormatter, DefaultFormatter};
             let formatter = DefaultFormatter::new();
             let window_str = formatter.format_window_mode_with_size(&test_def.config.window_mode, cache_info, thread_count);
-            let chunk_str = formatter.format_chunk_mode(&test_def.config.chunk_mode);
+            let chunk_str = formatter.format_chunk_mode_with_size(&test_def.config.chunk_mode, cache_info, thread_count);
             let param_str = match &test_def.config.parameter_context {
                 Some(c) => {
                     if let Some(stride) = c.page_stride_bytes {
@@ -3685,11 +3685,13 @@ fn create_test_definitions(cache_info: &CacheInfo) -> Vec<TestDefinition> {
         if let Some((resolved_name, resolved_function)) = resolve_auto_dispatch_test(test_name) {
             log::debug!("Auto-dispatch: {} → {} (based on CPU capabilities)", test_name, resolved_name);
             let effect = derive_memory_effect(resolved_name, &config);
+            let display_name = format!("{}_A", resolved_name); // Add _A suffix for auto-dispatch
             resolved_tests.push(TestDefinition {
                 actual_name: resolved_name,
-                display_name: format!("{}_A", resolved_name), // Add _A suffix for auto-dispatch
+                // Mirror onto the config so per-thread logs show the resolved+suffixed name
+                config: config.with_display_name(&display_name),
+                display_name,
                 function: resolved_function,
-                config,
                 original_name: Some(test_name), // Preserve original "StuckBitTestAuto" name
                 memory_effect: effect,
             });
@@ -3699,7 +3701,7 @@ fn create_test_definitions(cache_info: &CacheInfo) -> Vec<TestDefinition> {
                 actual_name: test_name,
                 display_name: test_name.to_string(),
                 function: test_function,
-                config,
+                config: config.with_display_name(test_name),
                 original_name: None,
                 memory_effect: effect,
             });
@@ -3729,11 +3731,13 @@ fn create_test_definitions_from_config(config: &crate::config::ModernConfig, cac
             // Convert to 'static str by leaking (safe for test names, small and finite set)
             let static_original_name: &'static str = Box::leak(test_name.to_string().into_boxed_str());
             let effect = derive_memory_effect(resolved_name, &test_config);
+            let display_name = format!("{}_A", resolved_name);
             resolved_tests.push(TestDefinition {
                 actual_name: resolved_name,
-                display_name: format!("{}_A", resolved_name),
+                // Mirror onto the config so per-thread logs show the resolved+suffixed name
+                config: test_config.with_display_name(&display_name),
+                display_name,
                 function: resolved_function,
-                config: test_config,
                 original_name: Some(static_original_name), // Preserve original Auto name
                 memory_effect: effect,
             });
@@ -3745,7 +3749,7 @@ fn create_test_definitions_from_config(config: &crate::config::ModernConfig, cac
                 actual_name: static_name,
                 display_name: test_name.to_string(),
                 function: test_function,
-                config: test_config,
+                config: test_config.with_display_name(test_name),
                 original_name: None,
                 memory_effect: effect,
             });

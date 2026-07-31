@@ -273,7 +273,7 @@ pub fn create_test_configuration_report_v2(
 
         // Use the new formatter with calculated sizes for CacheLevel targets
         let window_mode = formatter.format_window_mode_with_size(&config.window_mode, cache_info, thread_count);
-        let chunk_mode = formatter.format_chunk_mode(&config.chunk_mode);
+        let chunk_mode = formatter.format_chunk_mode_with_size(&config.chunk_mode, cache_info, thread_count);
 
         // Match old flag order: Locality first, then Misaligned
         let mut flags = Vec::new();
