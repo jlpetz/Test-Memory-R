@@ -139,8 +139,17 @@ unsafe fn check_privilege_in_token(token: HANDLE, privilege_luid: LUID) -> Privi
         return PrivilegeState::NotAssigned;
     }
 
-    // Allocate buffer and get actual privileges
-    let mut buffer = vec![0u8; return_length as usize];
+    // Allocate buffer and get actual privileges.
+    //
+    // ALIGNMENT: backed by `u64`, not `u8`. `TOKEN_PRIVILEGES` requires 4-byte alignment
+    // (DWORD `PrivilegeCount` + `LUID_AND_ATTRIBUTES` array), but `Vec<u8>` only guarantees
+    // 1 byte — so reinterpreting a `Vec<u8>` as `*const TOKEN_PRIVILEGES` below is UB by the
+    // letter of the language, and only "works" because the global allocator happens to hand
+    // back 8/16-byte-aligned blocks. `Vec<u64>` guarantees 8 >= 4 by construction, so the
+    // cast is sound rather than incidentally lucky. Keep the element type at least as
+    // aligned as any struct read out of this buffer.
+    let elements = (return_length as usize).div_ceil(std::mem::size_of::<u64>());
+    let mut buffer = vec![0u64; elements];
     if GetTokenInformation(
         token,
         TokenPrivileges,

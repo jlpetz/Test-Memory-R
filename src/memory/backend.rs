@@ -289,28 +289,28 @@ impl WindowsBackend {
             );
         }
 
-        // Add alignment requirements if specified
-        if let Some(alignment) = config.alignment {
-            let mut addr_req = MEM_ADDRESS_REQUIREMENTS {
-                LowestStartingAddress: config.base_address.unwrap_or(std::ptr::null_mut()) as *mut std::ffi::c_void,
-                HighestEndingAddress: std::ptr::null_mut(),
-                Alignment: alignment,
-            };
-            
-            let mut param = Self::create_extended_param(
-                MemExtendedParameterAddressRequirements,
-                0 // Will be overridden by Pointer field
-            );
-            param.Anonymous2.Pointer = &mut addr_req as *mut _ as *mut std::ffi::c_void;
-            extended_params.push(param);
-        } else if let Some(base_addr) = config.base_address {
-            // Just base address without alignment requirement
-            let mut addr_req = MEM_ADDRESS_REQUIREMENTS {
-                LowestStartingAddress: base_addr as *mut std::ffi::c_void,
-                HighestEndingAddress: std::ptr::null_mut(),
-                Alignment: 0, // No specific alignment
-            };
-            
+        // Add alignment / base-address requirements if specified.
+        //
+        // LIFETIME: `addr_req` MUST be declared at function scope, not inside the `if` below.
+        // `MEM_EXTENDED_PARAMETER` stores it as a *raw pointer*, which the kernel dereferences
+        // inside the `VirtualAlloc2` call further down. A block-scoped `addr_req` is dead by
+        // then (LLVM emits `lifetime.end` at scope exit and may reuse the stack slot), so the
+        // kernel would read whatever landed there — UB that the borrow checker cannot catch
+        // because the raw cast erases the borrow. Keep this binding alive until after the call.
+        let mut addr_req = MEM_ADDRESS_REQUIREMENTS {
+            LowestStartingAddress: std::ptr::null_mut(),
+            HighestEndingAddress: std::ptr::null_mut(),
+            Alignment: 0,
+        };
+
+        if config.alignment.is_some() || config.base_address.is_some() {
+            // Both fields are optional and independent: a null LowestStartingAddress means
+            // "anywhere", Alignment 0 means "no specific alignment". Filling them from the two
+            // Options covers all three previously-separate cases identically.
+            addr_req.LowestStartingAddress =
+                config.base_address.unwrap_or(std::ptr::null_mut()) as *mut std::ffi::c_void;
+            addr_req.Alignment = config.alignment.unwrap_or(0);
+
             let mut param = Self::create_extended_param(
                 MemExtendedParameterAddressRequirements,
                 0 // Will be overridden by Pointer field
@@ -324,6 +324,10 @@ impl WindowsBackend {
             log::trace!("Note: VirtualAlloc2 always zeros memory, zero_memory=false is ignored");
         }
 
+        // SAFETY: `extended_params` may hold a raw pointer to `addr_req` (see the LIFETIME note
+        // where it is built). `addr_req` is function-scoped, so it is still live here — the
+        // kernel dereferences that pointer during this call. Do not move `addr_req` into a
+        // narrower scope.
         let ptr = unsafe {
             VirtualAlloc2(
                 None,  // Current process
@@ -334,6 +338,9 @@ impl WindowsBackend {
                 if extended_params.is_empty() { None } else { Some(&mut extended_params) },
             )
         };
+        // Keep `addr_req` provably alive across the call above (defensive against a future
+        // refactor reordering or shrinking its scope; compiles to nothing).
+        let _ = &addr_req;
 
         if ptr.is_null() {
             let err = unsafe { GetLastError() };

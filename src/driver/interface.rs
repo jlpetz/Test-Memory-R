@@ -41,6 +41,14 @@ pub struct DriverHandle {
     handle: HANDLE,
 }
 
+// SAFETY: the only field is a Win32 `HANDLE` from `CreateFileW`, which is process-wide (NOT
+// thread-affine) — any thread may pass it to `DeviceIoControl`, and the kernel serialises
+// concurrent IOCTLs on the same file object. Nothing here is mutated after construction, so
+// `&DriverHandle` is safe to share; each IOCTL wrapper builds its own input/output structs as
+// locals and passes them directly as call arguments (never storing a raw pointer that could
+// outlive them — see TODO #66 and the LIFETIME note in `memory/backend.rs`). `Drop` calls
+// `CloseHandle` exactly once, and the handle is wrapped in an `Arc` by
+// `get_global_driver_handle`, so the close happens after the last user is gone.
 unsafe impl Send for DriverHandle {}
 unsafe impl Sync for DriverHandle {}
 

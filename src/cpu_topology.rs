@@ -463,20 +463,25 @@ pub fn detect_cpu_topology() -> Vec<CpuTopologyInfo> {
             return topology;
         }
         
-        let mut buffer = vec![0u8; buffer_size as usize];
-        
+        // ALIGNMENT: u64-backed, not u8 — `SYSTEM_LOGICAL_PROCESSOR_INFORMATION_EX` contains
+        // `KAFFINITY` (u64) so it needs 8-byte alignment, which `Vec<u8>` does not guarantee.
+        // See the same note in `memory/privileges.rs`. The walk below is still in BYTES, so it
+        // takes an explicit `*const u8` base — do not call `.add(offset)` on the `*const u64`.
+        let mut buffer = vec![0u64; (buffer_size as usize).div_ceil(std::mem::size_of::<u64>())];
+
         if GetLogicalProcessorInformationEx(
             RelationProcessorCore,
             Some(buffer.as_mut_ptr() as *mut SYSTEM_LOGICAL_PROCESSOR_INFORMATION_EX),
             &mut buffer_size,
         ).is_ok() {
+            let base = buffer.as_ptr() as *const u8;
             let mut offset = 0;
             let mut physical_core_id = 0;
-            
+
             log::debug!("Processing CPU topology from Windows API...");
-            
+
             while offset < buffer_size as usize {
-                let info = &*(buffer.as_ptr().add(offset) as *const SYSTEM_LOGICAL_PROCESSOR_INFORMATION_EX);
+                let info = &*(base.add(offset) as *const SYSTEM_LOGICAL_PROCESSOR_INFORMATION_EX);
                 
                 if info.Relationship == RelationProcessorCore {
                     let core_info = &info.Anonymous.Processor;
@@ -790,9 +795,10 @@ pub fn get_system_cpu_set_information() -> Result<Vec<EnhancedCpuInfo>, String> 
             return Err("Failed to get buffer size for CPU set information".to_string());
         }
         
-        // Allocate buffer
-        let mut buffer = vec![0u8; buffer_length as usize];
-        
+        // Allocate buffer. ALIGNMENT: u64-backed (see `memory/privileges.rs`); the walk below
+        // stays in BYTES via an explicit `*const u8` base.
+        let mut buffer = vec![0u64; (buffer_length as usize).div_ceil(std::mem::size_of::<u64>())];
+
         // Second call to get actual data
         let status = GetSystemCpuSetInformation(
             Some(buffer.as_mut_ptr() as *mut SYSTEM_CPU_SET_INFORMATION),
@@ -801,17 +807,18 @@ pub fn get_system_cpu_set_information() -> Result<Vec<EnhancedCpuInfo>, String> 
             None,
             None,
         );
-        
+
         if !status.as_bool() {
             return Err("GetSystemCpuSetInformation failed".to_string());
         }
-        
+
         // Parse the buffer
+        let base = buffer.as_ptr() as *const u8;
         let mut cpu_infos = Vec::new();
         let mut offset = 0usize;
-        
+
         while offset < buffer_length as usize {
-            let info = &*(buffer.as_ptr().add(offset) as *const SYSTEM_CPU_SET_INFORMATION);
+            let info = &*(base.add(offset) as *const SYSTEM_CPU_SET_INFORMATION);
             
             // CoreIndex from the API is actually the logical processor index
             // We need to map this to physical core index.
@@ -873,20 +880,23 @@ pub fn discover_numa_topology() -> Result<NumaTopology, String> {
             });
         }
         
-        let mut buffer = vec![0u8; buffer_size as usize];
-        
+        // ALIGNMENT: u64-backed (see `memory/privileges.rs`); the walk below stays in BYTES
+        // via an explicit `*const u8` base.
+        let mut buffer = vec![0u64; (buffer_size as usize).div_ceil(std::mem::size_of::<u64>())];
+
         GetLogicalProcessorInformationEx(
             RelationNumaNode,
             Some(buffer.as_mut_ptr() as *mut SYSTEM_LOGICAL_PROCESSOR_INFORMATION_EX),
             &mut buffer_size,
         ).map_err(|e| format!("Failed to get NUMA topology: {:?}", e))?;
-        
+
+        let base = buffer.as_ptr() as *const u8;
         let mut nodes = Vec::new();
         let mut cpu_to_node = HashMap::new();
         let mut offset = 0;
-        
+
         while offset < buffer_size as usize {
-            let info = &*(buffer.as_ptr().add(offset) as *const SYSTEM_LOGICAL_PROCESSOR_INFORMATION_EX);
+            let info = &*(base.add(offset) as *const SYSTEM_LOGICAL_PROCESSOR_INFORMATION_EX);
             
             if info.Relationship == RelationNumaNode {
                 let numa_info = &info.Anonymous.NumaNode;

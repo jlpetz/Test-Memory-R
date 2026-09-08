@@ -145,7 +145,23 @@ impl Drop for MemoryBuffer {
     }
 }
 
-// Ensure MemoryBuffer is Send + Sync for multi-threading
+// SAFETY (Send): `MemoryBuffer` owns its allocation — `ptr` is produced by the backend and
+// freed exactly once in `Drop` (below), which runs on whichever thread holds the buffer. No
+// thread-affine state (no TLS, no HANDLE tied to a thread), and `VirtualFree`/the driver free
+// path may be called from any thread, so transferring ownership across threads is sound.
+//
+// SAFETY (Sync): this is the stronger claim and it rests on a CONVENTION, not on the type.
+// `as_mut_ptr(&self)` hands out a `*mut u8` from a *shared* reference, so `&MemoryBuffer`
+// shared across threads could alias mutable memory. It is sound only because the allocator
+// gives each worker thread its OWN blocks and workers never write outside the block(s) they
+// were assigned — the disjointness is enforced by the coordinator (see `AllocationBlock` /
+// `BlockInfo` thread assignment), not by the borrow checker.
+//
+// WARNING: if a future change lets two threads write the same block (e.g. the shared-block
+// worker model in TODO #28, or a cross-thread page-exchange test), this `Sync` impl is no
+// longer justified by the above and the aliasing must be made explicit instead — split the
+// buffer into disjoint `&mut [u8]` slices per worker, or move to atomics/`UnsafeCell` with a
+// documented protocol. Do not rely on this comment staying true by accident.
 unsafe impl Send for MemoryBuffer {}
 unsafe impl Sync for MemoryBuffer {}
 
