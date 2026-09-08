@@ -393,6 +393,16 @@ pub fn run_tests_with_layout_and_timing_filtered(
     layout.print_layout();
 
     let progress = Arc::new(ProgressTracker::new());
+
+    // Subscribe to WHEA before any memory is touched, so hardware errors during allocation are
+    // caught too. Failure is non-fatal — WHEA adds visibility that our verify reads cannot have
+    // (DDR5 on-die ECC corrections, faults during non-verifying tests), but testing works without
+    // it. See whea.rs for the transport choice.
+    match progress.whea.start() {
+        Ok(()) => println!("🔎 WHEA hardware-error monitoring: active"),
+        Err(reason) => println!("🔎 WHEA hardware-error monitoring: unavailable ({})", reason),
+    }
+
     let success = Arc::new(AtomicBool::new(true));
 	let all_test_cpu_stats: Arc<Mutex<TestCpuStats>> = Arc::new(Mutex::new(HashMap::new()));
 
@@ -807,7 +817,32 @@ pub fn run_tests_with_layout_and_timing_filtered(
         print_detailed_cpu_performance_summary(&final_stats, &cpu_assignments, suite_duration);
     }
 
-    let final_success = success.load(Ordering::Relaxed);
+    // Final WHEA tally for the run. Taken from the monitor's own cumulative counter, so unlike the
+    // per-test deltas this is exact — no event can fall between two snapshots.
+    //
+    // ORDER MATTERS: `stop()` takes a last drain, and the window it covers is real work — the
+    // progress reporter stopped polling at its `join()` above, and freeing tens of GiB of large
+    // pages happens between there and here. On an interrupted run that window is the whole tail of
+    // the run. So stop (and drain) first, *then* read the counts; reading them first silently
+    // discards whatever that final drain found. `is_active()` is the exception — it must be read
+    // before `stop()` flips the flag.
+    let whea_monitored = progress.whea.is_active();
+    progress.whea.stop();
+    let whea_totals = progress.whea.counts();
+
+    // The reporter thread printed everything it had seen before it exited, so anything that last
+    // drain turned up would otherwise be counted but never described. Flush it here.
+    for event in progress.whea.take_pending() {
+        println!("{}", event);
+    }
+
+    // NOTE: `success` here is not the flag `execute_test_cycle` writes to — that one is a local
+    // inside the cycle function, used only for its ErrorMode::Halt check, so thread-reported errors
+    // never reached this point. `progress.total_errors` is the accurate aggregate (summed from
+    // every thread's result in `complete_test`), so the verdict is derived from it directly.
+    let memory_errors = progress.total_errors.load(Ordering::Relaxed);
+    let final_success =
+        success.load(Ordering::Relaxed) && memory_errors == 0 && whea_totals.total == 0;
 
     // Display completion status
     let was_interrupted = SHUTDOWN_REQUESTED.load(Ordering::Relaxed);
@@ -815,12 +850,24 @@ pub fn run_tests_with_layout_and_timing_filtered(
         println!("\n⚠️  Test suite interrupted by user (CTRL+C)");
     } else if final_success {
         println!("\n✅ All test cycles completed successfully!");
+    } else if memory_errors > 0 && whea_totals.total > 0 {
+        println!(
+            "\n❌ Test suite failed: {} memory error(s) and {} WHEA hardware error(s) ({} corrected)",
+            memory_errors, whea_totals.total, whea_totals.corrected
+        );
+    } else if whea_totals.total > 0 {
+        // No test detected bad data, but the platform logged a hardware fault — corrected by ECC,
+        // or raised during a test phase that does not verify. Still not a stable configuration.
+        println!(
+            "\n❌ Test suite failed: {} WHEA hardware error(s) ({} corrected) with no data mismatch",
+            whea_totals.total, whea_totals.corrected
+        );
     } else {
         println!("\n❌ Test suite failed due to memory errors");
     }
 
     // Always display and save results (even for partial/interrupted runs)
-    display_and_save_results(&test_run_result, suite_duration);
+    display_and_save_results(&test_run_result, suite_duration, whea_totals, whea_monitored);
 
     final_success
 }
@@ -867,7 +914,14 @@ fn execute_test_cycle(ctx: &CycleContext, cycle: u64) {
         progress.set_phase(&format!("{} ({}/{})", test_name, test_idx + 1, test_definitions.len()));
         
         let test_start = Instant::now();
-        
+
+        // Baseline for this test's WHEA attribution. Drain first so anything queued from the
+        // previous test is charged there, not here. Attribution is still approximate at a test
+        // boundary — the OS logs WHEA asynchronously (kernel → ETW → EventLog service) — but the
+        // run-level total below is exact regardless.
+        progress.whea.poll();
+        let whea_before = progress.whea.counts();
+
         // Execute test on all threads
         thread_pool.execute_test(test_name, test_func, test_config, error_mode);
         
@@ -929,6 +983,22 @@ fn execute_test_cycle(ctx: &CycleContext, cycle: u64) {
 				}
 			}
 		}
+
+        // Attribute WHEA events that landed while this test ran. A non-zero count here is a real
+        // failure signal even when every thread reported zero errors: the fault was either
+        // corrected before our verify read could see it, or it happened during a test that does no
+        // verification at all.
+        progress.whea.poll();
+        let whea_for_test = progress.whea.counts().since(&whea_before);
+        if whea_for_test.total > 0 {
+            success.store(false, Ordering::Relaxed);
+            log::error!(
+                "Test '{}' saw {} WHEA hardware error(s), {} corrected",
+                test_name,
+                whea_for_test.total,
+                whea_for_test.corrected
+            );
+        }
 
         let test_duration = test_start.elapsed();
         let test_duration_secs = test_duration.as_secs_f64();
@@ -1169,6 +1239,8 @@ fn execute_test_cycle(ctx: &CycleContext, cycle: u64) {
             bytes_processed: total_bytes_for_test,
             throughput_mib_s,
             errors: total_errors_for_test,
+            whea_total: whea_for_test.total,
+            whea_corrected: whea_for_test.corrected,
             latency_samples,
             latency_p5_ns: latency_p5,
             latency_p10_ns: latency_p10,
@@ -4218,9 +4290,18 @@ fn print_detailed_cpu_performance_summary(
     }
 }
 
-fn display_and_save_results(test_run_result: &Arc<Mutex<TestRunResult>>, suite_duration: std::time::Duration) {
+fn display_and_save_results(
+    test_run_result: &Arc<Mutex<TestRunResult>>,
+    suite_duration: std::time::Duration,
+    whea_totals: crate::whea::WheaCounts,
+    whea_monitored: bool,
+) {
     let mut result = test_run_result.lock().unwrap();
     result.finalize(suite_duration);
+    // Run-level WHEA figures come from the monitor's cumulative counters, not from summing the
+    // per-test deltas: a test that never started (early exit) or an event logged between tests
+    // would otherwise be dropped from the total.
+    result.set_whea_totals(whea_totals, whea_monitored);
 
     // Display final summary using reporting layer
     {

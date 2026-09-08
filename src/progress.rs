@@ -22,6 +22,11 @@ pub struct ProgressTracker {
     pub total_errors: AtomicU64,
     pub per_test_errors: Mutex<std::collections::HashMap<String, u64>>, // Track errors per test type
 
+    // Hardware errors the OS saw that our verify reads cannot (DDR5 on-die ECC corrections, and
+    // any fault landing during a non-verifying test like bandwidth/latency). Counted separately
+    // from `total_errors` because these are OS-reported, not thread-reported. See whea.rs.
+    pub whea: crate::whea::WheaMonitor,
+
     // Phase and throughput tracking
     pub current_phase: Mutex<String>,
     pub current_throughput: AtomicU64,
@@ -49,6 +54,11 @@ pub struct TestSummary {
     pub bytes_processed: u64,
     pub throughput_mib_s: f64,
     pub errors: u64,
+    // Hardware errors WHEA reported to the OS while this test was running (all severities), and
+    // the subset the OS reported as corrected. Tracked apart from `errors` because they are not
+    // thread-detected: see whea.rs.
+    pub whea_total: u64,
+    pub whea_corrected: u64,
     // Latency metrics (Some for latency tests, None for other tests)
     pub latency_samples: Option<u64>,
     pub latency_p5_ns: Option<f64>,
@@ -81,6 +91,9 @@ impl ProgressTracker {
             cycle_stats: Mutex::new(Vec::new()),
             total_errors: AtomicU64::new(0),
             per_test_errors: Mutex::new(std::collections::HashMap::new()),
+            // Inert until `whea.start()` is called by the runner — constructing a tracker must not
+            // have the side effect of opening an event-log subscription.
+            whea: crate::whea::WheaMonitor::new(),
             current_phase: Mutex::new("Initializing".to_string()),
             current_throughput: AtomicU64::new(0),
             start_time: Instant::now(),
@@ -171,7 +184,8 @@ impl ProgressTracker {
         let current_cycle = self.current_cycle.load(Ordering::Relaxed);
         let total_cycles = self.total_cycles.load(Ordering::Relaxed);
         let errors = self.total_errors.load(Ordering::Relaxed);
-        
+        let whea = self.whea.counts();
+
         let phase = self
             .current_phase
             .lock()
@@ -194,6 +208,7 @@ impl ProgressTracker {
             current_cycle,
             total_cycles,
             errors,
+            whea,
             phase,
             throughput_gib_s,
             throughput_mib_s,
@@ -217,6 +232,8 @@ pub struct ProgressStatus {
     pub current_cycle: u64,
     pub total_cycles: u64, // 0 = unlimited
     pub errors: u64,
+    /// OS-reported hardware errors so far this run (cumulative, see whea.rs).
+    pub whea: crate::whea::WheaCounts,
     pub phase: String,
     pub throughput_gib_s: f64,
     pub throughput_mib_s: f64,
@@ -230,6 +247,11 @@ pub fn progress_reporter(progress: Arc<ProgressTracker>) {
     loop {
         thread::sleep(std::time::Duration::from_millis(500)); // Check more frequently
 
+        // Drain any WHEA events the OS queued for us. Costs a single zero-timeout wait on a local
+        // event handle when nothing has happened, so it is safe to do on every 500ms tick — the
+        // descriptions are cached and only printed at the display interval below (TODO #63).
+        progress.whea.poll();
+
         let status = progress.get_status();
 
         // Update progress display every 2 seconds or when completed
@@ -241,7 +263,13 @@ pub fn progress_reporter(progress: Arc<ProgressTracker>) {
 
             // Clear the line and redraw progress (in case logs interrupted us)
             print!("\r\x1b[K");
-            
+
+            // Surface anything WHEA reported since the last update, above the progress line. These
+            // name the failing component, which is what tells a marginal DIMM from a marginal NIC.
+            for event in progress.whea.take_pending() {
+                println!("{}", event);
+            }
+
             // Format runtime as HH:MM:SS
             let runtime_secs = status.total_runtime.as_secs();
             let hours = runtime_secs / 3600;
@@ -249,43 +277,53 @@ pub fn progress_reporter(progress: Arc<ProgressTracker>) {
             let seconds = runtime_secs % 60;
             let runtime_str = format!("{:02}:{:02}:{:02}", hours, minutes, seconds);
 
+            // Running WHEA tally, e.g. "10 (5 corrected)". Omitted entirely while clean so the
+            // progress line is unchanged on a healthy system.
+            let whea_str = if status.whea.total > 0 {
+                format!(" | ⚠️ WHEA: {} ({} corrected)", status.whea.total, status.whea.corrected)
+            } else {
+                String::new()
+            };
+
             // Format progress display with enhanced error information
             if status.total_cycles == 0 {
                 // Unlimited cycles mode
                 print!(
-                    "Runtime: {} | Cycle: {} | Progress: {}/{} ({}%) | {} | Speed: {:.2} GiB/s ({:.1} MiB/s){}",
-                    runtime_str, 
+                    "Runtime: {} | Cycle: {} | Progress: {}/{} ({}%) | {} | Speed: {:.2} GiB/s ({:.1} MiB/s){}{}",
+                    runtime_str,
                     status.current_cycle,
-                    status.completed_tests, 
-                    status.tests_per_cycle, 
-                    status.progress_percent, 
-                    status.phase, 
-                    status.throughput_gib_s, 
+                    status.completed_tests,
+                    status.tests_per_cycle,
+                    status.progress_percent,
+                    status.phase,
+                    status.throughput_gib_s,
                     status.throughput_mib_s,
-                    if status.errors > 0 { 
-                        format!(" | ⚠️ Errors: {}", status.errors) 
-                    } else { 
-                        String::new() 
-                    }
+                    if status.errors > 0 {
+                        format!(" | ⚠️ Errors: {}", status.errors)
+                    } else {
+                        String::new()
+                    },
+                    whea_str
                 );
             } else {
                 // Limited cycles mode
                 let cycle_info = format!("Cycle: {}/{}", status.current_cycle, status.total_cycles);
                 print!(
-                    "Runtime: {} | {} | Progress: {}/{} ({}%) | {} | Speed: {:.2} GiB/s ({:.1} MiB/s){}",
+                    "Runtime: {} | {} | Progress: {}/{} ({}%) | {} | Speed: {:.2} GiB/s ({:.1} MiB/s){}{}",
                     runtime_str,
                     cycle_info,
-                    status.completed_tests, 
-                    status.tests_per_cycle, 
-                    status.progress_percent, 
-                    status.phase, 
-                    status.throughput_gib_s, 
+                    status.completed_tests,
+                    status.tests_per_cycle,
+                    status.progress_percent,
+                    status.phase,
+                    status.throughput_gib_s,
                     status.throughput_mib_s,
-                    if status.errors > 0 { 
-                        format!(" | ⚠️ Errors: {}", status.errors) 
-                    } else { 
-                        String::new() 
-                    }
+                    if status.errors > 0 {
+                        format!(" | ⚠️ Errors: {}", status.errors)
+                    } else {
+                        String::new()
+                    },
+                    whea_str
                 );
             }
 
@@ -298,6 +336,24 @@ pub fn progress_reporter(progress: Arc<ProgressTracker>) {
                     println!("\nError Summary by Test:");
                     for (test_name, error_count) in error_summary {
                         println!("  {}: {} errors", test_name, error_count);
+                    }
+                }
+
+                // Last chance to catch events the OS queued during the final test, then list every
+                // one we recorded — a WHEA event is worth reprinting even if it scrolled past live.
+                progress.whea.poll();
+                let whea = progress.whea.counts();
+                if whea.total > 0 {
+                    println!(
+                        "\nHardware Errors (WHEA): {} total, {} corrected{}",
+                        whea.total,
+                        whea.corrected,
+                        whea.corrected_percent()
+                            .map(|pct| format!(" ({:.0}%)", pct))
+                            .unwrap_or_default()
+                    );
+                    for event in progress.whea.recorded() {
+                        println!("  {}", event);
                     }
                 }
                 break;

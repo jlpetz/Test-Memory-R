@@ -446,6 +446,9 @@ pub struct TestPerformanceEntry {
     pub throughput_mib_s: f64,
     pub throughput_gib_s: f64,
     pub errors: u64,
+    /// OS-reported hardware errors during this test, and the corrected subset (see whea.rs).
+    pub whea_total: u64,
+    pub whea_corrected: u64,
 }
 
 /// CPU performance variance report
@@ -472,6 +475,11 @@ pub struct FinalTestSummaryReport {
     pub overall_throughput_mib_s: f64,
     pub overall_throughput_gib_s: f64,
     pub total_errors: u64,
+    /// OS-reported hardware errors for the whole run, and the corrected subset (see whea.rs).
+    pub whea_total: u64,
+    pub whea_corrected: u64,
+    /// False when WHEA monitoring never started, so the zero counts are not mistaken for a pass.
+    pub whea_monitored: bool,
     pub per_test_summaries: Vec<TestSummaryEntry>,
 }
 
@@ -483,6 +491,9 @@ pub struct TestSummaryEntry {
     pub average_throughput_mib_s: f64,
     pub average_throughput_gib_s: f64,
     pub total_errors: u64,
+    // WHEA counts summed over every cycle this test ran in (see whea.rs).
+    pub whea_total: u64,
+    pub whea_corrected: u64,
     // Latency metrics (Some for latency tests, None for other tests)
     pub latency_samples: Option<u64>,
     pub latency_p5_ns: Option<f64>,

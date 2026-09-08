@@ -51,6 +51,12 @@ pub struct TestResult {
     pub throughput_mib_s: f64,
     pub throughput_gib_s: f64,
     pub errors: u64,
+    // OS-reported hardware errors during this test, and the corrected subset (see whea.rs).
+    // `default` so `--compare-results` can still read baselines saved before WHEA existed.
+    #[serde(default)]
+    pub whea_total: u64,
+    #[serde(default)]
+    pub whea_corrected: u64,
     // Latency metrics (Some for latency tests, None for other tests)
     #[serde(skip_serializing_if = "Option::is_none")]
     pub latency_samples: Option<u64>,
@@ -92,6 +98,17 @@ pub struct OverallStats {
     pub overall_throughput_mib_s: f64,
     pub overall_throughput_gib_s: f64,
     pub total_errors: u64,
+    // Run-level WHEA tally, taken from the monitor's cumulative counters rather than summed from
+    // the per-test figures (see `set_whea_totals`). `default` for older baselines.
+    #[serde(default)]
+    pub whea_total: u64,
+    #[serde(default)]
+    pub whea_corrected: u64,
+    /// Whether WHEA monitoring was actually running. Without this, `whea_total: 0` is ambiguous
+    /// between "no hardware errors" and "we never looked" — which would read as a clean bill of
+    /// health it did not earn. `default` is `false`, which is correct for pre-WHEA baselines.
+    #[serde(default)]
+    pub whea_monitored: bool,
     pub per_test_averages: Vec<TestAverage>,
 }
 
@@ -104,6 +121,13 @@ pub struct TestAverage {
     pub avg_throughput_mib_s: f64,
     pub avg_throughput_gib_s: f64,
     pub total_errors: u64,
+    // WHEA counts summed across every cycle this test ran in (totals, not averages — a hardware
+    // error is an event count, and averaging it would hide a single-cycle fault). `default` for
+    // baselines saved before WHEA existed.
+    #[serde(default)]
+    pub whea_total: u64,
+    #[serde(default)]
+    pub whea_corrected: u64,
     // Latency metrics (averaged across cycles, Some for latency tests, None for other tests)
     #[serde(skip_serializing_if = "Option::is_none")]
     pub latency_samples: Option<u64>,
@@ -209,6 +233,9 @@ impl TestRunResult {
                 overall_throughput_mib_s: 0.0,
                 overall_throughput_gib_s: 0.0,
                 total_errors: 0,
+                whea_total: 0,
+                whea_corrected: 0,
+                whea_monitored: false,
                 per_test_averages: Vec::new(),
             },
         }
@@ -244,6 +271,8 @@ impl TestRunResult {
                 throughput_mib_s: summary.throughput_mib_s,
                 throughput_gib_s: summary.throughput_mib_s / 1024.0,
                 errors: summary.errors,
+                whea_total: summary.whea_total,
+                whea_corrected: summary.whea_corrected,
                 // Copy latency data from TestSummary
                 latency_samples: summary.latency_samples,
                 latency_p5_ns: summary.latency_p5_ns,
@@ -302,6 +331,8 @@ impl TestRunResult {
             total_duration_ms: u128,
             total_bytes: u64,
             total_errors: u64,
+            total_whea: u64,
+            total_whea_corrected: u64,
             // Latency aggregation
             latency_count: u64,  // Number of cycles with latency data
             latency_samples_sum: u64,
@@ -328,6 +359,8 @@ impl TestRunResult {
                 entry.total_duration_ms += test.duration_ms;
                 entry.total_bytes += test.bytes_processed;
                 entry.total_errors += test.errors;
+                entry.total_whea += test.whea_total;
+                entry.total_whea_corrected += test.whea_corrected;
 
                 // Aggregate latency data if present
                 if let Some(samples) = test.latency_samples {
@@ -385,6 +418,8 @@ impl TestRunResult {
                 avg_throughput_mib_s: avg_throughput_mib,
                 avg_throughput_gib_s: avg_throughput_mib / 1024.0,
                 total_errors: agg.total_errors,
+                whea_total: agg.total_whea,
+                whea_corrected: agg.total_whea_corrected,
                 latency_samples,
                 latency_p5_ns: latency_p5,
                 latency_p10_ns: latency_p10,
@@ -401,6 +436,18 @@ impl TestRunResult {
 
         // Sort by test number
         self.overall_stats.per_test_averages.sort_by_key(|t| t.test_number);
+    }
+
+    /// Records the run-level WHEA tally.
+    ///
+    /// Deliberately not summed from the per-test figures: those are deltas around test execution,
+    /// so an event logged between tests, during allocation, or after an early exit belongs to the
+    /// run but to no single test. The monitor's cumulative counter has all of them. Call after
+    /// [`finalize`](Self::finalize) — it does not touch these fields.
+    pub fn set_whea_totals(&mut self, whea: crate::whea::WheaCounts, monitored: bool) {
+        self.overall_stats.whea_total = whea.total;
+        self.overall_stats.whea_corrected = whea.corrected;
+        self.overall_stats.whea_monitored = monitored;
     }
 
     pub fn get_filename(&self) -> &str {

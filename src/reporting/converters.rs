@@ -319,6 +319,8 @@ pub fn create_cycle_report(
             throughput_mib_s: summary.throughput_mib_s,
             throughput_gib_s: summary.throughput_mib_s / 1024.0,
             errors: summary.errors,
+            whea_total: summary.whea_total,
+            whea_corrected: summary.whea_corrected,
         }
     }).collect();
     
@@ -418,6 +420,8 @@ pub fn create_final_test_summary_report(
         total_bytes: u64,
         total_duration_ms: u128,
         total_errors: u64,
+        total_whea: u64,
+        total_whea_corrected: u64,
         // Latency aggregation (sum for averaging)
         latency_count: u64,  // Number of cycles with latency data
         latency_samples_sum: u64,
@@ -441,6 +445,8 @@ pub fn create_final_test_summary_report(
             entry.total_bytes += test_summary.bytes_processed;
             entry.total_duration_ms += test_summary.duration_ms;
             entry.total_errors += test_summary.errors;
+            entry.total_whea += test_summary.whea_total;
+            entry.total_whea_corrected += test_summary.whea_corrected;
 
             // Aggregate latency data if present
             if let Some(samples) = test_summary.latency_samples {
@@ -499,6 +505,8 @@ pub fn create_final_test_summary_report(
                 average_throughput_mib_s: avg_throughput_mib_s,
                 average_throughput_gib_s: avg_throughput_mib_s / 1024.0,
                 total_errors: agg.total_errors,
+                whea_total: agg.total_whea,
+                whea_corrected: agg.total_whea_corrected,
                 latency_samples,
                 latency_p5_ns: latency_p5,
                 latency_p10_ns: latency_p10,
@@ -521,6 +529,13 @@ pub fn create_final_test_summary_report(
         overall_throughput_mib_s,
         overall_throughput_gib_s: overall_throughput_mib_s / 1024.0,
         total_errors,
+        // This converter builds from live per-cycle summaries, which carry no run-level WHEA
+        // counter; sum the per-test figures instead. The saved-results path
+        // (`create_overall_stats_summary_report`) uses the exact cumulative total.
+        whea_total: per_test_summaries.iter().map(|t| t.whea_total).sum(),
+        whea_corrected: per_test_summaries.iter().map(|t| t.whea_corrected).sum(),
+        // This path has no handle on the monitor's state; it is only reachable once tests have run.
+        whea_monitored: true,
         per_test_summaries,
     }
 }
@@ -943,6 +958,8 @@ pub fn create_overall_stats_summary_report(
             average_throughput_mib_s: avg.avg_throughput_mib_s,
             average_throughput_gib_s: avg.avg_throughput_gib_s,
             total_errors: avg.total_errors,
+            whea_total: avg.whea_total,
+            whea_corrected: avg.whea_corrected,
             // Copy latency data from TestAverage
             latency_samples: avg.latency_samples,
             latency_p5_ns: avg.latency_p5_ns,
@@ -965,6 +982,11 @@ pub fn create_overall_stats_summary_report(
         overall_throughput_mib_s: overall_stats.overall_throughput_mib_s,
         overall_throughput_gib_s: overall_stats.overall_throughput_gib_s,
         total_errors: overall_stats.total_errors,
+        // Exact run-level counters (see TestRunResult::set_whea_totals) — not a sum of the
+        // per-test figures, which miss events logged outside a test's execution window.
+        whea_total: overall_stats.whea_total,
+        whea_corrected: overall_stats.whea_corrected,
+        whea_monitored: overall_stats.whea_monitored,
         per_test_summaries,
     }
 }

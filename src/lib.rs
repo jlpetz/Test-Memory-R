@@ -31,6 +31,7 @@ pub mod test_harness; // v2 zero-cost test orchestration harness
 pub mod test_scaffolding; // shared zero-cost bookkeeping for loop-owning v1 tests (TODO #19 Part A)
 pub mod app_config; // Persistent application config (tmr-cfg.json)
 pub mod smbios; // SMBIOS table parser (system identity, memory modules)
+pub mod whea; // WHEA hardware-error monitoring via the System event log (TODO #63)
 
 // Common result type for the crate
 pub type Result<T> = std::result::Result<T, Box<dyn std::error::Error>>;

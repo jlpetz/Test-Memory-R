@@ -1229,6 +1229,9 @@ impl ReportFormatter for DefaultFormatter {
     }
     
     fn prepare_cycle_report_table(&self, report: &CycleReport) -> TableData {
+        // Only widen the table when the OS actually reported hardware errors this cycle.
+        let has_whea = report.test_performances.iter().any(|t| t.whea_total > 0);
+
         let mut table = TableData::new()
             .with_title(format!("Cycle {} Report", report.cycle_number))
             .add_header("#", ColumnAlignment::Right)
@@ -1237,25 +1240,43 @@ impl ReportFormatter for DefaultFormatter {
             .add_header("Data", ColumnAlignment::Right)
             .add_header("Throughput", ColumnAlignment::Right)
             .add_header("Errors", ColumnAlignment::Center);
-        
+
+        if has_whea {
+            table = table
+                .add_header("WHEA", ColumnAlignment::Center)
+                .add_header("WHEA Corr", ColumnAlignment::Center);
+        }
+
         for test in &report.test_performances {
             let error_display = if test.errors > 0 {
                 format!("{}", test.errors)
             } else {
                 "✅".to_string()
             };
-            
-            table = table.add_row(vec![
+
+            let mut row = vec![
                 test.number.to_string(),
                 test.name.clone(),
                 format!("{:.1}s", test.duration_secs),
                 format!("{:.2} GiB", test.data_processed_gib),
-                format!("{:.1} MiB/s ({:.2} GiB/s)", 
+                format!("{:.1} MiB/s ({:.2} GiB/s)",
                         test.throughput_mib_s, test.throughput_gib_s),
                 error_display,
-            ]);
+            ];
+
+            if has_whea {
+                if test.whea_total > 0 {
+                    row.push(format!("{}", test.whea_total));
+                    row.push(format!("{}", test.whea_corrected));
+                } else {
+                    row.push("✅".to_string());
+                    row.push("-".to_string());
+                }
+            }
+
+            table = table.add_row(row);
         }
-        
+
         table.with_footer(format!("Cycle Duration: {}s", report.duration_secs))
     }
     
@@ -1323,11 +1344,30 @@ impl ReportFormatter for DefaultFormatter {
                     "✅".to_string()
                 },
             ])
+            .add_row(vec![
+                "Hardware Errors (WHEA)".to_string(),
+                if !report.whea_monitored {
+                    // Say so explicitly: a bare "0" here would claim a clean bill of health that
+                    // was never actually checked.
+                    "not monitored".to_string()
+                } else if report.whea_total > 0 {
+                    // "10 (5 corrected, 50%)" - the corrected share matters because a corrected
+                    // error means the fault happened but the data was still right, which is
+                    // exactly the case our verify reads cannot see.
+                    let pct = report.whea_corrected as f64 * 100.0 / report.whea_total as f64;
+                    format!("{} ({} corrected, {:.0}%)", report.whea_total, report.whea_corrected, pct)
+                } else {
+                    "✅".to_string()
+                },
+            ])
     }
     
     fn prepare_final_summary_performance_table(&self, report: &FinalTestSummaryReport) -> TableData {
         // Check if any test has latency data
         let has_latency = report.per_test_summaries.iter().any(|t| t.latency_samples.is_some());
+        // Only widen the table when the OS actually reported hardware errors — on a healthy system
+        // the summary looks exactly as it did before WHEA monitoring existed.
+        let has_whea = report.per_test_summaries.iter().any(|t| t.whea_total > 0);
 
         let mut table = TableData::new()
             .with_title("Final Test Summary - Per-Test Performance")
@@ -1354,6 +1394,11 @@ impl ReportFormatter for DefaultFormatter {
         }
 
         table = table.add_header("Err", ColumnAlignment::Center);
+        if has_whea {
+            table = table
+                .add_header("WHEA", ColumnAlignment::Center)
+                .add_header("WHEA Corr", ColumnAlignment::Center);
+        }
 
         for (idx, test) in report.per_test_summaries.iter().enumerate() {
             let error_display = if test.total_errors > 0 {
@@ -1386,14 +1431,32 @@ impl ReportFormatter for DefaultFormatter {
             }
 
             row.push(error_display);
+
+            if has_whea {
+                // Counts, not averages: a hardware error is an event, and averaging over cycles
+                // would dilute a single-cycle fault into "0.3 errors".
+                if test.whea_total > 0 {
+                    row.push(format!("{}", test.whea_total));
+                    row.push(format!("{}", test.whea_corrected));
+                } else {
+                    row.push("✅".to_string());
+                    row.push("-".to_string());
+                }
+            }
+
             table = table.add_row(row);
         }
 
-        let footer = if has_latency {
+        let mut footer = if has_latency {
             format!("Averaged across {} cycles. Latency values in nanoseconds.", report.cycles_completed)
         } else {
             format!("Averaged across {} cycles", report.cycles_completed)
         };
+        if has_whea {
+            footer.push_str(
+                ". WHEA columns are OS-reported hardware error counts (totals, not averages)",
+            );
+        }
         table.with_footer(footer)
     }
     
