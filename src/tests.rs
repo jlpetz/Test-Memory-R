@@ -1403,14 +1403,33 @@ pub fn get_safe_chunk_size(ideal_chunk_size: usize, block_size_bytes: usize) -> 
 #[derive(Debug)]
 pub struct TestBlock<'a> {
     pub block: &'a crate::runner::AllocationBlock,
-    pub test_size: usize,  // How much to test (power-of-2, <= block size)
+    /// How much of `block` to test, in bytes: always a power of two and `<= block size`.
+    /// May be **less** than the block size when the window budget runs out mid-block
+    /// (see `prepare_blocks_for_window`), so always derive loop bounds from this field
+    /// rather than from `block.buffer.size()`.
+    pub test_size: usize,
 }
 
-/// Prepare blocks for testing with window size limits
-/// Returns a list of blocks with their test sizes, ensuring:
-/// - Only complete blocks are tested (never split blocks)
-/// - Blocks are added until total meets or exceeds window_size
-/// - At least one block is tested (even if window < block size)
+/// Prepare blocks for testing with window size limits.
+///
+/// The window is a **byte budget for the thread's total coverage**, not a per-block cap:
+/// each block contributes `min(block_size, window_remaining)` until the budget is spent.
+/// A block may therefore be tested *partially* — e.g. a 1 GiB window over 4 GiB blocks
+/// tests the first 1 GiB of block 0 and stops, rather than covering all 4 GiB.
+///
+/// **Power-of-2 invariant**: a partial contribution is rounded *down* to a power of two, so
+/// `test_size` stays power-of-2 and every chunk divides it evenly (no short final chunk).
+/// Block sizes are already powers of two, so a full contribution is trivially compliant.
+/// The cost is bounded under-coverage on a non-power-of-2 window (at most the last block's
+/// share); power-of-2 windows — `Absolute`, and fractions of power-of-2 totals — are exact.
+/// Do not "simplify" this to a plain `min()`: the chunk loops clamp with `.min(len)` so a
+/// tail would be *correct*, but it would add a ragged iteration that the power-of-2 chain
+/// (`calculate_ideal_chunk_size` → `get_safe_chunk_size`) exists specifically to avoid.
+///
+/// Historical note: this used to push **whole blocks only** and `break` once the accumulated
+/// total met the window, which rounded coverage *up* to a block boundary (a 1 GiB window over
+/// a 4 GiB block tested 4 GiB — 4× the request). That was a holdover from before the chunk
+/// loops handled arbitrary `test_size`; nothing requires `test_size == block_size`.
 pub fn prepare_blocks_for_window<'a>(
     blocks: &'a [crate::runner::AllocationBlock],
     window_size: usize,
@@ -1423,41 +1442,77 @@ pub fn prepare_blocks_for_window<'a>(
     let mut result = Vec::new();
     let mut accumulated = 0usize;
 
-    // Add complete blocks until we meet or exceed the window size
     // Blocks are pre-sorted by allocator (largest first)
     for block in blocks.iter() {
-        let block_size = block.buffer.size();
-
-        // Always test complete blocks (never split)
-        result.push(TestBlock {
-            block,
-            test_size: block_size,
-        });
-        accumulated += block_size;
-
-        log::debug!(
-            "{}: Block {} - size {:.2} MiB, testing complete block",
-            test_name,
-            result.len() - 1,
-            block_size as f64 / MB_F64
-        );
-
-        // Stop when we've met or exceeded the window
-        if accumulated >= window_size {
+        let remaining = window_size.saturating_sub(accumulated);
+        if remaining == 0 {
             break;
         }
+
+        let block_size = block.buffer.size();
+
+        // Full block when it fits the remaining budget; otherwise a partial contribution
+        // rounded DOWN to a power of two to keep chunk division exact (see doc above).
+        let test_size = if block_size <= remaining {
+            block_size
+        } else {
+            prev_power_of_two(remaining)
+        };
+
+        if test_size == 0 {
+            // Remaining budget is below the smallest representable power-of-2 span.
+            break;
+        }
+
+        result.push(TestBlock { block, test_size });
+        accumulated += test_size;
+
+        log::debug!(
+            "{}: Block {} - size {:.2} MiB, testing {:.2} MiB{}",
+            test_name,
+            result.len() - 1,
+            block_size as f64 / MB_F64,
+            test_size as f64 / MB_F64,
+            if test_size == block_size { " (complete block)" } else { " (window-limited)" }
+        );
     }
 
-    if accumulated > window_size {
+    if result.is_empty() {
+        // Window smaller than a single power-of-2 span: fall back to the first block so a
+        // test always has something to run on rather than silently doing nothing.
+        let block = &blocks[0];
+        let test_size = block.buffer.size();
         log::debug!(
-            "{}: Block total {:.2} MiB > window {:.2} MiB — processing large single block up to window limit",
+            "{}: Window {:.2} MiB too small to place any block — falling back to block 0 ({:.2} MiB)",
+            test_name,
+            window_size as f64 / MB_F64,
+            test_size as f64 / MB_F64
+        );
+        result.push(TestBlock { block, test_size });
+    } else if accumulated < window_size {
+        log::debug!(
+            "{}: Covering {:.2} MiB of {:.2} MiB window ({} block(s); shortfall is the \
+             power-of-2 round-down on a non-power-of-2 window)",
             test_name,
             accumulated as f64 / MB_F64,
-            window_size as f64 / MB_F64
+            window_size as f64 / MB_F64,
+            result.len()
         );
     }
 
     result
+}
+
+/// Largest power of two `<= n` (0 for n == 0). Complements `next_power_of_two()`, which
+/// rounds up and would overshoot a window budget.
+#[inline]
+fn prev_power_of_two(n: usize) -> usize {
+    if n == 0 {
+        0
+    } else {
+        // Highest set bit: 1 << floor(log2(n))
+        1usize << (usize::BITS - 1 - n.leading_zeros())
+    }
 }
 
 /// Expand total_operations into detailed operation breakdown using test metadata
