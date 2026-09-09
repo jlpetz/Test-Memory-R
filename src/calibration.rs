@@ -12,18 +12,7 @@ use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
 
 use crate::cache::CacheInfo;
-
-// ============================================================================
-// Serde helpers — round floats for config readability
-// ============================================================================
-
-fn serialize_round_2dp<S: serde::Serializer>(val: &f64, s: S) -> Result<S::Ok, S::Error> {
-    s.serialize_f64((*val * 100.0).round() / 100.0)
-}
-
-fn serialize_round_3dp<S: serde::Serializer>(val: &f64, s: S) -> Result<S::Ok, S::Error> {
-    s.serialize_f64((*val * 1000.0).round() / 1000.0)
-}
+use crate::formatting::{serialize_round_2dp, serialize_round_3dp};
 
 /// Accept any f64 on deserialize (don't enforce rounding on load)
 fn deserialize_f64_lenient<'de, D: serde::Deserializer<'de>>(d: D) -> Result<f64, D::Error> {

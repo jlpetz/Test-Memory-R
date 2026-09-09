@@ -36,6 +36,31 @@ pub struct MachineIdentity {
     pub system_product: String,
 }
 
+impl MachineIdentity {
+    /// Snapshot the readable identity of the current machine.
+    ///
+    /// Shared by [`AppConfig::update_identity`] (which stores it to gate calibration reuse) and
+    /// [`crate::run_context::RunIdentity`] (which stamps it onto result files) so the two can never
+    /// disagree about what "this machine" means.
+    pub fn detect(system_info: &SystemInfo, smbios: &SmbiosData) -> Self {
+        Self {
+            cpu_vendor: system_info.cpu_vendor.clone(),
+            cpu_brand: system_info.cpu_brand.clone(),
+            cpu_family: system_info.cpu_family,
+            cpu_model: system_info.cpu_model,
+            cpu_stepping: system_info.cpu_stepping,
+            cpu_base_mhz: AppConfig::get_cpu_base_frequency_mhz(smbios),
+            cpu_microcode: smbios.cpu_microcode.clone(),
+            physical_cores: system_info.physical_cores,
+            bios_vendor: smbios.bios.vendor.clone(),
+            bios_version: smbios.bios.version.clone(),
+            bios_date: smbios.bios.release_date.clone(),
+            system_manufacturer: smbios.system.manufacturer.clone(),
+            system_product: smbios.system.product_name.clone(),
+        }
+    }
+}
+
 /// Application-wide persistent configuration
 #[derive(Debug, Clone, Serialize, Deserialize, Default)]
 pub struct AppConfig {
@@ -260,21 +285,7 @@ impl AppConfig {
     /// Update all identity fields to match the current system
     pub fn update_identity(&mut self, system_info: &SystemInfo, smbios: &SmbiosData) {
         self.machine_id = Some(Self::generate_machine_id(system_info, smbios));
-        self.machine_identity = Some(MachineIdentity {
-            cpu_vendor: system_info.cpu_vendor.clone(),
-            cpu_brand: system_info.cpu_brand.clone(),
-            cpu_family: system_info.cpu_family,
-            cpu_model: system_info.cpu_model,
-            cpu_stepping: system_info.cpu_stepping,
-            cpu_base_mhz: Self::get_cpu_base_frequency_mhz(smbios),
-            cpu_microcode: smbios.cpu_microcode.clone(),
-            physical_cores: system_info.physical_cores,
-            bios_vendor: smbios.bios.vendor.clone(),
-            bios_version: smbios.bios.version.clone(),
-            bios_date: smbios.bios.release_date.clone(),
-            system_manufacturer: smbios.system.manufacturer.clone(),
-            system_product: smbios.system.product_name.clone(),
-        });
+        self.machine_identity = Some(MachineIdentity::detect(system_info, smbios));
         self.system_uuid = if smbios.system.uuid.is_empty() {
             None
         } else {

@@ -698,10 +698,10 @@ pub fn run_tests_with_layout_and_timing_filtered(
     // Used for calculating window sizes in CacheLevel mode during display and test execution
 
     // Display channels configuration before test table
+    let effective_channels = channels_override
+        .or_else(|| config.map(|c| c.system.channels))
+        .unwrap_or(2);
     {
-        let effective_channels = channels_override
-            .or_else(|| config.map(|c| c.system.channels))
-            .unwrap_or(2);
         let cl_bytes = cache_info.cache_line_size;
         println!("⚙  Memory Channels: {} (affects SimpleTest stride: [channels × param - 1] × {}B cache line)",
             effective_channels, cl_bytes);
@@ -724,9 +724,6 @@ pub fn run_tests_with_layout_and_timing_filtered(
         progress_reporter(progress_clone);
     });
 
-    // Initialize test run result
-    let test_run_result = Arc::new(Mutex::new(TestRunResult::new()));
-
     // Create thread pool with pre-allocated blocks
     let thread_count = allocated_blocks.len();
 
@@ -738,15 +735,51 @@ pub fn run_tests_with_layout_and_timing_filtered(
     }
 
     let pinning_config = CpuPinningConfig::default();
-    
+
+    // Tally the page-size mix and the real allocated total while we still own the blocks —
+    // `ThreadPool::new` takes them by value below. Both are *outcomes*, not requests: the
+    // allocator takes 1 GB pages only when physical memory is contiguous enough, and a partially
+    // satisfied request still runs, so neither can be derived from `layout.allocation_result`.
+    let page_mix = crate::run_context::PageSizeMix::from_blocks(&allocated_blocks);
+    let allocated_bytes: u64 = allocated_blocks
+        .values()
+        .flat_map(|blocks| blocks.iter())
+        .map(|block| block.buffer.size() as u64)
+        .sum();
+
     println!("\nCreating thread pool with {} persistent workers...", thread_count);
     let (thread_pool, result_receiver) = ThreadPool::new(
-        allocated_blocks, 
-        &pinning_config, 
+        allocated_blocks,
+        &pinning_config,
         thread_count,
         runtime_config.cpu_list.as_deref()  // Pass the CPU list
     );
-	
+
+    // Open the result file with the run's resolved configuration, now that both allocation and
+    // thread placement are observable facts (TODO #67). Without this, `--compare-results` has no way
+    // to know two runs used different working-set sizes and reports the difference as a code change.
+    let test_run_result = {
+        let snapshot = crate::run_context::RunConfigSnapshot::capture(crate::run_context::RunConfigInputs {
+            system_memory_info: &layout.system_memory_info,
+            allocation_result: &layout.allocation_result,
+            strategy: &layout.strategy,
+            runtime_config: &runtime_config,
+            page_mix,
+            allocated_bytes,
+            thread_count,
+            cpu_assignments: thread_pool.get_cpu_assignments(),
+            pinned: pinning_config.enable_pinning,
+            suite_timing: &suite_timing,
+            error_mode,
+            test_filter: single_test_filter.map(|s| s.to_string()),
+            channels: effective_channels,
+            config_name: config.map(|c| c.metadata.name.clone()),
+            tests: &test_definitions,
+            cache_info,
+        });
+        Arc::new(Mutex::new(TestRunResult::new(snapshot)))
+    };
+
     // Run test suite with timing control
     let suite_start = Instant::now();
     

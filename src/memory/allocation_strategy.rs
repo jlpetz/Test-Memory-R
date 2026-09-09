@@ -262,6 +262,18 @@ impl ReserveAmount {
             ReserveAmount::Percentage(pct) => (reference_bytes as f64 * pct / 100.0) as u64,
         }
     }
+
+    /// Canonical spec text for this amount, in the form `parse` accepts (`"20%"`, `"8GiB"`).
+    /// Recorded into result files so a run's memory request is reconstructable (TODO #67).
+    pub fn describe_spec(&self) -> String {
+        match self {
+            // GiB with 3 decimals: a byte count from `parse` is always a clean GiB/MiB value, and
+            // 3 decimals round-trips MiB-granular specs (e.g. 2048MB -> "1.953GiB") without
+            // printing 10 digits of noise.
+            ReserveAmount::Bytes(bytes) => format!("{:.3}GiB", bytes_to_gib_f64(*bytes)),
+            ReserveAmount::Percentage(pct) => format!("{}%", pct),
+        }
+    }
 }
 
 impl StartAddressMode {
@@ -338,6 +350,51 @@ impl StartAddressMode {
             Ok(mb / 1024.0) // Convert MB to GiB
         } else {
             s.parse::<f64>().map_err(|_| format!("Invalid numeric value: {}", s))
+        }
+    }
+
+    /// Canonical spec text, in the form `parse` accepts (`"split:5%:95%"`, `"+2GiB"`).
+    /// Note `split:auto` is *not* reproduced — it resolves to concrete percentages at parse
+    /// time, and the concrete values are what actually shaped the run.
+    pub fn describe_spec(&self) -> String {
+        match self {
+            StartAddressMode::Offset { offset_gib } => format!("{:+}GiB", offset_gib),
+            StartAddressMode::SplitReserve { pre_percent, post_percent } => {
+                format!("split:{}%:{}%", pre_percent, post_percent)
+            }
+        }
+    }
+}
+
+impl AllocationMode {
+    /// Canonical spec text for the `memory=` value, minus the `start=` suffix
+    /// (`"20%-from-available"`, `"8.000GiB-target"`).
+    pub fn describe_spec(&self) -> String {
+        match self {
+            AllocationMode::ReserveFromAvailable { reserve } => {
+                format!("{}-from-available", reserve.describe_spec())
+            }
+            AllocationMode::ReserveFromTotal { reserve } => {
+                format!("{}-from-total", reserve.describe_spec())
+            }
+            AllocationMode::AllocateTarget { target } => {
+                format!("{}-target", target.describe_spec())
+            }
+            AllocationMode::LegacyTM5 { reserve_mb } => format!("{}MB", reserve_mb),
+        }
+    }
+
+    /// Whether this mode produces the **same allocation size** on every run of the same machine.
+    ///
+    /// Only the `-from-total` and `-target` forms do: their reference is total installed RAM (a
+    /// constant) or an explicit figure. The `-from-available` forms — including the `--quick-test`
+    /// default and TM5 legacy configs — key off *currently free* memory, so two runs minutes apart
+    /// can size differently and their throughput numbers are not directly comparable. Recorded in
+    /// result files so `--compare-results` can say so instead of the user having to know (TODO #67).
+    pub fn is_deterministic(&self) -> bool {
+        match self {
+            AllocationMode::ReserveFromTotal { .. } | AllocationMode::AllocateTarget { .. } => true,
+            AllocationMode::ReserveFromAvailable { .. } | AllocationMode::LegacyTM5 { .. } => false,
         }
     }
 }
@@ -744,6 +801,17 @@ impl Default for EnhancedMemoryStrategy {
 }
 
 impl EnhancedMemoryStrategy {
+    /// Canonical `memory=` spec that reproduces this strategy, e.g.
+    /// `"20%-from-available:start=split:5%:95%"`. Written into result files so a run's request is
+    /// reconstructable from the result alone rather than only from `logs/` (TODO #67).
+    pub fn describe_spec(&self) -> String {
+        format!(
+            "{}:start={}",
+            self.allocation_mode.describe_spec(),
+            self.start_address_mode.describe_spec()
+        )
+    }
+
     /// Create a comprehensive memory layout with enhanced allocation calculation
     pub fn create_layout(&self, thread_count: usize) -> Result<crate::layout::EnhancedMemoryLayout, String> {
         let mem_info = SystemMemoryInfo::gather()?;

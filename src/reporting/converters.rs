@@ -956,7 +956,7 @@ pub fn create_overall_stats_summary_report(
             average_duration_secs: avg.avg_duration_ms as f64 / 1000.0,
             total_data_gib: avg.avg_bytes_processed as f64 / (1024.0 * 1024.0 * 1024.0),
             average_throughput_mib_s: avg.avg_throughput_mib_s,
-            average_throughput_gib_s: avg.avg_throughput_gib_s,
+            average_throughput_gib_s: avg.avg_throughput_mib_s / 1024.0,
             total_errors: avg.total_errors,
             whea_total: avg.whea_total,
             whea_corrected: avg.whea_corrected,
@@ -980,7 +980,7 @@ pub fn create_overall_stats_summary_report(
         cycles_completed: overall_stats.cycles_completed as usize,
         total_data_processed_gib: overall_stats.total_data_processed_gib,
         overall_throughput_mib_s: overall_stats.overall_throughput_mib_s,
-        overall_throughput_gib_s: overall_stats.overall_throughput_gib_s,
+        overall_throughput_gib_s: overall_stats.overall_throughput_mib_s / 1024.0,
         total_errors: overall_stats.total_errors,
         // Exact run-level counters (see TestRunResult::set_whea_totals) — not a sum of the
         // per-test figures, which miss events logged outside a test's execution window.

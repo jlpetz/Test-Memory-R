@@ -1,5 +1,8 @@
 use crate::progress::TestSummary;
 use crate::constants::{BYTES_PER_GIB_F64, MB_F64};
+use crate::formatting::{
+    serialize_round_2dp, serialize_round_int, serialize_round_opt_2dp,
+};
 use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
 use std::fs;
@@ -9,7 +12,13 @@ use std::time::{SystemTime, UNIX_EPOCH};
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct TestRunResult {
     pub metadata: TestRunMetadata,
-    pub system_info: SystemInfoSnapshot,
+    /// Which machine produced this result (TODO #67). Filled in by `new()` rather than a setter —
+    /// the field this replaced was an all-placeholder `SystemInfoSnapshot` whose setter nothing
+    /// ever called, so every result claimed `CPU: Unknown, 0.00 GiB`.
+    pub identity: crate::run_context::RunIdentity,
+    /// What was actually allocated and executed (TODO #67). Required, and taken by `new()`, so a
+    /// saved result can never be missing the context needed to interpret its own numbers.
+    pub run_config: crate::run_context::RunConfigSnapshot,
     pub cycles: Vec<CycleResult>,
     pub overall_stats: OverallStats,
 }
@@ -21,17 +30,6 @@ pub struct TestRunMetadata {
     pub start_time_iso: String,   // Human-readable ISO format
     pub filename: String,         // Generated filename
     pub config_name: Option<String>, // If loaded from config
-}
-
-#[derive(Debug, Clone, Serialize, Deserialize)]
-pub struct SystemInfoSnapshot {
-    pub cpu_brand: String,
-    pub cpu_cores: usize,
-    pub total_memory_gib: f64,
-    pub allocated_memory_gib: f64,
-    pub thread_count: usize,
-    pub large_pages_enabled: bool,
-    pub simd_capabilities: String,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -48,37 +46,37 @@ pub struct TestResult {
     pub name: String,
     pub duration_ms: u128,
     pub bytes_processed: u64,
+    /// Recorded in MiB/s only. A GiB/s field alongside it would be the same measurement stored
+    /// twice — every producer computed it as `mib_s / 1024.0` — and rounding the pair to
+    /// different scales made the two disagree. Readers that want GiB/s divide by 1024.
+    #[serde(serialize_with = "serialize_round_int")]
     pub throughput_mib_s: f64,
-    pub throughput_gib_s: f64,
     pub errors: u64,
     // OS-reported hardware errors during this test, and the corrected subset (see whea.rs).
-    // `default` so `--compare-results` can still read baselines saved before WHEA existed.
-    #[serde(default)]
     pub whea_total: u64,
-    #[serde(default)]
     pub whea_corrected: u64,
     // Latency metrics (Some for latency tests, None for other tests)
     #[serde(skip_serializing_if = "Option::is_none")]
     pub latency_samples: Option<u64>,
-    #[serde(skip_serializing_if = "Option::is_none")]
+    #[serde(skip_serializing_if = "Option::is_none", serialize_with = "serialize_round_opt_2dp")]
     pub latency_p5_ns: Option<f64>,
-    #[serde(skip_serializing_if = "Option::is_none")]
+    #[serde(skip_serializing_if = "Option::is_none", serialize_with = "serialize_round_opt_2dp")]
     pub latency_p10_ns: Option<f64>,
-    #[serde(skip_serializing_if = "Option::is_none")]
+    #[serde(skip_serializing_if = "Option::is_none", serialize_with = "serialize_round_opt_2dp")]
     pub latency_p25_ns: Option<f64>,
-    #[serde(skip_serializing_if = "Option::is_none")]
+    #[serde(skip_serializing_if = "Option::is_none", serialize_with = "serialize_round_opt_2dp")]
     pub latency_p50_ns: Option<f64>,
-    #[serde(skip_serializing_if = "Option::is_none")]
+    #[serde(skip_serializing_if = "Option::is_none", serialize_with = "serialize_round_opt_2dp")]
     pub latency_p75_ns: Option<f64>,
-    #[serde(skip_serializing_if = "Option::is_none")]
+    #[serde(skip_serializing_if = "Option::is_none", serialize_with = "serialize_round_opt_2dp")]
     pub latency_p90_ns: Option<f64>,
-    #[serde(skip_serializing_if = "Option::is_none")]
+    #[serde(skip_serializing_if = "Option::is_none", serialize_with = "serialize_round_opt_2dp")]
     pub latency_p95_ns: Option<f64>,
-    #[serde(skip_serializing_if = "Option::is_none")]
+    #[serde(skip_serializing_if = "Option::is_none", serialize_with = "serialize_round_opt_2dp")]
     pub latency_p99_ns: Option<f64>,
-    #[serde(skip_serializing_if = "Option::is_none")]
+    #[serde(skip_serializing_if = "Option::is_none", serialize_with = "serialize_round_opt_2dp")]
     pub latency_p99_9_ns: Option<f64>,
-    #[serde(skip_serializing_if = "Option::is_none")]
+    #[serde(skip_serializing_if = "Option::is_none", serialize_with = "serialize_round_opt_2dp")]
     pub latency_spread: Option<f64>,
 }
 
@@ -86,28 +84,26 @@ pub struct TestResult {
 pub struct CycleStats {
     pub total_bytes: u64,
     pub total_errors: u64,
+    #[serde(serialize_with = "serialize_round_int")]
     pub avg_throughput_mib_s: f64,
-    pub avg_throughput_gib_s: f64,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct OverallStats {
     pub total_runtime_secs: u64,
     pub cycles_completed: u32,
+    #[serde(serialize_with = "serialize_round_2dp")]
     pub total_data_processed_gib: f64,
+    #[serde(serialize_with = "serialize_round_int")]
     pub overall_throughput_mib_s: f64,
-    pub overall_throughput_gib_s: f64,
     pub total_errors: u64,
     // Run-level WHEA tally, taken from the monitor's cumulative counters rather than summed from
-    // the per-test figures (see `set_whea_totals`). `default` for older baselines.
-    #[serde(default)]
+    // the per-test figures (see `set_whea_totals`).
     pub whea_total: u64,
-    #[serde(default)]
     pub whea_corrected: u64,
     /// Whether WHEA monitoring was actually running. Without this, `whea_total: 0` is ambiguous
     /// between "no hardware errors" and "we never looked" — which would read as a clean bill of
-    /// health it did not earn. `default` is `false`, which is correct for pre-WHEA baselines.
-    #[serde(default)]
+    /// health it did not earn.
     pub whea_monitored: bool,
     pub per_test_averages: Vec<TestAverage>,
 }
@@ -118,38 +114,35 @@ pub struct TestAverage {
     pub name: String,
     pub avg_duration_ms: u128,
     pub avg_bytes_processed: u64,
+    #[serde(serialize_with = "serialize_round_int")]
     pub avg_throughput_mib_s: f64,
-    pub avg_throughput_gib_s: f64,
     pub total_errors: u64,
     // WHEA counts summed across every cycle this test ran in (totals, not averages — a hardware
-    // error is an event count, and averaging it would hide a single-cycle fault). `default` for
-    // baselines saved before WHEA existed.
-    #[serde(default)]
+    // error is an event count, and averaging it would hide a single-cycle fault).
     pub whea_total: u64,
-    #[serde(default)]
     pub whea_corrected: u64,
     // Latency metrics (averaged across cycles, Some for latency tests, None for other tests)
     #[serde(skip_serializing_if = "Option::is_none")]
     pub latency_samples: Option<u64>,
-    #[serde(skip_serializing_if = "Option::is_none")]
+    #[serde(skip_serializing_if = "Option::is_none", serialize_with = "serialize_round_opt_2dp")]
     pub latency_p5_ns: Option<f64>,
-    #[serde(skip_serializing_if = "Option::is_none")]
+    #[serde(skip_serializing_if = "Option::is_none", serialize_with = "serialize_round_opt_2dp")]
     pub latency_p10_ns: Option<f64>,
-    #[serde(skip_serializing_if = "Option::is_none")]
+    #[serde(skip_serializing_if = "Option::is_none", serialize_with = "serialize_round_opt_2dp")]
     pub latency_p25_ns: Option<f64>,
-    #[serde(skip_serializing_if = "Option::is_none")]
+    #[serde(skip_serializing_if = "Option::is_none", serialize_with = "serialize_round_opt_2dp")]
     pub latency_p50_ns: Option<f64>,
-    #[serde(skip_serializing_if = "Option::is_none")]
+    #[serde(skip_serializing_if = "Option::is_none", serialize_with = "serialize_round_opt_2dp")]
     pub latency_p75_ns: Option<f64>,
-    #[serde(skip_serializing_if = "Option::is_none")]
+    #[serde(skip_serializing_if = "Option::is_none", serialize_with = "serialize_round_opt_2dp")]
     pub latency_p90_ns: Option<f64>,
-    #[serde(skip_serializing_if = "Option::is_none")]
+    #[serde(skip_serializing_if = "Option::is_none", serialize_with = "serialize_round_opt_2dp")]
     pub latency_p95_ns: Option<f64>,
-    #[serde(skip_serializing_if = "Option::is_none")]
+    #[serde(skip_serializing_if = "Option::is_none", serialize_with = "serialize_round_opt_2dp")]
     pub latency_p99_ns: Option<f64>,
-    #[serde(skip_serializing_if = "Option::is_none")]
+    #[serde(skip_serializing_if = "Option::is_none", serialize_with = "serialize_round_opt_2dp")]
     pub latency_p99_9_ns: Option<f64>,
-    #[serde(skip_serializing_if = "Option::is_none")]
+    #[serde(skip_serializing_if = "Option::is_none", serialize_with = "serialize_round_opt_2dp")]
     pub latency_spread: Option<f64>,
 }
 
@@ -160,14 +153,22 @@ pub struct TestComparison {
     pub comparison_time: String,
     pub overall_comparison: OverallComparison,
     pub per_test_comparisons: Vec<TestComparisonResult>,
+    /// Hardware and configuration differences between the two runs (TODO #67). Non-empty means the
+    /// percentages above are at least partly explained by something other than a code change; any
+    /// entry with `invalidates` set means they cannot be attributed at all.
+    pub run_differences: Vec<crate::run_context::RunDifference>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct OverallComparison {
     pub runtime_diff_secs: i64,
+    #[serde(serialize_with = "serialize_round_2dp")]
     pub runtime_diff_percent: f64,
+    #[serde(serialize_with = "serialize_round_int")]
     pub throughput_diff_mib_s: f64,
+    #[serde(serialize_with = "serialize_round_2dp")]
     pub throughput_diff_percent: f64,
+    #[serde(serialize_with = "serialize_round_2dp")]
     pub data_processed_diff_gib: f64,
     pub errors_diff: i64,
 }
@@ -177,21 +178,24 @@ pub struct TestComparisonResult {
     pub test_number: usize,
     pub name: String,
     pub duration_diff_ms: i128,
+    #[serde(serialize_with = "serialize_round_2dp")]
     pub duration_diff_percent: f64,
+    #[serde(serialize_with = "serialize_round_int")]
     pub throughput_diff_mib_s: f64,
+    #[serde(serialize_with = "serialize_round_2dp")]
     pub throughput_diff_percent: f64,
     pub bytes_diff: i64,
     pub errors_diff: i64,
 }
 
-impl Default for TestRunResult {
-    fn default() -> Self {
-        Self::new()
-    }
-}
-
 impl TestRunResult {
-    pub fn new() -> Self {
+    /// Start a result file for this run.
+    ///
+    /// `run_config` is a constructor argument rather than a setter because its values are only
+    /// *observed* facts once allocation has returned and the thread pool exists — and because the
+    /// placeholder-snapshot bug this replaced was caused precisely by an optional setter nothing
+    /// called. Callers must therefore build it after `ThreadPool::new`.
+    pub fn new(run_config: crate::run_context::RunConfigSnapshot) -> Self {
         // Create results directory if it doesn't exist
         if let Err(e) = std::fs::create_dir_all("results") {
             log::warn!("Failed to create results directory: {}", e);
@@ -214,24 +218,17 @@ impl TestRunResult {
                 start_time: now,
                 start_time_iso,
                 filename: filename.clone(),
-                config_name: None,
+                config_name: run_config.config_name.clone(),
             },
-            system_info: SystemInfoSnapshot {
-                cpu_brand: "Unknown".to_string(),
-                cpu_cores: num_cpus::get_physical(),
-                total_memory_gib: 0.0,
-                allocated_memory_gib: 0.0,
-                thread_count: 0,
-                large_pages_enabled: false,
-                simd_capabilities: crate::detect_simd_capabilities(),
-            },
+            // Detected here rather than via a setter, for the same reason as `run_config`.
+            identity: crate::run_context::RunIdentity::detect(),
+            run_config,
             cycles: Vec::new(),
             overall_stats: OverallStats {
                 total_runtime_secs: 0,
                 cycles_completed: 0,
                 total_data_processed_gib: 0.0,
                 overall_throughput_mib_s: 0.0,
-                overall_throughput_gib_s: 0.0,
                 total_errors: 0,
                 whea_total: 0,
                 whea_corrected: 0,
@@ -239,18 +236,6 @@ impl TestRunResult {
                 per_test_averages: Vec::new(),
             },
         }
-    }
-
-    pub fn set_system_info(&mut self, cpu_brand: &str, total_memory_gib: f64, allocated_memory_gib: f64, thread_count: usize, large_pages_enabled: bool) {
-        self.system_info.cpu_brand = cpu_brand.to_string();
-        self.system_info.total_memory_gib = total_memory_gib;
-        self.system_info.allocated_memory_gib = allocated_memory_gib;
-        self.system_info.thread_count = thread_count;
-        self.system_info.large_pages_enabled = large_pages_enabled;
-    }
-
-    pub fn set_config_name(&mut self, config_name: Option<String>) {
-        self.metadata.config_name = config_name;
     }
 
     pub fn add_cycle(&mut self, cycle_number: u32, duration_secs: u32, test_summaries: Vec<TestSummary>) {
@@ -269,7 +254,6 @@ impl TestRunResult {
                 duration_ms: summary.duration_ms,
                 bytes_processed: summary.bytes_processed,
                 throughput_mib_s: summary.throughput_mib_s,
-                throughput_gib_s: summary.throughput_mib_s / 1024.0,
                 errors: summary.errors,
                 whea_total: summary.whea_total,
                 whea_corrected: summary.whea_corrected,
@@ -296,7 +280,6 @@ impl TestRunResult {
                 total_bytes,
                 total_errors,
                 avg_throughput_mib_s: avg_throughput_mib,
-                avg_throughput_gib_s: avg_throughput_mib / 1024.0,
             },
         };
 
@@ -315,7 +298,6 @@ impl TestRunResult {
         } else {
             0.0
         };
-        self.overall_stats.overall_throughput_gib_s = self.overall_stats.overall_throughput_mib_s / 1024.0;
         
         self.overall_stats.total_errors = self.cycles.iter().map(|c| c.cycle_stats.total_errors).sum();
 
@@ -416,7 +398,6 @@ impl TestRunResult {
                 avg_duration_ms,
                 avg_bytes_processed: avg_bytes,
                 avg_throughput_mib_s: avg_throughput_mib,
-                avg_throughput_gib_s: avg_throughput_mib / 1024.0,
                 total_errors: agg.total_errors,
                 whea_total: agg.total_whea,
                 whea_corrected: agg.total_whea_corrected,
@@ -487,21 +468,77 @@ impl TestRunResult {
         report.push('\n');
 
         report.push_str("System Information:\n");
-        report.push_str(&format!("  CPU: {}\n", self.system_info.cpu_brand));
-        report.push_str(&format!("  Cores: {} physical\n", self.system_info.cpu_cores));
-        report.push_str(&format!("  Memory: {:.2} GiB total, {:.2} GiB allocated\n", 
-            self.system_info.total_memory_gib, self.system_info.allocated_memory_gib));
-        report.push_str(&format!("  Threads: {}\n", self.system_info.thread_count));
-        report.push_str(&format!("  Large Pages: {}\n", if self.system_info.large_pages_enabled { "Enabled" } else { "Disabled" }));
-        report.push_str(&format!("  SIMD: {}\n", self.system_info.simd_capabilities));
+        let id = &self.identity;
+        report.push_str(&format!("  CPU: {}\n", id.machine.cpu_brand));
+        report.push_str(&format!("  Cores: {} physical, {} logical\n",
+            id.physical_cores, id.logical_cores));
+        report.push_str(&format!("  Cache: L1d {}/core, L2 {}/core, L3 {} ({})\n",
+            id.l1d_cache_per_core,
+            id.l2_cache_per_core,
+            id.l3_cache,
+            id.cache_detection_method));
+        report.push_str(&format!("  Memory: {:.2} GiB installed, {:.2} GiB OS-visible\n",
+            id.installed_memory_gib, id.os_visible_memory_gib));
+        if id.memory_modules_reported > 0 {
+            // Labelled, because on a VM the module list is a firmware abstraction rather than
+            // physical DIMMs — reading it as DIMM identity would be wrong.
+            report.push_str(&format!("  Modules: {} × reported, {:.1} GiB total{}\n",
+                id.memory_modules_reported,
+                id.memory_reported_gib,
+                if id.memory_identity_is_physical { "" } else { " (firmware view — virtualized)" }));
+        }
+        report.push_str(&format!("  SIMD: {}\n", id.simd_capabilities));
+        report.push_str(&format!("  TSC: {:.4} GHz\n", id.tsc_frequency_ghz));
+        if id.virtualized {
+            report.push_str(&format!("  Virtualized: yes ({})\n",
+                id.hypervisor.as_deref().unwrap_or("unknown hypervisor")));
+        }
+        report.push_str(&format!("  Machine ID: {}  Memory ID: {}\n", id.machine_id, id.memory_id));
         report.push('\n');
+
+        // The resolved allocation and thread setup, without which the throughput figures below
+        // cannot be compared against anything.
+        {
+            let cfg = &self.run_config;
+            report.push_str("Run Configuration:\n");
+            report.push_str(&format!("  Memory spec: {}{}\n",
+                cfg.memory.spec,
+                if cfg.memory.spec_is_deterministic { "" } else { " (size depends on free memory — not reproducible)" }));
+            report.push_str(&format!("  Allocated: {:.3} GiB total, {:.3} GiB/thread across {} block(s)\n",
+                cfg.memory.allocated_gib, cfg.memory.per_thread_gib, cfg.memory.blocks_allocated));
+            report.push_str(&format!("  Pages: {}\n", cfg.memory.page_mix.describe()));
+            report.push_str(&format!("  Threads: {} ({}), {} SMT thread(s)/core\n",
+                cfg.threads.thread_count,
+                if cfg.threads.pinned { "pinned" } else { "unpinned" },
+                cfg.threads.active_threads_per_core));
+            if !cfg.threads.numa_distribution.is_empty() {
+                let nodes: Vec<String> = cfg.threads.numa_distribution.iter()
+                    .map(|n| format!("node{}×{}", n.numa_node, n.threads))
+                    .collect();
+                report.push_str(&format!("  NUMA: {}\n", nodes.join(" ")));
+            }
+            report.push_str(&format!("  Backend: {}, channels: {}, error mode: {}\n",
+                cfg.memory.backend, cfg.execution.channels, cfg.execution.error_mode));
+            if let Some(filter) = &cfg.execution.test_filter {
+                report.push_str(&format!("  Test filter: {}\n", filter));
+            }
+            if let Some(cal) = &cfg.calibration {
+                report.push_str(&format!("  Calibration: {} ({} pages, {} tier(s))\n",
+                    cal.timestamp, cal.page_size, cal.tiers.len()));
+            } else {
+                report.push_str("  Calibration: none (cache-relative windows used CPUID sizes)\n");
+            }
+            report.push_str(&format!("  Command: {}\n", cfg.command_line.join(" ")));
+            report.push('\n');
+        }
 
         report.push_str("Overall Results:\n");
         report.push_str(&format!("  Runtime: {}s\n", self.overall_stats.total_runtime_secs));
         report.push_str(&format!("  Cycles: {}\n", self.overall_stats.cycles_completed));
         report.push_str(&format!("  Data Processed: {:.2} GiB\n", self.overall_stats.total_data_processed_gib));
         report.push_str(&format!("  Throughput: {:.1} MiB/s ({:.2} GiB/s)\n", 
-            self.overall_stats.overall_throughput_mib_s, self.overall_stats.overall_throughput_gib_s));
+            self.overall_stats.overall_throughput_mib_s,
+            self.overall_stats.overall_throughput_mib_s / 1024.0));
         report.push_str(&format!("  Total Errors: {}\n", self.overall_stats.total_errors));
         report.push('\n');
 
@@ -514,7 +551,7 @@ impl TestRunResult {
                     test.avg_duration_ms as f64 / 1000.0,
                     test.avg_bytes_processed as f64 / BYTES_PER_GIB_F64,
                     test.avg_throughput_mib_s,
-                    test.avg_throughput_gib_s,
+                    test.avg_throughput_mib_s / 1024.0,
                     if test.total_errors > 0 { 
                         format!(" [ERRORS: {}]", test.total_errors) 
                     } else { 
@@ -601,12 +638,21 @@ pub fn compare_test_results(baseline_path: &str, current_path: &str) -> Result<T
         }
     }
 
+    // Identity first, then configuration: a hardware change is the more fundamental explanation,
+    // and on a new machine the config differences are usually downstream of it.
+    let mut run_differences = crate::run_context::compare_identity(&baseline.identity, &current.identity);
+    run_differences.extend(crate::run_context::compare_config(
+        &baseline.run_config,
+        &current.run_config,
+    ));
+
     Ok(TestComparison {
         baseline: baseline.metadata,
         current: current.metadata,
         comparison_time,
         overall_comparison,
         per_test_comparisons,
+        run_differences,
     })
 }
 
@@ -619,6 +665,11 @@ impl TestComparison {
         report.push_str(&format!("Baseline: {} ({})\n", self.baseline.start_time_iso, self.baseline.filename));
         report.push_str(&format!("Current:  {} ({})\n", self.current.start_time_iso, self.current.filename));
         report.push('\n');
+
+        // Deliberately placed *before* the numbers: the whole point of TODO #67 was that a reader
+        // who sees "+20% faster" first has already drawn a conclusion by the time they reach a
+        // caveat at the bottom.
+        report.push_str(&crate::run_context::render_differences(&self.run_differences));
 
         report.push_str("Overall Performance Changes:\n");
         report.push_str(&format!("  Runtime: {}{} seconds ({:+.1}%)\n", 

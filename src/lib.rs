@@ -32,6 +32,7 @@ pub mod test_scaffolding; // shared zero-cost bookkeeping for loop-owning v1 tes
 pub mod app_config; // Persistent application config (tmr-cfg.json)
 pub mod smbios; // SMBIOS table parser (system identity, memory modules)
 pub mod whea; // WHEA hardware-error monitoring via the System event log (TODO #63)
+pub mod run_context; // Run identity + resolved config recorded into result files (TODO #67)
 
 // Common result type for the crate
 pub type Result<T> = std::result::Result<T, Box<dyn std::error::Error>>;
