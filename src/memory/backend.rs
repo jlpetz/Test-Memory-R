@@ -1,3 +1,11 @@
+// Every `unsafe` block in this file crosses a Win32 FFI boundary, where the borrow checker is
+// switched off precisely where the invariants get subtle (TODO #66). The lint below makes a missing
+// `// SAFETY:` a warning *here* rather than relying on a periodic audit — it is deliberately not
+// crate-wide, because the SIMD test kernels' `unsafe` is a different, repetitive story already
+// covered by `test_fn_safety.md`, and a blanket rule there would produce boilerplate that trains
+// you to skip reading these.
+#![warn(clippy::undocumented_unsafe_blocks)]
+
 use crate::memory::buffer::{BufferInfo, MemoryType, PageType, SegmentInfo};
 use crate::memory::allocator::AllocationConfig;
 use crate::memory::privileges::setup_large_pages_automatically;
@@ -113,6 +121,9 @@ impl Backend for WindowsBackend {
     fn free(&self, allocation: BackendAllocation) -> Result<(), String> {
         use windows::Win32::System::Memory::{VirtualFree, MEM_RELEASE};
 
+        // SAFETY: `allocation` is taken by value, so this is the unique owner of the region and the
+        // release happens exactly once. `ptr` came from a successful `VirtualAlloc2` in this same
+        // backend, which is the base address `MEM_RELEASE` requires.
         unsafe {
             // VirtualFree with MEM_RELEASE must pass size = 0
             // See: https://docs.microsoft.com/en-us/windows/win32/api/memoryapi/nf-memoryapi-virtualfree
@@ -343,6 +354,8 @@ impl WindowsBackend {
         let _ = &addr_req;
 
         if ptr.is_null() {
+            // SAFETY: `GetLastError` reads this thread's error slot and takes no arguments. It is
+            // read immediately after the failed call, before anything else can overwrite it.
             let err = unsafe { GetLastError() };
             
             // Handle fallback scenarios
@@ -451,6 +464,9 @@ impl Backend for DriverBackend {
         
         let mut output = AllocateDmaOutput::default();
         
+        // SAFETY: `input` is read-only to the kernel, `output` is a fully initialised local, and
+        // both lengths are `size_of` of the matching type. Direct-argument form — neither pointer
+        // is stored, so neither can outlive the call (TODO #66).
         unsafe {
             let mut bytes_returned = 0u32;
             

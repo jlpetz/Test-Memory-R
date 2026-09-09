@@ -1,3 +1,11 @@
+// Every `unsafe` block in this file crosses a Win32 FFI boundary, where the borrow checker is
+// switched off precisely where the invariants get subtle (TODO #66). The lint below makes a missing
+// `// SAFETY:` a warning *here* rather than relying on a periodic audit — it is deliberately not
+// crate-wide, because the SIMD test kernels' `unsafe` is a different, repetitive story already
+// covered by `test_fn_safety.md`, and a blanket rule there would produce boilerplate that trains
+// you to skip reading these.
+#![warn(clippy::undocumented_unsafe_blocks)]
+
 use std::ffi::c_void;
 use std::ptr::null_mut;
 use std::process::Command;
@@ -22,6 +30,9 @@ enum PrivilegeState {
 
 fn format_win32_error(err: WIN32_ERROR) -> String {
     let mut buffer = [0u16; 512];
+    // SAFETY: `FormatMessageW` writes at most `buffer.len()` UTF-16 units into the stack buffer we
+    // hand it, and the length we pass is that array's own length. Without
+    // `FORMAT_MESSAGE_ALLOCATE_BUFFER` it never reallocates, so the pointer stays ours.
     let len = unsafe {
         FormatMessageW(
             FORMAT_MESSAGE_FROM_SYSTEM,
@@ -42,6 +53,11 @@ fn format_win32_error(err: WIN32_ERROR) -> String {
 
 
 pub fn check_large_page_privilege() -> Result<(), &'static str> {
+    // SAFETY: `GetCurrentProcess` returns a pseudo-handle that needs no closing. `token` starts as
+    // a default `HANDLE` and is only used on the paths where `OpenProcessToken` succeeded; every
+    // early return closes it exactly once. `luid` is fully initialised before
+    // `LookupPrivilegeValueW` writes it, and the `VirtualAlloc` probe below is paired with
+    // `VirtualFree` on the success path.
     unsafe {
         let process = GetCurrentProcess();
         let mut token: HANDLE = HANDLE::default();
@@ -122,6 +138,12 @@ pub fn check_large_page_privilege() -> Result<(), &'static str> {
     }
 }
 
+/// # Safety
+///
+/// `token` must be an open process-token handle with `TOKEN_QUERY` access, and must stay open for
+/// the duration of the call — this function never closes it; the caller owns that. Reading a
+/// closed or non-token handle is what makes this `unsafe` rather than the pointer work below, which
+/// is bounded by the two-call `GetTokenInformation` size protocol.
 unsafe fn check_privilege_in_token(token: HANDLE, privilege_luid: LUID) -> PrivilegeState {
     use windows::Win32::Security::TOKEN_PRIVILEGES_ATTRIBUTES;
     
@@ -193,6 +215,11 @@ unsafe fn check_privilege_in_token(token: HANDLE, privilege_luid: LUID) -> Privi
     PrivilegeState::NotAssigned
 }
 
+/// # Safety
+///
+/// `token` must be an open process-token handle with `TOKEN_ADJUST_PRIVILEGES` access (and
+/// `TOKEN_QUERY` if the caller then re-reads the state), open for the duration of the call. This
+/// function does not close it.
 unsafe fn enable_privilege_in_token(token: HANDLE, privilege_luid: LUID) -> Result<(), &'static str> {
     use windows::Win32::Security::TOKEN_PRIVILEGES_ATTRIBUTES;
     
@@ -234,6 +261,9 @@ fn is_elevated() -> bool {
     use windows::Win32::Security::{GetTokenInformation, TokenElevation, TOKEN_ELEVATION};
     use windows::Win32::System::Threading::{GetCurrentProcess, OpenProcessToken};
     
+    // SAFETY: `elevation` is a fully initialised local passed directly as the out-param, with the
+    // length `size_of::<TOKEN_ELEVATION>()` matching its type — the direct-argument form, so no
+    // pointer outlives the call (TODO #66). The token is closed on both paths.
     unsafe {
         let process = GetCurrentProcess();
         let mut token: HANDLE = HANDLE::default();
@@ -261,6 +291,10 @@ fn is_elevated() -> bool {
 
 /// Alternative privilege enabling that works better on Windows Server
 pub fn enable_large_page_privilege_enhanced() -> Result<(), String> {
+    // SAFETY: same token discipline as `check_large_page_privilege` — `token` is used only where
+    // `OpenProcessToken` succeeded, and closed exactly once on every return path. The
+    // `check_privilege_in_token` / `enable_privilege_in_token` calls below meet their documented
+    // contract because the token was opened with `TOKEN_QUERY | TOKEN_ADJUST_PRIVILEGES`.
     unsafe {
         let process = GetCurrentProcess();
         let mut token: HANDLE = HANDLE::default();
@@ -447,6 +481,9 @@ pub fn setup_large_pages_automatically() -> Result<String, String> {
 
 /// Check the current state of the SeLockMemoryPrivilege
 fn check_privilege_state() -> PrivilegeState {
+    // SAFETY: `token` is opened with `TOKEN_QUERY` — the access
+    // `check_privilege_in_token` documents — stays open across that call, and is closed once on
+    // each return path.
     unsafe {
         let process = GetCurrentProcess();
         let mut token: HANDLE = HANDLE::default();
@@ -472,6 +509,9 @@ fn check_privilege_state() -> PrivilegeState {
 
 /// Test a small large page allocation
 fn test_large_page_allocation() -> Result<(), String> {
+    // SAFETY: a self-contained 2 MB probe. The returned pointer is never dereferenced — only
+    // null-checked and, when non-null, released with the `MEM_RELEASE` form `VirtualFree` requires
+    // (size 0, base address as returned).
     unsafe {
         let test_size = 2 * 1024 * 1024; // 2MB
         let ptr = VirtualAlloc(

@@ -1,3 +1,11 @@
+// Every `unsafe` block in this file crosses a Win32 FFI boundary, where the borrow checker is
+// switched off precisely where the invariants get subtle (TODO #66). The lint below makes a missing
+// `// SAFETY:` a warning *here* rather than relying on a periodic audit — it is deliberately not
+// crate-wide, because the SIMD test kernels' `unsafe` is a different, repetitive story already
+// covered by `test_fn_safety.md`, and a blanket rule there would produce boilerplate that trains
+// you to skip reading these.
+#![warn(clippy::undocumented_unsafe_blocks)]
+
 // Driver interface functionality - migrated from dma_memory.rs
 
 use crate::driver::types::{DriverVersionInfo, DriverVersionError, DriverStatistics, MemoryType};
@@ -50,14 +58,35 @@ pub struct DriverHandle {
 // `CloseHandle` exactly once, and the handle is wrapped in an `Arc` by
 // `get_global_driver_handle`, so the close happens after the last user is gone.
 unsafe impl Send for DriverHandle {}
+
+// SAFETY: `Sync` holds for the same reason — nothing is mutated after construction, so every
+// `&DriverHandle` method is a read of an immutable handle plus locals of its own. Note this is
+// weaker than it looks in isolation: the *kernel* state behind the handle is shared, and it is the
+// kernel that serialises concurrent IOCTLs on one file object, not anything in this type.
 unsafe impl Sync for DriverHandle {}
 
+/// # Safety invariants shared by every IOCTL below
+///
+/// All of these calls follow the **direct-argument** form: every raw pointer handed to
+/// `DeviceIoControl` is produced by the argument expression itself (`&mut x as *mut _ as *mut _`),
+/// so the referent is a live local for the whole call. None is stored into a struct that outlives
+/// the expression — that is the shape that caused the real dangling-pointer bug in
+/// `memory/backend.rs`, and the rule these sites are audited against (TODO #66).
+///
+/// Each in/out buffer length is `size_of::<T>()` of the *same* type as the pointer, so the kernel
+/// cannot write past it. Out-params are fully initialised before the call, never `MaybeUninit`, so
+/// a short write leaves defined (if stale) values rather than uninitialised memory.
+///
+/// `self.handle` is non-null and not `INVALID_HANDLE_VALUE` — `open()` rejects both before
+/// constructing `Self`, and `Drop` is the only thing that closes it.
 impl DriverHandle {
     /// Get the raw Windows handle for DeviceIoControl calls
     pub fn handle(&self) -> HANDLE {
         self.handle
     }
     pub fn open() -> Result<Arc<Self>, String> {
+        // SAFETY: `c"..."` is a NUL-terminated `'static` literal, so the `PCSTR` stays valid for
+        // the whole call. The returned handle is validated below before it reaches `Self`.
         unsafe {
             let device_path = PCSTR::from_raw(c"\\\\.\\TmrMemory".as_ptr().cast());
             
@@ -84,6 +113,8 @@ impl DriverHandle {
     pub fn reset_all(&self) -> Result<(), String> {
         track_call(DriverStatType::ResetAll);
         
+        // SAFETY: no in/out buffers — both are `None` with length 0, so the only pointer is
+        // `bytes_returned`, a live local. See the impl-level note.
         unsafe {
             let mut bytes_returned = 0u32;
             
@@ -124,6 +155,8 @@ impl DriverHandle {
             driver_build_time: [0; 32],
         };
 
+        // SAFETY: `version_info` is a fully initialised local; the out-length is
+        // `size_of::<DriverVersionInfo>()`, matching the pointer's type. See the impl-level note.
         unsafe {
             let mut bytes_returned = 0u32;
             
@@ -186,6 +219,8 @@ impl DriverHandle {
         
         let mut stats = DriverStatistics::default();
         
+        // SAFETY: `stats` is a fully initialised local; the out-length is
+        // `size_of::<DriverStatistics>()`, matching the pointer's type. See the impl-level note.
         unsafe {
             let mut bytes_returned = 0u32;
             
@@ -239,6 +274,9 @@ impl DriverHandle {
             results: [crate::driver::types::AllocationResult::default(); 128],
         };
         
+        // SAFETY: `input` is read-only to the kernel and `output` is a fully initialised local;
+        // both lengths are `size_of` of the matching type. `request_count` was already clamped to
+        // the 32-slot request array above. See the impl-level note.
         unsafe {
             let mut bytes_returned = 0u32;
             
@@ -257,7 +295,12 @@ impl DriverHandle {
                 return Err(format!("Enhanced batch allocation failed: {:?}", windows::core::Error::from_thread()));
             }
         }
-        
+
+        // The kernel reports how many of the fixed 128-slot array it filled, and callers slice with
+        // that count. Clamp it to the array's own length: a bad count is safe (indexing is checked)
+        // but would panic the run on a driver bug rather than degrade. TODO #66 check 3.
+        output.total_allocations = output.total_allocations.min(output.results.len() as u32);
+
         Ok(output)
     }
 
@@ -265,6 +308,7 @@ impl DriverHandle {
     pub fn free_all(&self) -> Result<(), String> {
         track_call(DriverStatType::FreeAll);
         
+        // SAFETY: no in/out buffers — both are `None` with length 0. See the impl-level note.
         unsafe {
             let mut bytes_returned = 0u32;
             
@@ -319,6 +363,9 @@ impl DriverHandle {
             results: [crate::driver::types::AllocationResult::default(); 128],
         };
         
+        // SAFETY: `input` is read-only to the kernel and `output` is a fully initialised local;
+        // both lengths are `size_of` of the matching type. `request_count` was already clamped to
+        // the 32-slot request array above. See the impl-level note.
         unsafe {
             let mut bytes_returned = 0u32;
             
@@ -337,9 +384,10 @@ impl DriverHandle {
                 return Err(format!("Failed to reallocate memory: {:?}", windows::core::Error::from_thread()));
             }
         }
-        
-        // Convert results to Vec
-        let results = output.results[..output.total_allocations as usize].to_vec();
+
+        // Clamped for the same reason as `enhanced_batch_allocate` — the slice below trusts it.
+        let filled = (output.total_allocations as usize).min(output.results.len());
+        let results = output.results[..filled].to_vec();
 
         Ok(results)
     }
@@ -348,6 +396,9 @@ impl DriverHandle {
 impl Drop for DriverHandle {
     fn drop(&mut self) {
         if self.handle != INVALID_HANDLE_VALUE {
+            // SAFETY: `Drop` runs once, and the handle is owned solely by this `DriverHandle`
+            // (shared only behind `Arc`, so no second owner can close it). Guarded against the
+            // sentinel above, so this cannot double-close or close a pseudo-handle.
             unsafe {
                 let _ = CloseHandle(self.handle);
             }

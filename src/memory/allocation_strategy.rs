@@ -1,3 +1,11 @@
+// Every `unsafe` block in this file crosses a Win32 FFI boundary, where the borrow checker is
+// switched off precisely where the invariants get subtle (TODO #66). The lint below makes a missing
+// `// SAFETY:` a warning *here* rather than relying on a periodic audit — it is deliberately not
+// crate-wide, because the SIMD test kernels' `unsafe` is a different, repetitive story already
+// covered by `test_fn_safety.md`, and a blanket rule there would produce boilerplate that trains
+// you to skip reading these.
+#![warn(clippy::undocumented_unsafe_blocks)]
+
 /// Enhanced memory allocation strategy with clear reserve semantics
 /// This replaces the ambiguous percentage-based system with explicit reserve types
 ///
@@ -82,6 +90,10 @@ pub struct SystemMemoryInfo {
 impl SystemMemoryInfo {
     /// Gather current system memory information
     pub fn gather() -> Result<Self, String> {
+        // SAFETY: both calls write into initialised locals passed by `&mut`. `MEMORYSTATUSEX`
+        // carries its own `dwLength`, set to `size_of` of that type above — the API relies on it
+        // to know the struct version, so a wrong value there (not a bad pointer) is the real
+        // hazard, and it is derived rather than hard-coded.
         unsafe {
             // Get total installed memory
             let mut total_installed_kb: u64 = 0;

@@ -1,3 +1,11 @@
+// Every `unsafe` block in this file crosses a Win32 FFI boundary, where the borrow checker is
+// switched off precisely where the invariants get subtle (TODO #66). The lint below makes a missing
+// `// SAFETY:` a warning *here* rather than relying on a periodic audit — it is deliberately not
+// crate-wide, because the SIMD test kernels' `unsafe` is a different, repetitive story already
+// covered by `test_fn_safety.md`, and a blanket rule there would produce boilerplate that trains
+// you to skip reading these.
+#![warn(clippy::undocumented_unsafe_blocks)]
+
 use crate::memory::backend::{Backend, BackendAllocation};
 use crate::constants::BYTES_PER_GIB_USIZE;
 use std::sync::Arc;
@@ -145,12 +153,13 @@ impl Drop for MemoryBuffer {
     }
 }
 
-// SAFETY (Send): `MemoryBuffer` owns its allocation — `ptr` is produced by the backend and
+// SAFETY: `MemoryBuffer` owns its allocation — `ptr` is produced by the backend and
 // freed exactly once in `Drop` (below), which runs on whichever thread holds the buffer. No
 // thread-affine state (no TLS, no HANDLE tied to a thread), and `VirtualFree`/the driver free
 // path may be called from any thread, so transferring ownership across threads is sound.
-//
-// SAFETY (Sync): this is the stronger claim and it rests on a CONVENTION, not on the type.
+unsafe impl Send for MemoryBuffer {}
+
+// SAFETY: this is the stronger claim and it rests on a CONVENTION, not on the type.
 // `as_mut_ptr(&self)` hands out a `*mut u8` from a *shared* reference, so `&MemoryBuffer`
 // shared across threads could alias mutable memory. It is sound only because the allocator
 // gives each worker thread its OWN blocks and workers never write outside the block(s) they
@@ -162,14 +171,14 @@ impl Drop for MemoryBuffer {
 // longer justified by the above and the aliasing must be made explicit instead — split the
 // buffer into disjoint `&mut [u8]` slices per worker, or move to atomics/`UnsafeCell` with a
 // documented protocol. Do not rely on this comment staying true by accident.
-unsafe impl Send for MemoryBuffer {}
 unsafe impl Sync for MemoryBuffer {}
 
 
 
 /// Get total system memory
 pub fn get_total_system_memory() -> usize {
-    
+    // SAFETY: `total_memory_kb` is an initialised local passed by `&mut`; the API writes one `u64`
+    // and reports failure through the `Result`, which is handled rather than assumed.
     unsafe {
         let mut total_memory_kb: u64 = 0;
         match GetPhysicallyInstalledSystemMemory(&mut total_memory_kb) {
