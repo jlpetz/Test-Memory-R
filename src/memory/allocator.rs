@@ -246,8 +246,7 @@ impl MemoryAllocator {
         // Convert allocation results to MemoryBuffer
         let mut results = Vec::new();
         
-        for i in 0..batch_result.total_allocations as usize {
-            let result = &batch_result.results[i];
+        for result in &batch_result.results[..batch_result.total_allocations as usize] {
             if !result.success {
                 continue;
             }

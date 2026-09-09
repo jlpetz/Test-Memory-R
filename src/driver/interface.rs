@@ -339,11 +339,8 @@ impl DriverHandle {
         }
         
         // Convert results to Vec
-        let mut results = Vec::new();
-        for i in 0..output.total_allocations as usize {
-            results.push(output.results[i]);
-        }
-        
+        let results = output.results[..output.total_allocations as usize].to_vec();
+
         Ok(results)
     }
 }

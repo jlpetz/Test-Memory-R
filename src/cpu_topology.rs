@@ -502,8 +502,7 @@ pub fn detect_cpu_topology() -> Vec<CpuTopologyInfo> {
                     let mut logical_processors = Vec::new();
                     
                     // Collect all logical processors for this physical core
-                    for group_idx in 0..group_count as usize {
-                        let group_mask = &core_info.GroupMask[group_idx];
+                    for group_mask in &core_info.GroupMask[..group_count as usize] {
                         let group = group_mask.Group;
                         let mask = group_mask.Mask;
                         
