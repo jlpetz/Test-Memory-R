@@ -17,7 +17,6 @@ pub mod results; // New results module
 pub mod table;
 pub mod formatting;
 pub mod thread_pool;
-pub mod driver;
 pub mod cpu_topology;
 pub mod cpu_selection; // two-stage CPU selection: skip-cores filter + cpu-stride spacing
 pub mod reporting;
@@ -43,7 +42,6 @@ pub use config::*;
 pub use memory::{MemoryAllocator, MemoryBuffer, AllocationConfig, BackendType, MemoryType, PageType, setup_large_pages_automatically, check_large_page_privilege};
 // Legacy compatibility 
 pub use memory::{diagnose_and_setup_large_pages, auto_grant_large_page_privilege, check_restart_needed};
-pub use driver::{reset_driver, DriverStatus, display_driver_info, check_and_display_driver_status, refresh_driver_status, display_driver_stats, is_driver_connected, compare_app_vs_driver_stats, reset_app_driver_stats, display_app_driver_stats_table, set_use_remap_all};
 pub use tests::TestMemoryConfig;
 pub use tests::{set_calibration_data, set_active_threads_per_core};
 pub use progress::ProgressTracker;
@@ -64,16 +62,13 @@ pub enum ErrorMode {
 
 #[derive(Debug, Clone, Copy)]
 pub enum MemoryBackend {
-    KernelDriver,    // Use TMR kernel driver
     NativeLargePages, // Use Windows large pages
     NativeRegular,    // Use regular Windows allocation
 }
 
 pub struct RuntimeConfig {
     pub memory_backend: MemoryBackend,
-    pub driver_available: bool,
     pub large_pages_available: bool,
-    pub use_driver_chunking: bool,
     pub cpu_list: Option<Vec<usize>>,
     pub enhanced_memory_strategy: crate::memory::allocation_strategy::EnhancedMemoryStrategy,
     pub memory_allocation: MemoryAllocationConfig,

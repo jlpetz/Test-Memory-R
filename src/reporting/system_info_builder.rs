@@ -17,7 +17,12 @@ pub fn build_system_info_report(
     
     // Use cached memory info instead of calling Windows APIs again
     let large_pages_available = crate::memory::check_large_page_privilege().is_ok();
-    let huge_pages_available = crate::driver::get_global_driver_handle().is_ok();
+    // 1GB huge pages come from VirtualAlloc2 (MEM_EXTENDED_PARAMETER_NONPAGED_HUGE), not from a
+    // driver — this used to report "is the driver handle open?", which read as "no 1GB pages" on
+    // every machine. Both page sizes gate on the same SeLockMemoryPrivilege, so that is the
+    // honest signal here. It is necessary, not sufficient: a 1GB page also needs 1GB of
+    // contiguous physical memory, so treat this as *permitted*, not guaranteed.
+    let huge_pages_available = large_pages_available;
     
     // Build NUMA nodes info
     let numa_nodes = if topology.is_empty() {

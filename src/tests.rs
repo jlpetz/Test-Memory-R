@@ -1,6 +1,6 @@
 use crate::ErrorMode;
 use crate::cache::{CacheInfo, SystemInfo};
-use crate::driver::MemoryType;
+use crate::memory::buffer::MemoryType;
 use crate::constants::{MB, MB_16, MB_32, MB_64, MB_F64, KB, PAGE_SIZE_4KB};
 use std::simd::*; // Docs here https://doc.rust-lang.org/std/simd/index.html
 use std::simd::cmp::SimdPartialEq;

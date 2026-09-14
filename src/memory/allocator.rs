@@ -1,4 +1,4 @@
-use crate::memory::backend::{Backend, BackendType, WindowsBackend, DriverBackend};
+use crate::memory::backend::{Backend, BackendType, WindowsBackend};
 use crate::memory::buffer::{MemoryBuffer, PageType};
 use crate::memory::buffer::MemoryType as BufferMemoryType;
 use crate::{BlockInfo, AllocationBlock};
@@ -111,23 +111,17 @@ impl MemoryAllocator {
             BackendType::Windows { large_pages } => {
                 Arc::new(WindowsBackend::new(large_pages))
             }
-            BackendType::Driver => {
-                Arc::new(DriverBackend::new()?)
-            }
         };
-        
+
         Ok(Self {
             backend,
             stats: AllocationStats::default(),
         })
     }
-    
+
     fn auto_detect_backend() -> Result<Arc<dyn Backend>, String> {
-        // Try driver first, fall back to Windows large pages, then regular
-        if let Ok(driver_backend) = DriverBackend::new() {
-            log::info!("Auto-detected TMR kernel driver backend");
-            Ok(Arc::new(driver_backend))
-        } else if crate::memory::check_large_page_privilege().is_ok() {
+        // Large pages if we hold SeLockMemoryPrivilege, otherwise regular 4KB.
+        if crate::memory::check_large_page_privilege().is_ok() {
             log::info!("Auto-detected Windows large pages backend");
             Ok(Arc::new(WindowsBackend::new(true)))
         } else {
@@ -165,138 +159,15 @@ impl MemoryAllocator {
         self.stats = AllocationStats::default();
     }
     
-    /// Batch allocation - optimized for driver backend, individual calls for Windows backend
+    /// Allocate one buffer per request. Sequential `VirtualAlloc2` calls: there is no
+    /// batch syscall to amortise, and allocation happens once at startup, off the hot path.
     pub fn batch_allocate(&mut self, configs: Vec<(usize, AllocationConfig)>) -> Result<Vec<(usize, MemoryBuffer)>, String> {
-        if configs.is_empty() {
-            return Ok(Vec::new());
-        }
-        
-        // For driver backend, use optimized batch API
-        if matches!(self.backend_name(), "TMR Kernel Driver") {
-            self.batch_allocate_driver(configs)
-        } else {
-            // For Windows backend, allocate individually
-            self.batch_allocate_individual(configs)
-        }
-    }
-    
-    /// Individual allocation fallback for Windows backend
-    fn batch_allocate_individual(&mut self, configs: Vec<(usize, AllocationConfig)>) -> Result<Vec<(usize, MemoryBuffer)>, String> {
         let mut results = Vec::new();
-        
+
         for (thread_id, config) in configs {
             match self.allocate(&config) {
                 Ok(buffer) => results.push((thread_id, buffer)),
                 Err(e) => return Err(format!("Failed to allocate for thread {}: {}", thread_id, e)),
-            }
-        }
-        
-        Ok(results)
-    }
-    
-    /// Optimized batch allocation for driver backend
-    fn batch_allocate_driver(&mut self, configs: Vec<(usize, AllocationConfig)>) -> Result<Vec<(usize, MemoryBuffer)>, String> {
-        // Convert AllocationConfig to ThreadAllocationRequest
-        let mut thread_requests = Vec::new();
-        let mut total_memory_target = 0;
-        
-        for (thread_id, config) in &configs {
-            let request = crate::driver::types::ThreadAllocationRequest {
-                thread_id: *thread_id as u32,
-                cpu_id: 0, // Will be set by caller if needed
-                size_bytes: config.size,
-                block_count: 1,
-                minimum_page_size: match config.page_size {
-                    PageSizePreference::Require(PageType::Huge(_)) => crate::driver::PageSize::Huge,
-                    PageSizePreference::Require(PageType::Large(_)) => crate::driver::PageSize::Large,
-                    _ => crate::driver::PageSize::Regular,
-                },
-                maximum_page_size: crate::driver::PageSize::Huge,
-                memory_type: match config.memory_type {
-                    BufferMemoryType::WriteBack => crate::driver::MemoryType::WriteBack,
-                    BufferMemoryType::WriteCombining => crate::driver::MemoryType::WriteCombining,
-                    BufferMemoryType::Uncached => crate::driver::MemoryType::Uncached,
-                    BufferMemoryType::WriteProtected => crate::driver::MemoryType::WriteProtected,
-                    BufferMemoryType::WriteCombined => crate::driver::MemoryType::WriteCombining,
-                },
-                numa_node: config.numa_node.unwrap_or(0),
-                strict_numa: matches!(config.page_size, PageSizePreference::Require(_)),
-                zero_memory: config.zero_memory,
-                contiguous: false,
-                timeout_ms: config.timeout_ms,
-                retry_interval_ms: 100,
-                max_retries: 5,
-            };
-            
-            thread_requests.push(request);
-            total_memory_target += config.size;
-        }
-        
-        // Call driver batch allocation
-        let interface = crate::driver::get_global_driver_handle()?;
-        let batch_result = interface.enhanced_batch_allocate(total_memory_target, &thread_requests)?;
-        
-        log::info!("Batch allocation completed: {}/{} successful", 
-                  batch_result.successful_allocations, batch_result.total_allocations);
-        
-        if batch_result.successful_allocations == 0 {
-            return Err("Batch allocation failed - no successful allocations".to_string());
-        }
-        
-        // Convert allocation results to MemoryBuffer
-        let mut results = Vec::new();
-        
-        for result in &batch_result.results[..batch_result.total_allocations as usize] {
-            if !result.success {
-                continue;
-            }
-            
-            // Create segments from allocation result
-            let segments = vec![crate::memory::buffer::SegmentInfo {
-                virtual_address: result.virtual_address,
-                physical_address: result.physical_address,
-                size: result.size,
-                page_size_kb: match result.guaranteed_page_type {
-                    2 => 1048576, // Huge (1GB)
-                    1 => 2048,    // Large (2MB) 
-                    _ => 4,       // Regular (4KB)
-                },
-                numa_node: result.numa_node,
-            }];
-            
-            let page_type = if result.guaranteed_page_type == 2 {
-                PageType::Huge(result.size)
-            } else if result.guaranteed_page_type == 1 {
-                PageType::Large(result.size)
-            } else {
-                PageType::Regular(result.size)
-            };
-            
-            let buffer_info = crate::memory::buffer::BufferInfo {
-                physical_address: Some(result.physical_address),
-                numa_node: result.numa_node,
-                page_type,
-                segments,
-            };
-            
-            let backend_allocation = crate::memory::backend::BackendAllocation {
-                ptr: result.virtual_address as *mut u8,
-                size: result.size,
-                info: buffer_info,
-            };
-            
-            let memory_buffer = MemoryBuffer::new(backend_allocation, self.backend.clone());
-            results.push((result.thread_id as usize, memory_buffer));
-            
-            // Update stats
-            self.stats.total_allocations += 1;
-            self.stats.total_bytes_allocated += result.size;
-            
-            if result.guaranteed_page_type >= 1 {
-                self.stats.large_page_allocations += 1;
-            }
-            if result.guaranteed_page_type >= 2 {
-                self.stats.huge_page_allocations += 1;
             }
         }
         

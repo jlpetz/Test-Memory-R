@@ -2,7 +2,7 @@ use crate::{ErrorMode, AllocationBlock};
 use crate::tests::TestMemoryConfig;
 use crate::runner::TestFunction;
 use crate::config::CpuPinningConfig;
-use crate::driver::MemoryType;
+use crate::memory::buffer::MemoryType;
 use crate::cpu_topology::get_numa_node_for_cpu;
 use crate::latency_tests::LatencyTestStats;
 use std::collections::HashMap;

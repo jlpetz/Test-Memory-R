@@ -20,12 +20,43 @@
 //! and the *outcome* (`8 × 3.000 GiB on 2 MB pages`) are different facts, and only the outcome
 //! explains a throughput number. Where they can diverge, both are stored.
 
+use std::sync::OnceLock;
+
+use chrono::{DateTime, Local};
 use serde::{Deserialize, Serialize};
 
 use crate::app_config::MachineIdentity;
 use crate::constants::bytes_to_gib_f64 as to_gib;
 use crate::formatting::{ByteSize, serialize_round_2dp, serialize_round_opt_2dp};
 use crate::smbios::{MemoryModule, SmbiosData};
+
+// ===========================================================================
+// Run instant — the one clock reading that names this run
+// ===========================================================================
+
+/// The single wall-clock instant identifying this run, captured on first call.
+///
+/// **Everything that names or stamps a run must read it from here.** The log filename
+/// (`main.rs: setup_logging`) and the result filename (`results.rs: TestRunResult::new`) used to
+/// call `Local::now()` and `Utc::now()` *independently*, and not at the same moment: logging is
+/// initialised near the top of `main`, while the result is built in `runner.rs` after allocation
+/// and `ThreadPool::new`. So the two artifacts of one run disagreed twice over —
+/// `results/TMR_2026-09-08_04-18-35.json` next to `logs/TMR_2026-09-08_14-18-23.log`, a 10 h zone
+/// difference *and* a 12 s difference — and could not be paired by name at all. Fixing only the
+/// timezone would have left the seconds skewed, which is why this is a shared instant rather than
+/// two matching format strings.
+///
+/// Local, not UTC, because it is the stem of a filename a human browses. Result *files* carry both
+/// zones as fields (see [`crate::results::TestRunMetadata`]); a filename can only pick one.
+pub fn run_start() -> DateTime<Local> {
+    static RUN_START: OnceLock<DateTime<Local>> = OnceLock::new();
+    *RUN_START.get_or_init(Local::now)
+}
+
+/// Filename stem shared by this run's log and result files, e.g. `TMR_2026-09-08_14-18-23`.
+pub fn run_file_stem() -> String {
+    format!("TMR_{}", run_start().format("%Y-%m-%d_%H-%M-%S"))
+}
 
 // ===========================================================================
 // Item 1 — run identity

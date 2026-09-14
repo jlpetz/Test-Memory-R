@@ -369,27 +369,6 @@ impl ParamRegistry {
             },
         });
 
-        // Driver-related parameters
-        flags.insert("--driver-chunking", ParamDef {
-            key: "--driver-chunking",
-            is_flag: true,
-            default: ParamValue::Bool(false),
-            help: "Enable driver-side memory chunking",
-            example: "--driver-chunking",
-            can_override_config: true,
-            parser: |_| Ok(ParamValue::Bool(true)),
-        });
-
-        flags.insert("--batch-remap", ParamDef {
-            key: "--batch-remap",
-            is_flag: true,
-            default: ParamValue::Bool(false),
-            help: "Enable batch remapping mode",
-            example: "--batch-remap",
-            can_override_config: true,
-            parser: |_| Ok(ParamValue::Bool(true)),
-        });
-
         // Page size parameters
         params.insert("minpage", ParamDef {
             key: "minpage",
@@ -631,8 +610,6 @@ pub fn print_help(program_name: &str) {
     println!("  test-reps=3                         # Test op repetitions per write (MirrorMove round-trips)");
     println!("  write-read-cycles=4                 # Write+verify cycles per chunk (TM5 SimpleTest: 4)");
     println!("  topology=windowsv2                  # CPU detection method (auto/windows/windowsv2/cpuid)");
-    println!("  --driver-chunking                   # Enable driver-side memory chunking");
-    println!("  --batch-remap                       # Enable batch remapping mode");
     println!("  --no-calibration                    # Skip loading calibration data (use CPUID heuristics)");
     println!();
     println!("CONFIG FILE OVERRIDES:");
@@ -642,21 +619,13 @@ pub fn print_help(program_name: &str) {
     println!("LOGGING:");
     println!("  RUST_LOG=info                       # Set log level (error/warn/info/debug/trace)");
     println!("                                        # Use debug for detailed per-thread logs");
-    println!("  Logs saved to: .\\logs\\TMR_YYYY-MM-DD_HH-MM-SS.log");
-    println!("  Results saved to: .\\results\\TMR_YYYY-MM-DD_HH-MM-SS.json");
+    println!("  Logs saved to: .\\logs\\TMR_YYYY-MM-DD_HH-MM-SS.log      (local time)");
+    println!("  Results saved to: .\\results\\TMR_YYYY-MM-DD_HH-MM-SS.json (same name as the log)");
     println!();
     println!("RESULT COMPARISON:");
     println!("  Test results are automatically saved as JSON files to .\\results\\");
     println!("  Use --compare-results to analyze performance differences");
     println!("  Useful for memory overclocking and timing optimization");
-    println!();
-    println!("ADVANCED FEATURES:");
-    println!("  DMA Memory: Install kernel driver for physical memory testing");
-    println!("              - Provides true physical address access");
-    println!("              - Guaranteed physically contiguous memory");
-    println!("              - Better detection of memory controller issues");
-    println!("  Installation: Run Install-TmrDriver.ps1 as Administrator");
-    println!();
 }
 
 /// Extract a string value from validated params, or use default

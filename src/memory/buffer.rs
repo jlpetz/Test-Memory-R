@@ -72,13 +72,25 @@ pub struct PageInfo {
     pub count: usize,
 }
 
-#[derive(Debug, Clone, Copy)]
+/// Caching behaviour requested for an allocation.
+///
+/// The single canonical memory-type vocabulary for TMR, formed by merging the old
+/// `driver::MemoryType` into this enum when the driver client was purged (TODO #4/5,
+/// 2026-09-14). The duplicate `WriteCombined` spelling was dropped in that merge;
+/// `WriteCombining` is the one.
+///
+/// Only `WriteBack` is constructed today: `VirtualAlloc2` cannot request UC/WC/WP for
+/// ordinary RAM, and WB + CLFLUSHOPT forces a DRAM round-trip faster than UC would.
+/// The other variants are kept deliberately as the vocabulary a ring-0 backend would
+/// map onto `MEMORY_CACHING_TYPE`, so one can slot back in as a `Backend` impl without
+/// a redesign.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 pub enum MemoryType {
     WriteBack,
+    WriteThrough,
     WriteCombining,
     Uncached,
     WriteProtected,
-    WriteCombined,
 }
 
 impl MemoryBuffer {
@@ -155,8 +167,8 @@ impl Drop for MemoryBuffer {
 
 // SAFETY: `MemoryBuffer` owns its allocation — `ptr` is produced by the backend and
 // freed exactly once in `Drop` (below), which runs on whichever thread holds the buffer. No
-// thread-affine state (no TLS, no HANDLE tied to a thread), and `VirtualFree`/the driver free
-// path may be called from any thread, so transferring ownership across threads is sound.
+// thread-affine state (no TLS, no HANDLE tied to a thread), and `VirtualFree` may be called
+// from any thread, so transferring ownership across threads is sound.
 unsafe impl Send for MemoryBuffer {}
 
 // SAFETY: this is the stronger claim and it rests on a CONVENTION, not on the type.
@@ -188,85 +200,6 @@ pub fn get_total_system_memory() -> usize {
                 log::warn!("Could not detect system memory, assuming 8 GiB");
                 8 * BYTES_PER_GIB_USIZE
             }
-        }
-    }
-}
-
-/// DMA buffer configuration
-#[derive(Clone, Debug)]
-pub struct DmaConfig {
-    pub minimum_page_size: crate::driver::PageSize,
-    pub maximum_page_size: crate::driver::PageSize,
-    pub prefer_numa_node: Option<u32>,
-    pub zero_memory: bool,
-    pub memory_type: crate::driver::MemoryType,
-    pub contiguous: bool,
-    pub timeout_ms: u32,
-    pub retry_interval_ms: u32,
-    pub max_retries: u32,
-    pub strict_numa: bool,
-}
-
-impl Default for DmaConfig {
-    fn default() -> Self {
-        Self {
-            minimum_page_size: crate::driver::PageSize::Regular,
-            maximum_page_size: crate::driver::PageSize::Huge,
-            prefer_numa_node: None,
-            zero_memory: true,
-            memory_type: crate::driver::MemoryType::WriteBack,
-            contiguous: false,
-            timeout_ms: 5000,
-            retry_interval_ms: 100,
-            max_retries: 5,
-            strict_numa: false,
-        }
-    }
-}
-
-impl DmaConfig {
-    pub fn for_testing() -> Self {
-        Self {
-            minimum_page_size: crate::driver::PageSize::Regular,
-            maximum_page_size: crate::driver::PageSize::Huge,
-            prefer_numa_node: None,
-            zero_memory: true,
-            memory_type: crate::driver::MemoryType::WriteBack,
-            contiguous: false,
-            timeout_ms: 5000,
-            retry_interval_ms: 100,
-            max_retries: 5,
-            strict_numa: false,
-        }
-    }
-
-    pub fn for_bandwidth_test() -> Self {
-        Self {
-            minimum_page_size: crate::driver::PageSize::Large,
-            maximum_page_size: crate::driver::PageSize::Huge,
-            prefer_numa_node: None,
-            zero_memory: false,
-            memory_type: crate::driver::MemoryType::WriteBack,
-            contiguous: true,
-            timeout_ms: 10000,
-            retry_interval_ms: 250,
-            max_retries: 3,
-            strict_numa: false,
-        }
-    }
-
-    pub fn for_latency_test() -> Self {
-        Self {
-            minimum_page_size: crate::driver::PageSize::Regular,
-            maximum_page_size: crate::driver::PageSize::Large,
-            prefer_numa_node: None,
-            zero_memory: true,
-            memory_type: crate::driver::MemoryType::WriteBack,
-            contiguous: false,
-            timeout_ms: 2000,
-            retry_interval_ms: 50,
-            max_retries: 10,
-            strict_numa: true,
         }
     }
 }

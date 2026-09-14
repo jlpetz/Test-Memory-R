@@ -2,7 +2,6 @@
 /// This bridges the gap between the current codebase and the new reporting system
 use super::models::*;
 use crate::memory::allocation_strategy::{SystemMemoryInfo, AllocationResult};
-use crate::driver::DriverStatus;
 use crate::progress::{TestSummary, CycleStats};
 use crate::constants::{PageType, bytes_to_gib_f64};
 use std::collections::HashSet;
@@ -142,50 +141,6 @@ pub fn create_consolidated_memory_report(
             post_reserve_bytes: details.post_reserve_bytes,
         }),
         warnings,
-    }
-}
-
-/// Convert driver status to reporting format
-pub fn create_driver_status_report(status: &DriverStatus) -> DriverStatusReport {
-    match status {
-        DriverStatus::Available(version_info) => {
-            let version = Some(DriverVersion {
-                major: version_info.driver_version_major as u16,
-                minor: version_info.driver_version_minor as u16,
-                build: version_info.driver_version_build as u16,
-                revision: version_info.driver_version_revision as u16,
-            });
-            
-            DriverStatusReport {
-                available: true,
-                version,
-                error_message: None,
-                statistics: None,
-            }
-        }
-        DriverStatus::VersionMismatch { driver_version, app_version, min_required, max_supported } => {
-            DriverStatusReport {
-                available: false,
-                version: None,
-                error_message: Some(format!(
-                    "Version mismatch: driver {}, app {}, requires {}-{}",
-                    driver_version, app_version, min_required, max_supported
-                )),
-                statistics: None,
-            }
-        }
-        DriverStatus::NotFound => DriverStatusReport {
-            available: false,
-            version: None,
-            error_message: Some("Driver not found".to_string()),
-            statistics: None,
-        },
-        DriverStatus::Error(msg) => DriverStatusReport {
-            available: false,
-            version: None,
-            error_message: Some(msg.clone()),
-            statistics: None,
-        },
     }
 }
 
@@ -549,16 +504,7 @@ pub fn create_block_allocation_report_from_windows(
     analyze_block_allocations(allocations, allocator_backend)
 }
 
-/// Create block allocation report from driver batch allocation results
-pub fn create_block_allocation_report_from_driver(
-    allocations: &std::collections::HashMap<usize, Vec<crate::AllocationBlock>>,
-) -> BlockAllocationReport {
-    let allocator_backend = "TMR Kernel Driver".to_string();
-    
-    analyze_block_allocations(allocations, allocator_backend)
-}
-
-/// Common analysis function that works with both Windows and driver allocations
+/// Shared block-allocation analysis, independent of which backend allocated.
 fn analyze_block_allocations(
     allocations: &std::collections::HashMap<usize, Vec<crate::AllocationBlock>>,
     allocator_backend: String,

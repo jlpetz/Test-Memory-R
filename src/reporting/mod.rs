@@ -70,19 +70,6 @@ impl<R: Renderer> Reporter<R> {
         Ok(())
     }
 
-    /// Report driver status
-    pub fn report_driver_status(&mut self, report: &DriverStatusReport) -> Result<()> {
-        let status_line = self.formatter.format_driver_status(report);
-        self.renderer.render_info(&status_line)?;
-        
-        if let Some(stats) = &report.statistics {
-            let stats_table = self.formatter.prepare_driver_stats_table(stats);
-            self.renderer.render_table(&stats_table)?;
-        }
-        
-        Ok(())
-    }
-    
     /// Report thread timing deviations
     pub fn report_thread_timing(&mut self, report: &ThreadTimingReport) -> Result<()> {
         let table = self.formatter.prepare_thread_timing_table(report);

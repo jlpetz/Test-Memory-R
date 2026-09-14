@@ -453,12 +453,7 @@ pub fn run_tests_with_layout_and_timing_filtered(
     {
         use crate::reporting::{create_console_reporter, converters};
 
-        // Determine which converter to use based on backend
-        let report = if matches!(runtime_config.memory_backend, MemoryBackend::KernelDriver) {
-            converters::create_block_allocation_report_from_driver(&allocated_blocks)
-        } else {
-            converters::create_block_allocation_report_from_windows(&allocated_blocks)
-        };
+        let report = converters::create_block_allocation_report_from_windows(&allocated_blocks);
 
         let mut reporter = create_console_reporter();
         if let Err(e) = reporter.report_block_allocation(&report) {
@@ -3888,38 +3883,21 @@ fn create_test_definitions_from_config(config: &crate::config::ModernConfig, cac
 
 // Detect runtime capabilities
 pub fn detect_runtime_capabilities(alloc_config: &MemoryAllocationConfig) -> RuntimeConfig {
-    // Check if driver is available
-    let driver_available = crate::driver::is_driver_connected();
-    
-    let memory_backend = if let Some(use_driver) = alloc_config.use_driver {
-        if use_driver && driver_available {
-            MemoryBackend::KernelDriver
-        } else {
-            MemoryBackend::NativeLargePages
-        }
-    } else {
-        // Auto-detect: prefer driver if available, fall back to native
-        if driver_available {
-            println!("✅ Kernel driver available - using enhanced memory access");
-            MemoryBackend::KernelDriver
-        } else {
-            println!("⚠️  Kernel driver not available - using Windows native memory");
-            MemoryBackend::NativeLargePages
-        }
-    };
+    // Unconditionally NativeLargePages, as before the driver-client purge: `WindowsBackend`
+    // itself decides per-allocation whether large pages are usable and falls back, so
+    // downgrading to NativeRegular here would turn a soft fallback into a hard
+    // "backend doesn't support large pages" error. `large_pages_available` is reported
+    // separately for display.
+    let memory_backend = MemoryBackend::NativeLargePages;
 
     let large_pages_available = crate::memory::privileges::check_large_page_privilege().is_ok();
 
-    log::info!("detect_runtime_capabilities: driver_available={}, large_pages_available={}", 
-               driver_available, large_pages_available);
-    log::info!("Runtime capabilities detected: backend={:?}, driver_available={}, large_pages_available={}", 
-               memory_backend, driver_available, large_pages_available);
+    log::info!("Runtime capabilities detected: backend={:?}, large_pages_available={}",
+               memory_backend, large_pages_available);
 
     RuntimeConfig {
         memory_backend,
-        driver_available,
         large_pages_available,
-        use_driver_chunking: alloc_config.driver_chunking,
         cpu_list: {
             // Use all available CPUs by default
             let total_cpus = num_cpus::get();
@@ -4169,7 +4147,6 @@ fn allocate_all_blocks_new(thread_blocks: &HashMap<usize, Vec<BlockInfo>>, runti
 
     // Determine backend type based on runtime config
     let backend_type = match runtime_config.memory_backend {
-        MemoryBackend::KernelDriver => BackendType::Driver,
         MemoryBackend::NativeLargePages => BackendType::Windows { large_pages: true },
         MemoryBackend::NativeRegular => BackendType::Windows { large_pages: false },
     };
@@ -4185,7 +4162,7 @@ fn allocate_all_blocks_new(thread_blocks: &HashMap<usize, Vec<BlockInfo>>, runti
                             runtime_config.memory_allocation.allocation_strategy, e))?;
     
     log::info!("Using allocation strategy: {}", strategy);
-    
+
     // Use the plan-based chunk allocation with configured strategy
     allocator.chunk_allocate_planned(thread_blocks, runtime_config, strategy)
 }

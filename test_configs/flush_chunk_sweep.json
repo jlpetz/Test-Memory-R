@@ -48,15 +48,11 @@
       "stride_spec": "1"
     },
     "memory_allocation": {
-      "use_driver": null,
-      "driver_chunking": false,
-      "remap_mode": "remap_all",
       "min_page_size": "large",
       "max_page_size": "huge",
       "zero_memory": false,
       "require_contiguous": true,
       "allocation_strategy": "plan-pagesize-pref",
-      "default_memory_type": "write_back",
       "allocation_timeout_ms": 10000,
       "retry_interval_ms": 100,
       "max_retries": 3,

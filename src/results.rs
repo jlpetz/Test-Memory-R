@@ -7,7 +7,6 @@ use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
 use std::fs;
 use std::path::Path;
-use std::time::{SystemTime, UNIX_EPOCH};
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct TestRunResult {
@@ -26,9 +25,19 @@ pub struct TestRunResult {
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct TestRunMetadata {
     pub tmr_version: String,
-    pub start_time: u64,          // Unix timestamp
-    pub start_time_iso: String,   // Human-readable ISO format
-    pub filename: String,         // Generated filename
+    /// Unix timestamp — zone-free, the machine-readable anchor.
+    pub start_time: u64,
+    /// Start time in UTC. Kept because result files get collected from several machines and
+    /// consolidated centrally, where local stamps from different boxes cannot be ordered.
+    pub start_time_utc: String,
+    /// The same instant in the running machine's local zone, **with its offset** (e.g.
+    /// `2026-09-08 14:18:23 +10:00`). This is the one a human matches against `logs/` and against
+    /// their own memory of when they ran it; the offset is recorded so it stays unambiguous once
+    /// the file leaves this machine, and across DST.
+    pub start_time_local: String,
+    /// Generated filename. Shares its stem with this run's log file — see
+    /// [`crate::run_context::run_file_stem`].
+    pub filename: String,
     pub config_name: Option<String>, // If loaded from config
 }
 
@@ -201,22 +210,21 @@ impl TestRunResult {
             log::warn!("Failed to create results directory: {}", e);
         }
 
-        let now = SystemTime::now().duration_since(UNIX_EPOCH).unwrap().as_secs();
-        let start_time_iso = chrono::DateTime::from_timestamp(now as i64, 0)
-            .unwrap_or_default()
-            .format("%Y-%m-%d %H:%M:%S UTC")
-            .to_string();
-        
-        let filename = format!("results/TMR_{}.json", 
-            chrono::DateTime::from_timestamp(now as i64, 0)
-                .unwrap_or_default()
-                .format("%Y-%m-%d_%H-%M-%S"));
+        // Read from `run_start()` rather than sampling the clock here: this runs after allocation
+        // and `ThreadPool::new`, so a fresh `now()` would be seconds later than the one that named
+        // the log file, leaving the pair unmatchable. See `run_context::run_start`.
+        let started = crate::run_context::run_start();
+        let filename = format!("results/{}.json", crate::run_context::run_file_stem());
 
         Self {
             metadata: TestRunMetadata {
                 tmr_version: "1.0.0".to_string(),
-                start_time: now,
-                start_time_iso,
+                start_time: started.timestamp() as u64,
+                start_time_utc: started
+                    .with_timezone(&chrono::Utc)
+                    .format("%Y-%m-%d %H:%M:%S UTC")
+                    .to_string(),
+                start_time_local: started.format("%Y-%m-%d %H:%M:%S %:z").to_string(),
                 filename: filename.clone(),
                 config_name: run_config.config_name.clone(),
             },
@@ -460,7 +468,9 @@ impl TestRunResult {
         let mut report = String::new();
         
         report.push_str("=== TMR Test Result Report ===\n");
-        report.push_str(&format!("Run Time: {}\n", self.metadata.start_time_iso));
+        // Local for the text report: it is read on the machine that produced it. The UTC stamp is
+        // in the JSON for whoever consolidates results later.
+        report.push_str(&format!("Run Time: {}\n", self.metadata.start_time_local));
         report.push_str(&format!("TMR Version: {}\n", self.metadata.tmr_version));
         if let Some(config) = &self.metadata.config_name {
             report.push_str(&format!("Config: {}\n", config));
@@ -662,8 +672,11 @@ impl TestComparison {
         
         report.push_str("=== TMR Test Result Comparison ===\n");
         report.push_str(&format!("Comparison Time: {}\n", self.comparison_time));
-        report.push_str(&format!("Baseline: {} ({})\n", self.baseline.start_time_iso, self.baseline.filename));
-        report.push_str(&format!("Current:  {} ({})\n", self.current.start_time_iso, self.current.filename));
+        // UTC here, unlike the single-run report above, because the two files being compared may
+        // come from different machines in different zones — UTC is the only stamp that makes
+        // "which ran first" answerable, and it matches `comparison_time`.
+        report.push_str(&format!("Baseline: {} ({})\n", self.baseline.start_time_utc, self.baseline.filename));
+        report.push_str(&format!("Current:  {} ({})\n", self.current.start_time_utc, self.current.filename));
         report.push('\n');
 
         // Deliberately placed *before* the numbers: the whole point of TODO #67 was that a reader

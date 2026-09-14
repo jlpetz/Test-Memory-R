@@ -207,35 +207,6 @@ pub struct TestCoverage {
     pub average_time_ms: f64,
 }
 
-/// Driver status report
-#[derive(Debug, Clone)]
-pub struct DriverStatusReport {
-    pub available: bool,
-    pub version: Option<DriverVersion>,
-    pub error_message: Option<String>,
-    pub statistics: Option<DriverStatistics>,
-}
-
-/// Driver version information
-#[derive(Debug, Clone)]
-pub struct DriverVersion {
-    pub major: u16,
-    pub minor: u16,
-    pub build: u16,
-    pub revision: u16,
-}
-
-/// Driver statistics
-#[derive(Debug, Clone)]
-pub struct DriverStatistics {
-    pub allocations_active: u64,
-    pub bytes_allocated: u64,
-    pub huge_pages_used: u64,
-    pub large_pages_used: u64,
-    pub standard_pages_used: u64,
-    pub numa_nodes_used: Vec<usize>,
-}
-
 /// Thread timing deviation report
 #[derive(Debug, Clone)]
 pub struct ThreadTimingReport {
@@ -547,7 +518,7 @@ pub struct CurrentMemoryStatus {
     pub memory_load_percent: f64,
 }
 
-/// Block allocation distribution report - compatible with both Windows and driver APIs
+/// Block allocation distribution report - backend-agnostic; `allocator_backend` names the source
 #[derive(Debug, Clone)]
 pub struct BlockAllocationReport {
     pub allocator_backend: String,

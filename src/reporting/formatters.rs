@@ -49,12 +49,6 @@ pub trait ReportFormatter: Send + Sync {
     /// Prepare statistics table
     fn prepare_statistics_table(&self, stats: &TestStatistics) -> TableData;
     
-    /// Format driver status
-    fn format_driver_status(&self, status: &DriverStatusReport) -> String;
-    
-    /// Prepare driver statistics table
-    fn prepare_driver_stats_table(&self, stats: &DriverStatistics) -> TableData;
-    
     /// Prepare thread timing deviation table
     fn prepare_thread_timing_table(&self, report: &ThreadTimingReport) -> TableData;
     
@@ -422,55 +416,6 @@ impl ReportFormatter for DefaultFormatter {
         table
     }
     
-    fn format_driver_status(&self, status: &DriverStatusReport) -> String {
-        if status.available {
-            if let Some(version) = &status.version {
-                format!(
-                    "✅ DMA Driver: Available (v{}.{}.{}.{})",
-                    version.major, version.minor, version.build, version.revision
-                )
-            } else {
-                "✅ DMA Driver: Available".to_string()
-            }
-        } else {
-            format!(
-                "❌ DMA Driver: {}",
-                status.error_message.as_ref().unwrap_or(&"Not available".to_string())
-            )
-        }
-    }
-    
-    fn prepare_driver_stats_table(&self, stats: &DriverStatistics) -> TableData {
-        TableData::new()
-            .with_title("Driver Statistics")
-            .add_header("Metric", ColumnAlignment::Left)
-            .add_header("Value", ColumnAlignment::Right)
-            .add_row(vec![
-                "Active Allocations".to_string(),
-                format!("{}", stats.allocations_active),
-            ])
-            .add_row(vec![
-                "Memory Allocated".to_string(),
-                self.format_bytes(stats.bytes_allocated),
-            ])
-            .add_row(vec![
-                "Huge Pages (1GB)".to_string(),
-                format!("{}", stats.huge_pages_used),
-            ])
-            .add_row(vec![
-                "Large Pages (2MB)".to_string(),
-                format!("{}", stats.large_pages_used),
-            ])
-            .add_row(vec![
-                "Standard Pages (4KB)".to_string(),
-                format!("{}", stats.standard_pages_used),
-            ])
-            .add_row(vec![
-                "NUMA Nodes".to_string(),
-                format!("{:?}", stats.numa_nodes_used),
-            ])
-    }
-    
     fn prepare_thread_timing_table(&self, report: &ThreadTimingReport) -> TableData {
         let mut table = TableData::new()
             .add_header("Thread", ColumnAlignment::Right)
@@ -643,7 +588,7 @@ impl ReportFormatter for DefaultFormatter {
             // Determine constraint based on actual allocation behavior rather than theoretical constraints
             let constraint = match page_type.page_type.as_str() {
                 "Huge (1GB)" => {
-                    // If system has no huge page support or driver not available, it's effectively blocked
+                    // If the system has no huge page support, it's effectively blocked
                     if page_type.allocated > 0 || page_type.requested > 0 {
                         "✅ Allowed"
                     } else {

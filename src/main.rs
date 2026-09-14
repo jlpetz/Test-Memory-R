@@ -7,7 +7,6 @@ use std::io::Write;						// Needed for flush()
 use std::sync::{Arc, Mutex};
 use log::LevelFilter;
 use env_logger::Builder;
-use windows::Win32::Storage::FileSystem::{GetFileVersionInfoW, GetFileVersionInfoSizeW, VerQueryValueW};
 
 use tmr::{create_demo_configs, load_config, ErrorMode};
 use tmr::params;  // Centralized parameter registry
@@ -16,8 +15,6 @@ use tmr::memory::allocation_strategy::EnhancedMemoryStrategy;
 use tmr::runner::{run_tests_with_layout_and_timing_filtered, TestSuiteTiming, print_current_memory_status, detect_runtime_capabilities};
 use tmr::cpu_topology::{display_cpu_topology, get_cpu_topology, is_hybrid_cpu, CoreType};
 use tmr::results::compare_results_command;
-use tmr::{reset_driver, check_and_display_driver_status, DriverStatus, refresh_driver_status, is_driver_connected, display_driver_stats, compare_app_vs_driver_stats, reset_app_driver_stats};
-use tmr::driver::DriverHandle;
 use tmr::config::{MemoryAllocationConfig, CpuPinningConfig};
 
 // Global file logger for dual console+file logging
@@ -618,14 +615,6 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
 						log::debug!("CLI override: topology_detection_method = {:?}", method);
 					}
 				}
-				"--driver-chunking" => {
-					alloc_config.driver_chunking = true;
-					log::debug!("CLI override: driver_chunking = true");
-				}
-				"--batch-remap" => {
-					alloc_config.remap_mode = "batch".to_string();
-					log::debug!("CLI override: remap_mode = batch");
-				}
 				"minpage" => {
 					if let params::ParamValue::String(page_str) = value {
 						alloc_config.min_page_size = page_str.to_string();
@@ -861,15 +850,6 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
 		}
 	}
 
-	let use_batch_remap = args.iter().any(|arg| arg == "--batch-remap");
-	if use_batch_remap {
-		tmr::set_use_remap_all(false);
-		println!("  Remap Mode: Batch remapping (original implementation)");
-	} else {
-		tmr::set_use_remap_all(true);
-		println!("  Remap Mode: Remap all (optimized for TMR)");
-	}
-	
 	// Display timing configuration
     print!("  Test Suite Timing: ");
     match (&suite_timing.global_cycles, &suite_timing.global_duration_secs) {
@@ -897,11 +877,11 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
 		println!();
 		print!("Enter your choice (A/B): ");
 		stdout().flush().unwrap();
-		
+
 		let mut input = String::new();
 		stdin().read_line(&mut input).unwrap();
 		let choice = input.trim().to_uppercase();
-		
+
 		match choice.as_str() {
 			"A" => {
 				println!();
@@ -947,85 +927,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
 			println!("   This is normal on some systems and doesn't affect test accuracy");
 		}
 	}
-	
-	// Check KMDF version before attempting to use the driver
-	let kmdf_compatible = match verify_kmdf_compatibility() {
-		Ok((major, minor)) => {
-			println!("  KMDF Framework: ✅ v{}.{} (Compatible)", major, minor);
-			true
-		}
-		Err(e) => {
-			println!("  KMDF Framework: ⚠️  {}", e);
-			println!("    Impact: TMR kernel driver will not be available");
-			println!("    Note: Driver requires Windows 10 version 2004 or later (KMDF 1.33+)");
-			false
-		}
-	};
-	
-	let use_driver_chunking = args.iter().any(|arg| arg == "--driver-chunking");
-	if use_driver_chunking {
-		println!("  Use Driver Chunking: ❌ Enabled (for driver testing, driver controls page allocation strategy)");
-	} else {
-		println!("  Use Driver Chunking: ✅ Disabled (default/good, application controls page allocation strategy)");
-	}
 
-	// Only check driver status if KMDF is compatible
-	if kmdf_compatible {
-		// Use formal reporting system for driver status
-		{
-			use tmr::reporting::{create_console_reporter, models::{DriverStatusReport, DriverVersion}};
-			
-			let driver_status = check_and_display_driver_status();
-			
-			let (available, version, error_message, statistics) = match &driver_status {
-				DriverStatus::Available(ver) => {
-					let driver_version = Some(DriverVersion {
-						major: ver.driver_version_major as u16,
-						minor: ver.driver_version_minor as u16,
-						build: ver.driver_version_build as u16,
-						revision: ver.driver_version_revision as u16,
-					});
-					
-					// Statistics not easily available from current interface, so None for now
-					(true, driver_version, None, None)
-				},
-				DriverStatus::NotFound => {
-					(false, None, Some("TMR kernel driver not found or not accessible".to_string()), None)
-				},
-				DriverStatus::VersionMismatch { .. } => {
-					(false, None, Some("Driver version incompatible with application".to_string()), None)
-				},
-				DriverStatus::Error(e) => {
-					(false, None, Some(e.clone()), None)
-				},
-			};
-			
-			let report = DriverStatusReport {
-				available,
-				version,
-				error_message,
-				statistics,
-			};
-			
-			let mut reporter = create_console_reporter();
-			if let Err(e) = reporter.report_driver_status(&report) {
-				log::error!("Failed to display driver status report: {}", e);
-				// Fallback to basic output
-				if available {
-					println!("  DMA Driver: ✅ Available");
-				} else {
-					println!("  DMA Driver: ❌ Not Found");
-				}
-			}
-		}
-		
-		// Reset allocations if driver is available
-		if matches!(check_and_display_driver_status(), DriverStatus::Available(_)) {
-			reset_driver();
-		}
-	} else {
-		println!("  DMA Driver: ⚠️  Skipped (KMDF version too old)");
-	}
 	println!();
 	
     // Get system info for later use (formatted output comes via reporter below)
@@ -1218,55 +1120,9 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
 
     println!();
 	
-	if is_driver_connected() {
-		// Gets fresh stats from existing handle
-		if let Err(e) = compare_app_vs_driver_stats() {
-			log::warn!("Failed to compare driver stats: {}", e);
-		}
-		
-		reset_driver(); // Reset_driver, this tells the driver we are done and any allocation not already released should be released(fail-safe).
-		
-		// This will completely reset the apps driver handle and re-check version, for when we implement a GUI
-		let new_status = refresh_driver_status();
-		log::debug!("Driver status after reset: {:?}", new_status);
-		reset_app_driver_stats(); // Reset the app stats since we reset the Driver, we want stats to align at zero
-
-		// display_driver_stats(); // We can probably comment this out, as the below compare_app_vs_driver_stats will display both app and driver after reset.
-		if let Err(e) = display_driver_stats() {
-			log::warn!("Failed to display driver stats: {}", e);
-		}
-		
-		// Gets fresh stats from existing handle, because we did a reset, things should be ZEROed
-		if let Err(e) = compare_app_vs_driver_stats() {
-			log::warn!("Failed to compare driver stats: {}", e);
-		}
-	}
-	
 	println!();
     params::print_usage(&args[0]);
 	Ok(())
-}
-
-// Example usage in main.rs
-pub fn check_dma_driver_status() {
-    match DriverHandle::open() {
-        Ok(driver) => {
-            if let Ok(version) = driver.check_version_compatibility() {
-                println!("  DMA Driver: ✅ Available and compatible");
-                println!("    Version: {}.{}.{}.{}", 
-                         version.driver_version_major,
-                         version.driver_version_minor,
-                         version.driver_version_build,
-                         version.driver_version_revision);
-            }
-        }
-        Err(e) => {
-            println!("  DMA Driver: ❌ {}", e);
-            if e.contains("version incompatible") {
-                println!("    Action: Update TMR or the kernel driver to matching versions");
-            }
-        }
-    }
 }
 
 /// Compare new calibration results with existing and prompt user to accept/reject.
@@ -1365,8 +1221,9 @@ fn setup_logging() {
         eprintln!("Warning: Failed to create logs directory: {}", e);
     }
 
-    let start_time = chrono::Local::now();
-    let log_filename = format!("logs/TMR_{}.log", start_time.format("%Y-%m-%d_%H-%M-%S"));
+    // Shared with the result filename so a run's log and result can be paired by name; see
+    // `run_context::run_start`. Local time — this file is read on the machine that wrote it.
+    let log_filename = format!("logs/{}.log", tmr::run_context::run_file_stem());
     
     let log_level = env::var("RUST_LOG").unwrap_or_else(|_| "info".to_string());
     let level_filter = match log_level.to_lowercase().as_str() {
@@ -1379,7 +1236,21 @@ fn setup_logging() {
     };
 
     // Initialize file logger for dual logging
-    if let Ok(log_file) = std::fs::File::create(&log_filename) {
+    if let Ok(mut log_file) = std::fs::File::create(&log_filename) {
+        // Stamp the zone once here rather than on every line: every line in the file has the same
+        // offset, so repeating it thousands of times buys nothing, but a reader (or a later
+        // consolidation pass) still needs to know these are local times and which local that was.
+        // The UTC equivalent is recorded so this file can be lined up with results from other boxes.
+        let started = tmr::run_context::run_start();
+        let _ = writeln!(
+            log_file,
+            "# TMR {} — run started {} (UTC {}); all timestamps below are local time\n\
+             # paired result file: results/{}.json",
+            env!("CARGO_PKG_VERSION"),
+            started.format("%Y-%m-%d %H:%M:%S %:z"),
+            started.with_timezone(&chrono::Utc).format("%Y-%m-%d %H:%M:%S"),
+            tmr::run_context::run_file_stem(),
+        );
         FILE_LOGGER.set(Arc::new(Mutex::new(Some(log_file)))).unwrap_or(());
     }
 
@@ -1409,7 +1280,11 @@ fn setup_logging() {
                     log::Level::Debug => "36", // Cyan
                     log::Level::Trace => "35", // Magenta
                 },
-                chrono::Local::now().format("%Y-%m-%dT%H:%M:%SZ"),
+                // Plain local time, no zone marker. This used to be `…%SZ` on a `Local::now()` —
+                // printing local while claiming UTC, which was the actual bug. A bare stamp claims
+                // nothing, which is both honest and easier to read; the zone is stated once in the
+                // log file's header for anything that gets archived. Matches the file format below.
+                chrono::Local::now().format("%Y-%m-%d %H:%M:%S"),
                 record.level(),
                 record.module_path().unwrap_or("unknown"),
                 record.args()
@@ -1513,13 +1388,6 @@ fn build_config_from_validated_params(
         }
     }
 
-    // Handle driver flags
-    if params::get_bool(validated, "--driver-chunking", false) {
-        alloc_config.driver_chunking = true;
-    }
-    if params::get_bool(validated, "--batch-remap", false) {
-        alloc_config.remap_mode = "batch".to_string();
-    }
 
     // Handle page size overrides
     if let Some(params::ParamValue::String(page_str)) = validated.get("minpage") {
@@ -1554,98 +1422,6 @@ fn build_config_from_validated_params(
     }
 
     Ok((enhanced_memory_strategy, error_mode, suite_timing, cputype, cpus, pinning_config, alloc_config))
-}
-
-// Add these functions to main.rs
-fn check_kmdf_version() -> Result<(u16, u16), String> {
-    unsafe {
-        let file_path = windows::core::w!("C:\\Windows\\System32\\drivers\\Wdf01000.sys");
-        
-        // Get the size of version info
-        let size = GetFileVersionInfoSizeW(file_path, None);
-        if size == 0 {
-            return Err("Failed to get KMDF version info size".to_string());
-        }
-        
-        // Allocate buffer for version info
-        let mut buffer = vec![0u8; size as usize];
-        
-        // Get version info
-        if GetFileVersionInfoW(
-            file_path,
-            None,
-            size,
-            buffer.as_mut_ptr() as *mut std::ffi::c_void,
-        ).is_err() {
-            return Err("Failed to get KMDF version info".to_string());
-        }
-        
-        // Query for VS_FIXEDFILEINFO
-        let mut file_info_ptr: *mut std::ffi::c_void = std::ptr::null_mut();
-        let mut len = 0u32;
-        
-        if !VerQueryValueW(
-            buffer.as_ptr() as *const std::ffi::c_void,
-            windows::core::w!("\\"),
-            &mut file_info_ptr,
-            &mut len,
-        ).as_bool() {  // BOOL type uses .as_bool()
-            return Err("Failed to query KMDF version value".to_string());
-        }
-        
-        if file_info_ptr.is_null() || len == 0 {
-            return Err("Invalid KMDF version info pointer".to_string());
-        }
-        
-        // Cast to VS_FIXEDFILEINFO structure
-        #[repr(C)]
-        struct VS_FIXEDFILEINFO {
-            dw_signature: u32,
-            dw_struct_version: u32,
-            dw_file_version_ms: u32,
-            dw_file_version_ls: u32,
-            dw_product_version_ms: u32,
-            dw_product_version_ls: u32,
-            dw_file_flags_mask: u32,
-            dw_file_flags: u32,
-            dw_file_os: u32,
-            dw_file_type: u32,
-            dw_file_subtype: u32,
-            dw_file_date_ms: u32,
-            dw_file_date_ls: u32,
-        }
-        
-        let file_info = &*(file_info_ptr as *const VS_FIXEDFILEINFO);
-        
-        // Extract major and minor version from product version
-        let major = (file_info.dw_product_version_ms >> 16) as u16;
-        let minor = (file_info.dw_product_version_ms & 0xFFFF) as u16;
-        
-        Ok((major, minor))
-    }
-}
-
-fn verify_kmdf_compatibility() -> Result<(u16, u16), String> {
-    const REQUIRED_MAJOR: u16 = 1;
-    const REQUIRED_MINOR: u16 = 33;
-    
-    match check_kmdf_version() {
-        Ok((major, minor)) => {
-            log::info!("KMDF version detected: {}.{}", major, minor);
-            
-            if major > REQUIRED_MAJOR || (major == REQUIRED_MAJOR && minor >= REQUIRED_MINOR) {
-                log::info!("KMDF version {}.{} meets minimum requirement ({}.{})", 
-                         major, minor, REQUIRED_MAJOR, REQUIRED_MINOR);
-                Ok((major, minor))
-            } else {
-                Err(format!(
-                    "KMDF version {}.{} is too old. Minimum required: {}.{}",
-                    major, minor, REQUIRED_MAJOR, REQUIRED_MINOR
-                ))
-            }
-        }
-        Err(e) => Err(format!("Failed to check KMDF version: {}", e))
-    }
 }
 
 fn format_duration(duration: std::time::Duration) -> String {

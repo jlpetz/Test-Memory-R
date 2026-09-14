@@ -6,11 +6,10 @@
 // you to skip reading these.
 #![warn(clippy::undocumented_unsafe_blocks)]
 
-use crate::memory::buffer::{BufferInfo, MemoryType, PageType, SegmentInfo};
+use crate::memory::buffer::{BufferInfo, PageType};
 use crate::memory::allocator::AllocationConfig;
 use crate::memory::privileges::setup_large_pages_automatically;
 use crate::constants::{HUGE_PAGE_SIZE_USIZE, LARGE_PAGE_SIZE_USIZE, PAGE_SIZE_4KB, MB};
-use std::sync::Arc;
 
 // Windows API imports for VirtualAlloc2 (moved from buffer.rs)
 use windows::Win32::Foundation::GetLastError;
@@ -38,24 +37,21 @@ pub struct BackendAllocation {
     pub info: BufferInfo,
 }
 
+/// Which `Backend` impl to allocate through.
+///
+/// Kept as an enum rather than collapsed to a bool: a ring-0 backend would return here
+/// as one more variant, which is the whole reason the `Backend` trait boundary survived
+/// the driver-client purge (TODO #4/5).
 #[derive(Debug, Clone)]
 pub enum BackendType {
     Auto,                                    // Let system decide
     Windows { large_pages: bool },          // Windows VirtualAlloc
-    Driver,                                  // TMR kernel driver
 }
 
 /// Windows VirtualAlloc backend
 #[derive(Debug)]
 pub struct WindowsBackend {
     use_large_pages: bool,
-}
-
-/// TMR kernel driver backend  
-#[derive(Debug)]
-pub struct DriverBackend {
-    #[allow(dead_code)] // Will be used when full driver backend implementation is completed
-    handle: Arc<crate::driver::DriverHandle>,
 }
 
 impl WindowsBackend {
@@ -417,123 +413,5 @@ impl WindowsBackend {
             
             Ok((ptr as *mut u8, aligned_size, actual_page_type.0, actual_page_type.1))
         }
-    }
-}
-
-impl DriverBackend {
-    pub fn new() -> Result<Self, String> {
-        let handle = crate::driver::get_global_driver_handle()
-            .map_err(|e| format!("Failed to open driver: {}", e))?;
-        
-        Ok(Self {
-            handle,
-        })
-    }
-}
-
-impl Backend for DriverBackend {
-    fn allocate(&self, config: &AllocationConfig) -> Result<BackendAllocation, String> {
-        // Individual driver allocation - simplified version of batch allocation
-        use crate::driver::types::{AllocateDmaInput, AllocateDmaOutput};
-        use std::mem;
-        use windows::Win32::System::IO::DeviceIoControl;
-        
-        let input = AllocateDmaInput {
-            size: config.size,
-            numa_node: config.numa_node.unwrap_or(0xFFFFFFFF),
-            memory_type: match config.memory_type {
-                MemoryType::WriteBack => crate::driver::MemoryType::WriteBack as u32,
-                MemoryType::WriteCombining => crate::driver::MemoryType::WriteCombining as u32,
-                MemoryType::Uncached => crate::driver::MemoryType::Uncached as u32,
-                MemoryType::WriteProtected => crate::driver::MemoryType::WriteProtected as u32,
-                MemoryType::WriteCombined => crate::driver::MemoryType::WriteCombining as u32,
-            },
-            minimum_page_size: match config.page_size {
-                crate::memory::allocator::PageSizePreference::Require(PageType::Huge(_)) => 2,
-                crate::memory::allocator::PageSizePreference::Require(PageType::Large(_)) => 1,
-                _ => 0,
-            },
-            maximum_page_size: 2, // Allow up to huge pages
-            strict_numa: false,
-            zero_memory: config.zero_memory,
-            contiguous: false,
-            timeout_ms: config.timeout_ms,
-            retry_interval_ms: 100,
-            max_retries: 5,
-        };
-        
-        let mut output = AllocateDmaOutput::default();
-        
-        // SAFETY: `input` is read-only to the kernel, `output` is a fully initialised local, and
-        // both lengths are `size_of` of the matching type. Direct-argument form — neither pointer
-        // is stored, so neither can outlive the call (TODO #66).
-        unsafe {
-            let mut bytes_returned = 0u32;
-            
-            let result = DeviceIoControl(
-                self.handle.handle(),
-                crate::driver::interface::IOCTL_TMR_ALLOCATE,
-                Some(&input as *const _ as *const std::ffi::c_void),
-                mem::size_of::<AllocateDmaInput>() as u32,
-                Some(&mut output as *mut _ as *mut std::ffi::c_void),
-                mem::size_of::<AllocateDmaOutput>() as u32,
-                Some(&mut bytes_returned),
-                None,
-            );
-            
-            if result.is_err() {
-                return Err("Failed to allocate DMA memory".to_string());
-            }
-            
-            if output.user_address == 0 {
-                return Err("Driver returned null address".to_string());
-            }
-            
-            // Calculate page size from composition
-            let page_size_kb = if output.page_composition.huge_pages_count > 0 {
-                1048576 // 1GB in KB
-            } else if output.page_composition.large_pages_count > 0 {
-                2048    // 2MB in KB
-            } else {
-                4       // 4KB
-            };
-            
-            let segments = vec![SegmentInfo {
-                virtual_address: output.user_address,
-                physical_address: output.physical_address,
-                size: output.size,
-                page_size_kb,
-                numa_node: output.numa_node,
-            }];
-            
-            let page_type = match page_size_kb {
-                1048576 => PageType::Huge(output.size),
-                2048 => PageType::Large(output.size),
-                _ => PageType::Regular(output.size),
-            };
-            
-            let info = BufferInfo {
-                physical_address: Some(output.physical_address),
-                numa_node: output.numa_node,
-                page_type,
-                segments,
-            };
-            
-            Ok(BackendAllocation {
-                ptr: output.user_address as *mut u8,
-                size: output.size,
-                info,
-            })
-        }
-    }
-    
-    fn free(&self, _allocation: BackendAllocation) -> Result<(), String> {
-        // Memory is automatically freed when DmaBuffer is dropped
-        Ok(())
-    }
-    
-    
-    fn name(&self) -> &'static str {
-        "TMR Kernel Driver"
     }
 }
