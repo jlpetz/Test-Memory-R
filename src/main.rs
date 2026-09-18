@@ -873,7 +873,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
 		println!();
 		println!("Choose your preferred action:");
 		println!("  A) Exit TMR and restart system (RECOMMENDED for optimal performance)");
-		println!("  B) Continue with standard 4KB pages (5-10% performance impact)");
+		println!("  B) Continue with standard 4KB pages (~5-10% slower, so less memory stress)");
 		println!();
 		print!("Enter your choice (A/B): ");
 		stdout().flush().unwrap();
@@ -899,7 +899,9 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
 				println!();
 				println!("⚠️  Continuing with standard 4KB pages.");
 				println!("   Performance impact: ~5-10% slower than large pages");
-				println!("   Test accuracy: Unaffected (still comprehensive)");
+				println!("   Every test still runs and every pattern is still checked, but slower");
+				println!("   memory traffic is less stress, so marginal errors that only appear at");
+				println!("   full bandwidth may go undetected");
 				println!();
 				println!("💡 TIP: Restart TMR after rebooting for optimal performance");
 				println!();
@@ -924,7 +926,9 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
 		Err(_) => {
 			println!("⚠️  Large Pages: Not available - TMR will use standard 4KB pages");
 			println!("   Performance impact: ~5-10% slower memory allocation");
-			println!("   This is normal on some systems and doesn't affect test accuracy");
+			println!("   Every test still runs and every pattern is still checked, but slower");
+			println!("   memory traffic is less stress, so marginal errors that only appear at");
+			println!("   full bandwidth may go undetected");
 		}
 	}
 
