@@ -2,7 +2,7 @@
 /// This bridges the gap between the current codebase and the new reporting system
 use super::models::*;
 use crate::memory::allocation_strategy::{SystemMemoryInfo, AllocationResult};
-use crate::progress::{TestSummary, CycleStats};
+use crate::progress::TestSummary;
 use crate::constants::{PageType, bytes_to_gib_f64};
 use std::collections::HashSet;
 
@@ -352,149 +352,6 @@ pub fn create_operation_breakdown(detailed: &crate::tests::DetailedOperationCoun
     }
 }
 
-/// Convert final test data to summary report
-pub fn create_final_test_summary_report(
-    total_time: std::time::Duration,
-    cycle_stats: &[CycleStats],
-    total_bytes: u64,
-    total_errors: u64,
-    test_definitions: &[(&'static str, crate::runner::TestFunction, crate::tests::TestMemoryConfig)],
-) -> FinalTestSummaryReport {
-    let cycles_completed = cycle_stats.len();
-    let total_data_processed_gib = bytes_to_gib_f64(total_bytes);
-    
-    let overall_throughput_mib_s = if total_time.as_secs() > 0 {
-        (total_bytes as f64 / (1024.0 * 1024.0)) / total_time.as_secs() as f64
-    } else {
-        0.0
-    };
-    
-    // Aggregate per-test performance including latency data
-    #[derive(Default)]
-    struct TestAggregate {
-        total_bytes: u64,
-        total_duration_ms: u128,
-        total_errors: u64,
-        total_whea: u64,
-        total_whea_corrected: u64,
-        // Latency aggregation (sum for averaging)
-        latency_count: u64,  // Number of cycles with latency data
-        latency_samples_sum: u64,
-        latency_p5_sum: f64,
-        latency_p10_sum: f64,
-        latency_p25_sum: f64,
-        latency_p50_sum: f64,
-        latency_p75_sum: f64,
-        latency_p90_sum: f64,
-        latency_p95_sum: f64,
-        latency_p99_sum: f64,
-        latency_p99_9_sum: f64,
-        latency_spread_sum: f64,
-    }
-
-    let mut test_aggregates: std::collections::HashMap<String, TestAggregate> = std::collections::HashMap::new();
-
-    for cycle in cycle_stats {
-        for test_summary in &cycle.test_stats {
-            let entry = test_aggregates.entry(test_summary.name.clone()).or_default();
-            entry.total_bytes += test_summary.bytes_processed;
-            entry.total_duration_ms += test_summary.duration_ms;
-            entry.total_errors += test_summary.errors;
-            entry.total_whea += test_summary.whea_total;
-            entry.total_whea_corrected += test_summary.whea_corrected;
-
-            // Aggregate latency data if present
-            if let Some(samples) = test_summary.latency_samples {
-                entry.latency_count += 1;
-                entry.latency_samples_sum += samples;
-                entry.latency_p5_sum += test_summary.latency_p5_ns.unwrap_or(0.0);
-                entry.latency_p10_sum += test_summary.latency_p10_ns.unwrap_or(0.0);
-                entry.latency_p25_sum += test_summary.latency_p25_ns.unwrap_or(0.0);
-                entry.latency_p50_sum += test_summary.latency_p50_ns.unwrap_or(0.0);
-                entry.latency_p75_sum += test_summary.latency_p75_ns.unwrap_or(0.0);
-                entry.latency_p90_sum += test_summary.latency_p90_ns.unwrap_or(0.0);
-                entry.latency_p95_sum += test_summary.latency_p95_ns.unwrap_or(0.0);
-                entry.latency_p99_sum += test_summary.latency_p99_ns.unwrap_or(0.0);
-                entry.latency_p99_9_sum += test_summary.latency_p99_9_ns.unwrap_or(0.0);
-                entry.latency_spread_sum += test_summary.latency_spread.unwrap_or(0.0);
-            }
-        }
-    }
-
-    let mut per_test_summaries = Vec::new();
-    for (test_name, _, _) in test_definitions.iter() {
-        if let Some(agg) = test_aggregates.get(*test_name) {
-            let cycle_count = cycle_stats.len() as u64;
-            let avg_bytes = agg.total_bytes / cycle_count;
-            let avg_duration_ms = agg.total_duration_ms / cycle_count as u128;
-            let avg_throughput_mib_s = if avg_duration_ms > 0 {
-                (avg_bytes as f64 / (1024.0 * 1024.0)) / (avg_duration_ms as f64 / 1000.0)
-            } else {
-                0.0
-            };
-
-            // Calculate averaged latency metrics if present
-            let (latency_samples, latency_p5, latency_p10, latency_p25, latency_p50,
-                 latency_p75, latency_p90, latency_p95, latency_p99, latency_p99_9, latency_spread) =
-                if agg.latency_count > 0 {
-                    let n = agg.latency_count as f64;
-                    (Some(agg.latency_samples_sum / agg.latency_count),
-                     Some(agg.latency_p5_sum / n),
-                     Some(agg.latency_p10_sum / n),
-                     Some(agg.latency_p25_sum / n),
-                     Some(agg.latency_p50_sum / n),
-                     Some(agg.latency_p75_sum / n),
-                     Some(agg.latency_p90_sum / n),
-                     Some(agg.latency_p95_sum / n),
-                     Some(agg.latency_p99_sum / n),
-                     Some(agg.latency_p99_9_sum / n),
-                     Some(agg.latency_spread_sum / n))
-                } else {
-                    (None, None, None, None, None, None, None, None, None, None, None)
-                };
-
-            per_test_summaries.push(TestSummaryEntry {
-                name: test_name.to_string(),
-                average_duration_secs: avg_duration_ms as f64 / 1000.0,
-                total_data_gib: bytes_to_gib_f64(avg_bytes),
-                average_throughput_mib_s: avg_throughput_mib_s,
-                average_throughput_gib_s: avg_throughput_mib_s / 1024.0,
-                total_errors: agg.total_errors,
-                whea_total: agg.total_whea,
-                whea_corrected: agg.total_whea_corrected,
-                latency_samples,
-                latency_p5_ns: latency_p5,
-                latency_p10_ns: latency_p10,
-                latency_p25_ns: latency_p25,
-                latency_p50_ns: latency_p50,
-                latency_p75_ns: latency_p75,
-                latency_p90_ns: latency_p90,
-                latency_p95_ns: latency_p95,
-                latency_p99_ns: latency_p99,
-                latency_p99_9_ns: latency_p99_9,
-                latency_spread,
-            });
-        }
-    }
-    
-    FinalTestSummaryReport {
-        total_runtime: format_duration(total_time),
-        cycles_completed,
-        total_data_processed_gib,
-        overall_throughput_mib_s,
-        overall_throughput_gib_s: overall_throughput_mib_s / 1024.0,
-        total_errors,
-        // This converter builds from live per-cycle summaries, which carry no run-level WHEA
-        // counter; sum the per-test figures instead. The saved-results path
-        // (`create_overall_stats_summary_report`) uses the exact cumulative total.
-        whea_total: per_test_summaries.iter().map(|t| t.whea_total).sum(),
-        whea_corrected: per_test_summaries.iter().map(|t| t.whea_corrected).sum(),
-        // This path has no handle on the monitor's state; it is only reachable once tests have run.
-        whea_monitored: true,
-        per_test_summaries,
-    }
-}
-
 /// Create block allocation report from Windows VirtualAlloc2 allocation results
 pub fn create_block_allocation_report_from_windows(
     allocations: &std::collections::HashMap<usize, Vec<crate::AllocationBlock>>,
@@ -806,9 +663,13 @@ fn calculate_allocation_fairness(
 }
 
 /// Convert thread stats to thread timing report
+///
+/// `whea` is the count attributed to *this test* (the delta across it), not the run total — it is
+/// what lets the aggregate row fail when the per-thread rows are all clean.
 pub fn create_thread_timing_report(
     test_name: &str,
     stats: &[(usize, usize, u64, u128, u64, u64, u32)],  // (thread_id, cpu_id, bytes, elapsed_ms, errors, operations, cycles_completed)
+    whea: crate::whea::WheaCounts,
 ) -> super::models::ThreadTimingReport {
     use super::models::{ThreadTimingReport, ThreadTiming};
 
@@ -817,6 +678,7 @@ pub fn create_thread_timing_report(
             test_name: test_name.to_string(),
             average_elapsed_ms: 0,
             thread_timings: Vec::new(),
+            whea,
         };
     }
 
@@ -876,6 +738,7 @@ pub fn create_thread_timing_report(
         test_name: test_name.to_string(),
         average_elapsed_ms: avg_elapsed,
         thread_timings,
+        whea,
     }
 }
 
@@ -900,7 +763,7 @@ pub fn create_overall_stats_summary_report(
         .map(|avg| TestSummaryEntry {
             name: avg.name.clone(),
             average_duration_secs: avg.avg_duration_ms as f64 / 1000.0,
-            total_data_gib: avg.avg_bytes_processed as f64 / (1024.0 * 1024.0 * 1024.0),
+            average_data_gib: avg.avg_bytes_processed as f64 / (1024.0 * 1024.0 * 1024.0),
             average_throughput_mib_s: avg.avg_throughput_mib_s,
             average_throughput_gib_s: avg.avg_throughput_mib_s / 1024.0,
             total_errors: avg.total_errors,
@@ -934,21 +797,5 @@ pub fn create_overall_stats_summary_report(
         whea_corrected: overall_stats.whea_corrected,
         whea_monitored: overall_stats.whea_monitored,
         per_test_summaries,
-    }
-}
-
-/// Format duration in human-readable format
-fn format_duration(duration: std::time::Duration) -> String {
-    let secs = duration.as_secs();
-    let hours = secs / 3600;
-    let minutes = (secs % 3600) / 60;
-    let seconds = secs % 60;
-
-    if hours > 0 {
-        format!("{}h {}m {}s", hours, minutes, seconds)
-    } else if minutes > 0 {
-        format!("{}m {}s", minutes, seconds)
-    } else {
-        format!("{}s", seconds)
     }
 }

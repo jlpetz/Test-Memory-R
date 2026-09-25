@@ -839,12 +839,6 @@ pub fn run_tests_with_layout_and_timing_filtered(
 
     log::info!("Memory cleanup complete");
 
-    // Create final performance summary with detailed per-CPU stats
-    let final_stats = all_test_cpu_stats.lock().unwrap();
-    if !final_stats.is_empty() {
-        print_detailed_cpu_performance_summary(&final_stats, &cpu_assignments, suite_duration);
-    }
-
     // Final WHEA tally for the run. Taken from the monitor's own cumulative counter, so unlike the
     // per-test deltas this is exact — no event can fall between two snapshots.
     //
@@ -854,6 +848,10 @@ pub fn run_tests_with_layout_and_timing_filtered(
     // the run. So stop (and drain) first, *then* read the counts; reading them first silently
     // discards whatever that final drain found. `is_active()` is the exception — it must be read
     // before `stop()` flips the flag.
+    //
+    // This also has to precede the performance summary below, which reports the run's WHEA total on
+    // its aggregate rows. Nothing between the free above and here touches memory, so the drain has
+    // already covered every window that could produce an event.
     let whea_monitored = progress.whea.is_active();
     progress.whea.stop();
     let whea_totals = progress.whea.counts();
@@ -862,6 +860,17 @@ pub fn run_tests_with_layout_and_timing_filtered(
     // drain turned up would otherwise be counted but never described. Flush it here.
     for event in progress.whea.take_pending() {
         println!("{}", event);
+    }
+
+    // Create final performance summary with detailed per-CPU stats
+    let final_stats = all_test_cpu_stats.lock().unwrap();
+    if !final_stats.is_empty() {
+        print_detailed_cpu_performance_summary(
+            &final_stats,
+            &cpu_assignments,
+            suite_duration,
+            whea_totals,
+        );
     }
 
     // NOTE: `success` here is not the flag `execute_test_cycle` writes to — that one is a local
@@ -878,20 +887,15 @@ pub fn run_tests_with_layout_and_timing_filtered(
         println!("\n⚠️  Test suite interrupted by user (CTRL+C)");
     } else if final_success {
         println!("\n✅ All test cycles completed successfully!");
-    } else if memory_errors > 0 && whea_totals.total > 0 {
-        println!(
-            "\n❌ Test suite failed: {} memory error(s) and {} WHEA hardware error(s) ({} corrected)",
-            memory_errors, whea_totals.total, whea_totals.corrected
-        );
-    } else if whea_totals.total > 0 {
-        // No test detected bad data, but the platform logged a hardware fault — corrected by ECC,
-        // or raised during a test phase that does not verify. Still not a stable configuration.
-        println!(
-            "\n❌ Test suite failed: {} WHEA hardware error(s) ({} corrected) with no data mismatch",
-            whea_totals.total, whea_totals.corrected
-        );
     } else {
-        println!("\n❌ Test suite failed due to memory errors");
+        // Same form as the per-test topline. Either count alone fails the run: a WHEA event with
+        // `0 errors` is a fault that ECC corrected, or one raised during a test phase that does not
+        // verify — still not a stable configuration. Reaching here always means one of the two is
+        // non-zero: the outer `success` is never cleared, so `final_success` is exactly "both zero".
+        println!(
+            "\n❌ Test suite failed: {} errors + {} WHEA{}",
+            memory_errors, whea_totals.total, whea_totals.split_suffix()
+        );
     }
 
     // Always display and save results (even for partial/interrupted runs)
@@ -1021,10 +1025,10 @@ fn execute_test_cycle(ctx: &CycleContext, cycle: u64) {
         if whea_for_test.total > 0 {
             success.store(false, Ordering::Relaxed);
             log::error!(
-                "Test '{}' saw {} WHEA hardware error(s), {} corrected",
+                "Test '{}' saw {} WHEA{}",
                 test_name,
                 whea_for_test.total,
-                whea_for_test.corrected
+                whea_for_test.split_suffix()
             );
         }
 
@@ -1105,12 +1109,28 @@ fn execute_test_cycle(ctx: &CycleContext, cycle: u64) {
             String::new()
         };
 
-        // Create test report header with results and indicators
-        println!("📊 Test report - Cycle {} - {}: {:.1}s, {} errors, {:.2} GiB @ {:.1} MiB/s, {} ops @ {} ops/s{}{}",
+        // Pass/fail for this test. Both error sources count: a WHEA event during the test means the
+        // hardware reported a fault whether or not a verify read caught it, and either way the
+        // system is not stable. This is the only per-test verdict in the output — `success` above is
+        // the ErrorMode::Halt trigger, not a report.
+        //
+        // The ✅/❌ here is a verdict; the 🔴/🟢 in `cycles_info` is not — those mark *which limit
+        // ended the test*, so the two glyph pairs are deliberately different.
+        let test_passed = total_errors_for_test == 0 && whea_for_test.total == 0;
+        let pass_indicator = if test_passed { "✅" } else { "❌" };
+
+        // WHEA is always shown, even at zero, so a clean line still states that we were watching;
+        // the C/UC split only appears when there is something to split. "errors" is the word every
+        // table uses for these (the `Errors` column) — "data" would collide with the `Data` column,
+        // which is bytes processed.
+        println!("📊 Test report - Cycle {} - {}: {} {:.1}s, {} errors + {} WHEA{}, {:.2} GiB @ {:.1} MiB/s, {} ops @ {} ops/s{}{}",
                  cycle,
                  test_def.display_name,
+                 pass_indicator,
                  test_duration.as_secs_f64(),
                  total_errors_for_test,
+                 whea_for_test.total,
+                 whea_for_test.split_suffix(),
                  total_bytes_for_test as f64 / (1024.0 * 1024.0 * 1024.0),
                  (total_bytes_for_test as f64 / (1024.0 * 1024.0)) / test_duration.as_secs_f64(),
                  format_ops(total_operations_for_test),
@@ -1184,7 +1204,8 @@ fn execute_test_cycle(ctx: &CycleContext, cycle: u64) {
         // Generate thread timing deviation report
         {
             use crate::reporting::{create_console_reporter, converters};
-            let report = converters::create_thread_timing_report(test_name, &test_stats);
+            let report =
+                converters::create_thread_timing_report(test_name, &test_stats, whea_for_test);
             let mut reporter = create_console_reporter();
             if let Err(e) = reporter.report_thread_timing(&report) {
                 log::error!("Failed to display thread timing report: {}", e);
@@ -4170,7 +4191,8 @@ fn allocate_all_blocks_new(thread_blocks: &HashMap<usize, Vec<BlockInfo>>, runti
 fn print_detailed_cpu_performance_summary(
     final_stats: &TestCpuStats,
     cpu_assignments: &[CpuAssignment],  // (thread_id, logical_cpu, numa_node)
-    _suite_duration: std::time::Duration
+    _suite_duration: std::time::Duration,
+    whea: crate::whea::WheaCounts,
 ) {
     use crate::reporting::{Reporter, models::*, formatters::DefaultFormatter, renderers::ConsoleRenderer};
     use crate::cpu_topology::get_cpu_topology;
@@ -4284,18 +4306,30 @@ fn print_detailed_cpu_performance_summary(
     // Display all reports using the reporting system (with variance columns built-in)
     let mut reporter = Reporter::new(Box::new(DefaultFormatter::new()), ConsoleRenderer::new());
 
+    // All three breakdowns carry the same run-wide WHEA figure: the events cannot be attributed to a
+    // thread, CPU or core, so each view reports the run total on its aggregate row rather than
+    // dividing something indivisible.
     if !threads.is_empty() {
-        let report = PerformanceByThreadReport { threads };
+        let report = PerformanceByThreadReport {
+            threads,
+            whea,
+        };
         let _ = reporter.report_performance_by_thread(&report);
     }
 
     if !cpus.is_empty() {
-        let report = PerformanceByCpuReport { cpus };
+        let report = PerformanceByCpuReport {
+            cpus,
+            whea,
+        };
         let _ = reporter.report_performance_by_cpu(&report);
     }
 
     if !cores.is_empty() {
-        let report = PerformanceByPhysicalCoreReport { cores };
+        let report = PerformanceByPhysicalCoreReport {
+            cores,
+            whea,
+        };
         let _ = reporter.report_performance_by_physical_core(&report);
     }
 }

@@ -14,21 +14,28 @@
 //! memory-only: any hardware error during a memory-overclock run is evidence the overclock is not
 //! stable, and the *source* is exactly what the operator needs to see to tell a marginal DIMM from
 //! a marginal NIC. The formatted message (same text Event Viewer shows) carries that source, so it
-//! is recorded verbatim rather than reduced to a count.
+//! is printed and logged verbatim as it arrives, rather than reduced to a count.
+//!
+//! Descriptions are **not** retained past that point. They go to the log file and to a short console
+//! queue that the reporting thread drains on its next tick; nothing accumulates them for a
+//! replay at the end of the run. What survives a test boundary is the counts, which is what the
+//! per-test / per-cycle / per-run reports fold in.
 //!
 //! # Transport: subscribe, not poll
 //!
-//! `EvtSubscribe` in its **signal-event-handle** form (not the callback form) — wevtapi sets a
-//! Win32 event when something matching the query is queued for us. Rationale:
+//! `EvtSubscribe` in its **signal-event-handle** form (not the callback form) — a subscription, so
+//! cost scales with *our* event rate rather than with the System log's total traffic. Rationale for
+//! subscribe over poll: an `EvtQuery` every N seconds costs a log scan *whether or not* anything
+//! happened, and pays for every other provider's traffic. Rationale against the callback form: it
+//! would have wevtapi run our code on a **threadpool thread of its choosing**, which on a
+//! fully-subscribed box means a wevtapi thread landing on a core pinned to a test worker.
 //!
-//! * A poll (`EvtQuery` every N seconds) costs a log scan *whether or not* anything happened, and
-//!   pays for every other provider's traffic in the System log. Subscription cost scales with
-//!   **our** event rate, which on a stable system is zero.
-//! * The callback form would have wevtapi run our code on a **threadpool thread of its choosing**,
-//!   which on a fully-subscribed box means a wevtapi thread landing on a core pinned to a test
-//!   worker. The signal-handle form keeps everything on the existing reporting thread: it does a
-//!   `WaitForSingleObject(handle, 0)` — a local, non-blocking check that costs nothing when the
-//!   system is healthy — and only calls into wevtapi when that says there is something to fetch.
+//! The signal protocol is **subtle and was implemented wrong for a month**, silently suppressing
+//! every WHEA event between 2026-08-24 and 2026-09-21. Notifications are coalesced, and the drain
+//! must read to `ERROR_NO_MORE_ITEMS` to acknowledge the result set and re-arm the signal — stopping
+//! early leaves the notification outstanding forever. Before changing anything in `poll` or `drain`,
+//! read the protocol note on [`poll`](WheaMonitor::poll): it records the two load-bearing invariants
+//! and the symptom (`ERROR_INVALID_OPERATION` in the log) that means they have regressed.
 //!
 //! Nothing here runs on the hot path: the reporting thread drains, and the coordinator reads
 //! cumulative counters at test boundaries.
@@ -48,14 +55,14 @@ use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 use windows::Win32::Foundation::{
     CloseHandle, ERROR_ACCESS_DENIED, ERROR_EVT_MAX_INSERTS_REACHED,
     ERROR_EVT_UNRESOLVED_PARAMETER_INSERT, ERROR_EVT_UNRESOLVED_VALUE_INSERT,
-    ERROR_INSUFFICIENT_BUFFER, ERROR_NO_MORE_ITEMS, ERROR_TIMEOUT, HANDLE, WAIT_OBJECT_0,
-    WIN32_ERROR,
+    ERROR_INSUFFICIENT_BUFFER, ERROR_INVALID_OPERATION, ERROR_NO_MORE_ITEMS, ERROR_TIMEOUT, HANDLE,
+    WAIT_OBJECT_0, WIN32_ERROR,
 };
 use windows::Win32::System::EventLog::{
     EVT_HANDLE, EvtClose, EvtFormatMessage, EvtFormatMessageEvent, EvtNext, EvtOpenPublisherMetadata,
     EvtRender, EvtRenderEventXml, EvtSubscribe, EvtSubscribeToFutureEvents,
 };
-use windows::Win32::System::Threading::{CreateEventW, WaitForSingleObject};
+use windows::Win32::System::Threading::{CreateEventW, ResetEvent, SetEvent, WaitForSingleObject};
 use windows::core::{HRESULT, PCWSTR};
 
 /// True when a `windows` error carries the given Win32 status code.
@@ -80,16 +87,35 @@ const WHEA_QUERY: &str = "*[System[Provider[@Name='Microsoft-Windows-WHEA-Logger
 /// Handles fetched per `EvtNext` call.
 const BATCH: usize = 16;
 
-/// How many event descriptions we keep verbatim for the final report. A run that produces more
-/// than this has already answered the question ("not stable"), so the rest are counted only.
-const MAX_RECORDED: usize = 32;
-
-/// Guard against spinning if wevtapi keeps re-signalling while we drain.
-const MAX_DRAIN_ROUNDS: u32 = 8;
+/// How many events we describe (log + console) per run. Past this, counting continues silently.
+///
+/// This bounds *output*, not storage — nothing is retained. A run that produces more than this has
+/// already answered the question ("not stable"), and an unbounded description stream would let a
+/// flapping link flood both the console and the log file. The per-test WHEA counts still rise, so
+/// suppressed events remain visible as numbers and stay attributed to the test they landed in.
+const MAX_DESCRIBED: u64 = 32;
 
 /// Cap on `EvtNext` batches per drain, so a machine emitting events as fast as we read them cannot
-/// hold the reporting thread indefinitely. Anything left over is picked up on the next tick.
+/// hold the reporting thread indefinitely. Anything left over is picked up on the next tick —
+/// which only works because hitting this cap returns [`DrainEnd::Unfinished`] and `poll` then
+/// re-arms the signal by hand. Reaching the cap means the result set was *not* read to
+/// `ERROR_NO_MORE_ITEMS`, so wevtapi will never signal us about it again on its own.
 const MAX_BATCHES_PER_DRAIN: u32 = 64;
+
+/// How a drain ended — i.e. whether wevtapi will signal us again unprompted.
+///
+/// The subscription's result set is only acknowledged by reading it to `ERROR_NO_MORE_ITEMS`. Any
+/// other exit leaves it outstanding and permanently silent, so `poll` has to re-arm the signal
+/// itself. Getting this wrong is what caused the month-long detection outage; see
+/// [`WheaMonitor::poll`].
+#[derive(Debug, PartialEq, Eq)]
+enum DrainEnd {
+    /// `EvtNext` reported the set empty. Acknowledged — wevtapi raises the signal on the next event.
+    Exhausted,
+    /// Stopped with events possibly still queued (batch cap reached, or an unexpected error). The
+    /// set is unacknowledged, so the caller must re-set the signal to get another attempt.
+    Unfinished,
+}
 
 /// Cumulative WHEA counts. Monotonic for the life of the run, so a per-test figure is the
 /// difference between two snapshots.
@@ -108,12 +134,16 @@ impl WheaCounts {
         self.total.saturating_sub(self.corrected)
     }
 
-    /// Corrected share as a percentage, or `None` when nothing was seen.
-    pub fn corrected_percent(&self) -> Option<f64> {
+    /// The corrected/uncorrected split as a suffix, `" (0C/3UC)"`, or empty when nothing was seen.
+    ///
+    /// For prose, where the label sits between the count and the split (`3 WHEA (0C/3UC)`); in a
+    /// table the header is the label, so cells use `Display` instead. Both parts are always given
+    /// when there is anything to split, so the reader never has to infer the missing one.
+    pub fn split_suffix(&self) -> String {
         if self.total == 0 {
-            None
+            String::new()
         } else {
-            Some(self.corrected as f64 * 100.0 / self.total as f64)
+            format!(" ({}C/{}UC)", self.corrected, self.uncorrected())
         }
     }
 
@@ -126,10 +156,21 @@ impl WheaCounts {
     }
 }
 
+/// The one rendering of a WHEA count, used everywhere the output prints one: `3 (0C/3UC)`, or plain
+/// `0` when clean. Every table, the progress line, the per-test topline, the verdict line and the
+/// final overview go through this or [`WheaCounts::split_suffix`], so the form cannot drift between
+/// them. Padding (`{:>10}` etc.) is honoured.
+impl std::fmt::Display for WheaCounts {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.pad(&format!("{}{}", self.total, self.split_suffix()))
+    }
+}
+
 /// Live subscription state. Every field is a Win32/wevtapi handle, so all access is funnelled
 /// through the owning `Mutex` in `WheaMonitor`.
 struct Subscription {
-    /// Auto-reset event wevtapi signals when matching events are queued.
+    /// **Manual-reset** event wevtapi signals when matching events are queued. Manual-reset is
+    /// required because `poll` has two callers; see [`WheaMonitor::poll`] for the full protocol.
     signal: HANDLE,
     /// The subscription itself; `EvtNext` pulls from this.
     subscription: EVT_HANDLE,
@@ -174,7 +215,7 @@ struct WheaRecord {
 impl WheaRecord {
     /// One-line form for the console and the saved report.
     fn describe(&self) -> String {
-        let severity = if self.corrected { "corrected" } else { "UNCORRECTED" };
+        let severity = if self.corrected { "corrected" } else { "uncorrected" };
         let level = level_name(self.level);
         if self.message.is_empty() {
             format!("WHEA [{}] id={} level={} ({})", severity, self.event_id, self.level, level)
@@ -211,10 +252,9 @@ pub struct WheaMonitor {
     /// Set once we have logged an unexpected drain error, so a persistent failure cannot spam the
     /// log every poll.
     drain_error_logged: AtomicBool,
-    /// Descriptions kept for the final report, capped at `MAX_RECORDED`.
-    recorded: Mutex<Vec<String>>,
     /// Descriptions not yet shown on the console. The reporting thread takes these at its own
-    /// display interval so a burst of events cannot flood the progress line.
+    /// display interval so a burst of events cannot flood the progress line. This is the only place
+    /// description text lives, and it is emptied as soon as it is printed — see the module docs.
     pending: Mutex<Vec<String>>,
 }
 
@@ -233,7 +273,6 @@ impl WheaMonitor {
             corrected: AtomicU64::new(0),
             active: AtomicBool::new(false),
             drain_error_logged: AtomicBool::new(false),
-            recorded: Mutex::new(Vec::new()),
             pending: Mutex::new(Vec::new()),
         }
     }
@@ -269,47 +308,87 @@ impl WheaMonitor {
 
     /// Drains anything wevtapi has queued and folds it into the counters.
     ///
-    /// Cheap to call often: when nothing has happened this is a single zero-timeout wait on a
-    /// local event handle and no wevtapi round-trip at all. Safe from multiple threads — the
-    /// handles are serialised by the internal `Mutex`, and a contended call simply returns
-    /// (someone else is already draining).
+    /// Cheap to call often: one `EvtNext` against an already-filtered subscription result set, not
+    /// a log scan. Safe from multiple threads — the handles are serialised by the internal `Mutex`,
+    /// which also satisfies wevtapi (concurrent `EvtNext` on one result set is not documented as
+    /// safe). A contended call *waits* rather than skipping: the two callers are the reporting
+    /// thread and the coordinator at a test boundary, neither is on a pinned hot path, and a
+    /// boundary poll that silently did nothing would mis-attribute the events it exists to catch.
+    ///
+    /// # The signal protocol, and how getting it wrong killed WHEA detection for a month
+    ///
+    /// wevtapi's push-subscription contract is: the signal means *at least one* event is available
+    /// (notifications are **coalesced**, not one per event); read with `EvtNext` until it returns
+    /// `ERROR_NO_MORE_ITEMS`; that return is the **acknowledgement** that re-arms the signal.
+    /// Calling `EvtNext` without a signal earns `ERROR_INVALID_OPERATION`.
+    ///
+    /// Between 2026-08-24 and 2026-09-21 this code waited on the signal but `drain` returned early
+    /// on a partial batch, so it never reached `ERROR_NO_MORE_ITEMS`. The result set was therefore
+    /// never acknowledged, wevtapi never re-signalled, the gate never re-opened, and **no WHEA
+    /// event was ever counted** while `whea_monitored` reported `true`. Self-locking: the gate
+    /// blocked the drain that would have re-armed the gate.
+    ///
+    /// Three invariants keep that fixed, and they are load-bearing together — any one alone is
+    /// still broken:
+    ///
+    /// 1. **`drain` must read to `ERROR_NO_MORE_ITEMS`**, never stop on a short batch.
+    /// 2. **Every bounded exit from `drain` must re-set the signal by hand.** `drain` is capped at
+    ///    `MAX_BATCHES_PER_DRAIN` so a flood cannot hold the lock indefinitely, and it returns on an
+    ///    unexpected error — both leave the result set unacknowledged, so wevtapi stays silent
+    ///    forever. Re-setting the event ourselves ("there is more, wake me again") is what makes a
+    ///    bounded drain safe; that is the whole point of [`DrainEnd`].
+    /// 3. **The event is manual-reset, and is reset *before* draining.** Manual-reset because
+    ///    `poll` has two callers (the reporting thread on its cadence, the coordinator at test
+    ///    boundaries): an auto-reset event is consumed by whichever one peeks first, so the other
+    ///    would skip its drain. Reset *before* the drain because an event arriving mid-drain must
+    ///    leave the signal set for the next poll — resetting afterwards would discard it.
+    ///
+    /// If `ERROR_INVALID_OPERATION` ever shows up in the log, invariant 3 has regressed.
     pub fn poll(&self) {
         if !self.is_active() {
             return;
         }
 
-        // try_lock, not lock: the coordinator calls this at test boundaries while the reporting
-        // thread calls it on its own cadence. If the other one is mid-drain there is nothing to
-        // wait for — its work updates the same counters we would have updated.
-        let Ok(mut guard) = self.sub.try_lock() else {
-            return;
+        let Ok(mut guard) = self.sub.lock() else {
+            return; // poisoned: a previous drain panicked, monitoring is over
         };
         let Some(subscription) = guard.as_mut() else {
             return;
         };
 
-        let mut rounds = 0;
-        loop {
-            // SAFETY: `signal` is a live auto-reset event owned by `subscription`; a zero timeout
-            // makes this a non-blocking check that never waits on a pinned core.
-            let signalled = unsafe { WaitForSingleObject(subscription.signal, 0) } == WAIT_OBJECT_0;
-            if !signalled {
-                break;
-            }
+        // SAFETY: `signal` is a live manual-reset event owned by `subscription`; a zero timeout
+        // makes this a non-blocking check that never waits on a pinned core. Manual-reset means a
+        // successful peek does NOT consume it, so the other caller of `poll` cannot be starved.
+        if unsafe { WaitForSingleObject(subscription.signal, 0) } != WAIT_OBJECT_0 {
+            return;
+        }
 
-            self.drain(subscription);
+        // Reset before draining, not after: anything wevtapi queues while we are inside `drain`
+        // re-sets the event and is picked up by the next poll. Resetting afterwards would clear
+        // that notification and lose the event.
+        // SAFETY: same live handle; `ResetEvent` only fails on an invalid handle.
+        unsafe {
+            let _ = ResetEvent(subscription.signal);
+        }
 
-            rounds += 1;
-            if rounds >= MAX_DRAIN_ROUNDS {
-                // wevtapi keeps re-signalling (events arriving as fast as we read them). Leave the
-                // rest for the next poll rather than spinning here.
-                break;
+        // `drain` reads to ERROR_NO_MORE_ITEMS, which is what acknowledges the result set and lets
+        // wevtapi signal us again. If it stopped short of that, the set is still outstanding and
+        // wevtapi will NOT signal — so put the event back up ourselves and finish on the next poll.
+        // Without this, hitting the batch cap once re-creates the outage described above.
+        if self.drain(subscription) == DrainEnd::Unfinished {
+            // SAFETY: same live handle as above; `SetEvent` only fails on an invalid handle.
+            unsafe {
+                let _ = SetEvent(subscription.signal);
             }
         }
     }
 
     /// Pulls every queued event out of the subscription and records it.
-    fn drain(&self, subscription: &mut Subscription) {
+    ///
+    /// Returns how it ended, because that decides whether the caller has to re-arm the signal — see
+    /// [`DrainEnd`] and invariants 1/2 on [`poll`](Self::poll).
+    #[must_use]
+    fn drain(&self, subscription: &mut Subscription) -> DrainEnd {
         for _ in 0..MAX_BATCHES_PER_DRAIN {
             let mut handles = [0isize; BATCH];
             let mut returned = 0u32;
@@ -320,12 +399,32 @@ impl WheaMonitor {
             let result = unsafe { EvtNext(subscription.subscription, &mut handles, 0, 0, &mut returned) };
 
             if let Err(e) = result {
-                // Both of these just mean "nothing queued", which is the normal exit from a drain.
+                // ERROR_NO_MORE_ITEMS is the *required* end of a drain, not merely a tolerated one:
+                // reaching it is what acknowledges the result set and lets wevtapi raise the signal
+                // again. ERROR_TIMEOUT means nothing arrived within the zero timeout, same effect.
                 let empty = is_win32_error(&e, ERROR_NO_MORE_ITEMS) || is_win32_error(&e, ERROR_TIMEOUT);
-                if !empty && !self.drain_error_logged.swap(true, Ordering::Relaxed) {
+
+                // ERROR_INVALID_OPERATION means we called `EvtNext` when wevtapi had not signalled
+                // us — i.e. *our* protocol bug, not a quiet system. It is called out separately
+                // because it was the visible symptom of the month-long detection outage (see
+                // `poll`), and normalising it to "nothing queued" is what hid the cause. If this
+                // fires, the signal handling in `poll` is wrong again; do not silence it.
+                let no_signal = is_win32_error(&e, ERROR_INVALID_OPERATION);
+                if no_signal && !self.drain_error_logged.swap(true, Ordering::Relaxed) {
+                    log::warn!(
+                        "WHEA drain called EvtNext without a signal (ERROR_INVALID_OPERATION) - \
+                         signal handling bug, WHEA counts may be incomplete"
+                    );
+                } else if !empty && !no_signal && !self.drain_error_logged.swap(true, Ordering::Relaxed)
+                {
                     log::warn!("WHEA drain failed, counts may be incomplete: {}", e);
                 }
-                return;
+
+                // `empty` and `no_signal` both mean there is demonstrably nothing waiting for us, so
+                // leave the signal down and let wevtapi raise it. Any *other* error left the set in
+                // an unknown state: report Unfinished so the next poll retries it, which also makes a
+                // transient failure self-healing instead of terminal.
+                return if empty || no_signal { DrainEnd::Exhausted } else { DrainEnd::Unfinished };
             }
 
             let count = (returned as usize).min(BATCH);
@@ -341,27 +440,38 @@ impl WheaMonitor {
                 }
             }
 
-            if count < BATCH {
-                return;
+            // Deliberately NO early return on a partial batch. wevtapi only re-raises the signal
+            // once the result set has been read to ERROR_NO_MORE_ITEMS, so stopping here leaves the
+            // notification outstanding forever: the next event never signals, the gate in `poll`
+            // never opens, and detection dies silently. That exact early return (`if count < BATCH
+            // { return }`) is what suppressed every WHEA event for a month. Always loop back and
+            // let `EvtNext` tell us the set is empty.
+            //
+            // `count == 0` with `Ok` is not documented but would spin, so treat it as exhausted.
+            if count == 0 {
+                return DrainEnd::Exhausted;
             }
         }
+
+        // Fell out of the loop: MAX_BATCHES_PER_DRAIN batches read and `EvtNext` still had more.
+        // The set is unacknowledged, so the caller must re-set the signal — see invariant 2 on
+        // `poll`. This is the bounded-drain escape hatch, not an error, so it is not logged.
+        DrainEnd::Unfinished
     }
 
-    /// Folds one event into the counters and the description caches.
+    /// Folds one event into the counters and queues its description for the console + log.
     fn record(&self, record: WheaRecord) {
         let seq = self.total.fetch_add(1, Ordering::Relaxed) + 1;
         if record.corrected {
             self.corrected.fetch_add(1, Ordering::Relaxed);
         }
 
-        // Past the cap, keep counting but stop describing. A run this far gone has already answered
-        // the question, and an unbounded description list would let a flapping link flood both the
-        // console and the log file.
-        if seq > MAX_RECORDED as u64 {
-            if seq == MAX_RECORDED as u64 + 1 {
+        // Past the cap, keep counting but stop describing — see `MAX_DESCRIBED`.
+        if seq > MAX_DESCRIBED {
+            if seq == MAX_DESCRIBED + 1 {
                 log::warn!(
                     "WHEA: over {} events this run; further descriptions suppressed (counts continue)",
-                    MAX_RECORDED
+                    MAX_DESCRIBED
                 );
             }
             return;
@@ -377,9 +487,6 @@ impl WheaMonitor {
             log::error!("{}", description);
         }
 
-        if let Ok(mut recorded) = self.recorded.lock() {
-            recorded.push(description.clone());
-        }
         if let Ok(mut pending) = self.pending.lock() {
             pending.push(description);
         }
@@ -396,11 +503,6 @@ impl WheaMonitor {
     /// Removes and returns descriptions not yet shown on the console.
     pub fn take_pending(&self) -> Vec<String> {
         self.pending.lock().map(|mut p| std::mem::take(&mut *p)).unwrap_or_default()
-    }
-
-    /// Every description kept for the final report (capped at `MAX_RECORDED`).
-    pub fn recorded(&self) -> Vec<String> {
-        self.recorded.lock().map(|r| r.clone()).unwrap_or_default()
     }
 
     /// Drains a last time and closes the subscription.
@@ -437,10 +539,11 @@ fn open_subscription() -> Result<Subscription, String> {
     // SAFETY: all arguments are locals or null; the returned handles are owned by the
     // `Subscription` built below, which closes them in `Drop`.
     unsafe {
-        // Auto-reset (manual_reset = false): the wait consumes the signal, then we drain until the
-        // queue is empty. Events arriving mid-drain re-signal it, which the retry loop in `poll`
-        // picks up, so nothing is lost.
-        let signal = CreateEventW(None, false, false, PCWSTR::null())
+        // manual_reset = TRUE is required, not stylistic: `poll` has two callers, and an auto-reset
+        // event is consumed by whichever one peeks first, starving the other of its drain. `poll`
+        // resets it explicitly instead. initial_state = TRUE so the first poll drains unconditionally
+        // and cannot miss anything queued between here and then. See `WheaMonitor::poll`.
+        let signal = CreateEventW(None, true, true, PCWSTR::null())
             .map_err(|e| format!("CreateEventW failed: {}", e))?;
 
         let subscription = match EvtSubscribe(
@@ -693,8 +796,15 @@ mod tests {
         assert_eq!(delta.total, 6);
         assert_eq!(delta.corrected, 2);
         assert_eq!(later.uncorrected(), 5);
-        assert_eq!(later.corrected_percent(), Some(50.0));
-        assert_eq!(WheaCounts::default().corrected_percent(), None);
+    }
+
+    #[test]
+    fn display_form() {
+        assert_eq!(WheaCounts::default().to_string(), "0");
+        assert_eq!(WheaCounts { total: 3, corrected: 0 }.to_string(), "3 (0C/3UC)");
+        assert_eq!(WheaCounts { total: 12, corrected: 3 }.to_string(), "12 (3C/9UC)");
+        assert_eq!(WheaCounts::default().split_suffix(), "");
+        assert_eq!(format!("{:>12}", WheaCounts { total: 3, corrected: 3 }), "  3 (3C/0UC)");
     }
 
     #[test]

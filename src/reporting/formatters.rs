@@ -2,6 +2,7 @@
 /// This layer handles all the "how to format" decisions
 use super::models::*;
 use crate::constants::bytes_to_gib_f64;
+use crate::whea::WheaCounts;
 use std::time::Duration;
 
 /// Trait for formatting report data
@@ -131,6 +132,45 @@ impl DefaultFormatter {
         Self {
             use_binary_units: true,
         }
+    }
+
+    /// The `Pass` cell: the verdict for a row, and the only place in a table that uses an emoji.
+    ///
+    /// Error counts elsewhere are plain numbers. Putting the verdict in one dedicated column keeps
+    /// the glyph meaning single: ✅/❌ is pass/fail, whereas the 🔴/🟢 on the per-test topline marks
+    /// *which limit ended the test*. (The previous convention rendered zero errors as ✅ inside the
+    /// error columns and non-zero as a bare number, so failures had less visual weight than passes
+    /// and ❌ never appeared at all.)
+    fn pass_cell(&self, passed: bool) -> String {
+        if passed { "✅" } else { "❌" }.to_string()
+    }
+
+    /// Adds the trailing `Errors | WHEA | Pass` headers shared by every table that carries a verdict.
+    ///
+    /// The `WHEA` column exists only when the table has something to put in it, so a healthy run's
+    /// tables look exactly as they did before WHEA monitoring existed. Every table uses this, so the
+    /// three columns have the same names, order and alignment everywhere.
+    fn with_verdict_headers(&self, table: TableData, has_whea: bool) -> TableData {
+        let table = table.add_header("Errors", ColumnAlignment::Right);
+        let table = if has_whea { table.add_header("WHEA", ColumnAlignment::Right) } else { table };
+        table.add_header("Pass", ColumnAlignment::Center)
+    }
+
+    /// Appends the `Errors | WHEA | Pass` cells matching [`Self::with_verdict_headers`].
+    ///
+    /// `whea` is `None` on per-thread/CPU/core rows: WHEA events are system-wide and nothing in them
+    /// identifies the core that faulted, so those rows get a blank WHEA cell (the same way the
+    /// aggregate row leaves its location columns blank) and a data-errors-only verdict. The
+    /// aggregate row passes `Some`, as does any per-test row — a per-test count *is* attributable,
+    /// being the delta across that test. WHEA and data errors stay in separate columns rather than
+    /// being summed: a combined figure over a column of per-row zeros would not add up.
+    fn push_verdict_cells(&self, row: &mut Vec<String>, errors: u64, whea: Option<WheaCounts>, has_whea: bool) {
+        row.push(errors.to_string());
+        if has_whea {
+            row.push(whea.map(|w| w.to_string()).unwrap_or_default());
+        }
+        let whea_total = whea.map_or(0, |w| w.total);
+        row.push(self.pass_cell(errors == 0 && whea_total == 0));
     }
 }
 
@@ -417,6 +457,7 @@ impl ReportFormatter for DefaultFormatter {
     }
     
     fn prepare_thread_timing_table(&self, report: &ThreadTimingReport) -> TableData {
+        let has_whea = report.whea.total > 0;
         let mut table = TableData::new()
             .add_header("Thread", ColumnAlignment::Right)
             .add_header("L CPU", ColumnAlignment::Right)
@@ -428,8 +469,8 @@ impl ReportFormatter for DefaultFormatter {
             .add_header("Dev D", ColumnAlignment::Right)
             .add_header("Speed", ColumnAlignment::Right)
             .add_header("Dev S", ColumnAlignment::Right)
-            .add_header("Cycles", ColumnAlignment::Right)
-            .add_header("Errors", ColumnAlignment::Right);
+            .add_header("Cycles", ColumnAlignment::Right);
+        table = self.with_verdict_headers(table, has_whea);
 
         for timing in &report.thread_timings {
             let deviation_time_str = if timing.deviation_ms >= 0 {
@@ -450,7 +491,7 @@ impl ReportFormatter for DefaultFormatter {
                 format!("{:.1}", timing.deviation_speed_mib_s)
             };
 
-            table = table.add_row(vec![
+            let mut row = vec![
                 timing.thread_id.to_string(),
                 format!("{}", timing.cpu_id),
                 format!("{}", timing.physical_core_id),
@@ -462,8 +503,9 @@ impl ReportFormatter for DefaultFormatter {
                 format!("{:.1} MiB/s", timing.throughput_mib_s),
                 deviation_speed_str,
                 timing.cycles_completed.to_string(),
-                if timing.errors > 0 { format!("{}", timing.errors) } else { "✅".to_string() },
-            ]);
+            ];
+            self.push_verdict_cells(&mut row, timing.errors, None, has_whea);
+            table = table.add_row(row);
         }
 
         // Add average row
@@ -479,7 +521,7 @@ impl ReportFormatter for DefaultFormatter {
                 .map(|t| t.cycles_completed as f64)
                 .sum::<f64>() / report.thread_timings.len() as f64;
 
-            table = table.add_row(vec![
+            let mut row = vec![
                 "Avg".to_string(),
                 "".to_string(),
                 "".to_string(),
@@ -491,13 +533,14 @@ impl ReportFormatter for DefaultFormatter {
                 format!("{:.1} MiB/s", avg_speed),
                 "".to_string(),
                 format!("{:.1}", avg_cycles), // Cycles column - show average
-                if total_errors > 0 { format!("{}", total_errors) } else { "✅".to_string() },
-            ]);
+            ];
+            self.push_verdict_cells(&mut row, total_errors, Some(report.whea), has_whea);
+            table = table.add_row(row);
         }
 
         table
     }
-    
+
     fn prepare_memory_status_table(&self, status: &CurrentMemoryStatus) -> TableData {
         TableData::new()
             .with_title("Current Memory Status")
@@ -635,6 +678,7 @@ impl ReportFormatter for DefaultFormatter {
     }
     
     fn prepare_performance_by_thread_table(&self, report: &PerformanceByThreadReport) -> TableData {
+        let has_whea = report.whea.total > 0;
         let mut table = TableData::new()
             .with_title("Performance by Thread")
             .add_header("Thread", ColumnAlignment::Right)
@@ -646,8 +690,8 @@ impl ReportFormatter for DefaultFormatter {
             .add_header("Data", ColumnAlignment::Right)
             .add_header("Dev D", ColumnAlignment::Right)
             .add_header("Speed", ColumnAlignment::Right)
-            .add_header("Dev S", ColumnAlignment::Right)
-            .add_header("Errors", ColumnAlignment::Right);
+            .add_header("Dev S", ColumnAlignment::Right);
+        table = self.with_verdict_headers(table, has_whea);
 
         // Calculate averages for variance
         let avg_time_ms = if !report.threads.is_empty() {
@@ -671,7 +715,7 @@ impl ReportFormatter for DefaultFormatter {
             let dev_bytes = thread.total_bytes as i64 - avg_bytes as i64;
             let dev_speed = thread.throughput_mib_s - avg_speed;
 
-            table = table.add_row(vec![
+            let mut row = vec![
                 thread.thread_id.to_string(),
                 format!("{}", thread.cpu_id),
                 format!("{}", thread.physical_core_id),
@@ -682,14 +726,15 @@ impl ReportFormatter for DefaultFormatter {
                 self.format_bytes_signed(dev_bytes),
                 format!("{:.1} MiB/s", thread.throughput_mib_s),
                 format!("{:+.1}", dev_speed),
-                if thread.total_errors > 0 { format!("{}", thread.total_errors) } else { "✅".to_string() },
-            ]);
+            ];
+            self.push_verdict_cells(&mut row, thread.total_errors, None, has_whea);
+            table = table.add_row(row);
         }
 
         // Add average row
         if !report.threads.is_empty() {
             let total_errors: u64 = report.threads.iter().map(|t| t.total_errors).sum();
-            table = table.add_row(vec![
+            let mut row = vec![
                 "Avg".to_string(),
                 "".to_string(),
                 "".to_string(),
@@ -700,14 +745,16 @@ impl ReportFormatter for DefaultFormatter {
                 "".to_string(),
                 format!("{:.1} MiB/s", avg_speed),
                 "".to_string(),
-                if total_errors > 0 { format!("{}", total_errors) } else { "✅".to_string() },
-            ]);
+            ];
+            self.push_verdict_cells(&mut row, total_errors, Some(report.whea), has_whea);
+            table = table.add_row(row);
         }
 
         table
     }
-    
+
     fn prepare_performance_by_cpu_table(&self, report: &PerformanceByCpuReport) -> TableData {
+        let has_whea = report.whea.total > 0;
         let mut table = TableData::new()
             .with_title("Performance by CPU")
             .add_header("L CPU", ColumnAlignment::Right)
@@ -718,8 +765,8 @@ impl ReportFormatter for DefaultFormatter {
             .add_header("Data", ColumnAlignment::Right)
             .add_header("Dev D", ColumnAlignment::Right)
             .add_header("Speed", ColumnAlignment::Right)
-            .add_header("Dev S", ColumnAlignment::Right)
-            .add_header("Errors", ColumnAlignment::Right);
+            .add_header("Dev S", ColumnAlignment::Right);
+        table = self.with_verdict_headers(table, has_whea);
 
         // Calculate averages for variance
         let avg_time_ms = if !report.cpus.is_empty() {
@@ -743,7 +790,7 @@ impl ReportFormatter for DefaultFormatter {
             let dev_bytes = cpu.total_bytes as i64 - avg_bytes as i64;
             let dev_speed = cpu.throughput_mib_s - avg_speed;
 
-            table = table.add_row(vec![
+            let mut row = vec![
                 format!("{}", cpu.cpu_id),
                 format!("{}", cpu.physical_core_id),
                 format!("{}", cpu.numa_node),
@@ -753,14 +800,15 @@ impl ReportFormatter for DefaultFormatter {
                 self.format_bytes_signed(dev_bytes),
                 format!("{:.1} MiB/s", cpu.throughput_mib_s),
                 format!("{:+.1}", dev_speed),
-                if cpu.total_errors > 0 { format!("{}", cpu.total_errors) } else { "✅".to_string() },
-            ]);
+            ];
+            self.push_verdict_cells(&mut row, cpu.total_errors, None, has_whea);
+            table = table.add_row(row);
         }
 
         // Add average row
         if !report.cpus.is_empty() {
             let total_errors: u64 = report.cpus.iter().map(|c| c.total_errors).sum();
-            table = table.add_row(vec![
+            let mut row = vec![
                 "Avg".to_string(),
                 "".to_string(),
                 "".to_string(),
@@ -770,14 +818,16 @@ impl ReportFormatter for DefaultFormatter {
                 "".to_string(),
                 format!("{:.1} MiB/s", avg_speed),
                 "".to_string(),
-                if total_errors > 0 { format!("{}", total_errors) } else { "✅".to_string() },
-            ]);
+            ];
+            self.push_verdict_cells(&mut row, total_errors, Some(report.whea), has_whea);
+            table = table.add_row(row);
         }
 
         table
     }
-    
+
     fn prepare_performance_by_physical_core_table(&self, report: &PerformanceByPhysicalCoreReport) -> TableData {
+        let has_whea = report.whea.total > 0;
         let mut table = TableData::new()
             .with_title("Performance by Physical Core")
             .add_header("P Core", ColumnAlignment::Center)
@@ -787,8 +837,8 @@ impl ReportFormatter for DefaultFormatter {
             .add_header("Data", ColumnAlignment::Right)
             .add_header("Dev D", ColumnAlignment::Right)
             .add_header("Speed", ColumnAlignment::Right)
-            .add_header("Dev S", ColumnAlignment::Right)
-            .add_header("Errors", ColumnAlignment::Right);
+            .add_header("Dev S", ColumnAlignment::Right);
+        table = self.with_verdict_headers(table, has_whea);
 
         // Calculate averages for variance
         let avg_time_ms = if !report.cores.is_empty() {
@@ -817,7 +867,7 @@ impl ReportFormatter for DefaultFormatter {
             let dev_bytes = core.total_bytes as i64 - avg_bytes as i64;
             let dev_speed = core.throughput_mib_s - avg_speed;
 
-            table = table.add_row(vec![
+            let mut row = vec![
                 format!("{}", core.core_id),
                 cpu_list,
                 self.format_duration(Duration::from_millis(core.total_time_ms as u64)),
@@ -826,14 +876,15 @@ impl ReportFormatter for DefaultFormatter {
                 self.format_bytes_signed(dev_bytes),
                 format!("{:.1} MiB/s", core.throughput_mib_s),
                 format!("{:+.1}", dev_speed),
-                if core.total_errors > 0 { format!("{}", core.total_errors) } else { "✅".to_string() },
-            ]);
+            ];
+            self.push_verdict_cells(&mut row, core.total_errors, None, has_whea);
+            table = table.add_row(row);
         }
 
         // Add average row
         if !report.cores.is_empty() {
             let total_errors: u64 = report.cores.iter().map(|c| c.total_errors).sum();
-            table = table.add_row(vec![
+            let mut row = vec![
                 "Avg".to_string(),
                 "".to_string(),
                 self.format_duration(Duration::from_millis(avg_time_ms as u64)),
@@ -842,13 +893,14 @@ impl ReportFormatter for DefaultFormatter {
                 "".to_string(),
                 format!("{:.1} MiB/s", avg_speed),
                 "".to_string(),
-                if total_errors > 0 { format!("{}", total_errors) } else { "✅".to_string() },
-            ]);
+            ];
+            self.push_verdict_cells(&mut row, total_errors, Some(report.whea), has_whea);
+            table = table.add_row(row);
         }
 
         table
     }
-    
+
     fn prepare_cpu_topology_table(&self, report: &CpuTopologyReport) -> TableData {
         let mut table = TableData::new()
             .with_title("CPU Topology and Thread Assignment")
@@ -1174,55 +1226,34 @@ impl ReportFormatter for DefaultFormatter {
     }
     
     fn prepare_cycle_report_table(&self, report: &CycleReport) -> TableData {
-        // Only widen the table when the OS actually reported hardware errors this cycle.
+        // Not wired up yet (TODO #69 F): nothing calls `report_cycle`. Kept deliberately for a
+        // between-cycle report, and kept in step with the final per-test table below so reinstating
+        // it needs only the call site. Unlike that table there is nothing to average — one cycle.
         let has_whea = report.test_performances.iter().any(|t| t.whea_total > 0);
 
-        let mut table = TableData::new()
+        let table = TableData::new()
             .with_title(format!("Cycle {} Report", report.cycle_number))
-            .add_header("#", ColumnAlignment::Right)
+            .add_header("#", ColumnAlignment::Center)
             .add_header("Test Name", ColumnAlignment::Left)
-            .add_header("Duration", ColumnAlignment::Right)
+            .add_header("Time", ColumnAlignment::Right)
             .add_header("Data", ColumnAlignment::Right)
-            .add_header("Throughput", ColumnAlignment::Right)
-            .add_header("Errors", ColumnAlignment::Center);
-
-        if has_whea {
-            table = table
-                .add_header("WHEA", ColumnAlignment::Center)
-                .add_header("WHEA Corr", ColumnAlignment::Center);
-        }
+            .add_header("Speed", ColumnAlignment::Right);
+        let mut table = self.with_verdict_headers(table, has_whea);
 
         for test in &report.test_performances {
-            let error_display = if test.errors > 0 {
-                format!("{}", test.errors)
-            } else {
-                "✅".to_string()
-            };
-
             let mut row = vec![
                 test.number.to_string(),
                 test.name.clone(),
                 format!("{:.1}s", test.duration_secs),
                 format!("{:.2} GiB", test.data_processed_gib),
-                format!("{:.1} MiB/s ({:.2} GiB/s)",
-                        test.throughput_mib_s, test.throughput_gib_s),
-                error_display,
+                format!("{:.0} MiB/s", test.throughput_mib_s),
             ];
-
-            if has_whea {
-                if test.whea_total > 0 {
-                    row.push(format!("{}", test.whea_total));
-                    row.push(format!("{}", test.whea_corrected));
-                } else {
-                    row.push("✅".to_string());
-                    row.push("-".to_string());
-                }
-            }
-
+            let whea = WheaCounts { total: test.whea_total, corrected: test.whea_corrected };
+            self.push_verdict_cells(&mut row, test.errors, Some(whea), has_whea);
             table = table.add_row(row);
         }
 
-        table.with_footer(format!("Cycle Duration: {}s", report.duration_secs))
+        table.with_footer(format!("Cycle Time: {}s", report.duration_secs))
     }
     
     fn prepare_cpu_variance_table(&self, report: &CpuVarianceReport) -> TableData {
@@ -1259,10 +1290,19 @@ impl ReportFormatter for DefaultFormatter {
     }
     
     fn prepare_final_summary_overview_table(&self, report: &FinalTestSummaryReport) -> TableData {
+        // Both error sources fail the run: a WHEA event means the hardware reported a fault whether
+        // or not a verify read could see it. First row, because it is the answer the whole table
+        // exists to give — everything below it is the supporting detail.
+        let passed = report.total_errors == 0 && report.whea_total == 0;
+
         TableData::new()
             .with_title("Final Test Summary - Overview")
             .add_header("Metric", ColumnAlignment::Left)
             .add_header("Value", ColumnAlignment::Right)
+            .add_row(vec![
+                "Result".to_string(),
+                if passed { "PASS ✅".to_string() } else { "FAIL ❌".to_string() },
+            ])
             .add_row(vec![
                 "Runtime (HH:MM:SS)".to_string(),
                 report.total_runtime.clone(),
@@ -1283,26 +1323,18 @@ impl ReportFormatter for DefaultFormatter {
             ])
             .add_row(vec![
                 "Total Errors".to_string(),
-                if report.total_errors > 0 {
-                    format!("{}", report.total_errors)
-                } else {
-                    "✅".to_string()
-                },
+                report.total_errors.to_string(),
             ])
             .add_row(vec![
-                "Hardware Errors (WHEA)".to_string(),
+                "Total WHEA".to_string(),
                 if !report.whea_monitored {
                     // Say so explicitly: a bare "0" here would claim a clean bill of health that
                     // was never actually checked.
                     "not monitored".to_string()
-                } else if report.whea_total > 0 {
-                    // "10 (5 corrected, 50%)" - the corrected share matters because a corrected
-                    // error means the fault happened but the data was still right, which is
-                    // exactly the case our verify reads cannot see.
-                    let pct = report.whea_corrected as f64 * 100.0 / report.whea_total as f64;
-                    format!("{} ({} corrected, {:.0}%)", report.whea_total, report.whea_corrected, pct)
                 } else {
-                    "✅".to_string()
+                    // The C/UC split matters: a corrected error means the fault happened but the
+                    // data was still right, which is exactly the case our verify reads cannot see.
+                    WheaCounts { total: report.whea_total, corrected: report.whea_corrected }.to_string()
                 },
             ])
     }
@@ -1318,9 +1350,9 @@ impl ReportFormatter for DefaultFormatter {
             .with_title("Final Test Summary - Per-Test Performance")
             .add_header("#", ColumnAlignment::Center)
             .add_header("Test Name", ColumnAlignment::Left)
-            .add_header("Duration", ColumnAlignment::Right)
+            .add_header("Time", ColumnAlignment::Right)
             .add_header("Data", ColumnAlignment::Right)
-            .add_header("Throughput", ColumnAlignment::Right);
+            .add_header("Speed", ColumnAlignment::Right);
 
         // Add latency columns only if any test has latency data
         if has_latency {
@@ -1338,25 +1370,14 @@ impl ReportFormatter for DefaultFormatter {
                 .add_header("Spread", ColumnAlignment::Right);
         }
 
-        table = table.add_header("Err", ColumnAlignment::Center);
-        if has_whea {
-            table = table
-                .add_header("WHEA", ColumnAlignment::Center)
-                .add_header("WHEA Corr", ColumnAlignment::Center);
-        }
+        table = self.with_verdict_headers(table, has_whea);
 
         for (idx, test) in report.per_test_summaries.iter().enumerate() {
-            let error_display = if test.total_errors > 0 {
-                format!("{}", test.total_errors)
-            } else {
-                "✅".to_string()
-            };
-
             let mut row = vec![
                 format!("{}", idx + 1),
                 test.name.clone(),
                 format!("{:.1}s", test.average_duration_secs),
-                format!("{:.2} GiB", test.total_data_gib),
+                format!("{:.2} GiB", test.average_data_gib),
                 format!("{:.0} MiB/s", test.average_throughput_mib_s),
             ];
 
@@ -1375,34 +1396,24 @@ impl ReportFormatter for DefaultFormatter {
                 row.push(test.latency_spread.map(|v| format!("{:.2}x", v)).unwrap_or_else(|| "-".to_string()));
             }
 
-            row.push(error_display);
-
-            if has_whea {
-                // Counts, not averages: a hardware error is an event, and averaging over cycles
-                // would dilute a single-cycle fault into "0.3 errors".
-                if test.whea_total > 0 {
-                    row.push(format!("{}", test.whea_total));
-                    row.push(format!("{}", test.whea_corrected));
-                } else {
-                    row.push("✅".to_string());
-                    row.push("-".to_string());
-                }
-            }
+            // Counts, not averages: an error is an event, and averaging over cycles would dilute a
+            // single-cycle fault into "0.3 errors".
+            let whea = WheaCounts { total: test.whea_total, corrected: test.whea_corrected };
+            self.push_verdict_cells(&mut row, test.total_errors, Some(whea), has_whea);
 
             table = table.add_row(row);
         }
 
-        let mut footer = if has_latency {
-            format!("Averaged across {} cycles. Latency values in nanoseconds.", report.cycles_completed)
-        } else {
-            format!("Averaged across {} cycles", report.cycles_completed)
-        };
-        if has_whea {
-            footer.push_str(
-                ". WHEA columns are OS-reported hardware error counts (totals, not averages)",
-            );
-        }
-        table.with_footer(footer)
+        // Say which columns are averages and which are totals — `Data` (an average) beside `Errors`
+        // (a total) is genuinely ambiguous otherwise, and nothing else on screen settles it.
+        let cycles = report.cycles_completed;
+        table.with_footer(format!(
+            "{} cycle{}: Time/Data/Speed{} averaged, Errors{} summed.",
+            cycles,
+            if cycles == 1 { "" } else { "s" },
+            if has_latency { "/latency (ns)" } else { "" },
+            if has_whea { "/WHEA" } else { "" },
+        ))
     }
     
     /// Prepare block size distribution table (Table 1)

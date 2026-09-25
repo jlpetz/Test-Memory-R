@@ -277,10 +277,10 @@ pub fn progress_reporter(progress: Arc<ProgressTracker>) {
             let seconds = runtime_secs % 60;
             let runtime_str = format!("{:02}:{:02}:{:02}", hours, minutes, seconds);
 
-            // Running WHEA tally, e.g. "10 (5 corrected)". Omitted entirely while clean so the
+            // Running WHEA tally, e.g. "10 (5C/5UC)". Omitted entirely while clean so the
             // progress line is unchanged on a healthy system.
             let whea_str = if status.whea.total > 0 {
-                format!(" | ⚠️ WHEA: {} ({} corrected)", status.whea.total, status.whea.corrected)
+                format!(" | ⚠️ WHEA: {}", status.whea)
             } else {
                 String::new()
             };
@@ -339,22 +339,14 @@ pub fn progress_reporter(progress: Arc<ProgressTracker>) {
                     }
                 }
 
-                // Last chance to catch events the OS queued during the final test, then list every
-                // one we recorded — a WHEA event is worth reprinting even if it scrolled past live.
+                // Last chance to catch events the OS queued during the final test. Anything this
+                // turns up has not been printed yet (the drain above ran before it), so print it
+                // here — but only it. Events already shown live are not reprinted: they are in the
+                // log file. No run tally here either: the final summary's `Total WHEA` row prints
+                // it a screen later, and saying it twice is noise.
                 progress.whea.poll();
-                let whea = progress.whea.counts();
-                if whea.total > 0 {
-                    println!(
-                        "\nHardware Errors (WHEA): {} total, {} corrected{}",
-                        whea.total,
-                        whea.corrected,
-                        whea.corrected_percent()
-                            .map(|pct| format!(" ({:.0}%)", pct))
-                            .unwrap_or_default()
-                    );
-                    for event in progress.whea.recorded() {
-                        println!("  {}", event);
-                    }
+                for event in progress.whea.take_pending() {
+                    println!("{}", event);
                 }
                 break;
             }

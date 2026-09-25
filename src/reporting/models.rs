@@ -208,11 +208,21 @@ pub struct TestCoverage {
 }
 
 /// Thread timing deviation report
+///
+/// The WHEA counts sit at report level, not on [`ThreadTiming`], because WHEA events are
+/// system-wide: nothing in the event identifies the core that faulted (the XML's
+/// `Execution ProcessID` is the logging service). They are carried here so the table's aggregate
+/// row can show them in the `WHEA` column and fail even when every thread row is clean — otherwise
+/// a WHEA-only failure shows a table of zeros under a failing topline, and the table is not
+/// self-contained once it is rendered anywhere other than directly under that topline. Same
+/// reasoning applies to the three `PerformanceBy*Report`s below.
 #[derive(Debug, Clone)]
 pub struct ThreadTimingReport {
     pub test_name: String,
     pub average_elapsed_ms: u128,
     pub thread_timings: Vec<ThreadTiming>,
+    /// WHEA events during this test (the delta across it, not the run total).
+    pub whea: crate::whea::WheaCounts,
 }
 
 /// Individual thread timing data
@@ -278,6 +288,8 @@ pub struct PageConstraints {
 #[derive(Debug, Clone)]
 pub struct PerformanceByThreadReport {
     pub threads: Vec<ThreadPerformance>,
+    /// WHEA events for the whole run — see [`ThreadTimingReport`] for why this is not per-thread.
+    pub whea: crate::whea::WheaCounts,
 }
 
 /// Individual thread performance
@@ -297,6 +309,8 @@ pub struct ThreadPerformance {
 #[derive(Debug, Clone)]
 pub struct PerformanceByCpuReport {
     pub cpus: Vec<CpuPerformance>,
+    /// WHEA events for the whole run — see [`ThreadTimingReport`] for why this is not per-CPU.
+    pub whea: crate::whea::WheaCounts,
 }
 
 /// Individual CPU performance
@@ -315,6 +329,8 @@ pub struct CpuPerformance {
 #[derive(Debug, Clone)]
 pub struct PerformanceByPhysicalCoreReport {
     pub cores: Vec<PhysicalCorePerformance>,
+    /// WHEA events for the whole run — see [`ThreadTimingReport`] for why this is not per-core.
+    pub whea: crate::whea::WheaCounts,
 }
 
 /// Individual physical core performance
@@ -458,7 +474,8 @@ pub struct FinalTestSummaryReport {
 pub struct TestSummaryEntry {
     pub name: String,
     pub average_duration_secs: f64,
-    pub total_data_gib: f64,
+    /// Per-cycle *average*, like duration and throughput. Only errors and WHEA are summed.
+    pub average_data_gib: f64,
     pub average_throughput_mib_s: f64,
     pub average_throughput_gib_s: f64,
     pub total_errors: u64,
