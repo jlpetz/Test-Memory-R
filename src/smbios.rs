@@ -7,6 +7,7 @@
 
 use std::collections::hash_map::DefaultHasher;
 use std::hash::{Hash, Hasher};
+use std::sync::OnceLock;
 use serde::{Deserialize, Serialize};
 
 // ============================================================================
@@ -101,6 +102,15 @@ impl SmbiosData {
     pub fn total_memory_bytes(&self) -> u64 {
         self.memory_modules.iter().map(|m| m.capacity_bytes).sum()
     }
+}
+
+static SMBIOS: OnceLock<SmbiosData> = OnceLock::new();
+
+/// The machine's SMBIOS data, read from firmware on first use. The tables cannot change while we
+/// run, and both the calibration identity check and the result file's identity need them, so they
+/// are read once rather than once per caller.
+pub fn get_smbios() -> &'static SmbiosData {
+    SMBIOS.get_or_init(SmbiosData::detect)
 }
 
 /// Format capacity in bytes to human-readable string (e.g. "64.0 GB")

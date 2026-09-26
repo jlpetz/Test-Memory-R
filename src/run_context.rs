@@ -28,7 +28,7 @@ use serde::{Deserialize, Serialize};
 use crate::app_config::MachineIdentity;
 use crate::constants::bytes_to_gib_f64 as to_gib;
 use crate::formatting::{ByteSize, serialize_round_2dp, serialize_round_opt_2dp};
-use crate::smbios::{MemoryModule, SmbiosData};
+use crate::smbios::MemoryModule;
 
 // ===========================================================================
 // Run instant — the one clock reading that names this run
@@ -66,7 +66,7 @@ pub fn run_file_stem() -> String {
 /// "the hardware changed".
 ///
 /// Nothing here is newly detected: [`crate::app_config::AppConfig::generate_machine_id`] and
-/// [`SmbiosData::memory_fingerprint`] already run on **every** invocation (via
+/// [`crate::smbios::SmbiosData::memory_fingerprint`] already run on **every** invocation (via
 /// `is_calibration_valid`, which is why TMR can print `Calibration: Stale (hardware changed)`).
 /// This type just hands the same facts to the result file, which never received them before.
 #[derive(Debug, Clone, Serialize, Deserialize, Default)]
@@ -157,12 +157,12 @@ impl RunIdentity {
     /// the bug this fixes was a `SystemInfoSnapshot` full of `"Unknown"` / `0.0` placeholders that
     /// no code ever populated. Wiring it into construction means it cannot be forgotten again.
     ///
-    /// Cost is a few Win32 calls and one SMBIOS firmware read, once per run, before any test
-    /// thread exists. CPU/cache data comes from the process-wide cached `SystemInfo`.
+    /// Cost is a few Win32 calls, once per run, before any test thread exists. CPU/cache data and
+    /// SMBIOS both come from process-wide caches, so the firmware tables are not read again here.
     pub fn detect() -> Self {
         let sys = crate::tests::get_system_info();
         let cache = sys.get_cache_info();
-        let smbios = SmbiosData::detect();
+        let smbios = crate::smbios::get_smbios();
 
         // Installed vs OS-visible RAM. Failure is not worth aborting a run over — leave zeros,
         // which read as "not recorded" next to a populated `machine_id`.
@@ -181,7 +181,7 @@ impl RunIdentity {
         let virtualized = cache.is_virtual_machine;
 
         Self {
-            machine_id: crate::app_config::AppConfig::generate_machine_id(sys, &smbios),
+            machine_id: crate::app_config::AppConfig::generate_machine_id(sys, smbios),
             memory_id: smbios.memory_fingerprint(),
             system_uuid: if smbios.system.uuid.is_empty() {
                 None
@@ -190,7 +190,7 @@ impl RunIdentity {
             },
             // Same constructor `AppConfig::update_identity` uses, so a result file's readable
             // identity always corresponds to the `machine_id` that gates calibration reuse.
-            machine: MachineIdentity::detect(sys, &smbios),
+            machine: MachineIdentity::detect(sys, smbios),
             physical_cores: sys.physical_cores,
             logical_cores: sys.logical_cores,
             smt_available: sys.has_hyperthreading,

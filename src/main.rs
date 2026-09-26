@@ -350,7 +350,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
 				let system_info = tmr::SystemInfo::detect();
 				let cache_info = system_info.get_cache_info().clone();
 				cache_info.print_info();
-				let smbios = tmr::smbios::SmbiosData::detect();
+				let smbios = tmr::smbios::get_smbios();
 				println!();
 
 				// Check for maxpage= override in remaining args
@@ -373,7 +373,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
 						let mut app_config = tmr::app_config::AppConfig::load(&cfg_path);
 						let should_save = prompt_calibration_save(&app_config.calibration, &results, "standard");
 						if should_save {
-							app_config.update_machine_id(&system_info, &smbios);
+							app_config.update_machine_id(&system_info, smbios);
 							app_config.calibration = Some(results.clone());
 							match app_config.save(&cfg_path) {
 								Ok(()) => println!("Calibration saved to {}", cfg_path.display()),
@@ -414,7 +414,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
 				let system_info = tmr::SystemInfo::detect();
 				let cache_info = system_info.get_cache_info().clone();
 				cache_info.print_info();
-				let smbios = tmr::smbios::SmbiosData::detect();
+				let smbios = tmr::smbios::get_smbios();
 				println!();
 
 				// Check for maxpage= override in remaining args
@@ -437,7 +437,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
 						let mut app_config = tmr::app_config::AppConfig::load(&cfg_path);
 						let should_save = prompt_calibration_save(&app_config.calibration_extended, &results, "extended");
 						if should_save {
-							app_config.update_machine_id(&system_info, &smbios);
+							app_config.update_machine_id(&system_info, smbios);
 							app_config.calibration_extended = Some(results.clone());
 							match app_config.save(&cfg_path) {
 								Ok(()) => println!("Extended calibration saved to {}", cfg_path.display()),
@@ -943,14 +943,14 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
 	tmr::set_active_threads_per_core(smt_threads);
 
 	// Detect SMBIOS data for identity validation
-	let smbios = tmr::smbios::SmbiosData::detect();
+	let smbios = tmr::smbios::get_smbios();
 
 	// Load calibration from tmr-cfg.json (unless --no-calibration)
 	let no_calibration = args.iter().any(|a| a == "--no-calibration");
 	if !no_calibration {
 		let cfg_path = tmr::app_config::AppConfig::default_path();
 		let app_config = tmr::app_config::AppConfig::load(&cfg_path);
-		if app_config.is_calibration_valid(system_info, &smbios) {
+		if app_config.is_calibration_valid(system_info, smbios) {
 			if let Some(cal) = app_config.get_best_calibration() {
 				let cal_type = if app_config.calibration_extended.is_some() { "extended" } else { "standard" };
 				let timestamp = cal.timestamp.format("%Y-%m-%d %H:%M");
