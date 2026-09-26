@@ -8,6 +8,7 @@ pub mod constants;
 pub mod memory;
 pub mod tests;
 pub mod progress;
+pub mod console; // single writer path while the progress ticker is on screen
 pub mod layout;
 pub mod runner;
 pub mod simd;

@@ -190,9 +190,6 @@ impl<R: Renderer> Reporter<R> {
             self.renderer.render_table(&per_thread_table)?;
         }
 
-        // Blank line to separate from next test
-        println!();
-
         Ok(())
     }
 

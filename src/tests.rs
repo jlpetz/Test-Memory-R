@@ -556,12 +556,16 @@ pub struct TestStats {
 
 /// Optional progress reporting structure for tests
 /// Allows tests to report progress back to the coordinator at checkpoints
+///
+/// One per worker, owned by the thread pool and read by the progress ticker. Each worker's slot is
+/// on its own cache line so workers publishing never contend with one another.
 #[derive(Debug)]
+#[repr(align(64))]
 pub struct TestProgress {
     pub cycles_completed: std::sync::atomic::AtomicU32,
     pub bytes_processed: std::sync::atomic::AtomicU64,
     pub errors_found: std::sync::atomic::AtomicU64,
-    pub last_update_ms: std::sync::atomic::AtomicU64,  // Timestamp of last update
+    pub last_update_ms: std::sync::atomic::AtomicU64,  // ms since the test started; 0 = nothing published yet
 }
 
 impl Default for TestProgress {
@@ -581,6 +585,15 @@ impl TestProgress {
             errors_found: AtomicU64::new(0),
             last_update_ms: AtomicU64::new(0),
         }
+    }
+
+    /// Zero the slot for the next test. Only safe while its worker is idle between tests.
+    pub fn reset(&self) {
+        use std::sync::atomic::Ordering::Relaxed;
+        self.cycles_completed.store(0, Relaxed);
+        self.bytes_processed.store(0, Relaxed);
+        self.errors_found.store(0, Relaxed);
+        self.last_update_ms.store(0, Relaxed);
     }
 }
 

@@ -140,6 +140,9 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     //    unsupported CPUs cleanly here rather than letting them #UD-fault mid-test.
     require_cpu_features();
 
+    // VT escape processing, for the log colours and the progress ticker (see console.rs).
+    tmr::console::init();
+
     // Initialize enhanced logging with file output
     setup_logging();
 
@@ -1025,9 +1028,12 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
 	// This allows tests to stop at next checkpoint and print final reports
 	ctrlc::set_handler(move || {
 		use std::sync::atomic::Ordering;
-		println!("\n\n🛑 CTRL+C received - initiating graceful shutdown...");
-		println!("   Tests will stop at next checkpoint and print final report");
-		println!("   (Press CTRL+C again to force immediate exit)\n");
+		// Above the progress ticker, which this thread would otherwise print into the middle of.
+		tmr::console::print_above(
+			"\n🛑 CTRL+C received - initiating graceful shutdown...\n\
+			 \x20  Tests will stop at next checkpoint and print final report\n\
+			 \x20  (Press CTRL+C again to force immediate exit)\n\n",
+		);
 		tmr::runner::SHUTDOWN_REQUESTED.store(true, Ordering::Relaxed);
 	}).expect("Error setting CTRL+C handler");
 
@@ -1262,18 +1268,8 @@ fn setup_logging() {
     Builder::new()
         .filter_level(level_filter)
         .format(|buf, record| {
-            // Clear any existing progress line and ensure we start on a new line
-            // This prevents log messages from getting merged with progress output
-            if record.level() <= log::Level::Warn {
-                // For warnings and errors, clear the line (removed extra newline)
-                print!("\r\x1b[K");
-            } else {
-                // For info/debug, just clear the current line
-                print!("\r\x1b[K");
-            }
-            let _ = stdout().flush();
-            
-            // Write to console with original env_logger format
+            // Write to console with original env_logger format. `LogSink` below prints it above
+            // the progress ticker, so the two never merge.
             let console_result = writeln!(
                 buf,
                 "\x1b[{}m[{} {} {}]\x1b[0m {}",
@@ -1311,7 +1307,16 @@ fn setup_logging() {
 
             console_result
         })
-        .target(env_logger::Target::Stdout)
+        // Through the console module, so a log line can never land inside the progress ticker.
+        // A pipe target gets no colour detection of its own (env_logger would strip the escapes
+        // above), so decide here as the stdout target used to: colours on a console, none when
+        // redirected.
+        .target(env_logger::Target::Pipe(Box::new(tmr::console::LogSink)))
+        .write_style(if std::io::IsTerminal::is_terminal(&stdout()) {
+            env_logger::WriteStyle::Always
+        } else {
+            env_logger::WriteStyle::Never
+        })
         .init();
 
     // Log startup info

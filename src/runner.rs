@@ -64,7 +64,7 @@ use crate::reporting::models::{
     LatencyTestSummaryReport, LatencyLevelSummary, LatencyThreadResult,
     LatencyPercentiles, DetectedCacheInfo,
 };
-use crate::progress::progress_reporter;
+use crate::progress::{progress_reporter, RunOutcome};
 use crate::results::TestRunResult;
 use crate::memory::{MemoryBuffer, MemoryAllocator, BackendType};
 use crate::memory::allocation_strategy::SystemMemoryInfo;
@@ -74,7 +74,7 @@ use std::collections::HashMap;
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, Mutex};
 use std::thread;
-use std::time::Instant;
+use std::time::{Duration, Instant};
 
 use std::sync::mpsc::Receiver;
 
@@ -403,7 +403,6 @@ pub fn run_tests_with_layout_and_timing_filtered(
         Err(reason) => println!("🔎 WHEA hardware-error monitoring: unavailable ({})", reason),
     }
 
-    let success = Arc::new(AtomicBool::new(true));
 	let all_test_cpu_stats: Arc<Mutex<TestCpuStats>> = Arc::new(Mutex::new(HashMap::new()));
 
     let mut thread_blocks: HashMap<usize, Vec<BlockInfo>> = HashMap::new();
@@ -412,7 +411,6 @@ pub fn run_tests_with_layout_and_timing_filtered(
     }
 
     // Stage 1: Pre-allocate all memory blocks
-    progress.set_phase("Stage 1: Allocating Memory");
     println!("Stage 1: Pre-allocating memory blocks...");
 
     // Display page size constraints before allocation begins
@@ -687,8 +685,6 @@ pub fn run_tests_with_layout_and_timing_filtered(
 
     let tests_per_cycle = test_definitions.len() as u64;
 
-    progress.set_cycle_info(1, suite_timing.global_cycles, tests_per_cycle);
-
     // cache_info is passed from main.rs (detected once at startup via get_system_info())
     // Used for calculating window sizes in CacheLevel mode during display and test execution
 
@@ -775,11 +771,6 @@ pub fn run_tests_with_layout_and_timing_filtered(
         Arc::new(Mutex::new(TestRunResult::new(snapshot)))
     };
 
-    // Run test suite with timing control
-    let suite_start = Instant::now();
-    
-    // Execute the main test cycles
-    let cycles = suite_timing.global_cycles.unwrap_or(1);
     let cycle_ctx = CycleContext {
         test_definitions: &test_definitions,
         thread_pool: &thread_pool,
@@ -791,27 +782,44 @@ pub fn run_tests_with_layout_and_timing_filtered(
         all_test_cpu_stats: &all_test_cpu_stats,
         cache_info,
     };
-    for cycle in 1..=cycles {
+    // Run cycles until a suite limit is reached. Both limits are checked *between* cycles, so a
+    // cycle is never cut short by the clock; with neither limit set the suite runs until Ctrl+C or
+    // an error halt, as the "Unlimited" in the banner says.
+    let cycle_limit = suite_timing.global_cycles;
+    let time_limit = suite_timing.global_duration_secs.map(|secs| Duration::from_secs(secs.into()));
+    let suite_start = Instant::now();
+    progress.begin_suite(suite_start, cycle_limit, time_limit, tests_per_cycle, thread_pool.live_progress());
+
+    let mut cycles_done = 0u32;
+    let outcome = loop {
+        if cycle_limit.is_some_and(|limit| cycles_done >= limit) {
+            break RunOutcome::Completed;
+        }
+        if time_limit.is_some_and(|limit| suite_start.elapsed() >= limit) {
+            break RunOutcome::TimeLimit;
+        }
         if SHUTDOWN_REQUESTED.load(Ordering::Relaxed) {
-            println!("\n🛑 Shutdown requested, ending test suite early");
-            break;
+            break RunOutcome::Interrupted;
         }
 
-        progress.set_phase(&format!("Cycle {} of {}", cycle, cycles));
-        println!("\n🔄 Starting test cycle {} of {}", cycle, cycles);
+        let cycle = cycles_done + 1;
+        progress.start_new_cycle(cycle);
+        crate::console::print_above(&match cycle_limit {
+            Some(limit) => format!("\n🔄 Starting test cycle {} of {}", cycle, limit),
+            None => format!("\n🔄 Starting test cycle {}", cycle),
+        });
 
         // Execute all tests in sequence for this cycle
-        execute_test_cycle(&cycle_ctx, cycle as u64);
-
-        if !success.load(Ordering::Relaxed) {
-            break;
+        if let Some(stop) = execute_test_cycle(&cycle_ctx, cycle as u64) {
+            break stop;
         }
-    }
+        cycles_done = cycle;
+    };
 
     let suite_duration = suite_start.elapsed();
 
     // Signal completion to progress reporter
-    progress.set_phase("Completed");
+    progress.finish();
 
     // Wait for progress reporter to finish
     if let Err(e) = progress_handle.join() {
@@ -873,25 +881,22 @@ pub fn run_tests_with_layout_and_timing_filtered(
         );
     }
 
-    // NOTE: `success` here is not the flag `execute_test_cycle` writes to — that one is a local
-    // inside the cycle function, used only for its ErrorMode::Halt check, so thread-reported errors
-    // never reached this point. `progress.total_errors` is the accurate aggregate (summed from
-    // every thread's result in `complete_test`), so the verdict is derived from it directly.
-    let memory_errors = progress.total_errors.load(Ordering::Relaxed);
+    // `progress.total_errors()` is the accurate aggregate (summed from every thread's result in
+    // `complete_test`), so the verdict is derived from it directly. A halt fails the run even at
+    // zero counts: the one halt trigger that carries no count is a lost worker result.
+    let memory_errors = progress.total_errors();
     let final_success =
-        success.load(Ordering::Relaxed) && memory_errors == 0 && whea_totals.total == 0;
+        outcome != RunOutcome::Halted && memory_errors == 0 && whea_totals.total == 0;
 
     // Display completion status
-    let was_interrupted = SHUTDOWN_REQUESTED.load(Ordering::Relaxed);
-    if was_interrupted {
+    if outcome == RunOutcome::Interrupted {
         println!("\n⚠️  Test suite interrupted by user (CTRL+C)");
     } else if final_success {
         println!("\n✅ All test cycles completed successfully!");
     } else {
         // Same form as the per-test topline. Either count alone fails the run: a WHEA event with
         // `0 errors` is a fault that ECC corrected, or one raised during a test phase that does not
-        // verify — still not a stable configuration. Reaching here always means one of the two is
-        // non-zero: the outer `success` is never cleared, so `final_success` is exactly "both zero".
+        // verify — still not a stable configuration.
         println!(
             "\n❌ Test suite failed: {} errors + {} WHEA{}",
             memory_errors, whea_totals.total, whea_totals.split_suffix()
@@ -904,7 +909,10 @@ pub fn run_tests_with_layout_and_timing_filtered(
     final_success
 }
 
-fn execute_test_cycle(ctx: &CycleContext, cycle: u64) {
+/// Run every test once. Returns `None` when the cycle ran to the end, or the outcome the suite
+/// must end with when it stopped early (Ctrl+C, or an `ErrorMode::Halt` trigger). Either way the
+/// tests that ran are added to the results as this cycle.
+fn execute_test_cycle(ctx: &CycleContext, cycle: u64) -> Option<RunOutcome> {
     let &CycleContext {
         test_definitions,
         thread_pool,
@@ -925,27 +933,25 @@ fn execute_test_cycle(ctx: &CycleContext, cycle: u64) {
     let mut cycle_test_summaries = Vec::new();
 
     let success = Arc::new(AtomicBool::new(true));
+    let mut stopped = None;
     for (test_idx, test_def) in test_definitions.iter().enumerate() {
         let test_name = test_def.actual_name; // Use actual_name for thread pool (requires 'static)
         let test_display_name = &test_def.display_name; // Use display_name for results to preserve _A suffix
         let test_func = &test_def.function;
         let test_config = &test_def.config;
         if SHUTDOWN_REQUESTED.load(Ordering::Relaxed) {
-            // Finalize partial cycle with completed tests before early exit
-            if !cycle_test_summaries.is_empty() {
-                let cycle_duration_secs = cycle_start.elapsed().as_secs() as u32;
-                if let Ok(mut result) = test_run_result.lock() {
-                    result.add_cycle(cycle as u32, cycle_duration_secs, cycle_test_summaries);
-                } else {
-                    log::error!("Failed to lock test_run_result to add partial cycle {}", cycle);
-                }
-            }
-            return;
+            stopped = Some(RunOutcome::Interrupted);
+            break;
         }
-        
-        progress.set_phase(&format!("{} ({}/{})", test_name, test_idx + 1, test_definitions.len()));
-        
+
         let test_start = Instant::now();
+        progress.start_test(
+            test_idx + 1,
+            test_display_name,
+            test_start,
+            test_config.timing.duration_secs.map(|secs| Duration::from_secs(secs.into())),
+            !matches!(test_func, TestFunction::Latency(_)),
+        );
 
         // Baseline for this test's WHEA attribution. Drain first so anything queued from the
         // previous test is charged there, not here. Attribution is still approximate at a test
@@ -1060,10 +1066,8 @@ fn execute_test_cycle(ctx: &CycleContext, cycle: u64) {
             String::new()
         };
 
-        // Pause progress output and clear any existing progress line
-        progress.pause_progress_output.store(true, Ordering::Relaxed);
-        print!("\r\x1b[K"); // Clear the progress ticker line
-        std::io::Write::flush(&mut std::io::stdout()).ok();
+        // Take the ticker down and keep it down while the report below prints.
+        crate::console::hold();
 
         // Format operations in human-readable form (B/M/K notation)
         let format_ops = |ops: u64| -> String {
@@ -1123,7 +1127,7 @@ fn execute_test_cycle(ctx: &CycleContext, cycle: u64) {
         // the C/UC split only appears when there is something to split. "errors" is the word every
         // table uses for these (the `Errors` column) — "data" would collide with the `Data` column,
         // which is bytes processed.
-        println!("📊 Test report - Cycle {} - {}: {} {:.1}s, {} errors + {} WHEA{}, {:.2} GiB @ {:.1} MiB/s, {} ops @ {} ops/s{}{}",
+        println!("📊 Test report - Cycle {} - {}: {} {:.1}s, {} errors + {} WHEA{}, {:.2} GiB @ {:.1} MiB/s ({:.2} GiB/s), {} ops @ {} ops/s{}{}",
                  cycle,
                  test_def.display_name,
                  pass_indicator,
@@ -1133,6 +1137,7 @@ fn execute_test_cycle(ctx: &CycleContext, cycle: u64) {
                  whea_for_test.split_suffix(),
                  total_bytes_for_test as f64 / (1024.0 * 1024.0 * 1024.0),
                  (total_bytes_for_test as f64 / (1024.0 * 1024.0)) / test_duration.as_secs_f64(),
+                 (total_bytes_for_test as f64 / (1024.0 * 1024.0 * 1024.0)) / test_duration.as_secs_f64(),
                  format_ops(total_operations_for_test),
                  format_ops(ops_per_sec as u64),
                  latency_info,
@@ -1186,20 +1191,7 @@ fn execute_test_cycle(ctx: &CycleContext, cycle: u64) {
         }
 
         // Update progress tracker with test completion
-        use crate::tests::{TestStats, TestAction};
-        let test_summary = TestStats {
-            name: test_name,
-            action: TestAction::ReadWrite, // Generic action for multi-purpose tests
-            bytes_processed: total_bytes_for_test as usize,
-            elapsed_ms: test_duration.as_millis(),
-            thread_id: 0, // Not used by progress tracker
-            error_count: total_errors_for_test,
-            total_operations: total_operations_for_test,
-            cycles_completed: 0,  // Aggregated from threads
-            cycles_planned: None,
-            stopped_by_time_limit: false,
-        };
-        progress.complete_test(&test_summary);
+        progress.complete_test(test_name, total_errors_for_test);
 
         // Generate thread timing deviation report
         {
@@ -1232,18 +1224,22 @@ fn execute_test_cycle(ctx: &CycleContext, cycle: u64) {
             };
 
             // Use existing reporting infrastructure - just display the single level
-            // (report_latency_summary adds trailing blank line for test separation)
             let mut reporter = create_console_reporter();
             if let Err(e) = reporter.report_latency_summary(&summary_report) {
                 log::error!("Failed to display latency report: {}", e);
             }
-        } else {
-            // Bandwidth-only test - add blank line to separate from next test
-            println!();
         }
 
-        // Resume progress output now that report is complete
-        progress.pause_progress_output.store(false, Ordering::Relaxed);
+        // Where the suite stood as this test ended. The ticker is down during every report and
+        // gone after the run, so this is what stays on screen: one line per test.
+        if let Some(stamp) = progress.test_stamp(test_duration) {
+            println!("{}", stamp);
+        }
+        // Blank line to separate from the next test
+        println!();
+
+        // Report done: let the ticker back.
+        crate::console::release();
 
 		// Store aggregated stats for this test
 		{
@@ -1303,31 +1299,31 @@ fn execute_test_cycle(ctx: &CycleContext, cycle: u64) {
             latency_spread,
         });
 
-        // Early exit on errors if required
+        // Early exit on errors if required. This is reported as a halt, not routed through
+        // SHUTDOWN_REQUESTED — that flag means Ctrl+C, and the verdict would report it as one.
         if !success.load(Ordering::Relaxed) && matches!(error_mode, ErrorMode::Halt) {
             log::error!("Halting test suite due to memory errors");
-            SHUTDOWN_REQUESTED.store(true, Ordering::Relaxed);
-
-            // Finalize partial cycle with completed tests before early exit
-            if !cycle_test_summaries.is_empty() {
-                let cycle_duration_secs = cycle_start.elapsed().as_secs() as u32;
-                if let Ok(mut result) = test_run_result.lock() {
-                    result.add_cycle(cycle as u32, cycle_duration_secs, cycle_test_summaries);
-                } else {
-                    log::error!("Failed to lock test_run_result to add partial cycle {}", cycle);
-                }
-            }
-            return;
+            stopped = Some(RunOutcome::Halted);
+            break;
+        }
+        // Ctrl+C during this test cut it short, so the cycle did not finish even if this was its
+        // last test.
+        if SHUTDOWN_REQUESTED.load(Ordering::Relaxed) {
+            stopped = Some(RunOutcome::Interrupted);
+            break;
         }
     }
 
-    // Cycle complete - add results to TestRunResult
-    let cycle_duration_secs = cycle_start.elapsed().as_secs() as u32;
-    if let Ok(mut result) = test_run_result.lock() {
-        result.add_cycle(cycle as u32, cycle_duration_secs, cycle_test_summaries);
-    } else {
-        log::error!("Failed to lock test_run_result to add cycle {}", cycle);
+    // Add this cycle's results to TestRunResult, including a partial cycle that stopped early
+    if !cycle_test_summaries.is_empty() {
+        let cycle_duration_secs = cycle_start.elapsed().as_secs() as u32;
+        if let Ok(mut result) = test_run_result.lock() {
+            result.add_cycle(cycle as u32, cycle_duration_secs, cycle_test_summaries);
+        } else {
+            log::error!("Failed to lock test_run_result to add cycle {}", cycle);
+        }
     }
+    stopped
 }
 
 // Generic auto-dispatch resolver - converts "*-Auto" test names to best SIMD variant

@@ -23,6 +23,7 @@ windows = { version = "0.62", features = [
 	"Win32_System_Registry",
 	"Win32_System_LibraryLoader",
 	"Win32_System_EventLog",         # WHEA monitoring (#63): EvtSubscribe/EvtNext/EvtRender
+	"Win32_System_Console",          # progress ticker: VT mode + console width (console.rs)
 ] }
 num_cpus = "1.17"
 log = "0.4"

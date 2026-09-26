@@ -1,50 +1,75 @@
-use crate::tests::TestStats;
-use crate::constants::{BYTES_PER_GIB_F64, BYTES_PER_MIB_F64};
-use std::sync::atomic::{AtomicU64, AtomicBool, Ordering};
-use std::sync::{Arc, Mutex};
-use std::time::Instant;
+use std::collections::HashMap;
+use std::fmt::Write as _;
+use std::sync::atomic::{AtomicBool, Ordering};
+use std::sync::{Arc, Mutex, MutexGuard, OnceLock};
+use std::time::{Duration, Instant};
 use std::thread;
 
-// Enhanced progress tracking with per-cycle progress and better error tracking
+use crate::constants::{BYTES_PER_GIB_F64, BYTES_PER_MIB_F64};
+use crate::tests::TestProgress;
+
+// Live suite position for the progress ticker, plus the run's error tallies. Per-cycle and per-test
+// results are not kept here: `TestRunResult` (results.rs) owns those, and the final summary and
+// the JSON file are both built from it.
 pub struct ProgressTracker {
-    // Test tracking - per cycle
-    pub tests_per_cycle: AtomicU64,          // Number of unique tests in one cycle
-    pub completed_tests_this_cycle: AtomicU64, // Tests completed in current cycle
-    pub current_cycle: AtomicU64,            // Current cycle number (1-based)
-    pub total_cycles: AtomicU64,             // Total planned cycles (0 = unlimited)
-
-    // Performance tracking
-    pub total_bytes_processed: AtomicU64,
-    pub total_test_time_ms: AtomicU64,
-    pub cycle_stats: Mutex<Vec<CycleStats>>,
-
-    // Enhanced error tracking
-    pub total_errors: AtomicU64,
-    pub per_test_errors: Mutex<std::collections::HashMap<String, u64>>, // Track errors per test type
+    // What the suite was asked to do, fixed by `begin_suite`.
+    suite: OnceLock<SuitePlan>,
+    position: Mutex<Position>,
+    finished: AtomicBool,
 
     // Hardware errors the OS saw that our verify reads cannot (DDR5 on-die ECC corrections, and
     // any fault landing during a non-verifying test like bandwidth/latency). Counted separately
-    // from `total_errors` because these are OS-reported, not thread-reported. See whea.rs.
+    // from the thread-reported errors because these are OS-reported. See whea.rs.
     pub whea: crate::whea::WheaMonitor,
-
-    // Phase and throughput tracking
-    pub current_phase: Mutex<String>,
-    pub current_throughput: AtomicU64,
-    pub start_time: Instant,
-
-    // Cycle timing
-    pub cycle_start_time: Mutex<Option<Instant>>,
-
-    // Output synchronization - pause progress updates when printing reports
-    pub pause_progress_output: AtomicBool,
 }
 
-#[derive(Debug, Clone)]
-pub struct CycleStats {
-    pub cycle_number: u32,
-    pub duration_secs: u64,
-    pub bytes_processed: u64,
-    pub test_stats: Vec<TestSummary>,
+/// What the suite was asked to do, fixed when it starts.
+struct SuitePlan {
+    start: Instant,
+    cycle_limit: Option<u32>,
+    time_limit: Option<Duration>,
+    tests_per_cycle: u64,
+    /// The workers' live-progress slots (thread_pool.rs), which carry the running test's figures.
+    workers: Arc<[TestProgress]>,
+}
+
+/// Where the suite is now, and the errors of the tests already finished. One lock, so a render
+/// never sees a half-made step: in particular a test's errors counted both in `errors` and still in
+/// its workers' live figures.
+struct Position {
+    cycle: u32, // 1-based, 0 = not started
+    cycle_start: Instant,
+    tests_done: u64, // tests finished in this cycle
+    test: Option<RunningTest>,
+    errors: u64, // from finished tests, whole run
+    errors_by_test: HashMap<String, u64>,
+}
+
+/// The test the workers are running now, or the one that just finished.
+struct RunningTest {
+    number: u64, // 1-based position in the cycle
+    name: String,
+    start: Instant,
+    time_limit: Option<Duration>,
+    /// Whether this kind of test publishes live figures. Latency tests don't.
+    publishes: bool,
+    /// Results are in and its errors are in `Position::errors`, so its workers' live errors must
+    /// not be added again.
+    finished: bool,
+}
+
+/// How the suite ended. Drives the run verdict.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum RunOutcome {
+    /// The cycle limit was reached.
+    Completed,
+    /// The suite time limit expired. It is checked between cycles, so the last cycle always
+    /// finishes.
+    TimeLimit,
+    /// Ctrl+C.
+    Interrupted,
+    /// `ErrorMode::Halt` stopped the suite on an error.
+    Halted,
 }
 
 #[derive(Debug, Clone)]
@@ -73,6 +98,15 @@ pub struct TestSummary {
     pub latency_spread: Option<f64>,
 }
 
+/// The running test's figures, summed over the workers that have published.
+#[derive(Default)]
+struct LiveFigures {
+    published: bool,
+    bytes: u64,
+    errors: u64,
+    bytes_per_sec: f64,
+}
+
 impl Default for ProgressTracker {
     fn default() -> Self {
         Self::new()
@@ -82,282 +116,284 @@ impl Default for ProgressTracker {
 impl ProgressTracker {
     pub fn new() -> Self {
         Self {
-            tests_per_cycle: AtomicU64::new(0),
-            completed_tests_this_cycle: AtomicU64::new(0),
-            current_cycle: AtomicU64::new(0),
-            total_cycles: AtomicU64::new(0),
-            total_bytes_processed: AtomicU64::new(0),
-            total_test_time_ms: AtomicU64::new(0),
-            cycle_stats: Mutex::new(Vec::new()),
-            total_errors: AtomicU64::new(0),
-            per_test_errors: Mutex::new(std::collections::HashMap::new()),
+            suite: OnceLock::new(),
+            position: Mutex::new(Position {
+                cycle: 0,
+                cycle_start: Instant::now(),
+                tests_done: 0,
+                test: None,
+                errors: 0,
+                errors_by_test: HashMap::new(),
+            }),
+            finished: AtomicBool::new(false),
             // Inert until `whea.start()` is called by the runner — constructing a tracker must not
             // have the side effect of opening an event-log subscription.
             whea: crate::whea::WheaMonitor::new(),
-            current_phase: Mutex::new("Initializing".to_string()),
-            current_throughput: AtomicU64::new(0),
-            start_time: Instant::now(),
-            cycle_start_time: Mutex::new(None),
-            pause_progress_output: AtomicBool::new(false),
         }
     }
 
-    pub fn set_cycle_info(&self, current_cycle: u32, total_cycles: Option<u32>, tests_per_cycle: u64) {
-        self.current_cycle.store(current_cycle as u64, Ordering::Relaxed);
-        self.tests_per_cycle.store(tests_per_cycle, Ordering::Relaxed);
-        
-        if let Some(total) = total_cycles {
-            self.total_cycles.store(total as u64, Ordering::Relaxed);
-        } else {
-            self.total_cycles.store(0, Ordering::Relaxed);
-        }
+    fn position(&self) -> MutexGuard<'_, Position> {
+        self.position.lock().unwrap_or_else(|poisoned| poisoned.into_inner())
+    }
+
+    /// Start the suite clock. The progress line draws nothing until this is called, so Runtime is
+    /// measured from the first test cycle — the same span the final summary reports — rather than
+    /// from before allocation.
+    pub fn begin_suite(
+        &self,
+        start: Instant,
+        cycle_limit: Option<u32>,
+        time_limit: Option<Duration>,
+        tests_per_cycle: u64,
+        workers: Arc<[TestProgress]>,
+    ) {
+        let _ = self.suite.set(SuitePlan { start, cycle_limit, time_limit, tests_per_cycle, workers });
     }
 
     pub fn start_new_cycle(&self, cycle_number: u32) {
-        // Reset per-cycle counters
-        self.completed_tests_this_cycle.store(0, Ordering::Relaxed);
-        self.current_cycle.store(cycle_number as u64, Ordering::Relaxed);
-        
-        // Update cycle timing
-        if let Ok(mut cycle_start) = self.cycle_start_time.lock() {
-            *cycle_start = Some(Instant::now());
+        let mut position = self.position();
+        position.cycle = cycle_number;
+        position.cycle_start = Instant::now();
+        position.tests_done = 0;
+    }
+
+    /// `number` is the test's 1-based position in the cycle; `time_limit` is the test's own
+    /// duration limit, if it has one; `publishes` is whether the test reports live figures.
+    /// Must be called before the test is dispatched: it zeroes the workers' live slots, which is
+    /// only safe while they are idle.
+    pub fn start_test(
+        &self,
+        number: usize,
+        name: &str,
+        start: Instant,
+        time_limit: Option<Duration>,
+        publishes: bool,
+    ) {
+        let mut position = self.position();
+        if let Some(plan) = self.suite.get() {
+            for slot in plan.workers.iter() {
+                slot.reset();
+            }
+        }
+        position.test = Some(RunningTest {
+            number: number as u64,
+            name: name.to_string(),
+            start,
+            time_limit,
+            publishes,
+            finished: false,
+        });
+    }
+
+    /// Record a finished test's errors, reported by its workers' results.
+    pub fn complete_test(&self, test_name: &str, errors: u64) {
+        let mut position = self.position();
+        position.tests_done += 1;
+        position.errors += errors;
+        if errors > 0 {
+            *position.errors_by_test.entry(test_name.to_string()).or_insert(0) += errors;
+        }
+        if let Some(test) = position.test.as_mut() {
+            test.finished = true;
         }
     }
-    
-    pub fn complete_cycle(&self, cycle_number: u32, test_summaries: Vec<TestSummary>) {
-        if let Ok(cycle_start) = self.cycle_start_time.lock()
-            && let Some(start_time) = *cycle_start {
-                let duration = start_time.elapsed().as_secs();
-                let bytes = test_summaries.iter().map(|t| t.bytes_processed).sum();
-                
-                let cycle_stat = CycleStats {
-                    cycle_number,
-                    duration_secs: duration,
-                    bytes_processed: bytes,
-                    test_stats: test_summaries,
-                };
-                
-                if let Ok(mut stats) = self.cycle_stats.lock() {
-                    stats.push(cycle_stat);
+
+    /// Thread-reported errors from every finished test.
+    pub fn total_errors(&self) -> u64 {
+        self.position().errors
+    }
+
+    /// The suite is over: the reporter thread takes the ticker down and exits. There is no final
+    /// ticker line, because the final summary reports the same figures.
+    pub fn finish(&self) {
+        self.finished.store(true, Ordering::Relaxed);
+    }
+
+    /// The ticker, or `None` before the suite has begun. It starts with a blank line, which sets
+    /// it off from the output above, and has two lines under that:
+    ///
+    /// ```text
+    ///
+    /// Runtime: 00:41:10 (remaining 00:18:50) | Cycle 4/8 (00:12:34, 40%) | 0 errors + 0 WHEA
+    /// Test 2/6 Mem-Refresh128 (00:05:12, 53%) | 285.00 GiB @ 19108.7 MiB/s (18.66 GiB/s)
+    /// ```
+    ///
+    /// Each bracketed part appears only when the matching limit exists. Errors are always shown,
+    /// the running test's live ones included; the WHEA C/UC split only when there is one.
+    fn render(&self) -> Option<String> {
+        let plan = self.suite.get()?;
+        let position = self.position();
+
+        // The running test's figures, while there is one. After it finishes they stay readable
+        // until the next test starts, but its errors are then in `position.errors` instead.
+        let live = position.test.as_ref().map(|_| live_figures(&plan.workers));
+        let live_errors = match (&position.test, &live) {
+            (Some(test), Some(live)) if !test.finished => live.errors,
+            _ => 0,
+        };
+        let mut line = format!("\n{}", self.suite_line(plan, &position, live_errors));
+
+        if let (Some(test), Some(live)) = (&position.test, live) {
+            let _ = write!(line, "\nTest {}/{} {} ({}", test.number, plan.tests_per_cycle, test.name, hms(test.start.elapsed()));
+            if let Some(limit) = test.time_limit {
+                let _ = write!(line, ", {}%", percent(test.start.elapsed().as_millis(), limit.as_millis()));
+            }
+            line.push(')');
+            if live.published {
+                let _ = write!(
+                    line,
+                    " | {:.2} GiB @ {:.1} MiB/s ({:.2} GiB/s)",
+                    live.bytes as f64 / BYTES_PER_GIB_F64,
+                    live.bytes_per_sec / BYTES_PER_MIB_F64,
+                    live.bytes_per_sec / BYTES_PER_GIB_F64,
+                );
+            } else if test.publishes {
+                line.push_str(" | pending");
+            } else {
+                line.push_str(" | no live data");
+            }
+        }
+        Some(line)
+    }
+
+    /// The ticker's first line, then the test that just ended. It is the last line of that test's
+    /// report, so a record of the suite's progress stays on screen after the ticker is gone:
+    ///
+    /// ```text
+    /// Runtime: 00:03:03 | Cycle 2/2 (00:01:31, 100%) | 0 errors + 0 WHEA | Test 6/6 Mem-Refresh512 (00:00:15)
+    /// ```
+    ///
+    /// Call after `complete_test`, so the error total includes this test. `duration` is the test's
+    /// own measured time, the one its report shows. `None` before the first test.
+    pub fn test_stamp(&self, duration: Duration) -> Option<String> {
+        let plan = self.suite.get()?;
+        let position = self.position();
+        let test = position.test.as_ref()?;
+        let mut line = self.suite_line(plan, &position, 0);
+        let _ = write!(line, " | Test {}/{} {} ({})", test.number, plan.tests_per_cycle, test.name, hms(duration));
+        Some(line)
+    }
+
+    /// `Runtime | Cycle | errors`: the ticker's first line, and the start of each test's stamp.
+    /// `live_errors` is what the running test has found so far, not yet in `position.errors`.
+    fn suite_line(&self, plan: &SuitePlan, position: &Position, live_errors: u64) -> String {
+        let tests = plan.tests_per_cycle;
+        let cycle = u64::from(position.cycle);
+
+        let runtime = plan.start.elapsed();
+        let mut line = format!("Runtime: {}", hms(runtime));
+        if let Some(limit) = plan.time_limit {
+            match limit.checked_sub(runtime) {
+                Some(left) if !left.is_zero() => {
+                    let _ = write!(line, " (remaining {})", hms(left));
                 }
+                _ => line.push_str(" (limit reached, finishing cycle)"),
             }
-    }
+        }
 
-    pub fn add_errors(&self, count: u64) {
-        self.total_errors.fetch_add(count, Ordering::Relaxed);
-    }
-
-    pub fn add_test_errors(&self, test_name: &str, count: u64) {
-        self.add_errors(count);
-        
-        if count > 0
-            && let Ok(mut per_test_errors) = self.per_test_errors.lock() {
-                *per_test_errors.entry(test_name.to_string()).or_insert(0) += count;
+        match plan.cycle_limit {
+            Some(limit) => {
+                let _ = write!(line, " | Cycle {}/{} ({}", cycle, limit, hms(position.cycle_start.elapsed()));
+                // Whole-run completion, counting finished tests only: Cycle 4/8 with 1 of 6 tests
+                // done is (3*6 + 1) / (8*6) = 40%.
+                let done = cycle.saturating_sub(1) * tests + position.tests_done;
+                let _ = write!(line, ", {}%)", percent(done as u128, u128::from(limit) * tests as u128));
             }
-    }
-
-    pub fn complete_test(&self, stats: &TestStats) {
-        // Increment completed tests for this cycle
-        self.completed_tests_this_cycle.fetch_add(1, Ordering::Relaxed);
-        
-        // Track overall stats
-        self.total_bytes_processed.fetch_add(stats.bytes_processed as u64, Ordering::Relaxed);
-        self.total_test_time_ms.fetch_add(stats.elapsed_ms as u64, Ordering::Relaxed);
-        
-        // Track errors per test
-        self.add_test_errors(stats.name, stats.error_count);
-
-        if let Some(throughput) = (stats.bytes_processed as u128 * 1000).checked_div(stats.elapsed_ms) {
-            self.current_throughput.store(throughput as u64, Ordering::Relaxed);
+            None => {
+                let _ = write!(line, " | Cycle {} ({})", cycle, hms(position.cycle_start.elapsed()));
+            }
         }
-    }
 
-    pub fn set_phase(&self, phase: &str) {
-        if let Ok(mut current) = self.current_phase.lock() {
-            *current = phase.to_string();
-        }
-    }
-
-    pub fn get_status(&self) -> ProgressStatus {
-        let completed = self.completed_tests_this_cycle.load(Ordering::Relaxed);
-        let tests_per_cycle = self.tests_per_cycle.load(Ordering::Relaxed);
-        let current_cycle = self.current_cycle.load(Ordering::Relaxed);
-        let total_cycles = self.total_cycles.load(Ordering::Relaxed);
-        let errors = self.total_errors.load(Ordering::Relaxed);
+        // Same form as the per-test topline: always shown, the C/UC split only when non-zero.
+        let errors = position.errors + live_errors;
         let whea = self.whea.counts();
-
-        let phase = self
-            .current_phase
-            .lock()
-            .map(|guard| guard.clone())
-            .unwrap_or_else(|_| "Unknown".to_string());
-            
-        let throughput_raw = self.current_throughput.load(Ordering::Relaxed);
-        let throughput_gib_s = (throughput_raw as f64) / BYTES_PER_GIB_F64;
-        let throughput_mib_s = (throughput_raw as f64) / BYTES_PER_MIB_F64;
-        let total_runtime = self.start_time.elapsed();
-
-        // Calculate progress percentage for current cycle only
-        let progress_pct = (completed * 100)
-            .checked_div(tests_per_cycle)
-            .map_or(0, |p| p.min(100));
-
-        ProgressStatus {
-            completed_tests: completed,
-            tests_per_cycle,
-            current_cycle,
-            total_cycles,
-            errors,
-            whea,
-            phase,
-            throughput_gib_s,
-            throughput_mib_s,
-            total_runtime,
-            progress_percent: progress_pct,
-        }
-    }
-    
-    pub fn get_cycle_stats(&self) -> Vec<CycleStats> {
-        self.cycle_stats.lock().map(|guard| guard.clone()).unwrap_or_default()
-    }
-
-    pub fn get_per_test_error_summary(&self) -> std::collections::HashMap<String, u64> {
-        self.per_test_errors.lock().map(|guard| guard.clone()).unwrap_or_default()
+        let flag = if errors > 0 || whea.total > 0 { "⚠️ " } else { "" };
+        let _ = write!(line, " | {}{} errors + {} WHEA{}", flag, errors, whea.total, whea.split_suffix());
+        line
     }
 }
 
-pub struct ProgressStatus {
-    pub completed_tests: u64,
-    pub tests_per_cycle: u64,
-    pub current_cycle: u64,
-    pub total_cycles: u64, // 0 = unlimited
-    pub errors: u64,
-    /// OS-reported hardware errors so far this run (cumulative, see whea.rs).
-    pub whea: crate::whea::WheaCounts,
-    pub phase: String,
-    pub throughput_gib_s: f64,
-    pub throughput_mib_s: f64,
-    pub total_runtime: std::time::Duration,
-    pub progress_percent: u64,
+/// Sum the workers' last published figures. Workers publish at most every 250 ms, at a cycle
+/// boundary of their own loop, so this lags the work by up to one publish.
+fn live_figures(workers: &[TestProgress]) -> LiveFigures {
+    let mut live = LiveFigures::default();
+    for slot in workers {
+        let ms = slot.last_update_ms.load(Ordering::Relaxed);
+        if ms == 0 {
+            continue; // this worker has not published yet
+        }
+        let bytes = slot.bytes_processed.load(Ordering::Relaxed);
+        live.published = true;
+        live.bytes += bytes;
+        live.errors += slot.errors_found.load(Ordering::Relaxed);
+        // Each worker's own average since the test began, as of its publish. Summing these rather
+        // than dividing the summed bytes by the wall clock keeps the rate from sagging between
+        // publishes.
+        live.bytes_per_sec += bytes as f64 * 1000.0 / ms as f64;
+    }
+    live
+}
+
+/// `part` as a whole percentage of `whole`, capped at 100; 0 when `whole` is 0.
+fn percent(part: u128, whole: u128) -> u128 {
+    (part * 100).checked_div(whole).map_or(0, |p| p.min(100))
+}
+
+fn hms(d: Duration) -> String {
+    let secs = d.as_secs();
+    format!("{:02}:{:02}:{:02}", secs / 3600, (secs % 3600) / 60, secs % 60)
 }
 
 pub fn progress_reporter(progress: Arc<ProgressTracker>) {
-    let mut last_update = Instant::now();
+    let mut last_draw = Instant::now();
 
     loop {
-        thread::sleep(std::time::Duration::from_millis(500)); // Check more frequently
+        thread::sleep(Duration::from_millis(500));
 
         // Drain any WHEA events the OS queued for us. Costs a single zero-timeout wait on a local
         // event handle when nothing has happened, so it is safe to do on every 500ms tick — the
         // descriptions are cached and only printed at the display interval below (TODO #63).
         progress.whea.poll();
 
-        let status = progress.get_status();
-
-        // Update progress display every 2 seconds or when completed
-        if last_update.elapsed().as_secs() >= 2 || status.phase == "Completed" {
-            // Skip output if paused (main thread is printing a report)
-            if progress.pause_progress_output.load(Ordering::Relaxed) && status.phase != "Completed" {
-                continue;
-            }
-
-            // Clear the line and redraw progress (in case logs interrupted us)
-            print!("\r\x1b[K");
-
-            // Surface anything WHEA reported since the last update, above the progress line. These
-            // name the failing component, which is what tells a marginal DIMM from a marginal NIC.
-            for event in progress.whea.take_pending() {
-                println!("{}", event);
-            }
-
-            // Format runtime as HH:MM:SS
-            let runtime_secs = status.total_runtime.as_secs();
-            let hours = runtime_secs / 3600;
-            let minutes = (runtime_secs % 3600) / 60;
-            let seconds = runtime_secs % 60;
-            let runtime_str = format!("{:02}:{:02}:{:02}", hours, minutes, seconds);
-
-            // Running WHEA tally, e.g. "10 (5C/5UC)". Omitted entirely while clean so the
-            // progress line is unchanged on a healthy system.
-            let whea_str = if status.whea.total > 0 {
-                format!(" | ⚠️ WHEA: {}", status.whea)
-            } else {
-                String::new()
-            };
-
-            // Format progress display with enhanced error information
-            if status.total_cycles == 0 {
-                // Unlimited cycles mode
-                print!(
-                    "Runtime: {} | Cycle: {} | Progress: {}/{} ({}%) | {} | Speed: {:.2} GiB/s ({:.1} MiB/s){}{}",
-                    runtime_str,
-                    status.current_cycle,
-                    status.completed_tests,
-                    status.tests_per_cycle,
-                    status.progress_percent,
-                    status.phase,
-                    status.throughput_gib_s,
-                    status.throughput_mib_s,
-                    if status.errors > 0 {
-                        format!(" | ⚠️ Errors: {}", status.errors)
-                    } else {
-                        String::new()
-                    },
-                    whea_str
-                );
-            } else {
-                // Limited cycles mode
-                let cycle_info = format!("Cycle: {}/{}", status.current_cycle, status.total_cycles);
-                print!(
-                    "Runtime: {} | {} | Progress: {}/{} ({}%) | {} | Speed: {:.2} GiB/s ({:.1} MiB/s){}{}",
-                    runtime_str,
-                    cycle_info,
-                    status.completed_tests,
-                    status.tests_per_cycle,
-                    status.progress_percent,
-                    status.phase,
-                    status.throughput_gib_s,
-                    status.throughput_mib_s,
-                    if status.errors > 0 {
-                        format!(" | ⚠️ Errors: {}", status.errors)
-                    } else {
-                        String::new()
-                    },
-                    whea_str
-                );
-            }
-
-            if status.phase == "Completed" {
-                println!(); // Final newline when completed
-                
-                // Print per-test error summary if there were any errors
-                let error_summary = progress.get_per_test_error_summary();
-                if !error_summary.is_empty() {
-                    println!("\nError Summary by Test:");
-                    for (test_name, error_count) in error_summary {
-                        println!("  {}: {} errors", test_name, error_count);
-                    }
-                }
-
-                // Last chance to catch events the OS queued during the final test. Anything this
-                // turns up has not been printed yet (the drain above ran before it), so print it
-                // here — but only it. Events already shown live are not reprinted: they are in the
-                // log file. No run tally here either: the final summary's `Total WHEA` row prints
-                // it a screen later, and saying it twice is noise.
-                progress.whea.poll();
-                for event in progress.whea.take_pending() {
-                    println!("{}", event);
-                }
-                break;
-            }
-
-            // Flush stdout to ensure progress appears immediately
-            std::io::Write::flush(&mut std::io::stdout()).unwrap_or(());
-            last_update = Instant::now();
+        if progress.finished.load(Ordering::Relaxed) {
+            break;
         }
 
-        if status.phase == "Completed" {
-            break;
+        // Redraw every 2 seconds.
+        if last_draw.elapsed() < Duration::from_secs(2) {
+            continue;
+        }
+        // `None` until the suite has begun.
+        let Some(ticker) = progress.render() else {
+            continue;
+        };
+
+        // Anything WHEA reported since the last draw is printed above the ticker. These name the
+        // failing component, which is what tells a marginal DIMM from a marginal NIC. While a test
+        // report holds the console this draws nothing and leaves the WHEA events queued, so try
+        // again at the next tick.
+        if crate::console::draw_ticker(ticker, || progress.whea.take_pending()) {
+            last_draw = Instant::now();
+        }
+    }
+
+    // Take the ticker down for good. Everything from here on prints with plain `println!`.
+    crate::console::hold();
+
+    // Events the OS queued since the last draw (the poll above ran on this tick), not printed yet.
+    // Events already shown live are not reprinted: they are in the log file. No run tally here
+    // either: the final summary's `Total WHEA` row prints it a screen later, and saying it twice is
+    // noise. The runner flushes anything later still, once monitoring stops.
+    for event in progress.whea.take_pending() {
+        println!("{}", event);
+    }
+
+    // Print per-test error summary if there were any errors
+    let error_summary = progress.position().errors_by_test.clone();
+    if !error_summary.is_empty() {
+        println!("\nError Summary by Test:");
+        for (test_name, error_count) in error_summary {
+            println!("  {}: {} errors", test_name, error_count);
         }
     }
 }

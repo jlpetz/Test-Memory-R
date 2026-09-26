@@ -1,5 +1,5 @@
 use crate::{ErrorMode, AllocationBlock};
-use crate::tests::TestMemoryConfig;
+use crate::tests::{TestMemoryConfig, TestProgress};
 use crate::runner::TestFunction;
 use crate::config::CpuPinningConfig;
 use crate::memory::buffer::MemoryType;
@@ -71,6 +71,8 @@ pub struct WorkerContext {
     pub allocated_blocks: Vec<AllocationBlock>,
     pub receiver: Receiver<WorkItem>,
     pub result_sender: Sender<WorkResult>,
+    /// Every worker's live-progress slot; this worker publishes into `live[thread_id]`.
+    pub live: Arc<[TestProgress]>,
 }
 
 pub type TestStatsTuple = (usize, usize, u64, u128, u64, u64, u32); // thread_id, cpu_id, bytes, elapsed, errors, operations, cycles_completed
@@ -80,6 +82,7 @@ pub struct ThreadPool {
     workers: Vec<thread::JoinHandle<Vec<AllocationBlock>>>,
     senders: Vec<Sender<WorkItem>>,
     cpu_assignments: Vec<CpuAssignment>, // (thread_id, logical_cpu, numa_node)
+    live: Arc<[TestProgress]>,
 }
 
 impl ThreadPool {
@@ -100,6 +103,11 @@ impl ThreadPool {
         } else {
             (0..thread_count).collect()
         };
+
+        // One live-progress slot per worker, indexed by thread_id. They outlive every test, so the
+        // progress ticker can read the running test's figures while its workers publish them.
+        let live: Arc<[TestProgress]> =
+            (0..cpu_list_final.len().min(thread_count)).map(|_| TestProgress::new()).collect();
         
         // Create persistent worker threads
         for (thread_id, &cpu_id) in cpu_list_final.iter().enumerate().take(thread_count) {
@@ -113,6 +121,7 @@ impl ThreadPool {
             
             let result_sender = result_sender.clone();
             let pinning_config = pinning_config.clone();
+            let live = Arc::clone(&live);
                         
             let handle = thread::spawn(move || {
                 // Pin thread to CPU once at creation
@@ -141,6 +150,7 @@ impl ThreadPool {
                     allocated_blocks: blocks,
                     receiver: work_receiver,
                     result_sender,
+                    live,
                 };
                 
                 // Worker loop - process work items until shutdown
@@ -153,11 +163,17 @@ impl ThreadPool {
             workers.push(handle);
         }
         
-        (ThreadPool { workers, senders, cpu_assignments }, result_receiver)
+        (ThreadPool { workers, senders, cpu_assignments, live }, result_receiver)
     }
 
     pub fn get_cpu_assignments(&self) -> &[CpuAssignment] {
         &self.cpu_assignments
+    }
+
+    /// The workers' live-progress slots, for the progress ticker. Reset one only while no test is
+    /// running.
+    pub fn live_progress(&self) -> Arc<[TestProgress]> {
+        Arc::clone(&self.live)
     }
     
     pub fn execute_test(
@@ -281,22 +297,21 @@ fn worker_thread_loop(context: &mut WorkerContext) {
                 // MultiBlock tests receive ALL allocated blocks and handle interleaving internally
                 let blocks_slice = &context.allocated_blocks[..];
 
-                // Create progress tracker
-                let progress = crate::tests::TestProgress::new();
+                let progress = &context.live[context.thread_id];
 
                 // Execute test based on function type
                 let (stats, latency_stats) = match &test_func {
                     crate::runner::TestFunction::MultiBlock(f) => {
                         // Regular bandwidth test - returns TestStats only
                         let stats = unsafe {
-                            f(blocks_slice, context.thread_id, error_mode, &test_config.timing, &test_config, Some(&progress))
+                            f(blocks_slice, context.thread_id, error_mode, &test_config.timing, &test_config, Some(progress))
                         };
                         (stats, None)
                     }
                     crate::runner::TestFunction::Latency(f) => {
                         // Latency test - returns LatencyTestStats with percentiles
                         let latency_stats = unsafe {
-                            f(blocks_slice, context.thread_id, error_mode, &test_config.timing, &test_config, Some(&progress))
+                            f(blocks_slice, context.thread_id, error_mode, &test_config.timing, &test_config, Some(progress))
                         };
                         (latency_stats.basic_stats.clone(), Some(latency_stats))
                     }
@@ -333,8 +348,7 @@ fn worker_thread_loop(context: &mut WorkerContext) {
 
                 let blocks_slice = &context.allocated_blocks[..];
 
-                // Create progress tracker
-                let progress = crate::tests::TestProgress::new();
+                let progress = &context.live[context.thread_id];
 
                 // Run the latency test
                 let stats = unsafe {
@@ -344,7 +358,7 @@ fn worker_thread_loop(context: &mut WorkerContext) {
                         error_mode,
                         &test_config.timing,
                         &test_config,
-                        Some(&progress),
+                        Some(progress),
                     )
                 };
 
