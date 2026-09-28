@@ -834,13 +834,24 @@ impl ReportFormatter for DefaultFormatter {
         };
         let rounding_diff = report.reserve_bytes as i64 - report.requested_reserve_bytes as i64;
 
-        table
-            .add_row(vec![
-                requested_label.to_string(),
-                self.format_bytes(requested_bytes),
-                of_reference(requested_bytes),
+        table = table.add_row(vec![
+            requested_label.to_string(),
+            self.format_bytes(requested_bytes),
+            of_reference(requested_bytes),
+            relative_info.clone(),
+        ]);
+        // Under a `-target` spec the raw figure is the target itself, already on the row above,
+        // unless the target is more than is installed.
+        if report.target_bytes != Some(report.raw_allocation_bytes) {
+            table = table.add_row(vec![
+                "Testing Raw".to_string(),
+                self.format_bytes(report.raw_allocation_bytes),
+                of_reference(report.raw_allocation_bytes),
                 relative_info.clone(),
-            ])
+            ]);
+        }
+
+        table
             .add_row(vec![
                 "Threads".to_string(),
                 report.thread_count.to_string(),

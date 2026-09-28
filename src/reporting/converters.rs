@@ -69,6 +69,7 @@ pub fn create_consolidated_memory_report(
         reference_name: allocation_result.reference_name,
         requested_reserve_bytes: allocation_result.requested_reserve_bytes,
         target_bytes: allocation_result.target_bytes,
+        raw_allocation_bytes: allocation_result.raw_allocation_bytes,
         thread_count: allocation_result.thread_count,
         per_thread_raw_bytes: allocation_result.per_thread_raw_bytes,
         rounding_step_bytes: allocation_result.rounding_step_bytes,

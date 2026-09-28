@@ -381,6 +381,7 @@ impl AllocationMode {
             reference_name,
             requested_reserve_bytes,
             target_bytes,
+            raw_allocation_bytes: base_allocation_bytes,
             thread_count,
             per_thread_raw_bytes,
             rounding_step_bytes: PER_THREAD_STEP_BYTES,
@@ -416,6 +417,9 @@ pub struct AllocationResult {
 
     /// The target a `-target` spec asked for; `None` for the reserve forms.
     pub target_bytes: Option<u64>,
+
+    /// What the reserve leaves to test, before each thread's share is rounded.
+    pub raw_allocation_bytes: u64,
 
     /// Worker threads the allocation is split between.
     pub thread_count: usize,

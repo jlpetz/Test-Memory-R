@@ -301,6 +301,7 @@ pub struct ConsolidatedMemoryReport {
     pub reference_name: &'static str,
     pub requested_reserve_bytes: u64,
     pub target_bytes: Option<u64>,
+    pub raw_allocation_bytes: u64,
     pub thread_count: usize,
     pub per_thread_raw_bytes: u64,
     pub rounding_step_bytes: u64,
