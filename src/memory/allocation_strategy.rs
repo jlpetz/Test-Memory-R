@@ -269,8 +269,8 @@ impl AllocationMode {
 
 /// Each thread's share is rounded **up** to a multiple of this. Whole GiB keeps the plan
 /// (`create_allocation_plan`) to blocks of 1 GiB and up. A 16 MiB step, tried 2026-09-28, added a
-/// tail of small blocks that the allocator's huge-page fallback mis-sized (TODO #71). Rounding up
-/// comes out of the reserve, and with enough threads can take all of it (also TODO #71).
+/// tail of small blocks that the allocator's huge-page fallback mis-sized (TODO #75 A). Rounding up
+/// comes out of the reserve, and with enough threads can take all of it (TODO #75 B).
 const PER_THREAD_STEP_BYTES: u64 = BYTES_PER_GIB;
 
 impl AllocationMode {
