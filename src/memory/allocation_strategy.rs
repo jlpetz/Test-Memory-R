@@ -78,13 +78,9 @@ pub struct SystemMemoryInfo {
     pub total_virtual_bytes: u64,
     
     /// Available virtual memory
-    pub available_virtual_bytes: u64,
     
     /// Memory load percentage (0-100)
     pub memory_load_percent: u32,
-    
-    /// Minimum recommended start address for allocations (calculated)
-    pub min_start_address: u64,
 }
 
 impl SystemMemoryInfo {
@@ -113,10 +109,6 @@ impl SystemMemoryInfo {
             }
 
             let used_physical_bytes = mem_status.ullTotalPhys - mem_status.ullAvailPhys;
-            
-            // Calculate default minimum start address (current usage + 1GB buffer)
-            let buffer_bytes = BYTES_PER_GIB; // 1GB buffer
-            let min_start_address = used_physical_bytes + buffer_bytes;
 
             Ok(SystemMemoryInfo {
                 total_installed_bytes,
@@ -124,57 +116,12 @@ impl SystemMemoryInfo {
                 available_physical_bytes: mem_status.ullAvailPhys,
                 used_physical_bytes,
                 total_virtual_bytes: mem_status.ullTotalPageFile,
-                available_virtual_bytes: mem_status.ullAvailPageFile,
                 memory_load_percent: mem_status.dwMemoryLoad,
-                min_start_address,
             })
         }
     }
 
-    /// Calculate actual start address based on start address mode
-    /// Note: For SplitReserve mode, this is just a placeholder - the real calculation
-    /// happens in calculate_allocation_with_split_reserve
-    pub fn calculate_start_address(&self, mode: &StartAddressMode) -> u64 {
-        match mode {
-            StartAddressMode::Offset { offset_gib } => {
-                // Simple: End of used memory + offset
-                if *offset_gib >= 0.0 {
-                    let offset_bytes = gib_to_bytes(*offset_gib);
-                    self.used_physical_bytes + offset_bytes
-                } else {
-                    let offset_bytes = gib_to_bytes(offset_gib.abs());
-                    self.used_physical_bytes.saturating_sub(offset_bytes)
-                }
-            }
-            StartAddressMode::SplitReserve { .. } => {
-                // Placeholder - actual calculation done in calculate_allocation_with_split_reserve
-                // This ensures we have a reasonable fallback for any edge cases
-                self.used_physical_bytes + BYTES_PER_GIB // 1GB buffer
-            }
-        }
-    }
-
-    // Note: Detailed memory analysis is now shown in consolidated memory report instead
-}
-
-/// Start address control for memory allocation
-#[derive(Debug, Clone)]
-pub enum StartAddressMode {
-    /// Simple offset from end of used memory (0-based)
-    /// Examples: +1GB, +0.5GB, +2GB
-    Offset { offset_gib: f64 },
-    
-    /// Split reserve into pre-buffer and post-reserve
-    /// Examples: split=20%:80%, split=auto
-    SplitReserve { pre_percent: f64, post_percent: f64 },
-}
-
-impl Default for StartAddressMode {
-    fn default() -> Self {
-        // Post-boot default: Split reserve with aggressive testing optimizations
-        // 5% pre-buffer (fragmentation protection) + 95% post-reserve (maximum testing)
-        StartAddressMode::SplitReserve { pre_percent: 5.0, post_percent: 95.0 }
-    }
+// Note: Detailed memory analysis is now shown in consolidated memory report instead
 }
 
 /// Enhanced allocation modes with clear semantics
@@ -288,99 +235,8 @@ impl ReserveAmount {
     }
 }
 
-impl StartAddressMode {
-    /// Parse start address parameter
-    /// Examples:
-    /// - "+2GiB" or "offset:2GiB" -> Offset { offset_gib: 2.0 }
-    /// - "-1GiB" or "offset:-1GiB" -> Offset { offset_gib: -1.0 }
-    /// - "split:20%:80%" -> SplitReserve { pre_percent: 20.0, post_percent: 80.0 }
-    /// - "split:auto" -> SplitReserve with optimized post-boot defaults
-    pub fn parse(s: &str) -> Result<Self, String> {
-        let s = s.trim().to_lowercase();
-        
-        if let Some(split_part) = s.strip_prefix("split:") {
-            // Skip "split:"
-            
-            if split_part == "auto" {
-                // Post-boot optimized defaults: 10% pre-buffer, 90% post-reserve
-                Ok(StartAddressMode::SplitReserve { pre_percent: 10.0, post_percent: 90.0 })
-            } else if split_part.contains(":") {
-                let parts: Vec<&str> = split_part.split(":").collect();
-                if parts.len() != 2 {
-                    return Err("Split reserve format should be 'split:X%:Y%'".to_string());
-                }
-                
-                let pre_percent = Self::parse_percentage(parts[0])?;
-                let post_percent = Self::parse_percentage(parts[1])?;
-                
-                // Validate percentages sum to 100% (with small tolerance)
-                if (pre_percent + post_percent - 100.0).abs() > 0.1 {
-                    return Err(format!("Split percentages must sum to 100%, got {}% + {}% = {}%", 
-                                     pre_percent, post_percent, pre_percent + post_percent));
-                }
-                
-                Ok(StartAddressMode::SplitReserve { pre_percent, post_percent })
-            } else {
-                Err("Split reserve format should be 'split:X%:Y%' or 'split:auto'".to_string())
-            }
-        } else if s.starts_with("+") || s.starts_with("offset:") {
-            let offset_str = if let Some(stripped) = s.strip_prefix("+") {
-                stripped
-            } else {
-                &s[7..] // Skip "offset:"
-            };
-            let offset_gib = Self::parse_gib_amount(offset_str)?;
-            Ok(StartAddressMode::Offset { offset_gib })
-        } else if let Some(offset_str) = s.strip_prefix("-") {
-            let offset_gib = -Self::parse_gib_amount(offset_str)?;
-            Ok(StartAddressMode::Offset { offset_gib })
-        } else {
-            // Default to simple offset parsing if no prefix
-            let offset_gib = Self::parse_gib_amount(&s)?;
-            Ok(StartAddressMode::Offset { offset_gib })
-        }
-    }
-    
-    /// Parse percentage from string (e.g., "20%" -> 20.0)
-    fn parse_percentage(s: &str) -> Result<f64, String> {
-        if let Some(num_str) = s.strip_suffix("%") {
-            num_str.parse::<f64>().map_err(|_| format!("Invalid percentage value: {}", s))
-        } else {
-            Err(format!("Percentage must end with '%': {}", s))
-        }
-    }
-
-    /// Parse GiB amount from string
-    fn parse_gib_amount(s: &str) -> Result<f64, String> {
-        if let Some(stripped) = s.strip_suffix("gib") {
-            stripped.parse::<f64>().map_err(|_| format!("Invalid GiB value: {}", s))
-        } else if let Some(stripped) = s.strip_suffix("gb") {
-            let gb = stripped.parse::<f64>().map_err(|_| format!("Invalid GB value: {}", s))?;
-            Ok(gb * 1000.0 / 1024.0) // Convert GB to GiB
-        } else if let Some(stripped) = s.strip_suffix("mb") {
-            let mb = stripped.parse::<f64>().map_err(|_| format!("Invalid MB value: {}", s))?;
-            Ok(mb / 1024.0) // Convert MB to GiB
-        } else {
-            s.parse::<f64>().map_err(|_| format!("Invalid numeric value: {}", s))
-        }
-    }
-
-    /// Canonical spec text, in the form `parse` accepts (`"split:5%:95%"`, `"+2GiB"`).
-    /// Note `split:auto` is *not* reproduced — it resolves to concrete percentages at parse
-    /// time, and the concrete values are what actually shaped the run.
-    pub fn describe_spec(&self) -> String {
-        match self {
-            StartAddressMode::Offset { offset_gib } => format!("{:+}GiB", offset_gib),
-            StartAddressMode::SplitReserve { pre_percent, post_percent } => {
-                format!("split:{}%:{}%", pre_percent, post_percent)
-            }
-        }
-    }
-}
-
 impl AllocationMode {
-    /// Canonical spec text for the `memory=` value, minus the `start=` suffix
-    /// (`"20%-from-available"`, `"8.000GiB-target"`).
+    /// Canonical spec text for the `memory=` value (`"20%-from-available"`, `"8.000GiB-target"`).
     pub fn describe_spec(&self) -> String {
         match self {
             AllocationMode::ReserveFromAvailable { reserve } => {
@@ -412,134 +268,6 @@ impl AllocationMode {
 }
 
 impl AllocationMode {
-    /// Calculate allocation with thread-aware sizing for identical per-thread layouts
-    fn calculate_allocation_with_split_reserve_and_threads(&self, mem_info: &SystemMemoryInfo, pre_percent: f64, post_percent: f64, thread_count: Option<usize>) -> AllocationResult {
-        // Validate percentages
-        if (pre_percent + post_percent - 100.0).abs() > 0.01 {
-            log::warn!("Split reserve percentages don't sum to 100%: {}% + {}% = {}%", 
-                      pre_percent, post_percent, pre_percent + post_percent);
-        }
-        
-        // Calculate total reserve bytes based on allocation mode
-        let total_reserve_bytes = match self {
-            AllocationMode::ReserveFromAvailable { reserve } => {
-                reserve.calculate_bytes(mem_info.available_physical_bytes)
-            },
-            AllocationMode::ReserveFromTotal { reserve } => {
-                reserve.calculate_bytes(mem_info.total_installed_bytes)
-            },
-            AllocationMode::AllocateTarget { target } => {
-                // For target mode, calculate reverse reserve (what's left after target)
-                let target_bytes = target.calculate_bytes(mem_info.total_installed_bytes);
-                mem_info.total_installed_bytes.saturating_sub(target_bytes)
-            },
-            AllocationMode::LegacyTM5 { reserve_mb } => {
-                (*reserve_mb as u64) * 1024 * 1024
-            },
-        };
-        
-        // Split reserve into pre-buffer and post-reserve
-        let pre_buffer_bytes = (total_reserve_bytes as f64 * pre_percent / 100.0) as u64;
-        let post_reserve_bytes = total_reserve_bytes.saturating_sub(pre_buffer_bytes);
-        
-        // Calculate raw start address: end of used memory + pre-buffer
-        let raw_start_address = mem_info.used_physical_bytes + pre_buffer_bytes;
-        
-        // Align start address UP to 1GB boundary for huge page support
-        const GB_BOUNDARY: u64 = BYTES_PER_GIB;
-        let aligned_start_address = raw_start_address.div_ceil(GB_BOUNDARY) * GB_BOUNDARY;
-        let start_adjustment = aligned_start_address - raw_start_address;
-        
-        log::info!("Start address alignment: raw={:.3} GiB, aligned={:.3} GiB, adjustment=+{:.3} GiB",
-                  raw_start_address as f64 / GB_BOUNDARY as f64,
-                  aligned_start_address as f64 / GB_BOUNDARY as f64,
-                  start_adjustment as f64 / GB_BOUNDARY as f64);
-        
-        // Calculate reference memory for allocation
-        let reference_bytes = match self {
-            AllocationMode::ReserveFromAvailable { .. } | AllocationMode::LegacyTM5 { .. } => {
-                mem_info.available_physical_bytes
-            },
-            AllocationMode::ReserveFromTotal { .. } | AllocationMode::AllocateTarget { .. } => {
-                mem_info.total_installed_bytes
-            },
-        };
-        
-        // Calculate base allocation size
-        let raw_allocation_bytes = reference_bytes.saturating_sub(total_reserve_bytes);
-        let base_allocation_bytes = raw_allocation_bytes.saturating_sub(start_adjustment);
-        
-        // Thread-aware allocation strategy: Round UP per-thread allocation for identical layouts
-        let (final_allocation_bytes, allocation_strategy) = if let Some(threads) = thread_count {
-            let per_thread_target = base_allocation_bytes / threads as u64;
-            
-            // Standard chunk sizes for rounding (1GB, 512MB, 256MB, 128MB)
-            let chunk_sizes = [GB_BOUNDARY, 512*BYTES_PER_MIB_USIZE as u64, 256*BYTES_PER_MIB_USIZE as u64, 128*BYTES_PER_MIB_USIZE as u64];
-            
-            // Round each thread's allocation UP to next clean chunk combination
-            let rounded_per_thread = Self::round_up_to_chunk_combination(per_thread_target, &chunk_sizes);
-            let total_rounded = rounded_per_thread * threads as u64;
-            
-            log::info!("Thread-aware allocation: {} threads × {:.3} GiB → rounded to {:.3} GiB each",
-                      threads, 
-                      per_thread_target as f64 / GB_BOUNDARY as f64,
-                      rounded_per_thread as f64 / GB_BOUNDARY as f64);
-            
-            log::info!("Total allocation: {:.3} GiB → {:.3} GiB (overage: +{:.3} GiB absorbed by reserves)",
-                      base_allocation_bytes as f64 / GB_BOUNDARY as f64,
-                      total_rounded as f64 / GB_BOUNDARY as f64,
-                      (total_rounded - base_allocation_bytes) as f64 / GB_BOUNDARY as f64);
-            
-            (total_rounded, format!("thread-aware ({}×{:.2} GiB)", threads, rounded_per_thread as f64 / GB_BOUNDARY as f64))
-        } else {
-            // Fallback: Round down to 1GB boundary (legacy behavior)
-            let allocation_bytes = (base_allocation_bytes / GB_BOUNDARY) * GB_BOUNDARY;
-            
-            log::info!("Legacy allocation: {:.3} GiB → {:.3} GiB (rounded down to 1GB boundary)",
-                      base_allocation_bytes as f64 / GB_BOUNDARY as f64,
-                      allocation_bytes as f64 / GB_BOUNDARY as f64);
-            
-            (allocation_bytes, "1GB-aligned".to_string())
-        };
-        
-        // Calculate final size adjustment and effective reserves
-        let size_adjustment = base_allocation_bytes.saturating_sub(final_allocation_bytes);
-        
-        let overage = final_allocation_bytes.saturating_sub(base_allocation_bytes);
-        
-        let effective_reserve_bytes = total_reserve_bytes + start_adjustment + size_adjustment + overage;
-        let effective_pre_buffer = pre_buffer_bytes + start_adjustment;
-        let effective_post_reserve = post_reserve_bytes + size_adjustment + overage;
-        
-        log::info!("Final reserves: total={:.3} GiB (was {:.3}), pre={:.3} GiB, post={:.3} GiB",
-                  effective_reserve_bytes as f64 / GB_BOUNDARY as f64,
-                  total_reserve_bytes as f64 / GB_BOUNDARY as f64,
-                  effective_pre_buffer as f64 / GB_BOUNDARY as f64,
-                  effective_post_reserve as f64 / GB_BOUNDARY as f64);
-        
-        // Determine allocation type description
-        let base_type = match self {
-            AllocationMode::ReserveFromAvailable { .. } => "Reserve pre/post split",
-            AllocationMode::ReserveFromTotal { .. } => "Reserve pre/post split from Total",
-            AllocationMode::AllocateTarget { .. } => "Target allocation pre/post split",
-            AllocationMode::LegacyTM5 { .. } => "Legacy TM5 pre/post split",
-        };
-        
-        AllocationResult {
-            allocation_bytes: final_allocation_bytes,
-            reserve_bytes: effective_reserve_bytes,
-            reference_bytes,
-            min_start_address: aligned_start_address,
-            allocation_type: format!("{} ({}%:{}%) [{}]", base_type, pre_percent as u32, post_percent as u32, allocation_strategy),
-            split_details: Some(SplitReserveInfo {
-                pre_percent,
-                post_percent,
-                pre_buffer_bytes: effective_pre_buffer,
-                post_reserve_bytes: effective_post_reserve,
-            }),
-        }
-    }
-    
     /// Round up allocation size to optimal chunk combinations
     /// Uses greedy algorithm to find combination of 1GB, 512MB, 256MB, 128MB chunks
     fn round_up_to_chunk_combination(target_bytes: u64, chunk_sizes: &[u64]) -> u64 {
@@ -583,26 +311,10 @@ impl AllocationMode {
     /// - "8GiB-from-total" -> ReserveFromTotal { reserve: Bytes(8*1024^3) } (FAILURE MODE TESTING)
     /// - "16GiB-target" -> AllocateTarget { target: Bytes(16*1024^3) } (FAILURE MODE TESTING)
     /// - "2048MB" -> LegacyTM5 { reserve_mb: 2048 } (TM5 compatibility - uses available memory)
-    /// 
-    /// With start address control:
-    /// - "20%-from-available:start=auto:2GiB" -> Allocation + Auto start with 2GiB buffer
-    /// - "16GiB-target:start=0x800000000" -> Allocation + Fixed start address
-    /// - "2048MB:start=+4GiB" -> Allocation + Offset start address
-    pub fn parse(s: &str) -> Result<(Self, StartAddressMode), String> {
+    pub fn parse(s: &str) -> Result<Self, String> {
         let s = s.trim().to_lowercase();
-        
-        // Check if start address is specified
-        let (allocation_part, start_mode) = if s.contains(":start=") {
-            let parts: Vec<&str> = s.split(":start=").collect();
-            if parts.len() != 2 {
-                return Err("Invalid start address format".to_string());
-            }
-            let start_mode = StartAddressMode::parse(parts[1])?;
-            (parts[0], start_mode)
-        } else {
-            (s.as_str(), StartAddressMode::default())
-        };
-        
+        let allocation_part = s.as_str();
+
         // Parse allocation mode
         let allocation_mode = if allocation_part.contains("-from-available") {
             let amount_str = allocation_part.split("-from-available").next().unwrap();
@@ -632,73 +344,76 @@ impl AllocationMode {
             let reserve = ReserveAmount::parse(allocation_part)?;
             AllocationMode::ReserveFromAvailable { reserve }
         };
-        
-        Ok((allocation_mode, start_mode))
+
+        Ok(allocation_mode)
     }
     
-    /// Calculate the allocation amount based on system memory info
-    pub fn calculate_allocation(&self, mem_info: &SystemMemoryInfo, start_address_mode: &StartAddressMode) -> AllocationResult {
-        self.calculate_allocation_with_threads(mem_info, start_address_mode, None)
-    }
-    
-    /// Calculate allocation with thread count for thread-aware sizing
-    pub fn calculate_allocation_with_threads(&self, mem_info: &SystemMemoryInfo, start_address_mode: &StartAddressMode, thread_count: Option<usize>) -> AllocationResult {
-        // Handle split reserve mode specially
-        if let StartAddressMode::SplitReserve { pre_percent, post_percent } = start_address_mode {
-            return self.calculate_allocation_with_split_reserve_and_threads(mem_info, *pre_percent, *post_percent, thread_count);
-        }
-        
-        let actual_start_address = mem_info.calculate_start_address(start_address_mode);
-        match self {
-            AllocationMode::ReserveFromTotal { reserve } => {
-                let reserve_bytes = reserve.calculate_bytes(mem_info.total_installed_bytes);
-                let available_for_allocation = mem_info.total_installed_bytes.saturating_sub(reserve_bytes);
-                AllocationResult {
-                    allocation_bytes: available_for_allocation,
-                    reserve_bytes,
-                    reference_bytes: mem_info.total_installed_bytes,
-                    min_start_address: actual_start_address,
-                    allocation_type: "Reserve from Total".to_string(),
-                    split_details: None,
-                }
-            },
-            AllocationMode::ReserveFromAvailable { reserve } => {
-                let reserve_bytes = reserve.calculate_bytes(mem_info.available_physical_bytes);
-                let available_for_allocation = mem_info.available_physical_bytes.saturating_sub(reserve_bytes);
-                AllocationResult {
-                    allocation_bytes: available_for_allocation,
-                    reserve_bytes,
-                    reference_bytes: mem_info.available_physical_bytes,
-                    min_start_address: actual_start_address,
-                    allocation_type: "Reserve from Available".to_string(),
-                    split_details: None,
-                }
-            },
+    /// Size the test allocation for `thread_count` workers with identical blocks.
+    ///
+    /// The reserve comes off the mode's reference figure (currently available, or total
+    /// installed), then each thread's share is rounded **up** by `round_up_to_chunk_combination`.
+    /// The rounding comes out of the reserve, so `reserve_bytes` is what is actually left to the OS.
+    pub fn calculate_allocation_with_threads(&self, mem_info: &SystemMemoryInfo, thread_count: usize) -> AllocationResult {
+        const GB_BOUNDARY: u64 = BYTES_PER_GIB;
+
+        let (reference_bytes, requested_reserve_bytes, base_type) = match self {
+            AllocationMode::ReserveFromAvailable { reserve } => (
+                mem_info.available_physical_bytes,
+                reserve.calculate_bytes(mem_info.available_physical_bytes),
+                "Reserve from Available",
+            ),
+            AllocationMode::ReserveFromTotal { reserve } => (
+                mem_info.total_installed_bytes,
+                reserve.calculate_bytes(mem_info.total_installed_bytes),
+                "Reserve from Total",
+            ),
             AllocationMode::AllocateTarget { target } => {
+                // Expressed as a reserve: whatever the target leaves of total installed memory.
                 let target_bytes = target.calculate_bytes(mem_info.total_installed_bytes);
-                let max_safe = mem_info.available_physical_bytes.saturating_sub(BYTES_PER_GIB); // Leave 1GB safety
-                let allocation_bytes = target_bytes.min(max_safe);
-                AllocationResult {
-                    allocation_bytes,
-                    reserve_bytes: mem_info.total_installed_bytes.saturating_sub(allocation_bytes),
-                    reference_bytes: mem_info.total_installed_bytes,
-                    min_start_address: actual_start_address,
-                    allocation_type: "Target Allocation".to_string(),
-                    split_details: None,
-                }
-            },
-            AllocationMode::LegacyTM5 { reserve_mb } => {
-                let reserve_bytes = (*reserve_mb as u64) * 1024 * 1024;
-                let available_for_allocation = mem_info.available_physical_bytes.saturating_sub(reserve_bytes);
-                AllocationResult {
-                    allocation_bytes: available_for_allocation,
-                    reserve_bytes,
-                    reference_bytes: mem_info.available_physical_bytes,
-                    min_start_address: actual_start_address,
-                    allocation_type: "Legacy TM5 (from available)".to_string(),
-                    split_details: None,
-                }
-            },
+                (
+                    mem_info.total_installed_bytes,
+                    mem_info.total_installed_bytes.saturating_sub(target_bytes),
+                    "Target Allocation",
+                )
+            }
+            AllocationMode::LegacyTM5 { reserve_mb } => (
+                mem_info.available_physical_bytes,
+                (*reserve_mb as u64) * 1024 * 1024,
+                "Legacy TM5 (from available)",
+            ),
+        };
+
+        let base_allocation_bytes = reference_bytes.saturating_sub(requested_reserve_bytes);
+        let per_thread_target = base_allocation_bytes / thread_count as u64;
+
+        // Standard chunk sizes for rounding (1GB, 512MB, 256MB, 128MB)
+        let chunk_sizes = [GB_BOUNDARY, 512*BYTES_PER_MIB_USIZE as u64, 256*BYTES_PER_MIB_USIZE as u64, 128*BYTES_PER_MIB_USIZE as u64];
+
+        // Round each thread's allocation UP to next clean chunk combination
+        let rounded_per_thread = Self::round_up_to_chunk_combination(per_thread_target, &chunk_sizes);
+        let allocation_bytes = rounded_per_thread * thread_count as u64;
+        let reserve_bytes = reference_bytes.saturating_sub(allocation_bytes);
+
+        log::info!("Thread-aware allocation: {} threads × {:.3} GiB → rounded to {:.3} GiB each",
+                  thread_count,
+                  per_thread_target as f64 / GB_BOUNDARY as f64,
+                  rounded_per_thread as f64 / GB_BOUNDARY as f64);
+        log::info!("Total allocation: {:.3} GiB → {:.3} GiB; reserve {:.3} GiB requested, {:.3} GiB left",
+                  base_allocation_bytes as f64 / GB_BOUNDARY as f64,
+                  allocation_bytes as f64 / GB_BOUNDARY as f64,
+                  requested_reserve_bytes as f64 / GB_BOUNDARY as f64,
+                  reserve_bytes as f64 / GB_BOUNDARY as f64);
+
+        AllocationResult {
+            allocation_bytes,
+            reserve_bytes,
+            reference_bytes,
+            allocation_type: format!(
+                "{} [thread-aware ({}×{:.2} GiB)]",
+                base_type,
+                thread_count,
+                rounded_per_thread as f64 / GB_BOUNDARY as f64
+            ),
         }
     }
 }
@@ -714,24 +429,9 @@ pub struct AllocationResult {
     
     /// Reference bytes used for calculation (total/available)
     pub reference_bytes: u64,
-    
-    /// Minimum recommended start address
-    pub min_start_address: u64,
-    
+
     /// Human-readable description of allocation type
     pub allocation_type: String,
-    
-    /// Split reserve details if using split mode
-    pub split_details: Option<SplitReserveInfo>,
-}
-
-/// Split reserve breakdown information
-#[derive(Debug, Clone)]
-pub struct SplitReserveInfo {
-    pub pre_percent: f64,
-    pub post_percent: f64,
-    pub pre_buffer_bytes: u64,
-    pub post_reserve_bytes: u64,
 }
 
 impl AllocationResult {
@@ -756,25 +456,7 @@ impl AllocationResult {
             ));
         }
         
-        // Start address validation warnings
-        let max_physical_addr = mem_info.total_physical_bytes;
-        if self.min_start_address > max_physical_addr {
-            warnings.push(format!(
-                "Start address (0x{:016X}) exceeds physical memory range (0x0 - 0x{:016X})",
-                self.min_start_address, max_physical_addr
-            ));
-        }
-        
-        if self.min_start_address + self.allocation_bytes > max_physical_addr {
-            warnings.push(format!(
-                "Allocation range exceeds physical memory (Start: 0x{:016X}, End: 0x{:016X}, Limit: 0x{:016X})",
-                self.min_start_address,
-                self.min_start_address + self.allocation_bytes,
-                max_physical_addr
-            ));
-        }
-        
-        // Failure mode testing warnings
+// Failure mode testing warnings
         if self.allocation_type.contains("from Total") || self.allocation_type.contains("Target") {
             warnings.push("🧪 FAILURE MODE TESTING DETECTED - This configuration may intentionally cause allocation failures".to_string());
             warnings.push("Use only for development/testing purposes!".to_string());
@@ -793,10 +475,7 @@ impl AllocationResult {
 pub struct EnhancedMemoryStrategy {
     /// How to calculate memory allocation amount
     pub allocation_mode: AllocationMode,
-    
-    /// Control over allocation start address
-    pub start_address_mode: StartAddressMode,
-    
+
     // WindowMode and ChunkMode removed - these are test configuration concerns, not allocation strategy concerns
 }
 
@@ -805,30 +484,25 @@ impl Default for EnhancedMemoryStrategy {
         Self {
             // Post-boot optimized: Reserve only 10% from available (aggressive testing)
             allocation_mode: AllocationMode::ReserveFromAvailable { 
-                reserve: ReserveAmount::Percentage(10.0) 
+                reserve: ReserveAmount::Percentage(10.0)
             },
-            start_address_mode: StartAddressMode::default(),
         }
     }
 }
 
 impl EnhancedMemoryStrategy {
-    /// Canonical `memory=` spec that reproduces this strategy, e.g.
-    /// `"20%-from-available:start=split:5%:95%"`. Written into result files so a run's request is
-    /// reconstructable from the result alone rather than only from `logs/` (TODO #67).
+    /// Canonical `memory=` spec that reproduces this strategy, e.g. `"20%-from-available"`.
+    /// Written into result files so a run's request is reconstructable from the result alone
+    /// rather than only from `logs/` (TODO #67).
     pub fn describe_spec(&self) -> String {
-        format!(
-            "{}:start={}",
-            self.allocation_mode.describe_spec(),
-            self.start_address_mode.describe_spec()
-        )
+        self.allocation_mode.describe_spec()
     }
 
     /// Create a comprehensive memory layout with enhanced allocation calculation
     pub fn create_layout(&self, thread_count: usize) -> Result<crate::layout::EnhancedMemoryLayout, String> {
         let mem_info = SystemMemoryInfo::gather()?;
         // Use thread-aware allocation calculation for optimal per-thread layouts
-        let allocation_result = self.allocation_mode.calculate_allocation_with_threads(&mem_info, &self.start_address_mode, Some(thread_count));
+        let allocation_result = self.allocation_mode.calculate_allocation_with_threads(&mem_info, thread_count);
         
         // Create per-thread blocks with identical sizes (thread-aware allocation ensures this)
         let allocation_per_thread = allocation_result.allocation_bytes / thread_count as u64;
@@ -865,19 +539,19 @@ mod tests {
     fn test_allocation_mode_parsing() {
         assert!(matches!(
             AllocationMode::parse("8GiB-from-total"), 
-            Ok((AllocationMode::ReserveFromTotal { .. }, _))
+            Ok(AllocationMode::ReserveFromTotal { .. })
         ));
         assert!(matches!(
             AllocationMode::parse("20%-from-available"), 
-            Ok((AllocationMode::ReserveFromAvailable { .. }, _))
+            Ok(AllocationMode::ReserveFromAvailable { .. })
         ));
         assert!(matches!(
             AllocationMode::parse("16GiB-target"), 
-            Ok((AllocationMode::AllocateTarget { .. }, _))
+            Ok(AllocationMode::AllocateTarget { .. })
         ));
         assert!(matches!(
             AllocationMode::parse("2048MB"), 
-            Ok((AllocationMode::LegacyTM5 { reserve_mb: 2048 }, _))
+            Ok(AllocationMode::LegacyTM5 { reserve_mb: 2048 })
         ));
     }
 

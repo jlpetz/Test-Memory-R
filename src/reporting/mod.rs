@@ -46,30 +46,6 @@ impl<R: Renderer> Reporter<R> {
         Ok(())
     }
 
-    /// Report test progress
-    pub fn report_test_progress(&mut self, report: &TestProgressReport) -> Result<()> {
-        let progress_line = self.formatter.format_progress_line(report);
-        self.renderer.render_progress(&progress_line)?;
-        Ok(())
-    }
-
-    /// Report final test results
-    pub fn report_final_results(&mut self, report: &FinalResultsReport) -> Result<()> {
-        self.renderer.render_separator()?;
-        
-        if report.success {
-            self.renderer.render_success(&self.formatter.format_success_message(report))?;
-        } else {
-            self.renderer.render_error(&self.formatter.format_failure_message(report))?;
-        }
-        
-        // Show summary statistics
-        let stats_table = self.formatter.prepare_statistics_table(&report.statistics);
-        self.renderer.render_table(&stats_table)?;
-        
-        Ok(())
-    }
-
     /// Report thread timing deviations
     pub fn report_thread_timing(&mut self, report: &ThreadTimingReport) -> Result<()> {
         let table = self.formatter.prepare_thread_timing_table(report);
@@ -77,23 +53,9 @@ impl<R: Renderer> Reporter<R> {
         Ok(())
     }
     
-    /// Report current memory status
-    pub fn report_memory_status(&mut self, status: &CurrentMemoryStatus) -> Result<()> {
-        let table = self.formatter.prepare_memory_status_table(status);
-        self.renderer.render_table(&table)?;
-        Ok(())
-    }
-    
     /// Report thread allocations
     pub fn report_thread_allocations(&mut self, report: &ThreadAllocationReport) -> Result<()> {
         let table = self.formatter.prepare_thread_allocation_table(report);
-        self.renderer.render_table(&table)?;
-        Ok(())
-    }
-    
-    /// Report page allocations
-    pub fn report_page_allocations(&mut self, report: &PageAllocationReport) -> Result<()> {
-        let table = self.formatter.prepare_page_allocation_table(report);
         self.renderer.render_table(&table)?;
         Ok(())
     }
@@ -148,15 +110,9 @@ impl<R: Renderer> Reporter<R> {
     }
     
     /// Report cycle completion
+    #[expect(dead_code, reason = "TODO #69 F: the per-cycle report is to be revived, not deleted")]
     pub fn report_cycle(&mut self, report: &CycleReport) -> Result<()> {
         let table = self.formatter.prepare_cycle_report_table(report);
-        self.renderer.render_table(&table)?;
-        Ok(())
-    }
-    
-    /// Report CPU performance variance
-    pub fn report_cpu_variance(&mut self, report: &CpuVarianceReport) -> Result<()> {
-        let table = self.formatter.prepare_cpu_variance_table(report);
         self.renderer.render_table(&table)?;
         Ok(())
     }

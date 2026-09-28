@@ -108,7 +108,7 @@ pub enum CacheTarget {
     L3 { scale: f64 },
     /// Target DRAM. Per-thread working set = total L3 × scale.
     /// No thread divisor — sharing L3 across threads would shrink the per-thread region.
-    DRAM { scale: f64 },
+    Dram { scale: f64 },
     /// Sentinel: use the entire per-thread allocation.
     DRAMFull,
 }
@@ -125,20 +125,9 @@ impl CacheTarget {
     /// L3 with default scale 0.5 (50% of per-thread L3 share).
     pub const L3_DEFAULT: Self = Self::L3 { scale: 0.5 };
     /// DRAM with default scale 4.0 (per-thread = total L3 × 4).
-    pub const DRAM_DEFAULT: Self = Self::DRAM { scale: 4.0 };
+    pub const DRAM_DEFAULT: Self = Self::Dram { scale: 4.0 };
     /// DRAM-Full uses the entire thread allocation.
     pub const DRAM_FULL_DEFAULT: Self = Self::DRAMFull;
-
-    /// Get the scale for this target (None for DRAMFull which has no scale).
-    pub fn scale(&self) -> Option<f64> {
-        match self {
-            CacheTarget::L1 { scale }
-            | CacheTarget::L2 { scale }
-            | CacheTarget::L3 { scale }
-            | CacheTarget::DRAM { scale } => Some(*scale),
-            CacheTarget::DRAMFull => None,
-        }
-    }
 
     /// Map CacheTarget to the corresponding calibration CacheTier
     fn to_calibration_tier(self) -> Option<crate::calibration::CacheTier> {
@@ -146,7 +135,7 @@ impl CacheTarget {
             CacheTarget::L1 { .. } => Some(crate::calibration::CacheTier::L1),
             CacheTarget::L2 { .. } => Some(crate::calibration::CacheTier::L2),
             CacheTarget::L3 { .. } => Some(crate::calibration::CacheTier::L3),
-            CacheTarget::DRAM { .. } => Some(crate::calibration::CacheTier::Dram),
+            CacheTarget::Dram { .. } => Some(crate::calibration::CacheTier::Dram),
             CacheTarget::DRAMFull => None, // Always uses full allocation
         }
     }
@@ -178,7 +167,7 @@ impl CacheTarget {
                 let per_thread = calibrated / thread_count.max(1) as f64;
                 (per_thread * scale) as usize
             }
-            CacheTarget::DRAM { scale } => {
+            CacheTarget::Dram { scale } => {
                 // DRAM: each thread's working set is sized off the L3-spill threshold
                 // (calibrated total L3). No thread divisor — sharing L3 across threads
                 // would make the per-thread region too small for a clean DRAM measurement
@@ -233,7 +222,7 @@ impl CacheTarget {
                 };
                 ((per_thread * scale) as usize).max(min_l3_size)
             }
-            CacheTarget::DRAM { scale } => {
+            CacheTarget::Dram { scale } => {
                 // No thread divisor — each thread independently exceeds L3 (see calibration path)
                 (cache_info.l3_cache as f64 * scale) as usize
             }
@@ -269,14 +258,9 @@ impl CacheTarget {
             CacheTarget::L1 { scale } => format!("L1{}", Self::format_scale(*scale)),
             CacheTarget::L2 { scale } => format!("L2{}", Self::format_scale(*scale)),
             CacheTarget::L3 { scale } => format!("L3{}", Self::format_scale(*scale)),
-            CacheTarget::DRAM { scale } => format!("DRAM{}", Self::format_scale(*scale)),
+            CacheTarget::Dram { scale } => format!("DRAM{}", Self::format_scale(*scale)),
             CacheTarget::DRAMFull => "DRAM-Full".to_string(),
         }
-    }
-
-    /// Get a human-readable name that reflects actual calculation with thread count
-    pub fn name_with_threads(&self, thread_count: usize) -> String {
-        self.name_with_context(thread_count, false)
     }
 
     /// Get a human-readable name that reflects actual calculation with thread count and VM status.
@@ -314,7 +298,7 @@ impl CacheTarget {
                     }
                 }
             }
-            CacheTarget::DRAM { scale } => format!("DRAM{}{}", Self::format_scale(*scale), suffix),
+            CacheTarget::Dram { scale } => format!("DRAM{}{}", Self::format_scale(*scale), suffix),
             CacheTarget::DRAMFull => "DRAM-Full".to_string(),
         }
     }
@@ -325,7 +309,7 @@ impl CacheTarget {
             CacheTarget::L1 { .. } => "L1",
             CacheTarget::L2 { .. } => "L2",
             CacheTarget::L3 { .. } => "L3",
-            CacheTarget::DRAM { .. } => "DRAM",
+            CacheTarget::Dram { .. } => "DRAM",
             CacheTarget::DRAMFull => "DRAM-Full",
         }
     }
@@ -351,7 +335,7 @@ impl CacheTarget {
             Some(CacheTarget::L3 { scale })
         } else if let Some(rest) = s.strip_prefix("DRAM") {
             let scale = Self::parse_scale(rest).unwrap_or(4.0);
-            Some(CacheTarget::DRAM { scale })
+            Some(CacheTarget::Dram { scale })
         } else if s == "RAM" {
             // Alias for DRAM
             Some(CacheTarget::DRAM_DEFAULT)
@@ -423,31 +407,9 @@ pub struct ErrorCheckInterval {
 }
 
 impl ErrorCheckInterval {
-    /// Check every element (shift = 0, check every 2^0 = 1 operation)
-    pub const EVERY_ELEMENT: Self = Self { power_of_two_shift: 0 };
     
     /// Check only at chunk boundaries (shift = MAX, effectively never within chunk)
     pub const PER_CHUNK: Self = Self { power_of_two_shift: u32::MAX };
-    
-    /// Create from TM5 Parameter value, rounding to nearest power-of-2
-    pub fn from_parameter(param: u32) -> Self {
-        match param {
-            0 => Self::PER_CHUNK,  // TM5 Parameter=0 means full chunk
-            1 => Self::EVERY_ELEMENT,  // TM5 Parameter=1 means every element
-            n => {
-                // Round up to nearest power of 2 and get shift
-                let power_of_2 = n.next_power_of_two();
-                let shift = power_of_2.trailing_zeros();
-                
-                if n != power_of_2 {
-                    log::debug!("Parameter {} rounded to {} (2^{}) for performance", 
-                              n, power_of_2, shift);
-                }
-                
-                Self { power_of_two_shift: shift }
-            }
-        }
-    }
     
     /// Get the mask for bitwise AND checking in hot loops
     /// Returns None for PER_CHUNK mode (no checking within chunk)
@@ -521,24 +483,6 @@ pub enum TestAction {
     Latency,
 }
 
-impl TestAction {
-    pub fn label(&self) -> &'static str {
-        match self {
-            TestAction::Read => "Read",
-            TestAction::Write => "Write",
-            TestAction::ReadWrite => "Read/Write",
-            TestAction::WriteVerify => "Write + Verify",
-            TestAction::Copy => "Copy",
-            TestAction::Verify => "Verify",
-            TestAction::WriteWaitVerify => "Write + Wait + Verify",
-            TestAction::CacheBusting => "Cache Busting",
-            TestAction::RandomAccess => "Random Access",
-            TestAction::StuckBitTest => "Stuck Bit Test",
-            TestAction::Latency => "Latency Measurement",
-        }
-    }
-}
-
 #[repr(C)]
 #[derive(Debug, Clone)]
 pub struct TestStats {
@@ -595,55 +539,6 @@ impl TestProgress {
         self.errors_found.store(0, Relaxed);
         self.last_update_ms.store(0, Relaxed);
     }
-}
-
-/// Detailed operation breakdown calculated post-test from total_operations
-#[derive(Debug, Clone)]
-pub struct DetailedOperationCount {
-    pub total_reads: u64,
-    pub total_writes: u64,
-    pub total_verifies: u64,
-    pub total_simd_ops: u64,
-    pub total_fence_ops: u64,
-    pub total_cache_ops: u64,
-    pub simd_type: SIMDType,
-    pub access_pattern: AccessPattern,
-}
-
-#[derive(Debug, Clone)]
-pub enum SIMDType {
-    None,
-    SSE2_128,
-    AVX2_256,
-    AVX512_512,
-}
-
-#[derive(Debug, Clone)]
-pub enum AccessPattern {
-    Sequential,
-    Strided(usize),
-    Random,
-    Mirror,
-    BlockCopy,
-    CacheBusting,
-}
-
-/// Operation metadata for each test - defines what constitutes one "operation"
-#[derive(Debug, Clone)]
-pub struct OperationMetadata {
-    // Operations per single "operation unit" (typically per loop iteration)
-    pub reads_per_op: u64,
-    pub writes_per_op: u64,
-    pub verifies_per_op: u64,
-    pub simd_ops_per_op: u64,
-    pub fence_ops_per_op: u64,
-    pub cache_ops_per_op: u64,
-    
-    // Test characteristics
-    pub simd_type: SIMDType,
-    pub access_pattern: AccessPattern,
-    pub memory_coverage: f64,  // Fraction of allocated memory touched per operation
-    pub locality_sensitive: bool,
 }
 
 // Test execution timing configuration
@@ -815,212 +710,6 @@ impl TestMemoryConfig {
         self
     }
 
-    /// Get operation metadata for a specific test
-    pub fn get_operation_metadata(&self, test_name: &str) -> OperationMetadata {
-        match test_name {
-            "Mem-StuckBit" | "Mem-StuckBit-Flush" => OperationMetadata {
-                reads_per_op: 3,  // 3 verification reads per cycle per element
-                writes_per_op: 3,  // 3 pattern writes per cycle per element
-                verifies_per_op: 3,  // Same as reads for this test
-                simd_ops_per_op: 0,
-                fence_ops_per_op: 1,  // Per cycle, not per element
-                cache_ops_per_op: 0,
-                simd_type: SIMDType::None,
-                access_pattern: AccessPattern::Sequential,
-                memory_coverage: 1.0,
-                locality_sensitive: false,
-            },
-            "Mem-StuckBit128" | "Mem-StuckBit-Flush128" => OperationMetadata {
-                reads_per_op: 3,  // 3 verification reads per cycle per element
-                writes_per_op: 3,  // 3 pattern writes per cycle per element
-                verifies_per_op: 3,  // Same as reads for this test
-                simd_ops_per_op: 6,  // 3 loads + 3 stores per cycle per u64x2
-                fence_ops_per_op: 1,  // Per cycle, not per element
-                cache_ops_per_op: 0,
-                simd_type: SIMDType::SSE2_128,
-                access_pattern: AccessPattern::Sequential,
-                memory_coverage: 1.0,
-                locality_sensitive: false,
-            },
-            "Mem-StuckBit256" | "Mem-StuckBit-Flush256" => OperationMetadata {
-                reads_per_op: 3,  // 3 verification reads per cycle per element
-                writes_per_op: 3,  // 3 pattern writes per cycle per element
-                verifies_per_op: 3,  // Same as reads for this test
-                simd_ops_per_op: 6,  // 3 loads + 3 stores per cycle per u64x4
-                fence_ops_per_op: 1,  // Per cycle, not per element
-                cache_ops_per_op: 0,
-                simd_type: SIMDType::AVX2_256,
-                access_pattern: AccessPattern::Sequential,
-                memory_coverage: 1.0,
-                locality_sensitive: false,
-            },
-            "Mem-StuckBit512" | "Mem-StuckBit-Flush512" => OperationMetadata {
-                reads_per_op: 3,  // 3 verification reads per cycle per element
-                writes_per_op: 3,  // 3 pattern writes per cycle per element
-                verifies_per_op: 3,  // Same as reads for this test
-                simd_ops_per_op: 6,  // 3 loads + 3 stores per cycle per u64x8
-                fence_ops_per_op: 1,  // Per cycle, not per element
-                cache_ops_per_op: 0,
-                simd_type: SIMDType::AVX512_512,
-                access_pattern: AccessPattern::Sequential,
-                memory_coverage: 1.0,
-                locality_sensitive: false,
-            },
-            "Mem-SimpleNT-128" | "Mem-SimpleNT-256" | "Mem-SimpleNT-512" | "Mem-SimpleNT-Auto" => OperationMetadata {
-                reads_per_op: 1,  // Verify read (regular loads)
-                writes_per_op: 1,  // NT store (bypasses cache)
-                verifies_per_op: 1,
-                simd_ops_per_op: 1,
-                fence_ops_per_op: 1,  // sfence per chunk
-                cache_ops_per_op: 0,  // NT stores bypass cache
-                simd_type: match test_name {
-                    "Mem-SimpleNT-512" => SIMDType::AVX512_512,
-                    "Mem-SimpleNT-256" => SIMDType::AVX2_256,
-                    _ => SIMDType::SSE2_128,
-                },
-                access_pattern: AccessPattern::Sequential,
-                memory_coverage: 1.0,
-                locality_sensitive: false,
-            },
-            "Mem-Refresh" | "Mem-Refresh-Flush" => OperationMetadata {
-                reads_per_op: 1,  // Verify read per element
-                writes_per_op: 1,  // Pattern write per element
-                verifies_per_op: 1,  // Same as reads
-                simd_ops_per_op: 0,
-                fence_ops_per_op: 1,  // Per cycle
-                cache_ops_per_op: 0,
-                simd_type: SIMDType::None,
-                access_pattern: AccessPattern::Sequential,
-                memory_coverage: 1.0,
-                locality_sensitive: true,
-            },
-            "Mem-Refresh128" | "Mem-Refresh-Flush128" => OperationMetadata {
-                reads_per_op: 1,  // Verify read per element
-                writes_per_op: 1,  // Pattern write per element
-                verifies_per_op: 1,  // Same as reads
-                simd_ops_per_op: 2,  // 1 load + 1 store per u64x2
-                fence_ops_per_op: 1,  // Per cycle
-                cache_ops_per_op: 0,
-                simd_type: SIMDType::SSE2_128,
-                access_pattern: AccessPattern::Sequential,
-                memory_coverage: 1.0,
-                locality_sensitive: true,
-            },
-            "Mem-Refresh256" | "Mem-Refresh-Flush256" => OperationMetadata {
-                reads_per_op: 1,  // Verify read per element
-                writes_per_op: 1,  // Pattern write per element
-                verifies_per_op: 1,  // Same as reads
-                simd_ops_per_op: 2,  // 1 load + 1 store per u64x4
-                fence_ops_per_op: 1,  // Per cycle
-                cache_ops_per_op: 0,
-                simd_type: SIMDType::AVX2_256,
-                access_pattern: AccessPattern::Sequential,
-                memory_coverage: 1.0,
-                locality_sensitive: true,
-            },
-            "Mem-Refresh512" | "Mem-Refresh-Flush512" => OperationMetadata {
-                reads_per_op: 1,  // Verify read per element
-                writes_per_op: 1,  // Pattern write per element
-                verifies_per_op: 1,  // Same as reads
-                simd_ops_per_op: 2,  // 1 load + 1 store per u64x8
-                fence_ops_per_op: 1,  // Per cycle
-                cache_ops_per_op: 0,
-                simd_type: SIMDType::AVX512_512,
-                access_pattern: AccessPattern::Sequential,
-                memory_coverage: 1.0,
-                locality_sensitive: true,
-            },
-            "Mem-CacheBust" => OperationMetadata {
-                reads_per_op: 1,
-                writes_per_op: 1,
-                verifies_per_op: 1,
-                simd_ops_per_op: 0,
-                fence_ops_per_op: 1,
-                cache_ops_per_op: 0,
-                simd_type: SIMDType::None,
-                access_pattern: AccessPattern::CacheBusting,
-                memory_coverage: 1.0,  // All memory touched with stride pattern for cache busting
-                locality_sensitive: false,
-            },
-            "Mem-Random" => OperationMetadata {
-                reads_per_op: 1,  // Random verification read
-                writes_per_op: 0,  // No writes in hot loop
-                verifies_per_op: 1,  // Same as reads
-                simd_ops_per_op: 0,
-                fence_ops_per_op: 0,  // No fences in hot loop
-                cache_ops_per_op: 0,
-                simd_type: SIMDType::None,
-                access_pattern: AccessPattern::Random,
-                memory_coverage: 0.1,  // Random coverage varies, use conservative estimate
-                locality_sensitive: false,
-            },
-            "Mem-Stride" => OperationMetadata {
-                reads_per_op: 1,
-                writes_per_op: 1,
-                verifies_per_op: 1,
-                simd_ops_per_op: 0,
-                fence_ops_per_op: 1,  // Per stride pattern
-                cache_ops_per_op: 0,
-                simd_type: SIMDType::None,
-                access_pattern: AccessPattern::Strided(1024),  // Average stride
-                memory_coverage: 0.85,  // Aggregate across all strides
-                locality_sensitive: false,
-            },
-            "Mem-BlockMove" => OperationMetadata {
-                reads_per_op: 2,  // Source read + destination verify read
-                writes_per_op: 1,  // Destination write
-                verifies_per_op: 1,  // Destination verify
-                simd_ops_per_op: 0,
-                fence_ops_per_op: 1,  // Per cycle
-                cache_ops_per_op: 0,
-                simd_type: SIMDType::None,
-                access_pattern: AccessPattern::BlockCopy,
-                memory_coverage: 0.5,  // Uses half of allocation (source to dest)
-                locality_sensitive: false,
-            },
-            // Sequential bandwidth tests — Write
-            s if s.starts_with("Spd-") && s.contains("-Write") => OperationMetadata {
-                reads_per_op: 0,
-                writes_per_op: 1,
-                verifies_per_op: 0,
-                simd_ops_per_op: 1,
-                fence_ops_per_op: if s.contains("DRAM") { 1 } else { 0 },
-                cache_ops_per_op: 0,
-                simd_type: SIMDType::AVX512_512,
-                access_pattern: AccessPattern::Sequential,
-                memory_coverage: 1.0,
-                locality_sensitive: false,
-            },
-            // Sequential bandwidth tests — Read
-            s if s.starts_with("Spd-") && s.contains("-Read") => OperationMetadata {
-                reads_per_op: 1,
-                writes_per_op: 0,
-                verifies_per_op: 0,
-                simd_ops_per_op: 1,
-                fence_ops_per_op: 0,
-                cache_ops_per_op: 0,
-                simd_type: SIMDType::AVX512_512,
-                access_pattern: AccessPattern::Sequential,
-                memory_coverage: 1.0,
-                locality_sensitive: false,
-            },
-            // Sequential bandwidth tests — Copy
-            s if s.starts_with("Spd-") && s.contains("-Copy") => OperationMetadata {
-                reads_per_op: 1,
-                writes_per_op: 1,
-                verifies_per_op: 0,
-                simd_ops_per_op: 1,
-                fence_ops_per_op: if s.contains("DRAM") { 1 } else { 0 },
-                cache_ops_per_op: 0,
-                simd_type: SIMDType::AVX512_512,
-                access_pattern: AccessPattern::Sequential,
-                memory_coverage: 0.5,  // Split-half: read first half, write second half
-                locality_sensitive: false,
-            },
-            _ => panic!("Unknown test '{}' - add explicit metadata to get_operation_metadata()", test_name),
-        }
-    }
-
     pub fn with_memory_type(mut self, memory_type: Option<MemoryType>) -> Self {
         self.memory_type = memory_type;
         self
@@ -1036,20 +725,10 @@ impl TestMemoryConfig {
         self
     }
 
-    pub fn with_error_check_interval(mut self, interval: ErrorCheckInterval) -> Self {
-        self.error_check_interval = interval;
-        self
-    }
-    
     pub fn with_pattern_config(mut self, mode: Option<u32>, param0: Option<u64>, param1: Option<u64>) -> Self {
         self.pattern_mode = mode;
         self.pattern_param0 = param0;
         self.pattern_param1 = param1;
-        self
-    }
-
-    pub fn with_thread_count(mut self, thread_count: usize) -> Self {
-        self.thread_count = thread_count.max(1);
         self
     }
 
@@ -1299,24 +978,6 @@ impl TestMemoryConfig {
         }
     }
 
-    // Ensure window size is multiple of block size
-    pub fn align_window_to_blocks(&self, window_size: usize, block_size: usize) -> usize {
-        if block_size == 0 || window_size == 0 {
-            return window_size;
-        }
-        
-        let aligned_window = (window_size / block_size) * block_size;
-        let _was_adjusted = aligned_window != window_size;
-        
-        // Ensure we have at least one full block
-        
-        
-        if aligned_window < block_size {
-            block_size
-        } else {
-            aligned_window
-        }
-    }
 }
 
 fn align_to_boundary(size: usize, alignment: usize) -> usize {
@@ -1370,26 +1031,6 @@ pub unsafe fn flush_range_to_dram(base: *const u8, len_bytes: usize, cache_line_
     // Mandatory: CLFLUSHOPT is weakly ordered. Without this fence a verify-load
     // could issue while flushes are still draining and read stale cached data.
     unsafe { std::arch::x86_64::_mm_mfence(); }
-}
-
-/// Round down to nearest power of 2 (for optimal bit masking in hot loops)
-pub fn round_down_to_power_of_2(size: usize) -> usize {
-    if size == 0 { return 0; }
-    if size.is_power_of_two() { return size; }
-    
-    // Find the highest set bit position
-    let mut v = size;
-    v |= v >> 1;
-    v |= v >> 2;
-    v |= v >> 4;
-    v |= v >> 8;
-    v |= v >> 16;
-    if std::mem::size_of::<usize>() > 4 {
-        v |= v >> 32;
-    }
-    // v is now the next power of 2 minus 1
-    // The power of 2 we want is (v + 1) >> 1
-    (v + 1) >> 1
 }
 
 /// Calculate ideal chunk size once at test start (power-of-2 elements for fast stream operations)
@@ -1526,75 +1167,6 @@ fn prev_power_of_two(n: usize) -> usize {
         // Highest set bit: 1 << floor(log2(n))
         1usize << (usize::BITS - 1 - n.leading_zeros())
     }
-}
-
-/// Expand total_operations into detailed operation breakdown using test metadata
-pub fn expand_operations(
-    test_stats: &TestStats,
-    metadata: &OperationMetadata,
-    memory_size: usize,
-) -> DetailedOperationCount {
-    // Calculate how many elements were processed based on memory coverage
-    let total_elements = memory_size / std::mem::size_of::<u64>();
-    let covered_elements = (total_elements as f64 * metadata.memory_coverage) as u64;
-    
-    // For most tests, total_operations represents total loop iterations
-    // Each iteration processes `covered_elements` worth of operations
-    let operations_per_element = if covered_elements > 0 {
-        test_stats.total_operations / covered_elements.max(1)
-    } else {
-        test_stats.total_operations
-    };
-    
-    DetailedOperationCount {
-        total_reads: operations_per_element * metadata.reads_per_op * covered_elements,
-        total_writes: operations_per_element * metadata.writes_per_op * covered_elements,
-        total_verifies: operations_per_element * metadata.verifies_per_op * covered_elements,
-        total_simd_ops: operations_per_element * metadata.simd_ops_per_op * covered_elements,
-        total_fence_ops: operations_per_element * metadata.fence_ops_per_op,  // Per iteration, not per element
-        total_cache_ops: operations_per_element * metadata.cache_ops_per_op * covered_elements,
-        simd_type: metadata.simd_type.clone(),
-        access_pattern: metadata.access_pattern.clone(),
-    }
-}
-
-/// Aggregate operation counts from multiple threads
-pub fn aggregate_operation_counts(counts: &[DetailedOperationCount]) -> DetailedOperationCount {
-    if counts.is_empty() {
-        return DetailedOperationCount {
-            total_reads: 0,
-            total_writes: 0,
-            total_verifies: 0,
-            total_simd_ops: 0,
-            total_fence_ops: 0,
-            total_cache_ops: 0,
-            simd_type: SIMDType::None,
-            access_pattern: AccessPattern::Sequential,
-        };
-    }
-    
-    let mut aggregated = DetailedOperationCount {
-        total_reads: counts.iter().map(|c| c.total_reads).sum(),
-        total_writes: counts.iter().map(|c| c.total_writes).sum(),
-        total_verifies: counts.iter().map(|c| c.total_verifies).sum(),
-        total_simd_ops: counts.iter().map(|c| c.total_simd_ops).sum(),
-        total_fence_ops: counts.iter().map(|c| c.total_fence_ops).sum(),
-        total_cache_ops: counts.iter().map(|c| c.total_cache_ops).sum(),
-        simd_type: counts[0].simd_type.clone(),  // Use first thread's SIMD type
-        access_pattern: counts[0].access_pattern.clone(),  // Use first thread's access pattern
-    };
-    
-    // If threads have different SIMD types, use the most advanced one
-    for count in counts {
-        aggregated.simd_type = match (&aggregated.simd_type, &count.simd_type) {
-            (SIMDType::None, other) => other.clone(),
-            (_current, SIMDType::AVX512_512) => SIMDType::AVX512_512,
-            (SIMDType::SSE2_128, SIMDType::AVX2_256) => SIMDType::AVX2_256,
-            (current, _) => current.clone(),
-        };
-    }
-    
-    aggregated
 }
 
 
@@ -2831,6 +2403,10 @@ pub unsafe fn block_move_multi(
 ) -> TestStats {
     let test_name = "Mem-BlockMove";
 
+    let copy_dirs = config.parameter_context.as_ref()
+        .and_then(|c| c.copy_directions)
+        .expect("BlockMove requires copy_directions in parameter_context");
+
     let (mut runner, test_blocks) = crate::test_scaffolding::TestRunner::new(
         blocks, thread_id, error_mode, timing, config, progress,
         test_name, TestAction::ReadWrite,
@@ -2873,9 +2449,6 @@ pub unsafe fn block_move_multi(
                 let chunk_end = (processed + chunk_size_operations).min(len);
 
                 // Copy from source to destination with direction patterns
-                let copy_dirs = config.parameter_context.as_ref()
-                    .and_then(|c| c.copy_directions)
-                    .expect("BlockMove requires copy_directions in parameter_context");
                 match copy_dirs {
                     1 => {
                         // Single direction: Simple forward copy

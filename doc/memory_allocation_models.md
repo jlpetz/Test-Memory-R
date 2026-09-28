@@ -492,12 +492,9 @@ CLI (`params.rs`), all overridable from JSON:
 | Parameter | Stage | Controls |
 |---|---|---|
 | `memory=20%` / `2GiB` / `2048MB` | 1 | Total reservation. `-from-available` (default, TM5-like), `-from-total`, `-target` |
-| `memory=...:start=+2GiB` | 1 | `StartAddressMode::Offset` — begin N GiB above used memory |
-| `memory=...:start=split:5%:95%` | 1 | `SplitReserve` — pre-buffer vs post-reserve. Default `5%:95%` |
 | `allocator=plan-pagesize-pref` | 1 | Phase ordering: page size first (default), block size first, or legacy greedy |
 | `min_page_size` / `max_page_size` (JSON) | 1 | Gate `regular`/`large`/`huge`; feeds `is_page_size_allowed` |
 | `cpus=50%`, `cputype=`, `skip-cores=`, `cpu-stride=` | 1 | Thread count → the divisor for `per_thread_target`. `cpu-stride=even` also spreads across CCDs/memory domains |
-| `require_contiguous`, `zero_memory` (JSON) | 1 | Allocation flags |
 | `window_mode` (JSON per test) | 2 | `full` / `cache` / `cache_total` / `absolute` |
 | `chunk_mode` (JSON per test) | 3 | `auto` / `cache` / `cache_total` / `absolute` / `fraction` |
 | `channels=` (JSON `system.channels`) | test | Stride formula, same role as TM5 `Channels` |

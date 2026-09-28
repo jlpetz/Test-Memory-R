@@ -1,8 +1,6 @@
 use crate::{ErrorMode, AllocationBlock};
 use crate::tests::{TestMemoryConfig, TestProgress};
-use crate::runner::TestFunction;
-use crate::config::CpuPinningConfig;
-use crate::memory::buffer::MemoryType;
+use crate::runner::{TestFunction, ThreadPriority};
 use crate::cpu_topology::get_numa_node_for_cpu;
 use crate::latency_tests::LatencyTestStats;
 use std::collections::HashMap;
@@ -19,23 +17,8 @@ pub enum WorkItem {
     RunTest {
         test_name: &'static str,  // Keep as static throughout
         test_func: TestFunction,
-        test_config: TestMemoryConfig,
+        test_config: Box<TestMemoryConfig>,  // Boxed: the variant would otherwise be ~300 bytes against a unit `Shutdown`
         error_mode: ErrorMode,
-        barrier: Arc<Barrier>,
-    },
-    RunLatencyTest {
-        test_name: &'static str,
-        test_config: TestMemoryConfig,
-        error_mode: ErrorMode,
-        barrier: Arc<Barrier>,
-        result_sender: Sender<LatencyWorkResult>,  // Separate channel for latency results
-    },
-    ChangeMemoryType {
-        new_memory_type: MemoryType,
-        barrier: Arc<Barrier>,
-    },
-    UpdateAllocations {
-        new_blocks: Vec<AllocationBlock>,
         barrier: Arc<Barrier>,
     },
     Shutdown,
@@ -55,27 +38,16 @@ pub struct WorkResult {
     pub latency_stats: Option<LatencyTestStats>,  // Set for latency tests - includes percentiles
 }
 
-// Result from worker thread for latency tests
-#[derive(Debug)]
-pub struct LatencyWorkResult {
-    pub thread_id: usize,
-    pub cpu_id: usize,
-    pub stats: LatencyTestStats,
-}
-
 // Thread pool worker context
 pub struct WorkerContext {
     pub thread_id: usize,
     pub cpu_id: usize,
-    pub numa_node: u32,
     pub allocated_blocks: Vec<AllocationBlock>,
     pub receiver: Receiver<WorkItem>,
     pub result_sender: Sender<WorkResult>,
     /// Every worker's live-progress slot; this worker publishes into `live[thread_id]`.
     pub live: Arc<[TestProgress]>,
 }
-
-pub type TestStatsTuple = (usize, usize, u64, u128, u64, u64, u32); // thread_id, cpu_id, bytes, elapsed, errors, operations, cycles_completed
 
 // Thread pool for persistent workers
 pub struct ThreadPool {
@@ -88,7 +60,8 @@ pub struct ThreadPool {
 impl ThreadPool {
     pub fn new(
         mut thread_blocks: HashMap<usize, Vec<AllocationBlock>>,
-        pinning_config: &CpuPinningConfig,
+        pin_threads: bool,
+        thread_priority: ThreadPriority,
         thread_count: usize,
         cpu_list: Option<&[usize]>,
     ) -> (Self, Receiver<WorkResult>) {
@@ -120,13 +93,12 @@ impl ThreadPool {
             let blocks = thread_blocks.remove(&thread_id).unwrap_or_default();
             
             let result_sender = result_sender.clone();
-            let pinning_config = pinning_config.clone();
             let live = Arc::clone(&live);
                         
             let handle = thread::spawn(move || {
                 // Pin thread to CPU once at creation
-                if pinning_config.enable_pinning {
-                    match crate::runner::pin_thread_to_cpu_with_config(thread_id, cpu_id, pinning_config.enable_pinning) {
+                if pin_threads {
+                    match crate::runner::pin_thread_to_cpu_with_config(thread_id, cpu_id, pin_threads) {
                         Ok(actual_cpu) => {
                             log::debug!("Thread {} pinned to CPU {}", thread_id, actual_cpu);
                             let thread_handle = unsafe { windows::Win32::System::Threading::GetCurrentThread() };
@@ -138,15 +110,13 @@ impl ThreadPool {
                     }
                 }
                 
-                // Apply thread priority
-                if let Err(e) = crate::runner::PerformanceConfig::default().apply() {
-                    log::warn!("Failed to set thread priority: {}", e);
+                if let Err(e) = thread_priority.apply() {
+                    log::warn!("Thread {} priority not set: {}", thread_id, e);
                 }
                 
                 let mut context = WorkerContext {
                     thread_id,
                     cpu_id,
-                    numa_node,
                     allocated_blocks: blocks,
                     receiver: work_receiver,
                     result_sender,
@@ -191,7 +161,7 @@ impl ThreadPool {
             let work_item = WorkItem::RunTest {
                 test_name,  // Already &'static str
                 test_func: test_func.clone(),
-                test_config: test_config.clone(),
+                test_config: Box::new(test_config.clone()),
                 error_mode,
                 barrier: Arc::clone(&barrier),
             };
@@ -202,51 +172,6 @@ impl ThreadPool {
         }
     }
 
-    pub fn execute_latency_test(
-        &self,
-        test_name: &'static str,
-        test_config: &TestMemoryConfig,
-        error_mode: ErrorMode,
-    ) -> Receiver<LatencyWorkResult> {
-        let thread_count = self.senders.len();
-        let barrier = Arc::new(Barrier::new(thread_count));
-        let (result_sender, result_receiver) = channel();
-
-        // Send latency test work to all threads
-        for sender in &self.senders {
-            let work_item = WorkItem::RunLatencyTest {
-                test_name,
-                test_config: test_config.clone(),
-                error_mode,
-                barrier: Arc::clone(&barrier),
-                result_sender: result_sender.clone(),
-            };
-
-            if sender.send(work_item).is_err() {
-                log::error!("Failed to send latency test work to thread");
-            }
-        }
-
-        result_receiver
-    }
-
-    pub fn execute_memory_type_change(&self, new_memory_type: MemoryType) {
-        let thread_count = self.senders.len();
-        let memory_change_barrier = Arc::new(Barrier::new(thread_count));
-        
-        // Send memory type change work to all threads (free + reallocate)
-        for sender in &self.senders {
-            let work_item = WorkItem::ChangeMemoryType {
-                new_memory_type,
-                barrier: Arc::clone(&memory_change_barrier),
-            };
-            
-            if sender.send(work_item).is_err() {
-                log::error!("Failed to send memory type change work to thread");
-            }
-        }
-    }
-    
     // Modified shutdown to return assignments along with blocks
     pub fn shutdown(self) -> (HashMap<usize, Vec<AllocationBlock>>, Vec<CpuAssignment>) {
         let cpu_assignments = self.cpu_assignments;
@@ -315,7 +240,6 @@ fn worker_thread_loop(context: &mut WorkerContext) {
                         };
                         (latency_stats.basic_stats.clone(), Some(latency_stats))
                     }
-                    _ => unreachable!("Only MultiBlock and Latency tests are registered"),
                 };
 
                 // Handle any errors from the test
@@ -341,61 +265,6 @@ fn worker_thread_loop(context: &mut WorkerContext) {
                 if context.result_sender.send(result).is_err() {
                     log::error!("Failed to send result from thread {}", context.thread_id);
                 }
-            }
-            Ok(WorkItem::RunLatencyTest { test_name, test_config, error_mode, barrier, result_sender }) => {
-                // Wait for all threads to be ready
-                barrier.wait();
-
-                let blocks_slice = &context.allocated_blocks[..];
-
-                let progress = &context.live[context.thread_id];
-
-                // Run the latency test
-                let stats = unsafe {
-                    crate::latency_tests::read_latency_multi(
-                        blocks_slice,
-                        context.thread_id,
-                        error_mode,
-                        &test_config.timing,
-                        &test_config,
-                        Some(progress),
-                    )
-                };
-
-                // Handle any errors from the test
-                if stats.basic_stats.error_count > 0
-                    && let Err(e) = handle_test_errors(&stats.basic_stats, error_mode, test_name) {
-                        log::error!("[Thread {} on CPU {}] {}", context.thread_id, context.cpu_id, e);
-                    }
-
-                let result = LatencyWorkResult {
-                    thread_id: context.thread_id,
-                    cpu_id: context.cpu_id,
-                    stats,
-                };
-
-                if result_sender.send(result).is_err() {
-                    log::error!("Failed to send latency result from thread {}", context.thread_id);
-                }
-            }
-            Ok(WorkItem::ChangeMemoryType { new_memory_type, barrier }) => {
-                log::info!("Thread {} stopping for memory type change to {:?}", context.thread_id, new_memory_type);
-
-                // Wait at barrier - main thread will handle reallocation and send new blocks
-                barrier.wait();
-
-                log::info!("Thread {} resumed after memory type change to {:?}", context.thread_id, new_memory_type);
-            }
-            Ok(WorkItem::UpdateAllocations { new_blocks, barrier }) => {
-                log::info!("Thread {} received {} new memory allocations", context.thread_id, new_blocks.len());
-                
-                // Replace old allocations with new ones
-                context.allocated_blocks = new_blocks;
-                
-                // Wait at barrier to ensure all threads have updated before continuing
-                barrier.wait();
-                
-                log::info!("Thread {} allocation update complete", context.thread_id);
             }
             Ok(WorkItem::Shutdown) => {
                 log::debug!("Thread {} shutting down", context.thread_id);

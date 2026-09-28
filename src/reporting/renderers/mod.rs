@@ -15,26 +15,20 @@ pub trait Renderer: Send {
     fn render_heading(&mut self, text: &str) -> Result<()>;
     
     /// Render an info message
+    #[expect(dead_code, reason = "TODO #29: kept as severity levels for the event-stream renderers")]
     fn render_info(&mut self, text: &str) -> Result<()>;
-    
+
     /// Render a warning message
     fn render_warning(&mut self, text: &str) -> Result<()>;
-    
+
     /// Render an error message
+    #[expect(dead_code, reason = "TODO #29: kept as severity levels for the event-stream renderers")]
     fn render_error(&mut self, text: &str) -> Result<()>;
-    
+
     /// Render a success message
+    #[expect(dead_code, reason = "TODO #29: kept as severity levels for the event-stream renderers")]
     fn render_success(&mut self, text: &str) -> Result<()>;
-    
-    /// Render a progress update (may overwrite previous line)
-    fn render_progress(&mut self, text: &str) -> Result<()>;
-    
+
     /// Render a separator line
     fn render_separator(&mut self) -> Result<()>;
-    
-    /// Clear the current line (for progress updates)
-    fn clear_line(&mut self) -> Result<()>;
-    
-    /// Flush any buffered output
-    fn flush(&mut self) -> Result<()>;
 }

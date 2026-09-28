@@ -21,25 +21,12 @@ pub enum ParamValue {
     U32(u32),
     Usize(usize),
     Bool(bool),
-    None,
 }
 
 /// Parameter definition with all metadata
 pub struct ParamDef {
     /// Parameter key (e.g., "cycles", "memory", "skip-cores")
     pub key: &'static str,
-
-    /// Whether this is a flag (--flag) or key=value parameter
-    pub is_flag: bool,
-
-    /// Default value
-    pub default: ParamValue,
-
-    /// Short description for help text
-    pub help: &'static str,
-
-    /// Example usage
-    pub example: &'static str,
 
     /// Can this parameter override config file values?
     pub can_override_config: bool,
@@ -69,20 +56,12 @@ impl ParamRegistry {
         // Memory allocation parameters
         params.insert("memory", ParamDef {
             key: "memory",
-            is_flag: false,
-            default: ParamValue::String("10%-from-available:start=split:auto".to_string()),
-            help: "Amount of memory to allocate for testing",
-            example: "memory=20% or memory=4GiB or memory=2048MB",
             can_override_config: true,
             parser: |v| Ok(ParamValue::String(v.to_string())), // Return raw value, complex parsing happens later
         });
 
         params.insert("allocator", ParamDef {
             key: "allocator",
-            is_flag: false,
-            default: ParamValue::String("plan-pagesize-pref".to_string()),
-            help: "Allocation strategy (greedy, plan-pagesize-pref, plan-blocksize-pref)",
-            example: "allocator=plan-pagesize-pref",
             can_override_config: true,
             parser: |v| Ok(ParamValue::String(v.to_string())), // Validated separately
         });
@@ -90,20 +69,12 @@ impl ParamRegistry {
         // CPU configuration parameters
         params.insert("cpus", ParamDef {
             key: "cpus",
-            is_flag: false,
-            default: ParamValue::String("100%".to_string()),
-            help: "Percentage of CPUs to use for testing",
-            example: "cpus=50%",
             can_override_config: true,
             parser: |v| Ok(ParamValue::String(v.to_string())),
         });
 
         params.insert("cputype", ParamDef {
             key: "cputype",
-            is_flag: false,
-            default: ParamValue::String("threads".to_string()),
-            help: "CPU type: 'threads' (use SMT) or 'cores' (physical cores only)",
-            example: "cputype=cores",
             can_override_config: true,
             parser: |v| {
                 match v {
@@ -119,10 +90,6 @@ impl ParamRegistry {
         // Ranges are the diagnostic tool for multi-CCD/NUMA-domain machines.
         params.insert("skip-cores", ParamDef {
             key: "skip-cores",
-            is_flag: false,
-            default: ParamValue::Usize(1),
-            help: "CPUs to exclude: N (first N), N% (first N%), or A-B (id range, e.g. 0-7)",
-            example: "skip-cores=0-7",
             can_override_config: true,
             parser: |v| {
                 // Keep as a string so the resolver can handle N / N% / A-B uniformly.
@@ -159,10 +126,6 @@ impl ParamRegistry {
         // `cpus=` percentage to right-size instead.
         params.insert("cpu-stride", ParamDef {
             key: "cpu-stride",
-            is_flag: false,
-            default: ParamValue::String("1".to_string()),
-            help: "Spacing within available CPUs: 1 (packed), N (every Nth), or 'even' (spread)",
-            example: "cpu-stride=2",
             can_override_config: true,
             parser: |v| {
                 let s = v.trim();
@@ -179,20 +142,12 @@ impl ParamRegistry {
 
         flags.insert("--disable-pinning", ParamDef {
             key: "--disable-pinning",
-            is_flag: true,
-            default: ParamValue::Bool(false),
-            help: "Disable CPU thread pinning (default: enabled)",
-            example: "--disable-pinning",
             can_override_config: true,
             parser: |_| Ok(ParamValue::Bool(true)),
         });
 
         params.insert("topology", ParamDef {
             key: "topology",
-            is_flag: false,
-            default: ParamValue::String("auto".to_string()),
-            help: "CPU topology detection method (auto, windows, windowsv2, cpuid)",
-            example: "topology=windowsv2",
             can_override_config: true,
             parser: |v| {
                 match v.to_lowercase().as_str() {
@@ -207,10 +162,6 @@ impl ParamRegistry {
         // Test execution parameters
         params.insert("cycles", ParamDef {
             key: "cycles",
-            is_flag: false,
-            default: ParamValue::U32(3),
-            help: "Number of test cycles to run",
-            example: "cycles=5",
             can_override_config: true,
             parser: |v| {
                 v.parse::<u32>()
@@ -221,10 +172,6 @@ impl ParamRegistry {
 
         params.insert("duration", ParamDef {
             key: "duration",
-            is_flag: false,
-            default: ParamValue::None,
-            help: "Maximum test duration in seconds",
-            example: "duration=600",
             can_override_config: true,
             parser: |v| {
                 v.parse::<u32>()
@@ -235,10 +182,6 @@ impl ParamRegistry {
 
         params.insert("errors", ParamDef {
             key: "errors",
-            is_flag: false,
-            default: ParamValue::String("log".to_string()),
-            help: "Error handling mode (log, halt, panic)",
-            example: "errors=halt",
             can_override_config: true,
             parser: |v| {
                 match v.to_lowercase().as_str() {
@@ -252,10 +195,6 @@ impl ParamRegistry {
 
         params.insert("channels", ParamDef {
             key: "channels",
-            is_flag: false,
-            default: ParamValue::Usize(2),
-            help: "Memory channel count for stride calculation (default 2 for consumer DDR5 dual-channel)",
-            example: "channels=4",
             can_override_config: true,
             parser: |v| {
                 let val = v.parse::<usize>()
@@ -269,10 +208,6 @@ impl ParamRegistry {
 
         params.insert("parameter", ParamDef {
             key: "parameter",
-            is_flag: false,
-            default: ParamValue::None,
-            help: "Override test parameter context (none, subblocks:N, stride:N)",
-            example: "parameter=none",
             can_override_config: true,
             parser: |v| {
                 match v.to_lowercase().as_str() {
@@ -303,10 +238,6 @@ impl ParamRegistry {
         // Pattern and repetition parameters
         params.insert("pattern-mode", ParamDef {
             key: "pattern-mode",
-            is_flag: false,
-            default: ParamValue::None,
-            help: "Override pattern mode (0-2: TM5-faithful, 10-12: TMR-native)",
-            example: "pattern-mode=0",
             can_override_config: true,
             parser: |v| {
                 let val = v.parse::<u32>()
@@ -320,10 +251,6 @@ impl ParamRegistry {
 
         params.insert("verify-reps", ParamDef {
             key: "verify-reps",
-            is_flag: false,
-            default: ParamValue::U32(1),
-            help: "Number of verify passes per cycle (TM5 uses 5 for retention stress)",
-            example: "verify-reps=5",
             can_override_config: true,
             parser: |v| {
                 let val = v.parse::<u32>()
@@ -337,10 +264,6 @@ impl ParamRegistry {
 
         params.insert("test-reps", ParamDef {
             key: "test-reps",
-            is_flag: false,
-            default: ParamValue::U32(1),
-            help: "Number of test operation repetitions per cycle (e.g., MirrorMove round-trips)",
-            example: "test-reps=3",
             can_override_config: true,
             parser: |v| {
                 let val = v.parse::<u32>()
@@ -354,10 +277,6 @@ impl ParamRegistry {
 
         params.insert("write-read-cycles", ParamDef {
             key: "write-read-cycles",
-            is_flag: false,
-            default: ParamValue::U32(1),
-            help: "Write+verify cycles per chunk (TM5 SimpleTest uses 4: write once, verify 5× then repeat 4×)",
-            example: "write-read-cycles=4",
             can_override_config: true,
             parser: |v| {
                 let val = v.parse::<u32>()
@@ -372,10 +291,6 @@ impl ParamRegistry {
         // Page size parameters
         params.insert("minpage", ParamDef {
             key: "minpage",
-            is_flag: false,
-            default: ParamValue::String("large".to_string()),
-            help: "Minimum page size (regular/4kb, large/2mb, huge/1gb)",
-            example: "minpage=regular",
             can_override_config: true,
             parser: |v| {
                 match v.to_lowercase().as_str() {
@@ -389,10 +304,6 @@ impl ParamRegistry {
 
         params.insert("maxpage", ParamDef {
             key: "maxpage",
-            is_flag: false,
-            default: ParamValue::String("huge".to_string()),
-            help: "Maximum page size (regular/4kb, large/2mb, huge/1gb)",
-            example: "maxpage=regular",
             can_override_config: true,
             parser: |v| {
                 match v.to_lowercase().as_str() {
@@ -407,10 +318,6 @@ impl ParamRegistry {
         // Config file parameter
         params.insert("config", ParamDef {
             key: "config",
-            is_flag: false,
-            default: ParamValue::None,
-            help: "Load configuration from JSON file",
-            example: "config=test.json",
             can_override_config: false,
             parser: |v| Ok(ParamValue::String(v.to_string())),
         });
@@ -418,10 +325,6 @@ impl ParamRegistry {
         // Test filter parameter (supports glob patterns and comma-separated lists)
         params.insert("test", ParamDef {
             key: "test",
-            is_flag: false,
-            default: ParamValue::None,
-            help: "Filter tests by name pattern (glob wildcards, comma-separated)",
-            example: "test=Spd-* or test=Mem-Mirror*,Lat-L3-*",
             can_override_config: false,
             parser: |v| Ok(ParamValue::String(v.to_string())),
         });
@@ -459,47 +362,6 @@ impl ParamRegistry {
             .or_else(|| self.flags.get(key))
             .map(|def| def.can_override_config)
             .unwrap_or(false)
-    }
-
-    /// Get all parameters that can override config files
-    pub fn get_config_overridable_params(&self) -> Vec<&str> {
-        self.params.values()
-            .filter(|def| def.can_override_config)
-            .map(|def| def.key)
-            .collect()
-    }
-
-    /// Generate help text for all parameters
-    pub fn generate_help(&self) -> String {
-        let mut help = String::new();
-        help.push_str("COMMAND LINE PARAMETERS:\n");
-
-        // Sort parameters by key for consistent output
-        let mut param_keys: Vec<_> = self.params.keys().collect();
-        param_keys.sort();
-
-        for key in param_keys {
-            let def = &self.params[key];
-            help.push_str(&format!("  {:30} # {}\n", def.example, def.help));
-        }
-
-        help.push_str("\nFLAGS:\n");
-        let mut flag_keys: Vec<_> = self.flags.keys().collect();
-        flag_keys.sort();
-
-        for key in flag_keys {
-            let def = &self.flags[key];
-            help.push_str(&format!("  {:30} # {}\n", def.example, def.help));
-        }
-
-        help
-    }
-
-    /// Get default value for a parameter
-    pub fn get_default(&self, key: &str) -> Option<&ParamValue> {
-        self.params.get(key)
-            .or_else(|| self.flags.get(key))
-            .map(|def| &def.default)
     }
 
     /// List all recognized parameter keys (for validation)
@@ -581,12 +443,6 @@ pub fn print_help(program_name: &str) {
     println!("  memory=10%-from-available           # Reserve 10% from currently available memory");
     println!("  memory=8GiB-from-total              # Reserve 8 GiB from total system memory");
     println!("  memory=64GiB-target                 # Target 64 GiB allocation (may fail if unavailable)");
-    println!("  memory=10%-from-available:start=+2GiB");
-    println!("                                        # Reserve 10%, start 2GiB above used memory");
-    println!("  memory=10%-from-available:start=split:5%:95%");
-    println!("                                        # Reserve 10%, split: 5% pre-buffer, 95% post");
-    println!("  memory=20%-from-available:start=split:auto");
-    println!("                                        # Reserve 20%, auto-split for post-boot testing");
     println!("  cycles=5                            # Run 5 complete test cycles");
     println!("  duration=600                        # Maximum 10 minutes runtime");
     println!("  cpus=50%                            # Use 50% of available CPUs");
@@ -672,9 +528,6 @@ pub fn print_usage(program_name: &str) {
     println!("  {} memory=2048MB                 # TM5 compatible: Reserve 2048MB from available memory", program_name);
     println!("  {} memory=8GiB-from-total        # Failure test: Reserve 8 GiB from total (unrealistic)", program_name);
     println!("  {} memory=64GiB-target           # Failure test: Target 64 GiB allocation (may fail)", program_name);
-    println!("  {} memory=10%-from-available:start=+2GiB     # Reserve 10%, start 2GiB above used memory", program_name);
-    println!("  {} memory=10%-from-available:start=split:5%:95% # Reserve 10%, split: 5% pre-buffer, 95% post", program_name);
-    println!("  {} memory=20%-from-available:start=split:auto # Reserve 20%, auto-split for post-boot testing", program_name);
     println!("  {} cycles=5 duration=600        # 5 cycles OR 10 minutes max", program_name);
     println!("  {} cpus=50% cputype=cores       # Use 50% of CPU cores (cores=avoid SMT)", program_name);
     println!("  {} skip-cores=0                 # Don't skip any CPUs (default: skip first CPU)", program_name);

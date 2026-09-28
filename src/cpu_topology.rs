@@ -41,58 +41,28 @@ impl CoreType {
             CoreType::Unknown => "Unknown".to_string(),
         }
     }
-    
-    // Simple helper to get scheduling priority (higher = better)
-    pub fn priority(&self) -> u8 {
-        match self {
-            CoreType::Performance(_) => 2,
-            CoreType::Efficiency(_) => 1,
-            CoreType::Unknown => 0,
-        }
-    }
 }
 
 // Structure to hold per-core CPUID information
 #[derive(Debug, Clone)]
 pub struct CoreCpuidInfo {
-    pub core_id: usize,
     pub l3_cache_size: Option<u32>,
-    pub thread_count: usize,
 }
 
 #[derive(Debug, Clone)]
 pub struct EnhancedCpuInfo {
-    pub id: u32,
     pub logical_processor_index: u32,
     pub core_index: u32,
     pub numa_node: u32,
     pub efficiency_class: u8,
     pub scheduling_class: u8,
-    pub core_type: CoreType,
 }
 
 
 // Modern NUMA information structure
 #[derive(Debug, Clone)]
 pub struct NumaTopology {
-    pub node_count: u32,
-    pub nodes: Vec<NumaNodeInfo>,
     pub cpu_to_node: HashMap<u32, u32>,
-}
-
-#[derive(Debug, Clone)]
-pub struct NumaNodeInfo {
-    pub node_id: u32,
-    pub group_count: u16,
-    pub group_masks: Vec<GroupMask>,
-    pub cpu_count: u32,
-    pub cpus: Vec<u32>,
-}
-
-#[derive(Debug, Clone)]
-pub struct GroupMask {
-    pub group: u16,
-    pub mask: usize,
 }
 
 // Configuration for which detection method to use
@@ -153,23 +123,6 @@ pub fn get_cpu_topology() -> &'static Vec<CpuTopologyInfo> {
     })
 }
 
-// Optional: Force refresh topology (useful for testing different methods)
-pub fn reset_cpu_topology() {
-    // This is a bit hacky but works for testing
-    // In production code, you'd want a Mutex<Option<>> instead
-    log::warn!("Resetting CPU topology cache - this should only be used for testing!");
-    // Can't actually reset OnceLock, so this would need a different approach
-    // if you really need this functionality
-}
-
-// For functions that need topology frequently, you can also pass it as a parameter
-pub fn get_numa_node_for_cpu_with_topology(cpu_id: usize, topology: &[CpuTopologyInfo]) -> u32 {
-    topology.iter()
-        .find(|cpu| cpu.logical_id == cpu_id)
-        .map(|cpu| cpu.numa_node)
-        .unwrap_or(0)
-}
-
 /// Physical-core id for a logical CPU, from the real detected topology (the same source the
 /// CPU Topology table uses). Replaces the old `cpu_id / 2` approximation, which hardcoded
 /// 2-way SMT and mislabeled cores on non-SMT (e.g. AMD EPYC) or non-2-way-SMT parts.
@@ -190,8 +143,6 @@ pub fn get_numa_node_for_cpu(cpu_id: usize) -> u32 {
         discover_numa_topology().unwrap_or_else(|e| {
             log::warn!("Failed to discover NUMA topology: {}", e);
             NumaTopology {
-                node_count: 1,
-                nodes: vec![],
                 cpu_to_node: HashMap::new(),
             }
         })
@@ -765,11 +716,7 @@ pub fn get_cpuid_for_cpu(logical_cpu: usize) -> Option<CoreCpuidInfo> {
         // Restore affinity
         SetThreadAffinityMask(thread_handle, old_mask);
         
-        Some(CoreCpuidInfo {
-            core_id: logical_cpu,
-            l3_cache_size,
-            thread_count: 1,
-        })
+        Some(CoreCpuidInfo { l3_cache_size })
     }
 }
 
@@ -830,21 +777,12 @@ pub fn get_system_cpu_set_information() -> Result<Vec<EnhancedCpuInfo>, String> 
             let logical_index = info.Anonymous.CpuSet.CoreIndex as u32;
             let physical_core_index = logical_index / 2; // Assuming SMT with 2 threads per core
             
-            // Determine initial core type based on efficiency class
-            let core_type = match info.Anonymous.CpuSet.EfficiencyClass {
-                0 => CoreType::Efficiency(0),
-                255 => CoreType::Unknown,
-                _ => CoreType::Performance(0),
-            };
-            
             cpu_infos.push(EnhancedCpuInfo {
-                id: info.Anonymous.CpuSet.Id,
                 logical_processor_index: info.Anonymous.CpuSet.LogicalProcessorIndex as u32,
                 core_index: physical_core_index,  // Now it's u32
                 numa_node: info.Anonymous.CpuSet.NumaNodeIndex as u32,
                 efficiency_class: info.Anonymous.CpuSet.EfficiencyClass,
                 scheduling_class: info.Anonymous.CpuSet.Anonymous2.SchedulingClass,
-                core_type,
             });
             
             offset += info.Size as usize;
@@ -867,14 +805,6 @@ pub fn discover_numa_topology() -> Result<NumaTopology, String> {
         
         if buffer_size == 0 {
             return Ok(NumaTopology {
-                node_count: 1,
-                nodes: vec![NumaNodeInfo {
-                    node_id: 0,
-                    group_count: 1,
-                    group_masks: vec![GroupMask { group: 0, mask: !0 }],
-                    cpu_count: num_cpus::get() as u32,
-                    cpus: (0..num_cpus::get() as u32).collect(),
-                }],
                 cpu_to_node: (0..num_cpus::get() as u32).map(|cpu| (cpu, 0)).collect(),
             });
         }
@@ -890,7 +820,6 @@ pub fn discover_numa_topology() -> Result<NumaTopology, String> {
         ).map_err(|e| format!("Failed to get NUMA topology: {:?}", e))?;
 
         let base = buffer.as_ptr() as *const u8;
-        let mut nodes = Vec::new();
         let mut cpu_to_node = HashMap::new();
         let mut offset = 0;
 
@@ -901,40 +830,22 @@ pub fn discover_numa_topology() -> Result<NumaTopology, String> {
                 let numa_info = &info.Anonymous.NumaNode;
                 let node_id = numa_info.NodeNumber;
                 
-                let mut cpus = Vec::new();
-                let mut group_masks = Vec::new();
-                
                 let group_affinity = &numa_info.Anonymous.GroupMask;
                 let group = group_affinity.Group;
                 let mask = group_affinity.Mask;
                 
-                group_masks.push(GroupMask { group, mask });
-                
                 for bit in 0..64 {
                     if (mask & (1u64 << bit) as usize) != 0 {
                         let cpu_id = (group as u32 * 64) + bit;
-                        cpus.push(cpu_id);
                         cpu_to_node.insert(cpu_id, node_id);
                     }
                 }
-                
-                nodes.push(NumaNodeInfo {
-                    node_id,
-                    group_count: 1,
-                    group_masks,
-                    cpu_count: cpus.len() as u32,
-                    cpus,
-                });
             }
             
             offset += info.Size as usize;
         }
         
-        Ok(NumaTopology {
-            node_count: nodes.len() as u32,
-            nodes,
-            cpu_to_node,
-        })
+        Ok(NumaTopology { cpu_to_node })
     }
 }
 

@@ -17,7 +17,6 @@ pub struct LatencyTestStats {
     pub basic_stats: TestStats,
     pub latencies_ns: Vec<f64>,
     pub sample_count: usize,
-    pub avg_ns: f64,
 
     // Full percentile breakdown
     pub p1_ns: f64,     // 1st percentile
@@ -53,7 +52,6 @@ impl LatencyTestStats {
                 },
                 latencies_ns: vec![],
                 sample_count: 0,
-                avg_ns: 0.0,
                 p1_ns: 0.0,
                 p5_ns: 0.0,
                 p10_ns: 0.0,
@@ -70,8 +68,6 @@ impl LatencyTestStats {
 
         latencies.sort_by(|a, b| a.partial_cmp(b).unwrap());
         let len = latencies.len();
-
-        let avg = latencies.iter().sum::<f64>() / len as f64;
 
         let percentile = |p: f64| -> f64 {
             let idx = ((len as f64 - 1.0) * p / 100.0) as usize;
@@ -107,7 +103,6 @@ impl LatencyTestStats {
             },
             latencies_ns: latencies,
             sample_count: len,
-            avg_ns: avg,
             p1_ns: p1,
             p5_ns: p5,
             p10_ns: p10,
@@ -628,94 +623,6 @@ pub unsafe fn copy_latency_multi(
         result.spread_ratio);
 
     result
-}
-
-/// Analyze spread ratio and return a summary message
-/// High spread (>1.5x) suggests spills between cache levels / DRAM
-pub fn analyze_spread(spread_ratio: f64) -> String {
-    if spread_ratio > 3.0 {
-        format!("⚠️ High variability (spread {:.2}x) - likely spilling between cache levels and DRAM", spread_ratio)
-    } else if spread_ratio > 2.0 {
-        format!("⚠️ Moderate variability (spread {:.2}x) - possible cache level transitions", spread_ratio)
-    } else if spread_ratio > 1.5 {
-        format!("ℹ️ Some variability (spread {:.2}x) - minor latency fluctuations", spread_ratio)
-    } else {
-        format!("✅ Consistent latencies (spread {:.2}x) - stable cache/memory access pattern", spread_ratio)
-    }
-}
-
-/// Print consolidated latency summary for all threads
-pub fn print_latency_summary(test_name: &str, results: &[LatencyTestStats]) {
-    if results.is_empty() {
-        return;
-    }
-
-    // Aggregate all latencies across threads
-    let mut all_latencies: Vec<f64> = Vec::new();
-    for r in results {
-        all_latencies.extend(&r.latencies_ns);
-    }
-
-    if all_latencies.is_empty() {
-        return;
-    }
-
-    all_latencies.sort_by(|a, b| a.partial_cmp(b).unwrap());
-    let len = all_latencies.len();
-
-    let percentile = |p: f64| -> f64 {
-        let idx = ((len as f64 - 1.0) * p / 100.0) as usize;
-        all_latencies[idx.min(len - 1)]
-    };
-
-    let p5 = percentile(5.0);
-    let p50 = percentile(50.0);
-    let p95 = percentile(95.0);
-    let p99 = percentile(99.0);
-    let spread = if p5 > 0.0 { p95 / p5 } else { 0.0 };
-
-    println!("\n📊 {} Summary (all {} threads, {} total samples):",
-        test_name, results.len(), len);
-    println!("   Median: {:.1}ns | P5-P95 range: {:.1}-{:.1}ns | P99: {:.1}ns",
-        p50, p5, p95, p99);
-    println!("   {}", analyze_spread(spread));
-}
-
-// Wrappers for runner integration
-#[doc = include_str!("test_fn_safety.md")]
-pub unsafe fn read_latency_multi_wrapper(
-    blocks: &[AllocationBlock],
-    thread_id: usize,
-    error_mode: ErrorMode,
-    timing: &TestTiming,
-    config: &TestMemoryConfig,
-    progress: Option<&TestProgress>,
-) -> TestStats {
-    read_latency_multi(blocks, thread_id, error_mode, timing, config, progress).basic_stats
-}
-
-#[doc = include_str!("test_fn_safety.md")]
-pub unsafe fn write_latency_multi_wrapper(
-    blocks: &[AllocationBlock],
-    thread_id: usize,
-    error_mode: ErrorMode,
-    timing: &TestTiming,
-    config: &TestMemoryConfig,
-    progress: Option<&TestProgress>,
-) -> TestStats {
-    write_latency_multi(blocks, thread_id, error_mode, timing, config, progress).basic_stats
-}
-
-#[doc = include_str!("test_fn_safety.md")]
-pub unsafe fn copy_latency_multi_wrapper(
-    blocks: &[AllocationBlock],
-    thread_id: usize,
-    error_mode: ErrorMode,
-    timing: &TestTiming,
-    config: &TestMemoryConfig,
-    progress: Option<&TestProgress>,
-) -> TestStats {
-    copy_latency_multi(blocks, thread_id, error_mode, timing, config, progress).basic_stats
 }
 
 // Note: run_cache_hierarchy_diagnostic() was removed - --cache-latency now uses

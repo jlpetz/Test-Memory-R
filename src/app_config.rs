@@ -305,12 +305,6 @@ impl AppConfig {
         self.update_identity(system_info, smbios);
     }
 
-    /// Clear calibration data that doesn't match the current system
-    pub fn clear_stale_calibration(&mut self) {
-        self.calibration = None;
-        self.calibration_extended = None;
-        log::info!("Cleared stale calibration data (hardware changed)");
-    }
 }
 
 #[cfg(test)]

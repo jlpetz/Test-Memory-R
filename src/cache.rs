@@ -1,5 +1,5 @@
 use raw_cpuid::CpuId;
-use crate::constants::{KB, MB, KB_F64, MB_F64, MB_64};
+use crate::constants::{KB, MB, KB_F64, MB_F64};
 use crate::tsc::TscInfo;
 
 #[derive(Debug, Clone)]
@@ -154,20 +154,6 @@ impl CacheInfo {
         }
     }
 
-    pub fn get_optimal_window_size(&self, test_type: &str) -> usize {
-        match test_type {
-            "Mem-CacheBust" => (self.l3_cache / 2).max(self.l2_cache * 4),
-            "Mem-Random" => self.l3_cache * 2,
-            "Mem-MirrorV2-128" | "Mem-MirrorV2-256" | "Mem-MirrorV2-512" => {
-                self.l3_cache.max(32 * MB)
-            }
-            _ => (self.total_cache * 2).max(MB_64),
-        }
-    }
-
-    pub fn total_cache_size(&self) -> usize {
-        self.total_cache
-    }
 }
 
 impl SystemInfo {

@@ -16,10 +16,9 @@ pub struct AllocationConfig {
     pub size: usize,
     pub numa_node: Option<u32>,
     pub page_size: PageSizePreference,
+    #[expect(dead_code, reason = "revival seam (TODO #4/5): VirtualAlloc2 can only give WriteBack, so it never reads this")]
     pub memory_type: BufferMemoryType,
     pub zero_memory: bool,
-    pub timeout_ms: u32,
-    pub base_address: Option<*mut u8>,  // Minimum start address for allocation (fragmentation prevention)
     pub alignment: Option<usize>,       // Custom alignment requirement (must be power of 2)
 }
 
@@ -28,14 +27,12 @@ pub enum PageSizePreference {
     Any,                                    // Let backend decide
     Prefer(PageType),                       // Prefer but fall back
     Require(PageType),                      // Must have or fail
-    Range { min: PageType, max: PageType }, // Range of acceptable sizes
 }
 
 #[derive(Debug, Default)]
 pub struct AllocationStats {
     pub total_allocations: usize,
     pub total_bytes_allocated: usize,
-    pub failed_allocations: usize,
     pub large_page_allocations: usize,
     pub huge_page_allocations: usize,
 }
@@ -146,34 +143,7 @@ impl MemoryAllocator {
         
         Ok(MemoryBuffer::new(allocation, self.backend.clone()))
     }
-    
-    pub fn backend_name(&self) -> &'static str {
-        self.backend.name()
-    }
-    
-    pub fn stats(&self) -> &AllocationStats {
-        &self.stats
-    }
-    
-    pub fn reset_stats(&mut self) {
-        self.stats = AllocationStats::default();
-    }
-    
-    /// Allocate one buffer per request. Sequential `VirtualAlloc2` calls: there is no
-    /// batch syscall to amortise, and allocation happens once at startup, off the hot path.
-    pub fn batch_allocate(&mut self, configs: Vec<(usize, AllocationConfig)>) -> Result<Vec<(usize, MemoryBuffer)>, String> {
-        let mut results = Vec::new();
 
-        for (thread_id, config) in configs {
-            match self.allocate(&config) {
-                Ok(buffer) => results.push((thread_id, buffer)),
-                Err(e) => return Err(format!("Failed to allocate for thread {}: {}", thread_id, e)),
-            }
-        }
-        
-        Ok(results)
-    }
-    
     /// Two-stage chunk-based allocation for Windows VirtualAlloc2
     /// Stage 1: Discover largest available chunks per NUMA node using power-of-2 sizes
     /// Stage 2: Distribute chunks fairly to threads prioritizing contiguous allocation
@@ -418,8 +388,6 @@ impl MemoryAllocator {
                             page_size: PageSizePreference::Require(PageType::Huge(block_size)),
                             memory_type: BufferMemoryType::WriteBack,
                             zero_memory: true,
-                            timeout_ms: 5000,
-                            base_address: None,
                             alignment: Some(HUGE_PAGE_SIZE_USIZE),
                         };
                         
@@ -489,8 +457,6 @@ impl MemoryAllocator {
                                 page_size: PageSizePreference::Require(PageType::Huge(chunk_size)),
                                 memory_type: BufferMemoryType::WriteBack,
                                 zero_memory: true,
-                                timeout_ms: 5000,
-                                base_address: None,
                                 alignment: Some(HUGE_PAGE_SIZE_USIZE),
                             };
                             
@@ -564,8 +530,6 @@ impl MemoryAllocator {
                                 page_size: PageSizePreference::Require(PageType::Large(block_size)),
                                 memory_type: BufferMemoryType::WriteBack,
                                 zero_memory: true,
-                                timeout_ms: 5000,
-                                base_address: None,
                                 alignment: Some(2 * 1024 * 1024), // 2MB alignment for large pages
                             };
 
@@ -623,8 +587,6 @@ impl MemoryAllocator {
                                     page_size: PageSizePreference::Require(PageType::Large(chunk_size)),
                                     memory_type: BufferMemoryType::WriteBack,
                                     zero_memory: true,
-                                    timeout_ms: 5000,
-                                    base_address: None,
                                     alignment: Some(2 * 1024 * 1024), // 2MB alignment for large pages
                                 };
 
@@ -689,8 +651,6 @@ impl MemoryAllocator {
                                 page_size: PageSizePreference::Prefer(PageType::Regular(chunk_size)),
                                 memory_type: BufferMemoryType::WriteBack,
                                 zero_memory: true,
-                                timeout_ms: 5000,
-                                base_address: None,
                                 alignment: Some(64 * 1024),
                             };
 
@@ -778,8 +738,6 @@ impl MemoryAllocator {
                         page_size: PageSizePreference::Require(PageType::Huge(block_size)),
                         memory_type: BufferMemoryType::WriteBack,
                         zero_memory: true,
-                        timeout_ms: 5000,
-                        base_address: None,
                         alignment: Some(HUGE_PAGE_SIZE_USIZE),
                     };
 
@@ -816,8 +774,6 @@ impl MemoryAllocator {
                         page_size: PageSizePreference::Require(PageType::Large(block_size)),
                         memory_type: BufferMemoryType::WriteBack,
                         zero_memory: true,
-                        timeout_ms: 5000,
-                        base_address: None,
                         alignment: Some(2 * 1024 * 1024),
                     };
                     
@@ -867,8 +823,6 @@ impl MemoryAllocator {
                             page_size: PageSizePreference::Prefer(PageType::Regular(block_size)),
                             memory_type: BufferMemoryType::WriteBack,
                             zero_memory: true,
-                            timeout_ms: 5000,
-                            base_address: None,
                             alignment: Some(64 * 1024),
                         };
 
@@ -1426,8 +1380,6 @@ impl MemoryAllocator {
                     page_size: page_size_pref.clone(),
                     memory_type: BufferMemoryType::WriteBack,
                     zero_memory: true,
-                    timeout_ms: 5000,
-                    base_address: None,
                     alignment: Some(Self::get_alignment_for_chunk_size(chunk_size)),
                 };
                 
@@ -1503,53 +1455,7 @@ impl Default for AllocationConfig {
             page_size: PageSizePreference::Any,
             memory_type: BufferMemoryType::WriteBack,
             zero_memory: false,
-            timeout_ms: 10000,
-            base_address: None,
             alignment: None,
         }
-    }
-}
-
-impl AllocationConfig {
-    pub fn new(size: usize) -> Self {
-        Self {
-            size,
-            ..Default::default()
-        }
-    }
-    
-    pub fn with_numa_node(mut self, numa_node: u32) -> Self {
-        self.numa_node = Some(numa_node);
-        self
-    }
-    
-    pub fn with_page_size(mut self, page_size: PageSizePreference) -> Self {
-        self.page_size = page_size;
-        self
-    }
-    
-    pub fn with_memory_type(mut self, memory_type: BufferMemoryType) -> Self {
-        self.memory_type = memory_type;
-        self
-    }
-    
-    pub fn with_zero_memory(mut self, zero_memory: bool) -> Self {
-        self.zero_memory = zero_memory;
-        self
-    }
-    
-    pub fn with_timeout(mut self, timeout_ms: u32) -> Self {
-        self.timeout_ms = timeout_ms;
-        self
-    }
-    
-    pub fn with_base_address(mut self, base_address: *mut u8) -> Self {
-        self.base_address = Some(base_address);
-        self
-    }
-    
-    pub fn with_alignment(mut self, alignment: usize) -> Self {
-        self.alignment = Some(alignment);
-        self
     }
 }

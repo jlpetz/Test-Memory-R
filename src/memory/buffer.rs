@@ -7,10 +7,7 @@
 #![warn(clippy::undocumented_unsafe_blocks)]
 
 use crate::memory::backend::{Backend, BackendAllocation};
-use crate::constants::BYTES_PER_GIB_USIZE;
 use std::sync::Arc;
-
-use windows::Win32::System::SystemInformation::GetPhysicallyInstalledSystemMemory;
 
 /// Single unified buffer type that works with any backend
 #[derive(Debug)]
@@ -23,10 +20,8 @@ pub struct MemoryBuffer {
 
 #[derive(Debug, Clone)]
 pub struct BufferInfo {
-    pub physical_address: Option<u64>,
     pub numa_node: u32,
     pub page_type: PageType,
-    pub segments: Vec<SegmentInfo>,  // Empty for simple allocations
 }
 
 impl BufferInfo {
@@ -49,19 +44,16 @@ impl BufferInfo {
     }
 }
 
+/// The payload is the allocation's size in bytes.
 #[derive(Debug, Clone)]
-pub struct SegmentInfo {
-    pub virtual_address: u64,
-    pub physical_address: u64,
-    pub size: usize,
-    pub page_size_kb: u32,
-    pub numa_node: u32,
-}
-
-#[derive(Debug, Clone)]
+#[expect(
+    dead_code,
+    reason = "revival seam (TODO #4/5): `Mixed` and the size payloads are for a backend that returns \
+              segmented allocations; VirtualAlloc2 only ever returns one page size"
+)]
 pub enum PageType {
     Regular(usize),              // 4KB
-    Large(usize),                // 2MB  
+    Large(usize),                // 2MB
     Huge(usize),                 // 1GB
     Mixed(Vec<PageInfo>),         // For segmented allocations
 }
@@ -69,6 +61,7 @@ pub enum PageType {
 #[derive(Debug, Clone, Copy)]
 pub struct PageInfo {
     pub size_kb: u32,
+    #[expect(dead_code, reason = "revival seam (TODO #4/5), with `PageType::Mixed`")]
     pub count: usize,
 }
 
@@ -85,6 +78,7 @@ pub struct PageInfo {
 /// map onto `MEMORY_CACHING_TYPE`, so one can slot back in as a `Backend` impl without
 /// a redesign.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+#[expect(dead_code, reason = "revival seam (TODO #4/5): only `WriteBack` is constructed, see above")]
 pub enum MemoryType {
     WriteBack,
     WriteThrough,
@@ -133,22 +127,6 @@ impl MemoryBuffer {
             _ => false,
         }
     }
-    
-    /// Get the primary page size used by this buffer
-    pub fn primary_page_size_kb(&self) -> u32 {
-        match &self.info.page_type {
-            PageType::Regular(_) => 4,
-            PageType::Large(_) => 2048,
-            PageType::Huge(_) => 1048576,
-            PageType::Mixed(pages) => {
-                if let Some(page) = pages.first() {
-                    page.size_kb
-                } else {
-                    4
-                }
-            }
-        }
-    }
 }
 
 impl Drop for MemoryBuffer {
@@ -184,24 +162,3 @@ unsafe impl Send for MemoryBuffer {}
 // buffer into disjoint `&mut [u8]` slices per worker, or move to atomics/`UnsafeCell` with a
 // documented protocol. Do not rely on this comment staying true by accident.
 unsafe impl Sync for MemoryBuffer {}
-
-
-
-/// Get total system memory
-pub fn get_total_system_memory() -> usize {
-    // SAFETY: `total_memory_kb` is an initialised local passed by `&mut`; the API writes one `u64`
-    // and reports failure through the `Result`, which is handled rather than assumed.
-    unsafe {
-        let mut total_memory_kb: u64 = 0;
-        match GetPhysicallyInstalledSystemMemory(&mut total_memory_kb) {
-            Ok(_) => (total_memory_kb * 1024) as usize,
-            Err(_) => {
-                // Fallback: assume 8GB if we can't detect
-                log::warn!("Could not detect system memory, assuming 8 GiB");
-                8 * BYTES_PER_GIB_USIZE
-            }
-        }
-    }
-}
-
-

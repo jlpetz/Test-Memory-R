@@ -15,8 +15,6 @@ pub enum TscDetectionMethod {
     CpuidLeaf15,
     /// CPUID leaf 0x16 - Processor frequency info (Intel)
     CpuidLeaf16,
-    /// Windows QueryPerformanceFrequency
-    WindowsQpc,
     /// Timing-based calibration (100ms measurement)
     TimingCalibration,
     /// Multiple methods agreed
@@ -30,7 +28,6 @@ impl std::fmt::Display for TscDetectionMethod {
         match self {
             TscDetectionMethod::CpuidLeaf15 => write!(f, "CPUID 0x15"),
             TscDetectionMethod::CpuidLeaf16 => write!(f, "CPUID 0x16"),
-            TscDetectionMethod::WindowsQpc => write!(f, "Windows QPC"),
             TscDetectionMethod::TimingCalibration => write!(f, "Timing calibration"),
             TscDetectionMethod::Validated { primary, .. } => write!(f, "{} (validated)", primary),
             TscDetectionMethod::NotAvailable => write!(f, "Not available"),

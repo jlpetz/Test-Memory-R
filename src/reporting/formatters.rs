@@ -16,18 +16,8 @@ pub trait ReportFormatter: Send + Sync {
     /// Format signed bytes with +/- prefix (eg. "+1.23 GiB" or "-0.50 GiB")
     fn format_bytes_signed(&self, bytes: i64) -> String;
 
-    /// Format percentage
-    fn format_percentage(&self, value: f64) -> String;
-    
     /// Format duration
     fn format_duration(&self, duration: Duration) -> String;
-    
-    /// Format memory address
-    fn format_address(&self, address: u64) -> String;
-    
-    /// Format bandwidth
-    fn format_bandwidth(&self, bytes_per_second: f64) -> String;
-    
     
     /// Prepare CPU info table
     fn prepare_cpu_info_table(&self, cpu_info: &CpuInfo) -> TableData;
@@ -38,29 +28,11 @@ pub trait ReportFormatter: Send + Sync {
     /// Prepare TSC calibration info table
     fn prepare_tsc_info_table(&self, tsc_info: &TscCalibrationInfo) -> TableData;
 
-    /// Format progress line
-    fn format_progress_line(&self, progress: &TestProgressReport) -> String;
-    
-    /// Format success message
-    fn format_success_message(&self, results: &FinalResultsReport) -> String;
-    
-    /// Format failure message
-    fn format_failure_message(&self, results: &FinalResultsReport) -> String;
-    
-    /// Prepare statistics table
-    fn prepare_statistics_table(&self, stats: &TestStatistics) -> TableData;
-    
     /// Prepare thread timing deviation table
     fn prepare_thread_timing_table(&self, report: &ThreadTimingReport) -> TableData;
     
-    /// Prepare current memory status table
-    fn prepare_memory_status_table(&self, status: &CurrentMemoryStatus) -> TableData;
-    
     /// Prepare thread allocation table
     fn prepare_thread_allocation_table(&self, report: &ThreadAllocationReport) -> TableData;
-    
-    /// Prepare page allocation table
-    fn prepare_page_allocation_table(&self, report: &PageAllocationReport) -> TableData;
     
     /// Prepare performance by thread table
     fn prepare_performance_by_thread_table(&self, report: &PerformanceByThreadReport) -> TableData;
@@ -74,13 +46,9 @@ pub trait ReportFormatter: Send + Sync {
     /// Prepare CPU topology table
     fn prepare_cpu_topology_table(&self, report: &CpuTopologyReport) -> TableData;
     
-    
     /// Prepare consolidated memory report table
     fn prepare_consolidated_memory_table(&self, report: &ConsolidatedMemoryReport) -> TableData;
     
-    /// Format memory strategy components
-    fn format_allocation_mode(&self, mode: &crate::memory::allocation_strategy::AllocationMode) -> String;
-    fn format_window_mode(&self, mode: &crate::tests::WindowMode) -> String;
     /// Format window mode with calculated size for CacheLevel targets
     fn format_window_mode_with_size(&self, mode: &crate::tests::WindowMode, cache_info: &crate::cache::CacheInfo, thread_count: usize) -> String;
     fn format_chunk_mode(&self, mode: &crate::tests::ChunkMode) -> String;
@@ -95,10 +63,8 @@ pub trait ReportFormatter: Send + Sync {
     fn prepare_test_configuration_table(&self, report: &TestConfigurationReport) -> TableData;
     
     /// Prepare cycle report table
+    #[expect(dead_code, reason = "TODO #69 F: the per-cycle report is to be revived, not deleted")]
     fn prepare_cycle_report_table(&self, report: &CycleReport) -> TableData;
-    
-    /// Prepare CPU variance table
-    fn prepare_cpu_variance_table(&self, report: &CpuVarianceReport) -> TableData;
     
     /// Prepare final test summary tables
     fn prepare_final_summary_overview_table(&self, report: &FinalTestSummaryReport) -> TableData;
@@ -112,7 +78,6 @@ pub trait ReportFormatter: Send + Sync {
     fn prepare_allocation_fairness_table(&self, report: &BlockAllocationReport) -> TableData;
 
     /// Prepare latency test summary tables (multi-threaded results)
-    fn prepare_latency_summary_consolidated_table(&self, report: &LatencyTestSummaryReport) -> TableData;
     fn prepare_latency_per_thread_table(&self, level: &LatencyLevelSummary) -> TableData;
 }
 
@@ -241,10 +206,6 @@ impl ReportFormatter for DefaultFormatter {
         }
     }
 
-    fn format_percentage(&self, value: f64) -> String {
-        format!("{:.1}%", value)
-    }
-    
     fn format_duration(&self, duration: Duration) -> String {
         let total_secs = duration.as_secs();
         let hours = total_secs / 3600;
@@ -259,15 +220,6 @@ impl ReportFormatter for DefaultFormatter {
         } else {
             format!("{}.{:03}s", seconds, millis)
         }
-    }
-    
-    fn format_address(&self, address: u64) -> String {
-        format!("0x{:016X}", address)
-    }
-    
-    fn format_bandwidth(&self, bytes_per_second: f64) -> String {
-        let gb_per_sec = bytes_per_second / 1024_f64.powi(3);
-        format!("{:.2} GB/s", gb_per_sec)
     }
     
     fn prepare_cpu_info_table(&self, cpu_info: &CpuInfo) -> TableData {
@@ -386,76 +338,6 @@ impl ReportFormatter for DefaultFormatter {
             ])
     }
 
-    fn format_progress_line(&self, progress: &TestProgressReport) -> String {
-        let cycle_info = match progress.total_cycles {
-            Some(total) => format!("Cycle {}/{}", progress.current_cycle, total),
-            None => format!("Cycle {}", progress.current_cycle),
-        };
-        
-        let time_info = match progress.estimated_time_remaining {
-            Some(remaining) => format!(" | ETA: {}", self.format_duration(remaining)),
-            None => String::new(),
-        };
-        
-        format!(
-            "[{}] {} - {} | {:.1}% | {} | {} errors | {:.2} GB tested | {}{}",
-            self.format_duration(progress.elapsed_time),
-            cycle_info,
-            progress.current_test,
-            progress.progress_percent,
-            progress.current_phase,
-            progress.errors_found,
-            progress.memory_tested_bytes as f64 / 1024_f64.powi(3),
-            self.format_bandwidth(progress.operations_per_second),
-            time_info
-        )
-    }
-    
-    fn format_success_message(&self, results: &FinalResultsReport) -> String {
-        format!(
-            "✅ All memory tests completed successfully in {} ({} cycles, {:.1}% coverage)",
-            self.format_duration(results.total_duration),
-            results.cycles_completed,
-            results.coverage_percent
-        )
-    }
-    
-    fn format_failure_message(&self, results: &FinalResultsReport) -> String {
-        format!(
-            "❌ Tests failed with {} errors in {} ({} cycles completed)",
-            results.total_errors,
-            self.format_duration(results.total_duration),
-            results.cycles_completed
-        )
-    }
-    
-    fn prepare_statistics_table(&self, stats: &TestStatistics) -> TableData {
-        let mut table = TableData::new()
-            .with_title("Test Statistics")
-            .add_header("Metric", ColumnAlignment::Left)
-            .add_header("Value", ColumnAlignment::Right);
-        
-        table = table
-            .add_row(vec![
-                "Total Operations".to_string(),
-                format!("{}", stats.total_operations),
-            ])
-            .add_row(vec![
-                "Memory Tested".to_string(),
-                self.format_bytes(stats.bytes_tested),
-            ])
-            .add_row(vec![
-                "Average Bandwidth".to_string(),
-                self.format_bandwidth(stats.average_bandwidth_gb_s * 1024_f64.powi(3)),
-            ])
-            .add_row(vec![
-                "Peak Bandwidth".to_string(),
-                self.format_bandwidth(stats.peak_bandwidth_gb_s * 1024_f64.powi(3)),
-            ]);
-        
-        table
-    }
-    
     fn prepare_thread_timing_table(&self, report: &ThreadTimingReport) -> TableData {
         let has_whea = report.whea.total > 0;
         let mut table = TableData::new()
@@ -541,31 +423,6 @@ impl ReportFormatter for DefaultFormatter {
         table
     }
 
-    fn prepare_memory_status_table(&self, status: &CurrentMemoryStatus) -> TableData {
-        TableData::new()
-            .with_title("Current Memory Status")
-            .add_header("Memory Type", ColumnAlignment::Left)
-            .add_header("Total", ColumnAlignment::Right)
-            .add_header("Available", ColumnAlignment::Right)
-            .add_header("Used", ColumnAlignment::Right)
-            .add_header("Status", ColumnAlignment::Center)
-            .add_row(vec![
-                "Physical RAM".to_string(),
-                format!("{:.2} GiB", status.physical_total_gib),
-                format!("{:.2} GiB", status.physical_available_gib),
-                format!("{:.2} GiB", status.physical_used_gib),
-                format!("{:.1}% free", status.physical_free_percent),
-            ])
-            .add_row(vec![
-                "Page File".to_string(),
-                format!("{:.2} GiB", status.page_file_total_gib),
-                format!("{:.2} GiB", status.page_file_available_gib),
-                format!("{:.2} GiB", status.page_file_used_gib),
-                format!("{:.1}% load", status.memory_load_percent),
-            ])
-            .with_footer("  Memory Strategy: Modern Optimal Allocation")
-    }
-    
     fn prepare_thread_allocation_table(&self, report: &ThreadAllocationReport) -> TableData {
         let mut table = TableData::new()
             .with_title("Per-Thread Allocation Breakdown")
@@ -612,65 +469,6 @@ impl ReportFormatter for DefaultFormatter {
                 } else {
                     "-".to_string()
                 },
-            ]);
-        }
-        
-        table
-    }
-    
-    fn prepare_page_allocation_table(&self, report: &PageAllocationReport) -> TableData {
-        let mut table = TableData::new()
-            .with_title("Enhanced Allocation Table")
-            .add_header("Page Type", ColumnAlignment::Left)
-            .add_header("User Constraints", ColumnAlignment::Center)
-            .add_header("Requested", ColumnAlignment::Right)
-            .add_header("Allocated", ColumnAlignment::Right)
-            .add_header("Result", ColumnAlignment::Left);
-        
-        for page_type in &report.page_types {
-            // Determine constraint based on actual allocation behavior rather than theoretical constraints
-            let constraint = match page_type.page_type.as_str() {
-                "Huge (1GB)" => {
-                    // If the system has no huge page support, it's effectively blocked
-                    if page_type.allocated > 0 || page_type.requested > 0 {
-                        "✅ Allowed"
-                    } else {
-                        "❌ Blocked"
-                    }
-                },
-                "Large (2MB)" => {
-                    // If we allocated large pages, they were clearly allowed
-                    if page_type.allocated > 0 {
-                        "✅ Allowed"
-                    } else if page_type.requested > 0 {
-                        "❌ Failed"
-                    } else {
-                        "✅ Allowed"
-                    }
-                },
-                _ => "✅ Allowed",
-            };
-            
-            let result = if page_type.success {
-                format!("✅ {}", self.format_bytes(page_type.allocated))
-            } else {
-                "❌ None".to_string()
-            };
-            
-            table = table.add_row(vec![
-                page_type.page_type.clone(),
-                constraint.to_string(),
-                if page_type.requested > 0 {
-                    self.format_bytes(page_type.requested)
-                } else {
-                    "-".to_string()
-                },
-                if page_type.allocated > 0 {
-                    self.format_bytes(page_type.allocated)
-                } else {
-                    "-".to_string()
-                },
-                result,
             ]);
         }
         
@@ -1016,30 +814,7 @@ impl ReportFormatter for DefaultFormatter {
             "".to_string(),
         ]);
         
-        // Extract percentages from allocation type if present
-        let (base_strategy, percentages) = if let Some(split) = &report.split_reserve {
-            let base = report.allocation_type.replace("Split Reserve from Available", "Reserve pre/post split")
-                                           .replace("Split Reserve from Total", "Reserve pre/post split from Total")
-                                           .replace("Split Target Allocation", "Target allocation pre/post split")
-                                           .replace("Split Legacy TM5", "Legacy TM5 pre/post split");
-            // Remove any existing percentage info
-            let clean_base = if let Some(pos) = base.find(" (") {
-                base[..pos].to_string()
-            } else {
-                base
-            };
-            (clean_base, format!("{}%:{}%", split.pre_percent as u32, split.post_percent as u32))
-        } else {
-            (report.allocation_type.clone(), "-".to_string())
-        };
-        
         table = table
-            .add_row(vec![
-                "Strategy Type".to_string(),
-                "-".to_string(),
-                percentages,
-                base_strategy.clone(),
-            ])
             .add_row(vec![
                 "Testing Allocation".to_string(),
                 self.format_bytes(report.allocation_bytes),
@@ -1051,88 +826,11 @@ impl ReportFormatter for DefaultFormatter {
                 self.format_bytes(report.reserve_bytes),
                 format!("{:.1}%", (report.reserve_bytes as f64 / report.available_physical_bytes as f64) * 100.0),
                 "of available".to_string(),
-            ])
-            .add_row(vec![
-                "Min Start Address".to_string(),
-                format!("{:.2} GiB", report.min_start_address as f64 / 1024_f64.powi(3)),
-                if report.min_start_address > 0 {
-                    format!("{:.1}%", (report.min_start_address as f64 / report.available_physical_bytes as f64) * 100.0)
-                } else {
-                    "0.0%".to_string()
-                },
-                "offset, of available".to_string(),
             ]);
-        
-        // Add split reserve details if available
-        if let Some(split) = &report.split_reserve {
-            table = table
-                .add_row(vec![
-                    "Pre-Buffer (Frag Prevention)".to_string(),
-                    self.format_bytes(split.pre_buffer_bytes),
-                    format!("{:.1}%", split.pre_percent),
-                    "of reserve".to_string(),
-                ])
-                .add_row(vec![
-                    "Post-Reserve (Ceil/frag Protection)".to_string(),
-                    self.format_bytes(split.post_reserve_bytes),
-                    format!("{:.1}%", split.post_percent),
-                    "of reserve".to_string(),
-                ]);
-        }
-        
-        // Add footer with allocation strategy summary
-        let footer = if report.split_reserve.is_some() {
-            format!("Strategy: {} with split reserve optimization", base_strategy)
-        } else {
-            format!("Strategy: {}", base_strategy)
-        };
-        
-        table.with_footer(&footer)
-    }
-    
-    fn format_allocation_mode(&self, mode: &crate::memory::allocation_strategy::AllocationMode) -> String {
-        use crate::memory::allocation_strategy::{AllocationMode, ReserveAmount};
-        match mode {
-            AllocationMode::ReserveFromAvailable { reserve } => {
-                match reserve {
-                    ReserveAmount::Bytes(bytes) => format!("ReserveFromAvailable ({})", self.format_bytes(*bytes)),
-                    ReserveAmount::Percentage(pct) => format!("ReserveFromAvailable ({:.1}%)", pct),
-                }
-            }
-            AllocationMode::ReserveFromTotal { reserve } => {
-                match reserve {
-                    ReserveAmount::Bytes(bytes) => format!("ReserveFromTotal ({})", self.format_bytes(*bytes)),
-                    ReserveAmount::Percentage(pct) => format!("ReserveFromTotal ({:.1}%)", pct),
-                }
-            }
-            AllocationMode::AllocateTarget { target } => {
-                match target {
-                    ReserveAmount::Bytes(bytes) => format!("AllocateTarget ({})", self.format_bytes(*bytes)),
-                    ReserveAmount::Percentage(pct) => format!("AllocateTarget ({:.1}%)", pct),
-                }
-            }
-            AllocationMode::LegacyTM5 { reserve_mb } => {
-                format!("LegacyTM5 (reserve: {} MB)", reserve_mb)
-            }
-        }
-    }
-    
-    fn format_window_mode(&self, mode: &crate::tests::WindowMode) -> String {
-        use crate::tests::WindowMode;
-        match mode {
-            WindowMode::FullAllocation => "FullAllocation".to_string(),
-            WindowMode::Absolute { size_bytes } => {
-                format!("Absolute ({})", self.format_bytes(*size_bytes as u64))
-            }
-            WindowMode::CacheTotal { fraction } => {
-                format!("CacheTotal ({:.2}x)", fraction)
-            }
-            WindowMode::Cache { target } => {
-                format!("Cache ({})", target.name())
-            }
-        }
-    }
 
+        table.with_footer(format!("Strategy: {}", report.allocation_type))
+    }
+    
     fn format_window_mode_with_size(&self, mode: &crate::tests::WindowMode, cache_info: &crate::cache::CacheInfo, thread_count: usize) -> String {
         use crate::tests::WindowMode;
         match mode {
@@ -1254,39 +952,6 @@ impl ReportFormatter for DefaultFormatter {
         }
 
         table.with_footer(format!("Cycle Time: {}s", report.duration_secs))
-    }
-    
-    fn prepare_cpu_variance_table(&self, report: &CpuVarianceReport) -> TableData {
-        let mut table = TableData::new()
-            .with_title("CPU Performance Variance")
-            .add_header("L CPU", ColumnAlignment::Right)
-            .add_header("Speed", ColumnAlignment::Right)
-            .add_header("Variance", ColumnAlignment::Right)
-            .add_header("Test Count", ColumnAlignment::Right)
-            .add_header("Status", ColumnAlignment::Center);
-        
-        let mut entries = report.cpu_performances.clone();
-        entries.sort_by_key(|a| a.cpu_id);
-        
-        for cpu in &entries {
-            let variance_str = format!("{:+.1}%", cpu.variance_percent);
-            let status = match cpu.variance_percent.abs() {
-                v if v < 5.0 => "✅ Normal",
-                v if v < 10.0 => "⚠️ Moderate",
-                _ => "❌ High",
-            };
-            
-            table = table.add_row(vec![
-                cpu.cpu_id.to_string(),
-                format!("{:.1} MiB/s", cpu.throughput_mib_s),
-                variance_str,
-                cpu.test_count.to_string(),
-                status.to_string(),
-            ]);
-        }
-        
-        table.with_footer(format!("Average Throughput: {:.1} MiB/s", 
-                                   report.average_throughput_mib_s))
     }
     
     fn prepare_final_summary_overview_table(&self, report: &FinalTestSummaryReport) -> TableData {
@@ -1644,53 +1309,6 @@ impl ReportFormatter for DefaultFormatter {
             fairness.coefficient_of_variation,
             if fairness.coefficient_of_variation < 0.1 { "Fair Distribution" } else { "Unfair Distribution" }
         ))
-    }
-
-    fn prepare_latency_summary_consolidated_table(&self, report: &LatencyTestSummaryReport) -> TableData {
-        let mut table = TableData::new()
-            .with_title(format!("Latency Test Summary ({} threads)", report.thread_count))
-            .add_header("Level", ColumnAlignment::Left)
-            .add_header("Window", ColumnAlignment::Right)
-            .add_header("Samples", ColumnAlignment::Right)
-            .add_header("Min", ColumnAlignment::Right)
-            .add_header("P5", ColumnAlignment::Right)
-            .add_header("P10", ColumnAlignment::Right)
-            .add_header("P25", ColumnAlignment::Right)
-            .add_header("P50", ColumnAlignment::Right)
-            .add_header("P75", ColumnAlignment::Right)
-            .add_header("P90", ColumnAlignment::Right)
-            .add_header("P95", ColumnAlignment::Right)
-            .add_header("P99", ColumnAlignment::Right)
-            .add_header("Max", ColumnAlignment::Right)
-            .add_header("Spread", ColumnAlignment::Right);
-
-        for level in &report.levels_tested {
-            let p = &level.consolidated;
-            let window_str = if level.window_size_bytes >= 1024 * 1024 {
-                format!("{} MB", level.window_size_bytes / (1024 * 1024))
-            } else {
-                format!("{} KB", level.window_size_bytes / 1024)
-            };
-
-            table = table.add_row(vec![
-                level.target_name.clone(),
-                window_str,
-                level.total_samples.to_string(),
-                format!("{:.1}", p.min_ns),
-                format!("{:.1}", p.p5_ns),
-                format!("{:.1}", p.p10_ns),
-                format!("{:.1}", p.p25_ns),
-                format!("{:.1}", p.p50_ns),
-                format!("{:.1}", p.p75_ns),
-                format!("{:.1}", p.p90_ns),
-                format!("{:.1}", p.p95_ns),
-                format!("{:.1}", p.p99_ns),
-                format!("{:.1}", p.max_ns),
-                format!("{:.2}x", p.spread_ratio),
-            ]);
-        }
-
-        table.with_footer("All values in nanoseconds. Spread = P95/P5 ratio.")
     }
 
     fn prepare_latency_per_thread_table(&self, level: &LatencyLevelSummary) -> TableData {

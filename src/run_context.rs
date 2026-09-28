@@ -27,7 +27,7 @@ use serde::{Deserialize, Serialize};
 
 use crate::app_config::MachineIdentity;
 use crate::constants::bytes_to_gib_f64 as to_gib;
-use crate::formatting::{ByteSize, serialize_round_2dp, serialize_round_opt_2dp};
+use crate::formatting::{ByteSize, serialize_round_2dp};
 use crate::smbios::MemoryModule;
 
 // ===========================================================================
@@ -251,8 +251,7 @@ pub struct RunConfigSnapshot {
 /// Memory request, and the allocation that came back.
 #[derive(Debug, Clone, Serialize, Deserialize, Default)]
 pub struct MemorySnapshot {
-    /// Canonical `memory=` spec reconstructed from the parsed strategy, e.g.
-    /// `"20%-from-available:start=split:5%:95%"`.
+    /// Canonical `memory=` spec reconstructed from the parsed strategy, e.g. `"20%-from-available"`.
     pub spec: String,
 
     /// Whether `spec` yields the same size on every run of this machine.
@@ -263,7 +262,8 @@ pub struct MemorySnapshot {
     /// reproducibility. Only `-from-total` and `-target` are deterministic.
     pub spec_is_deterministic: bool,
 
-    /// Human-readable strategy label from the allocator (e.g. `"Reserve from Available (5%:95%)"`).
+    /// Human-readable strategy label from the allocator (e.g.
+    /// `"Reserve from Available [thread-aware (8×3.00 GiB)]"`).
     pub allocation_type: String,
 
     /// The figure the spec's percentage was applied to (total or available, per the mode).
@@ -275,14 +275,6 @@ pub struct MemorySnapshot {
     /// Bytes deliberately left to the OS.
     #[serde(serialize_with = "serialize_round_2dp")]
     pub reserve_gib: f64,
-    /// Split-reserve breakdown, when the start-address mode splits the reserve either side of the
-    /// test region.
-    #[serde(serialize_with = "serialize_round_opt_2dp")]
-    pub reserve_pre_gib: Option<f64>,
-    #[serde(serialize_with = "serialize_round_opt_2dp")]
-    pub reserve_post_gib: Option<f64>,
-    /// Lowest address the allocator was told to accept.
-    pub min_start_address: ByteSize,
 
     /// Free memory and load at the moment the plan was computed. For a non-deterministic spec this
     /// is the input that decided the size, so it is the only way to explain why two runs differ.
@@ -298,10 +290,16 @@ pub struct MemorySnapshot {
     pub per_thread_gib: f64,
     pub blocks_allocated: usize,
 
+    /// The API that allocated the memory. The page sizes it actually got are `page_mix`.
     pub backend: String,
+    /// Whether `SeLockMemoryPrivilege` was held. Large pages need it, but holding it does not mean
+    /// they were obtained; `page_mix` says what was.
     pub large_pages_available: bool,
     pub min_page_size: String,
     pub max_page_size: String,
+    /// The `memory_allocation.allocation_strategy` key: the order the allocator tried page and
+    /// block sizes in.
+    pub allocation_strategy: String,
 
     pub page_mix: PageSizeMix,
 }
@@ -384,17 +382,6 @@ impl PageSizeMix {
         }
     }
 
-    /// Whether more than one page size was used. A mixed run's TLB behaviour is not uniform across
-    /// threads, which is enough to make a per-thread throughput spread expected rather than
-    /// suspicious.
-    pub fn is_mixed(&self) -> bool {
-        let kinds = [
-            self.huge_1gib_blocks,
-            self.large_2mib_blocks,
-            self.regular_4kib_blocks,
-        ];
-        kinds.iter().filter(|n| **n > 0).count() > 1
-    }
 }
 
 /// Worker-thread placement. Recorded per thread because *which* CPUs ran matters as much as how
@@ -405,6 +392,9 @@ pub struct ThreadSnapshot {
     /// Whether workers were pinned to specific logical CPUs. Unpinned, the OS scheduler may move
     /// a thread across cache or NUMA domains mid-test and the numbers stop meaning much.
     pub pinned: bool,
+    /// Worker scheduling priority (`normal`, `high` or `realtime`). Under contention from other
+    /// processes a lower one loses time slices, which shows up as lower throughput.
+    pub thread_priority: String,
     /// `(thread_id, logical_cpu, numa_node)` as actually assigned.
     pub assignments: Vec<ThreadAssignment>,
     /// Distinct NUMA nodes used, and the thread count on each.
@@ -516,6 +506,7 @@ pub struct RunConfigInputs<'a> {
     pub thread_count: usize,
     pub cpu_assignments: &'a [crate::thread_pool::CpuAssignment],
     pub pinned: bool,
+    pub thread_priority: crate::runner::ThreadPriority,
     pub suite_timing: &'a crate::runner::TestSuiteTiming,
     pub error_mode: crate::ErrorMode,
     pub test_filter: Option<String>,
@@ -540,6 +531,7 @@ impl RunConfigSnapshot {
             thread_count,
             cpu_assignments,
             pinned,
+            thread_priority,
             suite_timing,
             error_mode,
             test_filter,
@@ -549,14 +541,6 @@ impl RunConfigSnapshot {
             cache_info,
         } = inputs;
 
-        let (reserve_pre_gib, reserve_post_gib) = match &allocation.split_details {
-            Some(split) => (
-                Some(to_gib(split.pre_buffer_bytes)),
-                Some(to_gib(split.post_reserve_bytes)),
-            ),
-            None => (None, None),
-        };
-
         let memory = MemorySnapshot {
             spec: strategy.describe_spec(),
             spec_is_deterministic: strategy.allocation_mode.is_deterministic(),
@@ -564,9 +548,6 @@ impl RunConfigSnapshot {
             reference_gib: to_gib(allocation.reference_bytes),
             requested_gib: to_gib(allocation.allocation_bytes),
             reserve_gib: to_gib(allocation.reserve_bytes),
-            reserve_pre_gib,
-            reserve_post_gib,
-            min_start_address: allocation.min_start_address.into(),
             available_at_start_gib: to_gib(system_memory_info.available_physical_bytes),
             memory_load_percent_at_start: system_memory_info.memory_load_percent,
             allocated_gib: to_gib(allocated_bytes),
@@ -582,7 +563,14 @@ impl RunConfigSnapshot {
             large_pages_available: runtime_config.large_pages_available,
             min_page_size: runtime_config.memory_allocation.min_page_size.clone(),
             max_page_size: runtime_config.memory_allocation.max_page_size.clone(),
-            page_mix,
+            // Canonical spelling, so a config alias doesn't compare as a different strategy.
+            allocation_strategy: runtime_config.memory_allocation.allocation_strategy
+                .parse::<crate::memory::allocator::AllocationStrategy>()
+                .map_or_else(
+                    |_| runtime_config.memory_allocation.allocation_strategy.clone(),
+                    |s| s.to_string(),
+                ),
+page_mix,
         };
 
         // NUMA distribution, kept in node order so two runs diff cleanly.
@@ -598,6 +586,7 @@ impl RunConfigSnapshot {
         let threads = ThreadSnapshot {
             thread_count,
             pinned,
+            thread_priority: thread_priority.to_string(),
             assignments: cpu_assignments
                 .iter()
                 .map(|&(thread_id, logical_cpu, numa_node)| ThreadAssignment {
@@ -950,6 +939,15 @@ pub fn compare_config(b: &RunConfigSnapshot, c: &RunConfigSnapshot) -> Vec<RunDi
         ));
     }
 
+    if b.threads.thread_priority != c.threads.thread_priority {
+        diffs.push(RunDifference::new(
+            "Thread priority",
+            &b.threads.thread_priority,
+            &c.threads.thread_priority,
+            false,
+        ));
+    }
+
     if b.memory.page_mix.huge_1gib_blocks != c.memory.page_mix.huge_1gib_blocks
         || b.memory.page_mix.large_2mib_blocks != c.memory.page_mix.large_2mib_blocks
         || b.memory.page_mix.regular_4kib_blocks != c.memory.page_mix.regular_4kib_blocks
@@ -1001,6 +999,16 @@ pub fn compare_config(b: &RunConfigSnapshot, c: &RunConfigSnapshot) -> Vec<RunDi
 
     if b.memory.backend != c.memory.backend {
         diffs.push(RunDifference::new("Memory backend", &b.memory.backend, &c.memory.backend, true));
+    }
+
+    if b.memory.allocation_strategy != c.memory.allocation_strategy {
+        // What it changes shows up in the page-size mix, which is compared on its own.
+        diffs.push(RunDifference::new(
+            "Allocation strategy",
+            &b.memory.allocation_strategy,
+            &c.memory.allocation_strategy,
+            false,
+        ));
     }
 
     // Per-test config, for tests present in both plans. A window/chunk/flush change explains a
@@ -1134,7 +1142,7 @@ mod tests {
             memory: MemorySnapshot {
                 allocated_gib: per_thread_gib * threads as f64,
                 per_thread_gib,
-                spec: "20%-from-available:start=split:5%:95%".to_string(),
+                spec: "20%-from-available".to_string(),
                 spec_is_deterministic: true,
                 ..Default::default()
             },
@@ -1179,18 +1187,16 @@ mod tests {
     }
 
     #[test]
-    fn page_mix_reports_kinds_and_mixing() {
+    fn page_mix_describes_every_kind_used() {
         let mut mix = PageSizeMix {
             huge_1gib_blocks: 1,
             huge_1gib_gib: 1.0,
             ..Default::default()
         };
-        assert!(!mix.is_mixed());
         assert!(mix.describe().contains("1GB huge"));
 
         mix.large_2mib_blocks = 27;
         mix.large_2mib_gib = 54.0;
-        assert!(mix.is_mixed());
         let described = mix.describe();
         assert!(described.contains("1GB huge") && described.contains("2MB large"));
 

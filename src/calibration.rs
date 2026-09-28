@@ -90,45 +90,24 @@ impl std::fmt::Display for CacheTier {
 // ============================================================================
 
 /// Configuration parameters for the calibration process
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Debug, Clone)]
 pub struct CalibrationConfig {
-    /// Initial probe size as percentage of tier size (default: 1.07 = 107%)
-    pub initial_size_factor: f64,
-    /// Spread ratio threshold for stability (default: 2.0)
-    pub spread_ratio_threshold: f64,
-    /// Coefficient of variation threshold (default: 0.15 = 15%)
-    pub cv_threshold: f64,
-    /// Relative error threshold for convergence (default: 0.001 = 0.1%)
+    /// Relative error thresholdfor convergence (default: 0.001 = 0.1%)
     pub convergence_threshold: f64,
     /// Maximum time per probe in milliseconds (default: 2000)
     pub max_probe_time_ms: u64,
-    /// Maximum total calibration time in seconds (default: 60)
-    pub max_total_time_secs: u64,
-    /// Minimum samples before checking convergence (default: 50)
+    /// Minimum samplesbefore checking convergence (default: 50)
     pub min_samples: u32,
-    /// Size reduction factor when unstable (default: 0.90 = 10% steps)
-    pub size_reduction_factor: f64,
-    /// Minimum number of probes per tier (default: 3)
-    pub min_probes_per_tier: u32,
-    /// Maximum number of probes per tier (default: 20)
-    pub max_probes_per_tier: u32,
-    /// Page size for calibration allocation: "regular"/"4kb", "large"/"2mb", "huge"/"1gb"
+/// Page size for calibration allocation: "regular"/"4kb", "large"/"2mb", "huge"/"1gb"
     pub page_size: String,
 }
 
 impl Default for CalibrationConfig {
     fn default() -> Self {
         Self {
-            initial_size_factor: 1.07,        // 107% of tier size
-            spread_ratio_threshold: 2.0,      // P95/P5 > 2.0 indicates instability
-            cv_threshold: 0.15,               // CV > 15% indicates instability
             convergence_threshold: 0.001,     // 0.1% relative error for convergence
             max_probe_time_ms: 2000,          // 2 seconds per probe max
-            max_total_time_secs: 60,          // 60 seconds total calibration
             min_samples: 50,                  // Minimum samples before convergence check
-            size_reduction_factor: 0.90,      // 10% steps (larger to cover more range)
-            min_probes_per_tier: 3,           // At least 3 probes per tier
-            max_probes_per_tier: 20,          // Up to 20 probes per tier
             page_size: "large".to_string(),   // Default: 2MB large pages (matches main tests)
         }
     }
@@ -188,28 +167,6 @@ impl CpuSignature {
         }
     }
 
-    /// Check if this signature matches another (for validation)
-    /// Returns true if cache sizes match within 10% tolerance
-    pub fn matches(&self, other: &CpuSignature) -> bool {
-        // Vendor and brand must match exactly
-        if self.vendor != other.vendor || self.brand != other.brand {
-            return false;
-        }
-
-        // Cache sizes must match within 10% tolerance
-        let size_matches = |a: usize, b: usize| -> bool {
-            if a == 0 || b == 0 {
-                return a == b;
-            }
-            let diff = (a as f64 - b as f64).abs();
-            let avg = (a + b) as f64 / 2.0;
-            diff / avg < 0.10
-        };
-
-        size_matches(self.l1d_size, other.l1d_size)
-            && size_matches(self.l2_size, other.l2_size)
-            && size_matches(self.l3_size, other.l3_size)
-    }
 }
 
 // ============================================================================
@@ -270,63 +227,11 @@ impl CalibrationResults {
         }
     }
 
-    /// Load calibration results from a JSON file
-    pub fn load_from_file(path: &str) -> Result<Self, String> {
-        let contents = std::fs::read_to_string(path)
-            .map_err(|e| format!("Failed to read calibration file '{}': {}", path, e))?;
-        
-        serde_json::from_str(&contents)
-            .map_err(|e| format!("Failed to parse calibration file '{}': {}", path, e))
-    }
-
-    /// Save calibration results to a JSON file
-    pub fn save_to_file(&self, path: &str) -> Result<(), String> {
-        let json = serde_json::to_string_pretty(self)
-            .map_err(|e| format!("Failed to serialize calibration results: {}", e))?;
-        
-        std::fs::write(path, json)
-            .map_err(|e| format!("Failed to write calibration file '{}': {}", path, e))
-    }
-
     /// Add a tier result
     pub fn add_tier_result(&mut self, result: TierCalibrationResult) {
         self.tiers.insert(result.tier, result);
     }
 
-    /// Check if results contain all five tiers
-    pub fn is_complete(&self) -> bool {
-        CacheTier::all_tiers()
-            .iter()
-            .all(|tier| self.tiers.contains_key(tier))
-    }
-
-    /// Get the optimal size for a tier
-    pub fn get_optimal_size(&self, tier: CacheTier) -> Option<usize> {
-        self.tiers.get(&tier).map(|r| r.optimal_size)
-    }
-
-    /// Validate that these results match the current system
-    pub fn validate_for_system(&self, cache_info: &CacheInfo) -> bool {
-        let current_sig = CpuSignature::from_cache_info(cache_info);
-        self.cpu_signature.matches(&current_sig)
-    }
-}
-
-// ============================================================================
-// Probe Result
-// ============================================================================
-
-/// Result of a single probe at a specific workload size
-#[derive(Debug, Clone)]
-pub struct ProbeResult {
-    /// Workload size that was probed
-    pub workload_size: usize,
-    /// Collected latency samples in nanoseconds
-    pub samples: Vec<f64>,
-    /// Time spent probing in milliseconds
-    pub elapsed_ms: u64,
-    /// Whether the probe converged (relative error below threshold)
-    pub converged: bool,
 }
 
 // ============================================================================
@@ -343,11 +248,7 @@ pub struct OnlineStats {
     mean: f64,
     /// Running M2 for variance calculation (Welford's algorithm)
     m2: f64,
-    /// Minimum value seen
-    min: f64,
-    /// Maximum value seen
-    max: f64,
-    /// All samples (kept for percentile calculation)
+    /// All samples(kept for percentile calculation)
     samples: Vec<f64>,
 }
 
@@ -364,8 +265,6 @@ impl OnlineStats {
             count: 0,
             mean: 0.0,
             m2: 0.0,
-            min: f64::MAX,
-            max: f64::MIN,
             samples: Vec::new(),
         }
     }
@@ -376,8 +275,6 @@ impl OnlineStats {
             count: 0,
             mean: 0.0,
             m2: 0.0,
-            min: f64::MAX,
-            max: f64::MIN,
             samples: Vec::with_capacity(capacity),
         }
     }
@@ -387,15 +284,7 @@ impl OnlineStats {
         self.count += 1;
         self.samples.push(value);
 
-        // Update min/max
-        if value < self.min {
-            self.min = value;
-        }
-        if value > self.max {
-            self.max = value;
-        }
-
-        // Welford's algorithm for numerically stable mean/variance
+// Welford's algorithm for numerically stable mean/variance
         let delta = value - self.mean;
         self.mean += delta / self.count as f64;
         let delta2 = value - self.mean;
@@ -405,11 +294,6 @@ impl OnlineStats {
     /// Get the number of samples
     pub fn count(&self) -> u64 {
         self.count
-    }
-
-    /// Get the running mean
-    pub fn mean(&self) -> f64 {
-        self.mean
     }
 
     /// Get the sample variance (using n-1 denominator)
@@ -441,25 +325,11 @@ impl OnlineStats {
         self.std_error() / self.mean
     }
 
-    /// Get the minimum value
-    pub fn min(&self) -> f64 {
-        self.min
-    }
-
-    /// Get the maximum value
-    pub fn max(&self) -> f64 {
-        self.max
-    }
-
     /// Get a reference to all samples
     pub fn samples(&self) -> &[f64] {
         &self.samples
     }
 
-    /// Convert to ProbeStatistics (requires sorting samples for percentiles)
-    pub fn to_statistics(&self) -> ProbeStatistics {
-        StatisticsAnalyzer::analyze(&self.samples)
-    }
 }
 
 // ============================================================================
@@ -469,24 +339,10 @@ impl OnlineStats {
 /// Statistical summary of probe measurements
 #[derive(Debug, Clone)]
 pub struct ProbeStatistics {
-    /// Mean latency in nanoseconds
-    pub mean_ns: f64,
-    /// Sample variance
-    pub variance: f64,
-    /// Standard deviation in nanoseconds
-    pub std_dev_ns: f64,
     /// Median (P50) latency in nanoseconds
     pub median_ns: f64,
-    /// 5th percentile latency in nanoseconds
-    pub p5_ns: f64,
-    /// 95th percentile latency in nanoseconds
-    pub p95_ns: f64,
     /// Spread ratio (P95/P5) - high values indicate bimodal/unstable measurements
     pub spread_ratio: f64,
-    /// Coefficient of variation (std_dev/mean) - high values indicate instability
-    pub cv: f64,
-    /// Number of samples
-    pub sample_count: usize,
 }
 
 // ============================================================================
@@ -501,35 +357,14 @@ impl StatisticsAnalyzer {
     pub fn analyze(samples: &[f64]) -> ProbeStatistics {
         if samples.is_empty() {
             return ProbeStatistics {
-                mean_ns: 0.0,
-                variance: 0.0,
-                std_dev_ns: 0.0,
                 median_ns: 0.0,
-                p5_ns: 0.0,
-                p95_ns: 0.0,
                 spread_ratio: 0.0,
-                cv: 0.0,
-                sample_count: 0,
             };
         }
 
         // Sort samples for percentile calculation
         let mut sorted = samples.to_vec();
         sorted.sort_by(|a, b| a.partial_cmp(b).unwrap_or(std::cmp::Ordering::Equal));
-
-        let n = sorted.len();
-
-        // Calculate mean
-        let mean_ns = samples.iter().sum::<f64>() / n as f64;
-
-        // Calculate variance (using n-1 denominator for sample variance)
-        let variance = if n > 1 {
-            samples.iter().map(|x| (x - mean_ns).powi(2)).sum::<f64>() / (n - 1) as f64
-        } else {
-            0.0
-        };
-
-        let std_dev_ns = variance.sqrt();
 
         // Calculate percentiles
         let p5_ns = Self::percentile(&sorted, 5.0);
@@ -539,19 +374,9 @@ impl StatisticsAnalyzer {
         // Calculate spread ratio (P95/P5)
         let spread_ratio = if p5_ns > 0.0 { p95_ns / p5_ns } else { 0.0 };
 
-        // Calculate coefficient of variation
-        let cv = if mean_ns > 0.0 { std_dev_ns / mean_ns } else { 0.0 };
-
         ProbeStatistics {
-            mean_ns,
-            variance,
-            std_dev_ns,
             median_ns,
-            p5_ns,
-            p95_ns,
             spread_ratio,
-            cv,
-            sample_count: n,
         }
     }
 
@@ -579,17 +404,6 @@ impl StatisticsAnalyzer {
         }
     }
 
-    /// Check if measurements indicate stability (good for testing)
-    /// Returns true if spread ratio AND CV are below thresholds
-    pub fn is_stable(stats: &ProbeStatistics, config: &CalibrationConfig) -> bool {
-        stats.spread_ratio < config.spread_ratio_threshold && stats.cv < config.cv_threshold
-    }
-
-    /// Check if measurements indicate a tier transition (bimodal distribution)
-    /// Returns true if spread ratio exceeds threshold
-    pub fn is_transition(stats: &ProbeStatistics, config: &CalibrationConfig) -> bool {
-        stats.spread_ratio > config.spread_ratio_threshold
-    }
 }
 
 // ============================================================================
@@ -633,12 +447,6 @@ impl ProbeEngine {
         }
     }
 
-    /// Initialize the probe engine with a memory buffer of the specified size
-    /// Sets up a pointer-chase pattern that can be reused for all probes
-    pub fn initialize(&mut self, max_size: usize) -> Result<(), String> {
-        self.initialize_with_page_size(max_size, "large")
-    }
-
     /// Initialize with a specific page size preference
     /// page_size_str: "regular"/"4kb", "large"/"2mb", "huge"/"1gb"
     pub fn initialize_with_page_size(&mut self, max_size: usize, page_size_str: &str) -> Result<(), String> {
@@ -669,8 +477,6 @@ impl ProbeEngine {
             page_size: page_pref,
             memory_type: MemoryType::WriteBack,
             zero_memory: false,
-            timeout_ms: 5000,
-            base_address: None,
             alignment: None,
         };
 
@@ -772,16 +578,11 @@ impl ProbeEngine {
     }
 
     /// Run a probe at the specified workload size
-    /// Returns probe results with latency samples
+    /// Returns the latency samples in nanoseconds (empty if the probe could not run)
     #[cfg(target_arch = "x86_64")]
-    pub fn probe(&mut self, workload_size: usize, config: &CalibrationConfig) -> ProbeResult {
+    pub fn probe(&mut self, workload_size: usize, config: &CalibrationConfig) -> Vec<f64> {
         if !self.initialized {
-            return ProbeResult {
-                workload_size,
-                samples: vec![],
-                elapsed_ms: 0,
-                converged: false,
-            };
+            return Vec::new();
         }
 
         let base = self.get_base_ptr();
@@ -791,12 +592,7 @@ impl ProbeEngine {
         let working_set_u64 = actual_size / std::mem::size_of::<u64>();
         
         if working_set_u64 < 8 {
-            return ProbeResult {
-                workload_size,
-                samples: vec![],
-                elapsed_ms: 0,
-                converged: false,
-            };
+            return Vec::new();
         }
 
         // CRITICAL: Re-initialize pointer-chase pattern for THIS working set size
@@ -849,41 +645,21 @@ impl ProbeEngine {
             if stats.count() >= config.min_samples as u64 {
                 let rel_error = stats.relative_error();
                 if rel_error < config.convergence_threshold {
-                    return ProbeResult {
-                        workload_size: actual_size,
-                        samples: stats.samples().to_vec(),
-                        elapsed_ms: elapsed.as_millis() as u64,
-                        converged: true,
-                    };
+                    return stats.samples().to_vec();
                 }
             }
 
             // Check time limit
             if elapsed >= max_duration {
-                return ProbeResult {
-                    workload_size: actual_size,
-                    samples: stats.samples().to_vec(),
-                    elapsed_ms: elapsed.as_millis() as u64,
-                    converged: false,
-                };
+                return stats.samples().to_vec();
             }
         }
     }
 
     /// Non-x86_64 stub
     #[cfg(not(target_arch = "x86_64"))]
-    pub fn probe(&mut self, workload_size: usize, _config: &CalibrationConfig) -> ProbeResult {
-        ProbeResult {
-            workload_size,
-            samples: vec![],
-            elapsed_ms: 0,
-            converged: false,
-        }
-    }
-
-    /// Check if the engine is initialized
-    pub fn is_initialized(&self) -> bool {
-        self.initialized
+    pub fn probe(&mut self, _workload_size: usize, _config: &CalibrationConfig) -> Vec<f64> {
+        Vec::new()
     }
 
     /// Get the maximum working set size
@@ -902,25 +678,7 @@ pub struct SweepProbe {
     pub size: usize,
     pub median_ns: f64,
     pub spread: f64,
-    pub p5_ns: f64,
-    pub p95_ns: f64,
-    pub window_stddev: f64,  // Stability metric from sliding window
-}
-
-impl SweepProbe {
-    /// Calculate a stability score (lower is better)
-    /// Combines spread ratio and window stddev into a single metric
-    pub fn stability_score(&self) -> f64 {
-        // Normalize spread (1.0 = perfect, higher = worse)
-        // Normalize window_stddev relative to latency (CV-like)
-        let spread_penalty = (self.spread - 1.0).max(0.0);
-        let cv_penalty = if self.median_ns > 0.0 {
-            self.window_stddev / self.median_ns
-        } else {
-            0.0
-        };
-        spread_penalty + cv_penalty
-    }
+    pub window_stddev: f64,// Stability metric from sliding window
 }
 
 // ============================================================================
@@ -933,7 +691,6 @@ pub struct FineProbe {
     pub size: usize,
     pub repeats: u32,
     pub stable_count: u32,
-    pub median_latencies: Vec<f64>,
     pub overall_median_ns: f64,
     pub worst_spread: f64,
     pub latency_consistency: f64,
@@ -943,235 +700,6 @@ impl FineProbe {
     /// A probe is reliable if ALL repeats were stable
     pub fn is_reliable(&self) -> bool {
         self.stable_count == self.repeats
-    }
-}
-
-// ============================================================================
-// Tier Calibrator
-// ============================================================================
-
-/// Calibrator for a single cache tier using "start high, search down" strategy
-pub struct TierCalibrator<'a> {
-    /// The tier being calibrated
-    tier: CacheTier,
-    /// Size of this tier in bytes (from CacheInfo)
-    tier_size: usize,
-    /// Calibration configuration
-    config: &'a CalibrationConfig,
-}
-
-impl<'a> TierCalibrator<'a> {
-    /// Create a new tier calibrator
-    pub fn new(tier: CacheTier, tier_size: usize, config: &'a CalibrationConfig) -> Self {
-        Self {
-            tier,
-            tier_size,
-            config,
-        }
-    }
-
-    /// Calculate the initial probe size for this tier (start low, search up)
-    /// Must be LARGER than previous tier size but SMALLER than current tier size
-    /// Formula: max(tier_size / 4, prev_tier_size * 1.5)
-    fn calculate_initial_size(&self, l1_size: usize, l2_size: usize, l3_size: usize) -> usize {
-        match self.tier {
-            CacheTier::L1 => {
-                // L1: Start at 50% of L1 (no lower tier to worry about)
-                self.tier_size / 2
-            }
-            CacheTier::L2 => {
-                // L2: Must be > L1, start at max(L2/4, L1*1.5)
-                let min_for_l2 = (l1_size as f64 * 1.5) as usize;
-                let target = self.tier_size / 4;
-                min_for_l2.max(target)
-            }
-            CacheTier::L3 => {
-                // L3: Must be > L2, start at max(L3/4, L2*1.5)
-                let min_for_l3 = (l2_size as f64 * 1.5) as usize;
-                let target = self.tier_size / 4;
-                min_for_l3.max(target)
-            }
-            CacheTier::Dram => {
-                // DRAM: Must be > L3, start at L3*1.5
-                (l3_size as f64 * 1.5) as usize
-            }
-            CacheTier::FullDram => {
-                // FullDRAM: Start at 2x L3 (DRAM tier size)
-                l3_size * 2
-            }
-        }
-    }
-
-    /// Calculate the maximum probe size for this tier
-    /// We probe PAST the tier boundary to find the transition point
-    fn calculate_max_size(&self, max_buffer: usize, next_tier_size: usize) -> usize {
-        // We want to probe into the next tier to find the transition
-        // Max should be at least 2x current tier or halfway to next tier
-        let tier_max = match self.tier {
-            CacheTier::L1 => next_tier_size,  // Probe up to L2 size
-            CacheTier::L2 => next_tier_size,  // Probe up to L3 size (capped)
-            CacheTier::L3 => (self.tier_size as f64 * 2.0) as usize,  // 2x L3 into DRAM
-            CacheTier::Dram => (self.tier_size as f64 * 2.0) as usize, // 2x DRAM tier
-            CacheTier::FullDram => self.tier_size, // FullDRAM bounded by buffer
-        };
-        tier_max.min(max_buffer)
-    }
-
-    /// Calibrate this tier using the probe engine
-    /// 
-    /// Algorithm: "Start low, search up, find the tipping point"
-    /// 1. Start at a size well within this tier (but above previous tier)
-    /// 2. Establish baseline latency from first few probes
-    /// 3. Increase size until we see latency jump significantly (tipping point)
-    /// 4. The optimal size is the largest size BEFORE the latency jump
-    /// 
-    /// Tipping point detection:
-    /// - Latency jumps >2x from baseline = definite transition
-    /// - Latency jumps >1.5x AND spread increases = likely transition
-    pub fn calibrate(&self, probe_engine: &mut ProbeEngine, l1_size: usize, l2_size: usize, l3_size: usize) -> TierCalibrationResult {
-        let initial_size = self.calculate_initial_size(l1_size, l2_size, l3_size);
-        
-        // Calculate next tier size for max_size calculation
-        let next_tier_size = match self.tier {
-            CacheTier::L1 => l2_size,
-            CacheTier::L2 => l3_size.min(64 * 1024 * 1024), // Cap L2 max at 64MB to avoid huge probes
-            CacheTier::L3 => l3_size * 4,
-            CacheTier::Dram => l3_size * 8,
-            CacheTier::FullDram => probe_engine.max_working_set(),
-        };
-        let max_size = self.calculate_max_size(probe_engine.max_working_set(), next_tier_size);
-        
-        log::info!("Calibrating {} tier: initial={}, max={} (tier_size={})",
-            self.tier, format_size(initial_size), format_size(max_size), format_size(self.tier_size));
-
-        let mut current_size = initial_size;
-        let mut probes_attempted = 0u32;
-        let mut all_probes: Vec<(usize, ProbeStatistics)> = Vec::new();
-        
-        // Baseline tracking - established from first valid probe
-        let mut baseline_latency: Option<f64> = None;
-        let mut baseline_spread: Option<f64> = None;
-        
-        // Best candidate before transition
-        let mut best_before_transition: Option<(usize, ProbeStatistics)> = None;
-        let mut transition_detected = false;
-
-        // Size increase factor (~5% increase each step)
-        let size_increase_factor = 1.0 / self.config.size_reduction_factor;
-
-        // Search UP from initial size until we see latency jump or hit max
-        while current_size <= max_size && probes_attempted < self.config.max_probes_per_tier {
-            probes_attempted += 1;
-
-            let probe_result = probe_engine.probe(current_size, self.config);
-            
-            if probe_result.samples.is_empty() {
-                log::warn!("{} probe at {} returned no samples", self.tier, format_size(current_size));
-                current_size = (current_size as f64 * size_increase_factor) as usize;
-                continue;
-            }
-
-            let stats = StatisticsAnalyzer::analyze(&probe_result.samples);
-            
-            // Establish baseline from first probe (don't wait for "stable")
-            if baseline_latency.is_none() {
-                baseline_latency = Some(stats.median_ns);
-                baseline_spread = Some(stats.spread_ratio);
-                log::info!("  {} baseline established: {:.1}ns, spread={:.2}x",
-                    self.tier, stats.median_ns, stats.spread_ratio);
-            }
-            
-            let baseline_lat = baseline_latency.unwrap();
-            let baseline_spr = baseline_spread.unwrap();
-            
-            // Detect tipping point (transition to next tier)
-            // Key indicators:
-            // 1. Latency jumped significantly (>2x = definite, >1.5x = likely)
-            // 2. Spread increased significantly (becoming bimodal)
-            let latency_ratio = stats.median_ns / baseline_lat;
-            let spread_increase = stats.spread_ratio / baseline_spr;
-            
-            let definite_transition = latency_ratio > 2.0;
-            let likely_transition = latency_ratio > 1.5 && spread_increase > 1.3;
-            let is_transition = definite_transition || likely_transition;
-            
-            // Determine marker for logging
-            let marker = if definite_transition {
-                " ⬆️ TRANSITION (latency 2x+)"
-            } else if likely_transition {
-                " ⬆️ TRANSITION (latency+spread)"
-            } else if stats.spread_ratio < self.config.spread_ratio_threshold {
-                " ✓"
-            } else {
-                ""
-            };
-            
-            log::info!("  {} probe #{}: size={}, median={:.1}ns ({:.1}x baseline), spread={:.2}x{}",
-                self.tier, probes_attempted, format_size(current_size), 
-                stats.median_ns, latency_ratio, stats.spread_ratio, marker);
-
-            all_probes.push((current_size, stats.clone()));
-
-            if is_transition {
-                transition_detected = true;
-                log::info!("  {} tipping point found at {}", self.tier, format_size(current_size));
-                break;
-            }
-            
-            // This probe is good - remember it as best candidate
-            best_before_transition = Some((current_size, stats));
-
-            // Increase size and try again
-            current_size = (current_size as f64 * size_increase_factor) as usize;
-        }
-
-        // Build result
-        if let Some((optimal_size, stats)) = best_before_transition {
-            let status = if transition_detected { "before transition" } else { "max probes reached" };
-            log::info!("  {} optimal: {} @ {:.1}ns ({})", 
-                self.tier, format_size(optimal_size), stats.median_ns, status);
-            
-            TierCalibrationResult {
-                tier: self.tier,
-                optimal_size,
-                median_latency_ns: stats.median_ns,
-                spread_ratio: stats.spread_ratio,
-                probes_attempted,
-                converged: transition_detected,
-                fallback_used: false,
-            }
-        } else if !all_probes.is_empty() {
-            // No good probe before transition - use first probe as fallback
-            // This happens when even the initial size is already in the next tier
-            let (size, stats) = &all_probes[0];
-            log::warn!("{} no stable size found - initial size {} may already be in next tier",
-                self.tier, format_size(*size));
-            log::warn!("{} using first probe as fallback: {} @ {:.1}ns",
-                self.tier, format_size(*size), stats.median_ns);
-            
-            TierCalibrationResult {
-                tier: self.tier,
-                optimal_size: *size,
-                median_latency_ns: stats.median_ns,
-                spread_ratio: stats.spread_ratio,
-                probes_attempted,
-                converged: false,
-                fallback_used: true,
-            }
-        } else {
-            // No probes succeeded at all
-            log::error!("{} calibration failed completely, using tier size ({}) as fallback", 
-                self.tier, format_size(self.tier_size));
-            TierCalibrationResult {
-                tier: self.tier,
-                optimal_size: self.tier_size,
-                median_latency_ns: 0.0,
-                spread_ratio: 0.0,
-                probes_attempted,
-                converged: false,
-                fallback_used: true,
-            }
-        }
     }
 }
 
@@ -1190,15 +718,6 @@ pub struct CalibrationTest {
 }
 
 impl CalibrationTest {
-    /// Create a new calibration test
-    pub fn new(cache_info: CacheInfo) -> Self {
-        let tsc_frequency_ghz = cache_info.tsc_frequency_ghz;
-        Self {
-            cache_info,
-            tsc_frequency_ghz,
-            config: CalibrationConfig::default(),
-        }
-    }
 
     /// Create with custom configuration
     pub fn with_config(cache_info: CacheInfo, config: CalibrationConfig) -> Self {
@@ -1231,6 +750,7 @@ impl CalibrationTest {
 
     /// Run calibration using an existing memory buffer (no separate allocation).
     /// Used when calibrating with test plan memory — same page types, no extra alloc/dealloc.
+    #[expect(dead_code, reason = "CLAUDE.md Open Design Question 1: kept as the path for calibrating on the test plan's own memory")]
     pub fn run_with_buffer(&self, buffer: &mut MemoryBuffer) -> Result<CalibrationResults, String> {
         let mut probe_engine = ProbeEngine::new(self.tsc_frequency_ghz);
         probe_engine.initialize_from_buffer(buffer)?;
@@ -1271,6 +791,7 @@ impl CalibrationTest {
     }
 
     /// Run extended calibration using an existing memory buffer
+    #[expect(dead_code, reason = "CLAUDE.md Open Design Question 1: kept as the path for calibrating on the test plan's own memory")]
     pub fn run_extended_with_buffer(&self, buffer: &mut MemoryBuffer) -> Result<CalibrationResults, String> {
         let mut probe_engine = ProbeEngine::new(self.tsc_frequency_ghz);
         probe_engine.initialize_from_buffer(buffer)?;
@@ -1443,9 +964,9 @@ impl CalibrationTest {
             let mut worst_spread = 0.0f64;
             
             for _rep in 0..repeats {
-                let probe_result = probe_engine.probe(current_size, &self.config);
-                if !probe_result.samples.is_empty() {
-                    let stats = StatisticsAnalyzer::analyze(&probe_result.samples);
+                let samples = probe_engine.probe(current_size, &self.config);
+                if !samples.is_empty() {
+                    let stats = StatisticsAnalyzer::analyze(&samples);
                     median_latencies.push(stats.median_ns);
                     if stats.spread_ratio < 1.5 {
                         stable_count += 1;
@@ -1478,7 +999,6 @@ impl CalibrationTest {
                     size: current_size,
                     repeats,
                     stable_count,
-                    median_latencies: median_latencies.clone(),
                     overall_median_ns: overall_median,
                     worst_spread,
                     latency_consistency: consistency,
@@ -1529,10 +1049,10 @@ impl CalibrationTest {
         while current_size <= max_size {
             probe_num += 1;
             
-            let probe_result = probe_engine.probe(current_size, &self.config);
-            
-            if !probe_result.samples.is_empty() {
-                let stats = StatisticsAnalyzer::analyze(&probe_result.samples);
+            let samples = probe_engine.probe(current_size, &self.config);
+
+            if !samples.is_empty() {
+                let stats = StatisticsAnalyzer::analyze(&samples);
                 
                 // Calculate derivative (latency change per size doubling)
                 let derivative = if let (Some(prev_lat), Some(prev_sz)) = (prev_latency, prev_size) {
@@ -1593,9 +1113,7 @@ impl CalibrationTest {
                     size: current_size,
                     median_ns: stats.median_ns,
                     spread: stats.spread_ratio,
-                    p5_ns: stats.p5_ns,
-                    p95_ns: stats.p95_ns,
-                    window_stddev,
+window_stddev,
                 });
             }
             
@@ -1926,76 +1444,6 @@ mod tests {
     }
 
     #[test]
-    fn test_calibration_config_default() {
-        let config = CalibrationConfig::default();
-        assert!((config.initial_size_factor - 1.07).abs() < 0.001);
-        assert!((config.spread_ratio_threshold - 2.0).abs() < 0.001);
-        assert!((config.cv_threshold - 0.15).abs() < 0.001);
-    }
-
-    #[test]
-    fn test_cpu_signature_matches_self() {
-        let sig = CpuSignature {
-            vendor: "TestVendor".to_string(),
-            brand: "TestCPU".to_string(),
-            l1d_size: 32 * 1024,
-            l2_size: 512 * 1024,
-            l3_size: 32 * 1024 * 1024,
-            ..Default::default()
-        };
-        assert!(sig.matches(&sig));
-    }
-
-    #[test]
-    fn test_cpu_signature_mismatch_vendor() {
-        let sig1 = CpuSignature {
-            vendor: "VendorA".to_string(),
-            brand: "TestCPU".to_string(),
-            l1d_size: 32 * 1024,
-            l2_size: 512 * 1024,
-            l3_size: 32 * 1024 * 1024,
-            ..Default::default()
-        };
-        let sig2 = CpuSignature {
-            vendor: "VendorB".to_string(),
-            brand: "TestCPU".to_string(),
-            l1d_size: 32 * 1024,
-            l2_size: 512 * 1024,
-            l3_size: 32 * 1024 * 1024,
-            ..Default::default()
-        };
-        assert!(!sig1.matches(&sig2));
-    }
-
-    #[test]
-    fn test_calibration_results_completeness() {
-        let sig = CpuSignature {
-            vendor: "Test".to_string(),
-            brand: "Test".to_string(),
-            l1d_size: 32 * 1024,
-            l2_size: 512 * 1024,
-            l3_size: 32 * 1024 * 1024,
-            ..Default::default()
-        };
-        let mut results = CalibrationResults::new(sig);
-        assert!(!results.is_complete());
-
-        // Add all tiers
-        for tier in CacheTier::all_tiers() {
-            results.add_tier_result(TierCalibrationResult {
-                tier: *tier,
-                optimal_size: 1024,
-                median_latency_ns: 10.0,
-                spread_ratio: 1.5,
-                probes_attempted: 3,
-                converged: true,
-                fallback_used: false,
-            });
-        }
-        assert!(results.is_complete());
-    }
-
-    #[test]
     fn test_online_stats_welford() {
         let mut stats = OnlineStats::new();
         
@@ -2005,11 +1453,8 @@ mod tests {
         }
         
         assert_eq!(stats.count(), 5);
-        assert!((stats.mean() - 3.0).abs() < 0.001);
         assert!((stats.variance() - 2.5).abs() < 0.001); // Sample variance of 1,2,3,4,5
         assert!((stats.std_dev() - 1.5811).abs() < 0.01);
-        assert_eq!(stats.min(), 1.0);
-        assert_eq!(stats.max(), 5.0);
     }
 
     #[test]
@@ -2018,7 +1463,6 @@ mod tests {
         stats.add_sample(42.0);
         
         assert_eq!(stats.count(), 1);
-        assert!((stats.mean() - 42.0).abs() < 0.001);
         assert_eq!(stats.variance(), 0.0); // Variance undefined for n=1, returns 0
     }
 
@@ -2027,8 +1471,6 @@ mod tests {
         let samples = vec![1.0, 2.0, 3.0, 4.0, 5.0];
         let stats = StatisticsAnalyzer::analyze(&samples);
         
-        assert!((stats.mean_ns - 3.0).abs() < 0.001);
-        assert_eq!(stats.sample_count, 5);
         assert!((stats.median_ns - 3.0).abs() < 0.001);
     }
 
@@ -2038,12 +1480,10 @@ mod tests {
         let samples: Vec<f64> = (1..=100).map(|x| x as f64).collect();
         let stats = StatisticsAnalyzer::analyze(&samples);
         
-        // P5 should be around 5.95 (linear interpolation)
-        assert!((stats.p5_ns - 5.95).abs() < 0.1);
         // P50 should be around 50.5
         assert!((stats.median_ns - 50.5).abs() < 0.1);
-        // P95 should be around 95.05
-        assert!((stats.p95_ns - 95.05).abs() < 0.1);
+        // P5 ≈ 5.95 and P95 ≈ 95.05 (linear interpolation), seen through their ratio
+        assert!((stats.spread_ratio - 95.05 / 5.95).abs() < 0.1);
     }
 
     #[test]
@@ -2064,12 +1504,9 @@ mod tests {
         samples.extend(vec![100.0; 50]);
         
         let stats = StatisticsAnalyzer::analyze(&samples);
-        let config = CalibrationConfig::default();
-        
-        // Bimodal should have high spread ratio
-        assert!(stats.spread_ratio > config.spread_ratio_threshold);
-        assert!(StatisticsAnalyzer::is_transition(&stats, &config));
-        assert!(!StatisticsAnalyzer::is_stable(&stats, &config));
+
+        // Bimodal should fail the fine sweep's stability cut (spread < 1.5)
+        assert!(stats.spread_ratio > 1.5);
     }
 
     #[test]
@@ -2077,12 +1514,9 @@ mod tests {
         // Create stable distribution: all values close to 50
         let samples: Vec<f64> = (48..=52).map(|x| x as f64).collect();
         let stats = StatisticsAnalyzer::analyze(&samples);
-        let config = CalibrationConfig::default();
-        
-        // Stable should have low spread ratio and CV
-        assert!(stats.spread_ratio < config.spread_ratio_threshold);
-        assert!(stats.cv < config.cv_threshold);
-        assert!(StatisticsAnalyzer::is_stable(&stats, &config));
+
+        // Stable should pass the fine sweep's stability cut (spread < 1.5)
+        assert!(stats.spread_ratio < 1.5);
     }
 
     #[test]
@@ -2090,7 +1524,7 @@ mod tests {
         let samples: Vec<f64> = vec![];
         let stats = StatisticsAnalyzer::analyze(&samples);
         
-        assert_eq!(stats.sample_count, 0);
-        assert_eq!(stats.mean_ns, 0.0);
+        assert_eq!(stats.median_ns, 0.0);
+        assert_eq!(stats.spread_ratio, 0.0);
     }
 }

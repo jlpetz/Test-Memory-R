@@ -1749,7 +1749,6 @@ fn empty_stats(test_name: &'static str, thread_id: usize, timing: &TestTiming) -
         },
         latencies_ns: vec![],
         sample_count: 0,
-        avg_ns: 0.0,
         p1_ns: 0.0, p5_ns: 0.0, p10_ns: 0.0, p25_ns: 0.0, p50_ns: 0.0,
         p75_ns: 0.0, p90_ns: 0.0, p95_ns: 0.0, p99_ns: 0.0, p99_9_ns: 0.0,
         spread_ratio: 0.0,
@@ -1774,7 +1773,6 @@ fn finalize_stats(
         let idx = ((n as f64 - 1.0) * p / 100.0) as usize;
         slice[idx.min(n - 1)]
     };
-    let avg = if len == 0 { 0.0 } else { sorted.iter().sum::<f64>() / len as f64 };
     let p1 = percentile(&sorted, 1.0);
     let p5 = percentile(&sorted, 5.0);
     let p10 = percentile(&sorted, 10.0);
@@ -1802,7 +1800,6 @@ fn finalize_stats(
         },
         latencies_ns: sorted,
         sample_count: len,
-        avg_ns: avg,
         p1_ns: p1, p5_ns: p5, p10_ns: p10, p25_ns: p25, p50_ns: p50,
         p75_ns: p75, p90_ns: p90, p95_ns: p95, p99_ns: p99, p99_9_ns: p99_9,
         spread_ratio: spread,

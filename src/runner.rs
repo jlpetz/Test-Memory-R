@@ -61,14 +61,11 @@ use crate::bandwidth_tests::{
 };
 use crate::cache::CacheInfo;
 use crate::reporting::models::{
-    LatencyTestSummaryReport, LatencyLevelSummary, LatencyThreadResult,
-    LatencyPercentiles, DetectedCacheInfo,
+    LatencyTestSummaryReport, LatencyLevelSummary, LatencyThreadResult, LatencyPercentiles,
 };
 use crate::progress::{progress_reporter, RunOutcome};
 use crate::results::TestRunResult;
 use crate::memory::{MemoryBuffer, MemoryAllocator, BackendType};
-use crate::memory::allocation_strategy::SystemMemoryInfo;
-use crate::config::CpuPinningConfig;
 use crate::{MemoryBackend, RuntimeConfig};
 use std::collections::HashMap;
 use std::sync::atomic::{AtomicBool, Ordering};
@@ -163,10 +160,6 @@ pub struct PatternId {
 }
 
 impl PatternId {
-    pub fn new(mode: u32, param0: u64, param1: u64) -> Self {
-        Self { mode, param0, param1 }
-    }
-
     /// Create from a TestMemoryConfig's pattern settings.
     pub fn from_config(config: &crate::tests::TestMemoryConfig) -> Self {
         Self {
@@ -328,45 +321,18 @@ impl TestSuiteTiming {
             per_test_cycle_multiplier: 1.0,
         }
     }
-    
-    pub fn with_global_cycles(cycles: u32) -> Self {
-        Self::cycles_only(cycles)
-    }
 }
 
 // Test function signatures
-type TestFunctionSimple = unsafe fn(*mut u8, usize, usize, ErrorMode, &TestTiming) -> TestStats;
-type TestFunctionWithConfig = unsafe fn(*mut u8, usize, usize, ErrorMode, &TestTiming, &TestMemoryConfig) -> TestStats;
 type TestFunctionMultiBlock = unsafe fn(&[AllocationBlock], usize, ErrorMode, &TestTiming, &TestMemoryConfig, Option<&TestProgress>) -> TestStats;
 type TestFunctionLatency = unsafe fn(&[AllocationBlock], usize, ErrorMode, &TestTiming, &TestMemoryConfig, Option<&TestProgress>) -> LatencyTestStats;
 
 // Test function wrapper enum
 #[derive(Debug, Clone)]
 pub enum TestFunction {
-    Simple(TestFunctionSimple),
-    WithConfig(TestFunctionWithConfig),
     MultiBlock(TestFunctionMultiBlock),
     /// Latency tests return extended stats with percentiles
     Latency(TestFunctionLatency),
-}
-
-pub fn run_tests_with_layout(layout: EnhancedMemoryLayout, error_mode: ErrorMode) -> bool {
-    let alloc_config = MemoryAllocationConfig::default();
-    let runtime_config = detect_runtime_capabilities(&alloc_config);
-    // Use global cached system info for cache_info
-    let cache_info = crate::tests::get_system_info().get_cache_info();
-    run_tests_with_layout_and_timing(layout, error_mode, TestSuiteTiming::default(), runtime_config, None, cache_info)
-}
-
-pub fn run_tests_with_layout_and_timing(
-    layout: EnhancedMemoryLayout,
-    error_mode: ErrorMode,
-    suite_timing: TestSuiteTiming,
-    runtime_config: RuntimeConfig,
-    config: Option<&crate::config::ModernConfig>,
-    cache_info: &CacheInfo,
-) -> bool {
-    run_tests_with_layout_and_timing_filtered(layout, error_mode, suite_timing, runtime_config, config, TestRunOverrides::default(), cache_info)
 }
 
 pub fn run_tests_with_layout_and_timing_filtered(
@@ -388,8 +354,6 @@ pub fn run_tests_with_layout_and_timing_filtered(
         channels_override,
     } = overrides;
 
-    setup_signal_handler();
-    
     layout.print_layout();
 
     let progress = Arc::new(ProgressTracker::new());
@@ -495,10 +459,7 @@ pub fn run_tests_with_layout_and_timing_filtered(
             });
         }
         
-        let report = ThreadAllocationReport { 
-            total_threads: allocations.len(),
-            allocations 
-        };
+        let report = ThreadAllocationReport { allocations };
         let mut reporter = create_console_reporter();
         if let Err(e) = reporter.report_thread_allocations(&report) {
             log::error!("Failed to display thread allocation table: {}", e);
@@ -725,7 +686,7 @@ pub fn run_tests_with_layout_and_timing_filtered(
         test_def.config.cache_line_bytes = cache_info.cache_line_size;
     }
 
-    let pinning_config = CpuPinningConfig::default();
+    let thread_priority = ThreadPriority::default();
 
     // Tally the page-size mix and the real allocated total while we still own the blocks —
     // `ThreadPool::new` takes them by value below. Both are *outcomes*, not requests: the
@@ -738,10 +699,16 @@ pub fn run_tests_with_layout_and_timing_filtered(
         .map(|block| block.buffer.size() as u64)
         .sum();
 
-    println!("\nCreating thread pool with {} persistent workers...", thread_count);
+    log::info!(
+        "Creating thread pool: {} persistent workers at {} priority ({})",
+        thread_count,
+        thread_priority,
+        thread_priority.win32_name()
+    );
     let (thread_pool, result_receiver) = ThreadPool::new(
         allocated_blocks,
-        &pinning_config,
+        runtime_config.pin_threads,
+        thread_priority,
         thread_count,
         runtime_config.cpu_list.as_deref()  // Pass the CPU list
     );
@@ -759,7 +726,8 @@ pub fn run_tests_with_layout_and_timing_filtered(
             allocated_bytes,
             thread_count,
             cpu_assignments: thread_pool.get_cpu_assignments(),
-            pinned: pinning_config.enable_pinning,
+            pinned: runtime_config.pin_threads,
+            thread_priority,
             suite_timing: &suite_timing,
             error_mode,
             test_filter: single_test_filter.map(|s| s.to_string()),
@@ -1197,7 +1165,7 @@ fn execute_test_cycle(ctx: &CycleContext, cycle: u64) -> Option<RunOutcome> {
         {
             use crate::reporting::{create_console_reporter, converters};
             let report =
-                converters::create_thread_timing_report(test_name, &test_stats, whea_for_test);
+                converters::create_thread_timing_report(&test_stats, whea_for_test);
             let mut reporter = create_console_reporter();
             if let Err(e) = reporter.report_thread_timing(&report) {
                 log::error!("Failed to display thread timing report: {}", e);
@@ -1208,20 +1176,8 @@ fn execute_test_cycle(ctx: &CycleContext, cycle: u64) -> Option<RunOutcome> {
         if !latency_results.is_empty() {
             use crate::reporting::create_console_reporter;
 
-            // Convert to LatencyTestSummaryReport for reporting (uses passed cache_info)
-            let latency_thread_count = latency_results.len();
-            let level_summary = convert_to_latency_level_summary(test_name, &latency_results, test_config, cache_info, latency_thread_count);
-
-            let summary_report = LatencyTestSummaryReport {
-                detected_cache: DetectedCacheInfo {
-                    l1d_per_core_kb: cache_info.per_core_l1d / 1024,
-                    l2_per_core_kb: cache_info.per_core_l2 / 1024,
-                    l3_shared_mb: cache_info.l3_cache / (1024 * 1024),
-                    detection_method: cache_info.detection_method.clone(),
-                },
-                thread_count: latency_results.len(),
-                levels_tested: vec![level_summary],
-            };
+            let level_summary = convert_to_latency_level_summary(&latency_results);
+            let summary_report = LatencyTestSummaryReport { levels_tested: vec![level_summary] };
 
             // Use existing reporting infrastructure - just display the single level
             let mut reporter = create_console_reporter();
@@ -3900,12 +3856,11 @@ fn create_test_definitions_from_config(config: &crate::config::ModernConfig, cac
 
 // Detect runtime capabilities
 pub fn detect_runtime_capabilities(alloc_config: &MemoryAllocationConfig) -> RuntimeConfig {
-    // Unconditionally NativeLargePages, as before the driver-client purge: `WindowsBackend`
-    // itself decides per-allocation whether large pages are usable and falls back, so
-    // downgrading to NativeRegular here would turn a soft fallback into a hard
-    // "backend doesn't support large pages" error. `large_pages_available` is reported
-    // separately for display.
-    let memory_backend = MemoryBackend::NativeLargePages;
+    // Always large-page capable, even without the privilege: `WindowsBackend` itself
+    // decides per-allocation whether large pages are usable and falls back, whereas building it
+    // with `large_pages: false` would turn that soft fallback into a hard "backend doesn't
+    // support large pages" error. `large_pages_available` is reported separately for display.
+    let memory_backend = MemoryBackend::VirtualAlloc2;
 
     let large_pages_available = crate::memory::privileges::check_large_page_privilege().is_ok();
 
@@ -3920,6 +3875,7 @@ pub fn detect_runtime_capabilities(alloc_config: &MemoryAllocationConfig) -> Run
             let total_cpus = num_cpus::get();
             Some((0..total_cpus).collect())
         },
+        pin_threads: true,
         enhanced_memory_strategy: crate::memory::allocation_strategy::EnhancedMemoryStrategy::default(),
         memory_allocation: alloc_config.clone(),
     }
@@ -3974,86 +3930,61 @@ pub fn set_thread_ideal_processor_ex(_thread_handle: windows::Win32::Foundation:
     Ok(())
 }
 
-// Performance configuration for thread priority
-#[derive(Debug, Clone)]
-pub struct PerformanceConfig {
-    pub thread_priority: ThreadPriority,
-}
-
-#[derive(Debug, Clone)]
+/// Scheduling priority of the worker threads, set by each worker on itself at pool creation.
+///
+/// Relative to TMR's process class, which it leaves at `NORMAL_PRIORITY_CLASS`.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
 pub enum ThreadPriority {
+    #[expect(dead_code, reason = "no config key selects it yet; see TODO #71")]
     Normal,
+    #[default]
     High,
+    /// `THREAD_PRIORITY_TIME_CRITICAL`: base priority 15, the top of the normal range. Not the
+    /// realtime priority *class* (16-31). With a worker on every logical CPU it can still starve
+    /// the console and input, so it suits runs that leave cores free.
+    #[expect(dead_code, reason = "no config key selects it yet; see TODO #71")]
     Realtime,
 }
 
-impl Default for PerformanceConfig {
-    fn default() -> Self {
-        Self {
-            thread_priority: ThreadPriority::High,
+impl ThreadPriority {
+    fn win32(self) -> (windows::Win32::System::Threading::THREAD_PRIORITY, &'static str) {
+        use windows::Win32::System::Threading::{
+            THREAD_PRIORITY_HIGHEST, THREAD_PRIORITY_NORMAL, THREAD_PRIORITY_TIME_CRITICAL,
+        };
+        match self {
+            Self::Normal => (THREAD_PRIORITY_NORMAL, "THREAD_PRIORITY_NORMAL"),
+            Self::High => (THREAD_PRIORITY_HIGHEST, "THREAD_PRIORITY_HIGHEST"),
+            Self::Realtime => (THREAD_PRIORITY_TIME_CRITICAL, "THREAD_PRIORITY_TIME_CRITICAL"),
         }
+    }
+
+    /// The Win32 level this maps to, for the log.
+    pub fn win32_name(self) -> &'static str {
+        self.win32().1
+    }
+
+    /// Apply to the calling thread.
+    pub fn apply(self) -> Result<(), String> {
+        use windows::Win32::System::Threading::{GetCurrentThread, SetThreadPriority};
+
+        unsafe { SetThreadPriority(GetCurrentThread(), self.win32().0) }
+            .map_err(|e| format!("SetThreadPriority({}) failed: {e}", self.win32_name()))
     }
 }
 
-impl PerformanceConfig {
-    pub fn apply(&self) -> Result<(), String> {
-        use windows::Win32::System::Threading::{SetThreadPriority, GetCurrentThread, THREAD_PRIORITY_NORMAL, THREAD_PRIORITY_HIGHEST, THREAD_PRIORITY_TIME_CRITICAL};
-        
-        unsafe {
-            let priority = match self.thread_priority {
-                ThreadPriority::Normal => THREAD_PRIORITY_NORMAL,
-                ThreadPriority::High => THREAD_PRIORITY_HIGHEST,
-                ThreadPriority::Realtime => THREAD_PRIORITY_TIME_CRITICAL,
-            };
-            
-            if SetThreadPriority(GetCurrentThread(), priority).is_ok() {
-                Ok(())
-            } else {
-                Err("Failed to set thread priority".to_string())
-            }
-        }
+impl std::fmt::Display for ThreadPriority {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.write_str(match self {
+            Self::Normal => "normal",
+            Self::High => "high",
+            Self::Realtime => "realtime",
+        })
     }
-}
-
-// Main test execution function that thread_pool calls
-pub fn run_test_with_memory_stages(
-    test_func: &TestFunction,
-    allocated_block: &AllocationBlock,
-    test_config: &TestMemoryConfig,
-    thread_id: usize,
-    error_mode: ErrorMode,
-) -> Result<TestStats, String> {
-    let ptr = allocated_block.buffer.as_mut_ptr();
-    let size = allocated_block.buffer.size();
-    
-    // Execute the test based on the function type
-    let stats = unsafe {
-        match test_func {
-            TestFunction::Simple(f) => f(ptr, size, thread_id, error_mode, &test_config.timing),
-            TestFunction::WithConfig(f) => f(ptr, size, thread_id, error_mode, &test_config.timing, test_config),
-            TestFunction::MultiBlock(_) => {
-                // MultiBlock tests need to be called from thread_pool with all blocks
-                // This path should not be reached when properly implemented
-                return Err("MultiBlock tests must be called with all blocks at once".to_string());
-            }
-            TestFunction::Latency(_) => {
-                // Latency tests need to be called from thread_pool with all blocks
-                // This path should not be reached when properly implemented
-                return Err("Latency tests must be called with all blocks at once".to_string());
-            }
-        }
-    };
-    
-    Ok(stats)
 }
 
 /// Convert latency test results to LatencyLevelSummary for reporting
 fn convert_to_latency_level_summary(
-    test_name: &str,
     latency_results: &[(usize, usize, LatencyTestStats)],
-    test_config: &TestMemoryConfig,
-    cache_info: &CacheInfo,
-    thread_count: usize,
 ) -> LatencyLevelSummary {
     // Collect per-thread results
     let mut per_thread_results = Vec::new();
@@ -4067,7 +3998,6 @@ fn convert_to_latency_level_summary(
             sample_count: lat_stats.sample_count,
             percentiles: LatencyPercentiles {
                 min_ns: lat_stats.latencies_ns.iter().min_by(|a, b| a.partial_cmp(b).unwrap()).copied().unwrap_or(0.0),
-                p1_ns: lat_stats.p1_ns,
                 p5_ns: lat_stats.p5_ns,
                 p10_ns: lat_stats.p10_ns,
                 p25_ns: lat_stats.p25_ns,
@@ -4077,7 +4007,6 @@ fn convert_to_latency_level_summary(
                 p95_ns: lat_stats.p95_ns,
                 p99_ns: lat_stats.p99_ns,
                 p99_9_ns: lat_stats.p99_9_ns,
-                max_ns: lat_stats.latencies_ns.iter().max_by(|a, b| a.partial_cmp(b).unwrap()).copied().unwrap_or(0.0),
                 spread_ratio: lat_stats.spread_ratio,
             },
         });
@@ -4099,7 +4028,6 @@ fn convert_to_latency_level_summary(
 
         LatencyPercentiles {
             min_ns: all_latencies[0],
-            p1_ns: percentile(1.0),
             p5_ns: percentile(5.0),
             p10_ns: percentile(10.0),
             p25_ns: percentile(25.0),
@@ -4109,7 +4037,6 @@ fn convert_to_latency_level_summary(
             p95_ns: percentile(95.0),
             p99_ns: percentile(99.0),
             p99_9_ns: percentile(99.9),
-            max_ns: all_latencies[len - 1],
             spread_ratio: {
                 let p5 = percentile(5.0);
                 let p95 = percentile(95.0);
@@ -4118,45 +4045,17 @@ fn convert_to_latency_level_summary(
         }
     } else {
         LatencyPercentiles {
-            min_ns: 0.0, p1_ns: 0.0, p5_ns: 0.0, p10_ns: 0.0, p25_ns: 0.0,
+            min_ns: 0.0, p5_ns: 0.0, p10_ns: 0.0, p25_ns: 0.0,
             p50_ns: 0.0, p75_ns: 0.0, p90_ns: 0.0, p95_ns: 0.0, p99_ns: 0.0,
-            p99_9_ns: 0.0, max_ns: 0.0, spread_ratio: 0.0,
-        }
-    };
-
-    // Calculate window size from config
-    let window_size_bytes = match &test_config.window_mode {
-        WindowMode::Absolute { size_bytes } => *size_bytes,
-        WindowMode::Cache { target } => target.calculate_window_size(cache_info, thread_count),
-        WindowMode::FullAllocation => 0, // Unknown at this point
-        WindowMode::CacheTotal { fraction } => {
-            // Naive sum-of-tiers — no thread division (intentionally coarse).
-            let total_cache = cache_info.per_core_l1d + cache_info.per_core_l2 + cache_info.l3_cache;
-            (total_cache as f64 * fraction) as usize
+            p99_9_ns: 0.0, spread_ratio: 0.0,
         }
     };
 
     LatencyLevelSummary {
-        target_name: test_name.to_string(),
-        level_name: test_name.to_string(),
-        window_size_bytes,
         total_samples,
         per_thread_results,
         consolidated,
     }
-}
-
-// CPU performance stats structure needed by reporting
-#[derive(Debug, Clone)]
-pub struct CpuPerformanceStats {
-    pub total_elapsed_ms: u128,
-    pub total_bytes: u64,
-    pub thread_count: usize,
-}
-
-// Stub functions that need to be implemented properly based on the existing modules
-fn setup_signal_handler() {
-    // TODO: Implement signal handling for graceful shutdown
 }
 
 fn allocate_all_blocks_new(thread_blocks: &HashMap<usize, Vec<BlockInfo>>, runtime_config: &RuntimeConfig) -> Result<HashMap<usize, Vec<AllocationBlock>>, String> {
@@ -4164,8 +4063,7 @@ fn allocate_all_blocks_new(thread_blocks: &HashMap<usize, Vec<BlockInfo>>, runti
 
     // Determine backend type based on runtime config
     let backend_type = match runtime_config.memory_backend {
-        MemoryBackend::NativeLargePages => BackendType::Windows { large_pages: true },
-        MemoryBackend::NativeRegular => BackendType::Windows { large_pages: false },
+        MemoryBackend::VirtualAlloc2 => BackendType::Windows { large_pages: true },
     };
     
     // Create memory allocator
@@ -4361,7 +4259,7 @@ fn display_and_save_results(
     }
 }
 
-pub fn print_current_memory_status() -> Option<SystemMemoryInfo> {
+pub fn print_current_memory_status() {
     use windows::Win32::System::SystemInformation::{GlobalMemoryStatusEx, MEMORYSTATUSEX};
     use crate::table::{TableBuilder, Alignment};
     
@@ -4403,22 +4301,8 @@ pub fn print_current_memory_status() -> Option<SystemMemoryInfo> {
             
             table.print();
             println!();
-            
-            let system_memory = SystemMemoryInfo {
-                total_installed_bytes: mem_status.ullTotalPhys,
-                total_physical_bytes: mem_status.ullTotalPhys,
-                available_physical_bytes: mem_status.ullAvailPhys,
-                used_physical_bytes: mem_status.ullTotalPhys - mem_status.ullAvailPhys,
-                total_virtual_bytes: mem_status.ullTotalPageFile,
-                available_virtual_bytes: mem_status.ullAvailPageFile,
-                memory_load_percent: mem_status.dwMemoryLoad,
-                min_start_address: 0x10000000, // 256MB default start address
-            };
-            
-            Some(system_memory)
         } else {
             eprintln!("⚠️ Failed to retrieve system memory status");
-            None
         }
     }
 }

@@ -38,20 +38,6 @@ pub struct ChunkCtx {
     pub check_mask: Option<u32>,
 }
 
-impl ChunkCtx {
-    /// Number of u64 elements in this chunk.
-    #[inline(always)]
-    pub fn len(&self) -> usize {
-        self.chunk_end - self.chunk_start
-    }
-
-    /// Returns true if the chunk spans no elements.
-    #[inline(always)]
-    pub fn is_empty(&self) -> bool {
-        self.chunk_end == self.chunk_start
-    }
-}
-
 /// Run a phased test with monomorphized closures for init, test, and verify phases.
 ///
 /// This handles ALL orchestration boilerplate:

@@ -27,6 +27,7 @@ use windows::Win32::System::SystemServices::{
 pub trait Backend: Send + Sync + std::fmt::Debug {
     fn allocate(&self, config: &AllocationConfig) -> Result<BackendAllocation, String>;
     fn free(&self, allocation: BackendAllocation) -> Result<(), String>;
+    #[expect(dead_code, reason = "revival seam (TODO #4/5): names the backend once there is more than one")]
     fn name(&self) -> &'static str;
 }
 
@@ -77,12 +78,6 @@ impl Backend for WindowsBackend {
                         _ => return Err("Backend doesn't support large/huge pages but they are required".to_string()),
                     }
                 },
-                AllocPageSizePref::Range { min, max: _ } => {
-                    if matches!(min, PageType::Large(_) | PageType::Huge(_)) {
-                        return Err("Backend doesn't support large/huge pages but minimum requires them".to_string());
-                    }
-                    AllocPageSizePref::Prefer(PageType::Regular(config.size))
-                }
             };
             modified_config
         } else {
@@ -101,10 +96,8 @@ impl Backend for WindowsBackend {
         };
         
         let info = BufferInfo {
-            physical_address: None,
             numa_node: config.numa_node.unwrap_or(0),
             page_type,
-            segments: Vec::new(),
         };
         
         Ok(BackendAllocation {
@@ -184,20 +177,6 @@ impl WindowsBackend {
                     PageType::Mixed(_) => return Err("Can't require mixed page types with VirtualAlloc2".to_string()),
                 }
             },
-            AllocPageSizePref::Range { min, max } => {
-                // Determine based on range
-                let needs_large = !matches!(max, PageType::Regular(_));
-                let prefer_huge = matches!(min, PageType::Huge(_));
-                let prefer_large = matches!(min, PageType::Large(_)) || matches!(max, PageType::Large(_));
-                
-                if prefer_huge {
-                    (true, Some((true, true)))
-                } else if prefer_large {
-                    (true, Some((true, false)))
-                } else {
-                    (needs_large, None)
-                }
-            }
         };
         
         if needs_large_pages
@@ -296,7 +275,7 @@ impl WindowsBackend {
             );
         }
 
-        // Add alignment / base-address requirements if specified.
+        // Add the alignment requirement if specified.
         //
         // LIFETIME: `addr_req` MUST be declared at function scope, not inside the `if` below.
         // `MEM_EXTENDED_PARAMETER` stores it as a *raw pointer*, which the kernel dereferences
@@ -310,13 +289,9 @@ impl WindowsBackend {
             Alignment: 0,
         };
 
-        if config.alignment.is_some() || config.base_address.is_some() {
-            // Both fields are optional and independent: a null LowestStartingAddress means
-            // "anywhere", Alignment 0 means "no specific alignment". Filling them from the two
-            // Options covers all three previously-separate cases identically.
-            addr_req.LowestStartingAddress =
-                config.base_address.unwrap_or(std::ptr::null_mut()) as *mut std::ffi::c_void;
-            addr_req.Alignment = config.alignment.unwrap_or(0);
+        if let Some(alignment) = config.alignment {
+            // A null LowestStartingAddress means "anywhere".
+            addr_req.Alignment = alignment;
 
             let mut param = Self::create_extended_param(
                 MemExtendedParameterAddressRequirements,
@@ -384,21 +359,7 @@ impl WindowsBackend {
                         return self.allocate_with_virtualalloc2(&fallback_config);
                     }
                 },
-                AllocPageSizePref::Range { min: _, max } => {
-                    // Try next smaller size in range
-                    if actual_page_type.1 && !matches!(max, PageType::Huge(_)) {
-                        log::debug!("VirtualAlloc2 with huge pages failed (code {}), trying large pages in range", err.0);
-                        let mut fallback_config = config.clone();
-                        fallback_config.page_size = AllocPageSizePref::Prefer(PageType::Large(size_bytes));
-                        return self.allocate_with_virtualalloc2(&fallback_config);
-                    } else if actual_page_type.0 && !matches!(max, PageType::Large(_)) {
-                        log::debug!("VirtualAlloc2 with large pages failed (code {}), trying regular pages in range", err.0);
-                        let mut fallback_config = config.clone();
-                        fallback_config.page_size = AllocPageSizePref::Prefer(PageType::Regular(size_bytes));
-                        return self.allocate_with_virtualalloc2(&fallback_config);
-                    }
-                },
-                _ => {} // No fallback for Require
+                AllocPageSizePref::Require(_) => {} // No fallback for Require
             }
             
             Err(format!("VirtualAlloc2 failed: code = {}", err.0))

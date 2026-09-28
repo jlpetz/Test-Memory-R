@@ -1,52 +1,11 @@
-/// Pure data structures for reporting - no formatting or presentation logic
-/// These structures represent the "what" of reporting, not the "how"
-use std::time::Duration;
-
-/// Memory allocation report data
-#[derive(Debug, Clone)]
-pub struct MemoryAllocationReport {
-    // Raw values
-    pub total_installed_bytes: u64,
-    pub total_physical_bytes: u64,
-    pub available_physical_bytes: u64,
-    pub used_physical_bytes: u64,
-    pub allocation_bytes: u64,
-    pub reserve_bytes: u64,
-    pub reference_bytes: u64,
-    
-    // Calculated values
-    pub allocation_percent: f64,
-    pub reserve_percent: f64,
-    pub memory_load_percent: u32,
-    
-    // Metadata
-    pub allocation_type: String,
-    pub min_start_address: u64,
-    pub actual_start_address: u64,
-    
-    // Split reserve details (optional)
-    pub split_reserve: Option<SplitReserveDetails>,
-    
-    // Status
-    pub warnings: Vec<String>,
-}
-
-/// Split reserve breakdown details
-#[derive(Debug, Clone)]
-pub struct SplitReserveDetails {
-    pub pre_percent: f64,
-    pub post_percent: f64,
-    pub pre_buffer_bytes: u64,
-    pub post_reserve_bytes: u64,
-}
+//! Pure data structures for reporting - no formatting or presentation logic
+//! These structures represent the "what" of reporting, not the "how"
 
 /// System information report data
 #[derive(Debug, Clone)]
 pub struct SystemInfoReport {
     pub cpu_info: CpuInfo,
     pub cache_info: CacheInfo,
-    pub memory_info: MemoryInfo,
-    pub topology_info: TopologyInfo,
     pub tsc_info: TscCalibrationInfo,
 }
 
@@ -91,122 +50,6 @@ pub struct CacheInfo {
     pub detection_method: String,
 }
 
-/// Memory system information
-#[derive(Debug, Clone)]
-pub struct MemoryInfo {
-    pub total_installed: u64,
-    pub total_physical: u64,
-    pub available_physical: u64,
-    pub large_pages_available: bool,
-    pub huge_pages_available: bool,
-    pub numa_nodes: usize,
-}
-
-/// CPU topology information
-#[derive(Debug, Clone)]
-pub struct TopologyInfo {
-    pub is_hybrid: bool,
-    pub p_cores: usize,
-    pub e_cores: usize,
-    pub threads_per_core: usize,
-    pub numa_nodes: Vec<NumaNodeInfo>,
-    pub assigned_cpus: Vec<usize>,
-    pub detection_method: String,
-}
-
-/// NUMA node information
-#[derive(Debug, Clone)]
-pub struct NumaNodeInfo {
-    pub node_id: usize,
-    pub cpu_count: usize,
-    pub memory_bytes: u64,
-}
-
-/// Test progress report
-#[derive(Debug, Clone)]
-pub struct TestProgressReport {
-    pub current_cycle: u32,
-    pub total_cycles: Option<u32>,
-    pub elapsed_time: Duration,
-    pub estimated_time_remaining: Option<Duration>,
-    pub current_test: String,
-    pub current_phase: String,
-    pub progress_percent: f64,
-    pub errors_found: u32,
-    pub threads_active: usize,
-    pub memory_tested_bytes: u64,
-    pub operations_completed: u64,
-    pub operations_per_second: f64,
-}
-
-/// Per-thread status for progress reporting
-#[derive(Debug, Clone)]
-pub struct ThreadStatus {
-    pub thread_id: usize,
-    pub cpu_id: usize,
-    pub current_test: String,
-    pub progress_percent: f64,
-    pub errors: u32,
-}
-
-/// Final test results report
-#[derive(Debug, Clone)]
-pub struct FinalResultsReport {
-    pub success: bool,
-    pub total_duration: Duration,
-    pub cycles_completed: u32,
-    pub total_errors: u32,
-    pub error_details: Vec<ErrorDetail>,
-    pub statistics: TestStatistics,
-    pub coverage_percent: f64,
-}
-
-/// Detailed error information
-#[derive(Debug, Clone)]
-pub struct ErrorDetail {
-    pub test_name: String,
-    pub thread_id: usize,
-    pub address: u64,
-    pub expected: u64,
-    pub actual: u64,
-    pub timestamp: Duration,
-    pub cycle: u32,
-}
-
-/// Test statistics
-#[derive(Debug, Clone)]
-pub struct TestStatistics {
-    pub total_operations: u64,
-    pub bytes_tested: u64,
-    pub average_bandwidth_gb_s: f64,
-    pub peak_bandwidth_gb_s: f64,
-    pub operation_breakdown: Option<OperationBreakdown>,
-    pub test_coverage: Vec<TestCoverage>,
-}
-
-/// Detailed operation breakdown
-#[derive(Debug, Clone)]
-pub struct OperationBreakdown {
-    pub total_reads: u64,
-    pub total_writes: u64,
-    pub total_verifies: u64,
-    pub total_simd_ops: u64,
-    pub total_fence_ops: u64,
-    pub total_cache_ops: u64,
-    pub simd_type: String,
-    pub access_pattern: String,
-}
-
-/// Coverage information per test
-#[derive(Debug, Clone)]
-pub struct TestCoverage {
-    pub test_name: String,
-    pub iterations: u32,
-    pub bytes_tested: u64,
-    pub errors_found: u32,
-    pub average_time_ms: f64,
-}
-
 /// Thread timing deviation report
 ///
 /// The WHEA counts sit at report level, not on [`ThreadTiming`], because WHEA events are
@@ -218,7 +61,6 @@ pub struct TestCoverage {
 /// reasoning applies to the three `PerformanceBy*Report`s below.
 #[derive(Debug, Clone)]
 pub struct ThreadTimingReport {
-    pub test_name: String,
     pub average_elapsed_ms: u128,
     pub thread_timings: Vec<ThreadTiming>,
     /// WHEA events during this test (the delta across it, not the run total).
@@ -245,7 +87,6 @@ pub struct ThreadTiming {
 /// Per-thread allocation breakdown
 #[derive(Debug, Clone)]
 pub struct ThreadAllocationReport {
-    pub total_threads: usize,
     pub allocations: Vec<ThreadAllocation>,
 }
 
@@ -257,31 +98,6 @@ pub struct ThreadAllocation {
     pub huge_pages_count: u64,
     pub large_pages_count: u64,
     pub regular_pages_count: u64,
-}
-
-/// Page type allocation report
-#[derive(Debug, Clone)]
-pub struct PageAllocationReport {
-    pub page_types: Vec<PageTypeAllocation>,
-    pub user_constraints: PageConstraints,
-}
-
-/// Page type allocation details
-#[derive(Debug, Clone)]
-pub struct PageTypeAllocation {
-    pub page_type: String,
-    pub page_size: u64,
-    pub system_available: u64,
-    pub requested: u64,
-    pub allocated: u64,
-    pub success: bool,
-}
-
-/// User page size constraints
-#[derive(Debug, Clone)]
-pub struct PageConstraints {
-    pub min_page_size: Option<String>,
-    pub max_page_size: Option<String>,
 }
 
 /// Performance statistics by thread
@@ -380,23 +196,6 @@ pub struct TopologySummary {
     pub smt_excluded_count: usize,
 }
 
-/// System memory analysis report
-#[derive(Debug, Clone)]
-pub struct SystemMemoryAnalysisReport {
-    pub memory_types: Vec<MemoryTypeAnalysis>,
-    pub min_start_address: u64,
-}
-
-/// Individual memory type analysis
-#[derive(Debug, Clone)]
-pub struct MemoryTypeAnalysis {
-    pub memory_type: String,
-    pub total_gib: Option<f64>,
-    pub available_gib: Option<f64>,
-    pub used_gib: Option<f64>,
-    pub usage_percent: Option<f64>,
-}
-
 /// Test configuration report showing all tests and their settings
 #[derive(Debug, Clone)]
 pub struct TestConfigurationReport {
@@ -431,26 +230,12 @@ pub struct TestPerformanceEntry {
     pub duration_secs: f64,
     pub data_processed_gib: f64,
     pub throughput_mib_s: f64,
+    #[expect(dead_code, reason = "TODO #69 F: the per-cycle report is to be revived, not deleted")]
     pub throughput_gib_s: f64,
     pub errors: u64,
     /// OS-reported hardware errors during this test, and the corrected subset (see whea.rs).
     pub whea_total: u64,
     pub whea_corrected: u64,
-}
-
-/// CPU performance variance report
-#[derive(Debug, Clone)]
-pub struct CpuVarianceReport {
-    pub average_throughput_mib_s: f64,
-    pub cpu_performances: Vec<CpuPerformanceEntry>,
-}
-
-#[derive(Debug, Clone)]
-pub struct CpuPerformanceEntry {
-    pub cpu_id: usize,
-    pub throughput_mib_s: f64,
-    pub variance_percent: f64,
-    pub test_count: u32,
 }
 
 /// Final test summary report
@@ -477,7 +262,6 @@ pub struct TestSummaryEntry {
     /// Per-cycle *average*, like duration and throughput. Only errors and WHEA are summed.
     pub average_data_gib: f64,
     pub average_throughput_mib_s: f64,
-    pub average_throughput_gib_s: f64,
     pub total_errors: u64,
     // WHEA counts summed over every cycle this test ran in (see whea.rs).
     pub whea_total: u64,
@@ -505,34 +289,15 @@ pub struct ConsolidatedMemoryReport {
     pub available_physical_bytes: u64,
     pub used_physical_bytes: u64,
     pub total_virtual_bytes: u64,
-    pub available_virtual_bytes: u64,
     pub memory_load_percent: u32,
     
     // Allocation planning information
     pub allocation_bytes: u64,
     pub reserve_bytes: u64,
-    pub reference_bytes: u64,
     pub allocation_type: String,
-    pub min_start_address: u64,
-    
-    // Split reserve details (if applicable)
-    pub split_reserve: Option<SplitReserveDetails>,
-    
+
     // Warnings
     pub warnings: Vec<String>,
-}
-
-/// Current memory status report (kept for backward compatibility)
-#[derive(Debug, Clone)]
-pub struct CurrentMemoryStatus {
-    pub physical_total_gib: f64,
-    pub physical_available_gib: f64,
-    pub physical_used_gib: f64,
-    pub physical_free_percent: f64,
-    pub page_file_total_gib: f64,
-    pub page_file_available_gib: f64,
-    pub page_file_used_gib: f64,
-    pub memory_load_percent: f64,
 }
 
 /// Block allocation distribution report - backend-agnostic; `allocator_backend` names the source
@@ -636,17 +401,6 @@ pub struct AllocationFairness {
     pub min_allocation_bytes: u64,
     pub max_allocation_bytes: u64,
     pub mean_allocation_bytes: f64,
-    pub median_allocation_bytes: u64,
-    pub unfair_threads: Vec<UnfairThreadAllocation>,
-}
-
-/// Threads with unfair allocation (too much or too little)
-#[derive(Debug, Clone)]
-pub struct UnfairThreadAllocation {
-    pub thread_id: usize,
-    pub allocated_bytes: u64,
-    pub deviation_from_mean_percent: f64,
-    pub reason: String, // e.g., "got all huge pages", "only regular pages"
 }
 
 // Note: CacheLatencyReport was removed - --cache-latency now uses LatencyTestSummaryReport
@@ -655,17 +409,12 @@ pub struct UnfairThreadAllocation {
 /// Aggregates results from all threads for each cache level tested
 #[derive(Debug, Clone)]
 pub struct LatencyTestSummaryReport {
-    pub detected_cache: DetectedCacheInfo,
-    pub thread_count: usize,
     pub levels_tested: Vec<LatencyLevelSummary>,
 }
 
 /// Summary of latency measurements for a single cache level across all threads
 #[derive(Debug, Clone)]
 pub struct LatencyLevelSummary {
-    pub target_name: String,           // e.g., "L1/2", "L2/2", "DRAM*4"
-    pub level_name: String,            // e.g., "L1", "L2", "L3", "DRAM"
-    pub window_size_bytes: usize,      // Actual window size used per thread
     pub total_samples: usize,          // Total samples across all threads
     pub per_thread_results: Vec<LatencyThreadResult>,
     pub consolidated: LatencyPercentiles,  // Consolidated across all threads
@@ -684,7 +433,6 @@ pub struct LatencyThreadResult {
 #[derive(Debug, Clone)]
 pub struct LatencyPercentiles {
     pub min_ns: f64,
-    pub p1_ns: f64,
     pub p5_ns: f64,
     pub p10_ns: f64,
     pub p25_ns: f64,
@@ -694,17 +442,7 @@ pub struct LatencyPercentiles {
     pub p95_ns: f64,
     pub p99_ns: f64,
     pub p99_9_ns: f64,
-    pub max_ns: f64,
     pub spread_ratio: f64,  // P95/P5 - indicates variability
-}
-
-/// Detected cache hierarchy information
-#[derive(Debug, Clone)]
-pub struct DetectedCacheInfo {
-    pub l1d_per_core_kb: usize,
-    pub l2_per_core_kb: usize,
-    pub l3_shared_mb: usize,
-    pub detection_method: String,
 }
 
 // Note: CacheLatencyLevel was removed - --cache-latency now uses LatencyLevelSummary

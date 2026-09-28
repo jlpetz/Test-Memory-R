@@ -113,9 +113,6 @@ impl<'a> TestRunner<'a> {
         self.cycle
     }
 
-    #[inline]
-    pub fn cycle(&self) -> u32 { self.cycle }
-
     /// Accumulate processed bytes (called per block, between chunks).
     #[inline]
     pub fn add_bytes(&mut self, n: usize) {

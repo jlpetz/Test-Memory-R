@@ -1,7 +1,7 @@
 use crate::{ErrorMode};
 use crate::constants::{gib_to_bytes, BYTES_PER_MIB};
 use crate::tests::{WindowMode, ChunkMode, CacheTarget, parse_size_string};
-use crate::memory::allocation_strategy::{EnhancedMemoryStrategy, AllocationMode, ReserveAmount, StartAddressMode};
+use crate::memory::allocation_strategy::{EnhancedMemoryStrategy, AllocationMode, ReserveAmount};
 use crate::runner::TestSuiteTiming;
 use crate::tests::{TestTiming, TestMemoryConfig};
 use serde::{Deserialize, Serialize};
@@ -105,54 +105,21 @@ pub struct MemoryAllocationConfig {
     
     #[serde(default = "default_max_page_size")]
     pub max_page_size: String,                 // "regular", "large", "huge"
-    
-    // Allocation behavior
-    #[serde(default = "default_zero_memory")]
-    pub zero_memory: bool,                     // Zero memory on allocation
-    
-    #[serde(default = "default_require_contiguous")]
-    pub require_contiguous: bool,              // Require contiguous physical memory
-    
+
     #[serde(default = "default_allocation_strategy")]
     pub allocation_strategy: String,           // "greedy", "plan-pagesize-pref", "plan-blocksize-pref"
-    
-    // Timing/retry parameters
-    #[serde(default = "default_allocation_timeout_ms")]
-    pub allocation_timeout_ms: u32,            // Default: 10000
-    
-    #[serde(default = "default_retry_interval_ms")]
-    pub retry_interval_ms: u32,                // Default: 10
-    
-    #[serde(default = "default_max_retries")]
-    pub max_retries: u32,                      // Default: 100
-    
-    // NUMA behavior
-    #[serde(default = "default_strict_numa")]
-    pub strict_numa: bool,                     // Fail if can't allocate on requested NUMA node
 }
 
 fn default_min_page_size() -> String { "large".to_string() }
 fn default_max_page_size() -> String { "huge".to_string() }
-fn default_zero_memory() -> bool { false }
-fn default_require_contiguous() -> bool { true }
 fn default_allocation_strategy() -> String { "plan-pagesize-pref".to_string() }
-fn default_allocation_timeout_ms() -> u32 { 10000 }
-fn default_retry_interval_ms() -> u32 { 100 }
-fn default_max_retries() -> u32 { 3 }
-fn default_strict_numa() -> bool { false }
 
 impl Default for MemoryAllocationConfig {
     fn default() -> Self {
         Self {
             min_page_size: default_min_page_size(),
             max_page_size: default_max_page_size(),
-            zero_memory: default_zero_memory(),
-            require_contiguous: default_require_contiguous(),
             allocation_strategy: default_allocation_strategy(),
-            allocation_timeout_ms: default_allocation_timeout_ms(),
-            retry_interval_ms: default_retry_interval_ms(),
-            max_retries: default_max_retries(),
-            strict_numa: default_strict_numa(),
         }
     }
 }
@@ -173,9 +140,6 @@ impl WindowSpec {
     pub fn full_allocation() -> Self {
         WindowSpec { mode: "full_allocation".to_string(), ..Default::default() }
     }
-    pub fn cache(target: &str) -> Self {
-        WindowSpec { mode: "cache".to_string(), target: Some(target.to_string()), ..Default::default() }
-    }
     pub fn cache_total(fraction: f64) -> Self {
         WindowSpec { mode: "cache_total".to_string(), fraction: Some(fraction), ..Default::default() }
     }
@@ -187,12 +151,6 @@ impl WindowSpec {
 impl ChunkSpec {
     pub fn auto() -> Self {
         ChunkSpec { mode: "auto".to_string(), ..Default::default() }
-    }
-    pub fn cache(target: &str) -> Self {
-        ChunkSpec { mode: "cache".to_string(), target: Some(target.to_string()), ..Default::default() }
-    }
-    pub fn cache_total(fraction: f64) -> Self {
-        ChunkSpec { mode: "cache_total".to_string(), fraction: Some(fraction), ..Default::default() }
     }
     pub fn absolute(size: &str) -> Self {
         ChunkSpec { mode: "absolute".to_string(), size: Some(size.to_string()), ..Default::default() }
@@ -267,50 +225,6 @@ pub fn spec_to_chunk_mode(spec: &ChunkSpec) -> Result<ChunkMode, String> {
             Ok(ChunkMode::Fraction { fraction })
         }
         other => Err(format!("unknown chunk mode '{}'; valid: auto, cache, cache_total, absolute, fraction", other)),
-    }
-}
-
-/// Render a WindowSpec for display in summary reports.
-pub fn describe_window_spec(spec: &WindowSpec) -> String {
-    match spec.mode.to_ascii_lowercase().as_str() {
-        "full_allocation" | "full-allocation" | "full" => "FullAllocation".to_string(),
-        "cache" => match spec.target.as_deref() {
-            Some(t) => format!("Cache({})", t),
-            None => "Cache(?)".to_string(),
-        },
-        "cache_total" | "cache-total" => match spec.fraction {
-            Some(f) => format!("CacheTotal({:.2}x)", f),
-            None => "CacheTotal(?)".to_string(),
-        },
-        "absolute" => match spec.size.as_deref() {
-            Some(s) => format!("Absolute({})", s),
-            None => "Absolute(?)".to_string(),
-        },
-        other => format!("Unknown({})", other),
-    }
-}
-
-/// Render a ChunkSpec for display in summary reports.
-pub fn describe_chunk_spec(spec: &ChunkSpec) -> String {
-    match spec.mode.to_ascii_lowercase().as_str() {
-        "auto" => "Auto".to_string(),
-        "cache" => match spec.target.as_deref() {
-            Some(t) => format!("Cache({})", t),
-            None => "Cache(?)".to_string(),
-        },
-        "cache_total" | "cache-total" => match spec.fraction {
-            Some(f) => format!("CacheTotal({:.2}x)", f),
-            None => "CacheTotal(?)".to_string(),
-        },
-        "absolute" => match spec.size.as_deref() {
-            Some(s) => format!("Absolute({})", s),
-            None => "Absolute(?)".to_string(),
-        },
-        "fraction" => match spec.fraction {
-            Some(f) => format!("Fraction({:.1}%)", f * 100.0),
-            None => "Fraction(?)".to_string(),
-        },
-        other => format!("Unknown({})", other),
     }
 }
 
@@ -428,10 +342,6 @@ pub struct TestConfig {
     pub pattern_param0: Option<u64>,
     pub pattern_param1: Option<u64>,
     pub parameter: Option<u32>,             // Raw TM5 parameter — interpreted via TestParameterContext
-
-    // v2: Enable v2 test variants when true (uses corrected parameter interpretation)
-    #[serde(default)]
-    pub use_v2_tests: Option<bool>,
 }
 
 /// Correctly interpreted TM5 parameter context for v2 tests.
@@ -476,11 +386,6 @@ pub struct TestParameterContext {
 /// `channels`: memory channel count (default 2 for DDR5 dual-channel).
 /// TM5 SimpleTest stride formula: `JumpStep = BlkSize * (Channels * Parameter - 1)`
 /// where BlkSize=64 bytes (cache line). In cache line units: `Channels * Parameter - 1`.
-pub fn interpret_tm5_parameter(function: &str, parameter: u32) -> TestParameterContext {
-    interpret_tm5_parameter_with_channels(function, parameter, 2)
-}
-
-/// Interpret TM5 Parameter with explicit channel count.
 pub fn interpret_tm5_parameter_with_channels(function: &str, parameter: u32, channels: u32) -> TestParameterContext {
     match function {
         "SimpleTest" | "Mem-Simple" | "Mem-SimpleV2" => {
@@ -548,7 +453,6 @@ pub struct LegacyMainSection {
     pub config_name: String,
     pub config_author: String,
     pub cores: u32,
-    pub tests: u32,
     pub time_percent: u32,
     pub cycles: u32,
     pub test_sequence: Vec<u32>,
@@ -565,6 +469,7 @@ pub struct LegacyMemorySetup {
 
 #[derive(Debug, Clone)]
 pub struct LegacyTest {
+    #[expect(dead_code, reason = "TODO #74: TM5 `Test Sequence` is parsed but never wired; TMR runs enabled tests in index order")]
     pub id: u32,
     pub enabled: bool,
     pub time_percent: u32,
@@ -593,93 +498,6 @@ impl ModernConfig {
         }
     }
 	
-    pub fn to_report(&self) -> String {
-        let mut report = String::new();
-        
-        // Main configuration
-        report.push_str(&format!("Configuration: {}\n", self.metadata.name));
-        report.push_str(&format!("  Version: {} | Author: {}\n", self.metadata.version, self.metadata.author));
-        if let Some(desc) = &self.metadata.description {
-            report.push_str(&format!("  Description: {}\n", desc));
-        }
-        
-        // System settings
-        report.push_str(&format!("  CPU: {}% of {} ({})\n", 
-            self.system.cpu_config.usage_percent,
-            self.system.cpu_config.cpu_type,
-            if self.system.large_pages { "Large Pages Enabled" } else { "Standard Pages" }
-        ));
-        
-        // Memory strategy
-        report.push_str("  Memory Strategy: ");
-        match self.system.memory_strategy.allocation_mode.as_str() {
-            "max_available" => report.push_str(&format!("Max Available (reserve {} MB)", 
-                self.system.memory_strategy.reserve_mb.unwrap_or(0))),
-            "percentage_reserve" => report.push_str(&format!("{}% Reserve", 
-                self.system.memory_strategy.reserve_percent.unwrap_or(0.0))),
-            "fixed_reserve" => report.push_str(&format!("{:.1} GiB Reserve", 
-                self.system.memory_strategy.reserve_gib.unwrap_or(0.0))),
-            _ => report.push_str("Unknown"),
-        }
-        report.push_str(&format!(", Window: {}, Chunk: {}\n",
-            describe_window_spec(&self.system.memory_strategy.default_window),
-            describe_chunk_spec(&self.system.memory_strategy.default_chunk)
-        ));
-        
-        // Timing
-        report.push_str("  Timing: ");
-        match (self.system.timing.global_cycles, self.system.timing.global_duration_secs) {
-            (Some(c), Some(d)) => report.push_str(&format!("{} cycles or {}s max", c, d)),
-            (Some(c), None) => report.push_str(&format!("{} cycles", c)),
-            (None, Some(d)) => report.push_str(&format!("{}s duration", d)),
-            (None, None) => report.push_str("Unlimited"),
-        }
-        report.push_str(&format!(", Error Mode: {}\n", self.system.error_mode));
-        
-        // Test sequence summary
-        let enabled_tests: Vec<_> = self.test_sequence.iter().filter(|t| t.enabled).collect();
-        report.push_str(&format!("  Test Sequence: {} tests enabled\n", enabled_tests.len()));
-        
-        // Individual test details
-        for (i, test) in enabled_tests.iter().enumerate() {
-            report.push_str(&format!("    {}. {} - ", i + 1, test.function));
-            
-            // Timing
-            match (&test.cycles, &test.duration_secs) {
-                (Some(c), Some(d)) => report.push_str(&format!("{}cycles/{}s", c, d)),
-                (Some(c), None) => report.push_str(&format!("{}cycles", c)),
-                (None, Some(d)) => report.push_str(&format!("{}s", d)),
-                _ => report.push_str("default timing"),
-            }
-            
-            // TMR-native test parameters
-            if let Some(sp) = test.stride_patterns {
-                report.push_str(&format!(", stride_patterns={}", sp));
-            }
-            
-            // Window override
-            if let Some(spec) = &test.window {
-                report.push_str(&format!(", Window:{}", describe_window_spec(spec)));
-            }
-
-            // Block override
-            if let Some(spec) = &test.chunk {
-                report.push_str(&format!(", Block:{}", describe_chunk_spec(spec)));
-            }
-            
-            if test.allow_misaligned == Some(true) {
-                report.push_str(", Misaligned");
-            }
-            if test.requires_locality == Some(true) {
-                report.push_str(", Locality");
-            }
-            
-            report.push('\n');
-        }
-        
-        report
-    }
-
     pub fn save_to_file(&self, path: &str) -> Result<(), String> {
         let json = serde_json::to_string_pretty(self).map_err(|e| format!("Failed to serialize config: {}", e))?;
 
@@ -703,10 +521,7 @@ impl ModernConfig {
             },
         };
 
-        EnhancedMemoryStrategy {
-            allocation_mode,
-            start_address_mode: StartAddressMode::default(),
-        }
+        EnhancedMemoryStrategy { allocation_mode }
     }
     
     // Parse default window spec into runtime WindowMode
@@ -801,6 +616,7 @@ impl ModernConfig {
     }
 
     /// Get test configs in TM5 test sequence order (if available) with repetition support
+    #[expect(dead_code, reason = "TODO #74: TM5 `Test Sequence` is parsed but never wired; TMR runs enabled tests in index order")]
     pub fn get_test_configs_with_sequence(&self) -> Vec<(&str, TestMemoryConfig)> {
         // Check if we have TM5 test sequence data
         if let Some(ref metadata) = self.legacy_metadata
@@ -972,7 +788,6 @@ pub fn create_demo_config() -> Self {
                 pattern_param0: None,
                 pattern_param1: None,
                 parameter: None,
-                use_v2_tests: None,
             },
 
             // Mem-Refresh - needs small window for refresh timing
@@ -995,7 +810,6 @@ pub fn create_demo_config() -> Self {
                 pattern_param0: None,
                 pattern_param1: None,
                 parameter: None,
-                use_v2_tests: None,
             },
             
             // Mem-Simple - general pattern test with TM5 compatibility
@@ -1018,7 +832,6 @@ pub fn create_demo_config() -> Self {
                 pattern_param0: Some(0x1E5F),
                 pattern_param1: Some(0x45357354),
                 parameter: None,
-                use_v2_tests: None,
             },
 
             // Mem-MirrorV2-128 - SIMD test with optimal locality
@@ -1041,7 +854,6 @@ pub fn create_demo_config() -> Self {
                 pattern_param0: None,
                 pattern_param1: None,
                 parameter: None,
-                use_v2_tests: None,
             },
             
             // Mem-MirrorV2-256 - AVX2 with dual subblocks
@@ -1064,7 +876,6 @@ pub fn create_demo_config() -> Self {
                 pattern_param0: None,
                 pattern_param1: None,
                 parameter: None,
-                use_v2_tests: None,
             },
             
             // Mem-CacheBust - specifically sized for cache stress
@@ -1087,7 +898,6 @@ pub fn create_demo_config() -> Self {
                 pattern_param0: None,
                 pattern_param1: None,
                 parameter: None,
-                use_v2_tests: None,
             },
             
             // Mem-Random - full memory random access
@@ -1110,7 +920,6 @@ pub fn create_demo_config() -> Self {
                 pattern_param0: None,
                 pattern_param1: None,
                 parameter: None,
-                use_v2_tests: None,
             },
             
             // Mem-Stride - test various stride patterns
@@ -1133,7 +942,6 @@ pub fn create_demo_config() -> Self {
                 pattern_param0: None,
                 pattern_param1: None,
                 parameter: None,
-                use_v2_tests: None,
             },
             
             // Mem-BlockMove - memory copy test
@@ -1156,7 +964,6 @@ pub fn create_demo_config() -> Self {
                 pattern_param0: None,
                 pattern_param1: None,
                 parameter: None,
-                use_v2_tests: None,
             },
             
             // Legacy TM5-style test showing "window-size" block mode
@@ -1179,7 +986,6 @@ pub fn create_demo_config() -> Self {
                 pattern_param0: Some(0),
                 pattern_param1: Some(0),
                 parameter: None,
-                use_v2_tests: None,
             },
         ],
         legacy_metadata: None,
@@ -1243,7 +1049,6 @@ pub fn create_demo_config() -> Self {
                     pattern_param0: None,
                     pattern_param1: None,
                     parameter: None,
-                    use_v2_tests: None,
                 },
                 TestConfig {
                     enabled: true,
@@ -1264,7 +1069,6 @@ pub fn create_demo_config() -> Self {
                     pattern_param0: Some(0x1E5F),
                     pattern_param1: Some(0x45357354),
                     parameter: None,
-                    use_v2_tests: None,
                 },
             ],
             legacy_metadata: None,
@@ -1313,7 +1117,6 @@ impl LegacyConfig {
             config_name: main.get("Config Name").unwrap_or(&"Unknown".to_string()).clone(),
             config_author: main.get("Config Author").unwrap_or(&"Unknown".to_string()).clone(),
             cores: main.get("Cores").and_then(|s| s.parse().ok()).unwrap_or(0),
-            tests: main.get("Tests").and_then(|s| s.parse().ok()).unwrap_or(0),
             time_percent: main.get("Time (%)").and_then(|s| s.parse().ok()).unwrap_or(100),
             cycles: main.get("Cycles").and_then(|s| s.parse().ok()).unwrap_or(1),
             test_sequence,
@@ -1412,7 +1215,6 @@ impl LegacyConfig {
                 pattern_param0: Some(test.pattern_param0),
                 pattern_param1: Some(test.pattern_param1),
                 parameter: Some(test.parameter),
-                use_v2_tests: None,
             });
         }
     }

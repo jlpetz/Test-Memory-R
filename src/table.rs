@@ -38,16 +38,6 @@ impl TableBuilder {
         self
     }
     
-    pub fn separator_char(mut self, c: char) -> Self {
-        self.separator_char = c;
-        self
-    }
-    
-    pub fn min_column_width(mut self, width: usize) -> Self {
-        self.min_column_width = width;
-        self
-    }
-    
     pub fn print(&self) {
         if self.headers.is_empty() {
             return;
