@@ -5,6 +5,10 @@ use crate::constants::bytes_to_gib_f64;
 use crate::whea::WheaCounts;
 use std::time::Duration;
 
+/// Footer for the tables whose CPU columns are marked ⚠️ when pinning is off.
+const UNPINNED_CPU_NOTE: &str = "⚠️ Pinning is off: the OS moves threads between CPUs. \
+    A thread's CPU here only chooses the NUMA node its memory comes from.";
+
 /// Trait for formatting report data
 pub trait ReportFormatter: Send + Sync {
     /// Format bytes into human-readable string
@@ -477,11 +481,12 @@ impl ReportFormatter for DefaultFormatter {
     
     fn prepare_performance_by_thread_table(&self, report: &PerformanceByThreadReport) -> TableData {
         let has_whea = report.whea.total > 0;
+        let cpu_mark = if report.pinned { "" } else { " ⚠️" };
         let mut table = TableData::new()
             .with_title("Performance by Thread")
             .add_header("Thread", ColumnAlignment::Right)
-            .add_header("L CPU", ColumnAlignment::Right)
-            .add_header("P Core", ColumnAlignment::Right)
+            .add_header(format!("L CPU{}", cpu_mark), ColumnAlignment::Right)
+            .add_header(format!("P Core{}", cpu_mark), ColumnAlignment::Right)
             .add_header("NUMA", ColumnAlignment::Center)
             .add_header("Time", ColumnAlignment::Right)
             .add_header("Dev T", ColumnAlignment::Right)
@@ -548,6 +553,9 @@ impl ReportFormatter for DefaultFormatter {
             table = table.add_row(row);
         }
 
+        if !report.pinned {
+            table = table.with_footer(UNPINNED_CPU_NOTE);
+        }
         table
     }
 
@@ -709,7 +717,7 @@ impl ReportFormatter for DefaultFormatter {
             .add_header("NUMA Node", ColumnAlignment::Right)
             .add_header("SMT", ColumnAlignment::Center)
             .add_header("Status", ColumnAlignment::Center)
-            .add_header("Thread ID", ColumnAlignment::Right);
+            .add_header(if report.pinned { "Thread ID" } else { "Thread ID ⚠️" }, ColumnAlignment::Right);
         
         for cpu in &report.cpus {
             table = table.add_row(vec![
@@ -760,7 +768,10 @@ impl ReportFormatter for DefaultFormatter {
                 report.summary.skipped_count
             ));
         }
-        
+        if !report.pinned {
+            summary_parts.push(UNPINNED_CPU_NOTE.to_string());
+        }
+
         table.with_footer(summary_parts.join("\n"))
     }
     
@@ -814,21 +825,64 @@ impl ReportFormatter for DefaultFormatter {
             "".to_string(),
         ]);
         
-        table = table
+        // Percentages are of the spec's reference: available, or total installed
+        let of_reference = |bytes: u64| format!("{:.1}%", bytes as f64 / report.reference_bytes as f64 * 100.0);
+        let relative_info = format!("of {}", report.reference_name);
+        let (requested_label, requested_bytes) = match report.target_bytes {
+            Some(target) => ("Target Requested", target),
+            None => ("Reserve Requested", report.requested_reserve_bytes),
+        };
+        let rounding_diff = report.reserve_bytes as i64 - report.requested_reserve_bytes as i64;
+
+        table
+            .add_row(vec![
+                requested_label.to_string(),
+                self.format_bytes(requested_bytes),
+                of_reference(requested_bytes),
+                relative_info.clone(),
+            ])
+            .add_row(vec![
+                "Threads".to_string(),
+                report.thread_count.to_string(),
+                "-".to_string(),
+                "".to_string(),
+            ])
+            .add_row(vec![
+                "Per Thread Raw".to_string(),
+                self.format_bytes_precise(report.per_thread_raw_bytes, 3),
+                "-".to_string(),
+                "".to_string(),
+            ])
+            .add_row(vec![
+                "Per Thread Round To".to_string(),
+                self.format_bytes(report.rounding_step_bytes),
+                "-".to_string(),
+                "up".to_string(),
+            ])
+            .add_row(vec![
+                "Per Thread Rounded".to_string(),
+                self.format_bytes_precise(report.per_thread_bytes, 3),
+                "-".to_string(),
+                "".to_string(),
+            ])
             .add_row(vec![
                 "Testing Allocation".to_string(),
                 self.format_bytes(report.allocation_bytes),
-                format!("{:.1}%", (report.allocation_bytes as f64 / report.available_physical_bytes as f64) * 100.0),
-                "of available".to_string(),
+                of_reference(report.allocation_bytes),
+                relative_info.clone(),
             ])
             .add_row(vec![
-                "Reserved Amount".to_string(),
+                "Reserve Left".to_string(),
                 self.format_bytes(report.reserve_bytes),
-                format!("{:.1}%", (report.reserve_bytes as f64 / report.available_physical_bytes as f64) * 100.0),
-                "of available".to_string(),
-            ]);
-
-        table.with_footer(format!("Strategy: {}", report.allocation_type))
+                of_reference(report.reserve_bytes),
+                relative_info,
+            ])
+            .add_row(vec![
+                "Reserve Rounding Diff".to_string(),
+                self.format_bytes_signed(rounding_diff),
+                "-".to_string(),
+                "Threads × per-thread rounding".to_string(),
+            ])
     }
     
     fn format_window_mode_with_size(&self, mode: &crate::tests::WindowMode, cache_info: &crate::cache::CacheInfo, thread_count: usize) -> String {

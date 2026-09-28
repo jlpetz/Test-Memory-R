@@ -110,6 +110,11 @@ pub fn release() {
     lock().0.held = false;
 }
 
+/// Log target for a record that goes to the log file only. The logger (`cli.rs`) prints every other
+/// record here as well. Use it where the console gets the same text another way, as WHEA events do
+/// through the ticker's queue.
+pub const FILE_ONLY_TARGET: &str = "tmr::file_only";
+
 /// The logger's output: every write is one formatted record, printed above the ticker.
 pub struct LogSink;
 

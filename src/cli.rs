@@ -812,27 +812,24 @@ pub fn main() -> Result<(), Box<dyn std::error::Error>> {
 		cpus.parse::<usize>().unwrap_or(available_cpus).min(available_cpus).max(1)
 	};
 		
-	let (actual_threads, cpu_list) = if pinning_config.enable_pinning {
-		// Override avoid_smt_doubling if cputype=cores
-		let effective_avoid_smt = pinning_config.avoid_smt_doubling || avoid_smt;
-
-		match crate::cpu_selection::calculate_thread_allocation(
-			threads,
-			pinning_config.cpus_to_skip,
-			effective_avoid_smt,
-			skip_excluded_range,
-			&pinning_config.stride_spec,
-		) {
-			Ok(result) => result,
-			Err(e) => {
-				// Never silently right-size the request — tell the user and stop.
-				eprintln!("❌ CPU selection error: {}", e);
-				return Ok(());
-			}
+	// Selected even when pinning is off: the list also decides which NUMA node each thread's
+	// memory comes from, so a pinned/unpinned A/B differs in scheduling alone. The pool skips
+	// only the affinity call (`RuntimeConfig.pin_threads`).
+	// Override avoid_smt_doubling if cputype=cores
+	let effective_avoid_smt = pinning_config.avoid_smt_doubling || avoid_smt;
+	let (actual_threads, cpu_list) = match crate::cpu_selection::calculate_thread_allocation(
+		threads,
+		pinning_config.cpus_to_skip,
+		effective_avoid_smt,
+		skip_excluded_range,
+		&pinning_config.stride_spec,
+	) {
+		Ok(result) => result,
+		Err(e) => {
+			// Never silently right-size the request — tell the user and stop.
+			eprintln!("❌ CPU selection error: {}", e);
+			return Ok(());
 		}
-	} else {
-		// No pinning, use all requested threads
-		(threads, (0..threads).collect())
 	};
 	
 	print!("  Error Mode: ");
@@ -845,12 +842,14 @@ pub fn main() -> Result<(), Box<dyn std::error::Error>> {
 	println!("  Using {}/{} {} for testing", actual_threads, available_cpus, cputype);
 	if pinning_config.enable_pinning {
 		println!("  CPU Assignment: {:?}", cpu_list);
-		if pinning_config.cpus_to_skip > 0 {
-			println!("  Skipping first {} CPU(s) for system responsiveness", pinning_config.cpus_to_skip);
-		}
-		if pinning_config.avoid_smt_doubling {
-			println!("  Avoiding SMT doubling (using physical cores only)");
-		}
+	} else {
+		println!("  CPU Assignment: {:?} ⚠️ NUMA placement only, pinning is off", cpu_list);
+	}
+	if pinning_config.cpus_to_skip > 0 {
+		println!("  Skipping first {} CPU(s) for system responsiveness", pinning_config.cpus_to_skip);
+	}
+	if pinning_config.avoid_smt_doubling {
+		println!("  Avoiding SMT doubling (using physical cores only)");
 	}
 
 	// Display timing configuration
@@ -977,11 +976,7 @@ pub fn main() -> Result<(), Box<dyn std::error::Error>> {
 
 	// Display CPU topology right after system information
 	// Add this after the cache architecture display (around line 220-230):
-	if pinning_config.enable_pinning {
-		display_cpu_topology(&cpu_list, pinning_config.cpus_to_skip, avoid_smt);
-	} else {
-		println!("\nCPU Thread Assignment: No pinning - threads will be scheduled by OS");
-	}
+	display_cpu_topology(&cpu_list, pinning_config.cpus_to_skip, avoid_smt, pinning_config.enable_pinning);
 	println!();
 	
 	// Show memory stats
@@ -1003,15 +998,6 @@ pub fn main() -> Result<(), Box<dyn std::error::Error>> {
     
     // Calculate memory layout using enhanced system
     let enhanced_layout = enhanced_memory_strategy.create_layout(actual_threads)?;
-
-    // Display memory strategy information
-    println!("  Memory Strategy: {}", enhanced_layout.allocation_result.allocation_type);
-    println!("    Allocation: {:.2} GiB, Reserve: {:.2} GiB", 
-             enhanced_layout.allocation_result.allocation_bytes as f64 / 1024_f64.powi(3),
-             enhanced_layout.allocation_result.reserve_bytes as f64 / 1024_f64.powi(3));
-    
-    println!("    Window/Chunk Modes: Per-test configuration (see test sequence below)");
-	println!("  ");
 
     println!("Starting comprehensive memory tests... Use CTRL+C for graceful shutdown with final report");
     println!("(detailed logs available with RUST_LOG=debug)");
@@ -1277,26 +1263,31 @@ fn setup_logging() {
         .filter_level(level_filter)
         .format(|buf, record| {
             // Write to console with original env_logger format. `LogSink` below prints it above
-            // the progress ticker, so the two never merge.
-            let console_result = writeln!(
-                buf,
-                "\x1b[{}m[{} {} {}]\x1b[0m {}",
-                match record.level() {
-                    log::Level::Error => "31", // Red
-                    log::Level::Warn => "33",  // Yellow
-                    log::Level::Info => "32",  // Green
-                    log::Level::Debug => "36", // Cyan
-                    log::Level::Trace => "35", // Magenta
-                },
-                // Plain local time, no zone marker. This used to be `…%SZ` on a `Local::now()` —
-                // printing local while claiming UTC, which was the actual bug. A bare stamp claims
-                // nothing, which is both honest and easier to read; the zone is stated once in the
-                // log file's header for anything that gets archived. Matches the file format below.
-                chrono::Local::now().format("%Y-%m-%d %H:%M:%S"),
-                record.level(),
-                record.module_path().unwrap_or("unknown"),
-                record.args()
-            );
+            // the progress ticker, so the two never merge. A file-only record writes nothing here,
+            // and `LogSink` drops an empty write.
+            let console_result = if record.target() == crate::console::FILE_ONLY_TARGET {
+                Ok(())
+            } else {
+                writeln!(
+                    buf,
+                    "\x1b[{}m[{} {} {}]\x1b[0m {}",
+                    match record.level() {
+                        log::Level::Error => "31", // Red
+                        log::Level::Warn => "33",  // Yellow
+                        log::Level::Info => "32",  // Green
+                        log::Level::Debug => "36", // Cyan
+                        log::Level::Trace => "35", // Magenta
+                    },
+                    // Plain local time, no zone marker. This used to be `…%SZ` on a `Local::now()` —
+                    // printing local while claiming UTC, which was the actual bug. A bare stamp claims
+                    // nothing, which is both honest and easier to read; the zone is stated once in the
+                    // log file's header for anything that gets archived. Matches the file format below.
+                    chrono::Local::now().format("%Y-%m-%d %H:%M:%S"),
+                    record.level(),
+                    record.module_path().unwrap_or("unknown"),
+                    record.args()
+                )
+            };
 
             // Also write to file without colors
             if let Some(file_logger) = FILE_LOGGER.get()

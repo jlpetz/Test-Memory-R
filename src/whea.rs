@@ -479,12 +479,13 @@ impl WheaMonitor {
 
         let description = record.describe();
 
-        // Straight to the log file as well as the console queue — a run left unattended overnight
-        // should still be diagnosable from ./logs.
+        // To the log file as well as the console queue, so a run left unattended overnight is still
+        // diagnosable from ./logs. File only: the logger also prints to the console, and the queue
+        // is the console path, the one that waits while a report holds the screen.
         if record.corrected {
-            log::warn!("{}", description);
+            log::warn!(target: crate::console::FILE_ONLY_TARGET, "{}", description);
         } else {
-            log::error!("{}", description);
+            log::error!(target: crate::console::FILE_ONLY_TARGET, "{}", description);
         }
 
         if let Ok(mut pending) = self.pending.lock() {

@@ -208,11 +208,15 @@ user via `LsaAddAccountRights` and then asks for a restart.
          │     └─────────┴─────────┴─────────┴─────┴─────────┴───────────────────────┘
          │       each = dRealBlockSize            remainder < 1 chunk is dropped
          │                                        (MainThread.asm:741 jge)
-         │     per chunk:
-         │        Test0.Cmd_Check   retention check of the previous fill
-         │        Test0.Cmd_Set     re-fill
-         │        TestN.Cmd_Check   the actual test for this sequence step
-         │        Test0.Cmd_Set     re-fill, ready for the next step
+         │     per chunk, a normal step (:700-728):
+         │        Test0.Cmd_Check   retention check of the previous fill   errors -> 0
+         │        Test0.Cmd_Set       re-fill, only if that check failed
+         │        TestN.Cmd_Check   the actual test                        errors -> N
+         │        Test0.Cmd_Set     re-fill, ready for the next step (these two skipped if N is 0)
+         │     per chunk, a MirrorMove/MirrorMove128 step (:673-693), no pre-check:
+         │        TestN.Cmd_Check   the moves                              errors -> N
+         │        Test0.Cmd_Check   verifies what the moves left           errors -> N
+         │        Test0.Cmd_Set       re-fill, only if that check failed
          │     pBaseAddr += dRealBlockSize;  dNeedTested -= dRealBlockSize
          │     if dNeedTested >= dRealBlockSize -> next chunk
          │
@@ -224,7 +228,7 @@ Two structural facts:
 - **Test 0 owns the pattern.** The orchestrator drives fill/verify through test 0's
   `Cmd_Set`/`Cmd_Check`; the sequence test only ever gets `Cmd_Check`. Tests are stateless
   per-chunk callbacks; the orchestrator owns every loop. (`Capable_UseTst0ForGenAndCheck`
-  selects the variant at `:673`.)
+  selects the MirrorMove variant at `:673`. With test 0 disabled, that variant skips the step.)
 - **The window slides, so coverage is 100%.** Every test visits every locked page, chunk by
   chunk, slice by slice. There is no notion of "the part of memory we didn't get to".
 

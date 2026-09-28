@@ -65,9 +65,16 @@ pub fn create_consolidated_memory_report(
         used_physical_bytes: mem_info.used_physical_bytes,
         total_virtual_bytes: mem_info.total_virtual_bytes,
         memory_load_percent: mem_info.memory_load_percent,
+        reference_bytes: allocation_result.reference_bytes,
+        reference_name: allocation_result.reference_name,
+        requested_reserve_bytes: allocation_result.requested_reserve_bytes,
+        target_bytes: allocation_result.target_bytes,
+        thread_count: allocation_result.thread_count,
+        per_thread_raw_bytes: allocation_result.per_thread_raw_bytes,
+        rounding_step_bytes: allocation_result.rounding_step_bytes,
+        per_thread_bytes: allocation_result.per_thread_bytes,
         allocation_bytes: allocation_result.allocation_bytes,
         reserve_bytes: allocation_result.reserve_bytes,
-        allocation_type: allocation_result.allocation_type.clone(),
         warnings,
     }
 }

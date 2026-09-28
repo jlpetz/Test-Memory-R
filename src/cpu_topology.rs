@@ -506,7 +506,7 @@ pub fn detect_cpu_topology() -> Vec<CpuTopologyInfo> {
 }
 
 
-pub fn display_cpu_topology(cpu_list: &[usize], cpus_to_skip: usize, avoid_smt: bool) {
+pub fn display_cpu_topology(cpu_list: &[usize], cpus_to_skip: usize, avoid_smt: bool, pinned: bool) {
     use crate::reporting::{create_console_reporter, models::{CpuTopologyReport, CpuTopologyEntry, TopologySummary}};
 
     let topology = get_cpu_topology();
@@ -651,6 +651,7 @@ pub fn display_cpu_topology(cpu_list: &[usize], cpus_to_skip: usize, avoid_smt: 
     let report = CpuTopologyReport {
         cpus: cpu_entries,
         summary,
+        pinned,
     };
     
     let mut reporter = create_console_reporter();

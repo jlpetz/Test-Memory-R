@@ -846,6 +846,7 @@ pub fn run_tests_with_layout_and_timing_filtered(
             &cpu_assignments,
             suite_duration,
             whea_totals,
+            runtime_config.pin_threads,
         );
     }
 
@@ -4087,6 +4088,7 @@ fn print_detailed_cpu_performance_summary(
     cpu_assignments: &[CpuAssignment],  // (thread_id, logical_cpu, numa_node)
     _suite_duration: std::time::Duration,
     whea: crate::whea::WheaCounts,
+    pinned: bool,
 ) {
     use crate::reporting::{Reporter, models::*, formatters::DefaultFormatter, renderers::ConsoleRenderer};
     use crate::cpu_topology::get_cpu_topology;
@@ -4207,6 +4209,7 @@ fn print_detailed_cpu_performance_summary(
         let report = PerformanceByThreadReport {
             threads,
             whea,
+            pinned,
         };
         let _ = reporter.report_performance_by_thread(&report);
     }

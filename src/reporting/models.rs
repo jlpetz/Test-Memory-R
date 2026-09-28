@@ -104,6 +104,9 @@ pub struct ThreadAllocation {
 #[derive(Debug, Clone)]
 pub struct PerformanceByThreadReport {
     pub threads: Vec<ThreadPerformance>,
+    /// False under `--disable-pinning`: the CPU columns then only say which NUMA node a thread's
+    /// memory came from, not where it ran.
+    pub pinned: bool,
     /// WHEA events for the whole run — see [`ThreadTimingReport`] for why this is not per-thread.
     pub whea: crate::whea::WheaCounts,
 }
@@ -165,6 +168,8 @@ pub struct PhysicalCorePerformance {
 pub struct CpuTopologyReport {
     pub cpus: Vec<CpuTopologyEntry>,
     pub summary: TopologySummary,
+    /// See [`PerformanceByThreadReport::pinned`].
+    pub pinned: bool,
 }
 
 /// Individual CPU topology entry
@@ -291,10 +296,17 @@ pub struct ConsolidatedMemoryReport {
     pub total_virtual_bytes: u64,
     pub memory_load_percent: u32,
     
-    // Allocation planning information
+    // Allocation planning information, as in `AllocationResult`
+    pub reference_bytes: u64,
+    pub reference_name: &'static str,
+    pub requested_reserve_bytes: u64,
+    pub target_bytes: Option<u64>,
+    pub thread_count: usize,
+    pub per_thread_raw_bytes: u64,
+    pub rounding_step_bytes: u64,
+    pub per_thread_bytes: u64,
     pub allocation_bytes: u64,
     pub reserve_bytes: u64,
-    pub allocation_type: String,
 
     // Warnings
     pub warnings: Vec<String>,

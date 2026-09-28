@@ -57,7 +57,7 @@
 /// 
 /// Use these modes only for development/testing purposes!
 use windows::Win32::System::SystemInformation::{GlobalMemoryStatusEx, MEMORYSTATUSEX, GetPhysicallyInstalledSystemMemory};
-use crate::constants::{BYTES_PER_GIB, BYTES_PER_MIB_USIZE, gib_to_bytes, bytes_to_gib_f64};
+use crate::constants::{BYTES_PER_GIB, BYTES_PER_MIB, gib_to_bytes, bytes_to_gib_f64};
 
 /// Memory information gathered from the system
 #[derive(Debug, Clone)]
@@ -267,44 +267,13 @@ impl AllocationMode {
     }
 }
 
-impl AllocationMode {
-    /// Round up allocation size to optimal chunk combinations
-    /// Uses greedy algorithm to find combination of 1GB, 512MB, 256MB, 128MB chunks
-    fn round_up_to_chunk_combination(target_bytes: u64, chunk_sizes: &[u64]) -> u64 {
-        if target_bytes == 0 {
-            return 0;
-        }
-        
-        let mut remaining = target_bytes;
-        let mut total = 0;
-        
-        // Greedy approach: use largest chunks first
-        for &chunk_size in chunk_sizes {
-            let chunks_needed = remaining.div_ceil(chunk_size); // Round up division
-            if chunks_needed > 0 {
-                // Check if this single chunk type can satisfy the remaining needs
-                if chunks_needed * chunk_size >= remaining {
-                    total += chunks_needed * chunk_size;
-                    return total;
-                }
-                
-                // Otherwise, use as many full chunks as possible and continue with remainder
-                let full_chunks = remaining / chunk_size;
-                total += full_chunks * chunk_size;
-                remaining -= full_chunks * chunk_size;
-            }
-        }
-        
-        // If we still have remainder, round up with the smallest chunk
-        if remaining > 0 && !chunk_sizes.is_empty() {
-            let smallest_chunk = *chunk_sizes.last().unwrap();
-            let final_chunks = remaining.div_ceil(smallest_chunk);
-            total += final_chunks * smallest_chunk;
-        }
-        
-        total
-    }
+/// Each thread's share is rounded **up** to a multiple of this. Whole GiB keeps the plan
+/// (`create_allocation_plan`) to blocks of 1 GiB and up. A 16 MiB step, tried 2026-09-28, added a
+/// tail of small blocks that the allocator's huge-page fallback mis-sized (TODO #71). Rounding up
+/// comes out of the reserve, and with enough threads can take all of it (also TODO #71).
+const PER_THREAD_STEP_BYTES: u64 = BYTES_PER_GIB;
 
+impl AllocationMode {
     /// Parse memory parameter string into AllocationMode
     /// Examples:
     /// - "20%-from-available" -> ReserveFromAvailable { reserve: Percentage(20.0) } (STANDARD)
@@ -351,20 +320,22 @@ impl AllocationMode {
     /// Size the test allocation for `thread_count` workers with identical blocks.
     ///
     /// The reserve comes off the mode's reference figure (currently available, or total
-    /// installed), then each thread's share is rounded **up** by `round_up_to_chunk_combination`.
-    /// The rounding comes out of the reserve, so `reserve_bytes` is what is actually left to the OS.
+    /// installed), then each thread's share is rounded **up** to `PER_THREAD_STEP_BYTES`. The
+    /// rounding comes out of the reserve, so `reserve_bytes` is what is actually left to the OS.
     pub fn calculate_allocation_with_threads(&self, mem_info: &SystemMemoryInfo, thread_count: usize) -> AllocationResult {
-        const GB_BOUNDARY: u64 = BYTES_PER_GIB;
-
-        let (reference_bytes, requested_reserve_bytes, base_type) = match self {
+        let (reference_bytes, reference_name, requested_reserve_bytes, target_bytes, base_type) = match self {
             AllocationMode::ReserveFromAvailable { reserve } => (
                 mem_info.available_physical_bytes,
+                "available",
                 reserve.calculate_bytes(mem_info.available_physical_bytes),
+                None,
                 "Reserve from Available",
             ),
             AllocationMode::ReserveFromTotal { reserve } => (
                 mem_info.total_installed_bytes,
+                "total installed",
                 reserve.calculate_bytes(mem_info.total_installed_bytes),
+                None,
                 "Reserve from Total",
             ),
             AllocationMode::AllocateTarget { target } => {
@@ -372,47 +343,53 @@ impl AllocationMode {
                 let target_bytes = target.calculate_bytes(mem_info.total_installed_bytes);
                 (
                     mem_info.total_installed_bytes,
+                    "total installed",
                     mem_info.total_installed_bytes.saturating_sub(target_bytes),
+                    Some(target_bytes),
                     "Target Allocation",
                 )
             }
             AllocationMode::LegacyTM5 { reserve_mb } => (
                 mem_info.available_physical_bytes,
-                (*reserve_mb as u64) * 1024 * 1024,
+                "available",
+                (*reserve_mb as u64) * BYTES_PER_MIB,
+                None,
                 "Legacy TM5 (from available)",
             ),
         };
 
         let base_allocation_bytes = reference_bytes.saturating_sub(requested_reserve_bytes);
-        let per_thread_target = base_allocation_bytes / thread_count as u64;
-
-        // Standard chunk sizes for rounding (1GB, 512MB, 256MB, 128MB)
-        let chunk_sizes = [GB_BOUNDARY, 512*BYTES_PER_MIB_USIZE as u64, 256*BYTES_PER_MIB_USIZE as u64, 128*BYTES_PER_MIB_USIZE as u64];
-
-        // Round each thread's allocation UP to next clean chunk combination
-        let rounded_per_thread = Self::round_up_to_chunk_combination(per_thread_target, &chunk_sizes);
-        let allocation_bytes = rounded_per_thread * thread_count as u64;
+        let per_thread_raw_bytes = base_allocation_bytes / thread_count as u64;
+        let per_thread_bytes = per_thread_raw_bytes.div_ceil(PER_THREAD_STEP_BYTES) * PER_THREAD_STEP_BYTES;
+        let allocation_bytes = per_thread_bytes * thread_count as u64;
         let reserve_bytes = reference_bytes.saturating_sub(allocation_bytes);
 
-        log::info!("Thread-aware allocation: {} threads × {:.3} GiB → rounded to {:.3} GiB each",
+        log::info!("Thread-aware allocation: {} threads × {:.3} GiB → rounded up to {:.3} GiB each",
                   thread_count,
-                  per_thread_target as f64 / GB_BOUNDARY as f64,
-                  rounded_per_thread as f64 / GB_BOUNDARY as f64);
+                  bytes_to_gib_f64(per_thread_raw_bytes),
+                  bytes_to_gib_f64(per_thread_bytes));
         log::info!("Total allocation: {:.3} GiB → {:.3} GiB; reserve {:.3} GiB requested, {:.3} GiB left",
-                  base_allocation_bytes as f64 / GB_BOUNDARY as f64,
-                  allocation_bytes as f64 / GB_BOUNDARY as f64,
-                  requested_reserve_bytes as f64 / GB_BOUNDARY as f64,
-                  reserve_bytes as f64 / GB_BOUNDARY as f64);
+                  bytes_to_gib_f64(base_allocation_bytes),
+                  bytes_to_gib_f64(allocation_bytes),
+                  bytes_to_gib_f64(requested_reserve_bytes),
+                  bytes_to_gib_f64(reserve_bytes));
 
         AllocationResult {
             allocation_bytes,
             reserve_bytes,
             reference_bytes,
+            reference_name,
+            requested_reserve_bytes,
+            target_bytes,
+            thread_count,
+            per_thread_raw_bytes,
+            rounding_step_bytes: PER_THREAD_STEP_BYTES,
+            per_thread_bytes,
             allocation_type: format!(
                 "{} [thread-aware ({}×{:.2} GiB)]",
                 base_type,
                 thread_count,
-                rounded_per_thread as f64 / GB_BOUNDARY as f64
+                bytes_to_gib_f64(per_thread_bytes)
             ),
         }
     }
@@ -430,15 +407,36 @@ pub struct AllocationResult {
     /// Reference bytes used for calculation (total/available)
     pub reference_bytes: u64,
 
+    /// What `reference_bytes` is, for display: "available" or "total installed".
+    pub reference_name: &'static str,
+
+    /// The reserve the spec asked for. For a `-target` spec, what the target leaves of total
+    /// installed memory.
+    pub requested_reserve_bytes: u64,
+
+    /// The target a `-target` spec asked for; `None` for the reserve forms.
+    pub target_bytes: Option<u64>,
+
+    /// Worker threads the allocation is split between.
+    pub thread_count: usize,
+
+    /// Each thread's share before rounding.
+    pub per_thread_raw_bytes: u64,
+
+    /// Each share is rounded up to a multiple of this.
+    pub rounding_step_bytes: u64,
+
+    /// Each thread's share after rounding. `allocation_bytes` is this × `thread_count`.
+    pub per_thread_bytes: u64,
+
     /// Human-readable description of allocation type
     pub allocation_type: String,
 }
 
 impl AllocationResult {
-    /// Print allocation summary
+    /// Plain-text stand-in for the consolidated memory report, printed only when that table fails
+    /// to render (`layout.rs`): the allocation in one line, then its warnings.
     pub fn print_summary(&self, mem_info: &SystemMemoryInfo) {
-        // Note: Detailed allocation plan is now shown in consolidated memory report
-        
         // Gather warnings
         let allocation_percent = (self.allocation_bytes as f64 / self.reference_bytes as f64) * 100.0;
         let mut warnings = Vec::new();
@@ -465,8 +463,18 @@ impl AllocationResult {
                 warnings.push("🚨 EXTREME: Allocation >2x available memory - will likely fail".to_string());
             }
         }
-        
-        // Note: Detailed allocation plan is now shown in consolidated memory report
+
+        println!(
+            "Memory: {:.2} GiB to test ({} threads × {:.3} GiB), {:.2} GiB reserve left ({})",
+            bytes_to_gib_f64(self.allocation_bytes),
+            self.thread_count,
+            bytes_to_gib_f64(self.per_thread_bytes),
+            bytes_to_gib_f64(self.reserve_bytes),
+            self.allocation_type
+        );
+        for warning in &warnings {
+            println!("⚠️ {}", warning);
+        }
     }
 }
 
@@ -503,12 +511,17 @@ impl EnhancedMemoryStrategy {
         let mem_info = SystemMemoryInfo::gather()?;
         // Use thread-aware allocation calculation for optimal per-thread layouts
         let allocation_result = self.allocation_mode.calculate_allocation_with_threads(&mem_info, thread_count);
-        
+        if allocation_result.per_thread_bytes == 0 {
+            return Err(format!(
+                "memory={} leaves nothing to test once the reserve is taken",
+                self.describe_spec()
+            ));
+        }
+
         // Create per-thread blocks with identical sizes (thread-aware allocation ensures this)
-        let allocation_per_thread = allocation_result.allocation_bytes / thread_count as u64;
         let blocks = (0..thread_count)
             .map(|thread_id| crate::layout::BlockInfo {
-                size_bytes: allocation_per_thread as usize,
+                size_bytes: allocation_result.per_thread_bytes as usize,
                 thread_id,
             })
             .collect();
@@ -553,6 +566,37 @@ mod tests {
             AllocationMode::parse("2048MB"), 
             Ok(AllocationMode::LegacyTM5 { reserve_mb: 2048 })
         ));
+    }
+
+    #[test]
+    fn test_per_thread_share_rounds_up() {
+        let available = 55 * 1024 * BYTES_PER_MIB + 256 * BYTES_PER_MIB; // 55.25 GiB
+        let mem_info = SystemMemoryInfo {
+            total_installed_bytes: 64 * 1024 * BYTES_PER_MIB,
+            total_physical_bytes: 64 * 1024 * BYTES_PER_MIB,
+            available_physical_bytes: available,
+            used_physical_bytes: 64 * 1024 * BYTES_PER_MIB - available,
+            total_virtual_bytes: 128 * 1024 * BYTES_PER_MIB,
+            memory_load_percent: 14,
+        };
+        let mode = AllocationMode::ReserveFromAvailable { reserve: ReserveAmount::Percentage(10.0) };
+        for threads in [1, 3, 4, 16, 64] {
+            let r = mode.calculate_allocation_with_threads(&mem_info, threads);
+            assert_eq!(r.per_thread_bytes % PER_THREAD_STEP_BYTES, 0);
+            assert!(r.per_thread_bytes >= r.per_thread_raw_bytes);
+            assert!(r.per_thread_bytes - r.per_thread_raw_bytes < PER_THREAD_STEP_BYTES);
+            assert_eq!(r.allocation_bytes, r.per_thread_bytes * threads as u64);
+            // Rounding comes out of the reserve.
+            assert_eq!(r.reserve_bytes, available.saturating_sub(r.allocation_bytes));
+        }
+
+        // 4 threads × 12.43 GiB: a clean 3 × 4 GiB + 1 GiB each.
+        let r = mode.calculate_allocation_with_threads(&mem_info, 4);
+        assert_eq!(r.per_thread_bytes, 13 * BYTES_PER_GIB);
+
+        // Nothing left after the reserve rounds to nothing, which create_layout refuses.
+        let all = AllocationMode::ReserveFromAvailable { reserve: ReserveAmount::Percentage(100.0) };
+        assert_eq!(all.calculate_allocation_with_threads(&mem_info, 4).per_thread_bytes, 0);
     }
 
     #[test]
