@@ -232,6 +232,72 @@ Two structural facts:
 - **The window slides, so coverage is 100%.** Every test visits every locked page, chunk by
   chunk, slice by slice. There is no notion of "the part of memory we didn't get to".
 
+#### Loop order: chunk-major
+
+A **step** is one entry in `Test Sequence`, i.e. one whole test run over the window. It is not a
+phase inside a test. Within a step TM5 finishes everything on a chunk (check, all of test N's
+passes, refill) before it touches the next one. It is sequential, not a pipeline: each thread works
+one chunk at a time.
+
+```
+TM5 (chunk-major)                        Phase-major (not TM5)
+for each step (test 6, test 12, …)       for each step
+  for each chunk (c0, c1, c2, c3)          T0 check   on c0, c1, c2, c3
+    T0 check   this chunk                  test N     on c0, c1, c2, c3
+    test N     this chunk, all passes      T0 fill    on c0, c1, c2, c3
+    T0 fill    this chunk
+```
+
+#### What the per-chunk wrap buys: a retention window under load
+
+One thread, 4 chunks, two normal steps. The cycle opens with a test-0 fill of all memory and
+closes with one test-0 check of all memory (errors → 0).
+
+```
+         │    fill    │       step A       │       step B       │   final    │
+chunk 0  │[f]·········│[cAf]···············│[cBf]···············│[c]·········│
+chunk 1  │···[f]······│·····[cAf]··········│·····[cBf]··········│···[c]······│
+chunk 2  │······[f]···│··········[cAf]·····│··········[cBf]·····│······[c]···│
+chunk 3  │·········[f]│···············[cAf]│···············[cBf]│·········[c]│
+                                 └─ retention ──┘
+```
+
+- `[cAf]` is test 0's check → step A's test → test 0's refill, on that chunk. Every `·` is a
+  stretch where the chunk holds test 0's data while the step works the other chunks.
+- Each refill sits for about one step, next to heavy traffic, before the next step's pre-check
+  reads it. So retention loss and disturbance from neighbouring traffic are both caught.
+- Each refill is read exactly once: by the next step's pre-check or, after the last step, by the
+  final check. The final check is one read pass per cycle, against at least three passes per chunk
+  per step (SimpleTest at 100 % makes 1 + 24 + 1 = 26).
+
+Phase-major order throws this away. The data then waits one pass between fill and check, with
+nothing else running.
+
+#### The only double read: after a MirrorMove step
+
+```
+ chunk 1:  … [MM → T0 check (N)] ··········· [T0 check (0) → C → T0 fill] …
+                    read 1                     read 2: same data, no fill between
+                      └──── one retention window apart ────┘
+```
+
+The second read is not wasted. It is a retention test of the same data, one step later.
+
+#### Why the refill after test N is unconditional
+
+In both shipped configs test 0 is `RefreshStable` (`Pattern Mode=0`), and most sequence tests write
+their own data over the chunk. SimpleTest writes its pattern 4× per chunk. So after test N the
+chunk holds test N's data, not test 0's. The unconditional `Test0.Cmd_Set` puts back the one
+pattern the next pre-check can verify.
+
+The MirrorMove path confirms this. MirrorMove moves data but leaves the chunk as it found it, so
+there test 0 checks the result and refills only on failure. Repairing test N's errors is a side
+effect: the refill overwrites them.
+
+Skipping the refill would not skip a DRAM write "because the value is the same". x86 cores don't
+drop same-value stores: every store dirties its line, which is written back on eviction whatever
+it holds. After a normal step the values differ anyway.
+
 ### 1.6 `Test Block Size (Mb)` — the discontinuity trap
 
 This is the single nastiest TM5 compatibility detail, because the value is interpreted in
