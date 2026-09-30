@@ -1,7 +1,7 @@
 # TODO 65. [TMR-APP] Modern x86 Instruction Survey — findings + negative results (REFERENCE)
 
-> Full record, moved verbatim out of `TODO.md` on 2026-09-28 (open item).
-> The short entry in `TODO.md` holds the current status; this file holds the reasoning.
+> Full record, moved verbatim out of `TODO.md` on 2026-09-28 (open item; closed the same day).
+> The short entry, now in `TODO_ARCHIVE.md`, holds the current status; this file holds the reasoning.
 
 **Priority**: Reference (do not re-litigate; recorded so these are not re-proposed)
 **Status**: ✅ Survey COMPLETE (2026-07-31 / 2026-08-20). Full data: **`../shuffle-test/FINDINGS.md`**

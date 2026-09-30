@@ -1,7 +1,7 @@
 # TODO 70. [TMR-APP] Spike: VA stitching into one placeholder, with large pages intact
 
-> Full record, moved verbatim out of `TODO.md` on 2026-09-28 (open item).
-> The short entry in `TODO.md` holds the current status; this file holds the reasoning.
+> Full record, moved verbatim out of `TODO.md` on 2026-09-28 (open item; closed 2026-09-29).
+> The short entry, now in `TODO_ARCHIVE.md`, holds the current status; this file holds the reasoning.
 
 **Priority**: High (blocks the memory-system redesign — the answer decides how much multi-row
 machinery `LogicalSpace` needs in its first version)
