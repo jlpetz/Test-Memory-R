@@ -110,7 +110,7 @@ impl<R: Renderer> Reporter<R> {
     }
     
     /// Report cycle completion
-    #[expect(dead_code, reason = "TODO #69 F: the per-cycle report is to be revived, not deleted")]
+    #[expect(dead_code, reason = "TODO #29: the per-cycle report is to be revived, not deleted (from TODO #69 F)")]
     pub fn report_cycle(&mut self, report: &CycleReport) -> Result<()> {
         let table = self.formatter.prepare_cycle_report_table(report);
         self.renderer.render_table(&table)?;

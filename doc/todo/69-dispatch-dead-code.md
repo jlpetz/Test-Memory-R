@@ -1,7 +1,7 @@
 # TODO 69. [TMR-APP] Dispatch-layer dead code + harness hygiene
 
-> Full record, moved verbatim out of `TODO.md` on 2026-09-28 (open item).
-> The short entry in `TODO.md` holds the current status; this file holds the reasoning.
+> Full record, moved verbatim out of `TODO.md` on 2026-09-28 (open item; closed 2026-10-01).
+> The short entry, now in `TODO_ARCHIVE.md`, holds the current status; this file holds the reasoning.
 
 **Priority**: Low-Medium (A/B are pure deletion and remove a live footgun; C is a one-line fix;
 D is a real refactor and may be declined outright) — **but E is the one with leverage**: it is the

@@ -1,6 +1,6 @@
 # TODO 68. [TMR-APP] Run-on-real-hardware verification of two landed-but-unexercised changes
 
-> Full record, moved verbatim out of `TODO.md` on 2026-09-28 (open item).
+> Full record, moved verbatim out of `TODO.md` on 2026-09-28 (open item; A closed 2026-10-01).
 > The short entry in `TODO.md` holds the current status; this file holds the reasoning.
 
 **Priority**: Medium-High (both are already shipped in `main`'s lineage — if either is wrong, it is

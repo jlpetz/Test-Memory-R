@@ -142,7 +142,7 @@ pub fn create_test_configuration_report_v2(
 }
 
 /// Convert test summaries to cycle report
-#[expect(dead_code, reason = "TODO #69 F: the per-cycle report is to be revived, not deleted")]
+#[expect(dead_code, reason = "TODO #29: the per-cycle report is to be revived, not deleted (from TODO #69 F)")]
 pub fn create_cycle_report(
     cycle: u32,
     duration_secs: u32,

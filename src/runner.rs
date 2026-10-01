@@ -3936,14 +3936,14 @@ pub fn set_thread_ideal_processor_ex(_thread_handle: windows::Win32::Foundation:
 /// Relative to TMR's process class, which it leaves at `NORMAL_PRIORITY_CLASS`.
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
 pub enum ThreadPriority {
-    #[expect(dead_code, reason = "no config key selects it yet; see TODO #71")]
+    #[expect(dead_code, reason = "no config key selects it yet; see TODO #77 A")]
     Normal,
     #[default]
     High,
     /// `THREAD_PRIORITY_TIME_CRITICAL`: base priority 15, the top of the normal range. Not the
     /// realtime priority *class* (16-31). With a worker on every logical CPU it can still starve
     /// the console and input, so it suits runs that leave cores free.
-    #[expect(dead_code, reason = "no config key selects it yet; see TODO #71")]
+    #[expect(dead_code, reason = "no config key selects it yet; see TODO #77 A")]
     Realtime,
 }
 

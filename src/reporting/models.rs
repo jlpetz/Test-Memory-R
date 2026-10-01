@@ -235,7 +235,7 @@ pub struct TestPerformanceEntry {
     pub duration_secs: f64,
     pub data_processed_gib: f64,
     pub throughput_mib_s: f64,
-    #[expect(dead_code, reason = "TODO #69 F: the per-cycle report is to be revived, not deleted")]
+    #[expect(dead_code, reason = "TODO #29: the per-cycle report is to be revived, not deleted (from TODO #69 F)")]
     pub throughput_gib_s: f64,
     pub errors: u64,
     /// OS-reported hardware errors during this test, and the corrected subset (see whea.rs).

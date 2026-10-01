@@ -67,7 +67,7 @@ pub trait ReportFormatter: Send + Sync {
     fn prepare_test_configuration_table(&self, report: &TestConfigurationReport) -> TableData;
     
     /// Prepare cycle report table
-    #[expect(dead_code, reason = "TODO #69 F: the per-cycle report is to be revived, not deleted")]
+    #[expect(dead_code, reason = "TODO #29: the per-cycle report is to be revived, not deleted (from TODO #69 F)")]
     fn prepare_cycle_report_table(&self, report: &CycleReport) -> TableData;
     
     /// Prepare final test summary tables
@@ -989,7 +989,7 @@ impl ReportFormatter for DefaultFormatter {
     }
     
     fn prepare_cycle_report_table(&self, report: &CycleReport) -> TableData {
-        // Not wired up yet (TODO #69 F): nothing calls `report_cycle`. Kept deliberately for a
+        // Not wired up yet (TODO #29): nothing calls `report_cycle`. Kept deliberately for a
         // between-cycle report, and kept in step with the final per-test table below so reinstating
         // it needs only the call site. Unlike that table there is nothing to average — one cycle.
         let has_whea = report.test_performances.iter().any(|t| t.whea_total > 0);
