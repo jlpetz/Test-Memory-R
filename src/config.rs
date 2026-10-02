@@ -237,6 +237,32 @@ impl ChunkSpec {
     }
 }
 
+/// The power of two nearest `x` by ratio (`x > 0`): 293 MiB -> 256, 440 MiB -> 512.
+fn nearest_power_of_two(x: u64) -> u64 {
+    let lo = 1u64 << (63 - x.leading_zeros());
+    if (x as u128) * (x as u128) > 2 * (lo as u128) * (lo as u128) { lo * 2 } else { lo }
+}
+
+/// Per-chunk repetition for one test: its own `verify_reps` / `write_read_cycles` / `test_reps`
+/// when set, else the test's default. SimpleTest defaults to TM5's loop at 100 % / 100 %:
+/// 4 x (1 fill + 5 verifies) per chunk (`mtests0.asm` ST_Check :298-308).
+fn apply_repetition(test: &TestConfig, config: &mut TestMemoryConfig) {
+    let simple = test.function.starts_with("Mem-Simple") || test.function == "SimpleTest";
+    if simple {
+        config.verify_reps = 5;
+        config.write_read_cycles = 4;
+    }
+    if let Some(reps) = test.verify_reps {
+        config.verify_reps = reps;
+    }
+    if let Some(cycles) = test.write_read_cycles {
+        config.write_read_cycles = cycles;
+    }
+    if let Some(reps) = test.test_reps {
+        config.test_reps = reps;
+    }
+}
+
 /// Convert a WindowSpec into a runtime WindowMode. Returns Err with a human-readable
 /// reason on malformed input. Mode names are case-insensitive.
 pub fn spec_to_window_mode(spec: &WindowSpec) -> Result<WindowMode, String> {
@@ -414,6 +440,15 @@ pub struct TestConfig {
     pub subdivisions: Option<u32>,          // StrideAccess: number of chunk subdivisions
     pub copy_directions: Option<u32>,       // BlockMove: number of copy direction patterns
 
+    // Per-chunk repetition: how long each chunk is worked (TODO 79 B2). Unset is the test's own
+    // default; loading a TM5 `.cfg` fills them from `Time (%)`.
+    #[serde(default)]
+    pub verify_reps: Option<u32>,           // Verify passes after each fill
+    #[serde(default)]
+    pub write_read_cycles: Option<u32>,     // Fill + verify rounds per chunk
+    #[serde(default)]
+    pub test_reps: Option<u32>,             // Test-op repetitions before verifying (MirrorMove: round trips)
+
     // TM5 pattern configuration (preserved for TM5-faithful pattern generation)
     pub pattern_mode: Option<u32>,
     pub pattern_param0: Option<u64>,
@@ -546,7 +581,6 @@ pub struct LegacyMemorySetup {
 
 #[derive(Debug, Clone)]
 pub struct LegacyTest {
-    #[expect(dead_code, reason = "TODO #74: TM5 `Test Sequence` is parsed but never wired; TMR runs enabled tests in index order")]
     pub id: u32,
     pub enabled: bool,
     pub time_percent: u32,
@@ -681,12 +715,7 @@ impl ModernConfig {
                 if let Some(v) = test.copy_directions { ctx.copy_directions = Some(v); }
             }
 
-            // TM5 SimpleTest: dLoopCounter=5 (write once, verify 5 times),
-            // ST_WriteReadCycles=4 (repeat the write+verify sequence 4 times per chunk)
-            if test.function.starts_with("Mem-Simple") || test.function == "SimpleTest" {
-                config.verify_reps = 5;
-                config.write_read_cycles = 4;
-            }
+            apply_repetition(test, &mut config);
 
             (test.function.as_str(), config)
         }).collect()
@@ -755,12 +784,7 @@ impl ModernConfig {
                         if let Some(v) = test.copy_directions { ctx.copy_directions = Some(v); }
                     }
 
-                    // TM5 SimpleTest: dLoopCounter=5 (write once, verify 5 times),
-                    // ST_WriteReadCycles=4 (repeat the write+verify sequence 4 times per chunk)
-                    if test.function.starts_with("Mem-Simple") || test.function == "SimpleTest" {
-                        config.verify_reps = 5;
-                        config.write_read_cycles = 4;
-                    }
+                    apply_repetition(test, &mut config);
 
                     result.push((test.function.as_str(), config));
                 }
@@ -861,6 +885,9 @@ pub fn create_demo_config() -> Self {
                 rng_sequences: None,
                 subdivisions: None,
                 copy_directions: None,
+                verify_reps: None,
+                write_read_cycles: None,
+                test_reps: None,
                 pattern_mode: None,
                 pattern_param0: None,
                 pattern_param1: None,
@@ -883,6 +910,9 @@ pub fn create_demo_config() -> Self {
                 rng_sequences: None,
                 subdivisions: None,
                 copy_directions: None,
+                verify_reps: None,
+                write_read_cycles: None,
+                test_reps: None,
                 pattern_mode: None,
                 pattern_param0: None,
                 pattern_param1: None,
@@ -905,6 +935,9 @@ pub fn create_demo_config() -> Self {
                 rng_sequences: None,
                 subdivisions: None,
                 copy_directions: None,
+                verify_reps: None,
+                write_read_cycles: None,
+                test_reps: None,
                 pattern_mode: Some(1),
                 pattern_param0: Some(0x1E5F),
                 pattern_param1: Some(0x45357354),
@@ -927,6 +960,9 @@ pub fn create_demo_config() -> Self {
                 rng_sequences: None,
                 subdivisions: None,
                 copy_directions: None,
+                verify_reps: None,
+                write_read_cycles: None,
+                test_reps: None,
                 pattern_mode: None,
                 pattern_param0: None,
                 pattern_param1: None,
@@ -949,6 +985,9 @@ pub fn create_demo_config() -> Self {
                 rng_sequences: None,
                 subdivisions: None,
                 copy_directions: None,
+                verify_reps: None,
+                write_read_cycles: None,
+                test_reps: None,
                 pattern_mode: None,
                 pattern_param0: None,
                 pattern_param1: None,
@@ -971,6 +1010,9 @@ pub fn create_demo_config() -> Self {
                 rng_sequences: None,
                 subdivisions: None,
                 copy_directions: None,
+                verify_reps: None,
+                write_read_cycles: None,
+                test_reps: None,
                 pattern_mode: None,
                 pattern_param0: None,
                 pattern_param1: None,
@@ -993,6 +1035,9 @@ pub fn create_demo_config() -> Self {
                 rng_sequences: Some(8),                // 8 independent RNG sequences
                 subdivisions: None,
                 copy_directions: None,
+                verify_reps: None,
+                write_read_cycles: None,
+                test_reps: None,
                 pattern_mode: None,
                 pattern_param0: None,
                 pattern_param1: None,
@@ -1015,6 +1060,9 @@ pub fn create_demo_config() -> Self {
                 rng_sequences: None,
                 subdivisions: Some(4),                 // 4 chunk subdivisions
                 copy_directions: None,
+                verify_reps: None,
+                write_read_cycles: None,
+                test_reps: None,
                 pattern_mode: None,
                 pattern_param0: None,
                 pattern_param1: None,
@@ -1037,6 +1085,9 @@ pub fn create_demo_config() -> Self {
                 rng_sequences: None,
                 subdivisions: None,
                 copy_directions: Some(2),              // Forward + backward copy
+                verify_reps: None,
+                write_read_cycles: None,
+                test_reps: None,
                 pattern_mode: None,
                 pattern_param0: None,
                 pattern_param1: None,
@@ -1059,6 +1110,9 @@ pub fn create_demo_config() -> Self {
                 rng_sequences: None,
                 subdivisions: None,
                 copy_directions: None,
+                verify_reps: None,
+                write_read_cycles: None,
+                test_reps: None,
                 pattern_mode: Some(0),
                 pattern_param0: Some(0),
                 pattern_param1: Some(0),
@@ -1122,6 +1176,9 @@ pub fn create_demo_config() -> Self {
                     rng_sequences: None,
                     subdivisions: None,
                     copy_directions: None,
+                    verify_reps: None,
+                    write_read_cycles: None,
+                    test_reps: None,
                     pattern_mode: None,
                     pattern_param0: None,
                     pattern_param1: None,
@@ -1142,6 +1199,9 @@ pub fn create_demo_config() -> Self {
                     rng_sequences: None,
                     subdivisions: None,
                     copy_directions: None,
+                    verify_reps: None,
+                    write_read_cycles: None,
+                    test_reps: None,
                     pattern_mode: Some(1),
                     pattern_param0: Some(0x1E5F),
                     pattern_param1: Some(0x45357354),
@@ -1246,37 +1306,27 @@ impl LegacyConfig {
 
     // Convert legacy config to modern config v2.0
  pub fn to_modern_config(&self) -> Result<ModernConfig, String> {
-    let global_time_multiplier = self.main_section.time_percent as f64 / 100.0;
-    
     // Start with empty test sequence - only add what's in the config
     let mut test_sequence = Vec::new();
     
     // Add legacy tests WITHOUT auto-inserting StuckBitTest
     for test in &self.tests {
         if test.enabled {
-            // Calculate effective cycles based on Time(%)
-            // TM5: Time(%)=100 = 1 cycle, Time(%)=200 = 2 cycles, etc.
-            let base_cycles = test.time_percent as f64 / 100.0;
-            let effective_cycles = ((base_cycles * global_time_multiplier).ceil() as u32).max(1);
-            
+            let (verify_reps, write_read_cycles, test_reps) = self.repetition(test);
+
             test_sequence.push(TestConfig {
                 enabled: true,
                 function: Self::map_legacy_function(&test.function)?,
                 
-                // Use cycles for TM5 Time(%) compatibility
-                cycles: Some(effective_cycles),
+                // One pass per plan cycle; TM5 `Time (%)` is per-chunk dwell, set below (TODO 79 B2)
+                cycles: Some(1),
                 duration_secs: None,  // Don't use duration-based timing
                 min_duration_secs: None,
                 
                 // Handle TM5 window behavior - no overrides for legacy
                 window: None,  // Use global default
 
-                // Handle TM5 block size: 0 = use window size, else absolute MB
-                chunk: Some(if test.test_chunk_size_mb == 0 {
-                    ChunkSpec::fraction(1.0)  // 0 = use entire window
-                } else {
-                    ChunkSpec::absolute(&format!("{}MB", test.test_chunk_size_mb))
-                }),
+                chunk: Some(self.chunk_spec(test)),
                 
                 allow_misaligned: Some(false), // Legacy configs assume aligned access
                 requires_locality: Some(matches!(test.function.as_str(), "RefreshStable")),
@@ -1286,6 +1336,9 @@ impl LegacyConfig {
                 rng_sequences: None,
                 subdivisions: None,
                 copy_directions: None,
+                verify_reps,
+                write_read_cycles,
+                test_reps,
                 
                 // Preserve legacy test parameters
                 pattern_mode: Some(test.pattern_mode),
@@ -1313,7 +1366,7 @@ impl LegacyConfig {
                 reserve_mb: Some(self.memory_setup.reserved_memory_mb),
                 reserve_percent: None,
                 reserve_gib: None,
-                default_window: WindowSpec::absolute(&format!("{}MB", self.memory_setup.testing_window_size_mb)),
+                default_window: WindowSpec::absolute(&format!("{}MiB", self.memory_setup.testing_window_size_mb)),
                 default_chunk: ChunkSpec::auto(),
             },
             cpu_config: CpuConfig {
@@ -1341,6 +1394,49 @@ impl LegacyConfig {
         }),
     })
 }
+
+    /// TM5 `Test Block Size (Mb)` as a TMR chunk (TODO 79 B1). 0-3 are fraction codes,
+    /// window / (V + 1); 4 and up are megabytes, clamped to the window. TM5's "Mb" is binary
+    /// (`shl 20`; `mt_ini.asm:287-303`, `MainThread.asm:627-661`). TM5 uses the size as it comes;
+    /// TMR chunks are powers of two (`doc/memory_system_design.md` §4.6), so any other size
+    /// becomes the nearest one, and says so.
+    fn chunk_spec(&self, test: &LegacyTest) -> ChunkSpec {
+        let window = self.memory_setup.testing_window_size_mb as u64 * BYTES_PER_MIB;
+        let (size, what) = match test.test_chunk_size_mb {
+            0 => return ChunkSpec::fraction(1.0),
+            code @ 1..=3 => (window / (code as u64 + 1), format!("window/{}", code + 1)),
+            mb => ((mb as u64 * BYTES_PER_MIB).min(window), format!("{mb} MiB")),
+        };
+        let chunk = nearest_power_of_two(size.max(64 * 1024));
+        if chunk != size {
+            log::info!("TM5 Test{} ({}): Test Block Size {} = {what} = {:.0} MiB -> {} KiB chunk (nearest power of two)",
+                      test.id, test.function, test.test_chunk_size_mb,
+                      size as f64 / BYTES_PER_MIB as f64, chunk / 1024);
+        }
+        ChunkSpec::absolute(&format!("{}KiB", chunk / 1024))
+    }
+
+    /// TM5 `Time (%)` as per-chunk repetition (TODO 79 B2), returned as (`verify_reps`,
+    /// `write_read_cycles`, `test_reps`). N = test % x global % / 2000, at least 1 (`mtests0.asm`
+    /// ST_Check :298-308, MirrorMove_Check :1135-1145, MirrorMove128_Check :1566-1576): how long
+    /// each chunk is worked, not passes over the window. SimpleTest does 4 x (1 fill + N
+    /// verifies). MirrorMove does N mirror passes; TMR's test op is a round trip (mirror and
+    /// back), so N/2 rounded up, never less dwell than TM5. RefreshStable ignores `Time (%)`.
+    /// BlockMove reads it too, but no shipped config uses it and TMR's BlockMove has its own loop,
+    /// so it is left at its default.
+    fn repetition(&self, test: &LegacyTest) -> (Option<u32>, Option<u32>, Option<u32>) {
+        let n = (test.time_percent as u64 * self.main_section.time_percent as u64 / 2000).max(1) as u32;
+        let reps = match test.function.as_str() {
+            "SimpleTest" => (Some(n), Some(4), None),
+            "MirrorMove" | "MirrorMove128" => (None, None, Some(n.div_ceil(2))),
+            _ => (None, None, None),
+        };
+        if n != 5 && reps != (None, None, None) {
+            log::info!("TM5 Test{} ({}): Time (%) {} x global {} = {} passes per chunk (TM5's default is 5)",
+                      test.id, test.function, test.time_percent, self.main_section.time_percent, n);
+        }
+        reps
+    }
 
     // Map legacy function names to modern equivalents
 
@@ -1429,4 +1525,103 @@ pub fn create_demo_configs() -> Result<(), String> {
     println!("  Critical: Mem-StuckBit ensures full memory coverage for bit errors");
 
     Ok(())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::tests::ChunkMode;
+
+    const MIB: usize = 1 << 20;
+
+    fn test(id: u32, function: &str, time_percent: u32, block: u32) -> LegacyTest {
+        LegacyTest {
+            id,
+            enabled: true,
+            time_percent,
+            function: function.to_string(),
+            pattern_mode: 0,
+            pattern_param0: 0,
+            pattern_param1: 0,
+            parameter: 0,
+            test_chunk_size_mb: block,
+        }
+    }
+
+    /// A `1usmus_v3.cfg`-like setup: 880 MiB window, global `Time (%)` as given.
+    fn legacy(global_time: u32, tests: Vec<LegacyTest>) -> LegacyConfig {
+        LegacyConfig {
+            main_section: LegacyMainSection {
+                config_name: "t".to_string(),
+                config_author: "t".to_string(),
+                cores: 0,
+                time_percent: global_time,
+                cycles: 3,
+                test_sequence: Vec::new(),
+            },
+            memory_setup: LegacyMemorySetup { testing_window_size_mb: 880, reserved_memory_mb: 128, channels: 2 },
+            tests,
+        }
+    }
+
+    fn chunk_bytes(mode: &ChunkMode) -> Option<usize> {
+        match mode {
+            ChunkMode::Absolute { size_bytes } => Some(*size_bytes),
+            _ => None,
+        }
+    }
+
+    /// TODO 79 B1: codes 1-3 are window fractions, 4 and up are binary megabytes clamped to the
+    /// window, and each becomes the nearest power of two.
+    #[test]
+    fn tm5_block_size_codes_are_window_fractions() {
+        let tests = [0, 1, 2, 3, 4, 1536].iter().enumerate()
+            .map(|(i, &block)| test(i as u32, "SimpleTest", 100, block))
+            .collect();
+        let modern = legacy(100, tests).to_modern_config().unwrap();
+        let chunks: Vec<_> = modern.get_test_configs().iter().map(|(_, c)| c.chunk_mode.clone()).collect();
+        assert!(matches!(chunks[0], ChunkMode::Fraction { fraction } if fraction == 1.0));
+        let sizes: Vec<Option<usize>> = chunks[1..].iter().map(chunk_bytes).collect();
+        // window/2 = 440 -> 512, window/3 = 293 -> 256, window/4 = 220 -> 256, 4 MiB stays,
+        // 1536 MiB is clamped to the 880 MiB window first, -> 1024.
+        assert_eq!(sizes, [512, 256, 256, 4, 1024].map(|m| Some(m * MIB)));
+        assert_eq!(modern.system.memory_strategy.default_window.size.as_deref(), Some("880MiB"));
+    }
+
+    /// TODO 79 B2: `Time (%)` is per-chunk dwell, not whole-window passes.
+    #[test]
+    fn tm5_time_percent_is_per_chunk_dwell() {
+        let tests = vec![
+            test(0, "SimpleTest", 100, 0),
+            test(1, "SimpleTest", 300, 0),
+            test(2, "MirrorMove", 100, 0),
+            test(3, "MirrorMove128", 300, 0),
+            test(4, "RefreshStable", 300, 0),
+        ];
+        let modern = legacy(100, tests).to_modern_config().unwrap();
+        assert!(modern.test_sequence.iter().all(|t| t.cycles == Some(1)), "one pass per plan cycle");
+        let reps: Vec<(u32, u32, u32)> = modern.get_test_configs().iter()
+            .map(|(_, c)| (c.verify_reps, c.write_read_cycles, c.test_reps))
+            .collect();
+        assert_eq!(reps, vec![
+            (5, 4, 1),   // 100 x 100 / 2000 = 5 verifies, TM5's default
+            (15, 4, 1),  // 300 x 100 / 2000 = 15
+            (1, 1, 3),   // 5 mirror passes -> 3 round trips
+            (1, 1, 8),   // 15 mirror passes -> 8 round trips
+            (1, 1, 1),   // RefreshStable ignores Time (%)
+        ]);
+        // A global 50 % halves it: 100 x 50 / 2000 = 2.
+        let half = legacy(50, vec![test(0, "SimpleTest", 100, 0)]).to_modern_config().unwrap();
+        assert_eq!(half.get_test_configs()[0].1.verify_reps, 2);
+    }
+
+    #[test]
+    fn nearest_power_of_two_by_ratio() {
+        let mib = |m: u64| m << 20;
+        assert_eq!(nearest_power_of_two(mib(440)), mib(512));
+        assert_eq!(nearest_power_of_two(mib(293)), mib(256));
+        assert_eq!(nearest_power_of_two(mib(256)), mib(256));
+        assert_eq!(nearest_power_of_two(mib(362)), mib(256)); // just under 256 x sqrt 2
+        assert_eq!(nearest_power_of_two(mib(363)), mib(512));
+    }
 }

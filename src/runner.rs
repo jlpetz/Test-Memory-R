@@ -118,6 +118,8 @@ pub struct TestRunOverrides<'a> {
     pub wrc_override: Option<u32>,
     /// Override the channel count used by stride formulas.
     pub channels_override: Option<u32>,
+    /// Print the layout and the test plan, then return before allocating (`--startup-debug`).
+    pub plan_only: bool,
 }
 
 // Global flags for shutdown handling
@@ -323,6 +325,18 @@ impl TestSuiteTiming {
     }
 }
 
+/// The channels line and the test configuration table, shown before a run and by `--startup-debug`.
+fn print_test_plan(test_definitions: &[TestDefinition], suite_timing: &TestSuiteTiming, cache_info: &CacheInfo, channels: u32, thread_count: usize) {
+    use crate::reporting::{create_console_reporter, converters};
+    println!("⚙  Memory Channels: {} (affects SimpleTest stride: [channels × param - 1] × {}B cache line)",
+        channels, cache_info.cache_line_size);
+    let report = converters::create_test_configuration_report_v2(test_definitions, suite_timing, cache_info, thread_count);
+    let mut reporter = create_console_reporter();
+    if let Err(e) = reporter.report_test_configuration(&report) {
+        log::error!("Failed to display test configuration report: {}", e);
+    }
+}
+
 // Test function signatures
 type TestFunctionMultiBlock = unsafe fn(&[AllocationBlock], usize, ErrorMode, &TestTiming, &TestMemoryConfig, Option<&TestProgress>) -> TestStats;
 type TestFunctionLatency = unsafe fn(&[AllocationBlock], usize, ErrorMode, &TestTiming, &TestMemoryConfig, Option<&TestProgress>) -> LatencyTestStats;
@@ -352,119 +366,10 @@ pub fn run_tests_with_layout_and_timing_filtered(
         test_reps_override,
         wrc_override,
         channels_override,
+        plan_only,
     } = overrides;
 
     layout.print_layout();
-
-    let progress = Arc::new(ProgressTracker::new());
-
-    // Subscribe to WHEA before any memory is touched, so hardware errors during allocation are
-    // caught too. Failure is non-fatal — WHEA adds visibility that our verify reads cannot have
-    // (DDR5 on-die ECC corrections, faults during non-verifying tests), but testing works without
-    // it. See whea.rs for the transport choice.
-    match progress.whea.start() {
-        Ok(()) => println!("🔎 WHEA hardware-error monitoring: active"),
-        Err(reason) => println!("🔎 WHEA hardware-error monitoring: unavailable ({})", reason),
-    }
-
-	let all_test_cpu_stats: Arc<Mutex<TestCpuStats>> = Arc::new(Mutex::new(HashMap::new()));
-
-    let mut thread_blocks: HashMap<usize, Vec<BlockInfo>> = HashMap::new();
-    for block in layout.blocks {
-        thread_blocks.entry(block.thread_id).or_default().push(block);
-    }
-
-    // Stage 1: Pre-allocate all memory blocks
-    println!("Stage 1: Pre-allocating memory blocks...");
-
-    // Display page size constraints before allocation begins
-    {
-        let min = &runtime_config.memory_allocation.min_page_size;
-        let max = &runtime_config.memory_allocation.max_page_size;
-
-        let format_size = |s: &str| -> &'static str {
-            match s {
-                "regular" => "Regular (4KB)",
-                "large" => "Large (2MB)",
-                "huge" => "Huge (1GB)",
-                _ => "Unknown",
-            }
-        };
-
-        if min == max {
-            // Restrictive: only one page size allowed
-            println!("⚠️  Page Size Restricted: {} only - may limit available memory", format_size(min));
-        } else if min == "large" && max == "huge" {
-            // Default constraints
-            println!("⚙️  Page Size Constraints: {} to {} (default)", format_size(min), format_size(max));
-        } else {
-            // Custom constraints
-            println!("⚙️  Page Size Constraints: {} to {}", format_size(min), format_size(max));
-        }
-    }
-
-    let allocated_blocks = match allocate_all_blocks_new(&thread_blocks, &runtime_config) {
-        Ok(blocks) => blocks,
-        Err(e) => {
-            println!("❌ Failed to allocate memory blocks: {}\n", e);
-            return false;
-        }
-    };
-
-    // Display enhanced block allocation report using new reporting system
-    {
-        use crate::reporting::{create_console_reporter, converters};
-
-        let report = converters::create_block_allocation_report_from_windows(&allocated_blocks, &thread_blocks);
-
-        let mut reporter = create_console_reporter();
-        if let Err(e) = reporter.report_block_allocation(&report) {
-            log::error!("Failed to display block allocation report: {}", e);
-        }
-    }
-
-    // Display detailed memory allocation tables using the modern reporting system
-    {
-        use crate::reporting::{create_console_reporter, models::{ThreadAllocationReport, ThreadAllocation}};
-        
-        let mut allocations = Vec::new();
-        for (thread_id, blocks) in &allocated_blocks {
-            let total_size: usize = blocks.iter().map(|b| b.buffer.size()).sum();
-            
-            // Calculate actual page counts based on memory size and page type
-            let mut huge_pages = 0u64;
-            let mut large_pages = 0u64;
-            let mut regular_pages = 0u64;
-            
-            for block in blocks {
-                let block_size = block.buffer.size() as u64;
-                if block.buffer.uses_huge_pages() {
-                    // 1GB huge pages
-                    huge_pages += block_size.div_ceil(HUGE_PAGE_SIZE);
-                } else if block.buffer.uses_large_pages() {
-                    // 2MB large pages
-                    large_pages += block_size.div_ceil(LARGE_PAGE_SIZE);
-                } else {
-                    // 4KB regular pages
-                    regular_pages += block_size.div_ceil(REGULAR_PAGE_SIZE);
-                }
-            }
-            
-            allocations.push(ThreadAllocation {
-                thread_id: *thread_id,
-                total_size_bytes: total_size as u64,
-                huge_pages_count: huge_pages,
-                large_pages_count: large_pages,
-                regular_pages_count: regular_pages,
-            });
-        }
-        
-        let report = ThreadAllocationReport { allocations };
-        let mut reporter = create_console_reporter();
-        if let Err(e) = reporter.report_thread_allocations(&report) {
-            log::error!("Failed to display thread allocation table: {}", e);
-        }
-    }
 
     // Calculate progress tracking information and resolve auto-dispatch tests
     // Use config-driven tests if config is provided, otherwise use hard-coded defaults
@@ -644,31 +549,132 @@ pub fn run_tests_with_layout_and_timing_filtered(
         }
     }
 
+    let mut thread_blocks: HashMap<usize, Vec<BlockInfo>> = HashMap::new();
+    for block in layout.blocks {
+        thread_blocks.entry(block.thread_id).or_default().push(block);
+    }
+
+    let effective_channels = channels_override
+        .or_else(|| config.map(|c| c.system.channels))
+        .unwrap_or(2);
+
+    // --startup-debug: show the plan, then stop before WHEA, allocation or any test.
+    if plan_only {
+        print_test_plan(&test_definitions, &suite_timing, cache_info, effective_channels, thread_blocks.len());
+        return true;
+    }
+
+    let progress = Arc::new(ProgressTracker::new());
+
+    // Subscribe to WHEA before any memory is touched, so hardware errors during allocation are
+    // caught too. Failure is non-fatal — WHEA adds visibility that our verify reads cannot have
+    // (DDR5 on-die ECC corrections, faults during non-verifying tests), but testing works without
+    // it. See whea.rs for the transport choice.
+    match progress.whea.start() {
+        Ok(()) => println!("🔎 WHEA hardware-error monitoring: active"),
+        Err(reason) => println!("🔎 WHEA hardware-error monitoring: unavailable ({})", reason),
+    }
+
+	let all_test_cpu_stats: Arc<Mutex<TestCpuStats>> = Arc::new(Mutex::new(HashMap::new()));
+
+    // Stage 1: Pre-allocate all memory blocks
+    println!("Stage 1: Pre-allocating memory blocks...");
+
+    // Display page size constraints before allocation begins
+    {
+        let min = &runtime_config.memory_allocation.min_page_size;
+        let max = &runtime_config.memory_allocation.max_page_size;
+
+        let format_size = |s: &str| -> &'static str {
+            match s {
+                "regular" => "Regular (4KB)",
+                "large" => "Large (2MB)",
+                "huge" => "Huge (1GB)",
+                _ => "Unknown",
+            }
+        };
+
+        if min == max {
+            // Restrictive: only one page size allowed
+            println!("⚠️  Page Size Restricted: {} only - may limit available memory", format_size(min));
+        } else if min == "large" && max == "huge" {
+            // Default constraints
+            println!("⚙️  Page Size Constraints: {} to {} (default)", format_size(min), format_size(max));
+        } else {
+            // Custom constraints
+            println!("⚙️  Page Size Constraints: {} to {}", format_size(min), format_size(max));
+        }
+    }
+
+    let allocated_blocks = match allocate_all_blocks_new(&thread_blocks, &runtime_config) {
+        Ok(blocks) => blocks,
+        Err(e) => {
+            println!("❌ Failed to allocate memory blocks: {}\n", e);
+            return false;
+        }
+    };
+
+    // Display enhanced block allocation report using new reporting system
+    {
+        use crate::reporting::{create_console_reporter, converters};
+
+        let report = converters::create_block_allocation_report_from_windows(&allocated_blocks, &thread_blocks);
+
+        let mut reporter = create_console_reporter();
+        if let Err(e) = reporter.report_block_allocation(&report) {
+            log::error!("Failed to display block allocation report: {}", e);
+        }
+    }
+
+    // Display detailed memory allocation tables using the modern reporting system
+    {
+        use crate::reporting::{create_console_reporter, models::{ThreadAllocationReport, ThreadAllocation}};
+        
+        let mut allocations = Vec::new();
+        for (thread_id, blocks) in &allocated_blocks {
+            let total_size: usize = blocks.iter().map(|b| b.buffer.size()).sum();
+            
+            // Calculate actual page counts based on memory size and page type
+            let mut huge_pages = 0u64;
+            let mut large_pages = 0u64;
+            let mut regular_pages = 0u64;
+            
+            for block in blocks {
+                let block_size = block.buffer.size() as u64;
+                if block.buffer.uses_huge_pages() {
+                    // 1GB huge pages
+                    huge_pages += block_size.div_ceil(HUGE_PAGE_SIZE);
+                } else if block.buffer.uses_large_pages() {
+                    // 2MB large pages
+                    large_pages += block_size.div_ceil(LARGE_PAGE_SIZE);
+                } else {
+                    // 4KB regular pages
+                    regular_pages += block_size.div_ceil(REGULAR_PAGE_SIZE);
+                }
+            }
+            
+            allocations.push(ThreadAllocation {
+                thread_id: *thread_id,
+                total_size_bytes: total_size as u64,
+                huge_pages_count: huge_pages,
+                large_pages_count: large_pages,
+                regular_pages_count: regular_pages,
+            });
+        }
+        
+        let report = ThreadAllocationReport { allocations };
+        let mut reporter = create_console_reporter();
+        if let Err(e) = reporter.report_thread_allocations(&report) {
+            log::error!("Failed to display thread allocation table: {}", e);
+        }
+    }
+
     let tests_per_cycle = test_definitions.len() as u64;
 
     // cache_info is passed from main.rs (detected once at startup via get_system_info())
     // Used for calculating window sizes in CacheLevel mode during display and test execution
 
-    // Display channels configuration before test table
-    let effective_channels = channels_override
-        .or_else(|| config.map(|c| c.system.channels))
-        .unwrap_or(2);
-    {
-        let cl_bytes = cache_info.cache_line_size;
-        println!("⚙  Memory Channels: {} (affects SimpleTest stride: [channels × param - 1] × {}B cache line)",
-            effective_channels, cl_bytes);
-    }
-
-    // Print test configuration summary with resolved auto-dispatch names
-    {
-        use crate::reporting::{create_console_reporter, converters};
-        let thread_count = allocated_blocks.len();
-        let report = converters::create_test_configuration_report_v2(&test_definitions, &suite_timing, cache_info, thread_count);
-        let mut reporter = create_console_reporter();
-        if let Err(e) = reporter.report_test_configuration(&report) {
-            log::error!("Failed to display test configuration report: {}", e);
-        }
-    }
+    print_test_plan(&test_definitions, &suite_timing, cache_info, effective_channels, allocated_blocks.len());
 
     // Start progress reporter thread
     let progress_clone = Arc::clone(&progress);

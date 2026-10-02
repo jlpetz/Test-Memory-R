@@ -451,6 +451,7 @@ pub fn print_help(program_name: &str) {
     println!("  {} --cache-latency                  # Run full cache hierarchy latency tests (12 tests)", program_name);
     println!("  {} test=Spd-*                       # Run tests matching pattern (glob wildcards)", program_name);
     println!("  {} test=Mem-Mirror*,Lat-L3-*        # Run multiple patterns (comma-separated)", program_name);
+    println!("  {} config=x.cfg --startup-debug     # Print the memory and test plan; allocate no test memory, run nothing", program_name);
     println!("  {} --version                         # Show version information", program_name);
     println!("  {} --show-topology                   # Show CPU Topology Mapping for debugging", program_name);
     println!("  {} --debug-topology                  # Runs multiple CPU Topology checks to debug if one works better", program_name);

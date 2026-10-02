@@ -977,6 +977,7 @@ impl ReportFormatter for DefaultFormatter {
             .add_header("#", ColumnAlignment::Right)
             .add_header("Test Name", ColumnAlignment::Left)
             .add_header("Timing", ColumnAlignment::Right)
+            .add_header("Per chunk", ColumnAlignment::Left)
             .add_header("Parameter", ColumnAlignment::Left)
             .add_header("Window Mode", ColumnAlignment::Left)
             .add_header("Block Mode", ColumnAlignment::Left)
@@ -987,6 +988,7 @@ impl ReportFormatter for DefaultFormatter {
                 test.number.to_string(),
                 test.name.clone(),
                 test.timing.clone(),
+                test.per_chunk.clone(),
                 test.parameter.clone(),
                 test.window_mode.clone(),
                 test.chunk_mode.clone(),

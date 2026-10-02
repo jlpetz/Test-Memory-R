@@ -1019,10 +1019,14 @@ fn align_to_boundary(size: usize, alignment: usize) -> usize {
 ///
 /// # Safety
 /// `base..base+len_bytes` must be a valid, mapped range for the duration of the call.
+/// `base` must be aligned to `cache_line_bytes`: lines are counted from `base`, so an unaligned
+/// `base` leaves the last line its range touches cached (TODO 79 B3). Chunk starts satisfy this.
+/// Checked by `debug_assert!` only, to keep the release loop free of it.
 #[inline]
 #[target_feature(enable = "clflushopt")]
 pub unsafe fn flush_range_to_dram(base: *const u8, len_bytes: usize, cache_line_bytes: usize) {
     let line = cache_line_bytes.max(1);
+    debug_assert!((base as usize).is_multiple_of(line), "flush_range_to_dram: base {base:p} not aligned to {line} B");
     let line_count = len_bytes.div_ceil(line);
     for i in 0..line_count {
         let addr = unsafe { base.add(i * line) };
@@ -4939,6 +4943,15 @@ pub unsafe fn bench_verify_multi(
 // ============================================================================
 // Test Registry - Maps config test names to actual function implementations
 // ============================================================================
+
+/// Whether the test runs through `run_phased_test`, so `write_read_cycles`, `test_reps` and
+/// `verify_reps` shape its loop. Tier 2, bandwidth and latency tests ignore all three
+/// (`doc/test_harness_tiers.md`). A new Tier 1 test family adds its prefix here.
+pub fn reads_rep_knobs(actual_name: &str) -> bool {
+    ["Mem-SimpleV2", "Mem-SimpleNT", "Mem-MirrorV2", "Bench-Init-", "Bench-Verify-"]
+        .iter()
+        .any(|prefix| actual_name.starts_with(prefix))
+}
 
 /// Map test name (from config or CLI) to its function implementation.
 /// This is the single source of truth for test name → function mapping.

@@ -1041,6 +1041,9 @@ pub fn compare_config(b: &RunConfigSnapshot, c: &RunConfigSnapshot) -> Vec<RunDi
         if base_test.verify_reps != cur_test.verify_reps {
             note("verify reps", base_test.verify_reps.to_string(), cur_test.verify_reps.to_string());
         }
+        if base_test.test_reps != cur_test.test_reps {
+            note("test reps", base_test.test_reps.to_string(), cur_test.test_reps.to_string());
+        }
         if base_test.write_read_cycles != cur_test.write_read_cycles {
             note(
                 "write/read cycles",

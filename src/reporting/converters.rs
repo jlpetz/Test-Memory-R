@@ -111,6 +111,12 @@ pub fn create_test_configuration_report_v2(
             (None, None) => "default".to_string(),  // Match old behavior
         };
 
+        let per_chunk = if crate::tests::reads_rep_knobs(test_def.actual_name) {
+            format!("{}×({}+{})", config.write_read_cycles, config.test_reps, config.verify_reps)
+        } else {
+            "-".to_string()
+        };
+
         // Use the new formatter with calculated sizes for CacheLevel targets
         let window_mode = formatter.format_window_mode_with_size(&config.window_mode, cache_info, thread_count);
         let chunk_mode = formatter.format_chunk_mode_with_size(&config.chunk_mode, cache_info, thread_count);
@@ -130,6 +136,7 @@ pub fn create_test_configuration_report_v2(
             number: i + 1,
             name: test_def.display_name.clone(),  // Use display_name to get _A suffix
             timing,
+            per_chunk,
             parameter,
             window_mode,
             chunk_mode,

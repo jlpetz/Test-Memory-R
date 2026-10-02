@@ -1085,13 +1085,9 @@ pub fn main() -> Result<(), Box<dyn std::error::Error>> {
 		None
 	};
 
-    // --startup-debug: run full startup sequence but skip test execution
-    if args.iter().any(|a| a == "--startup-debug") {
-        println!("\n================================================================================");
-        println!("  --startup-debug: Startup sequence complete. Skipping test execution.");
-        println!("================================================================================");
-        return Ok(());
-    }
+    // --startup-debug: run the startup sequence and print the test plan, but allocate no test memory and
+    // run no test
+    let plan_only = args.iter().any(|a| a == "--startup-debug");
 
     let start_time = std::time::Instant::now();
 
@@ -1114,9 +1110,19 @@ pub fn main() -> Result<(), Box<dyn std::error::Error>> {
             test_reps_override,
             wrc_override,
             channels_override,
+            plan_only,
         },
         cache_info,
     );
+
+    if plan_only {
+        if success {
+            println!("\n================================================================================");
+            println!("  --startup-debug: Startup sequence and test plan complete. No test memory allocated, no test run.");
+            println!("================================================================================");
+        }
+        return Ok(());
+    }
 
     let total_time = start_time.elapsed();
 

@@ -214,6 +214,9 @@ pub struct TestConfigurationEntry {
     pub number: usize,
     pub name: String,
     pub timing: String,
+    /// `W×(T+V)` per chunk: write/read cycles × (test ops + verifies), or `-` when the test
+    /// ignores them
+    pub per_chunk: String,
     pub parameter: String,
     pub window_mode: String,
     pub chunk_mode: String,
