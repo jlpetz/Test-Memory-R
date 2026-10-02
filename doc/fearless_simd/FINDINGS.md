@@ -223,5 +223,4 @@ cargo run --release -- --pages small    # 4 KiB pages, no privilege needed
 ```
 
 Large pages use one plain `VirtualAlloc2(MEM_RESERVE|MEM_COMMIT|MEM_LARGE_PAGES)` per thread,
-with matching alignment and never placeholders (`src/mem.rs`), so the path where a refused
-large-page placeholder replace bugchecks Windows build 26100 isn't reachable. The box must be idle while it runs.
+with matching alignment (`src/mem.rs`). The box must be idle while it runs.
