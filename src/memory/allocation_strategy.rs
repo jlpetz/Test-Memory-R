@@ -267,11 +267,92 @@ impl AllocationMode {
     }
 }
 
-/// Each thread's share is rounded **up** to a multiple of this. Whole GiB keeps the plan
-/// (`create_allocation_plan`) to blocks of 1 GiB and up. A 16 MiB step, tried 2026-09-28, added a
-/// tail of small blocks that the allocator's huge-page fallback mis-sized (TODO #75 A). Rounding up
-/// comes out of the reserve, and with enough threads can take all of it (TODO #75 B).
-const PER_THREAD_STEP_BYTES: u64 = BYTES_PER_GIB;
+/// Which way each thread's share is rounded to the step (`blkround`).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum RoundDirection {
+    /// The default, greedy: the extra comes out of the reserve, and with enough threads can take
+    /// all of it.
+    Up,
+    /// Never past what the reserve leaves.
+    Down,
+    /// Whichever multiple is closer; a tie rounds up.
+    Nearest,
+}
+
+impl std::str::FromStr for RoundDirection {
+    type Err = String;
+
+    fn from_str(s: &str) -> Result<Self, Self::Err> {
+        match s.to_lowercase().as_str() {
+            "up" => Ok(RoundDirection::Up),
+            "down" => Ok(RoundDirection::Down),
+            "nearest" => Ok(RoundDirection::Nearest),
+            _ => Err(format!("Invalid blkround '{}'. Valid: up, down, nearest", s)),
+        }
+    }
+}
+
+impl std::fmt::Display for RoundDirection {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            RoundDirection::Up => write!(f, "up"),
+            RoundDirection::Down => write!(f, "down"),
+            RoundDirection::Nearest => write!(f, "nearest"),
+        }
+    }
+}
+
+/// How each thread's share is rounded before any allocator runs (`blkroundtarget`, `blkround`).
+/// The default, up to whole GiB, lets a share be whole 1 GiB pages. Checked against the block
+/// sizes by `MemoryAllocationConfig::share_rounding`.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct ShareRounding {
+    pub step_bytes: u64,
+    pub direction: RoundDirection,
+    /// The finest step (`largefloor`): where [`ShareRounding::fit`] stops stepping down.
+    pub floor_bytes: u64,
+}
+
+impl Default for ShareRounding {
+    fn default() -> Self {
+        Self { step_bytes: BYTES_PER_GIB, direction: RoundDirection::Up, floor_bytes: 16 * BYTES_PER_MIB }
+    }
+}
+
+impl ShareRounding {
+    fn apply(&self, bytes: u64) -> u64 {
+        let step = self.step_bytes;
+        let down = bytes / step * step;
+        let up = bytes.div_ceil(step) * step;
+        match self.direction {
+            RoundDirection::Up => up,
+            RoundDirection::Down => down,
+            RoundDirection::Nearest => if (bytes - down) * 2 >= step { up } else { down },
+        }
+    }
+
+    /// `bytes` rounded so `threads` shares fit in `limit`. First at `step_bytes`; if that passes
+    /// `limit`, the same direction at each power of two below it, down to `floor_bytes`; if none
+    /// fits, down to `floor_bytes`, which always does when `bytes` × `threads` fits. A smaller step
+    /// keeps the share coarse, so it ends in fewer small blocks than rounding straight down to the
+    /// floor (TODO 75 B). Returns the share and the rounding that made it.
+    fn fit(&self, bytes: u64, threads: u64, limit: u64) -> (u64, ShareRounding) {
+        let mut rounding = *self;
+        loop {
+            let share = rounding.apply(bytes);
+            if share * threads <= limit {
+                return (share, rounding);
+            }
+            let smaller = rounding.step_bytes.next_power_of_two() / 2;
+            if smaller < self.floor_bytes {
+                break;
+            }
+            rounding.step_bytes = smaller;
+        }
+        let down = ShareRounding { step_bytes: self.floor_bytes, direction: RoundDirection::Down, ..*self };
+        (down.apply(bytes), down)
+    }
+}
 
 impl AllocationMode {
     /// Parse memory parameter string into AllocationMode
@@ -320,9 +401,11 @@ impl AllocationMode {
     /// Size the test allocation for `thread_count` workers with identical blocks.
     ///
     /// The reserve comes off the mode's reference figure (currently available, or total
-    /// installed), then each thread's share is rounded **up** to `PER_THREAD_STEP_BYTES`. The
-    /// rounding comes out of the reserve, so `reserve_bytes` is what is actually left to the OS.
-    pub fn calculate_allocation_with_threads(&self, mem_info: &SystemMemoryInfo, thread_count: usize) -> AllocationResult {
+    /// installed), then each thread's share is rounded to a multiple of `rounding.step_bytes`.
+    /// Rounding up comes out of the reserve, so `reserve_bytes` is what is actually left to the OS.
+    /// It may take all of the reserve but no more: a round that would pass the reference figure
+    /// steps down to a smaller step instead (`ShareRounding::fit`, `rounding_asked`).
+    pub fn calculate_allocation_with_threads(&self, mem_info: &SystemMemoryInfo, thread_count: usize, rounding: ShareRounding) -> AllocationResult {
         let (reference_bytes, reference_name, requested_reserve_bytes, target_bytes, base_type) = match self {
             AllocationMode::ReserveFromAvailable { reserve } => (
                 mem_info.available_physical_bytes,
@@ -341,6 +424,10 @@ impl AllocationMode {
             AllocationMode::AllocateTarget { target } => {
                 // Expressed as a reserve: whatever the target leaves of total installed memory.
                 let target_bytes = target.calculate_bytes(mem_info.total_installed_bytes);
+                if target_bytes > mem_info.total_installed_bytes {
+                    log::warn!("memory={} is more than the {:.2} GiB installed; asking for all of it instead",
+                              self.describe_spec(), bytes_to_gib_f64(mem_info.total_installed_bytes));
+                }
                 (
                     mem_info.total_installed_bytes,
                     "total installed",
@@ -360,14 +447,30 @@ impl AllocationMode {
 
         let base_allocation_bytes = reference_bytes.saturating_sub(requested_reserve_bytes);
         let per_thread_raw_bytes = base_allocation_bytes / thread_count as u64;
-        let per_thread_bytes = per_thread_raw_bytes.div_ceil(PER_THREAD_STEP_BYTES) * PER_THREAD_STEP_BYTES;
+        // Past the reference the OS has to take the memory from running processes: "available"
+        // already counts the standby list, the file cache it can drop for free (TODO 75 B).
+        let (per_thread_bytes, used) = rounding.fit(per_thread_raw_bytes, thread_count as u64, reference_bytes);
+        let rounding_asked = (used != rounding).then_some(rounding);
+        if rounding_asked.is_some() {
+            log::warn!("blkround={} to {} MiB would take {} threads × {:.3} GiB, more than the {:.3} GiB {}; rounding {} to {} MiB instead",
+                      rounding.direction,
+                      rounding.step_bytes / BYTES_PER_MIB,
+                      thread_count,
+                      bytes_to_gib_f64(rounding.apply(per_thread_raw_bytes)),
+                      bytes_to_gib_f64(reference_bytes),
+                      reference_name,
+                      used.direction,
+                      used.step_bytes / BYTES_PER_MIB);
+        }
         let allocation_bytes = per_thread_bytes * thread_count as u64;
         let reserve_bytes = reference_bytes.saturating_sub(allocation_bytes);
 
-        log::info!("Thread-aware allocation: {} threads × {:.3} GiB → rounded up to {:.3} GiB each",
+        log::info!("Thread-aware allocation: {} threads × {:.3} GiB → rounded {} to {:.3} GiB each ({} MiB step)",
                   thread_count,
                   bytes_to_gib_f64(per_thread_raw_bytes),
-                  bytes_to_gib_f64(per_thread_bytes));
+                  used.direction,
+                  bytes_to_gib_f64(per_thread_bytes),
+                  used.step_bytes / BYTES_PER_MIB);
         log::info!("Total allocation: {:.3} GiB → {:.3} GiB; reserve {:.3} GiB requested, {:.3} GiB left",
                   bytes_to_gib_f64(base_allocation_bytes),
                   bytes_to_gib_f64(allocation_bytes),
@@ -384,7 +487,9 @@ impl AllocationMode {
             raw_allocation_bytes: base_allocation_bytes,
             thread_count,
             per_thread_raw_bytes,
-            rounding_step_bytes: PER_THREAD_STEP_BYTES,
+            rounding_step_bytes: used.step_bytes,
+            rounding_direction: used.direction,
+            rounding_asked,
             per_thread_bytes,
             allocation_type: format!(
                 "{} [thread-aware ({}×{:.2} GiB)]",
@@ -427,8 +532,14 @@ pub struct AllocationResult {
     /// Each thread's share before rounding.
     pub per_thread_raw_bytes: u64,
 
-    /// Each share is rounded up to a multiple of this.
+    /// Each share is rounded to a multiple of this, in `rounding_direction`: `blkroundtarget`
+    /// and `blkround`, unless `rounding_asked` is set.
     pub rounding_step_bytes: u64,
+    pub rounding_direction: RoundDirection,
+
+    /// The rounding asked for, when it would have passed `reference_bytes`; the two fields above
+    /// are then the smaller step that fit (`ShareRounding::fit`).
+    pub rounding_asked: Option<ShareRounding>,
 
     /// Each thread's share after rounding. `allocation_bytes` is this × `thread_count`.
     pub per_thread_bytes: u64,
@@ -511,11 +622,29 @@ impl EnhancedMemoryStrategy {
     }
 
     /// Create a comprehensive memory layout with enhanced allocation calculation
-    pub fn create_layout(&self, thread_count: usize) -> Result<crate::layout::EnhancedMemoryLayout, String> {
+    pub fn create_layout(&self, thread_count: usize, rounding: ShareRounding) -> Result<crate::layout::EnhancedMemoryLayout, String> {
         let mem_info = SystemMemoryInfo::gather()?;
         // Use thread-aware allocation calculation for optimal per-thread layouts
-        let allocation_result = self.allocation_mode.calculate_allocation_with_threads(&mem_info, thread_count);
+        let allocation_result = self.allocation_mode.calculate_allocation_with_threads(&mem_info, thread_count, rounding);
         if allocation_result.per_thread_bytes == 0 {
+            if allocation_result.rounding_asked.is_some() {
+                return Err(format!(
+                    "memory={} leaves {} MiB per thread, less than largefloor ({} MiB); use fewer threads or a smaller reserve",
+                    self.describe_spec(),
+                    allocation_result.per_thread_raw_bytes / BYTES_PER_MIB,
+                    rounding.floor_bytes / BYTES_PER_MIB
+                ));
+            }
+            if allocation_result.per_thread_raw_bytes > 0 {
+                return Err(format!(
+                    "memory={} leaves {} MiB per thread, which blkround={} takes to nothing at blkroundtarget={} MiB; \
+                     use a smaller blkroundtarget, blkround=up, or fewer threads",
+                    self.describe_spec(),
+                    allocation_result.per_thread_raw_bytes / BYTES_PER_MIB,
+                    rounding.direction,
+                    rounding.step_bytes / BYTES_PER_MIB
+                ));
+            }
             return Err(format!(
                 "memory={} leaves nothing to test once the reserve is taken",
                 self.describe_spec()
@@ -572,35 +701,106 @@ mod tests {
         ));
     }
 
-    #[test]
-    fn test_per_thread_share_rounds_up() {
+    fn mem_info_55_25_gib_available() -> SystemMemoryInfo {
         let available = 55 * 1024 * BYTES_PER_MIB + 256 * BYTES_PER_MIB; // 55.25 GiB
-        let mem_info = SystemMemoryInfo {
+        SystemMemoryInfo {
             total_installed_bytes: 64 * 1024 * BYTES_PER_MIB,
             total_physical_bytes: 64 * 1024 * BYTES_PER_MIB,
             available_physical_bytes: available,
             used_physical_bytes: 64 * 1024 * BYTES_PER_MIB - available,
             total_virtual_bytes: 128 * 1024 * BYTES_PER_MIB,
             memory_load_percent: 14,
-        };
+        }
+    }
+
+    #[test]
+    fn test_per_thread_share_rounds_up() {
+        let mem_info = mem_info_55_25_gib_available();
+        let available = mem_info.available_physical_bytes;
         let mode = AllocationMode::ReserveFromAvailable { reserve: ReserveAmount::Percentage(10.0) };
+        let rounding = ShareRounding::default();
         for threads in [1, 3, 4, 16, 64] {
-            let r = mode.calculate_allocation_with_threads(&mem_info, threads);
-            assert_eq!(r.per_thread_bytes % PER_THREAD_STEP_BYTES, 0);
-            assert!(r.per_thread_bytes >= r.per_thread_raw_bytes);
-            assert!(r.per_thread_bytes - r.per_thread_raw_bytes < PER_THREAD_STEP_BYTES);
+            let r = mode.calculate_allocation_with_threads(&mem_info, threads, rounding);
             assert_eq!(r.allocation_bytes, r.per_thread_bytes * threads as u64);
-            // Rounding comes out of the reserve.
-            assert_eq!(r.reserve_bytes, available.saturating_sub(r.allocation_bytes));
+            // Rounding comes out of the reserve, and never takes more than there is.
+            assert!(r.allocation_bytes <= available);
+            assert_eq!(r.reserve_bytes, available - r.allocation_bytes);
+            // Up at the largest step that fits: the share is a multiple of it, and up at twice it
+            // (where that is still at most 1 GiB) would not have fitted.
+            let step = r.rounding_step_bytes;
+            assert_eq!(r.rounding_direction, RoundDirection::Up);
+            assert_eq!(r.per_thread_bytes, r.per_thread_raw_bytes.div_ceil(step) * step);
+            assert_eq!(r.rounding_asked.is_some(), step < BYTES_PER_GIB);
+            if step < BYTES_PER_GIB {
+                assert!(r.per_thread_raw_bytes.div_ceil(2 * step) * 2 * step * threads as u64 > available);
+            }
         }
 
         // 4 threads × 12.43 GiB: a clean 3 × 4 GiB + 1 GiB each.
-        let r = mode.calculate_allocation_with_threads(&mem_info, 4);
+        let r = mode.calculate_allocation_with_threads(&mem_info, 4, rounding);
         assert_eq!(r.per_thread_bytes, 13 * BYTES_PER_GIB);
+        // 16 threads × 3.11 GiB: up to 1 GiB would plan 64 GiB on 55.25 available and 512 MiB
+        // 56 GiB, so 256 MiB: 3.25 GiB each.
+        let r = mode.calculate_allocation_with_threads(&mem_info, 16, rounding);
+        assert_eq!(r.rounding_asked, Some(rounding));
+        assert_eq!((r.rounding_step_bytes, r.per_thread_bytes), (256 * BYTES_PER_MIB, 3 * BYTES_PER_GIB + 256 * BYTES_PER_MIB));
+        // 64 threads × 0.78 GiB: up to 64 MiB, 0.8125 GiB each.
+        let r = mode.calculate_allocation_with_threads(&mem_info, 64, rounding);
+        assert_eq!((r.rounding_step_bytes, r.per_thread_bytes), (64 * BYTES_PER_MIB, 832 * BYTES_PER_MIB));
 
         // Nothing left after the reserve rounds to nothing, which create_layout refuses.
         let all = AllocationMode::ReserveFromAvailable { reserve: ReserveAmount::Percentage(100.0) };
-        assert_eq!(all.calculate_allocation_with_threads(&mem_info, 4).per_thread_bytes, 0);
+        assert_eq!(all.calculate_allocation_with_threads(&mem_info, 4, rounding).per_thread_bytes, 0);
+    }
+
+    #[test]
+    fn test_per_thread_share_rounding_directions() {
+        let mem_info = mem_info_55_25_gib_available();
+        let mode = AllocationMode::ReserveFromAvailable { reserve: ReserveAmount::Percentage(10.0) };
+        let share = |step_mib: u64, direction: RoundDirection| {
+            let rounding = ShareRounding { step_bytes: step_mib * BYTES_PER_MIB, direction, ..Default::default() };
+            mode.calculate_allocation_with_threads(&mem_info, 4, rounding).per_thread_bytes / BYTES_PER_MIB
+        };
+        // 4 threads × 12729.6 MiB.
+        assert_eq!(share(1024, RoundDirection::Up), 13 * 1024);
+        assert_eq!(share(1024, RoundDirection::Down), 12 * 1024);
+        assert_eq!(share(1024, RoundDirection::Nearest), 12 * 1024);
+        assert_eq!(share(256, RoundDirection::Up), 12800);
+        assert_eq!(share(256, RoundDirection::Down), 12544);
+        assert_eq!(share(256, RoundDirection::Nearest), 12800);
+
+        // No reserve: 4 × 13.8125 GiB is 56 GiB on 55.25 rounded up to 1 GiB, 512 MiB or
+        // 256 MiB, and 55.5 at 128 MiB. At 64 MiB the share is exact. Nearest gets there at
+        // 256 MiB, rounding down to 13.75 GiB.
+        let none = AllocationMode::ReserveFromAvailable { reserve: ReserveAmount::Percentage(0.0) };
+        let fit = |direction: RoundDirection| {
+            let rounding = ShareRounding { direction, ..Default::default() };
+            let r = none.calculate_allocation_with_threads(&mem_info, 4, rounding);
+            assert_eq!(r.rounding_asked, Some(rounding));
+            (r.rounding_step_bytes / BYTES_PER_MIB, r.per_thread_bytes / BYTES_PER_MIB)
+        };
+        assert_eq!(fit(RoundDirection::Up), (64, 14144));
+        assert_eq!(fit(RoundDirection::Nearest), (256, 14080));
+
+        // When nothing fits rounding up, down to the floor does: 3 × 1000 MiB in 2990 MiB.
+        let r = ShareRounding::default();
+        let mib = |m: u64| m * BYTES_PER_MIB;
+        assert_eq!(r.fit(mib(1000), 3, mib(2990)), (mib(992), ShareRounding { step_bytes: mib(16), direction: RoundDirection::Down, ..r }));
+        assert_eq!(r.fit(mib(1000), 3, mib(3072)), (mib(1024), r));
+
+        // Nearest: a tie rounds up.
+        let half = ShareRounding { direction: RoundDirection::Nearest, ..Default::default() };
+        assert_eq!(half.apply(BYTES_PER_GIB / 2), BYTES_PER_GIB);
+        assert_eq!(half.apply(BYTES_PER_GIB / 2 - 1), 0);
+        // Exact multiples stay put in every direction.
+        for direction in [RoundDirection::Up, RoundDirection::Down, RoundDirection::Nearest] {
+            let r = ShareRounding { direction, ..Default::default() };
+            assert_eq!(r.apply(3 * BYTES_PER_GIB), 3 * BYTES_PER_GIB);
+        }
+
+        assert_eq!("UP".parse::<RoundDirection>(), Ok(RoundDirection::Up));
+        assert_eq!("nearest".parse::<RoundDirection>(), Ok(RoundDirection::Nearest));
+        assert!("sideways".parse::<RoundDirection>().is_err());
     }
 
     #[test]

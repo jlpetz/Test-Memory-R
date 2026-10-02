@@ -450,52 +450,84 @@ page pool) TMR splits into **three independent stages**.
 
 ### 2.1 Stage 1 — allocation
 
-Per-NUMA-node target is split evenly across that node's threads, then decomposed greedily
-(`allocator.rs:480-512`):
+`create_layout` (`allocation_strategy.rs`) turns `memory=` into one share per thread, the same
+for every thread, rounded to a multiple of `blkroundtarget` (1 GiB by default) in the `blkround`
+direction (up by default, out of the reserve):
 
 ```
-  per_thread_target = numa_total / threads_on_this_numa
+  per_thread_raw = (reference − reserve) / threads        reference: available for
+  per_thread     = round(per_thread_raw, blkroundtarget)    -from-available, installed otherwise
+  per_thread × threads > reference?  →  the same at each smaller power of two, down to
+                                        largefloor; if none fits, down to largefloor
 
-  block_sizes_mb = [4096, 2048, 1024, 512, 256, 128, 64, 32, 16]
-  greedy descending: take as many of each size as fit, move to the next
-
-  target 3.5 GiB  ─────>  3 × 1 GiB  +  1 × 512 MiB
-                          └──────────────────────┘
-                          ONE thread, TWO different block sizes
-  remainder < 16 MiB is warned about and dropped
+  10 % reserve, 6 threads:  53.73 × 0.9 / 6 = 8.059 GiB
+      up to 1 GiB:   9.0 GiB × 6 = 54 GiB, more than 53.73
+      up to 512 MiB: 8.5 GiB × 6 = 51 GiB                       ✓
 ```
 
-Then the plan is executed under one of three strategies (`allocator=`):
+Windows' "available" already counts the standby list, the file cache it can drop for free. Past
+it, the OS has to take memory from running processes (the 2 MiB pages of a run 0.27 GiB past
+available took 19 s, against about 1 s). A smaller step keeps the share coarse, so it ends in
+fewer small blocks than rounding straight down to `largefloor`. Each share is then filled by one
+of two allocators (`allocator=`), in one order they share (`fill.rs`, `fill_ladder`). Threads on
+a node draw from one page pool, and fairness is judged within it:
 
 ```
-  plan-pagesize-pref   (DEFAULT)  — page size wins, block size yields
+  both allocators, one page size at a time
   ┌─────────────────────────────────────────────────────────────────────────┐
-  │ Phase 1   every planned size ≥1 GiB, Require(Huge 1 GiB) + align 1 GiB  │
-  │ Phase 1b  extra 1 GiB chunks not in the plan, still huge pages          │
-  │ Phase 2a  planned sizes ≥16 MiB, Require(Large 2 MiB) + align 2 MiB     │
-  │ Phase 2b  ANY 2 MiB-backed size, to close the remaining byte deficit    │
-  │ Phase 3   Prefer(Regular 4 KiB) for whatever is still missing           │
+  │ 1 GiB    hugechunk → 1 GiB         each request to the least-filled     │
+  │ 2 MiB    largechunk → largefloor   thread; ties to the one with less    │
+  │                                    on bigger pages, then the one served │
+  │                                    longest ago; a refusal halves the    │
+  │                                    node's request size                  │
+  │ 4 KiB    whatever is left, thread by thread, if minpage=regular         │
   └─────────────────────────────────────────────────────────────────────────┘
 
-  plan-blocksize-pref            — block size wins, page size yields
+  plan-pagesize-pref   (DEFAULT)  — every request is its own block
   ┌─────────────────────────────────────────────────────────────────────────┐
-  │ Phase 1   for each planned size (desc): try Huge, then Large            │
-  │ Phase 2   Regular pages as absolute last resort                         │
+  │ VirtualAlloc2, Require(Huge / Large) + the matching alignment           │
+  │ request = largest power of two ≤ request size and the thread's gap      │
   └─────────────────────────────────────────────────────────────────────────┘
 
-  greedy                         — legacy, bypasses planning entirely
-                                   (returns early to chunk_allocate)
+  stitched                        — one placeholder, one contiguous VA span per thread
+  ┌─────────────────────────────────────────────────────────────────────────┐
+  │ reserve one placeholder, carve a 1 GiB-aligned slice per thread         │
+  │ request = any multiple of the floor ≤ request size and the thread's gap │
+  │ commit = split, free, allocate at that address (never REPLACE: 26100)   │
+  │ neighbouring commits merge; each run is cut into power-of-two blocks    │
+  └─────────────────────────────────────────────────────────────────────────┘
 ```
 
-Phases 1b/2b/3 can hand back block sizes that were never in the plan, so the *actual* set of
-block sizes a thread owns is not knowable from the plan alone. `distribute_planned_chunks`
-(`allocator.rs:1045+`) hands out `total_blocks / thread_count` of each planned size and then
-mops up the off-plan chunks separately.
+The tie-break keeps the threads a node shorted on 1 GiB pages at the front of every 2 MiB round
+after their top-up, so if 2 MiB pages run out partway through a round, the threads it skips are
+ones that got more 1 GiB pages. Every request is traced at info: a ✅ line per size granted, a ❌
+line per refusal.
+
+No request is bigger than the gap of the thread it is for, so nothing is over-allocated and
+nothing is freed. At the default `hugechunk=1GiB` a node's threads end at most one 1 GiB page
+apart. A bigger `hugechunk` makes fewer requests, and the threads can end about one `hugechunk`
+apart. The allocators differ in block size. plan-pagesize-pref's blocks are its requests, so they
+top out at `hugechunk` and `largechunk` (1 GiB by default). stitched's commits merge, so a
+thread's 1 GiB pages come out as one large power-of-two block. Both return power-of-two blocks,
+which `prepare_blocks_for_window` relies on.
+
+A refusal is sorted by its Win32 code (`backend::is_exhaustion`). Running out (1450 and its kin,
+or 1314 for a missing privilege) steps down; anything else, 87 above all, fails the allocation.
+
+The pooled phases plan-pagesize-pref used to run (1 / 1b / 2a / 2b / 3) asked against the node's
+total deficit and gave the 1 GiB pages out in thread order. They took blocks no thread had room
+for, then freed them, and the first threads drained the 1 GiB pool (TODO 75 A). The greedy and
+plan-blocksize-pref allocators went on 2026-10-02.
+
+Neither allocator releases committed memory to even the split afterwards. A freed 1 GiB page goes
+back to the whole system and may not come back.
 
 `Require(Huge)`/`Require(Large)` are always paired with a matching `alignment` — this is
 load-bearing, not redundant, because on x86-64 a 1 GiB page *is* a PDPTE with PS=1 and can
 only exist at a 1 GiB-aligned VA. Drop the alignment and the kernel silently falls back to
-smaller pages while still reporting success. (See CLAUDE.md, settled decisions.)
+smaller pages while still reporting success. (See CLAUDE.md, settled decisions.) Stitched gets the
+same alignment from where it commits: each slice starts 1 GiB-aligned and fills from the base,
+1 GiB commits first, so every commit lands on its own page size's boundary.
 
 ### 2.2 Stage 2 — the window, and where it differs from TM5
 
@@ -562,8 +594,11 @@ CLI (`params.rs`), all overridable from JSON:
 | Parameter | Stage | Controls |
 |---|---|---|
 | `memory=20%` / `2GiB` / `2048MB` | 1 | Total reservation. `-from-available` (default, TM5-like), `-from-total`, `-target` |
-| `allocator=plan-pagesize-pref` | 1 | Phase ordering: page size first (default), block size first, or legacy greedy |
-| `min_page_size` / `max_page_size` (JSON) | 1 | Gate `regular`/`large`/`huge`; feeds `is_page_size_allowed` |
+| `allocator=plan-pagesize-pref` | 1 | One block per request (default), or `stitched`: one contiguous span per thread |
+| `minpage=` / `maxpage=` (JSON `min_page_size` / `max_page_size`) | 1 | Gate `regular`/`large`/`huge`; feeds `is_page_size_allowed` |
+| `blkroundtarget=1GiB`, `blkround=up` | 1 | Round each thread's share to a multiple of this: `up` (default), `down` or `nearest`. Never past the reference figure: a smaller step instead, down to `largefloor`. A multiple of `largefloor`, no bigger than `hugechunk` / `largechunk` |
+| `largefloor=16MiB` | 1 | Smallest 2 MiB-page request (16 MiB–1 GiB): a refusal this small means the node is out of 2 MiB pages |
+| `hugechunk=1GiB`, `largechunk=1GiB` | 1 | First size of each 1 GiB / 2 MiB-page request, halved on refusal. Bigger means fewer OS calls on large machines and a coarser split, and for plan-pagesize-pref bigger blocks |
 | `cpus=50%`, `cputype=`, `skip-cores=`, `cpu-stride=` | 1 | Thread count → the divisor for `per_thread_target`. `cpu-stride=even` also spreads across CCDs/memory domains |
 | `window_mode` (JSON per test) | 2 | `full` / `cache` / `cache_total` / `absolute` |
 | `chunk_mode` (JSON per test) | 3 | `auto` / `cache` / `cache_total` / `absolute` / `fraction` |
@@ -580,7 +615,7 @@ CLI (`params.rs`), all overridable from JSON:
 | `Testing Window Size (Mb)` | *(no equivalent)* | 64-bit removes the aperture. `WindowMode::Absolute` covers the *sizing* role but not the *addressability* role |
 | AWE locked page pool | Stage 1 blocks | Flat 4 KB pages → sized VA blocks |
 | `MapUserPhysicalPages` rotation | *(nothing)* | Lost capability — see the callout in 2.2 |
-| `Lock Memory Granularity (Mb)` | *(partial)* — plan's 16 MiB floor | TMR has no single user-facing quantum |
+| `Lock Memory Granularity (Mb)` | `blkroundtarget` (share step), `largefloor` (smallest block) | Two quanta: how a share is rounded, and how small a block the allocator will take |
 | `Reserved Memory for Windows (Mb)` | `memory=` reserve semantics + `split` | Reframed as "how much to take" not "how much to leave" |
 | `Test Block Size (Mb)` | `ChunkMode::Absolute` / `::Fraction` | The two TM5 unit systems became two explicit modes — a genuine improvement |
 | `Time (%)` → `dLoopCounter` | `write-read-cycles`, `verify-reps` | Explicit counts instead of a percentage-of-a-magic-constant |
@@ -891,5 +926,6 @@ Which means TMR can end up **more** flexible than TM5 was, not less: TM5 paid ~3
 change its view of memory and could only change it in window-sized slices; TMR pays nanoseconds
 of setup arithmetic and can change tile size, tile order, and starting offset independently, per
 test. The constraint that remains is the one TM5 didn't have — a tile can never exceed its
-containing block, because there is no remap to stitch two blocks together (and VA stitching is
-ruled out: adjacent VA is unrelated PA).
+containing block, because there is no remap to stitch two blocks together. `allocator=stitched`
+lays each thread's blocks out as one contiguous VA span (TODO 75 C), but tests still see separate
+blocks until TODO 76, and adjacent VA is still unrelated PA.

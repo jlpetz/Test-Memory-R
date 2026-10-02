@@ -73,6 +73,9 @@ pub fn create_consolidated_memory_report(
         thread_count: allocation_result.thread_count,
         per_thread_raw_bytes: allocation_result.per_thread_raw_bytes,
         rounding_step_bytes: allocation_result.rounding_step_bytes,
+        rounding_direction: allocation_result.rounding_direction.to_string(),
+        rounding_asked: allocation_result.rounding_asked
+            .map(|asked| (asked.step_bytes, asked.direction.to_string())),
         per_thread_bytes: allocation_result.per_thread_bytes,
         allocation_bytes: allocation_result.allocation_bytes,
         reserve_bytes: allocation_result.reserve_bytes,
@@ -169,18 +172,21 @@ pub fn create_cycle_report(
     }
 }
 
-/// Create block allocation report from Windows VirtualAlloc2 allocation results
+/// Create block allocation report from Windows VirtualAlloc2 allocation results. `requested` is
+/// the layout the allocator was given, each thread's blocks summing to its target.
 pub fn create_block_allocation_report_from_windows(
     allocations: &std::collections::HashMap<usize, Vec<crate::AllocationBlock>>,
+    requested: &std::collections::HashMap<usize, Vec<crate::BlockInfo>>,
 ) -> BlockAllocationReport {
     let allocator_backend = "Windows VirtualAlloc2".to_string();
     
-    analyze_block_allocations(allocations, allocator_backend)
+    analyze_block_allocations(allocations, requested, allocator_backend)
 }
 
 /// Shared block-allocation analysis, independent of which backend allocated.
 fn analyze_block_allocations(
     allocations: &std::collections::HashMap<usize, Vec<crate::AllocationBlock>>,
+    requested: &std::collections::HashMap<usize, Vec<crate::BlockInfo>>,
     allocator_backend: String,
 ) -> BlockAllocationReport {
     use std::collections::HashMap;
@@ -290,15 +296,19 @@ fn analyze_block_allocations(
             all_allocations.push((thread_id, block_size_bytes));
         }
         
+        let target_bytes = requested.get(&thread_id)
+            .map_or(0, |blocks| blocks.iter().map(|b| b.size_bytes as u64).sum());
         thread_allocations.push(ThreadBlockAllocation {
             thread_id,
             cpu_id,
             numa_node,
+            target_bytes,
             total_bytes: thread_total_bytes,
             block_sizes: thread_block_sizes,
             page_type_breakdown: thread_page_breakdown,
         });
     }
+    thread_allocations.sort_by_key(|t| t.thread_id);
     
     // Build block size distribution
     let mut block_size_distribution = Vec::new();
@@ -381,8 +391,7 @@ fn analyze_block_allocations(
     }
     
     // Calculate allocation fairness
-    let allocation_sizes: Vec<u64> = thread_allocations.iter().map(|t| t.total_bytes).collect();
-    let fairness = calculate_allocation_fairness(allocation_sizes);
+    let fairness = calculate_allocation_fairness(&thread_allocations);
     
     BlockAllocationReport {
         allocator_backend,
@@ -401,15 +410,20 @@ fn analyze_block_allocations(
 }
 
 /// Calculate allocation fairness statistics
-fn calculate_allocation_fairness(allocation_sizes: Vec<u64>) -> AllocationFairness {
-    if allocation_sizes.is_empty() {
+fn calculate_allocation_fairness(threads: &[ThreadBlockAllocation]) -> AllocationFairness {
+    if threads.is_empty() {
         return AllocationFairness {
             coefficient_of_variation: 0.0,
             min_allocation_bytes: 0,
             max_allocation_bytes: 0,
             mean_allocation_bytes: 0.0,
+            min_huge_pages: 0,
+            max_huge_pages: 0,
         };
     }
+    
+    let allocation_sizes: Vec<u64> = threads.iter().map(|t| t.total_bytes).collect();
+    let huge_pages = threads.iter().map(|t| t.page_type_breakdown.huge_pages_count);
     
     let min_allocation = *allocation_sizes.iter().min().unwrap();
     let max_allocation = *allocation_sizes.iter().max().unwrap();
@@ -427,6 +441,8 @@ fn calculate_allocation_fairness(allocation_sizes: Vec<u64>) -> AllocationFairne
         min_allocation_bytes: min_allocation,
         max_allocation_bytes: max_allocation,
         mean_allocation_bytes: mean_allocation,
+        min_huge_pages: huge_pages.clone().min().unwrap_or(0),
+        max_huge_pages: huge_pages.max().unwrap_or(0),
     }
 }
 

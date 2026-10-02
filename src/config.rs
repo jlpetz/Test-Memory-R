@@ -1,7 +1,8 @@
 use crate::{ErrorMode};
 use crate::constants::{gib_to_bytes, BYTES_PER_MIB};
 use crate::tests::{WindowMode, ChunkMode, CacheTarget, parse_size_string};
-use crate::memory::allocation_strategy::{EnhancedMemoryStrategy, AllocationMode, ReserveAmount};
+use crate::memory::allocation_strategy::{EnhancedMemoryStrategy, AllocationMode, ReserveAmount, RoundDirection, ShareRounding};
+use crate::memory::allocator::BlockSizing;
 use crate::runner::TestSuiteTiming;
 use crate::tests::{TestTiming, TestMemoryConfig};
 use serde::{Deserialize, Serialize};
@@ -107,12 +108,31 @@ pub struct MemoryAllocationConfig {
     pub max_page_size: String,                 // "regular", "large", "huge"
 
     #[serde(default = "default_allocation_strategy")]
-    pub allocation_strategy: String,           // "greedy", "plan-pagesize-pref", "plan-blocksize-pref"
+    pub allocation_strategy: String,           // "plan-pagesize-pref", "stitched"
+
+    // Block sizes, checked by `block_sizing` (see `BlockSizing`). Sizes as `parse_size_string`.
+    #[serde(default = "default_huge_chunk")]
+    pub huge_chunk: String,                    // `hugechunk`: first size of each 1 GiB-page request
+    #[serde(default = "default_large_chunk")]
+    pub large_chunk: String,                   // `largechunk`: first size of each 2 MiB-page request
+    #[serde(default = "default_large_floor")]
+    pub large_floor: String,                   // `largefloor`: smallest 2 MiB-page request
+
+    // Per-thread share rounding before any allocator runs, checked by `share_rounding`
+    #[serde(default = "default_share_round_step")]
+    pub share_round_step: String,              // `blkroundtarget`: round each thread's share to a multiple of this
+    #[serde(default = "default_share_round")]
+    pub share_round: String,                   // `blkround`: "up", "down", "nearest"
 }
 
 fn default_min_page_size() -> String { "large".to_string() }
 fn default_max_page_size() -> String { "huge".to_string() }
 fn default_allocation_strategy() -> String { "plan-pagesize-pref".to_string() }
+fn default_huge_chunk() -> String { "1GiB".to_string() }
+fn default_large_chunk() -> String { "1GiB".to_string() }
+fn default_large_floor() -> String { "16MiB".to_string() }
+fn default_share_round_step() -> String { "1GiB".to_string() }
+fn default_share_round() -> String { "up".to_string() }
 
 impl Default for MemoryAllocationConfig {
     fn default() -> Self {
@@ -120,7 +140,60 @@ impl Default for MemoryAllocationConfig {
             min_page_size: default_min_page_size(),
             max_page_size: default_max_page_size(),
             allocation_strategy: default_allocation_strategy(),
+            huge_chunk: default_huge_chunk(),
+            large_chunk: default_large_chunk(),
+            large_floor: default_large_floor(),
+            share_round_step: default_share_round_step(),
+            share_round: default_share_round(),
         }
+    }
+}
+
+impl MemoryAllocationConfig {
+    /// The command-line keys `set_block_param` takes.
+    pub const BLOCK_PARAMS: [&'static str; 5] = ["hugechunk", "largechunk", "largefloor", "blkroundtarget", "blkround"];
+
+    /// Sets the field a `BLOCK_PARAMS` key names. Returns false for any other key.
+    pub fn set_block_param(&mut self, key: &str, value: &str) -> bool {
+        let field = match key {
+            "hugechunk" => &mut self.huge_chunk,
+            "largechunk" => &mut self.large_chunk,
+            "largefloor" => &mut self.large_floor,
+            "blkroundtarget" => &mut self.share_round_step,
+            "blkround" => &mut self.share_round,
+            _ => return false,
+        };
+        *field = value.to_string();
+        true
+    }
+
+    /// `hugechunk`, `largechunk` and `largefloor`, parsed and checked.
+    pub fn block_sizing(&self) -> Result<BlockSizing, String> {
+        let size = |key: &str, value: &str| parse_size_string(value).map_err(|e| format!("{key}={value}: {e}"));
+        BlockSizing::new(
+            size("hugechunk", &self.huge_chunk)?,
+            size("largechunk", &self.large_chunk)?,
+            size("largefloor", &self.large_floor)?,
+        )
+    }
+
+    /// `blkroundtarget` and `blkround`, parsed and checked. The step must be a multiple of
+    /// `largefloor`, so the smallest request can fill a share exactly, and no bigger than the
+    /// largest request (`hugechunk` or `largechunk`). `largefloor` is also the finest step a
+    /// share falls back to when rounding would pass the memory there is.
+    pub fn share_rounding(&self) -> Result<ShareRounding, String> {
+        let sizing = self.block_sizing()?;
+        let step = parse_size_string(&self.share_round_step)
+            .map_err(|e| format!("blkroundtarget={}: {e}", self.share_round_step))?;
+        let mib = |b: usize| b / BYTES_PER_MIB as usize;
+        let top = sizing.largest_request();
+        if step < sizing.large_floor || !step.is_multiple_of(sizing.large_floor) || step > top {
+            return Err(format!(
+                "blkroundtarget={} MiB must be a multiple of largefloor ({} MiB) and at most the largest request, hugechunk or largechunk ({} MiB)",
+                mib(step), mib(sizing.large_floor), mib(top)));
+        }
+        let direction: RoundDirection = self.share_round.parse()?;
+        Ok(ShareRounding { step_bytes: step as u64, direction, floor_bytes: sizing.large_floor as u64 })
     }
 }
 

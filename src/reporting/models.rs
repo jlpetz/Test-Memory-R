@@ -305,6 +305,9 @@ pub struct ConsolidatedMemoryReport {
     pub thread_count: usize,
     pub per_thread_raw_bytes: u64,
     pub rounding_step_bytes: u64,
+    pub rounding_direction: String,
+    /// The step and direction asked for, when they would have passed the reference figure
+    pub rounding_asked: Option<(u64, String)>,
     pub per_thread_bytes: u64,
     pub allocation_bytes: u64,
     pub reserve_bytes: u64,
@@ -361,6 +364,8 @@ pub struct ThreadBlockAllocation {
     pub thread_id: usize,
     pub cpu_id: usize,
     pub numa_node: u32,
+    /// The thread's share from the layout: what the allocator was asked for
+    pub target_bytes: u64,
     pub total_bytes: u64,
     pub block_sizes: Vec<ThreadBlockSize>,
     pub page_type_breakdown: ThreadPageTypeBreakdown,
@@ -414,6 +419,9 @@ pub struct AllocationFairness {
     pub min_allocation_bytes: u64,
     pub max_allocation_bytes: u64,
     pub mean_allocation_bytes: f64,
+    /// Fewest and most 1 GiB pages any thread got
+    pub min_huge_pages: u64,
+    pub max_huge_pages: u64,
 }
 
 // Note: CacheLatencyReport was removed - --cache-latency now uses LatencyTestSummaryReport

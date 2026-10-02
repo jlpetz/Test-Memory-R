@@ -415,7 +415,7 @@ pub fn run_tests_with_layout_and_timing_filtered(
     {
         use crate::reporting::{create_console_reporter, converters};
 
-        let report = converters::create_block_allocation_report_from_windows(&allocated_blocks);
+        let report = converters::create_block_allocation_report_from_windows(&allocated_blocks, &thread_blocks);
 
         let mut reporter = create_console_reporter();
         if let Err(e) = reporter.report_block_allocation(&report) {

@@ -3,6 +3,8 @@
 use super::models::*;
 use crate::constants::bytes_to_gib_f64;
 use crate::whea::WheaCounts;
+use std::cmp::Ordering;
+use std::collections::HashMap;
 use std::time::Duration;
 
 /// Footer for the tables whose CPU columns are marked ⚠️ when pinning is off.
@@ -833,6 +835,14 @@ impl ReportFormatter for DefaultFormatter {
             None => ("Reserve Requested", report.requested_reserve_bytes),
         };
         let rounding_diff = report.reserve_bytes as i64 - report.requested_reserve_bytes as i64;
+        // When the rounding asked for would pass the reference: what was asked, and that it did not fit
+        let rounding_note = match &report.rounding_asked {
+            None => report.rounding_direction.clone(),
+            Some((step, direction)) if *direction == report.rounding_direction => format!(
+                "{} ({} step exceeds {})", report.rounding_direction, self.format_bytes(*step), report.reference_name),
+            Some((_, direction)) => format!(
+                "{} ({} exceeds {})", report.rounding_direction, direction, report.reference_name),
+        };
 
         table = table.add_row(vec![
             requested_label.to_string(),
@@ -868,7 +878,7 @@ impl ReportFormatter for DefaultFormatter {
                 "Per Thread Round To".to_string(),
                 self.format_bytes(report.rounding_step_bytes),
                 "-".to_string(),
-                "up".to_string(),
+                rounding_note,
             ])
             .add_row(vec![
                 "Per Thread Rounded".to_string(),
@@ -1335,44 +1345,54 @@ impl ReportFormatter for DefaultFormatter {
             .with_title("Allocation Fairness Analysis")
             .add_header("Thread ID", ColumnAlignment::Center)
             .add_header("Allocated", ColumnAlignment::Right)
-            .add_header("Deviation", ColumnAlignment::Right)
+            .add_header("vs Target", ColumnAlignment::Right)
             .add_header("Status", ColumnAlignment::Left);
 
         let fairness = &report.allocation_fairness;
 
+        // Each node's 1 GiB pages are one pool, so a thread is measured against the best-served
+        // thread on its node. One page apart is the most an even split can promise.
+        let mut node_max_huge: HashMap<u32, u64> = HashMap::new();
+        for thread_alloc in &report.per_thread_allocation {
+            let max = node_max_huge.entry(thread_alloc.numa_node).or_default();
+            *max = (*max).max(thread_alloc.page_type_breakdown.huge_pages_count);
+        }
+
         // Show all threads, not just unfair ones
         for thread_alloc in &report.per_thread_allocation {
-            let deviation_percent = ((thread_alloc.total_bytes as f64 - fairness.mean_allocation_bytes) / fairness.mean_allocation_bytes) * 100.0;
-            
-            let deviation_str = if deviation_percent >= 0.0 {
-                format!("+{:.1}%", deviation_percent)
-            } else {
-                format!("{:.1}%", deviation_percent)
+            let vs_target = thread_alloc.total_bytes as i64 - thread_alloc.target_bytes as i64;
+            let fewer_huge = node_max_huge[&thread_alloc.numa_node] - thread_alloc.page_type_breakdown.huge_pages_count;
+            let huge_note = (fewer_huge > 1).then(|| format!("{} fewer 1 GiB pages", fewer_huge));
+
+            let side = match vs_target.cmp(&0) {
+                Ordering::Less => Some("Short"),
+                Ordering::Greater => Some("Over"),
+                Ordering::Equal => None,
             };
-            
-            let status = if deviation_percent.abs() > 10.0 {
-                "⚠️ Unfair"
-            } else if deviation_percent.abs() > 5.0 {
-                "🟡 Slightly unfair"
-            } else {
-                "✅ Fair"
+            let status = match (side, huge_note) {
+                (None, None) => "✅ Fair".to_string(),
+                (None, Some(note)) => format!("🟡 {}", note),
+                (Some(side), None) => format!("⚠️ {}", side),
+                (Some(side), Some(note)) => format!("⚠️ {}, {}", side, note),
             };
-            
+
             table = table.add_row(vec![
                 thread_alloc.thread_id.to_string(),
                 self.format_bytes(thread_alloc.total_bytes),
-                deviation_str,
-                status.to_string(),
+                if vs_target == 0 { "-".to_string() } else { self.format_bytes_signed(vs_target) },
+                status,
             ]);
         }
 
         table.with_footer(format!(
-            "Fairness Stats: Min={}, Max={}, Mean={:.1} GiB, CV={:.3} ({})",
+            "Fairness Stats: Min={}, Max={}, Mean={:.1} GiB, CV={:.3} ({}), 1 GiB pages per thread: {}-{}",
             self.format_bytes(fairness.min_allocation_bytes),
             self.format_bytes(fairness.max_allocation_bytes),
             bytes_to_gib_f64(fairness.mean_allocation_bytes as u64),
             fairness.coefficient_of_variation,
-            if fairness.coefficient_of_variation < 0.1 { "Fair Distribution" } else { "Unfair Distribution" }
+            if fairness.coefficient_of_variation < 0.1 { "Fair Distribution" } else { "Unfair Distribution" },
+            fairness.min_huge_pages,
+            fairness.max_huge_pages,
         ))
     }
 

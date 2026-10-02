@@ -179,7 +179,7 @@ pub fn main() -> Result<(), Box<dyn std::error::Error>> {
         "--calibration-file", "--output", "--no-calibration",
         "--create-demo-configs", "--compare-results", "--debug-topology",
         "--show-topology", "--setup-large-pages", "--startup-debug",
-        "--help", "-h", "--version", "-v"
+        "--help", "-h", "-?", "--version", "-v"
     ];
 
     let unknown_flags: Vec<String> = args.iter()
@@ -473,7 +473,7 @@ pub fn main() -> Result<(), Box<dyn std::error::Error>> {
 				}
 				return Ok(());
 			}
-            "--help" | "-h" => {
+            "--help" | "-h" | "/?" | "-?" => {
                 params::print_help(&args[0]);
                 return Ok(());
             }
@@ -628,6 +628,12 @@ pub fn main() -> Result<(), Box<dyn std::error::Error>> {
 					if let params::ParamValue::String(page_str) = value {
 						alloc_config.max_page_size = page_str.to_string();
 						log::debug!("CLI override: max_page_size = {}", page_str);
+					}
+				}
+				"hugechunk" | "largechunk" | "largefloor" | "blkroundtarget" | "blkround" => {
+					if let params::ParamValue::String(v) = value {
+						alloc_config.set_block_param(key, v);
+						log::debug!("CLI override: {} = {}", key, v);
 					}
 				}
 				_ => {} // Ignore unknown overrides
@@ -997,7 +1003,9 @@ pub fn main() -> Result<(), Box<dyn std::error::Error>> {
 	println!();
     
     // Calculate memory layout using enhanced system
-    let enhanced_layout = enhanced_memory_strategy.create_layout(actual_threads)?;
+    // Checks the block sizes too, so a bad one stops the run before anything is allocated
+    let share_rounding = alloc_config.share_rounding()?;
+    let enhanced_layout = enhanced_memory_strategy.create_layout(actual_threads, share_rounding)?;
 
     println!("Starting comprehensive memory tests... Use CTRL+C for graceful shutdown with final report");
     println!("(detailed logs available with RUST_LOG=debug)");
@@ -1116,16 +1124,9 @@ pub fn main() -> Result<(), Box<dyn std::error::Error>> {
     println!("================================================================================");
     if success {
         println!("✅ All memory tests completed successfully in {}", format_duration(total_time));
-        println!("   Comprehensive testing completed with unified execution pipeline");
-        println!("   Memory pressure maintained throughout testing with three-stage architecture");
     } else {
         println!("❌ Tests failed or encountered errors in {}", format_duration(total_time));
     }
-
-    println!();
-	
-	println!();
-    params::print_usage(&args[0]);
 	Ok(())
 }
 
@@ -1405,6 +1406,12 @@ fn build_config_from_validated_params(
     if let Some(params::ParamValue::String(page_str)) = validated.get("maxpage") {
         alloc_config.max_page_size = page_str.to_string();
         println!("  Maximum Page Size: {}", page_str);
+    }
+    for key in MemoryAllocationConfig::BLOCK_PARAMS {
+        if let Some(params::ParamValue::String(v)) = validated.get(key) {
+            alloc_config.set_block_param(key, v);
+            println!("  {}: {}", key, v);
+        }
     }
 
     // Handle topology (has side effect of setting global state)

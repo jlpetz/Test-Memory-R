@@ -8,8 +8,144 @@ allocator is meant to replace it.
 **Raised**: 2026-09-28, the user's bundle: "fix that allocator bug … make the minimum block size
 tunable AND integrate the new allocator", keeping both for now. A and the over-commit in B came
 from #71. Adapting the tests is #76.
-**Status**: Not started. Suggested order: A (small, and it fixes the default), then C (the recipe is
-ready), then B (its setting spans both allocators), then D.
+**Status**: Closed 2026-10-02 (A, B and C, with the review follow-up below). D moved to
+TODO 80. The outcome is next; the original record follows it unchanged.
+
+## Outcome (2026-10-02)
+
+As first delivered. The follow-up below moved both allocators onto one fill order and replaced the
+cap's fallback; where the two disagree, the follow-up is current.
+
+**A, fixed.** `execute_plan_page_type_first` no longer pools. `fill_gaps` runs each page-size tier
+(1 GiB, then 2 MiB, then 4 KiB if `minpage` allows) down a power-of-two ladder from 4 GiB. 1 GiB
+pages stop at 1 GiB; the other tiers stop at `largefloor`. At each size it runs rounds of one block
+to every thread whose gap still holds it, largest gap first. The first refusal ends that size for
+the node. Every request fits one thread's gap, so nothing is over-allocated and nothing is freed.
+Phases 1b/2b and `distribute_planned_chunks` are gone from this path; plan-blocksize-pref still
+uses the latter.
+- Unit tests on a fake page-pool backend (`allocator.rs` tests). The 2026-09-28 shape (33 free
+  pages, 4 × 12.47 GiB) ends exact at 9/8/8/8 1 GiB pages, with only the refusals that found the
+  pool short. Also covered: the 4 KiB fallback per gap, short threads under `minpage=large`, the
+  ladder, and the setting checks.
+- Display. Per-Thread Block Allocation and the fairness table compare each thread with its target:
+  `vs Target`, ⚠️ Short / Over. On the same node they flag "N fewer 1 GiB pages" when a thread
+  is more than one page behind the best-served one. The footer gives the 1 GiB pages per thread as
+  min-max. Rows are sorted by thread.
+
+**B, done as tunables plus a cap.** The user chose the ladder and tunables over prediction:
+granular defaults, raised on big machines. Predicting when the 1 GiB pool will run out can only be
+a guess from available memory, so it is not attempted.
+- `largefloor` (16 MiB) is the one minimum-block name: the bottom rung of plan-pagesize-pref and
+  stitched's smallest commit. `hugechunk` and `largechunk` (1 GiB each) are stitched only.
+  greedy and plan-blocksize-pref keep the fixed `LEGACY_LADDER_MB`.
+- `blkroundtarget` (1 GiB) and `blkround=up|down|nearest` (up) control share rounding before
+  allocation, for every allocator. The step must be a multiple of `largefloor`, and no bigger than
+  the allocator's largest block (`AllocationStrategy::top_block`).
+- The over-commit is fixed by "round up, but cap at available". If the rounded share × threads
+  would pass the reference figure (available for `-from-available`, installed otherwise), the share
+  rounds down instead, with a warning. The memory table then shows "down (up exceeds available)".
+- #73: the ladder and 16 MiB literals in `allocator.rs` are now `LEGACY_LADDER_MB`,
+  `LEGACY_TOP_BLOCK` and `LEGACY_FLOOR`.
+- Not done: an L3-relative floor warning.
+
+**C, landed** as `allocator=stitched` (`src/memory/stitched.rs`), per `INTEGRATION.md` steps 1-6.
+Dropped: Equalize, `BlockShape::PerThread`, and the page helpers only those used. Its sizes come
+from `block_sizing()`. It has 21 unit tests. Free-then-allocate is the only path used; `Replace`
+is dormant and not exposed. The CLAUDE.md Settled Design Decisions are updated (stitching, never
+release, free-then-allocate, alignment), and so is the `tmr-design-rationale` skill.
+
+**Live runs**, all `Spd-DRAMFull-Read-Auto`, 0 errors. Machine: AWS r8i.2xlarge, 62.87 GiB visible,
+6 threads, 1 NUMA node, 23 free 1 GiB pages. Output is in `logs/live75_*.txt`.
+
+| # | allocator | memory | result |
+|---|---|---|---|
+| 1 | stitched | `8GiB-target` | 6 × 2 GiB (1.33 rounded up: 12 GiB), all on 1 GiB pages, audit clean |
+| 2 | plan-pagesize-pref | `8GiB-target` | 6 × 2 GiB, all on 1 GiB pages, exact |
+| 3 | plan-pagesize-pref | default | Found the over-commit: 54 GiB on 53.73 available, 19 s of 2 MiB allocation. Led to the cap |
+| 3b | plan-pagesize-pref | default, capped | Exact, 1 s |
+| 4 | stitched | default | 6 × 9 GiB exact, 1 GiB pages 4/4/4/4/4/3, audit clean |
+| 5 | plan-pagesize-pref | `1GiB-from-available blkroundtarget=16MiB` | 55.69 of 56.60 GiB, exact, 4/4/4/4/4/3 |
+| 6 | stitched | same | 56.91 of 57.86 GiB, exact, 4/4/4/4/4/3, audit clean (29,136 samples) |
+| 7 | stitched | `0%-from-available` | Cap fired: up meant 60 GiB on 58.43, so 9 GiB each, exact |
+
+Not run live: multi-NUMA, `minpage=regular`, a raised `largefloor`, `hugechunk` above 1 GiB.
+
+Seen along the way, and where each went:
+- plan-blocksize-pref dealt pooled 1 GiB pages to the first threads: removed (follow-up).
+- plan-pagesize-pref's ladder started at 4 GiB, so a short pool left threads up to one 4 GiB block
+  apart: it takes `hugechunk` now (follow-up).
+- The Per-Thread Block Allocation `CPU` column shows the thread id, and Per-Thread Allocation
+  Breakdown is a strict subset of that table, in hash order: TODO 81.
+- `cpu_list` identity: a false alarm. `detect_runtime_capabilities` fills in the identity, but
+  `cli.rs` replaces it with the real CPU selection before anything is allocated.
+- The usage examples printed once at the end of every run (not twice, as first reported): now
+  only under `--help`. A `-target` above installed memory asks for all installed: it warns now.
+
+## Follow-up after review (2026-10-02, same day)
+
+The user's calls on the review, committed with the rest:
+- **Removed greedy and plan-blocksize-pref** with everything only they used (`chunk_allocate`,
+  `discover_chunks_per_numa`, `distribute_chunks_to_threads`, `allocate_with_page_type`,
+  `create_allocation_plan`, `execute_plan_block_size_first`, `distribute_planned_chunks`,
+  `LEGACY_LADDER_MB`, `LEGACY_TOP_BLOCK`, `is_page_size_allowed`). `allocator=` takes
+  plan-pagesize-pref or stitched; anything else is an error naming both.
+- **One fill order for both allocators**, `memory/fill.rs`: `fill_ladder` (least-filled first,
+  ties to the thread served longest ago, a refusal halves the node's request size),
+  `fill_regular`, the thread → node shares, the minpage/maxpage limits and the page audit. Each
+  allocator implements `Fill`: plan-pagesize-pref asks for a power of two no bigger than the gap,
+  since each request is a block; stitched for any multiple of the floor, since its commits merge.
+- **plan-pagesize-pref takes `hugechunk` and `largechunk`** instead of a fixed 4 GiB top. The
+  user's run (4 × 14 GiB, 23 free 1 GiB pages) split 8/6/5/4; the same case in a unit test now
+  splits 6/6/6/5. The price: its blocks top out at 1 GiB by default. The user chose fairness;
+  big machines raise `hugechunk`.
+- **Cap, the user's design:** a share that would pass the reference rounds at the next power of
+  two below the step, and so on down to `largefloor`; if none fits, down to `largefloor`. With a
+  reserve this keeps the share coarse and greedy (10 % reserve, 6 threads, 53.73 GiB: 8.5 GiB
+  each at 512 MiB, where a whole step down gave 8). With no reserve it ends at the 16 MiB round
+  down. The memory table shows the step used, e.g. "up (1.00 GiB step exceeds available)".
+- **Refusals sorted by code** (`backend::is_exhaustion`, `AllocError`): running out steps down,
+  anything else fails, for both allocators. Before, plan-pagesize-pref stepped down on any
+  error. A machine with no 1 GiB pages at all now fails with a hint to set `maxpage=large`, if
+  Windows answers that with a code other than the exhaustion ones.
+- `-target` above installed memory warns once. The usage examples print only under `--help`
+  (and `/?`, `-?`); the two filler lines at the end of a run are gone.
+- **Tie-break, the user's catch.** Ties first went to the thread served longest ago. After a
+  2 MiB top-up, though, the threads never served in that tier are the ones that got the extra
+  1 GiB pages, so they led the next round, and a 2 MiB shortfall landed on the shorted threads a
+  second time. Ties now go to the thread with less on bigger pages, then served-longest-ago. In a
+  unit test (7 free 1 GiB pages, 3 GiB of 2 MiB, 4 × 4 GiB) thread 3, one 1 GiB page short, now
+  ends with 1 GiB of 4 KiB pages instead of 2.
+- **Trace back on** (the user wants it while the allocators settle; remove near release): a ✅
+  line per request size granted and a ❌ line per refusal, for both allocators and all three page
+  sizes. The audit line is skipped when nothing is on large pages.
+- Report tables: TODO 81.
+
+**Live runs, second round** (2026-10-02, just after a reboot; 4 threads via `skip-cores=0
+cputype=cores cpus=100%`; 49-50 free 1 GiB pages; output in `logs/live75b_*.txt`). All exact,
+audits clean, 0 errors:
+
+| # | allocator | settings | result |
+|---|---|---|---|
+| 1, 2 | both | the 2026-09-28 failure: `blkroundtarget=16MiB blkround=down`, `Mem-Refresh*`, 2 cycles | 4 × 13.094 GiB, 1 GiB pages 13/13/12/12, no "Unallocated" |
+| 3, 4 | both | defaults | 4 × 14 GiB, 13/13/12/12; full-memory read 50.6 vs 50.3 GiB/s; allocation 4.1 vs 2.3 s |
+| 5, 6 | both | `memory=0%-from-available` | 59.38 of 59.43 and 60.19 of 60.23 GiB: up fitted no step, so down to 16 MiB |
+| 7 | plan-pagesize-pref | `memory=1%-from-available` | up to 1 GiB, 512 and 256 MiB passed available; 128 MiB fitted: 4 × 15.125 GiB |
+| 8 | stitched | `hugechunk=4GiB largefloor=64MiB` | 12 × 4 GiB, 2 GiB refused, retried at 1 GiB: 13/12/12/12 |
+| 9, 10 | both | `minpage=regular maxpage=regular` | 4 × 14 GiB on 4 KiB pages |
+| 11 | plan-pagesize-pref | `maxpage=large minpage=regular memory=0%-from-available` | 59.94 GiB all on 2 MiB pages, 228 KiB left |
+
+**Found: Mem-Refresh throughput depends on the block count.** Runs 1 and 2 differed by 40% on
+Mem-Refresh (11.7 vs 16.4 GiB/s). The bytes are right; the time isn't comparable. Its window,
+2 × (L1+L2+L3) = 977 MiB, is smaller than one block, and `prepare_blocks_for_window` takes one
+power-of-two piece per block until the window is spent. On plan-pagesize-pref's 1 GiB blocks
+that is 512, 256, 128, 64, 16 MiB and then 0.5, 0.25 and 0.12 MiB slivers: 8 pieces. On stitched's
+8/4/1 GiB blocks it is 5. Each piece is a chunk, and Mem-Refresh sleeps 64 ms per chunk (debug runs,
+`logs/live75b_dbg_*.txt`). It is a harness effect for TODO 76, not memory speed. Until then,
+window-limited tests don't compare across allocators.
+
+---
+
+## Original record (2026-09-28)
 
 **A) Fix the legacy fallback** (bug B4 in `doc/memory_system_design.md` §1).
 

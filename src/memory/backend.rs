@@ -24,8 +24,68 @@ use windows::Win32::System::SystemServices::{
     MEM_EXTENDED_PARAMETER_TYPE_BITS,
 };
 
+// Win32 codes an allocation can be refused with. 1450 = no contiguous physical memory (a pool ran
+// dry), 1314 = no SeLockMemoryPrivilege, 87 = a bug in the request (TMR-APP CLAUDE.md).
+pub(crate) const ERROR_NOT_ENOUGH_MEMORY: u32 = 8;
+pub(crate) const ERROR_OUTOFMEMORY: u32 = 14;
+pub(crate) const ERROR_INVALID_PARAMETER: u32 = 87;
+pub(crate) const ERROR_INVALID_ADDRESS: u32 = 487;
+pub(crate) const ERROR_PRIVILEGE_NOT_HELD: u32 = 1314;
+pub(crate) const ERROR_NO_SYSTEM_RESOURCES: u32 = 1450;
+pub(crate) const ERROR_COMMITMENT_LIMIT: u32 = 1455;
+
+/// `code` with its name, for logs and errors.
+pub(crate) fn describe_error(code: u32) -> String {
+    let name = match code {
+        ERROR_NOT_ENOUGH_MEMORY => " ERROR_NOT_ENOUGH_MEMORY",
+        ERROR_OUTOFMEMORY => " ERROR_OUTOFMEMORY",
+        ERROR_INVALID_PARAMETER => " ERROR_INVALID_PARAMETER (a bug in the request)",
+        ERROR_INVALID_ADDRESS => " ERROR_INVALID_ADDRESS",
+        ERROR_PRIVILEGE_NOT_HELD => " ERROR_PRIVILEGE_NOT_HELD (no SeLockMemoryPrivilege)",
+        ERROR_NO_SYSTEM_RESOURCES => " ERROR_NO_SYSTEM_RESOURCES (no contiguous physical memory)",
+        ERROR_COMMITMENT_LIMIT => " ERROR_COMMITMENT_LIMIT",
+        _ => "",
+    };
+    format!("error {code}{name}")
+}
+
+/// Whether a refusal with `code` means the page size it asked for has run out, so a smaller
+/// request or the next page size is worth trying. A missing privilege counts, so 1 GiB and 2 MiB
+/// pages are each tried before 4 KiB. Any other code is a hard error.
+pub(crate) fn is_exhaustion(code: u32) -> bool {
+    matches!(
+        code,
+        ERROR_NO_SYSTEM_RESOURCES
+            | ERROR_COMMITMENT_LIMIT
+            | ERROR_NOT_ENOUGH_MEMORY
+            | ERROR_OUTOFMEMORY
+            | ERROR_PRIVILEGE_NOT_HELD
+    )
+}
+
+/// Why `Backend::allocate` failed. `code` is the Win32 error when the OS refused the request, so
+/// the caller can tell a pool running dry from a bad request.
+#[derive(Debug)]
+pub struct AllocError {
+    pub code: Option<u32>,
+    pub message: String,
+}
+
+impl AllocError {
+    /// A failure with no OS code behind it.
+    pub(crate) fn other(message: impl Into<String>) -> Self {
+        Self { code: None, message: message.into() }
+    }
+}
+
+impl std::fmt::Display for AllocError {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.write_str(&self.message)
+    }
+}
+
 pub trait Backend: Send + Sync + std::fmt::Debug {
-    fn allocate(&self, config: &AllocationConfig) -> Result<BackendAllocation, String>;
+    fn allocate(&self, config: &AllocationConfig) -> Result<BackendAllocation, AllocError>;
     fn free(&self, allocation: BackendAllocation) -> Result<(), String>;
     #[expect(dead_code, reason = "revival seam (TODO #4/5): names the backend once there is more than one")]
     fn name(&self) -> &'static str;
@@ -62,7 +122,7 @@ impl WindowsBackend {
 }
 
 impl Backend for WindowsBackend {
-    fn allocate(&self, config: &AllocationConfig) -> Result<BackendAllocation, String> {
+    fn allocate(&self, config: &AllocationConfig) -> Result<BackendAllocation, AllocError> {
         use crate::memory::allocator::PageSizePreference as AllocPageSizePref;
         
         // Override page preference if backend doesn't support large pages
@@ -75,7 +135,7 @@ impl Backend for WindowsBackend {
                 AllocPageSizePref::Require(page_type) => {
                     match page_type {
                         PageType::Regular(_) => config.page_size.clone(),
-                        _ => return Err("Backend doesn't support large/huge pages but they are required".to_string()),
+                        _ => return Err(AllocError::other("Backend doesn't support large/huge pages but they are required")),
                     }
                 },
             };
@@ -153,7 +213,7 @@ impl WindowsBackend {
     }
 
     /// VirtualAlloc2 implementation (moved from TestBuffer)
-    fn allocate_with_virtualalloc2(&self, config: &AllocationConfig) -> Result<(*mut u8, usize, bool, bool), String> {
+    fn allocate_with_virtualalloc2(&self, config: &AllocationConfig) -> Result<(*mut u8, usize, bool, bool), AllocError> {
         use crate::memory::allocator::PageSizePreference as AllocPageSizePref;
         
         let size_bytes = config.size;
@@ -174,7 +234,7 @@ impl WindowsBackend {
                     PageType::Regular(_) => (false, Some((false, false))),
                     PageType::Large(_) => (true, Some((true, false))),
                     PageType::Huge(_) => (true, Some((true, true))),
-                    PageType::Mixed(_) => return Err("Can't require mixed page types with VirtualAlloc2".to_string()),
+                    PageType::Mixed(_) => return Err(AllocError::other("Can't require mixed page types with VirtualAlloc2")),
                 }
             },
         };
@@ -184,7 +244,10 @@ impl WindowsBackend {
                 log::debug!("Large/huge page error - missing privilege");
                 // Fall back for non-strict modes
                 match &config.page_size {
-                    AllocPageSizePref::Require(_) => return Err("Large/huge pages required but privilege missing".to_string()),
+                    AllocPageSizePref::Require(_) => return Err(AllocError {
+                        code: Some(ERROR_PRIVILEGE_NOT_HELD),
+                        message: "Large/huge pages required but privilege missing".to_string(),
+                    }),
                     _ => {
                         // Try with regular pages
                         let mut fallback_config = config.clone();
@@ -362,7 +425,10 @@ impl WindowsBackend {
                 AllocPageSizePref::Require(_) => {} // No fallback for Require
             }
             
-            Err(format!("VirtualAlloc2 failed: code = {}", err.0))
+            Err(AllocError {
+                code: Some(err.0),
+                message: format!("VirtualAlloc2 failed: {}", describe_error(err.0)),
+            })
         } else {
             log::debug!("Successfully allocated {} bytes using {} pages{}", 
                 aligned_size,

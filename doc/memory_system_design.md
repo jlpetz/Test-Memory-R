@@ -23,7 +23,7 @@ stride, bounce, dwell and revisit — without any of that leaking into how memor
 
     Consequences, all observed:
       B5  one test runs several different chunk sizes (up to 16x apart)
-      B4  a 1 GiB huge block gets dropped because it doesn't fit a plan gap
+      B4  a 1 GiB huge block gets dropped because it doesn't fit a plan gap   (fixed: TODO 75 A)
       -   chunk silently clamped to the smallest block -> config ignored
       -   allocator forced toward power-of-two blocks to keep the division tidy
 ```
@@ -76,6 +76,9 @@ Four concrete changes:
    Phase 1b's opportunistically-acquired 1 GiB blocks have no gap to land in and get dropped
    (`allocator.rs:1141` rejects a 1 GiB block against an 800 MB gap, `:1180` warns and frees it).
    Acquire against the total, assign to threads afterwards.
+   *Status (2026-10-02):* B4 was fixed the other way round (TODO 75 A). plan-pagesize-pref now
+   sizes every request to one thread's remaining gap, largest gap first, so nothing is acquired
+   that no thread can take and nothing is freed. `allocator=stitched` never had the bug.
 3. **Never merge different page types into one row.** Already true; make it a documented invariant,
    because L1 carries `page_type` per row and a stride kernel reads it.
 4. **Keep the `Backend` seam.** Nothing here needs ring 0; the settled decision stands.

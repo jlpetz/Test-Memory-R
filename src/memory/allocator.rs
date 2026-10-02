@@ -1,10 +1,20 @@
-use crate::memory::backend::{Backend, BackendType, WindowsBackend};
+use crate::memory::backend::{AllocError, Backend, BackendType, WindowsBackend, is_exhaustion};
 use crate::memory::buffer::{MemoryBuffer, PageType};
 use crate::memory::buffer::MemoryType as BufferMemoryType;
+use crate::memory::fill::{self, Fill, Grant, PageSizes, ThreadShare};
 use crate::{BlockInfo, AllocationBlock};
-use crate::cpu_topology::get_numa_node_for_cpu;
-use crate::constants::{HUGE_PAGE_SIZE_USIZE, BYTES_PER_MIB_USIZE, bytes_to_gib_f64};
+use crate::constants::{HUGE_PAGE_SIZE_USIZE, LARGE_PAGE_SIZE_USIZE, BYTES_PER_MIB_USIZE, KB, MB_16, bytes_to_gib_f64};
+use std::collections::HashMap;
 use std::sync::Arc;
+
+/// The smallest `largefloor`, and its default.
+pub(crate) const MIN_LARGE_FLOOR: usize = MB_16;
+
+/// `VirtualAlloc` granularity: the alignment for a block with no large pages.
+const ALLOCATION_GRANULARITY: usize = 64 * KB;
+
+/// Log prefix for plan-pagesize-pref.
+const WHO: &str = "plan-pagesize-pref";
 
 pub struct MemoryAllocator {
     backend: Arc<dyn Backend>,
@@ -37,15 +47,15 @@ pub struct AllocationStats {
     pub huge_page_allocations: usize,
 }
 
-/// Allocation strategy for plan-based allocator
+/// Which allocator fills the threads' shares (`allocator=`)
 #[derive(Debug, Clone, Copy, PartialEq)]
 pub enum AllocationStrategy {
-    /// Legacy greedy allocation - largest chunks first without fairness planning
-    Greedy,
-    /// Plan-based: Exhaust all huge pages first, then large pages, then regular pages
+    /// Every block its own `VirtualAlloc2` request: 1 GiB pages, then 2 MiB, then 4 KiB, each
+    /// request sized to fit one thread's gap (the default)
     PlanPageSizePref,
-    /// Plan-based: For each block size, try huge then large, regular pages as last resort
-    PlanBlockSizePref,
+    /// One placeholder reservation carved into one contiguous VA span per thread, filled
+    /// 1 GiB → 2 MiB → 4 KiB (`memory::stitched`)
+    Stitched,
 }
 
 impl std::str::FromStr for AllocationStrategy {
@@ -53,10 +63,9 @@ impl std::str::FromStr for AllocationStrategy {
 
     fn from_str(s: &str) -> Result<Self, Self::Err> {
         match s.to_lowercase().as_str() {
-            "greedy" => Ok(AllocationStrategy::Greedy),
             "plan-pagesize-pref" | "planpagesizepref" => Ok(AllocationStrategy::PlanPageSizePref),
-            "plan-blocksize-pref" | "planblocksizepref" => Ok(AllocationStrategy::PlanBlockSizePref),
-            _ => Err(format!("Invalid allocation strategy: '{}'. Valid options: greedy, plan-pagesize-pref, plan-blocksize-pref", s)),
+            "stitched" => Ok(AllocationStrategy::Stitched),
+            _ => Err(format!("Invalid allocation strategy: '{}'. Valid options: plan-pagesize-pref, stitched", s)),
         }
     }
 }
@@ -64,10 +73,46 @@ impl std::str::FromStr for AllocationStrategy {
 impl std::fmt::Display for AllocationStrategy {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         match self {
-            AllocationStrategy::Greedy => write!(f, "greedy"),
             AllocationStrategy::PlanPageSizePref => write!(f, "plan-pagesize-pref"),
-            AllocationStrategy::PlanBlockSizePref => write!(f, "plan-blocksize-pref"),
+            AllocationStrategy::Stitched => write!(f, "stitched"),
         }
+    }
+}
+
+/// The block-size tunables, checked: `hugechunk`, `largechunk`, `largefloor`.
+/// Built by `MemoryAllocationConfig::block_sizing`; both allocators take all three.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct BlockSizing {
+    /// The first size of each 1 GiB-page request, halved on every refusal down to 1 GiB. A power
+    /// of two, at least 1 GiB.
+    pub huge_chunk: usize,
+    /// The first size of each 2 MiB-page request, halved on every refusal down to `large_floor`.
+    /// A power of two, at least `large_floor`.
+    pub large_chunk: usize,
+    /// The smallest 2 MiB-page request: once the node refuses one this small, it is out of 2 MiB
+    /// pages. A power of two, 16 MiB ..= 1 GiB.
+    pub large_floor: usize,
+}
+
+impl BlockSizing {
+    pub fn new(huge_chunk: usize, large_chunk: usize, large_floor: usize) -> Result<Self, String> {
+        let mib = |b: usize| b / BYTES_PER_MIB_USIZE;
+        if !huge_chunk.is_power_of_two() || huge_chunk < HUGE_PAGE_SIZE_USIZE {
+            return Err(format!("hugechunk={} MiB must be a power of two of at least 1 GiB", mib(huge_chunk)));
+        }
+        if !large_floor.is_power_of_two() || !(MIN_LARGE_FLOOR..=HUGE_PAGE_SIZE_USIZE).contains(&large_floor) {
+            return Err(format!("largefloor={} MiB must be a power of two from 16 MiB to 1 GiB", mib(large_floor)));
+        }
+        if !large_chunk.is_power_of_two() || large_chunk < large_floor {
+            return Err(format!("largechunk={} MiB must be a power of two of at least largefloor ({} MiB)",
+                               mib(large_chunk), mib(large_floor)));
+        }
+        Ok(Self { huge_chunk, large_chunk, large_floor })
+    }
+
+    /// The largest large-page request either allocator makes.
+    pub fn largest_request(&self) -> usize {
+        self.huge_chunk.max(self.large_chunk)
     }
 }
 
@@ -88,17 +133,6 @@ impl PageSizeLevel {
             _ => PageSizeLevel::Regular, // "regular", "4kb", or default
         }
     }
-}
-
-/// Check if a page size level is allowed given min/max constraints
-pub fn is_page_size_allowed(
-    level: PageSizeLevel,
-    min_page_size: &str,
-    max_page_size: &str,
-) -> bool {
-    let min = PageSizeLevel::from_config_str(min_page_size);
-    let max = PageSizeLevel::from_config_str(max_page_size);
-    level >= min && level <= max
 }
 
 impl MemoryAllocator {
@@ -126,1325 +160,219 @@ impl MemoryAllocator {
             Ok(Arc::new(WindowsBackend::new(false)))
         }
     }
-    
-    pub fn allocate(&mut self, config: &AllocationConfig) -> Result<MemoryBuffer, String> {
+
+    pub fn allocate(&mut self, config: &AllocationConfig) -> Result<MemoryBuffer, AllocError> {
         let allocation = self.backend.allocate(config)?;
-        
+
         // Update statistics
         self.stats.total_allocations += 1;
         self.stats.total_bytes_allocated += allocation.size;
-        
+
         if allocation.info.uses_large_pages() {
             self.stats.large_page_allocations += 1;
         }
         if allocation.info.uses_huge_pages() {
             self.stats.huge_page_allocations += 1;
         }
-        
+
         Ok(MemoryBuffer::new(allocation, self.backend.clone()))
     }
 
-    /// Two-stage chunk-based allocation for Windows VirtualAlloc2
-    /// Stage 1: Discover largest available chunks per NUMA node using power-of-2 sizes
-    /// Stage 2: Distribute chunks fairly to threads prioritizing contiguous allocation
-    pub fn chunk_allocate(
-        &mut self,
-        thread_blocks: &std::collections::HashMap<usize, Vec<BlockInfo>>,
-        runtime_config: &crate::RuntimeConfig,
-    ) -> Result<std::collections::HashMap<usize, Vec<AllocationBlock>>, String> {
-        use std::collections::HashMap;
-        
-        // Calculate total memory needed per NUMA node
-        let mut total_size_per_numa: HashMap<u32, usize> = HashMap::new();
-        let mut thread_numa_assignments: HashMap<usize, (usize, u32)> = HashMap::new();
-        
-        for (thread_id, blocks) in thread_blocks {
-            // Get the correct CPU ID from the CPU list, fallback to thread_id if not available  
-            let cpu_id = runtime_config.cpu_list.as_ref()
-                .and_then(|list| list.get(*thread_id))
-                .copied()
-                .unwrap_or(*thread_id);
-            let numa_node = get_numa_node_for_cpu(cpu_id);
-            let thread_total: usize = blocks.iter().map(|b| b.size_bytes).sum();
-            
-            // Debug: Log memory allocation mapping
-            log::debug!("Memory: Thread {} → CPU {} → NUMA {} ({}MB)", 
-                       thread_id, cpu_id, numa_node, thread_total / BYTES_PER_MIB_USIZE);
-            
-            *total_size_per_numa.entry(numa_node).or_insert(0) += thread_total;
-            thread_numa_assignments.insert(*thread_id, (thread_total, numa_node));
-        }
-        
-        log::info!("Chunk allocation: {} threads across {} NUMA nodes", 
-                  thread_blocks.len(), total_size_per_numa.len());
-        
-        // Stage 1: Discover chunks per NUMA node (with smart greedy fairness)
-        let thread_count = thread_blocks.len();
-        let allocated_chunks = self.discover_chunks_per_numa(&total_size_per_numa, runtime_config, thread_count)?;
-        
-        log::info!("Stage 1 complete: {} chunks allocated across {} NUMA nodes", 
-                  allocated_chunks.len(), total_size_per_numa.len());
-        
-        // Stage 2: Distribute chunks to threads
-        let distributed_blocks = self.distribute_chunks_to_threads(allocated_chunks, &thread_numa_assignments, thread_blocks)?;
-        
-        log::info!("Stage 2 complete: Memory distributed to {} threads", distributed_blocks.len());
-        
-        Ok(distributed_blocks)
-    }
-    
-    /// NEW: Plan-based chunk allocation with fairness guarantee
-    /// Creates a pre-allocation plan that ensures fair distribution among threads
-    /// while maximizing large block sizes
+    /// Allocate every thread's share with the chosen allocator, as power-of-two blocks.
     pub fn chunk_allocate_planned(
         &mut self,
-        thread_blocks: &std::collections::HashMap<usize, Vec<BlockInfo>>,
+        thread_blocks: &HashMap<usize, Vec<BlockInfo>>,
         runtime_config: &crate::RuntimeConfig,
         strategy: AllocationStrategy,
-    ) -> Result<std::collections::HashMap<usize, Vec<AllocationBlock>>, String> {
-        use std::collections::HashMap;
-        
-        // Calculate total memory needed per NUMA node and thread assignments
-        let mut total_size_per_numa: HashMap<u32, usize> = HashMap::new();
-        let mut thread_numa_assignments: HashMap<usize, (usize, u32)> = HashMap::new();
-        let mut threads_per_numa: HashMap<u32, Vec<usize>> = HashMap::new();
-        
-        for (thread_id, blocks) in thread_blocks {
-            let cpu_id = runtime_config.cpu_list.as_ref()
-                .and_then(|list| list.get(*thread_id))
-                .copied()
-                .unwrap_or(*thread_id);
-            let numa_node = get_numa_node_for_cpu(cpu_id);
-            let thread_total: usize = blocks.iter().map(|b| b.size_bytes).sum();
-            
-            log::debug!("Plan-based allocation: Thread {} → CPU {} → NUMA {} ({}MB)", 
-                       thread_id, cpu_id, numa_node, thread_total / BYTES_PER_MIB_USIZE);
-            
-            *total_size_per_numa.entry(numa_node).or_insert(0) += thread_total;
-            thread_numa_assignments.insert(*thread_id, (thread_total, numa_node));
-            threads_per_numa.entry(numa_node).or_default().push(*thread_id);
+    ) -> Result<HashMap<usize, Vec<AllocationBlock>>, String> {
+        if strategy == AllocationStrategy::Stitched {
+            return crate::memory::stitched::chunk_allocate_stitched(thread_blocks, runtime_config);
         }
-        
-        log::info!("Plan-based chunk allocation: {} threads across {} NUMA nodes (strategy: {:?})", 
-                  thread_blocks.len(), total_size_per_numa.len(), strategy);
-        
-        let mut all_allocated_blocks = HashMap::new();
-        
-        // Process each NUMA node separately
-        for (&numa_node, &total_needed) in &total_size_per_numa {
-            let numa_threads = &threads_per_numa[&numa_node];
-            let thread_count = numa_threads.len();
-            let per_thread_target = total_needed / thread_count;
-            
-            log::info!("NUMA {}: Creating allocation plan for {} threads × {:.2}GB = {:.2}GB total",
-                      numa_node, thread_count,
-                      bytes_to_gib_f64(per_thread_target as u64),
-                      bytes_to_gib_f64(total_needed as u64));
-            
-            // Create allocation plan
-            let plan = Self::create_allocation_plan(per_thread_target, thread_count);
-            
-            // Log the plan
-            log::info!("NUMA {}: Allocation plan:", numa_node);
-            for (block_size, blocks_per_thread) in &plan {
-                log::info!("  - {} × {}MB blocks per thread ({}MB total per thread)",
-                         blocks_per_thread, block_size / (1024 * 1024),
-                         (block_size * blocks_per_thread) / (1024 * 1024));
-            }
-            
-            // Execute the plan based on strategy
-            let allocated_chunks = match strategy {
-                AllocationStrategy::Greedy => {
-                    // Use the legacy greedy allocator - bypass planning
-                    log::info!("NUMA {}: Using legacy greedy allocation (no fairness planning)", numa_node);
-                    return self.chunk_allocate(thread_blocks, runtime_config);
-                }
-                AllocationStrategy::PlanPageSizePref => {
-                    self.execute_plan_page_type_first(&plan, numa_node, runtime_config)?
-                }
-                AllocationStrategy::PlanBlockSizePref => {
-                    self.execute_plan_block_size_first(&plan, numa_node, runtime_config)?
-                }
-            };
-            
-            let total_chunk_bytes: usize = allocated_chunks.iter().map(|c| c.chunk_size).sum();
-            log::info!("NUMA {}: Plan execution complete - {} chunks allocated ({:.2}GB of {:.2}GB target)",
-                      numa_node, allocated_chunks.len(),
-                      bytes_to_gib_f64(total_chunk_bytes as u64),
-                      bytes_to_gib_f64(total_needed as u64));
-            if total_chunk_bytes > total_needed {
-                log::warn!("NUMA {}: ⚠️ Over-allocation before distribution: {:.2}GB allocated for {:.2}GB target ({:.2}GB excess will be orphaned)",
-                         numa_node,
-                         bytes_to_gib_f64(total_chunk_bytes as u64),
-                         bytes_to_gib_f64(total_needed as u64),
-                         bytes_to_gib_f64((total_chunk_bytes - total_needed) as u64));
-            }
+        let sizing = runtime_config.memory_allocation.block_sizing()?;
+        let pages = fill::allowed_page_sizes(runtime_config)?;
+        let shares = fill::thread_shares(thread_blocks, runtime_config);
+        let blocks = self.fill_blocks(&shares, &sizing, pages)?;
 
-            // Distribute chunks to threads (ensuring fairness based on plan)
-            let thread_allocations = self.distribute_planned_chunks(
-                allocated_chunks, &plan, numa_threads, &thread_numa_assignments, thread_blocks
-            )?;
-            
-            // Merge into final results
-            for (thread_id, blocks) in thread_allocations {
-                all_allocated_blocks.entry(thread_id).or_insert_with(Vec::new).extend(blocks);
-            }
-        }
-        
-        log::info!("Plan-based allocation complete: Memory distributed to {} threads", 
-                  all_allocated_blocks.len());
-        
-        // Validate that we actually allocated memory
-        if all_allocated_blocks.is_empty() {
-            return Err("Failed to allocate any memory blocks. This may be due to:\n\
-                       1. Insufficient available memory\n\
-                       2. Large page privilege not granted (restart required after granting privilege)\n\
-                       3. System memory fragmentation preventing large allocations\n\
-                       Try: Restart your session/system after granting large page privilege, or use allocator=plan-blocksize-pref".to_string());
-        }
-        
-        // Validate that all threads got memory
-        let threads_without_memory: Vec<_> = thread_blocks.keys()
-            .filter(|tid| !all_allocated_blocks.contains_key(tid))
+        let runs: Vec<fill::AuditRun> = blocks.values()
+            .flatten()
+            .filter(|block| block.buffer.uses_large_pages())
+            .map(|block| fill::AuditRun {
+                addr: block.buffer.as_mut_ptr() as usize,
+                len: block.buffer.size(),
+                numa_node: Some(block.buffer.info().numa_node),
+                thread_id: block.block_info.thread_id,
+            })
             .collect();
-        
-        if !threads_without_memory.is_empty() {
-            return Err(format!("Failed to allocate memory for {} thread(s): {:?}\n\
-                               Some threads received memory but others did not. This indicates partial allocation failure.",
-                               threads_without_memory.len(), threads_without_memory));
-        }
-        
-        Ok(all_allocated_blocks)
+        fill::log_audit(WHO, &runs);
+        Ok(blocks)
     }
-    
-    /// Create a fair allocation plan that maximizes block sizes
-    fn create_allocation_plan(per_thread_target: usize, thread_count: usize) -> Vec<(usize, usize)> {
-        // Plan format: [(block_size_bytes, total_blocks_needed), ...]
-        let mut plan = Vec::new();
-        let mut remaining_per_thread = per_thread_target;
-        
-        log::info!("Creating allocation plan: {} bytes per thread × {} threads = {} total",
-                 per_thread_target, thread_count, per_thread_target * thread_count);
-        
-        // Block sizes including new 4GB size: 4GB, 2GB, 1GB, 512MB, 256MB, 128MB, 64MB, 32MB, 16MB
-        let block_sizes_mb = [4096, 2048, 1024, 512, 256, 128, 64, 32, 16];
-        
-        for &block_size_mb in &block_sizes_mb {
-            let block_size = (block_size_mb as usize) * 1024 * 1024;
-            
-            if remaining_per_thread >= block_size {
-                let blocks_per_thread = remaining_per_thread / block_size;
-                let total_blocks = blocks_per_thread * thread_count;
-                
-                plan.push((block_size, total_blocks));
-                remaining_per_thread %= block_size;
-                
-                log::info!("Plan: {} × {}MB blocks ({} per thread)",
-                         total_blocks, block_size_mb, blocks_per_thread);
-            }
-        }
-        
-        if remaining_per_thread > 0 {
-            log::warn!("Allocation plan has {} bytes remainder per thread (will attempt to allocate)",
-                     remaining_per_thread);
-        }
-        
-        plan
-    }
-    
-    /// Execute plan with PageTypeFirst strategy
-    fn execute_plan_page_type_first(
+
+    /// plan-pagesize-pref: fill each thread's share with 1 GiB pages, then 2 MiB, then 4 KiB
+    /// (as `minpage`/`maxpage` allow), in the order `fill::fill_ladder` hands them out. Every
+    /// request is one block, sized to the thread's remaining gap. A thread the allowed page sizes
+    /// do not cover comes up short, with a warning; one that gets nothing fails the allocation.
+    fn fill_blocks(
         &mut self,
-        plan: &[(usize, usize)],
-        numa_node: u32,
-        runtime_config: &crate::RuntimeConfig,
-    ) -> Result<Vec<AllocatedChunk>, String> {
-        let mut allocated_chunks = Vec::new();
+        shares: &[ThreadShare],
+        sizing: &BlockSizing,
+        pages: PageSizes,
+    ) -> Result<HashMap<usize, Vec<AllocationBlock>>, String> {
+        let nodes: std::collections::BTreeSet<u32> = shares.iter().map(|s| s.numa_node).collect();
+        log::info!("{WHO}: {} threads on {} NUMA node(s); 1 GiB pages from {} per request, 2 MiB from {} down to {}; page sizes {:?}..={:?}",
+                  shares.len(), nodes.len(),
+                  fill::size_label(sizing.huge_chunk), fill::size_label(sizing.large_chunk),
+                  fill::size_label(sizing.large_floor), pages.min, pages.max);
 
-        // Get page size constraints from config
-        let min_page = &runtime_config.memory_allocation.min_page_size;
-        let max_page = &runtime_config.memory_allocation.max_page_size;
-        let huge_allowed = is_page_size_allowed(PageSizeLevel::Huge, min_page, max_page);
-        let large_allowed = is_page_size_allowed(PageSizeLevel::Large, min_page, max_page);
-
-        log::info!("NUMA {}: Page size constraints: min={}, max={} (huge={}, large={})",
-                 numa_node, min_page, max_page, huge_allowed, large_allowed);
-
-        // Phase 1: PageTypeFirst - Try planned chunks + additional sizes with huge pages
-        if runtime_config.large_pages_available && huge_allowed {
-            log::info!("NUMA {}: Phase 1 - PageTypeFirst: Try planned chunks + extra sizes with huge pages", numa_node);
-            
-            // First, try all planned chunks with huge pages
-            for &(block_size, total_blocks_planned) in plan {
-                if block_size >= HUGE_PAGE_SIZE_USIZE {
-                    log::info!("NUMA {}: Trying {} × {}MB huge page blocks (planned)",
-                             numa_node, total_blocks_planned, block_size / (1024 * 1024));
-                    
-                    let mut allocated_this_size = 0;
-                    for _ in 0..total_blocks_planned {
-                        let config = AllocationConfig {
-                            size: block_size,
-                            numa_node: Some(numa_node),
-                            page_size: PageSizePreference::Require(PageType::Huge(block_size)),
-                            memory_type: BufferMemoryType::WriteBack,
-                            zero_memory: true,
-                            alignment: Some(HUGE_PAGE_SIZE_USIZE),
-                        };
-                        
-                        match self.allocate(&config) {
-                            Ok(buffer) => {
-                                log::info!("✅ NUMA {}: {}MB chunk allocated (1GB huge)",
-                                         numa_node, block_size / (1024 * 1024));
-                                allocated_chunks.push(AllocatedChunk {
-                                    buffer,
-                                    chunk_size: block_size,
-                                    numa_node,
-                                });
-                                allocated_this_size += 1;
-                            }
-                            Err(e) => {
-                                log::info!("❌ NUMA {}: {}MB huge page allocation failed: {}",
-                                         numa_node, block_size / (1024 * 1024), e);
-                                break; // Stop trying this planned size with huge pages
-                            }
-                        }
-                    }
-                    
-                    if allocated_this_size > 0 {
-                        log::info!("NUMA {}: Successfully allocated {} of {} planned {}MB huge page blocks",
-                                 numa_node, allocated_this_size, total_blocks_planned, block_size / (1024 * 1024));
-                    }
-                }
-            }
-            
-            // Then, try additional huge-page sizes not in plan (PageTypeFirst benefit)
-            let allocated_so_far: usize = allocated_chunks.iter().map(|c| c.chunk_size).sum();
-            let total_needed = plan.iter().map(|(size, count)| size * count).sum::<usize>();
-            
-            if allocated_so_far < total_needed {
-                let remaining_needed = total_needed - allocated_so_far;
-                log::info!("NUMA {}: Trying additional huge page sizes for remaining {} bytes",
-                         numa_node, remaining_needed);
-                
-                // Try other huge-page-compatible sizes not already attempted in the plan
-                let all_additional_sizes_mb = [1024]; // 1GB chunks (good for huge pages)
-                let plan_sizes_mb: std::collections::HashSet<usize> = plan.iter()
-                    .map(|(size, _)| size / (1024 * 1024))
-                    .collect();
-                
-                let additional_huge_sizes_mb: Vec<usize> = all_additional_sizes_mb
-                    .into_iter()
-                    .filter(|&size_mb| !plan_sizes_mb.contains(&size_mb))
-                    .collect();
-                let mut remaining = remaining_needed;
-                
-                if additional_huge_sizes_mb.is_empty() {
-                    log::info!("NUMA {}: No additional huge page sizes needed (all sizes already in plan)", numa_node);
-                } else {
-                    for &size_mb in &additional_huge_sizes_mb {
-                    let chunk_size = size_mb * 1024 * 1024;
-                    
-                    if remaining >= chunk_size {
-                        let max_chunks = remaining / chunk_size;
-                        log::info!("NUMA {}: Trying up to {} × {}MB with huge pages (additional)",
-                                 numa_node, max_chunks, size_mb);
-                        
-                        let mut allocated_this_size = 0;
-                        for _ in 0..max_chunks {
-                            let config = AllocationConfig {
-                                size: chunk_size,
-                                numa_node: Some(numa_node),
-                                page_size: PageSizePreference::Require(PageType::Huge(chunk_size)),
-                                memory_type: BufferMemoryType::WriteBack,
-                                zero_memory: true,
-                                alignment: Some(HUGE_PAGE_SIZE_USIZE),
-                            };
-                            
-                            match self.allocate(&config) {
-                                Ok(buffer) => {
-                                    log::info!("✅ NUMA {}: {}MB chunk allocated (1GB huge)",
-                                             numa_node, size_mb);
-                                    allocated_chunks.push(AllocatedChunk {
-                                        buffer,
-                                        chunk_size,
-                                        numa_node,
-                                    });
-                                    remaining -= chunk_size;
-                                    allocated_this_size += 1;
-                                }
-                                Err(e) => {
-                                    log::info!("❌ NUMA {}: {}MB huge page allocation failed: {}",
-                                             numa_node, size_mb, e);
-                                    break; // Stop trying this size, try next size
-                                }
-                            }
-                        }
-                        
-                        if allocated_this_size > 0 {
-                            log::info!("NUMA {}: Successfully allocated {} × {}MB additional huge pages",
-                                     numa_node, allocated_this_size, size_mb);
-                        }
-                    }
-                }
-                }
-            }
+        let mut fill = BlockFill {
+            allocator: self,
+            threads: shares.iter()
+                .map(|&share| ThreadFill { share, filled: 0, blocks: Vec::new() })
+                .collect(),
+        };
+        if pages.allows(PageSizeLevel::Huge) {
+            fill::fill_ladder(&mut fill, PageSizeLevel::Huge, sizing.huge_chunk, HUGE_PAGE_SIZE_USIZE, WHO)?;
         }
-        
-        // Phase 2: PageTypeFirst - Complete planned chunks first, then try additional sizes
-        // Use byte deficit (not per-size slot counting) to avoid over-allocation when
-        // Phase 1b grabbed chunks of sizes not in the plan.
-        let allocated_so_far: usize = allocated_chunks.iter().map(|c| c.chunk_size).sum();
-        let total_needed = plan.iter().map(|(size, count)| size * count).sum::<usize>();
-        let mut byte_deficit = total_needed.saturating_sub(allocated_so_far);
-
-        if byte_deficit > 0 && runtime_config.large_pages_available && large_allowed {
-            log::info!("NUMA {}: Phase 2 - Complete planned chunks first, then fill remaining (deficit: {} bytes)",
-                     numa_node, byte_deficit);
-
-            // Phase 2a: Complete any planned chunks that weren't fully allocated in Phase 1
-            log::info!("NUMA {}: Phase 2a - Completing planned chunks with large pages", numa_node);
-
-            for &(block_size, total_blocks_planned) in plan {
-                if byte_deficit == 0 { break; }
-                if block_size >= 16 * 1024 * 1024 { // Only sizes suitable for large pages
-                    // Count how many of this planned size we already have
-                    let already_allocated = allocated_chunks.iter()
-                        .filter(|c| c.chunk_size == block_size)
-                        .count();
-
-                    let plan_still_needed = total_blocks_planned.saturating_sub(already_allocated);
-                    // Cap by byte deficit to prevent over-allocation
-                    let max_by_deficit = byte_deficit / block_size;
-                    let still_needed = plan_still_needed.min(max_by_deficit);
-
-                    if still_needed > 0 {
-                        log::info!("NUMA {}: Completing planned {} × {}MB blocks (have {}, need {}, capped to {} by deficit)",
-                                 numa_node, total_blocks_planned, block_size / (1024 * 1024),
-                                 already_allocated, plan_still_needed, still_needed);
-
-                        let mut allocated_this_size = 0;
-                        for _ in 0..still_needed {
-                            let config = AllocationConfig {
-                                size: block_size,
-                                numa_node: Some(numa_node),
-                                page_size: PageSizePreference::Require(PageType::Large(block_size)),
-                                memory_type: BufferMemoryType::WriteBack,
-                                zero_memory: true,
-                                alignment: Some(2 * 1024 * 1024), // 2MB alignment for large pages
-                            };
-
-                            match self.allocate(&config) {
-                                Ok(buffer) => {
-                                    log::info!("✅ NUMA {}: {}MB chunk allocated (2MB large)",
-                                             numa_node, block_size / (1024 * 1024));
-                                    allocated_chunks.push(AllocatedChunk {
-                                        buffer,
-                                        chunk_size: block_size,
-                                        numa_node,
-                                    });
-                                    byte_deficit = byte_deficit.saturating_sub(block_size);
-                                    allocated_this_size += 1;
-                                }
-                                Err(e) => {
-                                    log::info!("❌ NUMA {}: {}MB large page allocation failed: {}",
-                                             numa_node, block_size / (1024 * 1024), e);
-                                    break; // Stop trying this planned size with large pages
-                                }
-                            }
-                        }
-
-                        if allocated_this_size > 0 {
-                            log::info!("NUMA {}: Successfully completed {} of {} remaining {}MB blocks",
-                                     numa_node, allocated_this_size, still_needed, block_size / (1024 * 1024));
-                        }
-                    }
-                }
-            }
-
-            // Phase 2b: Fill any remaining space with other chunk sizes (PageTypeFirst benefit)
-            if byte_deficit > 0 {
-                log::info!("NUMA {}: Phase 2b - Fill remaining {} bytes with any large page chunks",
-                         numa_node, byte_deficit);
-                
-                let all_chunk_sizes_mb = [4096, 2048, 1024, 512, 256, 128, 64, 32, 16];
-
-                for &chunk_mb in &all_chunk_sizes_mb {
-                    if byte_deficit == 0 { break; }
-                    let chunk_size = (chunk_mb as usize) * 1024 * 1024;
-
-                    // Only try sizes that are 16MB+ (suitable for large pages) and fit in deficit
-                    if chunk_size >= 16 * 1024 * 1024 && byte_deficit >= chunk_size {
-                        let max_chunks = byte_deficit / chunk_size;
-                        if max_chunks > 0 {
-                            log::info!("NUMA {}: Filling remaining with up to {} × {}MB large pages",
-                                     numa_node, max_chunks, chunk_mb);
-
-                            let mut allocated_this_size = 0;
-                            for _ in 0..max_chunks {
-                                let config = AllocationConfig {
-                                    size: chunk_size,
-                                    numa_node: Some(numa_node),
-                                    page_size: PageSizePreference::Require(PageType::Large(chunk_size)),
-                                    memory_type: BufferMemoryType::WriteBack,
-                                    zero_memory: true,
-                                    alignment: Some(2 * 1024 * 1024), // 2MB alignment for large pages
-                                };
-
-                                match self.allocate(&config) {
-                                    Ok(buffer) => {
-                                        log::info!("✅ NUMA {}: {}MB chunk allocated (2MB large)",
-                                                 numa_node, chunk_mb);
-                                        allocated_chunks.push(AllocatedChunk {
-                                            buffer,
-                                            chunk_size,
-                                            numa_node,
-                                        });
-                                        byte_deficit = byte_deficit.saturating_sub(chunk_size);
-                                        allocated_this_size += 1;
-                                    }
-                                    Err(e) => {
-                                        log::info!("❌ NUMA {}: {}MB large page allocation failed: {}",
-                                                 numa_node, chunk_mb, e);
-                                        break; // Stop trying this size with large pages
-                                    }
-                                }
-                            }
-
-                            if allocated_this_size > 0 {
-                                log::info!("NUMA {}: Successfully filled {} × {}MB with large pages",
-                                         numa_node, allocated_this_size, chunk_mb);
-                            }
-                        }
-                    }
-                }
-
-                log::info!("NUMA {}: Phase 2b complete, {} bytes still needed",
-                         numa_node, byte_deficit);
-            }
+        if pages.allows(PageSizeLevel::Large) {
+            fill::fill_ladder(&mut fill, PageSizeLevel::Large, sizing.large_chunk, sizing.large_floor, WHO)?;
         }
-        
-        // Phase 3: Regular pages as last resort - try ALL chunk sizes
-        let regular_allowed = is_page_size_allowed(PageSizeLevel::Regular, min_page, max_page);
-        // Recompute deficit from actual allocations (byte_deficit may not be in scope if Phase 2 was skipped)
-        let allocated_final: usize = allocated_chunks.iter().map(|c| c.chunk_size).sum();
-        let mut remaining = total_needed.saturating_sub(allocated_final);
-        if remaining > 0 && regular_allowed {
-            log::info!("NUMA {}: Phase 3 - Using regular pages for remaining {} bytes", numa_node, remaining);
-
-            let all_chunk_sizes_mb = [4096, 2048, 1024, 512, 256, 128, 64, 32, 16];
-
-            for &chunk_mb in &all_chunk_sizes_mb {
-                if remaining == 0 { break; }
-                let chunk_size = (chunk_mb as usize) * 1024 * 1024;
-
-                if remaining >= chunk_size {
-                    let max_chunks = remaining / chunk_size;
-                    if max_chunks > 0 {
-                        log::info!("NUMA {}: Trying up to {} × {}MB with regular pages",
-                                 numa_node, max_chunks, chunk_mb);
-
-                        let mut allocated_this_size = 0;
-                        for _ in 0..max_chunks {
-                            let config = AllocationConfig {
-                                size: chunk_size,
-                                numa_node: Some(numa_node),
-                                page_size: PageSizePreference::Prefer(PageType::Regular(chunk_size)),
-                                memory_type: BufferMemoryType::WriteBack,
-                                zero_memory: true,
-                                alignment: Some(64 * 1024),
-                            };
-
-                            match self.allocate(&config) {
-                                Ok(buffer) => {
-                                    log::info!("✅ NUMA {}: {}MB chunk allocated (4KB regular)",
-                                             numa_node, chunk_mb);
-                                    allocated_chunks.push(AllocatedChunk {
-                                        buffer,
-                                        chunk_size,
-                                        numa_node,
-                                    });
-                                    remaining = remaining.saturating_sub(chunk_size);
-                                    allocated_this_size += 1;
-                                }
-                                Err(e) => {
-                                    log::info!("❌ NUMA {}: {}MB regular page allocation failed: {}",
-                                             numa_node, chunk_mb, e);
-                                    break; // Stop trying this size, try next size
-                                }
-                            }
-                        }
-
-                        if allocated_this_size > 0 {
-                            log::info!("NUMA {}: Successfully allocated {} × {}MB with regular pages",
-                                     numa_node, allocated_this_size, chunk_mb);
-                        }
-                    }
-                }
-            }
-
-            log::info!("NUMA {}: Phase 3 complete, {} bytes still unallocated",
-                     numa_node, remaining);
+        // A refused 4 KiB request is traced there; the threads it leaves short are warned about below.
+        if pages.allows(PageSizeLevel::Regular) {
+            fill::fill_regular(&mut fill, WHO)?;
         }
 
-        // Final allocation sanity check
-        let final_allocated: usize = allocated_chunks.iter().map(|c| c.chunk_size).sum();
-        if final_allocated > total_needed {
-            log::warn!("NUMA {}: Over-allocation detected! Allocated {} bytes but only {} needed ({} bytes excess)",
-                     numa_node, final_allocated, total_needed, final_allocated - total_needed);
-        } else if final_allocated < total_needed {
-            log::warn!("NUMA {}: Under-allocation: {} bytes allocated of {} needed ({} bytes short)",
-                     numa_node, final_allocated, total_needed, total_needed - final_allocated);
-        } else {
-            log::info!("NUMA {}: Allocation complete: {} bytes allocated (exact match)", numa_node, final_allocated);
-        }
-
-        Ok(allocated_chunks)
-    }
-
-    /// Execute plan with BlockSizeFirst strategy
-    fn execute_plan_block_size_first(
-        &mut self,
-        plan: &[(usize, usize)],
-        numa_node: u32,
-        runtime_config: &crate::RuntimeConfig,
-    ) -> Result<Vec<AllocatedChunk>, String> {
-        let mut allocated_chunks = Vec::new();
-
-        // Get page size constraints from config
-        let min_page = &runtime_config.memory_allocation.min_page_size;
-        let max_page = &runtime_config.memory_allocation.max_page_size;
-        let huge_allowed = is_page_size_allowed(PageSizeLevel::Huge, min_page, max_page);
-        let large_allowed = is_page_size_allowed(PageSizeLevel::Large, min_page, max_page);
-        let regular_allowed = is_page_size_allowed(PageSizeLevel::Regular, min_page, max_page);
-
-        log::info!("NUMA {}: Page size constraints: min={}, max={} (huge={}, large={}, regular={})",
-                 numa_node, min_page, max_page, huge_allowed, large_allowed, regular_allowed);
-
-        // Phase 1: For each block size, try huge then large (skip regular)
-        log::info!("NUMA {}: Phase 1 - Block-size-first with huge/large pages only", numa_node);
-
-        for &(block_size, total_blocks_planned) in plan {
-            let mut blocks_allocated = 0;
-
-            // Try huge pages if size is eligible and allowed
-            if block_size >= HUGE_PAGE_SIZE_USIZE && runtime_config.large_pages_available && huge_allowed {
-                log::info!("NUMA {}: Trying {} × {}MB with huge pages",
-                         numa_node, total_blocks_planned, block_size / (1024 * 1024));
-
-                for _ in 0..total_blocks_planned {
-                    let config = AllocationConfig {
-                        size: block_size,
-                        numa_node: Some(numa_node),
-                        page_size: PageSizePreference::Require(PageType::Huge(block_size)),
-                        memory_type: BufferMemoryType::WriteBack,
-                        zero_memory: true,
-                        alignment: Some(HUGE_PAGE_SIZE_USIZE),
-                    };
-
-                    match self.allocate(&config) {
-                        Ok(buffer) => {
-                            blocks_allocated += 1;
-                            log::info!("✅ NUMA {}: {}MB chunk allocated (1GB huge) - planned block {}/{}",
-                                     numa_node, block_size / (1024 * 1024), blocks_allocated, total_blocks_planned);
-                            allocated_chunks.push(AllocatedChunk {
-                                buffer,
-                                chunk_size: block_size,
-                                numa_node,
-                            });
-                        }
-                        Err(e) => {
-                            log::info!("❌ NUMA {}: {}MB huge page allocation failed: {}",
-                                     numa_node, block_size / (1024 * 1024), e);
-                            break; // Try large pages
-                        }
-                    }
-                }
-            }
-            
-            // Try large pages for remaining blocks (if allowed)
-            let remaining_blocks = total_blocks_planned - blocks_allocated;
-            if remaining_blocks > 0 && block_size >= 16 * 1024 * 1024 && runtime_config.large_pages_available && large_allowed {
-                log::info!("NUMA {}: Trying {} × {}MB with large pages",
-                         numa_node, remaining_blocks, block_size / (1024 * 1024));
-                
-                for _ in 0..remaining_blocks {
-                    let config = AllocationConfig {
-                        size: block_size,
-                        numa_node: Some(numa_node),
-                        page_size: PageSizePreference::Require(PageType::Large(block_size)),
-                        memory_type: BufferMemoryType::WriteBack,
-                        zero_memory: true,
-                        alignment: Some(2 * 1024 * 1024),
-                    };
-                    
-                    match self.allocate(&config) {
-                        Ok(buffer) => {
-                            blocks_allocated += 1;
-                            log::info!("✅ NUMA {}: {}MB chunk allocated (2MB large) - planned block {}/{}",
-                                     numa_node, block_size / (1024 * 1024), blocks_allocated, total_blocks_planned);
-                            allocated_chunks.push(AllocatedChunk {
-                                buffer,
-                                chunk_size: block_size,
-                                numa_node,
-                            });
-                        }
-                        Err(e) => {
-                            log::info!("❌ NUMA {}: {}MB large page allocation failed: {}",
-                                     numa_node, block_size / (1024 * 1024), e);
-                            break; // Move to next block size
-                        }
-                    }
-                }
-            }
-        }
-        
-        // Phase 2: Regular pages as absolute last resort (if allowed)
-        let allocated_so_far: usize = allocated_chunks.iter().map(|c| c.chunk_size).sum();
-        let total_needed = plan.iter().map(|(size, count)| size * count).sum::<usize>();
-
-        if allocated_so_far < total_needed && regular_allowed {
-            log::info!("NUMA {}: Phase 2 - Regular pages as last resort", numa_node);
-            
-            for &(block_size, total_blocks_planned) in plan {
-                let already_allocated = allocated_chunks.iter()
-                    .filter(|c| c.chunk_size == block_size)
-                    .count();
-                let still_needed = total_blocks_planned.saturating_sub(already_allocated);
-                
-                if still_needed > 0 {
-                    log::info!("NUMA {}: Last resort - {} × {}MB with regular pages",
-                             numa_node, still_needed, block_size / (1024 * 1024));
-
-                    let mut phase2_allocated = 0;
-                    for _ in 0..still_needed {
-                        let config = AllocationConfig {
-                            size: block_size,
-                            numa_node: Some(numa_node),
-                            page_size: PageSizePreference::Prefer(PageType::Regular(block_size)),
-                            memory_type: BufferMemoryType::WriteBack,
-                            zero_memory: true,
-                            alignment: Some(64 * 1024),
-                        };
-
-                        match self.allocate(&config) {
-                            Ok(buffer) => {
-                                phase2_allocated += 1;
-                                log::info!("✅ NUMA {}: {}MB chunk allocated (4KB regular) - planned block {}/{}",
-                                         numa_node, block_size / (1024 * 1024),
-                                         already_allocated + phase2_allocated, total_blocks_planned);
-                                allocated_chunks.push(AllocatedChunk {
-                                    buffer,
-                                    chunk_size: block_size,
-                                    numa_node,
-                                });
-                            }
-                            Err(e) => {
-                                log::info!("❌ NUMA {}: {}MB regular page allocation failed: {}",
-                                         numa_node, block_size / (1024 * 1024), e);
-                                break;
-                            }
-                        }
-                    }
-                }
-            }
-        }
-
-        // Final allocation sanity check
-        let final_allocated: usize = allocated_chunks.iter().map(|c| c.chunk_size).sum();
-        let total_needed_bytes = plan.iter().map(|(size, count)| size * count).sum::<usize>();
-        if final_allocated > total_needed_bytes {
-            log::warn!("NUMA {}: Over-allocation detected! Allocated {} bytes but only {} needed ({} bytes excess)",
-                     numa_node, final_allocated, total_needed_bytes, final_allocated - total_needed_bytes);
-        } else if final_allocated < total_needed_bytes {
-            log::warn!("NUMA {}: Under-allocation: {} bytes allocated of {} needed ({} bytes short)",
-                     numa_node, final_allocated, total_needed_bytes, total_needed_bytes - final_allocated);
-        } else {
-            log::info!("NUMA {}: Allocation complete: {} bytes allocated (exact match)", numa_node, final_allocated);
-        }
-
-        Ok(allocated_chunks)
-    }
-
-    /// Distribute planned chunks fairly to threads according to the plan
-    /// Groups consecutive blocks per thread (e.g., 16×2GB blocks: thread0 gets blocks 0&1, thread1 gets blocks 2&3, etc.)
-    fn distribute_planned_chunks(
-        &mut self,
-        chunks: Vec<AllocatedChunk>,
-        plan: &[(usize, usize)],
-        numa_threads: &[usize],
-        thread_assignments: &std::collections::HashMap<usize, (usize, u32)>,
-        thread_blocks: &std::collections::HashMap<usize, Vec<BlockInfo>>,
-    ) -> Result<std::collections::HashMap<usize, Vec<AllocationBlock>>, String> {
-        use std::collections::HashMap;
-        
-        let mut thread_allocations = HashMap::new();
-        let mut all_chunks = chunks;
-        
-        log::info!("Distributing {} chunks to {} threads with consecutive block grouping",
-                 all_chunks.len(), numa_threads.len());
-        
-        // Process each block size in the plan
-        for &(block_size, total_blocks) in plan {
-            let blocks_per_thread = total_blocks / numa_threads.len();
-            
-            if blocks_per_thread == 0 {
-                log::warn!("Not enough {}MB blocks for all threads: {} total ÷ {} threads",
-                         block_size / (1024 * 1024), total_blocks, numa_threads.len());
-                continue;
-            }
-            
-            log::info!("Distributing {} × {}MB blocks ({} consecutive blocks per thread)",
-                     total_blocks, block_size / (1024 * 1024), blocks_per_thread);
-            
-            // Extract chunks of this size from the main collection
-            let (mut size_chunks, remaining): (Vec<_>, Vec<_>) = all_chunks
-                .into_iter()
-                .partition(|chunk| chunk.chunk_size == block_size);
-            
-            // Keep only the number we need for this block size
-            size_chunks.truncate(total_blocks);
-            all_chunks = remaining;
-            
-            if size_chunks.len() < total_blocks {
-                log::warn!("Only allocated {} of {} requested {}MB blocks",
-                         size_chunks.len(), total_blocks, block_size / (1024 * 1024));
-            }
-            
-            // Distribute consecutive blocks to each thread
-            let mut chunk_iter = size_chunks.into_iter();
-            for &thread_id in numa_threads {
-                for block_num in 0..blocks_per_thread {
-                    if let Some(chunk) = chunk_iter.next() {
-                        
-                        let block_info = thread_blocks[&thread_id]
-                            .get(block_num)
-                            .cloned()
-                            .unwrap_or(BlockInfo {
-                                size_bytes: chunk.chunk_size,
-                                thread_id,
-                            });
-                        
-                        let allocated_block = AllocationBlock {
-                            buffer: chunk.buffer,
-                            block_info,
-                        };
-                        
-                        thread_allocations.entry(thread_id)
-                            .or_insert_with(Vec::new)
-                            .push(allocated_block);
-                    }
-                }
-            }
-        }
-        
-        // Handle any remaining chunks not in the plan (from Phase 2b/3)
-        if !all_chunks.is_empty() {
-            log::info!("Distributing {} remaining chunks not in plan (round-robin to fill gaps)",
-                     all_chunks.len());
-            
-            // Calculate how much each thread still needs to reach target
-            let mut thread_gaps: Vec<(usize, usize)> = Vec::new();  // (thread_id, bytes_needed)
-            for &thread_id in numa_threads {
-                let current_total: usize = thread_allocations.get(&thread_id)
-                    .map(|blocks| blocks.iter().map(|b| b.buffer.size()).sum())
-                    .unwrap_or(0);
-                let target = thread_assignments[&thread_id].0;
-                
-                if current_total < target {
-                    let gap = target - current_total;
-                    thread_gaps.push((thread_id, gap));
-                }
-            }
-            
-            // Sort by gap size (largest gaps first) for better fairness
-            thread_gaps.sort_by_key(|b| std::cmp::Reverse(b.1));
-
-            // Sort remaining chunks by size (largest first) for efficient filling
-            all_chunks.sort_by_key(|b| std::cmp::Reverse(b.chunk_size));
-            
-            let mut remaining_chunks = all_chunks;
-            for (thread_id, gap) in thread_gaps {
-                let mut filled = 0;
-                let mut chunks_used = Vec::new();
-                
-                // Find chunks that fit in this thread's gap
-                for (i, chunk) in remaining_chunks.iter().enumerate() {
-                    if filled + chunk.chunk_size <= gap {
-                        filled += chunk.chunk_size;
-                        chunks_used.push(i);
-                        
-                        log::info!("Thread {}: Adding extra {}MB chunk to fill gap",
-                                 thread_id, chunk.chunk_size / (1024 * 1024));
-                    }
-                }
-                
-                // Move used chunks to thread (reverse order to maintain indices)
-                for &i in chunks_used.iter().rev() {
-                    let chunk = remaining_chunks.remove(i);
-                    let block_info = BlockInfo {
-                        size_bytes: chunk.chunk_size,
-                        thread_id,
-                    };
-                    
-                    let allocated_block = AllocationBlock {
-                        buffer: chunk.buffer,
-                        block_info,
-                    };
-                    
-                    thread_allocations.entry(thread_id)
-                        .or_insert_with(Vec::new)
-                        .push(allocated_block);
-                }
-                
-                if filled > 0 {
-                    log::info!("Thread {}: Filled {} bytes of {} byte gap with extra chunks",
-                             thread_id, filled, gap);
-                }
-            }
-            
-            if !remaining_chunks.is_empty() {
-                log::warn!("Still have {} unallocated chunks after gap filling", remaining_chunks.len());
-                for chunk in &remaining_chunks {
-                    log::warn!("Unallocated: {}MB chunk", chunk.chunk_size / (1024 * 1024));
-                }
-            }
-        }
-        
-        // Log final distribution with per-thread deviation warnings
-        log::info!("Plan-based distribution complete:");
-        let mut total_distributed: usize = 0;
-        let mut total_target: usize = 0;
-        for &thread_id in numa_threads {
-            let thread_total: usize = thread_allocations.get(&thread_id)
-                .map(|blocks| blocks.iter().map(|b| b.buffer.size()).sum())
-                .unwrap_or(0);
-            let target = thread_assignments[&thread_id].0;
-            total_distributed += thread_total;
-            total_target += target;
-
-            if thread_total > target {
-                log::warn!("Thread {}: {:.2}GB allocated (target: {:.2}GB) — ⚠️ over-distributed by {:.2}GB",
-                         thread_id,
-                         bytes_to_gib_f64(thread_total as u64),
-                         bytes_to_gib_f64(target as u64),
-                         bytes_to_gib_f64((thread_total - target) as u64));
-            } else if thread_total < target {
-                log::warn!("Thread {}: {:.2}GB allocated (target: {:.2}GB) — ⚠️ under-distributed by {:.2}GB",
-                         thread_id,
-                         bytes_to_gib_f64(thread_total as u64),
-                         bytes_to_gib_f64(target as u64),
-                         bytes_to_gib_f64((target - thread_total) as u64));
+        // Each thread against its own target, with its page-size shares
+        for thread in &fill.threads {
+            let (thread_id, target, got) = (thread.share.thread_id, thread.share.bytes, thread.filled);
+            let shares = format!("1GB {:.2}GB, 2MB {:.2}GB, 4KB {:.2}GB",
+                                 bytes_to_gib_f64(thread.bytes_at(PageSizeLevel::Huge) as u64),
+                                 bytes_to_gib_f64(thread.bytes_at(PageSizeLevel::Large) as u64),
+                                 bytes_to_gib_f64(thread.bytes_at(PageSizeLevel::Regular) as u64));
+            if got < target {
+                log::warn!("{WHO}: Thread {}: {:.2}GB of {:.2}GB target ({}) — ⚠️ short by {}MB: page sizes {:?}..={:?} ran out",
+                         thread_id, bytes_to_gib_f64(got as u64), bytes_to_gib_f64(target as u64),
+                         shares, (target - got) / BYTES_PER_MIB_USIZE, pages.min, pages.max);
             } else {
-                log::info!("Thread {}: {:.2}GB allocated (target: {:.2}GB)",
-                         thread_id,
-                         bytes_to_gib_f64(thread_total as u64),
-                         bytes_to_gib_f64(target as u64));
+                log::info!("{WHO}: Thread {}: {:.2}GB of {:.2}GB target ({})",
+                         thread_id, bytes_to_gib_f64(got as u64), bytes_to_gib_f64(target as u64), shares);
             }
         }
-        log::info!("Distribution summary: {:.2}GB distributed to threads of {:.2}GB target",
-                 bytes_to_gib_f64(total_distributed as u64),
-                 bytes_to_gib_f64(total_target as u64));
 
-        Ok(thread_allocations)
-    }
-    
-    /// Stage 1: Discover largest available chunks per NUMA node with smart greedy fairness
-    fn discover_chunks_per_numa(
-        &mut self,
-        total_size_per_numa: &std::collections::HashMap<u32, usize>,
-        runtime_config: &crate::RuntimeConfig,
-        thread_count: usize,
-    ) -> Result<Vec<AllocatedChunk>, String> {
-        
-        // Power-of-2 sizes: 4GB, 2GB, 1GB, 512MB, 256MB, 128MB, 64MB, 32MB, 16MB (minimum per requirements)
-        let chunk_sizes_mb = [4096, 2048, 1024, 512, 256, 128, 64, 32, 16];
-        let mut allocated_chunks = Vec::new();
-        
-        for (&numa_node, &total_needed) in total_size_per_numa {
-            let mut remaining = total_needed;
-            let phase_params = PageTypeAllocParams {
-                numa_node,
-                chunk_sizes_mb: &chunk_sizes_mb,
-                runtime_config,
-                thread_count,
-            };
+        let empty: Vec<usize> = fill.threads.iter()
+            .filter(|t| t.blocks.is_empty())
+            .map(|t| t.share.thread_id)
+            .collect();
+        if !empty.is_empty() {
+            return Err(format!("{WHO}: thread(s) {:?} got no memory with page sizes {:?}..={:?}. \
+                                Large pages may be exhausted or fragmented: restart, or allow 4 KiB pages with minpage=regular",
+                               empty, pages.min, pages.max));
+        }
 
-            log::info!("NUMA node {}: Allocating {:.2} GiB in power-of-2 chunks", 
-                      numa_node, bytes_to_gib_f64(total_needed as u64));
-            
-            // Phase 1: Huge pages (1GB) - try all chunk sizes with huge pages first
-            if runtime_config.large_pages_available {
-                log::info!("NUMA {}: Phase 1 - Trying huge pages (1GB)", numa_node);
-                self.allocate_with_page_type(
-                    &mut allocated_chunks, &mut remaining, "huge", &phase_params
-                )?;
-            }
-            
-            // Phase 2: Large pages (2MB) - restart chunk sizes for large pages
-            if remaining > 0 && runtime_config.large_pages_available {
-                log::info!("NUMA {}: Phase 2 - Trying large pages (2MB)", numa_node);
-                self.allocate_with_page_type(
-                    &mut allocated_chunks, &mut remaining, "large", &phase_params
-                )?;
-            }
-            
-            // Phase 3: Regular pages (4KB) - restart chunk sizes for regular pages
-            if remaining > 0 {
-                log::info!("NUMA {}: Phase 3 - Trying regular pages (4KB)", numa_node);
-                self.allocate_with_page_type(
-                    &mut allocated_chunks, &mut remaining, "regular", &phase_params
-                )?;
-            }
-            
-            if remaining > 16 * 1024 * 1024 {
-                log::warn!("NUMA node {}: {:.2} MB unallocated (system memory fragmentation)", 
-                          numa_node, remaining as f64 / (1024.0 * 1024.0));
-            }
-        }
-        
-        Ok(allocated_chunks)
+        Ok(fill.threads.into_iter()
+            .map(|thread| {
+                let thread_id = thread.share.thread_id;
+                let blocks = thread.blocks.into_iter()
+                    .map(|buffer| AllocationBlock {
+                        block_info: BlockInfo { size_bytes: buffer.size(), thread_id },
+                        buffer,
+                    })
+                    .collect();
+                (thread_id, blocks)
+            })
+            .collect())
     }
-    
-    /// Stage 2: Distribute chunks to threads prioritizing contiguous allocation
-    fn distribute_chunks_to_threads(
-        &mut self,
-        chunks: Vec<AllocatedChunk>,
-        thread_assignments: &std::collections::HashMap<usize, (usize, u32)>,
-        thread_blocks: &std::collections::HashMap<usize, Vec<BlockInfo>>,
-    ) -> Result<std::collections::HashMap<usize, Vec<AllocationBlock>>, String> {
-        use std::collections::HashMap;
-        
-        let mut thread_allocations = HashMap::new();
-        
-        // Group chunks by NUMA node (already sorted by size from allocation order)
-        let mut numa_chunks: HashMap<u32, Vec<AllocatedChunk>> = HashMap::new();
-        for chunk in chunks {
-            numa_chunks.entry(chunk.numa_node).or_default().push(chunk);
-        }
-        
-        // Count threads per NUMA node for fair distribution
-        let mut threads_per_numa: HashMap<u32, Vec<usize>> = HashMap::new();
-        for (thread_id, (_, numa_node)) in thread_assignments {
-            threads_per_numa.entry(*numa_node).or_default().push(*thread_id);
-        }
-        
-        // Distribute chunks within each NUMA node
-        for (numa_node, available_chunks) in numa_chunks {
-            let numa_threads = &threads_per_numa[&numa_node];
-            
-            log::info!("NUMA node {}: Distributing {} chunks to {} threads", 
-                      numa_node, available_chunks.len(), numa_threads.len());
-            
-            // Separate chunks by page type first, then by size
-            let mut chunks_by_page_type_and_size: HashMap<(bool, usize), Vec<AllocatedChunk>> = HashMap::new();
-            
-            for chunk in available_chunks {
-                let is_huge_page = chunk.buffer.uses_huge_pages();
-                let size = chunk.chunk_size;
-                chunks_by_page_type_and_size.entry((is_huge_page, size)).or_default().push(chunk);
-            }
-            
-            // Sort by huge pages first (true sorts before false), then by size descending
-            let mut sorted_groups: Vec<_> = chunks_by_page_type_and_size.into_iter().collect();
-            sorted_groups.sort_by(|a, b| {
-                // Sort by huge page first (huge pages = true come first)
-                match b.0.0.cmp(&a.0.0) {
-                    std::cmp::Ordering::Equal => {
-                        // If same page type, sort by size descending
-                        b.0.1.cmp(&a.0.1)
-                    }
-                    other => other
-                }
-            });
-            
-            // Track allocated amounts per thread to handle deficits
-            let mut thread_allocated: HashMap<usize, usize> = HashMap::new();
-            let mut thread_targets: HashMap<usize, usize> = HashMap::new();
-            
-            for &thread_id in numa_threads {
-                thread_allocated.insert(thread_id, 0);
-                thread_targets.insert(thread_id, thread_assignments[&thread_id].0);
-            }
-            
-            // Fair distribution with sequential blocks
-            let mut is_first_page_type = true;
-            
-            for ((is_huge_page, chunk_size), mut same_type_chunks) in sorted_groups {
-                let page_type = if is_huge_page { "huge page" } else { "large/regular page" };
-                let total_chunks = same_type_chunks.len();
-                
-                log::info!("NUMA {}: Processing {} × {}MB {} chunks", 
-                           numa_node, total_chunks, chunk_size / (1024*1024), page_type);
-                
-                if same_type_chunks.is_empty() {
-                    continue;
-                }
-                
-                // Reverse the chunks so we can pop from the front (maintaining sequential order)
-                same_type_chunks.reverse();
-                
-                if is_first_page_type {
-                    // FIRST PAGE TYPE: Fair distribution with sequential blocks
-                    log::info!("NUMA {}: First page type - fair sequential distribution", numa_node);
-                    
-                    let num_threads = numa_threads.len();
-                    let blocks_per_thread = total_chunks / num_threads;
-                    let remainder = total_chunks % num_threads;
-                    
-                    log::info!("NUMA {}: {} blocks ÷ {} threads = {} per thread, {} remainder", 
-                              numa_node, total_chunks, num_threads, blocks_per_thread, remainder);
-                    
-                    let mut block_index = 0;
-                    for (thread_idx, &thread_id) in numa_threads.iter().enumerate() {
-                        let mut blocks_to_give = blocks_per_thread;
-                        if thread_idx < remainder {
-                            blocks_to_give += 1; // First 'remainder' threads get +1 block
-                        }
-                        
-                        if blocks_to_give > 0 {
-                            log::info!("NUMA {}: Thread {} gets {} × {}MB {} blocks [{}..{}]", 
-                                      numa_node, thread_id, blocks_to_give, chunk_size / (1024*1024), 
-                                      page_type, block_index, block_index + blocks_to_give - 1);
-                            
-                            // Give sequential blocks to this thread
-                            for _ in 0..blocks_to_give {
-                                if let Some(chunk) = same_type_chunks.pop() {
-                                    let block_info = thread_blocks[&thread_id].first()
-                                        .cloned()
-                                        .unwrap_or(BlockInfo {
-                                            size_bytes: chunk.chunk_size,
-                                            thread_id,
-                                        });
-                                    
-                                    let allocated_block = AllocationBlock {
-                                        buffer: chunk.buffer,
-                                        block_info,
-                                    };
-                                    
-                                    thread_allocations.entry(thread_id).or_insert_with(Vec::new).push(allocated_block);
-                                    *thread_allocated.get_mut(&thread_id).unwrap() += chunk_size;
-                                    block_index += 1;
-                                }
-                            }
-                        }
-                    }
-                    
-                    is_first_page_type = false;
-                } else {
-                    // SUBSEQUENT PAGE TYPES: Deficit-aware sequential fill
-                    log::info!("NUMA {}: Subsequent page type - deficit fill only", numa_node);
-                    
-                    // Find threads with deficits
-                    let mut deficit_threads: Vec<(usize, usize)> = Vec::new();
-                    for &thread_id in numa_threads {
-                        let target = thread_targets[&thread_id];
-                        let allocated = thread_allocated[&thread_id];
-                        if allocated < target {
-                            let deficit = target - allocated;
-                            deficit_threads.push((thread_id, deficit));
-                        }
-                    }
-                    
-                    if deficit_threads.is_empty() {
-                        log::info!("NUMA {}: All threads satisfied, no deficits remain", numa_node);
-                        break;
-                    }
-                    
-                    // Calculate blocks needed per deficit thread
-                    let mut thread_blocks_needed: Vec<(usize, usize)> = Vec::new();
-                    let mut total_blocks_requested = 0;
-                    
-                    for (thread_id, deficit_bytes) in deficit_threads {
-                        let blocks_needed = deficit_bytes.div_ceil(chunk_size); // Round up
-                        thread_blocks_needed.push((thread_id, blocks_needed));
-                        total_blocks_requested += blocks_needed;
-                    }
-                    
-                    log::info!("NUMA {}: {} deficit threads need {} total blocks (have {} available)", 
-                              numa_node, thread_blocks_needed.len(), total_blocks_requested, total_chunks);
-                    
-                    // Give sequential chunks to each deficit thread
-                    for (thread_id, blocks_needed) in thread_blocks_needed {
-                        let blocks_to_give = std::cmp::min(blocks_needed, same_type_chunks.len());
-                        
-                        if blocks_to_give > 0 {
-                            log::info!("NUMA {}: Thread {} deficit fill → {} × {}MB chunks (sequential)", 
-                                      numa_node, thread_id, blocks_to_give, chunk_size / (1024*1024));
-                            
-                            for _ in 0..blocks_to_give {
-                                if let Some(chunk) = same_type_chunks.pop() {
-                                    let block_info = thread_blocks[&thread_id].first()
-                                        .cloned()
-                                        .unwrap_or(BlockInfo {
-                                            size_bytes: chunk.chunk_size,
-                                            thread_id,
-                                        });
-                                    
-                                    let allocated_block = AllocationBlock {
-                                        buffer: chunk.buffer,
-                                        block_info,
-                                    };
-                                    
-                                    thread_allocations.entry(thread_id).or_insert_with(Vec::new).push(allocated_block);
-                                    *thread_allocated.get_mut(&thread_id).unwrap() += chunk_size;
-                                }
-                            }
-                        }
-                        
-                        if same_type_chunks.is_empty() {
-                            break;
-                        }
-                    }
-                }
-            }
-            
-            // Log final allocation summary
-            log::info!("NUMA {}: Final allocation summary:", numa_node);
-            for &thread_id in numa_threads {
-                let target = thread_targets[&thread_id];
-                let allocated = thread_allocated[&thread_id];
-                let deficit = target as i64 - allocated as i64;
-                log::info!("NUMA {}: Thread {} - Target: {:.1}MB, Allocated: {:.1}MB, Deficit: {:.1}MB", 
-                          numa_node, thread_id, 
-                          target as f64 / (1024.0*1024.0), 
-                          allocated as f64 / (1024.0*1024.0), 
-                          deficit as f64 / (1024.0*1024.0));
-            }
-        }
-        
-        Ok(thread_allocations)
-    }
-    
-    
-    /// Helper function to allocate with a specific page type, trying all chunk sizes
-    fn allocate_with_page_type(
-        &mut self,
-        allocated_chunks: &mut Vec<AllocatedChunk>,
-        remaining: &mut usize,
-        page_type: &str,
-        params: &PageTypeAllocParams,
-    ) -> Result<(), String> {
-        let PageTypeAllocParams { numa_node, chunk_sizes_mb, runtime_config, thread_count } = *params;
-        for &chunk_mb in chunk_sizes_mb {
-            let chunk_size = (chunk_mb as usize) * 1024 * 1024;
-            
-            // Skip chunk sizes larger than remaining memory
-            if *remaining < chunk_size {
-                continue;
-            }
-            
-            // Smart Greedy: Skip chunk size if it can't be distributed fairly
-            // Only allocate chunk_size if remaining memory allows at least 1 chunk per thread
-            let chunks_possible = *remaining / chunk_size;
-            if chunks_possible < thread_count {
-                log::info!("NUMA {}: Smart Greedy: Skipping {}MB chunks (only {} possible for {} threads - ensuring fairness)", 
-                          numa_node, chunk_mb, chunks_possible, thread_count);
-                continue;
-            }
-            
-            // Determine page size preference based on page type
-            let page_size_pref = match page_type {
-                "huge" => {
-                    // Check if large pages are available before trying huge pages
-                    if !runtime_config.large_pages_available {
-                        continue; // Skip huge pages if not available
-                    }
-                    // Only try huge pages for 1GB+ chunks
-                    if chunk_size >= HUGE_PAGE_SIZE_USIZE {
-                        PageSizePreference::Require(PageType::Huge(chunk_size))
-                    } else {
-                        continue; // Skip smaller chunks for huge pages
-                    }
-                }
-                "large" => {
-                    // Check if large pages are available before trying large pages
-                    if !runtime_config.large_pages_available {
-                        continue; // Skip large pages if not available
-                    }
-                    // Try large pages for 16MB+ chunks
-                    if chunk_size >= 16 * 1024 * 1024 {
-                        PageSizePreference::Require(PageType::Large(chunk_size))
-                    } else {
-                        continue; // Skip smaller chunks for large pages
-                    }
-                }
-                "regular" => PageSizePreference::Prefer(PageType::Regular(chunk_size)),
-                _ => return Err(format!("Unknown page type: {}", page_type)),
-            };
-            
-            // Continue allocating chunks of this size until we can't get more
-            while *remaining >= chunk_size {
-                let config = AllocationConfig {
-                    size: chunk_size,
-                    numa_node: Some(numa_node),
-                    page_size: page_size_pref.clone(),
-                    memory_type: BufferMemoryType::WriteBack,
-                    zero_memory: true,
-                    alignment: Some(Self::get_alignment_for_chunk_size(chunk_size)),
-                };
-                
-                match self.allocate(&config) {
-                    Ok(buffer) => {
-                        let actual_page_type = if buffer.uses_huge_pages() { "1GB huge" } 
-                                               else if buffer.uses_large_pages() { "2MB large" } 
-                                               else { "4KB regular" };
-                        
-                        log::info!("✅ NUMA {}: {}MB chunk allocated ({})", 
-                                  numa_node, chunk_mb, actual_page_type);
-                        
-                        allocated_chunks.push(AllocatedChunk {
-                            buffer,
-                            chunk_size,
-                            numa_node,
-                        });
-                        *remaining -= chunk_size;
-                    }
-                    Err(e) => {
-                        log::info!("❌ NUMA {}: {}MB {} exhausted - trying next size", 
-                                  numa_node, chunk_mb, page_type);
-                        log::debug!("NUMA {}: {}MB chunk allocation failed: {}", numa_node, chunk_mb, e);
-                        // Can't allocate this size anymore, try next smaller size
-                        break;
-                    }
-                }
-            }
-        }
-        Ok(())
-    }
-
-    /// Get alignment requirements for chunk size following page boundaries per Copilot criteria
-    fn get_alignment_for_chunk_size(chunk_size: usize) -> usize {
-        if chunk_size >= HUGE_PAGE_SIZE_USIZE {
-            // 1GB chunks: align to 1GB boundary for optimal huge page allocation
-            HUGE_PAGE_SIZE_USIZE
-        } else if chunk_size >= 16 * 1024 * 1024 {
-            // Any chunk that might get large pages: align to 2MB boundary (large page size)
-            2 * 1024 * 1024
-        } else {
-            // Smaller chunks that won't get large pages: align to 64KB boundary (Windows allocation granularity)
-            64 * 1024
-        }
-    }
-    
-    
 }
 
-/// Allocated chunk structure for two-stage allocation
+/// One thread's blocks so far under plan-pagesize-pref.
 #[derive(Debug)]
-struct AllocatedChunk {
-    buffer: MemoryBuffer,
-    chunk_size: usize,
-    numa_node: u32,
+struct ThreadFill {
+    share: ThreadShare,
+    /// Bytes in `blocks`. No request is bigger than `share.bytes - filled`.
+    filled: usize,
+    blocks: Vec<MemoryBuffer>,
 }
 
-/// Invariant inputs to a single page-type allocation phase (huge/large/regular).
-/// These stay constant across the phases for one NUMA node; only the page type
-/// and the running accumulators differ per call.
-struct PageTypeAllocParams<'a> {
-    numa_node: u32,
-    chunk_sizes_mb: &'a [u32],
-    runtime_config: &'a crate::RuntimeConfig,
-    thread_count: usize,
+impl ThreadFill {
+    fn bytes_at(&self, page: PageSizeLevel) -> usize {
+        self.blocks.iter()
+            .filter(|b| match page {
+                PageSizeLevel::Huge => b.uses_huge_pages(),
+                PageSizeLevel::Large => b.uses_large_pages() && !b.uses_huge_pages(),
+                PageSizeLevel::Regular => !b.uses_large_pages(),
+            })
+            .map(MemoryBuffer::size)
+            .sum()
+    }
+}
+
+/// plan-pagesize-pref's side of `fill::Fill`. Every request is its own `VirtualAlloc2` block, so
+/// it is a power of two (the test harness splits windows on that, `prepare_blocks_for_window`)
+/// and never bigger than the gap left in the thread it is for: nothing is over-allocated, so
+/// nothing is freed. (The pooled phases this replaced asked against a node's whole deficit, then
+/// freed blocks no thread had room for: TODO 75 A.)
+struct BlockFill<'a> {
+    allocator: &'a mut MemoryAllocator,
+    threads: Vec<ThreadFill>,
+}
+
+impl Fill for BlockFill<'_> {
+    fn thread_count(&self) -> usize {
+        self.threads.len()
+    }
+
+    fn thread_id(&self, i: usize) -> usize {
+        self.threads[i].share.thread_id
+    }
+
+    fn numa_node(&self, i: usize) -> Option<u32> {
+        Some(self.threads[i].share.numa_node)
+    }
+
+    fn filled(&self, i: usize) -> usize {
+        self.threads[i].filled
+    }
+
+    fn bytes_at(&self, i: usize, page: PageSizeLevel) -> usize {
+        self.threads[i].bytes_at(page)
+    }
+
+    fn remaining(&self, i: usize) -> usize {
+        self.threads[i].share.bytes - self.threads[i].filled
+    }
+
+    fn request_len(&self, i: usize, rung: usize, _floor: usize) -> Result<usize, String> {
+        Ok(fill::prev_power_of_two(rung.min(self.remaining(i))))
+    }
+
+    fn request(&mut self, i: usize, len: usize, page: PageSizeLevel) -> Result<Grant, String> {
+        let thread = &mut self.threads[i];
+        // The alignment is what gets the page size (TMR-APP CLAUDE.md): never drop it.
+        let (page_size, alignment) = match page {
+            PageSizeLevel::Huge => (PageSizePreference::Require(PageType::Huge(len)), HUGE_PAGE_SIZE_USIZE),
+            PageSizeLevel::Large => (PageSizePreference::Require(PageType::Large(len)), LARGE_PAGE_SIZE_USIZE),
+            PageSizeLevel::Regular => (PageSizePreference::Prefer(PageType::Regular(len)), ALLOCATION_GRANULARITY),
+        };
+        let config = AllocationConfig {
+            size: len,
+            numa_node: Some(thread.share.numa_node),
+            page_size,
+            memory_type: BufferMemoryType::WriteBack,
+            zero_memory: true,
+            alignment: Some(alignment),
+        };
+        match self.allocator.allocate(&config) {
+            Ok(buffer) => {
+                log::debug!("{WHO}: Thread {}: {} block allocated ({})",
+                          thread.share.thread_id, fill::size_label(len), fill::page_label(page));
+                thread.filled += len;
+                thread.blocks.push(buffer);
+                Ok(Grant::Done)
+            }
+            Err(AllocError { code: Some(code), .. }) if is_exhaustion(code) => Ok(Grant::Refused(code)),
+            Err(e) => Err(format!("{WHO}: {} of {} pages for thread {} failed: {e}{}",
+                                  fill::size_label(len), fill::page_label(page), thread.share.thread_id,
+                                  fill::hard_error_hint(page))),
+        }
+    }
 }
 
 impl Default for AllocationConfig {
@@ -1457,5 +385,255 @@ impl Default for AllocationConfig {
             zero_memory: false,
             alignment: None,
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::memory::backend::{BackendAllocation, ERROR_INVALID_PARAMETER, ERROR_NO_SYSTEM_RESOURCES};
+    use crate::memory::buffer::BufferInfo;
+    use std::sync::Mutex;
+
+    const MIB: usize = BYTES_PER_MIB_USIZE;
+    const GIB: usize = HUGE_PAGE_SIZE_USIZE;
+
+    /// One node's page pools: `huge_pages` 1 GiB pages and `large_bytes` of 2 MiB pages, refused
+    /// once short; 4 KiB pages are unlimited. Addresses are fake and never dereferenced.
+    #[derive(Debug, Default)]
+    struct Pools {
+        huge_pages: usize,
+        large_bytes: usize,
+        next_addr: usize,
+        /// Every request in order: page size, bytes, granted.
+        requests: Vec<(PageSizeLevel, usize, bool)>,
+        frees: usize,
+        /// Answer every 1 GiB-page request with this code instead.
+        huge_error: Option<u32>,
+    }
+
+    #[derive(Debug, Default)]
+    struct PoolBackend(Mutex<Pools>);
+
+    impl PoolBackend {
+        fn with(huge_pages: usize, large_bytes: usize) -> Arc<Self> {
+            Arc::new(Self(Mutex::new(Pools { huge_pages, large_bytes, ..Default::default() })))
+        }
+
+        fn pools(&self) -> std::sync::MutexGuard<'_, Pools> {
+            self.0.lock().unwrap()
+        }
+
+        fn refused(&self, page: PageSizeLevel) -> Vec<usize> {
+            self.pools().requests.iter()
+                .filter(|&&(p, _, granted)| p == page && !granted)
+                .map(|&(_, size, _)| size)
+                .collect()
+        }
+    }
+
+    impl Backend for PoolBackend {
+        fn allocate(&self, config: &AllocationConfig) -> Result<BackendAllocation, AllocError> {
+            let mut s = self.pools();
+            let size = config.size;
+            let (page, page_type) = match &config.page_size {
+                PageSizePreference::Require(PageType::Huge(_)) => (PageSizeLevel::Huge, PageType::Huge(size)),
+                PageSizePreference::Require(PageType::Large(_)) => (PageSizeLevel::Large, PageType::Large(size)),
+                _ => (PageSizeLevel::Regular, PageType::Regular(size)),
+            };
+            if page == PageSizeLevel::Huge && let Some(code) = s.huge_error {
+                return Err(AllocError { code: Some(code), message: format!("error {code}") });
+            }
+            let granted = match page {
+                PageSizeLevel::Huge if s.huge_pages * GIB >= size => {
+                    s.huge_pages -= size / GIB;
+                    true
+                }
+                PageSizeLevel::Large if s.large_bytes >= size => {
+                    s.large_bytes -= size;
+                    true
+                }
+                PageSizeLevel::Regular => true,
+                _ => false,
+            };
+            s.requests.push((page, size, granted));
+            if !granted {
+                return Err(AllocError {
+                    code: Some(ERROR_NO_SYSTEM_RESOURCES),
+                    message: "error 1450 (no contiguous physical memory)".to_string(),
+                });
+            }
+            let addr = s.next_addr.max(1 << 40).next_multiple_of(config.alignment.unwrap_or(ALLOCATION_GRANULARITY));
+            s.next_addr = addr + size;
+            Ok(BackendAllocation {
+                ptr: addr as *mut u8,
+                size,
+                info: BufferInfo { numa_node: config.numa_node.unwrap_or(0), page_type },
+            })
+        }
+
+        fn free(&self, _allocation: BackendAllocation) -> Result<(), String> {
+            self.pools().frees += 1;
+            Ok(())
+        }
+
+        fn name(&self) -> &'static str {
+            "pool fake"
+        }
+    }
+
+    fn sizing(huge_chunk: usize) -> BlockSizing {
+        BlockSizing::new(huge_chunk, GIB, MIN_LARGE_FLOOR).unwrap()
+    }
+
+    fn pages(min_page: &str) -> PageSizes {
+        PageSizes { min: PageSizeLevel::from_config_str(min_page), max: PageSizeLevel::Huge }
+    }
+
+    /// `targets` as one node's thread shares, in thread order.
+    fn shares(targets: &[usize]) -> Vec<ThreadShare> {
+        targets.iter().enumerate()
+            .map(|(thread_id, &bytes)| ThreadShare { thread_id, bytes, numa_node: 0 })
+            .collect()
+    }
+
+    fn fill_blocks(backend: &Arc<PoolBackend>, targets: &[usize], huge_chunk: usize, min_page: &str)
+        -> Result<HashMap<usize, Vec<AllocationBlock>>, String> {
+        let mut allocator = MemoryAllocator { backend: backend.clone(), stats: AllocationStats::default() };
+        allocator.fill_blocks(&shares(targets), &sizing(huge_chunk), pages(min_page))
+    }
+
+    /// plan-pagesize-pref on one node: each thread's (1 GiB-page bytes, 2 MiB, 4 KiB), in
+    /// thread order, after checking every thread got exactly its target in power-of-two blocks.
+    fn fill(backend: &Arc<PoolBackend>, targets: &[usize], huge_chunk: usize, min_page: &str) -> Vec<(usize, usize, usize)> {
+        let blocks = fill_blocks(backend, targets, huge_chunk, min_page).unwrap();
+        assert_eq!(backend.pools().frees, 0, "nothing is freed while the blocks are held");
+        let shares = targets.iter().enumerate().map(|(thread_id, &target)| {
+            let mut share = (0, 0, 0);
+            for block in &blocks[&thread_id] {
+                let size = block.buffer.size();
+                assert!(size.is_power_of_two() && size >= MIN_LARGE_FLOOR, "thread {thread_id}: {size:#x}");
+                assert_eq!(block.block_info.size_bytes, size);
+                assert_eq!(block.block_info.thread_id, thread_id);
+                if block.buffer.uses_huge_pages() {
+                    share.0 += size;
+                } else if block.buffer.uses_large_pages() {
+                    share.1 += size;
+                } else {
+                    share.2 += size;
+                }
+            }
+            assert_eq!(share.0 + share.1 + share.2, target, "thread {thread_id} is not exact");
+            share
+        }).collect();
+        let held: usize = blocks.values().map(Vec::len).sum();
+        drop(blocks);
+        assert_eq!(backend.pools().frees, held);
+        shares
+    }
+
+    fn huge_pages(shares: &[(usize, usize, usize)]) -> Vec<usize> {
+        shares.iter().map(|s| s.0 / GIB).collect()
+    }
+
+    /// The 2026-09-28 run (TODO 75 A): four 12.47 GiB threads, 33 free 1 GiB pages. The pooled
+    /// phases took a 1 GiB page no thread had room for and freed it, and handed the huge pages
+    /// out consecutively. Sized to each thread's gap, the threads end exact and 9/8/8/8 on 1 GiB
+    /// pages, and the one refusal is the request that found the pool empty.
+    #[test]
+    fn fill_ends_each_thread_exact_and_spreads_huge_pages() {
+        let backend = PoolBackend::with(33, usize::MAX);
+        let target = 12 * GIB + 480 * MIB;
+        let shares = fill(&backend, &[target; 4], GIB, "large");
+        assert_eq!(huge_pages(&shares), vec![9, 8, 8, 8]);
+        assert!(shares.iter().all(|s| s.2 == 0));
+        assert_eq!(backend.pools().huge_pages, 0);
+        assert_eq!(backend.refused(PageSizeLevel::Huge), vec![GIB]);
+        assert!(backend.refused(PageSizeLevel::Large).is_empty());
+    }
+
+    /// The user's 2026-10-02 run: four 14 GiB threads, 23 free 1 GiB pages. 1 GiB requests split
+    /// them 6/6/6/5; starting at 4 GiB, as the allocator used to, the first threads drain the
+    /// pool first and it ends 8/6/5/4.
+    #[test]
+    fn hugechunk_trades_the_split_for_fewer_requests() {
+        let backend = PoolBackend::with(23, usize::MAX);
+        assert_eq!(huge_pages(&fill(&backend, &[14 * GIB; 4], GIB, "large")), vec![6, 6, 6, 5]);
+        let backend = PoolBackend::with(23, usize::MAX);
+        assert_eq!(huge_pages(&fill(&backend, &[14 * GIB; 4], 4 * GIB, "large")), vec![8, 6, 5, 4]);
+    }
+
+    /// The user's case (2026-10-02 review): 1 GiB pages run out with thread 3 one short, then
+    /// 2 MiB pages run out partway through a round. Thread 3 is topped up first and keeps the lead
+    /// in the rounds after (ties go to less on 1 GiB pages), so the 4 KiB pages land on threads
+    /// that got more 1 GiB pages. Ties to the thread served longest ago gave (2,1,1), (2,1,1),
+    /// (2,0,2), (1,1,2): thread 3 short on both.
+    #[test]
+    fn the_thread_short_of_huge_pages_leads_the_large_rounds() {
+        let backend = PoolBackend::with(7, 3 * GIB);
+        let shares: Vec<(usize, usize, usize)> = fill(&backend, &[4 * GIB; 4], GIB, "regular")
+            .into_iter()
+            .map(|(huge, large, regular)| (huge / GIB, large / GIB, regular / GIB))
+            .collect();
+        assert_eq!(shares, vec![(2, 1, 1), (2, 0, 2), (2, 0, 2), (1, 2, 1)]);
+    }
+
+    /// No 1 GiB pages and 1.25 GiB of 2 MiB ones for two 3 GiB threads: the least-filled thread
+    /// asks next, and 4 KiB pages finish both.
+    #[test]
+    fn fill_falls_back_to_regular_per_gap() {
+        let backend = PoolBackend::with(0, GIB + 256 * MIB);
+        let shares = fill(&backend, &[3 * GIB; 2], GIB, "regular");
+        assert_eq!(shares, vec![(0, GIB, 2 * GIB), (0, 256 * MIB, 2 * GIB + 768 * MIB)]);
+        assert_eq!(backend.pools().large_bytes, 0);
+    }
+
+    /// With 4 KiB pages ruled out, a thread the large pages do not cover comes up short: logged,
+    /// not over-allocated.
+    #[test]
+    fn fill_leaves_threads_short_without_regular() {
+        let backend = PoolBackend::with(1, 512 * MIB);
+        let blocks = fill_blocks(&backend, &[2 * GIB; 2], GIB, "large").unwrap();
+        let got = |t: usize| blocks[&t].iter().map(|b| b.buffer.size()).sum::<usize>();
+        assert_eq!((got(0), got(1)), (GIB, 512 * MIB));
+        assert!(backend.pools().requests.iter().all(|&(p, _, _)| p != PageSizeLevel::Regular));
+    }
+
+    /// A refusal that is not exhaustion (87: a bad request) fails the allocation instead of
+    /// stepping down, and nothing granted is kept.
+    #[test]
+    fn a_bad_request_is_an_error_not_a_step_down() {
+        let backend = PoolBackend::with(8, usize::MAX);
+        backend.pools().huge_error = Some(ERROR_INVALID_PARAMETER);
+        let err = fill_blocks(&backend, &[2 * GIB; 2], GIB, "large").unwrap_err();
+        assert!(err.contains("error 87") && err.contains("maxpage=large"), "{err}");
+    }
+
+    #[test]
+    fn block_sizing_and_share_rounding_are_checked() {
+        assert!(BlockSizing::new(GIB, GIB, 16 * MIB).is_ok());
+        assert!(BlockSizing::new(8 * GIB, 64 * MIB, 64 * MIB).is_ok());
+        assert!(BlockSizing::new(512 * MIB, GIB, 16 * MIB).is_err());
+        assert!(BlockSizing::new(3 * GIB, GIB, 16 * MIB).is_err());
+        assert!(BlockSizing::new(GIB, GIB, 8 * MIB).is_err());
+        assert!(BlockSizing::new(GIB, GIB, 2 * GIB).is_err());
+        assert!(BlockSizing::new(GIB, 32 * MIB, 64 * MIB).is_err());
+
+        let rounding = |step: &str, hugechunk: &str, largefloor: &str| {
+            let config = crate::config::MemoryAllocationConfig {
+                share_round_step: step.to_string(),
+                huge_chunk: hugechunk.to_string(),
+                large_floor: largefloor.to_string(),
+                ..Default::default()
+            };
+            config.share_rounding().map(|r| r.step_bytes as usize)
+        };
+        assert_eq!(rounding("1GiB", "1GiB", "16MiB"), Ok(GIB));
+        assert_eq!(rounding("256MiB", "1GiB", "16MiB"), Ok(256 * MIB));
+        assert!(rounding("8MiB", "1GiB", "16MiB").is_err());
+        assert!(rounding("48MiB", "1GiB", "32MiB").is_err());
+        // No bigger than the largest request: 1 GiB by default, more with a bigger hugechunk.
+        assert!(rounding("2GiB", "1GiB", "16MiB").is_err());
+        assert_eq!(rounding("4GiB", "4GiB", "16MiB"), Ok(4 * GIB));
     }
 }

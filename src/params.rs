@@ -315,6 +315,25 @@ impl ParamRegistry {
             },
         });
 
+        // Block sizes and share rounding. Each parses here; how they fit together is checked by
+        // MemoryAllocationConfig::share_rounding once the allocator is known.
+        for key in ["hugechunk", "largechunk", "largefloor", "blkroundtarget"] {
+            params.insert(key, ParamDef {
+                key,
+                can_override_config: true,
+                parser: |v| crate::tests::parse_size_string(v).map(|_| ParamValue::String(v.to_string())),
+            });
+        }
+
+        params.insert("blkround", ParamDef {
+            key: "blkround",
+            can_override_config: true,
+            parser: |v| {
+                v.parse::<crate::memory::allocation_strategy::RoundDirection>()?;
+                Ok(ParamValue::String(v.to_lowercase()))
+            },
+        });
+
         // Config file parameter
         params.insert("config", ParamDef {
             key: "config",
@@ -453,10 +472,14 @@ pub fn print_help(program_name: &str) {
     println!("  cpu-stride=2                        # Stage 2 SPACING: use every Nth available CPU");
     println!("  cpu-stride=even                     #   ...or spread the requested count evenly across the pool");
     println!("  --disable-pinning                   # Disable CPU thread pinning");
-    println!("  allocator=plan-pagesize-pref        # Allocation strategy:");
-    println!("    greedy                            #   Legacy: largest chunks first");
-    println!("    plan-pagesize-pref                #   Plan-based: page type priority (default)");
-    println!("    plan-blocksize-pref               #   Plan-based: block size priority");
+    println!("  allocator=plan-pagesize-pref        # Allocator, both filling 1GB, then 2MB, then 4KB pages:");
+    println!("    plan-pagesize-pref                #   One block per request (default)");
+    println!("    stitched                          #   One contiguous span per thread");
+    println!("  hugechunk=1GiB                      # First 1GB-page request size, halved on refusal (power of two, >= 1GiB)");
+    println!("  largechunk=1GiB                     # First 2MB-page request size, halved on refusal (power of two)");
+    println!("  largefloor=16MiB                    # Smallest 2MB-page request (16MiB-1GiB)");
+    println!("  blkroundtarget=1GiB                 # Round each thread's share to a multiple of this (of largefloor)");
+    println!("  blkround=up                         # ...up (default; a smaller step rather than pass available), down, or nearest");
     println!("  errors=halt                         # Error handling (log/halt/panic)");
     println!("  parameter=none                      # Clear test parameter (no subblocks/stride)");
     println!("  parameter=subblocks:4               # Override: 4 subblocks for MirrorMove");
@@ -482,6 +505,8 @@ pub fn print_help(program_name: &str) {
     println!("  Test results are automatically saved as JSON files to .\\results\\");
     println!("  Use --compare-results to analyze performance differences");
     println!("  Useful for memory overclocking and timing optimization");
+    println!();
+    print_usage(program_name);
 }
 
 /// Extract a string value from validated params, or use default
@@ -521,8 +546,8 @@ pub fn has_param(validated: &HashMap<String, ParamValue>, key: &str) -> bool {
     validated.contains_key(key)
 }
 
-/// Print quick usage examples
-pub fn print_usage(program_name: &str) {
+/// Print quick usage examples (the end of `--help`)
+fn print_usage(program_name: &str) {
     println!("Quick Usage Examples:");
     println!("  {} memory=10%-from-available     # Standard: Reserve 10% from currently available memory", program_name);
     println!("  {} memory=2048MB                 # TM5 compatible: Reserve 2048MB from available memory", program_name);
@@ -539,6 +564,4 @@ pub fn print_usage(program_name: &str) {
     println!("  {} config=legacy.cfg            # Auto-convert TM5 config + add stuck bit test", program_name);
     println!("  {} --create-demo-configs        # Create demo configurations", program_name);
     println!("  {} --compare-results old.json new.json # Compare results from .\\results\\", program_name);
-    println!();
-    println!("For full help: {} --help", program_name);
 }
