@@ -44,9 +44,9 @@ Spread (node 0): 14.00-14.00 GiB, 4-8 × 1 GiB pages, smallest block 1-2 GiB
 - Drop the CPU column (the CPU topology table already maps threads to CPUs), page counts for 2 MiB
   and 4 KiB (bytes say it), CV (the spread says it), and Node and Remote on single-node machines.
 - Status replaces the `vs Target` column ("⚠️ 0.47 GiB short").
-- Remote: the share of a thread's pages on another node, from the page audit's Node field
-  (QueryWorkingSetEx; a node number, not a physical address). Needs `fill::audit_pages` to count
-  per thread, for both allocators.
+- Remote: the share of a thread's pages on another node, from each block's recorded node. Exact
+  since 2026-10-02: large-page requests name their node strictly, and the page audit is gone.
+  4 KiB blocks only prefer their home node, so mark them as such.
 - Requests, refusals and time: counters in `fill::fill_ladder` and the allocators.
 - The per-thread log lines both allocators print repeat the thread table: move them to debug.
 

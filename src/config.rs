@@ -2,7 +2,7 @@ use crate::{ErrorMode};
 use crate::constants::{gib_to_bytes, BYTES_PER_MIB};
 use crate::tests::{WindowMode, ChunkMode, CacheTarget, parse_size_string};
 use crate::memory::allocation_strategy::{EnhancedMemoryStrategy, AllocationMode, ReserveAmount, RoundDirection, ShareRounding};
-use crate::memory::allocator::BlockSizing;
+use crate::memory::allocator::{AllocationStrategy, BlockSizing};
 use crate::runner::TestSuiteTiming;
 use crate::tests::{TestTiming, TestMemoryConfig};
 use serde::{Deserialize, Serialize};
@@ -113,8 +113,8 @@ pub struct MemoryAllocationConfig {
     // Block sizes, checked by `block_sizing` (see `BlockSizing`). Sizes as `parse_size_string`.
     #[serde(default = "default_huge_chunk")]
     pub huge_chunk: String,                    // `hugechunk`: first size of each 1 GiB-page request
-    #[serde(default = "default_large_chunk")]
-    pub large_chunk: String,                   // `largechunk`: first size of each 2 MiB-page request
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub large_chunk: Option<String>,           // `largechunk`: first size of each 2 MiB-page request; unset = the allocator's default
     #[serde(default = "default_large_floor")]
     pub large_floor: String,                   // `largefloor`: smallest 2 MiB-page request
 
@@ -129,7 +129,6 @@ fn default_min_page_size() -> String { "large".to_string() }
 fn default_max_page_size() -> String { "huge".to_string() }
 fn default_allocation_strategy() -> String { "plan-pagesize-pref".to_string() }
 fn default_huge_chunk() -> String { "1GiB".to_string() }
-fn default_large_chunk() -> String { "1GiB".to_string() }
 fn default_large_floor() -> String { "16MiB".to_string() }
 fn default_share_round_step() -> String { "1GiB".to_string() }
 fn default_share_round() -> String { "up".to_string() }
@@ -141,7 +140,7 @@ impl Default for MemoryAllocationConfig {
             max_page_size: default_max_page_size(),
             allocation_strategy: default_allocation_strategy(),
             huge_chunk: default_huge_chunk(),
-            large_chunk: default_large_chunk(),
+            large_chunk: None,
             large_floor: default_large_floor(),
             share_round_step: default_share_round_step(),
             share_round: default_share_round(),
@@ -155,9 +154,12 @@ impl MemoryAllocationConfig {
 
     /// Sets the field a `BLOCK_PARAMS` key names. Returns false for any other key.
     pub fn set_block_param(&mut self, key: &str, value: &str) -> bool {
+        if key == "largechunk" {
+            self.large_chunk = Some(value.to_string());
+            return true;
+        }
         let field = match key {
             "hugechunk" => &mut self.huge_chunk,
-            "largechunk" => &mut self.large_chunk,
             "largefloor" => &mut self.large_floor,
             "blkroundtarget" => &mut self.share_round_step,
             "blkround" => &mut self.share_round,
@@ -167,14 +169,16 @@ impl MemoryAllocationConfig {
         true
     }
 
-    /// `hugechunk`, `largechunk` and `largefloor`, parsed and checked.
+    /// `hugechunk`, `largechunk` and `largefloor`, parsed and checked. An unset `largechunk` is
+    /// the allocator's default (`AllocationStrategy::default_large_chunk`), never below `largefloor`.
     pub fn block_sizing(&self) -> Result<BlockSizing, String> {
         let size = |key: &str, value: &str| parse_size_string(value).map_err(|e| format!("{key}={value}: {e}"));
-        BlockSizing::new(
-            size("hugechunk", &self.huge_chunk)?,
-            size("largechunk", &self.large_chunk)?,
-            size("largefloor", &self.large_floor)?,
-        )
+        let large_floor = size("largefloor", &self.large_floor)?;
+        let large_chunk = match &self.large_chunk {
+            Some(value) => size("largechunk", value)?,
+            None => self.allocation_strategy.parse::<AllocationStrategy>()?.default_large_chunk().max(large_floor),
+        };
+        BlockSizing::new(size("hugechunk", &self.huge_chunk)?, large_chunk, large_floor)
     }
 
     /// `blkroundtarget` and `blkround`, parsed and checked. The step must be a multiple of

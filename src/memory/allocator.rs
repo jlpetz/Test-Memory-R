@@ -4,7 +4,7 @@ use crate::memory::buffer::MemoryType as BufferMemoryType;
 use crate::memory::fill::{self, Fill, Grant, PageSizes, ThreadShare};
 use crate::{BlockInfo, AllocationBlock};
 use crate::constants::{HUGE_PAGE_SIZE_USIZE, LARGE_PAGE_SIZE_USIZE, BYTES_PER_MIB_USIZE, KB, MB_16, bytes_to_gib_f64};
-use std::collections::HashMap;
+use std::collections::{BTreeMap, HashMap};
 use std::sync::Arc;
 
 /// The smallest `largefloor`, and its default.
@@ -30,6 +30,9 @@ pub struct AllocationConfig {
     pub memory_type: BufferMemoryType,
     pub zero_memory: bool,
     pub alignment: Option<usize>,       // Custom alignment requirement (must be power of 2)
+    /// `numa_node` is required, not preferred (`NUMA_NODE_MANDATORY`): refuse rather than take
+    /// another node's pages. Only 1 GiB and 2 MiB pages take it; 4 KiB requests stay preferred.
+    pub numa_strict: bool,
 }
 
 #[derive(Debug, Clone)]
@@ -56,6 +59,22 @@ pub enum AllocationStrategy {
     /// One placeholder reservation carved into one contiguous VA span per thread, filled
     /// 1 GiB → 2 MiB → 4 KiB (`memory::stitched`)
     Stitched,
+}
+
+impl AllocationStrategy {
+    /// `largechunk` when it is not set. stitched's commits merge into one run per page size, so
+    /// a small first request costs only calls, and it spreads a node's 2 MiB shortfall over all
+    /// its threads instead of the last few: on a 2-node box, 3.02 GiB remote over 32 threads at
+    /// 128 MiB, against 0.8-0.9 GiB on each of 3 at 1 GiB, for 3.9 s of allocation instead of 2.3
+    /// (TODO 75, follow-up 2). plan-pagesize-pref's requests are its blocks, so it keeps 1 GiB; it
+    /// already splits each gap into power-of-two pieces. Both to be re-checked once the tests are
+    /// reworked (TODO 83).
+    pub fn default_large_chunk(self) -> usize {
+        match self {
+            AllocationStrategy::PlanPageSizePref => HUGE_PAGE_SIZE_USIZE,
+            AllocationStrategy::Stitched => 128 * BYTES_PER_MIB_USIZE,
+        }
+    }
 }
 
 impl std::str::FromStr for AllocationStrategy {
@@ -191,35 +210,24 @@ impl MemoryAllocator {
         let sizing = runtime_config.memory_allocation.block_sizing()?;
         let pages = fill::allowed_page_sizes(runtime_config)?;
         let shares = fill::thread_shares(thread_blocks, runtime_config);
-        let blocks = self.fill_blocks(&shares, &sizing, pages)?;
-
-        let runs: Vec<fill::AuditRun> = blocks.values()
-            .flatten()
-            .filter(|block| block.buffer.uses_large_pages())
-            .map(|block| fill::AuditRun {
-                addr: block.buffer.as_mut_ptr() as usize,
-                len: block.buffer.size(),
-                numa_node: Some(block.buffer.info().numa_node),
-                thread_id: block.block_info.thread_id,
-            })
-            .collect();
-        fill::log_audit(WHO, &runs);
-        Ok(blocks)
+        self.fill_blocks(&shares, &sizing, pages, fill::numa_node_count())
     }
 
     /// plan-pagesize-pref: fill each thread's share with 1 GiB pages, then 2 MiB, then 4 KiB
-    /// (as `minpage`/`maxpage` allow), in the order `fill::fill_ladder` hands them out. Every
-    /// request is one block, sized to the thread's remaining gap. A thread the allowed page sizes
-    /// do not cover comes up short, with a warning; one that gets nothing fails the allocation.
+    /// (as `minpage`/`maxpage` allow), in the passes of `fill::fill_all`: each thread's own node
+    /// first, then the other `nodes`. Every request is one block, sized to the thread's remaining
+    /// gap. A thread the allowed page sizes do not cover comes up short, with a warning; one that
+    /// gets nothing fails the allocation.
     fn fill_blocks(
         &mut self,
         shares: &[ThreadShare],
         sizing: &BlockSizing,
         pages: PageSizes,
+        nodes: u32,
     ) -> Result<HashMap<usize, Vec<AllocationBlock>>, String> {
-        let nodes: std::collections::BTreeSet<u32> = shares.iter().map(|s| s.numa_node).collect();
-        log::info!("{WHO}: {} threads on {} NUMA node(s); 1 GiB pages from {} per request, 2 MiB from {} down to {}; page sizes {:?}..={:?}",
-                  shares.len(), nodes.len(),
+        let homes: std::collections::BTreeSet<u32> = shares.iter().map(|s| s.numa_node).collect();
+        log::info!("{WHO}: {} threads on {} of {} NUMA node(s); 1 GiB pages from {} per request, 2 MiB from {} down to {}; page sizes {:?}..={:?}",
+                  shares.len(), homes.len(), nodes,
                   fill::size_label(sizing.huge_chunk), fill::size_label(sizing.large_chunk),
                   fill::size_label(sizing.large_floor), pages.min, pages.max);
 
@@ -229,24 +237,18 @@ impl MemoryAllocator {
                 .map(|&share| ThreadFill { share, filled: 0, blocks: Vec::new() })
                 .collect(),
         };
-        if pages.allows(PageSizeLevel::Huge) {
-            fill::fill_ladder(&mut fill, PageSizeLevel::Huge, sizing.huge_chunk, HUGE_PAGE_SIZE_USIZE, WHO)?;
-        }
-        if pages.allows(PageSizeLevel::Large) {
-            fill::fill_ladder(&mut fill, PageSizeLevel::Large, sizing.large_chunk, sizing.large_floor, WHO)?;
-        }
         // A refused 4 KiB request is traced there; the threads it leaves short are warned about below.
-        if pages.allows(PageSizeLevel::Regular) {
-            fill::fill_regular(&mut fill, WHO)?;
-        }
+        fill::fill_all(&mut fill, pages, sizing, nodes, WHO)?;
 
         // Each thread against its own target, with its page-size shares
         for thread in &fill.threads {
             let (thread_id, target, got) = (thread.share.thread_id, thread.share.bytes, thread.filled);
-            let shares = format!("1GB {:.2}GB, 2MB {:.2}GB, 4KB {:.2}GB",
+            let remote = thread.remote_bytes();
+            let shares = format!("1GB {:.2}GB, 2MB {:.2}GB, 4KB {:.2}GB{}",
                                  bytes_to_gib_f64(thread.bytes_at(PageSizeLevel::Huge) as u64),
                                  bytes_to_gib_f64(thread.bytes_at(PageSizeLevel::Large) as u64),
-                                 bytes_to_gib_f64(thread.bytes_at(PageSizeLevel::Regular) as u64));
+                                 bytes_to_gib_f64(thread.bytes_at(PageSizeLevel::Regular) as u64),
+                                 if remote > 0 { format!("; {:.2}GB remote", bytes_to_gib_f64(remote as u64)) } else { String::new() });
             if got < target {
                 log::warn!("{WHO}: Thread {}: {:.2}GB of {:.2}GB target ({}) — ⚠️ short by {}MB: page sizes {:?}..={:?} ran out",
                          thread_id, bytes_to_gib_f64(got as u64), bytes_to_gib_f64(target as u64),
@@ -256,6 +258,22 @@ impl MemoryAllocator {
                          thread_id, bytes_to_gib_f64(got as u64), bytes_to_gib_f64(target as u64), shares);
             }
         }
+
+        let mut remote = fill::RemoteMemory::new();
+        for thread in &fill.threads {
+            let mut from: BTreeMap<u32, usize> = BTreeMap::new();
+            for block in thread.blocks.iter().filter(|b| b.uses_large_pages()) {
+                if block.info().numa_node != thread.share.numa_node {
+                    *from.entry(block.info().numa_node).or_default() += block.size();
+                }
+            }
+            for (source, bytes) in from {
+                let entry = remote.entry((thread.share.numa_node, source)).or_default();
+                entry.0 += bytes;
+                entry.1 += 1;
+            }
+        }
+        fill::warn_remote(WHO, &remote);
 
         let empty: Vec<usize> = fill.threads.iter()
             .filter(|t| t.blocks.is_empty())
@@ -292,6 +310,15 @@ struct ThreadFill {
 }
 
 impl ThreadFill {
+    /// Bytes on 1 GiB or 2 MiB pages from a node other than the thread's own. Those nodes are
+    /// known: the requests named them strictly. 4 KiB pages only prefer the home node.
+    fn remote_bytes(&self) -> usize {
+        self.blocks.iter()
+            .filter(|b| b.uses_large_pages() && b.info().numa_node != self.share.numa_node)
+            .map(MemoryBuffer::size)
+            .sum()
+    }
+
     fn bytes_at(&self, page: PageSizeLevel) -> usize {
         self.blocks.iter()
             .filter(|b| match page {
@@ -343,7 +370,7 @@ impl Fill for BlockFill<'_> {
         Ok(fill::prev_power_of_two(rung.min(self.remaining(i))))
     }
 
-    fn request(&mut self, i: usize, len: usize, page: PageSizeLevel) -> Result<Grant, String> {
+    fn request(&mut self, i: usize, len: usize, page: PageSizeLevel, node: Option<u32>) -> Result<Grant, String> {
         let thread = &mut self.threads[i];
         // The alignment is what gets the page size (TMR-APP CLAUDE.md): never drop it.
         let (page_size, alignment) = match page {
@@ -353,16 +380,17 @@ impl Fill for BlockFill<'_> {
         };
         let config = AllocationConfig {
             size: len,
-            numa_node: Some(thread.share.numa_node),
+            numa_node: node,
             page_size,
             memory_type: BufferMemoryType::WriteBack,
             zero_memory: true,
             alignment: Some(alignment),
+            numa_strict: page != PageSizeLevel::Regular,
         };
         match self.allocator.allocate(&config) {
             Ok(buffer) => {
-                log::debug!("{WHO}: Thread {}: {} block allocated ({})",
-                          thread.share.thread_id, fill::size_label(len), fill::page_label(page));
+                log::debug!("{WHO}: Thread {}: {} block allocated ({}, {})",
+                          thread.share.thread_id, fill::size_label(len), fill::page_label(page), fill::node_label(node));
                 thread.filled += len;
                 thread.blocks.push(buffer);
                 Ok(Grant::Done)
@@ -384,6 +412,7 @@ impl Default for AllocationConfig {
             memory_type: BufferMemoryType::WriteBack,
             zero_memory: false,
             alignment: None,
+            numa_strict: false,
         }
     }
 }
@@ -399,14 +428,22 @@ mod tests {
     const GIB: usize = HUGE_PAGE_SIZE_USIZE;
 
     /// One node's page pools: `huge_pages` 1 GiB pages and `large_bytes` of 2 MiB pages, refused
-    /// once short; 4 KiB pages are unlimited. Addresses are fake and never dereferenced.
+    /// once short; 4 KiB pages are unlimited.
     #[derive(Debug, Default)]
-    struct Pools {
+    struct NodePool {
         huge_pages: usize,
         large_bytes: usize,
+    }
+
+    /// Per-node page pools, indexed by node. A 1 GiB or 2 MiB request must name its node strictly,
+    /// as Windows would otherwise serve it from another one. Addresses are fake and never
+    /// dereferenced.
+    #[derive(Debug, Default)]
+    struct Pools {
+        nodes: Vec<NodePool>,
         next_addr: usize,
-        /// Every request in order: page size, bytes, granted.
-        requests: Vec<(PageSizeLevel, usize, bool)>,
+        /// Every request in order: page size, bytes, granted, node asked.
+        requests: Vec<(PageSizeLevel, usize, bool, u32)>,
         frees: usize,
         /// Answer every 1 GiB-page request with this code instead.
         huge_error: Option<u32>,
@@ -417,7 +454,12 @@ mod tests {
 
     impl PoolBackend {
         fn with(huge_pages: usize, large_bytes: usize) -> Arc<Self> {
-            Arc::new(Self(Mutex::new(Pools { huge_pages, large_bytes, ..Default::default() })))
+            Self::with_nodes(&[(huge_pages, large_bytes)])
+        }
+
+        fn with_nodes(nodes: &[(usize, usize)]) -> Arc<Self> {
+            let nodes = nodes.iter().map(|&(huge_pages, large_bytes)| NodePool { huge_pages, large_bytes }).collect();
+            Arc::new(Self(Mutex::new(Pools { nodes, ..Default::default() })))
         }
 
         fn pools(&self) -> std::sync::MutexGuard<'_, Pools> {
@@ -426,8 +468,8 @@ mod tests {
 
         fn refused(&self, page: PageSizeLevel) -> Vec<usize> {
             self.pools().requests.iter()
-                .filter(|&&(p, _, granted)| p == page && !granted)
-                .map(|&(_, size, _)| size)
+                .filter(|&&(p, _, granted, _)| p == page && !granted)
+                .map(|&(_, size, _, _)| size)
                 .collect()
         }
     }
@@ -444,19 +486,24 @@ mod tests {
             if page == PageSizeLevel::Huge && let Some(code) = s.huge_error {
                 return Err(AllocError { code: Some(code), message: format!("error {code}") });
             }
+            assert_eq!(config.numa_strict, page != PageSizeLevel::Regular, "large pages name their node strictly");
+            let node = config.numa_node.unwrap_or(0);
+            let Some(pool) = s.nodes.get_mut(node as usize) else {
+                return Err(AllocError { code: Some(ERROR_INVALID_PARAMETER), message: "no such node".to_string() });
+            };
             let granted = match page {
-                PageSizeLevel::Huge if s.huge_pages * GIB >= size => {
-                    s.huge_pages -= size / GIB;
+                PageSizeLevel::Huge if pool.huge_pages * GIB >= size => {
+                    pool.huge_pages -= size / GIB;
                     true
                 }
-                PageSizeLevel::Large if s.large_bytes >= size => {
-                    s.large_bytes -= size;
+                PageSizeLevel::Large if pool.large_bytes >= size => {
+                    pool.large_bytes -= size;
                     true
                 }
                 PageSizeLevel::Regular => true,
                 _ => false,
             };
-            s.requests.push((page, size, granted));
+            s.requests.push((page, size, granted, node));
             if !granted {
                 return Err(AllocError {
                     code: Some(ERROR_NO_SYSTEM_RESOURCES),
@@ -500,7 +547,7 @@ mod tests {
     fn fill_blocks(backend: &Arc<PoolBackend>, targets: &[usize], huge_chunk: usize, min_page: &str)
         -> Result<HashMap<usize, Vec<AllocationBlock>>, String> {
         let mut allocator = MemoryAllocator { backend: backend.clone(), stats: AllocationStats::default() };
-        allocator.fill_blocks(&shares(targets), &sizing(huge_chunk), pages(min_page))
+        allocator.fill_blocks(&shares(targets), &sizing(huge_chunk), pages(min_page), 1)
     }
 
     /// plan-pagesize-pref on one node: each thread's (1 GiB-page bytes, 2 MiB, 4 KiB), in
@@ -547,7 +594,7 @@ mod tests {
         let shares = fill(&backend, &[target; 4], GIB, "large");
         assert_eq!(huge_pages(&shares), vec![9, 8, 8, 8]);
         assert!(shares.iter().all(|s| s.2 == 0));
-        assert_eq!(backend.pools().huge_pages, 0);
+        assert_eq!(backend.pools().nodes[0].huge_pages, 0);
         assert_eq!(backend.refused(PageSizeLevel::Huge), vec![GIB]);
         assert!(backend.refused(PageSizeLevel::Large).is_empty());
     }
@@ -585,7 +632,7 @@ mod tests {
         let backend = PoolBackend::with(0, GIB + 256 * MIB);
         let shares = fill(&backend, &[3 * GIB; 2], GIB, "regular");
         assert_eq!(shares, vec![(0, GIB, 2 * GIB), (0, 256 * MIB, 2 * GIB + 768 * MIB)]);
-        assert_eq!(backend.pools().large_bytes, 0);
+        assert_eq!(backend.pools().nodes[0].large_bytes, 0);
     }
 
     /// With 4 KiB pages ruled out, a thread the large pages do not cover comes up short: logged,
@@ -596,7 +643,41 @@ mod tests {
         let blocks = fill_blocks(&backend, &[2 * GIB; 2], GIB, "large").unwrap();
         let got = |t: usize| blocks[&t].iter().map(|b| b.buffer.size()).sum::<usize>();
         assert_eq!((got(0), got(1)), (GIB, 512 * MIB));
-        assert!(backend.pools().requests.iter().all(|&(p, _, _)| p != PageSizeLevel::Regular));
+        assert!(backend.pools().requests.iter().all(|&(p, _, _, _)| p != PageSizeLevel::Regular));
+    }
+
+    /// Two nodes, two threads each, 3 GiB per thread. Node 0 has 2 × 1 GiB and 1 GiB of 2 MiB
+    /// pages, not enough for its threads; node 1 has plenty. Node 0's threads take their own
+    /// node's 2 MiB pages before node 1's 1 GiB ones, and only go remote once node 0 is out of
+    /// both, asking node 1 by name, so each block's node is the one recorded.
+    #[test]
+    fn short_node_threads_go_remote_last_and_by_name() {
+        let backend = PoolBackend::with_nodes(&[(2, GIB), (12, usize::MAX)]);
+        let mut allocator = MemoryAllocator { backend: backend.clone(), stats: AllocationStats::default() };
+        let shares: Vec<ThreadShare> = [0, 0, 1, 1].iter().enumerate()
+            .map(|(thread_id, &numa_node)| ThreadShare { thread_id, bytes: 3 * GIB, numa_node })
+            .collect();
+        let blocks = allocator.fill_blocks(&shares, &sizing(GIB), pages("large"), 2).unwrap();
+        // (local, remote) GiB per thread, from each block's recorded node.
+        let split: Vec<(usize, usize)> = shares.iter().map(|share| {
+            let mut split = (0, 0);
+            for block in &blocks[&share.thread_id] {
+                if block.buffer.info().numa_node == share.numa_node {
+                    split.0 += block.buffer.size() / GIB;
+                } else {
+                    split.1 += block.buffer.size() / GIB;
+                }
+            }
+            split
+        }).collect();
+        assert_eq!(split, vec![(2, 1), (1, 2), (3, 0), (3, 0)]);
+        // Local passes first: node 0's last request is its 2 MiB floor refusal, so nothing asked
+        // node 0 again once node 0's threads had gone to node 1.
+        let requests = backend.pools().requests.clone();
+        let last_node0 = requests.iter().rposition(|&(_, _, _, node)| node == 0).unwrap();
+        let node0_large_refused = requests.iter().position(|&(page, size, granted, node)|
+            page == PageSizeLevel::Large && size == MIN_LARGE_FLOOR && !granted && node == 0).unwrap();
+        assert_eq!(last_node0, node0_large_refused, "node 0's last request is its 2 MiB floor refusal");
     }
 
     /// A refusal that is not exhaustion (87: a bad request) fails the allocation instead of
@@ -635,5 +716,25 @@ mod tests {
         // No bigger than the largest request: 1 GiB by default, more with a bigger hugechunk.
         assert!(rounding("2GiB", "1GiB", "16MiB").is_err());
         assert_eq!(rounding("4GiB", "4GiB", "16MiB"), Ok(4 * GIB));
+    }
+
+    /// An unset `largechunk` follows the allocator, and never falls below `largefloor`; a set one
+    /// is taken as given.
+    #[test]
+    fn largechunk_defaults_per_allocator() {
+        let large_chunk = |allocator: &str, largechunk: Option<&str>, largefloor: &str| {
+            let config = crate::config::MemoryAllocationConfig {
+                allocation_strategy: allocator.to_string(),
+                large_chunk: largechunk.map(str::to_string),
+                large_floor: largefloor.to_string(),
+                ..Default::default()
+            };
+            config.block_sizing().map(|s| s.large_chunk)
+        };
+        assert_eq!(large_chunk("plan-pagesize-pref", None, "16MiB"), Ok(GIB));
+        assert_eq!(large_chunk("stitched", None, "16MiB"), Ok(128 * MIB));
+        assert_eq!(large_chunk("stitched", None, "256MiB"), Ok(256 * MIB));
+        assert_eq!(large_chunk("stitched", Some("1GiB"), "16MiB"), Ok(GIB));
+        assert_eq!(large_chunk("plan-pagesize-pref", Some("64MiB"), "16MiB"), Ok(64 * MIB));
     }
 }

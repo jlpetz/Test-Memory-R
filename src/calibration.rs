@@ -478,6 +478,7 @@ impl ProbeEngine {
             memory_type: MemoryType::WriteBack,
             zero_memory: false,
             alignment: None,
+            numa_strict: false,
         };
 
         let mut allocator = MemoryAllocator::new(BackendType::Auto)?;

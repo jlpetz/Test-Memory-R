@@ -5,7 +5,7 @@
 //! OS put them. This one reserves a single placeholder region up front, carves it into one
 //! 1 GiB-aligned slice per thread, and fills each slice from its base upward: 1 GiB HUGE pages
 //! first, 2 MiB LARGE pages once those run out, then 4 KiB REGULAR pages. Each thread's memory is
-//! one contiguous VA range, descending in page size, with the unused tail of its slice left as
+//! one contiguous VA range, 1 GiB pages at its base, with the unused tail of its slice left as
 //! placeholder.
 //!
 //! # Committing: the replace bug and the workaround
@@ -42,8 +42,8 @@
 //! The order is [`fill::fill_ladder`], shared with plan-pagesize-pref; this file supplies the
 //! commits. HUGE and LARGE pages are each handed out one commit at a time, and the next commit always goes
 //! to the thread holding the fewest committed bytes; equally filled threads take turns. Commit
-//! sizes come down a power-of-two ladder. They start at `huge_chunk` / `large_chunk` (1 GiB each
-//! by default). When a commit is refused, that node steps down to the largest rung below it and
+//! sizes come down a power-of-two ladder. They start at `huge_chunk` / `large_chunk` (in TMR,
+//! 1 GiB and 128 MiB by default). When a commit is refused, that node steps down to the largest rung below it and
 //! the same thread retries at the same address. The node is out of that page size once the bottom
 //! rung is refused: 1 GiB for HUGE, `large_floor` (16 MiB by default) for LARGE.
 //!
@@ -80,13 +80,14 @@ use std::sync::Arc;
 use crate::constants::{
     BYTES_PER_MIB_USIZE, HUGE_PAGE_SIZE_USIZE, LARGE_PAGE_SIZE_USIZE, bytes_to_gib_f64,
 };
-use crate::memory::allocator::{AllocationConfig, PageSizeLevel};
+use crate::memory::allocator::{AllocationConfig, BlockSizing, PageSizeLevel};
 use crate::memory::backend::{
-    AllocError, Backend, BackendAllocation, ERROR_INVALID_ADDRESS, describe_error, is_exhaustion,
+    AllocError, Backend, BackendAllocation, ERROR_INVALID_ADDRESS, NUMA_NODE_MANDATORY,
+    describe_error, is_exhaustion,
 };
 use crate::memory::buffer::{BufferInfo, MemoryBuffer, PageType};
 use crate::memory::fill::{
-    self, AuditRun, Fill, Grant, node_label, page_label, prev_power_of_two, size_label,
+    self, Fill, Grant, PageSizes, node_label, page_label, prev_power_of_two, size_label,
 };
 use crate::{AllocationBlock, BlockInfo};
 
@@ -105,6 +106,10 @@ use windows::Win32::System::SystemServices::{
 
 const HUGE: usize = HUGE_PAGE_SIZE_USIZE;
 const LARGE: usize = LARGE_PAGE_SIZE_USIZE;
+
+/// winnt.h `MEM_COALESCE_PLACEHOLDERS`: documented on `VirtualFree`, missing from the `windows`
+/// crate (TODO 82).
+const MEM_COALESCE_PLACEHOLDERS: u32 = 0x1;
 
 /// Log prefix.
 const WHO: &str = "stitched";
@@ -159,6 +164,9 @@ pub struct StitchRequest {
     /// pages, and whatever each thread still needs goes to 4 KiB. A power of two, at least
     /// `run_quantum`.
     pub large_floor: usize,
+    /// NUMA nodes on the machine (`0..numa_nodes`). Threads short after their own node's 1 GiB and
+    /// 2 MiB pages ask the others in turn, by name (`fill::fill_all`).
+    pub numa_nodes: u32,
     /// Every thread size is rounded down to a multiple of this and every LARGE commit is one, so
     /// no run (and no `PowerOfTwo` block) is smaller. A power of two, 2 MiB ..= 1 GiB; the default
     /// 16 MiB is TMR's smallest planned block.
@@ -177,12 +185,9 @@ impl StitchRequest {
             huge_chunk: HUGE,
             large_chunk: HUGE,
             large_floor: 16 * BYTES_PER_MIB_USIZE,
+            numa_nodes: 1,
             run_quantum: 16 * BYTES_PER_MIB_USIZE,
         }
-    }
-
-    fn allows(&self, page: PageSizeLevel) -> bool {
-        self.min_page <= page && page <= self.max_page
     }
 }
 
@@ -284,13 +289,15 @@ pub fn plan(req: &StitchRequest) -> Result<StitchPlan, String> {
 // Report types
 // ---------------------------------------------------------------------------------------------
 
-/// A stretch of one thread's span committed at a single page size.
+/// A stretch of one thread's span committed at a single page size from a single node.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct Run {
     /// From the thread's base.
     pub offset: usize,
     pub len: usize,
     pub page: PageSizeLevel,
+    /// The node the commits named: required for HUGE and LARGE, preferred for REGULAR.
+    pub numa_node: Option<u32>,
 }
 
 #[derive(Debug, Clone)]
@@ -302,11 +309,22 @@ pub struct ThreadSpan {
     pub len: usize,
     /// What it asked for; `len` falls short only when the allowed page sizes ran out.
     pub target: usize,
-    /// Committed runs from `base` upward, strictly descending in page size.
+    /// Committed runs from `base` upward. Each starts on its own page size's boundary: 1 GiB runs
+    /// can follow 2 MiB ones from another node when those end on a whole GiB.
     pub runs: Vec<Run>,
 }
 
 impl ThreadSpan {
+    /// Bytes on 1 GiB or 2 MiB pages from a node other than the thread's own, which the commits
+    /// named strictly. 4 KiB runs only prefer the home node.
+    pub fn remote_bytes(&self) -> usize {
+        self.runs
+            .iter()
+            .filter(|r| r.page != PageSizeLevel::Regular && r.numa_node != self.numa_node)
+            .map(|r| r.len)
+            .sum()
+    }
+
     pub fn bytes_at(&self, page: PageSizeLevel) -> usize {
         self.runs
             .iter()
@@ -340,6 +358,10 @@ pub trait VmOps {
         page: PageSizeLevel,
         numa: Option<u32>,
     ) -> Result<(), u32>;
+    /// Merge the adjacent placeholders that exactly cover `[addr, addr + len)` into one, the VA
+    /// staying reserved throughout (`MEM_RELEASE | MEM_COALESCE_PLACEHOLDERS`). The range must
+    /// start and end on placeholder edges, else 487 (`../numa-test/FINDINGS.md`, part 5).
+    fn coalesce(&mut self, addr: usize, len: usize) -> Result<(), u32>;
     /// Commit an ordinary allocation at exactly `[addr, addr + len)`, which must be free VA.
     fn allocate_at(
         &mut self,
@@ -368,8 +390,9 @@ impl Win32Vm {
         param
     }
 
-    /// Page-size attribute plus preferred node. Plain values only, no pointers, so these carry no
-    /// lifetime hazard.
+    /// Page-size attribute plus node: required for HUGE and LARGE (`NUMA_NODE_MANDATORY`),
+    /// preferred for REGULAR, which refuses the strict form. Plain values only, no pointers, so
+    /// these carry no lifetime hazard.
     fn page_params(page: PageSizeLevel, numa: Option<u32>) -> Vec<MEM_EXTENDED_PARAMETER> {
         let mut params = Vec::with_capacity(2);
         let attribute = match page {
@@ -384,9 +407,10 @@ impl Win32Vm {
             ));
         }
         if let Some(node) = numa {
+            let strict = if attribute.is_some() { NUMA_NODE_MANDATORY } else { 0 };
             params.push(Self::ext_param(
                 MemExtendedParameterNumaNode,
-                u64::from(node),
+                u64::from(node) | strict,
             ));
         }
         params
@@ -553,6 +577,13 @@ impl VmOps for Win32Vm {
         )
     }
 
+    fn coalesce(&mut self, addr: usize, len: usize) -> Result<(), u32> {
+        os_call(
+            format!("VirtualFree({addr:#x}, {len:#x}, MEM_RELEASE|MEM_COALESCE_PLACEHOLDERS)"),
+            || Self::free(addr, len, VIRTUAL_FREE_TYPE(MEM_RELEASE.0 | MEM_COALESCE_PLACEHOLDERS)),
+        )
+    }
+
     fn allocate_at(
         &mut self,
         addr: usize,
@@ -615,7 +646,7 @@ fn gib(bytes: usize) -> f64 {
 enum Holding {
     /// Reserved placeholder VA we own, not backed.
     Placeholder,
-    Committed(PageSizeLevel),
+    Committed(PageSizeLevel, Option<u32>),
     /// VA we released and have not (yet) taken back. Never freed by us: it may be someone else's.
     Lost,
 }
@@ -654,18 +685,23 @@ impl Slice {
     fn runs(&self) -> Vec<Run> {
         let mut runs: Vec<Run> = Vec::new();
         for piece in &self.pieces {
-            let Holding::Committed(page) = piece.holding else {
+            let Holding::Committed(page, numa_node) = piece.holding else {
                 continue;
             };
             let offset = piece.addr - self.base;
             match runs.last_mut() {
-                Some(run) if run.page == page && run.offset + run.len == offset => {
+                Some(run)
+                    if run.page == page
+                        && run.numa_node == numa_node
+                        && run.offset + run.len == offset =>
+                {
                     run.len += piece.len;
                 }
                 _ => runs.push(Run {
                     offset,
                     len: piece.len,
                     page,
+                    numa_node,
                 }),
             }
         }
@@ -708,22 +744,27 @@ impl StitchedArena<Win32Vm> {
         Self::build_with(Win32Vm, req).map(Arc::new)
     }
 
-    /// Every HUGE and LARGE run, for `fill::log_audit`.
-    pub fn audit_runs(&self) -> Vec<AuditRun> {
-        self.spans()
-            .iter()
-            .flat_map(|span| {
-                span.runs
-                    .iter()
-                    .filter(|r| r.page != PageSizeLevel::Regular)
-                    .map(|run| AuditRun {
-                        addr: span.base + run.offset,
-                        len: run.len,
-                        numa_node: span.numa_node,
-                        thread_id: span.thread_id,
-                    })
-            })
-            .collect()
+    /// Large-page bytes each thread got from another node, by (home, source), for
+    /// `fill::warn_remote`.
+    fn remote_memory(&self) -> fill::RemoteMemory {
+        let mut remote = fill::RemoteMemory::new();
+        for span in self.spans() {
+            let Some(home) = span.numa_node else {
+                continue;
+            };
+            let mut from: HashMap<u32, usize> = HashMap::new();
+            for run in span.runs.iter().filter(|r| r.page != PageSizeLevel::Regular) {
+                if let Some(source) = run.numa_node.filter(|&n| n != home) {
+                    *from.entry(source).or_default() += run.len;
+                }
+            }
+            for (source, bytes) in from {
+                let entry = remote.entry((home, source)).or_default();
+                entry.0 += bytes;
+                entry.1 += 1;
+            }
+        }
+        remote
     }
 }
 
@@ -753,17 +794,15 @@ impl<V: VmOps> StitchedArena<V> {
         };
         arena.carve(req, &plan)?;
 
-        if req.allows(PageSizeLevel::Huge) {
-            fill::fill_ladder(&mut arena, PageSizeLevel::Huge, req.huge_chunk, HUGE, WHO)?;
-        }
-        if req.allows(PageSizeLevel::Large) {
-            fill::fill_ladder(&mut arena, PageSizeLevel::Large, req.large_chunk, req.large_floor, WHO)?;
-        }
+        let pages = PageSizes { min: req.min_page, max: req.max_page };
+        let sizing = BlockSizing {
+            huge_chunk: req.huge_chunk,
+            large_chunk: req.large_chunk,
+            large_floor: req.large_floor,
+        };
         // No fairness question for 4 KiB pages: a refusal there is the commit limit, and that
         // fails the build.
-        if req.allows(PageSizeLevel::Regular)
-            && let Some((i, code)) = fill::fill_regular(&mut arena, WHO)?
-        {
+        if let Some((i, code)) = fill::fill_all(&mut arena, pages, &sizing, req.numa_nodes, WHO)? {
             let slice = &arena.slices[i];
             return Err(format!(
                 "stitched: committing {:.2} GiB of 4 KiB pages for thread {} was refused: {}",
@@ -826,65 +865,88 @@ impl<V: VmOps> StitchedArena<V> {
         Ok(())
     }
 
-    /// Length of the placeholder at slice `i`'s cursor: the most one commit there can cover.
+    /// The most one commit at slice `i`'s cursor can cover. A refused commit leaves its hole
+    /// re-reserved at the size it asked for, so the free space there can be several placeholders
+    /// in a row. A commit spans them (`cover`): free-then-allocate releases them all and
+    /// allocates once across them, a replace merges them into one placeholder first.
     fn slot_len(&self, i: usize) -> Result<usize, String> {
         let slice = &self.slices[i];
         let addr = slice.next_addr();
-        slice
+        let start = slice
             .pieces
             .iter()
-            .find(|p| p.addr == addr && p.holding == Holding::Placeholder)
-            .map(|p| p.len)
+            .position(|p| p.addr == addr && p.holding == Holding::Placeholder)
             .ok_or_else(|| {
                 format!(
                     "stitched: bug: no placeholder at thread {}'s cursor {addr:#x}",
                     slice.thread_id
                 )
-            })
+            })?;
+        Ok(slice.pieces[start..]
+            .iter()
+            .take_while(|p| p.holding == Holding::Placeholder)
+            .map(|p| p.len)
+            .sum())
     }
 
-    /// Make the placeholder at slice `i`'s cursor exactly `len` bytes, splitting it off the front
-    /// of a larger one. Only ever a front split: the cursor always sits on a piece boundary.
-    fn isolate(&mut self, i: usize, len: usize) -> Result<usize, String> {
+    /// Make `[cursor, cursor + len)` of slice `i` a run of whole placeholder pieces, splitting the
+    /// last one where the range ends. Returns their indices.
+    fn cover(&mut self, i: usize, len: usize) -> Result<std::ops::Range<usize>, String> {
         let slice = &mut self.slices[i];
         let addr = slice.next_addr();
-        let idx = slice
+        let start = slice
             .pieces
             .iter()
             .position(|p| p.addr == addr)
             .ok_or_else(|| format!("stitched: bug: no piece starts at {addr:#x}"))?;
-        let piece = slice.pieces[idx];
-        if piece.holding != Holding::Placeholder || piece.len < len {
-            return Err(format!(
-                "stitched: bug: piece at {addr:#x} is {:?} of {:#x}, cannot hold {len:#x}",
-                piece.holding, piece.len
-            ));
-        }
-        if piece.len > len {
-            self.vm.split(addr, len).map_err(|code| {
-                format!(
-                    "stitched: splitting {len:#x} off the placeholder at {addr:#x} failed: {}",
-                    describe_error(code)
-                )
+        let (mut end, mut covered) = (start, 0);
+        while covered < len {
+            let piece = *slice.pieces.get(end).ok_or_else(|| {
+                format!("stitched: bug: {len:#x} at {addr:#x} runs past thread {}'s slice", slice.thread_id)
             })?;
-            slice.pieces[idx].len = len;
-            slice.pieces.insert(
-                idx + 1,
-                Piece {
-                    addr: addr + len,
-                    len: piece.len - len,
-                    holding: Holding::Placeholder,
-                },
-            );
+            if piece.holding != Holding::Placeholder {
+                return Err(format!(
+                    "stitched: bug: piece at {:#x} is {:?}, cannot be committed into",
+                    piece.addr, piece.holding
+                ));
+            }
+            if covered + piece.len > len {
+                let keep = len - covered;
+                self.vm.split(piece.addr, keep).map_err(|code| {
+                    format!(
+                        "stitched: splitting {keep:#x} off the placeholder at {:#x} failed: {}",
+                        piece.addr,
+                        describe_error(code)
+                    )
+                })?;
+                slice.pieces[end].len = keep;
+                slice.pieces.insert(
+                    end + 1,
+                    Piece {
+                        addr: piece.addr + keep,
+                        len: piece.len - keep,
+                        holding: Holding::Placeholder,
+                    },
+                );
+            }
+            covered += slice.pieces[end].len;
+            end += 1;
         }
-        Ok(idx)
+        Ok(start..end)
     }
 
-    /// Commit `len` bytes at slice `i`'s cursor, by the request's [`CommitMethod`].
-    fn commit(&mut self, i: usize, len: usize, page: PageSizeLevel) -> Result<Grant, String> {
+    /// Commit `len` bytes of `node`'s pages at slice `i`'s cursor, by the request's
+    /// [`CommitMethod`].
+    fn commit(
+        &mut self,
+        i: usize,
+        len: usize,
+        page: PageSizeLevel,
+        node: Option<u32>,
+    ) -> Result<Grant, String> {
         match self.commit_method {
-            CommitMethod::Replace => self.commit_replace(i, len, page),
-            CommitMethod::FreeThenAllocate => self.commit_free_then_allocate(i, len, page),
+            CommitMethod::Replace => self.commit_replace(i, len, page, node),
+            CommitMethod::FreeThenAllocate => self.commit_free_then_allocate(i, len, page, node),
         }
     }
 
@@ -894,13 +956,34 @@ impl<V: VmOps> StitchedArena<V> {
         i: usize,
         len: usize,
         page: PageSizeLevel,
+        node: Option<u32>,
     ) -> Result<Grant, String> {
-        let idx = self.isolate(i, len)?;
+        let range = self.cover(i, len)?;
         let slice = &mut self.slices[i];
         let addr = slice.next_addr();
-        match self.vm.replace(addr, len, page, slice.numa_node) {
+        let idx = range.start;
+        if range.len() > 1 {
+            // Several placeholders a refusal left behind: merge them, the VA never leaving our
+            // hands. (On 10.0.26100 a placeholder a refused large-page replace poisoned would
+            // bugcheck here as it would on any split or free; Replace waits for the fix.)
+            self.vm.coalesce(addr, len).map_err(|code| {
+                format!(
+                    "stitched: merging the placeholders at {addr:#x}+{len:#x} failed: {}",
+                    describe_error(code)
+                )
+            })?;
+            slice.pieces.splice(
+                range,
+                [Piece {
+                    addr,
+                    len,
+                    holding: Holding::Placeholder,
+                }],
+            );
+        }
+        match self.vm.replace(addr, len, page, node) {
             Ok(()) => {
-                slice.pieces[idx].holding = Holding::Committed(page);
+                slice.pieces[idx].holding = Holding::Committed(page, node);
                 slice.cursor += len;
                 Ok(Grant::Done)
             }
@@ -918,26 +1001,41 @@ impl<V: VmOps> StitchedArena<V> {
         i: usize,
         len: usize,
         page: PageSizeLevel,
+        node: Option<u32>,
     ) -> Result<Grant, String> {
-        // 1. The slot becomes its own placeholder, in a call separate from the commit.
-        let idx = self.isolate(i, len)?;
+        // 1. The slot becomes whole placeholders, in calls separate from the commit.
+        let range = self.cover(i, len)?;
         let slice = &mut self.slices[i];
-        let (addr, node) = (slice.next_addr(), slice.numa_node);
+        let addr = slice.next_addr();
 
-        // 2. Free it outright. Until step 3 or the re-reserve lands, this VA is not ours.
-        self.vm.release(addr, len).map_err(|code| {
-            format!(
-                "stitched: releasing the {} slot at {addr:#x} failed: {}",
-                page_label(page),
-                describe_error(code)
-            )
-        })?;
-        slice.pieces[idx].holding = Holding::Lost;
+        // 2. Free them outright. Until step 3 or the re-reserve lands, this VA is not ours.
+        for k in range.clone() {
+            let piece = slice.pieces[k];
+            self.vm.release(piece.addr, piece.len).map_err(|code| {
+                format!(
+                    "stitched: releasing the {} slot at {:#x} failed: {}",
+                    page_label(page),
+                    piece.addr,
+                    describe_error(code)
+                )
+            })?;
+            slice.pieces[k].holding = Holding::Lost;
+        }
+        // From here one piece stands for the whole hole.
+        let idx = range.start;
+        slice.pieces.splice(
+            range,
+            [Piece {
+                addr,
+                len,
+                holding: Holding::Lost,
+            }],
+        );
 
         // 3. Allocate into the hole as an ordinary allocation at a fixed address.
         match self.vm.allocate_at(addr, len, page, node) {
             Ok(()) => {
-                slice.pieces[idx].holding = Holding::Committed(page);
+                slice.pieces[idx].holding = Holding::Committed(page, node);
                 slice.cursor += len;
                 Ok(Grant::Done)
             }
@@ -983,8 +1081,9 @@ impl<V: VmOps> StitchedArena<V> {
             gib(self.stride)
         );
         for span in self.spans() {
+            let remote = span.remote_bytes();
             log::info!(
-                "  thread {:>3} {:<8} {:#014x}  1GB {:>7.2} | 2MB {:>7.2} | 4KB {:>7.2} GiB = {:.2}/{:.2} GiB",
+                "  thread {:>3} {:<8} {:#014x}  1GB {:>7.2} | 2MB {:>7.2} | 4KB {:>7.2} GiB = {:.2}/{:.2} GiB{}",
                 span.thread_id,
                 node_label(span.numa_node),
                 span.base,
@@ -992,7 +1091,8 @@ impl<V: VmOps> StitchedArena<V> {
                 gib(span.bytes_at(PageSizeLevel::Large)),
                 gib(span.bytes_at(PageSizeLevel::Regular)),
                 gib(span.len),
-                gib(span.target)
+                gib(span.target),
+                if remote > 0 { format!(" ({:.2} GiB remote)", gib(remote)) } else { String::new() }
             );
         }
     }
@@ -1022,7 +1122,7 @@ impl<V: VmOps> Fill for StitchedArena<V> {
         self.slices[i]
             .pieces
             .iter()
-            .filter(|p| p.holding == Holding::Committed(page))
+            .filter(|p| matches!(p.holding, Holding::Committed(pg, _) if pg == page))
             .map(|p| p.len)
             .sum()
     }
@@ -1043,8 +1143,30 @@ impl<V: VmOps> Fill for StitchedArena<V> {
         Ok(len)
     }
 
-    fn request(&mut self, i: usize, len: usize, page: PageSizeLevel) -> Result<Grant, String> {
-        self.commit(i, len, page)
+    fn request(
+        &mut self,
+        i: usize,
+        len: usize,
+        page: PageSizeLevel,
+        node: Option<u32>,
+    ) -> Result<Grant, String> {
+        self.commit(i, len, page, node)
+    }
+
+    /// 1 GiB pages need a 1 GiB-aligned cursor. The base is one, and every 1 GiB commit and every
+    /// whole-GiB 2 MiB run keeps it, so a remote pass can still put 1 GiB pages above local 2 MiB
+    /// ones. A 2 MiB tail that is not whole GiB (the node's last 256, 64, 32 MiB pieces) moves the
+    /// cursor off the boundary, and from then on the thread takes 2 MiB pages only.
+    fn can_take(&self, i: usize, page: PageSizeLevel) -> bool {
+        page != PageSizeLevel::Huge || self.slices[i].cursor.is_multiple_of(HUGE)
+    }
+
+    fn gap_to_boundary(&self, i: usize, page: PageSizeLevel) -> usize {
+        let cursor = self.slices[i].cursor;
+        match page {
+            PageSizeLevel::Huge => cursor.next_multiple_of(HUGE) - cursor,
+            _ => 0,
+        }
     }
 }
 
@@ -1057,7 +1179,7 @@ impl<V: VmOps> Drop for StitchedArena<V> {
         for commits in [true, false] {
             for piece in self.slices.iter().flat_map(|s| &s.pieces) {
                 let wanted = match piece.holding {
-                    Holding::Committed(_) => commits,
+                    Holding::Committed(..) => commits,
                     Holding::Placeholder => !commits,
                     Holding::Lost => false,
                 };
@@ -1156,9 +1278,9 @@ where
     let backend: Arc<dyn Backend> = arena.clone();
     let mut out = HashMap::new();
     for span in arena.spans() {
-        let numa_node = span.numa_node.unwrap_or(0);
         let mut blocks = Vec::new();
         for run in &span.runs {
+            let numa_node = run.numa_node.or(span.numa_node).unwrap_or(0);
             let mut addr = span.base + run.offset;
             for size in power_of_two_split(run.len) {
                 blocks.push(AllocationBlock {
@@ -1210,6 +1332,7 @@ pub fn chunk_allocate_stitched(
     request.min_page = pages.min;
     request.max_page = pages.max;
     let alloc = &runtime_config.memory_allocation;
+    request.numa_nodes = fill::numa_node_count();
     let sizing = alloc.block_sizing()?;
     request.huge_chunk = sizing.huge_chunk;
     request.large_chunk = sizing.large_chunk;
@@ -1223,7 +1346,7 @@ pub fn chunk_allocate_stitched(
 
     let arena = StitchedArena::build(&request)?;
     arena.log_summary();
-    fill::log_audit(WHO, &arena.audit_runs());
+    fill::warn_remote(WHO, &arena.remote_memory());
     Ok(into_allocation_blocks(arena))
 }
 
@@ -1271,6 +1394,10 @@ mod tests {
         steal_next_release: bool,
         /// Placeholders whose large-page replace was refused with 1450: the 10.0.26100 bug.
         poisoned: HashSet<usize>,
+        /// A kernel with Microsoft's fix: a refused replace poisons nothing.
+        replace_fixed: bool,
+        /// `MEM_COALESCE_PLACEHOLDERS` calls made.
+        coalesces: usize,
         /// `MEM_REPLACE_PLACEHOLDER` calls made, granted or not.
         replaces: usize,
     }
@@ -1405,7 +1532,7 @@ mod tests {
                 return Err(ERROR_INVALID_PARAMETER);
             }
             if let Err(code) = s.take(addr, len, page, numa) {
-                if code == ERROR_NO_SYSTEM_RESOURCES {
+                if code == ERROR_NO_SYSTEM_RESOURCES && !s.replace_fixed {
                     s.poisoned.insert(addr);
                 }
                 return Err(code);
@@ -1427,6 +1554,28 @@ mod tests {
             }
             s.take(addr, len, page, numa)?;
             s.regions.insert(addr, (len, Region::Committed(page, numa)));
+            Ok(())
+        }
+
+        fn coalesce(&mut self, addr: usize, len: usize) -> Result<(), u32> {
+            let mut s = self.state();
+            s.coalesces += 1;
+            let mut covered = Vec::new();
+            let mut at = addr;
+            while at < addr + len {
+                s.touch(at, "coalesce");
+                match s.regions.get(&at) {
+                    Some(&(piece, Region::Placeholder)) if at + piece <= addr + len => {
+                        covered.push(at);
+                        at += piece;
+                    }
+                    _ => return Err(ERROR_INVALID_ADDRESS),
+                }
+            }
+            for piece in covered {
+                s.regions.remove(&piece);
+            }
+            s.regions.insert(addr, (len, Region::Placeholder));
             Ok(())
         }
 
@@ -1469,20 +1618,20 @@ mod tests {
             .collect()
     }
 
-    /// Every span is contiguous from its 1 GiB-aligned base and descends in page size.
+    /// Every span is contiguous from its 1 GiB-aligned base, each run on its page size's boundary.
     fn assert_well_formed(arena: &StitchedArena<FakeVm>) {
         for span in arena.spans() {
             let mut offset = 0;
-            let mut last = PageSizeLevel::Huge;
             for run in &span.runs {
                 assert_eq!(run.offset, offset, "thread {} has a gap", span.thread_id);
-                assert!(
-                    run.page <= last,
-                    "thread {} ascends in page size",
-                    span.thread_id
+                assert_eq!(
+                    run.offset % page_bytes(run.page),
+                    0,
+                    "thread {}: a {:?} run off its page boundary",
+                    span.thread_id,
+                    run.page
                 );
                 offset += run.len;
-                last = run.page;
             }
             assert_eq!(offset, span.len);
             assert_eq!(span.base % GIB, 0);
@@ -1614,12 +1763,14 @@ mod tests {
                 Run {
                     offset: 0,
                     len: 2 * GIB,
-                    page: PageSizeLevel::Huge
+                    page: PageSizeLevel::Huge,
+                    numa_node: None,
                 },
                 Run {
                     offset: 2 * GIB,
                     len: 48 * MIB,
-                    page: PageSizeLevel::Large
+                    page: PageSizeLevel::Large,
+                    numa_node: None,
                 },
             ]
         );
@@ -1635,6 +1786,102 @@ mod tests {
         let arena = StitchedArena::build_with(vm, &req).unwrap();
         assert_eq!(huge_counts(&arena), vec![1, 0, 2, 2]);
         assert_well_formed(&arena);
+    }
+
+    /// Node 0 has one 1 GiB page and 512 MiB of 2 MiB pages for two 2 GiB threads; node 1 has
+    /// plenty. Thread 0 tops up with a remote 1 GiB page. Thread 1's 512 MiB of local 2 MiB pages
+    /// leave it off a 1 GiB boundary, so it pads with node 1's 2 MiB pages up to the boundary and
+    /// then takes a 1 GiB page from node 1 too. Each run records the node it came from.
+    #[test]
+    fn short_node_threads_go_remote_and_runs_record_the_node() {
+        let vm = FakeVm::default();
+        vm.state().huge_pages.insert(Some(0), 1);
+        vm.state().large_bytes.insert(Some(0), 512 * MIB);
+        vm.state().huge_pages.insert(Some(1), 8);
+        let nodes = [Some(0), Some(0), Some(1), Some(1)];
+        let mut req = StitchRequest::new(threads(&[2 * GIB; 4], &nodes));
+        req.numa_nodes = 2;
+        let arena = StitchedArena::build_with(vm, &req).unwrap();
+        assert_well_formed(&arena);
+        let spans = arena.spans();
+        assert!(spans.iter().all(|s| s.len == s.target));
+        let run = |offset, len, page, node| Run { offset, len, page, numa_node: Some(node) };
+        assert_eq!(spans[0].runs, vec![run(0, GIB, PageSizeLevel::Huge, 0), run(GIB, GIB, PageSizeLevel::Huge, 1)]);
+        assert_eq!(
+            spans[1].runs,
+            vec![
+                run(0, 512 * MIB, PageSizeLevel::Large, 0),
+                run(512 * MIB, 512 * MIB, PageSizeLevel::Large, 1),
+                run(GIB, GIB, PageSizeLevel::Huge, 1),
+            ]
+        );
+        let remote: Vec<usize> = spans.iter().map(ThreadSpan::remote_bytes).collect();
+        assert_eq!(remote, vec![GIB, GIB + 512 * MIB, 0, 0]);
+    }
+
+    /// The user's 2026-10-02 case, small: node 0's 1 GiB pages split 2/2/1/1 and its 2 MiB pages
+    /// end in a 512 MiB and a 256 MiB piece, which leave threads 2 and 3 off a 1 GiB boundary.
+    /// Unpadded they took no 1 GiB pages from node 1 (4/4/1/1). Padded with node 1's 2 MiB pages up
+    /// to the boundary first, they take one each: 4/4/2/2, every thread exact.
+    #[test]
+    fn misaligned_threads_are_padded_before_remote_huge_pages() {
+        let vm = FakeVm::default();
+        vm.state().huge_pages.insert(Some(0), 6);
+        vm.state().large_bytes.insert(Some(0), 2 * GIB + 768 * MIB);
+        vm.state().huge_pages.insert(Some(1), 20);
+        let mut req = StitchRequest::new(threads(&[4 * GIB; 4], &[Some(0); 4]));
+        req.numa_nodes = 2;
+        let arena = StitchedArena::build_with(vm, &req).unwrap();
+        assert_well_formed(&arena);
+        let spans = arena.spans();
+        assert!(spans.iter().all(|s| s.len == s.target));
+        assert_eq!(huge_counts(&arena), vec![4, 4, 2, 2]);
+        let remote: Vec<usize> = spans.iter().map(ThreadSpan::remote_bytes).collect();
+        assert_eq!(remote, vec![2 * GIB, 2 * GIB, GIB + 512 * MIB, GIB + 768 * MIB]);
+    }
+
+    /// Thread 0's 2 MiB requests are refused down to the floor, which leaves the free space at its
+    /// cursor as 16, 16, 32, 64, 128 MiB placeholders and the rest. Its next 1 GiB page, from node
+    /// 1, spans those pieces in one commit instead of failing on the 16 MiB one.
+    #[test]
+    fn a_commit_spans_the_pieces_a_refusal_left() {
+        let vm = FakeVm::default();
+        vm.state().huge_pages.insert(Some(0), 2);
+        vm.state().large_bytes.insert(Some(0), 0);
+        vm.state().huge_pages.insert(Some(1), 4);
+        let mut req = StitchRequest::new(threads(&[2 * GIB; 2], &[Some(0); 2]));
+        req.numa_nodes = 2;
+        let arena = StitchedArena::build_with(vm, &req).unwrap();
+        assert_well_formed(&arena);
+        assert_eq!(huge_counts(&arena), vec![2, 2]);
+        let remote: Vec<usize> = arena.spans().iter().map(ThreadSpan::remote_bytes).collect();
+        assert_eq!(remote, vec![GIB, GIB]);
+    }
+
+    /// The same as `a_commit_spans_the_pieces_a_refusal_left`, by `Replace` on a kernel with
+    /// Microsoft's fix: the pieces are merged into one placeholder, never freed, and the result
+    /// is the same layout.
+    #[test]
+    fn replace_merges_the_pieces_a_refusal_left() {
+        let layout = |method| {
+            let vm = FakeVm::default();
+            vm.state().replace_fixed = true;
+            vm.state().huge_pages.insert(Some(0), 2);
+            vm.state().large_bytes.insert(Some(0), 0);
+            vm.state().huge_pages.insert(Some(1), 4);
+            let mut req = StitchRequest::new(threads(&[2 * GIB; 2], &[Some(0); 2]));
+            req.numa_nodes = 2;
+            req.commit_method = method;
+            let arena = StitchedArena::build_with(vm.clone(), &req).unwrap();
+            assert_well_formed(&arena);
+            let runs: Vec<Vec<Run>> = arena.spans().into_iter().map(|s| s.runs).collect();
+            (runs, vm.state().coalesces)
+        };
+        let (replaced, merges) = layout(CommitMethod::Replace);
+        let (freed, none) = layout(CommitMethod::FreeThenAllocate);
+        assert_eq!(replaced, freed);
+        assert!(merges > 0, "the pieces were merged");
+        assert_eq!(none, 0, "free-then-allocate releases them instead");
     }
 
     #[test]
@@ -1775,6 +2022,7 @@ mod tests {
                 offset: 0,
                 len: span.target,
                 page: PageSizeLevel::Regular,
+                numa_node: None,
             };
             assert_eq!(span.runs, vec![whole]);
         }

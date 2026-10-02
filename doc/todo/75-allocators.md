@@ -143,6 +143,44 @@ that is 512, 256, 128, 64, 16 MiB and then 0.5, 0.25 and 0.12 MiB slivers: 8 pie
 `logs/live75b_dbg_*.txt`). It is a harness effect for TODO 76, not memory speed. Until then,
 window-limited tests don't compare across allocators.
 
+## Follow-up 2: strict NUMA nodes (2026-10-02, on an m5.16xlarge)
+
+The user moved the work to a 2-socket machine (2 × 16 cores, 2 NUMA nodes, 256 GB). Probe:
+`../numa-test/FINDINGS.md`. Uncommitted at the time of writing.
+- **Found:** a preferred node is only a preference. Once a node is out, Windows serves the request
+  from the other node without an error, sometimes splitting one request across both. TMR's
+  default 62-thread run already had about 1.5 GiB of node-1 threads' memory on node 0, seen only
+  by the page audit.
+- **Strict nodes:** `NUMA_NODE_MANDATORY` (bit 63, OR-ed into the node value; `winnt.h` only, not
+  in the `windows` crate, not on the docs pages) for 1 GiB and 2 MiB requests. 4 KiB requests
+  reject it (87) and stay preferred. A node out of pages answers 1450 whether or not other nodes
+  have pages, and so does every form when the whole machine is out.
+- **Passes** (`fill::fill_all`): each node's own 1 GiB then 2 MiB pages, then each other node's by
+  name, then 4 KiB. Every block records its node; `warn_remote` gives one warning with the amounts.
+  A stitched span takes 1 GiB pages only from a 1 GiB-aligned cursor (`Fill::can_take`). A
+  thread left off the boundary by its local 2 MiB pages is padded with the remote node's 2 MiB
+  pages up to it before the remote 1 GiB pass (`pad_to_huge_boundary`, the user's idea).
+- **Fixed with it:** a refused stitched commit leaves its hole re-reserved at the refused size,
+  so a later, bigger commit at that cursor (a remote 1 GiB page after local 2 MiB refusals) found
+  only a 16 MiB placeholder and failed the build. A commit now spans every placeholder in its
+  range (`cover`): free-then-allocate releases them all and allocates once across them, and
+  `Replace` merges them into one first (`MEM_COALESCE_PLACEHOLDERS`, the VA never freed; checked
+  live in `../numa-test/` part 5), so it is ready for the day Microsoft's fix lands.
+- **The page audit is gone:** with strict requests the records are the truth (the user's call).
+- **Live** (no bugcheck in any run, including strict refusals on both allocators):
+
+| run | result |
+|---|---|
+| 62 threads, 0 % reserve, plan-pagesize-pref | node 1 out of 2 MiB pages; 2.05 GiB from node 0 by name, 32-160 MiB per thread; exact |
+| same, stitched | 2.54 GiB remote on 3 threads (1 GiB commits); with `largechunk=128MiB` 3.02 GiB over all 32 |
+| 4 threads on node 0, about 61 GiB each | plan: 1 GiB pages 57/58/58/56, about 30 GiB remote each; stitched 58/28/28/57 (threads 1 and 2's local 2 MiB pages ended off a GiB boundary), then 58/57/56/56 with the pad |
+| 16 threads on node 0, local (`100GiB-target`) vs about half remote (0 %) | Read 92.7 → 48.7 GB/s, Copy 86.5 → 56.5, SimpleV2 62.9 → 50.7, MirrorV2 unchanged (its 64 MiB window stays local) |
+
+Decided (the user, option 3): an unset `largechunk` is 128 MiB for stitched, 1 GiB for
+plan-pagesize-pref, to be re-checked after the test rework (TODO 83).
+Remote nodes are asked `home + 1`, `home + 2`, …, not nearest first; that matters on machines
+with many nodes (EPYC at 4 NUMA nodes per socket).
+
 ---
 
 ## Original record (2026-09-28)

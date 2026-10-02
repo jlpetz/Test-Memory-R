@@ -507,9 +507,33 @@ No request is bigger than the gap of the thread it is for, so nothing is over-al
 nothing is freed. At the default `hugechunk=1GiB` a node's threads end at most one 1 GiB page
 apart. A bigger `hugechunk` makes fewer requests, and the threads can end about one `hugechunk`
 apart. The allocators differ in block size. plan-pagesize-pref's blocks are its requests, so they
-top out at `hugechunk` and `largechunk` (1 GiB by default). stitched's commits merge, so a
+top out at `hugechunk` and `largechunk` (1 GiB by default for plan-pagesize-pref). stitched's commits merge, so a
 thread's 1 GiB pages come out as one large power-of-two block. Both return power-of-two blocks,
 which `prepare_blocks_for_window` relies on.
+
+**NUMA.** Each node's threads draw on that node's pools. 1 GiB and 2 MiB requests name the node
+strictly: `NUMA_NODE_MANDATORY`, bit 63 OR-ed into the `MemExtendedParameterNumaNode` value. It
+is in `winnt.h` but not in the `windows` crate, and Microsoft documents the node only as
+preferred. A preferred node spills to another node without an error once it is out, sometimes
+splitting one request across both (`../numa-test/FINDINGS.md`), so only strict requests make
+each block's recorded node true. The passes run local first, then remote:
+
+```
+  every node's own pages:   1 GiB, then 2 MiB        (page size gives way before locality)
+  then each other node:     1 GiB, then 2 MiB, by name ("NUMA 0 for NUMA 1" in the trace)
+  then 4 KiB:               home node preferred (4 KiB refuses the strict form: 87)
+```
+
+A node out of pages answers 1450 whether or not other nodes still have them, so the only way to
+tell is asking each node, which the passes do. Any remote memory gives one warning with the
+amounts. Measured on a 2-socket m5.16xlarge (16 threads on node 0, about half their memory on
+node 1): full-memory Read −48 %, Copy −35 %, SimpleV2 −19 %. Window-limited tests (MirrorV2's
+64 MiB window) touch only each thread's first, local, blocks and see no change. A stitched
+span can take 1 GiB pages only from a 1 GiB-aligned cursor. A thread whose local 2 MiB pages end
+off a GiB boundary is first padded with the remote node's 2 MiB pages up to it, so it shares the
+remote 1 GiB pages too. Nothing is freed for that; the pad is memory the thread needed anyway.
+Other nodes are asked in order (`home + 1`, `home + 2`, …), not nearest first: Windows has no
+documented user-mode call for node distances that we know of.
 
 A refusal is sorted by its Win32 code (`backend::is_exhaustion`). Running out (1450 and its kin,
 or 1314 for a missing privilege) steps down; anything else, 87 above all, fails the allocation.
@@ -598,7 +622,7 @@ CLI (`params.rs`), all overridable from JSON:
 | `minpage=` / `maxpage=` (JSON `min_page_size` / `max_page_size`) | 1 | Gate `regular`/`large`/`huge`; feeds `is_page_size_allowed` |
 | `blkroundtarget=1GiB`, `blkround=up` | 1 | Round each thread's share to a multiple of this: `up` (default), `down` or `nearest`. Never past the reference figure: a smaller step instead, down to `largefloor`. A multiple of `largefloor`, no bigger than `hugechunk` / `largechunk` |
 | `largefloor=16MiB` | 1 | Smallest 2 MiB-page request (16 MiB–1 GiB): a refusal this small means the node is out of 2 MiB pages |
-| `hugechunk=1GiB`, `largechunk=1GiB` | 1 | First size of each 1 GiB / 2 MiB-page request, halved on refusal. Bigger means fewer OS calls on large machines and a coarser split, and for plan-pagesize-pref bigger blocks |
+| `hugechunk=1GiB`, `largechunk=1GiB` (stitched: `128MiB`) | 1 | First size of each 1 GiB / 2 MiB-page request, halved on refusal. Bigger means fewer OS calls on large machines and a coarser split, and for plan-pagesize-pref bigger blocks. stitched's commits merge, so its smaller default only costs calls, and spreads a node's 2 MiB shortfall over all its threads |
 | `cpus=50%`, `cputype=`, `skip-cores=`, `cpu-stride=` | 1 | Thread count → the divisor for `per_thread_target`. `cpu-stride=even` also spreads across CCDs/memory domains |
 | `window_mode` (JSON per test) | 2 | `full` / `cache` / `cache_total` / `absolute` |
 | `chunk_mode` (JSON per test) | 3 | `auto` / `cache` / `cache_total` / `absolute` / `fraction` |

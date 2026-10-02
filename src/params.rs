@@ -476,7 +476,7 @@ pub fn print_help(program_name: &str) {
     println!("    plan-pagesize-pref                #   One block per request (default)");
     println!("    stitched                          #   One contiguous span per thread");
     println!("  hugechunk=1GiB                      # First 1GB-page request size, halved on refusal (power of two, >= 1GiB)");
-    println!("  largechunk=1GiB                     # First 2MB-page request size, halved on refusal (power of two)");
+    println!("  largechunk=128MiB                   # First 2MB-page request size, halved on refusal (default 1GiB, 128MiB stitched)");
     println!("  largefloor=16MiB                    # Smallest 2MB-page request (16MiB-1GiB)");
     println!("  blkroundtarget=1GiB                 # Round each thread's share to a multiple of this (of largefloor)");
     println!("  blkround=up                         # ...up (default; a smaller step rather than pass available), down, or nearest");

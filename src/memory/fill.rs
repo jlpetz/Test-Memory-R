@@ -1,23 +1,27 @@
 //! What the two per-thread allocators share (TODO 75): which page sizes a run may use, each
-//! thread's share and NUMA node, the order 1 GiB and 2 MiB pages are handed out in, and the audit
-//! of what backs the memory afterwards.
+//! thread's share and NUMA node, the order 1 GiB and 2 MiB pages are handed out in, and the
+//! warning when some of it is on another node.
 //!
 //! plan-pagesize-pref (`allocator.rs`) makes every request its own `VirtualAlloc2` block, so each
 //! one is a power of two no bigger than the thread's gap. stitched (`stitched.rs`) commits into one
 //! placeholder slice per thread; neighbouring commits of one page size merge into a single run, so
 //! a request can be any multiple of the floor, and the run is cut into power-of-two blocks only
 //! when it is handed out. That size rule, and how a request is made, are all that differ: both
-//! implement [`Fill`] and run the same [`fill_ladder`].
+//! implement [`Fill`] and run the same passes ([`fill_all`]).
+//!
+//! 1 GiB and 2 MiB requests name their node strictly (`NUMA_NODE_MANDATORY`), so every block's
+//! node is the one recorded for it. A preferred node is only a preference: once the node is out,
+//! Windows quietly takes the pages from another one, even splitting one request across nodes
+//! (`../numa-test/FINDINGS.md`). 4 KiB requests refuse the strict form (87), so they stay
+//! preferred, and their node is the one asked for, not one known.
 #![warn(clippy::undocumented_unsafe_blocks)]
 
 use std::collections::{BTreeMap, HashMap};
-use std::ffi::c_void;
 
-use windows::Win32::System::ProcessStatus::{PSAPI_WORKING_SET_EX_INFORMATION, QueryWorkingSetEx};
-use windows::Win32::System::Threading::GetCurrentProcess;
+use windows::Win32::System::Threading::GetNumaHighestNodeNumber;
 
 use crate::BlockInfo;
-use crate::constants::{BYTES_PER_MIB_USIZE, HUGE_PAGE_SIZE_USIZE, LARGE_PAGE_SIZE_USIZE, PAGE_SIZE_4KB};
+use crate::constants::{BYTES_PER_MIB_USIZE, HUGE_PAGE_SIZE_USIZE, PAGE_SIZE_4KB};
 use crate::cpu_topology::get_numa_node_for_cpu;
 use crate::memory::allocator::PageSizeLevel;
 use crate::memory::backend::describe_error;
@@ -60,6 +64,14 @@ pub(crate) fn thread_shares(
         .collect();
     shares.sort_by_key(|s| s.thread_id);
     shares
+}
+
+/// NUMA nodes on the machine, numbered `0..count`: the nodes remote passes can draw from.
+pub(crate) fn numa_node_count() -> u32 {
+    let mut highest = 0u32;
+    // SAFETY: writes one u32; on failure `highest` stays 0, one node.
+    let _ = unsafe { GetNumaHighestNodeNumber(&mut highest) };
+    highest + 1
 }
 
 /// The page sizes a run may use, smallest and largest.
@@ -114,7 +126,8 @@ pub(crate) enum Grant {
 }
 
 /// One allocator's threads, as [`fill_ladder`] sees them. Thread `i` is the `i`th in a fixed
-/// order; threads on the same node draw from one pool, and fairness is judged within it.
+/// order. `numa_node(i)` is the node of the CPU it runs on, its home; a pass's [`Source`] says
+/// which node's pages it asks for, and threads drawing on one node share that pool.
 pub(crate) trait Fill {
     fn thread_count(&self) -> usize;
     fn thread_id(&self, i: usize) -> usize;
@@ -128,15 +141,132 @@ pub(crate) trait Fill {
     /// What thread `i` asks for with the ladder at `rung`: at most `rung` and `remaining(i)`, at
     /// least `floor`. Only asked of threads with `remaining(i) >= floor`.
     fn request_len(&self, i: usize, rung: usize, floor: usize) -> Result<usize, String>;
-    /// Ask for `len` bytes of `page` pages for thread `i`.
-    fn request(&mut self, i: usize, len: usize, page: PageSizeLevel) -> Result<Grant, String>;
+    /// Ask for `len` bytes of `page` pages from `node` for thread `i`: strictly that node for
+    /// 1 GiB and 2 MiB pages, preferred for 4 KiB (`None`: any node).
+    fn request(&mut self, i: usize, len: usize, page: PageSizeLevel, node: Option<u32>) -> Result<Grant, String>;
+    /// Whether thread `i` can take `page` pages at all now. Stitched cannot once a smaller page
+    /// size sits below the next address: 1 GiB pages need a 1 GiB-aligned one.
+    fn can_take(&self, _i: usize, _page: PageSizeLevel) -> bool {
+        true
+    }
+    /// Bytes from thread `i`'s next address up to the next `page` boundary: what it must take in
+    /// smaller pages before `page` pages fit again. 0 where requests are separate blocks.
+    fn gap_to_boundary(&self, _i: usize, _page: PageSizeLevel) -> usize {
+        0
+    }
+}
+
+/// Which node's pages a pass asks for.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) enum Source {
+    /// Each thread's own node.
+    Local,
+    /// The node `step` after each thread's own, of `nodes`. Threads with no node sit it out.
+    Remote { step: u32, nodes: u32 },
+}
+
+impl Source {
+    /// The node a thread on `home` draws from in this pass; `None` leaves it out of the pass.
+    fn pool(self, home: Option<u32>) -> Option<Option<u32>> {
+        match (self, home) {
+            (Source::Local, home) => Some(home),
+            (Source::Remote { step, nodes }, Some(home)) => Some(Some((home + step) % nodes)),
+            (Source::Remote { .. }, None) => None,
+        }
+    }
+
+    /// The pool, for the trace: "NUMA 1", or "NUMA 1 for NUMA 0" when remote.
+    fn label(self, pool: Option<u32>) -> String {
+        match (self, pool) {
+            (Source::Remote { step, nodes }, Some(pool)) => {
+                format!("NUMA {pool} for NUMA {}", (pool + nodes - step % nodes) % nodes)
+            }
+            _ => node_label(pool),
+        }
+    }
+}
+
+/// Every pass, in order: 1 GiB then 2 MiB pages from each thread's own node, then the same from
+/// each other node in turn, then 4 KiB pages (preferred home node) for whatever is left. Page
+/// size gives way before locality: a thread takes its own node's 2 MiB pages before another
+/// node's 1 GiB ones, and no thread goes remote until every node has filled its own threads as
+/// far as it can. A stitched thread whose local 2 MiB pages end off a 1 GiB boundary is padded up
+/// to it before each remote 1 GiB pass (`pad_to_huge_boundary`). Returns the first 4 KiB refusal,
+/// as `fill_regular` does.
+pub(crate) fn fill_all(
+    fill: &mut impl Fill,
+    pages: PageSizes,
+    sizing: &crate::memory::allocator::BlockSizing,
+    nodes: u32,
+    who: &str,
+) -> Result<Option<(usize, u32)>, String> {
+    let sources = std::iter::once(Source::Local).chain((1..nodes).map(|step| Source::Remote { step, nodes }));
+    for source in sources {
+        if pages.allows(PageSizeLevel::Huge) {
+            if source != Source::Local && pages.allows(PageSizeLevel::Large) {
+                pad_to_huge_boundary(fill, source, sizing.large_floor, who)?;
+            }
+            fill_ladder(fill, PageSizeLevel::Huge, sizing.huge_chunk, HUGE_PAGE_SIZE_USIZE, source, who)?;
+        }
+        if pages.allows(PageSizeLevel::Large) {
+            fill_ladder(fill, PageSizeLevel::Large, sizing.large_chunk, sizing.large_floor, source, who)?;
+        }
+    }
+    if pages.allows(PageSizeLevel::Regular) {
+        return fill_regular(fill, who);
+    }
+    Ok(None)
+}
+
+/// Before a remote 1 GiB pass: a thread whose next address is off a 1 GiB boundary takes 2 MiB
+/// pages from that pass's node up to the boundary, as long as a 1 GiB page still fits after them,
+/// so the pass can give it 1 GiB pages too. (A stitched thread lands there when its own node's
+/// last 2 MiB pages came in odd-sized pieces; without the pad it would get no remote 1 GiB pages
+/// at all.) Nothing is freed: the pad is part of what the thread needs anyway, and where it
+/// lands is fixed, the thread's own next addresses. A refused pad leaves the thread on 2 MiB pages.
+fn pad_to_huge_boundary(fill: &mut impl Fill, source: Source, floor: usize, who: &str) -> Result<(), String> {
+    let label = page_label(PageSizeLevel::Large);
+    for i in 0..fill.thread_count() {
+        let gap = fill.gap_to_boundary(i, PageSizeLevel::Huge);
+        let Some(pool) = source.pool(fill.numa_node(i)) else {
+            continue;
+        };
+        if gap == 0 || fill.remaining(i) < gap + HUGE_PAGE_SIZE_USIZE {
+            continue;
+        }
+        // In as many requests as the thread's free slots take (`request_len`).
+        let mut padded = 0;
+        while padded < gap {
+            let len = fill.request_len(i, gap - padded, floor)?;
+            if let Grant::Refused(code) = fill.request(i, len, PageSizeLevel::Large, pool)? {
+                log::info!(
+                    "❌ {who}: {}: {} ({label}) for thread {}, up to its next 1 GiB boundary, refused: {}; it stays on 2 MiB pages",
+                    source.label(pool),
+                    size_label(len),
+                    fill.thread_id(i),
+                    describe_error(code)
+                );
+                break;
+            }
+            padded += len;
+        }
+        if padded == gap {
+            log::info!(
+                "✅ {who}: {}: {} ({label}) for thread {}, up to its next 1 GiB boundary",
+                source.label(pool),
+                size_label(gap),
+                fill.thread_id(i)
+            );
+        }
+    }
+    Ok(())
 }
 
 /// Hand out `page` pages one request at a time, starting at `top` bytes per request, to whichever
 /// thread holds the fewest bytes so far. Threads a node shorted on 1 GiB pages are then topped up
-/// with 2 MiB ones before anyone gets more. A refusal drops that node to the largest power of two
-/// below the refused size, and the same thread retries. Once a `floor` request is refused, the node
-/// is out of that page size.
+/// with 2 MiB ones before anyone gets more. A refusal drops that pool to the largest power of two
+/// below the refused size, and the same thread retries. Once a `floor` request is refused, the
+/// pool is out of that page size. Pools are per node: `source` says which node each thread asks.
 ///
 /// Ties between equally filled threads go to the one with less on bigger pages, then to the one
 /// served longest ago. So once a 2 MiB top-up has levelled the threads 1 GiB pages shorted, those
@@ -147,18 +277,19 @@ pub(crate) trait Fill {
 /// one page apart. A bigger `top` makes fewer requests and lets the threads end about one `top`
 /// apart. Nothing granted is ever released to even the split out.
 ///
-/// Every request is traced at info: a ✅ line per size granted, logged whenever the node's size
+/// Every request is traced at info: a ✅ line per size granted, logged whenever the pool's size
 /// drops and at the end, and a ❌ line per refusal.
 pub(crate) fn fill_ladder(
     fill: &mut impl Fill,
     page: PageSizeLevel,
     top: usize,
     floor: usize,
+    source: Source,
     who: &str,
 ) -> Result<(), String> {
     let label = page_label(page);
     let mut rung: HashMap<Option<u32>, usize> = HashMap::new();
-    // Grants not yet logged, per node: request size -> count.
+    // Grants not yet logged, per pool: request size -> count.
     let mut tally: HashMap<Option<u32>, BTreeMap<usize, usize>> = HashMap::new();
     let mut dry: Vec<Option<u32>> = Vec::new();
     // When each thread was last granted a request (0 = never).
@@ -166,36 +297,42 @@ pub(crate) fn fill_ladder(
     let mut grants = 0usize;
     loop {
         let pick = (0..fill.thread_count())
-            .filter(|&i| fill.remaining(i) >= floor && !dry.contains(&fill.numa_node(i)))
+            .filter(|&i| {
+                fill.remaining(i) >= floor
+                    && fill.can_take(i, page)
+                    && source.pool(fill.numa_node(i)).is_some_and(|pool| !dry.contains(&pool))
+            })
             .min_by_key(|&i| (fill.filled(i), bytes_above(fill, i, page), served[i]));
         let Some(i) = pick else {
             break;
         };
-        let node = fill.numa_node(i);
-        let size = *rung.entry(node).or_insert(top);
+        let Some(pool) = source.pool(fill.numa_node(i)) else {
+            break;
+        };
+        let size = *rung.entry(pool).or_insert(top);
         let len = fill.request_len(i, size, floor)?;
-        match fill.request(i, len, page)? {
+        match fill.request(i, len, page, pool)? {
             Grant::Done => {
                 grants += 1;
                 served[i] = grants;
-                *tally.entry(node).or_default().entry(len).or_default() += 1;
+                *tally.entry(pool).or_default().entry(len).or_default() += 1;
             }
             Grant::Refused(code) => {
-                log_granted(who, node, label, tally.remove(&node));
+                log_granted(who, &source.label(pool), label, tally.remove(&pool));
                 let mut smaller = size;
                 while smaller >= len {
                     smaller /= 2;
                 }
                 let next = if smaller < floor {
-                    dry.push(node);
+                    dry.push(pool);
                     format!("out of {label} pages")
                 } else {
-                    rung.insert(node, smaller);
+                    rung.insert(pool, smaller);
                     format!("retrying at {}", size_label(smaller))
                 };
                 log::info!(
                     "❌ {who}: {}: {} ({label}) for thread {} refused: {}; {next}",
-                    node_label(node),
+                    source.label(pool),
                     size_label(len),
                     fill.thread_id(i),
                     describe_error(code)
@@ -204,9 +341,9 @@ pub(crate) fn fill_ladder(
         }
     }
     let mut left: Vec<_> = tally.into_iter().collect();
-    left.sort_unstable_by_key(|&(node, _)| node);
-    for (node, sizes) in left {
-        log_granted(who, node, label, Some(sizes));
+    left.sort_unstable_by_key(|&(pool, _)| pool);
+    for (pool, sizes) in left {
+        log_granted(who, &source.label(pool), label, Some(sizes));
     }
     Ok(())
 }
@@ -223,28 +360,30 @@ fn bytes_above(fill: &impl Fill, i: usize, page: PageSizeLevel) -> usize {
 }
 
 /// One ✅ line per request size granted, largest first.
-fn log_granted(who: &str, node: Option<u32>, label: &str, sizes: Option<BTreeMap<usize, usize>>) {
+fn log_granted(who: &str, pool: &str, label: &str, sizes: Option<BTreeMap<usize, usize>>) {
     for (len, count) in sizes.into_iter().flatten().rev() {
-        log::info!("✅ {who}: {}: {count} × {} granted ({label})", node_label(node), size_label(len));
+        log::info!("✅ {who}: {pool}: {count} × {} granted ({label})", size_label(len));
     }
 }
 
 /// Fill what each thread still needs with 4 KiB pages, thread by thread: there is no shared pool
-/// to split fairly. Returns the first refusal, as (thread index, code); a 4 KiB refusal is the
-/// commit limit, and what to do about it is the caller's call. Traced like `fill_ladder`.
+/// to split fairly. The home node is preferred, not required (4 KiB pages refuse the strict
+/// form). Returns the first refusal, as (thread index, code); a 4 KiB refusal is the commit
+/// limit, and what to do about it is the caller's call. Traced like `fill_ladder`.
 pub(crate) fn fill_regular(fill: &mut impl Fill, who: &str) -> Result<Option<(usize, u32)>, String> {
     let label = page_label(PageSizeLevel::Regular);
     let mut tally: BTreeMap<Option<u32>, BTreeMap<usize, usize>> = BTreeMap::new();
     let mut refused = None;
     'threads: for i in 0..fill.thread_count() {
+        let home = fill.numa_node(i);
         while fill.remaining(i) > 0 {
             let len = fill.request_len(i, usize::MAX, PAGE_SIZE_4KB)?;
-            match fill.request(i, len, PageSizeLevel::Regular)? {
-                Grant::Done => *tally.entry(fill.numa_node(i)).or_default().entry(len).or_default() += 1,
+            match fill.request(i, len, PageSizeLevel::Regular, home)? {
+                Grant::Done => *tally.entry(home).or_default().entry(len).or_default() += 1,
                 Grant::Refused(code) => {
                     log::info!(
                         "❌ {who}: {}: {} ({label}) for thread {} refused: {}",
-                        node_label(fill.numa_node(i)),
+                        node_label(home),
                         size_label(len),
                         fill.thread_id(i),
                         describe_error(code)
@@ -256,7 +395,7 @@ pub(crate) fn fill_regular(fill: &mut impl Fill, who: &str) -> Result<Option<(us
         }
     }
     for (node, sizes) in tally {
-        log_granted(who, node, label, Some(sizes));
+        log_granted(who, &format!("{} (preferred)", node_label(node)), label, Some(sizes));
     }
     Ok(refused)
 }
@@ -297,121 +436,38 @@ pub(crate) fn size_label(bytes: usize) -> String {
 }
 
 // ---------------------------------------------------------------------------------------------
-// Page audit
+// Remote memory
 // ---------------------------------------------------------------------------------------------
 
-/// A stretch on 1 GiB or 2 MiB pages to audit, for `thread_id`, wanted on `numa_node`.
-#[derive(Debug, Clone, Copy)]
-pub(crate) struct AuditRun {
-    pub addr: usize,
-    pub len: usize,
-    pub numa_node: Option<u32>,
-    pub thread_id: usize,
-}
+/// Large-page bytes threads got from a node other than their own: (home, source) -> (bytes,
+/// threads). Built by each allocator from its records, which the strict requests made exact.
+pub(crate) type RemoteMemory = BTreeMap<(u32, u32), (usize, usize)>;
 
-/// What the working set says backs the 1 GiB- and 2 MiB-page memory.
-#[derive(Debug, Clone, Default)]
-pub(crate) struct PageAudit {
-    /// Addresses checked: one per 2 MiB across every run.
-    pub sampled: usize,
-    /// Not resident. Large pages are nonpaged, so any of these is wrong.
-    pub not_resident: usize,
-    /// Resident without the LargePage bit: the silent 4 KiB downgrade.
-    pub not_large: usize,
-    /// Resident on a different node from the one the thread asked for.
-    pub wrong_node: usize,
-    pub first_problem: Option<String>,
-}
-
-impl PageAudit {
-    pub fn is_clean(&self) -> bool {
-        self.not_resident == 0 && self.not_large == 0 && self.wrong_node == 0
-    }
-}
-
-/// Ask the working set what backs `runs`, one sample per 2 MiB. `MEM_LARGE_PAGES` should deliver
-/// or fail outright, but a silent 4 KiB downgrade is the trap the large-page alignment rule warns
-/// about, so this checks behaviour rather than trusting the flags.
-pub(crate) fn audit_pages(runs: &[AuditRun]) -> Result<PageAudit, String> {
-    let samples: Vec<(usize, Option<u32>, usize)> = runs
-        .iter()
-        .flat_map(|run| {
-            (run.addr..run.addr + run.len)
-                .step_by(LARGE_PAGE_SIZE_USIZE)
-                .map(|addr| (addr, run.numa_node, run.thread_id))
-        })
-        .collect();
-
-    let mut audit = PageAudit::default();
-    for batch in samples.chunks(1 << 16) {
-        let mut info: Vec<PSAPI_WORKING_SET_EX_INFORMATION> = batch
-            .iter()
-            .map(|&(addr, _, _)| PSAPI_WORKING_SET_EX_INFORMATION {
-                VirtualAddress: addr as *mut c_void,
-                ..Default::default()
-            })
-            .collect();
-        let bytes = u32::try_from(std::mem::size_of_val(info.as_slice()))
-            .map_err(|_| "page audit: batch too large".to_string())?;
-        // SAFETY: `info` is an initialised buffer of exactly `bytes` bytes that lives across the
-        // call; the kernel fills the attribute half of each entry in place and keeps no reference
-        // after returning. `GetCurrentProcess` is a pseudo-handle, never closed.
-        unsafe { QueryWorkingSetEx(GetCurrentProcess(), info.as_mut_ptr().cast(), bytes) }
-            .map_err(|e| format!("page audit: QueryWorkingSetEx failed: {e}"))?;
-
-        for (entry, &(addr, want_node, thread_id)) in info.iter().zip(batch) {
-            // SAFETY: `Flags` is the whole-word view of the attribute bitfield; every bit pattern
-            // is a valid `usize`.
-            let flags = unsafe { entry.VirtualAttributes.Flags };
-            // PSAPI_WORKING_SET_EX_BLOCK: Valid bit 0, Node bits 16..22, LargePage bit 23.
-            let resident = flags & 1 != 0;
-            let large = (flags >> 23) & 1 != 0;
-            let node = ((flags >> 16) & 0x3F) as u32;
-            audit.sampled += 1;
-            let problem = if !resident {
-                audit.not_resident += 1;
-                Some("not resident".to_string())
-            } else if !large {
-                audit.not_large += 1;
-                Some("no LargePage bit".to_string())
-            } else if want_node.is_some_and(|n| n != node) {
-                audit.wrong_node += 1;
-                Some(format!("on node {node}, asked for {want_node:?}"))
-            } else {
-                None
-            };
-            if let Some(problem) = problem
-                && audit.first_problem.is_none()
-            {
-                audit.first_problem =
-                    Some(format!("thread {thread_id}: {addr:#x} {problem} (flags {flags:#x})"));
-            }
-        }
-    }
-    Ok(audit)
-}
-
-/// Audit `runs` and log the outcome: one line when clean, a warning naming the first problem
-/// otherwise, nothing when no memory is on large pages.
-pub(crate) fn log_audit(who: &str, runs: &[AuditRun]) {
-    if runs.is_empty() {
+/// One warning when any thread's 1 GiB or 2 MiB pages came from another node: how much, between
+/// which nodes, and what to change if it was not intended. Remote memory is still tested, but
+/// over the socket link, so those threads run slower. Testing across nodes can be the point, so
+/// this warns rather than refuses.
+pub(crate) fn warn_remote(who: &str, remote: &RemoteMemory) {
+    if remote.is_empty() {
         return;
     }
-    match audit_pages(runs) {
-        Ok(audit) if audit.is_clean() => {
-            log::info!("{who}: page audit clean ({} samples)", audit.sampled)
-        }
-        Ok(audit) => log::warn!(
-            "{who}: page audit of {} samples: {} not resident, {} without LargePage, {} on \
-             another node; first: {}",
-            audit.sampled,
-            audit.not_resident,
-            audit.not_large,
-            audit.wrong_node,
-            audit.first_problem.unwrap_or_default()
-        ),
-        Err(e) => log::warn!("{who}: page audit unavailable: {e}"),
-    }
+    let total: usize = remote.values().map(|&(bytes, _)| bytes).sum();
+    let pairs: Vec<String> = remote
+        .iter()
+        .map(|(&(home, source), &(bytes, threads))| {
+            format!(
+                "{:.2} GiB for {threads} NUMA {home} thread(s) from NUMA {source}",
+                bytes as f64 / HUGE_PAGE_SIZE_USIZE as f64
+            )
+        })
+        .collect();
+    log::warn!(
+        "⚠️ {who}: {:.2} GiB of large-page memory is on another node ({}): those threads' own \
+         nodes ran short, and they reach it over the socket link, slower. To keep it local, \
+         spread the threads (cpu-stride=even) or lower memory=",
+        total as f64 / HUGE_PAGE_SIZE_USIZE as f64,
+        pairs.join("; ")
+    );
 }
 
 #[cfg(test)]
@@ -428,6 +484,8 @@ mod tests {
         target: usize,
         pool: HashMap<Option<u32>, usize>,
         requests: Vec<(usize, usize, bool)>,
+        /// The node each request named.
+        asked: Vec<Option<u32>>,
     }
 
     impl Fill for Pools {
@@ -452,8 +510,9 @@ mod tests {
         fn request_len(&self, i: usize, rung: usize, _floor: usize) -> Result<usize, String> {
             Ok(prev_power_of_two(rung.min(self.remaining(i))))
         }
-        fn request(&mut self, i: usize, len: usize, _page: PageSizeLevel) -> Result<Grant, String> {
-            let left = self.pool.get_mut(&self.nodes[i]).expect("every node has a pool");
+        fn request(&mut self, i: usize, len: usize, _page: PageSizeLevel, node: Option<u32>) -> Result<Grant, String> {
+            self.asked.push(node);
+            let left = self.pool.get_mut(&node).expect("every node has a pool");
             let granted = *left >= len;
             self.requests.push((i, len, granted));
             if !granted {
@@ -472,6 +531,7 @@ mod tests {
             target,
             pool: pages.iter().map(|&(node, n)| (node, n * GIB)).collect(),
             requests: Vec::new(),
+            asked: Vec::new(),
         }
     }
 
@@ -481,7 +541,7 @@ mod tests {
     fn nodes_split_their_own_pools_one_page_apart() {
         let nodes = [Some(0), Some(1), Some(0), Some(1)];
         let mut fill = pools(&nodes, 8 * GIB, &[(Some(0), 3), (Some(1), 9)]);
-        fill_ladder(&mut fill, PageSizeLevel::Huge, GIB, GIB, "test").unwrap();
+        fill_ladder(&mut fill, PageSizeLevel::Huge, GIB, GIB, Source::Local, "test").unwrap();
         assert_eq!(fill.filled, vec![2 * GIB, 5 * GIB, GIB, 4 * GIB]);
         // Each node's single refusal ended it; nothing else was refused.
         let refused: Vec<usize> = fill.requests.iter().filter(|r| !r.2).map(|r| r.0).collect();
@@ -493,7 +553,7 @@ mod tests {
     #[test]
     fn a_refusal_halves_the_rung_and_the_same_thread_retries() {
         let mut fill = pools(&[Some(0); 2], 8 * GIB, &[(Some(0), 6)]);
-        fill_ladder(&mut fill, PageSizeLevel::Huge, 4 * GIB, GIB, "test").unwrap();
+        fill_ladder(&mut fill, PageSizeLevel::Huge, 4 * GIB, GIB, Source::Local, "test").unwrap();
         let asked: Vec<(usize, usize, bool)> =
             fill.requests.iter().map(|&(i, len, ok)| (i, len / GIB, ok)).collect();
         assert_eq!(
@@ -501,6 +561,31 @@ mod tests {
             vec![(0, 4, true), (1, 4, false), (1, 2, true), (1, 2, false), (1, 1, false)]
         );
         assert_eq!(fill.filled, vec![4 * GIB, 2 * GIB]);
+    }
+
+    /// Node 0 cannot cover its threads; node 1 has pages to spare. Local first: every node fills
+    /// its own threads, and only then do node 0's threads ask node 1, by name.
+    #[test]
+    fn remote_passes_come_after_every_local_one() {
+        let nodes = [Some(0), Some(0), Some(1), Some(1)];
+        let mut fill = pools(&nodes, 3 * GIB, &[(Some(0), 4), (Some(1), 9)]);
+        let remote = Source::Remote { step: 1, nodes: 2 };
+        for source in [Source::Local, remote] {
+            fill_ladder(&mut fill, PageSizeLevel::Huge, GIB, GIB, source, "test").unwrap();
+        }
+        assert_eq!(fill.filled, vec![3 * GIB; 4]);
+        // Node 0's last two pages came from node 1, asked for by name after the local passes.
+        let from_node_1: Vec<usize> = fill.requests.iter().zip(&fill.asked)
+            .filter(|&(&(i, _, ok), &node)| ok && node == Some(1) && fill.nodes[i] == Some(0))
+            .map(|(&(i, _, _), _)| i)
+            .collect();
+        assert_eq!(from_node_1, vec![0, 1]);
+        let first_remote = fill.asked.iter().zip(&fill.requests)
+            .position(|(&node, &(i, _, _))| node != fill.nodes[i])
+            .unwrap();
+        assert!(fill.requests[..first_remote].iter().all(|&(i, _, _)| fill.asked[i].is_some()));
+        assert!(fill.asked[..first_remote].iter().zip(&fill.requests).all(|(&node, &(i, _, _))| node == fill.nodes[i]));
+        assert_eq!(remote.label(Some(1)), "NUMA 1 for NUMA 0");
     }
 
     #[test]

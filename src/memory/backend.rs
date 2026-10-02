@@ -34,6 +34,13 @@ pub(crate) const ERROR_PRIVILEGE_NOT_HELD: u32 = 1314;
 pub(crate) const ERROR_NO_SYSTEM_RESOURCES: u32 = 1450;
 pub(crate) const ERROR_COMMITMENT_LIMIT: u32 = 1455;
 
+/// OR-ed into a `MemExtendedParameterNumaNode` value, makes the node required: the request is
+/// refused (1450) rather than served from another node. In winnt.h (SDK 10.0.22621 and 10.0.26100)
+/// as `MINLONG64`, not in the `windows` crate, and not on the `VirtualAlloc2` page, which documents
+/// the node as preferred only. Shown to work for 1 GiB and 2 MiB pages on 10.0.26100; 4 KiB
+/// requests refuse it with 87 (`../numa-test/FINDINGS.md`).
+pub(crate) const NUMA_NODE_MANDATORY: u64 = 1 << 63;
+
 /// `code` with its name, for logs and errors.
 pub(crate) fn describe_error(code: u32) -> String {
     let name = match code {
@@ -322,11 +329,12 @@ impl WindowsBackend {
         }
         // No extended parameter needed for regular 4KB pages
 
-        // Add NUMA node parameter if specified
+        // Add NUMA node parameter if specified: required for large pages when asked, else preferred
         if let Some(node) = config.numa_node {
+            let strict = config.numa_strict && actual_page_type.0;
             extended_params.push(Self::create_extended_param(
                 MemExtendedParameterNumaNode,
-                node as u64
+                node as u64 | if strict { NUMA_NODE_MANDATORY } else { 0 }
             ));
             
             let is_strict = matches!(&config.page_size, AllocPageSizePref::Require(_));
