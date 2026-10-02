@@ -100,16 +100,12 @@ use windows::Win32::System::Memory::{
     PAGE_READWRITE, VIRTUAL_ALLOCATION_TYPE, VIRTUAL_FREE_TYPE, VirtualAlloc2, VirtualFree,
 };
 use windows::Win32::System::SystemServices::{
-    MEM_EXTENDED_PARAMETER_NONPAGED_HUGE, MEM_EXTENDED_PARAMETER_NONPAGED_LARGE,
-    MEM_EXTENDED_PARAMETER_TYPE_BITS,
+    MEM_COALESCE_PLACEHOLDERS, MEM_EXTENDED_PARAMETER_NONPAGED_HUGE,
+    MEM_EXTENDED_PARAMETER_NONPAGED_LARGE, MEM_EXTENDED_PARAMETER_TYPE_BITS,
 };
 
 const HUGE: usize = HUGE_PAGE_SIZE_USIZE;
 const LARGE: usize = LARGE_PAGE_SIZE_USIZE;
-
-/// winnt.h `MEM_COALESCE_PLACEHOLDERS`: documented on `VirtualFree`, missing from the `windows`
-/// crate (TODO 82).
-const MEM_COALESCE_PLACEHOLDERS: u32 = 0x1;
 
 /// Log prefix.
 const WHO: &str = "stitched";
