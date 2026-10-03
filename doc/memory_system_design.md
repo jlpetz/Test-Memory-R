@@ -758,11 +758,14 @@ they are test-fidelity arguments, not ergonomics.
 2. **Switch Tier 1's loop** to `for chunk { for seg }`. 28 tests, no kernel edits. Prove parity
    against current results.
 3. **Delete the clamps** — `prev_power_of_two` on *chunks*, per-block chunk derivation,
-   `allow_misaligned` (dormant, and it disables a memory-safety invariant). This is where **B5** dies
+   `allow_misaligned` (dormant: the power-of-two round-up always undid it; deleted 2026-10-03). This is where **B5** dies
    and where `Check_absolutnew.cfg`'s test 15 starts running at one honest size for every block
    (2048 MB, reported as an adjustment from 1536 — see §4.6) instead of five sizes across three values.
+   Until then the importer caps it at 1024 MiB, the largest piece a 1536 MiB window has
+   (`LegacyConfig::chunk_spec`, 2026-10-03); that cap goes with the clamps.
 4. **Fix dwell (B2) and the fraction codes (B1).** Independent of the above and the largest fidelity
-   gain per line changed — B1 alone is a 440× size error on real community configs.
+   gain per line changed — B1 alone is a 440× size error on real community configs. Done 2026-10-03
+   (TODO 79, commit 79b9de0).
 5. **L0 changes**: the global placeholder + global-then-distribute (**B4**), drop power-of-two *block*
    sizes. Note the asymmetry that §4.6 introduces: **chunks** are powers of two, **blocks** are not.
 6. **`Order` + `SpanRequest`.** The versatility payload, once the plumbing is proven.

@@ -456,6 +456,10 @@ pub fn print_help(program_name: &str) {
     println!("  {} --show-topology                   # Show CPU Topology Mapping for debugging", program_name);
     println!("  {} --debug-topology                  # Runs multiple CPU Topology checks to debug if one works better", program_name);
     println!();
+    println!("EXIT STATUS: 0 passed, 1 tests failed or found errors, 2 stopped before or instead of testing");
+    println!("             (bad config, failed command), 3 interrupted (Ctrl+C); other codes: crashed or killed");
+    println!("             (errors=panic aborts on the first error)");
+    println!();
     println!("COMMAND LINE PARAMETERS:");
     println!("  memory=20%                           # Reserve 20% of system memory");
     println!("  memory=2GiB                         # Reserve 2 GiB");

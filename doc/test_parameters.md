@@ -29,15 +29,15 @@ Number of independent subblocks for mirror operations. Each subblock is mirrored
 
 - **Valid values:** 1, 2, 3, or 4
 - **TM5 mapping:** Exact match on 2, 3, or 4 only. All other values (0, 1, 16384, etc.) fall through to 1 (single-block mirror)
-- **Example:** parameter=3 in 1usmus_v3.cfg → subblock_count=3 → memory split into 3 independently-mirrored regions
+- **Example:** a JSON `Mem-MirrorV2-Auto` with `"parameter": 4` → subblock_count=4 → the chunk split into 4 independently-mirrored regions
+- **3 crashes the SIMD variants today:** the parts aren't rounded to 128 B as TM5 rounds them, so their addresses aren't vector-aligned. `-256`, `-512` and `-Auto` fault on every power-of-two chunk, `-128` on 2^odd-byte chunks (TODO 85)
+- **Not reached from a TM5 `.cfg` today:** the importer renames MirrorMove to `Mem-MirrorV2-128` before reading the parameter, so it becomes a page stride (TODO 85)
 
 ### `page_stride_bytes: Option<usize>`
 **Used by:** MirrorMove128/256/512 (`Mem-MirrorV2-128`, `Mem-MirrorV2-256`, `Mem-MirrorV2-512`)
 
-Page stride distance in bytes for SIMD mirror operations.
+Set to `(parameter + 1) × 128` (TM5 MirrorMove128's step), but the kernel only checks that it is present: the stride it runs is `raw_parameter` vectors, swapping one vector every (parameter + 1) vectors (16 B every (parameter + 1) × 16 B on `-128`). TODO 85 reworks this.
 
-- **Formula:** `(parameter + 1) × 128`
-- **Example:** parameter=16384 → page_stride = 16385 × 128 = 2,097,280 bytes
 - **Source:** TM5 `.cfg` parameter field
 
 ### `stride_patterns: Option<u32>`
@@ -46,7 +46,7 @@ Page stride distance in bytes for SIMD mirror operations.
 Number of interleaved stride pattern variants. Each variant uses a different base pattern to write and verify, testing cache coherency under diverse access patterns.
 
 - **Default:** 4
-- **Constraint:** Must be >= 1, power-of-2 when > 1
+- **Constraint:** Must be >= 1. It picks the pattern for each column, one u64 offset repeated every 4 KiB (`offset % stride_patterns`, once per column), so any count works
 - **JSON config field:** `"stride_patterns": 4`
 
 ### `rng_sequences: Option<u32>`
@@ -86,13 +86,13 @@ Number of copy direction patterns for memory move operations:
 |--------|----------------------|
 | TM5 `.cfg` file | `interpret_tm5_parameter_with_channels()` maps the raw parameter based on test function name |
 | JSON config v2.0 | Direct fields: `"parameter"` for TM5-style, or named fields (`"stride_patterns"`, etc.) for TMR-native |
-| CLI override | `--parameter=subblocks:3` or `--parameter=stride:8` overrides for TM5-style params |
+| CLI override | `parameter=subblocks:4` or `parameter=stride:8` overrides for TM5-style params |
 | Default test suite | Hard-coded in `create_test_definitions()` in `runner.rs` |
 
 ## Validation
 
 All parameters are validated before tests run (in `runner.rs`):
-- Named TMR-native fields (`stride_patterns`, `rng_sequences`, `subdivisions`) must be >= 1 and power-of-2 when > 1
-- `copy_directions` must be >= 1 (no power-of-2 constraint)
-- `subblock_count` is validated by the TM5 parameter interpretation (exact match 2/3/4, else 1)
+- `rng_sequences` and `subdivisions` must be >= 1 and power-of-2 when > 1 (both are used as shifts)
+- `stride_patterns` and `copy_directions` must be >= 1 (no power-of-2 constraint)
+- `subblock_count` is mapped by the TM5 parameter interpretation (exact match 2/3/4, else 1). The CLI override `parameter=subblocks:N` accepts 2-4 (`params.rs`); its stride form needs N > 0
 - Tests panic with a clear error message if their required parameter is missing from `parameter_context`

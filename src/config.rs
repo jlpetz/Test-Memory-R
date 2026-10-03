@@ -18,6 +18,7 @@ pub const CONFIG_VERSION: &str = "2.0";
 
 // Modern JSON configuration format v2.0 (simplified)
 #[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
 pub struct ModernConfig {
     pub config_format_version: String,
     pub application_name: String,
@@ -28,6 +29,7 @@ pub struct ModernConfig {
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
 pub struct LegacyMetadata {
     pub tm5_test_sequence: Vec<u32>,
     pub tm5_cycles: u32,
@@ -40,6 +42,7 @@ pub struct LegacyMetadata {
 fn default_channels() -> u32 { 2 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
 pub struct ConfigMetadata {
     pub name: String,
     pub author: String,
@@ -50,6 +53,7 @@ pub struct ConfigMetadata {
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
 pub struct SystemConfig {
     pub memory_strategy: MemoryStrategyConfig,
     pub cpu_config: CpuConfig,
@@ -75,6 +79,7 @@ pub struct SystemConfig {
 // `cpus=` percentages are relative to the post-filter Available pool, so any value <= 100%
 // is always valid — that keeps configs portable across 4/6/8/16-core machines.
 #[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
 pub struct CpuPinningConfig {
     pub enable_pinning: bool,
     /// Resolved count of leading cores to skip. Kept for back-compat with existing JSON
@@ -99,6 +104,7 @@ fn default_stride_spec() -> String { "1".to_string() }
 
 // Define MemoryAllocationConfig
 #[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
 pub struct MemoryAllocationConfig {
     // Page size constraints (using your existing system)
     #[serde(default = "default_min_page_size")]
@@ -232,9 +238,6 @@ impl ChunkSpec {
     pub fn absolute(size: &str) -> Self {
         ChunkSpec { mode: "absolute".to_string(), size: Some(size.to_string()), ..Default::default() }
     }
-    pub fn fraction(fraction: f64) -> Self {
-        ChunkSpec { mode: "fraction".to_string(), fraction: Some(fraction), ..Default::default() }
-    }
 }
 
 /// The power of two nearest `x` by ratio (`x > 0`): 293 MiB -> 256, 440 MiB -> 512.
@@ -272,7 +275,7 @@ pub fn spec_to_window_mode(spec: &WindowSpec) -> Result<WindowMode, String> {
             let target_str = spec.target.as_deref()
                 .ok_or_else(|| "window mode 'cache' requires 'target' field (e.g. \"L3/2\", \"DRAM*4\")".to_string())?;
             let target = CacheTarget::parse(target_str)
-                .ok_or_else(|| format!("invalid cache target '{}'", target_str))?;
+                .ok_or_else(|| format!("invalid cache target '{}' (L1, L2, L3, DRAM or DRAM-FULL, optionally /N or *N with a scale of 0.01-100)", target_str))?;
             Ok(WindowMode::Cache { target })
         }
         "cache_total" | "cache-total" => {
@@ -287,14 +290,16 @@ pub fn spec_to_window_mode(spec: &WindowSpec) -> Result<WindowMode, String> {
             let size_str = spec.size.as_deref()
                 .ok_or_else(|| "window mode 'absolute' requires 'size' field (e.g. \"880MB\", \"4GiB\")".to_string())?;
             let size_bytes = parse_size_string(size_str)?;
+            if size_bytes == 0 {
+                return Err("window size must be above 0".to_string());
+            }
             Ok(WindowMode::Absolute { size_bytes })
         }
         other => Err(format!("unknown window mode '{}'; valid: full_allocation, cache, cache_total, absolute", other)),
     }
 }
 
-/// Convert a ChunkSpec into a runtime ChunkMode. Same conventions as spec_to_window_mode
-/// plus the `fraction` mode (fraction of resolved window).
+/// Convert a ChunkSpec into a runtime ChunkMode. Same conventions as spec_to_window_mode.
 pub fn spec_to_chunk_mode(spec: &ChunkSpec) -> Result<ChunkMode, String> {
     match spec.mode.to_ascii_lowercase().as_str() {
         "auto" => Ok(ChunkMode::Auto),
@@ -302,7 +307,7 @@ pub fn spec_to_chunk_mode(spec: &ChunkSpec) -> Result<ChunkMode, String> {
             let target_str = spec.target.as_deref()
                 .ok_or_else(|| "chunk mode 'cache' requires 'target' field (e.g. \"L3/2\", \"DRAM*4\")".to_string())?;
             let target = CacheTarget::parse(target_str)
-                .ok_or_else(|| format!("invalid cache target '{}'", target_str))?;
+                .ok_or_else(|| format!("invalid cache target '{}' (L1, L2, L3, DRAM or DRAM-FULL, optionally /N or *N with a scale of 0.01-100)", target_str))?;
             Ok(ChunkMode::Cache { target })
         }
         "cache_total" | "cache-total" => {
@@ -317,17 +322,12 @@ pub fn spec_to_chunk_mode(spec: &ChunkSpec) -> Result<ChunkMode, String> {
             let size_str = spec.size.as_deref()
                 .ok_or_else(|| "chunk mode 'absolute' requires 'size' field (e.g. \"16MB\", \"64KiB\")".to_string())?;
             let size_bytes = parse_size_string(size_str)?;
+            if size_bytes == 0 {
+                return Err("chunk size must be above 0".to_string());
+            }
             Ok(ChunkMode::Absolute { size_bytes })
         }
-        "fraction" => {
-            let fraction = spec.fraction
-                .ok_or_else(|| "chunk mode 'fraction' requires 'fraction' field (0.0-1.0 of resolved window)".to_string())?;
-            if !(0.0..=1.0).contains(&fraction) {
-                return Err(format!("chunk fraction must be in [0, 1] (got {})", fraction));
-            }
-            Ok(ChunkMode::Fraction { fraction })
-        }
-        other => Err(format!("unknown chunk mode '{}'; valid: auto, cache, cache_total, absolute, fraction", other)),
+        other => Err(format!("unknown chunk mode '{}'; valid: auto, cache, cache_total, absolute", other)),
     }
 }
 
@@ -340,6 +340,7 @@ pub fn spec_to_chunk_mode(spec: &ChunkSpec) -> Result<ChunkMode, String> {
 /// - `cache_total` — coarse `(L1+L2+L3) × fraction`; requires `fraction`
 /// - `absolute` — hard byte size; requires `size` (string like `"880MB"`, `"4GiB"`)
 #[derive(Debug, Clone, Serialize, Deserialize, Default)]
+#[serde(deny_unknown_fields)]
 pub struct WindowSpec {
     pub mode: String,
     /// CacheTarget string for `cache` mode (e.g. `"L3/2"`, `"DRAM*4"`).
@@ -353,15 +354,15 @@ pub struct WindowSpec {
     pub size: Option<String>,
 }
 
-/// Chunk specification — same nested shape as WindowSpec but with extra `fraction` mode.
+/// Chunk specification — same nested shape as WindowSpec.
 ///
 /// Modes:
 /// - `auto` — per-test heuristic
 /// - `cache` — tier-aware; requires `target`
 /// - `cache_total` — coarse cache fraction; requires `fraction`
 /// - `absolute` — hard byte size; requires `size`
-/// - `fraction` — fraction of resolved window; requires `fraction`
 #[derive(Debug, Clone, Serialize, Deserialize, Default)]
+#[serde(deny_unknown_fields)]
 pub struct ChunkSpec {
     pub mode: String,
     #[serde(default)]
@@ -374,6 +375,7 @@ pub struct ChunkSpec {
 
 // Simplified memory strategy configuration
 #[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
 pub struct MemoryStrategyConfig {
     // Stage 1: Allocation strategy
     pub allocation_mode: String, // "max_available", "percentage_reserve", "fixed_reserve"
@@ -388,6 +390,7 @@ pub struct MemoryStrategyConfig {
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
 pub struct TimingConfig {
     // Global test suite timing
     pub global_cycles: Option<u32>,
@@ -399,6 +402,7 @@ pub struct TimingConfig {
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
 pub struct CpuConfig {
     #[serde(rename = "type")]
     pub cpu_type: String, // "threads", "cores"
@@ -406,6 +410,7 @@ pub struct CpuConfig {
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
 pub struct TestConfig {
     pub enabled: bool,
     pub function: String,
@@ -422,7 +427,6 @@ pub struct TestConfig {
     #[serde(default)]
     pub chunk: Option<ChunkSpec>,
 
-    pub allow_misaligned: Option<bool>,     // Allow unaligned accesses
     pub requires_locality: Option<bool>,    // Test needs temporal locality
 
     /// Flush each chunk out of cache (CLFLUSHOPT + MFENCE) between the write and verify phases,
@@ -593,6 +597,33 @@ pub struct LegacyTest {
 }
 
 impl ModernConfig {
+    /// Check the system fields with the parsers the CLI uses for the same settings, so a typo in
+    /// a JSON config stops the run instead of quietly becoming a default (an unknown `error_mode`
+    /// used to mean `log`, an unknown page size `regular`).
+    pub fn validate_system(&self) -> Result<(), String> {
+        let registry = crate::params::get_registry();
+        let sys = &self.system;
+        let checks = [
+            ("errors", "error_mode", sys.error_mode.as_str()),
+            ("cputype", "cpu_config.cpu_type", sys.cpu_config.cpu_type.as_str()),
+            ("minpage", "memory_allocation.min_page_size", sys.memory_allocation.min_page_size.as_str()),
+            ("maxpage", "memory_allocation.max_page_size", sys.memory_allocation.max_page_size.as_str()),
+            ("skip-cores", "cpu_pinning.skip_spec", sys.cpu_pinning.skip_spec.as_str()),
+            ("cpu-stride", "cpu_pinning.stride_spec", sys.cpu_pinning.stride_spec.as_str()),
+        ];
+        for (cli_key, json_key, value) in checks {
+            registry.parse_arg(&format!("{cli_key}={value}"))
+                .map_err(|e| format!("system.{json_key}: {e}"))?;
+        }
+        sys.memory_allocation.allocation_strategy.parse::<crate::memory::allocator::AllocationStrategy>()
+            .map_err(|e| format!("system.memory_allocation.allocation_strategy: {e}"))?;
+        match sys.memory_strategy.allocation_mode.as_str() {
+            "max_available" | "percentage_reserve" | "fixed_reserve" => Ok(()),
+            other => Err(format!("system.memory_strategy.allocation_mode: unknown mode '{other}'; \
+                valid: max_available, percentage_reserve, fixed_reserve")),
+        }
+    }
+
     pub fn load_from_file(path: &str) -> Result<Self, String> {
         let content = fs::read_to_string(path).map_err(|e| format!("Failed to read config file: {}", e))?;
 
@@ -635,26 +666,21 @@ impl ModernConfig {
         EnhancedMemoryStrategy { allocation_mode }
     }
     
-    // Parse default window spec into runtime WindowMode
-    pub fn get_default_window_mode(&self) -> WindowMode {
+    // Parse default window spec into runtime WindowMode. An invalid spec is an error, not a
+    // fallback: the run stops rather than test something the config didn't ask for.
+    pub fn get_default_window_mode(&self) -> Result<WindowMode, String> {
         spec_to_window_mode(&self.system.memory_strategy.default_window)
-            .unwrap_or_else(|e| {
-                log::warn!("Invalid default window spec ({}); using full_allocation", e);
-                WindowMode::FullAllocation
-            })
+            .map_err(|e| format!("invalid default window spec: {e}"))
     }
 
-    // Parse default chunk spec into runtime ChunkMode
-    pub fn get_default_chunk_mode(&self) -> ChunkMode {
+    // Parse default chunk spec into runtime ChunkMode. Invalid is an error, as above.
+    pub fn get_default_chunk_mode(&self) -> Result<ChunkMode, String> {
         spec_to_chunk_mode(&self.system.memory_strategy.default_chunk)
-            .unwrap_or_else(|e| {
-                log::warn!("Invalid default chunk spec ({}); using auto", e);
-                ChunkMode::Auto
-            })
+            .map_err(|e| format!("invalid default chunk spec: {e}"))
     }
 
     pub fn to_error_mode(&self) -> ErrorMode {
-        match self.system.error_mode.as_str() {
+        match self.system.error_mode.to_lowercase().as_str() {
             "halt" | "stop" => ErrorMode::Halt,
             "panic" | "debug" => ErrorMode::Panic,
             _ => ErrorMode::Log, // default
@@ -669,17 +695,22 @@ impl ModernConfig {
         }
     }
     
-    pub fn get_test_configs(&self) -> Vec<(&str, TestMemoryConfig)> {
+    pub fn get_test_configs(&self) -> Result<Vec<(&str, TestMemoryConfig)>, String> {
         // Channels: prefer JSON system.channels, fall back to legacy TM5 metadata, default 2
         let channels = if self.system.channels > 0 {
             self.system.channels
         } else {
             self.legacy_metadata.as_ref().map_or(2, |m| m.tm5_channels)
         };
-        self.test_sequence.iter().filter(|t| t.enabled).map(|test| {
-            let window_mode = self.parse_test_window_mode(test);
-            let chunk_mode = self.parse_test_chunk_mode(test);
-            let allow_misaligned = test.allow_misaligned.unwrap_or(false);
+        self.test_sequence.iter().enumerate().filter(|(_, t)| t.enabled).map(|(i, test)| {
+            let window_mode = self.parse_test_window_mode(test).map_err(|e| Self::test_error(i, test, e))?;
+            let chunk_mode = self.parse_test_chunk_mode(test).map_err(|e| Self::test_error(i, test, e))?;
+            if let ChunkMode::Absolute { size_bytes } = chunk_mode
+                && !size_bytes.is_power_of_two()
+            {
+                log::info!("test_sequence[{i}] ('{}'): chunk {} KiB -> {} KiB (chunks are powers of two, rounded up; then capped at the window and each block piece)",
+                    test.function, size_bytes / 1024, size_bytes.next_power_of_two() / 1024);
+            }
             let requires_locality = test.requires_locality.unwrap_or({
                 // Auto-detect based on function name
                 matches!(test.function.as_str(), "Mem-CacheBust" | "Mem-Refresh")
@@ -691,7 +722,7 @@ impl ModernConfig {
                 min_duration_secs: test.min_duration_secs,
             };
 
-            let mut config = TestMemoryConfig::new(window_mode, chunk_mode, allow_misaligned, requires_locality)
+            let mut config = TestMemoryConfig::new(window_mode, chunk_mode, requires_locality)
                 .with_timing(timing)
                 .with_pattern_config(test.pattern_mode, test.pattern_param0, test.pattern_param1)
                 // #59: CLFLUSHOPT-verify, opt-in per test from the config
@@ -717,13 +748,13 @@ impl ModernConfig {
 
             apply_repetition(test, &mut config);
 
-            (test.function.as_str(), config)
+            Ok((test.function.as_str(), config))
         }).collect()
     }
 
     /// Get test configs in TM5 test sequence order (if available) with repetition support
     #[expect(dead_code, reason = "TODO #74: TM5 `Test Sequence` is parsed but never wired; TMR runs enabled tests in index order")]
-    pub fn get_test_configs_with_sequence(&self) -> Vec<(&str, TestMemoryConfig)> {
+    pub fn get_test_configs_with_sequence(&self) -> Result<Vec<(&str, TestMemoryConfig)>, String> {
         // Check if we have TM5 test sequence data
         if let Some(ref metadata) = self.legacy_metadata
             && !metadata.tm5_test_sequence.is_empty() {
@@ -735,7 +766,7 @@ impl ModernConfig {
     }
     
     /// Get test configs following TM5 test sequence order and repetition
-    fn get_tm5_sequence_configs(&self, sequence: &[u32]) -> Vec<(&str, TestMemoryConfig)> {
+    fn get_tm5_sequence_configs(&self, sequence: &[u32]) -> Result<Vec<(&str, TestMemoryConfig)>, String> {
         // Channels: prefer JSON system.channels, fall back to legacy TM5 metadata, default 2
         let channels = if self.system.channels > 0 {
             self.system.channels
@@ -748,9 +779,10 @@ impl ModernConfig {
             // Find the test by index (TM5 uses 0-based indexing)
             if let Some(test) = self.test_sequence.get(test_index as usize) {
                 if test.enabled {
-                    let window_mode = self.parse_test_window_mode(test);
-                    let chunk_mode = self.parse_test_chunk_mode(test);
-                    let allow_misaligned = test.allow_misaligned.unwrap_or(false);
+                    let window_mode = self.parse_test_window_mode(test)
+                        .map_err(|e| Self::test_error(test_index as usize, test, e))?;
+                    let chunk_mode = self.parse_test_chunk_mode(test)
+                        .map_err(|e| Self::test_error(test_index as usize, test, e))?;
                     let requires_locality = test.requires_locality.unwrap_or({
                         // Auto-detect based on function name
                         matches!(test.function.as_str(), "Mem-CacheBust" | "Mem-Refresh")
@@ -762,7 +794,7 @@ impl ModernConfig {
                         min_duration_secs: test.min_duration_secs,
                     };
 
-                    let mut config = TestMemoryConfig::new(window_mode, chunk_mode, allow_misaligned, requires_locality)
+                    let mut config = TestMemoryConfig::new(window_mode, chunk_mode, requires_locality)
                         .with_timing(timing)
                         .with_pattern_config(test.pattern_mode, test.pattern_param0, test.pattern_param1);
 
@@ -798,36 +830,26 @@ impl ModernConfig {
             return self.get_test_configs();
         }
         
-        result
+        Ok(result)
     }
     
-fn parse_test_window_mode(&self, test: &TestConfig) -> WindowMode {
-    if let Some(ref spec) = test.window {
-        match spec_to_window_mode(spec) {
-            Ok(mode) => mode,
-            Err(e) => {
-                log::warn!("Invalid per-test window spec for '{}' ({}); falling back to global default",
-                    test.function, e);
-                self.get_default_window_mode()
-            }
-        }
-    } else {
-        self.get_default_window_mode()
+/// Which entry an error belongs to: its `test_sequence` index and function, since a config can
+/// repeat a function (a TM5 import has eleven `Mem-SimpleV2`).
+fn test_error(index: usize, test: &TestConfig, e: String) -> String {
+    format!("test_sequence[{index}] ('{}'): {e}", test.function)
+}
+
+fn parse_test_window_mode(&self, test: &TestConfig) -> Result<WindowMode, String> {
+    match test.window {
+        Some(ref spec) => spec_to_window_mode(spec).map_err(|e| format!("invalid window spec: {e}")),
+        None => self.get_default_window_mode(),
     }
 }
 
-fn parse_test_chunk_mode(&self, test: &TestConfig) -> ChunkMode {
-    if let Some(ref spec) = test.chunk {
-        match spec_to_chunk_mode(spec) {
-            Ok(mode) => mode,
-            Err(e) => {
-                log::warn!("Invalid per-test chunk spec for '{}' ({}); falling back to global default",
-                    test.function, e);
-                self.get_default_chunk_mode()
-            }
-        }
-    } else {
-        self.get_default_chunk_mode()
+fn parse_test_chunk_mode(&self, test: &TestConfig) -> Result<ChunkMode, String> {
+    match test.chunk {
+        Some(ref spec) => spec_to_chunk_mode(spec).map_err(|e| format!("invalid chunk spec: {e}")),
+        None => self.get_default_chunk_mode(),
     }
 }
 
@@ -877,8 +899,7 @@ pub fn create_demo_config() -> Self {
                 duration_secs: None,
                 min_duration_secs: None,
                 window: Some(WindowSpec::full_allocation()), // Must test ALL memory
-                chunk: Some(ChunkSpec::fraction(0.0625)),    // 1/16th for efficiency
-                allow_misaligned: Some(false),
+                chunk: Some(ChunkSpec::absolute("512MiB")),  // Above a desktop L3; capped per block piece
                 requires_locality: Some(false),
                 flush_before_verify: None,
                 stride_patterns: None,
@@ -903,7 +924,6 @@ pub fn create_demo_config() -> Self {
                 min_duration_secs: None,
                 window: Some(WindowSpec::cache_total(2.0)), // 2x cache for refresh testing
                 chunk: Some(ChunkSpec::absolute("1MB")),    // Small 1MB blocks
-                allow_misaligned: Some(false),
                 requires_locality: Some(true),
                 flush_before_verify: None,
                 stride_patterns: None,
@@ -928,7 +948,6 @@ pub fn create_demo_config() -> Self {
                 min_duration_secs: None,
                 window: Some(WindowSpec::absolute("880MB")), // TM5 default window
                 chunk: Some(ChunkSpec::absolute("16MB")),    // TM5 typical block size
-                allow_misaligned: Some(false),
                 requires_locality: Some(false),
                 flush_before_verify: None,
                 stride_patterns: None,
@@ -953,7 +972,6 @@ pub fn create_demo_config() -> Self {
                 min_duration_secs: None,
                 window: Some(WindowSpec::absolute("64MB")),  // Good SIMD locality
                 chunk: Some(ChunkSpec::absolute("16MB")),    // 16MB for 128-bit alignment
-                allow_misaligned: Some(false),
                 requires_locality: Some(true),
                 flush_before_verify: None,
                 stride_patterns: None,
@@ -978,7 +996,6 @@ pub fn create_demo_config() -> Self {
                 min_duration_secs: None,
                 window: Some(WindowSpec::absolute("128MB")), // Larger for AVX2
                 chunk: Some(ChunkSpec::absolute("32MB")),    // 32MB for 256-bit alignment
-                allow_misaligned: Some(false),
                 requires_locality: Some(true),
                 flush_before_verify: None,
                 stride_patterns: None,
@@ -1003,7 +1020,6 @@ pub fn create_demo_config() -> Self {
                 min_duration_secs: None,
                 window: Some(WindowSpec::cache_total(0.5)), // Half total cache to ensure busting
                 chunk: Some(ChunkSpec::absolute("1MB")),    // 1MB blocks for cache lines
-                allow_misaligned: Some(false),
                 requires_locality: Some(true),
                 flush_before_verify: None,
                 stride_patterns: Some(4),              // 4 interleaved stride patterns
@@ -1028,7 +1044,6 @@ pub fn create_demo_config() -> Self {
                 min_duration_secs: None,
                 window: Some(WindowSpec::full_allocation()), // Need full memory
                 chunk: Some(ChunkSpec::absolute("8MB")),    // 8MB blocks
-                allow_misaligned: Some(true),          // Maximum stress
                 requires_locality: Some(false),
                 flush_before_verify: None,
                 stride_patterns: None,
@@ -1053,7 +1068,6 @@ pub fn create_demo_config() -> Self {
                 min_duration_secs: None,
                 window: Some(WindowSpec::full_allocation()),
                 chunk: Some(ChunkSpec::auto()),             // Let TMR optimize
-                allow_misaligned: Some(false),
                 requires_locality: Some(false),
                 flush_before_verify: None,
                 stride_patterns: None,
@@ -1078,7 +1092,6 @@ pub fn create_demo_config() -> Self {
                 min_duration_secs: None,
                 window: Some(WindowSpec::full_allocation()), // Need src+dst space
                 chunk: Some(ChunkSpec::absolute("16MB")),    // 16MB blocks
-                allow_misaligned: Some(false),
                 requires_locality: Some(false),
                 flush_before_verify: None,
                 stride_patterns: None,
@@ -1094,7 +1107,7 @@ pub fn create_demo_config() -> Self {
                 parameter: None,
             },
             
-            // Legacy TM5-style test showing "window-size" block mode
+            // Legacy TM5-style test with one large block
             TestConfig {
                 enabled: true,
                 function: "Mem-SimpleV2".to_string(),
@@ -1102,8 +1115,7 @@ pub fn create_demo_config() -> Self {
                 duration_secs: None,
                 min_duration_secs: None,
                 window: None,                                // Use global default
-                chunk: Some(ChunkSpec::fraction(1.0)),       // Block = window (TM5 0)
-                allow_misaligned: Some(false),
+                chunk: Some(ChunkSpec::absolute("512MiB")),
                 requires_locality: Some(false),
                 flush_before_verify: None,
                 stride_patterns: None,
@@ -1169,7 +1181,6 @@ pub fn create_demo_config() -> Self {
                     min_duration_secs: None,
                     window: Some(WindowSpec::full_allocation()), // Override to test all memory
                     chunk: None,                                 // Use default auto
-                    allow_misaligned: Some(false),
                     requires_locality: Some(false),
                     flush_before_verify: None,
                     stride_patterns: None,
@@ -1192,7 +1203,6 @@ pub fn create_demo_config() -> Self {
                     min_duration_secs: None,
                     window: None,                                // Use default 880MB
                     chunk: Some(ChunkSpec::absolute("16MB")),    // TM5-style block size
-                    allow_misaligned: Some(false),
                     requires_locality: Some(false),
                     flush_before_verify: None,
                     stride_patterns: None,
@@ -1328,7 +1338,6 @@ impl LegacyConfig {
 
                 chunk: Some(self.chunk_spec(test)),
                 
-                allow_misaligned: Some(false), // Legacy configs assume aligned access
                 requires_locality: Some(matches!(test.function.as_str(), "RefreshStable")),
                 flush_before_verify: None,
                 
@@ -1395,21 +1404,29 @@ impl LegacyConfig {
     })
 }
 
-    /// TM5 `Test Block Size (Mb)` as a TMR chunk (TODO 79 B1). 0-3 are fraction codes,
-    /// window / (V + 1); 4 and up are megabytes, clamped to the window. TM5's "Mb" is binary
+    /// TM5 `Test Block Size (Mb)` as a TMR chunk (TODO 79 B1). 0-3 are fraction codes: 0 is the
+    /// window, 1-3 are window / (V + 1); 4 and up are megabytes, clamped to the window. The window
+    /// is the `.cfg`'s own `Testing Window Size`, not TMR's window. TM5's "Mb" is binary
     /// (`shl 20`; `mt_ini.asm:287-303`, `MainThread.asm:627-661`). TM5 uses the size as it comes;
     /// TMR chunks are powers of two (`doc/memory_system_design.md` §4.6), so any other size
-    /// becomes the nearest one, and says so.
+    /// becomes the nearest one, and says so. It is capped at the largest power of two in the
+    /// window: no window piece is bigger (`prepare_blocks_for_window`), so no chunk is either.
     fn chunk_spec(&self, test: &LegacyTest) -> ChunkSpec {
         let window = self.memory_setup.testing_window_size_mb as u64 * BYTES_PER_MIB;
         let (size, what) = match test.test_chunk_size_mb {
-            0 => return ChunkSpec::fraction(1.0),
+            0 => (window, "the window".to_string()),
             code @ 1..=3 => (window / (code as u64 + 1), format!("window/{}", code + 1)),
             mb => ((mb as u64 * BYTES_PER_MIB).min(window), format!("{mb} MiB")),
         };
-        let chunk = nearest_power_of_two(size.max(64 * 1024));
+        let nearest = nearest_power_of_two(size.max(64 * 1024));
+        let largest = 1u64 << (63 - window.max(64 * 1024).leading_zeros());
+        let (chunk, why) = if nearest > largest {
+            (largest, "largest power of two in the window")
+        } else {
+            (nearest, "nearest power of two")
+        };
         if chunk != size {
-            log::info!("TM5 Test{} ({}): Test Block Size {} = {what} = {:.0} MiB -> {} KiB chunk (nearest power of two)",
+            log::info!("TM5 Test{} ({}): Test Block Size {} = {what} = {:.0} MiB -> {} KiB chunk ({why})",
                       test.id, test.function, test.test_chunk_size_mb,
                       size as f64 / BYTES_PER_MIB as f64, chunk / 1024);
         }
@@ -1482,19 +1499,26 @@ pub fn load_config(path: &str) -> Result<ModernConfig, String> {
     }
 
     // Try to detect format by file extension or content
-    if path.ends_with(".json") {
-        ModernConfig::load_from_file(path)
+    let config = if path.ends_with(".json") {
+        ModernConfig::load_from_file(path)?
     } else if path.ends_with(".cfg") {
         // Legacy format (v1.0)
         let legacy = LegacyConfig::load_from_file(path)?;
-        legacy.to_modern_config()
+        legacy.to_modern_config()?
     } else {
-        // Try JSON first, then legacy
-        ModernConfig::load_from_file(path).or_else(|_| {
-            let legacy = LegacyConfig::load_from_file(path)?;
-            legacy.to_modern_config()
-        })
-    }
+        // Try JSON first, then legacy. If neither parses, say why for both: one of the two
+        // messages is the real problem, and it isn't always the second.
+        match ModernConfig::load_from_file(path) {
+            Ok(config) => config,
+            Err(json_err) => match LegacyConfig::load_from_file(path).and_then(|l| l.to_modern_config()) {
+                Ok(config) => config,
+                Err(cfg_err) => return Err(format!(
+                    "{path} is neither a TMR JSON config ({json_err}) nor a TM5 .cfg ({cfg_err})")),
+            },
+        }
+    };
+    config.validate_system()?;
+    Ok(config)
 }
 
 // Generate demo configs
@@ -1571,21 +1595,109 @@ mod tests {
         }
     }
 
-    /// TODO 79 B1: codes 1-3 are window fractions, 4 and up are binary megabytes clamped to the
-    /// window, and each becomes the nearest power of two.
+    /// TODO 79 B1: code 0 is the `.cfg`'s window, 1-3 are window fractions, 4 and up are binary
+    /// megabytes clamped to the window. Each becomes the nearest power of two, at most the
+    /// largest one in the window.
     #[test]
     fn tm5_block_size_codes_are_window_fractions() {
         let tests = [0, 1, 2, 3, 4, 1536].iter().enumerate()
             .map(|(i, &block)| test(i as u32, "SimpleTest", 100, block))
             .collect();
         let modern = legacy(100, tests).to_modern_config().unwrap();
-        let chunks: Vec<_> = modern.get_test_configs().iter().map(|(_, c)| c.chunk_mode.clone()).collect();
-        assert!(matches!(chunks[0], ChunkMode::Fraction { fraction } if fraction == 1.0));
-        let sizes: Vec<Option<usize>> = chunks[1..].iter().map(chunk_bytes).collect();
-        // window/2 = 440 -> 512, window/3 = 293 -> 256, window/4 = 220 -> 256, 4 MiB stays,
-        // 1536 MiB is clamped to the 880 MiB window first, -> 1024.
-        assert_eq!(sizes, [512, 256, 256, 4, 1024].map(|m| Some(m * MIB)));
+        let chunks: Vec<_> = modern.get_test_configs().unwrap().iter().map(|(_, c)| c.chunk_mode.clone()).collect();
+        let sizes: Vec<Option<usize>> = chunks.iter().map(chunk_bytes).collect();
+        // The 880 MiB window -> 512 (1024 is nearer, but no piece of an 880 MiB window is bigger
+        // than 512), window/2 = 440 -> 512, window/3 = 293 -> 256, window/4 = 220 -> 256,
+        // 4 MiB stays, 1536 MiB is clamped to the window first, -> 512 like the window.
+        assert_eq!(sizes, [512, 512, 256, 256, 4, 512].map(|m| Some(m * MIB)));
         assert_eq!(modern.system.memory_strategy.default_window.size.as_deref(), Some("880MiB"));
+    }
+
+    /// An invalid window or chunk spec stops the run: no fallback to the default, which would
+    /// test something the config didn't ask for. A removed mode such as `fraction` is one.
+    #[test]
+    fn invalid_specs_are_errors() {
+        let mut modern = legacy(100, vec![test(0, "SimpleTest", 100, 16)]).to_modern_config().unwrap();
+        assert!(modern.get_test_configs().is_ok());
+
+        modern.test_sequence[0].chunk = Some(ChunkSpec { mode: "fraction".to_string(), fraction: Some(0.5), ..Default::default() });
+        let err = modern.get_test_configs().unwrap_err();
+        assert!(err.contains("Mem-SimpleV2") && err.contains("chunk") && err.contains("fraction"), "{err}");
+
+        modern.test_sequence[0].chunk = None;
+        modern.system.memory_strategy.default_chunk = ChunkSpec { mode: "bogus".to_string(), ..Default::default() };
+        let err = modern.get_test_configs().unwrap_err();
+        assert!(err.contains("default chunk"), "{err}");
+
+        modern.system.memory_strategy.default_chunk = ChunkSpec::auto();
+        modern.test_sequence[0].window = Some(WindowSpec { mode: "bogus".to_string(), ..Default::default() });
+        let err = modern.get_test_configs().unwrap_err();
+        assert!(err.contains("test_sequence[0] ('Mem-SimpleV2')") && err.contains("window"), "{err}");
+
+        modern.test_sequence[0].window = None;
+        modern.system.memory_strategy.default_window = WindowSpec { mode: "bogus".to_string(), ..Default::default() };
+        let err = modern.get_test_configs().unwrap_err();
+        assert!(err.contains("default window"), "{err}");
+
+        // A bad cache-target scale is an error, not the tier default; no scale is the default.
+        modern.system.memory_strategy.default_window = WindowSpec::full_allocation();
+        for bad in ["L3x4", "L2/0", "DRAM*200", "DRAM-FULLX"] {
+            modern.test_sequence[0].window = Some(WindowSpec { mode: "cache".to_string(), target: Some(bad.to_string()), ..Default::default() });
+            assert!(modern.get_test_configs().is_err(), "{bad} should be rejected");
+        }
+        modern.test_sequence[0].window = Some(WindowSpec { mode: "cache".to_string(), target: Some("L3".to_string()), ..Default::default() });
+        assert!(modern.get_test_configs().is_ok());
+        assert!(matches!(CacheTarget::parse("L3"), Some(CacheTarget::L3 { scale }) if scale == 0.5));
+        assert!(matches!(CacheTarget::parse("DRAM"), Some(CacheTarget::Dram { scale }) if scale == 4.0));
+
+        // A zero size is an error, not a test of nothing
+        modern.test_sequence[0].window = Some(WindowSpec::absolute("0"));
+        assert!(modern.get_test_configs().is_err());
+    }
+
+    /// The configs TMR generates itself must load, unknown-key check and system fields included.
+    #[test]
+    fn generated_configs_have_valid_specs() {
+        for config in [ModernConfig::create_demo_config(), ModernConfig::create_tm5_compatible_config(),
+                       legacy(100, vec![test(0, "SimpleTest", 100, 16)]).to_modern_config().unwrap()] {
+            assert!(config.get_test_configs().is_ok());
+            config.validate_system().unwrap();
+            let json = serde_json::to_string(&config).unwrap();
+            serde_json::from_str::<ModernConfig>(&json).unwrap();
+        }
+    }
+
+    /// The tracked JSON config under `test_configs/` still loads.
+    #[test]
+    fn tracked_json_configs_load() {
+        let path = concat!(env!("CARGO_MANIFEST_DIR"), "/test_configs/flush_chunk_sweep.json");
+        let config = load_config(path).unwrap();
+        assert!(config.get_test_configs().is_ok());
+    }
+
+    /// Unknown JSON keys and bad system values are errors, not ignored or defaulted.
+    #[test]
+    fn unknown_keys_and_bad_system_values_are_errors() {
+        let config = ModernConfig::create_demo_config();
+        let mut json: serde_json::Value = serde_json::to_value(&config).unwrap();
+        json["test_sequence"][0]["chunks"] = serde_json::json!({ "mode": "auto" });
+        let err = serde_json::from_value::<ModernConfig>(json).unwrap_err().to_string();
+        assert!(err.contains("chunks"), "{err}");
+
+        let mut bad = config.clone();
+        bad.system.error_mode = "halts".to_string();
+        assert!(bad.validate_system().unwrap_err().contains("error_mode"));
+        let mut bad = config.clone();
+        bad.system.memory_allocation.min_page_size = "1GiB".to_string();
+        assert!(bad.validate_system().unwrap_err().contains("min_page_size"));
+        let mut bad = config.clone();
+        bad.system.memory_strategy.allocation_mode = "max-available".to_string();
+        assert!(bad.validate_system().unwrap_err().contains("allocation_mode"));
+
+        let mut ok = config;
+        ok.system.error_mode = "Halt".to_string();
+        ok.validate_system().unwrap();
+        assert!(matches!(ok.to_error_mode(), ErrorMode::Halt));
     }
 
     /// TODO 79 B2: `Time (%)` is per-chunk dwell, not whole-window passes.
@@ -1600,7 +1712,7 @@ mod tests {
         ];
         let modern = legacy(100, tests).to_modern_config().unwrap();
         assert!(modern.test_sequence.iter().all(|t| t.cycles == Some(1)), "one pass per plan cycle");
-        let reps: Vec<(u32, u32, u32)> = modern.get_test_configs().iter()
+        let reps: Vec<(u32, u32, u32)> = modern.get_test_configs().unwrap().iter()
             .map(|(_, c)| (c.verify_reps, c.write_read_cycles, c.test_reps))
             .collect();
         assert_eq!(reps, vec![
@@ -1612,7 +1724,7 @@ mod tests {
         ]);
         // A global 50 % halves it: 100 x 50 / 2000 = 2.
         let half = legacy(50, vec![test(0, "SimpleTest", 100, 0)]).to_modern_config().unwrap();
-        assert_eq!(half.get_test_configs()[0].1.verify_reps, 2);
+        assert_eq!(half.get_test_configs().unwrap()[0].1.verify_reps, 2);
     }
 
     #[test]

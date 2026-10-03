@@ -600,8 +600,7 @@ Window modes (`tests.rs:14-28`):
 | `Auto` | Per-test heuristic (`calculate_optimal_block_for_test`) |
 | `Cache { target }` | Tier-aware. `L3/N` keeps writes warm through verify; `DRAM*N` forces eviction (refresh stress) |
 | `CacheTotal { fraction }` | `(L1+L2+L3) × fraction` |
-| `Absolute { size_bytes }` | Hard byte count — the TM5 `Test Block Size ≥4` analogue |
-| `Fraction { fraction }` | Fraction of the resolved window — the TM5 fraction-code analogue |
+| `Absolute { size_bytes }` | Hard byte count. TM5 `Test Block Size` imports as one: codes 0-3 as the `.cfg` window or a fraction of it, 4 and up as MiB (`Fraction` was removed 2026-10-03) |
 
 ```
   ┌──────────────── window span within one block ────────────────┐
@@ -625,7 +624,7 @@ CLI (`params.rs`), all overridable from JSON:
 | `hugechunk=1GiB`, `largechunk=1GiB` (stitched: `128MiB`) | 1 | First size of each 1 GiB / 2 MiB-page request, halved on refusal. Bigger means fewer OS calls on large machines and a coarser split, and for plan-pagesize-pref bigger blocks. stitched's commits merge, so its smaller default only costs calls, and spreads a node's 2 MiB shortfall over all its threads |
 | `cpus=50%`, `cputype=`, `skip-cores=`, `cpu-stride=` | 1 | Thread count → the divisor for `per_thread_target`. `cpu-stride=even` also spreads across CCDs/memory domains |
 | `window_mode` (JSON per test) | 2 | `full` / `cache` / `cache_total` / `absolute` |
-| `chunk_mode` (JSON per test) | 3 | `auto` / `cache` / `cache_total` / `absolute` / `fraction` |
+| `chunk_mode` (JSON per test) | 3 | `auto` / `cache` / `cache_total` / `absolute` |
 | `channels=` (JSON `system.channels`) | test | Stride formula, same role as TM5 `Channels` |
 | `parameter=stride:N` / `subblocks:N` | test | TM5 `Parameter` equivalent |
 | `write-read-cycles=4`, `verify-reps=`, `test-reps=` | test | TM5 `ST_WriteReadCycles` / `dLoopCounter` equivalents |
@@ -641,7 +640,7 @@ CLI (`params.rs`), all overridable from JSON:
 | `MapUserPhysicalPages` rotation | *(nothing)* | Lost capability — see the callout in 2.2 |
 | `Lock Memory Granularity (Mb)` | `blkroundtarget` (share step), `largefloor` (smallest block) | Two quanta: how a share is rounded, and how small a block the allocator will take |
 | `Reserved Memory for Windows (Mb)` | `memory=` reserve semantics + `split` | Reframed as "how much to take" not "how much to leave" |
-| `Test Block Size (Mb)` | `ChunkMode::Absolute` / `::Fraction` | The two TM5 unit systems became two explicit modes — a genuine improvement |
+| `Test Block Size (Mb)` | `ChunkMode::Absolute` | Both TM5 unit systems (fraction codes 0-3, MiB from 4) resolve to a size at import (TODO 79; code 0 since 2026-10-03) |
 | `Time (%)` → `dLoopCounter` | `write-read-cycles`, `verify-reps` | Explicit counts instead of a percentage-of-a-magic-constant |
 | Test 0 owns the pattern | `pattern_gen.rs` + phased harness | Pattern is a first-class module, not test index 0 |
 | Orchestrator owns all loops | Tier 1 `run_phased_test` / Tier 2 `TestRunner` | Same separation, without the trait-dispatch perf cost |

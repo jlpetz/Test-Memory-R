@@ -61,8 +61,8 @@ pub trait ReportFormatter: Send + Sync {
     /// Format chunk mode, appending the resolved byte size for `Cache` targets.
     ///
     /// `Cache` specs hide a real behavioural detail: `L1`/`L2` divide by *active threads per
-    /// core*, so `Cache (L2)` resolves to a different size with and without SMT. Absolute and
-    /// Fraction specs are self-explanatory and are left as-is.
+    /// core*, so `Cache (L2)` resolves to a different size with and without SMT. Absolute
+    /// specs are self-explanatory and are left as-is.
     fn format_chunk_mode_with_size(&self, mode: &crate::tests::ChunkMode, cache_info: &crate::cache::CacheInfo, thread_count: usize) -> String;
 
     /// Prepare test configuration table
@@ -939,9 +939,6 @@ impl ReportFormatter for DefaultFormatter {
             ChunkMode::Auto => "Auto".to_string(),
             ChunkMode::Absolute { size_bytes } => {
                 format!("Absolute ({})", self.format_bytes(*size_bytes as u64))
-            }
-            ChunkMode::Fraction { fraction } => {
-                format!("Fraction ({:.1}%)", fraction * 100.0)
             }
             ChunkMode::CacheTotal { fraction } => {
                 format!("CacheTotal ({:.2}x)", fraction)

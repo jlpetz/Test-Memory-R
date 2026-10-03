@@ -402,7 +402,7 @@ So the flush's real value is not "slower and therefore more thorough" — it is
 
 - Flush belongs where the chunk is **cache-resident**. `Mem-StuckBit-Flush*`
   therefore uses `ChunkMode::Cache { L2, scale 1.0 }`, not the plain variants'
-  ~6% fraction.
+  large chunk (512 MiB; a ~6% fraction before 2026-10-03).
 - At large chunks (>= ~16 MiB here) natural eviction already forces DRAM
   reads, so flushing buys ~20-30% less bandwidth for **no change in what is
   tested**. Don't add it there.

@@ -107,8 +107,8 @@ fixed on 2026-09-28.
   - `save_test_result` → `display_and_save_results`;
   - `print_current_memory_status` → still there, called from `cli.rs`. It only lost its return value.
   Driver/remap calls are gone, as expected.
-- **Parsed but never acted on: deleted.** JSON configs that still carry these keys parse as before,
-  since nothing uses `deny_unknown_fields`.
+- **Parsed but never acted on: deleted.** JSON configs that still carry these keys parsed as
+  before at the time; since 2026-10-03 `deny_unknown_fields` makes them errors.
   - `memory_allocation`: `zero_memory`, `require_contiguous`, `allocation_timeout_ms`,
     `retry_interval_ms`, `max_retries` and `strict_numa`, orphaned by the driver purge. They are also
     gone from `test_configs/flush_chunk_sweep.json` and the `memory_allocation_models.md` §2.4

@@ -198,6 +198,11 @@ impl ProgressTracker {
         }
     }
 
+    /// Tests finished in the current cycle (reset at each cycle's start).
+    pub fn tests_done(&self) -> u64 {
+        self.position().tests_done
+    }
+
     /// Thread-reported errors from every finished test.
     pub fn total_errors(&self) -> u64 {
         self.position().errors

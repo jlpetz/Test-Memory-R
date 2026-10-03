@@ -315,7 +315,8 @@ impl CacheTarget {
     }
 
     /// Parse from string like "L1", "L1/2", "L2*0.8", "L3/4", "DRAM", "DRAM*8", "DRAM/2", "DRAM-FULL".
-    /// Both `/N` and `*N` operators are accepted on every tier; values may be decimal.
+    /// Both `/N` and `*N` operators are accepted on every tier; values may be decimal. No scale
+    /// means the tier default; a scale that is there but invalid is `None`, never the default.
     pub fn parse(s: &str) -> Option<Self> {
         let s = s.trim().to_uppercase();
 
@@ -325,23 +326,25 @@ impl CacheTarget {
         }
 
         if let Some(rest) = s.strip_prefix("L1") {
-            let scale = Self::parse_scale(rest).unwrap_or(0.5);
-            Some(CacheTarget::L1 { scale })
+            Some(CacheTarget::L1 { scale: Self::scale_or(rest, 0.5)? })
         } else if let Some(rest) = s.strip_prefix("L2") {
-            let scale = Self::parse_scale(rest).unwrap_or(0.5);
-            Some(CacheTarget::L2 { scale })
+            Some(CacheTarget::L2 { scale: Self::scale_or(rest, 0.5)? })
         } else if let Some(rest) = s.strip_prefix("L3") {
-            let scale = Self::parse_scale(rest).unwrap_or(0.5);
-            Some(CacheTarget::L3 { scale })
+            Some(CacheTarget::L3 { scale: Self::scale_or(rest, 0.5)? })
         } else if let Some(rest) = s.strip_prefix("DRAM") {
-            let scale = Self::parse_scale(rest).unwrap_or(4.0);
-            Some(CacheTarget::Dram { scale })
+            Some(CacheTarget::Dram { scale: Self::scale_or(rest, 4.0)? })
         } else if s == "RAM" {
             // Alias for DRAM
             Some(CacheTarget::DRAM_DEFAULT)
         } else {
             None
         }
+    }
+
+    /// The scale in `rest`, or `default` when there is none. `None` when a scale is there but
+    /// invalid: a bad operator, not a number, or out of range.
+    fn scale_or(rest: &str, default: f64) -> Option<f64> {
+        if rest.trim().is_empty() { Some(default) } else { Self::parse_scale(rest) }
     }
 
     /// Parse a scale fragment like `/2`, `*8`, `*0.8`. Empty string returns None
@@ -393,12 +396,10 @@ pub enum ChunkMode {
     CacheTotal { fraction: f64 },
     /// Hard-coded byte size. Replaces former FixedSize (MB).
     Absolute { size_bytes: usize },
-    /// Fraction of the resolved window size. Independent of cache hierarchy.
-    Fraction { fraction: f64 },
 }
 
-/// Controls error checking frequency within tests using power-of-2 intervals
-/// for optimal hot loop performance with bitwise operations
+/// Controls error checking frequency within tests using power-of-2 intervals.
+/// Only `PER_CHUNK` is constructed today, so the kernels' `check_mask` paths never run.
 #[derive(Debug, Clone, Copy)]
 pub struct ErrorCheckInterval {
     /// Power-of-2 shift for check interval (0 = every op, 9 = every 512 ops, etc.)
@@ -613,7 +614,6 @@ impl TestTiming {
 pub struct TestMemoryConfig {
     pub window_mode: WindowMode,
     pub chunk_mode: ChunkMode,
-    pub allow_misaligned: bool,
     pub requires_locality: bool,    // True if test needs temporal locality (small window)
     pub timing: TestTiming,
     pub pattern_mode: Option<u32>,  // TM5 pattern mode
@@ -671,11 +671,10 @@ pub struct TestMemoryConfig {
 }
 
 impl TestMemoryConfig {
-    pub fn new(window_mode: WindowMode, chunk_mode: ChunkMode, allow_misaligned: bool, requires_locality: bool) -> Self {
+    pub fn new(window_mode: WindowMode, chunk_mode: ChunkMode, requires_locality: bool) -> Self {
         Self {
             window_mode,
             chunk_mode,
-            allow_misaligned,
             requires_locality,
             timing: TestTiming::default(),
             pattern_mode: None,
@@ -814,27 +813,11 @@ impl TestMemoryConfig {
         
         let raw_chunk_size = match &self.chunk_mode {
             ChunkMode::Absolute { size_bytes } => {
-                if self.allow_misaligned {
-                    *size_bytes
-                } else {
-                    align_to_boundary(*size_bytes, cache_info.cache_line_size)
-                }
-            }
-            ChunkMode::Fraction { fraction } => {
-                let fraction_size = (window_size as f64 * fraction) as usize;
-                if self.allow_misaligned {
-                    fraction_size
-                } else {
-                    align_to_boundary(fraction_size, cache_info.cache_line_size)
-                }
+                align_to_boundary(*size_bytes, cache_info.cache_line_size)
             }
             ChunkMode::CacheTotal { fraction } => {
                 let cache_based = (cache_info.total_cache as f64 * fraction) as usize;
-                if self.allow_misaligned {
-                    cache_based
-                } else {
-                    align_to_boundary(cache_based, cache_info.cache_line_size)
-                }
+                align_to_boundary(cache_based, cache_info.cache_line_size)
             }
             ChunkMode::Auto => {
                 self.calculate_optimal_block_for_test(test_name, window_size, cache_info)
@@ -844,11 +827,7 @@ impl TestMemoryConfig {
                 // as a sentinel meaning "use the whole window".
                 let calculated = target.calculate_window_size(cache_info, self.thread_count);
                 let raw = if calculated == usize::MAX { window_size } else { calculated };
-                if self.allow_misaligned {
-                    raw
-                } else {
-                    align_to_boundary(raw, cache_info.cache_line_size)
-                }
+                align_to_boundary(raw, cache_info.cache_line_size)
             }
         };
 
@@ -932,7 +911,7 @@ impl TestMemoryConfig {
         // Performance minimum: 64KB for reasonable cache behavior
         let performance_minimum = 64 * 1024; // 64KB
 
-        // Ensure result is aligned to u64 boundaries and power-of-2 element count for fast variant operations
+        // Round up to a power-of-2 element count, like the chunk itself (`calculate_ideal_chunk_size`)
         let minimum_bytes = variant_requirement.max(performance_minimum);
         let elements = minimum_bytes / std::mem::size_of::<u64>();
         let power_of_2_elements = elements.next_power_of_two();
@@ -968,13 +947,7 @@ impl TestMemoryConfig {
                 align_to_boundary(512 * KB, cache_info.cache_line_size)
             }
             
-            _ => {
-                if self.allow_misaligned {
-                    8 * MB // 8MB default unaligned
-                } else {
-                    align_to_boundary(8 * MB, cache_info.cache_line_size)
-                }
-            }
+            _ => align_to_boundary(8 * MB, cache_info.cache_line_size),
         }
     }
 
@@ -994,7 +967,7 @@ fn align_to_boundary(size: usize, alignment: usize) -> usize {
 /// verify must observe what actually landed in DRAM — refresh/bit-fade tests, or
 /// any cache-resident working set. See `doc/cache_management.md`.
 ///
-/// CLFLUSHOPT is emitted unconditionally: the startup CPUID gate (`main.rs`)
+/// CLFLUSHOPT is emitted unconditionally: the startup CPUID gate (`cli.rs` `require_cpu_features`)
 /// guarantees the feature, so there is no `_mm_clflush` fallback. The function
 /// carries `#[target_feature(enable = "clflushopt")]` (gated by the unstable
 /// `clflushopt_target_feature`, landed in nightly via rustc PR #157098).
@@ -1003,8 +976,9 @@ fn align_to_boundary(size: usize, alignment: usize) -> usize {
 /// now synced into nightly behind `simd_x86_clflushopt`, tracking #157096),
 /// NOT inline `asm!`. The intrinsic lowers to a real LLVM `clflushopt` op, so
 /// LLVM can unroll and schedule the loop freely; the asm form is an opaque
-/// `#APP` block LLVM cannot see through (verified by `--emit asm`: the intrinsic
-/// loop unrolls, the asm loop does not). The asm idiom is reserved for a *mixed*
+/// `#APP` block LLVM cannot see through. The shipped binary unrolls it 8x plus a
+/// remainder loop (checked 2026-10-03 in `tmr.exe`; the `--lib` asm is pre-LTO
+/// and shows a plain loop). The asm idiom is reserved for a *mixed*
 /// flush + NT-store hot loop, where NT stores are themselves asm in stdarch
 /// (`doc/nt_stores.md`) and one consistent `#APP` boundary avoids
 /// intrinsic→asm→intrinsic `#APP`/`#NO_APP` churn — we have no such loop today.
@@ -1037,13 +1011,15 @@ pub unsafe fn flush_range_to_dram(base: *const u8, len_bytes: usize, cache_line_
     unsafe { std::arch::x86_64::_mm_mfence(); }
 }
 
-/// Calculate ideal chunk size once at test start (power-of-2 elements for fast stream operations)
-/// Block sizes are already guaranteed to be powers-of-2, so we just need to ensure chunk elements are power-of-2
+/// Calculate the chunk size for one block (once at setup in Tier 1, every cycle in Tier 2), rounded
+/// up to a power-of-2 element count so chunks tile each power-of-2 block piece exactly, with no
+/// short last chunk (`prepare_blocks_for_window`). Kernels need multiples of the vector width or
+/// cache line, more where a test splits a chunk into parts (TODO 76's audit).
 pub fn calculate_ideal_chunk_size(config: &TestMemoryConfig, test_name: &str, total_memory_size: usize) -> usize {
     // Get base chunk size from user configuration
     let base_chunk_size = config.calculate_chunk_size(test_name, total_memory_size);
     
-    // Convert to elements and ensure power-of-2 for fast stream operations (no remainder calculations needed)
+    // Convert to elements and round up to a power of 2
     let base_elements = base_chunk_size / std::mem::size_of::<u64>();
     let power_of_2_elements = base_elements.next_power_of_two();
     
@@ -2186,7 +2162,7 @@ pub unsafe fn random_torture_multi(
             let base = test_block.block.buffer.as_mut_ptr() as *mut u64;
             let len = test_block.test_size / std::mem::size_of::<u64>();
 
-            // Assert power-of-2 size for optimal performance
+            // Indexes are `rng & (len - 1)`, so the size must be a power of 2
             if !len.is_power_of_two() {
                 panic!("{}: Window size {} is not power-of-2! This is a bug in the alignment code.",
                        test_name, len);
@@ -3018,103 +2994,108 @@ unsafe fn simple_test_v2_strided(
     };
     let cl_shift = pattern_gen::cache_line_shift(config.cache_line_bytes);
 
-    // Dispatch pattern function once outside hot loop (avoids per-element branch)
-    let gen_pattern: fn(u64, u64, u32) -> u64 = match effective_mode {
-        0 => |idx, seed, _cl| pattern_gen::pattern_mode0(idx, seed),
-        1 => |idx, seed, cl| pattern_gen::pattern_mode1(idx, seed, cl),
-        11 => |idx, combined, _cl| pattern_gen::pattern_mode11(idx, combined),
-        _ => |idx, base, _cl| pattern_gen::pattern_mode10(idx, base),
-    };
-
-    run_phased_test(
-        blocks, thread_id, error_mode, timing, config, progress,
-        test_name, TestAction::WriteVerify, 1, false, config.test_reps, config.verify_reps,
-        // Init: first write with stride pattern covering all elements
-        |ctx: &ChunkCtx| {
-            let seed = if effective_mode <= 1 {
-                pattern_gen::block_seed(ctx.ptr as usize, ctx.thread_id, ctx.cycle)
-            } else { base };
-            let len = ctx.chunk_end - ctx.chunk_start;
-            if len == 0 { return; }
-            for sub_offset in 0..stride.min(len) {
-                let mut idx = ctx.chunk_start + sub_offset;
-                while idx < ctx.chunk_end {
-                    *ctx.ptr.add(idx) = gen_pattern(idx as u64, seed, cl_shift);
-                    idx += stride;
-                }
-            }
-        },
-        // Test: write with stride (every cycle, matching v1 write+verify structure)
-        |ctx: &ChunkCtx| {
-            let seed = if effective_mode <= 1 {
-                pattern_gen::block_seed(ctx.ptr as usize, ctx.thread_id, ctx.cycle)
-            } else { base };
-            let len = ctx.chunk_end - ctx.chunk_start;
-            if len == 0 { return; }
-            for sub_offset in 0..stride.min(len) {
-                let mut idx = ctx.chunk_start + sub_offset;
-                while idx < ctx.chunk_end {
-                    *ctx.ptr.add(idx) = gen_pattern(idx as u64, seed, cl_shift);
-                    idx += stride;
-                }
-            }
-        },
-        // Verify: same strided order (with error_check_interval for v1 parity)
-        |ctx: &ChunkCtx| -> u64 {
-            let seed = if effective_mode <= 1 {
-                pattern_gen::block_seed(ctx.ptr as usize, ctx.thread_id, ctx.cycle)
-            } else { base };
-            let mut total_errors = 0u64;
-            let len = ctx.chunk_end - ctx.chunk_start;
-            if len == 0 { return 0; }
-            match ctx.check_mask {
-                Some(check_mask) => {
-                    let mut interval_errors = 0u64;
-                    let mut element_count = 0u32;
+    // One copy of the loops per pattern, so each inlines its pattern function. A `fn` pointer picked
+    // at run time was called once per element (`callq *%reg` in the release asm, 2026-10-03).
+    macro_rules! run_strided {
+        ($gen:expr) => {{
+            let gen_pattern = $gen;
+            run_phased_test(
+                blocks, thread_id, error_mode, timing, config, progress,
+                test_name, TestAction::WriteVerify, 1, false, config.test_reps, config.verify_reps,
+                // Init: first write with stride pattern covering all elements
+                |ctx: &ChunkCtx| {
+                    let seed = if effective_mode <= 1 {
+                        pattern_gen::block_seed(ctx.ptr as usize, ctx.thread_id, ctx.cycle)
+                    } else { base };
+                    let len = ctx.chunk_end - ctx.chunk_start;
+                    if len == 0 { return; }
                     for sub_offset in 0..stride.min(len) {
                         let mut idx = ctx.chunk_start + sub_offset;
                         while idx < ctx.chunk_end {
-                            let expected = gen_pattern(idx as u64, seed, cl_shift);
-                            let actual = *ctx.ptr.add(idx);
-                            if actual != expected {
-                                interval_errors += 1;
-                                if interval_errors <= 10 {
-                                    log::error!("{}: strided error at idx {} (stride={}) - expected {:#x}, got {:#x}",
-                                               test_name, idx, stride, expected, actual);
-                                }
-                            }
-                            element_count += 1;
-                            if (element_count & check_mask) == 0
-                                && interval_errors > 0 {
-                                    total_errors += interval_errors;
-                                    interval_errors = 0;
-                                }
+                            *ctx.ptr.add(idx) = gen_pattern(idx as u64, seed, cl_shift);
                             idx += stride;
                         }
                     }
-                    total_errors += interval_errors;
-                }
-                None => {
+                },
+                // Test: write with stride (every cycle, matching v1 write+verify structure)
+                |ctx: &ChunkCtx| {
+                    let seed = if effective_mode <= 1 {
+                        pattern_gen::block_seed(ctx.ptr as usize, ctx.thread_id, ctx.cycle)
+                    } else { base };
+                    let len = ctx.chunk_end - ctx.chunk_start;
+                    if len == 0 { return; }
                     for sub_offset in 0..stride.min(len) {
                         let mut idx = ctx.chunk_start + sub_offset;
                         while idx < ctx.chunk_end {
-                            let expected = gen_pattern(idx as u64, seed, cl_shift);
-                            let actual = *ctx.ptr.add(idx);
-                            if actual != expected {
-                                total_errors += 1;
-                                if total_errors <= 10 {
-                                    log::error!("{}: strided error at idx {} (stride={}) - expected {:#x}, got {:#x}",
-                                               test_name, idx, stride, expected, actual);
-                                }
-                            }
+                            *ctx.ptr.add(idx) = gen_pattern(idx as u64, seed, cl_shift);
                             idx += stride;
                         }
                     }
-                }
-            }
-            total_errors
-        },
-    )
+                },
+                // Verify: same strided order (with error_check_interval for v1 parity)
+                |ctx: &ChunkCtx| -> u64 {
+                    let seed = if effective_mode <= 1 {
+                        pattern_gen::block_seed(ctx.ptr as usize, ctx.thread_id, ctx.cycle)
+                    } else { base };
+                    let mut total_errors = 0u64;
+                    let len = ctx.chunk_end - ctx.chunk_start;
+                    if len == 0 { return 0; }
+                    match ctx.check_mask {
+                        Some(check_mask) => {
+                            let mut interval_errors = 0u64;
+                            let mut element_count = 0u32;
+                            for sub_offset in 0..stride.min(len) {
+                                let mut idx = ctx.chunk_start + sub_offset;
+                                while idx < ctx.chunk_end {
+                                    let expected = gen_pattern(idx as u64, seed, cl_shift);
+                                    let actual = *ctx.ptr.add(idx);
+                                    if actual != expected {
+                                        interval_errors += 1;
+                                        if interval_errors <= 10 {
+                                            log::error!("{}: strided error at idx {} (stride={}) - expected {:#x}, got {:#x}",
+                                                       test_name, idx, stride, expected, actual);
+                                        }
+                                    }
+                                    element_count += 1;
+                                    if (element_count & check_mask) == 0
+                                        && interval_errors > 0 {
+                                            total_errors += interval_errors;
+                                            interval_errors = 0;
+                                        }
+                                    idx += stride;
+                                }
+                            }
+                            total_errors += interval_errors;
+                        }
+                        None => {
+                            for sub_offset in 0..stride.min(len) {
+                                let mut idx = ctx.chunk_start + sub_offset;
+                                while idx < ctx.chunk_end {
+                                    let expected = gen_pattern(idx as u64, seed, cl_shift);
+                                    let actual = *ctx.ptr.add(idx);
+                                    if actual != expected {
+                                        total_errors += 1;
+                                        if total_errors <= 10 {
+                                            log::error!("{}: strided error at idx {} (stride={}) - expected {:#x}, got {:#x}",
+                                                       test_name, idx, stride, expected, actual);
+                                        }
+                                    }
+                                    idx += stride;
+                                }
+                            }
+                        }
+                    }
+                    total_errors
+                },
+            )
+        }};
+    }
+    match effective_mode {
+        0 => run_strided!(|idx: u64, seed: u64, _cl: u32| pattern_gen::pattern_mode0(idx, seed)),
+        1 => run_strided!(|idx: u64, seed: u64, cl: u32| pattern_gen::pattern_mode1(idx, seed, cl)),
+        11 => run_strided!(|idx: u64, combined: u64, _cl: u32| pattern_gen::pattern_mode11(idx, combined)),
+        _ => run_strided!(|idx: u64, base: u64, _cl: u32| pattern_gen::pattern_mode10(idx, base)),
+    }
 }
 
 // ─── MirrorMove v2 — u64 migration ──────────────────────────────────────────
@@ -3179,8 +3160,8 @@ macro_rules! mirror_init_simd {
 /// SIMD Swap — subblocks mode: split chunk into N subblocks, mirror each in lockstep.
 /// N=1 is equivalent to full mirror. N=2-4 creates cross-region cache pressure.
 ///
-/// Uses computed indices per iteration — LLVM strength-reduces the multiplies to
-/// additive increments internally while keeping all values in registers (no array spills).
+/// Computes indices per iteration. The multiplies stay in the loop (the release asm keeps
+/// `imul`s there) but are cheap next to the memory traffic; all values stay in registers.
 macro_rules! mirror_swap_subblocks {
     ($simd_type:ty, $simd_w:expr, $ctx:expr, $n_sub:expr) => {{
         let chunk_len = $ctx.chunk_end - $ctx.chunk_start;

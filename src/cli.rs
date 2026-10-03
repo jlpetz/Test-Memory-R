@@ -12,7 +12,7 @@ use crate::{create_demo_configs, load_config, ErrorMode};
 use crate::params;  // Centralized parameter registry
 // Note: Legacy MemoryLayout still needed for runner interface
 use crate::memory::allocation_strategy::EnhancedMemoryStrategy;
-use crate::runner::{run_tests_with_layout_and_timing_filtered, TestSuiteTiming, print_current_memory_status, detect_runtime_capabilities};
+use crate::runner::{run_tests_with_layout_and_timing_filtered, RunStatus, TestSuiteTiming, print_current_memory_status, detect_runtime_capabilities};
 use crate::cpu_topology::{display_cpu_topology, get_cpu_topology, is_hybrid_cpu, CoreType};
 use crate::results::compare_results_command;
 use crate::config::{MemoryAllocationConfig, CpuPinningConfig};
@@ -95,7 +95,7 @@ fn require_cpu_features() {
         missing.push("AVX2");
     }
     // clflushopt detection landed in std behind the unstable `clflushopt_target_feature`
-    // gate (rustc PR #157098) — gated at the crate root above.
+    // gate (rustc PR #157098) — gated at the crate root (`lib.rs`).
     if !is_x86_feature_detected!("clflushopt") {
         missing.push("CLFLUSHOPT");
     }
@@ -104,11 +104,23 @@ fn require_cpu_features() {
         eprintln!("FATAL: this CPU is missing required instruction set features: {}", missing.join(", "));
         eprintln!("TMR is built for x86-64-v3 (AVX2) + CLFLUSHOPT — a 2015-or-newer CPU");
         eprintln!("(Intel Skylake+ / AMD Excavator+ / any Zen). Pre-2015 CPUs are not supported.");
-        std::process::exit(1);
+        std::process::exit(RunStatus::NotRun.exit_code());
     }
 }
 
+/// Any error here stops TMR before testing, so it exits 2 like every other "stopped before
+/// testing" case (`RunStatus::NotRun`); returned to `main.rs` it would exit 1, which means "tests
+/// failed". The console gets it once, the log file too.
 pub fn main() -> Result<(), Box<dyn std::error::Error>> {
+    if let Err(e) = run() {
+        log::error!(target: crate::console::FILE_ONLY_TARGET, "{e}");
+        eprintln!("Error: {e}");
+        std::process::exit(RunStatus::NotRun.exit_code());
+    }
+    Ok(())
+}
+
+fn run() -> Result<(), Box<dyn std::error::Error>> {
     // --- Crash handling: install BEFORE anything else ---
 
     // 1. Rust panic hook — ensures panic messages reach stderr + log before abort
@@ -178,7 +190,7 @@ pub fn main() -> Result<(), Box<dyn std::error::Error>> {
         "--ram-latency", "--cache-latency", "--quick-test", "--calibrate-cache", "--calibrate-cache-ext",
         "--calibration-file", "--output", "--no-calibration",
         "--create-demo-configs", "--compare-results", "--debug-topology",
-        "--show-topology", "--setup-large-pages", "--startup-debug",
+        "--show-topology", "--setup-large-pages", "--startup-debug", "--disable-pinning",
         "--help", "-h", "-?", "--version", "-v"
     ];
 
@@ -202,7 +214,7 @@ pub fn main() -> Result<(), Box<dyn std::error::Error>> {
         println!("Note: --latency-test has been renamed to --ram-latency");
         println!();
         params::print_help(&args[0]);
-        return Ok(());
+        std::process::exit(RunStatus::NotRun.exit_code());
     }
 
     // Track if a test filter should be applied (for --ram-latency and --cache-latency)
@@ -293,14 +305,14 @@ pub fn main() -> Result<(), Box<dyn std::error::Error>> {
             "--create-demo-configs" => {
                 if let Err(e) = create_demo_configs() {
                     println!("❌ Failed to create demo configs: {}", e);
-                    return Ok(());
+                    std::process::exit(RunStatus::NotRun.exit_code());
                 }
                 return Ok(());
             }
             "--compare-results" => {
                 if args.len() < 4 {
                     println!("❌ Usage: {} --compare-results <baseline.json> <current.json> [output.json]", args[0]);
-                    return Ok(());
+                    std::process::exit(RunStatus::NotRun.exit_code());
                 }
                 let baseline = &args[2];
                 let current = &args[3];
@@ -308,7 +320,10 @@ pub fn main() -> Result<(), Box<dyn std::error::Error>> {
                 
                 match compare_results_command(baseline, current, output) {
                     Ok(()) => println!("✅ Comparison completed successfully"),
-                    Err(e) => println!("❌ Comparison failed: {}", e),
+                    Err(e) => {
+                        println!("❌ Comparison failed: {}", e);
+                        std::process::exit(RunStatus::NotRun.exit_code());
+                    }
                 }
                 return Ok(());
             }
@@ -405,6 +420,7 @@ pub fn main() -> Result<(), Box<dyn std::error::Error>> {
 					}
 					Err(e) => {
 						println!("Calibration failed: {}", e);
+						std::process::exit(RunStatus::NotRun.exit_code());
 					}
 				}
 				return Ok(());
@@ -469,6 +485,7 @@ pub fn main() -> Result<(), Box<dyn std::error::Error>> {
 					}
 					Err(e) => {
 						println!("Extended calibration failed: {}", e);
+						std::process::exit(RunStatus::NotRun.exit_code());
 					}
 				}
 				return Ok(());
@@ -493,7 +510,7 @@ pub fn main() -> Result<(), Box<dyn std::error::Error>> {
         Ok(params) => params,
         Err(e) => {
             eprintln!("{}", e);
-            std::process::exit(1);
+            std::process::exit(RunStatus::NotRun.exit_code());
         }
     };
 
@@ -562,7 +579,7 @@ pub fn main() -> Result<(), Box<dyn std::error::Error>> {
 							}
 							Err(e) => {
 								println!("❌ Invalid memory override '{}': {}", memory_str, e);
-								std::process::exit(1);
+								std::process::exit(RunStatus::NotRun.exit_code());
 							}
 						}
 					}
@@ -599,7 +616,7 @@ pub fn main() -> Result<(), Box<dyn std::error::Error>> {
 							}
 							Err(e) => {
 								println!("❌ Invalid allocator override '{}': {}", allocator_str, e);
-								std::process::exit(1);
+								std::process::exit(RunStatus::NotRun.exit_code());
 							}
 						}
 					}
@@ -834,7 +851,7 @@ pub fn main() -> Result<(), Box<dyn std::error::Error>> {
 		Err(e) => {
 			// Never silently right-size the request — tell the user and stop.
 			eprintln!("❌ CPU selection error: {}", e);
-			return Ok(());
+			std::process::exit(RunStatus::NotRun.exit_code());
 		}
 	};
 	
@@ -1096,7 +1113,7 @@ pub fn main() -> Result<(), Box<dyn std::error::Error>> {
     // test_filter_param may be set by test=Pattern for CLI filtering
     let final_test_filter = test_filter.as_deref().or(test_filter_param.as_deref());
 
-    let success = run_tests_with_layout_and_timing_filtered(
+    let status = run_tests_with_layout_and_timing_filtered(
         enhanced_layout,
         error_mode,
         suite_timing,
@@ -1116,22 +1133,26 @@ pub fn main() -> Result<(), Box<dyn std::error::Error>> {
     );
 
     if plan_only {
-        if success {
+        if status == RunStatus::Passed {
             println!("\n================================================================================");
             println!("  --startup-debug: Startup sequence and test plan complete. No test memory allocated, no test run.");
             println!("================================================================================");
         }
-        return Ok(());
-    }
-
-    let total_time = start_time.elapsed();
-
-    println!();
-    println!("================================================================================");
-    if success {
-        println!("✅ All memory tests completed successfully in {}", format_duration(total_time));
     } else {
-        println!("❌ Tests failed or encountered errors in {}", format_duration(total_time));
+        let total_time = start_time.elapsed();
+
+        println!();
+        println!("================================================================================");
+        match status {
+            RunStatus::Passed => println!("✅ All memory tests completed successfully in {}", format_duration(total_time)),
+            RunStatus::Failed => println!("❌ Tests failed or encountered errors in {}", format_duration(total_time)),
+            RunStatus::NotRun => println!("❌ Stopped before testing: see the message above"),
+            RunStatus::Interrupted => println!("⚠️  Interrupted after {}: only the tests that finished were checked", format_duration(total_time)),
+        }
+    }
+    // Exit status for scripts: 0 passed, 1 failed or found errors, 2 stopped before testing
+    if status != RunStatus::Passed {
+        std::process::exit(status.exit_code());
     }
 	Ok(())
 }

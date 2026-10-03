@@ -22,7 +22,11 @@ Allocation  (per-thread OS-level block — set by memory_strategy.allocation_mod
 | Chunk  | `cache`       | `target` (string)     | Same target syntax as window `cache` mode.                              |
 | Chunk  | `cache_total` | `fraction` (number)   | Coarse `(L1+L2+L3) × fraction`. Mirrors window mode.                    |
 | Chunk  | `absolute`    | `size` (string)       | Hard byte size.                                                         |
-| Chunk  | `fraction`    | `fraction` (number)   | Fraction (0.0-1.0) of the resolved window size.                         |
+
+An invalid spec stops the run with an error naming the `test_sequence` entry: an unknown mode, a
+missing field, a size of 0, or a `cache` target whose scale is malformed or outside 0.01-100. A
+default spec is checked for each enabled test that uses it. There is no fallback to another mode or
+to the built-in test suite. An unknown JSON key anywhere in the config is an error too.
 
 ## JSON shape
 
@@ -48,7 +52,7 @@ mode need to appear.
     {
       "function": "Mem-StuckBit",
       "window": { "mode": "full_allocation" },
-      "chunk":  { "mode": "fraction", "fraction": 0.0625 }
+      "chunk":  { "mode": "absolute", "size": "512MiB" }
     },
     {
       "function": "Mem-SimpleV2",
@@ -169,8 +173,8 @@ The old flat-field shape (`window_mode`, `window_size_mb`, `window_cache_multipl
 | `window_mode: "cache_relative"`, `window_cache_multiplier: 2.0` | `window: { mode: "cache_total", fraction: 2.0 }` (or `cache` with `target` for tier-aware) |
 | `chunk_mode: "auto_optimal"`                       | `chunk: { mode: "auto" }`                      |
 | `chunk_mode: "fixed_size"`, `block_size_mb: 16`    | `chunk: { mode: "absolute", size: "16MB" }`    |
-| `chunk_mode: "window_fraction"`, `block_window_fraction: 0.125` | `chunk: { mode: "fraction", fraction: 0.125 }` |
-| `chunk_mode: "window_size"` (TM5 0)                | `chunk: { mode: "fraction", fraction: 1.0 }`   |
+| `chunk_mode: "window_fraction"`, `block_window_fraction: 0.125` | none: an `absolute` size (the `fraction` chunk mode was removed 2026-10-03) |
+| `chunk_mode: "window_size"` (TM5 0)                | none: an `absolute` size; a TM5 `.cfg` imports its window size |
 
 There is **no migration shim** — TMR is in dev mode and old configs must be hand-updated.
 TM5 `.cfg` files continue to work because the legacy converter (`LegacyConfig::to_modern_config`)
@@ -194,7 +198,7 @@ emits the new shape.
 {
   "function": "Mem-StuckBit",
   "window": { "mode": "full_allocation" },
-  "chunk":  { "mode": "fraction", "fraction": 0.0625 }
+  "chunk":  { "mode": "absolute", "size": "512MiB" }
 }
 ```
 

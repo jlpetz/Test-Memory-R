@@ -121,13 +121,9 @@ pub fn create_test_configuration_report_v2(
         let window_mode = formatter.format_window_mode_with_size(&config.window_mode, cache_info, thread_count);
         let chunk_mode = formatter.format_chunk_mode_with_size(&config.chunk_mode, cache_info, thread_count);
 
-        // Match old flag order: Locality first, then Misaligned
         let mut flags = Vec::new();
         if config.requires_locality {
             flags.push("Locality".to_string());
-        }
-        if config.allow_misaligned {
-            flags.push("Misaligned".to_string());
         }
 
         let parameter = format_parameter_context(&config.parameter_context);

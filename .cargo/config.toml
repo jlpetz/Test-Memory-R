@@ -20,15 +20,13 @@ rustflags = ["-C", "target-cpu=x86-64-v3"]
 # never gave it to us (at v2 they were already 128-bit SSE, not scalar).
 #
 # CLFLUSHOPT is NOT in ANY psABI level (v1-v4) — it is a standalone CPUID feature flag,
-# so the v3 baseline does not enable it. We DO NOT set "+clflushopt" here: TMR emits
-# clflushopt via inline asm!("clflushopt ...") (see flush_range_to_dram in tests.rs),
-# which the assembler accepts directly with NO target-feature flag and NO unstable gate.
-# Rust's stdarch exposes no _mm_clflushopt intrinsic (only the slow SSE2 _mm_clflush), and
-# the LLVM-intrinsic route needs two discouraged nightly features for identical perf — so
-# asm is the chosen path (benchmarked in ../clflush-test). Because the binary CONTAINS
-# clflushopt, TMR GATES AT STARTUP (main.rs): it requires AVX2 + CLFLUSHOPT (the latter via
-# raw CPUID leaf 7 EBX bit 23, since std's is_x86_feature_detected! doesn't expose
-# clflushopt) and exits cleanly if absent rather than #UD-faulting. This drops pre-2015
+# so the v3 baseline does not enable it. We DO NOT set "+clflushopt" here: TMR emits it
+# through stdarch's _mm_clflushopt intrinsic inside one #[target_feature(enable =
+# "clflushopt")] fn (flush_range_to_dram in tests.rs; its doc has the nightly gates and
+# why the intrinsic replaced the earlier inline asm!). Because the binary CONTAINS
+# clflushopt, TMR GATES AT STARTUP (cli.rs require_cpu_features): it requires AVX2 +
+# CLFLUSHOPT via is_x86_feature_detected! (clflushopt detection is behind a nightly gate in
+# lib.rs) and exits cleanly if absent rather than #UD-faulting. This drops pre-2015
 # CPUs (Intel pre-Skylake incl. Haswell/Broadwell which have AVX2 but no CLFLUSHOPT; AMD
 # pre-Excavator/pre-Zen) — all DDR3/DDR4 era and irrelevant to a DDR5 tester.
 #
