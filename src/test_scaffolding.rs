@@ -125,6 +125,16 @@ impl<'a> TestRunner<'a> {
         self.chunk
     }
 
+    /// Start the clock again after untimed setup (a bandwidth test's page-faulting fill, a
+    /// latency test's chain build), so the setup counts toward neither the test's duration nor
+    /// its throughput. Call it before counting any bytes.
+    #[inline]
+    pub fn restart_clock(&mut self) {
+        let now = Instant::now();
+        self.start = now;
+        self.last_progress_update = now;
+    }
+
     /// Increment and return the new cycle number. Call at the top of each outer cycle.
     #[inline]
     pub fn begin_cycle(&mut self) -> u32 {

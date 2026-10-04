@@ -14,13 +14,13 @@
 // Auto-dispatch selects best available at runtime.
 
 use crate::ErrorMode;
-use crate::runner::{AllocationBlock, SHUTDOWN_REQUESTED};
-use crate::tests::{TestAction, TestMemoryConfig, TestProgress, TestTiming, TestStats, prepare_blocks_for_extent};
-use std::sync::atomic::Ordering;
-use std::time::Instant;
+use crate::runner::AllocationBlock;
+use crate::tests::{TestAction, TestMemoryConfig, TestProgress, TestTiming, TestStats};
+use crate::test_scaffolding::TestRunner;
 
-const STATIC_PATTERN: u64 = 0x5555555555555555;
-const PROGRESS_INTERVAL_MS: u128 = 250;
+/// The write pattern. Not byte-uniform: a byte-uniform fill (it was 0x5555...) lets LLVM turn the
+/// cached write loop into `memset`, which measured the C runtime, the same at every width.
+const STATIC_PATTERN: u64 = 0xA55AA55AA55AA55A;
 
 // ============================================================================
 // Scalar init — touches every page to ensure physical backing (not timed)
@@ -174,83 +174,45 @@ macro_rules! spd_write_impl {
         unsafe fn $impl_fn(
             blocks: &[AllocationBlock],
             thread_id: usize,
-            _error_mode: ErrorMode,
+            error_mode: ErrorMode,
             timing: &TestTiming,
             config: &TestMemoryConfig,
             progress: Option<&TestProgress>,
         ) -> TestStats {
             let test_name = "Spd-Write";
-            let start = Instant::now();
-
-            let total_allocated: usize = blocks.iter().map(|b| b.buffer.size()).sum();
-            let extent_size = config.calculate_extent_size(test_name, total_allocated);
-            let test_blocks = prepare_blocks_for_extent(blocks, extent_size, test_name);
-
-            if test_blocks.is_empty() {
-                return TestStats {
-                    name: test_name, action: TestAction::Write,
-                    bytes_processed: 0, elapsed_ms: 0, thread_id,
-                    error_count: 0, total_operations: 0,
-                    cycles_completed: 0, cycles_planned: timing.cycles,
-                    stopped_by_time_limit: false,
-                };
+            let (mut runner, extent) = TestRunner::new(
+                blocks, thread_id, error_mode, timing, config, progress, test_name, TestAction::Write,
+            );
+            if extent.test_size == 0 {
+                return runner.finish_completed(0);
             }
+            let base = extent.ptr;
 
-            // Init phase: scalar fill to fault in pages (skipped in dependent mode)
+            // Init phase: scalar fill to fault in pages (skipped in dependent mode), not timed
             if !config.skip_init {
-                for tb in &test_blocks {
-                    let base = tb.ptr as *mut u64;
-                    let len_u64 = tb.test_size.min(extent_size) / 8;
-                    scalar_fill(base, len_u64);
-                }
+                scalar_fill(base as *mut u64, extent.test_size / 8);
             }
+            runner.restart_clock();
 
-            let test_start = Instant::now();
             let pattern = $set1_fn(STATIC_PATTERN as i64);
-            let mut cycle = 0u32;
-            let mut total_bytes = 0u64;
-            let mut last_progress = Instant::now();
+            // The extent as one chunk under the `whole` chunk mode the built-ins use
+            let spread = runner.chunks(extent.test_size);
 
             loop {
-                cycle += 1;
+                runner.begin_cycle();
 
-                for tb in &test_blocks {
-                    let base = tb.ptr as *mut u8;
-                    let working_bytes = tb.test_size.min(extent_size);
-
-                    spd_write_hot!(base, working_bytes, pattern, $arch_type, $store_fn);
-
+                for k in 0..spread.count() {
+                    spd_write_hot!(base.add(spread.start(k)), spread.chunk(), pattern, $arch_type, $store_fn);
                     if $need_sfence {
                         std::arch::x86_64::_mm_sfence();
                     }
-
-                    total_bytes += working_bytes as u64;
+                    runner.add_bytes(spread.chunk());
                 }
 
-                // Progress update
-                if let Some(prog) = progress {
-                    let now = Instant::now();
-                    if now.duration_since(last_progress).as_millis() >= PROGRESS_INTERVAL_MS {
-                        prog.cycles_completed.store(cycle, Ordering::Relaxed);
-                        prog.bytes_processed.store(total_bytes, Ordering::Relaxed);
-                        prog.last_update_ms.store(now.duration_since(start).as_millis() as u64, Ordering::Relaxed);
-                        last_progress = now;
-                    }
+                runner.update_progress();
+                if runner.shutdown_requested() || !runner.should_continue() {
+                    return runner.finish_completed((runner.bytes_processed() / 8) as u64);
                 }
-
-                if SHUTDOWN_REQUESTED.load(Ordering::Relaxed) { break; }
-                if !timing.should_continue(cycle, test_start.elapsed().as_secs() as u32) { break; }
-            }
-
-            TestStats {
-                name: test_name, action: TestAction::Write,
-                bytes_processed: total_bytes as usize,
-                elapsed_ms: start.elapsed().as_millis(),
-                thread_id, error_count: 0,
-                total_operations: total_bytes / 8,
-                cycles_completed: cycle,
-                cycles_planned: timing.cycles,
-                stopped_by_time_limit: timing.cycles.map_or(true, |limit| cycle < limit),
             }
         }
 
@@ -281,77 +243,41 @@ macro_rules! spd_read_impl {
         unsafe fn $impl_fn(
             blocks: &[AllocationBlock],
             thread_id: usize,
-            _error_mode: ErrorMode,
+            error_mode: ErrorMode,
             timing: &TestTiming,
             config: &TestMemoryConfig,
             progress: Option<&TestProgress>,
         ) -> TestStats {
             let test_name = "Spd-Read";
-            let start = Instant::now();
-
-            let total_allocated: usize = blocks.iter().map(|b| b.buffer.size()).sum();
-            let extent_size = config.calculate_extent_size(test_name, total_allocated);
-            let test_blocks = prepare_blocks_for_extent(blocks, extent_size, test_name);
-
-            if test_blocks.is_empty() {
-                return TestStats {
-                    name: test_name, action: TestAction::Read,
-                    bytes_processed: 0, elapsed_ms: 0, thread_id,
-                    error_count: 0, total_operations: 0,
-                    cycles_completed: 0, cycles_planned: timing.cycles,
-                    stopped_by_time_limit: false,
-                };
+            let (mut runner, extent) = TestRunner::new(
+                blocks, thread_id, error_mode, timing, config, progress, test_name, TestAction::Read,
+            );
+            if extent.test_size == 0 {
+                return runner.finish_completed(0);
             }
+            let base = extent.ptr;
 
-            // Init phase: scalar fill to ensure physical pages (skipped in dependent mode)
+            // Init phase: scalar fill to ensure physical pages (skipped in dependent mode), not timed
             if !config.skip_init {
-                for tb in &test_blocks {
-                    let base = tb.ptr as *mut u64;
-                    let len_u64 = tb.test_size.min(extent_size) / 8;
-                    scalar_fill(base, len_u64);
-                }
+                scalar_fill(base as *mut u64, extent.test_size / 8);
             }
+            runner.restart_clock();
 
-            let test_start = Instant::now();
-            let mut cycle = 0u32;
-            let mut total_bytes = 0u64;
-            let mut last_progress = Instant::now();
+            // The extent as one chunk under the `whole` chunk mode the built-ins use
+            let spread = runner.chunks(extent.test_size);
 
             loop {
-                cycle += 1;
+                runner.begin_cycle();
 
-                for tb in &test_blocks {
-                    let base = tb.ptr as *const u8;
-                    let working_bytes = tb.test_size.min(extent_size);
-
-                    spd_read_hot!(base, working_bytes, $arch_type, $load_fn, $xor_fn, $setzero_fn);
-
-                    total_bytes += working_bytes as u64;
+                for k in 0..spread.count() {
+                    spd_read_hot!(base.add(spread.start(k)) as *const u8, spread.chunk(), $arch_type, $load_fn, $xor_fn, $setzero_fn);
+                    runner.add_bytes(spread.chunk());
                 }
 
-                if let Some(prog) = progress {
-                    let now = Instant::now();
-                    if now.duration_since(last_progress).as_millis() >= PROGRESS_INTERVAL_MS {
-                        prog.cycles_completed.store(cycle, Ordering::Relaxed);
-                        prog.bytes_processed.store(total_bytes, Ordering::Relaxed);
-                        prog.last_update_ms.store(now.duration_since(start).as_millis() as u64, Ordering::Relaxed);
-                        last_progress = now;
-                    }
+                runner.update_progress();
+                if runner.shutdown_requested() || !runner.should_continue() {
+                    return runner.finish_completed((runner.bytes_processed() / 8) as u64);
                 }
-
-                if SHUTDOWN_REQUESTED.load(Ordering::Relaxed) { break; }
-                if !timing.should_continue(cycle, test_start.elapsed().as_secs() as u32) { break; }
-            }
-
-            TestStats {
-                name: test_name, action: TestAction::Read,
-                bytes_processed: total_bytes as usize,
-                elapsed_ms: start.elapsed().as_millis(),
-                thread_id, error_count: 0,
-                total_operations: total_bytes / 8,
-                cycles_completed: cycle,
-                cycles_planned: timing.cycles,
-                stopped_by_time_limit: timing.cycles.map_or(true, |limit| cycle < limit),
             }
         }
 
@@ -384,98 +310,53 @@ macro_rules! spd_copy_impl {
         unsafe fn $impl_fn(
             blocks: &[AllocationBlock],
             thread_id: usize,
-            _error_mode: ErrorMode,
+            error_mode: ErrorMode,
             timing: &TestTiming,
             config: &TestMemoryConfig,
             progress: Option<&TestProgress>,
         ) -> TestStats {
             let test_name = "Spd-Copy";
-            let start = Instant::now();
-
-            let total_allocated: usize = blocks.iter().map(|b| b.buffer.size()).sum();
-            let extent_size = config.calculate_extent_size(test_name, total_allocated);
-            let test_blocks = prepare_blocks_for_extent(blocks, extent_size, test_name);
-
-            if test_blocks.is_empty() {
-                return TestStats {
-                    name: test_name, action: TestAction::Copy,
-                    bytes_processed: 0, elapsed_ms: 0, thread_id,
-                    error_count: 0, total_operations: 0,
-                    cycles_completed: 0, cycles_planned: timing.cycles,
-                    stopped_by_time_limit: false,
-                };
+            let (mut runner, extent) = TestRunner::new(
+                blocks, thread_id, error_mode, timing, config, progress, test_name, TestAction::Copy,
+            );
+            if extent.test_size == 0 {
+                return runner.finish_completed(0);
             }
+            let base = extent.ptr;
+            // The extent's halves: it is a multiple of 4 KiB, so each half is a multiple of every
+            // vector width
+            let half_bytes = extent.test_size / 2;
 
-            // Init phase: scalar fill source half (skipped in dependent mode)
+            // Init phase: scalar fill source half (skipped in dependent mode), not timed
             if !config.skip_init {
-                let vec_size = std::mem::size_of::<$arch_type>();
-                let align = vec_size * 2;
-                for tb in &test_blocks {
-                    let base = tb.ptr as *mut u64;
-                    let raw_bytes = tb.test_size.min(extent_size);
-                    let working_bytes = (raw_bytes / align) * align;
-                    let half_u64 = working_bytes / 2 / 8;
-                    scalar_fill(base, half_u64);
-                }
+                scalar_fill(base as *mut u64, half_bytes / 8);
             }
+            runner.restart_clock();
 
-            let test_start = Instant::now();
-            let mut cycle = 0u32;
-            let mut total_bytes = 0u64;
-            let mut last_progress = Instant::now();
+            // Each half as one chunk under the `whole` chunk mode the built-ins use
+            let spread = runner.half_chunks(extent.test_size);
+            let (half_a, half_b) = (base, base.add(half_bytes));
 
             loop {
-                cycle += 1;
+                runner.begin_cycle();
 
-                for tb in &test_blocks {
-                    let base = tb.ptr as *mut u8;
-                    let raw_bytes = tb.test_size.min(extent_size);
-                    // Round down to 2×vec_size so both halves are SIMD-aligned
-                    let vec_size = std::mem::size_of::<$arch_type>();
-                    let align = vec_size * 2;
-                    let working_bytes = (raw_bytes / align) * align;
-                    let half_bytes = working_bytes / 2;
-
-                    let half_a = base;
-                    let half_b = base.add(half_bytes);
-
-                    // Bidirectional: A→B then B→A = full extent processed per cycle
-                    spd_copy_hot!(half_a, half_b, half_bytes, $arch_type, $load_fn, $store_fn);
+                // Bidirectional: A→B then B→A, each direction in full = the extent's traffic twice
+                for (src, dst) in [(half_a, half_b), (half_b, half_a)] {
+                    for k in 0..spread.count() {
+                        let offset = spread.start(k);
+                        spd_copy_hot!(src.add(offset), dst.add(offset), spread.chunk(), $arch_type, $load_fn, $store_fn);
+                        // Traffic: the chunk read plus the chunk written
+                        runner.add_bytes(spread.chunk() * 2);
+                    }
                     if $need_sfence {
                         std::arch::x86_64::_mm_sfence();
                     }
-                    spd_copy_hot!(half_b, half_a, half_bytes, $arch_type, $load_fn, $store_fn);
-                    if $need_sfence {
-                        std::arch::x86_64::_mm_sfence();
-                    }
-
-                    // Total traffic = 2 × (read half + write half) = full extent
-                    total_bytes += (working_bytes * 2) as u64;
                 }
 
-                if let Some(prog) = progress {
-                    let now = Instant::now();
-                    if now.duration_since(last_progress).as_millis() >= PROGRESS_INTERVAL_MS {
-                        prog.cycles_completed.store(cycle, Ordering::Relaxed);
-                        prog.bytes_processed.store(total_bytes, Ordering::Relaxed);
-                        prog.last_update_ms.store(now.duration_since(start).as_millis() as u64, Ordering::Relaxed);
-                        last_progress = now;
-                    }
+                runner.update_progress();
+                if runner.shutdown_requested() || !runner.should_continue() {
+                    return runner.finish_completed((runner.bytes_processed() / 8) as u64);
                 }
-
-                if SHUTDOWN_REQUESTED.load(Ordering::Relaxed) { break; }
-                if !timing.should_continue(cycle, test_start.elapsed().as_secs() as u32) { break; }
-            }
-
-            TestStats {
-                name: test_name, action: TestAction::Copy,
-                bytes_processed: total_bytes as usize,
-                elapsed_ms: start.elapsed().as_millis(),
-                thread_id, error_count: 0,
-                total_operations: total_bytes / 8,
-                cycles_completed: cycle,
-                cycles_planned: timing.cycles,
-                stopped_by_time_limit: timing.cycles.map_or(true, |limit| cycle < limit),
             }
         }
 

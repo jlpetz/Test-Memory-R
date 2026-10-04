@@ -2,10 +2,10 @@
 // to defeat prefetchers and ensure accurate latency measurements
 
 use crate::ErrorMode;
-use crate::runner::{AllocationBlock, SHUTDOWN_REQUESTED};
-use crate::tests::{TestAction, TestMemoryConfig, TestProgress, TestTiming, TestStats, prepare_blocks_for_extent};
+use crate::runner::AllocationBlock;
+use crate::tests::{TestAction, TestMemoryConfig, TestProgress, TestTiming, TestStats};
+use crate::test_scaffolding::TestRunner;
 use std::sync::atomic::{fence, Ordering};
-use std::time::Instant;
 
 #[cfg(target_arch = "x86_64")]
 use std::arch::x86_64::__rdtscp;
@@ -119,34 +119,32 @@ impl LatencyTestStats {
 }
 
 
-/// Setup random pointer-chasing pattern in memory
-/// Each u64 location stores the address (as usize cast to u64) of the next random location
-/// This creates a random walk through memory that defeats prefetchers
-unsafe fn setup_pointer_chase(base: *mut u64, len: usize, thread_id: usize) {
-    // Create array of indices
-    let mut indices: Vec<usize> = (0..len).collect();
+/// One step of the setup RNG (xorshift64), mapped onto `[0, n)` by multiply-high: no division.
+#[inline(always)]
+pub(crate) fn below(rng: &mut u64, n: usize) -> usize {
+    *rng ^= *rng << 13;
+    *rng ^= *rng >> 17;
+    *rng ^= *rng << 5;
+    ((*rng as u128 * n as u128) >> 64) as usize
+}
 
-    // Fisher-Yates shuffle using XorShift RNG
-    let mut rng_state = 0x123456789ABCDEFu64.wrapping_add(thread_id as u64);
-    for i in (1..len).rev() {
-        rng_state ^= rng_state << 13;
-        rng_state ^= rng_state >> 17;
-        rng_state ^= rng_state << 5;
-        let j = (rng_state as usize) % (i + 1);
-        indices.swap(i, j);
+/// A random pointer chase through the `n` u64 slots at `base`: each slot holds the address of
+/// the next, and the chain is one cycle through all `n`, so a chase from any slot visits every
+/// slot before it repeats, and no prefetcher can follow it. Sattolo's algorithm in insertion form:
+/// slot i goes in after a random earlier slot. Every one of the (n-1)! single cycles is equally
+/// likely, as with the old shuffle-then-link, but in place, in one ascending pass, with no heap
+/// (TODO 76: the heap index was as big as the extent).
+pub(crate) unsafe fn build_cycle_u64(base: *mut u64, n: usize, seed: u64) {
+    if n == 0 {
+        return;
     }
-
-    // Link: each location points to next in shuffled order
-    for i in 0..len - 1 {
-        let current_addr = base.add(indices[i]);
-        let next_addr = base.add(indices[i + 1]) as usize as u64;
-        *current_addr = next_addr;
+    let mut rng = 0x123456789ABCDEFu64.wrapping_add(seed);
+    *base = base as u64;
+    for i in 1..n {
+        let earlier = base.add(below(&mut rng, i));
+        *base.add(i) = *earlier;
+        *earlier = base.add(i) as u64;
     }
-
-    // Loop back to start
-    let last_addr = base.add(indices[len - 1]);
-    let first_addr = base.add(indices[0]) as usize as u64;
-    *last_addr = first_addr;
 }
 
 /// Read Latency Test - Uses pointer chasing for true random-access latency
@@ -154,101 +152,59 @@ unsafe fn setup_pointer_chase(base: *mut u64, len: usize, thread_id: usize) {
 pub unsafe fn read_latency_multi(
     blocks: &[AllocationBlock],
     thread_id: usize,
-    _error_mode: ErrorMode,
+    error_mode: ErrorMode,
     timing: &TestTiming,
     config: &TestMemoryConfig,
-    _progress: Option<&TestProgress>,
+    progress: Option<&TestProgress>,
 ) -> LatencyTestStats {
     let test_name = "ReadLatency";
-
     // Use TSC frequency detected at startup
     let cpu_ghz = config.tsc_frequency_ghz;
     if cpu_ghz == 0.0 {
         panic!("TSC frequency not detected! Cannot run latency tests on non-x86_64 platforms.");
     }
 
-    let total_allocated: usize = blocks.iter().map(|b| b.buffer.size()).sum();
-    let extent_size = config.calculate_extent_size(test_name, total_allocated);
-    let test_blocks = prepare_blocks_for_extent(blocks, extent_size, test_name);
-
-    if test_blocks.is_empty() {
-        return LatencyTestStats {
-            basic_stats: TestStats {
-                name: test_name,
-                action: TestAction::Read,
-                bytes_processed: 0,
-                elapsed_ms: 0,
-                thread_id,
-                error_count: 0,
-                total_operations: 0,
-                cycles_completed: 0,
-                cycles_planned: timing.cycles,
-                stopped_by_time_limit: false,
-            },
-            ..LatencyTestStats::calculate_percentiles(vec![])
-        };
+    let (mut runner, extent) = TestRunner::new(blocks, thread_id, error_mode, timing, config, progress, test_name, TestAction::Read);
+    if extent.test_size == 0 {
+        return LatencyTestStats { basic_stats: runner.finish_completed(0), ..LatencyTestStats::calculate_percentiles(vec![]) };
     }
 
-    let mut latencies_ns = Vec::with_capacity(10000);
-    let mut total_bytes_processed = 0usize;
-    let mut cycle = 0u32;
-
-    // Use extent size to determine working set - this allows targeting different cache levels:
-    // - L1 Data: ~16-32KB extent
-    // - L2 Cache: ~512KB-1MB extent
-    // - L3 Cache: ~8-16MB extent
-    // - DRAM: 4-8x L3 size extent (64-128MB typical for 16MB L3)
-    let working_set_bytes = extent_size;
-    let working_set_u64 = working_set_bytes / std::mem::size_of::<u64>();
-    let iterations_per_sample = 1000usize; // Fixed iterations for consistent measurements
+    // The chain covers the extent, which targets the tier (L1/L2/L3/DRAM/DRAM-Full)
+    let base = extent.ptr as *mut u64;
+    let len = extent.test_size / std::mem::size_of::<u64>();
+    let iterations = len.min(1000); // Fixed iterations for consistent measurements
 
     log::debug!("[Thread {}] {} - Working set: {} bytes ({} elements) targeting {}",
-        thread_id, test_name, working_set_bytes, working_set_u64,
-        config.extent_mode.target_level_name());
+        thread_id, test_name, extent.test_size, len, config.extent_mode.target_level_name());
 
-    // Setup pointer-chasing pattern for each block (limited to working set size)
-    // Also initialize starting positions for continuous traversal
-    let mut chain_positions: Vec<*mut u64> = Vec::new();
-    for test_block in test_blocks.iter() {
-        let base = test_block.ptr as *mut u64;
-        let block_len = test_block.test_size / std::mem::size_of::<u64>();
-        let len = block_len.min(working_set_u64);
-        setup_pointer_chase(base, len, thread_id);
-        chain_positions.push(base); // Start at beginning
-    }
+    build_cycle_u64(base, len, thread_id as u64);
 
     // Start timing AFTER setup - setup time should not count against test duration
-    let start = Instant::now();
+    runner.restart_clock();
 
-    // Main measurement loop
+    let mut latencies_ns = Vec::with_capacity(10000);
+    // Each sample CONTINUES the chase from where the last one stopped, so it walks the whole
+    // working set, not a cached subset
+    let mut ptr = base;
+
+    // Main measurement loop: one sample per cycle
     loop {
-        cycle += 1;
+        runner.begin_cycle();
 
-        for (block_idx, test_block) in test_blocks.iter().enumerate() {
-            let block_len = test_block.test_size / std::mem::size_of::<u64>();
-            let len = block_len.min(working_set_u64);
-            let iterations = len.min(iterations_per_sample);
+        fence(Ordering::SeqCst);
+        let mut aux = 0u32;
+        let start_cycles = __rdtscp(&mut aux);
 
-            fence(Ordering::SeqCst);
-            let mut aux = 0u32;
-            let start_cycles = __rdtscp(&mut aux);
+        for _ in 0..iterations {
+            let addr = *ptr;  // Read address of next location
+            ptr = addr as *mut u64;  // Jump to that location
+        }
 
-            // Pointer chase - CONTINUE from where we left off (don't restart!)
-            // This ensures we traverse the entire working set, not just cached subset
-            let mut ptr = chain_positions[block_idx];
-            for _ in 0..iterations {
-                let addr = *ptr;  // Read address of next location
-                ptr = addr as *mut u64;  // Jump to that location
-            }
+        let end_cycles = __rdtscp(&mut aux);
+        fence(Ordering::SeqCst);
 
-            let end_cycles = __rdtscp(&mut aux);
-            fence(Ordering::SeqCst);
-
-            // Save position for next sample - continue traversing the chain
-            chain_positions[block_idx] = ptr;
-
-            // Use result to prevent optimization
-            std::hint::black_box(ptr);
+        // Use result to prevent optimization
+        std::hint::black_box(ptr);
 
             let delta_cycles = end_cycles - start_cycles;
             let cycles_per_read = delta_cycles as f64 / iterations as f64;
@@ -260,32 +216,16 @@ pub unsafe fn read_latency_multi(
             }
 
             latencies_ns.push(latency_ns);
-            total_bytes_processed += iterations * 8;
+        runner.add_bytes(iterations * 8);
 
-            if SHUTDOWN_REQUESTED.load(Ordering::Relaxed) {
-                break;
-            }
-        }
-
-        let elapsed_secs = start.elapsed().as_secs() as u32;
-        if !timing.should_continue(cycle, elapsed_secs) {
+        runner.update_progress();
+        if runner.shutdown_requested() || !runner.should_continue() {
             break;
         }
     }
 
     let mut result = LatencyTestStats::calculate_percentiles(latencies_ns);
-    result.basic_stats = TestStats {
-        name: test_name,
-        action: TestAction::Read,
-        bytes_processed: total_bytes_processed,
-        elapsed_ms: start.elapsed().as_millis(),
-        thread_id,
-        error_count: 0,
-        total_operations: total_bytes_processed as u64 / 8,
-        cycles_completed: cycle,
-        cycles_planned: timing.cycles,
-        stopped_by_time_limit: timing.cycles.is_none_or(|limit| cycle < limit),
-    };
+    result.basic_stats = runner.finish_completed((runner.bytes_processed() / 8) as u64);
 
     // Log per-thread results with all percentiles
     log::info!("[Thread {}] {} - {} samples | P1={:.1} P5={:.1} P10={:.1} P25={:.1} P50={:.1} P75={:.1} P90={:.1} P95={:.1} P99={:.1} P99.9={:.1} | Spread={:.2}x",
@@ -302,111 +242,65 @@ pub unsafe fn read_latency_multi(
 pub unsafe fn write_latency_multi(
     blocks: &[AllocationBlock],
     thread_id: usize,
-    _error_mode: ErrorMode,
+    error_mode: ErrorMode,
     timing: &TestTiming,
     config: &TestMemoryConfig,
-    _progress: Option<&TestProgress>,
+    progress: Option<&TestProgress>,
 ) -> LatencyTestStats {
     let test_name = "WriteLatency";
-
     // Use TSC frequency detected at startup
     let cpu_ghz = config.tsc_frequency_ghz;
     if cpu_ghz == 0.0 {
         panic!("TSC frequency not detected! Cannot run latency tests on non-x86_64 platforms.");
     }
 
-    let total_allocated: usize = blocks.iter().map(|b| b.buffer.size()).sum();
-    let extent_size = config.calculate_extent_size(test_name, total_allocated);
-    let test_blocks = prepare_blocks_for_extent(blocks, extent_size, test_name);
-
-    if test_blocks.is_empty() {
-        return LatencyTestStats {
-            basic_stats: TestStats {
-                name: test_name,
-                action: TestAction::Write,
-                bytes_processed: 0,
-                elapsed_ms: 0,
-                thread_id,
-                error_count: 0,
-                total_operations: 0,
-                cycles_completed: 0,
-                cycles_planned: timing.cycles,
-                stopped_by_time_limit: false,
-            },
-            ..LatencyTestStats::calculate_percentiles(vec![])
-        };
+    let (mut runner, extent) = TestRunner::new(blocks, thread_id, error_mode, timing, config, progress, test_name, TestAction::Write);
+    if extent.test_size == 0 {
+        return LatencyTestStats { basic_stats: runner.finish_completed(0), ..LatencyTestStats::calculate_percentiles(vec![]) };
     }
 
-    let mut latencies_ns = Vec::with_capacity(10000);
-    let mut total_bytes_processed = 0usize;
-    let mut cycle = 0u32;
-
-    // Use extent size to determine working set - allows targeting different cache levels
-    // For write test: split into two halves - pointer chain (read-only) and write targets
-    // This prevents destroying the pointer chain when we write
-    let working_set_bytes = extent_size;
-    let half_working_set_u64 = (working_set_bytes / std::mem::size_of::<u64>()) / 2;
-    let iterations_per_sample = 1000usize;
+    // The extent in two halves: the pointer chain (read only) and the write targets, so the
+    // writes don't destroy the chain
+    let chain_base = extent.ptr as *mut u64;
+    let chain_len = extent.test_size / std::mem::size_of::<u64>() / 2;
+    let write_base = chain_base.add(chain_len);
+    let iterations = chain_len.min(1000);
 
     log::debug!("[Thread {}] {} - Working set: {} bytes ({} elements: {} chain + {} write) targeting {}",
-        thread_id, test_name, working_set_bytes, half_working_set_u64 * 2, half_working_set_u64, half_working_set_u64,
+        thread_id, test_name, extent.test_size, chain_len * 2, chain_len, chain_len,
         config.extent_mode.target_level_name());
 
-    // Setup pointer-chasing pattern in first half (chain region - read only)
-    // Second half is used for writes so we don't destroy the chain
-    // Also initialize starting positions for continuous traversal
-    let mut chain_positions: Vec<*mut u64> = Vec::new();
-    let mut chain_bases: Vec<*mut u64> = Vec::new();
-    let mut write_bases: Vec<*mut u64> = Vec::new();
-    for test_block in test_blocks.iter() {
-        let base = test_block.ptr as *mut u64;
-        let block_len = test_block.test_size / std::mem::size_of::<u64>();
-        let len = (block_len / 2).min(half_working_set_u64);
-        setup_pointer_chase(base, len, thread_id);
-        chain_positions.push(base); // Start at beginning
-        chain_bases.push(base);
-        write_bases.push(base.add(len));
-    }
+    build_cycle_u64(chain_base, chain_len, thread_id as u64);
 
     // Start timing AFTER setup - setup time should not count against test duration
-    let start = Instant::now();
+    runner.restart_clock();
 
-    // Main measurement loop
+    let mut latencies_ns = Vec::with_capacity(10000);
+    // CONTINUE from where the last sample stopped
+    let mut chain_ptr = chain_base;
+
+    // Main measurement loop: one sample per cycle
     loop {
-        cycle += 1;
+        runner.begin_cycle();
 
-        for (block_idx, test_block) in test_blocks.iter().enumerate() {
-            let block_len = test_block.test_size / std::mem::size_of::<u64>();
-            let chain_len = (block_len / 2).min(half_working_set_u64);
-            let iterations = chain_len.min(iterations_per_sample);
+        fence(Ordering::SeqCst);
+        let mut aux = 0u32;
+        let start_cycles = __rdtscp(&mut aux);
 
-            // First half = pointer chain (read-only), Second half = write targets
-            let chain_base = chain_bases[block_idx];
-            let write_base = write_bases[block_idx];
+        // Follow pointer chain to get random offsets, write to parallel region
+        for i in 0..iterations {
+            let next_chain_addr = *chain_ptr;  // Read next from chain (doesn't modify chain)
+            // Calculate offset from chain position, write to parallel location
+            let offset = (chain_ptr as usize - chain_base as usize) / 8;
+            let write_ptr = write_base.add(offset);
+            *write_ptr = i as u64;  // Write to parallel location (random address)
+            chain_ptr = next_chain_addr as *mut u64;  // Move to next in chain
+        }
 
-            fence(Ordering::SeqCst);
-            let mut aux = 0u32;
-            let start_cycles = __rdtscp(&mut aux);
+        let end_cycles = __rdtscp(&mut aux);
+        fence(Ordering::SeqCst);
 
-            // Follow pointer chain to get random offsets, write to parallel region
-            // CONTINUE from where we left off (don't restart!)
-            let mut chain_ptr = chain_positions[block_idx];
-            for i in 0..iterations {
-                let next_chain_addr = *chain_ptr;  // Read next from chain (doesn't modify chain)
-                // Calculate offset from chain position, write to parallel location
-                let offset = (chain_ptr as usize - chain_base as usize) / 8;
-                let write_ptr = write_base.add(offset);
-                *write_ptr = i as u64;  // Write to parallel location (random address)
-                chain_ptr = next_chain_addr as *mut u64;  // Move to next in chain
-            }
-
-            let end_cycles = __rdtscp(&mut aux);
-            fence(Ordering::SeqCst);
-
-            // Save position for next sample
-            chain_positions[block_idx] = chain_ptr;
-
-            std::hint::black_box(chain_ptr);
+        std::hint::black_box(chain_ptr);
 
             let delta_cycles = end_cycles - start_cycles;
             let cycles_per_write = delta_cycles as f64 / iterations as f64;
@@ -418,32 +312,16 @@ pub unsafe fn write_latency_multi(
             }
 
             latencies_ns.push(latency_ns);
-            total_bytes_processed += iterations * 8;
+        runner.add_bytes(iterations * 8);
 
-            if SHUTDOWN_REQUESTED.load(Ordering::Relaxed) {
-                break;
-            }
-        }
-
-        let elapsed_secs = start.elapsed().as_secs() as u32;
-        if !timing.should_continue(cycle, elapsed_secs) {
+        runner.update_progress();
+        if runner.shutdown_requested() || !runner.should_continue() {
             break;
         }
     }
 
     let mut result = LatencyTestStats::calculate_percentiles(latencies_ns);
-    result.basic_stats = TestStats {
-        name: test_name,
-        action: TestAction::Write,
-        bytes_processed: total_bytes_processed,
-        elapsed_ms: start.elapsed().as_millis(),
-        thread_id,
-        error_count: 0,
-        total_operations: total_bytes_processed as u64 / 8,
-        cycles_completed: cycle,
-        cycles_planned: timing.cycles,
-        stopped_by_time_limit: timing.cycles.is_none_or(|limit| cycle < limit),
-    };
+    result.basic_stats = runner.finish_completed((runner.bytes_processed() / 8) as u64);
 
     // Log per-thread results with all percentiles
     log::info!("[Thread {}] {} - {} samples | P1={:.1} P5={:.1} P10={:.1} P25={:.1} P50={:.1} P75={:.1} P90={:.1} P95={:.1} P99={:.1} P99.9={:.1} | Spread={:.2}x",
@@ -460,123 +338,67 @@ pub unsafe fn write_latency_multi(
 pub unsafe fn copy_latency_multi(
     blocks: &[AllocationBlock],
     thread_id: usize,
-    _error_mode: ErrorMode,
+    error_mode: ErrorMode,
     timing: &TestTiming,
     config: &TestMemoryConfig,
-    _progress: Option<&TestProgress>,
+    progress: Option<&TestProgress>,
 ) -> LatencyTestStats {
     let test_name = "CopyLatency";
-
     // Use TSC frequency detected at startup
     let cpu_ghz = config.tsc_frequency_ghz;
     if cpu_ghz == 0.0 {
         panic!("TSC frequency not detected! Cannot run latency tests on non-x86_64 platforms.");
     }
 
-    let total_allocated: usize = blocks.iter().map(|b| b.buffer.size()).sum();
-    let extent_size = config.calculate_extent_size(test_name, total_allocated);
-    let test_blocks = prepare_blocks_for_extent(blocks, extent_size, test_name);
-
-    if test_blocks.is_empty() {
-        return LatencyTestStats {
-            basic_stats: TestStats {
-                name: test_name,
-                action: TestAction::Copy,
-                bytes_processed: 0,
-                elapsed_ms: 0,
-                thread_id,
-                error_count: 0,
-                total_operations: 0,
-                cycles_completed: 0,
-                cycles_planned: timing.cycles,
-                stopped_by_time_limit: false,
-            },
-            ..LatencyTestStats::calculate_percentiles(vec![])
-        };
+    let (mut runner, extent) = TestRunner::new(blocks, thread_id, error_mode, timing, config, progress, test_name, TestAction::Copy);
+    if extent.test_size == 0 {
+        return LatencyTestStats { basic_stats: runner.finish_completed(0), ..LatencyTestStats::calculate_percentiles(vec![]) };
     }
 
-    let mut latencies_ns = Vec::with_capacity(10000);
-    let mut total_bytes_processed = 0usize;
-    let mut cycle = 0u32;
+    // The extent in two halves: src (pointer chain) + dst (write target), so the total
+    // footprint stays within the target tier. Matches Lat-Write's split for comparable results.
+    let src_base = extent.ptr as *mut u64;
+    let half_len = extent.test_size / std::mem::size_of::<u64>() / 2;
+    let dst_base = src_base.add(half_len);
+    let iterations = half_len.min(1000);
 
-    // Use extent size to determine working set - allows targeting different cache levels
-    // Split extent in half: src (pointer chain) + dst (write target) = total footprint stays
-    // within the target tier. Matches Lat-Write's split strategy for comparable results.
-    let working_set_bytes = extent_size;
-    let working_set_u64 = working_set_bytes / std::mem::size_of::<u64>() / 2; // Each buffer = extent/2
-    let iterations_per_sample = 1000usize;
-
-    // Each buffer is extent/2 (src chain + dst writes), total footprint = extent
-    let per_buffer_bytes = working_set_u64 * std::mem::size_of::<u64>();
     log::debug!("[Thread {}] {} - Working set: {} bytes per buffer ({} elements each, {} total) targeting {}",
-        thread_id, test_name, per_buffer_bytes, working_set_u64, working_set_u64 * 2,
+        thread_id, test_name, half_len * std::mem::size_of::<u64>(), half_len, half_len * 2,
         config.extent_mode.target_level_name());
 
-    // Setup pointer-chasing pattern in first half (source)
-    // Also initialize starting positions for continuous traversal
-    let mut chain_positions: Vec<*mut u64> = Vec::new();
-    let mut dst_bases: Vec<*mut u64> = Vec::new();
-    for test_block in test_blocks.iter() {
-        let base = test_block.ptr as *mut u64;
-        let block_len = test_block.test_size / std::mem::size_of::<u64>();
-        let half_len = (block_len / 2).min(working_set_u64);
-
-        // Block needs >= extent bytes (split in half for src chain + dst writes)
-        if half_len < working_set_u64 {
-            let actual_per_buffer = half_len * std::mem::size_of::<u64>();
-            let intended_per_buffer = working_set_u64 * std::mem::size_of::<u64>();
-            log::debug!("[Thread {}] {} - Block smaller than extent: using {} bytes per buffer instead of {} (clamped to block half)",
-                thread_id, test_name, actual_per_buffer, intended_per_buffer);
-        }
-
-        setup_pointer_chase(base, half_len, thread_id);
-        chain_positions.push(base); // Start at beginning
-        dst_bases.push(base.add(half_len));
-    }
-
-    // Track destination position separately (wraps around)
-    let mut dst_positions: Vec<usize> = vec![0; test_blocks.len()];
+    build_cycle_u64(src_base, half_len, thread_id as u64);
 
     // Start timing AFTER setup - setup time should not count against test duration
-    let start = Instant::now();
+    runner.restart_clock();
 
-    // Main measurement loop
+    let mut latencies_ns = Vec::with_capacity(10000);
+    // CONTINUE from where the last sample stopped; the destination walks forward and wraps
+    let mut src_ptr = src_base;
+    let mut dst_offset = 0usize;
+
+    // Main measurement loop: one sample per cycle
     loop {
-        cycle += 1;
+        runner.begin_cycle();
 
-        for (block_idx, test_block) in test_blocks.iter().enumerate() {
-            let block_len = test_block.test_size / std::mem::size_of::<u64>();
-            let half_len = (block_len / 2).min(working_set_u64);
-            let iterations = half_len.min(iterations_per_sample);
+        fence(Ordering::SeqCst);
+        let mut aux = 0u32;
+        let start_cycles = __rdtscp(&mut aux);
 
-            let dst_base = dst_bases[block_idx];
+        // Use pointer chain for source, write to corresponding destination
+        for _ in 0..iterations {
+            let value = *src_ptr;  // Read pointer (also serves as data value)
+            let dst_ptr = dst_base.add(dst_offset);
+            *dst_ptr = value;  // Write to destination
+            src_ptr = value as *mut u64;  // Move source (chain follows the value)
+            dst_offset += 1;
+            if dst_offset >= half_len { dst_offset = 0; }  // Predictable branch — replaces idiv
+        }
 
-            fence(Ordering::SeqCst);
-            let mut aux = 0u32;
-            let start_cycles = __rdtscp(&mut aux);
+        let end_cycles = __rdtscp(&mut aux);
+        fence(Ordering::SeqCst);
 
-            // Use pointer chain for source, write to corresponding destination
-            // CONTINUE from where we left off (don't restart!)
-            let mut src_ptr = chain_positions[block_idx];
-            let mut dst_offset = dst_positions[block_idx];
-            for _ in 0..iterations {
-                let value = *src_ptr;  // Read pointer (also serves as data value)
-                let dst_ptr = dst_base.add(dst_offset);
-                *dst_ptr = value;  // Write to destination
-                src_ptr = value as *mut u64;  // Move source (chain follows the value)
-                dst_offset += 1;
-                if dst_offset >= half_len { dst_offset = 0; }  // Predictable branch — replaces idiv
-            }
-
-            let end_cycles = __rdtscp(&mut aux);
-            fence(Ordering::SeqCst);
-
-            // Save positions for next sample
-            chain_positions[block_idx] = src_ptr;
-            dst_positions[block_idx] = dst_offset;
-
-            std::hint::black_box(src_ptr);
-            std::hint::black_box(dst_offset);
+        std::hint::black_box(src_ptr);
+        std::hint::black_box(dst_offset);
 
             let delta_cycles = end_cycles - start_cycles;
             let cycles_per_copy = delta_cycles as f64 / iterations as f64;
@@ -588,32 +410,16 @@ pub unsafe fn copy_latency_multi(
             }
 
             latencies_ns.push(latency_ns);
-            total_bytes_processed += iterations * 16;
+        runner.add_bytes(iterations * 16);
 
-            if SHUTDOWN_REQUESTED.load(Ordering::Relaxed) {
-                break;
-            }
-        }
-
-        let elapsed_secs = start.elapsed().as_secs() as u32;
-        if !timing.should_continue(cycle, elapsed_secs) {
+        runner.update_progress();
+        if runner.shutdown_requested() || !runner.should_continue() {
             break;
         }
     }
 
     let mut result = LatencyTestStats::calculate_percentiles(latencies_ns);
-    result.basic_stats = TestStats {
-        name: test_name,
-        action: TestAction::Copy,
-        bytes_processed: total_bytes_processed,
-        elapsed_ms: start.elapsed().as_millis(),
-        thread_id,
-        error_count: 0,
-        total_operations: total_bytes_processed as u64 / 16,
-        cycles_completed: cycle,
-        cycles_planned: timing.cycles,
-        stopped_by_time_limit: timing.cycles.is_none_or(|limit| cycle < limit),
-    };
+    result.basic_stats = runner.finish_completed((runner.bytes_processed() / 16) as u64);
 
     // Log per-thread results with all percentiles
     log::info!("[Thread {}] {} - {} samples | P1={:.1} P5={:.1} P10={:.1} P25={:.1} P50={:.1} P75={:.1} P90={:.1} P95={:.1} P99={:.1} P99.9={:.1} | Spread={:.2}x",
@@ -627,3 +433,29 @@ pub unsafe fn copy_latency_multi(
 
 // Note: run_cache_hierarchy_diagnostic() was removed - --cache-latency now uses
 // the same ThreadPool infrastructure as --latency-test with cpus=1 for single-thread mode
+
+#[cfg(test)]
+mod tests {
+    use super::build_cycle_u64;
+
+    /// The chain is one cycle through every slot, for any length, so a chase visits all of the
+    /// working set.
+    #[test]
+    fn the_chain_is_one_cycle_through_every_slot() {
+        for n in [1usize, 2, 3, 7, 64, 1000, 4096] {
+            let mut mem = vec![0u64; n];
+            let base = mem.as_mut_ptr();
+            unsafe { build_cycle_u64(base, n, 3) };
+            let mut seen = vec![false; n];
+            let mut at = base;
+            for _ in 0..n {
+                let i = (at as usize - base as usize) / 8;
+                assert!(!seen[i], "n={n}: slot {i} visited twice");
+                seen[i] = true;
+                at = unsafe { *at } as *mut u64;
+            }
+            assert_eq!(at, base, "n={n}: the chase didn't return to the start");
+            assert!(seen.iter().all(|&s| s));
+        }
+    }
+}

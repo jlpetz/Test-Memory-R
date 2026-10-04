@@ -1,7 +1,7 @@
 use crate::ErrorMode;
 use crate::cache::{CacheInfo, SystemInfo};
 use crate::memory::buffer::MemoryType;
-use crate::constants::{MB, MB_16, MB_32, MB_64, MB_F64, KB, PAGE_SIZE_4KB};
+use crate::constants::{MB, MB_16, MB_32, MB_64, KB, PAGE_SIZE_4KB};
 use std::simd::*; // Docs here https://doc.rust-lang.org/std/simd/index.html
 use std::simd::cmp::SimdPartialEq;
 use std::sync::atomic::Ordering;
@@ -951,6 +951,10 @@ impl TestMemoryConfig {
             | "Bench-Verify-TMR-0" | "Bench-Verify-TMR-1" | "Bench-Verify-TMR-2" | "Bench-Verify-TMR-3" => 8,
             // Sequential bandwidth tests (all SIMD variants: 128/256/512/Auto)
             s if s.starts_with("Spd-") => 64,
+            // Latency tests: one chunk, the extent, under the `whole` chunk mode they register
+            // with; the minimum only matters for a config that gives them another one
+            "ReadLatency" | "WriteLatency" | "CopyLatency" => 16,
+            s if s.starts_with("Lat-") => 448,
             _ => panic!("Unknown test '{}' - add explicit SIMD requirement to calculate_minimum_chunk_size()", test_name),
         };
         
@@ -1067,11 +1071,6 @@ pub struct TestBlock<'a> {
 }
 
 impl<'a> TestBlock<'a> {
-    /// A piece starting at `block`'s base (`prepare_blocks_for_extent`).
-    pub fn at_block(block: &'a crate::runner::AllocationBlock, test_size: usize) -> Self {
-        TestBlock { ptr: block.buffer.as_mut_ptr(), test_size, _blocks: std::marker::PhantomData }
-    }
-
     /// No memory: a thread without blocks.
     pub fn empty() -> Self {
         TestBlock { ptr: std::ptr::null_mut(), test_size: 0, _blocks: std::marker::PhantomData }
@@ -1088,112 +1087,6 @@ impl<'a> TestBlock<'a> {
         TestBlock { ptr, test_size, _blocks: std::marker::PhantomData }
     }
 }
-
-/// Prepare blocks for testing with extent size limits. Only the bandwidth and latency tests use
-/// this now; the correctness tests take the extent from `test_memory::extent_pieces`, which needs
-/// no power-of-two pieces (TODO 76). The latency tests build heap buffers as big as a piece, so
-/// they keep these smaller pieces until their port onto `TestRunner` (TODO 76, from 69 D).
-///
-/// The extent is a **byte budget for the thread's total coverage**, not a per-block cap:
-/// each block contributes `min(block_size, extent_remaining)` until the budget is spent.
-/// A block may therefore be tested *partially* — e.g. a 1 GiB extent over 4 GiB blocks
-/// tests the first 1 GiB of block 0 and stops, rather than covering all 4 GiB.
-///
-/// **Power-of-2 invariant**: a partial contribution is rounded *down* to a power of two, so
-/// `test_size` stays power-of-2 and every chunk divides it evenly (no short final chunk).
-/// Block sizes are already powers of two, so a full contribution is trivially compliant.
-/// The cost is bounded under-coverage on a non-power-of-2 extent (at most the last block's
-/// share); power-of-2 windows — `Absolute`, and fractions of power-of-2 totals — are exact.
-///
-/// Historical note: this used to push **whole blocks only** and `break` once the accumulated
-/// total met the extent, which rounded coverage *up* to a block boundary (a 1 GiB extent over
-/// a 4 GiB block tested 4 GiB — 4× the request). That was a holdover from before the chunk
-/// loops handled arbitrary `test_size`; nothing requires `test_size == block_size`.
-pub fn prepare_blocks_for_extent<'a>(
-    blocks: &'a [crate::runner::AllocationBlock],
-    extent_size: usize,
-    test_name: &str,
-) -> Vec<TestBlock<'a>> {
-    if blocks.is_empty() {
-        return Vec::new();
-    }
-
-    let mut result = Vec::new();
-    let mut accumulated = 0usize;
-
-    // Blocks are pre-sorted by allocator (largest first)
-    for block in blocks.iter() {
-        let remaining = extent_size.saturating_sub(accumulated);
-        if remaining == 0 {
-            break;
-        }
-
-        let block_size = block.buffer.size();
-
-        // Full block when it fits the remaining budget; otherwise a partial contribution
-        // rounded DOWN to a power of two to keep chunk division exact (see doc above).
-        let test_size = if block_size <= remaining {
-            block_size
-        } else {
-            prev_power_of_two(remaining)
-        };
-
-        if test_size == 0 {
-            // Remaining budget is below the smallest representable power-of-2 span.
-            break;
-        }
-
-        result.push(TestBlock::at_block(block, test_size));
-        accumulated += test_size;
-
-        log::debug!(
-            "{}: Block {} - size {:.2} MiB, testing {:.2} MiB{}",
-            test_name,
-            result.len() - 1,
-            block_size as f64 / MB_F64,
-            test_size as f64 / MB_F64,
-            if test_size == block_size { " (complete block)" } else { " (extent-limited)" }
-        );
-    }
-
-    if result.is_empty() {
-        // Extent smaller than a single power-of-2 span: fall back to the first block so a
-        // test always has something to run on rather than silently doing nothing.
-        let block = &blocks[0];
-        let test_size = block.buffer.size();
-        log::debug!(
-            "{}: Extent {:.2} MiB too small to place any block — falling back to block 0 ({:.2} MiB)",
-            test_name,
-            extent_size as f64 / MB_F64,
-            test_size as f64 / MB_F64
-        );
-        result.push(TestBlock::at_block(block, test_size));
-    } else if accumulated < extent_size {
-        log::debug!(
-            "{}: Covering {:.2} MiB of {:.2} MiB extent ({} block(s); shortfall is the \
-             power-of-2 round-down on a non-power-of-2 extent)",
-            test_name,
-            accumulated as f64 / MB_F64,
-            extent_size as f64 / MB_F64,
-            result.len()
-        );
-    }
-
-    result
-}
-
-/// Largest power of two `<= n` (0 for n == 0). Complements `next_power_of_two()`, which
-/// rounds up and would overshoot an extent budget.
-#[inline]
-fn prev_power_of_two(n: usize) -> usize {
-    if n == 0 {
-        0
-    } else {
-        // Highest set bit: 1 << floor(log2(n))
-        1usize << (usize::BITS - 1 - n.leading_zeros())
-    }
-}
-
 
 // === NEW: Full Memory Stuck Bit Test ===
 /// # Safety

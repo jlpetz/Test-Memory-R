@@ -18,11 +18,12 @@
 // — no metadata embedded — so SIMD ops up to AVX-512 work directly on them.
 
 use crate::ErrorMode;
-use crate::runner::{AllocationBlock, SHUTDOWN_REQUESTED};
-use crate::tests::{TestAction, TestMemoryConfig, TestProgress, TestTiming, TestStats, prepare_blocks_for_extent};
-use crate::latency_tests::LatencyTestStats;
+use crate::runner::AllocationBlock;
+use crate::tests::{TestAction, TestMemoryConfig, TestProgress, TestTiming};
+use crate::latency_tests::{below, LatencyTestStats};
+use crate::test_scaffolding::TestRunner;
+use std::collections::HashMap;
 use std::sync::atomic::{fence, Ordering};
-use std::time::Instant;
 
 #[cfg(target_arch = "x86_64")]
 use std::arch::x86_64::__rdtscp;
@@ -34,7 +35,7 @@ const CACHE_LINE_BYTES: usize = 64;
 // ============================================================================
 //
 // Block of 2 cache lines (128 bytes total):
-//   Line 0 (chain cell): [prev: 8B][next: 8B][d_target: 8B][unused: 40B]
+//   Line 0 (chain cell): [unused: 8B][next: 8B][d_target: 8B][unused: 40B]
 //   Line 1 (data cell):  64-byte clean payload (writable as full AVX-512)
 //
 // Per-step work: 1 chain read (cache miss → tier latency) + 1 data load at SIMD width.
@@ -47,7 +48,7 @@ const LAYOUT_A_BLOCK_BYTES: usize = 2 * CACHE_LINE_BYTES; // chain + 1 data = 12
 // ============================================================================
 //
 // Block of 7 cache lines (448 bytes total):
-//   Line 0 (chain cell): [prev: 8B][next: 8B][d0..d5: 6×8B = 48B]
+//   Line 0 (chain cell): [unused: 8B][next: 8B][d0..d5: 6×8B = 48B]
 //   Lines 1-6 (data cells): 6× 64-byte clean payloads
 //
 // Per-step work: 1 chain read + 6 SIMD-width data loads. The 6 data loads are independent
@@ -59,19 +60,16 @@ const LAYOUT_B_BLOCK_BYTES: usize = 7 * CACHE_LINE_BYTES; // 1 chain + 6 data = 
 // Setup helpers (shared across all width variants — no SIMD needed for setup)
 // ============================================================================
 
-unsafe fn fisher_yates(slice: &mut [usize], seed: usize) {
-    let len = slice.len();
-    if len < 2 { return; }
-    let mut state = 0x123456789ABCDEFu64.wrapping_add(seed as u64);
-    for i in (1..len).rev() {
-        state ^= state << 13;
-        state ^= state >> 17;
-        state ^= state << 5;
-        let j = (state as usize) % (i + 1);
-        slice.swap(i, j);
-    }
+/// The setup RNG for one of a thread's streams: the seed values are TMR's since v1.
+fn setup_rng(stream: usize) -> u64 {
+    0x123456789ABCDEFu64.wrapping_add(stream as u64)
 }
 
+/// Layout A in place (TODO 76; the heap permutations were an eighth of the extent). The chain
+/// cells form one random cycle (Sattolo in insertion form: cell i goes in after a random earlier
+/// cell), and each chain cell's data target is a random data cell, every one exactly once
+/// (inside-out Fisher-Yates). The same distributions as the old shuffle-then-link, one ascending
+/// pass, no division. Returns the chain's start; any cell is on the cycle.
 unsafe fn setup_layout_a(base: *mut u8, working_bytes: usize, thread_id: usize) -> *mut u64 {
     let block_count = working_bytes / LAYOUT_A_BLOCK_BYTES;
     if block_count < 2 {
@@ -85,26 +83,25 @@ unsafe fn setup_layout_a(base: *mut u8, working_bytes: usize, thread_id: usize) 
         base.add(i * LAYOUT_A_BLOCK_BYTES + CACHE_LINE_BYTES) as *mut u64
     };
 
-    let mut chain_perm: Vec<usize> = (0..block_count).collect();
-    let mut data_perm: Vec<usize> = (0..block_count).collect();
-    fisher_yates(&mut chain_perm, thread_id ^ 0xA1);
-    fisher_yates(&mut data_perm, thread_id ^ 0xA2);
-
-    for i in 0..block_count {
-        let cur_block = chain_perm[i];
-        let next_block = chain_perm[(i + 1) % block_count];
-        let prev_block = chain_perm[(i + block_count - 1) % block_count];
-        let dtarget_block = data_perm[i];
-
-        let cell = chain_addr(cur_block);
-        *cell.add(0) = chain_addr(prev_block) as u64;
-        *cell.add(1) = chain_addr(next_block) as u64;
-        *cell.add(2) = data_addr(dtarget_block) as u64;
+    let mut chain_rng = setup_rng(thread_id ^ 0xA1);
+    let mut data_rng = setup_rng(thread_id ^ 0xA2);
+    *chain_addr(0).add(1) = chain_addr(0) as u64;
+    *chain_addr(0).add(2) = data_addr(0) as u64;
+    for i in 1..block_count {
+        let earlier = chain_addr(below(&mut chain_rng, i));
+        *chain_addr(i).add(1) = *earlier.add(1);
+        *earlier.add(1) = chain_addr(i) as u64;
+        // Target i swaps in with a random one at or below i (at i: the second store wins)
+        let swap = chain_addr(below(&mut data_rng, i + 1)).add(2);
+        *chain_addr(i).add(2) = *swap;
+        *swap = data_addr(i) as u64;
     }
 
-    chain_addr(chain_perm[0])
+    chain_addr(0)
 }
 
+/// Layout B in place, as Layout A: one random cycle through the chain cells, and the 6 data
+/// fields of each a random data cell, every one of the 6 x n exactly once.
 unsafe fn setup_layout_b(base: *mut u8, working_bytes: usize, thread_id: usize) -> *mut u64 {
     let block_count = working_bytes / LAYOUT_B_BLOCK_BYTES;
     if block_count < 2 {
@@ -114,36 +111,44 @@ unsafe fn setup_layout_b(base: *mut u8, working_bytes: usize, thread_id: usize) 
     let chain_addr = |i: usize| -> *mut u64 {
         base.add(i * LAYOUT_B_BLOCK_BYTES) as *mut u64
     };
-    let data_addr = |block: usize, slot: usize| -> *mut u64 {
-        base.add(block * LAYOUT_B_BLOCK_BYTES + (1 + slot) * CACHE_LINE_BYTES) as *mut u64
+    // Data field k: slot k % 6 of chain cell k / 6. Its target: data cell k % 6 of block k / 6.
+    let field = |k: usize| -> *mut u64 { chain_addr(k / 6).add(2 + k % 6) };
+    let data_addr = |k: usize| -> *mut u64 {
+        base.add((k / 6) * LAYOUT_B_BLOCK_BYTES + (1 + k % 6) * CACHE_LINE_BYTES) as *mut u64
     };
 
-    let total_data_cells = block_count * 6;
-    let mut chain_perm: Vec<usize> = (0..block_count).collect();
-    let mut data_perm: Vec<usize> = (0..total_data_cells).collect();
-    fisher_yates(&mut chain_perm, thread_id ^ 0xB1);
-    fisher_yates(&mut data_perm, thread_id ^ 0xB2);
-
-    let mut data_idx = 0usize;
+    let mut chain_rng = setup_rng(thread_id ^ 0xB1);
+    let mut data_rng = setup_rng(thread_id ^ 0xB2);
+    *chain_addr(0).add(1) = chain_addr(0) as u64;
     for i in 0..block_count {
-        let cur_block = chain_perm[i];
-        let next_block = chain_perm[(i + 1) % block_count];
-        let prev_block = chain_perm[(i + block_count - 1) % block_count];
-
-        let cell = chain_addr(cur_block);
-        *cell.add(0) = chain_addr(prev_block) as u64;
-        *cell.add(1) = chain_addr(next_block) as u64;
-
-        for slot in 0..6 {
-            let target_idx = data_perm[data_idx % total_data_cells];
-            data_idx += 1;
-            let target_block = target_idx / 6;
-            let target_slot = target_idx % 6;
-            *cell.add(2 + slot) = data_addr(target_block, target_slot) as u64;
+        if i > 0 {
+            let earlier = chain_addr(below(&mut chain_rng, i));
+            *chain_addr(i).add(1) = *earlier.add(1);
+            *earlier.add(1) = chain_addr(i) as u64;
+        }
+        for k in 6 * i..6 * i + 6 {
+            let swap = field(below(&mut data_rng, k + 1));
+            *field(k) = *swap;
+            *swap = data_addr(k) as u64;
         }
     }
 
-    chain_addr(chain_perm[0])
+    chain_addr(0)
+}
+
+/// The first `k` entries of a uniform random permutation of `0..n` (`k <= n`), without building
+/// the permutation: Fisher-Yates over a sparse map of the entries it has moved. The NT-write
+/// tests take their store addresses from it (TODO 76; the full permutation was the extent / 8).
+fn random_prefix(n: usize, k: usize, seed: usize) -> Vec<usize> {
+    let mut rng = setup_rng(seed);
+    let mut moved: HashMap<usize, usize> = HashMap::with_capacity(k);
+    (0..k).map(|i| {
+        let j = i + below(&mut rng, n - i);
+        let at_j = moved.get(&j).copied().unwrap_or(j);
+        let at_i = moved.get(&i).copied().unwrap_or(i);
+        moved.insert(j, at_i);
+        at_j
+    }).collect()
 }
 
 // ============================================================================
@@ -169,10 +174,10 @@ macro_rules! lat_v2_read_impl {
         pub unsafe fn $pub_fn(
             blocks: &[AllocationBlock],
             thread_id: usize,
-            _error_mode: ErrorMode,
+            error_mode: ErrorMode,
             timing: &TestTiming,
             config: &TestMemoryConfig,
-            _progress: Option<&TestProgress>,
+            progress: Option<&TestProgress>,
         ) -> LatencyTestStats {
             let test_name = "Lat-V2-Read";
             let cpu_ghz = config.tsc_frequency_ghz;
@@ -180,77 +185,63 @@ macro_rules! lat_v2_read_impl {
                 panic!("TSC frequency not detected");
             }
 
-            let total_allocated: usize = blocks.iter().map(|b| b.buffer.size()).sum();
-            let extent_size = config.calculate_extent_size(test_name, total_allocated);
-            let test_blocks = prepare_blocks_for_extent(blocks, extent_size, test_name);
-
-            if test_blocks.is_empty() {
-                return empty_stats(test_name, thread_id, timing);
+            let (mut runner, extent) = TestRunner::new(blocks, thread_id, error_mode, timing, config, progress, test_name, TestAction::Latency);
+            if extent.test_size == 0 {
+                return finalize_stats(&runner, test_name, thread_id, 0, Vec::new());
             }
 
             const ITER: usize = 1000;
 
-            let mut chain_positions: Vec<*mut u64> = Vec::new();
-            for tb in test_blocks.iter() {
-                let base = tb.ptr;
-                let working_bytes = tb.test_size.min(extent_size);
-                let aligned = (working_bytes / LAYOUT_A_BLOCK_BYTES) * LAYOUT_A_BLOCK_BYTES;
-                let start = setup_layout_a(base, aligned, thread_id);
-                chain_positions.push(start);
-            }
+            let aligned = (extent.test_size / LAYOUT_A_BLOCK_BYTES) * LAYOUT_A_BLOCK_BYTES;
+            // Each sample CONTINUES the chase from where the last one stopped
+            let mut chain = setup_layout_a(extent.ptr, aligned, thread_id);
 
             let mut latencies_ns = Vec::with_capacity(10000);
             let mut total_ops = 0u64;
-            let mut cycle = 0u32;
-            let start_time = Instant::now();
+            // Start timing AFTER setup - setup time should not count against test duration
+            runner.restart_clock();
 
             loop {
-                cycle += 1;
+                runner.begin_cycle();
 
-                for (block_idx, _tb) in test_blocks.iter().enumerate() {
-                    fence(Ordering::SeqCst);
-                    let mut aux = 0u32;
-                    let start_cyc = __rdtscp(&mut aux);
+                fence(Ordering::SeqCst);
+                let mut aux = 0u32;
+                let start_cyc = __rdtscp(&mut aux);
 
-                    let mut chain = chain_positions[block_idx];
-                    let mut accum: $vec_type = $zero_fn();
-                    for _ in 0..ITER {
-                        let next = *chain.add(1) as *mut u64;
-                        let dtarget = *chain.add(2) as *const $vec_type;
-                        // SIMD-width load from data cell — pipelines behind chain miss
-                        let v = $load_fn(dtarget);
-                        accum = $xor_fn(accum, v);
-                        chain = next;
-                    }
-
-                    let end_cyc = __rdtscp(&mut aux);
-                    fence(Ordering::SeqCst);
-                    // Reduce the SIMD accumulator to a u64 via the supplied closure, then
-                    // hand it to black_box so the SIMD load isn't optimized away.
-                    let scalar_accum: u64 = ($reduce)(accum);
-                    std::hint::black_box(scalar_accum);
-
-                    chain_positions[block_idx] = chain;
-
-                    let delta = end_cyc - start_cyc;
-                    // 1 op per iteration: chain read is the latency-bearing operation. The
-                    // SIMD data load pipelines in parallel — it exercises data cell address
-                    // space without gating the chain step, so we don't count it.
-                    let ops = ITER as u64;
-                    let cycles_per_op = delta as f64 / ops as f64;
-                    let ns_per_op = cycles_per_op / cpu_ghz;
-
-                    latencies_ns.push(ns_per_op);
-                    total_ops += ops;
-
-                    if SHUTDOWN_REQUESTED.load(Ordering::Relaxed) { break; }
+                let mut accum: $vec_type = $zero_fn();
+                for _ in 0..ITER {
+                    let next = *chain.add(1) as *mut u64;
+                    let dtarget = *chain.add(2) as *const $vec_type;
+                    // SIMD-width load from data cell — pipelines behind chain miss
+                    let v = $load_fn(dtarget);
+                    accum = $xor_fn(accum, v);
+                    chain = next;
                 }
 
-                let elapsed_secs = start_time.elapsed().as_secs() as u32;
-                if !timing.should_continue(cycle, elapsed_secs) { break; }
+                let end_cyc = __rdtscp(&mut aux);
+                fence(Ordering::SeqCst);
+                // Reduce the SIMD accumulator to a u64 via the supplied closure, then
+                // hand it to black_box so the SIMD load isn't optimized away.
+                let scalar_accum: u64 = ($reduce)(accum);
+                std::hint::black_box(scalar_accum);
+
+                let delta = end_cyc - start_cyc;
+                // 1 op per iteration: chain read is the latency-bearing operation. The
+                // SIMD data load pipelines in parallel — it exercises data cell address
+                // space without gating the chain step, so we don't count it.
+                let ops = ITER as u64;
+                let cycles_per_op = delta as f64 / ops as f64;
+                let ns_per_op = cycles_per_op / cpu_ghz;
+
+                latencies_ns.push(ns_per_op);
+                total_ops += ops;
+                runner.add_bytes(ops as usize * 8);
+
+                runner.update_progress();
+                if runner.shutdown_requested() || !runner.should_continue() { break; }
             }
 
-            finalize_stats(test_name, thread_id, total_ops, start_time, cycle, timing, latencies_ns)
+            finalize_stats(&runner, test_name, thread_id, total_ops, latencies_ns)
         }
     }
 }
@@ -278,10 +269,10 @@ macro_rules! lat_v2_write_impl {
         pub unsafe fn $pub_fn(
             blocks: &[AllocationBlock],
             thread_id: usize,
-            _error_mode: ErrorMode,
+            error_mode: ErrorMode,
             timing: &TestTiming,
             config: &TestMemoryConfig,
-            _progress: Option<&TestProgress>,
+            progress: Option<&TestProgress>,
         ) -> LatencyTestStats {
             let test_name = "Lat-V2-Write";
             let cpu_ghz = config.tsc_frequency_ghz;
@@ -289,70 +280,56 @@ macro_rules! lat_v2_write_impl {
                 panic!("TSC frequency not detected");
             }
 
-            let total_allocated: usize = blocks.iter().map(|b| b.buffer.size()).sum();
-            let extent_size = config.calculate_extent_size(test_name, total_allocated);
-            let test_blocks = prepare_blocks_for_extent(blocks, extent_size, test_name);
-
-            if test_blocks.is_empty() {
-                return empty_stats(test_name, thread_id, timing);
+            let (mut runner, extent) = TestRunner::new(blocks, thread_id, error_mode, timing, config, progress, test_name, TestAction::Latency);
+            if extent.test_size == 0 {
+                return finalize_stats(&runner, test_name, thread_id, 0, Vec::new());
             }
 
             const ITER: usize = 1000;
             let pattern: $vec_type = $set1_fn(0x5A5A5A5A_5A5A5A5Au64 as i64);
 
-            let mut chain_positions: Vec<*mut u64> = Vec::new();
-            for tb in test_blocks.iter() {
-                let base = tb.ptr;
-                let working_bytes = tb.test_size.min(extent_size);
-                let aligned = (working_bytes / LAYOUT_A_BLOCK_BYTES) * LAYOUT_A_BLOCK_BYTES;
-                let start = setup_layout_a(base, aligned, thread_id);
-                chain_positions.push(start);
-            }
+            let aligned = (extent.test_size / LAYOUT_A_BLOCK_BYTES) * LAYOUT_A_BLOCK_BYTES;
+            // Each sample CONTINUES the chase from where the last one stopped
+            let mut chain = setup_layout_a(extent.ptr, aligned, thread_id);
 
             let mut latencies_ns = Vec::with_capacity(10000);
             let mut total_ops = 0u64;
-            let mut cycle = 0u32;
-            let start_time = Instant::now();
+            // Start timing AFTER setup - setup time should not count against test duration
+            runner.restart_clock();
 
             loop {
-                cycle += 1;
+                runner.begin_cycle();
 
-                for (block_idx, _tb) in test_blocks.iter().enumerate() {
-                    fence(Ordering::SeqCst);
-                    let mut aux = 0u32;
-                    let start_cyc = __rdtscp(&mut aux);
+                fence(Ordering::SeqCst);
+                let mut aux = 0u32;
+                let start_cyc = __rdtscp(&mut aux);
 
-                    let mut chain = chain_positions[block_idx];
-                    for _ in 0..ITER {
-                        let next = *chain.add(1) as *mut u64;
-                        let dtarget = *chain.add(2) as *mut $vec_type;
-                        // Single SIMD-width cached store — fires into store buffer behind
-                        // the chain miss, retires before next iteration needs the slot.
-                        $store_fn(dtarget, pattern);
-                        chain = next;
-                    }
-
-                    let end_cyc = __rdtscp(&mut aux);
-                    fence(Ordering::SeqCst);
-
-                    chain_positions[block_idx] = chain;
-
-                    let delta = end_cyc - start_cyc;
-                    let ops = ITER as u64;
-                    let cycles_per_op = delta as f64 / ops as f64;
-                    let ns_per_op = cycles_per_op / cpu_ghz;
-
-                    latencies_ns.push(ns_per_op);
-                    total_ops += ops;
-
-                    if SHUTDOWN_REQUESTED.load(Ordering::Relaxed) { break; }
+                for _ in 0..ITER {
+                    let next = *chain.add(1) as *mut u64;
+                    let dtarget = *chain.add(2) as *mut $vec_type;
+                    // Single SIMD-width cached store — fires into store buffer behind
+                    // the chain miss, retires before next iteration needs the slot.
+                    $store_fn(dtarget, pattern);
+                    chain = next;
                 }
 
-                let elapsed_secs = start_time.elapsed().as_secs() as u32;
-                if !timing.should_continue(cycle, elapsed_secs) { break; }
+                let end_cyc = __rdtscp(&mut aux);
+                fence(Ordering::SeqCst);
+
+                let delta = end_cyc - start_cyc;
+                let ops = ITER as u64;
+                let cycles_per_op = delta as f64 / ops as f64;
+                let ns_per_op = cycles_per_op / cpu_ghz;
+
+                latencies_ns.push(ns_per_op);
+                total_ops += ops;
+                runner.add_bytes(ops as usize * 8);
+
+                runner.update_progress();
+                if runner.shutdown_requested() || !runner.should_continue() { break; }
             }
 
-            finalize_stats(test_name, thread_id, total_ops, start_time, cycle, timing, latencies_ns)
+            finalize_stats(&runner, test_name, thread_id, total_ops, latencies_ns)
         }
     }
 }
@@ -382,10 +359,10 @@ macro_rules! lat_v2_copy_impl {
         pub unsafe fn $pub_fn(
             blocks: &[AllocationBlock],
             thread_id: usize,
-            _error_mode: ErrorMode,
+            error_mode: ErrorMode,
             timing: &TestTiming,
             config: &TestMemoryConfig,
-            _progress: Option<&TestProgress>,
+            progress: Option<&TestProgress>,
         ) -> LatencyTestStats {
             let test_name = "Lat-V2-Copy";
             let cpu_ghz = config.tsc_frequency_ghz;
@@ -393,70 +370,56 @@ macro_rules! lat_v2_copy_impl {
                 panic!("TSC frequency not detected");
             }
 
-            let total_allocated: usize = blocks.iter().map(|b| b.buffer.size()).sum();
-            let extent_size = config.calculate_extent_size(test_name, total_allocated);
-            let test_blocks = prepare_blocks_for_extent(blocks, extent_size, test_name);
-
-            if test_blocks.is_empty() {
-                return empty_stats(test_name, thread_id, timing);
+            let (mut runner, extent) = TestRunner::new(blocks, thread_id, error_mode, timing, config, progress, test_name, TestAction::Latency);
+            if extent.test_size == 0 {
+                return finalize_stats(&runner, test_name, thread_id, 0, Vec::new());
             }
 
             const ITER: usize = 1000;
             let mask: $vec_type = $set1_fn(0x5A5A5A5A_5A5A5A5Au64 as i64);
 
-            let mut chain_positions: Vec<*mut u64> = Vec::new();
-            for tb in test_blocks.iter() {
-                let base = tb.ptr;
-                let working_bytes = tb.test_size.min(extent_size);
-                let aligned = (working_bytes / LAYOUT_A_BLOCK_BYTES) * LAYOUT_A_BLOCK_BYTES;
-                let start = setup_layout_a(base, aligned, thread_id);
-                chain_positions.push(start);
-            }
+            let aligned = (extent.test_size / LAYOUT_A_BLOCK_BYTES) * LAYOUT_A_BLOCK_BYTES;
+            // Each sample CONTINUES the chase from where the last one stopped
+            let mut chain = setup_layout_a(extent.ptr, aligned, thread_id);
 
             let mut latencies_ns = Vec::with_capacity(10000);
             let mut total_ops = 0u64;
-            let mut cycle = 0u32;
-            let start_time = Instant::now();
+            // Start timing AFTER setup - setup time should not count against test duration
+            runner.restart_clock();
 
             loop {
-                cycle += 1;
+                runner.begin_cycle();
 
-                for (block_idx, _tb) in test_blocks.iter().enumerate() {
-                    fence(Ordering::SeqCst);
-                    let mut aux = 0u32;
-                    let start_cyc = __rdtscp(&mut aux);
+                fence(Ordering::SeqCst);
+                let mut aux = 0u32;
+                let start_cyc = __rdtscp(&mut aux);
 
-                    let mut chain = chain_positions[block_idx];
-                    for _ in 0..ITER {
-                        let next = *chain.add(1) as *mut u64;
-                        let dtarget = *chain.add(2) as *mut $vec_type;
-                        // Single read-modify-write: load → XOR → store on same cell.
-                        let v = $load_fn(dtarget);
-                        $store_fn(dtarget, $xor_fn(v, mask));
-                        chain = next;
-                    }
-
-                    let end_cyc = __rdtscp(&mut aux);
-                    fence(Ordering::SeqCst);
-
-                    chain_positions[block_idx] = chain;
-
-                    let delta = end_cyc - start_cyc;
-                    let ops = ITER as u64;
-                    let cycles_per_op = delta as f64 / ops as f64;
-                    let ns_per_op = cycles_per_op / cpu_ghz;
-
-                    latencies_ns.push(ns_per_op);
-                    total_ops += ops;
-
-                    if SHUTDOWN_REQUESTED.load(Ordering::Relaxed) { break; }
+                for _ in 0..ITER {
+                    let next = *chain.add(1) as *mut u64;
+                    let dtarget = *chain.add(2) as *mut $vec_type;
+                    // Single read-modify-write: load → XOR → store on same cell.
+                    let v = $load_fn(dtarget);
+                    $store_fn(dtarget, $xor_fn(v, mask));
+                    chain = next;
                 }
 
-                let elapsed_secs = start_time.elapsed().as_secs() as u32;
-                if !timing.should_continue(cycle, elapsed_secs) { break; }
+                let end_cyc = __rdtscp(&mut aux);
+                fence(Ordering::SeqCst);
+
+                let delta = end_cyc - start_cyc;
+                let ops = ITER as u64;
+                let cycles_per_op = delta as f64 / ops as f64;
+                let ns_per_op = cycles_per_op / cpu_ghz;
+
+                latencies_ns.push(ns_per_op);
+                total_ops += ops;
+                runner.add_bytes(ops as usize * 8);
+
+                runner.update_progress();
+                if runner.shutdown_requested() || !runner.should_continue() { break; }
             }
 
-            finalize_stats(test_name, thread_id, total_ops, start_time, cycle, timing, latencies_ns)
+            finalize_stats(&runner, test_name, thread_id, total_ops, latencies_ns)
         }
     }
 }
@@ -480,10 +443,10 @@ macro_rules! lat_v2p_read_impl {
         pub unsafe fn $pub_fn(
             blocks: &[AllocationBlock],
             thread_id: usize,
-            _error_mode: ErrorMode,
+            error_mode: ErrorMode,
             timing: &TestTiming,
             config: &TestMemoryConfig,
-            _progress: Option<&TestProgress>,
+            progress: Option<&TestProgress>,
         ) -> LatencyTestStats {
             let test_name = "Lat-V2P-Read";
             let cpu_ghz = config.tsc_frequency_ghz;
@@ -491,89 +454,75 @@ macro_rules! lat_v2p_read_impl {
                 panic!("TSC frequency not detected");
             }
 
-            let total_allocated: usize = blocks.iter().map(|b| b.buffer.size()).sum();
-            let extent_size = config.calculate_extent_size(test_name, total_allocated);
-            let test_blocks = prepare_blocks_for_extent(blocks, extent_size, test_name);
-
-            if test_blocks.is_empty() {
-                return empty_stats(test_name, thread_id, timing);
+            let (mut runner, extent) = TestRunner::new(blocks, thread_id, error_mode, timing, config, progress, test_name, TestAction::Latency);
+            if extent.test_size == 0 {
+                return finalize_stats(&runner, test_name, thread_id, 0, Vec::new());
             }
 
             const ITER: usize = 1000;
 
-            let mut chain_positions: Vec<*mut u64> = Vec::new();
-            for tb in test_blocks.iter() {
-                let base = tb.ptr;
-                let working_bytes = tb.test_size.min(extent_size);
-                let aligned = (working_bytes / LAYOUT_B_BLOCK_BYTES) * LAYOUT_B_BLOCK_BYTES;
-                let start = setup_layout_b(base, aligned, thread_id);
-                chain_positions.push(start);
-            }
+            let aligned = (extent.test_size / LAYOUT_B_BLOCK_BYTES) * LAYOUT_B_BLOCK_BYTES;
+            // Each sample CONTINUES the chase from where the last one stopped
+            let mut chain = setup_layout_b(extent.ptr, aligned, thread_id);
 
             let mut latencies_ns = Vec::with_capacity(10000);
             let mut total_ops = 0u64;
-            let mut cycle = 0u32;
-            let start_time = Instant::now();
+            // Start timing AFTER setup - setup time should not count against test duration
+            runner.restart_clock();
 
             loop {
-                cycle += 1;
+                runner.begin_cycle();
 
-                for (block_idx, _tb) in test_blocks.iter().enumerate() {
-                    fence(Ordering::SeqCst);
-                    let mut aux = 0u32;
-                    let start_cyc = __rdtscp(&mut aux);
+                fence(Ordering::SeqCst);
+                let mut aux = 0u32;
+                let start_cyc = __rdtscp(&mut aux);
 
-                    let mut chain = chain_positions[block_idx];
-                    let mut accum: $vec_type = $zero_fn();
-                    for _ in 0..ITER {
-                        let next = *chain.add(1) as *mut u64;
-                        let d0 = *chain.add(2) as *const $vec_type;
-                        let d1 = *chain.add(3) as *const $vec_type;
-                        let d2 = *chain.add(4) as *const $vec_type;
-                        let d3 = *chain.add(5) as *const $vec_type;
-                        let d4 = *chain.add(6) as *const $vec_type;
-                        let d5 = *chain.add(7) as *const $vec_type;
-                        // 6 SIMD-width loads — CPU pipelines them through the load buffer
-                        let v0 = $load_fn(d0);
-                        let v1 = $load_fn(d1);
-                        let v2 = $load_fn(d2);
-                        let v3 = $load_fn(d3);
-                        let v4 = $load_fn(d4);
-                        let v5 = $load_fn(d5);
-                        accum = $xor_fn(accum, v0);
-                        accum = $xor_fn(accum, v1);
-                        accum = $xor_fn(accum, v2);
-                        accum = $xor_fn(accum, v3);
-                        accum = $xor_fn(accum, v4);
-                        accum = $xor_fn(accum, v5);
-                        chain = next;
-                    }
-
-                    let end_cyc = __rdtscp(&mut aux);
-                    fence(Ordering::SeqCst);
-                    let scalar_accum: u64 = ($reduce)(accum);
-                    std::hint::black_box(scalar_accum);
-
-                    chain_positions[block_idx] = chain;
-
-                    let delta = end_cyc - start_cyc;
-                    // 1 op per iteration: chain read is latency-bearing. The 6 data loads
-                    // pipeline in parallel through the CPU's load buffer.
-                    let ops = ITER as u64;
-                    let cycles_per_op = delta as f64 / ops as f64;
-                    let ns_per_op = cycles_per_op / cpu_ghz;
-
-                    latencies_ns.push(ns_per_op);
-                    total_ops += ops;
-
-                    if SHUTDOWN_REQUESTED.load(Ordering::Relaxed) { break; }
+                let mut accum: $vec_type = $zero_fn();
+                for _ in 0..ITER {
+                    let next = *chain.add(1) as *mut u64;
+                    let d0 = *chain.add(2) as *const $vec_type;
+                    let d1 = *chain.add(3) as *const $vec_type;
+                    let d2 = *chain.add(4) as *const $vec_type;
+                    let d3 = *chain.add(5) as *const $vec_type;
+                    let d4 = *chain.add(6) as *const $vec_type;
+                    let d5 = *chain.add(7) as *const $vec_type;
+                    // 6 SIMD-width loads — CPU pipelines them through the load buffer
+                    let v0 = $load_fn(d0);
+                    let v1 = $load_fn(d1);
+                    let v2 = $load_fn(d2);
+                    let v3 = $load_fn(d3);
+                    let v4 = $load_fn(d4);
+                    let v5 = $load_fn(d5);
+                    accum = $xor_fn(accum, v0);
+                    accum = $xor_fn(accum, v1);
+                    accum = $xor_fn(accum, v2);
+                    accum = $xor_fn(accum, v3);
+                    accum = $xor_fn(accum, v4);
+                    accum = $xor_fn(accum, v5);
+                    chain = next;
                 }
 
-                let elapsed_secs = start_time.elapsed().as_secs() as u32;
-                if !timing.should_continue(cycle, elapsed_secs) { break; }
+                let end_cyc = __rdtscp(&mut aux);
+                fence(Ordering::SeqCst);
+                let scalar_accum: u64 = ($reduce)(accum);
+                std::hint::black_box(scalar_accum);
+
+                let delta = end_cyc - start_cyc;
+                // 1 op per iteration: chain read is latency-bearing. The 6 data loads
+                // pipeline in parallel through the CPU's load buffer.
+                let ops = ITER as u64;
+                let cycles_per_op = delta as f64 / ops as f64;
+                let ns_per_op = cycles_per_op / cpu_ghz;
+
+                latencies_ns.push(ns_per_op);
+                total_ops += ops;
+                runner.add_bytes(ops as usize * 8);
+
+                runner.update_progress();
+                if runner.shutdown_requested() || !runner.should_continue() { break; }
             }
 
-            finalize_stats(test_name, thread_id, total_ops, start_time, cycle, timing, latencies_ns)
+            finalize_stats(&runner, test_name, thread_id, total_ops, latencies_ns)
         }
     }
 }
@@ -604,10 +553,10 @@ macro_rules! lat_v2p_write_impl {
         pub unsafe fn $pub_fn(
             blocks: &[AllocationBlock],
             thread_id: usize,
-            _error_mode: ErrorMode,
+            error_mode: ErrorMode,
             timing: &TestTiming,
             config: &TestMemoryConfig,
-            _progress: Option<&TestProgress>,
+            progress: Option<&TestProgress>,
         ) -> LatencyTestStats {
             let test_name = "Lat-V2P-Write";
             let cpu_ghz = config.tsc_frequency_ghz;
@@ -615,85 +564,71 @@ macro_rules! lat_v2p_write_impl {
                 panic!("TSC frequency not detected");
             }
 
-            let total_allocated: usize = blocks.iter().map(|b| b.buffer.size()).sum();
-            let extent_size = config.calculate_extent_size(test_name, total_allocated);
-            let test_blocks = prepare_blocks_for_extent(blocks, extent_size, test_name);
-
-            if test_blocks.is_empty() {
-                return empty_stats(test_name, thread_id, timing);
+            let (mut runner, extent) = TestRunner::new(blocks, thread_id, error_mode, timing, config, progress, test_name, TestAction::Latency);
+            if extent.test_size == 0 {
+                return finalize_stats(&runner, test_name, thread_id, 0, Vec::new());
             }
 
             const ITER: usize = 1000;
             let pattern: $vec_type = $set1_fn(0x5A5A5A5A_5A5A5A5Au64 as i64);
 
-            let mut chain_positions: Vec<*mut u64> = Vec::new();
-            for tb in test_blocks.iter() {
-                let base = tb.ptr;
-                let working_bytes = tb.test_size.min(extent_size);
-                let aligned = (working_bytes / LAYOUT_B_BLOCK_BYTES) * LAYOUT_B_BLOCK_BYTES;
-                let start = setup_layout_b(base, aligned, thread_id);
-                chain_positions.push(start);
-            }
+            let aligned = (extent.test_size / LAYOUT_B_BLOCK_BYTES) * LAYOUT_B_BLOCK_BYTES;
+            // Each sample CONTINUES the chase from where the last one stopped
+            let mut chain = setup_layout_b(extent.ptr, aligned, thread_id);
 
             let mut latencies_ns = Vec::with_capacity(10000);
             let mut total_ops = 0u64;
-            let mut cycle = 0u32;
-            let start_time = Instant::now();
+            // Start timing AFTER setup - setup time should not count against test duration
+            runner.restart_clock();
 
             loop {
-                cycle += 1;
+                runner.begin_cycle();
 
-                for (block_idx, _tb) in test_blocks.iter().enumerate() {
-                    fence(Ordering::SeqCst);
-                    let mut aux = 0u32;
-                    let start_cyc = __rdtscp(&mut aux);
+                fence(Ordering::SeqCst);
+                let mut aux = 0u32;
+                let start_cyc = __rdtscp(&mut aux);
 
-                    let mut chain = chain_positions[block_idx];
-                    for _ in 0..ITER {
-                        let next = *chain.add(1) as *mut u64;
-                        let d0 = *chain.add(2) as *mut $vec_type;
-                        let d1 = *chain.add(3) as *mut $vec_type;
-                        let d2 = *chain.add(4) as *mut $vec_type;
-                        let d3 = *chain.add(5) as *mut $vec_type;
-                        let d4 = *chain.add(6) as *mut $vec_type;
-                        let d5 = *chain.add(7) as *mut $vec_type;
-                        // 6 SIMD-width cached stores — fire into store buffer, pipeline
-                        // behind the chain miss. Hypothesis test: at DRAM tier with 6 RFOs
-                        // outstanding per iteration, does the store buffer become a
-                        // measurable bottleneck?
-                        $store_fn(d0, pattern);
-                        $store_fn(d1, pattern);
-                        $store_fn(d2, pattern);
-                        $store_fn(d3, pattern);
-                        $store_fn(d4, pattern);
-                        $store_fn(d5, pattern);
-                        chain = next;
-                    }
-
-                    let end_cyc = __rdtscp(&mut aux);
-                    fence(Ordering::SeqCst);
-
-                    chain_positions[block_idx] = chain;
-
-                    let delta = end_cyc - start_cyc;
-                    // 1 op per iteration: chain read is the latency-bearing operation. The
-                    // 6 writes pipeline through the store buffer. If they ever gate the
-                    // chain step (store buffer fills), it shows up here.
-                    let ops = ITER as u64;
-                    let cycles_per_op = delta as f64 / ops as f64;
-                    let ns_per_op = cycles_per_op / cpu_ghz;
-
-                    latencies_ns.push(ns_per_op);
-                    total_ops += ops;
-
-                    if SHUTDOWN_REQUESTED.load(Ordering::Relaxed) { break; }
+                for _ in 0..ITER {
+                    let next = *chain.add(1) as *mut u64;
+                    let d0 = *chain.add(2) as *mut $vec_type;
+                    let d1 = *chain.add(3) as *mut $vec_type;
+                    let d2 = *chain.add(4) as *mut $vec_type;
+                    let d3 = *chain.add(5) as *mut $vec_type;
+                    let d4 = *chain.add(6) as *mut $vec_type;
+                    let d5 = *chain.add(7) as *mut $vec_type;
+                    // 6 SIMD-width cached stores — fire into store buffer, pipeline
+                    // behind the chain miss. Hypothesis test: at DRAM tier with 6 RFOs
+                    // outstanding per iteration, does the store buffer become a
+                    // measurable bottleneck?
+                    $store_fn(d0, pattern);
+                    $store_fn(d1, pattern);
+                    $store_fn(d2, pattern);
+                    $store_fn(d3, pattern);
+                    $store_fn(d4, pattern);
+                    $store_fn(d5, pattern);
+                    chain = next;
                 }
 
-                let elapsed_secs = start_time.elapsed().as_secs() as u32;
-                if !timing.should_continue(cycle, elapsed_secs) { break; }
+                let end_cyc = __rdtscp(&mut aux);
+                fence(Ordering::SeqCst);
+
+                let delta = end_cyc - start_cyc;
+                // 1 op per iteration: chain read is the latency-bearing operation. The
+                // 6 writes pipeline through the store buffer. If they ever gate the
+                // chain step (store buffer fills), it shows up here.
+                let ops = ITER as u64;
+                let cycles_per_op = delta as f64 / ops as f64;
+                let ns_per_op = cycles_per_op / cpu_ghz;
+
+                latencies_ns.push(ns_per_op);
+                total_ops += ops;
+                runner.add_bytes(ops as usize * 8);
+
+                runner.update_progress();
+                if runner.shutdown_requested() || !runner.should_continue() { break; }
             }
 
-            finalize_stats(test_name, thread_id, total_ops, start_time, cycle, timing, latencies_ns)
+            finalize_stats(&runner, test_name, thread_id, total_ops, latencies_ns)
         }
     }
 }
@@ -730,10 +665,10 @@ macro_rules! lat_v2p_copy_impl {
         pub unsafe fn $pub_fn(
             blocks: &[AllocationBlock],
             thread_id: usize,
-            _error_mode: ErrorMode,
+            error_mode: ErrorMode,
             timing: &TestTiming,
             config: &TestMemoryConfig,
-            _progress: Option<&TestProgress>,
+            progress: Option<&TestProgress>,
         ) -> LatencyTestStats {
             let test_name = "Lat-V2P-Copy";
             let cpu_ghz = config.tsc_frequency_ghz;
@@ -741,83 +676,69 @@ macro_rules! lat_v2p_copy_impl {
                 panic!("TSC frequency not detected");
             }
 
-            let total_allocated: usize = blocks.iter().map(|b| b.buffer.size()).sum();
-            let extent_size = config.calculate_extent_size(test_name, total_allocated);
-            let test_blocks = prepare_blocks_for_extent(blocks, extent_size, test_name);
-
-            if test_blocks.is_empty() {
-                return empty_stats(test_name, thread_id, timing);
+            let (mut runner, extent) = TestRunner::new(blocks, thread_id, error_mode, timing, config, progress, test_name, TestAction::Latency);
+            if extent.test_size == 0 {
+                return finalize_stats(&runner, test_name, thread_id, 0, Vec::new());
             }
 
             const ITER: usize = 1000;
             let mask: $vec_type = $set1_fn(0x5A5A5A5A_5A5A5A5Au64 as i64);
 
-            let mut chain_positions: Vec<*mut u64> = Vec::new();
-            for tb in test_blocks.iter() {
-                let base = tb.ptr;
-                let working_bytes = tb.test_size.min(extent_size);
-                let aligned = (working_bytes / LAYOUT_B_BLOCK_BYTES) * LAYOUT_B_BLOCK_BYTES;
-                let start = setup_layout_b(base, aligned, thread_id);
-                chain_positions.push(start);
-            }
+            let aligned = (extent.test_size / LAYOUT_B_BLOCK_BYTES) * LAYOUT_B_BLOCK_BYTES;
+            // Each sample CONTINUES the chase from where the last one stopped
+            let mut chain = setup_layout_b(extent.ptr, aligned, thread_id);
 
             let mut latencies_ns = Vec::with_capacity(10000);
             let mut total_ops = 0u64;
-            let mut cycle = 0u32;
-            let start_time = Instant::now();
+            // Start timing AFTER setup - setup time should not count against test duration
+            runner.restart_clock();
 
             loop {
-                cycle += 1;
+                runner.begin_cycle();
 
-                for (block_idx, _tb) in test_blocks.iter().enumerate() {
-                    fence(Ordering::SeqCst);
-                    let mut aux = 0u32;
-                    let start_cyc = __rdtscp(&mut aux);
+                fence(Ordering::SeqCst);
+                let mut aux = 0u32;
+                let start_cyc = __rdtscp(&mut aux);
 
-                    let mut chain = chain_positions[block_idx];
-                    for _ in 0..ITER {
-                        let next = *chain.add(1) as *mut u64;
-                        let d0 = *chain.add(2) as *mut $vec_type;
-                        let d1 = *chain.add(3) as *mut $vec_type;
-                        let d2 = *chain.add(4) as *mut $vec_type;
-                        let d3 = *chain.add(5) as *mut $vec_type;
-                        let d4 = *chain.add(6) as *mut $vec_type;
-                        let d5 = *chain.add(7) as *mut $vec_type;
-                        // Read-Modify-Write each data cell. Loads warm the lines into L1
-                        // first, so the subsequent stores hit a cached line (no RFO needed).
-                        // Tests the "copy traffic" path — load + store on same cache line.
-                        let v0 = $load_fn(d0); $store_fn(d0, $xor_fn(v0, mask));
-                        let v1 = $load_fn(d1); $store_fn(d1, $xor_fn(v1, mask));
-                        let v2 = $load_fn(d2); $store_fn(d2, $xor_fn(v2, mask));
-                        let v3 = $load_fn(d3); $store_fn(d3, $xor_fn(v3, mask));
-                        let v4 = $load_fn(d4); $store_fn(d4, $xor_fn(v4, mask));
-                        let v5 = $load_fn(d5); $store_fn(d5, $xor_fn(v5, mask));
-                        chain = next;
-                    }
-
-                    let end_cyc = __rdtscp(&mut aux);
-                    fence(Ordering::SeqCst);
-
-                    chain_positions[block_idx] = chain;
-
-                    let delta = end_cyc - start_cyc;
-                    // 1 op per iteration: chain read is the latency-bearing operation.
-                    // The 6 RMW ops pipeline behind the chain miss.
-                    let ops = ITER as u64;
-                    let cycles_per_op = delta as f64 / ops as f64;
-                    let ns_per_op = cycles_per_op / cpu_ghz;
-
-                    latencies_ns.push(ns_per_op);
-                    total_ops += ops;
-
-                    if SHUTDOWN_REQUESTED.load(Ordering::Relaxed) { break; }
+                for _ in 0..ITER {
+                    let next = *chain.add(1) as *mut u64;
+                    let d0 = *chain.add(2) as *mut $vec_type;
+                    let d1 = *chain.add(3) as *mut $vec_type;
+                    let d2 = *chain.add(4) as *mut $vec_type;
+                    let d3 = *chain.add(5) as *mut $vec_type;
+                    let d4 = *chain.add(6) as *mut $vec_type;
+                    let d5 = *chain.add(7) as *mut $vec_type;
+                    // Read-Modify-Write each data cell. Loads warm the lines into L1
+                    // first, so the subsequent stores hit a cached line (no RFO needed).
+                    // Tests the "copy traffic" path — load + store on same cache line.
+                    let v0 = $load_fn(d0); $store_fn(d0, $xor_fn(v0, mask));
+                    let v1 = $load_fn(d1); $store_fn(d1, $xor_fn(v1, mask));
+                    let v2 = $load_fn(d2); $store_fn(d2, $xor_fn(v2, mask));
+                    let v3 = $load_fn(d3); $store_fn(d3, $xor_fn(v3, mask));
+                    let v4 = $load_fn(d4); $store_fn(d4, $xor_fn(v4, mask));
+                    let v5 = $load_fn(d5); $store_fn(d5, $xor_fn(v5, mask));
+                    chain = next;
                 }
 
-                let elapsed_secs = start_time.elapsed().as_secs() as u32;
-                if !timing.should_continue(cycle, elapsed_secs) { break; }
+                let end_cyc = __rdtscp(&mut aux);
+                fence(Ordering::SeqCst);
+
+                let delta = end_cyc - start_cyc;
+                // 1 op per iteration: chain read is the latency-bearing operation.
+                // The 6 RMW ops pipeline behind the chain miss.
+                let ops = ITER as u64;
+                let cycles_per_op = delta as f64 / ops as f64;
+                let ns_per_op = cycles_per_op / cpu_ghz;
+
+                latencies_ns.push(ns_per_op);
+                total_ops += ops;
+                runner.add_bytes(ops as usize * 8);
+
+                runner.update_progress();
+                if runner.shutdown_requested() || !runner.should_continue() { break; }
             }
 
-            finalize_stats(test_name, thread_id, total_ops, start_time, cycle, timing, latencies_ns)
+            finalize_stats(&runner, test_name, thread_id, total_ops, latencies_ns)
         }
     }
 }
@@ -852,10 +773,10 @@ macro_rules! lat_v2p_write_full_impl {
         pub unsafe fn $pub_fn(
             blocks: &[AllocationBlock],
             thread_id: usize,
-            _error_mode: ErrorMode,
+            error_mode: ErrorMode,
             timing: &TestTiming,
             config: &TestMemoryConfig,
-            _progress: Option<&TestProgress>,
+            progress: Option<&TestProgress>,
         ) -> LatencyTestStats {
             let test_name = "Lat-V2P-WriteFull";
             let cpu_ghz = config.tsc_frequency_ghz;
@@ -863,83 +784,69 @@ macro_rules! lat_v2p_write_full_impl {
                 panic!("TSC frequency not detected");
             }
 
-            let total_allocated: usize = blocks.iter().map(|b| b.buffer.size()).sum();
-            let extent_size = config.calculate_extent_size(test_name, total_allocated);
-            let test_blocks = prepare_blocks_for_extent(blocks, extent_size, test_name);
-
-            if test_blocks.is_empty() {
-                return empty_stats(test_name, thread_id, timing);
+            let (mut runner, extent) = TestRunner::new(blocks, thread_id, error_mode, timing, config, progress, test_name, TestAction::Latency);
+            if extent.test_size == 0 {
+                return finalize_stats(&runner, test_name, thread_id, 0, Vec::new());
             }
 
             const ITER: usize = 1000;
             let pattern: $vec_type = $set1_fn(0x5A5A5A5A_5A5A5A5Au64 as i64);
 
-            let mut chain_positions: Vec<*mut u64> = Vec::new();
-            for tb in test_blocks.iter() {
-                let base = tb.ptr;
-                let working_bytes = tb.test_size.min(extent_size);
-                let aligned = (working_bytes / LAYOUT_B_BLOCK_BYTES) * LAYOUT_B_BLOCK_BYTES;
-                let start = setup_layout_b(base, aligned, thread_id);
-                chain_positions.push(start);
-            }
+            let aligned = (extent.test_size / LAYOUT_B_BLOCK_BYTES) * LAYOUT_B_BLOCK_BYTES;
+            // Each sample CONTINUES the chase from where the last one stopped
+            let mut chain = setup_layout_b(extent.ptr, aligned, thread_id);
 
             let mut latencies_ns = Vec::with_capacity(10000);
             let mut total_ops = 0u64;
-            let mut cycle = 0u32;
-            let start_time = Instant::now();
+            // Start timing AFTER setup - setup time should not count against test duration
+            runner.restart_clock();
 
             loop {
-                cycle += 1;
+                runner.begin_cycle();
 
-                for (block_idx, _tb) in test_blocks.iter().enumerate() {
-                    fence(Ordering::SeqCst);
-                    let mut aux = 0u32;
-                    let start_cyc = __rdtscp(&mut aux);
+                fence(Ordering::SeqCst);
+                let mut aux = 0u32;
+                let start_cyc = __rdtscp(&mut aux);
 
-                    let mut chain = chain_positions[block_idx];
-                    for _ in 0..ITER {
-                        let next = *chain.add(1) as *mut u64;
-                        let d0 = *chain.add(2) as *mut $vec_type;
-                        let d1 = *chain.add(3) as *mut $vec_type;
-                        let d2 = *chain.add(4) as *mut $vec_type;
-                        let d3 = *chain.add(5) as *mut $vec_type;
-                        let d4 = *chain.add(6) as *mut $vec_type;
-                        let d5 = *chain.add(7) as *mut $vec_type;
-                        // Write the full 64-byte cache line per cell. Loop unrolled by
-                        // $stores_per_cell so 128/256/512 all touch every byte of every
-                        // target line.
-                        for i in 0..$stores_per_cell {
-                            $store_fn(d0.add(i), pattern);
-                            $store_fn(d1.add(i), pattern);
-                            $store_fn(d2.add(i), pattern);
-                            $store_fn(d3.add(i), pattern);
-                            $store_fn(d4.add(i), pattern);
-                            $store_fn(d5.add(i), pattern);
-                        }
-                        chain = next;
+                for _ in 0..ITER {
+                    let next = *chain.add(1) as *mut u64;
+                    let d0 = *chain.add(2) as *mut $vec_type;
+                    let d1 = *chain.add(3) as *mut $vec_type;
+                    let d2 = *chain.add(4) as *mut $vec_type;
+                    let d3 = *chain.add(5) as *mut $vec_type;
+                    let d4 = *chain.add(6) as *mut $vec_type;
+                    let d5 = *chain.add(7) as *mut $vec_type;
+                    // Write the full 64-byte cache line per cell. Loop unrolled by
+                    // $stores_per_cell so 128/256/512 all touch every byte of every
+                    // target line.
+                    for i in 0..$stores_per_cell {
+                        $store_fn(d0.add(i), pattern);
+                        $store_fn(d1.add(i), pattern);
+                        $store_fn(d2.add(i), pattern);
+                        $store_fn(d3.add(i), pattern);
+                        $store_fn(d4.add(i), pattern);
+                        $store_fn(d5.add(i), pattern);
                     }
-
-                    let end_cyc = __rdtscp(&mut aux);
-                    fence(Ordering::SeqCst);
-
-                    chain_positions[block_idx] = chain;
-
-                    let delta = end_cyc - start_cyc;
-                    let ops = ITER as u64;
-                    let cycles_per_op = delta as f64 / ops as f64;
-                    let ns_per_op = cycles_per_op / cpu_ghz;
-
-                    latencies_ns.push(ns_per_op);
-                    total_ops += ops;
-
-                    if SHUTDOWN_REQUESTED.load(Ordering::Relaxed) { break; }
+                    chain = next;
                 }
 
-                let elapsed_secs = start_time.elapsed().as_secs() as u32;
-                if !timing.should_continue(cycle, elapsed_secs) { break; }
+                let end_cyc = __rdtscp(&mut aux);
+                fence(Ordering::SeqCst);
+
+                let delta = end_cyc - start_cyc;
+                let ops = ITER as u64;
+                let cycles_per_op = delta as f64 / ops as f64;
+                let ns_per_op = cycles_per_op / cpu_ghz;
+
+                latencies_ns.push(ns_per_op);
+                total_ops += ops;
+                runner.add_bytes(ops as usize * 8);
+
+                runner.update_progress();
+                if runner.shutdown_requested() || !runner.should_continue() { break; }
             }
 
-            finalize_stats(test_name, thread_id, total_ops, start_time, cycle, timing, latencies_ns)
+            finalize_stats(&runner, test_name, thread_id, total_ops, latencies_ns)
         }
     }
 }
@@ -970,10 +877,10 @@ macro_rules! lat_v2p_copy_full_impl {
         pub unsafe fn $pub_fn(
             blocks: &[AllocationBlock],
             thread_id: usize,
-            _error_mode: ErrorMode,
+            error_mode: ErrorMode,
             timing: &TestTiming,
             config: &TestMemoryConfig,
-            _progress: Option<&TestProgress>,
+            progress: Option<&TestProgress>,
         ) -> LatencyTestStats {
             let test_name = "Lat-V2P-CopyFull";
             let cpu_ghz = config.tsc_frequency_ghz;
@@ -981,81 +888,67 @@ macro_rules! lat_v2p_copy_full_impl {
                 panic!("TSC frequency not detected");
             }
 
-            let total_allocated: usize = blocks.iter().map(|b| b.buffer.size()).sum();
-            let extent_size = config.calculate_extent_size(test_name, total_allocated);
-            let test_blocks = prepare_blocks_for_extent(blocks, extent_size, test_name);
-
-            if test_blocks.is_empty() {
-                return empty_stats(test_name, thread_id, timing);
+            let (mut runner, extent) = TestRunner::new(blocks, thread_id, error_mode, timing, config, progress, test_name, TestAction::Latency);
+            if extent.test_size == 0 {
+                return finalize_stats(&runner, test_name, thread_id, 0, Vec::new());
             }
 
             const ITER: usize = 1000;
             let mask: $vec_type = $set1_fn(0x5A5A5A5A_5A5A5A5Au64 as i64);
 
-            let mut chain_positions: Vec<*mut u64> = Vec::new();
-            for tb in test_blocks.iter() {
-                let base = tb.ptr;
-                let working_bytes = tb.test_size.min(extent_size);
-                let aligned = (working_bytes / LAYOUT_B_BLOCK_BYTES) * LAYOUT_B_BLOCK_BYTES;
-                let start = setup_layout_b(base, aligned, thread_id);
-                chain_positions.push(start);
-            }
+            let aligned = (extent.test_size / LAYOUT_B_BLOCK_BYTES) * LAYOUT_B_BLOCK_BYTES;
+            // Each sample CONTINUES the chase from where the last one stopped
+            let mut chain = setup_layout_b(extent.ptr, aligned, thread_id);
 
             let mut latencies_ns = Vec::with_capacity(10000);
             let mut total_ops = 0u64;
-            let mut cycle = 0u32;
-            let start_time = Instant::now();
+            // Start timing AFTER setup - setup time should not count against test duration
+            runner.restart_clock();
 
             loop {
-                cycle += 1;
+                runner.begin_cycle();
 
-                for (block_idx, _tb) in test_blocks.iter().enumerate() {
-                    fence(Ordering::SeqCst);
-                    let mut aux = 0u32;
-                    let start_cyc = __rdtscp(&mut aux);
+                fence(Ordering::SeqCst);
+                let mut aux = 0u32;
+                let start_cyc = __rdtscp(&mut aux);
 
-                    let mut chain = chain_positions[block_idx];
-                    for _ in 0..ITER {
-                        let next = *chain.add(1) as *mut u64;
-                        let d0 = *chain.add(2) as *mut $vec_type;
-                        let d1 = *chain.add(3) as *mut $vec_type;
-                        let d2 = *chain.add(4) as *mut $vec_type;
-                        let d3 = *chain.add(5) as *mut $vec_type;
-                        let d4 = *chain.add(6) as *mut $vec_type;
-                        let d5 = *chain.add(7) as *mut $vec_type;
-                        // Full-line RMW: cover every byte of every target line.
-                        for i in 0..$ops_per_cell {
-                            let v0 = $load_fn(d0.add(i)); $store_fn(d0.add(i), $xor_fn(v0, mask));
-                            let v1 = $load_fn(d1.add(i)); $store_fn(d1.add(i), $xor_fn(v1, mask));
-                            let v2 = $load_fn(d2.add(i)); $store_fn(d2.add(i), $xor_fn(v2, mask));
-                            let v3 = $load_fn(d3.add(i)); $store_fn(d3.add(i), $xor_fn(v3, mask));
-                            let v4 = $load_fn(d4.add(i)); $store_fn(d4.add(i), $xor_fn(v4, mask));
-                            let v5 = $load_fn(d5.add(i)); $store_fn(d5.add(i), $xor_fn(v5, mask));
-                        }
-                        chain = next;
+                for _ in 0..ITER {
+                    let next = *chain.add(1) as *mut u64;
+                    let d0 = *chain.add(2) as *mut $vec_type;
+                    let d1 = *chain.add(3) as *mut $vec_type;
+                    let d2 = *chain.add(4) as *mut $vec_type;
+                    let d3 = *chain.add(5) as *mut $vec_type;
+                    let d4 = *chain.add(6) as *mut $vec_type;
+                    let d5 = *chain.add(7) as *mut $vec_type;
+                    // Full-line RMW: cover every byte of every target line.
+                    for i in 0..$ops_per_cell {
+                        let v0 = $load_fn(d0.add(i)); $store_fn(d0.add(i), $xor_fn(v0, mask));
+                        let v1 = $load_fn(d1.add(i)); $store_fn(d1.add(i), $xor_fn(v1, mask));
+                        let v2 = $load_fn(d2.add(i)); $store_fn(d2.add(i), $xor_fn(v2, mask));
+                        let v3 = $load_fn(d3.add(i)); $store_fn(d3.add(i), $xor_fn(v3, mask));
+                        let v4 = $load_fn(d4.add(i)); $store_fn(d4.add(i), $xor_fn(v4, mask));
+                        let v5 = $load_fn(d5.add(i)); $store_fn(d5.add(i), $xor_fn(v5, mask));
                     }
-
-                    let end_cyc = __rdtscp(&mut aux);
-                    fence(Ordering::SeqCst);
-
-                    chain_positions[block_idx] = chain;
-
-                    let delta = end_cyc - start_cyc;
-                    let ops = ITER as u64;
-                    let cycles_per_op = delta as f64 / ops as f64;
-                    let ns_per_op = cycles_per_op / cpu_ghz;
-
-                    latencies_ns.push(ns_per_op);
-                    total_ops += ops;
-
-                    if SHUTDOWN_REQUESTED.load(Ordering::Relaxed) { break; }
+                    chain = next;
                 }
 
-                let elapsed_secs = start_time.elapsed().as_secs() as u32;
-                if !timing.should_continue(cycle, elapsed_secs) { break; }
+                let end_cyc = __rdtscp(&mut aux);
+                fence(Ordering::SeqCst);
+
+                let delta = end_cyc - start_cyc;
+                let ops = ITER as u64;
+                let cycles_per_op = delta as f64 / ops as f64;
+                let ns_per_op = cycles_per_op / cpu_ghz;
+
+                latencies_ns.push(ns_per_op);
+                total_ops += ops;
+                runner.add_bytes(ops as usize * 8);
+
+                runner.update_progress();
+                if runner.shutdown_requested() || !runner.should_continue() { break; }
             }
 
-            finalize_stats(test_name, thread_id, total_ops, start_time, cycle, timing, latencies_ns)
+            finalize_stats(&runner, test_name, thread_id, total_ops, latencies_ns)
         }
     }
 }
@@ -1495,10 +1388,10 @@ macro_rules! lat_ntw_write_impl {
         pub unsafe fn $pub_fn(
             blocks: &[AllocationBlock],
             thread_id: usize,
-            _error_mode: ErrorMode,
+            error_mode: ErrorMode,
             timing: &TestTiming,
             config: &TestMemoryConfig,
-            _progress: Option<&TestProgress>,
+            progress: Option<&TestProgress>,
         ) -> LatencyTestStats {
             use std::arch::x86_64::_mm_sfence;
 
@@ -1508,12 +1401,9 @@ macro_rules! lat_ntw_write_impl {
                 panic!("TSC frequency not detected");
             }
 
-            let total_allocated: usize = blocks.iter().map(|b| b.buffer.size()).sum();
-            let extent_size = config.calculate_extent_size(test_name, total_allocated);
-            let test_blocks = prepare_blocks_for_extent(blocks, extent_size, test_name);
-
-            if test_blocks.is_empty() {
-                return empty_stats(test_name, thread_id, timing);
+            let (mut runner, extent) = TestRunner::new(blocks, thread_id, error_mode, timing, config, progress, test_name, TestAction::Latency);
+            if extent.test_size == 0 {
+                return finalize_stats(&runner, test_name, thread_id, 0, Vec::new());
             }
 
             // Stores per sample. Large enough to saturate WCBs and dilute the warmup phase
@@ -1526,69 +1416,53 @@ macro_rules! lat_ntw_write_impl {
             // cache line — we issue one SIMD-width store per address (writes $vec_size bytes
             // at the start of the line). The vec_size doesn't change per-line commit cost
             // (still one cache line) but changes how many instructions we issue.
-            let mut addr_tables: Vec<Vec<*mut $vec_type>> = Vec::new();
-            for tb in test_blocks.iter() {
-                let base = tb.ptr as *mut u8;
-                let working_bytes = tb.test_size.min(extent_size);
-                let line_count = working_bytes / CACHE_LINE_BYTES;
-                if line_count < 2 {
-                    addr_tables.push(Vec::new());
-                    continue;
-                }
-                let mut perm: Vec<usize> = (0..line_count).collect();
-                fisher_yates(&mut perm, thread_id ^ 0xC1);
-
-                let mut table = Vec::with_capacity(STORES_PER_SAMPLE);
-                for i in 0..STORES_PER_SAMPLE {
-                    let line = perm[i % line_count];
-                    let addr = base.add(line * CACHE_LINE_BYTES) as *mut $vec_type;
-                    table.push(addr);
-                }
-                addr_tables.push(table);
+            // Random distinct lines of the extent, in random order: the first STORES_PER_SAMPLE of a
+            // random permutation of its lines, repeated when it has fewer
+            let line_count = extent.test_size / CACHE_LINE_BYTES;
+            if line_count < 2 {
+                return finalize_stats(&runner, test_name, thread_id, 0, Vec::new());
             }
+            let lines = random_prefix(line_count, line_count.min(STORES_PER_SAMPLE), thread_id ^ 0xC1);
+            let table: Vec<*mut $vec_type> = (0..STORES_PER_SAMPLE)
+                .map(|i| extent.ptr.add(lines[i % lines.len()] * CACHE_LINE_BYTES) as *mut $vec_type)
+                .collect();
 
             let mut latencies_ns = Vec::with_capacity(10000);
             let mut total_ops = 0u64;
-            let mut cycle = 0u32;
-            let start_time = Instant::now();
+            // Start timing AFTER setup - setup time should not count against test duration
+            runner.restart_clock();
 
             loop {
-                cycle += 1;
+                runner.begin_cycle();
 
-                for (block_idx, _tb) in test_blocks.iter().enumerate() {
-                    let table = &addr_tables[block_idx];
-                    if table.is_empty() { continue; }
+                fence(Ordering::SeqCst);
+                let mut aux = 0u32;
+                let start_cyc = __rdtscp(&mut aux);
 
-                    fence(Ordering::SeqCst);
-                    let mut aux = 0u32;
-                    let start_cyc = __rdtscp(&mut aux);
-
-                    for &addr in table.iter() {
-                        $stream_fn(addr, pattern);
-                    }
-                    _mm_sfence();
-
-                    let end_cyc = __rdtscp(&mut aux);
-                    fence(Ordering::SeqCst);
-
-                    let delta = end_cyc - start_cyc;
-                    let cycles_per_op = delta as f64 / STORES_PER_SAMPLE as f64;
-                    let ns_per_op = cycles_per_op / cpu_ghz;
-
-                    latencies_ns.push(ns_per_op);
-                    total_ops += STORES_PER_SAMPLE as u64;
-
-                    if SHUTDOWN_REQUESTED.load(Ordering::Relaxed) { break; }
+                for &addr in table.iter() {
+                    $stream_fn(addr, pattern);
                 }
+                _mm_sfence();
 
-                let elapsed_secs = start_time.elapsed().as_secs() as u32;
-                if !timing.should_continue(cycle, elapsed_secs) { break; }
+                let end_cyc = __rdtscp(&mut aux);
+                fence(Ordering::SeqCst);
+
+                let delta = end_cyc - start_cyc;
+                let cycles_per_op = delta as f64 / STORES_PER_SAMPLE as f64;
+                let ns_per_op = cycles_per_op / cpu_ghz;
+
+                latencies_ns.push(ns_per_op);
+                total_ops += STORES_PER_SAMPLE as u64;
+                runner.add_bytes(STORES_PER_SAMPLE as u64 as usize * 8);
+
+                runner.update_progress();
+                if runner.shutdown_requested() || !runner.should_continue() { break; }
             }
 
             // Suppress unused-vec_size warning; the value is documentary and may be used in
             // future variants that issue multiple stores per cache line.
             let _ = $vec_size;
-            finalize_stats(test_name, thread_id, total_ops, start_time, cycle, timing, latencies_ns)
+            finalize_stats(&runner, test_name, thread_id, total_ops, latencies_ns)
         }
     }
 }
@@ -1602,10 +1476,10 @@ macro_rules! lat_ntw_write_impl {
 pub unsafe fn lat_ntw_write_scalar_multi(
     blocks: &[AllocationBlock],
     thread_id: usize,
-    _error_mode: ErrorMode,
+    error_mode: ErrorMode,
     timing: &TestTiming,
     config: &TestMemoryConfig,
-    _progress: Option<&TestProgress>,
+    progress: Option<&TestProgress>,
 ) -> LatencyTestStats {
     use std::arch::x86_64::{_mm_sfence, _mm_stream_si64};
 
@@ -1615,77 +1489,58 @@ pub unsafe fn lat_ntw_write_scalar_multi(
         panic!("TSC frequency not detected");
     }
 
-    let total_allocated: usize = blocks.iter().map(|b| b.buffer.size()).sum();
-    let extent_size = config.calculate_extent_size(test_name, total_allocated);
-    let test_blocks = prepare_blocks_for_extent(blocks, extent_size, test_name);
-
-    if test_blocks.is_empty() {
-        return empty_stats(test_name, thread_id, timing);
+    let (mut runner, extent) = TestRunner::new(blocks, thread_id, error_mode, timing, config, progress, test_name, TestAction::Latency);
+    if extent.test_size == 0 {
+        return finalize_stats(&runner, test_name, thread_id, 0, Vec::new());
     }
 
     const STORES_PER_SAMPLE: usize = 4096;
     const PATTERN: i64 = 0x5A5A5A5A_5A5A5A5Au64 as i64;
 
-    let mut addr_tables: Vec<Vec<*mut i64>> = Vec::new();
-    for tb in test_blocks.iter() {
-        let base = tb.ptr;
-        let working_bytes = tb.test_size.min(extent_size);
-        let line_count = working_bytes / CACHE_LINE_BYTES;
-        if line_count < 2 {
-            addr_tables.push(Vec::new());
-            continue;
-        }
-        let mut perm: Vec<usize> = (0..line_count).collect();
-        fisher_yates(&mut perm, thread_id ^ 0xC1);
-
-        let mut table = Vec::with_capacity(STORES_PER_SAMPLE);
-        for i in 0..STORES_PER_SAMPLE {
-            let line = perm[i % line_count];
-            let addr = base.add(line * CACHE_LINE_BYTES) as *mut i64;
-            table.push(addr);
-        }
-        addr_tables.push(table);
+    // Random distinct lines of the extent, in random order: the first STORES_PER_SAMPLE of a
+    // random permutation of its lines, repeated when it has fewer
+    let line_count = extent.test_size / CACHE_LINE_BYTES;
+    if line_count < 2 {
+        return finalize_stats(&runner, test_name, thread_id, 0, Vec::new());
     }
+    let lines = random_prefix(line_count, line_count.min(STORES_PER_SAMPLE), thread_id ^ 0xC1);
+    let table: Vec<*mut i64> = (0..STORES_PER_SAMPLE)
+        .map(|i| extent.ptr.add(lines[i % lines.len()] * CACHE_LINE_BYTES) as *mut i64)
+        .collect();
 
     let mut latencies_ns = Vec::with_capacity(10000);
     let mut total_ops = 0u64;
-    let mut cycle = 0u32;
-    let start_time = Instant::now();
+    // Start timing AFTER setup - setup time should not count against test duration
+    runner.restart_clock();
 
     loop {
-        cycle += 1;
+        runner.begin_cycle();
 
-        for (block_idx, _tb) in test_blocks.iter().enumerate() {
-            let table = &addr_tables[block_idx];
-            if table.is_empty() { continue; }
+        fence(Ordering::SeqCst);
+        let mut aux = 0u32;
+        let start_cyc = __rdtscp(&mut aux);
 
-            fence(Ordering::SeqCst);
-            let mut aux = 0u32;
-            let start_cyc = __rdtscp(&mut aux);
-
-            for &addr in table.iter() {
-                _mm_stream_si64(addr, PATTERN);
-            }
-            _mm_sfence();
-
-            let end_cyc = __rdtscp(&mut aux);
-            fence(Ordering::SeqCst);
-
-            let delta = end_cyc - start_cyc;
-            let cycles_per_op = delta as f64 / STORES_PER_SAMPLE as f64;
-            let ns_per_op = cycles_per_op / cpu_ghz;
-
-            latencies_ns.push(ns_per_op);
-            total_ops += STORES_PER_SAMPLE as u64;
-
-            if SHUTDOWN_REQUESTED.load(Ordering::Relaxed) { break; }
+        for &addr in table.iter() {
+            _mm_stream_si64(addr, PATTERN);
         }
+        _mm_sfence();
 
-        let elapsed_secs = start_time.elapsed().as_secs() as u32;
-        if !timing.should_continue(cycle, elapsed_secs) { break; }
+        let end_cyc = __rdtscp(&mut aux);
+        fence(Ordering::SeqCst);
+
+        let delta = end_cyc - start_cyc;
+        let cycles_per_op = delta as f64 / STORES_PER_SAMPLE as f64;
+        let ns_per_op = cycles_per_op / cpu_ghz;
+
+        latencies_ns.push(ns_per_op);
+        total_ops += STORES_PER_SAMPLE as u64;
+        runner.add_bytes(STORES_PER_SAMPLE as u64 as usize * 8);
+
+        runner.update_progress();
+        if runner.shutdown_requested() || !runner.should_continue() { break; }
     }
 
-    finalize_stats(test_name, thread_id, total_ops, start_time, cycle, timing, latencies_ns)
+    finalize_stats(&runner, test_name, thread_id, total_ops, latencies_ns)
 }
 
 lat_ntw_write_impl!(
@@ -1733,35 +1588,13 @@ pub unsafe fn lat_ntw_write_auto_multi(
 // Common stats helpers
 // ============================================================================
 
-fn empty_stats(test_name: &'static str, thread_id: usize, timing: &TestTiming) -> LatencyTestStats {
-    LatencyTestStats {
-        basic_stats: TestStats {
-            name: test_name,
-            action: TestAction::Latency,
-            bytes_processed: 0,
-            elapsed_ms: 0,
-            thread_id,
-            error_count: 0,
-            total_operations: 0,
-            cycles_completed: 0,
-            cycles_planned: timing.cycles,
-            stopped_by_time_limit: false,
-        },
-        latencies_ns: vec![],
-        sample_count: 0,
-        p1_ns: 0.0, p5_ns: 0.0, p10_ns: 0.0, p25_ns: 0.0, p50_ns: 0.0,
-        p75_ns: 0.0, p90_ns: 0.0, p95_ns: 0.0, p99_ns: 0.0, p99_9_ns: 0.0,
-        spread_ratio: 0.0,
-    }
-}
-
+/// The test's stats: the runner's bytes, time and cycles (one sample per cycle), and the
+/// percentiles of the samples.
 fn finalize_stats(
+    runner: &TestRunner<'_>,
     test_name: &'static str,
     thread_id: usize,
     total_ops: u64,
-    start_time: Instant,
-    cycle: u32,
-    timing: &TestTiming,
     latencies_ns: Vec<f64>,
 ) -> LatencyTestStats {
     let mut sorted = latencies_ns;
@@ -1786,18 +1619,7 @@ fn finalize_stats(
     let spread = if p5 > 0.0 { p95 / p5 } else { 0.0 };
 
     let result = LatencyTestStats {
-        basic_stats: TestStats {
-            name: test_name,
-            action: TestAction::Latency,
-            bytes_processed: (total_ops * 8) as usize,
-            elapsed_ms: start_time.elapsed().as_millis(),
-            thread_id,
-            error_count: 0,
-            total_operations: total_ops,
-            cycles_completed: cycle,
-            cycles_planned: timing.cycles,
-            stopped_by_time_limit: timing.cycles.is_none_or(|limit| cycle < limit),
-        },
+        basic_stats: runner.finish_completed(total_ops),
         latencies_ns: sorted,
         sample_count: len,
         p1_ns: p1, p5_ns: p5, p10_ns: p10, p25_ns: p25, p50_ns: p50,
@@ -1810,4 +1632,59 @@ fn finalize_stats(
         result.p5_ns, result.p50_ns, result.p95_ns, result.p99_ns, result.spread_ratio);
 
     result
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// Walks the chain from `start`: every chain cell once, back to the start. Returns the data
+    /// targets in the order the chase meets them.
+    fn chase(start: *mut u64, cells: usize, slots: std::ops::Range<usize>) -> Vec<u64> {
+        let mut seen = std::collections::HashSet::new();
+        let mut targets = Vec::new();
+        let mut at = start;
+        for _ in 0..cells {
+            assert!(seen.insert(at as usize), "a chain cell visited twice");
+            targets.extend(slots.clone().map(|s| unsafe { *at.add(s) }));
+            at = unsafe { *at.add(1) } as *mut u64;
+        }
+        assert_eq!(at, start, "the chase didn't return to the start");
+        targets
+    }
+
+    /// TODO 76: built in place, each layout's chain is one cycle through every chain cell, and
+    /// its data targets are every data cell exactly once.
+    #[test]
+    fn layouts_are_one_cycle_and_a_bijection_onto_the_data_cells() {
+        let cells = 300;
+        let mut mem = vec![std::simd::u64x8::splat(0); cells * 7];
+        let base = mem.as_mut_ptr() as *mut u8;
+        let expect = |block_bytes: usize, slots: usize| -> Vec<u64> {
+            let mut all: Vec<u64> = (0..cells).flat_map(|i| (0..slots).map(move |s| (i * block_bytes + (1 + s) * CACHE_LINE_BYTES) as u64)).collect();
+            all.sort();
+            all
+        };
+
+        let start = unsafe { setup_layout_a(base, cells * LAYOUT_A_BLOCK_BYTES, 5) };
+        let mut targets: Vec<u64> = chase(start, cells, 2..3).iter().map(|&t| t - base as u64).collect();
+        targets.sort();
+        assert_eq!(targets, expect(LAYOUT_A_BLOCK_BYTES, 1));
+
+        let start = unsafe { setup_layout_b(base, cells * LAYOUT_B_BLOCK_BYTES, 5) };
+        let mut targets: Vec<u64> = chase(start, cells, 2..8).iter().map(|&t| t - base as u64).collect();
+        targets.sort();
+        assert_eq!(targets, expect(LAYOUT_B_BLOCK_BYTES, 6));
+    }
+
+    #[test]
+    fn a_random_prefix_is_distinct_and_in_range() {
+        for (n, k) in [(10_000, 4096), (4096, 4096), (5, 5), (1 << 30, 4096)] {
+            let prefix = random_prefix(n, k, 7);
+            assert_eq!(prefix.len(), k);
+            assert!(prefix.iter().all(|&x| x < n));
+            let unique: std::collections::HashSet<_> = prefix.iter().collect();
+            assert_eq!(unique.len(), k, "n={n}: a line repeats");
+        }
+    }
 }

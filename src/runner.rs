@@ -983,7 +983,8 @@ fn execute_test_cycle(ctx: &CycleContext, cycle: u64) -> Option<RunOutcome> {
             test_display_name,
             test_start,
             test_config.timing.duration_secs.map(|secs| Duration::from_secs(secs.into())),
-            !matches!(test_func, TestFunction::Latency(_)),
+            // Every test publishes through its TestRunner, the latency tests too (TODO 76)
+            true,
         );
 
         // Baseline for this test's WHEA attribution. Drain first so anything queued from the
@@ -4379,7 +4380,7 @@ mod tests {
         let cache_info = crate::tests::get_cache_info();
         let avx512 = is_x86_feature_detected!("avx512f");
         create_test_definitions(cache_info).into_iter().filter_map(|mut def| {
-            // The latency tests build heap chains as big as their extent; not this test's subject
+            // The latency tests return other stats: `latency_tests_run_in_place_on_the_span`
             let TestFunction::MultiBlock(test_fn) = def.function else { return None };
             if def.actual_name.contains("512") && !avx512 {
                 return None;
@@ -4477,6 +4478,31 @@ mod tests {
         }
         assert!(verified >= 7, "only {verified} Bench pairs verified");
         assert!(region.guards_intact());
+    }
+
+    /// TODO 76: every latency test builds its chain in place on the span (no heap), takes its
+    /// sample, and writes nothing outside the span.
+    #[test]
+    fn latency_tests_run_in_place_on_the_span() {
+        let region = Region::new(&[256 * KIB, 256 * KIB, 128 * KIB]);
+        let cache_info = crate::tests::get_cache_info();
+        let avx512 = is_x86_feature_detected!("avx512f");
+        let mut ran = 0;
+        for mut def in create_test_definitions(cache_info) {
+            let TestFunction::Latency(test_fn) = def.function else { continue };
+            if def.actual_name.contains("512") && !avx512 {
+                continue;
+            }
+            def.config.timing = TestTiming::cycles_only(1);
+            def.config.thread_count = 1;
+            def.config.tsc_frequency_ghz = 1.0;
+            let stats = unsafe { test_fn(&region.blocks, 0, ErrorMode::Log, &def.config.timing, &def.config, None) };
+            assert_eq!(stats.sample_count, 1, "{} took no sample", def.display_name);
+            assert!(stats.basic_stats.bytes_processed > 0, "{} counted nothing", def.display_name);
+            assert!(region.guards_intact(), "{} wrote outside the region", def.display_name);
+            ran += 1;
+        }
+        assert!(ran >= 100, "only {ran} latency tests ran");
     }
 
     /// Why `subdivisions` is capped at 512: past it, Mem-Stride's shift no longer divides a 4 KiB

@@ -51,7 +51,8 @@ struct RunningTest {
     name: String,
     start: Instant,
     time_limit: Option<Duration>,
-    /// Whether this kind of test publishes live figures. Latency tests don't.
+    /// Whether this kind of test publishes live figures. Every built-in does since TODO 76, when
+    /// the latency tests moved onto `TestRunner`.
     publishes: bool,
     /// Results are in and its errors are in `Position::errors`, so its workers' live errors must
     /// not be added again.
