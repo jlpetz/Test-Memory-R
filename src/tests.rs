@@ -1031,29 +1031,29 @@ impl<'a> TestBlock<'a> {
     }
 }
 
-/// Prepare blocks for testing with window size limits. Only the bandwidth and latency tests use
-/// this now; the correctness tests take the window from `test_memory::extent_pieces`, which needs
+/// Prepare blocks for testing with extent size limits. Only the bandwidth and latency tests use
+/// this now; the correctness tests take the extent from `test_memory::extent_pieces`, which needs
 /// no power-of-two pieces (TODO 76). The latency tests build heap buffers as big as a piece, so
 /// they keep these smaller pieces until their port onto `TestRunner` (TODO 76, from 69 D).
 ///
-/// The window is a **byte budget for the thread's total coverage**, not a per-block cap:
-/// each block contributes `min(block_size, window_remaining)` until the budget is spent.
-/// A block may therefore be tested *partially* — e.g. a 1 GiB window over 4 GiB blocks
+/// The extent is a **byte budget for the thread's total coverage**, not a per-block cap:
+/// each block contributes `min(block_size, extent_remaining)` until the budget is spent.
+/// A block may therefore be tested *partially* — e.g. a 1 GiB extent over 4 GiB blocks
 /// tests the first 1 GiB of block 0 and stops, rather than covering all 4 GiB.
 ///
 /// **Power-of-2 invariant**: a partial contribution is rounded *down* to a power of two, so
 /// `test_size` stays power-of-2 and every chunk divides it evenly (no short final chunk).
 /// Block sizes are already powers of two, so a full contribution is trivially compliant.
-/// The cost is bounded under-coverage on a non-power-of-2 window (at most the last block's
+/// The cost is bounded under-coverage on a non-power-of-2 extent (at most the last block's
 /// share); power-of-2 windows — `Absolute`, and fractions of power-of-2 totals — are exact.
 ///
 /// Historical note: this used to push **whole blocks only** and `break` once the accumulated
-/// total met the window, which rounded coverage *up* to a block boundary (a 1 GiB window over
+/// total met the extent, which rounded coverage *up* to a block boundary (a 1 GiB extent over
 /// a 4 GiB block tested 4 GiB — 4× the request). That was a holdover from before the chunk
 /// loops handled arbitrary `test_size`; nothing requires `test_size == block_size`.
-pub fn prepare_blocks_for_window<'a>(
+pub fn prepare_blocks_for_extent<'a>(
     blocks: &'a [crate::runner::AllocationBlock],
-    window_size: usize,
+    extent_size: usize,
     test_name: &str,
 ) -> Vec<TestBlock<'a>> {
     if blocks.is_empty() {
@@ -1065,7 +1065,7 @@ pub fn prepare_blocks_for_window<'a>(
 
     // Blocks are pre-sorted by allocator (largest first)
     for block in blocks.iter() {
-        let remaining = window_size.saturating_sub(accumulated);
+        let remaining = extent_size.saturating_sub(accumulated);
         if remaining == 0 {
             break;
         }
@@ -1094,29 +1094,29 @@ pub fn prepare_blocks_for_window<'a>(
             result.len() - 1,
             block_size as f64 / MB_F64,
             test_size as f64 / MB_F64,
-            if test_size == block_size { " (complete block)" } else { " (window-limited)" }
+            if test_size == block_size { " (complete block)" } else { " (extent-limited)" }
         );
     }
 
     if result.is_empty() {
-        // Window smaller than a single power-of-2 span: fall back to the first block so a
+        // Extent smaller than a single power-of-2 span: fall back to the first block so a
         // test always has something to run on rather than silently doing nothing.
         let block = &blocks[0];
         let test_size = block.buffer.size();
         log::debug!(
-            "{}: Window {:.2} MiB too small to place any block — falling back to block 0 ({:.2} MiB)",
+            "{}: Extent {:.2} MiB too small to place any block — falling back to block 0 ({:.2} MiB)",
             test_name,
-            window_size as f64 / MB_F64,
+            extent_size as f64 / MB_F64,
             test_size as f64 / MB_F64
         );
         result.push(TestBlock::at_block(block, test_size));
-    } else if accumulated < window_size {
+    } else if accumulated < extent_size {
         log::debug!(
-            "{}: Covering {:.2} MiB of {:.2} MiB window ({} block(s); shortfall is the \
-             power-of-2 round-down on a non-power-of-2 window)",
+            "{}: Covering {:.2} MiB of {:.2} MiB extent ({} block(s); shortfall is the \
+             power-of-2 round-down on a non-power-of-2 extent)",
             test_name,
             accumulated as f64 / MB_F64,
-            window_size as f64 / MB_F64,
+            extent_size as f64 / MB_F64,
             result.len()
         );
     }
@@ -1125,7 +1125,7 @@ pub fn prepare_blocks_for_window<'a>(
 }
 
 /// Largest power of two `<= n` (0 for n == 0). Complements `next_power_of_two()`, which
-/// rounds up and would overshoot a window budget.
+/// rounds up and would overshoot an extent budget.
 #[inline]
 fn prev_power_of_two(n: usize) -> usize {
     if n == 0 {

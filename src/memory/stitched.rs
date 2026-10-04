@@ -1266,7 +1266,7 @@ fn single_page_type(page: PageSizeLevel, size: usize) -> PageType {
 /// Cut each thread's span into `AllocationBlock`s, in address order: every same-page-size run split
 /// into power-of-two blocks, largest first, each but the last marked `joins_next`. The correctness
 /// tests see the span as one region (`test_memory::regions`, TODO 76); the bandwidth and latency
-/// tests still take the power-of-two blocks (`prepare_blocks_for_window`). The buffers are views:
+/// tests still take the power-of-two blocks (`prepare_blocks_for_extent`). The buffers are views:
 /// they share `arena` as their backend, and the memory is released when the last of them drops.
 pub fn into_allocation_blocks<V>(arena: Arc<StitchedArena<V>>) -> HashMap<usize, Vec<AllocationBlock>>
 where

@@ -1331,7 +1331,7 @@ impl LegacyConfig {
                 duration_secs: None,  // Don't use duration-based timing
                 min_duration_secs: None,
                 
-                // Handle TM5 window behavior - no overrides for legacy
+                // The default extent; no per-test override for legacy
                 extent: None,  // Use global default
 
                 chunk: Some(self.chunk_spec(test)),
@@ -1403,33 +1403,33 @@ impl LegacyConfig {
 }
 
     /// TM5 `Test Block Size (Mb)` as a TMR chunk (TODO 79 B1), sized exactly as TM5 sizes it
-    /// (`mt_ini.asm:287-303`, `MainThread.asm:627-661`). 0-3 are fraction codes: window / (V + 1),
+    /// (`mt_ini.asm:287-303`, `MainThread.asm:627-661`). 0-3 are fraction codes: tm5_window / (V + 1),
     /// floored to the `.cfg`'s Lock Memory Granularity, at least one granule. 4 and up are binary
-    /// megabytes. Either is then clamped to the window and floored to 4 KiB. The window is the
-    /// `.cfg`'s own `Testing Window Size`, not TMR's window. A size that differs from the plain
+    /// megabytes. Either is then clamped to tm5_window and floored to 4 KiB. tm5_window is the
+    /// `.cfg`'s own `Testing Window Size`, not TMR's extent. A size that differs from the plain
     /// fraction or value is logged.
     fn chunk_spec(&self, test: &LegacyTest) -> ChunkSpec {
-        let window = self.memory_setup.testing_window_size_mb as u64 * BYTES_PER_MIB;
+        let tm5_window = self.memory_setup.testing_window_size_mb as u64 * BYTES_PER_MIB;
         let granule = crate::test_memory::GRANULE as u64;
         let lock = self.memory_setup.lock_granularity_mb.max(1) as u64 * BYTES_PER_MIB;
         let (size, what) = match test.test_chunk_size_mb {
             code @ 0..=3 => {
-                let part = window / (code as u64 + 1);
+                let part = tm5_window / (code as u64 + 1);
                 let floored = (part / lock).max(1) * lock;
                 if floored != part {
-                    log::info!("TM5 Test{} ({}): Test Block Size {} = window/{} = {:.2} MiB -> {} MiB (TM5 floors it to the {} MiB Lock Memory Granularity)",
+                    log::info!("TM5 Test{} ({}): Test Block Size {} = .cfg window/{} = {:.2} MiB -> {} MiB (TM5 floors it to the {} MiB Lock Memory Granularity)",
                               test.id, test.function, code, code + 1, part as f64 / BYTES_PER_MIB as f64,
                               floored / BYTES_PER_MIB, lock / BYTES_PER_MIB);
                 }
-                (floored.min(window), format!("window/{}", code + 1))
+                (floored.min(tm5_window), format!(".cfg window/{}", code + 1))
             }
             mb => {
                 let requested = mb as u64 * BYTES_PER_MIB;
-                if requested > window {
-                    log::info!("TM5 Test{} ({}): Test Block Size {} MiB is more than the {} MiB window; the chunk is the window",
-                              test.id, test.function, mb, window / BYTES_PER_MIB);
+                if requested > tm5_window {
+                    log::info!("TM5 Test{} ({}): Test Block Size {} MiB is more than the {} MiB .cfg window; the chunk is the .cfg window",
+                              test.id, test.function, mb, tm5_window / BYTES_PER_MIB);
                 }
-                (requested.min(window), format!("{mb} MiB"))
+                (requested.min(tm5_window), format!("{mb} MiB"))
             }
         };
         // TM5 floors to 4 KiB, at least 4 KiB
@@ -1445,7 +1445,7 @@ impl LegacyConfig {
     /// TM5 `Time (%)` as per-chunk repetition (TODO 79 B2), returned as (`verify_reps`,
     /// `write_read_cycles`, `test_reps`). N = test % x global % / 2000, at least 1 (`mtests0.asm`
     /// ST_Check :298-308, MirrorMove_Check :1135-1145, MirrorMove128_Check :1566-1576): how long
-    /// each chunk is worked, not passes over the window. SimpleTest does 4 x (1 fill + N
+    /// each chunk is worked, not passes over the extent. SimpleTest does 4 x (1 fill + N
     /// verifies). MirrorMove does N mirror passes; TMR's test op is a round trip (mirror and
     /// back), so N/2 rounded up, never less dwell than TM5. RefreshStable ignores `Time (%)`.
     /// BlockMove reads it too, but no shipped config uses it and TMR's BlockMove has its own loop,
@@ -1621,7 +1621,7 @@ mod tests {
         assert_eq!(modern.system.memory_strategy.default_extent.size.as_deref(), Some("880MiB"));
     }
 
-    /// An invalid window or chunk spec stops the run: no fallback to the default, which would
+    /// An invalid extent or chunk spec stops the run: no fallback to the default, which would
     /// test something the config didn't ask for. A removed mode such as `fraction` is one.
     #[test]
     fn invalid_specs_are_errors() {
@@ -1708,7 +1708,7 @@ mod tests {
         assert!(matches!(ok.to_error_mode(), ErrorMode::Halt));
     }
 
-    /// TODO 79 B2: `Time (%)` is per-chunk dwell, not whole-window passes.
+    /// TODO 79 B2: `Time (%)` is per-chunk dwell, not whole-extent passes.
     #[test]
     fn tm5_time_percent_is_per_chunk_dwell() {
         let tests = vec![

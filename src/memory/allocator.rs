@@ -334,7 +334,7 @@ impl ThreadFill {
 
 /// plan-pagesize-pref's side of `fill::Fill`. Every request is its own `VirtualAlloc2` block, a
 /// power of two (the bandwidth and latency tests still split windows on that,
-/// `prepare_blocks_for_window`; the correctness tests don't need it, TODO 76) and never bigger
+/// `prepare_blocks_for_extent`; the correctness tests don't need it, TODO 76) and never bigger
 /// than the gap left in the thread it is for: nothing is over-allocated, so
 /// nothing is freed. (The pooled phases this replaced asked against a node's whole deficit, then
 /// freed blocks no thread had room for: TODO 75 A.)

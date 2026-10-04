@@ -19,7 +19,7 @@
 
 use crate::ErrorMode;
 use crate::runner::{AllocationBlock, SHUTDOWN_REQUESTED};
-use crate::tests::{TestAction, TestMemoryConfig, TestProgress, TestTiming, TestStats, prepare_blocks_for_window};
+use crate::tests::{TestAction, TestMemoryConfig, TestProgress, TestTiming, TestStats, prepare_blocks_for_extent};
 use crate::latency_tests::LatencyTestStats;
 use std::sync::atomic::{fence, Ordering};
 use std::time::Instant;
@@ -181,8 +181,8 @@ macro_rules! lat_v2_read_impl {
             }
 
             let total_allocated: usize = blocks.iter().map(|b| b.buffer.size()).sum();
-            let window_size = config.calculate_extent_size(test_name, total_allocated);
-            let test_blocks = prepare_blocks_for_window(blocks, window_size, test_name);
+            let extent_size = config.calculate_extent_size(test_name, total_allocated);
+            let test_blocks = prepare_blocks_for_extent(blocks, extent_size, test_name);
 
             if test_blocks.is_empty() {
                 return empty_stats(test_name, thread_id, timing);
@@ -193,7 +193,7 @@ macro_rules! lat_v2_read_impl {
             let mut chain_positions: Vec<*mut u64> = Vec::new();
             for tb in test_blocks.iter() {
                 let base = tb.ptr;
-                let working_bytes = tb.test_size.min(window_size);
+                let working_bytes = tb.test_size.min(extent_size);
                 let aligned = (working_bytes / LAYOUT_A_BLOCK_BYTES) * LAYOUT_A_BLOCK_BYTES;
                 let start = setup_layout_a(base, aligned, thread_id);
                 chain_positions.push(start);
@@ -290,8 +290,8 @@ macro_rules! lat_v2_write_impl {
             }
 
             let total_allocated: usize = blocks.iter().map(|b| b.buffer.size()).sum();
-            let window_size = config.calculate_extent_size(test_name, total_allocated);
-            let test_blocks = prepare_blocks_for_window(blocks, window_size, test_name);
+            let extent_size = config.calculate_extent_size(test_name, total_allocated);
+            let test_blocks = prepare_blocks_for_extent(blocks, extent_size, test_name);
 
             if test_blocks.is_empty() {
                 return empty_stats(test_name, thread_id, timing);
@@ -303,7 +303,7 @@ macro_rules! lat_v2_write_impl {
             let mut chain_positions: Vec<*mut u64> = Vec::new();
             for tb in test_blocks.iter() {
                 let base = tb.ptr;
-                let working_bytes = tb.test_size.min(window_size);
+                let working_bytes = tb.test_size.min(extent_size);
                 let aligned = (working_bytes / LAYOUT_A_BLOCK_BYTES) * LAYOUT_A_BLOCK_BYTES;
                 let start = setup_layout_a(base, aligned, thread_id);
                 chain_positions.push(start);
@@ -394,8 +394,8 @@ macro_rules! lat_v2_copy_impl {
             }
 
             let total_allocated: usize = blocks.iter().map(|b| b.buffer.size()).sum();
-            let window_size = config.calculate_extent_size(test_name, total_allocated);
-            let test_blocks = prepare_blocks_for_window(blocks, window_size, test_name);
+            let extent_size = config.calculate_extent_size(test_name, total_allocated);
+            let test_blocks = prepare_blocks_for_extent(blocks, extent_size, test_name);
 
             if test_blocks.is_empty() {
                 return empty_stats(test_name, thread_id, timing);
@@ -407,7 +407,7 @@ macro_rules! lat_v2_copy_impl {
             let mut chain_positions: Vec<*mut u64> = Vec::new();
             for tb in test_blocks.iter() {
                 let base = tb.ptr;
-                let working_bytes = tb.test_size.min(window_size);
+                let working_bytes = tb.test_size.min(extent_size);
                 let aligned = (working_bytes / LAYOUT_A_BLOCK_BYTES) * LAYOUT_A_BLOCK_BYTES;
                 let start = setup_layout_a(base, aligned, thread_id);
                 chain_positions.push(start);
@@ -492,8 +492,8 @@ macro_rules! lat_v2p_read_impl {
             }
 
             let total_allocated: usize = blocks.iter().map(|b| b.buffer.size()).sum();
-            let window_size = config.calculate_extent_size(test_name, total_allocated);
-            let test_blocks = prepare_blocks_for_window(blocks, window_size, test_name);
+            let extent_size = config.calculate_extent_size(test_name, total_allocated);
+            let test_blocks = prepare_blocks_for_extent(blocks, extent_size, test_name);
 
             if test_blocks.is_empty() {
                 return empty_stats(test_name, thread_id, timing);
@@ -504,7 +504,7 @@ macro_rules! lat_v2p_read_impl {
             let mut chain_positions: Vec<*mut u64> = Vec::new();
             for tb in test_blocks.iter() {
                 let base = tb.ptr;
-                let working_bytes = tb.test_size.min(window_size);
+                let working_bytes = tb.test_size.min(extent_size);
                 let aligned = (working_bytes / LAYOUT_B_BLOCK_BYTES) * LAYOUT_B_BLOCK_BYTES;
                 let start = setup_layout_b(base, aligned, thread_id);
                 chain_positions.push(start);
@@ -616,8 +616,8 @@ macro_rules! lat_v2p_write_impl {
             }
 
             let total_allocated: usize = blocks.iter().map(|b| b.buffer.size()).sum();
-            let window_size = config.calculate_extent_size(test_name, total_allocated);
-            let test_blocks = prepare_blocks_for_window(blocks, window_size, test_name);
+            let extent_size = config.calculate_extent_size(test_name, total_allocated);
+            let test_blocks = prepare_blocks_for_extent(blocks, extent_size, test_name);
 
             if test_blocks.is_empty() {
                 return empty_stats(test_name, thread_id, timing);
@@ -629,7 +629,7 @@ macro_rules! lat_v2p_write_impl {
             let mut chain_positions: Vec<*mut u64> = Vec::new();
             for tb in test_blocks.iter() {
                 let base = tb.ptr;
-                let working_bytes = tb.test_size.min(window_size);
+                let working_bytes = tb.test_size.min(extent_size);
                 let aligned = (working_bytes / LAYOUT_B_BLOCK_BYTES) * LAYOUT_B_BLOCK_BYTES;
                 let start = setup_layout_b(base, aligned, thread_id);
                 chain_positions.push(start);
@@ -742,8 +742,8 @@ macro_rules! lat_v2p_copy_impl {
             }
 
             let total_allocated: usize = blocks.iter().map(|b| b.buffer.size()).sum();
-            let window_size = config.calculate_extent_size(test_name, total_allocated);
-            let test_blocks = prepare_blocks_for_window(blocks, window_size, test_name);
+            let extent_size = config.calculate_extent_size(test_name, total_allocated);
+            let test_blocks = prepare_blocks_for_extent(blocks, extent_size, test_name);
 
             if test_blocks.is_empty() {
                 return empty_stats(test_name, thread_id, timing);
@@ -755,7 +755,7 @@ macro_rules! lat_v2p_copy_impl {
             let mut chain_positions: Vec<*mut u64> = Vec::new();
             for tb in test_blocks.iter() {
                 let base = tb.ptr;
-                let working_bytes = tb.test_size.min(window_size);
+                let working_bytes = tb.test_size.min(extent_size);
                 let aligned = (working_bytes / LAYOUT_B_BLOCK_BYTES) * LAYOUT_B_BLOCK_BYTES;
                 let start = setup_layout_b(base, aligned, thread_id);
                 chain_positions.push(start);
@@ -864,8 +864,8 @@ macro_rules! lat_v2p_write_full_impl {
             }
 
             let total_allocated: usize = blocks.iter().map(|b| b.buffer.size()).sum();
-            let window_size = config.calculate_extent_size(test_name, total_allocated);
-            let test_blocks = prepare_blocks_for_window(blocks, window_size, test_name);
+            let extent_size = config.calculate_extent_size(test_name, total_allocated);
+            let test_blocks = prepare_blocks_for_extent(blocks, extent_size, test_name);
 
             if test_blocks.is_empty() {
                 return empty_stats(test_name, thread_id, timing);
@@ -877,7 +877,7 @@ macro_rules! lat_v2p_write_full_impl {
             let mut chain_positions: Vec<*mut u64> = Vec::new();
             for tb in test_blocks.iter() {
                 let base = tb.ptr;
-                let working_bytes = tb.test_size.min(window_size);
+                let working_bytes = tb.test_size.min(extent_size);
                 let aligned = (working_bytes / LAYOUT_B_BLOCK_BYTES) * LAYOUT_B_BLOCK_BYTES;
                 let start = setup_layout_b(base, aligned, thread_id);
                 chain_positions.push(start);
@@ -982,8 +982,8 @@ macro_rules! lat_v2p_copy_full_impl {
             }
 
             let total_allocated: usize = blocks.iter().map(|b| b.buffer.size()).sum();
-            let window_size = config.calculate_extent_size(test_name, total_allocated);
-            let test_blocks = prepare_blocks_for_window(blocks, window_size, test_name);
+            let extent_size = config.calculate_extent_size(test_name, total_allocated);
+            let test_blocks = prepare_blocks_for_extent(blocks, extent_size, test_name);
 
             if test_blocks.is_empty() {
                 return empty_stats(test_name, thread_id, timing);
@@ -995,7 +995,7 @@ macro_rules! lat_v2p_copy_full_impl {
             let mut chain_positions: Vec<*mut u64> = Vec::new();
             for tb in test_blocks.iter() {
                 let base = tb.ptr;
-                let working_bytes = tb.test_size.min(window_size);
+                let working_bytes = tb.test_size.min(extent_size);
                 let aligned = (working_bytes / LAYOUT_B_BLOCK_BYTES) * LAYOUT_B_BLOCK_BYTES;
                 let start = setup_layout_b(base, aligned, thread_id);
                 chain_positions.push(start);
@@ -1509,8 +1509,8 @@ macro_rules! lat_ntw_write_impl {
             }
 
             let total_allocated: usize = blocks.iter().map(|b| b.buffer.size()).sum();
-            let window_size = config.calculate_extent_size(test_name, total_allocated);
-            let test_blocks = prepare_blocks_for_window(blocks, window_size, test_name);
+            let extent_size = config.calculate_extent_size(test_name, total_allocated);
+            let test_blocks = prepare_blocks_for_extent(blocks, extent_size, test_name);
 
             if test_blocks.is_empty() {
                 return empty_stats(test_name, thread_id, timing);
@@ -1529,7 +1529,7 @@ macro_rules! lat_ntw_write_impl {
             let mut addr_tables: Vec<Vec<*mut $vec_type>> = Vec::new();
             for tb in test_blocks.iter() {
                 let base = tb.ptr as *mut u8;
-                let working_bytes = tb.test_size.min(window_size);
+                let working_bytes = tb.test_size.min(extent_size);
                 let line_count = working_bytes / CACHE_LINE_BYTES;
                 if line_count < 2 {
                     addr_tables.push(Vec::new());
@@ -1616,8 +1616,8 @@ pub unsafe fn lat_ntw_write_scalar_multi(
     }
 
     let total_allocated: usize = blocks.iter().map(|b| b.buffer.size()).sum();
-    let window_size = config.calculate_extent_size(test_name, total_allocated);
-    let test_blocks = prepare_blocks_for_window(blocks, window_size, test_name);
+    let extent_size = config.calculate_extent_size(test_name, total_allocated);
+    let test_blocks = prepare_blocks_for_extent(blocks, extent_size, test_name);
 
     if test_blocks.is_empty() {
         return empty_stats(test_name, thread_id, timing);
@@ -1629,7 +1629,7 @@ pub unsafe fn lat_ntw_write_scalar_multi(
     let mut addr_tables: Vec<Vec<*mut i64>> = Vec::new();
     for tb in test_blocks.iter() {
         let base = tb.ptr;
-        let working_bytes = tb.test_size.min(window_size);
+        let working_bytes = tb.test_size.min(extent_size);
         let line_count = working_bytes / CACHE_LINE_BYTES;
         if line_count < 2 {
             addr_tables.push(Vec::new());

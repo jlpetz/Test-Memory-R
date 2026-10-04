@@ -509,7 +509,7 @@ apart. A bigger `hugechunk` makes fewer requests, and the threads can end about 
 apart. The allocators differ in block size. plan-pagesize-pref's blocks are its requests, so they
 top out at `hugechunk` and `largechunk` (1 GiB by default for plan-pagesize-pref). stitched's commits merge, so a
 thread's 1 GiB pages come out as one large power-of-two block. Both return power-of-two blocks;
-only the bandwidth and latency tests still rely on that (`prepare_blocks_for_window`). The
+only the bandwidth and latency tests still rely on that (`prepare_blocks_for_extent`). The
 correctness tests see a stitched span as one region (`AllocationBlock::joins_next`, TODO 76).
 
 **NUMA.** Each node's threads draw on that node's pools. 1 GiB and 2 MiB requests name the node
@@ -637,7 +637,7 @@ CLI (`params.rs`), all overridable from JSON:
 | TM5 | TMR | Note |
 |---|---|---|
 | 1 process per core, own VA | 1 thread per core, shared VA | `std::thread` + affinity, no MMF needed |
-| `Testing Window Size (Mb)` | *(no equivalent)* | 64-bit removes the aperture. `WindowMode::Absolute` covers the *sizing* role but not the *addressability* role |
+| `Testing Window Size (Mb)` | *(no equivalent)* | 64-bit removes the aperture. `ExtentMode::Absolute` covers the *sizing* role but not the *addressability* role |
 | AWE locked page pool | Stage 1 blocks | Flat 4 KB pages → sized VA blocks |
 | `MapUserPhysicalPages` rotation | *(nothing)* | Lost capability — see the callout in 2.2 |
 | `Lock Memory Granularity (Mb)` | `blkroundtarget` (share step), `largefloor` (smallest block) | Two quanta: how a share is rounded, and how small a block the allocator will take |
@@ -753,7 +753,7 @@ serve *specific* test capabilities, not for its own sake.
 ### 3.6 Prime95 / y-cruncher / OCCT — cache-tier working sets
 
 Not memory testers, but they solved TMR's Stage 2 problem first. Prime95's FFT size selection
-is exactly `WindowMode::Cache`: small FFTs sit in L1/L2 (a core/power test), large FFTs spill
+is exactly `ExtentMode::Cache`: small FFTs sit in L1/L2 (a core/power test), large FFTs spill
 to DRAM (a memory test). The overclocking community's use of "Large FFT" as a memory-controller
 test is the same idea as `Cache { target: "DRAM*N" }`.
 

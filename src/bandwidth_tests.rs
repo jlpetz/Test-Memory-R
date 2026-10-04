@@ -15,7 +15,7 @@
 
 use crate::ErrorMode;
 use crate::runner::{AllocationBlock, SHUTDOWN_REQUESTED};
-use crate::tests::{TestAction, TestMemoryConfig, TestProgress, TestTiming, TestStats, prepare_blocks_for_window};
+use crate::tests::{TestAction, TestMemoryConfig, TestProgress, TestTiming, TestStats, prepare_blocks_for_extent};
 use std::sync::atomic::Ordering;
 use std::time::Instant;
 
@@ -183,8 +183,8 @@ macro_rules! spd_write_impl {
             let start = Instant::now();
 
             let total_allocated: usize = blocks.iter().map(|b| b.buffer.size()).sum();
-            let window_size = config.calculate_extent_size(test_name, total_allocated);
-            let test_blocks = prepare_blocks_for_window(blocks, window_size, test_name);
+            let extent_size = config.calculate_extent_size(test_name, total_allocated);
+            let test_blocks = prepare_blocks_for_extent(blocks, extent_size, test_name);
 
             if test_blocks.is_empty() {
                 return TestStats {
@@ -200,7 +200,7 @@ macro_rules! spd_write_impl {
             if !config.skip_init {
                 for tb in &test_blocks {
                     let base = tb.ptr as *mut u64;
-                    let len_u64 = tb.test_size.min(window_size) / 8;
+                    let len_u64 = tb.test_size.min(extent_size) / 8;
                     scalar_fill(base, len_u64);
                 }
             }
@@ -216,7 +216,7 @@ macro_rules! spd_write_impl {
 
                 for tb in &test_blocks {
                     let base = tb.ptr as *mut u8;
-                    let working_bytes = tb.test_size.min(window_size);
+                    let working_bytes = tb.test_size.min(extent_size);
 
                     spd_write_hot!(base, working_bytes, pattern, $arch_type, $store_fn);
 
@@ -290,8 +290,8 @@ macro_rules! spd_read_impl {
             let start = Instant::now();
 
             let total_allocated: usize = blocks.iter().map(|b| b.buffer.size()).sum();
-            let window_size = config.calculate_extent_size(test_name, total_allocated);
-            let test_blocks = prepare_blocks_for_window(blocks, window_size, test_name);
+            let extent_size = config.calculate_extent_size(test_name, total_allocated);
+            let test_blocks = prepare_blocks_for_extent(blocks, extent_size, test_name);
 
             if test_blocks.is_empty() {
                 return TestStats {
@@ -307,7 +307,7 @@ macro_rules! spd_read_impl {
             if !config.skip_init {
                 for tb in &test_blocks {
                     let base = tb.ptr as *mut u64;
-                    let len_u64 = tb.test_size.min(window_size) / 8;
+                    let len_u64 = tb.test_size.min(extent_size) / 8;
                     scalar_fill(base, len_u64);
                 }
             }
@@ -322,7 +322,7 @@ macro_rules! spd_read_impl {
 
                 for tb in &test_blocks {
                     let base = tb.ptr as *const u8;
-                    let working_bytes = tb.test_size.min(window_size);
+                    let working_bytes = tb.test_size.min(extent_size);
 
                     spd_read_hot!(base, working_bytes, $arch_type, $load_fn, $xor_fn, $setzero_fn);
 
@@ -393,8 +393,8 @@ macro_rules! spd_copy_impl {
             let start = Instant::now();
 
             let total_allocated: usize = blocks.iter().map(|b| b.buffer.size()).sum();
-            let window_size = config.calculate_extent_size(test_name, total_allocated);
-            let test_blocks = prepare_blocks_for_window(blocks, window_size, test_name);
+            let extent_size = config.calculate_extent_size(test_name, total_allocated);
+            let test_blocks = prepare_blocks_for_extent(blocks, extent_size, test_name);
 
             if test_blocks.is_empty() {
                 return TestStats {
@@ -412,7 +412,7 @@ macro_rules! spd_copy_impl {
                 let align = vec_size * 2;
                 for tb in &test_blocks {
                     let base = tb.ptr as *mut u64;
-                    let raw_bytes = tb.test_size.min(window_size);
+                    let raw_bytes = tb.test_size.min(extent_size);
                     let working_bytes = (raw_bytes / align) * align;
                     let half_u64 = working_bytes / 2 / 8;
                     scalar_fill(base, half_u64);
@@ -429,7 +429,7 @@ macro_rules! spd_copy_impl {
 
                 for tb in &test_blocks {
                     let base = tb.ptr as *mut u8;
-                    let raw_bytes = tb.test_size.min(window_size);
+                    let raw_bytes = tb.test_size.min(extent_size);
                     // Round down to 2×vec_size so both halves are SIMD-aligned
                     let vec_size = std::mem::size_of::<$arch_type>();
                     let align = vec_size * 2;
@@ -439,7 +439,7 @@ macro_rules! spd_copy_impl {
                     let half_a = base;
                     let half_b = base.add(half_bytes);
 
-                    // Bidirectional: A→B then B→A = full window processed per cycle
+                    // Bidirectional: A→B then B→A = full extent processed per cycle
                     spd_copy_hot!(half_a, half_b, half_bytes, $arch_type, $load_fn, $store_fn);
                     if $need_sfence {
                         std::arch::x86_64::_mm_sfence();
@@ -449,7 +449,7 @@ macro_rules! spd_copy_impl {
                         std::arch::x86_64::_mm_sfence();
                     }
 
-                    // Total traffic = 2 × (read half + write half) = full window
+                    // Total traffic = 2 × (read half + write half) = full extent
                     total_bytes += (working_bytes * 2) as u64;
                 }
 

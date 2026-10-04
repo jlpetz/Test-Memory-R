@@ -3,7 +3,7 @@
 
 use crate::ErrorMode;
 use crate::runner::{AllocationBlock, SHUTDOWN_REQUESTED};
-use crate::tests::{TestAction, TestMemoryConfig, TestProgress, TestTiming, TestStats, prepare_blocks_for_window};
+use crate::tests::{TestAction, TestMemoryConfig, TestProgress, TestTiming, TestStats, prepare_blocks_for_extent};
 use std::sync::atomic::{fence, Ordering};
 use std::time::Instant;
 
@@ -168,8 +168,8 @@ pub unsafe fn read_latency_multi(
     }
 
     let total_allocated: usize = blocks.iter().map(|b| b.buffer.size()).sum();
-    let window_size = config.calculate_extent_size(test_name, total_allocated);
-    let test_blocks = prepare_blocks_for_window(blocks, window_size, test_name);
+    let extent_size = config.calculate_extent_size(test_name, total_allocated);
+    let test_blocks = prepare_blocks_for_extent(blocks, extent_size, test_name);
 
     if test_blocks.is_empty() {
         return LatencyTestStats {
@@ -193,12 +193,12 @@ pub unsafe fn read_latency_multi(
     let mut total_bytes_processed = 0usize;
     let mut cycle = 0u32;
 
-    // Use window size to determine working set - this allows targeting different cache levels:
-    // - L1 Data: ~16-32KB window
-    // - L2 Cache: ~512KB-1MB window
-    // - L3 Cache: ~8-16MB window
-    // - DRAM: 4-8x L3 size window (64-128MB typical for 16MB L3)
-    let working_set_bytes = window_size;
+    // Use extent size to determine working set - this allows targeting different cache levels:
+    // - L1 Data: ~16-32KB extent
+    // - L2 Cache: ~512KB-1MB extent
+    // - L3 Cache: ~8-16MB extent
+    // - DRAM: 4-8x L3 size extent (64-128MB typical for 16MB L3)
+    let working_set_bytes = extent_size;
     let working_set_u64 = working_set_bytes / std::mem::size_of::<u64>();
     let iterations_per_sample = 1000usize; // Fixed iterations for consistent measurements
 
@@ -316,8 +316,8 @@ pub unsafe fn write_latency_multi(
     }
 
     let total_allocated: usize = blocks.iter().map(|b| b.buffer.size()).sum();
-    let window_size = config.calculate_extent_size(test_name, total_allocated);
-    let test_blocks = prepare_blocks_for_window(blocks, window_size, test_name);
+    let extent_size = config.calculate_extent_size(test_name, total_allocated);
+    let test_blocks = prepare_blocks_for_extent(blocks, extent_size, test_name);
 
     if test_blocks.is_empty() {
         return LatencyTestStats {
@@ -341,10 +341,10 @@ pub unsafe fn write_latency_multi(
     let mut total_bytes_processed = 0usize;
     let mut cycle = 0u32;
 
-    // Use window size to determine working set - allows targeting different cache levels
+    // Use extent size to determine working set - allows targeting different cache levels
     // For write test: split into two halves - pointer chain (read-only) and write targets
     // This prevents destroying the pointer chain when we write
-    let working_set_bytes = window_size;
+    let working_set_bytes = extent_size;
     let half_working_set_u64 = (working_set_bytes / std::mem::size_of::<u64>()) / 2;
     let iterations_per_sample = 1000usize;
 
@@ -474,8 +474,8 @@ pub unsafe fn copy_latency_multi(
     }
 
     let total_allocated: usize = blocks.iter().map(|b| b.buffer.size()).sum();
-    let window_size = config.calculate_extent_size(test_name, total_allocated);
-    let test_blocks = prepare_blocks_for_window(blocks, window_size, test_name);
+    let extent_size = config.calculate_extent_size(test_name, total_allocated);
+    let test_blocks = prepare_blocks_for_extent(blocks, extent_size, test_name);
 
     if test_blocks.is_empty() {
         return LatencyTestStats {
@@ -499,14 +499,14 @@ pub unsafe fn copy_latency_multi(
     let mut total_bytes_processed = 0usize;
     let mut cycle = 0u32;
 
-    // Use window size to determine working set - allows targeting different cache levels
-    // Split window in half: src (pointer chain) + dst (write target) = total footprint stays
+    // Use extent size to determine working set - allows targeting different cache levels
+    // Split extent in half: src (pointer chain) + dst (write target) = total footprint stays
     // within the target tier. Matches Lat-Write's split strategy for comparable results.
-    let working_set_bytes = window_size;
-    let working_set_u64 = working_set_bytes / std::mem::size_of::<u64>() / 2; // Each buffer = window/2
+    let working_set_bytes = extent_size;
+    let working_set_u64 = working_set_bytes / std::mem::size_of::<u64>() / 2; // Each buffer = extent/2
     let iterations_per_sample = 1000usize;
 
-    // Each buffer is window/2 (src chain + dst writes), total footprint = window
+    // Each buffer is extent/2 (src chain + dst writes), total footprint = extent
     let per_buffer_bytes = working_set_u64 * std::mem::size_of::<u64>();
     log::debug!("[Thread {}] {} - Working set: {} bytes per buffer ({} elements each, {} total) targeting {}",
         thread_id, test_name, per_buffer_bytes, working_set_u64, working_set_u64 * 2,
@@ -521,11 +521,11 @@ pub unsafe fn copy_latency_multi(
         let block_len = test_block.test_size / std::mem::size_of::<u64>();
         let half_len = (block_len / 2).min(working_set_u64);
 
-        // Block needs >= window bytes (split in half for src chain + dst writes)
+        // Block needs >= extent bytes (split in half for src chain + dst writes)
         if half_len < working_set_u64 {
             let actual_per_buffer = half_len * std::mem::size_of::<u64>();
             let intended_per_buffer = working_set_u64 * std::mem::size_of::<u64>();
-            log::debug!("[Thread {}] {} - Block smaller than window: using {} bytes per buffer instead of {} (clamped to block half)",
+            log::debug!("[Thread {}] {} - Block smaller than extent: using {} bytes per buffer instead of {} (clamped to block half)",
                 thread_id, test_name, actual_per_buffer, intended_per_buffer);
         }
 

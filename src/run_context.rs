@@ -472,7 +472,6 @@ pub struct TestConfigSnapshot {
     /// and `_A` variants), so this is not unique — it says which code path ran.
     pub function: String,
     /// Stage-2 per-test working set.
-    #[serde(alias = "window_mode")] // its name before TODO 76, so older result files still load
     pub extent_mode: String,
     /// Stage-3 iteration unit within the extent.
     pub chunk_mode: String,
@@ -1218,15 +1217,5 @@ mod tests {
         let diffs = compare_config(&a, &b);
         assert!(diffs.iter().any(|d| d.field == "Page-size mix"));
         assert!(!diffs.iter().any(|d| d.invalidates));
-    }
-
-    #[test]
-    fn a_snapshot_from_before_the_extent_rename_still_loads() {
-        let old = r#"{"name":"Mem-SimpleV2","function":"Mem-SimpleV2","window_mode":"FullAllocation",
-            "chunk_mode":"16.00 MiB","verify_reps":1,"test_reps":1,"write_read_cycles":1,
-            "pattern_mode":null,"flush_before_verify":false,"skip_init":false}"#;
-        let snapshot: TestConfigSnapshot = serde_json::from_str(old).unwrap();
-        assert_eq!(snapshot.extent_mode, "FullAllocation");
-        assert!(serde_json::to_string(&snapshot).unwrap().contains("\"extent_mode\""));
     }
 }
