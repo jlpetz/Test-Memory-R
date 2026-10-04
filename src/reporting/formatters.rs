@@ -914,9 +914,9 @@ impl ReportFormatter for DefaultFormatter {
                 self.format_bytes(*size_bytes as u64)
             }
             ExtentMode::CacheTotal { fraction } => {
-                // Naive sum-of-tiers — no thread division (CacheTotal is intentionally coarse)
-                let total_cache = cache_info.per_core_l1d + cache_info.per_core_l2 + cache_info.l3_cache;
-                let size = (total_cache as f64 * fraction) as u64;
+                // Naive sum-of-tiers — no thread division (CacheTotal is intentionally coarse).
+                // The same total the test sizes from (`calculate_extent_size`).
+                let size = (cache_info.total_cache as f64 * fraction) as u64;
                 format!("{} (CacheTotal {:.2}x)", self.format_bytes(size), fraction)
             }
             ExtentMode::Cache { target } => {
@@ -937,6 +937,7 @@ impl ReportFormatter for DefaultFormatter {
         use crate::tests::ChunkMode;
         match mode {
             ChunkMode::Auto => "Auto".to_string(),
+            ChunkMode::Whole => "Whole".to_string(),
             ChunkMode::Absolute { size_bytes } => {
                 format!("Absolute ({})", self.format_bytes(*size_bytes as u64))
             }
@@ -945,6 +946,9 @@ impl ReportFormatter for DefaultFormatter {
             }
             ChunkMode::Cache { target } => {
                 format!("Cache ({})", target.name())
+            }
+            ChunkMode::Tm5Block { window, divisor, granularity } => {
+                format!("TM5 block (.cfg window {}/{}, {} lock)", self.format_bytes(*window as u64), divisor, self.format_bytes(*granularity as u64))
             }
         }
     }

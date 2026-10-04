@@ -254,8 +254,9 @@ making them separate knobs is what lets a config choose.
 ### 4.6 Chunk sizes are multiples of 4 KiB — reopened 2026-10-03 (TODO 76)
 
 **Decision (TODO 76, awaiting the user's approval): `C` is any multiple of 4 KiB**, from the test's
-minimum (64 KiB, more for variant counts) up to the extent. TM5's `1536 MB` and `window/3` are kept:
-`window/3` rounds up to the next 4 KiB, and the config load says so.
+minimum (64 KiB, more for variant counts) up to the extent. TM5's `1536 MB` and `window/3` are kept
+as TM5 sizes them: codes 0-3 are floored to the `.cfg`'s Lock Memory Granularity, against the
+smaller of the window and the thread's memory (TODO 76).
 
 This replaces "C is always a power of two" (DECIDED until 2026-10-03). Why it changed:
 

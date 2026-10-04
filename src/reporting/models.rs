@@ -207,6 +207,9 @@ pub struct TestConfigurationReport {
     pub suite_timing: String,
     pub test_count: usize,
     pub tests: Vec<TestConfigurationEntry>,
+    /// Lines printed under the table: what a TM5 import's window does, and every chunk the
+    /// thread's memory made smaller than its spec asks for (TODO 76)
+    pub notes: Vec<String>,
 }
 
 #[derive(Debug, Clone)]
@@ -218,7 +221,9 @@ pub struct TestConfigurationEntry {
     /// ignores them
     pub per_chunk: String,
     pub parameter: String,
+    /// The extent spec, with its per-thread size once the thread memory is known
     pub extent_mode: String,
+    /// The resolved chunk, its count and overlap, once the thread memory is known
     pub chunk_mode: String,
     pub flags: Vec<String>,
 }

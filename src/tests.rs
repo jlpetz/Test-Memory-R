@@ -389,6 +389,9 @@ fn trim_float(v: f64) -> String {
 pub enum ChunkMode {
     /// Per-test heuristic chunk sizing.
     Auto,
+    /// One chunk, the whole extent (TODO 76): the latency and bandwidth tests, which walk their
+    /// extent as one working set. Resolved before the minimum, which those names don't have.
+    Whole,
     /// Tier-aware sizing — same target syntax as `ExtentMode::Cache`.
     /// L3/N keeps writes warm through verify; DRAM*N forces eviction (refresh stress).
     Cache { target: CacheTarget },
@@ -396,6 +399,38 @@ pub enum ChunkMode {
     CacheTotal { fraction: f64 },
     /// Hard-coded byte size. Replaces former FixedSize (MB).
     Absolute { size_bytes: usize },
+    /// A TM5 `Test Block Size` code 0-3 (TODO 76): the smaller of the `.cfg`'s Testing Window
+    /// Size and the extent, divided by `divisor` (code + 1), floored to `granularity` (the
+    /// `.cfg`'s Lock Memory Granularity). Resolved against the extent, as TM5 resolves it against
+    /// the memory it maps (`function.asm:497-506`, `MainThread.asm:624-661`).
+    Tm5Block { window: usize, divisor: u32, granularity: usize },
+}
+
+/// TM5's block for a `Test Block Size` code over `base` bytes: `base / divisor` floored to
+/// `granularity`, at least one granule (`MainThread.asm:627-661`). Code 0 (divisor 1) is `base`.
+pub fn tm5_block_size(base: usize, divisor: u32, granularity: usize) -> usize {
+    if divisor <= 1 {
+        return base;
+    }
+    let granularity = granularity.max(1);
+    (base / divisor as usize / granularity).max(1) * granularity
+}
+
+/// What a test's chunk spec asks for and the chunk it runs (TODO 76).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct ChunkResolution {
+    /// The spec's size before the extent bounds it; a TM5 block code at the `.cfg`'s own window.
+    pub requested: usize,
+    /// The chunk the test runs: at least the test's minimum, at most the extent, a multiple of
+    /// 4 KiB.
+    pub resolved: usize,
+}
+
+impl ChunkResolution {
+    /// The thread's memory made the chunk smaller than the spec asks for.
+    pub fn shrunk_by_memory(&self) -> bool {
+        self.resolved < self.requested.next_multiple_of(crate::test_memory::GRANULE)
+    }
 }
 
 /// Controls error checking frequency within tests using power-of-2 intervals.
@@ -810,12 +845,30 @@ impl TestMemoryConfig {
     /// The chunk for a test whose extent is `extent_size` bytes, resolved once per test (TODO 76):
     /// the configured size, at least the test's minimum, at most the extent, rounded up to
     /// `test_memory::GRANULE`. Any such multiple works: no kernel needs a power of two (TODO 76's
-    /// audit). A chunk bigger than the extent is the extent, as TM5 clamps its block to its extent.
+    /// audit). A chunk bigger than the extent is the extent, as TM5 clamps its block to its memory.
     pub fn calculate_chunk_size(&self, test_name: &str, extent_size: usize) -> usize {
+        self.resolve_chunk(test_name, extent_size).resolved
+    }
+
+    /// `calculate_chunk_size`, with the size the spec asks for, so the plan can say when the
+    /// thread's memory shrank it.
+    pub fn resolve_chunk(&self, test_name: &str, extent_size: usize) -> ChunkResolution {
+        if let ChunkMode::Whole = self.chunk_mode {
+            let whole = extent_size.next_multiple_of(crate::test_memory::GRANULE).max(crate::test_memory::GRANULE);
+            return ChunkResolution { requested: whole, resolved: whole };
+        }
         let cache_info = get_cache_info();
 
+        let requested = match &self.chunk_mode {
+            ChunkMode::Tm5Block { window, divisor, granularity } => tm5_block_size(*window, *divisor, *granularity),
+            _ => 0,
+        };
         let raw_chunk_size = match &self.chunk_mode {
+            ChunkMode::Whole => extent_size,
             ChunkMode::Absolute { size_bytes } => *size_bytes,
+            ChunkMode::Tm5Block { window, divisor, granularity } => {
+                tm5_block_size((*window).min(extent_size), *divisor, *granularity)
+            }
             ChunkMode::CacheTotal { fraction } => (cache_info.total_cache as f64 * fraction) as usize,
             ChunkMode::Auto => {
                 self.calculate_optimal_block_for_test(test_name, extent_size, cache_info)
@@ -858,7 +911,7 @@ impl TestMemoryConfig {
             }
         }
 
-        final_chunk_size
+        ChunkResolution { requested: requested.max(raw_chunk_size), resolved: final_chunk_size }
     }
     
     fn calculate_minimum_chunk_size(&self, test_name: &str, variant_count: u32) -> usize {

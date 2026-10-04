@@ -575,7 +575,9 @@ Each piece is tested from its start (`TestBlock::ptr`). There is no extent offse
 between cycles. Until TODO 76 the extent was cut into power-of-two pieces, one per block.
 
 > **This is the one capability TMR lost with AWE.** TM5's window slides, so every test covers
-> 100 % of locked memory. TMR's extent is pinned to the start of the thread's memory, so whenever
+> (nearly: a remainder smaller than a block is dropped) all of locked memory. Since TODO 76 TM5
+> `.cfg` imports run every test over the full allocation instead, so they cover it all; what
+> follows is about tests with a smaller extent, the built-in cache-sized ones. TMR's extent is pinned to the start of the thread's memory, so whenever
 > `extent_size < total_allocated` the tail of the allocation is *never visited* — not this
 > cycle, not any cycle. For deliberately cache-resident tests that is the intent (you want a
 > small hot working set). But it means those tests always exercise the *same* DRAM cells at the
@@ -589,7 +591,7 @@ Extent modes (`tests.rs:14-28`):
 | `FullAllocation` | Everything the thread owns (unless `requires_locality`, which redirects to a cache-derived size) |
 | `Cache { target }` | Tier-aware: `"L3/2"`, `"L3*4"`, `"DRAM*8"`. Divides per-thread for L3, per-SMT-sibling for L1/L2. Uses calibration data when present |
 | `CacheTotal { fraction }` | `(L1+L2+L3) × fraction`. Not tier- or thread-aware |
-| `Absolute { size_bytes }` | Hard byte count, e.g. `"880MB"`. This is the TM5 window analogue |
+| `Absolute { size_bytes }` | Hard byte count, e.g. `"880MB"`. Not the TM5 window: an import's extent is the full allocation (TODO 76) |
 
 ### 2.3 Stage 3 — chunk
 
@@ -603,7 +605,9 @@ divide it (`test_memory::ChunkSpread`):
 | `Auto` | Per-test heuristic (`calculate_optimal_block_for_test`) |
 | `Cache { target }` | Tier-aware. `L3/N` keeps writes warm through verify; `DRAM*N` forces eviction (refresh stress) |
 | `CacheTotal { fraction }` | `(L1+L2+L3) × fraction` |
-| `Absolute { size_bytes }` | Hard byte count. TM5 `Test Block Size` imports as one: codes 0-3 as the `.cfg` window or a fraction of it, 4 and up as MiB (`Fraction` was removed 2026-10-03) |
+| `Absolute { size_bytes }` | Hard byte count. TM5 `Test Block Size` 4 and up imports as one, in MiB, capped at the `.cfg` window (`Fraction` was removed 2026-10-03) |
+| `Tm5Block { window, divisor, granularity }` | TM5 `Test Block Size` codes 0-3: the smaller of the `.cfg` window and the extent, / (code + 1), floored to the Lock Memory Granularity |
+| `Whole` | One chunk, the extent: the latency and bandwidth tests |
 
 ```
   ┌──────────────── extent span within one block ────────────────┐

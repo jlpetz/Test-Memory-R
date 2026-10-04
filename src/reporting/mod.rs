@@ -106,6 +106,9 @@ impl<R: Renderer> Reporter<R> {
     pub fn report_test_configuration(&mut self, report: &TestConfigurationReport) -> Result<()> {
         let table = self.formatter.prepare_test_configuration_table(report);
         self.renderer.render_table(&table)?;
+        for note in &report.notes {
+            println!("{note}");
+        }
         Ok(())
     }
     

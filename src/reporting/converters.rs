@@ -85,14 +85,30 @@ pub fn create_consolidated_memory_report(
 
 /// Convert TestDefinition structs to test configuration report (updated version)
 /// Now accepts cache_info and thread_count to calculate actual extent sizes for cache targets
+/// `thread_memory` is each thread's bytes (planned or allocated): extents and chunks are shown
+/// resolved for the thread with the least, the range when threads differ. `tm5` is a TM5
+/// import's `.cfg` window and lock granularity (MiB), for a header line.
 pub fn create_test_configuration_report_v2(
     test_definitions: &[crate::runner::TestDefinition],
     suite_timing: &crate::runner::TestSuiteTiming,
     cache_info: &crate::cache::CacheInfo,
-    thread_count: usize,
+    thread_memory: &[usize],
+    tm5: Option<(u32, u32)>,
 ) -> TestConfigurationReport {
     use crate::reporting::formatters::{ReportFormatter, DefaultFormatter};
+    use crate::test_memory::{ChunkSpread, GRANULE};
+    use crate::tests::{ChunkMode, ExtentMode};
     let formatter = DefaultFormatter::new();
+    let size = |bytes: usize| formatter.format_bytes(bytes as u64);
+    let thread_count = thread_memory.len();
+    let least = thread_memory.iter().copied().min().unwrap_or(0);
+    let most = thread_memory.iter().copied().max().unwrap_or(0);
+
+    let mut notes = Vec::new();
+    if let Some((window, lock)) = tm5 {
+        notes.push(format!("ℹ  TM5 import: every test covers the full allocation. The .cfg's {window} MiB Testing Window and \
+                            {lock} MiB Lock Memory Granularity only size Test Block Size codes 0-3 and cap larger blocks."));
+    }
 
     let suite_timing_str = match (suite_timing.global_cycles, suite_timing.global_duration_secs) {
         (Some(cycles), Some(duration)) => format!("{} cycles or {}s max", cycles, duration),
@@ -118,8 +134,48 @@ pub fn create_test_configuration_report_v2(
         };
 
         // Use the new formatter with calculated sizes for CacheLevel targets
-        let extent_mode = formatter.format_extent_mode_with_size(&config.extent_mode, cache_info, thread_count);
-        let chunk_mode = formatter.format_chunk_mode_with_size(&config.chunk_mode, cache_info, thread_count);
+        let mut extent_mode = formatter.format_extent_mode_with_size(&config.extent_mode, cache_info, thread_count);
+        let mut chunk_mode = formatter.format_chunk_mode_with_size(&config.chunk_mode, cache_info, thread_count);
+
+        // Resolved as the test resolves them (`TestRunner::new`): the extent floored to 4 KiB,
+        // then the chunk from it, spread over it
+        if least > 0 {
+            let mut sized = config.clone();
+            sized.thread_count = thread_count;
+            let name = test_def.actual_name;
+            let extent_at = |memory: usize| sized.calculate_extent_size(name, memory) / GRANULE * GRANULE;
+            let (lo, hi) = (extent_at(least), extent_at(most));
+            let sizes = if lo == hi { size(lo) } else { format!("{}-{}", size(lo), size(hi)) };
+            extent_mode = match &config.extent_mode {
+                // Mem-BlockMove's locality flag sizes it from the caches, not the memory
+                ExtentMode::FullAllocation if config.requires_locality => format!("{sizes} (locality)"),
+                ExtentMode::FullAllocation => format!("Full ({sizes}/thread)"),
+                ExtentMode::Absolute { .. } => sizes,
+                ExtentMode::CacheTotal { fraction } => format!("{sizes} (CacheTotal {fraction:.2}x)"),
+                ExtentMode::Cache { target } => {
+                    format!("{sizes} ({})", target.name_with_context(thread_count, cache_info.is_virtual_machine))
+                }
+            };
+            let resolution = sized.resolve_chunk(name, lo);
+            let spread = ChunkSpread::new(lo, resolution.resolved);
+            let overlap = if spread.overlap() > 0 { format!(", {} overlap", size(spread.overlap())) } else { String::new() };
+            let source = match &config.chunk_mode {
+                ChunkMode::Tm5Block { divisor: 1, .. } => " (.cfg window)".to_string(),
+                ChunkMode::Tm5Block { divisor, .. } => format!(" (.cfg window/{divisor})"),
+                ChunkMode::Cache { target } => format!(" ({})", target.name()),
+                ChunkMode::Auto => " (auto)".to_string(),
+                ChunkMode::Whole => " (whole)".to_string(),
+                ChunkMode::Absolute { .. } | ChunkMode::CacheTotal { .. } => String::new(),
+            };
+            chunk_mode = format!("{} x{}{overlap}{source}", size(spread.chunk()), spread.count());
+            // Only when the memory is what limits the extent: a cache-sized extent smaller than
+            // its chunk is the test's design (Mem-Refresh's 2 GiB chunk means "the whole extent")
+            let memory_bounds_extent = sized.calculate_extent_size(name, 1 << 60) > lo;
+            if resolution.shrunk_by_memory() && memory_bounds_extent {
+                notes.push(format!("⚠  Chunk size was adjusted for test {} ({}) from {} -> {}, as the memory allocation ({} per thread) can't support it",
+                                   i + 1, test_def.display_name, size(resolution.requested), size(resolution.resolved), size(lo)));
+            }
+        }
 
         let mut flags = Vec::new();
         if config.requires_locality {
@@ -144,6 +200,7 @@ pub fn create_test_configuration_report_v2(
         suite_timing: suite_timing_str,
         test_count: test_definitions.len(),
         tests,
+        notes,
     }
 }
 

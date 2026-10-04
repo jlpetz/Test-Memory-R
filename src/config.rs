@@ -37,6 +37,12 @@ pub struct LegacyMetadata {
     /// Memory channel count from TM5 .cfg (default 2). Used in stride formula.
     #[serde(default = "default_channels")]
     pub tm5_channels: u32,
+    /// The `.cfg`'s Testing Window Size and Lock Memory Granularity (MiB): they size block codes
+    /// 0-3 and cap larger blocks, nothing else (TODO 76). Shown in the plan.
+    #[serde(default)]
+    pub tm5_window_mb: u32,
+    #[serde(default)]
+    pub tm5_lock_mb: u32,
 }
 
 fn default_channels() -> u32 { 2 }
@@ -238,6 +244,16 @@ impl ChunkSpec {
     pub fn absolute(size: &str) -> Self {
         ChunkSpec { mode: "absolute".to_string(), size: Some(size.to_string()), ..Default::default() }
     }
+    /// A TM5 block code 0-3 over a `.cfg` window of `window_mb`: see `ChunkMode::Tm5Block`.
+    pub fn tm5_block(window_mb: u64, divisor: u32, granularity_mb: u64) -> Self {
+        ChunkSpec {
+            mode: "tm5_block".to_string(),
+            size: Some(format!("{window_mb}MiB")),
+            divisor: Some(divisor),
+            granularity: Some(format!("{granularity_mb}MiB")),
+            ..Default::default()
+        }
+    }
 }
 
 /// Per-chunk repetition for one test: its own `verify_reps` / `write_read_cycles` / `test_reps`
@@ -297,6 +313,7 @@ pub fn spec_to_extent_mode(spec: &ExtentSpec) -> Result<ExtentMode, String> {
 pub fn spec_to_chunk_mode(spec: &ChunkSpec) -> Result<ChunkMode, String> {
     match spec.mode.to_ascii_lowercase().as_str() {
         "auto" => Ok(ChunkMode::Auto),
+        "whole" => Ok(ChunkMode::Whole),
         "cache" => {
             let target_str = spec.target.as_deref()
                 .ok_or_else(|| "chunk mode 'cache' requires 'target' field (e.g. \"L3/2\", \"DRAM*4\")".to_string())?;
@@ -321,7 +338,21 @@ pub fn spec_to_chunk_mode(spec: &ChunkSpec) -> Result<ChunkMode, String> {
             }
             Ok(ChunkMode::Absolute { size_bytes })
         }
-        other => Err(format!("unknown chunk mode '{}'; valid: auto, cache, cache_total, absolute", other)),
+        "tm5_block" => {
+            let size = |field: &Option<String>, name: &str| -> Result<usize, String> {
+                let text = field.as_deref().ok_or_else(|| format!("chunk mode 'tm5_block' requires '{name}'"))?;
+                match parse_size_string(text)? {
+                    0 => Err(format!("tm5_block {name} must be above 0")),
+                    bytes => Ok(bytes),
+                }
+            };
+            let divisor = spec.divisor.ok_or_else(|| "chunk mode 'tm5_block' requires 'divisor' (a TM5 code + 1, 1-4)".to_string())?;
+            if !(1..=4).contains(&divisor) {
+                return Err(format!("tm5_block divisor must be 1-4 (got {divisor})"));
+            }
+            Ok(ChunkMode::Tm5Block { window: size(&spec.size, "size")?, divisor, granularity: size(&spec.granularity, "granularity")? })
+        }
+        other => Err(format!("unknown chunk mode '{}'; valid: auto, whole, cache, cache_total, absolute, tm5_block", other)),
     }
 }
 
@@ -352,9 +383,12 @@ pub struct ExtentSpec {
 ///
 /// Modes:
 /// - `auto` — per-test heuristic
+/// - `whole` — one chunk, the whole extent
 /// - `cache` — tier-aware; requires `target`
 /// - `cache_total` — coarse cache fraction; requires `fraction`
 /// - `absolute` — hard byte size; requires `size`
+/// - `tm5_block` — a TM5 block code 0-3 (what a `.cfg` import makes): the smaller of `size` (the
+///   `.cfg`'s Testing Window Size) and the extent, / `divisor`, floored to `granularity`
 #[derive(Debug, Clone, Serialize, Deserialize, Default)]
 #[serde(deny_unknown_fields)]
 pub struct ChunkSpec {
@@ -365,6 +399,10 @@ pub struct ChunkSpec {
     pub fraction: Option<f64>,
     #[serde(default)]
     pub size: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub divisor: Option<u32>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub granularity: Option<String>,
 }
 
 // Simplified memory strategy configuration
@@ -943,7 +981,7 @@ pub fn create_demo_config() -> Self {
                 cycles: Some(1),
                 duration_secs: None,
                 min_duration_secs: None,
-                extent: Some(ExtentSpec::absolute("880MB")), // TM5 default window
+                extent: Some(ExtentSpec::absolute("880MB")), // a fixed extent
                 chunk: Some(ChunkSpec::absolute("16MB")),    // TM5 typical block size
                 requires_locality: Some(false),
                 flush_before_verify: None,
@@ -1140,7 +1178,7 @@ pub fn create_demo_config() -> Self {
                 name: "TM5-Compatible Memory Test".to_string(),
                 author: "tmr_user".to_string(),
                 version: "1.0".to_string(),
-                description: Some("TM5-compatible configuration with maximum memory allocation and fixed testing window".to_string()),
+                description: Some("TM5-compatible configuration: maximum memory allocation, every test over all of it".to_string()),
                 created: Some("2025-06-29".to_string()),
                 tested_with_version: APP_VERSION.to_string(),
             },
@@ -1150,7 +1188,7 @@ pub fn create_demo_config() -> Self {
                     reserve_mb: Some(128),                 // TM5-style fixed reserve
                     reserve_percent: None,
                     reserve_gib: None,
-                    default_extent: ExtentSpec::absolute("880MB"), // TM5 default window
+                    default_extent: ExtentSpec::full_allocation(), // as a TM5 .cfg import
                     default_chunk: ChunkSpec::auto(),
                 },
                 cpu_config: CpuConfig {
@@ -1198,7 +1236,7 @@ pub fn create_demo_config() -> Self {
                     cycles: Some(1),
                     duration_secs: None,
                     min_duration_secs: None,
-                    extent: None,                                // Use default 880MB
+                    extent: None,                                // the full allocation
                     chunk: Some(ChunkSpec::absolute("16MB")),    // TM5-style block size
                     requires_locality: Some(false),
                     flush_before_verify: None,
@@ -1331,12 +1369,15 @@ impl LegacyConfig {
                 duration_secs: None,  // Don't use duration-based timing
                 min_duration_secs: None,
                 
-                // The default extent; no per-test override for legacy
-                extent: None,  // Use global default
+                // The default extent, the full allocation: every TM5 test visits every locked
+                // page, walking its AWE window over them (TODO 76)
+                extent: None,
 
                 chunk: Some(self.chunk_spec(test)),
-                
-                requires_locality: Some(matches!(test.function.as_str(), "RefreshStable")),
+
+                // Not `None`: the auto-detect would set it for Mem-Refresh, which under a full
+                // allocation caps the extent at L3 x 2
+                requires_locality: Some(false),
                 flush_before_verify: None,
                 
                 stride_patterns: None,
@@ -1373,7 +1414,7 @@ impl LegacyConfig {
                 reserve_mb: Some(self.memory_setup.reserved_memory_mb),
                 reserve_percent: None,
                 reserve_gib: None,
-                default_extent: ExtentSpec::absolute(&format!("{}MiB", self.memory_setup.testing_window_size_mb)),
+                default_extent: ExtentSpec::full_allocation(),
                 default_chunk: ChunkSpec::auto(),
             },
             cpu_config: CpuConfig {
@@ -1398,30 +1439,34 @@ impl LegacyConfig {
             tm5_cycles: self.main_section.cycles,
             tm5_time_percent: self.main_section.time_percent,
             tm5_channels: self.memory_setup.channels,
+            tm5_window_mb: self.memory_setup.testing_window_size_mb,
+            tm5_lock_mb: self.memory_setup.lock_granularity_mb.max(1),
         }),
     })
 }
 
     /// TM5 `Test Block Size (Mb)` as a TMR chunk (TODO 79 B1), sized exactly as TM5 sizes it
-    /// (`mt_ini.asm:287-303`, `MainThread.asm:627-661`). 0-3 are fraction codes: tm5_window / (V + 1),
-    /// floored to the `.cfg`'s Lock Memory Granularity, at least one granule. 4 and up are binary
-    /// megabytes. Either is then clamped to tm5_window and floored to 4 KiB. tm5_window is the
-    /// `.cfg`'s own `Testing Window Size`, not TMR's extent. A size that differs from the plain
-    /// fraction or value is logged.
+    /// (`mt_ini.asm:287-303`, `MainThread.asm:627-661`). 0-3 are fraction codes, resolved at run
+    /// time against the thread's memory (`ChunkMode::Tm5Block`): the smaller of tm5_window and the
+    /// extent, / (V + 1), floored to the `.cfg`'s Lock Memory Granularity. 4 and up are binary
+    /// megabytes, clamped to tm5_window and floored to 4 KiB. tm5_window is the `.cfg`'s own
+    /// `Testing Window Size`, not TMR's extent, which for an import is the full allocation. A size
+    /// that differs from the plain fraction or value is logged.
     fn chunk_spec(&self, test: &LegacyTest) -> ChunkSpec {
         let tm5_window = self.memory_setup.testing_window_size_mb as u64 * BYTES_PER_MIB;
         let granule = crate::test_memory::GRANULE as u64;
         let lock = self.memory_setup.lock_granularity_mb.max(1) as u64 * BYTES_PER_MIB;
         let (size, what) = match test.test_chunk_size_mb {
             code @ 0..=3 => {
-                let part = tm5_window / (code as u64 + 1);
-                let floored = (part / lock).max(1) * lock;
+                let divisor = code + 1;
+                let part = tm5_window / divisor as u64;
+                let floored = crate::tests::tm5_block_size(tm5_window as usize, divisor, lock as usize) as u64;
                 if floored != part {
-                    log::info!("TM5 Test{} ({}): Test Block Size {} = .cfg window/{} = {:.2} MiB -> {} MiB (TM5 floors it to the {} MiB Lock Memory Granularity)",
-                              test.id, test.function, code, code + 1, part as f64 / BYTES_PER_MIB as f64,
+                    log::info!("TM5 Test{} ({}): Test Block Size {} = .cfg window/{} = {:.2} MiB -> {} MiB (TM5 floors it to the {} MiB Lock Memory Granularity; a thread with less memory than the window takes the fraction of its memory)",
+                              test.id, test.function, code, divisor, part as f64 / BYTES_PER_MIB as f64,
                               floored / BYTES_PER_MIB, lock / BYTES_PER_MIB);
                 }
-                (floored.min(tm5_window), format!(".cfg window/{}", code + 1))
+                return ChunkSpec::tm5_block(tm5_window / BYTES_PER_MIB, divisor, lock / BYTES_PER_MIB);
             }
             mb => {
                 let requested = mb as u64 * BYTES_PER_MIB;
@@ -1548,11 +1593,11 @@ pub fn create_demo_configs() -> Result<(), String> {
     println!("✅ Created demo_tm5_compatible.json - TM5-compatible configuration");
     println!("   Features: TM5-style allocation with modern stuck bit test added");
     println!("   Timing: 3 cycles, faster execution for compatibility");
-    println!("   Memory: Maximum allocation minus 128MB reserve, 880MB testing window");
+    println!("   Memory: Maximum allocation minus 128MB reserve, every test over all of it");
     println!();
     println!("Configuration Architecture Summary:");
     println!("  Stage 1: Memory Allocation - Maximum available memory per thread");
-    println!("  Stage 2: Testing Window - Configurable window within allocation");
+    println!("  Stage 2: Extent - how much of the allocation each test covers");
     println!("  Stage 3: Block/Chunk Size - Auto-optimized per test with alignment");
     println!("  Timing: Per-test cycles/duration limits + global suite limits");
     println!("  Critical: Mem-StuckBit ensures full memory coverage for bit errors");
@@ -1563,7 +1608,6 @@ pub fn create_demo_configs() -> Result<(), String> {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::tests::ChunkMode;
 
     const MIB: usize = 1 << 20;
 
@@ -1597,28 +1641,43 @@ mod tests {
         }
     }
 
-    fn chunk_bytes(mode: &ChunkMode) -> Option<usize> {
-        match mode {
-            ChunkMode::Absolute { size_bytes } => Some(*size_bytes),
-            _ => None,
-        }
-    }
-
-    /// TODO 79 B1: code 0 is the `.cfg`'s window, 1-3 are window fractions floored to the Lock
-    /// Memory Granularity (16 MiB here) as TM5 does, 4 and up are binary megabytes clamped to the
-    /// window.
+    /// TODO 79 B1, TODO 76: code 0 is the `.cfg`'s window, 1-3 are window fractions floored to
+    /// the Lock Memory Granularity (16 MiB here) as TM5 does, 4 and up are binary megabytes
+    /// clamped to the window. A thread with less memory than the window (500 MiB) takes them as
+    /// fractions of its memory, as TM5 does, and the plan can tell they shrank. Every import
+    /// covers the full allocation.
     #[test]
     fn tm5_block_size_codes_are_window_fractions() {
         let tests = [0, 1, 2, 3, 4, 1536].iter().enumerate()
             .map(|(i, &block)| test(i as u32, "SimpleTest", 100, block))
             .collect();
         let modern = legacy(100, tests).to_modern_config().unwrap();
-        let chunks: Vec<_> = modern.get_test_configs().unwrap().iter().map(|(_, c)| c.chunk_mode.clone()).collect();
-        let sizes: Vec<Option<usize>> = chunks.iter().map(chunk_bytes).collect();
+        let configs = modern.get_test_configs().unwrap();
+        let chunks = |extent: usize| -> Vec<usize> {
+            configs.iter().map(|(name, c)| c.calculate_chunk_size(name, extent) / MIB).collect()
+        };
         // The 880 MiB window; window/2 = 440 -> 432, window/3 = 293.33 -> 288, window/4 = 220
         // -> 208 (each floored to 16 MiB, as TM5 does); 4 MiB; 1536 MiB clamped to the window.
-        assert_eq!(sizes, [880, 432, 288, 208, 4, 880].map(|m| Some(m * MIB)));
-        assert_eq!(modern.system.memory_strategy.default_extent.size.as_deref(), Some("880MiB"));
+        assert_eq!(chunks(5 * 1024 * MIB), [880, 432, 288, 208, 4, 880]);
+        // 500 MiB of memory: 500, 250 -> 240, 166.67 -> 160, 125 -> 112; 4; and 880 capped at 500
+        assert_eq!(chunks(500 * MIB), [500, 240, 160, 112, 4, 500]);
+        let shrunk: Vec<bool> = configs.iter().map(|(name, c)| c.resolve_chunk(name, 500 * MIB).shrunk_by_memory()).collect();
+        assert_eq!(shrunk, [true, true, true, true, false, true]);
+        assert!(!configs.iter().any(|(name, c)| c.resolve_chunk(name, 5 * 1024 * MIB).shrunk_by_memory()));
+        assert_eq!(modern.system.memory_strategy.default_extent.mode, "full_allocation");
+        let meta = modern.legacy_metadata.as_ref().unwrap();
+        assert_eq!((meta.tm5_window_mb, meta.tm5_lock_mb), (880, 16));
+    }
+
+    /// TODO 76: an imported RefreshStable covers the full allocation too. Its locality flag would
+    /// cap it at L3 x 2, and `None` would let the auto-detect set it.
+    #[test]
+    fn imported_refresh_covers_the_full_allocation() {
+        let modern = legacy(100, vec![test(0, "RefreshStable", 100, 0)]).to_modern_config().unwrap();
+        let configs = modern.get_test_configs().unwrap();
+        let (name, config) = &configs[0];
+        assert!(!config.requires_locality);
+        assert_eq!(config.calculate_extent_size(name, 5 * 1024 * MIB), 5 * 1024 * MIB);
     }
 
     /// An invalid extent or chunk spec stops the run: no fallback to the default, which would

@@ -22,9 +22,11 @@ Allocation  (per-thread OS-level block — set by memory_strategy.allocation_mod
 | Extent | `cache_total` | `fraction` (number)   | Coarse `(L1+L2+L3) × fraction`. Naive — not tier- or thread-aware.      |
 | Extent | `absolute`    | `size` (string)       | Hard byte size, e.g. `"880MB"`, `"4GiB"`.                               |
 | Chunk  | `auto`        | (none)                | Per-test heuristic chunk sizing.                                        |
+| Chunk  | `whole`       | (none)                | One chunk, the whole extent (the latency and bandwidth tests).          |
 | Chunk  | `cache`       | `target` (string)     | Same target syntax as the extent's `cache` mode.                        |
 | Chunk  | `cache_total` | `fraction` (number)   | Coarse `(L1+L2+L3) × fraction`. Mirrors the extent mode.                |
 | Chunk  | `absolute`    | `size` (string)       | Hard byte size.                                                         |
+| Chunk  | `tm5_block`   | `size`, `divisor`, `granularity` | A TM5 block code 0-3: the smaller of `size` and the extent, / `divisor`, floored to `granularity`. |
 
 **Where the extent lies and how chunks fall (TODO 76).** The extent is the first bytes of the
 thread's memory, in order. Under `allocator=stitched` that memory is one span, so the extent is one
@@ -36,7 +38,15 @@ chunks overlap, by under one chunk in total (`880 MiB x 6, 160 MiB overlap`). Wh
 tile with no overlap, as TM5's blocks do. A chunk may cross a 1 GiB to 2 MiB page seam inside a
 span. Under `plan-pagesize-pref` a piece shorter than the chunk gets one chunk of its own length.
 The per-thread log line lists each piece, its page sizes and its chunks. A fault in an overlap is
-found by both chunks and counted twice, as `verify_reps` counts each detection.
+found by both chunks and counted twice, as `verify_reps` counts each detection. The plan table
+shows each test's extent and chunk resolved for the thread memory (`880.00 MiB x9, 752.00 MiB
+overlap`), and a line under it for every chunk the memory made smaller than its spec asks for.
+
+**TM5 `.cfg` imports** cover the full allocation (TODO 76): every TM5 test walks its AWE window
+over all of a core's locked memory, so an import's extent is `full_allocation`, not the `.cfg`'s
+Testing Window Size. That window, with the Lock Memory Granularity, only sizes Test Block Size
+codes 0-3 (`tm5_block`: window/(code + 1) floored to the granularity) and caps larger blocks. A
+thread with less memory than the window takes the codes as fractions of its memory, as TM5 does.
 
 An invalid spec stops the run with an error naming the `test_sequence` entry: an unknown mode, a
 missing field, a size of 0, or a `cache` target whose scale is malformed or outside 0.01-100. A
