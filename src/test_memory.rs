@@ -1,17 +1,17 @@
-//! Where a test's window lies in a thread's memory (TODO 76).
+//! Where a test's extent lies in a thread's memory (TODO 76).
 //!
 //! Each thread gets a list of `AllocationBlock`s. Under `allocator=stitched` they are one
 //! contiguous VA span, and every block but the last carries `joins_next`; under
 //! `plan-pagesize-pref` each block is its own range. A *region* is a longest run of joined blocks,
-//! so a stitched thread has one region and a legacy thread one per block. The window is the first
-//! `window` bytes of the regions in order: whole regions, then the remainder.
+//! so a stitched thread has one region and a legacy thread one per block. The extent is the first
+//! `extent` bytes of the regions in order: whole regions, then the remainder.
 
 use std::ops::Range;
 
 use crate::runner::AllocationBlock;
 use crate::tests::TestBlock;
 
-/// Window pieces and chunks are multiples of this, and chunks start on it. It makes halves,
+/// Extent pieces and chunks are multiples of this, and chunks start on it. It makes halves,
 /// quarters and subdivisions exact for every vector width, and keeps chunk starts page-aligned.
 pub const GRANULE: usize = 4096;
 
@@ -47,10 +47,10 @@ pub fn regions(blocks: &[AllocationBlock]) -> Vec<Region> {
     out
 }
 
-/// The window's pieces: the first `window` bytes of the regions, whole regions first, each piece
-/// a multiple of `GRANULE` (the remainder is floored to it). Empty when `window < GRANULE`.
-pub fn window_pieces(blocks: &[AllocationBlock], window: usize) -> Vec<TestBlock<'_>> {
-    let mut left = window - window % GRANULE;
+/// The extent's pieces: the first `extent` bytes of the regions, whole regions first, each piece
+/// a multiple of `GRANULE` (the remainder is floored to it). Empty when `extent < GRANULE`.
+pub fn extent_pieces(blocks: &[AllocationBlock], extent: usize) -> Vec<TestBlock<'_>> {
+    let mut left = extent - extent % GRANULE;
     let mut pieces = Vec::new();
     for region in regions(blocks) {
         if left == 0 {
@@ -185,27 +185,27 @@ mod tests {
     }
 
     #[test]
-    fn the_window_is_the_first_bytes_of_the_regions() {
+    fn the_extent_is_the_first_bytes_of_the_regions() {
         let span = blocks(1 << 40, &[(8 * GIB, PageType::Huge, true), (GIB, PageType::Huge, true), (256 * MIB, PageType::Large, false)]);
         // One piece per region: no power-of-two slivers
-        assert_eq!(sizes(&window_pieces(&span, 880 * MIB)), [880 * MIB]);
-        assert_eq!(sizes(&window_pieces(&span, 9 * GIB + 100 * MIB)), [9 * GIB + 100 * MIB]);
+        assert_eq!(sizes(&extent_pieces(&span, 880 * MIB)), [880 * MIB]);
+        assert_eq!(sizes(&extent_pieces(&span, 9 * GIB + 100 * MIB)), [9 * GIB + 100 * MIB]);
         // More than there is: all of it
-        assert_eq!(sizes(&window_pieces(&span, usize::MAX)), [9 * GIB + 256 * MIB]);
+        assert_eq!(sizes(&extent_pieces(&span, usize::MAX)), [9 * GIB + 256 * MIB]);
         // Floored to the granule, and empty below it
-        assert_eq!(sizes(&window_pieces(&span, 880 * MIB + 100)), [880 * MIB]);
-        assert!(window_pieces(&span, GRANULE - 1).is_empty());
+        assert_eq!(sizes(&extent_pieces(&span, 880 * MIB + 100)), [880 * MIB]);
+        assert!(extent_pieces(&span, GRANULE - 1).is_empty());
 
         // Legacy: whole blocks in order, then the remainder
         let legacy = blocks(1 << 40, &[(GIB, PageType::Huge, false), (GIB, PageType::Huge, false), (32 * MIB, PageType::Large, false)]);
-        assert_eq!(sizes(&window_pieces(&legacy, 1536 * MIB)), [GIB, 512 * MIB]);
-        assert_eq!(sizes(&window_pieces(&legacy, 880 * MIB)), [880 * MIB]);
+        assert_eq!(sizes(&extent_pieces(&legacy, 1536 * MIB)), [GIB, 512 * MIB]);
+        assert_eq!(sizes(&extent_pieces(&legacy, 880 * MIB)), [880 * MIB]);
     }
 
     #[test]
     fn pieces_report_their_page_sizes_across_a_seam() {
         let span = blocks(1 << 40, &[(GIB, PageType::Huge, true), (256 * MIB, PageType::Large, false)]);
-        let pieces = window_pieces(&span, GIB + 112 * MIB);
+        let pieces = extent_pieces(&span, GIB + 112 * MIB);
         let line = describe_pieces(&span, &pieces, |piece| piece.clamp(GRANULE, 440 * MIB));
         assert_eq!(line, "1136 MiB 1G 1024 MiB/2M 112 MiB (3 x 440 MiB)");
         assert_eq!(size_str(293 * MIB + MIB / 3), "293.33 MiB");

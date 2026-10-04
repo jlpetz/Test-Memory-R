@@ -168,7 +168,7 @@ pub unsafe fn read_latency_multi(
     }
 
     let total_allocated: usize = blocks.iter().map(|b| b.buffer.size()).sum();
-    let window_size = config.calculate_window_size(test_name, total_allocated);
+    let window_size = config.calculate_extent_size(test_name, total_allocated);
     let test_blocks = prepare_blocks_for_window(blocks, window_size, test_name);
 
     if test_blocks.is_empty() {
@@ -204,7 +204,7 @@ pub unsafe fn read_latency_multi(
 
     log::debug!("[Thread {}] {} - Working set: {} bytes ({} elements) targeting {}",
         thread_id, test_name, working_set_bytes, working_set_u64,
-        config.window_mode.target_level_name());
+        config.extent_mode.target_level_name());
 
     // Setup pointer-chasing pattern for each block (limited to working set size)
     // Also initialize starting positions for continuous traversal
@@ -316,7 +316,7 @@ pub unsafe fn write_latency_multi(
     }
 
     let total_allocated: usize = blocks.iter().map(|b| b.buffer.size()).sum();
-    let window_size = config.calculate_window_size(test_name, total_allocated);
+    let window_size = config.calculate_extent_size(test_name, total_allocated);
     let test_blocks = prepare_blocks_for_window(blocks, window_size, test_name);
 
     if test_blocks.is_empty() {
@@ -350,7 +350,7 @@ pub unsafe fn write_latency_multi(
 
     log::debug!("[Thread {}] {} - Working set: {} bytes ({} elements: {} chain + {} write) targeting {}",
         thread_id, test_name, working_set_bytes, half_working_set_u64 * 2, half_working_set_u64, half_working_set_u64,
-        config.window_mode.target_level_name());
+        config.extent_mode.target_level_name());
 
     // Setup pointer-chasing pattern in first half (chain region - read only)
     // Second half is used for writes so we don't destroy the chain
@@ -474,7 +474,7 @@ pub unsafe fn copy_latency_multi(
     }
 
     let total_allocated: usize = blocks.iter().map(|b| b.buffer.size()).sum();
-    let window_size = config.calculate_window_size(test_name, total_allocated);
+    let window_size = config.calculate_extent_size(test_name, total_allocated);
     let test_blocks = prepare_blocks_for_window(blocks, window_size, test_name);
 
     if test_blocks.is_empty() {
@@ -510,7 +510,7 @@ pub unsafe fn copy_latency_multi(
     let per_buffer_bytes = working_set_u64 * std::mem::size_of::<u64>();
     log::debug!("[Thread {}] {} - Working set: {} bytes per buffer ({} elements each, {} total) targeting {}",
         thread_id, test_name, per_buffer_bytes, working_set_u64, working_set_u64 * 2,
-        config.window_mode.target_level_name());
+        config.extent_mode.target_level_name());
 
     // Setup pointer-chasing pattern in first half (source)
     // Also initialize starting positions for continuous traversal

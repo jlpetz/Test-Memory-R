@@ -137,7 +137,7 @@ impl<R: Renderer> Reporter<R> {
     
     /// Report latency test summary results (multi-threaded)
     pub fn report_latency_summary(&mut self, report: &LatencyTestSummaryReport) -> Result<()> {
-        // Simple label - test name and window are already shown in the main test header and config line
+        // Simple label - test name and extent are already shown in the main test header and config line
         println!("🔍 Latency");
 
         // Per-level detailed tables (per-thread breakdown with ALL row)

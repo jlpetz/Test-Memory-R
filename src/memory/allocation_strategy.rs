@@ -599,7 +599,7 @@ pub struct EnhancedMemoryStrategy {
     /// How to calculate memory allocation amount
     pub allocation_mode: AllocationMode,
 
-    // WindowMode and ChunkMode removed - these are test configuration concerns, not allocation strategy concerns
+    // ExtentMode and ChunkMode removed - these are test configuration concerns, not allocation strategy concerns
 }
 
 impl Default for EnhancedMemoryStrategy {

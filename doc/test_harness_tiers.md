@@ -2,8 +2,8 @@
 
 **Status**: reference. Reflects the code as of 2026-09-14 (branch `clippy-cleanup-todo20`).
 **Related**: TODO #19 (the tier decision), TODO #28 (Tier 3, unbuilt),
-`doc/simd_codegen_rules.md` (why macros, not generics), `doc/window_chunk_modes.md`
-(what window/chunk mean), `doc/test_parameters.md` (`parameter_context` fields).
+`doc/simd_codegen_rules.md` (why macros, not generics), `doc/extent_chunk_modes.md`
+(what extent/chunk mean), `doc/test_parameters.md` (`parameter_context` fields).
 
 A "tier" in TMR is **how much of its own loop a test owns**. It is not a measure of test
 quality, importance, or SIMD width — every tier gets full SIMD. This document explains why
@@ -91,12 +91,12 @@ entire distinction between Tier 1 and Tier 2. It is about *loop shape*, nothing 
 | Tier | Mechanism | Who owns the loop | Gives you | Costs you |
 |---|---|---|---|---|
 | **1 — Phased** | `run_phased_test` (`test_harness.rs:113`) | Harness | Cycle/chunk/block walk, shutdown checks, error-mode dispatch, byte + op accounting, progress, `TestStats`, `skip_init` for dependent tests, `flush_before_verify`, TM5 `write_read_cycles`/`test_reps`/`verify_reps` | The fixed nest above. One pattern per phase, linear chunk range, no delays |
-| **2 — Loop-owning** | `TestRunner` (`test_scaffolding.rs:33`) | **Test** | Window sizing, block prep, timers, cycle counter, shutdown probe, throttled progress, error-mode dispatch, `TestStats` construction | You write the cycle/block/chunk walk and the byte accounting yourself |
+| **2 — Loop-owning** | `TestRunner` (`test_scaffolding.rs:33`) | **Test** | Extent sizing, block prep, timers, cycle counter, shutdown probe, throttled progress, error-mode dispatch, `TestStats` construction | You write the cycle/block/chunk walk and the byte accounting yourself |
 | **— Unscaffolded** | none (hand-rolled in a macro) | Test | nothing | You duplicate all of the above |
 | **3 — Concurrent** | worker/mailbox model — **not built** (TODO #28) | Coordinator routes *jobs*; workers own access | cross-thread coordination | does not exist yet |
 
 Tiers 1 and 2 are not independent implementations: `run_phased_test` **builds on** `TestRunner`
-internally (`test_harness.rs:154`), so window sizing, the info log, timers, progress, and stats
+internally (`test_harness.rs:154`), so extent sizing, the info log, timers, progress, and stats
 have one source of truth across both. Tier 1 adds the loop and the phased-specific accounting
 (`total_operations`, `ops_per_wrc` byte math, `block_metas`, `check_mask`, `skip_init`).
 
@@ -157,7 +157,7 @@ would strip the SIMD. So the test keeps its loop and calls the runner between ch
 
 | Method | Call it | Purpose |
 |---|---|---|
-| `TestRunner::new` | once, at the top | Window sizing, the window's pieces (`test_memory::window_pieces`: one per stitched span, one per block otherwise), the chunk (resolved once from the window), the per-thread info log listing every piece with its page sizes and chunks, starts timers. **Returns `(runner, test_blocks)`** — keep `test_blocks` as a local so you can iterate it immutably while calling `&mut self` methods |
+| `TestRunner::new` | once, at the top | Extent sizing, the extent's pieces (`test_memory::extent_pieces`: one per stitched span, one per block otherwise), the chunk (resolved once from the extent), the per-thread info log listing every piece with its page sizes and chunks, starts timers. **Returns `(runner, test_blocks)`** — keep `test_blocks` as a local so you can iterate it immutably while calling `&mut self` methods |
 | `chunk_size_bytes(piece_size)` | once per piece | The test's chunk, or the piece when it is shorter. A multiple of 4 KiB; the last chunk of a piece may be shorter. Convert to your own element units and apply your own `.max(..)` floor |
 | `begin_cycle()` | top of each cycle | Increments and returns the cycle number |
 | `add_bytes(n)` | per block or per chunk | Byte accounting. **You compute the multiplier** — StuckBit passes `test_size * 6` (3 writes + 3 reads), Refresh `test_size * 2` |
@@ -222,7 +222,7 @@ them to 256-bit, but the width is not chosen or guaranteed.
 
 ## 6. The unscaffolded measurement tests
 
-`bandwidth_tests.rs` and both latency modules use **neither** harness. They hand-roll window
+`bandwidth_tests.rs` and both latency modules use **neither** harness. They hand-roll extent
 sizing, the timer/cycle loop, the 250 ms progress throttle, and `TestStats` construction inside
 their own macros (`spd_read_impl!`, `lat_v2p_copy_impl!`, …).
 
@@ -238,7 +238,7 @@ Part of that is principled:
   tests could only use part of it anyway. They also do bespoke setup — `setup_layout_a` /
   `setup_layout_b` build Fisher-Yates-shuffled pointer chains before timing starts.
 
-Part of it is just duplication that predates the scaffolding. Window sizing, the cycle timer, the
+Part of it is just duplication that predates the scaffolding. Extent sizing, the cycle timer, the
 progress throttle, and the `TestStats` literal are copied per macro across ~12 macros in the two
 latency files plus 3 in bandwidth. Nothing is wrong, but the "one source of truth" that TODO #19
 Part A established for Tiers 1 and 2 stops at these files.

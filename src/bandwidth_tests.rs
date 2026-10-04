@@ -183,7 +183,7 @@ macro_rules! spd_write_impl {
             let start = Instant::now();
 
             let total_allocated: usize = blocks.iter().map(|b| b.buffer.size()).sum();
-            let window_size = config.calculate_window_size(test_name, total_allocated);
+            let window_size = config.calculate_extent_size(test_name, total_allocated);
             let test_blocks = prepare_blocks_for_window(blocks, window_size, test_name);
 
             if test_blocks.is_empty() {
@@ -290,7 +290,7 @@ macro_rules! spd_read_impl {
             let start = Instant::now();
 
             let total_allocated: usize = blocks.iter().map(|b| b.buffer.size()).sum();
-            let window_size = config.calculate_window_size(test_name, total_allocated);
+            let window_size = config.calculate_extent_size(test_name, total_allocated);
             let test_blocks = prepare_blocks_for_window(blocks, window_size, test_name);
 
             if test_blocks.is_empty() {
@@ -393,7 +393,7 @@ macro_rules! spd_copy_impl {
             let start = Instant::now();
 
             let total_allocated: usize = blocks.iter().map(|b| b.buffer.size()).sum();
-            let window_size = config.calculate_window_size(test_name, total_allocated);
+            let window_size = config.calculate_extent_size(test_name, total_allocated);
             let test_blocks = prepare_blocks_for_window(blocks, window_size, test_name);
 
             if test_blocks.is_empty() {

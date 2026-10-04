@@ -95,7 +95,7 @@ pub struct RunIdentity {
     /// [`ThreadSnapshot::active_threads_per_core`] — a machine capability and a run choice.
     pub smt_available: bool,
 
-    /// Cache geometry. Recorded because cache-relative window and chunk modes are computed from
+    /// Cache geometry. Recorded because cache-relative extent and chunk modes are computed from
     /// these numbers, so two machines with the same `machine_id`-relevant CPU but different L3
     /// (a different SKU, or a hypervisor presenting a different slice) will size tests differently.
     pub l1d_cache_per_core: ByteSize,
@@ -400,7 +400,7 @@ pub struct ThreadSnapshot {
     /// Distinct NUMA nodes used, and the thread count on each.
     pub numa_distribution: Vec<NumaThreadCount>,
     /// SMT siblings TMR treated as active (1 or 2). This is the **divisor** for L1/L2-relative
-    /// window and chunk sizes, so the same `Cache (L2)` spec resolves to half the bytes at 2 —
+    /// extent and chunk sizes, so the same `Cache (L2)` spec resolves to half the bytes at 2 —
     /// making it a direct input to what every cache-tier test measured.
     pub active_threads_per_core: usize,
     /// Resolved logical-CPU pool the pool drew from (`cpus=` / `skip-cores=` / `cpu-stride=`
@@ -447,7 +447,7 @@ pub struct CalibrationSnapshot {
     /// Page size the calibration allocation used — a calibration run on 4 KB pages describes
     /// different tier boundaries than one on 2 MB.
     pub page_size: String,
-    /// Measured optimal working-set size per tier, which is literally the number window sizing
+    /// Measured optimal working-set size per tier, which is literally the number extent sizing
     /// multiplies by the test's scale factor.
     pub tiers: Vec<CalibratedTier>,
 }
@@ -457,7 +457,7 @@ pub struct CalibratedTier {
     pub tier: String,
     pub optimal_size: ByteSize,
     /// Median latency measured at `optimal_size`. Recorded alongside the size because it is the
-    /// evidence for it — a tier whose latency looks wrong explains a window size that looks wrong.
+    /// evidence for it — a tier whose latency looks wrong explains an extent size that looks wrong.
     #[serde(serialize_with = "serialize_round_2dp")]
     pub median_latency_ns: f64,
 }
@@ -472,8 +472,9 @@ pub struct TestConfigSnapshot {
     /// and `_A` variants), so this is not unique — it says which code path ran.
     pub function: String,
     /// Stage-2 per-test working set.
-    pub window_mode: String,
-    /// Stage-3 iteration unit within the window.
+    #[serde(alias = "window_mode")] // its name before TODO 76, so older result files still load
+    pub extent_mode: String,
+    /// Stage-3 iteration unit within the extent.
     pub chunk_mode: String,
     pub verify_reps: u32,
     pub test_reps: u32,
@@ -628,7 +629,7 @@ page_mix,
             }
         });
 
-        // Window/chunk modes are rendered with the same formatter the console tables use, so the
+        // Extent/chunk modes are rendered with the same formatter the console tables use, so the
         // recorded string matches what the user saw — including the resolved byte size for cache
         // specs, which is where the SMT divisor becomes visible.
         let formatter = crate::reporting::formatters::DefaultFormatter::new();
@@ -638,8 +639,8 @@ page_mix,
             .map(|def| TestConfigSnapshot {
                 name: def.display_name.clone(),
                 function: def.actual_name.to_string(),
-                window_mode: formatter.format_window_mode_with_size(
-                    &def.config.window_mode,
+                extent_mode: formatter.format_extent_mode_with_size(
+                    &def.config.extent_mode,
                     cache_info,
                     thread_count,
                 ),
@@ -885,7 +886,7 @@ pub fn compare_config(b: &RunConfigSnapshot, c: &RunConfigSnapshot) -> Vec<RunDi
     }
 
     if b.threads.active_threads_per_core != c.threads.active_threads_per_core {
-        // Halves or doubles every L1/L2-relative window and chunk size.
+        // Halves or doubles every L1/L2-relative extent and chunk size.
         diffs.push(RunDifference::new(
             "Active threads per core (SMT)",
             b.threads.active_threads_per_core.to_string(),
@@ -1011,7 +1012,7 @@ pub fn compare_config(b: &RunConfigSnapshot, c: &RunConfigSnapshot) -> Vec<RunDi
         ));
     }
 
-    // Per-test config, for tests present in both plans. A window/chunk/flush change explains a
+    // Per-test config, for tests present in both plans. An extent/chunk/flush change explains a
     // single test moving while its neighbours did not — otherwise easy to misread as a regression.
     for cur_test in &c.tests {
         let Some(base_test) = b.tests.iter().find(|t| t.name == cur_test.name) else {
@@ -1025,8 +1026,8 @@ pub fn compare_config(b: &RunConfigSnapshot, c: &RunConfigSnapshot) -> Vec<RunDi
                 true,
             ));
         };
-        if base_test.window_mode != cur_test.window_mode {
-            note("window", base_test.window_mode.clone(), cur_test.window_mode.clone());
+        if base_test.extent_mode != cur_test.extent_mode {
+            note("extent", base_test.extent_mode.clone(), cur_test.extent_mode.clone());
         }
         if base_test.chunk_mode != cur_test.chunk_mode {
             note("chunk", base_test.chunk_mode.clone(), cur_test.chunk_mode.clone());
@@ -1217,5 +1218,15 @@ mod tests {
         let diffs = compare_config(&a, &b);
         assert!(diffs.iter().any(|d| d.field == "Page-size mix"));
         assert!(!diffs.iter().any(|d| d.invalidates));
+    }
+
+    #[test]
+    fn a_snapshot_from_before_the_extent_rename_still_loads() {
+        let old = r#"{"name":"Mem-SimpleV2","function":"Mem-SimpleV2","window_mode":"FullAllocation",
+            "chunk_mode":"16.00 MiB","verify_reps":1,"test_reps":1,"write_read_cycles":1,
+            "pattern_mode":null,"flush_before_verify":false,"skip_init":false}"#;
+        let snapshot: TestConfigSnapshot = serde_json::from_str(old).unwrap();
+        assert_eq!(snapshot.extent_mode, "FullAllocation");
+        assert!(serde_json::to_string(&snapshot).unwrap().contains("\"extent_mode\""));
     }
 }

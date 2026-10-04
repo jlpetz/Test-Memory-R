@@ -1,8 +1,8 @@
-// Window and Block modes are shared between legacy and enhanced systems
+// Extent and chunk modes are shared between legacy and enhanced systems
 
 use crate::constants::bytes_to_gib_f64;
 
-// WindowMode and ChunkMode moved to tests.rs - they are test configuration concerns, not memory layout concerns
+// ExtentMode and ChunkMode moved to tests.rs - they are test configuration concerns, not memory layout concerns
 
 #[derive(Debug, Clone)]
 pub struct BlockInfo {

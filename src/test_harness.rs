@@ -23,7 +23,7 @@ use std::sync::atomic::Ordering;
 /// Chunk-level context passed to closures.
 /// Contains pre-computed values so closures don't need to recompute them.
 pub struct ChunkCtx {
-    /// Pointer to the start of this piece of the window (as u64 elements).
+    /// Pointer to the start of this piece of the extent (as u64 elements).
     pub ptr: *mut u64,
     /// Start element index within this piece (0-based).
     pub chunk_start: usize,
@@ -41,7 +41,7 @@ pub struct ChunkCtx {
 /// Run a phased test with monomorphized closures for init, test, and verify phases.
 ///
 /// This handles ALL orchestration boilerplate:
-/// - Block preparation with window limits
+/// - Block preparation with extent limits
 /// - Chunked iteration for shutdown responsiveness
 /// - Cycle/timing loop
 /// - Error accumulation and mode handling
@@ -133,7 +133,7 @@ where
         };
     }
 
-    // Block prep, window sizing, the info log, and the timers all live in TestRunner
+    // Block prep, extent sizing, the info log, and the timers all live in TestRunner
     // now — one source of truth shared with the Tier-2 loop-owning tests (TODO #19 A.3).
     // The runner also starts the timer BEFORE init, preserving the v1 behaviour of
     // counting the first write in cycle timing.
@@ -255,7 +255,7 @@ where
                 }
 
                 // Count the chunk when it is done, so a halt or shutdown below reports what ran:
-                // under stitched one piece is the whole window (TODO 76)
+                // under stitched one piece is the whole extent (TODO 76)
                 let chunk_len = chunk_end - chunk_start;
                 runner.add_bytes(chunk_len * std::mem::size_of::<u64>() * ops_per_wrc * wrc as usize);
                 total_operations += chunk_len as u64 * (test_reps as u64 + verify_reps as u64) * wrc as u64;

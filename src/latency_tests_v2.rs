@@ -181,7 +181,7 @@ macro_rules! lat_v2_read_impl {
             }
 
             let total_allocated: usize = blocks.iter().map(|b| b.buffer.size()).sum();
-            let window_size = config.calculate_window_size(test_name, total_allocated);
+            let window_size = config.calculate_extent_size(test_name, total_allocated);
             let test_blocks = prepare_blocks_for_window(blocks, window_size, test_name);
 
             if test_blocks.is_empty() {
@@ -290,7 +290,7 @@ macro_rules! lat_v2_write_impl {
             }
 
             let total_allocated: usize = blocks.iter().map(|b| b.buffer.size()).sum();
-            let window_size = config.calculate_window_size(test_name, total_allocated);
+            let window_size = config.calculate_extent_size(test_name, total_allocated);
             let test_blocks = prepare_blocks_for_window(blocks, window_size, test_name);
 
             if test_blocks.is_empty() {
@@ -394,7 +394,7 @@ macro_rules! lat_v2_copy_impl {
             }
 
             let total_allocated: usize = blocks.iter().map(|b| b.buffer.size()).sum();
-            let window_size = config.calculate_window_size(test_name, total_allocated);
+            let window_size = config.calculate_extent_size(test_name, total_allocated);
             let test_blocks = prepare_blocks_for_window(blocks, window_size, test_name);
 
             if test_blocks.is_empty() {
@@ -492,7 +492,7 @@ macro_rules! lat_v2p_read_impl {
             }
 
             let total_allocated: usize = blocks.iter().map(|b| b.buffer.size()).sum();
-            let window_size = config.calculate_window_size(test_name, total_allocated);
+            let window_size = config.calculate_extent_size(test_name, total_allocated);
             let test_blocks = prepare_blocks_for_window(blocks, window_size, test_name);
 
             if test_blocks.is_empty() {
@@ -616,7 +616,7 @@ macro_rules! lat_v2p_write_impl {
             }
 
             let total_allocated: usize = blocks.iter().map(|b| b.buffer.size()).sum();
-            let window_size = config.calculate_window_size(test_name, total_allocated);
+            let window_size = config.calculate_extent_size(test_name, total_allocated);
             let test_blocks = prepare_blocks_for_window(blocks, window_size, test_name);
 
             if test_blocks.is_empty() {
@@ -742,7 +742,7 @@ macro_rules! lat_v2p_copy_impl {
             }
 
             let total_allocated: usize = blocks.iter().map(|b| b.buffer.size()).sum();
-            let window_size = config.calculate_window_size(test_name, total_allocated);
+            let window_size = config.calculate_extent_size(test_name, total_allocated);
             let test_blocks = prepare_blocks_for_window(blocks, window_size, test_name);
 
             if test_blocks.is_empty() {
@@ -864,7 +864,7 @@ macro_rules! lat_v2p_write_full_impl {
             }
 
             let total_allocated: usize = blocks.iter().map(|b| b.buffer.size()).sum();
-            let window_size = config.calculate_window_size(test_name, total_allocated);
+            let window_size = config.calculate_extent_size(test_name, total_allocated);
             let test_blocks = prepare_blocks_for_window(blocks, window_size, test_name);
 
             if test_blocks.is_empty() {
@@ -982,7 +982,7 @@ macro_rules! lat_v2p_copy_full_impl {
             }
 
             let total_allocated: usize = blocks.iter().map(|b| b.buffer.size()).sum();
-            let window_size = config.calculate_window_size(test_name, total_allocated);
+            let window_size = config.calculate_extent_size(test_name, total_allocated);
             let test_blocks = prepare_blocks_for_window(blocks, window_size, test_name);
 
             if test_blocks.is_empty() {
@@ -1509,7 +1509,7 @@ macro_rules! lat_ntw_write_impl {
             }
 
             let total_allocated: usize = blocks.iter().map(|b| b.buffer.size()).sum();
-            let window_size = config.calculate_window_size(test_name, total_allocated);
+            let window_size = config.calculate_extent_size(test_name, total_allocated);
             let test_blocks = prepare_blocks_for_window(blocks, window_size, test_name);
 
             if test_blocks.is_empty() {
@@ -1616,7 +1616,7 @@ pub unsafe fn lat_ntw_write_scalar_multi(
     }
 
     let total_allocated: usize = blocks.iter().map(|b| b.buffer.size()).sum();
-    let window_size = config.calculate_window_size(test_name, total_allocated);
+    let window_size = config.calculate_extent_size(test_name, total_allocated);
     let test_blocks = prepare_blocks_for_window(blocks, window_size, test_name);
 
     if test_blocks.is_empty() {

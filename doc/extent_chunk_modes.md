@@ -1,32 +1,35 @@
-# Window and Chunk Modes
+# Extent and Chunk Modes
+
+(The extent was called the window until TODO 76, 2026-10; TM5's own "Testing Window Size" keeps
+its name.)
 
 TMR's three-stage memory hierarchy:
 
 ```
 Allocation  (per-thread OS-level block — set by memory_strategy.allocation_mode)
-└── Window  (per-test working set inside the allocation)
-    └── Chunk (iteration unit inside the window — controls shutdown responsiveness)
+└── Extent  (per-test working set inside the allocation)
+    └── Chunk (iteration unit inside the extent — controls shutdown responsiveness)
 ```
 
-`WindowMode` and `ChunkMode` are the test-time knobs for shaping the inner two stages.
+`ExtentMode` and `ChunkMode` are the test-time knobs for shaping the inner two stages.
 
 ## Quick reference
 
 | Stage  | Mode          | Required field        | Meaning                                                                 |
 | ------ | ------------- | --------------------- | ----------------------------------------------------------------------- |
-| Window | `full_allocation` | (none)            | Use the entire per-thread allocation. No inner window.                  |
-| Window | `cache`       | `target` (string)     | Tier-aware sizing. Thread-aware. Calibration-aware.                     |
-| Window | `cache_total` | `fraction` (number)   | Coarse `(L1+L2+L3) × fraction`. Naive — not tier- or thread-aware.      |
-| Window | `absolute`    | `size` (string)       | Hard byte size, e.g. `"880MB"`, `"4GiB"`.                               |
+| Extent | `full_allocation` | (none)            | Use the entire per-thread allocation.                                   |
+| Extent | `cache`       | `target` (string)     | Tier-aware sizing. Thread-aware. Calibration-aware.                     |
+| Extent | `cache_total` | `fraction` (number)   | Coarse `(L1+L2+L3) × fraction`. Naive — not tier- or thread-aware.      |
+| Extent | `absolute`    | `size` (string)       | Hard byte size, e.g. `"880MB"`, `"4GiB"`.                               |
 | Chunk  | `auto`        | (none)                | Per-test heuristic chunk sizing.                                        |
-| Chunk  | `cache`       | `target` (string)     | Same target syntax as window `cache` mode.                              |
-| Chunk  | `cache_total` | `fraction` (number)   | Coarse `(L1+L2+L3) × fraction`. Mirrors window mode.                    |
+| Chunk  | `cache`       | `target` (string)     | Same target syntax as the extent's `cache` mode.                        |
+| Chunk  | `cache_total` | `fraction` (number)   | Coarse `(L1+L2+L3) × fraction`. Mirrors the extent mode.                |
 | Chunk  | `absolute`    | `size` (string)       | Hard byte size.                                                         |
 
-**Where the window lies and how chunks fall (TODO 76).** The window is the first bytes of the
-thread's memory, in order. Under `allocator=stitched` that memory is one span, so the window is one
+**Where the extent lies and how chunks fall (TODO 76).** The extent is the first bytes of the
+thread's memory, in order. Under `allocator=stitched` that memory is one span, so the extent is one
 piece; under `plan-pagesize-pref` it is whole blocks, then the remainder. The chunk is resolved once
-from the window: the configured size, at least the test's minimum, at most the window, rounded up to
+from the extent: the configured size, at least the test's minimum, at most the extent, rounded up to
 a multiple of 4 KiB. Chunks walk each piece from its start; the last one may be shorter. A chunk may
 cross a 1 GiB to 2 MiB page seam inside a span. Under `plan-pagesize-pref` a piece shorter than the
 chunk gets one chunk of its own length. The per-thread log line lists each piece, its page sizes and
@@ -48,31 +51,31 @@ mode need to appear.
     "memory_strategy": {
       "allocation_mode": "percentage_reserve",
       "reserve_percent": 10.0,
-      "default_window": { "mode": "full_allocation" },
+      "default_extent": { "mode": "full_allocation" },
       "default_chunk":  { "mode": "auto" }
     }
   },
   "test_sequence": [
     {
       "function": "Mem-CacheBust",
-      "window": { "mode": "cache", "target": "L3*2" },
+      "extent": { "mode": "cache", "target": "L3*2" },
       "chunk":  { "mode": "absolute", "size": "1MB" }
     },
     {
       "function": "Mem-StuckBit",
-      "window": { "mode": "full_allocation" },
+      "extent": { "mode": "full_allocation" },
       "chunk":  { "mode": "absolute", "size": "512MiB" }
     },
     {
       "function": "Mem-SimpleV2",
-      "window": { "mode": "absolute", "size": "880MB" },
+      "extent": { "mode": "absolute", "size": "880MB" },
       "chunk":  { "mode": "absolute", "size": "16MB" }
     }
   ]
 }
 ```
 
-When a per-test `window` or `chunk` is omitted, the global default applies.
+When a per-test `extent` or `chunk` is omitted, the global default applies.
 
 ## `cache` vs `cache_total` — when to use which
 
@@ -177,13 +180,14 @@ The old flat-field shape (`window_mode`, `window_size_mb`, `window_cache_multipl
 
 | Old (flat fields)                                  | New (nested spec)                              |
 | -------------------------------------------------- | ---------------------------------------------- |
-| `window_mode: "full_allocation"`                   | `window: { mode: "full_allocation" }`          |
-| `window_mode: "fixed_size"`, `window_size_mb: 880` | `window: { mode: "absolute", size: "880MB" }`  |
-| `window_mode: "cache_relative"`, `window_cache_multiplier: 2.0` | `window: { mode: "cache_total", fraction: 2.0 }` (or `cache` with `target` for tier-aware) |
+| `window_mode: "full_allocation"`                   | `extent: { mode: "full_allocation" }`          |
+| `window_mode: "fixed_size"`, `window_size_mb: 880` | `extent: { mode: "absolute", size: "880MB" }`  |
+| `window_mode: "cache_relative"`, `window_cache_multiplier: 2.0` | `extent: { mode: "cache_total", fraction: 2.0 }` (or `cache` with `target` for tier-aware) |
+| `default_window`, `window` (nested spec, until TODO 76) | `default_extent`, `extent` (same shape) |
 | `chunk_mode: "auto_optimal"`                       | `chunk: { mode: "auto" }`                      |
 | `chunk_mode: "fixed_size"`, `block_size_mb: 16`    | `chunk: { mode: "absolute", size: "16MB" }`    |
 | `chunk_mode: "window_fraction"`, `block_window_fraction: 0.125` | none: an `absolute` size (the `fraction` chunk mode was removed 2026-10-03) |
-| `chunk_mode: "window_size"` (TM5 0)                | none: an `absolute` size; a TM5 `.cfg` imports its window size |
+| `chunk_mode: "window_size"` (TM5 0)                | none: an `absolute` size |
 
 There is **no migration shim** — TMR is in dev mode and old configs must be hand-updated.
 TM5 `.cfg` files continue to work because the legacy converter (`LegacyConfig::to_modern_config`)
@@ -196,7 +200,7 @@ emits the new shape.
 ```json
 {
   "function": "Mem-Refresh",
-  "window": { "mode": "cache", "target": "L3" },
+  "extent": { "mode": "cache", "target": "L3" },
   "chunk":  { "mode": "absolute", "size": "1MB" }
 }
 ```
@@ -206,7 +210,7 @@ emits the new shape.
 ```json
 {
   "function": "Mem-StuckBit",
-  "window": { "mode": "full_allocation" },
+  "extent": { "mode": "full_allocation" },
   "chunk":  { "mode": "absolute", "size": "512MiB" }
 }
 ```
@@ -216,17 +220,17 @@ emits the new shape.
 ```json
 {
   "function": "Mem-CacheBust",
-  "window": { "mode": "cache", "target": "DRAM*8" },
+  "extent": { "mode": "cache", "target": "DRAM*8" },
   "chunk":  { "mode": "absolute", "size": "1MB" }
 }
 ```
 
-### TM5-style fixed window + block
+### Fixed extent and chunk
 
 ```json
 {
   "function": "Mem-SimpleV2",
-  "window": { "mode": "absolute", "size": "880MB" },
+  "extent": { "mode": "absolute", "size": "880MB" },
   "chunk":  { "mode": "absolute", "size": "16MB" }
 }
 ```

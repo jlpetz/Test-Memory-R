@@ -84,7 +84,7 @@ pub fn create_consolidated_memory_report(
 }
 
 /// Convert TestDefinition structs to test configuration report (updated version)
-/// Now accepts cache_info and thread_count to calculate actual window sizes for CacheLevel targets
+/// Now accepts cache_info and thread_count to calculate actual extent sizes for cache targets
 pub fn create_test_configuration_report_v2(
     test_definitions: &[crate::runner::TestDefinition],
     suite_timing: &crate::runner::TestSuiteTiming,
@@ -118,7 +118,7 @@ pub fn create_test_configuration_report_v2(
         };
 
         // Use the new formatter with calculated sizes for CacheLevel targets
-        let window_mode = formatter.format_window_mode_with_size(&config.window_mode, cache_info, thread_count);
+        let extent_mode = formatter.format_extent_mode_with_size(&config.extent_mode, cache_info, thread_count);
         let chunk_mode = formatter.format_chunk_mode_with_size(&config.chunk_mode, cache_info, thread_count);
 
         let mut flags = Vec::new();
@@ -134,7 +134,7 @@ pub fn create_test_configuration_report_v2(
             timing,
             per_chunk,
             parameter,
-            window_mode,
+            extent_mode,
             chunk_mode,
             flags,
         }

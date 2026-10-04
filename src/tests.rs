@@ -11,8 +11,8 @@ const CACHE_BUSTING_STRIDE: usize = PAGE_SIZE_4KB;
 
 // Test memory configuration enums (moved from layout.rs - these are test concerns, not allocation concerns)
 #[derive(Debug, Clone)]
-pub enum WindowMode {
-    /// Use entire per-thread allocation (no window — sweep all memory).
+pub enum ExtentMode {
+    /// Use the entire per-thread allocation (sweep all memory).
     FullAllocation,
     /// Tier-aware sizing. Target string parsed via `CacheTarget::parse()`
     /// (e.g. "L3/2", "L3*4", "DRAM*8"). Divides per-thread share for L3,
@@ -27,14 +27,14 @@ pub enum WindowMode {
     Absolute { size_bytes: usize },
 }
 
-impl WindowMode {
+impl ExtentMode {
     /// Get target level name for logging (e.g., "L1", "L2", "L3", "DRAM", "DRAM-Full", or "Memory")
     pub fn target_level_name(&self) -> &'static str {
         match self {
-            WindowMode::Cache { target } => target.level_name(),
-            WindowMode::FullAllocation => "DRAM",
-            WindowMode::Absolute { .. } => "Memory",
-            WindowMode::CacheTotal { .. } => "Cache",
+            ExtentMode::Cache { target } => target.level_name(),
+            ExtentMode::FullAllocation => "DRAM",
+            ExtentMode::Absolute { .. } => "Memory",
+            ExtentMode::CacheTotal { .. } => "Cache",
         }
     }
 }
@@ -87,7 +87,7 @@ pub fn parse_size_string(s: &str) -> Result<usize, String> {
     Ok((value * multiplier as f64) as usize)
 }
 
-/// Cache level targeting for window/chunk sizing.
+/// Cache level targeting for extent/chunk sizing.
 ///
 /// Each tier accepts a `scale: f64` interpreted relative to that tier's natural size:
 /// - L1/L2: per-core size ÷ active SMT siblings × scale
@@ -140,7 +140,7 @@ impl CacheTarget {
         }
     }
 
-    /// Calculate window size using calibration data (measured tier boundaries).
+    /// Calculate extent size using calibration data (measured tier boundaries).
     /// Returns None if calibration data is unavailable or missing the needed tier.
     fn calculate_from_calibration(
         &self,
@@ -153,7 +153,7 @@ impl CacheTarget {
 
         // The calibrated optimal_size is the largest working set that stays in this tier
         // (single-threaded measurement). Only topology sharing matters — no CPUID heuristics.
-        // Final 64-byte alignment is applied downstream in TestMemoryConfig::calculate_window_size.
+        // Final 64-byte alignment is applied downstream in TestMemoryConfig::calculate_extent_size.
         let calibrated = tier_result.optimal_size as f64;
 
         let size = match self {
@@ -180,15 +180,15 @@ impl CacheTarget {
             CacheTarget::DRAMFull => return None, // Handled by sentinel
         };
 
-        log::debug!("Calibrated window: {:?} → {} bytes (calibrated_optimal={}, threads={}, smt={})",
+        log::debug!("Calibrated extent: {:?} → {} bytes (calibrated_optimal={}, threads={}, smt={})",
             tier, size, calibrated, thread_count, get_active_threads_per_core());
 
         Some(size)
     }
 
-    /// Calculate actual window size in bytes based on cache info and thread count.
+    /// Calculate actual extent size in bytes based on cache info and thread count.
     /// Uses calibration data when available, falls back to CPUID heuristics.
-    pub fn calculate_window_size(&self, cache_info: &CacheInfo, thread_count: usize) -> usize {
+    pub fn size_bytes(&self, cache_info: &CacheInfo, thread_count: usize) -> usize {
         // Try calibrated sizing first
         if let Some(cal) = get_calibration_data()
             && let Some(size) = self.calculate_from_calibration(cal, cache_info, thread_count) {
@@ -196,11 +196,11 @@ impl CacheTarget {
             }
 
         // CPUID-based fallback
-        self.calculate_window_size_cpuid(cache_info, thread_count)
+        self.size_bytes_cpuid(cache_info, thread_count)
     }
 
-    /// CPUID-based window sizing (original heuristic path)
-    fn calculate_window_size_cpuid(&self, cache_info: &CacheInfo, thread_count: usize) -> usize {
+    /// CPUID-based extent sizing (original heuristic path)
+    fn size_bytes_cpuid(&self, cache_info: &CacheInfo, thread_count: usize) -> usize {
         match self {
             CacheTarget::L1 { scale } => {
                 let per_thread = cache_info.per_core_l1d as f64 / get_active_threads_per_core() as f64;
@@ -389,10 +389,10 @@ fn trim_float(v: f64) -> String {
 pub enum ChunkMode {
     /// Per-test heuristic chunk sizing.
     Auto,
-    /// Tier-aware sizing — same target syntax as `WindowMode::Cache`.
+    /// Tier-aware sizing — same target syntax as `ExtentMode::Cache`.
     /// L3/N keeps writes warm through verify; DRAM*N forces eviction (refresh stress).
     Cache { target: CacheTarget },
-    /// `(L1+L2+L3) × fraction`. NOT tier-aware. Coarse parity with `WindowMode::CacheTotal`.
+    /// `(L1+L2+L3) × fraction`. NOT tier-aware. Coarse parity with `ExtentMode::CacheTotal`.
     CacheTotal { fraction: f64 },
     /// Hard-coded byte size. Replaces former FixedSize (MB).
     Absolute { size_bytes: usize },
@@ -609,12 +609,12 @@ impl TestTiming {
     }
 }
 
-// Three-stage memory configuration with corrected window logic
+// Three-stage memory configuration with corrected extent logic
 #[derive(Debug, Clone)]
 pub struct TestMemoryConfig {
-    pub window_mode: WindowMode,
+    pub extent_mode: ExtentMode,
     pub chunk_mode: ChunkMode,
-    pub requires_locality: bool,    // True if test needs temporal locality (small window)
+    pub requires_locality: bool,    // True if test needs temporal locality (small extent)
     pub timing: TestTiming,
     pub pattern_mode: Option<u32>,  // TM5 pattern mode
     pub pattern_param0: Option<u64>, // TM5 pattern parameter 0
@@ -622,7 +622,7 @@ pub struct TestMemoryConfig {
     pub memory_type: Option<MemoryType>,
     pub error_check_interval: ErrorCheckInterval,  // Controls error checking frequency
     pub tsc_frequency_ghz: f64,     // TSC frequency detected at startup (for latency tests)
-    pub thread_count: usize,        // Total thread count for cache-aware window calculations
+    pub thread_count: usize,        // Total thread count for cache-aware extent calculations
     /// v2: Correctly interpreted TM5 parameter context (stride, subblocks, page stride).
     /// None for v1 tests or TMR-native configs that don't originate from TM5.
     pub parameter_context: Option<crate::config::TestParameterContext>,
@@ -660,7 +660,7 @@ pub struct TestMemoryConfig {
     /// Registration/display name for **logging only** — never for lookups.
     ///
     /// Test fns bake in their own hardcoded `$test_name` (e.g. `"Mem-StuckBit128"`), which is the
-    /// key used for window/chunk sizing and metadata lookups and must not change. But several
+    /// key used for extent/chunk sizing and metadata lookups and must not change. But several
     /// registrations share one fn: `Mem-StuckBit-Flush128` and the auto-dispatch `_A` variants
     /// both run `stuck_bit_test_128_impl`. Logging the baked-in name therefore mislabels those
     /// runs (`Mem-StuckBit-Flush128` was logging as `Mem-StuckBit128`).
@@ -671,9 +671,9 @@ pub struct TestMemoryConfig {
 }
 
 impl TestMemoryConfig {
-    pub fn new(window_mode: WindowMode, chunk_mode: ChunkMode, requires_locality: bool) -> Self {
+    pub fn new(extent_mode: ExtentMode, chunk_mode: ChunkMode, requires_locality: bool) -> Self {
         Self {
-            window_mode,
+            extent_mode,
             chunk_mode,
             requires_locality,
             timing: TestTiming::default(),
@@ -741,29 +741,29 @@ impl TestMemoryConfig {
         self
     }
 
-    // Calculate window size with corrected logic
-    pub fn calculate_window_size(&self, test_name: &str, allocated_size: usize) -> usize {
-        let size = match &self.window_mode {
-            WindowMode::FullAllocation => {
+    // Calculate extent size with corrected logic
+    pub fn calculate_extent_size(&self, test_name: &str, allocated_size: usize) -> usize {
+        let size = match &self.extent_mode {
+            ExtentMode::FullAllocation => {
                 // Use full allocation unless test specifically requires locality
                 if self.requires_locality {
-                    self.calculate_locality_window_size(test_name, allocated_size)
+                    self.calculate_locality_extent_size(test_name, allocated_size)
                 } else {
                     allocated_size
                 }
             }
-            WindowMode::Absolute { size_bytes } => {
+            ExtentMode::Absolute { size_bytes } => {
                 (*size_bytes).min(allocated_size)
             }
-            WindowMode::CacheTotal { fraction } => {
+            ExtentMode::CacheTotal { fraction } => {
                 let cache_info = get_cache_info();
                 let cache_based_size = (cache_info.total_cache as f64 * fraction) as usize;
                 cache_based_size.min(allocated_size)
             }
-            WindowMode::Cache { target } => {
-                // Calculate window size based on cache target using actual thread count
+            ExtentMode::Cache { target } => {
+                // Calculate extent size based on cache target using actual thread count
                 let cache_info = get_cache_info();
-                let calculated = target.calculate_window_size(cache_info, self.thread_count);
+                let calculated = target.size_bytes(cache_info, self.thread_count);
                 // DRAMFull returns usize::MAX as sentinel to indicate "use full allocation"
                 if calculated == usize::MAX {
                     allocated_size
@@ -774,27 +774,27 @@ impl TestMemoryConfig {
         };
 
         // Round down to 64-byte boundary so SIMD operations (especially NT stores) don't fault.
-        // This is the single source of alignment for all window modes — calibrated values are
+        // This is the single source of alignment for all extent modes — calibrated values are
         // raw measurements and topology divisions can produce non-aligned results, both expected.
         let aligned = (size / 64) * 64;
         if aligned != size {
             log::debug!(
-                "{}: window size {} bytes not 64-byte aligned ({:?}) — rounded down to {} bytes",
-                test_name, size, self.window_mode, aligned
+                "{}: extent size {} bytes not 64-byte aligned ({:?}) — rounded down to {} bytes",
+                test_name, size, self.extent_mode, aligned
             );
         }
 
         aligned
     }
     
-    // Calculate locality-specific window for tests that need it
-    fn calculate_locality_window_size(&self, test_name: &str, allocated_size: usize) -> usize {
+    // Calculate locality-specific extent for tests that need it
+    fn calculate_locality_extent_size(&self, test_name: &str, allocated_size: usize) -> usize {
         let cache_info = get_cache_info();
 
         let optimal_size = match test_name {
             "Mem-CacheBust" => (cache_info.l3_cache / 2).max(cache_info.l2_cache * 4),
             // Refresh now flushes each chunk to DRAM before the per-chunk 64ms
-            // sleep, so window size controls how many DRAM cells get a retention
+            // sleep, so extent size controls how many DRAM cells get a retention
             // check. L3*2 covers far more cells than the old l2*2 while keeping
             // the (per-chunk) sleep count bounded — full-allocation would multiply
             // runtime by the chunk count.
@@ -807,24 +807,24 @@ impl TestMemoryConfig {
         optimal_size.min(allocated_size)
     }
 
-    /// The chunk for a test whose window is `window_size` bytes, resolved once per test (TODO 76):
-    /// the configured size, at least the test's minimum, at most the window, rounded up to
+    /// The chunk for a test whose extent is `extent_size` bytes, resolved once per test (TODO 76):
+    /// the configured size, at least the test's minimum, at most the extent, rounded up to
     /// `test_memory::GRANULE`. Any such multiple works: no kernel needs a power of two (TODO 76's
-    /// audit). A chunk bigger than the window is the window, as TM5 clamps its block to its window.
-    pub fn calculate_chunk_size(&self, test_name: &str, window_size: usize) -> usize {
+    /// audit). A chunk bigger than the extent is the extent, as TM5 clamps its block to its extent.
+    pub fn calculate_chunk_size(&self, test_name: &str, extent_size: usize) -> usize {
         let cache_info = get_cache_info();
 
         let raw_chunk_size = match &self.chunk_mode {
             ChunkMode::Absolute { size_bytes } => *size_bytes,
             ChunkMode::CacheTotal { fraction } => (cache_info.total_cache as f64 * fraction) as usize,
             ChunkMode::Auto => {
-                self.calculate_optimal_block_for_test(test_name, window_size, cache_info)
+                self.calculate_optimal_block_for_test(test_name, extent_size, cache_info)
             }
             ChunkMode::Cache { target } => {
                 // Reuse the calibration-aware sizing path. DRAMFull returns usize::MAX
-                // as a sentinel meaning "use the whole window".
-                let calculated = target.calculate_window_size(cache_info, self.thread_count);
-                if calculated == usize::MAX { window_size } else { calculated }
+                // as a sentinel meaning "use the whole extent".
+                let calculated = target.size_bytes(cache_info, self.thread_count);
+                if calculated == usize::MAX { extent_size } else { calculated }
             }
         };
 
@@ -840,8 +840,8 @@ impl TestMemoryConfig {
         let minimum_chunk_size = self.calculate_minimum_chunk_size(test_name, variant_count);
         let granule = crate::test_memory::GRANULE;
 
-        // The minimum first, then the window, which wins: a chunk never exceeds the window.
-        let sized = raw_chunk_size.max(minimum_chunk_size).min(window_size);
+        // The minimum first, then the extent, which wins: a chunk never exceeds the extent.
+        let sized = raw_chunk_size.max(minimum_chunk_size).min(extent_size);
         let final_chunk_size = sized.next_multiple_of(granule).max(granule);
 
         // Log corrections for user awareness
@@ -853,7 +853,7 @@ impl TestMemoryConfig {
                 log::debug!("🔧 Chunk size corrected for {}: {:.2}MB → {:.2}MB (minimum for {} variants, then a multiple of 4 KiB)",
                            test_name, raw_mb, final_mb, variant_count);
             } else {
-                log::debug!("🔧 Chunk size capped for {}: {:.2}MB → {:.2}MB (limited by window size)",
+                log::debug!("🔧 Chunk size capped for {}: {:.2}MB → {:.2}MB (limited by extent size)",
                            test_name, raw_mb, final_mb);
             }
         }
@@ -911,7 +911,7 @@ impl TestMemoryConfig {
         variant_requirement.max(performance_minimum).next_multiple_of(crate::test_memory::GRANULE)
     }
     
-    fn calculate_optimal_block_for_test(&self, test_name: &str, window_size: usize, cache_info: &CacheInfo) -> usize {
+    fn calculate_optimal_block_for_test(&self, test_name: &str, extent_size: usize, cache_info: &CacheInfo) -> usize {
         match test_name {
             // SIMD tests need specific alignments
             "MirrorMove128" => {
@@ -926,7 +926,7 @@ impl TestMemoryConfig {
             
             // Full memory tests should use large blocks for efficiency
             "StuckBitTest" | "FullMemoryPattern" => {
-                align_to_boundary(window_size / 16, cache_info.cache_line_size).max(MB)
+                align_to_boundary(extent_size / 16, cache_info.cache_line_size).max(MB)
             }
             
             // Cache tests use cache-line aligned blocks
@@ -1003,7 +1003,7 @@ pub unsafe fn flush_range_to_dram(base: *const u8, len_bytes: usize, cache_line_
     unsafe { std::arch::x86_64::_mm_mfence(); }
 }
 
-/// One contiguous piece of the window a test runs on: `test_size` bytes from `ptr`.
+/// One contiguous piece of the extent a test runs on: `test_size` bytes from `ptr`.
 /// The borrow ties it to the `AllocationBlock`s it lies in, which stay mapped for `'a`.
 #[derive(Debug)]
 pub struct TestBlock<'a> {
@@ -1032,7 +1032,7 @@ impl<'a> TestBlock<'a> {
 }
 
 /// Prepare blocks for testing with window size limits. Only the bandwidth and latency tests use
-/// this now; the correctness tests take the window from `test_memory::window_pieces`, which needs
+/// this now; the correctness tests take the window from `test_memory::extent_pieces`, which needs
 /// no power-of-two pieces (TODO 76). The latency tests build heap buffers as big as a piece, so
 /// they keep these smaller pieces until their port onto `TestRunner` (TODO 76, from 69 D).
 ///
@@ -1161,7 +1161,7 @@ pub const STUCKBIT_P2: u64 = 0x55AA55AA55AA55AAu64; // exact complement of P1
 /// `memory/simd-loop-optimization.md`: single-chain starves memory-level parallelism, worst
 /// on Intel 256-bit; N=4 fixes it, free on 128/512). No intermediate `ErrorCheckInterval`
 /// mode — on error the chunk trips and TODO #27's two-tier verifier does exact localization.
-/// The scaffolding (`TestRunner`) owns window/timer/progress/stats/shutdown; the hot loop is
+/// The scaffolding (`TestRunner`) owns extent/timer/progress/stats/shutdown; the hot loop is
 /// byte-identical across widths modulo the `$simd_type`.
 macro_rules! stuck_bit_impl {
     ($fn_name:ident, $test_name:literal, $simd_type:ty, $tf:literal) => {
@@ -1575,7 +1575,7 @@ pub const REFRESH_PATTERN: u64 = 0xA55AA55AA55AA55Au64;
 /// DRAM (defeats cache masking of bit-fade). Verify uses **4 independent accumulator chains**
 /// (MLP; see `memory/simd-loop-optimization.md`) — this is the cold-DRAM regime where MLP
 /// mattered most in benchmarking. No intermediate `ErrorCheckInterval` mode (TODO #27 does
-/// exact localization). `TestRunner` owns window/timer/progress/stats/shutdown.
+/// exact localization). `TestRunner` owns extent/timer/progress/stats/shutdown.
 ///
 /// The chunk-vector floor stays `.max(256)` (matching the pre-macro per-width code; note the
 /// scalar `refresh_stable_multi` uses its own operation-based floor).
@@ -1626,14 +1626,14 @@ macro_rules! refresh_impl {
                         // Optional flush (TODO #59, opt-in): evict this chunk so the post-sleep
                         // verify reads DRAM rather than a cache-resident copy that would mask
                         // bit-fade. Default OFF — natural eviction already handles this here:
-                        //   - the window is `CacheTotal 2.0x`, i.e. 2× the whole hierarchy by
+                        //   - the extent is `CacheTotal 2.0x`, i.e. 2× the whole hierarchy by
                         //     design, so writing it evicts its own earlier half;
                         //   - N threads run concurrently against a *shared* L3, cutting the
                         //     per-thread residency further (on a 482 MiB-cache box: ≤50% of the
-                        //     window could survive at 1 thread, but ≤6.4% at 8);
+                        //     extent could survive at 1 thread, but ≤6.4% at 8);
                         //   - the verify below sweeps *forward*, the same direction as the write,
                         //     so any surviving tail line is read last — after the verify's own
-                        //     reads have pulled ~a whole window through the cache. The residual is
+                        //     reads have pulled ~a whole extent through the cache. The residual is
                         //     both the smallest and the least-likely-resident part of the range.
                         // So this buys insurance against a fluke at ~20-30% throughput. For a
                         // tool where throughput *is* coverage-per-unit-time, faster cycles find

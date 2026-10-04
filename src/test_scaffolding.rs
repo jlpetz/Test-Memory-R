@@ -9,7 +9,7 @@
 //! Every method here runs **between** chunks/blocks, never inside the SIMD loop:
 //! they are simple field reads/writes that inline trivially. The hot path stays
 //! byte-identical to the hand-written v1 tests — only the surrounding boilerplate
-//! (window sizing, block prep, timer/cycle loop, shutdown checks, throttled
+//! (extent sizing, block prep, timer/cycle loop, shutdown checks, throttled
 //! progress, error-mode dispatch, `TestStats` construction) moves in here.
 //!
 //! See TODO #19 Part A for the design and the three-tier execution model.
@@ -35,7 +35,7 @@ pub struct TestRunner<'a> {
     timing: &'a TestTiming,
     progress: Option<&'a TestProgress>,
 
-    /// The test's chunk, resolved once from its window (TODO 76); a piece shorter than it
+    /// The test's chunk, resolved once from its extent (TODO 76); a piece shorter than it
     /// gets one chunk of its own length.
     chunk: usize,
     start: Instant,
@@ -46,7 +46,7 @@ pub struct TestRunner<'a> {
 }
 
 impl<'a> TestRunner<'a> {
-    /// Prepare blocks for the window and start the timers.
+    /// Prepare blocks for the extent and start the timers.
     ///
     /// Returns `(runner, test_blocks)`. The test keeps `test_blocks` as a local
     /// `Vec` (exactly as the v1 tests do today) so iterating it doesn't conflict
@@ -63,12 +63,12 @@ impl<'a> TestRunner<'a> {
         action: TestAction,
     ) -> (Self, Vec<TestBlock<'a>>) {
         let total_allocated: usize = blocks.iter().map(|b| b.buffer.size()).sum();
-        let window_size = config.calculate_window_size(test_name, total_allocated);
-        // The window is the first `window_size` bytes of the thread's regions: one piece per
+        let extent_size = config.calculate_extent_size(test_name, total_allocated);
+        // The extent is the first `extent_size` bytes of the thread's regions: one piece per
         // stitched span, one per block under plan-pagesize-pref (TODO 76).
-        let mut test_blocks = crate::test_memory::window_pieces(blocks, window_size);
+        let mut test_blocks = crate::test_memory::extent_pieces(blocks, extent_size);
         if test_blocks.is_empty() && let Some(first) = blocks.first() {
-            log::error!("{}: window of {} bytes is below 4 KiB; testing 4 KiB instead", test_name, window_size);
+            log::error!("{}: extent of {} bytes is below 4 KiB; testing 4 KiB instead", test_name, extent_size);
             test_blocks.push(TestBlock::at_block(first, crate::test_memory::GRANULE.min(first.buffer.size())));
         }
         let total_test_size: usize = test_blocks.iter().map(|b| b.test_size).sum();
@@ -97,10 +97,10 @@ impl<'a> TestRunner<'a> {
         // iterations, not these byte ranges).
         let log_name = config.display_name.as_deref().unwrap_or(test_name);
         log::info!(
-            "[Thread {}] Running {} on {} (window {}): {}",
+            "[Thread {}] Running {} on {} (extent {}): {}",
             thread_id, log_name,
             crate::test_memory::size_str(total_test_size),
-            crate::test_memory::size_str(window_size),
+            crate::test_memory::size_str(extent_size),
             crate::test_memory::describe_pieces(blocks, &test_blocks, |piece| runner.chunk_size_bytes(piece)),
         );
         (runner, test_blocks)

@@ -15,7 +15,7 @@ stride, bounce, dwell and revisit — without any of that leaking into how memor
 ```
   TODAY — the shape of the allocation leaks into the shape of the test unit
 
-    Allocation ──► Window ──────────► Chunk
+    Allocation ──► Extent ──────────► Chunk
     blocks of      per-thread BYTE     derived PER BLOCK from that
     unequal size   budget, spread      block's share
                    greedily over
@@ -175,9 +175,9 @@ provable full coverage, one multiply per chunk.
 
 ### 4.5 Chunks never wrap — the circular framing was wrong
 
-> **Built so far (TODO 76, 2026-10-03):** chunks walk `k*C` from the start of each window piece and
+> **Built so far (TODO 76, 2026-10-03):** chunks walk `k*C` from the start of each extent piece and
 > the last one is shorter; the even-spread starts below and per-cycle rotation are not built. A
-> stitched window is one piece, so nothing overlaps and nothing wraps.
+> stitched extent is one piece, so nothing overlaps and nothing wraps.
 
 Earlier drafts made the space circular and let a chunk wrap past `T`, splitting it a third time.
 **That is avoidable and should be avoided.** The reasoning:
@@ -253,7 +253,7 @@ making them separate knobs is what lets a config choose.
 ### 4.6 Chunk sizes are multiples of 4 KiB — reopened 2026-10-03 (TODO 76)
 
 **Decision (TODO 76, awaiting the user's approval): `C` is any multiple of 4 KiB**, from the test's
-minimum (64 KiB, more for variant counts) up to the window. TM5's `1536 MB` and `window/3` are kept:
+minimum (64 KiB, more for variant counts) up to the extent. TM5's `1536 MB` and `window/3` are kept:
 `window/3` rounds up to the next 4 KiB, and the config load says so.
 
 This replaces "C is always a power of two" (DECIDED until 2026-10-03). Why it changed:
@@ -269,9 +269,9 @@ This replaces "C is always a power of two" (DECIDED until 2026-10-03). Why it ch
   piece, with a short last chunk, so nothing overlaps. Tile mode (4.7) takes `floor(T/C)*C` for any
   `C`. Comparability comes from configs naming the same sizes, not from a ladder.
 - **The power-of-two pieces came from the old allocator's blocks**, not from the tests. With
-  `allocator=stitched` a thread's memory is one span, and the window is one piece of it.
+  `allocator=stitched` a thread's memory is one span, and the extent is one piece of it.
 
-What it costs: a window that isn't a multiple of the chunk ends in a shorter chunk. That chunk is
+What it costs: an extent that isn't a multiple of the chunk ends in a shorter chunk. That chunk is
 tested in full; TM5 drops such a tail.
 
 ### 4.7 Two coverage modes — overlap or exclusive, never both
@@ -434,7 +434,7 @@ would silently invalidate every other test's asserted invariant. Cheap to add, h
 ## 7a. Worked examples — two real tests, before and after
 
 Pseudocode. `T = 5632 MB` (rows 4096 HUGE / 1024 HUGE / 512 LARGE), config asks `C = 1536 MB`,
-window = full allocation.
+extent = full allocation.
 
 ### 7a.1 `Mem-StuckBit` — position-local, 3 phases (Tier 2, owns its loop)
 

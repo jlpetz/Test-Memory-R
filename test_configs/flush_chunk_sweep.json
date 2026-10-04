@@ -15,7 +15,7 @@
       "reserve_mb": null,
       "reserve_percent": 10.0,
       "reserve_gib": null,
-      "default_window": {
+      "default_extent": {
         "mode": "full_allocation",
         "target": null,
         "fraction": null,
@@ -61,7 +61,7 @@
       "cycles": 1,
       "duration_secs": null,
       "min_duration_secs": null,
-      "window": {
+      "extent": {
         "mode": "full_allocation",
         "target": null,
         "fraction": null,
@@ -90,7 +90,7 @@
       "cycles": 1,
       "duration_secs": null,
       "min_duration_secs": null,
-      "window": {
+      "extent": {
         "mode": "full_allocation",
         "target": null,
         "fraction": null,
@@ -119,7 +119,7 @@
       "cycles": 1,
       "duration_secs": null,
       "min_duration_secs": null,
-      "window": {
+      "extent": {
         "mode": "full_allocation",
         "target": null,
         "fraction": null,
@@ -148,7 +148,7 @@
       "cycles": 1,
       "duration_secs": null,
       "min_duration_secs": null,
-      "window": {
+      "extent": {
         "mode": "full_allocation",
         "target": null,
         "fraction": null,
@@ -177,7 +177,7 @@
       "cycles": 1,
       "duration_secs": null,
       "min_duration_secs": null,
-      "window": {
+      "extent": {
         "mode": "full_allocation",
         "target": null,
         "fraction": null,
@@ -206,7 +206,7 @@
       "cycles": 1,
       "duration_secs": null,
       "min_duration_secs": null,
-      "window": {
+      "extent": {
         "mode": "full_allocation",
         "target": null,
         "fraction": null,
@@ -235,7 +235,7 @@
       "cycles": 1,
       "duration_secs": null,
       "min_duration_secs": null,
-      "window": {
+      "extent": {
         "mode": "full_allocation",
         "target": null,
         "fraction": null,
@@ -264,7 +264,7 @@
       "cycles": 1,
       "duration_secs": null,
       "min_duration_secs": null,
-      "window": {
+      "extent": {
         "mode": "full_allocation",
         "target": null,
         "fraction": null,

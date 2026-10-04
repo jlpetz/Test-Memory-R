@@ -322,7 +322,7 @@ Key interactions to remember:
 
 - **Workset > L3 is a heuristic, not a guarantee.** It relies on *activity* displacing your
   data. During a quiet sleep (refresh tests) nothing displaces anything, so it fails
-  regardless of window size — that's exactly the bug `flush_range_to_dram` fixed. On servers
+  regardless of extent size — that's exactly the bug `flush_range_to_dram` fixed. On servers
   with 256MB+ L3 it can also silently fail to spill. Use CLFLUSHOPT when you need certainty.
 
 - **CLFLUSHOPT always needs a trailing fence (MFENCE/SFENCE).** It is weakly ordered; without

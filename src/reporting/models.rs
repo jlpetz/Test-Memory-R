@@ -218,7 +218,7 @@ pub struct TestConfigurationEntry {
     /// ignores them
     pub per_chunk: String,
     pub parameter: String,
-    pub window_mode: String,
+    pub extent_mode: String,
     pub chunk_mode: String,
     pub flags: Vec<String>,
 }

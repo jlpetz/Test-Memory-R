@@ -55,8 +55,8 @@ pub trait ReportFormatter: Send + Sync {
     /// Prepare consolidated memory report table
     fn prepare_consolidated_memory_table(&self, report: &ConsolidatedMemoryReport) -> TableData;
     
-    /// Format window mode with calculated size for CacheLevel targets
-    fn format_window_mode_with_size(&self, mode: &crate::tests::WindowMode, cache_info: &crate::cache::CacheInfo, thread_count: usize) -> String;
+    /// Format the extent mode, with the calculated size for cache targets
+    fn format_extent_mode_with_size(&self, mode: &crate::tests::ExtentMode, cache_info: &crate::cache::CacheInfo, thread_count: usize) -> String;
     fn format_chunk_mode(&self, mode: &crate::tests::ChunkMode) -> String;
     /// Format chunk mode, appending the resolved byte size for `Cache` targets.
     ///
@@ -906,22 +906,22 @@ impl ReportFormatter for DefaultFormatter {
             ])
     }
     
-    fn format_window_mode_with_size(&self, mode: &crate::tests::WindowMode, cache_info: &crate::cache::CacheInfo, thread_count: usize) -> String {
-        use crate::tests::WindowMode;
+    fn format_extent_mode_with_size(&self, mode: &crate::tests::ExtentMode, cache_info: &crate::cache::CacheInfo, thread_count: usize) -> String {
+        use crate::tests::ExtentMode;
         match mode {
-            WindowMode::FullAllocation => "FullAllocation".to_string(),
-            WindowMode::Absolute { size_bytes } => {
+            ExtentMode::FullAllocation => "FullAllocation".to_string(),
+            ExtentMode::Absolute { size_bytes } => {
                 self.format_bytes(*size_bytes as u64)
             }
-            WindowMode::CacheTotal { fraction } => {
+            ExtentMode::CacheTotal { fraction } => {
                 // Naive sum-of-tiers — no thread division (CacheTotal is intentionally coarse)
                 let total_cache = cache_info.per_core_l1d + cache_info.per_core_l2 + cache_info.l3_cache;
                 let size = (total_cache as f64 * fraction) as u64;
                 format!("{} (CacheTotal {:.2}x)", self.format_bytes(size), fraction)
             }
-            WindowMode::Cache { target } => {
-                // Calculate the actual window size using the target's method
-                let size = target.calculate_window_size(cache_info, thread_count);
+            ExtentMode::Cache { target } => {
+                // Calculate the actual extent size using the target's method
+                let size = target.size_bytes(cache_info, thread_count);
                 let is_vm = cache_info.is_virtual_machine;
                 // DRAMFull returns usize::MAX as sentinel for "use full allocation"
                 if size == usize::MAX {
@@ -956,9 +956,9 @@ impl ReportFormatter for DefaultFormatter {
             // active threads per core), so the same spec means 2 MiB at 1 thread/core and 1 MiB
             // under SMT. Everything else already states its size in the spec.
             ChunkMode::Cache { target } => {
-                let size = target.calculate_window_size(cache_info, thread_count);
+                let size = target.size_bytes(cache_info, thread_count);
                 if size == usize::MAX {
-                    format!("Cache ({}, full window)", target.name())
+                    format!("Cache ({}, full extent)", target.name())
                 } else {
                     format!("Cache ({}, {})", target.name(), self.format_bytes(size as u64))
                 }
@@ -976,8 +976,8 @@ impl ReportFormatter for DefaultFormatter {
             .add_header("Timing", ColumnAlignment::Right)
             .add_header("Per chunk", ColumnAlignment::Left)
             .add_header("Parameter", ColumnAlignment::Left)
-            .add_header("Window Mode", ColumnAlignment::Left)
-            .add_header("Block Mode", ColumnAlignment::Left)
+            .add_header("Extent", ColumnAlignment::Left)
+            .add_header("Chunk", ColumnAlignment::Left)
             .add_header("Flags", ColumnAlignment::Left);
 
         for test in &report.tests {
@@ -987,7 +987,7 @@ impl ReportFormatter for DefaultFormatter {
                 test.timing.clone(),
                 test.per_chunk.clone(),
                 test.parameter.clone(),
-                test.window_mode.clone(),
+                test.extent_mode.clone(),
                 test.chunk_mode.clone(),
                 test.flags.join(", "),
             ]);
@@ -1396,7 +1396,7 @@ impl ReportFormatter for DefaultFormatter {
     }
 
     fn prepare_latency_per_thread_table(&self, level: &LatencyLevelSummary) -> TableData {
-        // No title - test name and window size are already shown in the main test header and config line
+        // No title - test name and extent size are already shown in the main test header and config line
         let mut table = TableData::new()
             .add_header("Thread", ColumnAlignment::Right)
             .add_header("CPU", ColumnAlignment::Right)

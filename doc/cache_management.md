@@ -16,8 +16,8 @@ fits the test's intent.
 | Bulk bandwidth at >L3 working set | Natural eviction | MFENCE between phases (cheap, defensive) |
 | Cache-tier-targeted bandwidth (L1/L2/L3) | Cache-resident BY DESIGN | SFENCE between phases |
 | Sequential correctness on huge workset | Natural eviction | MFENCE between write/verify phases |
-| **Refresh / bit-fade, window >= 2x cache** | Natural eviction sufficient; CLFLUSHOPT optional | MFENCE between write and sleep |
-| **Refresh / bit-fade, cache-resident window** | **CLFLUSHOPT REQUIRED** | MFENCE after flush, before verify |
+| **Refresh / bit-fade, extent >= 2x cache** | Natural eviction sufficient; CLFLUSHOPT optional | MFENCE between write and sleep |
+| **Refresh / bit-fade, cache-resident extent** | **CLFLUSHOPT REQUIRED** | MFENCE after flush, before verify |
 | **Repeated-access tests (SimpleTest write-read cycles)** | **CLFLUSHOPT REQUIRED to reach DRAM** | MFENCE after flush, before verify |
 | **Stuck-bit with strict DRAM guarantee** | CLFLUSHOPT optional (chunk-size dependent) | MFENCE after flush, before verify |
 | NT-store-based test | NT bypasses cache writing | SFENCE before re-store; MFENCE before verify-load |
@@ -167,7 +167,7 @@ The cheapest strategy and what TMR uses for most tests today.
    *deliberately* fit in cache. That's the point. If you want a "DRAM
    verify after L3-sized write" variant, you need explicit flush.
 
-3. **Tail-end of a sweep** — when you reach the last block in a window
+3. **Tail-end of a sweep** — when you reach the last block in an extent
    and start the verify, the last few MB you wrote are still hot in L3.
    The first 90% of the verify hits DRAM via natural eviction; the last
    10% might hit cache. Usually fine for bandwidth tests; a small coverage
@@ -292,8 +292,8 @@ What's actually wired:
 | `Mem-StuckBit*` | Workset >> L3 (typically), MFENCE between phases | ✓ correct for large worksets |
 | `Mem-SimpleV2*` | Workset >> L3, MFENCE between phases | ✓ correct |
 | `Mem-Mirror*` | Workset >> L3, MFENCE between phases | ✓ correct |
-| `Mem-CacheBust` | L3-sized window, intentional cache pressure | ✓ correct (purpose-built) |
-| `Mem-Refresh*` | Window L3*2, 64ms sleep, CLFLUSHOPT each chunk before sleep | ✓ **FIXED 2026-05-29** |
+| `Mem-CacheBust` | L3-sized extent, intentional cache pressure | ✓ correct (purpose-built) |
+| `Mem-Refresh*` | Extent L3*2, 64ms sleep, CLFLUSHOPT each chunk before sleep | ✓ **FIXED 2026-05-29** |
 
 ### The Mem-Refresh Cache Masking Bug (FIXED 2026-05-29, Task #46)
 
@@ -301,11 +301,11 @@ What's actually wired:
 gap: the lines written stayed hot in cache across the 64ms quiet wait, so
 the verify read from L1/L2/L3 instead of DRAM and could not observe real
 DRAM bit decay. (Workset size doesn't help here — during a quiet sleep
-*nothing* evicts the lines, regardless of window size.)
+*nothing* evicts the lines, regardless of extent size.)
 
 **Fix applied**: each chunk is now flushed to DRAM before the sleep via
 `flush_range_to_dram` (`tests.rs:~1292`, inline-asm CLFLUSHOPT + trailing
-MFENCE, 1× per line, no unroll) in all 4 variants. The window was bumped
+MFENCE, 1× per line, no unroll) in all 4 variants. The extent was bumped
 `l2*2` → `l3*2`. Chunk size left on the user's `ChunkMode`. The verify load
 now round-trips through DRAM — the canonical refresh-test pattern from
 memtest86+ and similar tools.
@@ -414,7 +414,7 @@ So the flush's real value is not "slower and therefore more thorough" — it is
   exists** beyond SIMD alignment (`calculate_minimum_chunk_size` returns
   8-64 *bytes*), so nothing clamps a too-small cache target for you.
 - Mind the **SMT divisor** when picking a scale: `CacheTarget::L1`/`L2` divide
-  by *active threads per core* (`calculate_window_size_cpuid`), so `scale 0.5`
+  by *active threads per core* (`size_bytes_cpuid`), so `scale 0.5`
   on a 2 MiB L2 gives 1 MiB at 1 thread/core but 512 KiB under SMT — i.e. it
   silently drops into the fixed-cost-dominated zone above on exactly half the
   run configurations. `scale 1.0` gives 2 MiB / 1 MiB, both in the flat zone.
@@ -425,18 +425,18 @@ So the flush's real value is not "slower and therefore more thorough" — it is
 
 TODO #26 fixed a real bug — the 64 ms retention delay was being defeated by a
 cached copy — but the fix landed as an *unconditional* flush, and that was
-over-correction. Three things make natural eviction sufficient at a sane window:
+over-correction. Three things make natural eviction sufficient at a sane extent:
 
-1. **The window is `CacheTotal 2.0x` by design** — 2x the whole hierarchy. On a
-   482 MiB-cache box that is a 964 MiB window, so writing it evicts its own
+1. **The extent is `CacheTotal 2.0x` by design** — 2x the whole hierarchy. On a
+   482 MiB-cache box that is a 964 MiB extent, so writing it evicts its own
    earlier half. The multiplier exists precisely so this holds across machines
    with different cache sizes.
-2. **L3 is shared across threads.** At 1 thread up to ~50% of the window could
+2. **L3 is shared across threads.** At 1 thread up to ~50% of the extent could
    still be resident; at 8 threads the per-thread L3 share is 1/8, so <= 6.4%
    can be. More threads means less residency, and real runs are multi-threaded.
 3. **The verify sweeps forward, the same direction as the write.** So any
    surviving tail line is read *last* — after the verify's own reads have pulled
-   roughly a whole window through the cache. The residual is simultaneously the
+   roughly a whole extent through the cache. The residual is simultaneously the
    smallest part of the range and the least likely to still be cached. (Verifying
    *backwards* would be the pathological case; forwards is self-cleaning.)
 
@@ -453,7 +453,7 @@ architecturally guaranteed rather than dependent on replacement policy
 
 **The flush is still mandatory where eviction cannot help**: any test that
 re-reads the chunk it just wrote. `SimpleTest`'s TM5-faithful
-`(1 write + N reads) x write_read_cycles` is exactly that shape — no window
+`(1 write + N reads) x write_read_cycles` is exactly that shape — no extent
 sizing defeats the cache when the re-reads target the chunk you just wrote.
 
 ## See Also
@@ -468,5 +468,5 @@ sizing defeats the cache when the re-reads target the chunk you just wrote.
   methodology (flush outside the timed region, DCE traps)
 - `doc/store_buffer_pressure.md` — how store buffer dynamics affect
   benchmarks at different cache tiers
-- `doc/window_chunk_modes.md` — Window/Chunk hierarchy that determines
+- `doc/extent_chunk_modes.md` — Extent/Chunk hierarchy that determines
   workset size for each test

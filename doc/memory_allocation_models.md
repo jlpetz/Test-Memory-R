@@ -441,10 +441,10 @@ page pool) TMR splits into **three independent stages**.
   Stage 1  ALLOCATION   once at startup, per NUMA node
            OS-level blocks owned by each thread            [memory/allocator.rs]
 
-  Stage 2  WINDOW       per test: byte budget for coverage
+  Stage 2  EXTENT       per test: byte budget for coverage
            how much of the thread's memory this test touches    [tests.rs]
 
-  Stage 3  CHUNK        per test: iteration unit inside the window
+  Stage 3  CHUNK        per test: iteration unit inside the extent
            controls shutdown responsiveness + cache residency   [tests.rs]
 ```
 
@@ -528,8 +528,8 @@ each block's recorded node true. The passes run local first, then remote:
 A node out of pages answers 1450 whether or not other nodes still have them, so the only way to
 tell is asking each node, which the passes do. Any remote memory gives one warning with the
 amounts. Measured on a 2-socket m5.16xlarge (16 threads on node 0, about half their memory on
-node 1): full-memory Read −48 %, Copy −35 %, SimpleV2 −19 %. Window-limited tests (MirrorV2's
-64 MiB window) touch only each thread's first, local, blocks and see no change. A stitched
+node 1): full-memory Read −48 %, Copy −35 %, SimpleV2 −19 %. Extent-limited tests (MirrorV2's
+64 MiB extent) touch only each thread's first, local, blocks and see no change. A stitched
 span can take 1 GiB pages only from a 1 GiB-aligned cursor. A thread whose local 2 MiB pages end
 off a GiB boundary is first padded with the remote node's 2 MiB pages up to it, so it shares the
 remote 1 GiB pages too. Nothing is freed for that; the pad is memory the thread needed anyway.
@@ -554,37 +554,37 @@ smaller pages while still reporting success. (See CLAUDE.md, settled decisions.)
 same alignment from where it commits: each slice starts 1 GiB-aligned and fills from the base,
 1 GiB commits first, so every commit lands on its own page size's boundary.
 
-### 2.2 Stage 2 — the window, and where it differs from TM5
+### 2.2 Stage 2 — the extent, and where it differs from TM5
 
-`TestRunner::new` (`test_scaffolding.rs`) → `calculate_window_size(test_name, total_allocated)`
-→ `test_memory::window_pieces` (TODO 76, 2026-10-03):
+`TestRunner::new` (`test_scaffolding.rs`) → `calculate_extent_size(test_name, total_allocated)`
+→ `test_memory::extent_pieces` (TODO 76, 2026-10-03):
 
 ```
-  window_size = f(WindowMode, sum of ALL this thread's blocks)      then floor to 64 B
-  pieces = the first window_size bytes of the thread's regions, each a multiple of 4 KiB
+  extent_size = f(ExtentMode, sum of ALL this thread's blocks)      then floor to 64 B
+  pieces = the first extent_size bytes of the thread's regions, each a multiple of 4 KiB
 
   allocator=stitched: one region (the span)      plan-pagesize-pref: one region per block
   ┌─── 1 GiB ───┬─── 1 GiB ───┬ 512 MiB ┐        ┌─ 1 GiB ─┐ ┌─ 1 GiB ─┐ ┌ 512 MiB ┐
   │████████████████████       │         │        │█████████│ │████     │ │         │
   └─────────────┴─────────────┴─────────┘        └─────────┘ └─────────┘ └─────────┘
    one piece, across block and page seams         whole blocks, then the remainder
-  █ = the window
+  █ = the extent
 ```
 
-Each piece is tested from its start (`TestBlock::ptr`). There is no window offset and no rotation
-between cycles. Until TODO 76 the window was cut into power-of-two pieces, one per block.
+Each piece is tested from its start (`TestBlock::ptr`). There is no extent offset and no rotation
+between cycles. Until TODO 76 the extent was cut into power-of-two pieces, one per block.
 
 > **This is the one capability TMR lost with AWE.** TM5's window slides, so every test covers
-> 100 % of locked memory. TMR's window is pinned to the start of the thread's memory, so whenever
-> `window_size < total_allocated` the tail of the allocation is *never visited* — not this
+> 100 % of locked memory. TMR's extent is pinned to the start of the thread's memory, so whenever
+> `extent_size < total_allocated` the tail of the allocation is *never visited* — not this
 > cycle, not any cycle. For deliberately cache-resident tests that is the intent (you want a
 > small hot working set). But it means those tests always exercise the *same* DRAM cells at the
-> *same* addresses, and cells outside the window get no coverage from them at all. TM5 got both
+> *same* addresses, and cells outside the extent get no coverage from them at all. TM5 got both
 > properties at once: small working set *and* full coverage, because the small window walked.
 
-Window modes (`tests.rs:14-28`):
+Extent modes (`tests.rs:14-28`):
 
-| `WindowMode` | Meaning |
+| `ExtentMode` | Meaning |
 |---|---|
 | `FullAllocation` | Everything the thread owns (unless `requires_locality`, which redirects to a cache-derived size) |
 | `Cache { target }` | Tier-aware: `"L3/2"`, `"L3*4"`, `"DRAM*8"`. Divides per-thread for L3, per-SMT-sibling for L1/L2. Uses calibration data when present |
@@ -593,8 +593,8 @@ Window modes (`tests.rs:14-28`):
 
 ### 2.3 Stage 3 — chunk
 
-`calculate_chunk_size(test_name, window_size)`, resolved once per test from the window: the
-configured size, at least the test's minimum, at most the window, rounded up to 4 KiB (TODO 76).
+`calculate_chunk_size(test_name, extent_size)`, resolved once per test from the extent: the
+configured size, at least the test's minimum, at most the extent, rounded up to 4 KiB (TODO 76).
 Chunks walk each piece from its start; the last one may be shorter:
 
 | `ChunkMode` | Meaning |
@@ -605,7 +605,7 @@ Chunks walk each piece from its start; the last one may be shorter:
 | `Absolute { size_bytes }` | Hard byte count. TM5 `Test Block Size` imports as one: codes 0-3 as the `.cfg` window or a fraction of it, 4 and up as MiB (`Fraction` was removed 2026-10-03) |
 
 ```
-  ┌──────────────── window span within one block ────────────────┐
+  ┌──────────────── extent span within one block ────────────────┐
   │ chunk │ chunk │ chunk │ chunk │ chunk │ chunk │ chunk │ chunk │
   └───────┴───────┴───────┴───────┴───────┴───────┴───────┴───────┘
     ^ ErrorCheckInterval decides how often the accumulator is inspected
@@ -625,7 +625,7 @@ CLI (`params.rs`), all overridable from JSON:
 | `largefloor=16MiB` | 1 | Smallest 2 MiB-page request (16 MiB–1 GiB): a refusal this small means the node is out of 2 MiB pages |
 | `hugechunk=1GiB`, `largechunk=1GiB` (stitched: `128MiB`) | 1 | First size of each 1 GiB / 2 MiB-page request, halved on refusal. Bigger means fewer OS calls on large machines and a coarser split, and for plan-pagesize-pref bigger blocks. stitched's commits merge, so its smaller default only costs calls, and spreads a node's 2 MiB shortfall over all its threads |
 | `cpus=50%`, `cputype=`, `skip-cores=`, `cpu-stride=` | 1 | Thread count → the divisor for `per_thread_target`. `cpu-stride=even` also spreads across CCDs/memory domains |
-| `window_mode` (JSON per test) | 2 | `full` / `cache` / `cache_total` / `absolute` |
+| `extent_mode` (JSON per test) | 2 | `full` / `cache` / `cache_total` / `absolute` |
 | `chunk_mode` (JSON per test) | 3 | `auto` / `cache` / `cache_total` / `absolute` |
 | `channels=` (JSON `system.channels`) | test | Stride formula, same role as TM5 `Channels` |
 | `parameter=stride:N` / `subblocks:N` | test | TM5 `Parameter` equivalent |
@@ -775,7 +775,7 @@ variable. OCCT's memory test is a userspace allocate-and-sweep with SIMD variant
 | Page sizes | 4 KB (AWE) or 2 MB (non-AWE) | 1 GiB / 2 MiB / 4 KiB | its own tables | hugepages when available | OS default |
 | Block granularity | flat 4 KB pool, no blocks | **variable** 16 MiB–4 GiB | physical ranges | **uniform** (`--blocksize`) | uniform (user's number) |
 | Uniform blocks? | n/a (no blocks) | **no** | n/a | **yes, by design** | yes, trivially |
-| Coverage of owned memory | **100 %, window slides** | window budget from offset 0; tail may never be visited | 100 % | 100 % via page queue | 100 % of its buffer |
+| Coverage of owned memory | **100 %, window slides** | extent budget from offset 0; tail may never be visited | 100 % | 100 % via page queue | 100 % of its buffer |
 | Physical addresses known | no | no (settled decision) | **yes** | no | no |
 | Cross-thread page exchange | no | not yet (TODO #19) | n/a | **yes, core design** | no |
 | NUMA aware | no | yes | yes | yes | no |
@@ -812,7 +812,7 @@ completely different tests.
     dMemForCore                                    greedy 16 MiB .. 4 GiB
         │                                              │
   window / AWE aperture         global           window                   per test
-    Testing Window Size (Mb)                       window_mode  (SIZE ONLY — no position)
+    Testing Window Size (Mb)                       extent_mode  (SIZE ONLY — no position)
     512..1536, VA aperture                         a byte budget, pinned to block offset 0
         │                                              │
   test block  ("chunk")         PER TEST         chunk                    per test
@@ -863,9 +863,9 @@ percentage of a magic constant:
   cycles / duration                          <- cycles= , duration= , min_duration_secs
    └─ Test Sequence                          <- test_sequence[]
        └─ Test
-           └─ (NO slice level — window is pinned to block offset 0, see §2.2)
+           └─ (NO slice level — extent is pinned to block offset 0, see §2.2)
               └─ Block   (interleaved across the thread's blocks)
-                  └─ Chunk                   <- chunk_mode  (window_mode caps total coverage)
+                  └─ Chunk                   <- chunk_mode  (extent_mode caps total coverage)
                       └─ write_read_cycles   <- write_read_cycles   (= TM5 ST_WriteReadCycles)
                           ├─ test_reps       <- test_reps           (test op, e.g. mirror trips)
                           ├─ [flush + mfence]<- flush_before_verify
@@ -879,7 +879,7 @@ percentage of a magic constant:
 | Whole run | lowest — full re-sweep | `[Main Section] Cycles` | `cycles=` / `duration=` |
 | Test sequence | — | `Test Sequence` | `test_sequence[]` |
 | Window slice | medium — advances coverage | `Testing Window Size (Mb)` (size) + pool size (count) | **none** — no position concept |
-| Chunk walk | medium | `Test Block Size (Mb)` | `chunk_mode` (+ `window_mode` as a cap) |
+| Chunk walk | medium | `Test Block Size (Mb)` | `chunk_mode` (+ `extent_mode` as a cap) |
 | Write/read cycle | **highest — same chunk** | `ST_WriteReadCycles` (hardcoded 4) | `write_read_cycles` |
 | Verify rep | **highest — same chunk** | `Time (%)` → `dLoopCounter` | `verify_reps` |
 | Test-op rep | **highest — same chunk** | — | `test_reps` |
@@ -888,7 +888,7 @@ Two things fall out of this table, both covered in
 [`allocation_questions_answered.md`](allocation_questions_answered.md):
 
 - TMR has no **window slice** row. That is the missing sliding window — the reason a test whose
-  window is smaller than its allocation never visits the tail (§2.2).
+  extent is smaller than its allocation never visits the tail (§2.2).
 - TM5's `Time (%)` belongs on the **bottom** rows. TMR's legacy loader puts it on the **top** row
   (`config.rs:1439-1447`), which preserves neither the amount of work nor the locality.
 

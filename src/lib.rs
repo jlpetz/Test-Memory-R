@@ -35,7 +35,7 @@ mod calibration; // Adaptive cache calibration
 mod pattern_gen; // v2 pattern generation (LCG, Mode 0/1/2)
 mod test_harness; // v2 zero-cost test orchestration harness
 mod test_scaffolding; // shared zero-cost bookkeeping for loop-owning v1 tests (TODO #19 Part A)
-mod test_memory; // where a test's window lies in a thread's blocks (TODO 76)
+mod test_memory; // where a test's extent lies in a thread's blocks (TODO 76)
 mod app_config; // Persistent application config (tmr-cfg.json)
 mod smbios; // SMBIOS table parser (system identity, memory modules)
 mod whea; // WHEA hardware-error monitoring via the System event log (TODO #63)

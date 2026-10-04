@@ -1,6 +1,6 @@
 use crate::{ErrorMode};
 use crate::constants::{gib_to_bytes, BYTES_PER_MIB};
-use crate::tests::{WindowMode, ChunkMode, CacheTarget, parse_size_string};
+use crate::tests::{ExtentMode, ChunkMode, CacheTarget, parse_size_string};
 use crate::memory::allocation_strategy::{EnhancedMemoryStrategy, AllocationMode, ReserveAmount, RoundDirection, ShareRounding};
 use crate::memory::allocator::{AllocationStrategy, BlockSizing};
 use crate::runner::TestSuiteTiming;
@@ -219,15 +219,15 @@ impl Default for CpuPinningConfig {
     }
 }
 
-impl WindowSpec {
+impl ExtentSpec {
     pub fn full_allocation() -> Self {
-        WindowSpec { mode: "full_allocation".to_string(), ..Default::default() }
+        ExtentSpec { mode: "full_allocation".to_string(), ..Default::default() }
     }
     pub fn cache_total(fraction: f64) -> Self {
-        WindowSpec { mode: "cache_total".to_string(), fraction: Some(fraction), ..Default::default() }
+        ExtentSpec { mode: "cache_total".to_string(), fraction: Some(fraction), ..Default::default() }
     }
     pub fn absolute(size: &str) -> Self {
-        WindowSpec { mode: "absolute".to_string(), size: Some(size.to_string()), ..Default::default() }
+        ExtentSpec { mode: "absolute".to_string(), size: Some(size.to_string()), ..Default::default() }
     }
 }
 
@@ -260,40 +260,40 @@ fn apply_repetition(test: &TestConfig, config: &mut TestMemoryConfig) {
     }
 }
 
-/// Convert a WindowSpec into a runtime WindowMode. Returns Err with a human-readable
+/// Convert a ExtentSpec into a runtime ExtentMode. Returns Err with a human-readable
 /// reason on malformed input. Mode names are case-insensitive.
-pub fn spec_to_window_mode(spec: &WindowSpec) -> Result<WindowMode, String> {
+pub fn spec_to_extent_mode(spec: &ExtentSpec) -> Result<ExtentMode, String> {
     match spec.mode.to_ascii_lowercase().as_str() {
-        "full_allocation" | "full-allocation" | "full" => Ok(WindowMode::FullAllocation),
+        "full_allocation" | "full-allocation" | "full" => Ok(ExtentMode::FullAllocation),
         "cache" => {
             let target_str = spec.target.as_deref()
-                .ok_or_else(|| "window mode 'cache' requires 'target' field (e.g. \"L3/2\", \"DRAM*4\")".to_string())?;
+                .ok_or_else(|| "extent mode 'cache' requires 'target' field (e.g. \"L3/2\", \"DRAM*4\")".to_string())?;
             let target = CacheTarget::parse(target_str)
                 .ok_or_else(|| format!("invalid cache target '{}' (L1, L2, L3, DRAM or DRAM-FULL, optionally /N or *N with a scale of 0.01-100)", target_str))?;
-            Ok(WindowMode::Cache { target })
+            Ok(ExtentMode::Cache { target })
         }
         "cache_total" | "cache-total" => {
             let fraction = spec.fraction
-                .ok_or_else(|| "window mode 'cache_total' requires 'fraction' field".to_string())?;
+                .ok_or_else(|| "extent mode 'cache_total' requires 'fraction' field".to_string())?;
             if fraction <= 0.0 {
                 return Err(format!("cache_total fraction must be > 0 (got {})", fraction));
             }
-            Ok(WindowMode::CacheTotal { fraction })
+            Ok(ExtentMode::CacheTotal { fraction })
         }
         "absolute" => {
             let size_str = spec.size.as_deref()
-                .ok_or_else(|| "window mode 'absolute' requires 'size' field (e.g. \"880MB\", \"4GiB\")".to_string())?;
+                .ok_or_else(|| "extent mode 'absolute' requires 'size' field (e.g. \"880MB\", \"4GiB\")".to_string())?;
             let size_bytes = parse_size_string(size_str)?;
             if size_bytes == 0 {
-                return Err("window size must be above 0".to_string());
+                return Err("extent size must be above 0".to_string());
             }
-            Ok(WindowMode::Absolute { size_bytes })
+            Ok(ExtentMode::Absolute { size_bytes })
         }
-        other => Err(format!("unknown window mode '{}'; valid: full_allocation, cache, cache_total, absolute", other)),
+        other => Err(format!("unknown extent mode '{}'; valid: full_allocation, cache, cache_total, absolute", other)),
     }
 }
 
-/// Convert a ChunkSpec into a runtime ChunkMode. Same conventions as spec_to_window_mode.
+/// Convert a ChunkSpec into a runtime ChunkMode. Same conventions as spec_to_extent_mode.
 pub fn spec_to_chunk_mode(spec: &ChunkSpec) -> Result<ChunkMode, String> {
     match spec.mode.to_ascii_lowercase().as_str() {
         "auto" => Ok(ChunkMode::Auto),
@@ -325,8 +325,8 @@ pub fn spec_to_chunk_mode(spec: &ChunkSpec) -> Result<ChunkMode, String> {
     }
 }
 
-/// Window specification — nested JSON shape: `{ "mode": "...", ... }`.
-/// See `doc/window_chunk_modes.md` for full syntax.
+/// Extent specification — nested JSON shape: `{ "mode": "...", ... }`.
+/// See `doc/extent_chunk_modes.md` for full syntax.
 ///
 /// Modes:
 /// - `full_allocation` — use entire per-thread allocation (no other fields needed)
@@ -335,7 +335,7 @@ pub fn spec_to_chunk_mode(spec: &ChunkSpec) -> Result<ChunkMode, String> {
 /// - `absolute` — hard byte size; requires `size` (string like `"880MB"`, `"4GiB"`)
 #[derive(Debug, Clone, Serialize, Deserialize, Default)]
 #[serde(deny_unknown_fields)]
-pub struct WindowSpec {
+pub struct ExtentSpec {
     pub mode: String,
     /// CacheTarget string for `cache` mode (e.g. `"L3/2"`, `"DRAM*4"`).
     #[serde(default)]
@@ -348,7 +348,7 @@ pub struct WindowSpec {
     pub size: Option<String>,
 }
 
-/// Chunk specification — same nested shape as WindowSpec.
+/// Chunk specification — same nested shape as ExtentSpec.
 ///
 /// Modes:
 /// - `auto` — per-test heuristic
@@ -377,8 +377,8 @@ pub struct MemoryStrategyConfig {
     pub reserve_percent: Option<f64>,  // For percentage_reserve mode
     pub reserve_gib: Option<f64>,      // For fixed_reserve mode
 
-    /// Default window spec — applied when a test does not override it.
-    pub default_window: WindowSpec,
+    /// Default extent spec — applied when a test does not override it.
+    pub default_extent: ExtentSpec,
     /// Default chunk spec — applied when a test does not override it.
     pub default_chunk: ChunkSpec,
 }
@@ -414,9 +414,9 @@ pub struct TestConfig {
     pub duration_secs: Option<u32>,
     pub min_duration_secs: Option<u32>,
 
-    /// Per-test window spec override. Same shape as `system.memory_strategy.default_window`.
+    /// Per-test extent spec override. Same shape as `system.memory_strategy.default_extent`.
     #[serde(default)]
-    pub window: Option<WindowSpec>,
+    pub extent: Option<ExtentSpec>,
     /// Per-test chunk spec override. Same shape as `system.memory_strategy.default_chunk`.
     #[serde(default)]
     pub chunk: Option<ChunkSpec>,
@@ -425,7 +425,7 @@ pub struct TestConfig {
 
     /// Flush each chunk out of cache (CLFLUSHOPT + MFENCE) between the write and verify phases,
     /// so the verify round-trips through DRAM instead of reading the just-written cached copy
-    /// (#59). Defaults to false. Only meaningful where the window/chunk would otherwise stay
+    /// (#59). Defaults to false. Only meaningful where the extent/chunk would otherwise stay
     /// cache-resident — at large chunks natural eviction already forces DRAM reads, so enabling
     /// it there costs bandwidth without changing what is tested.
     #[serde(default)]
@@ -643,7 +643,7 @@ impl ModernConfig {
         fs::write(path, json).map_err(|e| format!("Failed to write config file: {}", e))
     }
 
-    // Convert to runtime allocation strategy (window/chunk modes are now test-specific)
+    // Convert to runtime allocation strategy (extent/chunk modes are now test-specific)
     pub fn to_memory_strategy(&self) -> EnhancedMemoryStrategy {
         let allocation_mode = match self.system.memory_strategy.allocation_mode.as_str() {
             "max_available" => AllocationMode::ReserveFromAvailable { 
@@ -663,11 +663,11 @@ impl ModernConfig {
         EnhancedMemoryStrategy { allocation_mode }
     }
     
-    // Parse default window spec into runtime WindowMode. An invalid spec is an error, not a
+    // Parse default extent spec into runtime ExtentMode. An invalid spec is an error, not a
     // fallback: the run stops rather than test something the config didn't ask for.
-    pub fn get_default_window_mode(&self) -> Result<WindowMode, String> {
-        spec_to_window_mode(&self.system.memory_strategy.default_window)
-            .map_err(|e| format!("invalid default window spec: {e}"))
+    pub fn get_default_extent_mode(&self) -> Result<ExtentMode, String> {
+        spec_to_extent_mode(&self.system.memory_strategy.default_extent)
+            .map_err(|e| format!("invalid default extent spec: {e}"))
     }
 
     // Parse default chunk spec into runtime ChunkMode. Invalid is an error, as above.
@@ -700,12 +700,12 @@ impl ModernConfig {
             self.legacy_metadata.as_ref().map_or(2, |m| m.tm5_channels)
         };
         self.test_sequence.iter().enumerate().filter(|(_, t)| t.enabled).map(|(i, test)| {
-            let window_mode = self.parse_test_window_mode(test).map_err(|e| Self::test_error(i, test, e))?;
+            let extent_mode = self.parse_test_extent_mode(test).map_err(|e| Self::test_error(i, test, e))?;
             let chunk_mode = self.parse_test_chunk_mode(test).map_err(|e| Self::test_error(i, test, e))?;
             if let ChunkMode::Absolute { size_bytes } = chunk_mode
                 && !size_bytes.is_multiple_of(crate::test_memory::GRANULE)
             {
-                log::info!("test_sequence[{i}] ('{}'): chunk {} bytes -> {} KiB (chunks are multiples of 4 KiB, rounded up; then at least the test's minimum and at most the window)",
+                log::info!("test_sequence[{i}] ('{}'): chunk {} bytes -> {} KiB (chunks are multiples of 4 KiB, rounded up; then at least the test's minimum and at most the extent)",
                     test.function, size_bytes, size_bytes.next_multiple_of(crate::test_memory::GRANULE) / 1024);
             }
             let requires_locality = test.requires_locality.unwrap_or({
@@ -719,7 +719,7 @@ impl ModernConfig {
                 min_duration_secs: test.min_duration_secs,
             };
 
-            let mut config = TestMemoryConfig::new(window_mode, chunk_mode, requires_locality)
+            let mut config = TestMemoryConfig::new(extent_mode, chunk_mode, requires_locality)
                 .with_timing(timing)
                 .with_pattern_config(test.pattern_mode, test.pattern_param0, test.pattern_param1)
                 // #59: CLFLUSHOPT-verify, opt-in per test from the config
@@ -776,7 +776,7 @@ impl ModernConfig {
             // Find the test by index (TM5 uses 0-based indexing)
             if let Some(test) = self.test_sequence.get(test_index as usize) {
                 if test.enabled {
-                    let window_mode = self.parse_test_window_mode(test)
+                    let extent_mode = self.parse_test_extent_mode(test)
                         .map_err(|e| Self::test_error(test_index as usize, test, e))?;
                     let chunk_mode = self.parse_test_chunk_mode(test)
                         .map_err(|e| Self::test_error(test_index as usize, test, e))?;
@@ -791,7 +791,7 @@ impl ModernConfig {
                         min_duration_secs: test.min_duration_secs,
                     };
 
-                    let mut config = TestMemoryConfig::new(window_mode, chunk_mode, requires_locality)
+                    let mut config = TestMemoryConfig::new(extent_mode, chunk_mode, requires_locality)
                         .with_timing(timing)
                         .with_pattern_config(test.pattern_mode, test.pattern_param0, test.pattern_param1);
 
@@ -836,10 +836,10 @@ fn test_error(index: usize, test: &TestConfig, e: String) -> String {
     format!("test_sequence[{index}] ('{}'): {e}", test.function)
 }
 
-fn parse_test_window_mode(&self, test: &TestConfig) -> Result<WindowMode, String> {
-    match test.window {
-        Some(ref spec) => spec_to_window_mode(spec).map_err(|e| format!("invalid window spec: {e}")),
-        None => self.get_default_window_mode(),
+fn parse_test_extent_mode(&self, test: &TestConfig) -> Result<ExtentMode, String> {
+    match test.extent {
+        Some(ref spec) => spec_to_extent_mode(spec).map_err(|e| format!("invalid extent spec: {e}")),
+        None => self.get_default_extent_mode(),
     }
 }
 
@@ -868,7 +868,7 @@ pub fn create_demo_config() -> Self {
                 reserve_mb: None,
                 reserve_percent: Some(10.0),           // Reserve 10% for OS
                 reserve_gib: None,
-                default_window: WindowSpec::full_allocation(),
+                default_extent: ExtentSpec::full_allocation(),
                 default_chunk: ChunkSpec::auto(),
             },
             cpu_config: CpuConfig {
@@ -895,7 +895,7 @@ pub fn create_demo_config() -> Self {
                 cycles: Some(1),                       // 1 cycle is thorough enough
                 duration_secs: None,
                 min_duration_secs: None,
-                window: Some(WindowSpec::full_allocation()), // Must test ALL memory
+                extent: Some(ExtentSpec::full_allocation()), // Must test ALL memory
                 chunk: Some(ChunkSpec::absolute("512MiB")),  // Above a desktop L3; capped per block piece
                 requires_locality: Some(false),
                 flush_before_verify: None,
@@ -912,14 +912,14 @@ pub fn create_demo_config() -> Self {
                 parameter: None,
             },
 
-            // Mem-Refresh - needs small window for refresh timing
+            // Mem-Refresh - needs small extent for refresh timing
             TestConfig {
                 enabled: true,
                 function: "Mem-Refresh".to_string(),
                 cycles: Some(1),
                 duration_secs: None,
                 min_duration_secs: None,
-                window: Some(WindowSpec::cache_total(2.0)), // 2x cache for refresh testing
+                extent: Some(ExtentSpec::cache_total(2.0)), // 2x cache for refresh testing
                 chunk: Some(ChunkSpec::absolute("1MB")),    // Small 1MB blocks
                 requires_locality: Some(true),
                 flush_before_verify: None,
@@ -943,7 +943,7 @@ pub fn create_demo_config() -> Self {
                 cycles: Some(1),
                 duration_secs: None,
                 min_duration_secs: None,
-                window: Some(WindowSpec::absolute("880MB")), // TM5 default window
+                extent: Some(ExtentSpec::absolute("880MB")), // TM5 default window
                 chunk: Some(ChunkSpec::absolute("16MB")),    // TM5 typical block size
                 requires_locality: Some(false),
                 flush_before_verify: None,
@@ -967,7 +967,7 @@ pub fn create_demo_config() -> Self {
                 cycles: Some(1),
                 duration_secs: None,
                 min_duration_secs: None,
-                window: Some(WindowSpec::absolute("64MB")),  // Good SIMD locality
+                extent: Some(ExtentSpec::absolute("64MB")),  // Good SIMD locality
                 chunk: Some(ChunkSpec::absolute("16MB")),    // 16MB for 128-bit alignment
                 requires_locality: Some(true),
                 flush_before_verify: None,
@@ -991,7 +991,7 @@ pub fn create_demo_config() -> Self {
                 cycles: Some(1),
                 duration_secs: None,
                 min_duration_secs: None,
-                window: Some(WindowSpec::absolute("128MB")), // Larger for AVX2
+                extent: Some(ExtentSpec::absolute("128MB")), // Larger for AVX2
                 chunk: Some(ChunkSpec::absolute("32MB")),    // 32MB for 256-bit alignment
                 requires_locality: Some(true),
                 flush_before_verify: None,
@@ -1015,7 +1015,7 @@ pub fn create_demo_config() -> Self {
                 cycles: Some(1),
                 duration_secs: None,
                 min_duration_secs: None,
-                window: Some(WindowSpec::cache_total(0.5)), // Half total cache to ensure busting
+                extent: Some(ExtentSpec::cache_total(0.5)), // Half total cache to ensure busting
                 chunk: Some(ChunkSpec::absolute("1MB")),    // 1MB blocks for cache lines
                 requires_locality: Some(true),
                 flush_before_verify: None,
@@ -1039,7 +1039,7 @@ pub fn create_demo_config() -> Self {
                 cycles: Some(1),
                 duration_secs: None,
                 min_duration_secs: None,
-                window: Some(WindowSpec::full_allocation()), // Need full memory
+                extent: Some(ExtentSpec::full_allocation()), // Need full memory
                 chunk: Some(ChunkSpec::absolute("8MB")),    // 8MB blocks
                 requires_locality: Some(false),
                 flush_before_verify: None,
@@ -1063,7 +1063,7 @@ pub fn create_demo_config() -> Self {
                 cycles: Some(1),
                 duration_secs: None,
                 min_duration_secs: None,
-                window: Some(WindowSpec::full_allocation()),
+                extent: Some(ExtentSpec::full_allocation()),
                 chunk: Some(ChunkSpec::auto()),             // Let TMR optimize
                 requires_locality: Some(false),
                 flush_before_verify: None,
@@ -1087,7 +1087,7 @@ pub fn create_demo_config() -> Self {
                 cycles: Some(1),
                 duration_secs: None,
                 min_duration_secs: None,
-                window: Some(WindowSpec::full_allocation()), // Need src+dst space
+                extent: Some(ExtentSpec::full_allocation()), // Need src+dst space
                 chunk: Some(ChunkSpec::absolute("16MB")),    // 16MB blocks
                 requires_locality: Some(false),
                 flush_before_verify: None,
@@ -1111,7 +1111,7 @@ pub fn create_demo_config() -> Self {
                 cycles: Some(1),
                 duration_secs: None,
                 min_duration_secs: None,
-                window: None,                                // Use global default
+                extent: None,                                // Use global default
                 chunk: Some(ChunkSpec::absolute("512MiB")),
                 requires_locality: Some(false),
                 flush_before_verify: None,
@@ -1150,7 +1150,7 @@ pub fn create_demo_config() -> Self {
                     reserve_mb: Some(128),                 // TM5-style fixed reserve
                     reserve_percent: None,
                     reserve_gib: None,
-                    default_window: WindowSpec::absolute("880MB"), // TM5 default window
+                    default_extent: ExtentSpec::absolute("880MB"), // TM5 default window
                     default_chunk: ChunkSpec::auto(),
                 },
                 cpu_config: CpuConfig {
@@ -1176,7 +1176,7 @@ pub fn create_demo_config() -> Self {
                     cycles: Some(1),
                     duration_secs: None,
                     min_duration_secs: None,
-                    window: Some(WindowSpec::full_allocation()), // Override to test all memory
+                    extent: Some(ExtentSpec::full_allocation()), // Override to test all memory
                     chunk: None,                                 // Use default auto
                     requires_locality: Some(false),
                     flush_before_verify: None,
@@ -1198,7 +1198,7 @@ pub fn create_demo_config() -> Self {
                     cycles: Some(1),
                     duration_secs: None,
                     min_duration_secs: None,
-                    window: None,                                // Use default 880MB
+                    extent: None,                                // Use default 880MB
                     chunk: Some(ChunkSpec::absolute("16MB")),    // TM5-style block size
                     requires_locality: Some(false),
                     flush_before_verify: None,
@@ -1332,7 +1332,7 @@ impl LegacyConfig {
                 min_duration_secs: None,
                 
                 // Handle TM5 window behavior - no overrides for legacy
-                window: None,  // Use global default
+                extent: None,  // Use global default
 
                 chunk: Some(self.chunk_spec(test)),
                 
@@ -1373,7 +1373,7 @@ impl LegacyConfig {
                 reserve_mb: Some(self.memory_setup.reserved_memory_mb),
                 reserve_percent: None,
                 reserve_gib: None,
-                default_window: WindowSpec::absolute(&format!("{}MiB", self.memory_setup.testing_window_size_mb)),
+                default_extent: ExtentSpec::absolute(&format!("{}MiB", self.memory_setup.testing_window_size_mb)),
                 default_chunk: ChunkSpec::auto(),
             },
             cpu_config: CpuConfig {
@@ -1618,7 +1618,7 @@ mod tests {
         // The 880 MiB window; window/2 = 440 -> 432, window/3 = 293.33 -> 288, window/4 = 220
         // -> 208 (each floored to 16 MiB, as TM5 does); 4 MiB; 1536 MiB clamped to the window.
         assert_eq!(sizes, [880, 432, 288, 208, 4, 880].map(|m| Some(m * MIB)));
-        assert_eq!(modern.system.memory_strategy.default_window.size.as_deref(), Some("880MiB"));
+        assert_eq!(modern.system.memory_strategy.default_extent.size.as_deref(), Some("880MiB"));
     }
 
     /// An invalid window or chunk spec stops the run: no fallback to the default, which would
@@ -1638,28 +1638,28 @@ mod tests {
         assert!(err.contains("default chunk"), "{err}");
 
         modern.system.memory_strategy.default_chunk = ChunkSpec::auto();
-        modern.test_sequence[0].window = Some(WindowSpec { mode: "bogus".to_string(), ..Default::default() });
+        modern.test_sequence[0].extent = Some(ExtentSpec { mode: "bogus".to_string(), ..Default::default() });
         let err = modern.get_test_configs().unwrap_err();
-        assert!(err.contains("test_sequence[0] ('Mem-SimpleV2')") && err.contains("window"), "{err}");
+        assert!(err.contains("test_sequence[0] ('Mem-SimpleV2')") && err.contains("extent"), "{err}");
 
-        modern.test_sequence[0].window = None;
-        modern.system.memory_strategy.default_window = WindowSpec { mode: "bogus".to_string(), ..Default::default() };
+        modern.test_sequence[0].extent = None;
+        modern.system.memory_strategy.default_extent = ExtentSpec { mode: "bogus".to_string(), ..Default::default() };
         let err = modern.get_test_configs().unwrap_err();
-        assert!(err.contains("default window"), "{err}");
+        assert!(err.contains("default extent"), "{err}");
 
         // A bad cache-target scale is an error, not the tier default; no scale is the default.
-        modern.system.memory_strategy.default_window = WindowSpec::full_allocation();
+        modern.system.memory_strategy.default_extent = ExtentSpec::full_allocation();
         for bad in ["L3x4", "L2/0", "DRAM*200", "DRAM-FULLX"] {
-            modern.test_sequence[0].window = Some(WindowSpec { mode: "cache".to_string(), target: Some(bad.to_string()), ..Default::default() });
+            modern.test_sequence[0].extent = Some(ExtentSpec { mode: "cache".to_string(), target: Some(bad.to_string()), ..Default::default() });
             assert!(modern.get_test_configs().is_err(), "{bad} should be rejected");
         }
-        modern.test_sequence[0].window = Some(WindowSpec { mode: "cache".to_string(), target: Some("L3".to_string()), ..Default::default() });
+        modern.test_sequence[0].extent = Some(ExtentSpec { mode: "cache".to_string(), target: Some("L3".to_string()), ..Default::default() });
         assert!(modern.get_test_configs().is_ok());
         assert!(matches!(CacheTarget::parse("L3"), Some(CacheTarget::L3 { scale }) if scale == 0.5));
         assert!(matches!(CacheTarget::parse("DRAM"), Some(CacheTarget::Dram { scale }) if scale == 4.0));
 
         // A zero size is an error, not a test of nothing
-        modern.test_sequence[0].window = Some(WindowSpec::absolute("0"));
+        modern.test_sequence[0].extent = Some(ExtentSpec::absolute("0"));
         assert!(modern.get_test_configs().is_err());
     }
 
