@@ -606,21 +606,6 @@ fn run() -> Result<(), Box<dyn std::error::Error>> {
 					pinning_config.enable_pinning = false;
 					log::debug!("CLI override: enable_pinning = false");
 				}
-				"allocator" => {
-					if let params::ParamValue::String(allocator_str) = value {
-						use crate::memory::allocator::AllocationStrategy;
-						match allocator_str.parse::<AllocationStrategy>() {
-							Ok(strategy) => {
-								alloc_config.allocation_strategy = strategy.to_string();
-								log::debug!("CLI override: allocation_strategy = {}", strategy);
-							}
-							Err(e) => {
-								println!("❌ Invalid allocator override '{}': {}", allocator_str, e);
-								std::process::exit(RunStatus::NotRun.exit_code());
-							}
-						}
-					}
-				}
 				"topology" => {
 					if let params::ParamValue::String(topology_str) = value {
 						use crate::cpu_topology::{set_topology_detection_method, TopologyDetectionMethod};
@@ -1409,20 +1394,6 @@ fn build_config_from_validated_params(
 
     // Build memory allocation config
     let mut alloc_config = MemoryAllocationConfig::default();
-
-    // Handle allocator if specified (requires special parsing)
-    if let Some(params::ParamValue::String(allocator_str)) = validated.get("allocator") {
-        use crate::memory::allocator::AllocationStrategy;
-        match allocator_str.parse::<AllocationStrategy>() {
-            Ok(strategy) => {
-                alloc_config.allocation_strategy = strategy.to_string();
-                println!("  Allocation Strategy: {}", strategy);
-            }
-            Err(e) => {
-                return Err(format!("Invalid allocator '{}': {}", allocator_str, e));
-            }
-        }
-    }
 
 
     // Handle page size overrides

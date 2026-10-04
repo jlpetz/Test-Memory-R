@@ -64,8 +64,7 @@ impl<'a> TestRunner<'a> {
     ) -> (Self, Vec<TestBlock<'a>>) {
         let total_allocated: usize = blocks.iter().map(|b| b.buffer.size()).sum();
         let extent_size = config.calculate_extent_size(test_name, total_allocated);
-        // The extent is the first `extent_size` bytes of the thread's regions: one piece per
-        // stitched span, one per block under plan-pagesize-pref (TODO 76).
+        // The extent is the first `extent_size` bytes of the thread's span (TODO 76).
         let mut test_blocks = crate::test_memory::extent_pieces(blocks, extent_size);
         if test_blocks.is_empty() && let Some(first) = blocks.first() {
             log::error!("{}: extent of {} bytes is below 4 KiB; testing 4 KiB instead", test_name, extent_size);

@@ -60,12 +60,6 @@ impl ParamRegistry {
             parser: |v| Ok(ParamValue::String(v.to_string())), // Return raw value, complex parsing happens later
         });
 
-        params.insert("allocator", ParamDef {
-            key: "allocator",
-            can_override_config: true,
-            parser: |v| Ok(ParamValue::String(v.to_string())), // Validated separately
-        });
-
         // CPU configuration parameters
         params.insert("cpus", ParamDef {
             key: "cpus",
@@ -316,7 +310,7 @@ impl ParamRegistry {
         });
 
         // Block sizes and share rounding. Each parses here; how they fit together is checked by
-        // MemoryAllocationConfig::share_rounding once the allocator is known.
+        // MemoryAllocationConfig::share_rounding.
         for key in ["hugechunk", "largechunk", "largefloor", "blkroundtarget"] {
             params.insert(key, ParamDef {
                 key,
@@ -477,11 +471,8 @@ pub fn print_help(program_name: &str) {
     println!("  cpu-stride=2                        # Stage 2 SPACING: use every Nth available CPU");
     println!("  cpu-stride=even                     #   ...or spread the requested count evenly across the pool");
     println!("  --disable-pinning                   # Disable CPU thread pinning");
-    println!("  allocator=stitched                  # Allocator, both filling 1GB, then 2MB, then 4KB pages:");
-    println!("    stitched                          #   One contiguous span per thread (default)");
-    println!("    plan-pagesize-pref                #   One block per request");
     println!("  hugechunk=1GiB                      # First 1GB-page request size, halved on refusal (power of two, >= 1GiB)");
-    println!("  largechunk=128MiB                   # First 2MB-page request size, halved on refusal (default 1GiB, 128MiB stitched)");
+    println!("  largechunk=128MiB                   # First 2MB-page request size, halved on refusal (default 128MiB)");
     println!("  largefloor=16MiB                    # Smallest 2MB-page request (16MiB-1GiB)");
     println!("  blkroundtarget=1GiB                 # Round each thread's share to a multiple of this (of largefloor)");
     println!("  blkround=up                         # ...up (default; a smaller step rather than pass available), down, or nearest");

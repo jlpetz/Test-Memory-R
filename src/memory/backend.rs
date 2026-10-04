@@ -70,18 +70,17 @@ pub(crate) fn is_exhaustion(code: u32) -> bool {
     )
 }
 
-/// Why `Backend::allocate` failed. `code` is the Win32 error when the OS refused the request, so
-/// the caller can tell a pool running dry from a bad request.
+/// Why `Backend::allocate` failed, with the Win32 error named in the message when the OS refused
+/// the request. (The stitched allocator, which sorts refusals by code, calls `VirtualAlloc2`
+/// itself.)
 #[derive(Debug)]
 pub struct AllocError {
-    pub code: Option<u32>,
     pub message: String,
 }
 
 impl AllocError {
-    /// A failure with no OS code behind it.
     pub(crate) fn other(message: impl Into<String>) -> Self {
-        Self { code: None, message: message.into() }
+        Self { message: message.into() }
     }
 }
 
@@ -113,6 +112,7 @@ pub struct BackendAllocation {
 #[derive(Debug, Clone)]
 pub enum BackendType {
     Auto,                                    // Let system decide
+    #[expect(dead_code, reason = "revival seam (TODO #4/5): only Auto is built since the stitched allocator calls VirtualAlloc2 itself (TODO 76)")]
     Windows { large_pages: bool },          // Windows VirtualAlloc
 }
 
@@ -252,8 +252,7 @@ impl WindowsBackend {
                 // Fall back for non-strict modes
                 match &config.page_size {
                     AllocPageSizePref::Require(_) => return Err(AllocError {
-                        code: Some(ERROR_PRIVILEGE_NOT_HELD),
-                        message: "Large/huge pages required but privilege missing".to_string(),
+                        message: format!("Large/huge pages required but privilege missing ({})", describe_error(ERROR_PRIVILEGE_NOT_HELD)),
                     }),
                     _ => {
                         // Try with regular pages
@@ -434,7 +433,6 @@ impl WindowsBackend {
             }
             
             Err(AllocError {
-                code: Some(err.0),
                 message: format!("VirtualAlloc2 failed: {}", describe_error(err.0)),
             })
         } else {

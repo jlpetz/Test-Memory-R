@@ -1,8 +1,9 @@
-//! Stitched placeholder allocator (`allocator=stitched`): one reservation, one contiguous VA span
-//! per thread (TODO 70, brought into TMR by TODO 75 C).
+//! Stitched placeholder allocator, TMR's only one since TODO 76: one reservation, one contiguous
+//! VA span per thread (TODO 70, brought into TMR by TODO 75 C).
 //!
-//! The chunk allocators hand each thread a list of independent `VirtualAlloc2` blocks, wherever the
-//! OS put them. This one reserves a single placeholder region up front, carves it into one
+//! A chunk allocator (plan-pagesize-pref, removed in TODO 76) hands each thread a list of
+//! independent `VirtualAlloc2` blocks, wherever the OS puts them. This one reserves a single
+//! placeholder region up front, carves it into one
 //! 1 GiB-aligned slice per thread, and fills each slice from its base upward: 1 GiB HUGE pages
 //! first, 2 MiB LARGE pages once those run out, then 4 KiB REGULAR pages. Each thread's memory is
 //! one contiguous VA range, 1 GiB pages at its base, with the unused tail of its slice left as
@@ -39,8 +40,7 @@
 //!
 //! # Fairness: commit-size ladders, least-filled first
 //!
-//! The order is [`fill::fill_ladder`], shared with plan-pagesize-pref; this file supplies the
-//! commits. HUGE and LARGE pages are each handed out one commit at a time, and the next commit always goes
+//! The order is [`fill::fill_ladder`]; this file supplies the commits. HUGE and LARGE pages are each handed out one commit at a time, and the next commit always goes
 //! to the thread holding the fewest committed bytes; equally filled threads take turns. Commit
 //! sizes come down a power-of-two ladder. They start at `huge_chunk` / `large_chunk` (in TMR,
 //! 1 GiB and 128 MiB by default). When a commit is refused, that node steps down to the largest rung below it and
@@ -1315,8 +1315,8 @@ where
 // TMR entry point
 // ---------------------------------------------------------------------------------------------
 
-/// `allocator=stitched`: the same inputs and output as `MemoryAllocator::chunk_allocate_planned`,
-/// so it slots in as one more `AllocationStrategy` arm. Blocks come out power-of-two shaped.
+/// Every thread's share as one span: blocks keyed by thread, power-of-two shaped, each joined to
+/// the next (`AllocationBlock::joins_next`).
 pub fn chunk_allocate_stitched(
     thread_blocks: &HashMap<usize, Vec<BlockInfo>>,
     runtime_config: &crate::RuntimeConfig,

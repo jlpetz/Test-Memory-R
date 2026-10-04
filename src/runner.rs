@@ -65,7 +65,7 @@ use crate::reporting::models::{
 };
 use crate::progress::{progress_reporter, RunOutcome};
 use crate::results::TestRunResult;
-use crate::memory::{MemoryBuffer, MemoryAllocator, BackendType};
+use crate::memory::MemoryBuffer;
 use crate::{MemoryBackend, RuntimeConfig};
 use std::collections::HashMap;
 use std::sync::atomic::{AtomicBool, Ordering};
@@ -4068,28 +4068,11 @@ fn convert_to_latency_level_summary(
     }
 }
 
+/// Every thread's share, from the stitched allocator: one contiguous VA span per thread.
 fn allocate_all_blocks_new(thread_blocks: &HashMap<usize, Vec<BlockInfo>>, runtime_config: &RuntimeConfig) -> Result<HashMap<usize, Vec<AllocationBlock>>, String> {
-    use crate::memory::allocator::AllocationStrategy;
-
-    // Determine backend type based on runtime config
-    let backend_type = match runtime_config.memory_backend {
-        MemoryBackend::VirtualAlloc2 => BackendType::Windows { large_pages: true },
-    };
-    
-    // Create memory allocator
-    let mut allocator = MemoryAllocator::new(backend_type)
-        .map_err(|e| format!("Failed to create memory allocator: {:?}", e))?;
-    
-    // Parse allocation strategy from config
-    let strategy = runtime_config.memory_allocation.allocation_strategy
-        .parse::<AllocationStrategy>()
-        .map_err(|e| format!("Invalid allocation strategy '{}': {:?}", 
-                            runtime_config.memory_allocation.allocation_strategy, e))?;
-    
-    log::info!("Using allocation strategy: {}", strategy);
-
-    // Use the plan-based chunk allocation with configured strategy
-    allocator.chunk_allocate_planned(thread_blocks, runtime_config, strategy)
+    match runtime_config.memory_backend {
+        MemoryBackend::VirtualAlloc2 => crate::memory::stitched::chunk_allocate_stitched(thread_blocks, runtime_config),
+    }
 }
 
 fn print_detailed_cpu_performance_summary(

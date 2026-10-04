@@ -2,7 +2,7 @@ use crate::{ErrorMode};
 use crate::constants::{gib_to_bytes, BYTES_PER_MIB};
 use crate::tests::{ExtentMode, ChunkMode, CacheTarget, parse_size_string};
 use crate::memory::allocation_strategy::{EnhancedMemoryStrategy, AllocationMode, ReserveAmount, RoundDirection, ShareRounding};
-use crate::memory::allocator::{AllocationStrategy, BlockSizing};
+use crate::memory::allocator::{BlockSizing, DEFAULT_LARGE_CHUNK};
 use crate::runner::TestSuiteTiming;
 use crate::tests::{TestTiming, TestMemoryConfig};
 use serde::{Deserialize, Serialize};
@@ -119,14 +119,11 @@ pub struct MemoryAllocationConfig {
     #[serde(default = "default_max_page_size")]
     pub max_page_size: String,                 // "regular", "large", "huge"
 
-    #[serde(default = "default_allocation_strategy")]
-    pub allocation_strategy: String,           // "plan-pagesize-pref", "stitched"
-
     // Block sizes, checked by `block_sizing` (see `BlockSizing`). Sizes as `parse_size_string`.
     #[serde(default = "default_huge_chunk")]
     pub huge_chunk: String,                    // `hugechunk`: first size of each 1 GiB-page request
     #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub large_chunk: Option<String>,           // `largechunk`: first size of each 2 MiB-page request; unset = the allocator's default
+    pub large_chunk: Option<String>,           // `largechunk`: first size of each 2 MiB-page request; unset = 128 MiB
     #[serde(default = "default_large_floor")]
     pub large_floor: String,                   // `largefloor`: smallest 2 MiB-page request
 
@@ -139,7 +136,6 @@ pub struct MemoryAllocationConfig {
 
 fn default_min_page_size() -> String { "large".to_string() }
 fn default_max_page_size() -> String { "huge".to_string() }
-fn default_allocation_strategy() -> String { "stitched".to_string() }
 fn default_huge_chunk() -> String { "1GiB".to_string() }
 fn default_large_floor() -> String { "16MiB".to_string() }
 fn default_share_round_step() -> String { "1GiB".to_string() }
@@ -150,7 +146,6 @@ impl Default for MemoryAllocationConfig {
         Self {
             min_page_size: default_min_page_size(),
             max_page_size: default_max_page_size(),
-            allocation_strategy: default_allocation_strategy(),
             huge_chunk: default_huge_chunk(),
             large_chunk: None,
             large_floor: default_large_floor(),
@@ -182,13 +177,13 @@ impl MemoryAllocationConfig {
     }
 
     /// `hugechunk`, `largechunk` and `largefloor`, parsed and checked. An unset `largechunk` is
-    /// the allocator's default (`AllocationStrategy::default_large_chunk`), never below `largefloor`.
+    /// `DEFAULT_LARGE_CHUNK`, never below `largefloor`.
     pub fn block_sizing(&self) -> Result<BlockSizing, String> {
         let size = |key: &str, value: &str| parse_size_string(value).map_err(|e| format!("{key}={value}: {e}"));
         let large_floor = size("largefloor", &self.large_floor)?;
         let large_chunk = match &self.large_chunk {
             Some(value) => size("largechunk", value)?,
-            None => self.allocation_strategy.parse::<AllocationStrategy>()?.default_large_chunk().max(large_floor),
+            None => DEFAULT_LARGE_CHUNK.max(large_floor),
         };
         BlockSizing::new(size("hugechunk", &self.huge_chunk)?, large_chunk, large_floor)
     }
@@ -650,8 +645,6 @@ impl ModernConfig {
             registry.parse_arg(&format!("{cli_key}={value}"))
                 .map_err(|e| format!("system.{json_key}: {e}"))?;
         }
-        sys.memory_allocation.allocation_strategy.parse::<crate::memory::allocator::AllocationStrategy>()
-            .map_err(|e| format!("system.memory_allocation.allocation_strategy: {e}"))?;
         match sys.memory_strategy.allocation_mode.as_str() {
             "max_available" | "percentage_reserve" | "fixed_reserve" => Ok(()),
             other => Err(format!("system.memory_strategy.allocation_mode: unknown mode '{other}'; \

@@ -1,13 +1,13 @@
-//! What the two per-thread allocators share (TODO 75): which page sizes a run may use, each
-//! thread's share and NUMA node, the order 1 GiB and 2 MiB pages are handed out in, and the
-//! warning when some of it is on another node.
+//! How a thread's share is filled (TODO 75): which page sizes a run may use, each thread's share
+//! and NUMA node, the order 1 GiB and 2 MiB pages are handed out in, and the warning when some of
+//! it is on another node.
 //!
-//! plan-pagesize-pref (`allocator.rs`) makes every request its own `VirtualAlloc2` block, so each
-//! one is a power of two no bigger than the thread's gap. stitched (`stitched.rs`) commits into one
-//! placeholder slice per thread; neighbouring commits of one page size merge into a single run, so
-//! a request can be any multiple of the floor, and the run is cut into power-of-two blocks only
-//! when it is handed out. That size rule, and how a request is made, are all that differ: both
-//! implement [`Fill`] and run the same passes ([`fill_all`]).
+//! The stitched allocator (`stitched.rs`) commits into one placeholder slice per thread;
+//! neighbouring commits of one page size merge into a single run, so a request can be any
+//! multiple of the floor, and the run is cut into power-of-two blocks only when it is handed out.
+//! It implements [`Fill`] and runs the passes of [`fill_all`]. (A second implementation,
+//! plan-pagesize-pref, one `VirtualAlloc2` block per request, went in TODO 76; `Fill` is the seam
+//! another would take.)
 //!
 //! 1 GiB and 2 MiB requests name their node strictly (`NUMA_NODE_MANDATORY`), so every block's
 //! node is the one recorded for it. A preferred node is only a preference: once the node is out,

@@ -297,9 +297,6 @@ pub struct MemorySnapshot {
     pub large_pages_available: bool,
     pub min_page_size: String,
     pub max_page_size: String,
-    /// The `memory_allocation.allocation_strategy` key: the order the allocator tried page and
-    /// block sizes in.
-    pub allocation_strategy: String,
 
     pub page_mix: PageSizeMix,
 }
@@ -563,13 +560,6 @@ impl RunConfigSnapshot {
             large_pages_available: runtime_config.large_pages_available,
             min_page_size: runtime_config.memory_allocation.min_page_size.clone(),
             max_page_size: runtime_config.memory_allocation.max_page_size.clone(),
-            // Canonical spelling, so a config alias doesn't compare as a different strategy.
-            allocation_strategy: runtime_config.memory_allocation.allocation_strategy
-                .parse::<crate::memory::allocator::AllocationStrategy>()
-                .map_or_else(
-                    |_| runtime_config.memory_allocation.allocation_strategy.clone(),
-                    |s| s.to_string(),
-                ),
 page_mix,
         };
 
@@ -999,16 +989,6 @@ pub fn compare_config(b: &RunConfigSnapshot, c: &RunConfigSnapshot) -> Vec<RunDi
 
     if b.memory.backend != c.memory.backend {
         diffs.push(RunDifference::new("Memory backend", &b.memory.backend, &c.memory.backend, true));
-    }
-
-    if b.memory.allocation_strategy != c.memory.allocation_strategy {
-        // What it changes shows up in the page-size mix, which is compared on its own.
-        diffs.push(RunDifference::new(
-            "Allocation strategy",
-            &b.memory.allocation_strategy,
-            &c.memory.allocation_strategy,
-            false,
-        ));
     }
 
     // Per-test config, for tests present in both plans. An extent/chunk/flush change explains a
