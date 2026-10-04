@@ -26,7 +26,7 @@ Bugs to fix along the way:
 ## Proposal (mock-up, the user's 2026-10-02 run: 4 threads × 14 GiB, 23 free 1 GiB pages)
 
 ```
-📊 Memory Allocation — plan-pagesize-pref, x.x s
+📊 Memory Allocation — stitched, x.x s
 Node  Threads     Target  Allocated      1 GiB      2 MiB  4 KiB  Remote  Requests
    0        4  56.00 GiB  56.00 GiB  23.00 GiB  33.00 GiB      -      0%  17 (3 refused)
 

@@ -157,7 +157,8 @@ would strip the SIMD. So the test keeps its loop and calls the runner between ch
 
 | Method | Call it | Purpose |
 |---|---|---|
-| `TestRunner::new` | once, at the top | Extent sizing, the extent's pieces (`test_memory::extent_pieces`: one per stitched span, one per block otherwise), the chunk (resolved once from the extent), the per-thread info log listing every piece with its page sizes and chunks, starts timers. **Returns `(runner, test_blocks)`** — keep `test_blocks` as a local so you can iterate it immutably while calling `&mut self` methods |
+| `TestRunner::new` | once, at the top | Extent sizing, the extent (`test_memory::extent`: the first bytes of the thread's span), the chunk (resolved once from the extent), the per-thread info log with the extent's page sizes and chunks, starts timers. **Returns `(runner, extent)`** — keep `extent` as a local so you can hold it while calling `&mut self` methods |
+| `restart_clock()` | after untimed setup | Starts the clock again, so a fill or a chain build counts toward neither the duration nor the throughput. The bandwidth and latency tests call it |
 | `chunks(piece_size)` | once per piece | The piece's `ChunkSpread` (TODO 76): `count()` chunks of exactly `chunk()` bytes (the test's chunk, or the piece when it is shorter), at `start(k)`, spread evenly from 0 to the piece's end. Chunks overlap by under one chunk in total when the chunk doesn't divide the piece, so every word must depend only on its position. Byte offsets: convert to your own units. `half_chunks` is the same for a copy from a piece's first half to its second; `chunk_bytes()` is the bare size, for tests whose chunks aren't ranges (Mem-Random) |
 | `begin_cycle()` | top of each cycle | Increments and returns the cycle number |
 | `add_bytes(n)` | per chunk, before the halt check | Byte accounting, so a halted or interrupted test reports what ran. **You compute the multiplier** — StuckBit passes `chunk() * 6` (3 writes + 3 reads), Refresh `chunk() * 2`. Overlaps count each time |
@@ -179,20 +180,18 @@ loop {
     runner.begin_cycle();
     let mut cycle_errors = 0u64;
 
-    for test_block in test_blocks.iter() {
-        let base = test_block.ptr as *mut $simd_type;
-        let spread = runner.chunks(test_block.test_size);
-        let chunk = spread.chunk() / lanes;
+    let base = extent.ptr as *mut $simd_type;
+    let spread = runner.chunks(extent.test_size);
+    let chunk = spread.chunk() / lanes;
 
-        for k in 0..spread.count() {
-            let start = spread.start(k) / lanes;
-            // …your loop nest over start..start + chunk, whatever shape it needs…
-            //    kernel goes here, macro-expanded, no fn boundary
+    for k in 0..spread.count() {
+        let start = spread.start(k) / lanes;
+        // …your loop nest over start..start + chunk, whatever shape it needs…
+        //    kernel goes here, macro-expanded, no fn boundary
 
-            runner.add_bytes(spread.chunk() * /* your own multiplier */);
-            if runner.should_halt(cycle_errors) { return runner.finish_aborted(/*…*/); }
-            if runner.shutdown_requested()      { return runner.finish_aborted(/*…*/); }
-        }
+        runner.add_bytes(spread.chunk() * /* your own multiplier */);
+        if runner.should_halt(cycle_errors) { return runner.finish_aborted(/*…*/); }
+        if runner.shutdown_requested()      { return runner.finish_aborted(/*…*/); }
     }
 
     runner.commit_cycle_errors(cycle_errors);
@@ -226,26 +225,23 @@ them to 256-bit, but the width is not chosen or guaranteed.
 
 ## 6. The unscaffolded measurement tests
 
-`bandwidth_tests.rs` and both latency modules use **neither** harness. They hand-roll extent
-sizing, the timer/cycle loop, the 250 ms progress throttle, and `TestStats` construction inside
-their own macros (`spd_read_impl!`, `lat_v2p_copy_impl!`, …).
+`bandwidth_tests.rs` and both latency modules don't use `run_phased_test`. Since TODO 76 they do
+use `TestRunner`, like Tier 2: it sizes their extent, runs their timer, cycle gate, progress and
+shutdown, and builds their `TestStats` (the latency tests wrap it in `LatencyTestStats`). They
+register chunk mode `whole`, one chunk, the extent. Their setup runs before `restart_clock()`:
+the bandwidth tests' page-faulting fill, and the latency tests' chains, built in place on the
+extent (Sattolo's algorithm for the cycle, inside-out Fisher-Yates for the data targets; no heap).
 
-Part of that is principled:
+What sets them apart:
 
 - **No error checking** → `should_halt` and the error-mode dispatch, roughly half of what
   `TestRunner` does, is moot. `spd_*` takes `_error_mode` and always reports `error_count: 0`.
-- **Bandwidth deliberately does not chunk.** `spd_*` walks a whole block per cycle and checks
-  shutdown once per cycle, not mid-block. Chunking would insert a loop boundary into the thing
-  being measured; shutdown responsiveness is bounded by one block pass instead.
+- **Bandwidth deliberately does not chunk.** `spd_*` walks the whole extent per cycle (one
+  chunk under `whole`) and checks shutdown once per cycle. Chunking would insert a loop boundary
+  into the thing being measured; shutdown responsiveness is bounded by one extent pass instead.
 - **Latency needs a different return type.** `TestFunction::Latency` returns `LatencyTestStats`
-  (percentiles, TSC samples). `TestRunner::finish_*` builds plain `TestStats`, so the latency
-  tests could only use part of it anyway. They also do bespoke setup — `setup_layout_a` /
-  `setup_layout_b` build Fisher-Yates-shuffled pointer chains before timing starts.
-
-Part of it is just duplication that predates the scaffolding. Extent sizing, the cycle timer, the
-progress throttle, and the `TestStats` literal are copied per macro across ~12 macros in the two
-latency files plus 3 in bandwidth. Nothing is wrong, but the "one source of truth" that TODO #19
-Part A established for Tiers 1 and 2 stops at these files.
+  (percentiles, TSC samples), with `TestRunner::finish_completed` as its `basic_stats`. One cycle
+  is one sample.
 
 | Registration names | Module | Return type |
 |---|---|---|

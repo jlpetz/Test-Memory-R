@@ -270,8 +270,8 @@ This replaces "C is always a power of two" (DECIDED until 2026-10-03). Why it ch
 - **The structural payoffs** argued for powers of two don't need them. Chunks spread evenly over a
   piece (4.5), each exactly `C`. Tile mode (4.7) takes `floor(T/C)*C` for any `C`. Comparability
   comes from configs naming the same sizes, not from a ladder.
-- **The power-of-two pieces came from the old allocator's blocks**, not from the tests. With
-  `allocator=stitched` a thread's memory is one span, and the extent is one piece of it.
+- **The power-of-two pieces came from the old allocator's blocks**, not from the tests. With the
+  stitched allocator a thread's memory is one span, and the extent is the start of it.
 
 What it costs: an extent that isn't a multiple of the chunk is walked with overlaps, under one
 chunk in total per pass (4.5); n = 2 nearly doubles a pass. TM5 drops such a tail instead.

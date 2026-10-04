@@ -29,15 +29,13 @@ Allocation  (per-thread OS-level block — set by memory_strategy.allocation_mod
 | Chunk  | `tm5_block`   | `size`, `divisor`, `granularity` | A TM5 block code 0-3: the smaller of `size` and the extent, / `divisor`, floored to `granularity`. |
 
 **Where the extent lies and how chunks fall (TODO 76).** The extent is the first bytes of the
-thread's memory, in order. Under `allocator=stitched` that memory is one span, so the extent is one
-piece; under `plan-pagesize-pref` it is whole blocks, then the remainder. The chunk is resolved once
+thread's memory, which the stitched allocator makes one contiguous span. The chunk is resolved once
 from the extent: the configured size, at least the test's minimum, at most the extent, rounded up to
 a multiple of 4 KiB. Every chunk is exactly that size. They spread evenly over the piece: the first
 starts at 0, the last ends at the piece's end, and where the chunk doesn't divide the piece the
 chunks overlap, by under one chunk in total (`880 MiB x 6, 160 MiB overlap`). When it divides, they
-tile with no overlap, as TM5's blocks do. A chunk may cross a 1 GiB to 2 MiB page seam inside a
-span. Under `plan-pagesize-pref` a piece shorter than the chunk gets one chunk of its own length.
-The per-thread log line lists each piece, its page sizes and its chunks. A fault in an overlap is
+tile with no overlap, as TM5's blocks do. A chunk may cross a 1 GiB to 2 MiB page seam inside the
+span. The per-thread log line gives the extent, its page sizes and its chunks. A fault in an overlap is
 found by both chunks and counted twice, as `verify_reps` counts each detection. The plan table
 shows each test's extent and chunk resolved for the thread memory (`880.00 MiB x9, 752.00 MiB
 overlap`), and a line under it for every chunk the memory made smaller than its spec asks for.

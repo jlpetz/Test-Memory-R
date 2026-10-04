@@ -483,13 +483,7 @@ a node draw from one page pool, and fairness is judged within it:
   │ 4 KiB    whatever is left, thread by thread, if minpage=regular         │
   └─────────────────────────────────────────────────────────────────────────┘
 
-  plan-pagesize-pref   (DEFAULT)  — every request is its own block
-  ┌─────────────────────────────────────────────────────────────────────────┐
-  │ VirtualAlloc2, Require(Huge / Large) + the matching alignment           │
-  │ request = largest power of two ≤ request size and the thread's gap      │
-  └─────────────────────────────────────────────────────────────────────────┘
-
-  stitched                        — one placeholder, one contiguous VA span per thread
+  stitched (the only allocator since TODO 76) — one placeholder, one contiguous VA span per thread
   ┌─────────────────────────────────────────────────────────────────────────┐
   │ reserve one placeholder, carve a 1 GiB-aligned slice per thread         │
   │ request = any multiple of the floor ≤ request size and the thread's gap │
@@ -506,11 +500,9 @@ line per refusal.
 No request is bigger than the gap of the thread it is for, so nothing is over-allocated and
 nothing is freed. At the default `hugechunk=1GiB` a node's threads end at most one 1 GiB page
 apart. A bigger `hugechunk` makes fewer requests, and the threads can end about one `hugechunk`
-apart. The allocators differ in block size. plan-pagesize-pref's blocks are its requests, so they
-top out at `hugechunk` and `largechunk` (1 GiB by default for plan-pagesize-pref). stitched's commits merge, so a
-thread's 1 GiB pages come out as one large power-of-two block. Both return power-of-two blocks;
-only the bandwidth and latency tests still rely on that (`prepare_blocks_for_extent`). The
-correctness tests see a stitched span as one region (`AllocationBlock::joins_next`, TODO 76).
+apart. The commits merge, so a thread's 1 GiB pages come out as one large power-of-two block; the
+blocks record each part's page size and node, and the tests see the span as one extent (TODO 76).
+(plan-pagesize-pref, which made every request its own block, was removed in TODO 76.)
 
 **NUMA.** Each node's threads draw on that node's pools. 1 GiB and 2 MiB requests name the node
 strictly: `NUMA_NODE_MANDATORY`, bit 63 OR-ed into the `MemExtendedParameterNumaNode` value. It
@@ -557,22 +549,21 @@ same alignment from where it commits: each slice starts 1 GiB-aligned and fills 
 ### 2.2 Stage 2 — the extent, and where it differs from TM5
 
 `TestRunner::new` (`test_scaffolding.rs`) → `calculate_extent_size(test_name, total_allocated)`
-→ `test_memory::extent_pieces` (TODO 76, 2026-10-03):
+→ `test_memory::extent` (TODO 76):
 
 ```
   extent_size = f(ExtentMode, sum of ALL this thread's blocks)      then floor to 64 B
-  pieces = the first extent_size bytes of the thread's regions, each a multiple of 4 KiB
+  extent = the first extent_size bytes of the thread's span, floored to 4 KiB
 
-  allocator=stitched: one region (the span)      plan-pagesize-pref: one region per block
-  ┌─── 1 GiB ───┬─── 1 GiB ───┬ 512 MiB ┐        ┌─ 1 GiB ─┐ ┌─ 1 GiB ─┐ ┌ 512 MiB ┐
-  │████████████████████       │         │        │█████████│ │████     │ │         │
-  └─────────────┴─────────────┴─────────┘        └─────────┘ └─────────┘ └─────────┘
-   one piece, across block and page seams         whole blocks, then the remainder
+  ┌─── 1 GiB ───┬─── 1 GiB ───┬ 512 MiB ┐
+  │████████████████████       │         │
+  └─────────────┴─────────────┴─────────┘
+   one extent, across block and page seams
   █ = the extent
 ```
 
-Each piece is tested from its start (`TestBlock::ptr`). There is no extent offset and no rotation
-between cycles. Until TODO 76 the extent was cut into power-of-two pieces, one per block.
+The extent is tested from its start (`TestBlock::ptr`). There is no extent offset and no
+rotation between cycles. Until TODO 76 the extent was cut into power-of-two pieces, one per block.
 
 > **This is the one capability TMR lost with AWE.** TM5's window slides, so every test covers
 > (nearly: a remainder smaller than a block is dropped) all of locked memory. Since TODO 76 TM5
@@ -624,14 +615,13 @@ CLI (`params.rs`), all overridable from JSON:
 | Parameter | Stage | Controls |
 |---|---|---|
 | `memory=20%` / `2GiB` / `2048MB` | 1 | Total reservation. `-from-available` (default, TM5-like), `-from-total`, `-target` |
-| `allocator=plan-pagesize-pref` | 1 | One block per request (default), or `stitched`: one contiguous span per thread |
 | `minpage=` / `maxpage=` (JSON `min_page_size` / `max_page_size`) | 1 | Gate `regular`/`large`/`huge`; feeds `is_page_size_allowed` |
 | `blkroundtarget=1GiB`, `blkround=up` | 1 | Round each thread's share to a multiple of this: `up` (default), `down` or `nearest`. Never past the reference figure: a smaller step instead, down to `largefloor`. A multiple of `largefloor`, no bigger than `hugechunk` / `largechunk` |
 | `largefloor=16MiB` | 1 | Smallest 2 MiB-page request (16 MiB–1 GiB): a refusal this small means the node is out of 2 MiB pages |
-| `hugechunk=1GiB`, `largechunk=1GiB` (stitched: `128MiB`) | 1 | First size of each 1 GiB / 2 MiB-page request, halved on refusal. Bigger means fewer OS calls on large machines and a coarser split, and for plan-pagesize-pref bigger blocks. stitched's commits merge, so its smaller default only costs calls, and spreads a node's 2 MiB shortfall over all its threads |
+| `hugechunk=1GiB`, `largechunk=128MiB` | 1 | First size of each 1 GiB / 2 MiB-page request, halved on refusal. Bigger means fewer OS calls on large machines and a coarser split. The commits merge, so the smaller 2 MiB default only costs calls, and spreads a node's 2 MiB shortfall over all its threads |
 | `cpus=50%`, `cputype=`, `skip-cores=`, `cpu-stride=` | 1 | Thread count → the divisor for `per_thread_target`. `cpu-stride=even` also spreads across CCDs/memory domains |
 | `extent_mode` (JSON per test) | 2 | `full` / `cache` / `cache_total` / `absolute` |
-| `chunk_mode` (JSON per test) | 3 | `auto` / `cache` / `cache_total` / `absolute` |
+| `chunk_mode` (JSON per test) | 3 | `auto` / `whole` / `cache` / `cache_total` / `absolute` / `tm5_block` |
 | `channels=` (JSON `system.channels`) | test | Stride formula, same role as TM5 `Channels` |
 | `parameter=stride:N` / `subblocks:N` | test | TM5 `Parameter` equivalent |
 | `write-read-cycles=4`, `verify-reps=`, `test-reps=` | test | TM5 `ST_WriteReadCycles` / `dLoopCounter` equivalents |
