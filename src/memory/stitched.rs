@@ -1403,6 +1403,10 @@ mod tests {
         coalesces: usize,
         /// `MEM_REPLACE_PLACEHOLDER` calls made, granted or not.
         replaces: usize,
+        /// Every 1 GiB commit is refused with this code instead (e.g. 87, a bad request).
+        huge_error: Option<u32>,
+        /// Every commit asked for, in order: (page size, node, granted).
+        commits: Vec<(PageSizeLevel, Option<u32>, bool)>,
     }
 
     impl State {
@@ -1453,6 +1457,9 @@ mod tests {
             if self.no_privilege && page != PageSizeLevel::Regular {
                 self.privilege_refusals.push((page, len));
                 return Err(ERROR_PRIVILEGE_NOT_HELD);
+            }
+            if page == PageSizeLevel::Huge && let Some(code) = self.huge_error {
+                return Err(code);
             }
             let want = Self::units(page, len);
             let pool = self.pool(page, node);
@@ -1534,7 +1541,9 @@ mod tests {
             if s.regions.get(&addr) != Some(&(len, Region::Placeholder)) {
                 return Err(ERROR_INVALID_PARAMETER);
             }
-            if let Err(code) = s.take(addr, len, page, numa) {
+            let taken = s.take(addr, len, page, numa);
+            s.commits.push((page, numa, taken.is_ok()));
+            if let Err(code) = taken {
                 if code == ERROR_NO_SYSTEM_RESOURCES && !s.replace_fixed {
                     s.poisoned.insert(addr);
                 }
@@ -1555,7 +1564,9 @@ mod tests {
             if s.overlaps(addr, len) {
                 return Err(ERROR_INVALID_ADDRESS);
             }
-            s.take(addr, len, page, numa)?;
+            let taken = s.take(addr, len, page, numa);
+            s.commits.push((page, numa, taken.is_ok()));
+            taken?;
             s.regions.insert(addr, (len, Region::Committed(page, numa)));
             Ok(())
         }
@@ -2046,6 +2057,72 @@ mod tests {
         let err = StitchedArena::build_with(vm.clone(), &req).unwrap_err();
         assert!(err.contains("thread 0 got no memory"), "{err}");
         assert!(vm.state().regions.is_empty());
+    }
+
+    /// A refusal that is not exhaustion (87: a bad request) ends the build with the hint instead
+    /// of stepping down to 2 MiB pages, and nothing granted is kept.
+    #[test]
+    fn a_bad_request_is_an_error_not_a_step_down() {
+        let vm = FakeVm::default();
+        vm.state().huge_error = Some(ERROR_INVALID_PARAMETER);
+        let req = StitchRequest::new(threads(&[2 * GIB; 2], &[None; 2]));
+        let err = StitchedArena::build_with(vm.clone(), &req).unwrap_err();
+        assert!(err.contains("error 87") && err.contains("maxpage=large"), "{err}");
+        let s = vm.state();
+        assert!(s.regions.is_empty(), "{:?}", s.regions);
+        assert!(s.commits.iter().all(|&(page, _, _)| page == PageSizeLevel::Huge), "{:?}", s.commits);
+    }
+
+    /// 1 GiB and 2 MiB requests name their node strictly, so a block's recorded node is true;
+    /// 4 KiB requests name it as a preference, since the strict form is refused for them.
+    #[test]
+    fn large_pages_name_their_node_strictly() {
+        let decode = |params: Vec<MEM_EXTENDED_PARAMETER>| -> Vec<(i32, u64)> {
+            params
+                .iter()
+                .map(|p| {
+                    let kind = (p.Anonymous1._bitfield & ((1 << MEM_EXTENDED_PARAMETER_TYPE_BITS) - 1)) as i32;
+                    // SAFETY: `ext_param` writes `ULong64` for both kinds it builds.
+                    (kind, unsafe { p.Anonymous2.ULong64 })
+                })
+                .collect()
+        };
+        let attribute = MemExtendedParameterAttributeFlags.0;
+        let node = MemExtendedParameterNumaNode.0;
+        assert_eq!(
+            decode(Win32Vm::page_params(PageSizeLevel::Huge, Some(1))),
+            vec![(attribute, MEM_EXTENDED_PARAMETER_NONPAGED_HUGE as u64), (node, 1 | NUMA_NODE_MANDATORY)]
+        );
+        assert_eq!(
+            decode(Win32Vm::page_params(PageSizeLevel::Large, Some(0))),
+            vec![(attribute, MEM_EXTENDED_PARAMETER_NONPAGED_LARGE as u64), (node, NUMA_NODE_MANDATORY)]
+        );
+        assert_eq!(decode(Win32Vm::page_params(PageSizeLevel::Regular, Some(1))), vec![(node, 1)]);
+        assert_eq!(
+            decode(Win32Vm::page_params(PageSizeLevel::Large, None)),
+            vec![(attribute, MEM_EXTENDED_PARAMETER_NONPAGED_LARGE as u64)]
+        );
+        assert!(decode(Win32Vm::page_params(PageSizeLevel::Regular, None)).is_empty());
+    }
+
+    /// Both threads live on node 0, which runs out of 1 GiB pages. They take node 0's 2 MiB pages
+    /// before anything from node 1, so every node 0 request comes before the first node 1 one.
+    #[test]
+    fn local_2mib_pages_come_before_remote_1gib_pages() {
+        let vm = FakeVm::default();
+        vm.state().huge_pages.insert(Some(0), 1);
+        vm.state().large_bytes.insert(Some(0), 512 * MIB);
+        vm.state().huge_pages.insert(Some(1), 8);
+        let mut req = StitchRequest::new(threads(&[2 * GIB; 2], &[Some(0); 2]));
+        req.numa_nodes = 2;
+        let arena = StitchedArena::build_with(vm.clone(), &req).unwrap();
+        assert_well_formed(&arena);
+        let commits = vm.state().commits.clone();
+        let last_local = commits.iter().rposition(|&(_, node, _)| node == Some(0)).unwrap();
+        let first_remote = commits.iter().position(|&(_, node, _)| node == Some(1)).unwrap();
+        assert!(last_local < first_remote, "{commits:?}");
+        assert!(commits[..first_remote].iter().any(|&(page, _, granted)| page == PageSizeLevel::Large && granted), "{commits:?}");
+        assert!(commits[first_remote..].iter().any(|&(page, _, granted)| page == PageSizeLevel::Huge && granted), "{commits:?}");
     }
 
     #[test]

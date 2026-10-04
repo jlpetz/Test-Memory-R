@@ -133,7 +133,7 @@ pub struct MemoryAllocationConfig {
 
 fn default_min_page_size() -> String { "large".to_string() }
 fn default_max_page_size() -> String { "huge".to_string() }
-fn default_allocation_strategy() -> String { "plan-pagesize-pref".to_string() }
+fn default_allocation_strategy() -> String { "stitched".to_string() }
 fn default_huge_chunk() -> String { "1GiB".to_string() }
 fn default_large_floor() -> String { "16MiB".to_string() }
 fn default_share_round_step() -> String { "1GiB".to_string() }

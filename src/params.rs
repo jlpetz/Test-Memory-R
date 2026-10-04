@@ -477,9 +477,9 @@ pub fn print_help(program_name: &str) {
     println!("  cpu-stride=2                        # Stage 2 SPACING: use every Nth available CPU");
     println!("  cpu-stride=even                     #   ...or spread the requested count evenly across the pool");
     println!("  --disable-pinning                   # Disable CPU thread pinning");
-    println!("  allocator=plan-pagesize-pref        # Allocator, both filling 1GB, then 2MB, then 4KB pages:");
-    println!("    plan-pagesize-pref                #   One block per request (default)");
-    println!("    stitched                          #   One contiguous span per thread");
+    println!("  allocator=stitched                  # Allocator, both filling 1GB, then 2MB, then 4KB pages:");
+    println!("    stitched                          #   One contiguous span per thread (default)");
+    println!("    plan-pagesize-pref                #   One block per request");
     println!("  hugechunk=1GiB                      # First 1GB-page request size, halved on refusal (power of two, >= 1GiB)");
     println!("  largechunk=128MiB                   # First 2MB-page request size, halved on refusal (default 1GiB, 128MiB stitched)");
     println!("  largefloor=16MiB                    # Smallest 2MB-page request (16MiB-1GiB)");

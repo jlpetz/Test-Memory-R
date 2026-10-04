@@ -49,8 +49,7 @@
     },
     "memory_allocation": {
       "min_page_size": "large",
-      "max_page_size": "huge",
-      "allocation_strategy": "plan-pagesize-pref"
+      "max_page_size": "huge"
     },
     "channels": 2
   },
