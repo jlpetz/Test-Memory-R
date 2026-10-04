@@ -24,9 +24,9 @@ use crate::runner::{AllocationBlock, SHUTDOWN_REQUESTED};
 
 /// Per-test bookkeeping shared by the loop-owning v1 tests.
 ///
-/// Construct with [`TestRunner::new`], which also returns the prepared
-/// [`TestBlock`] list (kept as a local in the test so the test can hold an
-/// immutable borrow of it while calling `&mut self` methods on the runner).
+/// Construct with [`TestRunner::new`], which also returns the test's extent as a
+/// [`TestBlock`] (kept as a local in the test, so the test can hold it while calling
+/// `&mut self` methods on the runner).
 pub struct TestRunner<'a> {
     test_name: &'static str,
     action: TestAction,
@@ -36,7 +36,7 @@ pub struct TestRunner<'a> {
     progress: Option<&'a TestProgress>,
 
     /// The test's chunk, resolved once from its extent (TODO 76). Every chunk is exactly this,
-    /// spread evenly over each piece (`chunks`); a piece shorter than it is one chunk.
+    /// spread evenly over the extent (`chunks`).
     chunk: usize,
     start: Instant,
     cycle: u32,
@@ -46,11 +46,9 @@ pub struct TestRunner<'a> {
 }
 
 impl<'a> TestRunner<'a> {
-    /// Prepare blocks for the extent and start the timers.
+    /// Size the extent and the chunk, and start the timers.
     ///
-    /// Returns `(runner, test_blocks)`. The test keeps `test_blocks` as a local
-    /// `Vec` (exactly as the v1 tests do today) so iterating it doesn't conflict
-    /// with `&mut self` accumulator calls on the runner.
+    /// Returns `(runner, extent)`: the first bytes of the thread's span (TODO 76).
     #[allow(clippy::too_many_arguments)]
     pub fn new(
         blocks: &'a [AllocationBlock],
@@ -61,16 +59,16 @@ impl<'a> TestRunner<'a> {
         progress: Option<&'a TestProgress>,
         test_name: &'static str,
         action: TestAction,
-    ) -> (Self, Vec<TestBlock<'a>>) {
+    ) -> (Self, TestBlock<'a>) {
         let total_allocated: usize = blocks.iter().map(|b| b.buffer.size()).sum();
         let extent_size = config.calculate_extent_size(test_name, total_allocated);
         // The extent is the first `extent_size` bytes of the thread's span (TODO 76).
-        let mut test_blocks = crate::test_memory::extent_pieces(blocks, extent_size);
-        if test_blocks.is_empty() && let Some(first) = blocks.first() {
+        let mut extent = crate::test_memory::extent(blocks, extent_size);
+        if extent.test_size == 0 && total_allocated > 0 {
             log::error!("{}: extent of {} bytes is below 4 KiB; testing 4 KiB instead", test_name, extent_size);
-            test_blocks.push(TestBlock::at_block(first, crate::test_memory::GRANULE.min(first.buffer.size())));
+            extent = crate::test_memory::extent(blocks, crate::test_memory::GRANULE);
         }
-        let total_test_size: usize = test_blocks.iter().map(|b| b.test_size).sum();
+        let total_test_size = extent.test_size;
         let chunk = config.calculate_chunk_size(test_name, total_test_size);
 
         let now = Instant::now();
@@ -100,20 +98,20 @@ impl<'a> TestRunner<'a> {
             thread_id, log_name,
             crate::test_memory::size_str(total_test_size),
             crate::test_memory::size_str(extent_size),
-            crate::test_memory::describe_pieces(blocks, &test_blocks, |piece| runner.chunks(piece)),
+            crate::test_memory::describe_extent(blocks, &extent, runner.chunks(total_test_size)),
         );
-        (runner, test_blocks)
+        (runner, extent)
     }
 
-    /// The chunks of a piece `len` bytes long: each exactly the test's chunk (or the piece, when
-    /// it is shorter), spread evenly from 0 to `len` (TODO 76). The test converts the byte
+    /// The chunks of an extent `len` bytes long: each exactly the test's chunk (or the extent,
+    /// when it is shorter), spread evenly from 0 to `len` (TODO 76). The test converts the byte
     /// offsets to its own element/operation units.
     #[inline]
     pub fn chunks(&self, len: usize) -> crate::test_memory::ChunkSpread {
         crate::test_memory::ChunkSpread::new(len, self.chunk)
     }
 
-    /// Half-chunks over the first half of a piece, for tests that copy it to the second half:
+    /// Half-chunks over the first half of an extent, for tests that copy it to the second half:
     /// `chunks(len)` halved, on a 2 KiB granule.
     #[inline]
     pub fn half_chunks(&self, len: usize) -> crate::test_memory::ChunkSpread {

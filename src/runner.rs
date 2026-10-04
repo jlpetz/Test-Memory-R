@@ -154,9 +154,6 @@ pub static SHUTDOWN_REQUESTED: AtomicBool = AtomicBool::new(false);
 pub struct AllocationBlock {
     pub buffer: MemoryBuffer,  // Contains BufferInfo with numa_node, page_type, etc.
     pub block_info: BlockInfo, // Thread assignment and size planning
-    /// The next block in the thread's list starts where this one ends, in the same VA span
-    /// (`allocator=stitched`). Tests treat joined blocks as one region (`test_memory::regions`).
-    pub joins_next: bool,
 }
 
 // Test definition with display name support
@@ -4325,7 +4322,7 @@ mod tests {
     /// A word no test pattern writes, to find extent words a test never touched
     const UNTOUCHED: u64 = 0x5AF0_0FA5_C3D2_1E87;
 
-    /// A heap buffer with guard zones on both sides, cut into joined blocks of `sizes`: one region.
+    /// A heap buffer with guard zones on both sides, cut into adjacent blocks of `sizes`: one span.
     struct Region {
         mem: *mut u8,
         layout: std::alloc::Layout,
@@ -4342,7 +4339,7 @@ mod tests {
             unsafe { std::ptr::write_bytes(mem, FILL, layout.size()) };
             let backend: Arc<dyn Backend> = Arc::new(HeapView);
             let mut at = GUARD;
-            let blocks = sizes.iter().enumerate().map(|(i, &size)| {
+            let blocks = sizes.iter().map(|&size| {
                 let block = AllocationBlock {
                     buffer: MemoryBuffer::new(
                         BackendAllocation {
@@ -4353,7 +4350,6 @@ mod tests {
                         backend.clone(),
                     ),
                     block_info: BlockInfo { size_bytes: size, thread_id: 0 },
-                    joins_next: i + 1 < sizes.len(),
                 };
                 at += size;
                 block
@@ -4405,7 +4401,7 @@ mod tests {
     #[test]
     fn built_in_tests_run_clean_on_joined_blocks() {
         let mut region = Region::new(&[256 * KIB, 256 * KIB, 128 * KIB]);
-        assert_eq!(crate::test_memory::regions(&region.blocks).len(), 1);
+        assert_eq!(crate::test_memory::extent(&region.blocks, usize::MAX).test_size, 640 * KIB);
 
         let mut ran = Vec::new();
         for (mut def, test_fn) in suite() {

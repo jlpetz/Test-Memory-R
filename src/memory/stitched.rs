@@ -1264,10 +1264,10 @@ fn single_page_type(page: PageSizeLevel, size: usize) -> PageType {
 }
 
 /// Cut each thread's span into `AllocationBlock`s, in address order: every same-page-size run split
-/// into power-of-two blocks, largest first, each but the last marked `joins_next`. The correctness
-/// tests see the span as one region (`test_memory::regions`, TODO 76); the bandwidth and latency
-/// tests still take the power-of-two blocks (`prepare_blocks_for_extent`). The buffers are views:
-/// they share `arena` as their backend, and the memory is released when the last of them drops.
+/// into power-of-two blocks, largest first, each ending where the next begins. The tests see the
+/// span as one extent (`test_memory::extent`, TODO 76); the blocks record each part's page size
+/// and node. The buffers are views: they share `arena` as their backend, and the memory is
+/// released when the last of them drops.
 pub fn into_allocation_blocks<V>(arena: Arc<StitchedArena<V>>) -> HashMap<usize, Vec<AllocationBlock>>
 where
     V: VmOps + Send + Sync + std::fmt::Debug + 'static,
@@ -1296,15 +1296,9 @@ where
                         size_bytes: size,
                         thread_id: span.thread_id,
                     },
-                    joins_next: false, // set below, once the next block is known
                 });
                 addr += size;
             }
-        }
-        // The runs tile the span, so each block but the last runs into the next
-        for i in 1..blocks.len() {
-            let end = blocks[i - 1].buffer.as_mut_ptr() as usize + blocks[i - 1].buffer.size();
-            blocks[i - 1].joins_next = end == blocks[i].buffer.as_mut_ptr() as usize;
         }
         out.insert(span.thread_id, blocks);
     }
@@ -1315,8 +1309,8 @@ where
 // TMR entry point
 // ---------------------------------------------------------------------------------------------
 
-/// Every thread's share as one span: blocks keyed by thread, power-of-two shaped, each joined to
-/// the next (`AllocationBlock::joins_next`).
+/// Every thread's share as one span: blocks keyed by thread, power-of-two shaped, each ending
+/// where the next begins.
 pub fn chunk_allocate_stitched(
     thread_blocks: &HashMap<usize, Vec<BlockInfo>>,
     runtime_config: &crate::RuntimeConfig,
@@ -2200,12 +2194,9 @@ mod tests {
                 addr += block.buffer.size();
             }
             assert_eq!(addr, span.base + span.len);
-            // Every block but the last joins the next, so the span is one region (TODO 76)
-            let thread_blocks = &blocks[&span.thread_id];
-            assert!(thread_blocks[..thread_blocks.len() - 1].iter().all(|b| b.joins_next));
-            assert!(!thread_blocks.last().unwrap().joins_next);
-            let regions = crate::test_memory::regions(thread_blocks);
-            assert_eq!((regions.len(), regions[0].len), (1, span.len));
+            // The blocks tile the span, so the extent can take all of it (TODO 76)
+            let extent = crate::test_memory::extent(&blocks[&span.thread_id], usize::MAX);
+            assert_eq!((extent.ptr as usize, extent.test_size), (span.base, span.len));
         }
 
         drop(arena);

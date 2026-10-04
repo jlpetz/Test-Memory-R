@@ -1067,12 +1067,17 @@ pub struct TestBlock<'a> {
 }
 
 impl<'a> TestBlock<'a> {
-    /// A piece starting at `block`'s base.
+    /// A piece starting at `block`'s base (`prepare_blocks_for_extent`).
     pub fn at_block(block: &'a crate::runner::AllocationBlock, test_size: usize) -> Self {
         TestBlock { ptr: block.buffer.as_mut_ptr(), test_size, _blocks: std::marker::PhantomData }
     }
 
-    /// A piece at `ptr` inside `blocks` (it may span several joined blocks).
+    /// No memory: a thread without blocks.
+    pub fn empty() -> Self {
+        TestBlock { ptr: std::ptr::null_mut(), test_size: 0, _blocks: std::marker::PhantomData }
+    }
+
+    /// The extent at `ptr` inside `blocks` (it may span several of the span's blocks).
     pub fn in_blocks(blocks: &'a [crate::runner::AllocationBlock], ptr: *mut u8, test_size: usize) -> Self {
         debug_assert!({
             let (start, end) = (ptr as usize, ptr as usize + test_size);
@@ -1231,7 +1236,7 @@ macro_rules! stuck_bit_impl {
         ) -> TestStats {
             let test_name = $test_name;
             let lanes = std::mem::size_of::<$simd_type>();
-            let (mut runner, test_blocks) = crate::test_scaffolding::TestRunner::new(
+            let (mut runner, extent) = crate::test_scaffolding::TestRunner::new(
                 blocks, thread_id, error_mode, timing, config, progress,
                 test_name, TestAction::StuckBitTest,
             );
@@ -1247,35 +1252,33 @@ macro_rules! stuck_bit_impl {
                 runner.begin_cycle();
                 let mut cycle_errors = 0u64;
 
-                for test_block in test_blocks.iter() {
-                    let base = test_block.ptr as *mut $simd_type;
+                let base = extent.ptr as *mut $simd_type;
 
-                    // Chunks of exactly the test's size, spread evenly over the piece (TODO 76)
-                    let spread = runner.chunks(test_block.test_size);
-                    let chunk_size_operations = spread.chunk() / lanes;
+                // Chunks of exactly the test's size, spread evenly over the extent (TODO 76)
+                let spread = runner.chunks(extent.test_size);
+                let chunk_size_operations = spread.chunk() / lanes;
 
-                    for k in 0..spread.count() {
-                        let processed = spread.start(k) / lanes;
-                        let chunk_end = processed + chunk_size_operations;
+                for k in 0..spread.count() {
+                    let processed = spread.start(k) / lanes;
+                    let chunk_end = processed + chunk_size_operations;
 
-                        // Phase 1: write P1, verify. Phase 2: write P2, verify.
-                        // Phase 3: write P1 again, verify (catches transition-induced flips).
-                        stuck_bit_write_verify!($simd_type, base, processed, chunk_end, p1, &mut cycle_errors, test_name, thread_id, 1, flush_before_verify, line_bytes);
-                        stuck_bit_write_verify!($simd_type, base, processed, chunk_end, p2, &mut cycle_errors, test_name, thread_id, 2, flush_before_verify, line_bytes);
-                        stuck_bit_write_verify!($simd_type, base, processed, chunk_end, p1, &mut cycle_errors, test_name, thread_id, 3, flush_before_verify, line_bytes);
+                    // Phase 1: write P1, verify. Phase 2: write P2, verify.
+                    // Phase 3: write P1 again, verify (catches transition-induced flips).
+                    stuck_bit_write_verify!($simd_type, base, processed, chunk_end, p1, &mut cycle_errors, test_name, thread_id, 1, flush_before_verify, line_bytes);
+                    stuck_bit_write_verify!($simd_type, base, processed, chunk_end, p2, &mut cycle_errors, test_name, thread_id, 2, flush_before_verify, line_bytes);
+                    stuck_bit_write_verify!($simd_type, base, processed, chunk_end, p1, &mut cycle_errors, test_name, thread_id, 3, flush_before_verify, line_bytes);
 
-                        // Count the chunk when it is done; overlaps count each time
-                        runner.add_bytes(spread.chunk() * 6);
+                    // Count the chunk when it is done; overlaps count each time
+                    runner.add_bytes(spread.chunk() * 6);
 
-                        if runner.should_halt(cycle_errors) {
-                            let total_operations = (runner.bytes_processed() / lanes) as u64;
-                            return runner.finish_aborted(cycle_errors, total_operations);
-                        }
+                    if runner.should_halt(cycle_errors) {
+                        let total_operations = (runner.bytes_processed() / lanes) as u64;
+                        return runner.finish_aborted(cycle_errors, total_operations);
+                    }
 
-                        if runner.shutdown_requested() {
-                            let total_operations = (runner.bytes_processed() / lanes) as u64;
-                            return runner.finish_aborted(cycle_errors, total_operations);
-                        }
+                    if runner.shutdown_requested() {
+                        let total_operations = (runner.bytes_processed() / lanes) as u64;
+                        return runner.finish_aborted(cycle_errors, total_operations);
                     }
                 }
 
@@ -1357,7 +1360,7 @@ pub unsafe fn stuck_bit_test_multi(
     progress: Option<&TestProgress>,
 ) -> TestStats {
     let test_name = "Mem-StuckBit";
-    let (mut runner, test_blocks) = crate::test_scaffolding::TestRunner::new(
+    let (mut runner, extent) = crate::test_scaffolding::TestRunner::new(
         blocks, thread_id, error_mode, timing, config, progress,
         test_name, TestAction::StuckBitTest,
     );
@@ -1370,99 +1373,96 @@ pub unsafe fn stuck_bit_test_multi(
         runner.begin_cycle();
         let mut cycle_errors = 0u64;
 
-        // Interleave testing across all blocks with shared timer
-        for test_block in test_blocks.iter() {
-            let base = test_block.ptr as *mut u64;
+        let base = extent.ptr as *mut u64;
 
-            // Chunks of exactly the test's size, spread evenly over the piece (TODO 76)
-            let spread = runner.chunks(test_block.test_size);
-            let chunk_size_operations = spread.chunk() / std::mem::size_of::<u64>();
+        // Chunks of exactly the test's size, spread evenly over the extent (TODO 76)
+        let spread = runner.chunks(extent.test_size);
+        let chunk_size_operations = spread.chunk() / std::mem::size_of::<u64>();
 
-            for k in 0..spread.count() {
-                let processed = spread.start(k) / std::mem::size_of::<u64>();
-                let chunk_end = processed + chunk_size_operations;
+        for k in 0..spread.count() {
+            let processed = spread.start(k) / std::mem::size_of::<u64>();
+            let chunk_end = processed + chunk_size_operations;
 
-                // Patterns must NOT be byte-uniform (would memset) — see STUCKBIT_P1 note.
-                let pattern1 = STUCKBIT_P1;
-                let pattern2 = STUCKBIT_P2;
+            // Patterns must NOT be byte-uniform (would memset) — see STUCKBIT_P1 note.
+            let pattern1 = STUCKBIT_P1;
+            let pattern2 = STUCKBIT_P2;
 
-                // Optional flush so the verify reads DRAM, not the line we just wrote (#59).
-                // Expanded inline (not a fn) to keep it out of the hot path when disabled.
-                macro_rules! flush_chunk_if_enabled {
-                    () => {
-                        if flush_before_verify {
-                            let chunk_ptr = base.add(processed) as *const u8;
-                            let chunk_bytes = (chunk_end - processed) * std::mem::size_of::<u64>();
-                            flush_range_to_dram(chunk_ptr, chunk_bytes, line_bytes);
-                        }
-                    };
-                }
-
-                // Phase 1: Write P1 (0xAA55...), verify
-                for i in processed..chunk_end {
-                    *base.add(i) = pattern1;
-                }
-
-                std::sync::atomic::fence(Ordering::SeqCst);
-                flush_chunk_if_enabled!();
-
-                for i in processed..chunk_end {
-                    let v = *base.add(i);
-                    if v != pattern1 {
-                        cycle_errors += 1;
-                        log::error!("{}: Phase 1 memory error at index {} - expected {:#x}, got {:#x}",
-                                   test_name, i, pattern1, v);
+            // Optional flush so the verify reads DRAM, not the line we just wrote (#59).
+            // Expanded inline (not a fn) to keep it out of the hot path when disabled.
+            macro_rules! flush_chunk_if_enabled {
+                () => {
+                    if flush_before_verify {
+                        let chunk_ptr = base.add(processed) as *const u8;
+                        let chunk_bytes = (chunk_end - processed) * std::mem::size_of::<u64>();
+                        flush_range_to_dram(chunk_ptr, chunk_bytes, line_bytes);
                     }
+                };
+            }
+
+            // Phase 1: Write P1 (0xAA55...), verify
+            for i in processed..chunk_end {
+                *base.add(i) = pattern1;
+            }
+
+            std::sync::atomic::fence(Ordering::SeqCst);
+            flush_chunk_if_enabled!();
+
+            for i in processed..chunk_end {
+                let v = *base.add(i);
+                if v != pattern1 {
+                    cycle_errors += 1;
+                    log::error!("{}: Phase 1 memory error at index {} - expected {:#x}, got {:#x}",
+                               test_name, i, pattern1, v);
                 }
+            }
 
-                // Phase 2: Write P2 (0x55AA..., = !P1), verify
-                for i in processed..chunk_end {
-                    *base.add(i) = pattern2;
+            // Phase 2: Write P2 (0x55AA..., = !P1), verify
+            for i in processed..chunk_end {
+                *base.add(i) = pattern2;
+            }
+
+            std::sync::atomic::fence(Ordering::SeqCst);
+            flush_chunk_if_enabled!();
+
+            for i in processed..chunk_end {
+                let v = *base.add(i);
+                if v != pattern2 {
+                    cycle_errors += 1;
+                    log::error!("{}: Phase 2 memory error at index {} - expected {:#x}, got {:#x}",
+                               test_name, i, pattern2, v);
                 }
+            }
 
-                std::sync::atomic::fence(Ordering::SeqCst);
-                flush_chunk_if_enabled!();
+            // Phase 3: Write back to P1, verify
+            for i in processed..chunk_end {
+                *base.add(i) = pattern1;
+            }
 
-                for i in processed..chunk_end {
-                    let v = *base.add(i);
-                    if v != pattern2 {
-                        cycle_errors += 1;
-                        log::error!("{}: Phase 2 memory error at index {} - expected {:#x}, got {:#x}",
-                                   test_name, i, pattern2, v);
-                    }
+            std::sync::atomic::fence(Ordering::SeqCst);
+            flush_chunk_if_enabled!();
+
+            for i in processed..chunk_end {
+                let v = *base.add(i);
+                if v != pattern1 {
+                    cycle_errors += 1;
+                    log::error!("{}: Phase 3 memory error at index {} - expected {:#x}, got {:#x}",
+                               test_name, i, pattern1, v);
                 }
+            }
 
-                // Phase 3: Write back to P1, verify
-                for i in processed..chunk_end {
-                    *base.add(i) = pattern1;
-                }
+            // Count the chunk when it is done; overlaps count each time
+            runner.add_bytes(spread.chunk() * 6);
 
-                std::sync::atomic::fence(Ordering::SeqCst);
-                flush_chunk_if_enabled!();
+            // Handle errors if found
+            if runner.should_halt(cycle_errors) {
+                let total_operations = (runner.bytes_processed() / std::mem::size_of::<u64>()) as u64;
+                return runner.finish_aborted(cycle_errors, total_operations);
+            }
 
-                for i in processed..chunk_end {
-                    let v = *base.add(i);
-                    if v != pattern1 {
-                        cycle_errors += 1;
-                        log::error!("{}: Phase 3 memory error at index {} - expected {:#x}, got {:#x}",
-                                   test_name, i, pattern1, v);
-                    }
-                }
-
-                // Count the chunk when it is done; overlaps count each time
-                runner.add_bytes(spread.chunk() * 6);
-
-                // Handle errors if found
-                if runner.should_halt(cycle_errors) {
-                    let total_operations = (runner.bytes_processed() / std::mem::size_of::<u64>()) as u64;
-                    return runner.finish_aborted(cycle_errors, total_operations);
-                }
-
-                // Check for shutdown request
-                if runner.shutdown_requested() {
-                    let total_operations = (runner.bytes_processed() / std::mem::size_of::<u64>()) as u64;
-                    return runner.finish_aborted(cycle_errors, total_operations);
-                }
+            // Check for shutdown request
+            if runner.shutdown_requested() {
+                let total_operations = (runner.bytes_processed() / std::mem::size_of::<u64>()) as u64;
+                return runner.finish_aborted(cycle_errors, total_operations);
             }
         }
 
@@ -1641,7 +1641,7 @@ macro_rules! refresh_impl {
         ) -> TestStats {
             let test_name = $test_name;
             let lanes = std::mem::size_of::<$simd_type>();
-            let (mut runner, test_blocks) = crate::test_scaffolding::TestRunner::new(
+            let (mut runner, extent) = crate::test_scaffolding::TestRunner::new(
                 blocks, thread_id, error_mode, timing, config, progress,
                 test_name, TestAction::WriteWaitVerify,
             );
@@ -1654,83 +1654,81 @@ macro_rules! refresh_impl {
                 runner.begin_cycle();
                 let mut cycle_errors = 0u64;
 
-                for test_block in test_blocks.iter() {
-                    let base = test_block.ptr as *mut $simd_type;
+                let base = extent.ptr as *mut $simd_type;
 
-                    // Chunks of exactly the test's size, spread evenly over the piece (TODO 76)
-                    let spread = runner.chunks(test_block.test_size);
-                    let chunk_size_vectors = spread.chunk() / lanes;
+                // Chunks of exactly the test's size, spread evenly over the extent (TODO 76)
+                let spread = runner.chunks(extent.test_size);
+                let chunk_size_vectors = spread.chunk() / lanes;
 
-                    for k in 0..spread.count() {
-                        let processed = spread.start(k) / lanes;
-                        let chunk_end = processed + chunk_size_vectors;
+                for k in 0..spread.count() {
+                    let processed = spread.start(k) / lanes;
+                    let chunk_end = processed + chunk_size_vectors;
 
-                        // Write phase.
-                        for i in processed..chunk_end {
-                            *base.add(i) = pattern;
-                        }
+                    // Write phase.
+                    for i in processed..chunk_end {
+                        *base.add(i) = pattern;
+                    }
 
-                        // Optional flush (TODO #59, opt-in): evict this chunk so the post-sleep
-                        // verify reads DRAM rather than a cache-resident copy that would mask
-                        // bit-fade. Default OFF — natural eviction already handles this here:
-                        //   - the extent is `CacheTotal 2.0x`, i.e. 2× the whole hierarchy by
-                        //     design, so writing it evicts its own earlier half;
-                        //   - N threads run concurrently against a *shared* L3, cutting the
-                        //     per-thread residency further (on a 482 MiB-cache box: ≤50% of the
-                        //     extent could survive at 1 thread, but ≤6.4% at 8);
-                        //   - the verify below sweeps *forward*, the same direction as the write,
-                        //     so any surviving tail line is read last — after the verify's own
-                        //     reads have pulled ~a whole extent through the cache. The residual is
-                        //     both the smallest and the least-likely-resident part of the range.
-                        // So this buys insurance against a fluke at ~20-30% throughput. For a
-                        // tool where throughput *is* coverage-per-unit-time, faster cycles find
-                        // more errors than a marginally stricter single pass. Turn it on to make
-                        // the DRAM round-trip architecturally guaranteed instead of policy-
-                        // dependent (shared virtualized L3, non-inclusive caches, prefetchers).
-                        if flush_before_verify {
-                            let chunk_ptr = base.add(processed) as *const u8;
-                            let chunk_bytes = (chunk_end - processed) * lanes;
-                            flush_range_to_dram(chunk_ptr, chunk_bytes, config.cache_line_bytes);
-                        }
+                    // Optional flush (TODO #59, opt-in): evict this chunk so the post-sleep
+                    // verify reads DRAM rather than a cache-resident copy that would mask
+                    // bit-fade. Default OFF — natural eviction already handles this here:
+                    //   - the extent is `CacheTotal 2.0x`, i.e. 2× the whole hierarchy by
+                    //     design, so writing it evicts its own earlier half;
+                    //   - N threads run concurrently against a *shared* L3, cutting the
+                    //     per-thread residency further (on a 482 MiB-cache box: ≤50% of the
+                    //     extent could survive at 1 thread, but ≤6.4% at 8);
+                    //   - the verify below sweeps *forward*, the same direction as the write,
+                    //     so any surviving tail line is read last — after the verify's own
+                    //     reads have pulled ~a whole extent through the cache. The residual is
+                    //     both the smallest and the least-likely-resident part of the range.
+                    // So this buys insurance against a fluke at ~20-30% throughput. For a
+                    // tool where throughput *is* coverage-per-unit-time, faster cycles find
+                    // more errors than a marginally stricter single pass. Turn it on to make
+                    // the DRAM round-trip architecturally guaranteed instead of policy-
+                    // dependent (shared virtualized L3, non-inclusive caches, prefetchers).
+                    if flush_before_verify {
+                        let chunk_ptr = base.add(processed) as *const u8;
+                        let chunk_bytes = (chunk_end - processed) * lanes;
+                        flush_range_to_dram(chunk_ptr, chunk_bytes, config.cache_line_bytes);
+                    }
 
-                        std::sync::atomic::fence(Ordering::SeqCst);
-                        std::thread::sleep(std::time::Duration::from_millis(64));
+                    std::sync::atomic::fence(Ordering::SeqCst);
+                    std::thread::sleep(std::time::Duration::from_millis(64));
 
-                        // Verify — 4 independent accumulator chains (MLP).
-                        let mut a0 = <$simd_type>::splat(0);
-                        let mut a1 = <$simd_type>::splat(0);
-                        let mut a2 = <$simd_type>::splat(0);
-                        let mut a3 = <$simd_type>::splat(0);
-                        let mut i = processed;
-                        while i + 4 <= chunk_end {
-                            a0 |= *base.add(i) ^ pattern;
-                            a1 |= *base.add(i + 1) ^ pattern;
-                            a2 |= *base.add(i + 2) ^ pattern;
-                            a3 |= *base.add(i + 3) ^ pattern;
-                            i += 4;
-                        }
-                        while i < chunk_end {
-                            a0 |= *base.add(i) ^ pattern;
-                            i += 1;
-                        }
-                        let acc = (a0 | a1) | (a2 | a3);
-                        if acc.simd_ne(<$simd_type>::splat(0)).any() {
-                            cycle_errors += 1;
-                            log::error!("{}: memory error detected in chunk (thread {})", test_name, thread_id);
-                        }
+                    // Verify — 4 independent accumulator chains (MLP).
+                    let mut a0 = <$simd_type>::splat(0);
+                    let mut a1 = <$simd_type>::splat(0);
+                    let mut a2 = <$simd_type>::splat(0);
+                    let mut a3 = <$simd_type>::splat(0);
+                    let mut i = processed;
+                    while i + 4 <= chunk_end {
+                        a0 |= *base.add(i) ^ pattern;
+                        a1 |= *base.add(i + 1) ^ pattern;
+                        a2 |= *base.add(i + 2) ^ pattern;
+                        a3 |= *base.add(i + 3) ^ pattern;
+                        i += 4;
+                    }
+                    while i < chunk_end {
+                        a0 |= *base.add(i) ^ pattern;
+                        i += 1;
+                    }
+                    let acc = (a0 | a1) | (a2 | a3);
+                    if acc.simd_ne(<$simd_type>::splat(0)).any() {
+                        cycle_errors += 1;
+                        log::error!("{}: memory error detected in chunk (thread {})", test_name, thread_id);
+                    }
 
-                        // Count the chunk when it is done; overlaps count each time
-                        runner.add_bytes(spread.chunk() * 2);
+                    // Count the chunk when it is done; overlaps count each time
+                    runner.add_bytes(spread.chunk() * 2);
 
-                        if runner.should_halt(cycle_errors) {
-                            let total_operations = (runner.bytes_processed() / lanes) as u64;
-                            return runner.finish_aborted(cycle_errors, total_operations);
-                        }
+                    if runner.should_halt(cycle_errors) {
+                        let total_operations = (runner.bytes_processed() / lanes) as u64;
+                        return runner.finish_aborted(cycle_errors, total_operations);
+                    }
 
-                        if runner.shutdown_requested() {
-                            let total_operations = (runner.bytes_processed() / lanes) as u64;
-                            return runner.finish_aborted(cycle_errors, total_operations);
-                        }
+                    if runner.shutdown_requested() {
+                        let total_operations = (runner.bytes_processed() / lanes) as u64;
+                        return runner.finish_aborted(cycle_errors, total_operations);
                     }
                 }
 
@@ -1764,7 +1762,7 @@ pub unsafe fn refresh_stable_multi(
     progress: Option<&TestProgress>,
 ) -> TestStats {
     let test_name = "Mem-Refresh";
-    let (mut runner, test_blocks) = crate::test_scaffolding::TestRunner::new(
+    let (mut runner, extent) = crate::test_scaffolding::TestRunner::new(
         blocks, thread_id, error_mode, timing, config, progress,
         test_name, TestAction::WriteWaitVerify,
     );
@@ -1773,60 +1771,57 @@ pub unsafe fn refresh_stable_multi(
         runner.begin_cycle();
         let mut cycle_errors = 0u64;
 
-        // Interleave testing across all blocks with shared timer
-        for test_block in test_blocks.iter() {
-            let base = test_block.ptr as *mut u64;
+        let base = extent.ptr as *mut u64;
 
-            // Chunks of exactly the test's size, spread evenly over the piece (TODO 76)
-            let spread = runner.chunks(test_block.test_size);
-            let chunk_size_operations = spread.chunk() / std::mem::size_of::<u64>();
+        // Chunks of exactly the test's size, spread evenly over the extent (TODO 76)
+        let spread = runner.chunks(extent.test_size);
+        let chunk_size_operations = spread.chunk() / std::mem::size_of::<u64>();
 
-            for k in 0..spread.count() {
-                let processed = spread.start(k) / std::mem::size_of::<u64>();
-                let chunk_end = processed + chunk_size_operations;
+        for k in 0..spread.count() {
+            let processed = spread.start(k) / std::mem::size_of::<u64>();
+            let chunk_end = processed + chunk_size_operations;
 
-                // Non-byte-uniform (see REFRESH_PATTERN / #61): stays a real store loop,
-                // not memset.
-                let pattern = REFRESH_PATTERN;
-                for i in processed..chunk_end {
-                    *base.add(i) = pattern;
+            // Non-byte-uniform (see REFRESH_PATTERN / #61): stays a real store loop,
+            // not memset.
+            let pattern = REFRESH_PATTERN;
+            for i in processed..chunk_end {
+                *base.add(i) = pattern;
+            }
+
+            // Flush the written chunk to DRAM so the verify after the sleep
+            // round-trips through DRAM instead of reading a cache-resident
+            // copy. Without this the refresh/bit-fade test is silently inert:
+            // the cached line masks any decay that happened in DRAM.
+            let chunk_ptr = base.add(processed) as *const u8;
+            let chunk_bytes = (chunk_end - processed) * std::mem::size_of::<u64>();
+            flush_range_to_dram(chunk_ptr, chunk_bytes, config.cache_line_bytes);
+
+            std::sync::atomic::fence(Ordering::SeqCst);
+            std::thread::sleep(std::time::Duration::from_millis(64)); // DRAM refresh cycle timing
+
+            // Verify phase
+            for i in processed..chunk_end {
+                let v = *base.add(i);
+                if v != pattern {
+                    cycle_errors += 1;
+                    log::error!("{}: memory error at index {} - expected {:#x}, got {:#x}",
+                               test_name, i, pattern, v);
                 }
+            }
 
-                // Flush the written chunk to DRAM so the verify after the sleep
-                // round-trips through DRAM instead of reading a cache-resident
-                // copy. Without this the refresh/bit-fade test is silently inert:
-                // the cached line masks any decay that happened in DRAM.
-                let chunk_ptr = base.add(processed) as *const u8;
-                let chunk_bytes = (chunk_end - processed) * std::mem::size_of::<u64>();
-                flush_range_to_dram(chunk_ptr, chunk_bytes, config.cache_line_bytes);
+            // Count the chunk when it is done; overlaps count each time
+            runner.add_bytes(spread.chunk() * 2);
 
-                std::sync::atomic::fence(Ordering::SeqCst);
-                std::thread::sleep(std::time::Duration::from_millis(64)); // DRAM refresh cycle timing
+            // Handle errors if found
+            if runner.should_halt(cycle_errors) {
+                let total_operations = (runner.bytes_processed() / std::mem::size_of::<u64>()) as u64;
+                return runner.finish_aborted(cycle_errors, total_operations);
+            }
 
-                // Verify phase
-                for i in processed..chunk_end {
-                    let v = *base.add(i);
-                    if v != pattern {
-                        cycle_errors += 1;
-                        log::error!("{}: memory error at index {} - expected {:#x}, got {:#x}",
-                                   test_name, i, pattern, v);
-                    }
-                }
-
-                // Count the chunk when it is done; overlaps count each time
-                runner.add_bytes(spread.chunk() * 2);
-
-                // Handle errors if found
-                if runner.should_halt(cycle_errors) {
-                    let total_operations = (runner.bytes_processed() / std::mem::size_of::<u64>()) as u64;
-                    return runner.finish_aborted(cycle_errors, total_operations);
-                }
-
-                // Check for shutdown request
-                if runner.shutdown_requested() {
-                    let total_operations = (runner.bytes_processed() / std::mem::size_of::<u64>()) as u64;
-                    return runner.finish_aborted(cycle_errors, total_operations);
-                }
+            // Check for shutdown request
+            if runner.shutdown_requested() {
+                let total_operations = (runner.bytes_processed() / std::mem::size_of::<u64>()) as u64;
+                return runner.finish_aborted(cycle_errors, total_operations);
             }
         }
 
@@ -2017,7 +2012,7 @@ pub unsafe fn cache_busting_multi(
     let base_stride = CACHE_BUSTING_STRIDE / std::mem::size_of::<u64>();
     let pattern_base = 0x0123456789ABCDEFu64.wrapping_add(thread_id as u64);
 
-    let (mut runner, test_blocks) = crate::test_scaffolding::TestRunner::new(
+    let (mut runner, extent) = crate::test_scaffolding::TestRunner::new(
         blocks, thread_id, error_mode, timing, config, progress,
         test_name, TestAction::CacheBusting,
     );
@@ -2026,101 +2021,98 @@ pub unsafe fn cache_busting_multi(
         runner.begin_cycle();
         let mut cycle_errors = 0u64;
 
-        // Interleave testing across all blocks with shared timer
-        for test_block in test_blocks.iter() {
-            let base = test_block.ptr as *mut u64;
+        let base = extent.ptr as *mut u64;
 
-            // Chunks of exactly the test's size, spread evenly over the piece (TODO 76)
-            let spread = runner.chunks(test_block.test_size);
-            let chunk_size_operations = spread.chunk() / std::mem::size_of::<u64>();
+        // Chunks of exactly the test's size, spread evenly over the extent (TODO 76)
+        let spread = runner.chunks(extent.test_size);
+        let chunk_size_operations = spread.chunk() / std::mem::size_of::<u64>();
 
-            for k in 0..spread.count() {
-                let processed = spread.start(k) / std::mem::size_of::<u64>();
-                let chunk_end = processed + chunk_size_operations;
+        for k in 0..spread.count() {
+            let processed = spread.start(k) / std::mem::size_of::<u64>();
+            let chunk_end = processed + chunk_size_operations;
 
-                // Apply stride-pattern-based access patterns within chunk
-                match stride_patterns {
-                    1 => {
-                        // Single pattern with large strides to bust cache
-                        for offset in 0..base_stride.min(chunk_end - processed) {
-                            let mut i = processed + offset;
-                            while i < chunk_end {
-                                *base.add(i) = pattern_base.wrapping_add(i as u64);
-                                i += base_stride;
-                                if i >= chunk_end { break; }
-                            }
-                        }
-
-                        std::sync::atomic::fence(Ordering::SeqCst);
-
-                        // Verify with same stride pattern within chunk
-                        for offset in 0..base_stride.min(chunk_end - processed) {
-                            let mut i = processed + offset;
-                            while i < chunk_end {
-                                let v = *base.add(i);
-                                let expected = pattern_base.wrapping_add(i as u64);
-                                if v != expected {
-                                    cycle_errors += 1;
-                                    log::error!("{}: memory error at index {} - expected {:#x}, got {:#x}",
-                                               test_name, i, expected, v);
-                                }
-                                i += base_stride;
-                                if i >= chunk_end { break; }
-                            }
+            // Apply stride-pattern-based access patterns within chunk
+            match stride_patterns {
+                1 => {
+                    // Single pattern with large strides to bust cache
+                    for offset in 0..base_stride.min(chunk_end - processed) {
+                        let mut i = processed + offset;
+                        while i < chunk_end {
+                            *base.add(i) = pattern_base.wrapping_add(i as u64);
+                            i += base_stride;
+                            if i >= chunk_end { break; }
                         }
                     }
-                    _ => {
-                        // Multiple patterns - divide offsets among stride variants
-                        // Each variant handles a subset of offsets, but ALL offsets are covered
-                        for offset in 0..base_stride.min(chunk_end - processed) {
-                            let variant = (((processed + offset) % base_stride) % stride_patterns) as u64;
-                            let pattern = pattern_base.wrapping_add(variant * 0x1111111111111111u64);
 
-                            let mut i = processed + offset;
-                            while i < chunk_end {
-                                *base.add(i) = pattern.wrapping_add(i as u64);
-                                i += base_stride;
-                                if i >= chunk_end { break; }
+                    std::sync::atomic::fence(Ordering::SeqCst);
+
+                    // Verify with same stride pattern within chunk
+                    for offset in 0..base_stride.min(chunk_end - processed) {
+                        let mut i = processed + offset;
+                        while i < chunk_end {
+                            let v = *base.add(i);
+                            let expected = pattern_base.wrapping_add(i as u64);
+                            if v != expected {
+                                cycle_errors += 1;
+                                log::error!("{}: memory error at index {} - expected {:#x}, got {:#x}",
+                                           test_name, i, expected, v);
                             }
-                        }
-
-                        std::sync::atomic::fence(Ordering::SeqCst);
-
-                        // Verify all offsets with their respective variant patterns
-                        for offset in 0..base_stride.min(chunk_end - processed) {
-                            let variant = (((processed + offset) % base_stride) % stride_patterns) as u64;
-                            let pattern = pattern_base.wrapping_add(variant * 0x1111111111111111u64);
-
-                            let mut i = processed + offset;
-                            while i < chunk_end {
-                                let v = *base.add(i);
-                                let expected = pattern.wrapping_add(i as u64);
-                                if v != expected {
-                                    cycle_errors += 1;
-                                    log::error!("{}: memory error at index {} - expected {:#x}, got {:#x}",
-                                               test_name, i, expected, v);
-                                }
-                                i += base_stride;
-                                if i >= chunk_end { break; }
-                            }
+                            i += base_stride;
+                            if i >= chunk_end { break; }
                         }
                     }
                 }
+                _ => {
+                    // Multiple patterns - divide offsets among stride variants
+                    // Each variant handles a subset of offsets, but ALL offsets are covered
+                    for offset in 0..base_stride.min(chunk_end - processed) {
+                        let variant = (((processed + offset) % base_stride) % stride_patterns) as u64;
+                        let pattern = pattern_base.wrapping_add(variant * 0x1111111111111111u64);
 
-                // Count the chunk when it is done; overlaps count each time
-                runner.add_bytes(spread.chunk() * 2);
+                        let mut i = processed + offset;
+                        while i < chunk_end {
+                            *base.add(i) = pattern.wrapping_add(i as u64);
+                            i += base_stride;
+                            if i >= chunk_end { break; }
+                        }
+                    }
 
-                // Handle errors if found
-                if runner.should_halt(cycle_errors) {
-                    let total_operations = (runner.bytes_processed() / std::mem::size_of::<u64>()) as u64;
-                    return runner.finish_aborted(cycle_errors, total_operations);
+                    std::sync::atomic::fence(Ordering::SeqCst);
+
+                    // Verify all offsets with their respective variant patterns
+                    for offset in 0..base_stride.min(chunk_end - processed) {
+                        let variant = (((processed + offset) % base_stride) % stride_patterns) as u64;
+                        let pattern = pattern_base.wrapping_add(variant * 0x1111111111111111u64);
+
+                        let mut i = processed + offset;
+                        while i < chunk_end {
+                            let v = *base.add(i);
+                            let expected = pattern.wrapping_add(i as u64);
+                            if v != expected {
+                                cycle_errors += 1;
+                                log::error!("{}: memory error at index {} - expected {:#x}, got {:#x}",
+                                           test_name, i, expected, v);
+                            }
+                            i += base_stride;
+                            if i >= chunk_end { break; }
+                        }
+                    }
                 }
+            }
 
-                // Check for shutdown request
-                if runner.shutdown_requested() {
-                    let total_operations = (runner.bytes_processed() / std::mem::size_of::<u64>()) as u64;
-                    return runner.finish_aborted(cycle_errors, total_operations);
-                }
+            // Count the chunk when it is done; overlaps count each time
+            runner.add_bytes(spread.chunk() * 2);
+
+            // Handle errors if found
+            if runner.should_halt(cycle_errors) {
+                let total_operations = (runner.bytes_processed() / std::mem::size_of::<u64>()) as u64;
+                return runner.finish_aborted(cycle_errors, total_operations);
+            }
+
+            // Check for shutdown request
+            if runner.shutdown_requested() {
+                let total_operations = (runner.bytes_processed() / std::mem::size_of::<u64>()) as u64;
+                return runner.finish_aborted(cycle_errors, total_operations);
             }
         }
 
@@ -2185,95 +2177,87 @@ pub unsafe fn random_torture_multi(
 ) -> TestStats {
     let test_name = "Mem-Random";
 
-    let (mut runner, test_blocks) = crate::test_scaffolding::TestRunner::new(
+    let (mut runner, extent) = crate::test_scaffolding::TestRunner::new(
         blocks, thread_id, error_mode, timing, config, progress,
         test_name, TestAction::RandomAccess,
     );
-    let total_test_size: usize = test_blocks.iter().map(|b| b.test_size).sum();
+    let total_test_size = extent.test_size;
 
-    // Initialize all blocks with known pattern once
-    for test_block in test_blocks.iter() {
-        let base = test_block.ptr as *mut u64;
-        let len = test_block.test_size / std::mem::size_of::<u64>();
+    // Initialize the extent with a known pattern once
+    let base = extent.ptr as *mut u64;
+    let len = extent.test_size / std::mem::size_of::<u64>();
 
-        for i in 0..len {
-            *base.add(i) = i as u64;
-        }
-        std::sync::atomic::fence(Ordering::SeqCst);
-        runner.add_bytes(test_block.test_size);
+    for i in 0..len {
+        *base.add(i) = i as u64;
     }
+    std::sync::atomic::fence(Ordering::SeqCst);
+    runner.add_bytes(extent.test_size);
 
     loop {
         let cycle = runner.begin_cycle();
         let mut cycle_errors = 0u64;
 
-        // Interleave testing across all blocks with shared timer
-        for test_block in test_blocks.iter() {
-            let base = test_block.ptr as *mut u64;
-            let len = test_block.test_size / std::mem::size_of::<u64>();
+        // Reads per batch, for responsive shutdown: the chunk's size in words
+        let chunk_size_operations = runner.chunk_bytes() / std::mem::size_of::<u64>();
 
-            // Reads per batch, for responsive shutdown: the chunk's size in words
-            let chunk_size_operations = runner.chunk_bytes() / std::mem::size_of::<u64>();
+        // Random access torture with configurable RNG sequences
+        let rng_sequences = config.parameter_context.as_ref()
+            .and_then(|c| c.rng_sequences)
+            .expect("RandomTorture requires rng_sequences in parameter_context");
+        let base_iterations = (len / 1000).clamp(5000, 50000);
+        let seq_count = rng_sequences.max(1) as usize;
+        let seq_shift = seq_count.trailing_zeros();
+        let iterations_per_seq = (base_iterations >> seq_shift).max(1);
 
-            // Random access torture with configurable RNG sequences
-            let rng_sequences = config.parameter_context.as_ref()
-                .and_then(|c| c.rng_sequences)
-                .expect("RandomTorture requires rng_sequences in parameter_context");
-            let base_iterations = (len / 1000).clamp(5000, 50000);
-            let seq_count = rng_sequences.max(1) as usize;
-            let seq_shift = seq_count.trailing_zeros();
-            let iterations_per_seq = (base_iterations >> seq_shift).max(1);
+        // Process RNG sequences in chunks for responsive shutdown
+        for seq in 0..rng_sequences {
+            let mut rng_state = 0x123456789ABCDEFu64
+                .wrapping_add(thread_id as u64)
+                .wrapping_add(cycle as u64)
+                .wrapping_add((seq as u64).wrapping_mul(0x8765432187654321u64));
 
-            // Process RNG sequences in chunks for responsive shutdown
-            for seq in 0..rng_sequences {
-                let mut rng_state = 0x123456789ABCDEFu64
-                    .wrapping_add(thread_id as u64)
-                    .wrapping_add(cycle as u64)
-                    .wrapping_add((seq as u64).wrapping_mul(0x8765432187654321u64));
+            // Random read verification for this sequence - chunked for responsive shutdown.
+            // The index is `rng * len >> 64`: uniform over any length, one multiply off the
+            // RNG's dependency chain (TODO 76; the old `& (len - 1)` needed a power of two).
+            // Mismatches OR into one accumulator; a nonzero one replays the chunk to count
+            // and log each bad word, so the loop has no branch and no logging.
+            for chunk_start in (0..iterations_per_seq).step_by(chunk_size_operations) {
+                let chunk_end = (chunk_start + chunk_size_operations).min(iterations_per_seq);
+                let chunk_rng = rng_state;
+                let mut acc = 0u64;
 
-                // Random read verification for this sequence - chunked for responsive shutdown.
-                // The index is `rng * len >> 64`: uniform over any length, one multiply off the
-                // RNG's dependency chain (TODO 76; the old `& (len - 1)` needed a power of two).
-                // Mismatches OR into one accumulator; a nonzero one replays the chunk to count
-                // and log each bad word, so the loop has no branch and no logging.
-                for chunk_start in (0..iterations_per_seq).step_by(chunk_size_operations) {
-                    let chunk_end = (chunk_start + chunk_size_operations).min(iterations_per_seq);
-                    let chunk_rng = rng_state;
-                    let mut acc = 0u64;
+                for _ in chunk_start..chunk_end {
+                    rng_state ^= rng_state << 13;
+                    rng_state ^= rng_state >> 17;
+                    rng_state ^= rng_state << 5;
 
-                    for _ in chunk_start..chunk_end {
-                        rng_state ^= rng_state << 13;
-                        rng_state ^= rng_state >> 17;
-                        rng_state ^= rng_state << 5;
+                    let idx = ((rng_state as u128 * len as u128) >> 64) as usize;
+                    acc |= *base.add(idx) ^ idx as u64;
+                }
 
-                        let idx = ((rng_state as u128 * len as u128) >> 64) as usize;
-                        acc |= *base.add(idx) ^ idx as u64;
-                    }
+                if acc != 0 {
+                    cycle_errors += random_replay(base, len, chunk_rng, chunk_start..chunk_end, seq, test_name);
+                }
 
-                    if acc != 0 {
-                        cycle_errors += random_replay(base, len, chunk_rng, chunk_start..chunk_end, seq, test_name);
-                    }
+                // Handle errors if found
+                if runner.should_halt(cycle_errors) {
+                    let total_operations = cycle as u64 * (chunk_end - chunk_start) as u64;
+                    return runner.finish_aborted(cycle_errors, total_operations);
+                }
 
-                    // Handle errors if found
-                    if runner.should_halt(cycle_errors) {
-                        let total_operations = cycle as u64 * (chunk_end - chunk_start) as u64;
-                        return runner.finish_aborted(cycle_errors, total_operations);
-                    }
-
-                    // Check for shutdown request
-                    if runner.shutdown_requested() {
-                        let total_operations = cycle as u64 * (chunk_end - chunk_start) as u64;
-                        return runner.finish_aborted(cycle_errors, total_operations);
-                    }
+                // Check for shutdown request
+                if runner.shutdown_requested() {
+                    let total_operations = cycle as u64 * (chunk_end - chunk_start) as u64;
+                    return runner.finish_aborted(cycle_errors, total_operations);
                 }
             }
-
-            // Update bytes processed for this block
-            let bytes_this_cycle = iterations_per_seq
-                .saturating_mul(rng_sequences as usize)
-                .saturating_mul(std::mem::size_of::<u64>());
-            runner.add_bytes(bytes_this_cycle);
         }
+
+        // Update bytes processed for this block
+        let bytes_this_cycle = iterations_per_seq
+            .saturating_mul(rng_sequences as usize)
+            .saturating_mul(std::mem::size_of::<u64>());
+        runner.add_bytes(bytes_this_cycle);
 
         runner.commit_cycle_errors(cycle_errors);
         runner.update_progress();
@@ -2314,11 +2298,11 @@ pub unsafe fn stride_access_multi(
         .expect("StrideAccess requires subdivisions in parameter_context") as usize;
     let subdiv_shift = subdivisions.trailing_zeros();
 
-    let (mut runner, test_blocks) = crate::test_scaffolding::TestRunner::new(
+    let (mut runner, extent) = crate::test_scaffolding::TestRunner::new(
         blocks, thread_id, error_mode, timing, config, progress,
         test_name, TestAction::ReadWrite,
     );
-    let total_test_size: usize = test_blocks.iter().map(|b| b.test_size).sum();
+    let total_test_size = extent.test_size;
 
     loop {
         let cycle = runner.begin_cycle();
@@ -2326,61 +2310,59 @@ pub unsafe fn stride_access_multi(
         let strides = [1, 16, 64, 256, 1024, 4096];
         let pattern_base = 0xFEDCBA9876543210u64.wrapping_add(thread_id as u64).wrapping_add(cycle as u64);
 
-        for test_block in test_blocks.iter() {
-            let base = test_block.ptr as *mut u64;
-            let len = test_block.test_size / std::mem::size_of::<u64>();
-            // Chunks of exactly the test's size, spread evenly over the piece (TODO 76)
-            let spread = runner.chunks(test_block.test_size);
-            let chunk_len = spread.chunk() / std::mem::size_of::<u64>();
-            let elements_per_subdiv = chunk_len >> subdiv_shift;
+        let base = extent.ptr as *mut u64;
+        let len = extent.test_size / std::mem::size_of::<u64>();
+        // Chunks of exactly the test's size, spread evenly over the extent (TODO 76)
+        let spread = runner.chunks(extent.test_size);
+        let chunk_len = spread.chunk() / std::mem::size_of::<u64>();
+        let elements_per_subdiv = chunk_len >> subdiv_shift;
 
-            for &stride in &strides {
-                if stride >= len { continue; }
-                // Words written and read per chunk: each subdivision from its start, every stride
-                let touched = subdivisions * elements_per_subdiv.div_ceil(stride);
-                // A word's value depends on its index and the pass's stride, not on the chunk
-                let pattern = pattern_base.wrapping_add((stride as u64) << 32);
+        for &stride in &strides {
+            if stride >= len { continue; }
+            // Words written and read per chunk: each subdivision from its start, every stride
+            let touched = subdivisions * elements_per_subdiv.div_ceil(stride);
+            // A word's value depends on its index and the pass's stride, not on the chunk
+            let pattern = pattern_base.wrapping_add((stride as u64) << 32);
 
-                for k in 0..spread.count() {
-                    let chunk_start = spread.start(k) / std::mem::size_of::<u64>();
+            for k in 0..spread.count() {
+                let chunk_start = spread.start(k) / std::mem::size_of::<u64>();
 
-                    for subdiv in 0..subdivisions {
-                        let subdiv_start = chunk_start + subdiv * elements_per_subdiv;
-                        let subdiv_end = subdiv_start + elements_per_subdiv;
-                        let mut pos = subdiv_start;
-                        while pos < subdiv_end {
-                            *base.add(pos) = pattern.wrapping_add(pos as u64);
-                            pos += stride;
-                            if pos >= subdiv_end { break; }
+                for subdiv in 0..subdivisions {
+                    let subdiv_start = chunk_start + subdiv * elements_per_subdiv;
+                    let subdiv_end = subdiv_start + elements_per_subdiv;
+                    let mut pos = subdiv_start;
+                    while pos < subdiv_end {
+                        *base.add(pos) = pattern.wrapping_add(pos as u64);
+                        pos += stride;
+                        if pos >= subdiv_end { break; }
+                    }
+                }
+
+                std::sync::atomic::fence(Ordering::SeqCst);
+
+                for subdiv in 0..subdivisions {
+                    let subdiv_start = chunk_start + subdiv * elements_per_subdiv;
+                    let subdiv_end = subdiv_start + elements_per_subdiv;
+                    let mut pos = subdiv_start;
+                    while pos < subdiv_end {
+                        let expected = pattern.wrapping_add(pos as u64);
+                        let actual = *base.add(pos);
+                        if actual != expected {
+                            cycle_errors += 1;
+                            log::error!("{}: memory error at index {} - expected {:#x}, got {:#x}", test_name, pos, expected, actual);
                         }
+                        pos += stride;
+                        if pos >= subdiv_end { break; }
                     }
+                }
 
-                    std::sync::atomic::fence(Ordering::SeqCst);
+                // Count the chunk when it is done (one write and one read per word touched)
+                runner.add_bytes(touched * std::mem::size_of::<u64>() * 2);
 
-                    for subdiv in 0..subdivisions {
-                        let subdiv_start = chunk_start + subdiv * elements_per_subdiv;
-                        let subdiv_end = subdiv_start + elements_per_subdiv;
-                        let mut pos = subdiv_start;
-                        while pos < subdiv_end {
-                            let expected = pattern.wrapping_add(pos as u64);
-                            let actual = *base.add(pos);
-                            if actual != expected {
-                                cycle_errors += 1;
-                                log::error!("{}: memory error at index {} - expected {:#x}, got {:#x}", test_name, pos, expected, actual);
-                            }
-                            pos += stride;
-                            if pos >= subdiv_end { break; }
-                        }
-                    }
-
-                    // Count the chunk when it is done (one write and one read per word touched)
-                    runner.add_bytes(touched * std::mem::size_of::<u64>() * 2);
-
-                    // A halt stops the test, not just this piece's stride passes
-                    if runner.should_halt(cycle_errors) || runner.shutdown_requested() {
-                        let total_operations = (runner.bytes_processed() / (2 * std::mem::size_of::<u64>())) as u64;
-                        return runner.finish_aborted(cycle_errors, total_operations);
-                    }
+                // A halt stops the test, not just this stride pass
+                if runner.should_halt(cycle_errors) || runner.shutdown_requested() {
+                    let total_operations = (runner.bytes_processed() / (2 * std::mem::size_of::<u64>())) as u64;
+                    return runner.finish_aborted(cycle_errors, total_operations);
                 }
             }
         }
@@ -2418,24 +2400,22 @@ pub unsafe fn block_move_multi(
         .and_then(|c| c.copy_directions)
         .expect("BlockMove requires copy_directions in parameter_context");
 
-    let (mut runner, test_blocks) = crate::test_scaffolding::TestRunner::new(
+    let (mut runner, extent) = crate::test_scaffolding::TestRunner::new(
         blocks, thread_id, error_mode, timing, config, progress,
         test_name, TestAction::ReadWrite,
     );
-    let total_test_size: usize = test_blocks.iter().map(|b| b.test_size).sum();
+    let total_test_size = extent.test_size;
 
-    // Initialize source memory in each block
+    // Initialize the source half
     let pattern_base = 0xDEADBEEFCAFEBABEu64;
-    for test_block in test_blocks.iter() {
-        // Divide block in half: first half = source, second half = destination
-        let half_size = test_block.test_size / 2;
-        let src_base = test_block.ptr as *mut u64;
-        let len = half_size / std::mem::size_of::<u64>();
+    // Divide the extent in half: first half = source, second half = destination
+    let half_size = extent.test_size / 2;
+    let src_base = extent.ptr as *mut u64;
+    let len = half_size / std::mem::size_of::<u64>();
 
-        // Initialize source with pattern
-        for i in 0..len {
-            *src_base.add(i) = pattern_base.wrapping_add(i as u64);
-        }
+    // Initialize source with pattern
+    for i in 0..len {
+        *src_base.add(i) = pattern_base.wrapping_add(i as u64);
     }
     std::sync::atomic::fence(Ordering::SeqCst);
 
@@ -2443,114 +2423,112 @@ pub unsafe fn block_move_multi(
         let cycle = runner.begin_cycle();
         let mut cycle_errors = 0u64;
 
-        for test_block in test_blocks.iter() {
-            // Divide block: source (first half) → destination (second half)
-            let half_size = test_block.test_size / 2;
-            let src_base = test_block.ptr as *mut u64;
-            let dst_base = src_base.add(half_size / std::mem::size_of::<u64>());
+        // Divide the extent: source (first half) → destination (second half)
+        let half_size = extent.test_size / 2;
+        let src_base = extent.ptr as *mut u64;
+        let dst_base = src_base.add(half_size / std::mem::size_of::<u64>());
 
-            // Half-chunks of exactly half the test's chunk, spread evenly over the source half
-            // (TODO 76); each is copied to the same offset in the destination half
-            let spread = runner.half_chunks(test_block.test_size);
-            let chunk_size_operations = spread.chunk() / std::mem::size_of::<u64>();
+        // Half-chunks of exactly half the test's chunk, spread evenly over the source half
+        // (TODO 76); each is copied to the same offset in the destination half
+        let spread = runner.half_chunks(extent.test_size);
+        let chunk_size_operations = spread.chunk() / std::mem::size_of::<u64>();
 
-            for k in 0..spread.count() {
-                let processed = spread.start(k) / std::mem::size_of::<u64>();
-                let chunk_end = processed + chunk_size_operations;
+        for k in 0..spread.count() {
+            let processed = spread.start(k) / std::mem::size_of::<u64>();
+            let chunk_end = processed + chunk_size_operations;
 
-                // Copy from source to destination with direction patterns
-                match copy_dirs {
-                    1 => {
-                        // Single direction: Simple forward copy
-                        for i in processed..chunk_end {
-                            let val = *src_base.add(i);
-                            *dst_base.add(i) = val;
-                        }
+            // Copy from source to destination with direction patterns
+            match copy_dirs {
+                1 => {
+                    // Single direction: Simple forward copy
+                    for i in processed..chunk_end {
+                        let val = *src_base.add(i);
+                        *dst_base.add(i) = val;
                     }
-                    2 => {
-                        // Two directions: Copy forward and backward simultaneously
-                        let chunk_size = chunk_end - processed;
-                        let mid = processed + chunk_size / 2;
+                }
+                2 => {
+                    // Two directions: Copy forward and backward simultaneously
+                    let chunk_size = chunk_end - processed;
+                    let mid = processed + chunk_size / 2;
 
-                        // Stream 1: First half forward
-                        for i in processed..mid {
-                            *dst_base.add(i) = *src_base.add(i);
-                        }
-
-                        // Stream 2: Second half backward
-                        for i in 0..(chunk_end - mid) {
-                            let idx = chunk_end - 1 - i;
-                            *dst_base.add(idx) = *src_base.add(idx);
-                        }
+                    // Stream 1: First half forward
+                    for i in processed..mid {
+                        *dst_base.add(i) = *src_base.add(i);
                     }
-                    4 => {
-                        // Four directions: Interleaved block copy with different patterns
-                        let chunk_size = chunk_end - processed;
-                        let block_size = chunk_size / 4;
 
-                        for stream in 0..4 {
-                            let start_idx = processed + stream * block_size;
-                            let end_idx = (processed + (stream + 1) * block_size).min(chunk_end);
+                    // Stream 2: Second half backward
+                    for i in 0..(chunk_end - mid) {
+                        let idx = chunk_end - 1 - i;
+                        *dst_base.add(idx) = *src_base.add(idx);
+                    }
+                }
+                4 => {
+                    // Four directions: Interleaved block copy with different patterns
+                    let chunk_size = chunk_end - processed;
+                    let block_size = chunk_size / 4;
 
-                            if start_idx < end_idx {
-                                match stream & 3 {
-                                    0 | 3 => {
-                                        // Forward copy
-                                        for i in start_idx..end_idx {
-                                            *dst_base.add(i) = *src_base.add(i);
-                                        }
+                    for stream in 0..4 {
+                        let start_idx = processed + stream * block_size;
+                        let end_idx = (processed + (stream + 1) * block_size).min(chunk_end);
+
+                        if start_idx < end_idx {
+                            match stream & 3 {
+                                0 | 3 => {
+                                    // Forward copy
+                                    for i in start_idx..end_idx {
+                                        *dst_base.add(i) = *src_base.add(i);
                                     }
-                                    1 => {
-                                        // Backward copy within block
-                                        for i in 0..(end_idx - start_idx) {
-                                            let idx = end_idx - 1 - i;
-                                            *dst_base.add(idx) = *src_base.add(idx);
-                                        }
+                                }
+                                1 => {
+                                    // Backward copy within block
+                                    for i in 0..(end_idx - start_idx) {
+                                        let idx = end_idx - 1 - i;
+                                        *dst_base.add(idx) = *src_base.add(idx);
                                     }
-                                    _ => {
-                                        // Skip pattern (every other element)
-                                        for i in (start_idx..end_idx).step_by(2) {
-                                            *dst_base.add(i) = *src_base.add(i);
-                                        }
-                                        for i in ((start_idx + 1)..end_idx).step_by(2) {
-                                            *dst_base.add(i) = *src_base.add(i);
-                                        }
+                                }
+                                _ => {
+                                    // Skip pattern (every other element)
+                                    for i in (start_idx..end_idx).step_by(2) {
+                                        *dst_base.add(i) = *src_base.add(i);
+                                    }
+                                    for i in ((start_idx + 1)..end_idx).step_by(2) {
+                                        *dst_base.add(i) = *src_base.add(i);
                                     }
                                 }
                             }
                         }
                     }
-                    _ => {
-                        // Many directions: Strided copy pattern
-                        let dirs = copy_dirs as usize;
-                        for dir in 0..dirs {
-                            for i in (processed + dir..chunk_end).step_by(dirs) {
-                                *dst_base.add(i) = *src_base.add(i);
-                            }
+                }
+                _ => {
+                    // Many directions: Strided copy pattern
+                    let dirs = copy_dirs as usize;
+                    for dir in 0..dirs {
+                        for i in (processed + dir..chunk_end).step_by(dirs) {
+                            *dst_base.add(i) = *src_base.add(i);
                         }
                     }
                 }
+            }
 
-                std::sync::atomic::fence(Ordering::SeqCst);
+            std::sync::atomic::fence(Ordering::SeqCst);
 
-                // Verify copied data
-                for i in processed..chunk_end {
-                    let expected = pattern_base.wrapping_add(i as u64);
-                    let actual = *dst_base.add(i);
-                    if actual != expected {
-                        cycle_errors += 1;
-                        log::error!("{}: error at {} - expected {:#x}, got {:#x}",
-                                   test_name, i, expected, actual);
-                    }
+            // Verify copied data
+            for i in processed..chunk_end {
+                let expected = pattern_base.wrapping_add(i as u64);
+                let actual = *dst_base.add(i);
+                if actual != expected {
+                    cycle_errors += 1;
+                    log::error!("{}: error at {} - expected {:#x}, got {:#x}",
+                               test_name, i, expected, actual);
                 }
+            }
 
-                // Count the half-chunk when it is done: copy (read + write) and verify (read)
-                runner.add_bytes(spread.chunk() * 3);
+            // Count the half-chunk when it is done: copy (read + write) and verify (read)
+            runner.add_bytes(spread.chunk() * 3);
 
-                if runner.should_halt(cycle_errors) || runner.shutdown_requested() {
-                    let total_operations = (runner.bytes_processed() / (3 * std::mem::size_of::<u64>())) as u64;
-                    return runner.finish_aborted(cycle_errors, total_operations);
-                }
+            if runner.should_halt(cycle_errors) || runner.shutdown_requested() {
+                let total_operations = (runner.bytes_processed() / (3 * std::mem::size_of::<u64>())) as u64;
+                return runner.finish_aborted(cycle_errors, total_operations);
             }
         }
 

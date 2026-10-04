@@ -137,11 +137,11 @@ where
     // now — one source of truth shared with the Tier-2 loop-owning tests (TODO #19 A.3).
     // The runner also starts the timer BEFORE init, preserving the v1 behaviour of
     // counting the first write in cycle timing.
-    let (mut runner, test_blocks) = crate::test_scaffolding::TestRunner::new(
+    let (mut runner, extent) = crate::test_scaffolding::TestRunner::new(
         blocks, thread_id, error_mode, timing, config, progress, test_name, action,
     );
 
-    if test_blocks.is_empty() {
+    if extent.test_size == 0 {
         log::warn!("{}: No blocks prepared for testing", test_name);
         return TestStats {
             name: test_name,
@@ -167,119 +167,95 @@ where
     // (Bytes and errors are accumulated through the runner.)
     let mut total_operations = 0u64;
 
-    // Pre-compute per-block metadata once (ptr, len, chunks don't change between cycles)
-    struct BlockMeta {
-        ptr: *mut u64,
-        len_elements: usize,
-        chunks: crate::test_memory::ChunkSpread,
-        test_size_bytes: usize,
-    }
-    let block_metas: Vec<BlockMeta> = test_blocks.iter().map(|tb| {
-        let ptr = tb.ptr as *mut u64;
-        let len_elements = tb.test_size / std::mem::size_of::<u64>();
-        BlockMeta { ptr, len_elements, chunks: runner.chunks(tb.test_size), test_size_bytes: tb.test_size }
-    }).collect();
+    // The extent and its chunks, fixed for the test: every chunk is exactly the test's chunk,
+    // spread evenly over the extent (TODO 76)
+    let ptr = extent.ptr as *mut u64;
+    let len_elements = extent.test_size / std::mem::size_of::<u64>();
+    let chunks = runner.chunks(extent.test_size);
+    let chunk_len = chunks.chunk() / std::mem::size_of::<u64>();
 
-    // Initialize all blocks with patterns (unless dependent mode — prior test already wrote them)
+    // Initialize the extent with patterns (unless dependent mode — prior test already wrote them)
     if !skip_init {
-        for meta in block_metas.iter() {
-            let ctx = ChunkCtx {
-                ptr: meta.ptr,
-                chunk_start: 0,
-                chunk_end: meta.len_elements,
-                cycle: 0,
-                thread_id,
-                check_mask,
-            };
-            init_fn(&ctx);
-        }
+        let ctx = ChunkCtx {
+            ptr,
+            chunk_start: 0,
+            chunk_end: len_elements,
+            cycle: 0,
+            thread_id,
+            check_mask,
+        };
+        init_fn(&ctx);
         std::sync::atomic::fence(Ordering::SeqCst);
 
-        // Account for init: one write pass over all blocks
-        for meta in block_metas.iter() {
-            runner.add_bytes(meta.test_size_bytes);
-        }
+        // Account for init: one write pass over the extent
+        runner.add_bytes(extent.test_size);
     }
 
     // Per write_read_cycle: bytes_per_test_op × test_reps writes + verify_reps reads
     let ops_per_wrc = bytes_per_test_op * test_reps as usize + verify_reps as usize;
     let wrc = config.write_read_cycles;
 
-    // Main test loop — interleaves across blocks
+    // Main test loop
     loop {
         let cycle = runner.begin_cycle();
         let mut cycle_errors = 0u64;
 
-        for meta in block_metas.iter() {
-            let mut block_errors = 0u64;
-            // Every chunk is exactly the test's chunk, spread evenly over the piece (TODO 76)
-            let chunk_len = meta.chunks.chunk() / std::mem::size_of::<u64>();
+        for k in 0..chunks.count() {
+            let chunk_start = chunks.start(k) / std::mem::size_of::<u64>();
+            let chunk_end = chunk_start + chunk_len;
+            let ctx = ChunkCtx {
+                ptr,
+                chunk_start,
+                chunk_end,
+                cycle,
+                thread_id,
+                check_mask,
+            };
 
-            for k in 0..meta.chunks.count() {
-                let chunk_start = meta.chunks.start(k) / std::mem::size_of::<u64>();
-                let chunk_end = chunk_start + chunk_len;
-                let ctx = ChunkCtx {
-                    ptr: meta.ptr,
-                    chunk_start,
-                    chunk_end,
-                    cycle,
-                    thread_id,
-                    check_mask,
-                };
-
-                // TM5-faithful loop: (write + multi-read) × write_read_cycles
-                // TM5 SimpleTest: (1 write + 5 reads) × 4 = tight repeated access per chunk
-                for _ in 0..wrc {
-                    // Test/write phase — run test_reps times (e.g., mirror round-trips)
-                    for _ in 0..test_reps {
-                        test_fn(&ctx);
-                    }
-
-                    std::sync::atomic::fence(Ordering::SeqCst);
-
-                    // Optional flush phase (TODO #59): evict this chunk so the verify below
-                    // round-trips through DRAM instead of reading the just-written cached copy.
-                    // Placed AFTER the fence (writes globally ordered) and BEFORE the reads —
-                    // flush_range_to_dram ends in its own MFENCE, so the flushes are drained
-                    // before any verify load can issue. Off by default; costs real bandwidth.
-                    if flush_before_verify {
-                        let chunk_ptr = ctx.ptr.add(chunk_start) as *const u8;
-                        let chunk_bytes = (chunk_end - chunk_start) * std::mem::size_of::<u64>();
-                        crate::tests::flush_range_to_dram(chunk_ptr, chunk_bytes, config.cache_line_bytes);
-                    }
-
-                    // Verify phase — run verify_reps times (e.g., multi-read for retention stress)
-                    for _ in 0..verify_reps {
-                        let errors = verify_fn(&ctx);
-                        block_errors += errors;
-                    }
+            // TM5-faithful loop: (write + multi-read) × write_read_cycles
+            // TM5 SimpleTest: (1 write + 5 reads) × 4 = tight repeated access per chunk
+            for _ in 0..wrc {
+                // Test/write phase — run test_reps times (e.g., mirror round-trips)
+                for _ in 0..test_reps {
+                    test_fn(&ctx);
                 }
 
-                // Count the chunk when it is done, so a halt or shutdown below reports what ran:
-                // under stitched one piece is the whole extent (TODO 76). Overlaps count each time.
-                runner.add_bytes(chunk_len * std::mem::size_of::<u64>() * ops_per_wrc * wrc as usize);
-                total_operations += chunk_len as u64 * (test_reps as u64 + verify_reps as u64) * wrc as u64;
+                std::sync::atomic::fence(Ordering::SeqCst);
 
-                // Halt at the chunk that erred, not at the end of the piece
-                if runner.should_halt(block_errors) {
-                    return runner.finish_aborted(cycle_errors + block_errors, total_operations);
+                // Optional flush phase (TODO #59): evict this chunk so the verify below
+                // round-trips through DRAM instead of reading the just-written cached copy.
+                // Placed AFTER the fence (writes globally ordered) and BEFORE the reads —
+                // flush_range_to_dram ends in its own MFENCE, so the flushes are drained
+                // before any verify load can issue. Off by default; costs real bandwidth.
+                if flush_before_verify {
+                    let chunk_ptr = ctx.ptr.add(chunk_start) as *const u8;
+                    let chunk_bytes = (chunk_end - chunk_start) * std::mem::size_of::<u64>();
+                    crate::tests::flush_range_to_dram(chunk_ptr, chunk_bytes, config.cache_line_bytes);
                 }
 
-                // Check for shutdown (mid-piece)
-                if runner.shutdown_requested() {
-                    return runner.finish_aborted(cycle_errors + block_errors, total_operations);
+                // Verify phase — run verify_reps times (e.g., multi-read for retention stress)
+                for _ in 0..verify_reps {
+                    cycle_errors += verify_fn(&ctx);
                 }
-
-                // The live display, throttled inside: one piece can be a whole cycle long
-                runner.update_progress_in_cycle();
             }
 
-            cycle_errors += block_errors;
+            // Count the chunk when it is done, so a halt or shutdown below reports what ran
+            // (TODO 76). Overlaps count each time.
+            runner.add_bytes(chunk_len * std::mem::size_of::<u64>() * ops_per_wrc * wrc as usize);
+            total_operations += chunk_len as u64 * (test_reps as u64 + verify_reps as u64) * wrc as u64;
 
-            // Check for shutdown between blocks
+            // Halt at the chunk that erred, not at the end of the extent
+            if runner.should_halt(cycle_errors) {
+                return runner.finish_aborted(cycle_errors, total_operations);
+            }
+
+            // Check for shutdown (mid-extent)
             if runner.shutdown_requested() {
                 return runner.finish_aborted(cycle_errors, total_operations);
             }
+
+            // The live display, throttled inside: one extent can be a whole cycle long
+            runner.update_progress_in_cycle();
         }
 
         runner.commit_cycle_errors(cycle_errors);
