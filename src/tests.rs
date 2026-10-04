@@ -2074,6 +2074,10 @@ pub unsafe fn random_torture_multi(
         blocks, thread_id, error_mode, timing, config, progress,
         test_name, TestAction::RandomAccess,
     );
+    // A thread with no memory has an empty extent, and the reads below need at least one word
+    if extent.test_size == 0 {
+        return runner.finish_completed(0);
+    }
     let total_test_size = extent.test_size;
 
     // Initialize the extent with a known pattern once
@@ -2297,6 +2301,10 @@ pub unsafe fn block_move_multi(
         blocks, thread_id, error_mode, timing, config, progress,
         test_name, TestAction::ReadWrite,
     );
+    // A thread with no memory has an empty extent, which has no halves
+    if extent.test_size == 0 {
+        return runner.finish_completed(0);
+    }
     let total_test_size = extent.test_size;
 
     // Initialize the source half
@@ -2584,6 +2592,30 @@ unsafe fn count_line(errors: &mut u64, ptr: *const u64, offset: usize, words: &[
     }
 }
 
+/// Verify for the per-word patterns (modes 0, 1, 10, 11, 13): XOR each word with
+/// `expected(idx)` and OR into 4 accumulators, then count and log in a cold rescan only if one is
+/// set. A per-word branch and `log::error!` kept the log's arguments spilled to the stack on every
+/// word, and cost Bench-Verify-TM5-0 30% when the harness around it changed (TODO 76).
+#[inline(always)]
+unsafe fn verify_words(ptr: *const u64, start: usize, end: usize, test_name: &str, expected: impl Fn(usize) -> u64 + Copy) -> u64 {
+    let mut acc = [0u64; 4];
+    let mut idx = start;
+    while idx + 4 <= end {
+        for (k, a) in acc.iter_mut().enumerate() {
+            *a |= *ptr.add(idx + k) ^ expected(idx + k);
+        }
+        idx += 4;
+    }
+    while idx < end {
+        acc[0] |= *ptr.add(idx) ^ expected(idx);
+        idx += 1;
+    }
+    if (acc[0] | acc[1]) | (acc[2] | acc[3]) == 0 {
+        return 0;
+    }
+    rescan_words(ptr, start, end, test_name, expected)
+}
+
 /// Counts and logs the words of `[start, end)` that differ from `expected(idx)`, once an
 /// accumulator has seen one.
 #[cold]
@@ -2692,19 +2724,7 @@ unsafe fn simple_test_v2_sequential(
                 },
                 |ctx: &ChunkCtx| -> u64 {
                     let seed = pattern_gen::block_seed(ctx.ptr as usize, ctx.thread_id, ctx.cycle);
-                    let mut total_errors = 0u64;
-                    for idx in ctx.chunk_start..ctx.chunk_end {
-                        let expected = pattern_gen::pattern_mode0(idx as u64, seed);
-                        let actual = *ctx.ptr.add(idx);
-                        if actual != expected {
-                            total_errors += 1;
-                            if total_errors <= 10 {
-                                log::error!("{}: error at idx {} - expected {:#x}, got {:#x}",
-                                           test_name, idx, expected, actual);
-                            }
-                        }
-                    }
-                    total_errors
+                    verify_words(ctx.ptr, ctx.chunk_start, ctx.chunk_end, test_name, |idx| pattern_gen::pattern_mode0(idx as u64, seed))
                 },
             )
         }
@@ -2727,19 +2747,7 @@ unsafe fn simple_test_v2_sequential(
                 },
                 |ctx: &ChunkCtx| -> u64 {
                     let seed = pattern_gen::block_seed(ctx.ptr as usize, ctx.thread_id, ctx.cycle);
-                    let mut total_errors = 0u64;
-                    for idx in ctx.chunk_start..ctx.chunk_end {
-                        let expected = pattern_gen::pattern_mode1(idx as u64, seed, cl_shift);
-                        let actual = *ctx.ptr.add(idx);
-                        if actual != expected {
-                            total_errors += 1;
-                            if total_errors <= 10 {
-                                log::error!("{}: error at idx {} - expected {:#x}, got {:#x}",
-                                           test_name, idx, expected, actual);
-                            }
-                        }
-                    }
-                    total_errors
+                    verify_words(ctx.ptr, ctx.chunk_start, ctx.chunk_end, test_name, |idx| pattern_gen::pattern_mode1(idx as u64, seed, cl_shift))
                 },
             )
         }
@@ -2785,45 +2793,7 @@ unsafe fn simple_test_v2_sequential(
                 },
                 // Verify: read and compare (with error_check_interval for v1 parity)
                 |ctx: &ChunkCtx| -> u64 {
-                    let mut total_errors = 0u64;
-                    match ctx.check_mask {
-                        Some(check_mask) => {
-                            let mut interval_errors = 0u64;
-                            let mut element_count = 0u32;
-                            for idx in ctx.chunk_start..ctx.chunk_end {
-                                let expected = pattern_gen::pattern_mode11(idx as u64, combined);
-                                let actual = *ctx.ptr.add(idx);
-                                if actual != expected {
-                                    interval_errors += 1;
-                                    if interval_errors <= 10 {
-                                        log::error!("{}: error at idx {} - expected {:#x}, got {:#x}",
-                                                   test_name, idx, expected, actual);
-                                    }
-                                }
-                                element_count += 1;
-                                if (element_count & check_mask) == 0
-                                    && interval_errors > 0 {
-                                        total_errors += interval_errors;
-                                        interval_errors = 0;
-                                    }
-                            }
-                            total_errors += interval_errors;
-                        }
-                        None => {
-                            for idx in ctx.chunk_start..ctx.chunk_end {
-                                let expected = pattern_gen::pattern_mode11(idx as u64, combined);
-                                let actual = *ctx.ptr.add(idx);
-                                if actual != expected {
-                                    total_errors += 1;
-                                    if total_errors <= 10 {
-                                        log::error!("{}: error at idx {} - expected {:#x}, got {:#x}",
-                                                   test_name, idx, expected, actual);
-                                    }
-                                }
-                            }
-                        }
-                    }
-                    total_errors
+                    verify_words(ctx.ptr, ctx.chunk_start, ctx.chunk_end, test_name, |idx| pattern_gen::pattern_mode11(idx as u64, combined))
                 },
             )
         }
@@ -2844,16 +2814,7 @@ unsafe fn simple_test_v2_sequential(
                     }
                 },
                 |ctx: &ChunkCtx| -> u64 {
-                    let mut acc = [0u64; 4];
-                    for idx in (ctx.chunk_start..ctx.chunk_end).step_by(4) {
-                        for (k, a) in acc.iter_mut().enumerate() {
-                            *a |= *ctx.ptr.add(idx + k) ^ pattern_gen::pattern_mode13((idx + k) as u64, seed);
-                        }
-                    }
-                    if (acc[0] | acc[1]) | (acc[2] | acc[3]) == 0 {
-                        return 0;
-                    }
-                    rescan_words(ctx.ptr, ctx.chunk_start, ctx.chunk_end, test_name, |idx| pattern_gen::pattern_mode13(idx as u64, seed))
+                    verify_words(ctx.ptr, ctx.chunk_start, ctx.chunk_end, test_name, |idx| pattern_gen::pattern_mode13(idx as u64, seed))
                 },
             )
         }
@@ -2877,45 +2838,7 @@ unsafe fn simple_test_v2_sequential(
                 },
                 // Verify: read and compare (with error_check_interval for v1 parity)
                 |ctx: &ChunkCtx| -> u64 {
-                    let mut total_errors = 0u64;
-                    match ctx.check_mask {
-                        Some(check_mask) => {
-                            let mut interval_errors = 0u64;
-                            let mut element_count = 0u32;
-                            for idx in ctx.chunk_start..ctx.chunk_end {
-                                let expected = pattern_gen::pattern_mode10(idx as u64, base);
-                                let actual = *ctx.ptr.add(idx);
-                                if actual != expected {
-                                    interval_errors += 1;
-                                    if interval_errors <= 10 {
-                                        log::error!("{}: error at idx {} - expected {:#x}, got {:#x}",
-                                                   test_name, idx, expected, actual);
-                                    }
-                                }
-                                element_count += 1;
-                                if (element_count & check_mask) == 0
-                                    && interval_errors > 0 {
-                                        total_errors += interval_errors;
-                                        interval_errors = 0;
-                                    }
-                            }
-                            total_errors += interval_errors;
-                        }
-                        None => {
-                            for idx in ctx.chunk_start..ctx.chunk_end {
-                                let expected = pattern_gen::pattern_mode10(idx as u64, base);
-                                let actual = *ctx.ptr.add(idx);
-                                if actual != expected {
-                                    total_errors += 1;
-                                    if total_errors <= 10 {
-                                        log::error!("{}: error at idx {} - expected {:#x}, got {:#x}",
-                                                   test_name, idx, expected, actual);
-                                    }
-                                }
-                            }
-                        }
-                    }
-                    total_errors
+                    verify_words(ctx.ptr, ctx.chunk_start, ctx.chunk_end, test_name, |idx| pattern_gen::pattern_mode10(idx as u64, base))
                 },
             )
         }
@@ -4516,19 +4439,7 @@ pub unsafe fn bench_verify_multi(
                 |_ctx: &ChunkCtx| {},
                 |ctx: &ChunkCtx| -> u64 {
                     let seed = pattern_gen::block_seed(ctx.ptr as usize, ctx.thread_id, 0);
-                    let mut total_errors = 0u64;
-                    for idx in ctx.chunk_start..ctx.chunk_end {
-                        let expected = pattern_gen::pattern_mode0(idx as u64, seed);
-                        let actual = *ctx.ptr.add(idx);
-                        if actual != expected {
-                            total_errors += 1;
-                            if total_errors <= 10 {
-                                log::error!("{}: error at idx {} - expected {:#x}, got {:#x}",
-                                           test_name, idx, expected, actual);
-                            }
-                        }
-                    }
-                    total_errors
+                    verify_words(ctx.ptr, ctx.chunk_start, ctx.chunk_end, test_name, |idx| pattern_gen::pattern_mode0(idx as u64, seed))
                 },
             )
         }
@@ -4546,19 +4457,7 @@ pub unsafe fn bench_verify_multi(
                 |_ctx: &ChunkCtx| {},
                 |ctx: &ChunkCtx| -> u64 {
                     let seed = pattern_gen::block_seed(ctx.ptr as usize, ctx.thread_id, 0);
-                    let mut total_errors = 0u64;
-                    for idx in ctx.chunk_start..ctx.chunk_end {
-                        let expected = pattern_gen::pattern_mode1(idx as u64, seed, cl_shift);
-                        let actual = *ctx.ptr.add(idx);
-                        if actual != expected {
-                            total_errors += 1;
-                            if total_errors <= 10 {
-                                log::error!("{}: error at idx {} - expected {:#x}, got {:#x}",
-                                           test_name, idx, expected, actual);
-                            }
-                        }
-                    }
-                    total_errors
+                    verify_words(ctx.ptr, ctx.chunk_start, ctx.chunk_end, test_name, |idx| pattern_gen::pattern_mode1(idx as u64, seed, cl_shift))
                 },
             )
         }
@@ -4587,19 +4486,7 @@ pub unsafe fn bench_verify_multi(
                 },
                 |_ctx: &ChunkCtx| {},
                 |ctx: &ChunkCtx| -> u64 {
-                    let mut total_errors = 0u64;
-                    for idx in ctx.chunk_start..ctx.chunk_end {
-                        let expected = pattern_gen::pattern_mode10(idx as u64, base);
-                        let actual = *ctx.ptr.add(idx);
-                        if actual != expected {
-                            total_errors += 1;
-                            if total_errors <= 10 {
-                                log::error!("{}: error at idx {} - expected {:#x}, got {:#x}",
-                                           test_name, idx, expected, actual);
-                            }
-                        }
-                    }
-                    total_errors
+                    verify_words(ctx.ptr, ctx.chunk_start, ctx.chunk_end, test_name, |idx| pattern_gen::pattern_mode10(idx as u64, base))
                 },
             )
         }
@@ -4616,19 +4503,7 @@ pub unsafe fn bench_verify_multi(
                 },
                 |_ctx: &ChunkCtx| {},
                 |ctx: &ChunkCtx| -> u64 {
-                    let mut total_errors = 0u64;
-                    for idx in ctx.chunk_start..ctx.chunk_end {
-                        let expected = pattern_gen::pattern_mode11(idx as u64, combined);
-                        let actual = *ctx.ptr.add(idx);
-                        if actual != expected {
-                            total_errors += 1;
-                            if total_errors <= 10 {
-                                log::error!("{}: error at idx {} - expected {:#x}, got {:#x}",
-                                           test_name, idx, expected, actual);
-                            }
-                        }
-                    }
-                    total_errors
+                    verify_words(ctx.ptr, ctx.chunk_start, ctx.chunk_end, test_name, |idx| pattern_gen::pattern_mode11(idx as u64, combined))
                 },
             )
         }
@@ -4647,19 +4522,7 @@ pub unsafe fn bench_verify_multi(
                 },
                 |_ctx: &ChunkCtx| {},
                 |ctx: &ChunkCtx| -> u64 {
-                    let mut total_errors = 0u64;
-                    for idx in ctx.chunk_start..ctx.chunk_end {
-                        let expected = pattern_gen::pattern_mode13(idx as u64, seed);
-                        let actual = *ctx.ptr.add(idx);
-                        if actual != expected {
-                            total_errors += 1;
-                            if total_errors <= 10 {
-                                log::error!("{}: error at idx {} - expected {:#x}, got {:#x}",
-                                           test_name, idx, expected, actual);
-                            }
-                        }
-                    }
-                    total_errors
+                    verify_words(ctx.ptr, ctx.chunk_start, ctx.chunk_end, test_name, |idx| pattern_gen::pattern_mode13(idx as u64, seed))
                 },
             )
         }
