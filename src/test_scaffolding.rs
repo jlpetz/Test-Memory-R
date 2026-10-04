@@ -18,11 +18,8 @@ use std::time::Instant;
 use std::sync::atomic::Ordering;
 
 use crate::ErrorMode;
-use crate::tests::{
-    TestBlock, TestStats, TestAction, TestTiming, TestProgress, TestMemoryConfig,
-    prepare_blocks_for_window, calculate_ideal_chunk_size, get_safe_chunk_size,
-};
-use crate::constants::MB_F64;
+use crate::tests::{TestBlock, TestStats, TestAction, TestTiming, TestProgress, TestMemoryConfig};
+
 use crate::runner::{AllocationBlock, SHUTDOWN_REQUESTED};
 
 /// Per-test bookkeeping shared by the loop-owning v1 tests.
@@ -36,9 +33,11 @@ pub struct TestRunner<'a> {
     thread_id: usize,
     error_mode: ErrorMode,
     timing: &'a TestTiming,
-    config: &'a TestMemoryConfig,
     progress: Option<&'a TestProgress>,
 
+    /// The test's chunk, resolved once from its window (TODO 76); a piece shorter than it
+    /// gets one chunk of its own length.
+    chunk: usize,
     start: Instant,
     cycle: u32,
     total_error_count: u64,
@@ -65,19 +64,15 @@ impl<'a> TestRunner<'a> {
     ) -> (Self, Vec<TestBlock<'a>>) {
         let total_allocated: usize = blocks.iter().map(|b| b.buffer.size()).sum();
         let window_size = config.calculate_window_size(test_name, total_allocated);
-        let test_blocks = prepare_blocks_for_window(blocks, window_size, test_name);
+        // The window is the first `window_size` bytes of the thread's regions: one piece per
+        // stitched span, one per block under plan-pagesize-pref (TODO 76).
+        let mut test_blocks = crate::test_memory::window_pieces(blocks, window_size);
+        if test_blocks.is_empty() && let Some(first) = blocks.first() {
+            log::error!("{}: window of {} bytes is below 4 KiB; testing 4 KiB instead", test_name, window_size);
+            test_blocks.push(TestBlock::at_block(first, crate::test_memory::GRANULE.min(first.buffer.size())));
+        }
         let total_test_size: usize = test_blocks.iter().map(|b| b.test_size).sum();
-
-        // Log the registration name (carries the `_A` auto-dispatch suffix and distinguishes
-        // registrations that share one test fn, e.g. Mem-StuckBit-Flush128); fall back to the
-        // fn's baked-in name. Sizing above still keys off `test_name` — do not swap that.
-        let log_name = config.display_name.as_deref().unwrap_or(test_name);
-        log::info!(
-            "[Thread {}] Running {} on {:.2} MB of memory (window: {:.2} MB)",
-            thread_id, log_name,
-            total_test_size as f64 / MB_F64,
-            window_size as f64 / MB_F64
-        );
+        let chunk = config.calculate_chunk_size(test_name, total_test_size);
 
         let now = Instant::now();
         let runner = TestRunner {
@@ -86,24 +81,36 @@ impl<'a> TestRunner<'a> {
             thread_id,
             error_mode,
             timing,
-            config,
             progress,
+            chunk,
             start: now,
             cycle: 0,
             total_error_count: 0,
             total_bytes_processed: 0,
             last_progress_update: now,
         };
+
+        // Log the registration name (carries the `_A` auto-dispatch suffix and distinguishes
+        // registrations that share one test fn, e.g. Mem-StuckBit-Flush128); fall back to the
+        // fn's baked-in name. Sizing above still keys off `test_name` — do not swap that.
+        // Each piece is listed with its page sizes and chunks (Mem-Random's chunks are RNG
+        // iterations, not these byte ranges).
+        let log_name = config.display_name.as_deref().unwrap_or(test_name);
+        log::info!(
+            "[Thread {}] Running {} on {} (window {}): {}",
+            thread_id, log_name,
+            crate::test_memory::size_str(total_test_size),
+            crate::test_memory::size_str(window_size),
+            crate::test_memory::describe_pieces(blocks, &test_blocks, |piece| runner.chunk_size_bytes(piece)),
+        );
         (runner, test_blocks)
     }
 
-    /// Safe chunk size in bytes for a block of `test_block_size`, matching the
-    /// v1 `get_safe_chunk_size(calculate_ideal_chunk_size(..))` pattern. The test
-    /// converts to its own element/operation units (and applies any `.max(..)`).
+    /// The chunk in bytes for a piece of `test_block_size`: the test's chunk, or the piece when it
+    /// is shorter. The test converts to its own element/operation units.
     #[inline]
     pub fn chunk_size_bytes(&self, test_block_size: usize) -> usize {
-        let ideal = calculate_ideal_chunk_size(self.config, self.test_name, test_block_size);
-        get_safe_chunk_size(ideal, test_block_size)
+        self.chunk.min(test_block_size)
     }
 
     /// Increment and return the new cycle number. Call at the top of each outer cycle.

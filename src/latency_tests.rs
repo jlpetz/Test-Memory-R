@@ -210,7 +210,7 @@ pub unsafe fn read_latency_multi(
     // Also initialize starting positions for continuous traversal
     let mut chain_positions: Vec<*mut u64> = Vec::new();
     for test_block in test_blocks.iter() {
-        let base = test_block.block.buffer.as_mut_ptr() as *mut u64;
+        let base = test_block.ptr as *mut u64;
         let block_len = test_block.test_size / std::mem::size_of::<u64>();
         let len = block_len.min(working_set_u64);
         setup_pointer_chase(base, len, thread_id);
@@ -359,7 +359,7 @@ pub unsafe fn write_latency_multi(
     let mut chain_bases: Vec<*mut u64> = Vec::new();
     let mut write_bases: Vec<*mut u64> = Vec::new();
     for test_block in test_blocks.iter() {
-        let base = test_block.block.buffer.as_mut_ptr() as *mut u64;
+        let base = test_block.ptr as *mut u64;
         let block_len = test_block.test_size / std::mem::size_of::<u64>();
         let len = (block_len / 2).min(half_working_set_u64);
         setup_pointer_chase(base, len, thread_id);
@@ -517,7 +517,7 @@ pub unsafe fn copy_latency_multi(
     let mut chain_positions: Vec<*mut u64> = Vec::new();
     let mut dst_bases: Vec<*mut u64> = Vec::new();
     for test_block in test_blocks.iter() {
-        let base = test_block.block.buffer.as_mut_ptr() as *mut u64;
+        let base = test_block.ptr as *mut u64;
         let block_len = test_block.test_size / std::mem::size_of::<u64>();
         let half_len = (block_len / 2).min(working_set_u64);
 

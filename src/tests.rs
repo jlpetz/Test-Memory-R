@@ -807,18 +807,16 @@ impl TestMemoryConfig {
         optimal_size.min(allocated_size)
     }
 
-    // Calculate optimal chunk size with alignment  
+    /// The chunk for a test whose window is `window_size` bytes, resolved once per test (TODO 76):
+    /// the configured size, at least the test's minimum, at most the window, rounded up to
+    /// `test_memory::GRANULE`. Any such multiple works: no kernel needs a power of two (TODO 76's
+    /// audit). A chunk bigger than the window is the window, as TM5 clamps its block to its window.
     pub fn calculate_chunk_size(&self, test_name: &str, window_size: usize) -> usize {
         let cache_info = get_cache_info();
-        
+
         let raw_chunk_size = match &self.chunk_mode {
-            ChunkMode::Absolute { size_bytes } => {
-                align_to_boundary(*size_bytes, cache_info.cache_line_size)
-            }
-            ChunkMode::CacheTotal { fraction } => {
-                let cache_based = (cache_info.total_cache as f64 * fraction) as usize;
-                align_to_boundary(cache_based, cache_info.cache_line_size)
-            }
+            ChunkMode::Absolute { size_bytes } => *size_bytes,
+            ChunkMode::CacheTotal { fraction } => (cache_info.total_cache as f64 * fraction) as usize,
             ChunkMode::Auto => {
                 self.calculate_optimal_block_for_test(test_name, window_size, cache_info)
             }
@@ -826,8 +824,7 @@ impl TestMemoryConfig {
                 // Reuse the calibration-aware sizing path. DRAMFull returns usize::MAX
                 // as a sentinel meaning "use the whole window".
                 let calculated = target.calculate_window_size(cache_info, self.thread_count);
-                let raw = if calculated == usize::MAX { window_size } else { calculated };
-                align_to_boundary(raw, cache_info.cache_line_size)
+                if calculated == usize::MAX { window_size } else { calculated }
             }
         };
 
@@ -841,27 +838,26 @@ impl TestMemoryConfig {
                 .unwrap_or(1)
         }).unwrap_or(1);
         let minimum_chunk_size = self.calculate_minimum_chunk_size(test_name, variant_count);
-        
-        // Cap at window size first
-        let window_capped_size = raw_chunk_size.min(window_size);
-        
-        // Apply minimum size requirements
-        let final_chunk_size = window_capped_size.max(minimum_chunk_size);
-        
+        let granule = crate::test_memory::GRANULE;
+
+        // The minimum first, then the window, which wins: a chunk never exceeds the window.
+        let sized = raw_chunk_size.max(minimum_chunk_size).min(window_size);
+        let final_chunk_size = sized.next_multiple_of(granule).max(granule);
+
         // Log corrections for user awareness
         if final_chunk_size != raw_chunk_size {
             let raw_mb = raw_chunk_size as f64 / MB as f64;
             let final_mb = final_chunk_size as f64 / MB as f64;
-            
+
             if final_chunk_size > raw_chunk_size {
-                log::debug!("🔧 Chunk size corrected for {}: {:.2}MB → {:.2}MB (minimum required for {} variants + SIMD alignment)",
+                log::debug!("🔧 Chunk size corrected for {}: {:.2}MB → {:.2}MB (minimum for {} variants, then a multiple of 4 KiB)",
                            test_name, raw_mb, final_mb, variant_count);
             } else {
-                log::debug!("🔧 Chunk size capped for {}: {:.2}MB → {:.2}MB (limited by window size)", 
+                log::debug!("🔧 Chunk size capped for {}: {:.2}MB → {:.2}MB (limited by window size)",
                            test_name, raw_mb, final_mb);
             }
         }
-        
+
         final_chunk_size
     }
     
@@ -911,12 +907,8 @@ impl TestMemoryConfig {
         // Performance minimum: 64KB for reasonable cache behavior
         let performance_minimum = 64 * 1024; // 64KB
 
-        // Round up to a power-of-2 element count, like the chunk itself (`calculate_ideal_chunk_size`)
-        let minimum_bytes = variant_requirement.max(performance_minimum);
-        let elements = minimum_bytes / std::mem::size_of::<u64>();
-        let power_of_2_elements = elements.next_power_of_two();
-        
-        power_of_2_elements * std::mem::size_of::<u64>()
+        // A multiple of the granule, like the chunk itself
+        variant_requirement.max(performance_minimum).next_multiple_of(crate::test_memory::GRANULE)
     }
     
     fn calculate_optimal_block_for_test(&self, test_name: &str, window_size: usize, cache_info: &CacheInfo) -> usize {
@@ -1011,40 +1003,38 @@ pub unsafe fn flush_range_to_dram(base: *const u8, len_bytes: usize, cache_line_
     unsafe { std::arch::x86_64::_mm_mfence(); }
 }
 
-/// Calculate the chunk size for one block (once at setup in Tier 1, every cycle in Tier 2), rounded
-/// up to a power-of-2 element count so chunks tile each power-of-2 block piece exactly, with no
-/// short last chunk (`prepare_blocks_for_window`). Kernels need multiples of the vector width or
-/// cache line, more where a test splits a chunk into parts (TODO 76's audit).
-pub fn calculate_ideal_chunk_size(config: &TestMemoryConfig, test_name: &str, total_memory_size: usize) -> usize {
-    // Get base chunk size from user configuration
-    let base_chunk_size = config.calculate_chunk_size(test_name, total_memory_size);
-    
-    // Convert to elements and round up to a power of 2
-    let base_elements = base_chunk_size / std::mem::size_of::<u64>();
-    let power_of_2_elements = base_elements.next_power_of_two();
-    
-    power_of_2_elements * std::mem::size_of::<u64>()
-}
-
-/// Simple clamp chunk size to current block size (blocks are already power-of-2)
-#[inline]
-pub fn get_safe_chunk_size(ideal_chunk_size: usize, block_size_bytes: usize) -> usize {
-    ideal_chunk_size.min(block_size_bytes)
-}
-
-/// Represents a block with window-limited test size
-/// Used by MultiBlock tests to respect window limits while maintaining power-of-2 alignment
+/// One contiguous piece of the window a test runs on: `test_size` bytes from `ptr`.
+/// The borrow ties it to the `AllocationBlock`s it lies in, which stay mapped for `'a`.
 #[derive(Debug)]
 pub struct TestBlock<'a> {
-    pub block: &'a crate::runner::AllocationBlock,
-    /// How much of `block` to test, in bytes: always a power of two and `<= block size`.
-    /// May be **less** than the block size when the window budget runs out mid-block
-    /// (see `prepare_blocks_for_window`), so always derive loop bounds from this field
-    /// rather than from `block.buffer.size()`.
+    pub ptr: *mut u8,
+    /// How much to test, in bytes. Always derive loop bounds from this field.
     pub test_size: usize,
+    _blocks: std::marker::PhantomData<&'a crate::runner::AllocationBlock>,
 }
 
-/// Prepare blocks for testing with window size limits.
+impl<'a> TestBlock<'a> {
+    /// A piece starting at `block`'s base.
+    pub fn at_block(block: &'a crate::runner::AllocationBlock, test_size: usize) -> Self {
+        TestBlock { ptr: block.buffer.as_mut_ptr(), test_size, _blocks: std::marker::PhantomData }
+    }
+
+    /// A piece at `ptr` inside `blocks` (it may span several joined blocks).
+    pub fn in_blocks(blocks: &'a [crate::runner::AllocationBlock], ptr: *mut u8, test_size: usize) -> Self {
+        debug_assert!({
+            let (start, end) = (ptr as usize, ptr as usize + test_size);
+            let lo = blocks.iter().map(|b| b.buffer.as_mut_ptr() as usize).min().unwrap_or(0);
+            let hi = blocks.iter().map(|b| b.buffer.as_mut_ptr() as usize + b.buffer.size()).max().unwrap_or(0);
+            lo <= start && end <= hi
+        }, "piece outside its blocks");
+        TestBlock { ptr, test_size, _blocks: std::marker::PhantomData }
+    }
+}
+
+/// Prepare blocks for testing with window size limits. Only the bandwidth and latency tests use
+/// this now; the correctness tests take the window from `test_memory::window_pieces`, which needs
+/// no power-of-two pieces (TODO 76). The latency tests build heap buffers as big as a piece, so
+/// they keep these smaller pieces until their port onto `TestRunner` (TODO 76, from 69 D).
 ///
 /// The window is a **byte budget for the thread's total coverage**, not a per-block cap:
 /// each block contributes `min(block_size, window_remaining)` until the budget is spent.
@@ -1056,9 +1046,6 @@ pub struct TestBlock<'a> {
 /// Block sizes are already powers of two, so a full contribution is trivially compliant.
 /// The cost is bounded under-coverage on a non-power-of-2 window (at most the last block's
 /// share); power-of-2 windows — `Absolute`, and fractions of power-of-2 totals — are exact.
-/// Do not "simplify" this to a plain `min()`: the chunk loops clamp with `.min(len)` so a
-/// tail would be *correct*, but it would add a ragged iteration that the power-of-2 chain
-/// (`calculate_ideal_chunk_size` → `get_safe_chunk_size`) exists specifically to avoid.
 ///
 /// Historical note: this used to push **whole blocks only** and `break` once the accumulated
 /// total met the window, which rounded coverage *up* to a block boundary (a 1 GiB window over
@@ -1098,7 +1085,7 @@ pub fn prepare_blocks_for_window<'a>(
             break;
         }
 
-        result.push(TestBlock { block, test_size });
+        result.push(TestBlock::at_block(block, test_size));
         accumulated += test_size;
 
         log::debug!(
@@ -1122,7 +1109,7 @@ pub fn prepare_blocks_for_window<'a>(
             window_size as f64 / MB_F64,
             test_size as f64 / MB_F64
         );
-        result.push(TestBlock { block, test_size });
+        result.push(TestBlock::at_block(block, test_size));
     } else if accumulated < window_size {
         log::debug!(
             "{}: Covering {:.2} MiB of {:.2} MiB window ({} block(s); shortfall is the \
@@ -1208,7 +1195,7 @@ macro_rules! stuck_bit_impl {
                 let mut cycle_errors = 0u64;
 
                 for test_block in test_blocks.iter() {
-                    let base = test_block.block.buffer.as_mut_ptr() as *mut $simd_type;
+                    let base = test_block.ptr as *mut $simd_type;
                     let len = test_block.test_size / lanes;
 
                     let chunk_size_bytes = runner.chunk_size_bytes(test_block.test_size);
@@ -1334,10 +1321,10 @@ pub unsafe fn stuck_bit_test_multi(
 
         // Interleave testing across all blocks with shared timer
         for test_block in test_blocks.iter() {
-            let base = test_block.block.buffer.as_mut_ptr() as *mut u64;
+            let base = test_block.ptr as *mut u64;
             let len = test_block.test_size / std::mem::size_of::<u64>();
 
-            // Recalculate chunk size for THIS block's size
+            // This piece's chunk: the test's, or the piece when it is shorter
             let chunk_size_bytes = runner.chunk_size_bytes(test_block.test_size);
             let chunk_size_operations = (chunk_size_bytes / std::mem::size_of::<u64>()).max(1024);
 
@@ -1621,7 +1608,7 @@ macro_rules! refresh_impl {
                 let mut cycle_errors = 0u64;
 
                 for test_block in test_blocks.iter() {
-                    let base = test_block.block.buffer.as_mut_ptr() as *mut $simd_type;
+                    let base = test_block.ptr as *mut $simd_type;
                     let len = test_block.test_size / lanes;
 
                     let chunk_size_bytes = runner.chunk_size_bytes(test_block.test_size);
@@ -1743,10 +1730,10 @@ pub unsafe fn refresh_stable_multi(
 
         // Interleave testing across all blocks with shared timer
         for test_block in test_blocks.iter() {
-            let base = test_block.block.buffer.as_mut_ptr() as *mut u64;
+            let base = test_block.ptr as *mut u64;
             let len = test_block.test_size / std::mem::size_of::<u64>();
 
-            // Recalculate chunk size for THIS block's size
+            // This piece's chunk: the test's, or the piece when it is shorter
             let chunk_size_bytes = runner.chunk_size_bytes(test_block.test_size);
             let chunk_size_operations = (chunk_size_bytes / std::mem::size_of::<u64>()).max(1024);
 
@@ -2000,10 +1987,10 @@ pub unsafe fn cache_busting_multi(
 
         // Interleave testing across all blocks with shared timer
         for test_block in test_blocks.iter() {
-            let base = test_block.block.buffer.as_mut_ptr() as *mut u64;
+            let base = test_block.ptr as *mut u64;
             let len = test_block.test_size / std::mem::size_of::<u64>();
 
-            // Recalculate chunk size for THIS block's size
+            // This piece's chunk: the test's, or the piece when it is shorter
             let chunk_size_bytes = runner.chunk_size_bytes(test_block.test_size);
             let chunk_size_operations = (chunk_size_bytes / std::mem::size_of::<u64>()).max(1024);
 
@@ -2115,6 +2102,32 @@ pub unsafe fn cache_busting_multi(
 // RandomTorture MultiBlock Implementation
 // ================================================================================================
 
+/// Cold path of Mem-Random: rerun one chunk's reads from its saved RNG state, counting and logging
+/// each mismatch. A fault that was gone by the reread still counts once.
+#[cold]
+#[inline(never)]
+unsafe fn random_replay(base: *mut u64, len: usize, mut rng_state: u64, iterations: std::ops::Range<usize>,
+                        seq: u32, test_name: &str) -> u64 {
+    let mut errors = 0u64;
+    for iteration in iterations {
+        rng_state ^= rng_state << 13;
+        rng_state ^= rng_state >> 17;
+        rng_state ^= rng_state << 5;
+        let idx = ((rng_state as u128 * len as u128) >> 64) as usize;
+        let actual = unsafe { *base.add(idx) };
+        if actual != idx as u64 {
+            errors += 1;
+            log::error!("{}: memory error at index {}, iteration {}, rng_seq {}, expected {}, actual {}",
+                        test_name, idx, iteration, seq, idx, actual);
+        }
+    }
+    if errors == 0 {
+        log::error!("{}: memory error in rng_seq {} that a reread no longer shows (transient)", test_name, seq);
+        errors = 1;
+    }
+    errors
+}
+
 /// RandomTorture MultiBlock implementation - random access pattern testing.
 ///
 /// Pattern per cycle:
@@ -2143,7 +2156,7 @@ pub unsafe fn random_torture_multi(
 
     // Initialize all blocks with known pattern once
     for test_block in test_blocks.iter() {
-        let base = test_block.block.buffer.as_mut_ptr() as *mut u64;
+        let base = test_block.ptr as *mut u64;
         let len = test_block.test_size / std::mem::size_of::<u64>();
 
         for i in 0..len {
@@ -2159,15 +2172,8 @@ pub unsafe fn random_torture_multi(
 
         // Interleave testing across all blocks with shared timer
         for test_block in test_blocks.iter() {
-            let base = test_block.block.buffer.as_mut_ptr() as *mut u64;
+            let base = test_block.ptr as *mut u64;
             let len = test_block.test_size / std::mem::size_of::<u64>();
-
-            // Indexes are `rng & (len - 1)`, so the size must be a power of 2
-            if !len.is_power_of_two() {
-                panic!("{}: Window size {} is not power-of-2! This is a bug in the alignment code.",
-                       test_name, len);
-            }
-            let mask = len - 1;
 
             // Calculate chunk size for responsive shutdown
             let chunk_size_bytes = runner.chunk_size_bytes(test_block.test_size);
@@ -2189,31 +2195,27 @@ pub unsafe fn random_torture_multi(
                     .wrapping_add(cycle as u64)
                     .wrapping_add((seq as u64).wrapping_mul(0x8765432187654321u64));
 
-                // Random read verification for this sequence - chunked for responsive shutdown
+                // Random read verification for this sequence - chunked for responsive shutdown.
+                // The index is `rng * len >> 64`: uniform over any length, one multiply off the
+                // RNG's dependency chain (TODO 76; the old `& (len - 1)` needed a power of two).
+                // Mismatches OR into one accumulator; a nonzero one replays the chunk to count
+                // and log each bad word, so the loop has no branch and no logging.
                 for chunk_start in (0..iterations_per_seq).step_by(chunk_size_operations) {
                     let chunk_end = (chunk_start + chunk_size_operations).min(iterations_per_seq);
+                    let chunk_rng = rng_state;
+                    let mut acc = 0u64;
 
-                    for _iteration in chunk_start..chunk_end {
+                    for _ in chunk_start..chunk_end {
                         rng_state ^= rng_state << 13;
                         rng_state ^= rng_state >> 17;
                         rng_state ^= rng_state << 5;
 
-                        let idx = (rng_state as usize) & mask;
-                        let expected = idx as u64;
-                        let actual = *base.add(idx);
+                        let idx = ((rng_state as u128 * len as u128) >> 64) as usize;
+                        acc |= *base.add(idx) ^ idx as u64;
+                    }
 
-                        if actual != expected {
-                            cycle_errors += 1;
-                            log::error!(
-                                "{}: memory error at index {}, iteration {}, rng_seq {}, expected {}, actual {}",
-                                test_name,
-                                idx,
-                                _iteration,
-                                seq,
-                                expected,
-                                actual
-                            );
-                        }
+                    if acc != 0 {
+                        cycle_errors += random_replay(base, len, chunk_rng, chunk_start..chunk_end, seq, test_name);
                     }
 
                     // Handle errors if found
@@ -2289,7 +2291,7 @@ pub unsafe fn stride_access_multi(
         let pattern_base = 0xFEDCBA9876543210u64.wrapping_add(thread_id as u64).wrapping_add(cycle as u64);
 
         for test_block in test_blocks.iter() {
-            let base = test_block.block.buffer.as_mut_ptr() as *mut u64;
+            let base = test_block.ptr as *mut u64;
             let len = test_block.test_size / std::mem::size_of::<u64>();
             let chunk_size_bytes = runner.chunk_size_bytes(test_block.test_size);
             let chunk_size_elements = chunk_size_bytes / std::mem::size_of::<u64>();
@@ -2398,7 +2400,7 @@ pub unsafe fn block_move_multi(
     for test_block in test_blocks.iter() {
         // Divide block in half: first half = source, second half = destination
         let half_size = test_block.test_size / 2;
-        let src_base = test_block.block.buffer.as_mut_ptr() as *mut u64;
+        let src_base = test_block.ptr as *mut u64;
         let len = half_size / std::mem::size_of::<u64>();
 
         // Initialize source with pattern
@@ -2415,7 +2417,7 @@ pub unsafe fn block_move_multi(
         for test_block in test_blocks.iter() {
             // Divide block: source (first half) → destination (second half)
             let half_size = test_block.test_size / 2;
-            let src_base = test_block.block.buffer.as_mut_ptr() as *mut u64;
+            let src_base = test_block.ptr as *mut u64;
             let dst_base = src_base.add(half_size / std::mem::size_of::<u64>());
             let len = half_size / std::mem::size_of::<u64>();
 
@@ -5028,5 +5030,39 @@ pub fn get_test_function_by_name(name: &str) -> Option<crate::runner::TestFuncti
             => Some(TestFunction::MultiBlock(bench_verify_multi)),
 
         _ => None,
+    }
+}
+
+#[cfg(test)]
+mod random_replay_tests {
+    use super::random_replay;
+
+    /// TODO 76: Mem-Random's replay counts exactly the mismatches the hot loop's accumulator saw,
+    /// on a length that isn't a power of two, and every index stays below it.
+    #[test]
+    fn replay_counts_what_a_plain_loop_counts() {
+        let len = 1000usize;
+        let mut mem: Vec<u64> = (0..len as u64).collect();
+        mem[123] ^= 1;
+        mem[999] ^= 1 << 40;
+        let start = 0x123456789ABCDEFu64;
+
+        let (mut rng, mut expected) = (start, 0u64);
+        for _ in 0..20_000 {
+            rng ^= rng << 13;
+            rng ^= rng >> 17;
+            rng ^= rng << 5;
+            let idx = ((rng as u128 * len as u128) >> 64) as usize;
+            assert!(idx < len);
+            expected += u64::from(mem[idx] != idx as u64);
+        }
+        assert!(expected > 0);
+        let counted = unsafe { random_replay(mem.as_mut_ptr(), len, start, 0..20_000, 0, "test") };
+        assert_eq!(counted, expected);
+
+        // A fault gone by the reread still counts once
+        mem[123] ^= 1;
+        mem[999] ^= 1 << 40;
+        assert_eq!(unsafe { random_replay(mem.as_mut_ptr(), len, start, 0..20_000, 0, "test") }, 1);
     }
 }

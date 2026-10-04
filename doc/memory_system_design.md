@@ -22,7 +22,7 @@ stride, bounce, dwell and revisit — without any of that leaking into how memor
                    blocks
 
     Consequences, all observed:
-      B5  one test runs several different chunk sizes (up to 16x apart)
+      B5  one test runs several different chunk sizes (up to 16x apart)   [fixed for stitched, TODO 76]
       B4  a 1 GiB huge block gets dropped because it doesn't fit a plan gap   (fixed: TODO 75 A)
       -   chunk silently clamped to the smallest block -> config ignored
       -   allocator forced toward power-of-two blocks to keep the division tidy
@@ -175,6 +175,10 @@ provable full coverage, one multiply per chunk.
 
 ### 4.5 Chunks never wrap — the circular framing was wrong
 
+> **Built so far (TODO 76, 2026-10-03):** chunks walk `k*C` from the start of each window piece and
+> the last one is shorter; the even-spread starts below and per-cycle rotation are not built. A
+> stitched window is one piece, so nothing overlaps and nothing wraps.
+
 Earlier drafts made the space circular and let a chunk wrap past `T`, splitting it a third time.
 **That is avoidable and should be avoided.** The reasoning:
 
@@ -246,35 +250,29 @@ Verified nest: `mtests0.asm:312/411/520-522` — reps are innermost, per chunk. 
 24 passes over one chunk before moving on. **Dwell and coverage oppose each other at fixed runtime**;
 making them separate knobs is what lets a config choose.
 
-### 4.6 Chunk sizes are powers of two — DECIDED, but not for the reason usually given
+### 4.6 Chunk sizes are multiples of 4 KiB — reopened 2026-10-03 (TODO 76)
 
-**Decision: `C` is always a power of two**, from 64 KiB up to 4 GiB. TM5's `1536 MB` is not preserved.
+**Decision (TODO 76, awaiting the user's approval): `C` is any multiple of 4 KiB**, from the test's
+minimum (64 KiB, more for variant counts) up to the window. TM5's `1536 MB` and `window/3` are kept:
+`window/3` rounds up to the next 4 KiB, and the config load says so.
 
-Being honest about *why*, because the obvious argument is the weak one:
+This replaces "C is always a power of two" (DECIDED until 2026-10-03). Why it changed:
 
-- **The hot-path math argument barely holds.** The kernels are `while i < end { i += stride }` —
-  compare and add. There is no division or modulo in any inner loop to strength-reduce. The two places
-  power-of-two actually pays are `Mem-Random`'s index-into-range and `ErrorCheckInterval`, and the
-  latter is *already* a power-of-two shift mask by construction. So do not justify this on shifts.
-- **The real payoffs are structural:**
-  1. **Exact tiling.** Tile mode (4.7) needs `C` to divide the space into equal, non-overlapping
-     units. Powers of two make that reliable instead of luck.
-  2. **Zero overlap whenever `C` divides `T`** — the start formula in 4.5 degenerates to `k*C`.
-  3. **Comparability.** A small canonical ladder makes results comparable across runs and machines.
-     Today's per-block-derived sizes (B5) destroy that outright.
+- **No kernel needs a power of two** (`doc/todo/76-span-tests.md`, the audit). The kernels are
+  `while i < end` sweeps, and their divisions run once per chunk. The one size mask, `Mem-Random`'s
+  `rng & (len - 1)`, is now a multiply-high (`rng * len >> 64`), off the RNG's dependency chain.
+- **What the kernels do need is a multiple of the vector width**, more where a test splits a chunk
+  into parts (mirror halves and subblocks, BlockMove halves and quarters, Stride subdivisions).
+  4 KiB covers all of them for every width, except MirrorMove's 3 subblocks (TODO 85), and keeps
+  chunk starts page-aligned.
+- **The structural payoffs** argued for powers of two don't need them. Chunks walk `k*C` within a
+  piece, with a short last chunk, so nothing overlaps. Tile mode (4.7) takes `floor(T/C)*C` for any
+  `C`. Comparability comes from configs naming the same sizes, not from a ladder.
+- **The power-of-two pieces came from the old allocator's blocks**, not from the tests. With
+  `allocator=stitched` a thread's memory is one span, and the window is one piece of it.
 
-**Supporting evidence from TM5 itself.** `Check_absolutnew.cfg`'s sweep is
-`4, 8, 16, 32, 64, 128, 256, 512, 1536` MB — **a power-of-two ladder with exactly one exception**, and
-that exception is `1536 = 9216 / 6`, i.e. a *fraction of the window*, where the window is an AWE
-aperture size. So `1536` is an artifact of how TM5 expressed "one sixth of my window", not a chosen
-test property. Dropping it costs one value in one config and loses no test quality.
-
-**The compat break, stated plainly.** TM5 `Test Block Size` codes 0–3 are fraction codes meaning
-`window/1, /2, /3, /4`. **`window/3` can never be a power of two.** So code 2 cannot be honoured
-exactly, and neither can a literal non-power-of-two MB value. Per the resolve-or-reject rule this must
-be **reported at config load** — "chunk 1536 MB → 2048 MB (power-of-two ladder)" — never silently
-adjusted. This is a deliberate, documented divergence from TM5, and the first one in this design that
-a user could notice in a config file.
+What it costs: a window that isn't a multiple of the chunk ends in a shorter chunk. That chunk is
+tested in full; TM5 drops such a tail.
 
 ### 4.7 Two coverage modes — overlap or exclusive, never both
 
@@ -300,8 +298,8 @@ writing the same bytes is a correctness bug in the *test*, not a finding about t
 ```
 
 This is the earlier "sacrifice coverage for equal tiles" idea, kept for exactly the case that needs it
-rather than applied globally. With `C` a power of two `R` is usually 0 or small: `T = 5632 MB` with
-`C = 512 MB` gives `R = 0` (11 exact tiles); with `C = 1024 MB`, `R = 512 MB` (9% idle, rotating).
+rather than applied globally. When `C` divides `T`, `R` is 0: `T = 5632 MB` with `C = 512 MB` gives
+`R = 0` (11 exact tiles); with `C = 1024 MB`, `R = 512 MB` (9% idle, rotating).
 
 **One extra requirement for cross-thread tiles.** The pattern seed is
 `block_seed(ptr, thread_id, cycle)`. If thread A writes a tile and thread B verifies it, B must seed
@@ -445,7 +443,7 @@ window = full allocation.
   ───────────────────────────
   for test_block in test_blocks:               # 3 blocks
       len   = test_block.test_size
-      chunk = chunk_size_bytes(test_block.test_size)    # <-- DERIVED PER BLOCK  (bug B5)
+      chunk = chunk_size_bytes(test_block.test_size)    # <-- DERIVED PER BLOCK  (bug B5; fixed in TODO 76)
       processed = 0
       while processed < len:
           end = min(processed + chunk, len)             # <-- PARTIAL final chunk
@@ -760,14 +758,15 @@ they are test-fidelity arguments, not ergonomics.
 3. **Delete the clamps** — `prev_power_of_two` on *chunks*, per-block chunk derivation,
    `allow_misaligned` (dormant: the power-of-two round-up always undid it; deleted 2026-10-03). This is where **B5** dies
    and where `Check_absolutnew.cfg`'s test 15 starts running at one honest size for every block
-   (2048 MB, reported as an adjustment from 1536 — see §4.6) instead of five sizes across three values.
-   Until then the importer caps it at 1024 MiB, the largest piece a 1536 MiB window has
-   (`LegacyConfig::chunk_spec`, 2026-10-03); that cap goes with the clamps.
+   instead of five sizes across three values. Done in TODO 76 (2026-10-03, uncommitted), with the
+   importer's power-of-two cap: test 15 runs at its own 1536 MiB, as one chunk under
+   `allocator=stitched` (§4.6 now keeps 1536 rather than rounding it to 2048).
 4. **Fix dwell (B2) and the fraction codes (B1).** Independent of the above and the largest fidelity
    gain per line changed — B1 alone is a 440× size error on real community configs. Done 2026-10-03
    (TODO 79, commit 79b9de0).
 5. **L0 changes**: the global placeholder + global-then-distribute (**B4**), drop power-of-two *block*
-   sizes. Note the asymmetry that §4.6 introduces: **chunks** are powers of two, **blocks** are not.
+   sizes. Chunks are multiples of 4 KiB (§4.6), so neither chunks nor blocks need powers of two;
+   only the bandwidth and latency tests still take power-of-two blocks.
 6. **`Order` + `SpanRequest`.** The versatility payload, once the plumbing is proven.
 7. **Then** the new tests that were the point: permuted-order sweeps, `Mem-Unaligned`, AMX movement,
    and tile mode for cross-thread handover (#19).

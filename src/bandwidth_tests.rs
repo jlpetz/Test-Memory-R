@@ -199,7 +199,7 @@ macro_rules! spd_write_impl {
             // Init phase: scalar fill to fault in pages (skipped in dependent mode)
             if !config.skip_init {
                 for tb in &test_blocks {
-                    let base = tb.block.buffer.as_mut_ptr() as *mut u64;
+                    let base = tb.ptr as *mut u64;
                     let len_u64 = tb.test_size.min(window_size) / 8;
                     scalar_fill(base, len_u64);
                 }
@@ -215,7 +215,7 @@ macro_rules! spd_write_impl {
                 cycle += 1;
 
                 for tb in &test_blocks {
-                    let base = tb.block.buffer.as_mut_ptr() as *mut u8;
+                    let base = tb.ptr as *mut u8;
                     let working_bytes = tb.test_size.min(window_size);
 
                     spd_write_hot!(base, working_bytes, pattern, $arch_type, $store_fn);
@@ -306,7 +306,7 @@ macro_rules! spd_read_impl {
             // Init phase: scalar fill to ensure physical pages (skipped in dependent mode)
             if !config.skip_init {
                 for tb in &test_blocks {
-                    let base = tb.block.buffer.as_mut_ptr() as *mut u64;
+                    let base = tb.ptr as *mut u64;
                     let len_u64 = tb.test_size.min(window_size) / 8;
                     scalar_fill(base, len_u64);
                 }
@@ -321,7 +321,7 @@ macro_rules! spd_read_impl {
                 cycle += 1;
 
                 for tb in &test_blocks {
-                    let base = tb.block.buffer.as_mut_ptr() as *const u8;
+                    let base = tb.ptr as *const u8;
                     let working_bytes = tb.test_size.min(window_size);
 
                     spd_read_hot!(base, working_bytes, $arch_type, $load_fn, $xor_fn, $setzero_fn);
@@ -411,7 +411,7 @@ macro_rules! spd_copy_impl {
                 let vec_size = std::mem::size_of::<$arch_type>();
                 let align = vec_size * 2;
                 for tb in &test_blocks {
-                    let base = tb.block.buffer.as_mut_ptr() as *mut u64;
+                    let base = tb.ptr as *mut u64;
                     let raw_bytes = tb.test_size.min(window_size);
                     let working_bytes = (raw_bytes / align) * align;
                     let half_u64 = working_bytes / 2 / 8;
@@ -428,7 +428,7 @@ macro_rules! spd_copy_impl {
                 cycle += 1;
 
                 for tb in &test_blocks {
-                    let base = tb.block.buffer.as_mut_ptr() as *mut u8;
+                    let base = tb.ptr as *mut u8;
                     let raw_bytes = tb.test_size.min(window_size);
                     // Round down to 2×vec_size so both halves are SIMD-aligned
                     let vec_size = std::mem::size_of::<$arch_type>();

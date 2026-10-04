@@ -192,7 +192,7 @@ macro_rules! lat_v2_read_impl {
 
             let mut chain_positions: Vec<*mut u64> = Vec::new();
             for tb in test_blocks.iter() {
-                let base = tb.block.buffer.as_mut_ptr();
+                let base = tb.ptr;
                 let working_bytes = tb.test_size.min(window_size);
                 let aligned = (working_bytes / LAYOUT_A_BLOCK_BYTES) * LAYOUT_A_BLOCK_BYTES;
                 let start = setup_layout_a(base, aligned, thread_id);
@@ -302,7 +302,7 @@ macro_rules! lat_v2_write_impl {
 
             let mut chain_positions: Vec<*mut u64> = Vec::new();
             for tb in test_blocks.iter() {
-                let base = tb.block.buffer.as_mut_ptr();
+                let base = tb.ptr;
                 let working_bytes = tb.test_size.min(window_size);
                 let aligned = (working_bytes / LAYOUT_A_BLOCK_BYTES) * LAYOUT_A_BLOCK_BYTES;
                 let start = setup_layout_a(base, aligned, thread_id);
@@ -406,7 +406,7 @@ macro_rules! lat_v2_copy_impl {
 
             let mut chain_positions: Vec<*mut u64> = Vec::new();
             for tb in test_blocks.iter() {
-                let base = tb.block.buffer.as_mut_ptr();
+                let base = tb.ptr;
                 let working_bytes = tb.test_size.min(window_size);
                 let aligned = (working_bytes / LAYOUT_A_BLOCK_BYTES) * LAYOUT_A_BLOCK_BYTES;
                 let start = setup_layout_a(base, aligned, thread_id);
@@ -503,7 +503,7 @@ macro_rules! lat_v2p_read_impl {
 
             let mut chain_positions: Vec<*mut u64> = Vec::new();
             for tb in test_blocks.iter() {
-                let base = tb.block.buffer.as_mut_ptr();
+                let base = tb.ptr;
                 let working_bytes = tb.test_size.min(window_size);
                 let aligned = (working_bytes / LAYOUT_B_BLOCK_BYTES) * LAYOUT_B_BLOCK_BYTES;
                 let start = setup_layout_b(base, aligned, thread_id);
@@ -628,7 +628,7 @@ macro_rules! lat_v2p_write_impl {
 
             let mut chain_positions: Vec<*mut u64> = Vec::new();
             for tb in test_blocks.iter() {
-                let base = tb.block.buffer.as_mut_ptr();
+                let base = tb.ptr;
                 let working_bytes = tb.test_size.min(window_size);
                 let aligned = (working_bytes / LAYOUT_B_BLOCK_BYTES) * LAYOUT_B_BLOCK_BYTES;
                 let start = setup_layout_b(base, aligned, thread_id);
@@ -754,7 +754,7 @@ macro_rules! lat_v2p_copy_impl {
 
             let mut chain_positions: Vec<*mut u64> = Vec::new();
             for tb in test_blocks.iter() {
-                let base = tb.block.buffer.as_mut_ptr();
+                let base = tb.ptr;
                 let working_bytes = tb.test_size.min(window_size);
                 let aligned = (working_bytes / LAYOUT_B_BLOCK_BYTES) * LAYOUT_B_BLOCK_BYTES;
                 let start = setup_layout_b(base, aligned, thread_id);
@@ -876,7 +876,7 @@ macro_rules! lat_v2p_write_full_impl {
 
             let mut chain_positions: Vec<*mut u64> = Vec::new();
             for tb in test_blocks.iter() {
-                let base = tb.block.buffer.as_mut_ptr();
+                let base = tb.ptr;
                 let working_bytes = tb.test_size.min(window_size);
                 let aligned = (working_bytes / LAYOUT_B_BLOCK_BYTES) * LAYOUT_B_BLOCK_BYTES;
                 let start = setup_layout_b(base, aligned, thread_id);
@@ -994,7 +994,7 @@ macro_rules! lat_v2p_copy_full_impl {
 
             let mut chain_positions: Vec<*mut u64> = Vec::new();
             for tb in test_blocks.iter() {
-                let base = tb.block.buffer.as_mut_ptr();
+                let base = tb.ptr;
                 let working_bytes = tb.test_size.min(window_size);
                 let aligned = (working_bytes / LAYOUT_B_BLOCK_BYTES) * LAYOUT_B_BLOCK_BYTES;
                 let start = setup_layout_b(base, aligned, thread_id);
@@ -1528,7 +1528,7 @@ macro_rules! lat_ntw_write_impl {
             // (still one cache line) but changes how many instructions we issue.
             let mut addr_tables: Vec<Vec<*mut $vec_type>> = Vec::new();
             for tb in test_blocks.iter() {
-                let base = tb.block.buffer.as_mut_ptr() as *mut u8;
+                let base = tb.ptr as *mut u8;
                 let working_bytes = tb.test_size.min(window_size);
                 let line_count = working_bytes / CACHE_LINE_BYTES;
                 if line_count < 2 {
@@ -1628,7 +1628,7 @@ pub unsafe fn lat_ntw_write_scalar_multi(
 
     let mut addr_tables: Vec<Vec<*mut i64>> = Vec::new();
     for tb in test_blocks.iter() {
-        let base = tb.block.buffer.as_mut_ptr();
+        let base = tb.ptr;
         let working_bytes = tb.test_size.min(window_size);
         let line_count = working_bytes / CACHE_LINE_BYTES;
         if line_count < 2 {

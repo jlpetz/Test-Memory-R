@@ -154,6 +154,9 @@ pub static SHUTDOWN_REQUESTED: AtomicBool = AtomicBool::new(false);
 pub struct AllocationBlock {
     pub buffer: MemoryBuffer,  // Contains BufferInfo with numa_node, page_type, etc.
     pub block_info: BlockInfo, // Thread assignment and size planning
+    /// The next block in the thread's list starts where this one ends, in the same VA span
+    /// (`allocator=stitched`). Tests treat joined blocks as one region (`test_memory::regions`).
+    pub joins_next: bool,
 }
 
 // Test definition with display name support
@@ -553,6 +556,11 @@ pub fn run_tests_with_layout_and_timing_filtered(
             check("rng_sequences", ctx.rng_sequences, true);
             check("subdivisions", ctx.subdivisions, true);
             check("copy_directions", ctx.copy_directions, false);
+            // Mem-Stride splits each chunk by shifting; a chunk is a multiple of 4 KiB (512 u64),
+            // so more subdivisions than that would leave part of a chunk untested (TODO 76)
+            if let Some(v) = ctx.subdivisions && v > 512 {
+                param_errors.push(format!("{}: subdivisions must be at most 512, got {}", def.display_name, v));
+            }
         }
     }
     if !param_errors.is_empty() {
@@ -4300,5 +4308,172 @@ pub fn print_current_memory_status() {
         } else {
             eprintln!("⚠️ Failed to retrieve system memory status");
         }
+    }
+}
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::memory::allocator::AllocationConfig;
+    use crate::memory::backend::{AllocError, Backend, BackendAllocation};
+    use crate::memory::buffer::{BufferInfo, PageType};
+
+    /// Blocks over a heap buffer the test owns: nothing to allocate or free.
+    #[derive(Debug)]
+    struct HeapView;
+    impl Backend for HeapView {
+        fn allocate(&self, _: &AllocationConfig) -> Result<BackendAllocation, AllocError> {
+            unreachable!("test blocks are built directly")
+        }
+        fn free(&self, _: BackendAllocation) -> Result<(), String> { Ok(()) }
+        fn name(&self) -> &'static str { "heap" }
+    }
+
+    const KIB: usize = 1024;
+    const GUARD: usize = 64 * KIB;
+    const FILL: u8 = 0xA5;
+    /// A word no test pattern writes, to find window words a test never touched
+    const UNTOUCHED: u64 = 0x5AF0_0FA5_C3D2_1E87;
+
+    /// A heap buffer with guard zones on both sides, cut into joined blocks of `sizes`: one region.
+    struct Region {
+        mem: *mut u8,
+        layout: std::alloc::Layout,
+        len: usize,
+        blocks: Vec<AllocationBlock>,
+    }
+
+    impl Region {
+        fn new(sizes: &[usize]) -> Self {
+            let len: usize = sizes.iter().sum();
+            let layout = std::alloc::Layout::from_size_align(GUARD + len + GUARD, 4096).unwrap();
+            let mem = unsafe { std::alloc::alloc(layout) };
+            assert!(!mem.is_null());
+            unsafe { std::ptr::write_bytes(mem, FILL, layout.size()) };
+            let backend: Arc<dyn Backend> = Arc::new(HeapView);
+            let mut at = GUARD;
+            let blocks = sizes.iter().enumerate().map(|(i, &size)| {
+                let block = AllocationBlock {
+                    buffer: MemoryBuffer::new(
+                        BackendAllocation {
+                            ptr: unsafe { mem.add(at) },
+                            size,
+                            info: BufferInfo { numa_node: 0, page_type: PageType::Large(size) },
+                        },
+                        backend.clone(),
+                    ),
+                    block_info: BlockInfo { size_bytes: size, thread_id: 0 },
+                    joins_next: i + 1 < sizes.len(),
+                };
+                at += size;
+                block
+            }).collect();
+            Region { mem, layout, len, blocks }
+        }
+
+        fn words(&mut self) -> &mut [u64] {
+            unsafe { std::slice::from_raw_parts_mut(self.mem.add(GUARD) as *mut u64, self.len / 8) }
+        }
+
+        fn guards_intact(&self) -> bool {
+            let bytes = unsafe { std::slice::from_raw_parts(self.mem, self.layout.size()) };
+            bytes[..GUARD].iter().chain(&bytes[GUARD + self.len..]).all(|&b| b == FILL)
+        }
+    }
+
+    impl Drop for Region {
+        fn drop(&mut self) {
+            self.blocks.clear();
+            unsafe { std::alloc::dealloc(self.mem, self.layout) };
+        }
+    }
+
+    /// The built-in suite, set up to run once on a test region (one thread, 64 B lines)
+    fn suite() -> Vec<(TestDefinition, TestFunctionMultiBlock)> {
+        let cache_info = crate::tests::get_cache_info();
+        let avx512 = is_x86_feature_detected!("avx512f");
+        create_test_definitions(cache_info).into_iter().filter_map(|mut def| {
+            // The latency tests build heap chains as big as their window; not this test's subject
+            let TestFunction::MultiBlock(test_fn) = def.function else { return None };
+            if def.actual_name.contains("512") && !avx512 {
+                return None;
+            }
+            def.config.timing = TestTiming::cycles_only(1);
+            def.config.thread_count = 1;
+            def.config.cache_line_bytes = cache_info.cache_line_size;
+            Some((def, test_fn))
+        }).collect()
+    }
+
+    /// TODO 76: every built-in correctness and bandwidth test runs clean on one region of three
+    /// joined blocks (640 KiB, not a power of two). Tests with an absolute chunk get 68 KiB, which
+    /// divides neither the region nor a block, so each ends in a short chunk. Nothing is written
+    /// outside the region (guard zones), and the correctness tests leave no window word untouched,
+    /// so no tail is skipped. (The Spd-* bandwidth tests still take power-of-two blocks.)
+    #[test]
+    fn built_in_tests_run_clean_on_joined_blocks() {
+        let mut region = Region::new(&[256 * KIB, 256 * KIB, 128 * KIB]);
+        assert_eq!(crate::test_memory::regions(&region.blocks).len(), 1);
+
+        let mut ran = Vec::new();
+        for (mut def, test_fn) in suite() {
+            if matches!(def.config.chunk_mode, ChunkMode::Absolute { .. }) {
+                def.config.chunk_mode = ChunkMode::Absolute { size_bytes: 68 * KIB };
+            }
+            // Writers cover the whole window; read-only bandwidth tests and dependent verifies don't
+            let writes_all = def.actual_name.starts_with("Mem-") || def.actual_name.starts_with("Bench-Init-");
+            if writes_all {
+                region.words().fill(UNTOUCHED);
+            }
+            let stats = unsafe { test_fn(&region.blocks, 0, ErrorMode::Log, &def.config.timing, &def.config, None) };
+            assert_eq!(stats.error_count, 0, "{} found errors", def.display_name);
+            assert!(stats.bytes_processed > 0, "{} tested nothing", def.display_name);
+            if writes_all {
+                let left = region.words().iter().filter(|&&w| w == UNTOUCHED).count();
+                assert_eq!(left, 0, "{} left {} words of its window untouched", def.display_name, left);
+            }
+            assert!(region.guards_intact(), "{} wrote outside the region", def.display_name);
+            ran.push(def.display_name.clone());
+        }
+        assert!(ran.len() > 30, "only {} tests ran: {:?}", ran.len(), ran);
+    }
+
+    /// Why `subdivisions` is capped at 512: past it, Mem-Stride's shift no longer divides a 4 KiB
+    /// multiple of a chunk, and the tail of each chunk goes untested. Also shows the coverage check
+    /// in `built_in_tests_run_clean_on_joined_blocks` catches a skipped tail.
+    #[test]
+    fn stride_with_too_many_subdivisions_skips_tails() {
+        let mut region = Region::new(&[256 * KIB, 256 * KIB, 128 * KIB]);
+        let (mut stride, stride_fn) = suite().into_iter().find(|(d, _)| d.display_name == "Mem-Stride").unwrap();
+        stride.config.chunk_mode = ChunkMode::Absolute { size_bytes: 68 * KIB };
+        let mut untouched_with = |subdivisions: u32, region: &mut Region| {
+            stride.config.parameter_context.as_mut().unwrap().subdivisions = Some(subdivisions);
+            region.words().fill(UNTOUCHED);
+            unsafe { stride_fn(&region.blocks, 0, ErrorMode::Log, &stride.config.timing, &stride.config, None) };
+            region.words().iter().filter(|&&w| w == UNTOUCHED).count()
+        };
+        assert_eq!(untouched_with(512, &mut region), 0);
+        assert!(untouched_with(1024, &mut region) > 0);
+    }
+
+    /// TODO 76: a fault between a write and its verify is counted once, and a halted test still
+    /// reports the bytes it got through (accounting is per chunk, not per piece).
+    #[test]
+    fn an_injected_fault_is_counted_and_halt_reports_progress() {
+        let mut region = Region::new(&[256 * KIB, 256 * KIB, 128 * KIB]);
+        let suite = suite();
+        let find = |name: &str| suite.iter().find(|(d, _)| d.display_name == name).cloned().unwrap();
+        let (init, init_fn) = find("Bench-Init-TMR-0");
+        let (mut verify, verify_fn) = find("Bench-Verify-TMR-0");
+        verify.config.skip_init = true;
+        verify.config.chunk_mode = ChunkMode::Absolute { size_bytes: 68 * KIB };
+
+        for (mode, check) in [(ErrorMode::Log, "log"), (ErrorMode::Halt, "halt")] {
+            unsafe { init_fn(&region.blocks, 0, ErrorMode::Log, &init.config.timing, &init.config, None) };
+            region.words()[(68 * KIB) / 8 + 5] ^= 1 << 17; // in the second chunk
+            let stats = unsafe { verify_fn(&region.blocks, 0, mode, &verify.config.timing, &verify.config, None) };
+            assert_eq!(stats.error_count, 1, "{check}: one flipped bit, one error");
+            assert!(stats.bytes_processed >= 2 * 68 * KIB, "{check}: the chunks it verified are counted ({})", stats.bytes_processed);
+        }
+        assert!(region.guards_intact());
     }
 }

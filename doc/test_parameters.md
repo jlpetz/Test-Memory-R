@@ -92,7 +92,7 @@ Number of copy direction patterns for memory move operations:
 ## Validation
 
 All parameters are validated before tests run (in `runner.rs`):
-- `rng_sequences` and `subdivisions` must be >= 1 and power-of-2 when > 1 (both are used as shifts)
+- `rng_sequences` and `subdivisions` must be >= 1 and power-of-2 when > 1 (both are used as shifts); `subdivisions` at most 512, since a chunk is a multiple of 4 KiB (512 u64) and more would leave part of it untested
 - `stride_patterns` and `copy_directions` must be >= 1 (no power-of-2 constraint)
 - `subblock_count` is mapped by the TM5 parameter interpretation (exact match 2/3/4, else 1). The CLI override `parameter=subblocks:N` accepts 2-4 (`params.rs`); its stride form needs N > 0
 - Tests panic with a clear error message if their required parameter is missing from `parameter_context`

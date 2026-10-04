@@ -508,8 +508,9 @@ nothing is freed. At the default `hugechunk=1GiB` a node's threads end at most o
 apart. A bigger `hugechunk` makes fewer requests, and the threads can end about one `hugechunk`
 apart. The allocators differ in block size. plan-pagesize-pref's blocks are its requests, so they
 top out at `hugechunk` and `largechunk` (1 GiB by default for plan-pagesize-pref). stitched's commits merge, so a
-thread's 1 GiB pages come out as one large power-of-two block. Both return power-of-two blocks,
-which `prepare_blocks_for_window` relies on.
+thread's 1 GiB pages come out as one large power-of-two block. Both return power-of-two blocks;
+only the bandwidth and latency tests still rely on that (`prepare_blocks_for_window`). The
+correctness tests see a stitched span as one region (`AllocationBlock::joins_next`, TODO 76).
 
 **NUMA.** Each node's threads draw on that node's pools. 1 GiB and 2 MiB requests name the node
 strictly: `NUMA_NODE_MANDATORY`, bit 63 OR-ed into the `MemExtendedParameterNumaNode` value. It
@@ -555,27 +556,26 @@ same alignment from where it commits: each slice starts 1 GiB-aligned and fills 
 
 ### 2.2 Stage 2 — the window, and where it differs from TM5
 
-`TestRunner::new` (`test_scaffolding.rs:66-68`) → `calculate_window_size(test_name, total_allocated)`
-→ `prepare_blocks_for_window` (`tests.rs:1433-1478`):
+`TestRunner::new` (`test_scaffolding.rs`) → `calculate_window_size(test_name, total_allocated)`
+→ `test_memory::window_pieces` (TODO 76, 2026-10-03):
 
 ```
   window_size = f(WindowMode, sum of ALL this thread's blocks)      then floor to 64 B
+  pieces = the first window_size bytes of the thread's regions, each a multiple of 4 KiB
 
-  blocks, largest first:
-  ┌─────────── 1 GiB ───────────┐ ┌─────── 1 GiB ───────┐ ┌── 512 MiB ──┐
-  │████████████████████████████ │ │█████████            │ │             │
-  └─────────────────────────────┘ └─────────────────────┘ └─────────────┘
-   test_size = min(size, remaining)  partial: prev_power_of_two   budget spent:
-                                     (keeps chunk division exact)  block never
-                                                                   opened at all
-  █ = covered by the window budget
+  allocator=stitched: one region (the span)      plan-pagesize-pref: one region per block
+  ┌─── 1 GiB ───┬─── 1 GiB ───┬ 512 MiB ┐        ┌─ 1 GiB ─┐ ┌─ 1 GiB ─┐ ┌ 512 MiB ┐
+  │████████████████████       │         │        │█████████│ │████     │ │         │
+  └─────────────┴─────────────┴─────────┘        └─────────┘ └─────────┘ └─────────┘
+   one piece, across block and page seams         whole blocks, then the remainder
+  █ = the window
 ```
 
-The pointer each test uses is `tb.block.buffer.as_mut_ptr()` (`test_harness.rs:192`) — the
-**block base, always**. There is no window offset and no rotation between cycles.
+Each piece is tested from its start (`TestBlock::ptr`). There is no window offset and no rotation
+between cycles. Until TODO 76 the window was cut into power-of-two pieces, one per block.
 
 > **This is the one capability TMR lost with AWE.** TM5's window slides, so every test covers
-> 100 % of locked memory. TMR's window is pinned to offset 0 of each block, so whenever
+> 100 % of locked memory. TMR's window is pinned to the start of the thread's memory, so whenever
 > `window_size < total_allocated` the tail of the allocation is *never visited* — not this
 > cycle, not any cycle. For deliberately cache-resident tests that is the intent (you want a
 > small hot working set). But it means those tests always exercise the *same* DRAM cells at the
@@ -593,7 +593,9 @@ Window modes (`tests.rs:14-28`):
 
 ### 2.3 Stage 3 — chunk
 
-`calculate_chunk_size(test_name, window_size)` (`tests.rs:1120+`), capped at the window:
+`calculate_chunk_size(test_name, window_size)`, resolved once per test from the window: the
+configured size, at least the test's minimum, at most the window, rounded up to 4 KiB (TODO 76).
+Chunks walk each piece from its start; the last one may be shorter:
 
 | `ChunkMode` | Meaning |
 |---|---|

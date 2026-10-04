@@ -157,8 +157,8 @@ would strip the SIMD. So the test keeps its loop and calls the runner between ch
 
 | Method | Call it | Purpose |
 |---|---|---|
-| `TestRunner::new` | once, at the top | Window sizing, block prep (`prepare_blocks_for_window`), the per-thread info log, starts timers. **Returns `(runner, test_blocks)`** — keep `test_blocks` as a local so you can iterate it immutably while calling `&mut self` methods |
-| `chunk_size_bytes(block_size)` | once per block | `calculate_ideal_chunk_size` + `get_safe_chunk_size`. Convert to your own element units and apply your own `.max(..)` floor |
+| `TestRunner::new` | once, at the top | Window sizing, the window's pieces (`test_memory::window_pieces`: one per stitched span, one per block otherwise), the chunk (resolved once from the window), the per-thread info log listing every piece with its page sizes and chunks, starts timers. **Returns `(runner, test_blocks)`** — keep `test_blocks` as a local so you can iterate it immutably while calling `&mut self` methods |
+| `chunk_size_bytes(piece_size)` | once per piece | The test's chunk, or the piece when it is shorter. A multiple of 4 KiB; the last chunk of a piece may be shorter. Convert to your own element units and apply your own `.max(..)` floor |
 | `begin_cycle()` | top of each cycle | Increments and returns the cycle number |
 | `add_bytes(n)` | per block or per chunk | Byte accounting. **You compute the multiplier** — StuckBit passes `test_size * 6` (3 writes + 3 reads), Refresh `test_size * 2` |
 | `should_halt(cycle_errors)` | after a verify | Error-mode dispatch: panics on `Panic`, returns `true` on `Halt`, `false` on `Log` |
@@ -180,7 +180,7 @@ loop {
     let mut cycle_errors = 0u64;
 
     for test_block in test_blocks.iter() {
-        let base = test_block.block.buffer.as_mut_ptr() as *mut $simd_type;
+        let base = test_block.ptr as *mut $simd_type;
         let chunk = (runner.chunk_size_bytes(test_block.test_size) / lanes).max(FLOOR);
 
         // …your loop nest, whatever shape it needs…
@@ -206,7 +206,7 @@ This is the table to read if you are deciding where a new test goes.
 | `Mem-StuckBit{,128,256,512,Auto}`, `Mem-StuckBit-Flush{,Auto,128,256,512}` | `stuck_bit_impl!` (widths), `stuck_bit_test_multi` (scalar) | **Three phases per chunk visit with alternating constants**: write P1→verify, write P2→verify, write P1→verify. `run_phased_test` has one `test_fn`/`verify_fn` pair and one pattern per chunk visit. The third phase (P1 again) specifically catches transition-induced flips, so it is not reducible to two runs of a two-phase test |
 | `Mem-Refresh{,128,256,512,Auto}`, `Mem-Refresh-Flush{,128,256,512,Auto}` | `refresh_impl!` (widths), `refresh_stable_multi` (scalar) | **A 64 ms `sleep` between write and verify, per chunk.** The harness has no delay phase, and the sleep has to be ordered after the fence and after the optional flush — otherwise a cached copy masks the bit-fade the test exists to find (the #26 bug) |
 | `Mem-CacheBust` | `cache_busting_multi` | **Non-linear access order.** Walks the chunk at `CACHE_BUSTING_STRIDE`, and the whole write/verify shape switches on the `stride_patterns` parameter. `ChunkCtx` hands the closure a linear `chunk_start..chunk_end`; the offset-then-stride walk is a loop nest the harness does not have |
-| `Mem-Random` | `random_torture_multi` | **RNG-driven access order** over a power-of-2 masked range, iterating `rng_sequences`. Also inits once up front and never re-inits, which does not map onto per-cycle `test_fn`/`verify_fn`. (Reads only today — random *writes* are an open item, TODO #19 step 6) |
+| `Mem-Random` | `random_torture_multi` | **RNG-driven access order** over the piece, indexed by multiply-high (`rng * len >> 64`, any length), iterating `rng_sequences`. Mismatches OR into an accumulator; a nonzero one replays the chunk from its saved RNG state to count and log (TODO 76). Also inits once up front and never re-inits, which does not map onto per-cycle `test_fn`/`verify_fn`. (Reads only today — random *writes* are an open item, TODO #19 step 6) |
 | `Mem-Stride` | `stride_access_multi` | **A loop level above the chunk walk.** The nest is cycle → block → *stride* → chunk → subdivision, with a labeled `'stride_loop`. The harness's nest is cycle → block → chunk, and the stride loop cannot be pushed inside a chunk without changing what is measured |
 | `Mem-BlockMove` | `block_move_multi` | **Two ranges with different roles** — first half source, second half destination — plus a `copy_directions` switch. `ChunkCtx` describes one range |
 

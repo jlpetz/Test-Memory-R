@@ -240,12 +240,6 @@ impl ChunkSpec {
     }
 }
 
-/// The power of two nearest `x` by ratio (`x > 0`): 293 MiB -> 256, 440 MiB -> 512.
-fn nearest_power_of_two(x: u64) -> u64 {
-    let lo = 1u64 << (63 - x.leading_zeros());
-    if (x as u128) * (x as u128) > 2 * (lo as u128) * (lo as u128) { lo * 2 } else { lo }
-}
-
 /// Per-chunk repetition for one test: its own `verify_reps` / `write_read_cycles` / `test_reps`
 /// when set, else the test's default. SimpleTest defaults to TM5's loop at 100 % / 100 %:
 /// 4 x (1 fill + 5 verifies) per chunk (`mtests0.asm` ST_Check :298-308).
@@ -581,6 +575,9 @@ pub struct LegacyMemorySetup {
     /// Memory channel count from .cfg (TM5: 1-3, default 2).
     /// Used in SimpleTest stride formula: `Channels * Parameter - 1` cache lines.
     pub channels: u32,
+    /// `Lock Memory Granularity (Mb)` (TM5: 1-512, default 16). TM5 floors a fractional block
+    /// size to it (`MainThread.asm` ~627-650).
+    pub lock_granularity_mb: u32,
 }
 
 #[derive(Debug, Clone)]
@@ -706,10 +703,10 @@ impl ModernConfig {
             let window_mode = self.parse_test_window_mode(test).map_err(|e| Self::test_error(i, test, e))?;
             let chunk_mode = self.parse_test_chunk_mode(test).map_err(|e| Self::test_error(i, test, e))?;
             if let ChunkMode::Absolute { size_bytes } = chunk_mode
-                && !size_bytes.is_power_of_two()
+                && !size_bytes.is_multiple_of(crate::test_memory::GRANULE)
             {
-                log::info!("test_sequence[{i}] ('{}'): chunk {} KiB -> {} KiB (chunks are powers of two, rounded up; then capped at the window and each block piece)",
-                    test.function, size_bytes / 1024, size_bytes.next_power_of_two() / 1024);
+                log::info!("test_sequence[{i}] ('{}'): chunk {} bytes -> {} KiB (chunks are multiples of 4 KiB, rounded up; then at least the test's minimum and at most the window)",
+                    test.function, size_bytes, size_bytes.next_multiple_of(crate::test_memory::GRANULE) / 1024);
             }
             let requires_locality = test.requires_locality.unwrap_or({
                 // Auto-detect based on function name
@@ -1279,6 +1276,7 @@ impl LegacyConfig {
                 .and_then(|s| s.parse().ok())
                 .unwrap_or(128),
             channels: memory.get("Channels").and_then(|s| s.parse().ok()).unwrap_or(2).clamp(1, 8),
+            lock_granularity_mb: memory.get("Lock Memory Granularity (Mb)").and_then(|s| s.parse().ok()).unwrap_or(16).clamp(1, 512),
         };
 
         // Parse tests
@@ -1404,29 +1402,40 @@ impl LegacyConfig {
     })
 }
 
-    /// TM5 `Test Block Size (Mb)` as a TMR chunk (TODO 79 B1). 0-3 are fraction codes: 0 is the
-    /// window, 1-3 are window / (V + 1); 4 and up are megabytes, clamped to the window. The window
-    /// is the `.cfg`'s own `Testing Window Size`, not TMR's window. TM5's "Mb" is binary
-    /// (`shl 20`; `mt_ini.asm:287-303`, `MainThread.asm:627-661`). TM5 uses the size as it comes;
-    /// TMR chunks are powers of two (`doc/memory_system_design.md` §4.6), so any other size
-    /// becomes the nearest one, and says so. It is capped at the largest power of two in the
-    /// window: no window piece is bigger (`prepare_blocks_for_window`), so no chunk is either.
+    /// TM5 `Test Block Size (Mb)` as a TMR chunk (TODO 79 B1), sized exactly as TM5 sizes it
+    /// (`mt_ini.asm:287-303`, `MainThread.asm:627-661`). 0-3 are fraction codes: window / (V + 1),
+    /// floored to the `.cfg`'s Lock Memory Granularity, at least one granule. 4 and up are binary
+    /// megabytes. Either is then clamped to the window and floored to 4 KiB. The window is the
+    /// `.cfg`'s own `Testing Window Size`, not TMR's window. A size that differs from the plain
+    /// fraction or value is logged.
     fn chunk_spec(&self, test: &LegacyTest) -> ChunkSpec {
         let window = self.memory_setup.testing_window_size_mb as u64 * BYTES_PER_MIB;
+        let granule = crate::test_memory::GRANULE as u64;
+        let lock = self.memory_setup.lock_granularity_mb.max(1) as u64 * BYTES_PER_MIB;
         let (size, what) = match test.test_chunk_size_mb {
-            0 => (window, "the window".to_string()),
-            code @ 1..=3 => (window / (code as u64 + 1), format!("window/{}", code + 1)),
-            mb => ((mb as u64 * BYTES_PER_MIB).min(window), format!("{mb} MiB")),
+            code @ 0..=3 => {
+                let part = window / (code as u64 + 1);
+                let floored = (part / lock).max(1) * lock;
+                if floored != part {
+                    log::info!("TM5 Test{} ({}): Test Block Size {} = window/{} = {:.2} MiB -> {} MiB (TM5 floors it to the {} MiB Lock Memory Granularity)",
+                              test.id, test.function, code, code + 1, part as f64 / BYTES_PER_MIB as f64,
+                              floored / BYTES_PER_MIB, lock / BYTES_PER_MIB);
+                }
+                (floored.min(window), format!("window/{}", code + 1))
+            }
+            mb => {
+                let requested = mb as u64 * BYTES_PER_MIB;
+                if requested > window {
+                    log::info!("TM5 Test{} ({}): Test Block Size {} MiB is more than the {} MiB window; the chunk is the window",
+                              test.id, test.function, mb, window / BYTES_PER_MIB);
+                }
+                (requested.min(window), format!("{mb} MiB"))
+            }
         };
-        let nearest = nearest_power_of_two(size.max(64 * 1024));
-        let largest = 1u64 << (63 - window.max(64 * 1024).leading_zeros());
-        let (chunk, why) = if nearest > largest {
-            (largest, "largest power of two in the window")
-        } else {
-            (nearest, "nearest power of two")
-        };
+        // TM5 floors to 4 KiB, at least 4 KiB
+        let chunk = (size / granule).max(1) * granule;
         if chunk != size {
-            log::info!("TM5 Test{} ({}): Test Block Size {} = {what} = {:.0} MiB -> {} KiB chunk ({why})",
+            log::info!("TM5 Test{} ({}): Test Block Size {} = {what} = {:.2} MiB -> {} KiB chunk (a multiple of 4 KiB)",
                       test.id, test.function, test.test_chunk_size_mb,
                       size as f64 / BYTES_PER_MIB as f64, chunk / 1024);
         }
@@ -1583,7 +1592,7 @@ mod tests {
                 cycles: 3,
                 test_sequence: Vec::new(),
             },
-            memory_setup: LegacyMemorySetup { testing_window_size_mb: 880, reserved_memory_mb: 128, channels: 2 },
+            memory_setup: LegacyMemorySetup { testing_window_size_mb: 880, reserved_memory_mb: 128, channels: 2, lock_granularity_mb: 16 },
             tests,
         }
     }
@@ -1595,9 +1604,9 @@ mod tests {
         }
     }
 
-    /// TODO 79 B1: code 0 is the `.cfg`'s window, 1-3 are window fractions, 4 and up are binary
-    /// megabytes clamped to the window. Each becomes the nearest power of two, at most the
-    /// largest one in the window.
+    /// TODO 79 B1: code 0 is the `.cfg`'s window, 1-3 are window fractions floored to the Lock
+    /// Memory Granularity (16 MiB here) as TM5 does, 4 and up are binary megabytes clamped to the
+    /// window.
     #[test]
     fn tm5_block_size_codes_are_window_fractions() {
         let tests = [0, 1, 2, 3, 4, 1536].iter().enumerate()
@@ -1606,10 +1615,9 @@ mod tests {
         let modern = legacy(100, tests).to_modern_config().unwrap();
         let chunks: Vec<_> = modern.get_test_configs().unwrap().iter().map(|(_, c)| c.chunk_mode.clone()).collect();
         let sizes: Vec<Option<usize>> = chunks.iter().map(chunk_bytes).collect();
-        // The 880 MiB window -> 512 (1024 is nearer, but no piece of an 880 MiB window is bigger
-        // than 512), window/2 = 440 -> 512, window/3 = 293 -> 256, window/4 = 220 -> 256,
-        // 4 MiB stays, 1536 MiB is clamped to the window first, -> 512 like the window.
-        assert_eq!(sizes, [512, 512, 256, 256, 4, 512].map(|m| Some(m * MIB)));
+        // The 880 MiB window; window/2 = 440 -> 432, window/3 = 293.33 -> 288, window/4 = 220
+        // -> 208 (each floored to 16 MiB, as TM5 does); 4 MiB; 1536 MiB clamped to the window.
+        assert_eq!(sizes, [880, 432, 288, 208, 4, 880].map(|m| Some(m * MIB)));
         assert_eq!(modern.system.memory_strategy.default_window.size.as_deref(), Some("880MiB"));
     }
 
@@ -1727,13 +1735,4 @@ mod tests {
         assert_eq!(half.get_test_configs().unwrap()[0].1.verify_reps, 2);
     }
 
-    #[test]
-    fn nearest_power_of_two_by_ratio() {
-        let mib = |m: u64| m << 20;
-        assert_eq!(nearest_power_of_two(mib(440)), mib(512));
-        assert_eq!(nearest_power_of_two(mib(293)), mib(256));
-        assert_eq!(nearest_power_of_two(mib(256)), mib(256));
-        assert_eq!(nearest_power_of_two(mib(362)), mib(256)); // just under 256 x sqrt 2
-        assert_eq!(nearest_power_of_two(mib(363)), mib(512));
-    }
 }

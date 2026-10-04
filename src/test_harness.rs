@@ -23,11 +23,11 @@ use std::sync::atomic::Ordering;
 /// Chunk-level context passed to closures.
 /// Contains pre-computed values so closures don't need to recompute them.
 pub struct ChunkCtx {
-    /// Pointer to the start of this block's memory (as u64 elements).
+    /// Pointer to the start of this piece of the window (as u64 elements).
     pub ptr: *mut u64,
-    /// Start element index within this block (0-based).
+    /// Start element index within this piece (0-based).
     pub chunk_start: usize,
-    /// End element index (exclusive) within this block.
+    /// End element index (exclusive) within this piece.
     pub chunk_end: usize,
     /// Current cycle number (1-based).
     pub cycle: u32,
@@ -175,7 +175,7 @@ where
         test_size_bytes: usize,
     }
     let block_metas: Vec<BlockMeta> = test_blocks.iter().map(|tb| {
-        let ptr = tb.block.buffer.as_mut_ptr() as *mut u64;
+        let ptr = tb.ptr as *mut u64;
         let len_elements = tb.test_size / std::mem::size_of::<u64>();
         let chunk_bytes = runner.chunk_size_bytes(tb.test_size);
         let chunk_size_elements = chunk_bytes / std::mem::size_of::<u64>();
@@ -203,6 +203,10 @@ where
         }
     }
 
+    // Per write_read_cycle: bytes_per_test_op × test_reps writes + verify_reps reads
+    let ops_per_wrc = bytes_per_test_op * test_reps as usize + verify_reps as usize;
+    let wrc = config.write_read_cycles;
+
     // Main test loop — interleaves across blocks
     loop {
         let cycle = runner.begin_cycle();
@@ -224,7 +228,6 @@ where
 
                 // TM5-faithful loop: (write + multi-read) × write_read_cycles
                 // TM5 SimpleTest: (1 write + 5 reads) × 4 = tight repeated access per chunk
-                let wrc = config.write_read_cycles;
                 for _ in 0..wrc {
                     // Test/write phase — run test_reps times (e.g., mirror round-trips)
                     for _ in 0..test_reps {
@@ -251,25 +254,24 @@ where
                     }
                 }
 
-                // Check for shutdown (mid-chunk)
+                // Count the chunk when it is done, so a halt or shutdown below reports what ran:
+                // under stitched one piece is the whole window (TODO 76)
+                let chunk_len = chunk_end - chunk_start;
+                runner.add_bytes(chunk_len * std::mem::size_of::<u64>() * ops_per_wrc * wrc as usize);
+                total_operations += chunk_len as u64 * (test_reps as u64 + verify_reps as u64) * wrc as u64;
+
+                // Halt at the chunk that erred, not at the end of the piece
+                if runner.should_halt(block_errors) {
+                    return runner.finish_aborted(cycle_errors + block_errors, total_operations);
+                }
+
+                // Check for shutdown (mid-piece)
                 if runner.shutdown_requested() {
-                    cycle_errors += block_errors;
-                    let ops_per_wrc = bytes_per_test_op * test_reps as usize + verify_reps as usize;
-                    runner.add_bytes((chunk_end - chunk_start) * std::mem::size_of::<u64>() * ops_per_wrc * wrc as usize);
-                    return runner.finish_aborted(cycle_errors, total_operations);
+                    return runner.finish_aborted(cycle_errors + block_errors, total_operations);
                 }
             }
 
             cycle_errors += block_errors;
-            // Per write_read_cycle: bytes_per_test_op × test_reps writes + verify_reps reads
-            let ops_per_wrc = bytes_per_test_op * test_reps as usize + verify_reps as usize;
-            runner.add_bytes(meta.test_size_bytes * ops_per_wrc * config.write_read_cycles as usize);
-            total_operations += meta.len_elements as u64 * (test_reps as u64 + verify_reps as u64) * config.write_read_cycles as u64;
-
-            // Error-mode dispatch: Panic panics, Halt aborts the test, Log continues.
-            if runner.should_halt(block_errors) {
-                return runner.finish_aborted(cycle_errors, total_operations);
-            }
 
             // Check for shutdown between blocks
             if runner.shutdown_requested() {

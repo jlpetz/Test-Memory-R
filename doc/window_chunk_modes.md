@@ -23,6 +23,15 @@ Allocation  (per-thread OS-level block — set by memory_strategy.allocation_mod
 | Chunk  | `cache_total` | `fraction` (number)   | Coarse `(L1+L2+L3) × fraction`. Mirrors window mode.                    |
 | Chunk  | `absolute`    | `size` (string)       | Hard byte size.                                                         |
 
+**Where the window lies and how chunks fall (TODO 76).** The window is the first bytes of the
+thread's memory, in order. Under `allocator=stitched` that memory is one span, so the window is one
+piece; under `plan-pagesize-pref` it is whole blocks, then the remainder. The chunk is resolved once
+from the window: the configured size, at least the test's minimum, at most the window, rounded up to
+a multiple of 4 KiB. Chunks walk each piece from its start; the last one may be shorter. A chunk may
+cross a 1 GiB to 2 MiB page seam inside a span. Under `plan-pagesize-pref` a piece shorter than the
+chunk gets one chunk of its own length. The per-thread log line lists each piece, its page sizes and
+its chunks.
+
 An invalid spec stops the run with an error naming the `test_sequence` entry: an unknown mode, a
 missing field, a size of 0, or a `cache` target whose scale is malformed or outside 0.01-100. A
 default spec is checked for each enabled test that uses it. There is no fallback to another mode or
