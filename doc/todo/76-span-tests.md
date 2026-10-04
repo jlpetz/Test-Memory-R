@@ -221,3 +221,72 @@ on it; the loop is rewritten for overlapping chunks anyway (accumulator, no per-
   per node: v1 one node per u64, so as big as the tested memory; v2 one per cache line, two
   permutations) before writing the chain into test memory. Build it in place (Sattolo) before they
   get one-piece windows.
+
+## Step 2, implemented (2026-10-05, branch `todo76-step2`, awaiting review)
+
+Built as decided above, plus the user's answers of 2026-10-05: small commits on a local branch,
+the overnight runs below, TM5 block codes 0-3 that follow TM5 when a thread has less memory than
+the `.cfg` window (with a plan warning when memory shrinks a chunk), and a TODO entry for each
+side issue (87-92). `git log --oneline a9626bb..todo76-step2` lists the commits.
+
+- **Rename.** TMR's window is the extent everywhere: `ExtentMode`, `ExtentSpec`, the JSON keys
+  `default_extent`/`extent`, `calculate_extent_size`, logs, the plan's Extent and Chunk columns.
+  TM5's Testing Window Size keeps its name (`tm5_window`, ".cfg window" in logs). No alias for old
+  config keys or result files (pre-1.0, the user).
+- **One allocator, one extent.** Stitched is the only allocator (deletion lists A, B and C;
+  `allocator=` is gone; an unset `largechunk` is 128 MiB). Its missing tests were ported first: a
+  bad request (87) is a hard error with the hint, large pages name their node strictly, a node's
+  own 2 MiB pages come before another node's 1 GiB pages. A refused 4 KiB request stays fatal.
+  `TestRunner::new` returns the extent, the first bytes of the span (`test_memory::extent`).
+- **Even spread** (`test_memory::ChunkSpread`, property-tested on 20,000 random cases and the hole
+  cases): every chunk is exactly C, start k = k(E-C)/(n-1) floored to 4 KiB per start. Tier 1,
+  StuckBit, Refresh, CacheBust, Stride (inside its stride loop) and BlockMove (half-chunks on a
+  2 KiB granule) walk it; Mem-Random takes C as its batch. Bytes count per chunk, overlaps each
+  time; Stride's halt now stops the test. A fault in an overlap counts twice under log (canary).
+- **Patterns.** Mode 2 restarts TM5's line chain at every 4 KiB page (64 B lines, TM5's block
+  length). New mode 12: each 64 B line is seed + j*step, both hashed from the line's address; the
+  LCG mode 12 is deleted. Stride lost its chunk-relative term; CacheBust's column is explicit.
+  Every sequential scalar SimpleV2 and Bench-Verify mode verifies by OR into 4 accumulators with a
+  cold rescan (`verify_words`, `Mode2`, `Mode12`); `pattern-mode=` takes 13.
+- **TM5 imports** cover the full allocation; codes 0-3 are `ChunkMode::Tm5Block`, the smaller of
+  the `.cfg` window and the extent over (code + 1), floored to the Lock Memory Granularity; larger
+  blocks stay capped at the window. Imported Refresh has locality off (it capped it at L3 x 2).
+- **Plan table**: extents and chunks as the tests resolve them for the thread memory, e.g.
+  `Full (7.00 GiB/thread)`, `880.00 MiB x9, 752.00 MiB overlap (.cfg window)`; a TM5 line; a
+  warning per chunk the memory shrank. Spd-* and Lat-* register `ChunkMode::Whole`.
+- **Bandwidth and latency on `TestRunner`**: real extents (no power-of-two floor), clock restarted
+  after setup, live progress, Ctrl+C within a sample. Latency chains built in place (Sattolo,
+  inside-out Fisher-Yates, a sparse Fisher-Yates prefix for NTW), no heap. Spd-Write's pattern
+  was byte-uniform, so the cached write was `memset`; now `0xA55AA55AA55AA55A`.
+
+Asm (post-LTO `--bin`): mode 2/12 verifies have no call or store in the loop (12's vectorised
+4-line body spills 3 ymm per 4 lines; its scalar tail is clean); SimpleV2-256 mode 12 stores and
+verifies at ymm; the mode-0 verify is 4 words per iteration into 4 accumulators, no store; StuckBit
+and BlockMove have no `memcpy`/`memset`; Spd-Write has `vmovaps` ymm, no `memset`; the v1 read
+chase is 8x unrolled between the `rdtscp`s; the chain builders use `mulx`, no `div`.
+
+An independent read of the diff found no high-severity defect; its low ones are fixed (empty-extent
+guards, the plan's sub-granule extent, `pattern_mode` validation). Left as documented: SIMD
+SimpleV2 runs modes 0/1/2/13 positionally; MirrorV2's 3 subblocks misalign (TODO 85).
+
+**Live runs, 2026-10-05, at memory=50% on 4 physical cores (7 GiB per thread, 28 GiB), step 1
+(a9626bb with `allocator=stitched`) against step 2; single runs, so about ±10% is noise.** All
+runs: 0 errors, 0 WHEA.
+- Bench (two pairs): Bench-Verify 1.2-4.9x faster: TM5-2 11.7k/16.7k -> 57k MiB/s, TMR-0/1 12-27k ->
+  57k, TM5-0 21-22k -> 26.5k; a whole Bench run 2:46-3:50 -> 1:49. Bench-Init-TMR-2 (new mode 12)
+  1.33x; Bench-Init-TM5-2 0.92x (the per-page mode-2 writer; to look at). The first step-2 build,
+  before the accumulator verifies, had Bench-Verify-TM5-0 at 0.70x: the per-word log kept its
+  arguments spilled to the stack on every word.
+- Mem-* (one pair): within noise; Stride 1.13x, BlockMove 0.91-1.12x across two step-2 runs.
+- Spd/Lat: Spd within ±3% but Spd-L1-Write 1.14x (the `memset` gone). Latency P50 unchanged at
+  L1/L2 read and write, DRAM and DRAM-Full; L3 rises (47 -> 82 ns read) because the extent is now
+  the real 30 MiB, not 16; L1-Copy 1.3 -> 2.3 ns (24 KiB extent, was 16; unexplained, to probe).
+  DRAM-Full setup is in place: Lat-DRAMFull-Read 43 s -> 21 s wall.
+- 1usmus_v3: a cycle 0:47 -> 6:50, by design (7 GiB per test, was 880 MiB). Non-strided tests
+  0.95-1.08x; strided 0.80-0.92x (unchanged verify, now over 2 MiB pages too; TODO 89).
+- Check_absolutnew: a cycle 5:17 -> 20:33, by design (7 GiB per test, was 1536 MiB). Test1 (mode 2,
+  4 MiB chunks, 150 verifies each) 2.10x on the accumulator verify; the mode-0 tests 0.96-1.21x;
+  mirrors and the strided test 0.97-1.00x.
+
+Logs and the comparison script: `%LOCALAPPDATA%\Temp	mr76uns_step2\` (`compare2.py`; the
+`*_6ca286d.txt` files are the step-2 build before the accumulator verifies).
