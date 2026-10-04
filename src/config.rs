@@ -733,6 +733,11 @@ impl ModernConfig {
         self.test_sequence.iter().enumerate().filter(|(_, t)| t.enabled).map(|(i, test)| {
             let extent_mode = self.parse_test_extent_mode(test).map_err(|e| Self::test_error(i, test, e))?;
             let chunk_mode = self.parse_test_chunk_mode(test).map_err(|e| Self::test_error(i, test, e))?;
+            if let Some(mode) = test.pattern_mode
+                && !matches!(mode, 0..=2 | 10..=13)
+            {
+                return Err(Self::test_error(i, test, format!("pattern_mode {mode} is not a mode; valid: 0-2 (TM5-faithful), 10-13 (TMR-native)")));
+            }
             if let ChunkMode::Absolute { size_bytes } = chunk_mode
                 && !size_bytes.is_multiple_of(crate::test_memory::GRANULE)
             {
@@ -1713,6 +1718,14 @@ mod tests {
         // A zero size is an error, not a test of nothing
         modern.test_sequence[0].extent = Some(ExtentSpec::absolute("0"));
         assert!(modern.get_test_configs().is_err());
+        modern.test_sequence[0].extent = None;
+
+        // So is a pattern mode that doesn't exist; 13 does
+        modern.test_sequence[0].pattern_mode = Some(7);
+        let err = modern.get_test_configs().unwrap_err();
+        assert!(err.contains("pattern_mode 7"), "{err}");
+        modern.test_sequence[0].pattern_mode = Some(13);
+        assert!(modern.get_test_configs().is_ok());
     }
 
     /// The configs TMR generates itself must load, unknown-key check and system fields included.

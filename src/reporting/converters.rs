@@ -143,7 +143,8 @@ pub fn create_test_configuration_report_v2(
             let mut sized = config.clone();
             sized.thread_count = thread_count;
             let name = test_def.actual_name;
-            let extent_at = |memory: usize| sized.calculate_extent_size(name, memory) / GRANULE * GRANULE;
+            // Below one granule TestRunner tests one granule (and logs it)
+            let extent_at = |memory: usize| (sized.calculate_extent_size(name, memory) / GRANULE * GRANULE).max(GRANULE.min(memory));
             let (lo, hi) = (extent_at(least), extent_at(most));
             let sizes = if lo == hi { size(lo) } else { format!("{}-{}", size(lo), size(hi)) };
             extent_mode = match &config.extent_mode {
