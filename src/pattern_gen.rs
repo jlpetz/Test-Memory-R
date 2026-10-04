@@ -19,25 +19,20 @@
 //!   PADDD step per element and XOR complement every 64 bytes.
 //!   TMR: wrapping_sub step per element, complement every cache line.
 //! - **Mode 2**: Two-level evolving pattern. TM5 uses PMULLW per-page evolution
-//!   with step that also evolves. TMR: 64-bit wrapping_mul evolution per cache line
-//!   with evolving step. Stateful (caller tracks page seed/step).
+//!   with step that also evolves. TMR: each 64 B line is `seed + j * step`, and seed and
+//!   step evolve by 64-bit wrapping multiply from line to line. TM5 seeds the chain once per
+//!   block; TMR restarts it at every 4 KiB page (TODO 76), so a page depends only on its
+//!   address and chunks may overlap.
 //!
 //! ## TMR-Native Modes
 //!
 //! - **Mode 10**: Unique-per-address XOR (`idx ^ base`). Substitutes for Mode 0.
 //! - **Mode 11**: Simple XOR with combined constant (`idx ^ combined`). Substitutes for Mode 1.
-//! - **Mode 12**: Flat LCG chain (`state = state * m + a`). Substitutes for Mode 2.
+//! - **Mode 12**: Mode 2's lines without the chain: each 64 B line is `seed + j * step`,
+//!   with seed and step hashed from the line's address (TODO 76).
+//! - **Mode 13**: Positional pseudo-random hash per word.
 //!
 //! See `doc/pattern_gen_modes.md` for detailed descriptions.
-//!
-//! # SIMD LCG Strategy
-//!
-//! For N-lane SIMD (e.g., `u64x4`), we run N independent LCG streams:
-//! - Seeds: `s0, lcg(s0), lcg(lcg(s0)), ...` (one per lane)
-//! - Each lane advances by N steps per iteration using pre-computed `multiplier^N`
-//! - This eliminates lane dependencies while maintaining full SIMD throughput.
-
-use std::simd::*;
 
 // ─── Block Seed Derivation ──────────────────────────────────────────────────
 
@@ -120,7 +115,7 @@ pub fn pattern_mode1(idx: u64, block_seed: u64, cl_shift: u32) -> u64 {
 /// TMR port: 64-bit wrapping_mul/add. Called once per cache line (every 8 u64 elements
 /// for 64-byte cache lines). Returns (new_seed, new_step).
 ///
-/// TMR alternative: Mode 12 (flat LCG chain).
+/// TMR alternative: Mode 12 (the same lines, hashed rather than chained).
 #[inline(always)]
 pub fn mode2_evolve(seed: u64, step: u64, param0: u64, param1: u64) -> (u64, u64) {
     let new_seed = seed.wrapping_mul(param0).wrapping_add(param1);
@@ -128,15 +123,47 @@ pub fn mode2_evolve(seed: u64, step: u64, param0: u64, param1: u64) -> (u64, u64
     (new_seed, new_step)
 }
 
-/// Mode 2 (TM5-faithful): Compute element value within a cache line.
-///
-/// TM5: Within a page, writes xmm0 then PADDD xmm0, xmm6 (adds step per 16-byte group).
-///
-/// TMR port: Element value = page_seed + element_offset * page_step. The `element_offset`
-/// is the position within the current cache line (0..elements_per_cache_line).
+/// Words per 64 B line: TM5's block length (`dBlockLength`), the unit mode 2 evolves on and
+/// mode 12 hashes. Fixed, not the CPU's cache line, so the image is the same on every machine.
+pub const LINE_WORDS: usize = 8;
+
+/// Words per 4 KiB page. Mode 2 restarts its chain on each page, and chunks start on pages.
+pub const PAGE_WORDS: usize = 512;
+
+/// Mode 2: the chain's start for the 4 KiB page at `page_addr`. TM5 seeds once per block from
+/// the block's address; TMR does the same per page.
 #[inline(always)]
-pub fn mode2_element(page_seed: u64, element_offset: u64, page_step: u64) -> u64 {
-    page_seed.wrapping_add(element_offset.wrapping_mul(page_step))
+pub fn mode2_page_start(page_addr: usize, thread_id: usize, cycle: u32) -> (u64, u64) {
+    let seed = block_seed(page_addr, thread_id, cycle);
+    (seed, seed.wrapping_mul(0x5DEECE66D))
+}
+
+/// One 64 B line of modes 2 and 12: `seed + j * step` for j in 0..8, from adds only.
+///
+/// TM5: within a block, writes xmm0, then PADDD xmm0, xmm6 (adds the step per 16-byte group).
+#[inline(always)]
+pub fn line_words(seed: u64, step: u64) -> [u64; LINE_WORDS] {
+    let s2 = step.wrapping_add(step);
+    let s4 = s2.wrapping_add(s2);
+    let w1 = seed.wrapping_add(step);
+    let w2 = seed.wrapping_add(s2);
+    let w3 = w1.wrapping_add(s2);
+    [seed, w1, w2, w3, seed.wrapping_add(s4), w1.wrapping_add(s4), w2.wrapping_add(s4), w3.wrapping_add(s4)]
+}
+
+/// Mode 12's key for one thread and cycle, folding in both parameters. Computed once per chunk.
+#[inline]
+pub fn mode12_key(thread_id: usize, cycle: u32, param0: u64, param1: u64) -> u64 {
+    block_seed(0, thread_id, cycle) ^ param0.wrapping_mul(0xD6E8FEB86659FD93) ^ param1.rotate_left(32)
+}
+
+/// Mode 12: seed and step of the 64 B line at `line_addr`, hashed from it. No chain, so any
+/// line can be computed on its own. The step is odd, so a line's 8 words all differ.
+#[inline(always)]
+pub fn mode12_line(line_addr: usize, key: u64) -> (u64, u64) {
+    let seed = pattern_mode13(line_addr as u64, key);
+    let step = (seed ^ key).rotate_left(29).wrapping_mul(0x9E3779B97F4A7C15) | 1;
+    (seed, step)
 }
 
 // ─── TMR-Native Pattern Modes (10, 11, 12) ─────────────────────────────────
@@ -161,9 +188,9 @@ pub fn pattern_mode11(idx: u64, combined: u64) -> u64 {
 
 /// Mode 13 (TMR-native): Positional pseudo-random hash.
 ///
-/// Combines the pseudo-random quality of Mode 12 (LCG) with the positional independence
-/// of Modes 10/11. Each element is computed purely from `(idx, seed)` — no sequential
-/// dependency, no carry-state needed across chunks, trivially SIMD-parallelizable.
+/// Pseudo-random per word, with the positional independence of Modes 10/11. Each element is
+/// computed purely from `(idx, seed)` — no sequential dependency, no carry-state needed
+/// across chunks, trivially SIMD-parallelizable.
 ///
 /// Uses splitmix64 finalizer (same bit mixing as java.util.SplittableRandom).
 /// Excellent avalanche: every output bit depends on every input bit.
@@ -176,174 +203,6 @@ pub fn pattern_mode13(idx: u64, seed: u64) -> u64 {
     h = h.wrapping_mul(0x94d049bb133111eb);
     h ^= h >> 31;
     h
-}
-
-/// Mode 12 (TMR-native) / shared LCG infrastructure: Single LCG step.
-/// `state = state * multiplier + addend`
-///
-/// Core PRNG used by Mode 12 (flat LCG chain) and SIMD LCG variants.
-/// Also usable as building block for Mode 2 (TM5-faithful) page evolution.
-/// ```ignore
-/// state = lcg_next(state, multiplier, addend);
-/// *ptr = state;
-/// state = lcg_next(state, multiplier, addend);
-/// *ptr.add(1) = state;
-/// ```
-#[inline(always)]
-pub fn lcg_next(state: u64, multiplier: u64, addend: u64) -> u64 {
-    state.wrapping_mul(multiplier).wrapping_add(addend)
-}
-
-/// Compute `multiplier^n mod 2^64` by repeated squaring.
-/// Used to pre-compute the stride multiplier for SIMD LCG lanes.
-///
-/// For N-lane SIMD, call `lcg_multiplier_power(multiplier, N)` to get the
-/// multiplier that advances a lane by N steps in one operation.
-#[inline]
-pub fn lcg_multiplier_power(multiplier: u64, n: usize) -> u64 {
-    let mut result = 1u64;
-    let mut base = multiplier;
-    let mut exp = n;
-    while exp > 0 {
-        if exp & 1 == 1 {
-            result = result.wrapping_mul(base);
-        }
-        base = base.wrapping_mul(base);
-        exp >>= 1;
-    }
-    result
-}
-
-/// Compute the addend for a multi-step LCG jump.
-///
-/// If the single-step LCG is `x' = m*x + a`, then after N steps:
-/// `x_N = m^N * x_0 + a * (m^(N-1) + m^(N-2) + ... + m + 1)`
-///
-/// The sum `(m^N - 1) / (m - 1)` is computed iteratively to avoid division:
-/// `addend_N = a * sum(m^i for i in 0..N)`
-#[inline]
-pub fn lcg_addend_power(multiplier: u64, addend: u64, n: usize) -> u64 {
-    // Compute sum = 1 + m + m^2 + ... + m^(n-1) via repeated application
-    let mut sum = 0u64;
-    let mut m_power = 1u64; // m^0 = 1
-    for _ in 0..n {
-        sum = sum.wrapping_add(m_power);
-        m_power = m_power.wrapping_mul(multiplier);
-    }
-    addend.wrapping_mul(sum)
-}
-
-/// Seed N independent LCG streams from a single initial state.
-///
-/// Returns `[s0, lcg(s0), lcg(lcg(s0)), ...]` — N consecutive LCG outputs
-/// starting from `initial_state`.
-#[inline]
-pub fn lcg_seed_lanes(initial_state: u64, multiplier: u64, addend: u64, n: usize) -> [u64; 8] {
-    let mut seeds = [0u64; 8];
-    let mut state = initial_state;
-    for seed in seeds.iter_mut().take(n) {
-        *seed = state;
-        state = lcg_next(state, multiplier, addend);
-    }
-    seeds
-}
-
-// ─── SIMD LCG (u64x2 — SSE2/128-bit) ────────────────────────────────────────
-
-/// State for a 2-lane SIMD LCG (128-bit).
-pub struct LcgSimd2 {
-    pub state: u64x2,
-    pub multiplier: u64x2,  // multiplier^2 broadcast
-    pub addend: u64x2,      // multi-step addend broadcast
-}
-
-impl LcgSimd2 {
-    /// Create a 2-lane SIMD LCG from scalar parameters.
-    ///
-    /// Each lane gets an independent stream seeded from consecutive LCG outputs.
-    /// The multiplier and addend are pre-computed for 2-step jumps.
-    #[inline]
-    pub fn new(initial_state: u64, multiplier: u64, addend: u64) -> Self {
-        let seeds = lcg_seed_lanes(initial_state, multiplier, addend, 2);
-        let m2 = lcg_multiplier_power(multiplier, 2);
-        let a2 = lcg_addend_power(multiplier, addend, 2);
-        Self {
-            state: u64x2::from_array([seeds[0], seeds[1]]),
-            multiplier: u64x2::splat(m2),
-            addend: u64x2::splat(a2),
-        }
-    }
-
-    /// Advance all lanes by 2 LCG steps (one per lane) and return current state.
-    #[inline(always)]
-    #[allow(clippy::should_implement_trait)]
-    pub fn next(&mut self) -> u64x2 {
-        let current = self.state;
-        self.state = self.state * self.multiplier + self.addend;
-        current
-    }
-}
-
-// ─── SIMD LCG (u64x4 — AVX2/256-bit) ────────────────────────────────────────
-
-/// State for a 4-lane SIMD LCG (256-bit).
-pub struct LcgSimd4 {
-    pub state: u64x4,
-    pub multiplier: u64x4,
-    pub addend: u64x4,
-}
-
-impl LcgSimd4 {
-    #[inline]
-    pub fn new(initial_state: u64, multiplier: u64, addend: u64) -> Self {
-        let seeds = lcg_seed_lanes(initial_state, multiplier, addend, 4);
-        let m4 = lcg_multiplier_power(multiplier, 4);
-        let a4 = lcg_addend_power(multiplier, addend, 4);
-        Self {
-            state: u64x4::from_array([seeds[0], seeds[1], seeds[2], seeds[3]]),
-            multiplier: u64x4::splat(m4),
-            addend: u64x4::splat(a4),
-        }
-    }
-
-    #[inline(always)]
-    #[allow(clippy::should_implement_trait)]
-    pub fn next(&mut self) -> u64x4 {
-        let current = self.state;
-        self.state = self.state * self.multiplier + self.addend;
-        current
-    }
-}
-
-// ─── SIMD LCG (u64x8 — AVX-512/512-bit) ─────────────────────────────────────
-
-/// State for an 8-lane SIMD LCG (512-bit).
-pub struct LcgSimd8 {
-    pub state: u64x8,
-    pub multiplier: u64x8,
-    pub addend: u64x8,
-}
-
-impl LcgSimd8 {
-    #[inline]
-    pub fn new(initial_state: u64, multiplier: u64, addend: u64) -> Self {
-        let seeds = lcg_seed_lanes(initial_state, multiplier, addend, 8);
-        let m8 = lcg_multiplier_power(multiplier, 8);
-        let a8 = lcg_addend_power(multiplier, addend, 8);
-        Self {
-            state: u64x8::from_array(seeds),
-            multiplier: u64x8::splat(m8),
-            addend: u64x8::splat(a8),
-        }
-    }
-
-    #[inline(always)]
-    #[allow(clippy::should_implement_trait)]
-    pub fn next(&mut self) -> u64x8 {
-        let current = self.state;
-        self.state = self.state * self.multiplier + self.addend;
-        current
-    }
 }
 
 // ─── Mirror pattern generation (u64-based, replacing i32) ────────────────────
@@ -467,15 +326,28 @@ mod tests {
     }
 
     #[test]
-    fn test_mode2_element_within_page() {
-        let page_seed = 0xDEADu64;
-        let page_step = 17u64;
-        // element_offset 0 → page_seed
-        assert_eq!(mode2_element(page_seed, 0, page_step), page_seed);
-        // element_offset 1 → page_seed + 1*step
-        assert_eq!(mode2_element(page_seed, 1, page_step), page_seed + 17);
-        // element_offset 7 → page_seed + 7*step
-        assert_eq!(mode2_element(page_seed, 7, page_step), page_seed + 7 * 17);
+    fn line_words_are_an_arithmetic_run() {
+        let (seed, step) = (0xDEAD_u64, 0x8000_0000_0000_0011_u64);
+        let words = line_words(seed, step);
+        for (j, &w) in words.iter().enumerate() {
+            assert_eq!(w, seed.wrapping_add((j as u64).wrapping_mul(step)));
+        }
+    }
+
+    #[test]
+    fn mode12_lines_depend_on_address_thread_cycle_and_parameters() {
+        let key = mode12_key(3, 1, 0x5DEECE66D, 0xB);
+        let (seed, step) = mode12_line(0x4000_0040, key);
+        assert_eq!(mode12_line(0x4000_0040, key), (seed, step));
+        assert_eq!(step & 1, 1);
+        let words = line_words(seed, step);
+        let unique: std::collections::HashSet<u64> = words.iter().copied().collect();
+        assert_eq!(unique.len(), 8);
+        assert_ne!(mode12_line(0x4000_0080, key).0, seed);
+        for other in [mode12_key(4, 1, 0x5DEECE66D, 0xB), mode12_key(3, 2, 0x5DEECE66D, 0xB),
+                      mode12_key(3, 1, 0x5DEECE66E, 0xB), mode12_key(3, 1, 0x5DEECE66D, 0xC)] {
+            assert_ne!(mode12_line(0x4000_0040, other).0, seed);
+        }
     }
 
     #[test]
@@ -496,113 +368,6 @@ mod tests {
         assert_eq!(cache_line_shift(64), 3);  // 64/8 = 8 elements = 2^3
         assert_eq!(cache_line_shift(128), 4); // 128/8 = 16 elements = 2^4
         assert_eq!(cache_line_shift(32), 2);  // 32/8 = 4 elements = 2^2
-    }
-
-    #[test]
-    fn test_lcg_produces_evolving_sequence() {
-        // Use known params from 1usmus_v3.cfg style
-        let multiplier = 0x5DEECE66Du64;
-        let addend = 0xBu64;
-        let mut state = 0x12345678u64;
-
-        let mut seen = Vec::new();
-        for _ in 0..100 {
-            state = lcg_next(state, multiplier, addend);
-            seen.push(state);
-        }
-
-        // Verify all values are different (no static seed bug)
-        let unique: std::collections::HashSet<u64> = seen.iter().copied().collect();
-        assert_eq!(unique.len(), 100, "LCG should produce 100 unique values, got {}", unique.len());
-
-        // Verify deterministic: same seed produces same sequence
-        let mut state2 = 0x12345678u64;
-        for &expected in &seen {
-            state2 = lcg_next(state2, multiplier, addend);
-            assert_eq!(state2, expected);
-        }
-    }
-
-    #[test]
-    fn test_lcg_multiplier_power() {
-        let m = 0x5DEECE66Du64;
-        // m^1 = m
-        assert_eq!(lcg_multiplier_power(m, 1), m);
-        // m^2 = m * m
-        assert_eq!(lcg_multiplier_power(m, 2), m.wrapping_mul(m));
-        // m^4 = (m^2)^2
-        let m2 = m.wrapping_mul(m);
-        assert_eq!(lcg_multiplier_power(m, 4), m2.wrapping_mul(m2));
-    }
-
-    #[test]
-    fn test_lcg_simd4_matches_scalar() {
-        let multiplier = 0x5DEECE66Du64;
-        let addend = 0xBu64;
-        let initial = 0xCAFEBABEu64;
-
-        // Run scalar LCG for 16 steps
-        let mut scalar_results = Vec::new();
-        let mut state = initial;
-        for _ in 0..16 {
-            scalar_results.push(state);
-            state = lcg_next(state, multiplier, addend);
-        }
-
-        // Run SIMD LCG for 4 steps (4 lanes × 4 steps = 16 values)
-        let mut simd = LcgSimd4::new(initial, multiplier, addend);
-        let mut simd_results = Vec::new();
-        for _ in 0..4 {
-            let v = simd.next();
-            simd_results.extend_from_slice(&v.to_array());
-        }
-
-        // Results should match: SIMD lanes interleave the same sequence
-        // Lane 0 gets elements 0, 4, 8, 12
-        // Lane 1 gets elements 1, 5, 9, 13
-        // etc.
-        for step in 0..4 {
-            for lane in 0..4 {
-                let scalar_idx = step * 4 + lane;
-                let simd_val = simd_results[step * 4 + lane];
-                assert_eq!(
-                    simd_val, scalar_results[scalar_idx],
-                    "Mismatch at step={}, lane={}: SIMD={:#x}, scalar={:#x}",
-                    step, lane, simd_val, scalar_results[scalar_idx]
-                );
-            }
-        }
-    }
-
-    #[test]
-    fn test_lcg_simd2_matches_scalar() {
-        let multiplier = 0x5DEECE66Du64;
-        let addend = 0xBu64;
-        let initial = 0x42u64;
-
-        let mut scalar = Vec::new();
-        let mut state = initial;
-        for _ in 0..8 {
-            scalar.push(state);
-            state = lcg_next(state, multiplier, addend);
-        }
-
-        let mut simd = LcgSimd2::new(initial, multiplier, addend);
-        let mut simd_results = Vec::new();
-        for _ in 0..4 {
-            let v = simd.next();
-            simd_results.extend_from_slice(&v.to_array());
-        }
-
-        for step in 0..4 {
-            for lane in 0..2 {
-                let scalar_idx = step * 2 + lane;
-                assert_eq!(
-                    simd_results[step * 2 + lane], scalar[scalar_idx],
-                    "Mismatch at step={}, lane={}", step, lane
-                );
-            }
-        }
     }
 
     #[test]

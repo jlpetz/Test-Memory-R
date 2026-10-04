@@ -1201,6 +1201,7 @@ fn execute_test_cycle(ctx: &CycleContext, cycle: u64) -> Option<RunOutcome> {
                     10 => "TMR-0".to_string(),
                     11 => "TMR-1".to_string(),
                     12 => "TMR-2".to_string(),
+                    13 => "TMR-3".to_string(),
                     other => format!("{}", other),
                 },
                 None => "-".to_string(),

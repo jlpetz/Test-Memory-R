@@ -2561,7 +2561,165 @@ pub unsafe fn block_move_multi(
 // - Configurable test_reps, verify_reps, write_read_cycles
 
 use crate::pattern_gen;
+use crate::pattern_gen::{LINE_WORDS, PAGE_WORDS};
 use crate::test_harness::{run_phased_test, ChunkCtx};
+
+// ─── Line patterns: modes 2 and 12 (TODO 76) ─────────────────────────────────
+//
+// Both write each 64 B line as `seed + j * step`. Mode 2 takes seed and step from TM5's chain,
+// restarted at every 4 KiB page; mode 12 hashes them from the line's address. Either way a
+// word depends only on its address, so chunks may overlap and start on any page. One writer
+// and one verifier per mode serve SimpleV2 (seeded with the cycle) and Bench-Init/Verify
+// (cycle 0, so a later Bench-Verify can check what Bench-Init wrote). The verifiers OR the
+// differences into 4 accumulators and rescan, counting and logging, only when one is set.
+
+/// Mode 2 for one thread and cycle.
+#[derive(Clone, Copy)]
+struct Mode2 {
+    thread_id: usize,
+    cycle: u32,
+    param0: u64,
+    param1: u64,
+}
+
+impl Mode2 {
+    /// Calls `line(word_offset, expected)` for each line of words `[start, end)` of `ptr`,
+    /// which are whole 4 KiB pages.
+    #[inline(always)]
+    unsafe fn walk(self, ptr: *const u64, start: usize, end: usize, mut line: impl FnMut(usize, [u64; LINE_WORDS])) {
+        debug_assert!(start.is_multiple_of(PAGE_WORDS) && end.is_multiple_of(PAGE_WORDS), "mode 2 needs whole pages: {start}..{end}");
+        let mut page = start;
+        while page < end {
+            let (mut seed, mut step) = pattern_gen::mode2_page_start(ptr.add(page) as usize, self.thread_id, self.cycle);
+            for offset in (page..page + PAGE_WORDS).step_by(LINE_WORDS) {
+                line(offset, pattern_gen::line_words(seed, step));
+                (seed, step) = pattern_gen::mode2_evolve(seed, step, self.param0, self.param1);
+            }
+            page += PAGE_WORDS;
+        }
+    }
+
+    #[inline(always)]
+    unsafe fn fill(self, ptr: *mut u64, start: usize, end: usize) {
+        self.walk(ptr, start, end, |offset, words| *(ptr.add(offset) as *mut [u64; LINE_WORDS]) = words);
+    }
+
+    /// Errors in words `[start, end)`: 0 if all hold, else counted and logged by a rescan.
+    #[inline(always)]
+    unsafe fn verify(self, ptr: *const u64, start: usize, end: usize, test_name: &str) -> u64 {
+        let mut acc = [0u64; 4];
+        self.walk(ptr, start, end, |offset, words| accumulate_line(&mut acc, ptr.add(offset), &words));
+        if (acc[0] | acc[1]) | (acc[2] | acc[3]) == 0 {
+            return 0;
+        }
+        self.rescan(ptr, start, end, test_name)
+    }
+
+    #[cold]
+    #[inline(never)]
+    unsafe fn rescan(self, ptr: *const u64, start: usize, end: usize, test_name: &str) -> u64 {
+        let mut errors = 0u64;
+        self.walk(ptr, start, end, |offset, words| count_line(&mut errors, ptr, offset, &words, test_name));
+        transient_if_none(errors, test_name, start, end)
+    }
+}
+
+/// Mode 12 for one thread and cycle.
+#[derive(Clone, Copy)]
+struct Mode12 {
+    key: u64,
+}
+
+impl Mode12 {
+    fn new(thread_id: usize, cycle: u32, param0: u64, param1: u64) -> Self {
+        Self { key: pattern_gen::mode12_key(thread_id, cycle, param0, param1) }
+    }
+
+    /// Calls `line(word_offset, expected)` for each line of words `[start, end)` of `ptr`.
+    #[inline(always)]
+    unsafe fn walk(self, ptr: *const u64, start: usize, end: usize, mut line: impl FnMut(usize, [u64; LINE_WORDS])) {
+        debug_assert!(start.is_multiple_of(LINE_WORDS) && end.is_multiple_of(LINE_WORDS), "mode 12 needs whole lines: {start}..{end}");
+        for offset in (start..end).step_by(LINE_WORDS) {
+            let (seed, step) = pattern_gen::mode12_line(ptr.add(offset) as usize, self.key);
+            line(offset, pattern_gen::line_words(seed, step));
+        }
+    }
+
+    #[inline(always)]
+    unsafe fn fill(self, ptr: *mut u64, start: usize, end: usize) {
+        self.walk(ptr, start, end, |offset, words| *(ptr.add(offset) as *mut [u64; LINE_WORDS]) = words);
+    }
+
+    /// Errors in words `[start, end)`: 0 if all hold, else counted and logged by a rescan.
+    #[inline(always)]
+    unsafe fn verify(self, ptr: *const u64, start: usize, end: usize, test_name: &str) -> u64 {
+        let mut acc = [0u64; 4];
+        self.walk(ptr, start, end, |offset, words| accumulate_line(&mut acc, ptr.add(offset), &words));
+        if (acc[0] | acc[1]) | (acc[2] | acc[3]) == 0 {
+            return 0;
+        }
+        self.rescan(ptr, start, end, test_name)
+    }
+
+    #[cold]
+    #[inline(never)]
+    unsafe fn rescan(self, ptr: *const u64, start: usize, end: usize, test_name: &str) -> u64 {
+        let mut errors = 0u64;
+        self.walk(ptr, start, end, |offset, words| count_line(&mut errors, ptr, offset, &words, test_name));
+        transient_if_none(errors, test_name, start, end)
+    }
+}
+
+/// ORs one line's differences into 4 accumulators: words k and k + 4 into accumulator k, so a
+/// vectorised build reads each half-line as one 32 B lane group, with no shuffles.
+#[inline(always)]
+unsafe fn accumulate_line(acc: &mut [u64; 4], line: *const u64, words: &[u64; LINE_WORDS]) {
+    let actual = *(line as *const [u64; LINE_WORDS]);
+    for k in 0..4 {
+        acc[k] |= (actual[k] ^ words[k]) | (actual[k + 4] ^ words[k + 4]);
+    }
+}
+
+/// Counts one line's bad words, logging the first 10 of the scan.
+#[inline(always)]
+unsafe fn count_line(errors: &mut u64, ptr: *const u64, offset: usize, words: &[u64; LINE_WORDS], test_name: &str) {
+    for (j, &expected) in words.iter().enumerate() {
+        let actual = *ptr.add(offset + j);
+        if actual != expected {
+            *errors += 1;
+            if *errors <= 10 {
+                log::error!("{}: error at idx {} - expected {:#x}, got {:#x}", test_name, offset + j, expected, actual);
+            }
+        }
+    }
+}
+
+/// Counts and logs the words of `[start, end)` that differ from `expected(idx)`, once an
+/// accumulator has seen one.
+#[cold]
+#[inline(never)]
+unsafe fn rescan_words(ptr: *const u64, start: usize, end: usize, test_name: &str, expected: impl Fn(usize) -> u64) -> u64 {
+    let mut errors = 0u64;
+    for idx in start..end {
+        let (want, actual) = (expected(idx), *ptr.add(idx));
+        if actual != want {
+            errors += 1;
+            if errors <= 10 {
+                log::error!("{}: error at idx {} - expected {:#x}, got {:#x}", test_name, idx, want, actual);
+            }
+        }
+    }
+    transient_if_none(errors, test_name, start, end)
+}
+
+/// A rescan that finds nothing still reports the error the accumulator saw.
+fn transient_if_none(errors: u64, test_name: &str, start: usize, end: usize) -> u64 {
+    if errors > 0 {
+        return errors;
+    }
+    log::error!("{}: error in idx {}..{} that a reread no longer shows (transient)", test_name, start, end);
+    1
+}
 
 // ─── SimpleTest v2 ───────────────────────────────────────────────────────────
 
@@ -2623,7 +2781,6 @@ unsafe fn simple_test_v2_sequential(
     let SimplePatternConfig { mode: pattern_mode, param0, param1, .. } = pattern;
     let test_name = "Mem-SimpleV2";
     let cl_shift = pattern_gen::cache_line_shift(config.cache_line_bytes);
-    let cl_elements = config.cache_line_bytes / std::mem::size_of::<u64>();
 
     match pattern_mode {
         0 => {
@@ -2697,148 +2854,25 @@ unsafe fn simple_test_v2_sequential(
             )
         }
         2 => {
-            // Mode 2 (TM5-faithful): two-level evolving pattern (PMULLW-style)
+            // Mode 2 (TM5-faithful): TM5's evolving lines, the chain restarted per 4 KiB page
+            let mode2 = |ctx: &ChunkCtx| Mode2 { thread_id: ctx.thread_id, cycle: ctx.cycle, param0, param1 };
             run_phased_test(
                 blocks, thread_id, error_mode, timing, config, progress,
                 test_name, TestAction::WriteVerify, 1, false, config.test_reps, config.verify_reps,
-                |ctx: &ChunkCtx| {
-                    let base_seed = pattern_gen::block_seed(ctx.ptr as usize, ctx.thread_id, ctx.cycle);
-                    let mut page_seed = base_seed;
-                    let mut page_step = base_seed.wrapping_mul(0x5DEECE66D);
-                    let mut idx = ctx.chunk_start;
-                    while idx < ctx.chunk_end {
-                        let page_end = (idx + cl_elements).min(ctx.chunk_end);
-                        for i in idx..page_end {
-                            *ctx.ptr.add(i) = pattern_gen::mode2_element(page_seed, (i - idx) as u64, page_step);
-                        }
-                        let (ns, nst) = pattern_gen::mode2_evolve(page_seed, page_step, param0, param1);
-                        page_seed = ns;
-                        page_step = nst;
-                        idx = page_end;
-                    }
-                },
-                |ctx: &ChunkCtx| {
-                    let base_seed = pattern_gen::block_seed(ctx.ptr as usize, ctx.thread_id, ctx.cycle);
-                    let mut page_seed = base_seed;
-                    let mut page_step = base_seed.wrapping_mul(0x5DEECE66D);
-                    let mut idx = ctx.chunk_start;
-                    while idx < ctx.chunk_end {
-                        let page_end = (idx + cl_elements).min(ctx.chunk_end);
-                        for i in idx..page_end {
-                            *ctx.ptr.add(i) = pattern_gen::mode2_element(page_seed, (i - idx) as u64, page_step);
-                        }
-                        let (ns, nst) = pattern_gen::mode2_evolve(page_seed, page_step, param0, param1);
-                        page_seed = ns;
-                        page_step = nst;
-                        idx = page_end;
-                    }
-                },
-                |ctx: &ChunkCtx| -> u64 {
-                    let base_seed = pattern_gen::block_seed(ctx.ptr as usize, ctx.thread_id, ctx.cycle);
-                    let mut page_seed = base_seed;
-                    let mut page_step = base_seed.wrapping_mul(0x5DEECE66D);
-                    let mut total_errors = 0u64;
-                    let mut idx = ctx.chunk_start;
-                    while idx < ctx.chunk_end {
-                        let page_end = (idx + cl_elements).min(ctx.chunk_end);
-                        for i in idx..page_end {
-                            let expected = pattern_gen::mode2_element(page_seed, (i - idx) as u64, page_step);
-                            let actual = *ctx.ptr.add(i);
-                            if actual != expected {
-                                total_errors += 1;
-                                if total_errors <= 10 {
-                                    log::error!("{}: error at idx {} - expected {:#x}, got {:#x}",
-                                               test_name, i, expected, actual);
-                                }
-                            }
-                        }
-                        let (ns, nst) = pattern_gen::mode2_evolve(page_seed, page_step, param0, param1);
-                        page_seed = ns;
-                        page_step = nst;
-                        idx = page_end;
-                    }
-                    total_errors
-                },
+                |ctx: &ChunkCtx| mode2(ctx).fill(ctx.ptr, ctx.chunk_start, ctx.chunk_end),
+                |ctx: &ChunkCtx| mode2(ctx).fill(ctx.ptr, ctx.chunk_start, ctx.chunk_end),
+                |ctx: &ChunkCtx| -> u64 { mode2(ctx).verify(ctx.ptr, ctx.chunk_start, ctx.chunk_end, test_name) },
             )
         }
         12 => {
-            // Mode 12 (TMR-native): LCG chain — real PRNG.
-            let multiplier = param0;
-            let addend = param1;
-            // Initial seed from thread_id for per-thread uniqueness
-            let initial_seed = (thread_id as u64).wrapping_mul(0x9E3779B97F4A7C15).wrapping_add(1);
-
+            // Mode 12 (TMR-native): mode 2's lines, seed and step hashed from each line's address
+            let mode12 = |ctx: &ChunkCtx| Mode12::new(ctx.thread_id, ctx.cycle, param0, param1);
             run_phased_test(
                 blocks, thread_id, error_mode, timing, config, progress,
                 test_name, TestAction::WriteVerify, 1, false, config.test_reps, config.verify_reps,
-                // Init: first write (same as test_fn — ensures memory has valid patterns before cycle loop)
-                |ctx: &ChunkCtx| {
-                    let mut state = pattern_gen::lcg_next(
-                        initial_seed.wrapping_add(ctx.chunk_start as u64),
-                        multiplier, addend,
-                    );
-                    for idx in ctx.chunk_start..ctx.chunk_end {
-                        *ctx.ptr.add(idx) = state;
-                        state = pattern_gen::lcg_next(state, multiplier, addend);
-                    }
-                },
-                // Test: write LCG sequence (every cycle, matching v1 write+verify structure)
-                |ctx: &ChunkCtx| {
-                    let mut state = pattern_gen::lcg_next(
-                        initial_seed.wrapping_add(ctx.chunk_start as u64),
-                        multiplier, addend,
-                    );
-                    for idx in ctx.chunk_start..ctx.chunk_end {
-                        *ctx.ptr.add(idx) = state;
-                        state = pattern_gen::lcg_next(state, multiplier, addend);
-                    }
-                },
-                // Verify: regenerate LCG and compare (with error_check_interval for v1 parity)
-                |ctx: &ChunkCtx| -> u64 {
-                    let mut total_errors = 0u64;
-                    let mut state = pattern_gen::lcg_next(
-                        initial_seed.wrapping_add(ctx.chunk_start as u64),
-                        multiplier, addend,
-                    );
-                    match ctx.check_mask {
-                        Some(check_mask) => {
-                            let mut interval_errors = 0u64;
-                            let mut element_count = 0u32;
-                            for idx in ctx.chunk_start..ctx.chunk_end {
-                                let actual = *ctx.ptr.add(idx);
-                                if actual != state {
-                                    interval_errors += 1;
-                                    if interval_errors <= 10 {
-                                        log::error!("{}: error at idx {} - expected {:#x}, got {:#x}",
-                                                   test_name, idx, state, actual);
-                                    }
-                                }
-                                state = pattern_gen::lcg_next(state, multiplier, addend);
-                                element_count += 1;
-                                if (element_count & check_mask) == 0
-                                    && interval_errors > 0 {
-                                        total_errors += interval_errors;
-                                        interval_errors = 0;
-                                    }
-                            }
-                            total_errors += interval_errors;
-                        }
-                        None => {
-                            for idx in ctx.chunk_start..ctx.chunk_end {
-                                let actual = *ctx.ptr.add(idx);
-                                if actual != state {
-                                    total_errors += 1;
-                                    if total_errors <= 10 {
-                                        log::error!("{}: error at idx {} - expected {:#x}, got {:#x}",
-                                                   test_name, idx, state, actual);
-                                    }
-                                }
-                                state = pattern_gen::lcg_next(state, multiplier, addend);
-                            }
-                        }
-                    }
-                    total_errors
-                },
+                |ctx: &ChunkCtx| mode12(ctx).fill(ctx.ptr, ctx.chunk_start, ctx.chunk_end),
+                |ctx: &ChunkCtx| mode12(ctx).fill(ctx.ptr, ctx.chunk_start, ctx.chunk_end),
+                |ctx: &ChunkCtx| -> u64 { mode12(ctx).verify(ctx.ptr, ctx.chunk_start, ctx.chunk_end, test_name) },
             )
         }
         11 => {
@@ -2900,6 +2934,36 @@ unsafe fn simple_test_v2_sequential(
                         }
                     }
                     total_errors
+                },
+            )
+        }
+        13 => {
+            // Mode 13 (TMR-native): a hash per word
+            let seed = param0;
+            run_phased_test(
+                blocks, thread_id, error_mode, timing, config, progress,
+                test_name, TestAction::WriteVerify, 1, false, config.test_reps, config.verify_reps,
+                |ctx: &ChunkCtx| {
+                    for idx in ctx.chunk_start..ctx.chunk_end {
+                        *ctx.ptr.add(idx) = pattern_gen::pattern_mode13(idx as u64, seed);
+                    }
+                },
+                |ctx: &ChunkCtx| {
+                    for idx in ctx.chunk_start..ctx.chunk_end {
+                        *ctx.ptr.add(idx) = pattern_gen::pattern_mode13(idx as u64, seed);
+                    }
+                },
+                |ctx: &ChunkCtx| -> u64 {
+                    let mut acc = [0u64; 4];
+                    for idx in (ctx.chunk_start..ctx.chunk_end).step_by(4) {
+                        for (k, a) in acc.iter_mut().enumerate() {
+                            *a |= *ctx.ptr.add(idx + k) ^ pattern_gen::pattern_mode13((idx + k) as u64, seed);
+                        }
+                    }
+                    if (acc[0] | acc[1]) | (acc[2] | acc[3]) == 0 {
+                        return 0;
+                    }
+                    rescan_words(ctx.ptr, ctx.chunk_start, ctx.chunk_end, test_name, |idx| pattern_gen::pattern_mode13(idx as u64, seed))
                 },
             )
         }
@@ -2984,11 +3048,11 @@ unsafe fn simple_test_v2_strided(
 ) -> TestStats {
     let SimplePatternConfig { mode: pattern_mode, param0, param1, stride } = pattern;
     let test_name = "Mem-SimpleV2";
-    // For strided access, stateful modes (2, 12) fall back to positional mode 10.
-    // LCG chains don't compose with non-sequential access. Positional modes (0/1/10/11) work fine.
+    // For strided access, the line patterns (2, 12) fall back to positional mode 10: they are
+    // computed a line at a time, and a stride visits a word at a time. The per-word modes work.
     let effective_mode = match pattern_mode {
-        0 | 1 | 10 | 11 => pattern_mode,
-        _ => 10, // Stateful modes fall back to TMR-native positional
+        0 | 1 | 10 | 11 | 13 => pattern_mode,
+        _ => 10,
     };
     let base = match effective_mode {
         11 => param0 ^ param1,
@@ -3096,6 +3160,7 @@ unsafe fn simple_test_v2_strided(
         0 => run_strided!(|idx: u64, seed: u64, _cl: u32| pattern_gen::pattern_mode0(idx, seed)),
         1 => run_strided!(|idx: u64, seed: u64, cl: u32| pattern_gen::pattern_mode1(idx, seed, cl)),
         11 => run_strided!(|idx: u64, combined: u64, _cl: u32| pattern_gen::pattern_mode11(idx, combined)),
+        13 => run_strided!(|idx: u64, seed: u64, _cl: u32| pattern_gen::pattern_mode13(idx, seed)),
         _ => run_strided!(|idx: u64, base: u64, _cl: u32| pattern_gen::pattern_mode10(idx, base)),
     }
 }
@@ -3618,7 +3683,7 @@ crate::auto_dispatch!(
 // ─── SIMD SimpleTest v2 Macros ──────────────────────────────────────────────
 //
 // These macros stamp out SIMD Write and Verify phases for SimpleTest at any width.
-// Two code paths: positional (Mode 0/1: idx ^ base) and LCG (Mode 2: PRNG chain).
+// Two code paths: positional (idx ^ base, every mode but 12) and mode 12 (hashed lines).
 // The master macro `simple_test_v2_impl!` combines them into a complete test function.
 
 /// SIMD Write for positional patterns (Mode 0/1): stores (idx ^ base) per element.
@@ -3696,80 +3761,42 @@ macro_rules! simple_verify_positional_simd {
     }}
 }
 
-/// SIMD Write for LCG patterns (Mode 2): uses LcgSimdN for N-lane parallel PRNG.
-/// LCG state is seeded per chunk from chunk_start for deterministic replay.
-macro_rules! simple_write_lcg_simd {
-    ($lcg_type:ty, $simd_type:ty, $simd_w:expr, $ctx:expr,
-     $initial_seed:expr, $multiplier:expr, $addend:expr) => {{
-        let _len = $ctx.chunk_end - $ctx.chunk_start;
-        debug_assert!(_len % $simd_w == 0, "chunk not aligned to SIMD width");
-        let chunk_seed = pattern_gen::lcg_next(
-            $initial_seed.wrapping_add($ctx.chunk_start as u64),
-            $multiplier, $addend,
-        );
-        let mut lcg = <$lcg_type>::new(chunk_seed, $multiplier, $addend);
-        for i in ($ctx.chunk_start..$ctx.chunk_end).step_by($simd_w) {
-            *($ctx.ptr.add(i) as *mut $simd_type) = lcg.next();
+/// SIMD write for mode 12: each 64 B line is `seed + j * step`, with seed and step hashed from
+/// the line's address (`pattern_gen::mode12_line`), stored W words at a time.
+macro_rules! simple_write_mode12_simd {
+    ($simd_type:ty, $simd_w:expr, $ctx:expr, $mode12:expr, $lane_offsets:expr) => {{
+        for offset in ($ctx.chunk_start..$ctx.chunk_end).step_by(LINE_WORDS) {
+            let line = $ctx.ptr.add(offset);
+            let (seed, step) = pattern_gen::mode12_line(line as usize, $mode12.key);
+            let advance = <$simd_type>::splat(step.wrapping_mul($simd_w as u64));
+            let mut words = <$simd_type>::splat(seed) + <$simd_type>::splat(step) * $lane_offsets;
+            for j in (0..LINE_WORDS).step_by($simd_w) {
+                *(line.add(j) as *mut $simd_type) = words;
+                words += advance;
+            }
         }
     }}
 }
 
-/// SIMD Verify for LCG patterns (Mode 2): replay LCG and XOR+OR accumulate.
-macro_rules! simple_verify_lcg_simd {
-    ($lcg_type:ty, $simd_type:ty, $simd_w:expr, $ctx:expr,
-     $initial_seed:expr, $multiplier:expr, $addend:expr, $zero:expr) => {{
-        let _len = $ctx.chunk_end - $ctx.chunk_start;
-        debug_assert!(_len % $simd_w == 0, "chunk not aligned to SIMD width");
-        let chunk_seed = pattern_gen::lcg_next(
-            $initial_seed.wrapping_add($ctx.chunk_start as u64),
-            $multiplier, $addend,
-        );
-        let mut lcg = <$lcg_type>::new(chunk_seed, $multiplier, $addend);
-        let mut total_errors = 0u64;
-
-        match $ctx.check_mask {
-            Some(check_mask) => {
-                let vectors_per_check = (check_mask as usize) + 1;
-                let batch_elements = vectors_per_check * $simd_w;
-                let mut pos = $ctx.chunk_start;
-                let aligned_end = $ctx.chunk_end - ($ctx.chunk_end - $ctx.chunk_start) % batch_elements;
-
-                while pos < aligned_end {
-                    let mut error_acc = $zero;
-                    let batch_end = pos + batch_elements;
-                    for i in (pos..batch_end).step_by($simd_w) {
-                        let actual = *($ctx.ptr.add(i) as *const $simd_type);
-                        error_acc |= actual ^ lcg.next();
-                    }
-                    if error_acc.simd_ne($zero).any() {
-                        total_errors += 1;
-                    }
-                    pos = batch_end;
-                }
-
-                if pos < $ctx.chunk_end {
-                    let mut error_acc = $zero;
-                    for i in (pos..$ctx.chunk_end).step_by($simd_w) {
-                        let actual = *($ctx.ptr.add(i) as *const $simd_type);
-                        error_acc |= actual ^ lcg.next();
-                    }
-                    if error_acc.simd_ne($zero).any() {
-                        total_errors += 1;
-                    }
-                }
-            }
-            None => {
-                let mut error_acc = $zero;
-                for i in ($ctx.chunk_start..$ctx.chunk_end).step_by($simd_w) {
-                    let actual = *($ctx.ptr.add(i) as *const $simd_type);
-                    error_acc |= actual ^ lcg.next();
-                }
-                if error_acc.simd_ne($zero).any() {
-                    total_errors += 1;
-                }
+/// SIMD verify for mode 12: XOR+OR into an accumulator; the scalar rescan counts and logs.
+macro_rules! simple_verify_mode12_simd {
+    ($simd_type:ty, $simd_w:expr, $ctx:expr, $mode12:expr, $lane_offsets:expr, $zero:expr, $test_name:expr) => {{
+        let mut acc = $zero;
+        for offset in ($ctx.chunk_start..$ctx.chunk_end).step_by(LINE_WORDS) {
+            let line = $ctx.ptr.add(offset);
+            let (seed, step) = pattern_gen::mode12_line(line as usize, $mode12.key);
+            let advance = <$simd_type>::splat(step.wrapping_mul($simd_w as u64));
+            let mut words = <$simd_type>::splat(seed) + <$simd_type>::splat(step) * $lane_offsets;
+            for j in (0..LINE_WORDS).step_by($simd_w) {
+                acc |= *(line.add(j) as *const $simd_type) ^ words;
+                words += advance;
             }
         }
-        total_errors
+        if acc.simd_ne($zero).any() {
+            $mode12.rescan($ctx.ptr, $ctx.chunk_start, $ctx.chunk_end, $test_name)
+        } else {
+            0
+        }
     }}
 }
 
@@ -3840,69 +3867,57 @@ macro_rules! simple_verify_strided_positional_simd {
     }}
 }
 
-/// SIMD Write for LCG patterns with stride — block-strided, re-seeded per block.
-/// Each SIMD block gets an independent LCG seeded from its position, producing W
-/// pseudo-random values per block. The stride provides DRAM row stress while SIMD
-/// gives write throughput within each block.
-macro_rules! simple_write_strided_lcg_simd {
-    ($lcg_type:ty, $simd_type:ty, $simd_w:expr, $ctx:expr,
-     $initial_seed:expr, $multiplier:expr, $addend:expr, $stride_param:expr) => {{
+/// SIMD write for mode 12 with stride: the same image as the sequential write, each W-word
+/// block computed from its line's hash, in the block-strided order of the positional writer.
+macro_rules! simple_write_strided_mode12_simd {
+    ($simd_type:ty, $simd_w:expr, $ctx:expr, $mode12:expr, $lane_offsets:expr, $stride_param:expr) => {{
         let block_elements: usize = $simd_w;
-        let stride_elements: usize = $stride_param * block_elements;
-        let total_stride: usize = stride_elements + block_elements;
+        let total_stride: usize = $stride_param * block_elements + block_elements;
         let interleave_passes: usize = total_stride / block_elements;
 
         for pass in 0..interleave_passes {
-            let offset = pass * block_elements;
-            let mut pos = $ctx.chunk_start + offset;
+            let mut pos = $ctx.chunk_start + pass * block_elements;
             while pos + block_elements <= $ctx.chunk_end {
-                let block_seed = pattern_gen::lcg_next(
-                    $initial_seed.wrapping_add(pos as u64),
-                    $multiplier, $addend,
-                );
-                let mut lcg = <$lcg_type>::new(block_seed, $multiplier, $addend);
-                *($ctx.ptr.add(pos) as *mut $simd_type) = lcg.next();
+                let line = pos & !(LINE_WORDS - 1);
+                let (seed, step) = pattern_gen::mode12_line($ctx.ptr.add(line) as usize, $mode12.key);
+                let lanes = $lane_offsets + <$simd_type>::splat((pos - line) as u64);
+                *($ctx.ptr.add(pos) as *mut $simd_type) = <$simd_type>::splat(seed) + <$simd_type>::splat(step) * lanes;
                 pos += total_stride;
             }
         }
     }}
 }
 
-/// SIMD Verify for LCG patterns with stride — replay per-block LCG, XOR+OR accumulate.
-macro_rules! simple_verify_strided_lcg_simd {
-    ($lcg_type:ty, $simd_type:ty, $simd_w:expr, $ctx:expr,
-     $initial_seed:expr, $multiplier:expr, $addend:expr, $zero:expr, $stride_param:expr) => {{
+/// SIMD verify for mode 12 with stride: XOR+OR accumulate; the scalar rescan counts and logs.
+macro_rules! simple_verify_strided_mode12_simd {
+    ($simd_type:ty, $simd_w:expr, $ctx:expr, $mode12:expr, $lane_offsets:expr, $zero:expr, $stride_param:expr, $test_name:expr) => {{
         let block_elements: usize = $simd_w;
-        let stride_elements: usize = $stride_param * block_elements;
-        let total_stride: usize = stride_elements + block_elements;
+        let total_stride: usize = $stride_param * block_elements + block_elements;
         let interleave_passes: usize = total_stride / block_elements;
-        let mut total_errors = 0u64;
-        let mut error_acc = $zero;
+        let mut acc = $zero;
 
         for pass in 0..interleave_passes {
-            let offset = pass * block_elements;
-            let mut pos = $ctx.chunk_start + offset;
+            let mut pos = $ctx.chunk_start + pass * block_elements;
             while pos + block_elements <= $ctx.chunk_end {
-                let block_seed = pattern_gen::lcg_next(
-                    $initial_seed.wrapping_add(pos as u64),
-                    $multiplier, $addend,
-                );
-                let mut lcg = <$lcg_type>::new(block_seed, $multiplier, $addend);
-                let actual = *($ctx.ptr.add(pos) as *const $simd_type);
-                error_acc |= actual ^ lcg.next();
+                let line = pos & !(LINE_WORDS - 1);
+                let (seed, step) = pattern_gen::mode12_line($ctx.ptr.add(line) as usize, $mode12.key);
+                let lanes = $lane_offsets + <$simd_type>::splat((pos - line) as u64);
+                let expected = <$simd_type>::splat(seed) + <$simd_type>::splat(step) * lanes;
+                acc |= *($ctx.ptr.add(pos) as *const $simd_type) ^ expected;
                 pos += total_stride;
             }
         }
 
-        if error_acc.simd_ne($zero).any() {
-            total_errors += 1;
+        if acc.simd_ne($zero).any() {
+            $mode12.rescan($ctx.ptr, $ctx.chunk_start, $ctx.chunk_end, $test_name)
+        } else {
+            0
         }
-        total_errors
     }}
 }
 
 /// Master macro: stamps out a complete SIMD SimpleTest v2 function for a given width.
-/// Handles all 3 pattern modes: Mode 0 (idx^base), Mode 1 (idx^combined), Mode 2 (LCG).
+/// Two pattern paths: positional (idx^base, or idx^combined for modes 1/11) and mode 12.
 /// Generates 4 specialized `#[target_feature]` functions (one per pattern/stride combo)
 /// plus a lightweight dispatch function. This prevents LLVM from inlining all 4 code paths
 /// into one mega-function, which caused 9K+ lines of assembly, 46 `vzeroupper` calls,
@@ -3916,13 +3931,12 @@ macro_rules! simple_test_v2_impl {
         $dispatch_fn:ident,
         $pos_seq_fn:ident,
         $pos_str_fn:ident,
-        $lcg_seq_fn:ident,
-        $lcg_str_fn:ident,
+        $m12_seq_fn:ident,
+        $m12_str_fn:ident,
         $test_name:literal,
         $simd_type:ty,
         $simd_w:expr,
         $lane_offsets:expr,
-        $lcg_type:ty,
         $target_feature:literal
     ) => {
         /// Positional sequential — contiguous access with idx^base pattern.
@@ -4010,9 +4024,9 @@ macro_rules! simple_test_v2_impl {
             )
         }
 
-        /// LCG sequential — contiguous access with chained PRNG pattern.
+        /// Mode 12 sequential — contiguous access, each line hashed from its address.
         #[target_feature(enable = $target_feature)]
-        unsafe fn $lcg_seq_fn(
+        unsafe fn $m12_seq_fn(
             blocks: &[crate::runner::AllocationBlock],
             thread_id: usize,
             error_mode: ErrorMode,
@@ -4022,34 +4036,32 @@ macro_rules! simple_test_v2_impl {
         ) -> TestStats {
             let test_name = $test_name;
             let simd_elements: usize = $simd_w;
+            let lane_offsets = <$simd_type>::from_array($lane_offsets);
             let zero = <$simd_type>::splat(0);
-            let multiplier = config.pattern_param0.unwrap_or(0xDEADBEEFDEADBEEF);
-            let addend = config.pattern_param1.unwrap_or(0xCAFEBABECAFEBABE);
-            let initial_seed = (thread_id as u64)
-                .wrapping_mul(0x9E3779B97F4A7C15)
-                .wrapping_add(1);
+            let param0 = config.pattern_param0.unwrap_or(0xDEADBEEFDEADBEEF);
+            let param1 = config.pattern_param1.unwrap_or(0xCAFEBABECAFEBABE);
 
             run_phased_test(
                 blocks, thread_id, error_mode, timing, config, progress,
                 test_name, TestAction::WriteVerify, 1, false, config.test_reps, config.verify_reps,
                 |ctx: &ChunkCtx| {
-                    simple_write_lcg_simd!($lcg_type, $simd_type, simd_elements, ctx,
-                        initial_seed, multiplier, addend);
+                    let mode12 = Mode12::new(ctx.thread_id, ctx.cycle, param0, param1);
+                    simple_write_mode12_simd!($simd_type, simd_elements, ctx, mode12, lane_offsets);
                 },
                 |ctx: &ChunkCtx| {
-                    simple_write_lcg_simd!($lcg_type, $simd_type, simd_elements, ctx,
-                        initial_seed, multiplier, addend);
+                    let mode12 = Mode12::new(ctx.thread_id, ctx.cycle, param0, param1);
+                    simple_write_mode12_simd!($simd_type, simd_elements, ctx, mode12, lane_offsets);
                 },
                 |ctx: &ChunkCtx| -> u64 {
-                    simple_verify_lcg_simd!($lcg_type, $simd_type, simd_elements, ctx,
-                        initial_seed, multiplier, addend, zero)
+                    let mode12 = Mode12::new(ctx.thread_id, ctx.cycle, param0, param1);
+                    simple_verify_mode12_simd!($simd_type, simd_elements, ctx, mode12, lane_offsets, zero, test_name)
                 },
             )
         }
 
-        /// LCG strided — block-strided access with re-seeded PRNG pattern.
+        /// Mode 12 strided — block-strided access, the same image as sequential.
         #[target_feature(enable = $target_feature)]
-        unsafe fn $lcg_str_fn(
+        unsafe fn $m12_str_fn(
             blocks: &[crate::runner::AllocationBlock],
             thread_id: usize,
             error_mode: ErrorMode,
@@ -4059,30 +4071,28 @@ macro_rules! simple_test_v2_impl {
         ) -> TestStats {
             let test_name = $test_name;
             let simd_elements: usize = $simd_w;
+            let lane_offsets = <$simd_type>::from_array($lane_offsets);
             let zero = <$simd_type>::splat(0);
-            let multiplier = config.pattern_param0.unwrap_or(0xDEADBEEFDEADBEEF);
-            let addend = config.pattern_param1.unwrap_or(0xCAFEBABECAFEBABE);
+            let param0 = config.pattern_param0.unwrap_or(0xDEADBEEFDEADBEEF);
+            let param1 = config.pattern_param1.unwrap_or(0xCAFEBABECAFEBABE);
             let stride_param = config.parameter_context.as_ref()
                 .and_then(|ctx| ctx.stride_elements)
                 .unwrap_or(0);
-            let initial_seed = (thread_id as u64)
-                .wrapping_mul(0x9E3779B97F4A7C15)
-                .wrapping_add(1);
 
             run_phased_test(
                 blocks, thread_id, error_mode, timing, config, progress,
                 test_name, TestAction::WriteVerify, 1, false, config.test_reps, config.verify_reps,
                 |ctx: &ChunkCtx| {
-                    simple_write_strided_lcg_simd!($lcg_type, $simd_type, simd_elements, ctx,
-                        initial_seed, multiplier, addend, stride_param);
+                    let mode12 = Mode12::new(ctx.thread_id, ctx.cycle, param0, param1);
+                    simple_write_strided_mode12_simd!($simd_type, simd_elements, ctx, mode12, lane_offsets, stride_param);
                 },
                 |ctx: &ChunkCtx| {
-                    simple_write_strided_lcg_simd!($lcg_type, $simd_type, simd_elements, ctx,
-                        initial_seed, multiplier, addend, stride_param);
+                    let mode12 = Mode12::new(ctx.thread_id, ctx.cycle, param0, param1);
+                    simple_write_strided_mode12_simd!($simd_type, simd_elements, ctx, mode12, lane_offsets, stride_param);
                 },
                 |ctx: &ChunkCtx| -> u64 {
-                    simple_verify_strided_lcg_simd!($lcg_type, $simd_type, simd_elements, ctx,
-                        initial_seed, multiplier, addend, zero, stride_param)
+                    let mode12 = Mode12::new(ctx.thread_id, ctx.cycle, param0, param1);
+                    simple_verify_strided_mode12_simd!($simd_type, simd_elements, ctx, mode12, lane_offsets, zero, stride_param, test_name)
                 },
             )
         }
@@ -4098,14 +4108,14 @@ macro_rules! simple_test_v2_impl {
             config: &TestMemoryConfig,
             progress: Option<&TestProgress>,
         ) -> TestStats {
-            let is_lcg = config.pattern_mode.unwrap_or(0) == 12;
+            let is_mode12 = config.pattern_mode.unwrap_or(0) == 12;
             let has_stride = config.parameter_context.as_ref()
                 .and_then(|ctx| ctx.stride_elements)
                 .map_or(false, |s| s > 0);
 
-            match (is_lcg, has_stride) {
-                (true, true)   => $lcg_str_fn(blocks, thread_id, error_mode, timing, config, progress),
-                (true, false)  => $lcg_seq_fn(blocks, thread_id, error_mode, timing, config, progress),
+            match (is_mode12, has_stride) {
+                (true, true)   => $m12_str_fn(blocks, thread_id, error_mode, timing, config, progress),
+                (true, false)  => $m12_seq_fn(blocks, thread_id, error_mode, timing, config, progress),
                 (false, true)  => $pos_str_fn(blocks, thread_id, error_mode, timing, config, progress),
                 (false, false) => $pos_seq_fn(blocks, thread_id, error_mode, timing, config, progress),
             }
@@ -4117,19 +4127,19 @@ macro_rules! simple_test_v2_impl {
 // Each invocation generates 4 specialized #[target_feature] functions + 1 dispatch.
 simple_test_v2_impl!(simple_test_v2_128_impl,
     simple_test_v2_128_pos_seq, simple_test_v2_128_pos_str,
-    simple_test_v2_128_lcg_seq, simple_test_v2_128_lcg_str,
+    simple_test_v2_128_m12_seq, simple_test_v2_128_m12_str,
     "Mem-SimpleV2-128", u64x2, 2, [0, 1],
-    pattern_gen::LcgSimd2, "sse4.2,sse4.1,ssse3,sse3,sse2,popcnt");
+    "sse4.2,sse4.1,ssse3,sse3,sse2,popcnt");
 simple_test_v2_impl!(simple_test_v2_256_impl,
     simple_test_v2_256_pos_seq, simple_test_v2_256_pos_str,
-    simple_test_v2_256_lcg_seq, simple_test_v2_256_lcg_str,
+    simple_test_v2_256_m12_seq, simple_test_v2_256_m12_str,
     "Mem-SimpleV2-256", u64x4, 4, [0, 1, 2, 3],
-    pattern_gen::LcgSimd4, "avx2,avx,fma,bmi1,bmi2");
+    "avx2,avx,fma,bmi1,bmi2");
 simple_test_v2_impl!(simple_test_v2_512_impl,
     simple_test_v2_512_pos_seq, simple_test_v2_512_pos_str,
-    simple_test_v2_512_lcg_seq, simple_test_v2_512_lcg_str,
+    simple_test_v2_512_m12_seq, simple_test_v2_512_m12_str,
     "Mem-SimpleV2-512", u64x8, 8, [0, 1, 2, 3, 4, 5, 6, 7],
-    pattern_gen::LcgSimd8, "avx512f,avx512bw,avx512cd,avx512dq,avx512vl,avx2,avx,fma,bmi1,bmi2");
+    "avx512f,avx512bw,avx512cd,avx512dq,avx512vl,avx2,avx,fma,bmi1,bmi2");
 
 /// SimpleTest v2 SSE2 (u64x2) — 128-bit SIMD.
 ///
@@ -4477,52 +4487,13 @@ pub unsafe fn bench_init_multi(
             )
         }
         2 => {
-            // Mode 2: per-page seed+step evolution (PMULLW-style)
-            // Stateful: carry evolve state across chunks so init and test_fn produce
-            // the same continuous chain. Re-seed at chunk_start==0 (new block).
-            let cl_elements = config.cache_line_bytes / std::mem::size_of::<u64>();
-            let mut test_page_seed: u64 = 0;
-            let mut test_page_step: u64 = 0;
+            // Mode 2: TM5's evolving lines, the chain restarted per 4 KiB page
+            let mode2 = Mode2 { thread_id, cycle: 0, param0, param1 };
             run_phased_test(
                 blocks, thread_id, error_mode, timing, config, progress,
                 test_name, TestAction::Write, 1, skip_init, 1, 0,
-                |ctx: &ChunkCtx| {
-                    let base_seed = pattern_gen::block_seed(ctx.ptr as usize, ctx.thread_id, 0);
-                    let mut page_seed = base_seed;
-                    let mut page_step = base_seed.wrapping_mul(0x5DEECE66D);
-                    let mut idx = ctx.chunk_start;
-                    while idx < ctx.chunk_end {
-                        let page_end = (idx + cl_elements).min(ctx.chunk_end);
-                        for i in idx..page_end {
-                            *ctx.ptr.add(i) = pattern_gen::mode2_element(page_seed, (i - idx) as u64, page_step);
-                        }
-                        let (ns, nst) = pattern_gen::mode2_evolve(page_seed, page_step, param0, param1);
-                        page_seed = ns;
-                        page_step = nst;
-                        idx = page_end;
-                    }
-                },
-                |ctx: &ChunkCtx| {
-                    let (mut page_seed, mut page_step) = if ctx.chunk_start == 0 {
-                        let base_seed = pattern_gen::block_seed(ctx.ptr as usize, ctx.thread_id, 0);
-                        (base_seed, base_seed.wrapping_mul(0x5DEECE66D))
-                    } else {
-                        (test_page_seed, test_page_step)
-                    };
-                    let mut idx = ctx.chunk_start;
-                    while idx < ctx.chunk_end {
-                        let page_end = (idx + cl_elements).min(ctx.chunk_end);
-                        for i in idx..page_end {
-                            *ctx.ptr.add(i) = pattern_gen::mode2_element(page_seed, (i - idx) as u64, page_step);
-                        }
-                        let (ns, nst) = pattern_gen::mode2_evolve(page_seed, page_step, param0, param1);
-                        page_seed = ns;
-                        page_step = nst;
-                        idx = page_end;
-                    }
-                    test_page_seed = page_seed;
-                    test_page_step = page_step;
-                },
+                |ctx: &ChunkCtx| mode2.fill(ctx.ptr, ctx.chunk_start, ctx.chunk_end),
+                |ctx: &ChunkCtx| mode2.fill(ctx.ptr, ctx.chunk_start, ctx.chunk_end),
                 |_ctx: &ChunkCtx| -> u64 { 0 },
             )
         }
@@ -4587,36 +4558,13 @@ pub unsafe fn bench_init_multi(
             )
         }
         _ => {
-            // Mode 12: LCG chain (real PRNG)
-            // LCG is sequential — carry state across chunks so init, test_fn, and
-            // bench_verify's verify_fn all produce the same continuous chain.
-            let multiplier = param0;
-            let addend = param1;
-            let initial_seed = (thread_id as u64).wrapping_mul(0x9E3779B97F4A7C15).wrapping_add(1);
-            let mut test_lcg_state: u64 = 0;
+            // Mode 12 (and any unknown mode): mode 2's lines, hashed from each line's address
+            let mode12 = Mode12::new(thread_id, 0, param0, param1);
             run_phased_test(
                 blocks, thread_id, error_mode, timing, config, progress,
                 test_name, TestAction::Write, 1, skip_init, 1, 0,
-                |ctx: &ChunkCtx| {
-                    let mut state = pattern_gen::lcg_next(
-                        initial_seed, multiplier, addend);
-                    for idx in ctx.chunk_start..ctx.chunk_end {
-                        *ctx.ptr.add(idx) = state;
-                        state = pattern_gen::lcg_next(state, multiplier, addend);
-                    }
-                },
-                |ctx: &ChunkCtx| {
-                    let mut state = if ctx.chunk_start == 0 {
-                        pattern_gen::lcg_next(initial_seed, multiplier, addend)
-                    } else {
-                        test_lcg_state
-                    };
-                    for idx in ctx.chunk_start..ctx.chunk_end {
-                        *ctx.ptr.add(idx) = state;
-                        state = pattern_gen::lcg_next(state, multiplier, addend);
-                    }
-                    test_lcg_state = state;
-                },
+                |ctx: &ChunkCtx| mode12.fill(ctx.ptr, ctx.chunk_start, ctx.chunk_end),
+                |ctx: &ChunkCtx| mode12.fill(ctx.ptr, ctx.chunk_start, ctx.chunk_end),
                 |_ctx: &ChunkCtx| -> u64 { 0 },
             )
         }
@@ -4725,64 +4673,14 @@ pub unsafe fn bench_verify_multi(
             )
         }
         2 => {
-            // Mode 2: per-page seed+step evolution (PMULLW-style)
-            // Stateful: page_seed/page_step evolve per cache line. Init writes the full
-            // block as one continuous chain. Verify runs per-chunk, so we carry the evolve
-            // state across chunk calls. Re-seed when chunk_start==0 (new block).
-            let cl_elements = config.cache_line_bytes / std::mem::size_of::<u64>();
-            let mut verify_page_seed: u64 = 0;
-            let mut verify_page_step: u64 = 0;
+            // Mode 2: TM5's evolving lines, the chain restarted per 4 KiB page
+            let mode2 = Mode2 { thread_id, cycle: 0, param0, param1 };
             run_phased_test(
                 blocks, thread_id, error_mode, timing, config, progress,
                 test_name, TestAction::Verify, 1, skip_init, 0, 1,
-                |ctx: &ChunkCtx| {
-                    let base_seed = pattern_gen::block_seed(ctx.ptr as usize, ctx.thread_id, 0);
-                    let mut page_seed = base_seed;
-                    let mut page_step = base_seed.wrapping_mul(0x5DEECE66D);
-                    let mut idx = ctx.chunk_start;
-                    while idx < ctx.chunk_end {
-                        let page_end = (idx + cl_elements).min(ctx.chunk_end);
-                        for i in idx..page_end {
-                            *ctx.ptr.add(i) = pattern_gen::mode2_element(page_seed, (i - idx) as u64, page_step);
-                        }
-                        let (ns, nst) = pattern_gen::mode2_evolve(page_seed, page_step, param0, param1);
-                        page_seed = ns;
-                        page_step = nst;
-                        idx = page_end;
-                    }
-                },
+                |ctx: &ChunkCtx| mode2.fill(ctx.ptr, ctx.chunk_start, ctx.chunk_end),
                 |_ctx: &ChunkCtx| {},
-                |ctx: &ChunkCtx| -> u64 {
-                    let (mut page_seed, mut page_step) = if ctx.chunk_start == 0 {
-                        let base_seed = pattern_gen::block_seed(ctx.ptr as usize, ctx.thread_id, 0);
-                        (base_seed, base_seed.wrapping_mul(0x5DEECE66D))
-                    } else {
-                        (verify_page_seed, verify_page_step)
-                    };
-                    let mut total_errors = 0u64;
-                    let mut idx = ctx.chunk_start;
-                    while idx < ctx.chunk_end {
-                        let page_end = (idx + cl_elements).min(ctx.chunk_end);
-                        for i in idx..page_end {
-                            let expected = pattern_gen::mode2_element(page_seed, (i - idx) as u64, page_step);
-                            let actual = *ctx.ptr.add(i);
-                            if actual != expected {
-                                total_errors += 1;
-                                if total_errors <= 10 {
-                                    log::error!("{}: error at idx {} - expected {:#x}, got {:#x}",
-                                               test_name, i, expected, actual);
-                                }
-                            }
-                        }
-                        let (ns, nst) = pattern_gen::mode2_evolve(page_seed, page_step, param0, param1);
-                        page_seed = ns;
-                        page_step = nst;
-                        idx = page_end;
-                    }
-                    verify_page_seed = page_seed;
-                    verify_page_step = page_step;
-                    total_errors
-                },
+                |ctx: &ChunkCtx| -> u64 { mode2.verify(ctx.ptr, ctx.chunk_start, ctx.chunk_end, test_name) },
             )
         }
         // --- TMR-native modes ---
@@ -4876,48 +4774,14 @@ pub unsafe fn bench_verify_multi(
             )
         }
         _ => {
-            // Mode 12: LCG chain (real PRNG)
-            // LCG is sequential — state[N] depends on the full chain from state[0].
-            // Init writes the full block as one continuous chain. Verify runs per-chunk,
-            // so we carry the LCG state across chunk calls via a captured mutable variable.
-            // Re-seed when chunk_start==0 (new block), continue otherwise.
-            let multiplier = param0;
-            let addend = param1;
-            let initial_seed = (thread_id as u64).wrapping_mul(0x9E3779B97F4A7C15).wrapping_add(1);
-            let mut verify_lcg_state: u64 = 0;
+            // Mode 12 (and any unknown mode): mode 2's lines, hashed from each line's address
+            let mode12 = Mode12::new(thread_id, 0, param0, param1);
             run_phased_test(
                 blocks, thread_id, error_mode, timing, config, progress,
                 test_name, TestAction::Verify, 1, skip_init, 0, 1,
-                |ctx: &ChunkCtx| {
-                    let mut state = pattern_gen::lcg_next(
-                        initial_seed, multiplier, addend);
-                    for idx in ctx.chunk_start..ctx.chunk_end {
-                        *ctx.ptr.add(idx) = state;
-                        state = pattern_gen::lcg_next(state, multiplier, addend);
-                    }
-                },
+                |ctx: &ChunkCtx| mode12.fill(ctx.ptr, ctx.chunk_start, ctx.chunk_end),
                 |_ctx: &ChunkCtx| {},
-                |ctx: &ChunkCtx| -> u64 {
-                    let mut state = if ctx.chunk_start == 0 {
-                        pattern_gen::lcg_next(initial_seed, multiplier, addend)
-                    } else {
-                        verify_lcg_state
-                    };
-                    let mut total_errors = 0u64;
-                    for idx in ctx.chunk_start..ctx.chunk_end {
-                        let actual = *ctx.ptr.add(idx);
-                        if actual != state {
-                            total_errors += 1;
-                            if total_errors <= 10 {
-                                log::error!("{}: error at idx {} - expected {:#x}, got {:#x}",
-                                           test_name, idx, state, actual);
-                            }
-                        }
-                        state = pattern_gen::lcg_next(state, multiplier, addend);
-                    }
-                    verify_lcg_state = state;
-                    total_errors
-                },
+                |ctx: &ChunkCtx| -> u64 { mode12.verify(ctx.ptr, ctx.chunk_start, ctx.chunk_end, test_name) },
             )
         }
     }
@@ -5035,7 +4899,47 @@ pub fn get_test_function_by_name(name: &str) -> Option<crate::runner::TestFuncti
 
 #[cfg(test)]
 mod random_replay_tests {
-    use super::random_replay;
+    use super::{random_replay, Mode12, Mode2};
+    use crate::pattern_gen::PAGE_WORDS;
+
+    /// TODO 76: modes 2 and 12 depend only on the address, so writing a range in overlapping
+    /// pieces, in any order, gives the image one pass gives. The verify finds nothing on it and
+    /// counts each bad word exactly.
+    #[test]
+    fn line_patterns_are_position_pure_and_count_exactly() {
+        let words = 6 * PAGE_WORDS;
+        let mut buf = vec![std::simd::u64x8::splat(0); words / 8];
+        let p = buf.as_mut_ptr() as *mut u64;
+        let mode2 = Mode2 { thread_id: 3, cycle: 1, param0: 0x5DEECE66D, param1: 0xB };
+        let mode12 = Mode12::new(3, 1, 0x5DEECE66D, 0xB);
+        let image = |p: *mut u64| unsafe { std::slice::from_raw_parts(p, words).to_vec() };
+        unsafe {
+            mode2.fill(p, 0, words);
+            let one_pass = image(p);
+            mode12.fill(p, 0, words);
+            for (s, e) in [(4, 6), (0, 3), (2, 5)] {
+                mode2.fill(p, s * PAGE_WORDS, e * PAGE_WORDS);
+            }
+            assert_eq!(image(p), one_pass);
+            assert_eq!(mode2.verify(p, 0, words, "test"), 0);
+            *p.add(700) ^= 1;
+            *p.add(2 * PAGE_WORDS + 9) ^= 1 << 63;
+            assert_eq!(mode2.verify(p, 0, words, "test"), 2);
+            assert_eq!(mode2.verify(p, 3 * PAGE_WORDS, words, "test"), 0);
+            assert!(mode12.verify(p, 0, words, "test") > 0);
+
+            mode12.fill(p, 0, words);
+            let one_pass = image(p);
+            mode2.fill(p, 0, words);
+            for (s, e) in [(5 * PAGE_WORDS, words), (8, 3 * PAGE_WORDS + 64), (0, 5 * PAGE_WORDS + 8)] {
+                mode12.fill(p, s, e);
+            }
+            assert_eq!(image(p), one_pass);
+            assert_eq!(mode12.verify(p, 0, words, "test"), 0);
+            *p.add(5 * PAGE_WORDS + 511) = 0;
+            assert_eq!(mode12.verify(p, 0, words, "test"), 1);
+        }
+    }
 
     /// TODO 76: Mem-Random's replay counts exactly the mismatches the hot loop's accumulator saw,
     /// on a length that isn't a power of two, and every index stays below it.

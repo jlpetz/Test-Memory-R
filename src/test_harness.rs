@@ -411,53 +411,6 @@ mod tests {
         assert_eq!(errors, 1, "Should detect exactly 1 corrupted element");
     }
 
-    // ── SimpleTest v2 Mode 2 (LCG) error injection ──
-
-    #[test]
-    fn simple_v2_lcg_detects_corruption() {
-        let len = 4096;
-        let mut buf = alloc_test_buffer(len);
-        let ptr = buf.as_mut_ptr();
-        let multiplier = 0x5DEECE66Du64;
-        let addend = 0xBu64;
-        let initial_seed = 42u64;
-
-        // Write LCG sequence
-        unsafe {
-            let mut state = pattern_gen::lcg_next(initial_seed, multiplier, addend);
-            for i in 0..len {
-                *ptr.add(i) = state;
-                state = pattern_gen::lcg_next(state, multiplier, addend);
-            }
-        }
-
-        // Verify clean
-        let errors = unsafe {
-            let mut total = 0u64;
-            let mut state = pattern_gen::lcg_next(initial_seed, multiplier, addend);
-            for i in 0..len {
-                if *ptr.add(i) != state { total += 1; }
-                state = pattern_gen::lcg_next(state, multiplier, addend);
-            }
-            total
-        };
-        assert_eq!(errors, 0, "Clean LCG buffer should have 0 errors");
-
-        // Corrupt middle element
-        unsafe { *ptr.add(len / 2) = 0xBADBADBADBADBAD; }
-
-        let errors = unsafe {
-            let mut total = 0u64;
-            let mut state = pattern_gen::lcg_next(initial_seed, multiplier, addend);
-            for i in 0..len {
-                if *ptr.add(i) != state { total += 1; }
-                state = pattern_gen::lcg_next(state, multiplier, addend);
-            }
-            total
-        };
-        assert_eq!(errors, 1, "Should detect exactly 1 corrupted LCG element");
-    }
-
     // ── MirrorMove v2 scalar error injection ──
 
     #[test]
