@@ -204,15 +204,19 @@ on it; the loop is rewritten for overlapping chunks anyway (accumulator, no per-
 - **Commit to the stitched allocator.** No software overlay for the legacy allocator: it would only
   serve something we will drop. The tests are reworked to one span per thread; removing
   `plan-pagesize-pref` comes as a deletion list for approval. Stitched becomes the default (TODO 80).
-- **Full-size chunks covering the whole extent**, overlapping instead of a short last chunk: every
-  chunk exactly the configured size. Even spread (§4.5) or one overlap at the end is still to
-  settle. Either needs position-pure patterns: Bench modes 2 and 12 (chains) get a jump-ahead.
-  The future thread-handover test uses exact tiles with no overlap (§4.7).
+- **Full-size chunks spread evenly over the extent** (decided 2026-10-04): n = ceil(E/C), and each
+  start rounded down to 4 KiB on its own, start(k) = floor(k*S/(n-1)) granules with S = (E-C)/4 KiB,
+  so the last chunk ends at E. (A single step rounded down once would leave a hole before the last
+  chunk: 24 KiB for a 640 KiB extent of 68 KiB chunks.) Every chunk is exactly C, overlaps differ by
+  at most 4 KiB: better stress and evenness than one slab at the end. Needs position-pure patterns (Bench modes 2 and 12 carry state today). The future
+  thread-handover test uses its own rule: exact tiles, no overlap (§4.7). The user's idea for it:
+  even/odd passes (chunks 1,3,5... then 2,4,6...) with a gap buffer, so no two chunks that touch
+  are in flight on different threads at once.
 - **TM5's window is not TMR's window** (the user). TM5's is an AWE mapping aperture that slides
   over all of a core's memory; TMR has no AWE. A TM5 test covers all memory, so an imported test
-  should too; the `.cfg` window size only matters to translate the block-size codes (window/2 ...).
+  should too; the `.cfg` window size only translates the block-size codes 0-3 (decided 2026-10-04).
   TM5 runs each block to the end before the next and never repeats a window, so its window has no
-  testing purpose to adopt. Renaming TMR's window (the design doc calls it "extent") is open.
+  testing purpose to adopt. TMR's `window` is renamed `extent` (the user left the name to me).
 - **The latency tests' heap scratch:** they shuffle the chain order in a heap `Vec<usize>` (8 B
   per node: v1 one node per u64, so as big as the tested memory; v2 one per cache line, two
   permutations) before writing the chain into test memory. Build it in place (Sattolo) before they
