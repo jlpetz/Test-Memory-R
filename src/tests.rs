@@ -1196,14 +1196,14 @@ macro_rules! stuck_bit_impl {
 
                 for test_block in test_blocks.iter() {
                     let base = test_block.ptr as *mut $simd_type;
-                    let len = test_block.test_size / lanes;
 
-                    let chunk_size_bytes = runner.chunk_size_bytes(test_block.test_size);
-                    let chunk_size_operations = (chunk_size_bytes / lanes).max(1024);
+                    // Chunks of exactly the test's size, spread evenly over the piece (TODO 76)
+                    let spread = runner.chunks(test_block.test_size);
+                    let chunk_size_operations = spread.chunk() / lanes;
 
-                    let mut processed = 0;
-                    while processed < len {
-                        let chunk_end = (processed + chunk_size_operations).min(len);
+                    for k in 0..spread.count() {
+                        let processed = spread.start(k) / lanes;
+                        let chunk_end = processed + chunk_size_operations;
 
                         // Phase 1: write P1, verify. Phase 2: write P2, verify.
                         // Phase 3: write P1 again, verify (catches transition-induced flips).
@@ -1211,21 +1211,19 @@ macro_rules! stuck_bit_impl {
                         stuck_bit_write_verify!($simd_type, base, processed, chunk_end, p2, &mut cycle_errors, test_name, thread_id, 2, flush_before_verify, line_bytes);
                         stuck_bit_write_verify!($simd_type, base, processed, chunk_end, p1, &mut cycle_errors, test_name, thread_id, 3, flush_before_verify, line_bytes);
 
+                        // Count the chunk when it is done; overlaps count each time
+                        runner.add_bytes(spread.chunk() * 6);
+
                         if runner.should_halt(cycle_errors) {
                             let total_operations = (runner.bytes_processed() / lanes) as u64;
                             return runner.finish_aborted(cycle_errors, total_operations);
                         }
-
-                        processed = chunk_end;
 
                         if runner.shutdown_requested() {
                             let total_operations = (runner.bytes_processed() / lanes) as u64;
                             return runner.finish_aborted(cycle_errors, total_operations);
                         }
                     }
-
-                    // 3 writes + 3 reads per chunk over the whole block.
-                    runner.add_bytes(test_block.test_size * 6);
                 }
 
                 runner.commit_cycle_errors(cycle_errors);
@@ -1322,16 +1320,14 @@ pub unsafe fn stuck_bit_test_multi(
         // Interleave testing across all blocks with shared timer
         for test_block in test_blocks.iter() {
             let base = test_block.ptr as *mut u64;
-            let len = test_block.test_size / std::mem::size_of::<u64>();
 
-            // This piece's chunk: the test's, or the piece when it is shorter
-            let chunk_size_bytes = runner.chunk_size_bytes(test_block.test_size);
-            let chunk_size_operations = (chunk_size_bytes / std::mem::size_of::<u64>()).max(1024);
+            // Chunks of exactly the test's size, spread evenly over the piece (TODO 76)
+            let spread = runner.chunks(test_block.test_size);
+            let chunk_size_operations = spread.chunk() / std::mem::size_of::<u64>();
 
-            // Process this block in chunks
-            let mut processed = 0;
-            while processed < len {
-                let chunk_end = (processed + chunk_size_operations).min(len);
+            for k in 0..spread.count() {
+                let processed = spread.start(k) / std::mem::size_of::<u64>();
+                let chunk_end = processed + chunk_size_operations;
 
                 // Patterns must NOT be byte-uniform (would memset) — see STUCKBIT_P1 note.
                 let pattern1 = STUCKBIT_P1;
@@ -1400,13 +1396,14 @@ pub unsafe fn stuck_bit_test_multi(
                     }
                 }
 
+                // Count the chunk when it is done; overlaps count each time
+                runner.add_bytes(spread.chunk() * 6);
+
                 // Handle errors if found
                 if runner.should_halt(cycle_errors) {
                     let total_operations = (runner.bytes_processed() / std::mem::size_of::<u64>()) as u64;
                     return runner.finish_aborted(cycle_errors, total_operations);
                 }
-
-                processed = chunk_end;
 
                 // Check for shutdown request
                 if runner.shutdown_requested() {
@@ -1414,9 +1411,6 @@ pub unsafe fn stuck_bit_test_multi(
                     return runner.finish_aborted(cycle_errors, total_operations);
                 }
             }
-
-            // Update bytes processed for this block (3 writes + 3 reads)
-            runner.add_bytes(test_block.test_size * 6);
         }
 
         runner.commit_cycle_errors(cycle_errors);
@@ -1609,14 +1603,14 @@ macro_rules! refresh_impl {
 
                 for test_block in test_blocks.iter() {
                     let base = test_block.ptr as *mut $simd_type;
-                    let len = test_block.test_size / lanes;
 
-                    let chunk_size_bytes = runner.chunk_size_bytes(test_block.test_size);
-                    let chunk_size_vectors = (chunk_size_bytes / lanes).max(256);
+                    // Chunks of exactly the test's size, spread evenly over the piece (TODO 76)
+                    let spread = runner.chunks(test_block.test_size);
+                    let chunk_size_vectors = spread.chunk() / lanes;
 
-                    let mut processed = 0;
-                    while processed < len {
-                        let chunk_end = (processed + chunk_size_vectors).min(len);
+                    for k in 0..spread.count() {
+                        let processed = spread.start(k) / lanes;
+                        let chunk_end = processed + chunk_size_vectors;
 
                         // Write phase.
                         for i in processed..chunk_end {
@@ -1672,21 +1666,19 @@ macro_rules! refresh_impl {
                             log::error!("{}: memory error detected in chunk (thread {})", test_name, thread_id);
                         }
 
+                        // Count the chunk when it is done; overlaps count each time
+                        runner.add_bytes(spread.chunk() * 2);
+
                         if runner.should_halt(cycle_errors) {
                             let total_operations = (runner.bytes_processed() / lanes) as u64;
                             return runner.finish_aborted(cycle_errors, total_operations);
                         }
-
-                        processed = chunk_end;
 
                         if runner.shutdown_requested() {
                             let total_operations = (runner.bytes_processed() / lanes) as u64;
                             return runner.finish_aborted(cycle_errors, total_operations);
                         }
                     }
-
-                    // 1 write + 1 read per chunk over the whole block.
-                    runner.add_bytes(test_block.test_size * 2);
                 }
 
                 runner.commit_cycle_errors(cycle_errors);
@@ -1731,16 +1723,14 @@ pub unsafe fn refresh_stable_multi(
         // Interleave testing across all blocks with shared timer
         for test_block in test_blocks.iter() {
             let base = test_block.ptr as *mut u64;
-            let len = test_block.test_size / std::mem::size_of::<u64>();
 
-            // This piece's chunk: the test's, or the piece when it is shorter
-            let chunk_size_bytes = runner.chunk_size_bytes(test_block.test_size);
-            let chunk_size_operations = (chunk_size_bytes / std::mem::size_of::<u64>()).max(1024);
+            // Chunks of exactly the test's size, spread evenly over the piece (TODO 76)
+            let spread = runner.chunks(test_block.test_size);
+            let chunk_size_operations = spread.chunk() / std::mem::size_of::<u64>();
 
-            // Process this block in chunks
-            let mut processed = 0;
-            while processed < len {
-                let chunk_end = (processed + chunk_size_operations).min(len);
+            for k in 0..spread.count() {
+                let processed = spread.start(k) / std::mem::size_of::<u64>();
+                let chunk_end = processed + chunk_size_operations;
 
                 // Non-byte-uniform (see REFRESH_PATTERN / #61): stays a real store loop,
                 // not memset.
@@ -1770,13 +1760,14 @@ pub unsafe fn refresh_stable_multi(
                     }
                 }
 
+                // Count the chunk when it is done; overlaps count each time
+                runner.add_bytes(spread.chunk() * 2);
+
                 // Handle errors if found
                 if runner.should_halt(cycle_errors) {
                     let total_operations = (runner.bytes_processed() / std::mem::size_of::<u64>()) as u64;
                     return runner.finish_aborted(cycle_errors, total_operations);
                 }
-
-                processed = chunk_end;
 
                 // Check for shutdown request
                 if runner.shutdown_requested() {
@@ -1784,9 +1775,6 @@ pub unsafe fn refresh_stable_multi(
                     return runner.finish_aborted(cycle_errors, total_operations);
                 }
             }
-
-            // Update bytes processed for this block (1 write + 1 read)
-            runner.add_bytes(test_block.test_size * 2);
         }
 
         runner.commit_cycle_errors(cycle_errors);
@@ -1988,16 +1976,14 @@ pub unsafe fn cache_busting_multi(
         // Interleave testing across all blocks with shared timer
         for test_block in test_blocks.iter() {
             let base = test_block.ptr as *mut u64;
-            let len = test_block.test_size / std::mem::size_of::<u64>();
 
-            // This piece's chunk: the test's, or the piece when it is shorter
-            let chunk_size_bytes = runner.chunk_size_bytes(test_block.test_size);
-            let chunk_size_operations = (chunk_size_bytes / std::mem::size_of::<u64>()).max(1024);
+            // Chunks of exactly the test's size, spread evenly over the piece (TODO 76)
+            let spread = runner.chunks(test_block.test_size);
+            let chunk_size_operations = spread.chunk() / std::mem::size_of::<u64>();
 
-            // Process this block in chunks
-            let mut processed = 0;
-            while processed < len {
-                let chunk_end = (processed + chunk_size_operations).min(len);
+            for k in 0..spread.count() {
+                let processed = spread.start(k) / std::mem::size_of::<u64>();
+                let chunk_end = processed + chunk_size_operations;
 
                 // Apply stride-pattern-based access patterns within chunk
                 match stride_patterns {
@@ -2034,7 +2020,7 @@ pub unsafe fn cache_busting_multi(
                         // Multiple patterns - divide offsets among stride variants
                         // Each variant handles a subset of offsets, but ALL offsets are covered
                         for offset in 0..base_stride.min(chunk_end - processed) {
-                            let variant = (offset % stride_patterns) as u64;
+                            let variant = (((processed + offset) % base_stride) % stride_patterns) as u64;
                             let pattern = pattern_base.wrapping_add(variant * 0x1111111111111111u64);
 
                             let mut i = processed + offset;
@@ -2049,7 +2035,7 @@ pub unsafe fn cache_busting_multi(
 
                         // Verify all offsets with their respective variant patterns
                         for offset in 0..base_stride.min(chunk_end - processed) {
-                            let variant = (offset % stride_patterns) as u64;
+                            let variant = (((processed + offset) % base_stride) % stride_patterns) as u64;
                             let pattern = pattern_base.wrapping_add(variant * 0x1111111111111111u64);
 
                             let mut i = processed + offset;
@@ -2068,13 +2054,14 @@ pub unsafe fn cache_busting_multi(
                     }
                 }
 
+                // Count the chunk when it is done; overlaps count each time
+                runner.add_bytes(spread.chunk() * 2);
+
                 // Handle errors if found
                 if runner.should_halt(cycle_errors) {
                     let total_operations = (runner.bytes_processed() / std::mem::size_of::<u64>()) as u64;
                     return runner.finish_aborted(cycle_errors, total_operations);
                 }
-
-                processed = chunk_end;
 
                 // Check for shutdown request
                 if runner.shutdown_requested() {
@@ -2082,9 +2069,6 @@ pub unsafe fn cache_busting_multi(
                     return runner.finish_aborted(cycle_errors, total_operations);
                 }
             }
-
-            // Update bytes processed for this block (write + verify = 2×)
-            runner.add_bytes(test_block.test_size * 2);
         }
 
         runner.commit_cycle_errors(cycle_errors);
@@ -2175,9 +2159,8 @@ pub unsafe fn random_torture_multi(
             let base = test_block.ptr as *mut u64;
             let len = test_block.test_size / std::mem::size_of::<u64>();
 
-            // Calculate chunk size for responsive shutdown
-            let chunk_size_bytes = runner.chunk_size_bytes(test_block.test_size);
-            let chunk_size_operations = chunk_size_bytes / std::mem::size_of::<u64>();
+            // Reads per batch, for responsive shutdown: the chunk's size in words
+            let chunk_size_operations = runner.chunk_bytes() / std::mem::size_of::<u64>();
 
             // Random access torture with configurable RNG sequences
             let rng_sequences = config.parameter_context.as_ref()
@@ -2293,19 +2276,22 @@ pub unsafe fn stride_access_multi(
         for test_block in test_blocks.iter() {
             let base = test_block.ptr as *mut u64;
             let len = test_block.test_size / std::mem::size_of::<u64>();
-            let chunk_size_bytes = runner.chunk_size_bytes(test_block.test_size);
-            let chunk_size_elements = chunk_size_bytes / std::mem::size_of::<u64>();
+            // Chunks of exactly the test's size, spread evenly over the piece (TODO 76)
+            let spread = runner.chunks(test_block.test_size);
+            let chunk_len = spread.chunk() / std::mem::size_of::<u64>();
+            let elements_per_subdiv = chunk_len >> subdiv_shift;
 
-            'stride_loop: for &stride in &strides {
+            for &stride in &strides {
                 if stride >= len { continue; }
+                // Words written and read per chunk: each subdivision from its start, every stride
+                let touched = subdivisions * elements_per_subdiv.div_ceil(stride);
+                // A word's value depends on its index and the pass's stride, not on the chunk
+                let pattern = pattern_base.wrapping_add((stride as u64) << 32);
 
-                for chunk_start in (0..len).step_by(chunk_size_elements) {
-                    let chunk_end = (chunk_start + chunk_size_elements).min(len);
-                    let chunk_len = chunk_end - chunk_start;
-                    let elements_per_subdiv = chunk_len >> subdiv_shift;
+                for k in 0..spread.count() {
+                    let chunk_start = spread.start(k) / std::mem::size_of::<u64>();
 
                     for subdiv in 0..subdivisions {
-                        let pattern = pattern_base.wrapping_add((stride as u64) << 32).wrapping_add((subdiv as u64) << 48);
                         let subdiv_start = chunk_start + subdiv * elements_per_subdiv;
                         let subdiv_end = subdiv_start + elements_per_subdiv;
                         let mut pos = subdiv_start;
@@ -2319,7 +2305,6 @@ pub unsafe fn stride_access_multi(
                     std::sync::atomic::fence(Ordering::SeqCst);
 
                     for subdiv in 0..subdivisions {
-                        let pattern = pattern_base.wrapping_add((stride as u64) << 32).wrapping_add((subdiv as u64) << 48);
                         let subdiv_start = chunk_start + subdiv * elements_per_subdiv;
                         let subdiv_end = subdiv_start + elements_per_subdiv;
                         let mut pos = subdiv_start;
@@ -2335,25 +2320,16 @@ pub unsafe fn stride_access_multi(
                         }
                     }
 
-                    if runner.should_halt(cycle_errors) {
-                        break 'stride_loop;
-                    }
+                    // Count the chunk when it is done (one write and one read per word touched)
+                    runner.add_bytes(touched * std::mem::size_of::<u64>() * 2);
 
-                    if runner.shutdown_requested() {
-                        runner.add_bytes((chunk_end - chunk_start) * std::mem::size_of::<u64>() * 2);
-                        let total_operations = cycle as u64 * (chunk_end - chunk_start) as u64;
+                    // A halt stops the test, not just this piece's stride passes
+                    if runner.should_halt(cycle_errors) || runner.shutdown_requested() {
+                        let total_operations = (runner.bytes_processed() / (2 * std::mem::size_of::<u64>())) as u64;
                         return runner.finish_aborted(cycle_errors, total_operations);
                     }
                 }
             }
-
-            let mut bytes_this_cycle = 0;
-            for &stride in &strides {
-                if stride < len {
-                    bytes_this_cycle += (len / stride) * std::mem::size_of::<u64>() * 2;
-                }
-            }
-            runner.add_bytes(bytes_this_cycle);
         }
 
         runner.commit_cycle_errors(cycle_errors);
@@ -2419,16 +2395,15 @@ pub unsafe fn block_move_multi(
             let half_size = test_block.test_size / 2;
             let src_base = test_block.ptr as *mut u64;
             let dst_base = src_base.add(half_size / std::mem::size_of::<u64>());
-            let len = half_size / std::mem::size_of::<u64>();
 
-            // Calculate chunk size for responsive shutdown
-            let chunk_size_bytes = runner.chunk_size_bytes(test_block.test_size);
-            let chunk_size_operations = chunk_size_bytes / (2 * std::mem::size_of::<u64>());
+            // Half-chunks of exactly half the test's chunk, spread evenly over the source half
+            // (TODO 76); each is copied to the same offset in the destination half
+            let spread = runner.half_chunks(test_block.test_size);
+            let chunk_size_operations = spread.chunk() / std::mem::size_of::<u64>();
 
-            // Process in chunks
-            let mut processed = 0;
-            while processed < len {
-                let chunk_end = (processed + chunk_size_operations).min(len);
+            for k in 0..spread.count() {
+                let processed = spread.start(k) / std::mem::size_of::<u64>();
+                let chunk_end = processed + chunk_size_operations;
 
                 // Copy from source to destination with direction patterns
                 match copy_dirs {
@@ -2516,23 +2491,14 @@ pub unsafe fn block_move_multi(
                     }
                 }
 
-                // Handle errors
-                if runner.should_halt(cycle_errors) {
-                    let total_operations = cycle as u64 * len as u64;
+                // Count the half-chunk when it is done: copy (read + write) and verify (read)
+                runner.add_bytes(spread.chunk() * 3);
+
+                if runner.should_halt(cycle_errors) || runner.shutdown_requested() {
+                    let total_operations = (runner.bytes_processed() / (3 * std::mem::size_of::<u64>())) as u64;
                     return runner.finish_aborted(cycle_errors, total_operations);
                 }
-
-                // Check for shutdown
-                if runner.shutdown_requested() {
-                    runner.add_bytes((chunk_end - processed) * std::mem::size_of::<u64>() * 2);
-                    let total_operations = cycle as u64 * (chunk_end - processed) as u64;
-                    return runner.finish_aborted(cycle_errors, total_operations);
-                }
-
-                processed = chunk_end;
             }
-
-            runner.add_bytes(test_block.test_size * 3 / 2); // Copy (R source + W dest = 1×) + Verify (R dest = 0.5×) = 1.5×
         }
 
         runner.commit_cycle_errors(cycle_errors);
@@ -2554,7 +2520,7 @@ pub unsafe fn block_move_multi(
 // init → test × N → verify × M phases. Replaces duplicated boilerplate.
 //
 // Key improvements over v1 manual-loop tests:
-// - Mode 2 PRNG is a real LCG chain (not a static seed)
+// - Mode 2 is a real evolving chain (not a static seed), restarted per 4 KiB page
 // - Parameter field correctly interpreted (stride, subblocks, page stride)
 // - All tests use u64 lanes (v1 MirrorMove i32 removed)
 // - Strided access support for SimpleTest

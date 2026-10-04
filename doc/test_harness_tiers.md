@@ -158,12 +158,12 @@ would strip the SIMD. So the test keeps its loop and calls the runner between ch
 | Method | Call it | Purpose |
 |---|---|---|
 | `TestRunner::new` | once, at the top | Extent sizing, the extent's pieces (`test_memory::extent_pieces`: one per stitched span, one per block otherwise), the chunk (resolved once from the extent), the per-thread info log listing every piece with its page sizes and chunks, starts timers. **Returns `(runner, test_blocks)`** — keep `test_blocks` as a local so you can iterate it immutably while calling `&mut self` methods |
-| `chunk_size_bytes(piece_size)` | once per piece | The test's chunk, or the piece when it is shorter. A multiple of 4 KiB; the last chunk of a piece may be shorter. Convert to your own element units and apply your own `.max(..)` floor |
+| `chunks(piece_size)` | once per piece | The piece's `ChunkSpread` (TODO 76): `count()` chunks of exactly `chunk()` bytes (the test's chunk, or the piece when it is shorter), at `start(k)`, spread evenly from 0 to the piece's end. Chunks overlap by under one chunk in total when the chunk doesn't divide the piece, so every word must depend only on its position. Byte offsets: convert to your own units. `half_chunks` is the same for a copy from a piece's first half to its second; `chunk_bytes()` is the bare size, for tests whose chunks aren't ranges (Mem-Random) |
 | `begin_cycle()` | top of each cycle | Increments and returns the cycle number |
-| `add_bytes(n)` | per block or per chunk | Byte accounting. **You compute the multiplier** — StuckBit passes `test_size * 6` (3 writes + 3 reads), Refresh `test_size * 2` |
+| `add_bytes(n)` | per chunk, before the halt check | Byte accounting, so a halted or interrupted test reports what ran. **You compute the multiplier** — StuckBit passes `chunk() * 6` (3 writes + 3 reads), Refresh `chunk() * 2`. Overlaps count each time |
 | `should_halt(cycle_errors)` | after a verify | Error-mode dispatch: panics on `Panic`, returns `true` on `Halt`, `false` on `Log` |
 | `shutdown_requested()` | between chunks | Relaxed load of `SHUTDOWN_REQUESTED`. **Never inside a kernel** |
-| `update_progress()` | end of cycle | Throttled to 250 ms; no-op without a progress sink |
+| `update_progress()` / `update_progress_in_cycle()` | end of cycle / between chunks | Throttled to 250 ms; no-op without a progress sink. Tier 1 calls the in-cycle one per chunk, since one piece can be a whole cycle |
 | `should_continue()` | end of cycle | The timing/cycle gate |
 | `commit_cycle_errors(n)` | end of cycle | Folds the cycle's errors into the running total |
 | `finish_aborted(cycle_errors, ops)` / `finish_completed(ops)` | on exit | Builds `TestStats`. Aborted = Halt-on-error or Ctrl+C; completed = timing gate reached |
@@ -181,16 +181,20 @@ loop {
 
     for test_block in test_blocks.iter() {
         let base = test_block.ptr as *mut $simd_type;
-        let chunk = (runner.chunk_size_bytes(test_block.test_size) / lanes).max(FLOOR);
+        let spread = runner.chunks(test_block.test_size);
+        let chunk = spread.chunk() / lanes;
 
-        // …your loop nest, whatever shape it needs…
-        //    kernel goes here, macro-expanded, no fn boundary
+        for k in 0..spread.count() {
+            let start = spread.start(k) / lanes;
+            // …your loop nest over start..start + chunk, whatever shape it needs…
+            //    kernel goes here, macro-expanded, no fn boundary
 
-        if runner.should_halt(cycle_errors) { return runner.finish_aborted(/*…*/); }
-        if runner.shutdown_requested()      { return runner.finish_aborted(/*…*/); }
+            runner.add_bytes(spread.chunk() * /* your own multiplier */);
+            if runner.should_halt(cycle_errors) { return runner.finish_aborted(/*…*/); }
+            if runner.shutdown_requested()      { return runner.finish_aborted(/*…*/); }
+        }
     }
 
-    runner.add_bytes(/* your own multiplier */);
     runner.commit_cycle_errors(cycle_errors);
     runner.update_progress();
     if !runner.should_continue() { return runner.finish_completed(/*…*/); }
@@ -207,7 +211,7 @@ This is the table to read if you are deciding where a new test goes.
 | `Mem-Refresh{,128,256,512,Auto}`, `Mem-Refresh-Flush{,128,256,512,Auto}` | `refresh_impl!` (widths), `refresh_stable_multi` (scalar) | **A 64 ms `sleep` between write and verify, per chunk.** The harness has no delay phase, and the sleep has to be ordered after the fence and after the optional flush — otherwise a cached copy masks the bit-fade the test exists to find (the #26 bug) |
 | `Mem-CacheBust` | `cache_busting_multi` | **Non-linear access order.** Walks the chunk at `CACHE_BUSTING_STRIDE`, and the whole write/verify shape switches on the `stride_patterns` parameter. `ChunkCtx` hands the closure a linear `chunk_start..chunk_end`; the offset-then-stride walk is a loop nest the harness does not have |
 | `Mem-Random` | `random_torture_multi` | **RNG-driven access order** over the piece, indexed by multiply-high (`rng * len >> 64`, any length), iterating `rng_sequences`. Mismatches OR into an accumulator; a nonzero one replays the chunk from its saved RNG state to count and log (TODO 76). Also inits once up front and never re-inits, which does not map onto per-cycle `test_fn`/`verify_fn`. (Reads only today — random *writes* are an open item, TODO #19 step 6) |
-| `Mem-Stride` | `stride_access_multi` | **A loop level above the chunk walk.** The nest is cycle → block → *stride* → chunk → subdivision, with a labeled `'stride_loop`. The harness's nest is cycle → block → chunk, and the stride loop cannot be pushed inside a chunk without changing what is measured |
+| `Mem-Stride` | `stride_access_multi` | **A loop level above the chunk walk.** The nest is cycle → block → *stride* → chunk → subdivision. The harness's nest is cycle → block → chunk, and the stride loop cannot be pushed inside a chunk without changing what is measured |
 | `Mem-BlockMove` | `block_move_multi` | **Two ranges with different roles** — first half source, second half destination — plus a `copy_directions` switch. `ChunkCtx` describes one range |
 
 Note the pattern: every Tier-2 justification is a *loop-shape* or *timing* need, never a SIMD or

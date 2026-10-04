@@ -30,10 +30,13 @@ Allocation  (per-thread OS-level block — set by memory_strategy.allocation_mod
 thread's memory, in order. Under `allocator=stitched` that memory is one span, so the extent is one
 piece; under `plan-pagesize-pref` it is whole blocks, then the remainder. The chunk is resolved once
 from the extent: the configured size, at least the test's minimum, at most the extent, rounded up to
-a multiple of 4 KiB. Chunks walk each piece from its start; the last one may be shorter. A chunk may
-cross a 1 GiB to 2 MiB page seam inside a span. Under `plan-pagesize-pref` a piece shorter than the
-chunk gets one chunk of its own length. The per-thread log line lists each piece, its page sizes and
-its chunks.
+a multiple of 4 KiB. Every chunk is exactly that size. They spread evenly over the piece: the first
+starts at 0, the last ends at the piece's end, and where the chunk doesn't divide the piece the
+chunks overlap, by under one chunk in total (`880 MiB x 6, 160 MiB overlap`). When it divides, they
+tile with no overlap, as TM5's blocks do. A chunk may cross a 1 GiB to 2 MiB page seam inside a
+span. Under `plan-pagesize-pref` a piece shorter than the chunk gets one chunk of its own length.
+The per-thread log line lists each piece, its page sizes and its chunks. A fault in an overlap is
+found by both chunks and counted twice, as `verify_reps` counts each detection.
 
 An invalid spec stops the run with an error naming the `test_sequence` entry: an unknown mode, a
 missing field, a size of 0, or a `cache` target whose scale is malformed or outside 0.01-100. A

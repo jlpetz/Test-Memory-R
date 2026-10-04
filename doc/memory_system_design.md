@@ -175,9 +175,10 @@ provable full coverage, one multiply per chunk.
 
 ### 4.5 Chunks never wrap — the circular framing was wrong
 
-> **Built so far (TODO 76, 2026-10-03):** chunks walk `k*C` from the start of each extent piece and
-> the last one is shorter; the even-spread starts below and per-cycle rotation are not built. A
-> stitched extent is one piece, so nothing overlaps and nothing wraps.
+> **Built (TODO 76, 2026-10-05):** the even spread below, as `test_memory::ChunkSpread`, in every
+> chunked test: every chunk is exactly `C`, start `k` is `k*(T-C)/(n-1)` floored to 4 KiB, each
+> start on its own (a single floored step leaves a hole before the last chunk). Per-cycle rotation
+> is not built.
 
 Earlier drafts made the space circular and let a chunk wrap past `T`, splitting it a third time.
 **That is avoidable and should be avoided.** The reasoning:
@@ -265,14 +266,14 @@ This replaces "C is always a power of two" (DECIDED until 2026-10-03). Why it ch
   into parts (mirror halves and subblocks, BlockMove halves and quarters, Stride subdivisions).
   4 KiB covers all of them for every width, except MirrorMove's 3 subblocks (TODO 85), and keeps
   chunk starts page-aligned.
-- **The structural payoffs** argued for powers of two don't need them. Chunks walk `k*C` within a
-  piece, with a short last chunk, so nothing overlaps. Tile mode (4.7) takes `floor(T/C)*C` for any
-  `C`. Comparability comes from configs naming the same sizes, not from a ladder.
+- **The structural payoffs** argued for powers of two don't need them. Chunks spread evenly over a
+  piece (4.5), each exactly `C`. Tile mode (4.7) takes `floor(T/C)*C` for any `C`. Comparability
+  comes from configs naming the same sizes, not from a ladder.
 - **The power-of-two pieces came from the old allocator's blocks**, not from the tests. With
   `allocator=stitched` a thread's memory is one span, and the extent is one piece of it.
 
-What it costs: an extent that isn't a multiple of the chunk ends in a shorter chunk. That chunk is
-tested in full; TM5 drops such a tail.
+What it costs: an extent that isn't a multiple of the chunk is walked with overlaps, under one
+chunk in total per pass (4.5); n = 2 nearly doubles a pass. TM5 drops such a tail instead.
 
 ### 4.7 Two coverage modes — overlap or exclusive, never both
 

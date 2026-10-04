@@ -167,19 +167,17 @@ where
     // (Bytes and errors are accumulated through the runner.)
     let mut total_operations = 0u64;
 
-    // Pre-compute per-block metadata once (ptr, len, chunk_size don't change between cycles)
+    // Pre-compute per-block metadata once (ptr, len, chunks don't change between cycles)
     struct BlockMeta {
         ptr: *mut u64,
         len_elements: usize,
-        chunk_size_elements: usize,
+        chunks: crate::test_memory::ChunkSpread,
         test_size_bytes: usize,
     }
     let block_metas: Vec<BlockMeta> = test_blocks.iter().map(|tb| {
         let ptr = tb.ptr as *mut u64;
         let len_elements = tb.test_size / std::mem::size_of::<u64>();
-        let chunk_bytes = runner.chunk_size_bytes(tb.test_size);
-        let chunk_size_elements = chunk_bytes / std::mem::size_of::<u64>();
-        BlockMeta { ptr, len_elements, chunk_size_elements, test_size_bytes: tb.test_size }
+        BlockMeta { ptr, len_elements, chunks: runner.chunks(tb.test_size), test_size_bytes: tb.test_size }
     }).collect();
 
     // Initialize all blocks with patterns (unless dependent mode — prior test already wrote them)
@@ -214,9 +212,12 @@ where
 
         for meta in block_metas.iter() {
             let mut block_errors = 0u64;
+            // Every chunk is exactly the test's chunk, spread evenly over the piece (TODO 76)
+            let chunk_len = meta.chunks.chunk() / std::mem::size_of::<u64>();
 
-            for chunk_start in (0..meta.len_elements).step_by(meta.chunk_size_elements) {
-                let chunk_end = (chunk_start + meta.chunk_size_elements).min(meta.len_elements);
+            for k in 0..meta.chunks.count() {
+                let chunk_start = meta.chunks.start(k) / std::mem::size_of::<u64>();
+                let chunk_end = chunk_start + chunk_len;
                 let ctx = ChunkCtx {
                     ptr: meta.ptr,
                     chunk_start,
@@ -255,8 +256,7 @@ where
                 }
 
                 // Count the chunk when it is done, so a halt or shutdown below reports what ran:
-                // under stitched one piece is the whole extent (TODO 76)
-                let chunk_len = chunk_end - chunk_start;
+                // under stitched one piece is the whole extent (TODO 76). Overlaps count each time.
                 runner.add_bytes(chunk_len * std::mem::size_of::<u64>() * ops_per_wrc * wrc as usize);
                 total_operations += chunk_len as u64 * (test_reps as u64 + verify_reps as u64) * wrc as u64;
 
@@ -269,6 +269,9 @@ where
                 if runner.shutdown_requested() {
                     return runner.finish_aborted(cycle_errors + block_errors, total_operations);
                 }
+
+                // The live display, throttled inside: one piece can be a whole cycle long
+                runner.update_progress_in_cycle();
             }
 
             cycle_errors += block_errors;

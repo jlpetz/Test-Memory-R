@@ -4407,9 +4407,11 @@ mod tests {
 
     /// TODO 76: every built-in correctness and bandwidth test runs clean on one region of three
     /// joined blocks (640 KiB, not a power of two). Tests with an absolute chunk get 68 KiB, which
-    /// divides neither the region nor a block, so each ends in a short chunk. Nothing is written
-    /// outside the region (guard zones), and the correctness tests leave no extent word untouched,
-    /// so no tail is skipped. (The Spd-* bandwidth tests still take power-of-two blocks.)
+    /// divides neither the region nor a block, so its 10 chunks overlap by 4 or 8 KiB. Nothing is
+    /// written outside the region (guard zones), and the correctness tests leave no extent word
+    /// untouched, so nothing is skipped. Every chunk is exactly 68 KiB: a Bench-Init's bytes are
+    /// its init pass, if it has one, plus 10 x 68 KiB per write pass. (The Spd-* bandwidth tests still take
+    /// power-of-two blocks.)
     #[test]
     fn built_in_tests_run_clean_on_joined_blocks() {
         let mut region = Region::new(&[256 * KIB, 256 * KIB, 128 * KIB]);
@@ -4428,6 +4430,11 @@ mod tests {
             let stats = unsafe { test_fn(&region.blocks, 0, ErrorMode::Log, &def.config.timing, &def.config, None) };
             assert_eq!(stats.error_count, 0, "{} found errors", def.display_name);
             assert!(stats.bytes_processed > 0, "{} tested nothing", def.display_name);
+            if def.actual_name.starts_with("Bench-Init-") {
+                let init = if def.config.skip_init { 0 } else { 640 * KIB };
+                let passes = def.config.write_read_cycles as usize;
+                assert_eq!(stats.bytes_processed, init + passes * 10 * 68 * KIB, "{}: a chunk wasn't 68 KiB", def.display_name);
+            }
             if writes_all {
                 let left = region.words().iter().filter(|&&w| w == UNTOUCHED).count();
                 assert_eq!(left, 0, "{} left {} words of its extent untouched", def.display_name, left);
@@ -4436,6 +4443,54 @@ mod tests {
             ran.push(def.display_name.clone());
         }
         assert!(ran.len() > 30, "only {} tests ran: {:?}", ran.len(), ran);
+    }
+
+    /// TODO 76: chunks overlap where they don't tile, so a word's value may depend only on its
+    /// position. Each writer whose last pass covers every word leaves the same image at 68 KiB
+    /// and 100 KiB chunks (Mem-Stride's last pass doesn't), and each Bench-Verify finds its
+    /// Bench-Init's image clean at a third size, 132 KiB.
+    #[test]
+    fn writers_leave_the_same_image_at_any_chunk_size() {
+        let mut region = Region::new(&[256 * KIB, 256 * KIB, 128 * KIB]);
+        let suite = suite();
+        let with_chunk = |def: &TestDefinition, chunk: usize| {
+            let mut def = def.clone();
+            def.config.chunk_mode = ChunkMode::Absolute { size_bytes: chunk };
+            def
+        };
+        let mut compared = 0;
+        for (def, test_fn) in &suite {
+            let name = def.actual_name;
+            if !(name.starts_with("Mem-") || name.starts_with("Bench-Init-")) || name.starts_with("Mem-Stride") {
+                continue;
+            }
+            let mut images = Vec::new();
+            for chunk in [68 * KIB, 100 * KIB] {
+                let def = with_chunk(def, chunk);
+                region.words().fill(UNTOUCHED);
+                let stats = unsafe { test_fn(&region.blocks, 0, ErrorMode::Log, &def.config.timing, &def.config, None) };
+                assert_eq!(stats.error_count, 0, "{} found errors", def.display_name);
+                images.push(region.words().to_vec());
+            }
+            assert!(images[0] == images[1], "{} wrote a different image at 68 KiB and 100 KiB chunks", def.display_name);
+            compared += 1;
+        }
+        assert!(compared > 20, "only {compared} writers compared");
+
+        let mut verified = 0;
+        for (init, init_fn) in suite.iter().filter(|(d, _)| d.display_name.starts_with("Bench-Init-")) {
+            let verify_name = init.display_name.replace("Bench-Init-", "Bench-Verify-");
+            let (verify, verify_fn) = suite.iter().find(|(d, _)| d.display_name == verify_name).unwrap();
+            let init = with_chunk(init, 68 * KIB);
+            let mut verify = with_chunk(verify, 132 * KIB);
+            verify.config.skip_init = true;
+            unsafe { init_fn(&region.blocks, 0, ErrorMode::Log, &init.config.timing, &init.config, None) };
+            let stats = unsafe { verify_fn(&region.blocks, 0, ErrorMode::Log, &verify.config.timing, &verify.config, None) };
+            assert_eq!(stats.error_count, 0, "{} at 132 KiB disagrees with {} at 68 KiB", verify.display_name, init.display_name);
+            verified += 1;
+        }
+        assert!(verified >= 7, "only {verified} Bench pairs verified");
+        assert!(region.guards_intact());
     }
 
     /// Why `subdivisions` is capped at 512: past it, Mem-Stride's shift no longer divides a 4 KiB
@@ -4456,8 +4511,10 @@ mod tests {
         assert!(untouched_with(1024, &mut region) > 0);
     }
 
-    /// TODO 76: a fault between a write and its verify is counted once, and a halted test still
-    /// reports the bytes it got through (accounting is per chunk, not per piece).
+    /// TODO 76: a fault between a write and its verify is counted once per chunk that verifies
+    /// it: once in one chunk, twice in the overlap of two (as `verify_reps` counts each detection),
+    /// and once under halt, which stops at the first. A halted test still reports the bytes it got
+    /// through (accounting is per chunk, not per piece).
     #[test]
     fn an_injected_fault_is_counted_and_halt_reports_progress() {
         let mut region = Region::new(&[256 * KIB, 256 * KIB, 128 * KIB]);
@@ -4468,12 +4525,18 @@ mod tests {
         verify.config.skip_init = true;
         verify.config.chunk_mode = ChunkMode::Absolute { size_bytes: 68 * KIB };
 
-        for (mode, check) in [(ErrorMode::Log, "log"), (ErrorMode::Halt, "halt")] {
+        // Chunks [0, 68) and [60, 128) KiB: 68 KiB + 40 B is in the second only, 62 KiB in both
+        for (word, mode, errors, check) in [
+            ((68 * KIB) / 8 + 5, ErrorMode::Log, 1, "log"),
+            ((68 * KIB) / 8 + 5, ErrorMode::Halt, 1, "halt"),
+            ((62 * KIB) / 8, ErrorMode::Log, 2, "log, overlap"),
+            ((62 * KIB) / 8, ErrorMode::Halt, 1, "halt, overlap"),
+        ] {
             unsafe { init_fn(&region.blocks, 0, ErrorMode::Log, &init.config.timing, &init.config, None) };
-            region.words()[(68 * KIB) / 8 + 5] ^= 1 << 17; // in the second chunk
+            region.words()[word] ^= 1 << 17;
             let stats = unsafe { verify_fn(&region.blocks, 0, mode, &verify.config.timing, &verify.config, None) };
-            assert_eq!(stats.error_count, 1, "{check}: one flipped bit, one error");
-            assert!(stats.bytes_processed >= 2 * 68 * KIB, "{check}: the chunks it verified are counted ({})", stats.bytes_processed);
+            assert_eq!(stats.error_count, errors, "{check}: one flipped bit");
+            assert!(stats.bytes_processed >= 68 * KIB, "{check}: the chunks it verified are counted ({})", stats.bytes_processed);
         }
         assert!(region.guards_intact());
     }

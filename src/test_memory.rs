@@ -15,6 +15,71 @@ use crate::tests::TestBlock;
 /// quarters and subdivisions exact for every vector width, and keeps chunk starts page-aligned.
 pub const GRANULE: usize = 4096;
 
+/// How a test's chunks cover its extent (TODO 76): `count()` chunks of exactly `chunk()` bytes,
+/// spread evenly, the first at 0 and the last ending at the extent. Start k is k(E-c)/(n-1)
+/// floored to the granule, each start on its own, so consecutive starts are at most c apart (no
+/// holes) and the overlaps differ by at most one granule; the total overlap is under c. When c
+/// divides the extent the starts are k*c, TM5's tiling with no overlap; when c is at least the
+/// extent there is one chunk, the extent. With 3 or more chunks, chunks k and k+2 never overlap.
+/// Every word must be position-pure for this: a chunk rewrites what its neighbour wrote.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct ChunkSpread {
+    extent: usize,
+    chunk: usize,
+    count: usize,
+    /// (E-c)/G = q*(n-1) + r, so start(k) = (k*q + k*r/(n-1)) * G without overflow.
+    q: usize,
+    r: usize,
+    d: usize,
+    granule: usize,
+}
+
+impl ChunkSpread {
+    pub fn new(extent: usize, chunk: usize) -> Self {
+        Self::with_granule(extent, chunk, GRANULE)
+    }
+
+    /// For halves (BlockMove, Spd-Copy): `with_granule(E / 2, c / 2, GRANULE / 2)`.
+    pub fn with_granule(extent: usize, chunk: usize, granule: usize) -> Self {
+        debug_assert!(extent.is_multiple_of(granule) && chunk.is_multiple_of(granule) && chunk > 0,
+                      "extent {extent} and chunk {chunk} must be non-zero multiples of {granule}");
+        if extent == 0 {
+            return Self { extent, chunk: 0, count: 0, q: 0, r: 0, d: 1, granule };
+        }
+        let chunk = chunk.clamp(1, extent);
+        let count = extent.div_ceil(chunk);
+        let span = (extent - chunk) / granule;
+        let d = (count - 1).max(1);
+        Self { extent, chunk, count, q: span / d, r: span % d, d, granule }
+    }
+
+    #[inline(always)]
+    pub fn count(&self) -> usize {
+        self.count
+    }
+
+    #[inline(always)]
+    pub fn chunk(&self) -> usize {
+        self.chunk
+    }
+
+    /// Byte offset of chunk `k` (`k < count()`), a multiple of the granule.
+    #[inline(always)]
+    pub fn start(&self, k: usize) -> usize {
+        (k * self.q + k * self.r / self.d) * self.granule
+    }
+
+    /// Bytes walked per pass, overlaps counted each time: `count() * chunk()`.
+    pub fn walked(&self) -> usize {
+        self.count * self.chunk
+    }
+
+    /// Bytes walked twice per pass: `walked() - extent`, under one chunk.
+    pub fn overlap(&self) -> usize {
+        self.walked() - self.extent
+    }
+}
+
 /// A longest run of address-adjacent blocks the allocator joined.
 #[derive(Debug)]
 pub struct Region {
@@ -100,9 +165,10 @@ pub fn size_str(bytes: usize) -> String {
 
 /// The pieces for the per-thread log line, each with its page sizes and chunks: one piece of a
 /// stitched span `880 MiB 1G (2 x 440 MiB)`; one across a page-size seam
-/// `1136 MiB 1G 1024 MiB/2M 112 MiB (3 x 440 MiB)`; legacy blocks `1024 MiB 1G (1 x 1024 MiB) +
-/// 512 MiB 2M (1 x 512 MiB)`. A piece on more than one NUMA node ends in `nodes 0+1`.
-pub fn describe_pieces(blocks: &[AllocationBlock], pieces: &[TestBlock<'_>], chunk_of: impl Fn(usize) -> usize) -> String {
+/// `1136 MiB 1G 1024 MiB/2M 112 MiB (3 x 440 MiB, 184 MiB overlap)`; legacy blocks
+/// `1024 MiB 1G (1 x 1024 MiB) + 512 MiB 2M (1 x 512 MiB)`. A piece on more than one NUMA node
+/// ends in `nodes 0+1`.
+pub fn describe_pieces(blocks: &[AllocationBlock], pieces: &[TestBlock<'_>], chunks_of: impl Fn(usize) -> ChunkSpread) -> String {
     const NAMES: [&str; 3] = ["1G", "2M", "4K"];
     pieces.iter().map(|piece| {
         let (mix, nodes) = page_mix(blocks, piece.ptr, piece.test_size);
@@ -112,13 +178,14 @@ pub fn describe_pieces(blocks: &[AllocationBlock], pieces: &[TestBlock<'_>], chu
         } else {
             kinds.iter().map(|&k| format!("{} {}", NAMES[k], size_str(mix[k]))).collect::<Vec<_>>().join("/")
         };
-        let chunk = chunk_of(piece.test_size).max(1);
+        let spread = chunks_of(piece.test_size);
+        let overlap = if spread.overlap() > 0 { format!(", {} overlap", size_str(spread.overlap())) } else { String::new() };
         let nodes = if nodes.len() > 1 {
             format!(" nodes {}", nodes.iter().map(|n| n.to_string()).collect::<Vec<_>>().join("+"))
         } else {
             String::new()
         };
-        format!("{} {} ({} x {}){nodes}", size_str(piece.test_size), pages, piece.test_size.div_ceil(chunk), size_str(chunk))
+        format!("{} {} ({} x {}{overlap}){nodes}", size_str(piece.test_size), pages, spread.count(), size_str(spread.chunk()))
     }).collect::<Vec<_>>().join(" + ")
 }
 
@@ -171,6 +238,67 @@ mod tests {
         pieces.iter().map(|p| p.test_size).collect()
     }
 
+    /// Every guarantee `ChunkSpread` documents, for one extent and chunk.
+    fn check_spread(extent: usize, chunk: usize, g: usize) {
+        let s = ChunkSpread::with_granule(extent, chunk, g);
+        let c = s.chunk();
+        let n = s.count();
+        let case = format!("extent {extent} chunk {chunk} granule {g}");
+        assert_eq!(c, chunk.min(extent), "{case}");
+        assert_eq!(n, extent.div_ceil(c), "{case}");
+        assert_eq!(s.start(0), 0, "{case}");
+        assert_eq!(s.start(n - 1) + c, extent, "{case}: the last chunk ends at the extent");
+        let starts: Vec<usize> = (0..n).map(|k| s.start(k)).collect();
+        assert!(starts.iter().all(|&x| x % g == 0), "{case}: starts on the granule");
+        let overlaps: Vec<usize> = starts.windows(2).map(|w| {
+            assert!(w[1] > w[0] && w[1] - w[0] <= c, "{case}: a hole between {} and {}", w[0], w[1]);
+            w[0] + c - w[1]
+        }).collect();
+        if let (Some(lo), Some(hi)) = (overlaps.iter().min(), overlaps.iter().max()) {
+            assert!(hi - lo <= g, "{case}: overlaps {lo}..{hi} differ by more than a granule");
+        }
+        assert_eq!(s.overlap(), overlaps.iter().sum::<usize>(), "{case}");
+        assert!(s.overlap() < c, "{case}");
+        if extent.is_multiple_of(c) {
+            assert!(starts.iter().enumerate().all(|(k, &x)| x == k * c), "{case}: exact tiles");
+        }
+        if n >= 3 {
+            assert!(starts.windows(3).all(|w| w[2] - w[0] >= c), "{case}: k and k+2 overlap");
+        }
+    }
+
+    #[test]
+    fn chunks_spread_evenly_with_no_holes() {
+        const KIB: usize = 1024;
+        // The canary: 640 KiB in 68 KiB chunks is 10 chunks, 60 or 64 KiB apart
+        let s = ChunkSpread::new(640 * KIB, 68 * KIB);
+        assert_eq!(s.count(), 10);
+        let starts: Vec<usize> = (0..10).map(|k| s.start(k) / KIB).collect();
+        assert_eq!(starts, [0, 60, 124, 188, 252, 316, 380, 444, 508, 572]);
+        // One step rounded once left a hole before the last chunk in each of these
+        for (e, c) in [(640 * KIB, 68 * KIB), (977 * MIB, 8 * MIB), (880 * MIB, 4100 * KIB), (7 * GIB + 12 * KIB, 64 * KIB)] {
+            check_spread(e, c, GRANULE);
+        }
+        // One chunk, exact tiles, two chunks (the worst case: walks almost twice the extent)
+        assert_eq!(ChunkSpread::new(GIB, 2 * GIB).count(), 1);
+        assert_eq!(ChunkSpread::new(5 * GIB, GIB).overlap(), 0);
+        let two = ChunkSpread::new(GIB, 880 * MIB);
+        assert_eq!((two.count(), two.start(1), two.overlap()), (2, 144 * MIB, 736 * MIB));
+        // Halves of a 4 KiB-multiple extent
+        check_spread(320 * KIB, 34 * KIB, GRANULE / 2);
+        // Random extents and chunks, in granules
+        let mut x = 0x9E37_79B9_7F4A_7C15_u64;
+        for _ in 0..20_000 {
+            x ^= x << 13;
+            x ^= x >> 7;
+            x ^= x << 17;
+            let e = 1 + (x % 3000) as usize;
+            let c = 1 + ((x >> 32) % (e as u64 + 50)) as usize;
+            check_spread(e * GRANULE, c * GRANULE, GRANULE);
+        }
+        assert_eq!(ChunkSpread::new(0, GRANULE).count(), 0);
+    }
+
     #[test]
     fn joined_blocks_are_one_region_and_the_rest_one_each() {
         // A stitched span: 8 GiB + 1 GiB of 1 GiB pages, then 256 MiB of 2 MiB pages
@@ -206,8 +334,8 @@ mod tests {
     fn pieces_report_their_page_sizes_across_a_seam() {
         let span = blocks(1 << 40, &[(GIB, PageType::Huge, true), (256 * MIB, PageType::Large, false)]);
         let pieces = extent_pieces(&span, GIB + 112 * MIB);
-        let line = describe_pieces(&span, &pieces, |piece| piece.clamp(GRANULE, 440 * MIB));
-        assert_eq!(line, "1136 MiB 1G 1024 MiB/2M 112 MiB (3 x 440 MiB)");
+        let line = describe_pieces(&span, &pieces, |piece| ChunkSpread::new(piece, 440 * MIB));
+        assert_eq!(line, "1136 MiB 1G 1024 MiB/2M 112 MiB (3 x 440 MiB, 184 MiB overlap)");
         assert_eq!(size_str(293 * MIB + MIB / 3), "293.33 MiB");
         assert_eq!(size_str(64 * 1024), "64 KiB");
     }

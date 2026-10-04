@@ -35,8 +35,8 @@ pub struct TestRunner<'a> {
     timing: &'a TestTiming,
     progress: Option<&'a TestProgress>,
 
-    /// The test's chunk, resolved once from its extent (TODO 76); a piece shorter than it
-    /// gets one chunk of its own length.
+    /// The test's chunk, resolved once from its extent (TODO 76). Every chunk is exactly this,
+    /// spread evenly over each piece (`chunks`); a piece shorter than it is one chunk.
     chunk: usize,
     start: Instant,
     cycle: u32,
@@ -101,16 +101,31 @@ impl<'a> TestRunner<'a> {
             thread_id, log_name,
             crate::test_memory::size_str(total_test_size),
             crate::test_memory::size_str(extent_size),
-            crate::test_memory::describe_pieces(blocks, &test_blocks, |piece| runner.chunk_size_bytes(piece)),
+            crate::test_memory::describe_pieces(blocks, &test_blocks, |piece| runner.chunks(piece)),
         );
         (runner, test_blocks)
     }
 
-    /// The chunk in bytes for a piece of `test_block_size`: the test's chunk, or the piece when it
-    /// is shorter. The test converts to its own element/operation units.
+    /// The chunks of a piece `len` bytes long: each exactly the test's chunk (or the piece, when
+    /// it is shorter), spread evenly from 0 to `len` (TODO 76). The test converts the byte
+    /// offsets to its own element/operation units.
     #[inline]
-    pub fn chunk_size_bytes(&self, test_block_size: usize) -> usize {
-        self.chunk.min(test_block_size)
+    pub fn chunks(&self, len: usize) -> crate::test_memory::ChunkSpread {
+        crate::test_memory::ChunkSpread::new(len, self.chunk)
+    }
+
+    /// Half-chunks over the first half of a piece, for tests that copy it to the second half:
+    /// `chunks(len)` halved, on a 2 KiB granule.
+    #[inline]
+    pub fn half_chunks(&self, len: usize) -> crate::test_memory::ChunkSpread {
+        crate::test_memory::ChunkSpread::with_granule(len / 2, self.chunk.min(len) / 2, crate::test_memory::GRANULE / 2)
+    }
+
+    /// The test's chunk in bytes, for tests whose chunks aren't byte ranges (Mem-Random's are
+    /// batches of random reads).
+    #[inline]
+    pub fn chunk_bytes(&self) -> usize {
+        self.chunk
     }
 
     /// Increment and return the new cycle number. Call at the top of each outer cycle.
@@ -162,13 +177,24 @@ impl<'a> TestRunner<'a> {
         SHUTDOWN_REQUESTED.load(Ordering::Relaxed)
     }
 
-    /// Throttled (250 ms) progress publish. No-op if no progress sink.
+    /// Throttled (250 ms) progress publish at the end of a cycle. No-op if no progress sink.
     #[inline]
     pub fn update_progress(&mut self) {
+        self.publish_progress(self.cycle);
+    }
+
+    /// The same from inside a cycle, between chunks: the current cycle isn't complete yet.
+    #[inline]
+    pub fn update_progress_in_cycle(&mut self) {
+        self.publish_progress(self.cycle.saturating_sub(1));
+    }
+
+    #[inline]
+    fn publish_progress(&mut self, cycles_completed: u32) {
         if let Some(progress) = self.progress {
             let now = Instant::now();
             if now.duration_since(self.last_progress_update).as_millis() >= 250 {
-                progress.cycles_completed.store(self.cycle, Ordering::Relaxed);
+                progress.cycles_completed.store(cycles_completed, Ordering::Relaxed);
                 progress.bytes_processed.store(self.total_bytes_processed as u64, Ordering::Relaxed);
                 progress.errors_found.store(self.total_error_count, Ordering::Relaxed);
                 progress.last_update_ms.store(self.start.elapsed().as_millis() as u64, Ordering::Relaxed);

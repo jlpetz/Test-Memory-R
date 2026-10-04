@@ -595,7 +595,8 @@ Extent modes (`tests.rs:14-28`):
 
 `calculate_chunk_size(test_name, extent_size)`, resolved once per test from the extent: the
 configured size, at least the test's minimum, at most the extent, rounded up to 4 KiB (TODO 76).
-Chunks walk each piece from its start; the last one may be shorter:
+Every chunk is exactly that size, spread evenly over the piece, overlapping where it doesn't
+divide it (`test_memory::ChunkSpread`):
 
 | `ChunkMode` | Meaning |
 |---|---|
