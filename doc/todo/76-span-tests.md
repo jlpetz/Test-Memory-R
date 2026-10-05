@@ -279,8 +279,12 @@ runs: 0 errors, 0 WHEA.
   arguments spilled to the stack on every word.
 - Mem-* (one pair): within noise; Stride 1.13x, BlockMove 0.91-1.12x across two step-2 runs.
 - Spd/Lat: Spd within ±3% but Spd-L1-Write 1.14x (the `memset` gone). Latency P50 unchanged at
-  L1/L2 read and write, DRAM and DRAM-Full; L3 rises (47 -> 82 ns read) because the extent is now
-  the real 30 MiB, not 16; L1-Copy 1.3 -> 2.3 ns (24 KiB extent, was 16; unexplained, to probe).
+  L1/L2 read and write, DRAM and DRAM-Full. L3 read rises (all-thread P50 53.8 -> 79.6 ns). Step 1
+  was not a smaller extent: it cut the same ~30 MiB into 16 + 8 + 4 MiB power-of-two pieces with a
+  chain each and sampled them in turn, so a third of its samples came from a 4 MiB chain; step 2 is
+  one chain over 30 MiB. On this VM (480 MB shared L3, 4 cores) that chain is about 45% DRAM hops;
+  no calibration file was used (L3 / 2 VM / 4 threads x 0.5 = 30 MiB). Lat-V2/V2P-L3 barely moved.
+  L1-Copy 1.3 -> 2.3 ns (24 KiB extent; step 1 had 16 + 8 KiB pieces, two chains; to probe).
   DRAM-Full setup is in place: Lat-DRAMFull-Read 43 s -> 21 s wall.
 - 1usmus_v3: a cycle 0:47 -> 6:50, by design (7 GiB per test, was 880 MiB). Non-strided tests
   0.95-1.08x; strided 0.80-0.92x (unchanged verify, now over 2 MiB pages too; TODO 89).
@@ -288,5 +292,5 @@ runs: 0 errors, 0 WHEA.
   4 MiB chunks, 150 verifies each) 2.10x on the accumulator verify; the mode-0 tests 0.96-1.21x;
   mirrors and the strided test 0.97-1.00x.
 
-Logs and the comparison script: `%LOCALAPPDATA%\Temp	mr76uns_step2\` (`compare2.py`; the
+Logs and the comparison script: `%LOCALAPPDATA%\Temp\tmr76\runs_step2\` (`compare2.py`; the
 `*_6ca286d.txt` files are the step-2 build before the accumulator verifies).
