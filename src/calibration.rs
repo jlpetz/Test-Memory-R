@@ -471,13 +471,19 @@ impl ProbeEngine {
 
         log::info!("ProbeEngine: Allocating {} bytes for calibration (page_size={})", max_size, page_size_str);
 
+        // A large-page request gets its page size from its alignment: without it the kernel
+        // silently gives smaller pages (TODO 87). A fallback to smaller pages keeps it, over-aligned.
+        let alignment = match &page_pref {
+            PageSizePreference::Prefer(PageType::Huge(size)) | PageSizePreference::Prefer(PageType::Large(size)) => Some(*size),
+            _ => None,
+        };
         let config = AllocationConfig {
             size: max_size,
             numa_node: None,
             page_size: page_pref,
             memory_type: MemoryType::WriteBack,
             zero_memory: false,
-            alignment: None,
+            alignment,
             numa_strict: false,
         };
 
