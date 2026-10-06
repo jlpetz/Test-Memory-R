@@ -2658,10 +2658,14 @@ unsafe fn verify_words(ptr: *const u64, start: usize, end: usize, test_name: &st
 /// on a hit.
 ///
 /// One load per step, not 4 accumulators 4 strides apart (`accumulate_stride_4`): the strided
-/// SimpleTest's walk over a big chunk is memory-bound, not bound by the OR chain, and below a
-/// 16 KiB stride the 4-way walk is far slower. On 1usmus_v3 (2026-10-06, 4 threads) it took Test 6
-/// (a 15.9 KB stride over 432 MiB chunks) from 44 s to 78 s, worse than the per-word branch it
-/// replaced (55 s), while at 32 KB and up it was 13-30% faster than this one.
+/// SimpleTest's walk over a big chunk is memory-bound, not bound by the OR chain, and at strides
+/// of about 12-20 KB the 4-way walk is far slower. On 1usmus_v3 (2026-10-06, 4 threads) it took
+/// Test 6 (a 15.9 KB stride over 432 MiB chunks) from 44 s to 78 s, worse than the per-word branch
+/// it replaced (55 s). A sweep over 432 MiB chunks (2026-10-07, 4-way time / 1-way time): 2-8 KB
+/// 0.97-1.03, 12.7 KB 1.58, 15.9 KB 1.82, 20 KB 1.34, 25.5 KB 0.95, 32-128 KB 0.90-0.94; over
+/// 32 MiB chunks 15.9 KB was 0.97. So the slow band is where one sweep's lines (chunk / stride,
+/// 1.4-2.2 MB here) are about the L2's 2 MiB; the prefetcher's part is unmeasured. A stopgap until
+/// the strided SimpleTest moves whole lines per jump as TM5 does (TODO 93).
 #[inline(always)]
 unsafe fn accumulate_stride(acc: &mut [u64; 4], ptr: *const u64, start: usize, end: usize, stride: usize,
                             expected: impl Fn(usize) -> u64 + Copy) {
@@ -2674,7 +2678,7 @@ unsafe fn accumulate_stride(acc: &mut [u64; 4], ptr: *const u64, start: usize, e
 
 /// `accumulate_stride` 4 strides per step into the 4 accumulators: for a walk over a chunk that
 /// stays in cache (Mem-CacheBust's 1 MiB, Mem-Stride's 2 MiB), where the loop is the limit, and for
-/// the strided SimpleTest at 16 KiB strides and up (`STRIDE_4_FROM`). Measured on the dev box
+/// the strided SimpleTest at 24 KiB strides and up (`STRIDE_4_FROM`). Measured on the dev box
 /// (2026-10-06): CacheBust 12% and Mem-Stride 5% faster than one load per step; 1usmus_v3's 32-100
 /// KB strides 13-30%.
 #[inline(always)]
@@ -2694,9 +2698,9 @@ unsafe fn accumulate_stride_4(acc: &mut [u64; 4], ptr: *const u64, start: usize,
     }
 }
 
-/// The strided SimpleTest's stride, in words, from which it walks 4 strides per step (16 KiB): see
-/// `accumulate_stride`.
-const STRIDE_4_FROM: usize = 2048;
+/// The strided SimpleTest's stride, in words, from which it walks 4 strides per step (24 KiB, above
+/// the slow band): see `accumulate_stride`.
+const STRIDE_4_FROM: usize = 3072;
 
 /// Counts and logs the words `start, start + stride, ...` below `end` that differ from
 /// `expected(idx)`, the cold path of `accumulate_stride` (the caller adds `transient_if_none`).
