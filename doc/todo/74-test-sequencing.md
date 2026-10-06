@@ -195,3 +195,25 @@ later ("repair in the middle might not make sense anyway").
   rows per test (Runs, Seal), the seal's stage time, an Errors by Step table only on failure.
   Results are per step (`step`, `id`, `label`, `seal_errors`; `per_step_averages`) and
   `--compare-results` matches by step and test.
+
+**Live runs, 2026-10-06/07** (memory=50%, 4 physical cores, 28 GiB; main = 59e77b1; single runs,
+about ±5% noise; all 0 errors, 0 seal errors, 0 WHEA):
+- **1usmus_v3**: 6:43 -> 4:42 at the branch head. TM5's 17 steps in TM5's order (main ran its 16
+  tests in file order, Test0 as a full Mem-Refresh). Strided SimpleTest steps 1.4-2.2x (TODO 89's
+  walks, and no strided up-front fill when sealed); sequential SimpleTest steps 0.93-0.95x (the
+  seal); mirror steps 1.1-2.6x faster at 512 bits despite TM5's doubled dwell; Seal-Check 0.5 s.
+  The seal's stages: 28 GiB sealed in 0.3 s, checked in 0.5 s. Sealed vs `seal=off` on the same
+  build: 5:21 vs 5:37 (the strided steps skip their fill). `seal=tm5` vs `tmr`: equal within noise.
+- **Check_absolutnew**: 20:30 -> 33:15, by design: TM5's 31 steps (Test 15 x8 is 11.5 min), not 16
+  tests. Sequential steps 0.98-1.05x, Test 15 (strided) 1.27x, mirrors 0.7-2.2x (TM5's dwell).
+- **Mem-* built-ins**: 8:28 -> 8:38. One-cycle StuckBit 0.82x (the seal adds 2 passes to 6),
+  duration tests 0.95-1.04x once the wrap covered only a step's first cycle (0.40-0.73x before).
+- **Bench**: within ±3%. The seal pairs: fills ~90 GiB/s at every width (non-temporal; the
+  temporal fills run ~38-40), checks 63 GiB/s at 128/256 and 53-57 at 512, hence `auto` = 256.
+- **Spd/Lat**: within noise of TODO 76 step 2; a plan with no sealed step is unsealed.
+
+An independent read of the diff (no builds) found six issues, all fixed in 56c1581: the check
+before a never-sealed step didn't halt the run; `mirror=` showed on every test; a plan with no
+sealed step still sealed memory; a `Test Sequence` starting at 16 gave a misleading error;
+`seal=off` refused an absent seal width; the ticker and the per-thread error line left out seal
+errors.
