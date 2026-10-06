@@ -517,7 +517,7 @@ pub fn run_tests_with_layout_and_timing_filtered(
     // Use config-driven tests if config is provided, otherwise use hard-coded defaults
     let mut cycle_order = None;
     let mut test_definitions = if let Some(cfg) = config {
-        match create_test_definitions_from_config(cfg) {
+        match create_test_definitions_from_config(cfg, cache_info) {
             Ok((tests, order)) => {
                 log::info!("Using config-driven test sequence with {} steps", tests.len());
                 cycle_order = order;
@@ -841,11 +841,15 @@ pub fn run_tests_with_layout_and_timing_filtered(
     // Create thread pool with pre-allocated blocks
     let thread_count = allocated_blocks.len();
 
-    // Set thread_count and cache_line_bytes on all test configs
+    // Set thread_count, cache_line_bytes and the TSC rate on all test configs (a config's latency
+    // tests need the TSC rate as the built-in ones do, TODO 94)
     let cache_info = crate::tests::get_cache_info();
     for test_def in &mut test_definitions {
         test_def.config.thread_count = thread_count;
         test_def.config.cache_line_bytes = cache_info.cache_line_size;
+        if test_def.config.tsc_frequency_ghz == 0.0 {
+            test_def.config.tsc_frequency_ghz = cache_info.tsc_frequency_ghz;
+        }
     }
 
     let thread_priority = ThreadPriority::default();
@@ -3952,13 +3956,20 @@ type CycleOrder = Vec<(String, bool)>;
 
 /// A config's steps (TODO 74): its tests in `cycle_order`, or each enabled test once in file
 /// order. Returns them with `cycle_order` as written (each id with whether it runs), if it has one.
-fn create_test_definitions_from_config(config: &crate::config::ModernConfig) -> Result<(Vec<TestDefinition>, Option<CycleOrder>), String> {
+///
+/// A config can name any test the built-in suite has, latency and bandwidth tests included
+/// (TODO 94), by its name or its `-Auto` name, plus the aliases `get_test_function_by_name` knows.
+fn create_test_definitions_from_config(config: &crate::config::ModernConfig, cache_info: &CacheInfo) -> Result<(Vec<TestDefinition>, Option<CycleOrder>), String> {
     let plan = config.plan()?;
+    let built_in = create_test_definitions(cache_info);
     let mut tests = Vec::new();
     for (test_index, test) in plan.tests.into_iter().enumerate() {
         let test_name = test.function;
-        // Look up function by name using the test registry
+        // Look up function by name: the aliases first, then the built-in suite
         let test_function = crate::tests::get_test_function_by_name(test_name)
+            .or_else(|| built_in.iter()
+                .find(|d| d.actual_name == test_name || d.original_name == Some(test_name))
+                .map(|d| d.function.clone()))
             .ok_or_else(|| format!("Unknown test function '{}' in config", test_name))?;
         let id = test.id.map(str::to_string);
 
@@ -4713,6 +4724,27 @@ mod tests {
         let errors = crate::thread_pool::seal_before_step(&region.blocks, &sealed.config, sealed.actual_name, &progress, &mut unsealed);
         assert_eq!((errors, unsealed), (0, 0));
         assert_eq!(unsafe { kernel.check(region.words().as_ptr(), 0, words, "test") }, 0);
+    }
+
+    /// TODO 94: a config can name every built-in test, latency and bandwidth tests included, by
+    /// its name or its `-Auto` name.
+    #[test]
+    fn a_config_can_name_every_built_in_test() {
+        let cache_info = crate::tests::get_cache_info();
+        let mut config = crate::config::ModernConfig::create_demo_config();
+        let mut names: Vec<&str> = Vec::new();
+        for def in create_test_definitions(cache_info) {
+            names.push(def.actual_name);
+            names.extend(def.original_name);
+        }
+        names.sort();
+        names.dedup();
+        config.test_sequence = names.iter()
+            .map(|name| crate::config::TestConfig { enabled: true, function: name.to_string(), ..Default::default() })
+            .collect();
+        let (steps, _) = create_test_definitions_from_config(&config, cache_info).unwrap();
+        assert_eq!(steps.len(), names.len());
+        assert!(names.contains(&"Lat-L1-Copy") && names.contains(&"Spd-L1-Read-Auto"));
     }
 
     /// TODO 92: each latency shortcut runs the tests its help text names, no more.
