@@ -909,8 +909,10 @@ fn run() -> Result<(), Box<dyn std::error::Error>> {
 				return Ok(());
 			}
 			"B" => {
+				// The default minpage needs large pages, so say 4 KB for this run (TODO 88)
+				alloc_config.min_page_size = "regular".to_string();
 				println!();
-				println!("⚠️  Continuing with standard 4KB pages.");
+				println!("⚠️  Continuing with standard 4KB pages (minpage=regular for this run).");
 				println!("   Performance impact: ~5-10% slower than large pages");
 				println!("   Every test still runs and every pattern is still checked, but slower");
 				println!("   memory traffic is less stress, so marginal errors that only appear at");
@@ -920,8 +922,9 @@ fn run() -> Result<(), Box<dyn std::error::Error>> {
 				println!();
 			}
 			_ => {
+				alloc_config.min_page_size = "regular".to_string();
 				println!();
-				println!("❌ Invalid choice. Defaulting to continue with 4KB pages.");
+				println!("❌ Invalid choice. Defaulting to continue with 4KB pages (minpage=regular for this run).");
 				println!();
 			}
 		}
@@ -936,6 +939,15 @@ fn run() -> Result<(), Box<dyn std::error::Error>> {
 			println!("🎉 Large Pages: ✅ ENABLED and tested successfully!");
 			println!("   TMR will use 2MB large pages for optimal performance");
 		},
+		Err(_) if crate::memory::allocator::PageSizeLevel::from_config_str(&alloc_config.min_page_size)
+			> crate::memory::allocator::PageSizeLevel::Regular => {
+			// Without the privilege, a large minpage (the default) refuses the run at allocation
+			println!("⚠️  Large Pages: Not available, and minpage={} needs them, so the run will stop", alloc_config.min_page_size);
+			println!("   before allocating. Set them up (tmr.exe --setup-large-pages, elevated), or rerun");
+			println!("   with minpage=regular to test on standard 4KB pages: every test still runs, but");
+			println!("   slower memory traffic is less stress, so marginal errors that only appear at");
+			println!("   full bandwidth may go undetected");
+		}
 		Err(_) => {
 			println!("⚠️  Large Pages: Not available - TMR will use standard 4KB pages");
 			println!("   Performance impact: ~5-10% slower memory allocation");
