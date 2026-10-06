@@ -134,6 +134,14 @@ impl<R: Renderer> Reporter<R> {
             let performance_table = self.formatter.prepare_final_summary_performance_table(report);
             self.renderer.render_table(&performance_table)?;
         }
+
+        // Where in the sequence it failed, only when something did (TODO 74)
+        let final_check_errors = report.seal.as_ref().map_or(0, |s| s.final_check_errors);
+        if !report.errors_by_step.is_empty() || final_check_errors > 0 {
+            self.renderer.render_separator()?;
+            let table = self.formatter.prepare_errors_by_step_table(report);
+            self.renderer.render_table(&table)?;
+        }
         
         Ok(())
     }

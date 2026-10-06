@@ -97,6 +97,10 @@ struct CycleContext<'a> {
     test_run_result: &'a Arc<Mutex<TestRunResult>>,
     all_test_cpu_stats: &'a Arc<Mutex<TestCpuStats>>,
     cache_info: &'a CacheInfo,
+    /// The seal's kernel when the run is sealed (TODO 74)
+    seal: Option<crate::seal::SealKernel>,
+    /// A TM5 import: steps are named by the `.cfg`'s test numbers
+    tm5: bool,
 }
 
 /// Keeps the tests whose display, actual or original name matches one of the filter's
@@ -130,6 +134,9 @@ pub(crate) fn retain_matching(test_definitions: &mut Vec<TestDefinition>, filter
 pub struct TestRunOverrides<'a> {
     /// Run only the test(s) matching this name/glob filter.
     pub single_test_filter: Option<&'a str>,
+    /// Override the seal (`seal=tmr|tm5|off`) and its width (`seal-width=`).
+    pub seal_override: Option<&'a str>,
+    pub seal_width_override: Option<&'a str>,
     /// Override every mirror test's mode (`mirror=`).
     pub mirror_override: Option<crate::config::MirrorMode>,
     /// Override the pattern-generation mode.
@@ -209,6 +216,16 @@ pub struct PatternId {
 }
 
 impl PatternId {
+    /// The pattern a test writes or expects: a Bench-*-Seal-* test's is its seal pattern, modes
+    /// 200 (TMR) and 201 (TM5) whatever its width; any other test's is its config's.
+    pub fn for_test(test_name: &str, config: &crate::tests::TestMemoryConfig) -> Self {
+        if test_name.starts_with("Bench-Init-Seal-") || test_name.starts_with("Bench-Verify-Seal-") {
+            let mode = if test_name.contains("-Seal-TM5") { 201 } else { 200 };
+            return Self { mode, param0: 0, param1: 0 };
+        }
+        Self::from_config(config)
+    }
+
     /// Create from a TestMemoryConfig's pattern settings.
     pub fn from_config(config: &crate::tests::TestMemoryConfig) -> Self {
         Self {
@@ -248,7 +265,7 @@ fn derive_memory_effect(test_name: &str, config: &crate::tests::TestMemoryConfig
         || test_name.starts_with("Mem-SimpleNT")
         || test_name.starts_with("Bench-Init")
     {
-        return MemoryEffect::Writes(PatternId::from_config(config));
+        return MemoryEffect::Writes(PatternId::for_test(test_name, config));
     }
 
     // Tests that preserve existing memory contents (round-trip or read-only)
@@ -265,11 +282,11 @@ fn derive_memory_effect(test_name: &str, config: &crate::tests::TestMemoryConfig
 
 /// Validate a test plan's dependency chain.
 ///
-/// Walks the test list in order, tracking what pattern is currently in memory.
-/// Reports warnings for tests that use `skip_init=true` (dependent mode) but
-/// either have no pattern in memory or the wrong pattern.
+/// Walks the steps in order, tracking what pattern is currently in memory. Reports each step that
+/// uses `skip_init=true` (dependent mode) but finds no pattern in memory or the wrong one: a load
+/// error, since it would verify data nothing wrote. A step that takes the seal leaves the seal.
 ///
-/// Returns a list of (test_index, warning_message) for any issues found.
+/// Returns a list of (step_index, message) for any issues found.
 pub fn validate_test_plan(tests: &[TestDefinition]) -> Vec<(usize, String)> {
     let mut warnings = Vec::new();
     // Track what pattern is currently in memory (None = unknown/destroyed)
@@ -285,7 +302,7 @@ pub fn validate_test_plan(tests: &[TestDefinition]) -> Vec<(usize, String)> {
             let needs_existing_pattern = matches!(&test.memory_effect, MemoryEffect::Preserves);
 
             if needs_existing_pattern {
-                let expected = PatternId::from_config(&test.config);
+                let expected = PatternId::for_test(test.actual_name, &test.config);
                 match &current_pattern {
                     Some(current) if *current == expected => {
                         // Pattern matches — dependency satisfied
@@ -306,8 +323,17 @@ pub fn validate_test_plan(tests: &[TestDefinition]) -> Vec<(usize, String)> {
             }
         }
 
-        // Update memory state based on what this test does
-        match &test.memory_effect {
+        // Update memory state based on what this test does. A step that takes the seal leaves it
+        // in memory, whatever it wrote (TODO 74).
+        let sealed = test.config.seal.expects.then_some(MemoryEffect::Writes(PatternId {
+            mode: match test.config.seal.kernel.pattern {
+                crate::seal::SealPattern::Tmr => 200,
+                crate::seal::SealPattern::Tm5 => 201,
+            },
+            param0: 0,
+            param1: 0,
+        }));
+        match sealed.as_ref().unwrap_or(&test.memory_effect) {
             MemoryEffect::Writes(pattern) => {
                 current_pattern = Some(pattern.clone());
             }
@@ -332,6 +358,69 @@ pub struct TestDefinition {
     pub original_name: Option<&'static str>, // Preserves original name for Auto variants (e.g., "StuckBitTestAuto")
     /// What this test does to memory patterns. Used for plan-level dependency validation.
     pub memory_effect: MemoryEffect,
+    /// Which of the plan's tests this step runs (TODO 74): the steps of one test share it.
+    pub test_index: usize,
+    /// The test's config `id`; for a TM5 import, the `.cfg`'s test number.
+    pub id: Option<String>,
+    /// How the step takes the seal.
+    pub seal_use: SealUse,
+    /// `seal: false` on the test in the config.
+    pub seal_opt_out: bool,
+}
+
+impl TestDefinition {
+    /// The step's name in the plan, the ticker and error lines: the TM5 test number for an import,
+    /// the id for a config that gives one, e.g. `Mem-SimpleV2_A (Test 12)`.
+    pub fn step_label(&self, tm5: bool) -> String {
+        match (&self.id, tm5) {
+            (Some(id), true) => format!("{} (Test {id})", self.display_name),
+            (Some(id), false) => format!("{} ({id})", self.display_name),
+            (None, _) => self.display_name.clone(),
+        }
+    }
+}
+
+/// How a test takes the seal (TODO 74, `seal.rs`).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum SealUse {
+    /// A correctness test: the seal is checked before each of its chunks and resealed after.
+    Wrap,
+    /// A mirror test: its data is the seal and its verify the seal check (TM5's
+    /// `Capable_UseTst0ForGenAndCheck`).
+    Data,
+    /// TM5's test 0 as a step: the seal check alone.
+    Check,
+    /// Bandwidth, latency, Bench and Mem-Random tests: never sealed. The worker checks what one will
+    /// overwrite before it runs and reseals it before the next step that takes the seal.
+    Never,
+}
+
+/// A test's seal use, from its name. A new `Mem-*` correctness test takes the seal unless it is
+/// listed here; `every_sealed_test_honours_the_seal` checks each one does.
+pub fn seal_use(test_name: &str) -> SealUse {
+    if test_name == "Seal-Check" {
+        SealUse::Check
+    } else if test_name.starts_with("Mem-MirrorV2") {
+        SealUse::Data
+    } else if test_name.starts_with("Mem-") && test_name != "Mem-Random" {
+        SealUse::Wrap
+    } else {
+        SealUse::Never
+    }
+}
+
+/// The seal each step runs with (TODO 74): `kernel` when the run is sealed (`None` when not, and
+/// then the mirror tests still use `pattern`'s kernel for their data).
+fn set_step_seals(test_definitions: &mut [TestDefinition], kernel: crate::seal::SealKernel, on: bool) {
+    for def in test_definitions {
+        let takes = def.seal_use != SealUse::Never && !def.seal_opt_out;
+        def.config.seal = crate::seal::SealStep {
+            kernel,
+            on,
+            expects: on && takes,
+            wrap: on && takes && def.seal_use == SealUse::Wrap,
+        };
+    }
 }
 
 // Work item for thread pool
@@ -375,12 +464,13 @@ impl TestSuiteTiming {
 /// The channels line and the test configuration table, shown before a run and by `--startup-debug`.
 /// `thread_memory` is each thread's bytes, planned or allocated, so the table shows the extents
 /// and chunks the tests will resolve; `tm5` a TM5 import's `.cfg` window and lock granularity.
+#[allow(clippy::too_many_arguments)]
 fn print_test_plan(test_definitions: &[TestDefinition], suite_timing: &TestSuiteTiming, cache_info: &CacheInfo, channels: u32,
-                   thread_memory: &[usize], tm5: Option<(u32, u32)>) {
+                   thread_memory: &[usize], tm5: Option<(u32, u32)>, sequence: &crate::reporting::converters::PlanSequence) {
     use crate::reporting::{create_console_reporter, converters};
     println!("⚙  Memory Channels: {} (affects SimpleTest stride: [channels × param - 1] × {}B cache line)",
         channels, cache_info.cache_line_size);
-    let report = converters::create_test_configuration_report_v2(test_definitions, suite_timing, cache_info, thread_memory, tm5);
+    let report = converters::create_test_configuration_report_v2(test_definitions, suite_timing, cache_info, thread_memory, tm5, sequence);
     let mut reporter = create_console_reporter();
     if let Err(e) = reporter.report_test_configuration(&report) {
         log::error!("Failed to display test configuration report: {}", e);
@@ -410,6 +500,8 @@ pub fn run_tests_with_layout_and_timing_filtered(
 ) -> RunStatus {
     let TestRunOverrides {
         single_test_filter,
+        seal_override,
+        seal_width_override,
         mirror_override,
         pattern_mode_override,
         verify_reps_override,
@@ -423,10 +515,12 @@ pub fn run_tests_with_layout_and_timing_filtered(
 
     // Calculate progress tracking information and resolve auto-dispatch tests
     // Use config-driven tests if config is provided, otherwise use hard-coded defaults
+    let mut cycle_order = None;
     let mut test_definitions = if let Some(cfg) = config {
-        match create_test_definitions_from_config(cfg, cache_info) {
-            Ok(tests) => {
-                log::info!("Using config-driven test sequence with {} tests", tests.len());
+        match create_test_definitions_from_config(cfg) {
+            Ok((tests, order)) => {
+                log::info!("Using config-driven test sequence with {} steps", tests.len());
+                cycle_order = order;
                 tests
             }
             Err(e) => {
@@ -553,22 +647,35 @@ pub fn run_tests_with_layout_and_timing_filtered(
         return RunStatus::NotRun;
     }
 
-    // Validate test plan dependency chain
+    // The run's seal (TODO 74): the command line's, else the config's, else tmr at the widest
+    let seal_settings = crate::seal::SealSettings::parse(
+        seal_override.or(config.and_then(|c| c.system.seal.as_deref())).unwrap_or("tmr"),
+        seal_width_override.or(config.and_then(|c| c.system.seal_width.as_deref())).unwrap_or("auto"),
+    ).and_then(|s| Ok((s, s.kernel()?)));
+    let (seal_settings, seal_kernel) = match seal_settings {
+        Ok(s) => s,
+        Err(e) => {
+            println!("❌ Config error: {}", e);
+            log::error!(target: crate::console::FILE_ONLY_TARGET, "Config error: {}", e);
+            return RunStatus::NotRun;
+        }
+    };
+    set_step_seals(&mut test_definitions, seal_kernel, seal_settings.on);
+    let tm5_run = config.is_some_and(|c| c.legacy_metadata.is_some());
+
+    // Validate test plan dependency chain: a step that verifies the data an earlier one left must
+    // directly follow it, with no seal in between (TODO 74, the plan-time half of TODO 13)
     for (i, def) in test_definitions.iter().enumerate() {
         log::debug!("Test plan [{}] '{}': effect={}, skip_init={}",
             i + 1, def.display_name, def.memory_effect, def.config.skip_init);
     }
-    let plan_warnings = validate_test_plan(&test_definitions);
-    if !plan_warnings.is_empty() {
-        println!("\n--- Test Plan Dependency Warnings ---");
-        for (idx, msg) in &plan_warnings {
-            println!("  [{}] {}", idx + 1, msg);
+    let plan_errors = validate_test_plan(&test_definitions);
+    if !plan_errors.is_empty() {
+        for (idx, msg) in &plan_errors {
+            println!("❌ Config error: step {}: {}", idx + 1, msg);
+            log::error!(target: crate::console::FILE_ONLY_TARGET, "Config error: step {}: {}", idx + 1, msg);
         }
-        println!("  Dependent tests with unmet dependencies will run their own init phase.");
-        println!("-------------------------------------\n");
-        for (idx, msg) in &plan_warnings {
-            log::warn!("Plan validation [test {}]: {}", idx + 1, msg);
-        }
+        return RunStatus::NotRun;
     }
 
     let mut thread_blocks: HashMap<usize, Vec<BlockInfo>> = HashMap::new();
@@ -581,11 +688,16 @@ pub fn run_tests_with_layout_and_timing_filtered(
         .unwrap_or(2);
 
     let tm5 = config.and_then(|c| c.legacy_metadata.as_ref()).map(|m| (m.tm5_window_mb, m.tm5_lock_mb));
+    let plan_sequence = crate::reporting::converters::PlanSequence {
+        order: cycle_order.as_deref(),
+        seal: seal_settings.on.then_some(seal_kernel),
+        tm5: tm5_run,
+    };
 
     // --startup-debug: show the plan, then stop before WHEA, allocation or any test.
     if plan_only {
         let planned: Vec<usize> = thread_blocks.values().map(|blocks| blocks.iter().map(|b| b.size_bytes).sum()).collect();
-        print_test_plan(&test_definitions, &suite_timing, cache_info, effective_channels, &planned, tm5);
+        print_test_plan(&test_definitions, &suite_timing, cache_info, effective_channels, &planned, tm5, &plan_sequence);
         return RunStatus::Passed;
     }
 
@@ -701,7 +813,7 @@ pub fn run_tests_with_layout_and_timing_filtered(
     // Used for calculating extent sizes in CacheLevel mode during display and test execution
 
     let allocated: Vec<usize> = allocated_blocks.values().map(|blocks| blocks.iter().map(|b| b.buffer.size()).sum()).collect();
-    print_test_plan(&test_definitions, &suite_timing, cache_info, effective_channels, &allocated, tm5);
+    print_test_plan(&test_definitions, &suite_timing, cache_info, effective_channels, &allocated, tm5, &plan_sequence);
 
     // Start progress reporter thread
     let progress_clone = Arc::clone(&progress);
@@ -782,6 +894,8 @@ pub fn run_tests_with_layout_and_timing_filtered(
         test_run_result: &test_run_result,
         all_test_cpu_stats: &all_test_cpu_stats,
         cache_info,
+        seal: seal_settings.on.then_some(seal_kernel),
+        tm5: tm5_run,
     };
     // Run cycles until a suite limit is reached. Both limits are checked *between* cycles, so a
     // cycle is never cut short by the clock; with neither limit set the suite runs until Ctrl+C or
@@ -938,6 +1052,8 @@ fn execute_test_cycle(ctx: &CycleContext, cycle: u64) -> Option<RunOutcome> {
         test_run_result,
         all_test_cpu_stats,
         cache_info,
+        seal,
+        tm5,
     } = ctx;
 
     use crate::progress::TestSummary;
@@ -949,6 +1065,12 @@ fn execute_test_cycle(ctx: &CycleContext, cycle: u64) -> Option<RunOutcome> {
 
     let success = Arc::new(AtomicBool::new(true));
     let mut stopped = None;
+    let mut seal_stages = crate::results::CycleSeal::default();
+    if let Some(kernel) = seal {
+        let (bytes, _, duration) = run_seal_stage(ctx, crate::thread_pool::SealOp::SealAll, kernel, cycle);
+        seal_stages.seal_ms = duration.as_millis();
+        seal_stages.seal_bytes = bytes;
+    }
     for (test_idx, test_def) in test_definitions.iter().enumerate() {
         let test_name = test_def.actual_name; // Use actual_name for thread pool (requires 'static)
         let test_display_name = &test_def.display_name; // Use display_name for results to preserve _A suffix
@@ -960,9 +1082,10 @@ fn execute_test_cycle(ctx: &CycleContext, cycle: u64) -> Option<RunOutcome> {
         }
 
         let test_start = Instant::now();
+        let step_label = test_def.step_label(tm5);
         progress.start_test(
             test_idx + 1,
-            test_display_name,
+            &step_label,
             test_start,
             test_config.timing.duration_secs.map(|secs| Duration::from_secs(secs.into())),
             // Every test publishes through its TestRunner, the latency tests too (TODO 76)
@@ -977,7 +1100,22 @@ fn execute_test_cycle(ctx: &CycleContext, cycle: u64) -> Option<RunOutcome> {
         let whea_before = progress.whea.counts();
 
         // Execute test on all threads
-        thread_pool.execute_test(test_name, test_func, test_config, error_mode);
+        let step_context = format!("step {} ({}), cycle {}", test_idx + 1, step_label, cycle);
+        // The seal's work between steps first, on its own clock (TODO 74)
+        let mut seal_errors_for_test = 0u64;
+        if seal.is_some() {
+            let between = Instant::now();
+            thread_pool.execute_seal_before_step(test_name, test_config, &step_context);
+            for _ in 0..thread_count {
+                match result_receiver.recv() {
+                    Ok(result) => seal_errors_for_test += result.seal_errors,
+                    Err(e) => log::error!("Failed to receive seal result: {}", e),
+                }
+            }
+            seal_stages.between_steps_ms += between.elapsed().as_millis();
+        }
+        let test_start = Instant::now();
+        thread_pool.execute_test(test_name, test_func, test_config, error_mode, &step_context);
         
 		// Collect results from all threads
 		let mut test_stats = Vec::new();
@@ -1010,6 +1148,7 @@ fn execute_test_cycle(ctx: &CycleContext, cycle: u64) -> Option<RunOutcome> {
 
 					total_bytes_for_test += result.total_bytes;
 					total_errors_for_test += result.total_errors;
+					seal_errors_for_test += result.seal_errors;
 					total_operations_for_test += result.total_operations;
 
 					// Track maximum cycle count (to detect if any thread hit the limit)
@@ -1029,6 +1168,11 @@ fn execute_test_cycle(ctx: &CycleContext, cycle: u64) -> Option<RunOutcome> {
 						success.store(false, Ordering::Relaxed);
 						log::error!("Thread {} reported {} memory errors in test '{}'",
 								  result.thread_id, result.total_errors, test_name);
+					}
+					if result.seal_errors > 0 {
+						success.store(false, Ordering::Relaxed);
+						log::error!("Thread {}: the seal checks in step {} ('{}') found {} errors",
+								  result.thread_id, test_idx + 1, test_name, result.seal_errors);
 					}
 				}
 				Err(e) => {
@@ -1136,19 +1280,23 @@ fn execute_test_cycle(ctx: &CycleContext, cycle: u64) -> Option<RunOutcome> {
         //
         // The ✅/❌ here is a verdict; the 🔴/🟢 in `cycles_info` is not — those mark *which limit
         // ended the test*, so the two glyph pairs are deliberately different.
-        let test_passed = total_errors_for_test == 0 && whea_for_test.total == 0;
+        let test_passed = total_errors_for_test == 0 && seal_errors_for_test == 0 && whea_for_test.total == 0;
         let pass_indicator = if test_passed { "✅" } else { "❌" };
+        // The seal's errors, in a sealed run: what the checks before this step's chunks found
+        let seal_info = if seal.is_some() { format!(" + {} seal", seal_errors_for_test) } else { String::new() };
 
         // WHEA is always shown, even at zero, so a clean line still states that we were watching;
         // the C/UC split only appears when there is something to split. "errors" is the word every
         // table uses for these (the `Errors` column) — "data" would collide with the `Data` column,
         // which is bytes processed.
-        println!("📊 Test report - Cycle {} - {}: {} {:.1}s, {} errors + {} WHEA{}, {:.2} GiB @ {:.1} MiB/s ({:.2} GiB/s), {} ops @ {} ops/s{}{}",
+        println!("📊 Test report - Cycle {} - Step {} {}: {} {:.1}s, {} errors{} + {} WHEA{}, {:.2} GiB @ {:.1} MiB/s ({:.2} GiB/s), {} ops @ {} ops/s{}{}",
                  cycle,
-                 test_def.display_name,
+                 test_idx + 1,
+                 step_label,
                  pass_indicator,
                  test_duration.as_secs_f64(),
                  total_errors_for_test,
+                 seal_info,
                  whea_for_test.total,
                  whea_for_test.split_suffix(),
                  total_bytes_for_test as f64 / (1024.0 * 1024.0 * 1024.0),
@@ -1193,7 +1341,7 @@ fn execute_test_cycle(ctx: &CycleContext, cycle: u64) -> Option<RunOutcome> {
         }
 
         // Update progress tracker with test completion
-        progress.complete_test(test_name, total_errors_for_test);
+        progress.complete_test(test_name, total_errors_for_test + seal_errors_for_test);
 
         // Generate thread timing deviation report
         {
@@ -1269,6 +1417,11 @@ fn execute_test_cycle(ctx: &CycleContext, cycle: u64) -> Option<RunOutcome> {
             };
 
         cycle_test_summaries.push(TestSummary {
+            step: test_idx + 1,
+            test_index: test_def.test_index,
+            id: test_def.id.clone(),
+            label: step_label.clone(),
+            seal_errors: seal_errors_for_test,
             name: test_display_name.to_string(), // Use display_name to preserve _A suffix for AUTO tests
             duration_ms: test_duration.as_millis(),
             bytes_processed: total_bytes_for_test,
@@ -1304,16 +1457,64 @@ fn execute_test_cycle(ctx: &CycleContext, cycle: u64) -> Option<RunOutcome> {
         }
     }
 
+    // The cycle ends with a check of all memory (TODO 74), unless it stopped early
+    if let Some(kernel) = seal
+        && stopped.is_none()
+    {
+        let (bytes, errors, duration) = run_seal_stage(ctx, crate::thread_pool::SealOp::FinalCheck, kernel, cycle);
+        seal_stages.final_check_ms = duration.as_millis();
+        seal_stages.final_check_bytes = bytes;
+        seal_stages.final_check_errors = errors;
+        if errors > 0 {
+            progress.add_seal_errors(errors);
+            if matches!(error_mode, ErrorMode::Halt) {
+                stopped = Some(RunOutcome::Halted);
+            }
+        }
+    }
+
     // Add this cycle's results to TestRunResult, including a partial cycle that stopped early
     if !cycle_test_summaries.is_empty() {
         let cycle_duration_secs = cycle_start.elapsed().as_secs() as u32;
         if let Ok(mut result) = test_run_result.lock() {
-            result.add_cycle(cycle as u32, cycle_duration_secs, cycle_test_summaries);
+            result.add_cycle(cycle as u32, cycle_duration_secs, cycle_test_summaries, seal.map(|_| seal_stages));
         } else {
             log::error!("Failed to lock test_run_result to add cycle {}", cycle);
         }
     }
     stopped
+}
+
+/// Run a seal stage on every worker (TODO 74) and report it: the bytes, the errors (a final check's)
+/// and the wall time.
+fn run_seal_stage(ctx: &CycleContext, op: crate::thread_pool::SealOp, kernel: crate::seal::SealKernel, cycle: u64) -> (u64, u64, Duration) {
+    use crate::thread_pool::SealOp;
+    let (name, lead) = match op {
+        SealOp::SealAll => ("Sealing memory", "🔒 Sealing memory"),
+        SealOp::FinalCheck => ("Final seal check", "🔒 Final seal check"),
+    };
+    let start = Instant::now();
+    ctx.progress.start_test(0, name, start, None, true);
+    ctx.thread_pool.execute_seal(op, kernel, &format!("cycle {cycle}"));
+    let (mut bytes, mut errors) = (0u64, 0u64);
+    for _ in 0..ctx.thread_count {
+        match ctx.result_receiver.recv() {
+            Ok(result) => {
+                bytes += result.total_bytes;
+                errors += result.seal_errors;
+            }
+            Err(e) => log::error!("Failed to receive seal stage result: {}", e),
+        }
+    }
+    let duration = start.elapsed();
+    let gib = bytes as f64 / (1024.0 * 1024.0 * 1024.0);
+    let errors_info = if op == SealOp::FinalCheck { format!("{errors} errors, ") } else { String::new() };
+    crate::console::print_above(&format!("{lead} ({}): {errors_info}{gib:.2} GiB in {:.1}s ({:.2} GiB/s)",
+        kernel.name(), duration.as_secs_f64(), gib / duration.as_secs_f64().max(1e-9)));
+    if errors > 0 {
+        log::error!("The final seal check of cycle {cycle} found {errors} errors");
+    }
+    (bytes, errors, duration)
 }
 
 // Generic auto-dispatch resolver - converts "*-Auto" test names to best SIMD variant
@@ -3667,6 +3868,18 @@ fn create_test_definitions(cache_info: &CacheInfo) -> Vec<TestDefinition> {
         ),
     ];
     
+    // The seal's fill and check, per pattern and width (TODO 74), set up as the Bench pairs above
+    let bench_at = test_definitions.iter().rposition(|(name, _, _)| name.starts_with("Bench-Verify-")).map_or(test_definitions.len(), |i| i + 1);
+    let mut test_definitions = test_definitions;
+    let seal_benches = crate::tests::bench_seal_tests().map(|(name, function)| {
+        let config = TestMemoryConfig::new(ExtentMode::FullAllocation, ChunkMode::Absolute { size_bytes: 4 * MB })
+            .with_timing(TestTiming::cycles_only(10))
+            .with_skip_init(name.starts_with("Bench-Init-"))
+            .with_memory_type(None);
+        (name, function, config)
+    });
+    test_definitions.splice(bench_at..bench_at, seal_benches);
+
     // Process test definitions and resolve auto-dispatch tests
     let mut resolved_tests = Vec::new();
     for (test_name, test_function, config) in test_definitions {
@@ -3682,6 +3895,10 @@ fn create_test_definitions(cache_info: &CacheInfo) -> Vec<TestDefinition> {
                 function: resolved_function,
                 original_name: Some(test_name), // Preserve original "StuckBitTestAuto" name
                 memory_effect: effect,
+                test_index: resolved_tests.len(),
+                id: None,
+                seal_use: seal_use(resolved_name),
+                seal_opt_out: false,
             });
         } else {
             let effect = derive_memory_effect(test_name, &config);
@@ -3692,6 +3909,10 @@ fn create_test_definitions(cache_info: &CacheInfo) -> Vec<TestDefinition> {
                 config: config.with_display_name(test_name),
                 original_name: None,
                 memory_effect: effect,
+                test_index: resolved_tests.len(),
+                id: None,
+                seal_use: seal_use(test_name),
+                seal_opt_out: false,
             });
         }
     }
@@ -3699,56 +3920,66 @@ fn create_test_definitions(cache_info: &CacheInfo) -> Vec<TestDefinition> {
     resolved_tests
 }
 
-/// Create test definitions from config file (config-driven test execution)
-fn create_test_definitions_from_config(config: &crate::config::ModernConfig, cache_info: &CacheInfo) -> Result<Vec<TestDefinition>, String> {
-    let _tsc_freq = cache_info.tsc_frequency_ghz; // Available for latency tests in config
-    let mut resolved_tests = Vec::new();
+/// `cycle_order` as written: each id, with whether it runs (a disabled test's doesn't)
+type CycleOrder = Vec<(String, bool)>;
 
-    // Get enabled tests from config
-    let test_configs = config.get_test_configs()?;
-
-    for (test_name, test_config) in test_configs {
-
+/// A config's steps (TODO 74): its tests in `cycle_order`, or each enabled test once in file
+/// order. Returns them with `cycle_order` as written (each id with whether it runs), if it has one.
+fn create_test_definitions_from_config(config: &crate::config::ModernConfig) -> Result<(Vec<TestDefinition>, Option<CycleOrder>), String> {
+    let plan = config.plan()?;
+    let mut tests = Vec::new();
+    for (test_index, test) in plan.tests.into_iter().enumerate() {
+        let test_name = test.function;
         // Look up function by name using the test registry
         let test_function = crate::tests::get_test_function_by_name(test_name)
             .ok_or_else(|| format!("Unknown test function '{}' in config", test_name))?;
+        let id = test.id.map(str::to_string);
 
         // Check for auto-dispatch
-        if let Some((resolved_name, resolved_function)) = resolve_auto_dispatch_test(test_name) {
+        let def = if let Some((resolved_name, resolved_function)) = resolve_auto_dispatch_test(test_name) {
             log::debug!("Auto-dispatch: {} → {} (based on CPU capabilities)", test_name, resolved_name);
             // Convert to 'static str by leaking (safe for test names, small and finite set)
             let static_original_name: &'static str = Box::leak(test_name.to_string().into_boxed_str());
-            let effect = derive_memory_effect(resolved_name, &test_config);
+            let effect = derive_memory_effect(resolved_name, &test.config);
             let display_name = format!("{}_A", resolved_name);
-            resolved_tests.push(TestDefinition {
+            TestDefinition {
                 actual_name: resolved_name,
                 // Mirror onto the config so per-thread logs show the resolved+suffixed name
-                config: test_config.with_display_name(&display_name),
+                config: test.config.with_display_name(&display_name),
                 display_name,
                 function: resolved_function,
                 original_name: Some(static_original_name), // Preserve original Auto name
                 memory_effect: effect,
-            });
+                test_index,
+                id,
+                seal_use: seal_use(resolved_name),
+                seal_opt_out: test.seal_opt_out,
+            }
         } else {
             // Convert to 'static str by leaking (safe for test names, small and finite set)
             let static_name: &'static str = Box::leak(test_name.to_string().into_boxed_str());
-            let effect = derive_memory_effect(test_name, &test_config);
-            resolved_tests.push(TestDefinition {
+            let effect = derive_memory_effect(test_name, &test.config);
+            TestDefinition {
                 actual_name: static_name,
                 display_name: test_name.to_string(),
                 function: test_function,
-                config: test_config.with_display_name(test_name),
+                config: test.config.with_display_name(test_name),
                 original_name: None,
                 memory_effect: effect,
-            });
-        }
+                test_index,
+                id,
+                seal_use: seal_use(test_name),
+                seal_opt_out: test.seal_opt_out,
+            }
+        };
+        tests.push(def);
     }
 
-    if resolved_tests.is_empty() {
+    let steps: Vec<TestDefinition> = plan.steps.iter().map(|&t| tests[t].clone()).collect();
+    if steps.is_empty() {
         return Err("No enabled tests found in configuration".to_string());
     }
-
-    Ok(resolved_tests)
+    Ok((steps, plan.order))
 }
 
 // Re-export RuntimeConfig from lib.rs instead of redefining
@@ -4129,7 +4360,7 @@ fn display_and_save_results(
     // Display final summary using reporting layer
     {
         use crate::reporting::{create_console_reporter, converters};
-        let report = converters::create_overall_stats_summary_report(&result.overall_stats);
+        let report = converters::create_overall_stats_summary_report(&result);
         let mut reporter = create_console_reporter();
         if let Err(e) = reporter.report_final_summary(&report) {
             log::error!("Failed to display final summary: {}", e);
@@ -4370,6 +4601,89 @@ mod tests {
         }
         assert!(verified >= 7, "only {verified} Bench pairs verified");
         assert!(region.guards_intact());
+    }
+
+    /// TODO 74: every test that takes the seal honours it. Sealed, on memory that holds the seal,
+    /// it finds no errors of its own or the seal's and leaves every word of the span sealed again.
+    /// A new `Mem-*` test that skips the wrap fails here.
+    #[test]
+    fn every_sealed_test_honours_the_seal() {
+        let mut region = Region::new(&[256 * KIB, 256 * KIB, 128 * KIB]);
+        let words = 640 * KIB / 8;
+        let base = region.words().as_mut_ptr();
+        let mut ran = Vec::new();
+        for pattern in [crate::seal::SealPattern::Tmr, crate::seal::SealPattern::Tm5] {
+            let kernel = crate::seal::SealKernel { pattern, ..crate::seal::SealKernel::detect() };
+            for (mut def, test_fn) in suite() {
+                if def.seal_use == SealUse::Never {
+                    continue;
+                }
+                if matches!(def.config.chunk_mode, ChunkMode::Absolute { .. }) {
+                    def.config.chunk_mode = ChunkMode::Absolute { size_bytes: 68 * KIB };
+                }
+                set_step_seals(std::slice::from_mut(&mut def), kernel, true);
+                unsafe { kernel.fill(base, 0, words) };
+                let stats = unsafe { test_fn(&region.blocks, 0, ErrorMode::Log, &def.config.timing, &def.config, None) };
+                assert_eq!((stats.error_count, stats.seal_errors), (0, 0), "{} ({})", def.display_name, kernel.name());
+                assert_eq!(unsafe { kernel.check(base, 0, words, "test") }, 0, "{} left words unsealed", def.display_name);
+                ran.push(def.actual_name);
+            }
+        }
+        assert!(ran.len() > 40, "only {} sealed runs", ran.len());
+        assert!(ran.iter().any(|n| n.starts_with("Mem-MirrorV2")) && ran.iter().any(|n| n.starts_with("Mem-BlockMove")));
+        assert!(region.guards_intact());
+    }
+
+    /// TODO 74: a bit flipped in sealed memory is the seal's error before a correctness test's
+    /// chunk (TM5 numbers it 0), but the mirror's own after a mirror (TM5's step number), and
+    /// either way the chunk ends sealed again.
+    #[test]
+    fn the_seal_attributes_a_flipped_bit_as_tm5_does() {
+        let mut region = Region::new(&[256 * KIB, 256 * KIB, 128 * KIB]);
+        let words = 640 * KIB / 8;
+        let kernel = crate::seal::SealKernel::detect();
+        let suite = suite();
+        let find = |name: &str| suite.iter().find(|(d, _)| d.display_name == name).cloned().unwrap();
+        for (name, own, seal) in [("Mem-StuckBit", 0, 1), ("Mem-SimpleV2", 0, 1), ("Mem-MirrorV2", 1, 0)] {
+            let (mut def, test_fn) = find(name);
+            def.config.chunk_mode = ChunkMode::Absolute { size_bytes: 68 * KIB };
+            set_step_seals(std::slice::from_mut(&mut def), kernel, true);
+            let base = region.words().as_mut_ptr();
+            unsafe { kernel.fill(base, 0, words) };
+            // In the second chunk only: [68, 128) KiB of the ten 68 KiB chunks over 640 KiB
+            region.words()[(70 * KIB) / 8] ^= 1 << 9;
+            let stats = unsafe { test_fn(&region.blocks, 0, ErrorMode::Log, &def.config.timing, &def.config, None) };
+            assert_eq!((stats.error_count, stats.seal_errors), (own, seal), "{name}");
+            assert_eq!(unsafe { kernel.check(region.words().as_ptr(), 0, words, "test") }, 0, "{name} left it unsealed");
+        }
+    }
+
+    /// TODO 74: the worker's seal bookkeeping between steps. A step that never takes the seal has
+    /// the part of its extent still sealed checked first, and leaves it unsealed; the next step
+    /// that takes the seal gets it back first. A bad word found there is a seal error.
+    #[test]
+    fn steps_that_skip_the_seal_are_checked_first_and_resealed_after() {
+        let mut region = Region::new(&[256 * KIB, 256 * KIB, 128 * KIB]);
+        let words = 640 * KIB / 8;
+        let kernel = crate::seal::SealKernel::detect();
+        let suite = suite();
+        let find = |name: &str| suite.iter().find(|(d, _)| d.display_name == name).cloned().unwrap();
+        let progress = crate::tests::TestProgress::new();
+        let (mut never, _) = find("Bench-Init-TMR-0");
+        let (mut sealed, _) = find("Mem-StuckBit");
+        set_step_seals(std::slice::from_mut(&mut never), kernel, true);
+        set_step_seals(std::slice::from_mut(&mut sealed), kernel, true);
+        assert!(!never.config.seal.expects && sealed.config.seal.expects);
+        let base = region.words().as_mut_ptr();
+        unsafe { kernel.fill(base, 0, words) };
+        let mut unsealed = 0;
+        region.words()[100] ^= 1;
+        let errors = crate::thread_pool::seal_before_step(&region.blocks, &never.config, never.actual_name, &progress, &mut unsealed);
+        assert_eq!((errors, unsealed), (1, 640 * KIB), "the whole span is Bench-Init's extent");
+        region.words().fill(UNTOUCHED);
+        let errors = crate::thread_pool::seal_before_step(&region.blocks, &sealed.config, sealed.actual_name, &progress, &mut unsealed);
+        assert_eq!((errors, unsealed), (0, 0));
+        assert_eq!(unsafe { kernel.check(region.words().as_ptr(), 0, words, "test") }, 0);
     }
 
     /// TODO 92: each latency shortcut runs the tests its help text names, no more.

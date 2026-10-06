@@ -100,3 +100,21 @@ All parameters are validated before tests run (in `runner.rs`):
 - `stride_patterns` and `copy_directions` must be >= 1 (no power-of-2 constraint)
 - `mirror` is checked when it is parsed (`MirrorMode::from_str`, shared by JSON, the CLI and the importer): subblocks 2 or 4, any jump
 - Tests panic with a clear error message if their required parameter is missing from `parameter_context`
+
+## Sequencing and the seal (TODO 74)
+
+These sit beside the per-test parameters above:
+
+| Where | Field | Meaning |
+|---|---|---|
+| test entry | `"id": "12"` | The name `cycle_order` lists the test by; unique in the config. A TM5 import gives each `[TestN]` the id `"N"`, disabled ones too |
+| top level | `"cycle_order": ["6", "12", "2", "1", "1"]` | One cycle's steps, as ids in order; an id may repeat. A disabled test's id is skipped (the plan marks it); an unknown id is a load error. Unset is every enabled test once, in file order. A TM5 import's `Test Sequence`, read up to a number of 16 or more |
+| test entry | `"seal": false` | This correctness test runs without the seal around its chunks |
+| `system` | `"seal": "tmr"` | The seal (`seal.rs`, `doc/test_harness_tiers.md` §3a): `tmr` (the default), `tm5` (TM5's test 0 pattern, bit for bit) or `off`. A TM5 import takes `tmr` when its Test0 (RefreshStable) is enabled, else `off` |
+| `system` | `"seal_width": "auto"` | The seal kernels' SIMD width: `auto` (the widest), `128`, `256` or `512`; a width the CPU lacks is a load error |
+
+The command line overrides the last two: `seal=tmr|tm5|off`, `seal-width=auto|128|256|512`. A TM5
+`Cycles = 0` runs until stopped. A dependent step (`skip_init`) must directly follow the step that
+wrote its data, with no step that takes the seal in between; otherwise the plan is refused.
+`Bench-Init-Seal-{TMR,TM5}[-128|-256|-512]` and their `Bench-Verify-Seal-*` measure the seal's
+fill and check alone.

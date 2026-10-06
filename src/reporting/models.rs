@@ -206,6 +206,10 @@ pub struct TopologySummary {
 pub struct TestConfigurationReport {
     pub suite_timing: String,
     pub test_count: usize,
+    /// Steps per cycle: more than `test_count` when a test repeats (TODO 74)
+    pub step_count: usize,
+    /// The run is sealed: the table gets a Seal column
+    pub sealed: bool,
     pub tests: Vec<TestConfigurationEntry>,
     /// Lines printed under the table: what a TM5 import's window does, and every chunk the
     /// thread's memory made smaller than its spec asks for (TODO 76)
@@ -225,7 +229,8 @@ pub struct TestConfigurationEntry {
     pub extent_mode: String,
     /// The resolved chunk, its count and overlap, once the thread memory is known
     pub chunk_mode: String,
-    pub flags: Vec<String>,
+    /// How the test takes the seal: ✓, data, check or – (empty in an unsealed run)
+    pub seal: String,
 }
 
 /// Cycle completion report
@@ -265,12 +270,39 @@ pub struct FinalTestSummaryReport {
     pub whea_corrected: u64,
     /// False when WHEA monitoring never started, so the zero counts are not mistaken for a pass.
     pub whea_monitored: bool,
+    /// One row per test, its steps' figures combined (TODO 74)
     pub per_test_summaries: Vec<TestSummaryEntry>,
+    /// The seal's run-wide stages, in a sealed run (TODO 74)
+    pub seal: Option<SealStagesSummary>,
+    /// The steps that found errors, in cycle order; empty on a clean run (TODO 74)
+    pub errors_by_step: Vec<StepErrorsEntry>,
+}
+
+/// The seal's run-wide stages over the run: sealing all memory and the final checks (TODO 74).
+#[derive(Debug, Clone)]
+pub struct SealStagesSummary {
+    pub secs: f64,
+    pub data_gib: f64,
+    /// The final checks' errors (TM5 numbers them 0)
+    pub final_check_errors: u64,
+}
+
+/// A step that found errors (TODO 74).
+#[derive(Debug, Clone)]
+pub struct StepErrorsEntry {
+    pub step: usize,
+    pub label: String,
+    pub errors: u64,
+    pub seal_errors: u64,
 }
 
 #[derive(Debug, Clone)]
 pub struct TestSummaryEntry {
     pub name: String,
+    /// Times it ran: its steps per cycle, over the cycles
+    pub runs: u64,
+    /// What the seal checks before its chunks found (TODO 74)
+    pub seal_errors: u64,
     pub average_duration_secs: f64,
     /// Per-cycle *average*, like duration and throughput. Only errors and WHEA are summed.
     pub average_data_gib: f64,

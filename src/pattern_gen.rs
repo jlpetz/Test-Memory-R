@@ -205,27 +205,6 @@ pub fn pattern_mode13(idx: u64, seed: u64) -> u64 {
     h
 }
 
-// ─── Mirror pattern generation (u64-based, replacing i32) ────────────────────
-
-/// Generate a mirror move pattern value for a given element index.
-/// Uses u64 arithmetic for full 64-bit pattern coverage.
-///
-/// The pattern combines thread identity (high bits) with element position
-/// (distributed via wrapping multiply with a large prime).
-#[inline(always)]
-pub fn mirror_pattern_u64(element_idx: u64, thread_pattern_base: u64) -> u64 {
-    element_idx
-        .wrapping_add(thread_pattern_base)
-        .wrapping_mul(0x0123456789ABCDEFu64)
-}
-
-/// Compute the thread-specific pattern base for mirror tests.
-/// Places thread_id in upper 32 bits for clean separation from element index.
-#[inline(always)]
-pub fn mirror_thread_base(thread_id: usize) -> u64 {
-    (thread_id as u64) << 32
-}
-
 // ─── Tests ───────────────────────────────────────────────────────────────────
 
 #[cfg(test)]
@@ -370,26 +349,4 @@ mod tests {
         assert_eq!(cache_line_shift(32), 2);  // 32/8 = 4 elements = 2^2
     }
 
-    #[test]
-    fn test_mirror_pattern_u64_coverage() {
-        let base = mirror_thread_base(1);
-        let p0 = mirror_pattern_u64(0, base);
-        let p1 = mirror_pattern_u64(1, base);
-
-        // Should use full 64-bit range (high bits should differ)
-        assert_ne!(p0 >> 32, p1 >> 32, "Upper 32 bits should differ between elements");
-        // Different threads produce different patterns
-        let base2 = mirror_thread_base(2);
-        assert_ne!(mirror_pattern_u64(0, base), mirror_pattern_u64(0, base2));
-    }
-
-    #[test]
-    fn test_mirror_thread_base_separation() {
-        // Thread bases should be in upper 32 bits
-        let b0 = mirror_thread_base(0);
-        let b1 = mirror_thread_base(1);
-        assert_eq!(b0, 0);
-        assert_eq!(b1, 1u64 << 32);
-        assert_eq!(mirror_thread_base(255), 255u64 << 32);
-    }
 }

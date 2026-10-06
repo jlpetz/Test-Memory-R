@@ -40,6 +40,8 @@ mod app_config; // Persistent application config (tmr-cfg.json)
 mod smbios; // SMBIOS table parser (system identity, memory modules)
 mod whea; // WHEA hardware-error monitoring via the System event log (TODO #63)
 mod run_context; // Run identity + resolved config recorded into result files (TODO #67)
+mod seal; // the seal: TM5's test 0, checked and resealed around every chunk (TODO 74)
+mod error_context; // where a worker is in the run, for its error lines (TODO 74)
 
 // Common result type for the crate
 pub(crate) type Result<T> = std::result::Result<T, Box<dyn std::error::Error>>;

@@ -75,6 +75,7 @@ pub trait ReportFormatter: Send + Sync {
     /// Prepare final test summary tables
     fn prepare_final_summary_overview_table(&self, report: &FinalTestSummaryReport) -> TableData;
     fn prepare_final_summary_performance_table(&self, report: &FinalTestSummaryReport) -> TableData;
+    fn prepare_errors_by_step_table(&self, report: &FinalTestSummaryReport) -> TableData;
     
     /// Prepare block allocation report tables (Option B layout - separate tables)
     fn prepare_block_size_distribution_table(&self, report: &BlockAllocationReport) -> TableData;
@@ -981,11 +982,13 @@ impl ReportFormatter for DefaultFormatter {
             .add_header("Per chunk", ColumnAlignment::Left)
             .add_header("Parameter", ColumnAlignment::Left)
             .add_header("Extent", ColumnAlignment::Left)
-            .add_header("Chunk", ColumnAlignment::Left)
-            .add_header("Flags", ColumnAlignment::Left);
+            .add_header("Chunk", ColumnAlignment::Left);
+        if report.sealed {
+            table = table.add_header("Seal", ColumnAlignment::Center);
+        }
 
         for test in &report.tests {
-            table = table.add_row(vec![
+            let mut row = vec![
                 test.number.to_string(),
                 test.name.clone(),
                 test.timing.clone(),
@@ -993,12 +996,16 @@ impl ReportFormatter for DefaultFormatter {
                 test.parameter.clone(),
                 test.extent_mode.clone(),
                 test.chunk_mode.clone(),
-                test.flags.join(", "),
-            ]);
+            ];
+            if report.sealed {
+                row.push(test.seal.clone());
+            }
+            table = table.add_row(row);
         }
-        
-        table.with_footer(format!("Suite Timing: {} | Total Tests: {}", 
-                                   report.suite_timing, report.test_count))
+
+        let steps = if report.step_count != report.test_count { format!(" | Steps per cycle: {}", report.step_count) } else { String::new() };
+        table.with_footer(format!("Suite Timing: {} | Total Tests: {}{}",
+                                   report.suite_timing, report.test_count, steps))
     }
     
     fn prepare_cycle_report_table(&self, report: &CycleReport) -> TableData {
@@ -1069,6 +1076,15 @@ impl ReportFormatter for DefaultFormatter {
                 report.total_errors.to_string(),
             ])
             .add_row(vec![
+                // The run-wide stages; the checks around each chunk are in the steps' times
+                "Seal".to_string(),
+                match &report.seal {
+                    Some(seal) => format!("{} errors in the final checks, {:.1}s for {:.2} GiB sealed and checked",
+                                          seal.final_check_errors, seal.secs, seal.data_gib),
+                    None => "off".to_string(),
+                },
+            ])
+            .add_row(vec![
                 "Total WHEA".to_string(),
                 if !report.whea_monitored {
                     // Say so explicitly: a bare "0" here would claim a clean bill of health that
@@ -1089,10 +1105,18 @@ impl ReportFormatter for DefaultFormatter {
         // the summary looks exactly as it did before WHEA monitoring existed.
         let has_whea = report.per_test_summaries.iter().any(|t| t.whea_total > 0);
 
+        // A test that runs more than once a cycle (TODO 74) gets a Runs column; a sealed run, Seal
+        let has_repeats = report.per_test_summaries.iter().any(|t| t.runs > report.cycles_completed as u64);
+        let sealed = report.seal.is_some();
+
         let mut table = TableData::new()
             .with_title("Final Test Summary - Per-Test Performance")
             .add_header("#", ColumnAlignment::Center)
-            .add_header("Test Name", ColumnAlignment::Left)
+            .add_header("Test Name", ColumnAlignment::Left);
+        if has_repeats {
+            table = table.add_header("Runs", ColumnAlignment::Right);
+        }
+        table = table
             .add_header("Time", ColumnAlignment::Right)
             .add_header("Data", ColumnAlignment::Right)
             .add_header("Speed", ColumnAlignment::Right);
@@ -1113,16 +1137,21 @@ impl ReportFormatter for DefaultFormatter {
                 .add_header("Spread", ColumnAlignment::Right);
         }
 
+        if sealed {
+            table = table.add_header("Seal", ColumnAlignment::Right);
+        }
         table = self.with_verdict_headers(table, has_whea);
 
         for (idx, test) in report.per_test_summaries.iter().enumerate() {
-            let mut row = vec![
-                format!("{}", idx + 1),
-                test.name.clone(),
+            let mut row = vec![format!("{}", idx + 1), test.name.clone()];
+            if has_repeats {
+                row.push(test.runs.to_string());
+            }
+            row.extend([
                 format!("{:.1}s", test.average_duration_secs),
                 format!("{:.2} GiB", test.average_data_gib),
                 format!("{:.0} MiB/s", test.average_throughput_mib_s),
-            ];
+            ]);
 
             // Add latency values if we have latency columns
             if has_latency {
@@ -1141,8 +1170,17 @@ impl ReportFormatter for DefaultFormatter {
 
             // Counts, not averages: an error is an event, and averaging over cycles would dilute a
             // single-cycle fault into "0.3 errors".
+            if sealed {
+                row.push(test.seal_errors.to_string());
+            }
             let whea = WheaCounts { total: test.whea_total, corrected: test.whea_corrected };
             self.push_verdict_cells(&mut row, test.total_errors, Some(whea), has_whea);
+            if test.seal_errors > 0 {
+                // The verdict counts the seal's errors too: they are this run's
+                if let Some(pass) = row.last_mut() {
+                    *pass = self.pass_cell(false);
+                }
+            }
 
             table = table.add_row(row);
         }
@@ -1151,12 +1189,37 @@ impl ReportFormatter for DefaultFormatter {
         // (a total) is genuinely ambiguous otherwise, and nothing else on screen settles it.
         let cycles = report.cycles_completed;
         table.with_footer(format!(
-            "{} cycle{}: Time/Data/Speed{} averaged, Errors{} summed.",
+            "{} cycle{}: Time/Data/Speed{} averaged per run, {}Errors{}{} summed.",
             cycles,
             if cycles == 1 { "" } else { "s" },
             if has_latency { "/latency (ns)" } else { "" },
+            if has_repeats { "Runs/" } else { "" },
+            if sealed { "/Seal (the seal checks before its chunks, TM5's test 0)" } else { "" },
             if has_whea { "/WHEA" } else { "" },
         ))
+    }
+
+    fn prepare_errors_by_step_table(&self, report: &FinalTestSummaryReport) -> TableData {
+        let sealed = report.seal.is_some();
+        let mut table = TableData::new()
+            .with_title("Errors by Step")
+            .add_header("Step", ColumnAlignment::Right)
+            .add_header("Test", ColumnAlignment::Left)
+            .add_header("Errors", ColumnAlignment::Right);
+        if sealed {
+            table = table.add_header("Seal", ColumnAlignment::Right);
+        }
+        for step in &report.errors_by_step {
+            let mut row = vec![step.step.to_string(), step.label.clone(), step.errors.to_string()];
+            if sealed {
+                row.push(step.seal_errors.to_string());
+            }
+            table = table.add_row(row);
+        }
+        if let Some(seal) = report.seal.as_ref().filter(|s| s.final_check_errors > 0) {
+            table = table.add_row(vec!["end".to_string(), "Final seal check".to_string(), "-".to_string(), seal.final_check_errors.to_string()]);
+        }
+        table.with_footer("Seal: found by the seal check before the step's chunks (TM5 test 0); a mirror's own errors are its seal check after it.".to_string())
     }
     
     /// Prepare block size distribution table (Table 1)

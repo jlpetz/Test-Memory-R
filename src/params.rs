@@ -200,6 +200,22 @@ impl ParamRegistry {
             },
         });
 
+        // The seal around every chunk of the correctness tests (TODO 74, seal.rs)
+        params.insert("seal", ParamDef {
+            key: "seal",
+            can_override_config: true,
+            parser: |v| {
+                crate::seal::SealSettings::parse(v, "auto").map(|_| ParamValue::String(v.trim().to_lowercase()))
+            },
+        });
+        params.insert("seal-width", ParamDef {
+            key: "seal-width",
+            can_override_config: true,
+            parser: |v| {
+                crate::seal::SealWidth::parse(v).map(|w| ParamValue::String(w.name().to_string()))
+            },
+        });
+
         params.insert("mirror", ParamDef {
             key: "mirror",
             can_override_config: true,
@@ -457,6 +473,8 @@ pub fn print_help(program_name: &str) {
     println!("  blkroundtarget=1GiB                 # Round each thread's share to a multiple of this (of largefloor)");
     println!("  blkround=up                         # ...up (default; a smaller step rather than pass available), down, or nearest");
     println!("  errors=halt                         # Error handling (log/halt/panic)");
+    println!("  seal=tmr                            # Seal: check and reseal around every chunk (tmr, the default; tm5; off)");
+    println!("  seal-width=auto                     # Seal kernels' SIMD width (auto, 128, 256, 512)");
     println!("  mirror=whole                        # Mirror tests: one mirror over each chunk (the default)");
     println!("  mirror=subblocks:4                  #   ...each chunk in 2 or 4 parts, mirrored in lockstep");
     println!("  mirror=jump:510                     #   ...128 B swaps every (N+1) x 128 B (TM5 MirrorMove128)");

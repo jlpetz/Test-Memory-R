@@ -532,6 +532,9 @@ pub struct TestStats {
     pub cycles_completed: u32,  // Actual cycles completed
     pub cycles_planned: Option<u32>, // Planned cycles (None = unlimited)
     pub stopped_by_time_limit: bool, // True if stopped due to time, false if stopped due to cycle limit
+    /// Bad words the seal check before a chunk found (TODO 74): data the previous step left
+    /// sealed went bad, so they aren't this test's errors. TM5 numbers them 0.
+    pub seal_errors: u64,
 }
 
 /// Optional progress reporting structure for tests
@@ -546,6 +549,48 @@ pub struct TestProgress {
     pub bytes_processed: std::sync::atomic::AtomicU64,
     pub errors_found: std::sync::atomic::AtomicU64,
     pub last_update_ms: std::sync::atomic::AtomicU64,  // ms since the test started; 0 = nothing published yet
+    /// What the worker is doing (`Stage as u8`), for the ticker (TODO 74). Set between chunks.
+    pub stage: std::sync::atomic::AtomicU8,
+}
+
+/// What a worker is doing, as the progress ticker names it (TODO 74).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[repr(u8)]
+pub enum Stage {
+    /// The test itself; the ticker shows no stage.
+    Testing = 0,
+    SealingMemory = 1,
+    CheckingSeal = 2,
+    Resealing = 3,
+    FinalSealCheck = 4,
+    FillingMemory = 5,
+    BuildingPointerChain = 6,
+}
+
+impl Stage {
+    pub fn from_u8(v: u8) -> Self {
+        match v {
+            1 => Stage::SealingMemory,
+            2 => Stage::CheckingSeal,
+            3 => Stage::Resealing,
+            4 => Stage::FinalSealCheck,
+            5 => Stage::FillingMemory,
+            6 => Stage::BuildingPointerChain,
+            _ => Stage::Testing,
+        }
+    }
+
+    pub fn label(self) -> &'static str {
+        match self {
+            Stage::Testing => "",
+            Stage::SealingMemory => "Sealing memory",
+            Stage::CheckingSeal => "Checking seal",
+            Stage::Resealing => "Resealing",
+            Stage::FinalSealCheck => "Final seal check",
+            Stage::FillingMemory => "Filling memory",
+            Stage::BuildingPointerChain => "Building pointer chain",
+        }
+    }
 }
 
 impl Default for TestProgress {
@@ -564,7 +609,13 @@ impl TestProgress {
             bytes_processed: AtomicU64::new(0),
             errors_found: AtomicU64::new(0),
             last_update_ms: AtomicU64::new(0),
+            stage: std::sync::atomic::AtomicU8::new(Stage::Testing as u8),
         }
+    }
+
+    /// Name what the worker is doing now. A relaxed store, between chunks.
+    pub fn set_stage(&self, stage: Stage) {
+        self.stage.store(stage as u8, std::sync::atomic::Ordering::Relaxed);
     }
 
     /// Zero the slot for the next test. Only safe while its worker is idle between tests.
@@ -574,6 +625,7 @@ impl TestProgress {
         self.bytes_processed.store(0, Relaxed);
         self.errors_found.store(0, Relaxed);
         self.last_update_ms.store(0, Relaxed);
+        self.stage.store(Stage::Testing as u8, Relaxed);
     }
 }
 
@@ -702,6 +754,8 @@ pub struct TestMemoryConfig {
     /// When set, `TestRunner::new` logs this instead. `None` falls back to the baked-in name, so
     /// tests constructed outside the registry are unaffected.
     pub display_name: Option<String>,
+    /// The seal as this step runs it (TODO 74), set per step by the runner.
+    pub seal: crate::seal::SealStep,
 }
 
 impl TestMemoryConfig {
@@ -725,6 +779,7 @@ impl TestMemoryConfig {
             skip_init: false,  // Default: always run init (independent mode)
             flush_before_verify: false,  // Default: keep existing (cache-resident) verify behaviour
             display_name: None,  // Logging only; falls back to the test fn's baked-in name
+            seal: crate::seal::SealStep::default(),  // Unsealed; the runner sets it per step
         }
     }
 
@@ -920,6 +975,9 @@ impl TestMemoryConfig {
             | "Bench-Init-TMR-0" | "Bench-Init-TMR-1" | "Bench-Init-TMR-2" | "Bench-Init-TMR-3"
             | "Bench-Verify-TM5-0" | "Bench-Verify-TM5-1" | "Bench-Verify-TM5-2"
             | "Bench-Verify-TMR-0" | "Bench-Verify-TMR-1" | "Bench-Verify-TMR-2" | "Bench-Verify-TMR-3" => 8,
+            // The seal kernels take 64 B-aligned ranges at every width (TODO 74)
+            s if s.starts_with("Bench-Init-Seal-") || s.starts_with("Bench-Verify-Seal-") => 64,
+            "Seal-Check" => 64,
             // Sequential bandwidth tests (all SIMD variants: 128/256/512/Auto)
             s if s.starts_with("Spd-") => 64,
             // Latency tests: one chunk, the extent, under the `whole` chunk mode they register
@@ -1128,9 +1186,11 @@ macro_rules! stuck_bit_impl {
 
                     // Phase 1: write P1, verify. Phase 2: write P2, verify.
                     // Phase 3: write P1 again, verify (catches transition-induced flips).
+                    runner.check_seal(spread.start(k), spread.chunk());
                     stuck_bit_write_verify!($simd_type, base, processed, chunk_end, p1, &mut cycle_errors, test_name, thread_id, 1, flush_before_verify, line_bytes);
                     stuck_bit_write_verify!($simd_type, base, processed, chunk_end, p2, &mut cycle_errors, test_name, thread_id, 2, flush_before_verify, line_bytes);
                     stuck_bit_write_verify!($simd_type, base, processed, chunk_end, p1, &mut cycle_errors, test_name, thread_id, 3, flush_before_verify, line_bytes);
+                    runner.reseal(spread.start(k), spread.chunk());
 
                     // Count the chunk when it is done; overlaps count each time
                     runner.add_bytes(spread.chunk() * 6);
@@ -1202,7 +1262,7 @@ macro_rules! stuck_bit_write_verify {
             // Count and log each bad word, as every width does (TODO 89)
             let words = std::mem::size_of::<$simd_type>() / std::mem::size_of::<u64>();
             let pat = $pat.as_array()[0];
-            log::error!("{}: phase {} found a bad word (thread {})", $test_name, $phase, $thread_id);
+            log::error!("{}: phase {} found a bad word (thread {})", crate::error_context::found_by($test_name), $phase, $thread_id);
             *$errs += rescan_words($base as *const u64, $start * words, $end * words, $test_name, |_| pat);
         }
     }};
@@ -1265,6 +1325,8 @@ pub unsafe fn stuck_bit_test_multi(
                 };
             }
 
+            runner.check_seal(spread.start(k), spread.chunk());
+
             // Phase 1: Write P1 (0xAA55...), verify
             for i in processed..chunk_end {
                 *base.add(i) = pattern1;
@@ -1294,6 +1356,7 @@ pub unsafe fn stuck_bit_test_multi(
             flush_chunk_if_enabled!();
 
             cycle_errors += verify_words(base, processed, chunk_end, test_name, |_| pattern1);
+            runner.reseal(spread.start(k), spread.chunk());
 
             // Count the chunk when it is done; overlaps count each time
             runner.add_bytes(spread.chunk() * 6);
@@ -1353,6 +1416,7 @@ pub unsafe fn stuck_bit_test_128_multi(
             cycles_completed: 0,
             cycles_planned: timing.cycles,
             stopped_by_time_limit: false,
+            seal_errors: 0,
         };
     }
 
@@ -1384,6 +1448,7 @@ pub unsafe fn stuck_bit_test_256_multi(
             error_count: 0, total_operations: 0,
             cycles_completed: 0, cycles_planned: timing.cycles,
             stopped_by_time_limit: false,
+            seal_errors: 0,
         };
     }
 
@@ -1415,6 +1480,7 @@ pub unsafe fn stuck_bit_test_512_multi(
             error_count: 0, total_operations: 0,
             cycles_completed: 0, cycles_planned: timing.cycles,
             stopped_by_time_limit: false,
+            seal_errors: 0,
         };
     }
 
@@ -1509,6 +1575,8 @@ macro_rules! refresh_impl {
                     let processed = spread.start(k) / lanes;
                     let chunk_end = processed + chunk_size_vectors;
 
+                    runner.check_seal(spread.start(k), spread.chunk());
+
                     // Write phase.
                     for i in processed..chunk_end {
                         *base.add(i) = pattern;
@@ -1564,6 +1632,7 @@ macro_rules! refresh_impl {
                         cycle_errors += rescan_words(base as *const u64, processed * words, chunk_end * words,
                                                      test_name, |_| REFRESH_PATTERN);
                     }
+                    runner.reseal(spread.start(k), spread.chunk());
 
                     // Count the chunk when it is done; overlaps count each time
                     runner.add_bytes(spread.chunk() * 2);
@@ -1628,6 +1697,8 @@ pub unsafe fn refresh_stable_multi(
             let processed = spread.start(k) / std::mem::size_of::<u64>();
             let chunk_end = processed + chunk_size_operations;
 
+            runner.check_seal(spread.start(k), spread.chunk());
+
             // Non-byte-uniform (see REFRESH_PATTERN / #61): stays a real store loop,
             // not memset.
             let pattern = REFRESH_PATTERN;
@@ -1648,6 +1719,7 @@ pub unsafe fn refresh_stable_multi(
 
             // Verify phase
             cycle_errors += verify_words(base, processed, chunk_end, test_name, |_| pattern);
+            runner.reseal(spread.start(k), spread.chunk());
 
             // Count the chunk when it is done; overlaps count each time
             runner.add_bytes(spread.chunk() * 2);
@@ -1707,6 +1779,7 @@ pub unsafe fn refresh_stable_128_multi(
             cycles_completed: 0,
             cycles_planned: timing.cycles,
             stopped_by_time_limit: false,
+            seal_errors: 0,
         };
     }
 
@@ -1746,6 +1819,7 @@ pub unsafe fn refresh_stable_256_multi(
             cycles_completed: 0,
             cycles_planned: timing.cycles,
             stopped_by_time_limit: false,
+            seal_errors: 0,
         };
     }
 
@@ -1785,6 +1859,7 @@ pub unsafe fn refresh_stable_512_multi(
             cycles_completed: 0,
             cycles_planned: timing.cycles,
             stopped_by_time_limit: false,
+            seal_errors: 0,
         };
     }
 
@@ -1871,6 +1946,8 @@ pub unsafe fn cache_busting_multi(
             let processed = spread.start(k) / std::mem::size_of::<u64>();
             let chunk_end = processed + chunk_size_operations;
 
+            runner.check_seal(spread.start(k), spread.chunk());
+
             // Apply stride-pattern-based access patterns within chunk
             match stride_patterns {
                 1 => {
@@ -1931,6 +2008,7 @@ pub unsafe fn cache_busting_multi(
                     }
                 }
             }
+            runner.reseal(spread.start(k), spread.chunk());
 
             // Count the chunk when it is done; overlaps count each time
             runner.add_bytes(spread.chunk() * 2);
@@ -1978,12 +2056,12 @@ unsafe fn random_replay(base: *mut u64, len: usize, mut rng_state: u64, iteratio
         let actual = unsafe { *base.add(idx) };
         if actual != idx as u64 {
             errors += 1;
-            log::error!("{}: memory error at index {}, iteration {}, rng_seq {}, expected {}, actual {}",
-                        test_name, idx, iteration, seq, idx, actual);
+            log::error!("{}, idx {} (iteration {}, rng_seq {}): expected {:#x}, got {:#x}",
+                        crate::error_context::found_by(test_name), idx, iteration, seq, idx, actual);
         }
     }
     if errors == 0 {
-        log::error!("{}: memory error in rng_seq {} that a reread no longer shows (transient)", test_name, seq);
+        log::error!("{} in rng_seq {} that a reread no longer shows (transient)", crate::error_context::found_by(test_name), seq);
         errors = 1;
     }
     errors
@@ -2153,15 +2231,17 @@ pub unsafe fn stride_access_multi(
         let chunk_len = spread.chunk() / std::mem::size_of::<u64>();
         let elements_per_subdiv = chunk_len >> subdiv_shift;
 
-        for &stride in &strides {
-            if stride >= len { continue; }
-            // Words written and read per chunk: each subdivision from its start, every stride
-            let touched = subdivisions * elements_per_subdiv.div_ceil(stride);
-            // A word's value depends on its index and the pass's stride, not on the chunk
-            let pattern = pattern_base.wrapping_add((stride as u64) << 32);
+        // Each chunk takes every stride pass in turn, inside one seal wrap (TODO 74)
+        for k in 0..spread.count() {
+            let chunk_start = spread.start(k) / std::mem::size_of::<u64>();
+            runner.check_seal(spread.start(k), spread.chunk());
 
-            for k in 0..spread.count() {
-                let chunk_start = spread.start(k) / std::mem::size_of::<u64>();
+            for &stride in &strides {
+                if stride >= len { continue; }
+                // Words written and read per chunk: each subdivision from its start, every stride
+                let touched = subdivisions * elements_per_subdiv.div_ceil(stride);
+                // A word's value depends on its index and the pass's stride, not on the chunk
+                let pattern = pattern_base.wrapping_add((stride as u64) << 32);
 
                 for subdiv in 0..subdivisions {
                     let subdiv_start = chunk_start + subdiv * elements_per_subdiv;
@@ -2192,14 +2272,15 @@ pub unsafe fn stride_access_multi(
                     cycle_errors += transient_if_none(errors, test_name, chunk_start, chunk_end);
                 }
 
-                // Count the chunk when it is done (one write and one read per word touched)
+                // Count the pass when it is done (one write and one read per word touched)
                 runner.add_bytes(touched * std::mem::size_of::<u64>() * 2);
+            }
+            runner.reseal(spread.start(k), spread.chunk());
 
-                // A halt stops the test, not just this stride pass
-                if runner.should_halt(cycle_errors) || runner.shutdown_requested() {
-                    let total_operations = (runner.bytes_processed() / (2 * std::mem::size_of::<u64>())) as u64;
-                    return runner.finish_aborted(cycle_errors, total_operations);
-                }
+            // A halt stops the test at the chunk that erred
+            if runner.should_halt(cycle_errors) || runner.shutdown_requested() {
+                let total_operations = (runner.bytes_processed() / (2 * std::mem::size_of::<u64>())) as u64;
+                return runner.finish_aborted(cycle_errors, total_operations);
             }
         }
 
@@ -2253,11 +2334,15 @@ pub unsafe fn block_move_multi(
     let src_base = extent.ptr as *mut u64;
     let len = half_size / std::mem::size_of::<u64>();
 
-    // Initialize source with pattern
-    for i in 0..len {
-        *src_base.add(i) = pattern_base.wrapping_add(i as u64);
+    // Initialize source with pattern; a sealed step fills each source piece after its seal check
+    // instead (TODO 74)
+    let sealed = runner.seal_wrap();
+    if !sealed {
+        for i in 0..len {
+            *src_base.add(i) = pattern_base.wrapping_add(i as u64);
+        }
+        std::sync::atomic::fence(Ordering::SeqCst);
     }
-    std::sync::atomic::fence(Ordering::SeqCst);
 
     loop {
         let cycle = runner.begin_cycle();
@@ -2276,6 +2361,15 @@ pub unsafe fn block_move_multi(
         for k in 0..spread.count() {
             let processed = spread.start(k) / std::mem::size_of::<u64>();
             let chunk_end = processed + chunk_size_operations;
+
+            // The source piece and its destination, each checked, then the source filled
+            runner.check_seal(spread.start(k), spread.chunk());
+            runner.check_seal(half_size + spread.start(k), spread.chunk());
+            if sealed {
+                for i in processed..chunk_end {
+                    *src_base.add(i) = pattern_base.wrapping_add(i as u64);
+                }
+            }
 
             // Copy from source to destination with direction patterns
             match copy_dirs {
@@ -2354,6 +2448,8 @@ pub unsafe fn block_move_multi(
 
             // Verify copied data (indices from the destination half's start)
             cycle_errors += verify_words(dst_base, processed, chunk_end, test_name, |i| pattern_base.wrapping_add(i as u64));
+            runner.reseal(spread.start(k), spread.chunk());
+            runner.reseal(half_size + spread.start(k), spread.chunk());
 
             // Count the half-chunk when it is done: copy (read + write) and verify (read)
             runner.add_bytes(spread.chunk() * 3);
@@ -2518,7 +2614,7 @@ unsafe fn count_line(errors: &mut u64, ptr: *const u64, offset: usize, words: &[
         if actual != expected {
             *errors += 1;
             if *errors <= 10 {
-                log::error!("{}: error at idx {} - expected {:#x}, got {:#x}", test_name, offset + j, expected, actual);
+                log::error!("{}, idx {}: expected {:#x}, got {:#x}", crate::error_context::found_by(test_name), offset + j, expected, actual);
             }
         }
     }
@@ -2581,7 +2677,7 @@ unsafe fn rescan_stride(ptr: *const u64, start: usize, end: usize, stride: usize
         if actual != want {
             errors += 1;
             if errors <= 10 {
-                log::error!("{}: error at idx {} (stride {}) - expected {:#x}, got {:#x}", test_name, idx, stride, want, actual);
+                log::error!("{}, idx {} (stride {}): expected {:#x}, got {:#x}", crate::error_context::found_by(test_name), idx, stride, want, actual);
             }
         }
         idx += stride;
@@ -2600,7 +2696,7 @@ unsafe fn rescan_words(ptr: *const u64, start: usize, end: usize, test_name: &st
         if actual != want {
             errors += 1;
             if errors <= 10 {
-                log::error!("{}: error at idx {} - expected {:#x}, got {:#x}", test_name, idx, want, actual);
+                log::error!("{}, idx {}: expected {:#x}, got {:#x}", crate::error_context::found_by(test_name), idx, want, actual);
             }
         }
     }
@@ -2612,7 +2708,7 @@ fn transient_if_none(errors: u64, test_name: &str, start: usize, end: usize) -> 
     if errors > 0 {
         return errors;
     }
-    log::error!("{}: error in idx {}..{} that a reread no longer shows (transient)", test_name, start, end);
+    log::error!("{} in idx {}..{} that a reread no longer shows (transient)", crate::error_context::found_by(test_name), start, end);
     1
 }
 
@@ -2921,27 +3017,12 @@ fn mirror_mode(config: &TestMemoryConfig) -> MirrorMode {
     config.parameter_context.as_ref().and_then(|c| c.mirror).unwrap_or_default()
 }
 
-// ─── SIMD MirrorMove v2 Macros ──────────────────────────────────────────────
+// ─── MirrorMove v2: the swap kernels ─────────────────────────────────────────
 //
-// These macros stamp out the Init, Swap, and Verify phases for any SIMD width.
-// Each macro is parameterized by SIMD type and element count. The master macro
-// `mirror_move_v2_impl!` combines them into a complete test function.
-
-/// SIMD Init: write incrementing pattern using SIMD stores.
-/// Pattern: (element_idx + thread_base) * MIRROR_CONST — linear, so stride is constant.
-macro_rules! mirror_init_simd {
-    ($simd_type:ty, $simd_w:expr, $ctx:expr,
-     $base_vec:expr, $const_vec:expr, $lane_offsets:expr, $step:expr) => {{
-        let _len = $ctx.chunk_end - $ctx.chunk_start;
-        debug_assert!(_len % $simd_w == 0, "chunk not aligned to SIMD width");
-        let mut expected = (<$simd_type>::splat($ctx.chunk_start as u64)
-            + $lane_offsets + $base_vec) * $const_vec;
-        for i in ($ctx.chunk_start..$ctx.chunk_end).step_by($simd_w) {
-            *($ctx.ptr.add(i) as *mut $simd_type) = expected;
-            expected += $step;
-        }
-    }}
-}
+// A mirror test's data is the seal (TODO 74, TM5's `Capable_UseTst0ForGenAndCheck`): it swaps the
+// sealed words and puts them back, and the seal check after it is its verify. In an unsealed run
+// it writes the seal first. These macros stamp the swaps per width; `mirror_move_v2_impl!` makes
+// the test function.
 
 /// Swap one `$t` at element `$a` with one at element `$b`.
 macro_rules! mirror_swap_pair {
@@ -3026,81 +3107,6 @@ macro_rules! mirror_swap {
     }}
 }
 
-/// SIMD Verify: incrementing pattern with XOR+OR accumulator.
-/// Unified error check: `.simd_ne(zero).any()` across all widths.
-///
-/// When check_mask is set, processes in fixed-size batches to eliminate
-/// per-iteration counter and branch from the hot loop. The inner batch
-/// loop has a known trip count, enabling better code generation.
-macro_rules! mirror_verify_simd {
-    ($simd_type:ty, $simd_w:expr, $ctx:expr,
-     $base_vec:expr, $const_vec:expr, $lane_offsets:expr, $step:expr, $zero:expr) => {{
-        let _len = $ctx.chunk_end - $ctx.chunk_start;
-        debug_assert!(_len % $simd_w == 0, "chunk not aligned to SIMD width");
-        let mut total_errors = 0u64;
-
-        let mut expected = (<$simd_type>::splat($ctx.chunk_start as u64)
-            + $lane_offsets + $base_vec) * $const_vec;
-
-        match $ctx.check_mask {
-            Some(check_mask) => {
-                // Batch processing: accumulate for exactly (check_mask+1) vectors,
-                // then check once. No per-iteration counter or branch.
-                let vectors_per_check = (check_mask as usize) + 1;
-                let batch_elements = vectors_per_check * $simd_w;
-                let mut pos = $ctx.chunk_start;
-                let aligned_end = $ctx.chunk_end - ($ctx.chunk_end - $ctx.chunk_start) % batch_elements;
-
-                // Main batched loop: known trip count per batch
-                while pos < aligned_end {
-                    let mut error_acc = $zero;
-                    let batch_end = pos + batch_elements;
-                    for i in (pos..batch_end).step_by($simd_w) {
-                        let actual = *($ctx.ptr.add(i) as *const $simd_type);
-                        error_acc |= actual ^ expected;
-                        expected += $step;
-                    }
-                    if error_acc.simd_ne($zero).any() {
-                        total_errors += 1;
-                    }
-                    pos = batch_end;
-                }
-
-                // Remainder (fewer than one full batch)
-                if pos < $ctx.chunk_end {
-                    let mut error_acc = $zero;
-                    for i in (pos..$ctx.chunk_end).step_by($simd_w) {
-                        let actual = *($ctx.ptr.add(i) as *const $simd_type);
-                        error_acc |= actual ^ expected;
-                        expected += $step;
-                    }
-                    if error_acc.simd_ne($zero).any() {
-                        total_errors += 1;
-                    }
-                }
-            }
-            None => {
-                let mut error_acc = $zero;
-                for i in ($ctx.chunk_start..$ctx.chunk_end).step_by($simd_w) {
-                    let actual = *($ctx.ptr.add(i) as *const $simd_type);
-                    error_acc |= actual ^ expected;
-                    expected += $step;
-                }
-                if error_acc.simd_ne($zero).any() {
-                    total_errors += 1;
-                }
-            }
-        }
-
-        // Repair on error: re-write correct pattern to this chunk
-        if total_errors > 0 {
-            mirror_init_simd!($simd_type, $simd_w, $ctx,
-                $base_vec, $const_vec, $lane_offsets, $step);
-        }
-        total_errors
-    }}
-}
-
 /// Master macro: stamps out a complete MirrorMove v2 impl function for a given SIMD width.
 /// Generates an `unsafe fn` with `#[target_feature]` that handles all swap modes.
 macro_rules! mirror_move_v2_impl {
@@ -3109,7 +3115,6 @@ macro_rules! mirror_move_v2_impl {
         $test_name:literal,
         $simd_type:ty,
         $simd_w:expr,
-        $lane_offsets:expr,
         $target_feature:literal
     ) => {
         #[target_feature(enable = $target_feature)]
@@ -3122,49 +3127,41 @@ macro_rules! mirror_move_v2_impl {
             progress: Option<&TestProgress>,
         ) -> TestStats {
             let test_name = $test_name;
-            let thread_base = pattern_gen::mirror_thread_base(thread_id);
             let simd_elements: usize = $simd_w;
-
-            // Pre-compute SIMD constants for pattern generation.
-            const MIRROR_CONST: u64 = 0x0123456789ABCDEFu64;
-            let base_vec = <$simd_type>::splat(thread_base);
-            let const_vec = <$simd_type>::splat(MIRROR_CONST);
-            let lane_offsets = <$simd_type>::from_array($lane_offsets);
-            let step = <$simd_type>::splat((simd_elements as u64).wrapping_mul(MIRROR_CONST));
-            let zero = <$simd_type>::splat(0);
-
             let mirror = mirror_mode(config);
-
+            let seal = config.seal;
             run_phased_test(
                 blocks, thread_id, error_mode, timing, config, progress,
                 test_name, TestAction::WriteWaitVerify,
                 4,  // bytes_per_test_op: 2R + 2W per mirror round-trip
-                false,  // skip_init: always init (independent mode)
+                seal.expects || config.skip_init,  // a sealed step's memory holds the seal already
                 config.test_reps,  // test_reps: mirror round-trips before verify
                 config.verify_reps,  // verify_reps: verification passes
-
-                // Init: SIMD pattern writes
-                |ctx: &ChunkCtx| {
-                    mirror_init_simd!($simd_type, simd_elements, ctx,
-                        base_vec, const_vec, lane_offsets, step);
-                },
-
+                // Init: the seal, in an unsealed run
+                |ctx: &ChunkCtx| seal.kernel.fill(ctx.ptr, ctx.chunk_start, ctx.chunk_end),
                 // Test: one mirror round trip
                 |ctx: &ChunkCtx| {
                     mirror_swap!($simd_type, simd_elements, ctx, mirror);
                 },
-
-                // Verify: SIMD incrementing pattern + accumulator
-                |ctx: &ChunkCtx| -> u64 {
-                    mirror_verify_simd!($simd_type, simd_elements, ctx,
-                        base_vec, const_vec, lane_offsets, step, zero)
-                },
+                // Verify: the seal check, resealing the chunk if it failed (TM5's refill)
+                |ctx: &ChunkCtx| -> u64 { mirror_seal_check(seal.kernel, ctx) },
             )
         }
     }
 }
 
-/// MirrorMove v2 scalar — u64 patterns with full 64-bit coverage.
+/// A mirror test's verify (TODO 74): the seal check after the mirror, its errors the test's own
+/// (TM5 numbers them by the mirror step), and the chunk resealed if it failed.
+#[inline(always)]
+unsafe fn mirror_seal_check(kernel: crate::seal::SealKernel, ctx: &ChunkCtx) -> u64 {
+    let errors = kernel.check(ctx.ptr, ctx.chunk_start, ctx.chunk_end, "seal check after");
+    if errors > 0 {
+        kernel.fill(ctx.ptr, ctx.chunk_start, ctx.chunk_end);
+    }
+    errors
+}
+
+/// MirrorMove v2 scalar: the mirror a u64 per step, on the seal (TODO 74).
 ///
 /// # Safety
 /// Caller must ensure all blocks contain valid, aligned, writable memory.
@@ -3177,76 +3174,24 @@ pub unsafe fn mirror_move_v2_multi(
     progress: Option<&TestProgress>,
 ) -> TestStats {
     let test_name = "Mem-MirrorV2";
-    // Use upper 32 bits for thread separation (vs old << 16)
-    let thread_base = pattern_gen::mirror_thread_base(thread_id);
     let mirror = mirror_mode(config);
+    let seal = config.seal;
 
     run_phased_test(
         blocks, thread_id, error_mode, timing, config, progress,
         test_name, TestAction::WriteWaitVerify,
         4, // bytes_per_test_op: 2R + 2W per mirror round-trip
-        false,  // skip_init: always init (independent mode)
+        seal.expects || config.skip_init,  // a sealed step's memory holds the seal already
         config.test_reps,  // test_reps: mirror round-trips before verify
         config.verify_reps,  // verify_reps: verification passes
-        // Init: write forward patterns once (TM5: RS_Set fills before test sequence)
-        |ctx: &ChunkCtx| {
-            for i in ctx.chunk_start..ctx.chunk_end {
-                *ctx.ptr.add(i) = pattern_gen::mirror_pattern_u64(i as u64, thread_base);
-            }
-        },
+        // Init: the seal, in an unsealed run
+        |ctx: &ChunkCtx| seal.kernel.fill(ctx.ptr, ctx.chunk_start, ctx.chunk_end),
         // Test: one mirror round trip, a u64 per step
         |ctx: &ChunkCtx| {
             mirror_swap!(u64, 1, ctx, mirror);
         },
-        // Verify: check original (forward) patterns + repair chunk on error
-        // (with error_check_interval for v1 parity)
-        |ctx: &ChunkCtx| -> u64 {
-            let mut total_errors = 0u64;
-            match ctx.check_mask {
-                Some(check_mask) => {
-                    let mut interval_errors = 0u64;
-                    let mut element_count = 0u32;
-                    for i in ctx.chunk_start..ctx.chunk_end {
-                        let expected = pattern_gen::mirror_pattern_u64(i as u64, thread_base);
-                        let actual = *ctx.ptr.add(i);
-                        if actual != expected {
-                            interval_errors += 1;
-                            if interval_errors <= 10 {
-                                log::error!("{}: error at idx {} - expected {:#x}, got {:#x}",
-                                           test_name, i, expected, actual);
-                            }
-                        }
-                        element_count += 1;
-                        if (element_count & check_mask) == 0
-                            && interval_errors > 0 {
-                                total_errors += interval_errors;
-                                interval_errors = 0;
-                            }
-                    }
-                    total_errors += interval_errors;
-                }
-                None => {
-                    for i in ctx.chunk_start..ctx.chunk_end {
-                        let expected = pattern_gen::mirror_pattern_u64(i as u64, thread_base);
-                        let actual = *ctx.ptr.add(i);
-                        if actual != expected {
-                            total_errors += 1;
-                            if total_errors <= 10 {
-                                log::error!("{}: error at idx {} - expected {:#x}, got {:#x}",
-                                           test_name, i, expected, actual);
-                            }
-                        }
-                    }
-                }
-            }
-            // Repair this chunk if errors detected (TM5: RS_Set on failure)
-            if total_errors > 0 {
-                for i in ctx.chunk_start..ctx.chunk_end {
-                    *ctx.ptr.add(i) = pattern_gen::mirror_pattern_u64(i as u64, thread_base);
-                }
-            }
-            total_errors
-        },
+        // Verify: the seal check, resealing the chunk if it failed (TM5's refill)
+        |ctx: &ChunkCtx| -> u64 { mirror_seal_check(seal.kernel, ctx) },
     )
 }
 
@@ -3269,7 +3214,7 @@ pub unsafe fn mirror_move_v2_128_multi(
     }
 }
 
-mirror_move_v2_impl!(mirror_move_v2_128_impl, "Mem-MirrorV2-128", u64x2, 2, [0, 1], "sse4.2,sse4.1,ssse3,sse3,sse2,popcnt");
+mirror_move_v2_impl!(mirror_move_v2_128_impl, "Mem-MirrorV2-128", u64x2, 2, "sse4.2,sse4.1,ssse3,sse3,sse2,popcnt");
 
 /// MirrorMove v2 AVX2 (u64x4) — 256-bit SIMD with u64 lanes.
 ///
@@ -3290,7 +3235,7 @@ pub unsafe fn mirror_move_v2_256_multi(
     }
 }
 
-mirror_move_v2_impl!(mirror_move_v2_256_impl, "Mem-MirrorV2-256", u64x4, 4, [0, 1, 2, 3], "avx2,avx,fma,bmi1,bmi2");
+mirror_move_v2_impl!(mirror_move_v2_256_impl, "Mem-MirrorV2-256", u64x4, 4, "avx2,avx,fma,bmi1,bmi2");
 
 /// MirrorMove v2 AVX-512 (u64x8) — 512-bit SIMD with u64 lanes.
 ///
@@ -3311,7 +3256,7 @@ pub unsafe fn mirror_move_v2_512_multi(
     }
 }
 
-mirror_move_v2_impl!(mirror_move_v2_512_impl, "Mem-MirrorV2-512", u64x8, 8, [0, 1, 2, 3, 4, 5, 6, 7], "avx512f,avx512bw,avx512cd,avx512dq,avx512vl,avx2,avx,fma,bmi1,bmi2");
+mirror_move_v2_impl!(mirror_move_v2_512_impl, "Mem-MirrorV2-512", u64x8, 8, "avx512f,avx512bw,avx512cd,avx512dq,avx512vl,avx2,avx,fma,bmi1,bmi2");
 
 // MirrorMove v2 auto-dispatch — selects best SIMD variant at runtime.
 crate::auto_dispatch!(
@@ -4053,6 +3998,139 @@ crate::auto_dispatch!(
 // Measures raw INIT/write throughput per pattern mode with no-op test/verify.
 // ============================================================================
 
+/// Seal-Check: TM5's test 0 as a step (TODO 74), the seal check of every chunk, resealing a chunk
+/// that failed (TM5's refill). Its errors are its own, and TM5 numbers them 0. In an unsealed run
+/// it seals its extent first.
+#[doc = include_str!("test_fn_safety.md")]
+pub unsafe fn seal_check_multi(
+    blocks: &[crate::runner::AllocationBlock],
+    thread_id: usize,
+    error_mode: ErrorMode,
+    timing: &TestTiming,
+    config: &TestMemoryConfig,
+    progress: Option<&TestProgress>,
+) -> TestStats {
+    let seal = config.seal;
+    run_phased_test(
+        blocks, thread_id, error_mode, timing, config, progress,
+        "Seal-Check", TestAction::Verify, 0, seal.expects || config.skip_init, 0, 1,
+        |ctx: &ChunkCtx| seal.kernel.fill(ctx.ptr, ctx.chunk_start, ctx.chunk_end),
+        |_ctx: &ChunkCtx| {},
+        |ctx: &ChunkCtx| -> u64 {
+            let errors = seal.kernel.check(ctx.ptr, ctx.chunk_start, ctx.chunk_end, "seal check at");
+            if errors > 0 {
+                seal.kernel.fill(ctx.ptr, ctx.chunk_start, ctx.chunk_end);
+            }
+            errors
+        },
+    )
+}
+
+/// The kernel a Bench-*-Seal-* test measures: its pattern at its width or, where the CPU lacks
+/// that one (or the width is `Auto`), the widest it has.
+fn bench_seal_kernel(pattern: crate::seal::SealPattern, width: crate::seal::SealWidth, test_name: &str) -> crate::seal::SealKernel {
+    let width = width.resolve().unwrap_or_else(|e| {
+        log::warn!("{test_name}: {e}; measuring the widest width this CPU has");
+        crate::seal::SealKernel::detect().width
+    });
+    crate::seal::SealKernel { pattern, width }
+}
+
+/// Bench-Init-Seal-*: the seal's fill alone (TODO 74), one non-temporal write pass per chunk per
+/// cycle.
+#[allow(clippy::too_many_arguments)]
+unsafe fn bench_init_seal(
+    blocks: &[crate::runner::AllocationBlock],
+    thread_id: usize,
+    error_mode: ErrorMode,
+    timing: &TestTiming,
+    config: &TestMemoryConfig,
+    progress: Option<&TestProgress>,
+    test_name: &'static str,
+    kernel: crate::seal::SealKernel,
+) -> TestStats {
+    run_phased_test(
+        blocks, thread_id, error_mode, timing, config, progress,
+        test_name, TestAction::Write, 1, config.skip_init, 1, 0,
+        |ctx: &ChunkCtx| kernel.fill(ctx.ptr, ctx.chunk_start, ctx.chunk_end),
+        |ctx: &ChunkCtx| kernel.fill(ctx.ptr, ctx.chunk_start, ctx.chunk_end),
+        |_ctx: &ChunkCtx| -> u64 { 0 },
+    )
+}
+
+/// Bench-Verify-Seal-*: the seal's check alone (TODO 74), one read pass per chunk per cycle, after
+/// one fill unless it follows its Bench-Init-Seal-* (`skip_init`).
+#[allow(clippy::too_many_arguments)]
+unsafe fn bench_verify_seal(
+    blocks: &[crate::runner::AllocationBlock],
+    thread_id: usize,
+    error_mode: ErrorMode,
+    timing: &TestTiming,
+    config: &TestMemoryConfig,
+    progress: Option<&TestProgress>,
+    test_name: &'static str,
+    kernel: crate::seal::SealKernel,
+) -> TestStats {
+    run_phased_test(
+        blocks, thread_id, error_mode, timing, config, progress,
+        test_name, TestAction::Verify, 1, config.skip_init, 0, 1,
+        |ctx: &ChunkCtx| kernel.fill(ctx.ptr, ctx.chunk_start, ctx.chunk_end),
+        |_ctx: &ChunkCtx| {},
+        |ctx: &ChunkCtx| -> u64 { kernel.check(ctx.ptr, ctx.chunk_start, ctx.chunk_end, "seal check of") },
+    )
+}
+
+/// One Bench-Init-Seal-* and its Bench-Verify-Seal-* for a seal pattern and width.
+macro_rules! bench_seal_fns {
+    ($init:ident, $init_name:literal, $verify:ident, $verify_name:literal, $pattern:ident, $width:ident) => {
+        #[doc = include_str!("test_fn_safety.md")]
+        pub unsafe fn $init(blocks: &[crate::runner::AllocationBlock], thread_id: usize, error_mode: ErrorMode,
+                            timing: &TestTiming, config: &TestMemoryConfig, progress: Option<&TestProgress>) -> TestStats {
+            let kernel = bench_seal_kernel(crate::seal::SealPattern::$pattern, crate::seal::SealWidth::$width, $init_name);
+            bench_init_seal(blocks, thread_id, error_mode, timing, config, progress, $init_name, kernel)
+        }
+
+        #[doc = include_str!("test_fn_safety.md")]
+        pub unsafe fn $verify(blocks: &[crate::runner::AllocationBlock], thread_id: usize, error_mode: ErrorMode,
+                              timing: &TestTiming, config: &TestMemoryConfig, progress: Option<&TestProgress>) -> TestStats {
+            let kernel = bench_seal_kernel(crate::seal::SealPattern::$pattern, crate::seal::SealWidth::$width, $verify_name);
+            bench_verify_seal(blocks, thread_id, error_mode, timing, config, progress, $verify_name, kernel)
+        }
+    };
+}
+
+bench_seal_fns!(bench_init_seal_tmr_128_multi, "Bench-Init-Seal-TMR-128", bench_verify_seal_tmr_128_multi, "Bench-Verify-Seal-TMR-128", Tmr, W128);
+bench_seal_fns!(bench_init_seal_tmr_256_multi, "Bench-Init-Seal-TMR-256", bench_verify_seal_tmr_256_multi, "Bench-Verify-Seal-TMR-256", Tmr, W256);
+bench_seal_fns!(bench_init_seal_tmr_512_multi, "Bench-Init-Seal-TMR-512", bench_verify_seal_tmr_512_multi, "Bench-Verify-Seal-TMR-512", Tmr, W512);
+bench_seal_fns!(bench_init_seal_tmr_widest_multi, "Bench-Init-Seal-TMR", bench_verify_seal_tmr_widest_multi, "Bench-Verify-Seal-TMR", Tmr, Auto);
+bench_seal_fns!(bench_init_seal_tm5_128_multi, "Bench-Init-Seal-TM5-128", bench_verify_seal_tm5_128_multi, "Bench-Verify-Seal-TM5-128", Tm5, W128);
+bench_seal_fns!(bench_init_seal_tm5_256_multi, "Bench-Init-Seal-TM5-256", bench_verify_seal_tm5_256_multi, "Bench-Verify-Seal-TM5-256", Tm5, W256);
+bench_seal_fns!(bench_init_seal_tm5_512_multi, "Bench-Init-Seal-TM5-512", bench_verify_seal_tm5_512_multi, "Bench-Verify-Seal-TM5-512", Tm5, W512);
+bench_seal_fns!(bench_init_seal_tm5_widest_multi, "Bench-Init-Seal-TM5", bench_verify_seal_tm5_widest_multi, "Bench-Verify-Seal-TM5", Tm5, Auto);
+
+/// The Bench-*-Seal-* tests: (name, function), Init before its Verify, per pattern and width.
+pub fn bench_seal_tests() -> [(&'static str, crate::runner::TestFunction); 16] {
+    use crate::runner::TestFunction::MultiBlock;
+    [
+        ("Bench-Init-Seal-TMR", MultiBlock(bench_init_seal_tmr_widest_multi)),
+        ("Bench-Verify-Seal-TMR", MultiBlock(bench_verify_seal_tmr_widest_multi)),
+        ("Bench-Init-Seal-TMR-128", MultiBlock(bench_init_seal_tmr_128_multi)),
+        ("Bench-Verify-Seal-TMR-128", MultiBlock(bench_verify_seal_tmr_128_multi)),
+        ("Bench-Init-Seal-TMR-256", MultiBlock(bench_init_seal_tmr_256_multi)),
+        ("Bench-Verify-Seal-TMR-256", MultiBlock(bench_verify_seal_tmr_256_multi)),
+        ("Bench-Init-Seal-TMR-512", MultiBlock(bench_init_seal_tmr_512_multi)),
+        ("Bench-Verify-Seal-TMR-512", MultiBlock(bench_verify_seal_tmr_512_multi)),
+        ("Bench-Init-Seal-TM5", MultiBlock(bench_init_seal_tm5_widest_multi)),
+        ("Bench-Verify-Seal-TM5", MultiBlock(bench_verify_seal_tm5_widest_multi)),
+        ("Bench-Init-Seal-TM5-128", MultiBlock(bench_init_seal_tm5_128_multi)),
+        ("Bench-Verify-Seal-TM5-128", MultiBlock(bench_verify_seal_tm5_128_multi)),
+        ("Bench-Init-Seal-TM5-256", MultiBlock(bench_init_seal_tm5_256_multi)),
+        ("Bench-Verify-Seal-TM5-256", MultiBlock(bench_verify_seal_tm5_256_multi)),
+        ("Bench-Init-Seal-TM5-512", MultiBlock(bench_init_seal_tm5_512_multi)),
+        ("Bench-Verify-Seal-TM5-512", MultiBlock(bench_verify_seal_tm5_512_multi)),
+    ]
+}
+
 /// Bench-Init dispatcher: routes to the correct pattern mode based on config.pattern_mode.
 /// Each Bench-Init-* test sets pattern_mode in its config, then calls this.
 #[doc = include_str!("test_fn_safety.md")]
@@ -4474,6 +4552,13 @@ pub fn get_test_function_by_name(name: &str) -> Option<crate::runner::TestFuncti
         | "Bench-Verify-TMR-0" | "Bench-Verify-TMR-1" | "Bench-Verify-TMR-2"
         | "Bench-Verify-TMR-3"
             => Some(TestFunction::MultiBlock(bench_verify_multi)),
+
+        // TM5's test 0 as a step: the seal check (TODO 74)
+        "Seal-Check" => Some(TestFunction::MultiBlock(seal_check_multi)),
+
+        // The seal's fill and check, per pattern and width (TODO 74)
+        s if s.starts_with("Bench-Init-Seal-") || s.starts_with("Bench-Verify-Seal-")
+            => bench_seal_tests().into_iter().find(|(n, _)| *n == s).map(|(_, f)| f),
 
         _ => None,
     }

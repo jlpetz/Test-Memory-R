@@ -18,7 +18,7 @@ use std::time::Instant;
 use std::sync::atomic::Ordering;
 
 use crate::ErrorMode;
-use crate::tests::{TestBlock, TestStats, TestAction, TestTiming, TestProgress, TestMemoryConfig};
+use crate::tests::{Stage, TestBlock, TestStats, TestAction, TestTiming, TestProgress, TestMemoryConfig};
 
 use crate::runner::{AllocationBlock, SHUTDOWN_REQUESTED};
 
@@ -43,6 +43,25 @@ pub struct TestRunner<'a> {
     total_error_count: u64,
     total_bytes_processed: usize,
     last_progress_update: Instant,
+
+    /// The seal as this step runs it (TODO 74), and the extent's start, which its kernels index from
+    seal: crate::seal::SealStep,
+    seal_base: *mut u64,
+    /// Bad words the seal checks before chunks found: not this test's errors, but they halt it
+    seal_errors: u64,
+}
+
+/// The extent a test of this config covers on these blocks: the first bytes of the thread's span
+/// (TODO 76), at least one granule when there is memory. Also the worker's view of what a step
+/// that never takes the seal will overwrite (TODO 74).
+pub fn test_extent<'a>(blocks: &'a [AllocationBlock], config: &TestMemoryConfig, test_name: &str) -> (TestBlock<'a>, usize) {
+    let total_allocated: usize = blocks.iter().map(|b| b.buffer.size()).sum();
+    let extent_size = config.calculate_extent_size(test_name, total_allocated);
+    let mut extent = crate::test_memory::extent(blocks, extent_size);
+    if extent.test_size == 0 && total_allocated > 0 {
+        extent = crate::test_memory::extent(blocks, crate::test_memory::GRANULE);
+    }
+    (extent, extent_size)
 }
 
 impl<'a> TestRunner<'a> {
@@ -60,13 +79,10 @@ impl<'a> TestRunner<'a> {
         test_name: &'static str,
         action: TestAction,
     ) -> (Self, TestBlock<'a>) {
-        let total_allocated: usize = blocks.iter().map(|b| b.buffer.size()).sum();
-        let extent_size = config.calculate_extent_size(test_name, total_allocated);
         // The extent is the first `extent_size` bytes of the thread's span (TODO 76).
-        let mut extent = crate::test_memory::extent(blocks, extent_size);
-        if extent.test_size == 0 && total_allocated > 0 {
+        let (extent, extent_size) = test_extent(blocks, config, test_name);
+        if extent.test_size > extent_size {
             log::error!("{}: extent of {} bytes is below 4 KiB; testing 4 KiB instead", test_name, extent_size);
-            extent = crate::test_memory::extent(blocks, crate::test_memory::GRANULE);
         }
         let total_test_size = extent.test_size;
         let chunk = config.calculate_chunk_size(test_name, total_test_size);
@@ -85,7 +101,16 @@ impl<'a> TestRunner<'a> {
             total_error_count: 0,
             total_bytes_processed: 0,
             last_progress_update: now,
+            seal: config.seal,
+            seal_base: extent.ptr as *mut u64,
+            seal_errors: 0,
         };
+        // The untimed setup a latency or bandwidth test does before `restart_clock`, for the ticker
+        match action {
+            TestAction::Latency => runner.set_stage(Stage::BuildingPointerChain),
+            _ if test_name.starts_with("Spd-") => runner.set_stage(Stage::FillingMemory),
+            _ => {}
+        }
 
         // Log the registration name (carries the `_A` auto-dispatch suffix and distinguishes
         // registrations that share one test fn, e.g. Mem-StuckBit-Flush128); fall back to the
@@ -130,9 +155,53 @@ impl<'a> TestRunner<'a> {
     /// its throughput. Call it before counting any bytes.
     #[inline]
     pub fn restart_clock(&mut self) {
+        self.set_stage(Stage::Testing);
         let now = Instant::now();
         self.start = now;
         self.last_progress_update = now;
+    }
+
+    /// Whether this step wraps each chunk in the seal (TODO 74): `check_seal` before the test works
+    /// it, `reseal` after.
+    #[inline]
+    pub fn seal_wrap(&self) -> bool {
+        self.seal.wrap
+    }
+
+    /// Check the seal on bytes `[start, start + len)` of the extent before the test works them
+    /// (TODO 74); a no-op unless the step wraps. Bad words count as seal errors, not the test's,
+    /// and halt it under `errors=halt`.
+    #[inline]
+    pub fn check_seal(&mut self, start: usize, len: usize) {
+        if !self.seal.wrap {
+            return;
+        }
+        self.set_stage(Stage::CheckingSeal);
+        let (from, to) = (start / 8, (start + len) / 8);
+        // SAFETY: the range is inside the extent, which the test is about to work
+        self.seal_errors += unsafe { self.seal.kernel.check(self.seal_base, from, to, "seal check before") };
+        self.set_stage(Stage::Testing);
+    }
+
+    /// Reseal bytes `[start, start + len)` of the extent once the test is done with them (TODO 74);
+    /// a no-op unless the step wraps.
+    #[inline]
+    pub fn reseal(&mut self, start: usize, len: usize) {
+        if !self.seal.wrap {
+            return;
+        }
+        self.set_stage(Stage::Resealing);
+        // SAFETY: as `check_seal`
+        unsafe { self.seal.kernel.fill(self.seal_base, start / 8, (start + len) / 8) };
+        self.set_stage(Stage::Testing);
+    }
+
+    /// Name what the worker is doing, for the ticker.
+    #[inline]
+    pub fn set_stage(&self, stage: Stage) {
+        if let Some(progress) = self.progress {
+            progress.set_stage(stage);
+        }
     }
 
     /// Increment and return the new cycle number. Call at the top of each outer cycle.
@@ -165,6 +234,7 @@ impl<'a> TestRunner<'a> {
     /// - `Log`: returns `false` (errors already logged in the hot loop).
     #[inline]
     pub fn should_halt(&self, cycle_errors: u64) -> bool {
+        let cycle_errors = cycle_errors + self.seal_errors;
         if cycle_errors == 0 {
             return false;
         }
@@ -232,6 +302,7 @@ impl<'a> TestRunner<'a> {
             cycles_completed: self.cycle,
             cycles_planned: self.timing.cycles,
             stopped_by_time_limit: false,
+            seal_errors: self.seal_errors,
         }
     }
 
@@ -250,6 +321,7 @@ impl<'a> TestRunner<'a> {
             cycles_completed: self.cycle,
             cycles_planned: self.timing.cycles,
             stopped_by_time_limit: self.timing.cycles.is_none_or(|limit| self.cycle < limit),
+            seal_errors: self.seal_errors,
         }
     }
 }

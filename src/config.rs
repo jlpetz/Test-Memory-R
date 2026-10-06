@@ -25,13 +25,16 @@ pub struct ModernConfig {
     pub metadata: ConfigMetadata,
     pub system: SystemConfig,
     pub test_sequence: Vec<TestConfig>,
+    /// What one cycle runs, as test `id`s in order; an id may repeat (TODO 74). Unset is every
+    /// enabled test once, in file order. A disabled test listed here is skipped.
+    #[serde(default)]
+    pub cycle_order: Option<Vec<String>>,
     pub legacy_metadata: Option<LegacyMetadata>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct LegacyMetadata {
-    pub tm5_test_sequence: Vec<u32>,
     pub tm5_cycles: u32,
     pub tm5_time_percent: u32,
     /// Memory channel count from TM5 .cfg (default 2). Used in stride formula.
@@ -75,6 +78,13 @@ pub struct SystemConfig {
     /// Consumer: 2, Server: 4-12+.
     #[serde(default = "default_channels")]
     pub channels: u32,
+    /// The seal (TODO 74, `seal.rs`): `"tmr"` (the default), `"tm5"`, or `"off"` to run without
+    /// it. The mirror tests' data is the seal pattern either way.
+    #[serde(default)]
+    pub seal: Option<String>,
+    /// The seal kernels' SIMD width: `"auto"` (the default, the widest), `"128"`, `"256"`, `"512"`.
+    #[serde(default)]
+    pub seal_width: Option<String>,
 }
 
 // Define CpuPinningConfig in config.rs
@@ -439,8 +449,16 @@ pub struct CpuConfig {
 #[derive(Debug, Clone, Default, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct TestConfig {
+    /// The name `cycle_order` lists this test by; unique in the config (TODO 74). A TM5 import
+    /// gives each `[TestN]` the id `"N"`.
+    #[serde(default)]
+    pub id: Option<String>,
     pub enabled: bool,
     pub function: String,
+    /// `false` runs this correctness test without the seal around its chunks (TODO 74). Bandwidth,
+    /// latency, Bench and Mem-Random tests never take it.
+    #[serde(default)]
+    pub seal: Option<bool>,
     
     // Per-test timing overrides
     pub cycles: Option<u32>,
@@ -677,6 +695,27 @@ pub struct LegacyTest {
     pub test_chunk_size_mb: u32,
 }
 
+/// One enabled test of a config, as a cycle plan holds it (TODO 74).
+pub struct ConfigTest<'a> {
+    pub function: &'a str,
+    pub config: TestMemoryConfig,
+    /// Its `id`; for a TM5 import, the `.cfg`'s test number.
+    pub id: Option<&'a str>,
+    /// `seal: false` on the test.
+    pub seal_opt_out: bool,
+}
+
+/// What one cycle of a config runs (TODO 74).
+pub struct CyclePlan<'a> {
+    /// The enabled tests, in file order.
+    pub tests: Vec<ConfigTest<'a>>,
+    /// The cycle's steps, as indices into `tests`.
+    pub steps: Vec<usize>,
+    /// `cycle_order` as written, each id with whether it runs (a disabled test's doesn't); `None`
+    /// without one.
+    pub order: Option<Vec<(String, bool)>>,
+}
+
 impl ModernConfig {
     /// Check the system fields with the parsers the CLI uses for the same settings, so a typo in
     /// a JSON config stops the run instead of quietly becoming a default (an unknown `error_mode`
@@ -691,6 +730,8 @@ impl ModernConfig {
             ("maxpage", "memory_allocation.max_page_size", sys.memory_allocation.max_page_size.as_str()),
             ("skip-cores", "cpu_pinning.skip_spec", sys.cpu_pinning.skip_spec.as_str()),
             ("cpu-stride", "cpu_pinning.stride_spec", sys.cpu_pinning.stride_spec.as_str()),
+            ("seal", "seal", sys.seal.as_deref().unwrap_or("tmr")),
+            ("seal-width", "seal_width", sys.seal_width.as_deref().unwrap_or("auto")),
         ];
         for (cli_key, json_key, value) in checks {
             registry.parse_arg(&format!("{cli_key}={value}"))
@@ -774,70 +815,118 @@ impl ModernConfig {
         }
     }
     
+    /// The enabled tests, in file order, each with its runtime config.
+    #[cfg(test)]
     pub fn get_test_configs(&self) -> Result<Vec<(&str, TestMemoryConfig)>, String> {
+        self.test_sequence.iter().enumerate().filter(|(_, t)| t.enabled)
+            .map(|(i, test)| Ok((test.function.as_str(), self.build_test(i, test)?)))
+            .collect()
+    }
+
+    /// What one cycle runs (TODO 74): the enabled tests, validated, and the steps, as indices
+    /// into them, in `cycle_order` or else each test once in file order.
+    pub fn plan(&self) -> Result<CyclePlan<'_>, String> {
+        let mut ids = HashMap::new();
+        for (i, test) in self.test_sequence.iter().enumerate() {
+            if let Some(id) = &test.id
+                && ids.insert(id.as_str(), i).is_some()
+            {
+                return Err(format!("test_sequence[{i}] ('{}'): id \"{id}\" is used twice", test.function));
+            }
+        }
+        let mut tests = Vec::new();
+        let mut at_entry = HashMap::new();
+        for (i, test) in self.test_sequence.iter().enumerate().filter(|(_, t)| t.enabled) {
+            at_entry.insert(i, tests.len());
+            tests.push(ConfigTest {
+                function: test.function.as_str(),
+                config: self.build_test(i, test)?,
+                id: test.id.as_deref(),
+                seal_opt_out: test.seal == Some(false),
+            });
+        }
+        let Some(order) = &self.cycle_order else {
+            let steps = (0..tests.len()).collect();
+            return Ok(CyclePlan { tests, steps, order: None });
+        };
+        let mut steps = Vec::new();
+        let mut listed = Vec::new();
+        for id in order {
+            let entry = *ids.get(id.as_str()).ok_or_else(|| format!("cycle_order: no test has the id \"{id}\""))?;
+            match at_entry.get(&entry) {
+                Some(&t) => {
+                    steps.push(t);
+                    listed.push((id.clone(), true));
+                }
+                None => listed.push((id.clone(), false)),
+            }
+        }
+        Ok(CyclePlan { tests, steps, order: Some(listed) })
+    }
+
+    /// One test's runtime config from its entry `i` in `test_sequence`.
+    fn build_test(&self, i: usize, test: &TestConfig) -> Result<TestMemoryConfig, String> {
         // Channels: prefer JSON system.channels, fall back to legacy TM5 metadata, default 2
         let channels = if self.system.channels > 0 {
             self.system.channels
         } else {
             self.legacy_metadata.as_ref().map_or(2, |m| m.tm5_channels)
         };
-        self.test_sequence.iter().enumerate().filter(|(_, t)| t.enabled).map(|(i, test)| {
-            let extent_mode = self.parse_test_extent_mode(test).map_err(|e| Self::test_error(i, test, e))?;
-            let chunk_mode = self.parse_test_chunk_mode(test).map_err(|e| Self::test_error(i, test, e))?;
-            if let Some(mode) = test.pattern_mode
-                && !matches!(mode, 0..=2 | 10..=13)
-            {
-                return Err(Self::test_error(i, test, format!("pattern_mode {mode} is not a mode; valid: 0-2 (TM5-faithful), 10-13 (TMR-native)")));
-            }
-            let is_mirror = test.function.starts_with("Mem-MirrorV2");
-            if is_mirror && test.parameter.is_some() {
-                return Err(Self::test_error(i, test, "a mirror test takes \"mirror\" (whole, subblocks:2, subblocks:4 or jump:N), not \"parameter\"".to_string()));
-            }
-            if !is_mirror && test.mirror.is_some() {
-                return Err(Self::test_error(i, test, "only the Mem-MirrorV2 tests read \"mirror\"".to_string()));
-            }
-            if let ChunkMode::Absolute { size_bytes } = chunk_mode
-                && !size_bytes.is_multiple_of(crate::test_memory::GRANULE)
-            {
-                log::info!("test_sequence[{i}] ('{}'): chunk {} bytes -> {} KiB (chunks are multiples of 4 KiB, rounded up; then at least the test's minimum and at most the extent)",
-                    test.function, size_bytes, size_bytes.next_multiple_of(crate::test_memory::GRANULE) / 1024);
-            }
-            let timing = TestTiming {
-                cycles: test.cycles.or(self.system.timing.default_test_cycles),
-                duration_secs: test.duration_secs.or(self.system.timing.default_test_duration_secs),
-                min_duration_secs: test.min_duration_secs,
-            };
+        let extent_mode = self.parse_test_extent_mode(test).map_err(|e| Self::test_error(i, test, e))?;
+        let chunk_mode = self.parse_test_chunk_mode(test).map_err(|e| Self::test_error(i, test, e))?;
+        if let Some(mode) = test.pattern_mode
+            && !matches!(mode, 0..=2 | 10..=13)
+        {
+            return Err(Self::test_error(i, test, format!("pattern_mode {mode} is not a mode; valid: 0-2 (TM5-faithful), 10-13 (TMR-native)")));
+        }
+        let is_mirror = test.function.starts_with("Mem-MirrorV2");
+        if is_mirror && test.parameter.is_some() {
+            return Err(Self::test_error(i, test, "a mirror test takes \"mirror\" (whole, subblocks:2, subblocks:4 or jump:N), not \"parameter\"".to_string()));
+        }
+        if !is_mirror && test.mirror.is_some() {
+            return Err(Self::test_error(i, test, "only the Mem-MirrorV2 tests read \"mirror\"".to_string()));
+        }
+        if let ChunkMode::Absolute { size_bytes } = chunk_mode
+            && !size_bytes.is_multiple_of(crate::test_memory::GRANULE)
+        {
+            log::info!("test_sequence[{i}] ('{}'): chunk {} bytes -> {} KiB (chunks are multiples of 4 KiB, rounded up; then at least the test's minimum and at most the extent)",
+                test.function, size_bytes, size_bytes.next_multiple_of(crate::test_memory::GRANULE) / 1024);
+        }
+        let timing = TestTiming {
+            cycles: test.cycles.or(self.system.timing.default_test_cycles),
+            duration_secs: test.duration_secs.or(self.system.timing.default_test_duration_secs),
+            min_duration_secs: test.min_duration_secs,
+        };
 
-            let mut config = TestMemoryConfig::new(extent_mode, chunk_mode)
-                .with_timing(timing)
-                .with_pattern_config(test.pattern_mode, test.pattern_param0, test.pattern_param1)
-                // #59: CLFLUSHOPT-verify, opt-in per test from the config
-                .with_flush_before_verify(test.flush_before_verify.unwrap_or(false));
+        let mut config = TestMemoryConfig::new(extent_mode, chunk_mode)
+            .with_timing(timing)
+            .with_pattern_config(test.pattern_mode, test.pattern_param0, test.pattern_param1)
+            // #59: CLFLUSHOPT-verify, opt-in per test from the config
+            .with_flush_before_verify(test.flush_before_verify.unwrap_or(false));
 
-            // v2: Attach correctly interpreted parameter context
-            if let Some(param) = test.parameter {
-                config = config.with_parameter_context(
-                    interpret_tm5_parameter_with_channels(&test.function, param, channels)
-                );
-            }
+        // v2: Attach correctly interpreted parameter context
+        if let Some(param) = test.parameter {
+            config = config.with_parameter_context(
+                interpret_tm5_parameter_with_channels(&test.function, param, channels)
+            );
+        }
 
-            // Fold TMR-native test parameters into parameter_context
-            if test.stride_patterns.is_some() || test.rng_sequences.is_some()
-                || test.subdivisions.is_some() || test.copy_directions.is_some()
-                || test.mirror.is_some()
-            {
-                let ctx = config.parameter_context.get_or_insert(TestParameterContext::default());
-                if let Some(v) = test.stride_patterns { ctx.stride_patterns = Some(v); }
-                if let Some(v) = test.rng_sequences { ctx.rng_sequences = Some(v); }
-                if let Some(v) = test.subdivisions { ctx.subdivisions = Some(v); }
-                if let Some(v) = test.copy_directions { ctx.copy_directions = Some(v); }
-                if let Some(v) = test.mirror { ctx.mirror = Some(v); }
-            }
+        // Fold TMR-native test parameters into parameter_context
+        if test.stride_patterns.is_some() || test.rng_sequences.is_some()
+            || test.subdivisions.is_some() || test.copy_directions.is_some()
+            || test.mirror.is_some()
+        {
+            let ctx = config.parameter_context.get_or_insert(TestParameterContext::default());
+            if let Some(v) = test.stride_patterns { ctx.stride_patterns = Some(v); }
+            if let Some(v) = test.rng_sequences { ctx.rng_sequences = Some(v); }
+            if let Some(v) = test.subdivisions { ctx.subdivisions = Some(v); }
+            if let Some(v) = test.copy_directions { ctx.copy_directions = Some(v); }
+            if let Some(v) = test.mirror { ctx.mirror = Some(v); }
+        }
 
-            apply_repetition(test, &mut config);
+        apply_repetition(test, &mut config);
 
-            Ok((test.function.as_str(), config))
-        }).collect()
+        Ok(config)
     }
 
 /// Which entry an error belongs to: its `test_sequence` index and function, since a config can
@@ -896,6 +985,8 @@ pub fn create_demo_config() -> Self {
 			cpu_pinning: CpuPinningConfig::default(),
 			memory_allocation: MemoryAllocationConfig::default(),
             channels: 2,
+            seal: None,
+            seal_width: None,
         },
         test_sequence: vec![
             // Critical: Full memory stuck bit test
@@ -1007,6 +1098,7 @@ pub fn create_demo_config() -> Self {
                 ..Default::default()
             },
         ],
+        cycle_order: None,
         legacy_metadata: None,
     }
 }
@@ -1047,6 +1139,8 @@ pub fn create_demo_config() -> Self {
 				cpu_pinning: CpuPinningConfig::default(),
 				memory_allocation: MemoryAllocationConfig::default(),
                 channels: 2,
+                seal: None,
+                seal_width: None,
 	            },
             test_sequence: vec![
                 TestConfig {
@@ -1067,7 +1161,8 @@ pub fn create_demo_config() -> Self {
                     ..Default::default()
                 },
             ],
-            legacy_metadata: None,
+            cycle_order: None,
+        legacy_metadata: None,
         }
     }
 }
@@ -1165,20 +1260,50 @@ impl LegacyConfig {
     }
 
     // Convert legacy config to modern config v2.0
+ /// Every `[TestN]` becomes a test with the id `"N"` and its `Enable=`, `Test Sequence` the
+ /// `cycle_order` and `Cycles` the run's cycles (TODO 74). Test 0 is TM5's RefreshStable, which
+ /// TM5 runs around every step: TMR's seal. Enabled, the run is sealed and a `0` step is a
+ /// seal check (`Seal-Check`); disabled, the run is unsealed. TM5 skips a disabled step, and
+ /// stops reading `Test Sequence` at a number of 16 or more.
  pub fn to_modern_config(&self) -> Result<ModernConfig, String> {
-    // Start with empty test sequence - only add what's in the config
     let mut test_sequence = Vec::new();
-    
-    // Add legacy tests WITHOUT auto-inserting StuckBitTest
+    let mut sealed = false;
     for test in &self.tests {
-        if test.enabled {
+        if test.id == 0 {
+            if test.function != "RefreshStable" {
+                return Err(format!("TM5 Test0 is {}, not RefreshStable: TM5 runs test 0 around every step, \
+                                    as TMR's seal, and TMR only runs it as RefreshStable", test.function));
+            }
+            sealed = test.enabled;
+            test_sequence.push(TestConfig {
+                id: Some("0".to_string()),
+                enabled: test.enabled,
+                function: "Seal-Check".to_string(),
+                cycles: Some(1),
+                chunk: Some(self.chunk_spec(test)),
+                ..Default::default()
+            });
+            continue;
+        }
+        // A disabled test is declared, so a `Test Sequence` that names it skips it; one whose
+        // function TMR doesn't know is left out (naming it is then an error)
+        let function = match Self::map_legacy_function(&test.function) {
+            Ok(function) => function,
+            Err(e) if test.enabled => return Err(e),
+            Err(_) => continue,
+        };
+        {
             let (verify_reps, write_read_cycles, test_reps) = self.repetition(test);
-            let mirror = Self::mirror_mode(test)?;
+            let mirror = match Self::mirror_mode(test) {
+                Err(e) if !test.enabled => { log::info!("TM5 Test{} is disabled: {e}", test.id); None }
+                other => other?,
+            };
 
             test_sequence.push(TestConfig {
-                enabled: true,
-                function: Self::map_legacy_function(&test.function)?,
-                
+                id: Some(test.id.to_string()),
+                enabled: test.enabled,
+                function,
+                                
                 // One pass per plan cycle; TM5 `Time (%)` is per-chunk dwell, set below (TODO 79 B2)
                 cycles: Some(1),
 
@@ -1200,6 +1325,18 @@ impl LegacyConfig {
                 ..Default::default()
             });
         }
+    }
+    let declared: std::collections::HashSet<u32> = test_sequence.iter()
+        .filter_map(|t| t.id.as_deref()?.parse().ok()).collect();
+    let mut cycle_order = Vec::new();
+    for &n in &self.main_section.test_sequence {
+        if n >= 16 {
+            break;
+        }
+        if !declared.contains(&n) {
+            return Err(format!("TM5 Test Sequence names test {n}, which the .cfg doesn't define"));
+        }
+        cycle_order.push(n.to_string());
     }
 
     Ok(ModernConfig {
@@ -1228,7 +1365,8 @@ impl LegacyConfig {
             },
             error_mode: "log".to_string(),
             timing: TimingConfig {
-                global_cycles: Some(self.main_section.cycles),
+                // TM5's 0 is "until stopped"
+                global_cycles: (self.main_section.cycles > 0).then_some(self.main_section.cycles),
                 global_duration_secs: None,  // TM5 doesn't use duration
                 default_test_cycles: None,   // Each test has its own from Time(%)
                 default_test_duration_secs: None,
@@ -1237,10 +1375,13 @@ impl LegacyConfig {
 			cpu_pinning: CpuPinningConfig::default(),
 			memory_allocation: MemoryAllocationConfig::default(),
             channels: self.memory_setup.channels,
+            seal: Some(if sealed { "tmr" } else { "off" }.to_string()),
+            seal_width: None,
         },
         test_sequence,
+        // Without a Test Sequence, every enabled test once, in file order
+        cycle_order: if self.main_section.test_sequence.is_empty() { None } else { Some(cycle_order) },
         legacy_metadata: Some(LegacyMetadata {
-            tm5_test_sequence: self.main_section.test_sequence.clone(),
             tm5_cycles: self.main_section.cycles,
             tm5_time_percent: self.main_section.time_percent,
             tm5_channels: self.memory_setup.channels,
@@ -1470,7 +1611,7 @@ mod tests {
     #[test]
     fn tm5_block_size_codes_are_window_fractions() {
         let tests = [0, 1, 2, 3, 4, 1536].iter().enumerate()
-            .map(|(i, &block)| test(i as u32, "SimpleTest", 100, block))
+            .map(|(i, &block)| test(i as u32 + 1, "SimpleTest", 100, block))
             .collect();
         let modern = legacy(100, tests).to_modern_config().unwrap();
         let configs = modern.get_test_configs().unwrap();
@@ -1490,20 +1631,23 @@ mod tests {
         assert_eq!((meta.tm5_window_mb, meta.tm5_lock_mb), (880, 16));
     }
 
-    /// TODO 76: an imported RefreshStable covers the full allocation too.
+    /// TODO 76: an imported RefreshStable covers the full allocation too, and as TM5's test 0 it
+    /// is the seal check (TODO 74).
     #[test]
     fn imported_refresh_covers_the_full_allocation() {
-        let modern = legacy(100, vec![test(0, "RefreshStable", 100, 0)]).to_modern_config().unwrap();
+        let modern = legacy(100, vec![test(0, "RefreshStable", 100, 0), test(4, "RefreshStable", 100, 0)]).to_modern_config().unwrap();
         let configs = modern.get_test_configs().unwrap();
-        let (name, config) = &configs[0];
-        assert_eq!(config.calculate_extent_size(name, 5 * 1024 * MIB), 5 * 1024 * MIB);
+        assert_eq!(configs.iter().map(|(name, _)| *name).collect::<Vec<_>>(), ["Seal-Check", "Mem-Refresh"]);
+        for (name, config) in &configs {
+            assert_eq!(config.calculate_extent_size(name, 5 * 1024 * MIB), 5 * 1024 * MIB);
+        }
     }
 
     /// An invalid extent or chunk spec stops the run: no fallback to the default, which would
     /// test something the config didn't ask for. A removed mode such as `fraction` is one.
     #[test]
     fn invalid_specs_are_errors() {
-        let mut modern = legacy(100, vec![test(0, "SimpleTest", 100, 16)]).to_modern_config().unwrap();
+        let mut modern = legacy(100, vec![test(1, "SimpleTest", 100, 16)]).to_modern_config().unwrap();
         assert!(modern.get_test_configs().is_ok());
 
         modern.test_sequence[0].chunk = Some(ChunkSpec { mode: "fraction".to_string(), fraction: Some(0.5), ..Default::default() });
@@ -1553,7 +1697,7 @@ mod tests {
     #[test]
     fn generated_configs_have_valid_specs() {
         for config in [ModernConfig::create_demo_config(), ModernConfig::create_tm5_compatible_config(),
-                       legacy(100, vec![test(0, "SimpleTest", 100, 16)]).to_modern_config().unwrap()] {
+                       legacy(100, vec![test(1, "SimpleTest", 100, 16)]).to_modern_config().unwrap()] {
             assert!(config.get_test_configs().is_ok());
             config.validate_system().unwrap();
             let json = serde_json::to_string(&config).unwrap();
@@ -1598,11 +1742,11 @@ mod tests {
     #[test]
     fn tm5_time_percent_is_per_chunk_dwell() {
         let tests = vec![
-            test(0, "SimpleTest", 100, 0),
-            test(1, "SimpleTest", 300, 0),
-            test(2, "MirrorMove", 100, 0),
-            test(3, "MirrorMove128", 300, 0),
-            test(4, "RefreshStable", 300, 0),
+            test(1, "SimpleTest", 100, 0),
+            test(2, "SimpleTest", 300, 0),
+            test(3, "MirrorMove", 100, 0),
+            test(4, "MirrorMove128", 300, 0),
+            test(5, "RefreshStable", 300, 0),
         ];
         let modern = legacy(100, tests).to_modern_config().unwrap();
         assert!(modern.test_sequence.iter().all(|t| t.cycles == Some(1)), "one pass per plan cycle");
@@ -1617,8 +1761,62 @@ mod tests {
             (1, 1, 1),   // RefreshStable ignores Time (%)
         ]);
         // A global 50 % halves it: 100 x 50 / 2000 = 2.
-        let half = legacy(50, vec![test(0, "SimpleTest", 100, 0)]).to_modern_config().unwrap();
+        let half = legacy(50, vec![test(1, "SimpleTest", 100, 0)]).to_modern_config().unwrap();
         assert_eq!(half.get_test_configs().unwrap()[0].1.verify_reps, 2);
+    }
+
+    /// TODO 74: `cycle_order` lists ids in order, repeats them, and skips a disabled test's; an
+    /// unknown or repeated id is a load error. Without it, each enabled test runs once in order.
+    #[test]
+    fn cycle_order_runs_ids_in_order() {
+        let mut modern = ModernConfig::create_demo_config();
+        modern.test_sequence.truncate(3);
+        for (test, id) in modern.test_sequence.iter_mut().zip(["a", "b", "c"]) {
+            test.id = Some(id.to_string());
+        }
+        let plan = modern.plan().unwrap();
+        assert_eq!((plan.steps.clone(), plan.order.is_none()), (vec![0, 1, 2], true));
+
+        modern.test_sequence[2].enabled = false;
+        modern.cycle_order = Some(["b", "a", "c", "b"].map(String::from).to_vec());
+        let plan = modern.plan().unwrap();
+        assert_eq!(plan.steps, [1, 0, 1]);
+        assert_eq!(plan.tests[plan.steps[0]].id, Some("b"));
+        let runs: Vec<bool> = plan.order.unwrap().iter().map(|(_, runs)| *runs).collect();
+        assert_eq!(runs, [true, true, false, true]);
+
+        modern.cycle_order = Some(vec!["d".to_string()]);
+        assert!(modern.plan().err().unwrap().contains("\"d\""));
+        modern.cycle_order = None;
+        modern.test_sequence[1].id = Some("a".to_string());
+        assert!(modern.plan().err().unwrap().contains("used twice"));
+    }
+
+    /// TODO 74: a TM5 import declares every `[TestN]` as id "N", `Test Sequence` becomes the cycle
+    /// order (read up to a number of 16 or more), test 0 is the seal check and turns the seal on,
+    /// and `Cycles = 0` runs until stopped.
+    #[test]
+    fn tm5_sequence_becomes_the_cycle_order() {
+        let mut tests = vec![test(0, "RefreshStable", 100, 0), test(1, "SimpleTest", 100, 0), test(2, "MirrorMove", 100, 0)];
+        tests[2].enabled = false;
+        let mut cfg = legacy(100, tests.clone());
+        cfg.main_section.test_sequence = vec![1, 0, 2, 1, 16, 1];
+        cfg.main_section.cycles = 0;
+        let modern = cfg.to_modern_config().unwrap();
+        assert_eq!(modern.cycle_order, Some(["1", "0", "2", "1"].map(String::from).to_vec()));
+        assert_eq!((modern.system.seal.as_deref(), modern.system.timing.global_cycles), (Some("tmr"), None));
+        let plan = modern.plan().unwrap();
+        let functions: Vec<&str> = plan.steps.iter().map(|&t| plan.tests[t].function).collect();
+        assert_eq!(functions, ["Mem-SimpleV2", "Seal-Check", "Mem-SimpleV2"], "the disabled Test2 is skipped");
+
+        tests[0].enabled = false;
+        let mut cfg = legacy(100, tests.clone());
+        cfg.main_section.test_sequence = vec![0, 1];
+        assert_eq!(cfg.to_modern_config().unwrap().system.seal.as_deref(), Some("off"));
+        cfg.main_section.test_sequence = vec![1, 7];
+        assert!(cfg.to_modern_config().unwrap_err().contains("test 7"));
+        tests[0].function = "SimpleTest".to_string();
+        assert!(legacy(100, tests).to_modern_config().unwrap_err().contains("RefreshStable"));
     }
 
     /// TODO 85: each TM5 mirror's `Parameter` becomes TMR's one mirror mode, at the widest SIMD.

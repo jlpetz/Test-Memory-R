@@ -1067,6 +1067,10 @@ fn run() -> Result<(), Box<dyn std::error::Error>> {
 		None
 	};
 
+	// The seal and its width, if given (the parser has validated them)
+	let seal_override = params::has_param(&validated_params, "seal").then(|| params::get_string(&validated_params, "seal", "tmr"));
+	let seal_width_override = params::has_param(&validated_params, "seal-width").then(|| params::get_string(&validated_params, "seal-width", "auto"));
+
 	// Extract the mirror override if provided (the parser has validated it)
 	let mirror_override = if params::has_param(&validated_params, "mirror") {
 		params::get_string(&validated_params, "mirror", "whole").parse::<crate::config::MirrorMode>().ok()
@@ -1121,6 +1125,8 @@ fn run() -> Result<(), Box<dyn std::error::Error>> {
         config_opt.as_ref(),
         crate::runner::TestRunOverrides {
             single_test_filter: final_test_filter,
+            seal_override: seal_override.as_deref(),
+            seal_width_override: seal_width_override.as_deref(),
             mirror_override,
             pattern_mode_override,
             verify_reps_override,

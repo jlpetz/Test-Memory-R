@@ -45,14 +45,41 @@ pub struct TestRunMetadata {
 pub struct CycleResult {
     pub cycle_number: u32,
     pub duration_secs: u32,
+    /// One per step, in cycle order (TODO 74)
     pub tests: Vec<TestResult>,
+    /// The seal's stages, in a sealed run (TODO 74)
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub seal: Option<CycleSeal>,
     pub cycle_stats: CycleStats,
 }
 
+/// A cycle's run-wide seal stages (TODO 74): sealing all memory at its start, checking it all at
+/// its end. Their time is the cycle's, not any step's.
+#[derive(Debug, Clone, Copy, Default, Serialize, Deserialize)]
+pub struct CycleSeal {
+    pub seal_ms: u128,
+    pub seal_bytes: u64,
+    /// Checking and resealing between steps, around those that never take the seal
+    pub between_steps_ms: u128,
+    pub final_check_ms: u128,
+    pub final_check_bytes: u64,
+    /// TM5 numbers them 0
+    pub final_check_errors: u64,
+}
+
+/// One step of a cycle.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct TestResult {
-    pub test_number: usize,
+    /// The step's 1-based position in the cycle (TODO 74)
+    pub step: usize,
+    /// The test's config id (a TM5 import's test number)
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub id: Option<String>,
+    /// Which of the plan's tests the step ran: steps of one test share it
+    pub test_index: usize,
     pub name: String,
+    /// The step's name in reports, e.g. `Mem-SimpleV2_A (Test 12)`
+    pub label: String,
     pub duration_ms: u128,
     pub bytes_processed: u64,
     /// Recorded in MiB/s only. A GiB/s field alongside it would be the same measurement stored
@@ -61,6 +88,8 @@ pub struct TestResult {
     #[serde(serialize_with = "serialize_round_int")]
     pub throughput_mib_s: f64,
     pub errors: u64,
+    /// What the seal checks before the step's chunks found (TODO 74): TM5's test 0 errors
+    pub seal_errors: u64,
     // OS-reported hardware errors during this test, and the corrected subset (see whea.rs).
     pub whea_total: u64,
     pub whea_corrected: u64,
@@ -114,18 +143,29 @@ pub struct OverallStats {
     /// between "no hardware errors" and "we never looked" — which would read as a clean bill of
     /// health it did not earn.
     pub whea_monitored: bool,
-    pub per_test_averages: Vec<TestAverage>,
+    /// The seal's errors, all of them in `total_errors` too (TODO 74)
+    pub seal_errors: u64,
+    /// Each step's figures over the cycles (TODO 74)
+    pub per_step_averages: Vec<TestAverage>,
 }
 
+/// One step's figures over the cycles it ran in.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct TestAverage {
-    pub test_number: usize,
+    pub step: usize,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub id: Option<String>,
+    pub test_index: usize,
     pub name: String,
+    pub label: String,
     pub avg_duration_ms: u128,
     pub avg_bytes_processed: u64,
     #[serde(serialize_with = "serialize_round_int")]
     pub avg_throughput_mib_s: f64,
     pub total_errors: u64,
+    pub total_seal_errors: u64,
+    /// Cycles the step ran in
+    pub runs: u64,
     // WHEA counts summed across every cycle this test ran in (totals, not averages — a hardware
     // error is an event count, and averaging it would hide a single-cycle fault).
     pub whea_total: u64,
@@ -184,8 +224,11 @@ pub struct OverallComparison {
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct TestComparisonResult {
-    pub test_number: usize,
+    pub step: usize,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub id: Option<String>,
     pub name: String,
+    pub label: String,
     pub duration_diff_ms: i128,
     #[serde(serialize_with = "serialize_round_2dp")]
     pub duration_diff_percent: f64,
@@ -241,28 +284,34 @@ impl TestRunResult {
                 whea_total: 0,
                 whea_corrected: 0,
                 whea_monitored: false,
-                per_test_averages: Vec::new(),
+                seal_errors: 0,
+                per_step_averages: Vec::new(),
             },
         }
     }
 
-    pub fn add_cycle(&mut self, cycle_number: u32, duration_secs: u32, test_summaries: Vec<TestSummary>) {
+    pub fn add_cycle(&mut self, cycle_number: u32, duration_secs: u32, test_summaries: Vec<TestSummary>, seal: Option<CycleSeal>) {
         let total_bytes: u64 = test_summaries.iter().map(|t| t.bytes_processed).sum();
-        let total_errors: u64 = test_summaries.iter().map(|t| t.errors).sum();
+        let total_errors: u64 = test_summaries.iter().map(|t| t.errors + t.seal_errors).sum::<u64>()
+            + seal.map_or(0, |s| s.final_check_errors);
         let avg_throughput_mib = if duration_secs > 0 {
             (total_bytes as f64 / MB_F64) / duration_secs as f64
         } else {
             0.0
         };
 
-        let tests: Vec<TestResult> = test_summaries.iter().enumerate().map(|(i, summary)| {
+        let tests: Vec<TestResult> = test_summaries.iter().map(|summary| {
             TestResult {
-                test_number: i + 1,
+                step: summary.step,
+                id: summary.id.clone(),
+                test_index: summary.test_index,
                 name: summary.name.clone(),
+                label: summary.label.clone(),
                 duration_ms: summary.duration_ms,
                 bytes_processed: summary.bytes_processed,
                 throughput_mib_s: summary.throughput_mib_s,
                 errors: summary.errors,
+                seal_errors: summary.seal_errors,
                 whea_total: summary.whea_total,
                 whea_corrected: summary.whea_corrected,
                 // Copy latency data from TestSummary
@@ -284,6 +333,7 @@ impl TestRunResult {
             cycle_number,
             duration_secs,
             tests,
+            seal,
             cycle_stats: CycleStats {
                 total_bytes,
                 total_errors,
@@ -308,6 +358,9 @@ impl TestRunResult {
         };
         
         self.overall_stats.total_errors = self.cycles.iter().map(|c| c.cycle_stats.total_errors).sum();
+        self.overall_stats.seal_errors = self.cycles.iter()
+            .map(|c| c.tests.iter().map(|t| t.seal_errors).sum::<u64>() + c.seal.map_or(0, |s| s.final_check_errors))
+            .sum();
 
         // Calculate per-test averages
         self.calculate_per_test_averages();
@@ -317,10 +370,15 @@ impl TestRunResult {
         // Aggregation struct to track per-test statistics including latency
         #[derive(Default)]
         struct TestAggregate {
-            test_number: usize,
+            id: Option<String>,
+            test_index: usize,
+            name: String,
+            label: String,
+            runs: u64,
             total_duration_ms: u128,
             total_bytes: u64,
             total_errors: u64,
+            total_seal_errors: u64,
             total_whea: u64,
             total_whea_corrected: u64,
             // Latency aggregation
@@ -338,17 +396,19 @@ impl TestRunResult {
             latency_spread_sum: f64,
         }
 
-        let mut test_aggregates: HashMap<String, TestAggregate> = HashMap::new();
+        let mut test_aggregates: HashMap<usize, TestAggregate> = HashMap::new();
 
         for cycle in &self.cycles {
             for test in &cycle.tests {
-                let entry = test_aggregates.entry(test.name.clone()).or_default();
-                if entry.test_number == 0 {
-                    entry.test_number = test.test_number;
+                let entry = test_aggregates.entry(test.step).or_default();
+                if entry.runs == 0 {
+                    (entry.id, entry.test_index, entry.name, entry.label) = (test.id.clone(), test.test_index, test.name.clone(), test.label.clone());
                 }
+                entry.runs += 1;
                 entry.total_duration_ms += test.duration_ms;
                 entry.total_bytes += test.bytes_processed;
                 entry.total_errors += test.errors;
+                entry.total_seal_errors += test.seal_errors;
                 entry.total_whea += test.whea_total;
                 entry.total_whea_corrected += test.whea_corrected;
 
@@ -370,10 +430,9 @@ impl TestRunResult {
             }
         }
 
-        let cycle_count = self.cycles.len() as u128;
-        self.overall_stats.per_test_averages = test_aggregates.into_iter().map(|(name, agg)| {
-            let avg_duration_ms = agg.total_duration_ms / cycle_count;
-            let avg_bytes = agg.total_bytes / cycle_count as u64;
+        self.overall_stats.per_step_averages = test_aggregates.into_iter().map(|(step, agg)| {
+            let avg_duration_ms = agg.total_duration_ms / agg.runs as u128;
+            let avg_bytes = agg.total_bytes / agg.runs;
             let avg_throughput_mib = if avg_duration_ms > 0 {
                 (avg_bytes as f64 / MB_F64) / (avg_duration_ms as f64 / 1000.0)
             } else {
@@ -401,12 +460,17 @@ impl TestRunResult {
                 };
 
             TestAverage {
-                test_number: agg.test_number,
-                name,
+                step,
+                id: agg.id,
+                test_index: agg.test_index,
+                name: agg.name,
+                label: agg.label,
                 avg_duration_ms,
                 avg_bytes_processed: avg_bytes,
                 avg_throughput_mib_s: avg_throughput_mib,
                 total_errors: agg.total_errors,
+                total_seal_errors: agg.total_seal_errors,
+                runs: agg.runs,
                 whea_total: agg.total_whea,
                 whea_corrected: agg.total_whea_corrected,
                 latency_samples,
@@ -423,8 +487,7 @@ impl TestRunResult {
             }
         }).collect();
 
-        // Sort by test number
-        self.overall_stats.per_test_averages.sort_by_key(|t| t.test_number);
+        self.overall_stats.per_step_averages.sort_by_key(|t| t.step);
     }
 
     /// Records the run-level WHEA tally.
@@ -495,13 +558,14 @@ pub fn compare_test_results(baseline_path: &str, current_path: &str) -> Result<T
         errors_diff: current.overall_stats.total_errors as i64 - baseline.overall_stats.total_errors as i64,
     };
 
-    // Per-test comparisons
+    // Per-step comparisons: a step matches the baseline's step at the same position running the
+    // same test (TODO 74), so a test that runs twice is compared twice
     let mut per_test_comparisons = Vec::new();
-    let baseline_tests: HashMap<String, &TestAverage> = baseline.overall_stats.per_test_averages.iter()
-        .map(|t| (t.name.clone(), t)).collect();
+    let baseline_tests: HashMap<(usize, Option<String>, String), &TestAverage> = baseline.overall_stats.per_step_averages.iter()
+        .map(|t| ((t.step, t.id.clone(), t.name.clone()), t)).collect();
 
-    for current_test in &current.overall_stats.per_test_averages {
-        if let Some(baseline_test) = baseline_tests.get(&current_test.name) {
+    for current_test in &current.overall_stats.per_step_averages {
+        if let Some(baseline_test) = baseline_tests.get(&(current_test.step, current_test.id.clone(), current_test.name.clone())) {
             let duration_diff_ms = current_test.avg_duration_ms as i128 - baseline_test.avg_duration_ms as i128;
             let duration_diff_percent = if baseline_test.avg_duration_ms > 0 {
                 (duration_diff_ms as f64 / baseline_test.avg_duration_ms as f64) * 100.0
@@ -517,8 +581,10 @@ pub fn compare_test_results(baseline_path: &str, current_path: &str) -> Result<T
             };
 
             per_test_comparisons.push(TestComparisonResult {
-                test_number: current_test.test_number,
+                step: current_test.step,
+                id: current_test.id.clone(),
                 name: current_test.name.clone(),
+                label: current_test.label.clone(),
                 duration_diff_ms,
                 duration_diff_percent,
                 throughput_diff_mib_s,
@@ -593,9 +659,9 @@ impl TestComparison {
                 let duration_symbol = if test.duration_diff_ms < 0 { "⬇" } else if test.duration_diff_ms > 0 { "⬆" } else { "=" };
                 let throughput_symbol = if test.throughput_diff_mib_s > 0.0 { "⬆" } else if test.throughput_diff_mib_s < 0.0 { "⬇" } else { "=" };
                 
-                report.push_str(&format!("  {}. {} - Duration: {}{:.1}ms ({:+.1}%) {}, Throughput: {:+.1} MiB/s ({:+.1}%) {}{}\n",
-                    test.test_number,
-                    test.name,
+                report.push_str(&format!("  Step {}. {} - Duration: {}{:.1}ms ({:+.1}%) {}, Throughput: {:+.1} MiB/s ({:+.1}%) {}{}\n",
+                    test.step,
+                    test.label,
                     if test.duration_diff_ms >= 0 { "+" } else { "" },
                     test.duration_diff_ms as f64,
                     test.duration_diff_percent,

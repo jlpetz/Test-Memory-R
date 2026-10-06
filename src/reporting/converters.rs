@@ -84,12 +84,25 @@ pub fn create_consolidated_memory_report(
 /// `thread_memory` is each thread's bytes (planned or allocated): extents and chunks are shown
 /// resolved for the thread with the least, the range when threads differ. `tm5` is a TM5
 /// import's `.cfg` window and lock granularity (MiB), for a header line.
+/// What the plan shows of the cycle beyond its tests (TODO 74).
+pub struct PlanSequence<'a> {
+    /// `cycle_order` as written, each id with whether it runs; `None` without one
+    pub order: Option<&'a [(String, bool)]>,
+    /// The seal's kernel, when the run is sealed
+    pub seal: Option<crate::seal::SealKernel>,
+    /// A TM5 import: tests go by the `.cfg`'s numbers
+    pub tm5: bool,
+}
+
+/// The plan: one row per test, in the order of its first step, then the cycle's sequence when it
+/// isn't simply each test once, and the seal (TODO 74).
 pub fn create_test_configuration_report_v2(
     test_definitions: &[crate::runner::TestDefinition],
     suite_timing: &crate::runner::TestSuiteTiming,
     cache_info: &crate::cache::CacheInfo,
     thread_memory: &[usize],
     tm5: Option<(u32, u32)>,
+    sequence: &PlanSequence,
 ) -> TestConfigurationReport {
     use crate::reporting::formatters::{ReportFormatter, DefaultFormatter};
     use crate::test_memory::{ChunkSpread, GRANULE};
@@ -113,7 +126,17 @@ pub fn create_test_configuration_report_v2(
         (None, None) => "Unlimited".to_string(),
     };
 
-    let tests = test_definitions.iter().enumerate().map(|(i, test_def)| {
+    // Each test once, at its first step, with how many steps of the cycle run it
+    let mut firsts: Vec<(&crate::runner::TestDefinition, usize)> = Vec::new();
+    for def in test_definitions {
+        match firsts.iter_mut().find(|(d, _)| d.test_index == def.test_index) {
+            Some((_, steps)) => *steps += 1,
+            None => firsts.push((def, 1)),
+        }
+    }
+    let unique = firsts.len();
+
+    let tests = firsts.iter().enumerate().map(|(i, &(test_def, steps))| {
         let config = &test_def.config;
 
         let timing = match (&config.timing.cycles, &config.timing.duration_secs) {
@@ -172,25 +195,63 @@ pub fn create_test_configuration_report_v2(
             }
         }
 
-        let flags = Vec::new();
+        use crate::runner::SealUse;
+        let seal = match test_def.seal_use {
+            _ if !config.seal.on => "",
+            SealUse::Wrap if config.seal.wrap => "✓",
+            SealUse::Data => "data",
+            SealUse::Check => "check",
+            _ => "–",
+        }.to_string();
 
         let parameter = format_parameter_context(&config.parameter_context);
+        let mut name = test_def.step_label(sequence.tm5);
+        if steps > 1 {
+            name.push_str(&format!(" ×{steps}"));
+        }
 
         TestConfigurationEntry {
             number: i + 1,
-            name: test_def.display_name.clone(),  // Use display_name to get _A suffix
+            name,
             timing,
             per_chunk,
             parameter,
             extent_mode,
             chunk_mode,
-            flags,
+            seal,
         }
     }).collect();
 
+    // The sequence, when it isn't each test once in row order
+    let label = |id: &str| if sequence.tm5 { id.to_string() } else { format!("\"{id}\"") };
+    match sequence.order {
+        Some(order) => {
+            let steps: Vec<String> = order.iter()
+                .map(|(id, runs)| if *runs { label(id) } else { format!("({} off)", label(id)) })
+                .collect();
+            let repeats: Vec<String> = firsts.iter().filter(|(_, n)| *n > 1)
+                .map(|(d, n)| format!("{} ×{n}", d.id.as_deref().map_or(d.display_name.clone(), |id| if sequence.tm5 { format!("Test {id}") } else { label(id) })))
+                .collect();
+            let extra = if repeats.is_empty() { String::new() } else { format!("; {}", repeats.join(", ")) };
+            notes.push(format!("ℹ  Cycle: {} ({} steps{extra})", steps.join(" → "), test_definitions.len()));
+        }
+        None if unique != test_definitions.len() => {
+            notes.push(format!("ℹ  Cycle: {} steps", test_definitions.len()));
+        }
+        None => {}
+    }
+    notes.push(match sequence.seal {
+        Some(kernel) => format!("🔒 Seal ({}): all memory is sealed at each cycle's start and checked at its end. ✓: the seal is checked \
+                                 before every chunk and resealed after. data: the test works on the seal. –: never sealed; what it \
+                                 overwrites is checked first and resealed before the next sealed step.", kernel.name()),
+        None => "🔓 Seal: off (seal=off)".to_string(),
+    });
+
     TestConfigurationReport {
         suite_timing: suite_timing_str,
-        test_count: test_definitions.len(),
+        test_count: unique,
+        step_count: test_definitions.len(),
+        sealed: sequence.seal.is_some(),
         tests,
         notes,
     }
@@ -575,12 +636,13 @@ pub fn create_thread_timing_report(
     }
 }
 
-/// Create a final test summary report from OverallStats
-/// This is a simpler converter that works with already-finalized statistics
+/// The final summary (TODO 74): one row per test, its steps combined (a test that runs twice a
+/// cycle is one row with twice the runs), the seal's stages, and the steps that found errors.
 pub fn create_overall_stats_summary_report(
-    overall_stats: &crate::results::OverallStats,
+    result: &crate::results::TestRunResult,
 ) -> super::models::FinalTestSummaryReport {
-    use super::models::{FinalTestSummaryReport, TestSummaryEntry};
+    use super::models::{FinalTestSummaryReport, SealStagesSummary, StepErrorsEntry, TestSummaryEntry};
+    let overall_stats = &result.overall_stats;
 
     // Format runtime in fixed HH:MM:SS format for machine comparison
     let secs = overall_stats.total_runtime_secs;
@@ -589,31 +651,67 @@ pub fn create_overall_stats_summary_report(
     let seconds = secs % 60;
     let total_runtime = format!("{:02}:{:02}:{:02}", hours, minutes, seconds);
 
-    // Convert per-test averages to TestSummaryEntry format
-    let per_test_summaries: Vec<TestSummaryEntry> = overall_stats
-        .per_test_averages
-        .iter()
-        .map(|avg| TestSummaryEntry {
-            name: avg.name.clone(),
-            average_duration_secs: avg.avg_duration_ms as f64 / 1000.0,
-            average_data_gib: avg.avg_bytes_processed as f64 / (1024.0 * 1024.0 * 1024.0),
-            average_throughput_mib_s: avg.avg_throughput_mib_s,
-            total_errors: avg.total_errors,
-            whea_total: avg.whea_total,
-            whea_corrected: avg.whea_corrected,
-            // Copy latency data from TestAverage
-            latency_samples: avg.latency_samples,
-            latency_p5_ns: avg.latency_p5_ns,
-            latency_p10_ns: avg.latency_p10_ns,
-            latency_p25_ns: avg.latency_p25_ns,
-            latency_p50_ns: avg.latency_p50_ns,
-            latency_p75_ns: avg.latency_p75_ns,
-            latency_p90_ns: avg.latency_p90_ns,
-            latency_p95_ns: avg.latency_p95_ns,
-            latency_p99_ns: avg.latency_p99_ns,
-            latency_p99_9_ns: avg.latency_p99_9_ns,
-            latency_spread: avg.latency_spread,
-        })
+    // Steps of one test, combined: times and data per run, errors summed. A step's figures are
+    // already per run (`TestAverage`), so the test's are its steps' run-weighted means.
+    let mut per_test_summaries: Vec<TestSummaryEntry> = Vec::new();
+    let mut seen: Vec<usize> = Vec::new();
+    for avg in &overall_stats.per_step_averages {
+        let label = match &avg.id {
+            Some(_) => avg.label.clone(),
+            None => avg.name.clone(),
+        };
+        let at = match seen.iter().position(|&t| t == avg.test_index) {
+            Some(at) => at,
+            None => {
+                seen.push(avg.test_index);
+                per_test_summaries.push(TestSummaryEntry {
+                    name: label,
+                    runs: 0,
+                    seal_errors: 0,
+                    average_duration_secs: 0.0,
+                    average_data_gib: 0.0,
+                    average_throughput_mib_s: 0.0,
+                    total_errors: 0,
+                    whea_total: 0,
+                    whea_corrected: 0,
+                    // Copy latency data from the test's first step
+                    latency_samples: avg.latency_samples,
+                    latency_p5_ns: avg.latency_p5_ns,
+                    latency_p10_ns: avg.latency_p10_ns,
+                    latency_p25_ns: avg.latency_p25_ns,
+                    latency_p50_ns: avg.latency_p50_ns,
+                    latency_p75_ns: avg.latency_p75_ns,
+                    latency_p90_ns: avg.latency_p90_ns,
+                    latency_p95_ns: avg.latency_p95_ns,
+                    latency_p99_ns: avg.latency_p99_ns,
+                    latency_p99_9_ns: avg.latency_p99_9_ns,
+                    latency_spread: avg.latency_spread,
+                });
+                per_test_summaries.len() - 1
+            }
+        };
+        let entry = &mut per_test_summaries[at];
+        let (old, new) = (entry.runs as f64, avg.runs as f64);
+        let mean = |a: f64, b: f64| (a * old + b * new) / (old + new);
+        entry.average_duration_secs = mean(entry.average_duration_secs, avg.avg_duration_ms as f64 / 1000.0);
+        entry.average_data_gib = mean(entry.average_data_gib, avg.avg_bytes_processed as f64 / (1024.0 * 1024.0 * 1024.0));
+        entry.average_throughput_mib_s = mean(entry.average_throughput_mib_s, avg.avg_throughput_mib_s);
+        entry.runs += avg.runs;
+        entry.total_errors += avg.total_errors;
+        entry.seal_errors += avg.total_seal_errors;
+        entry.whea_total += avg.whea_total;
+        entry.whea_corrected += avg.whea_corrected;
+    }
+
+    let sealed: Vec<crate::results::CycleSeal> = result.cycles.iter().filter_map(|c| c.seal).collect();
+    let seal = (!sealed.is_empty()).then(|| SealStagesSummary {
+        secs: sealed.iter().map(|s| (s.seal_ms + s.between_steps_ms + s.final_check_ms) as f64 / 1000.0).sum(),
+        data_gib: sealed.iter().map(|s| (s.seal_bytes + s.final_check_bytes) as f64).sum::<f64>() / (1024.0 * 1024.0 * 1024.0),
+        final_check_errors: sealed.iter().map(|s| s.final_check_errors).sum(),
+    });
+    let errors_by_step = overall_stats.per_step_averages.iter()
+        .filter(|s| s.total_errors + s.total_seal_errors > 0)
+        .map(|s| StepErrorsEntry { step: s.step, label: s.label.clone(), errors: s.total_errors, seal_errors: s.total_seal_errors })
         .collect();
 
     FinalTestSummaryReport {
@@ -629,5 +727,7 @@ pub fn create_overall_stats_summary_report(
         whea_corrected: overall_stats.whea_corrected,
         whea_monitored: overall_stats.whea_monitored,
         per_test_summaries,
+        seal,
+        errors_by_step,
     }
 }

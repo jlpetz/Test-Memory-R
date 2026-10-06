@@ -102,6 +102,51 @@ have one source of truth across both. Tier 1 adds the loop and the phased-specif
 
 ---
 
+## 3a. The seal: every correctness test gets it (TODO 74)
+
+**What it is for.** Every test checks its own data almost as soon as it writes it: microseconds to
+milliseconds later. The seal checks data that has sat untouched for about one whole step (seconds
+to minutes) while the step hammered the rest of memory: retention under load, which is sensitive
+to refresh timings, heat and neighbouring-row disturbance. It also catches a test that wrote
+outside its own chunk. TM5 does the same with its test 0 and numbers these errors 0; nothing else
+in TMR waits under load (Mem-Refresh waits 64 ms, idle).
+
+**How a run uses it** (`seal.rs`, `seal=tmr|tm5|off`, `seal-width=`):
+
+```
+cycle start   seal all memory                               "Sealing memory"
+each step, each chunk of a correctness test:
+              check the seal         → its errors are the step's Seal column (TM5 #0)
+              the test's chunk body  (its own fill moves in here; a test whose first op writes needs none)
+              reseal                 → the chunk sits sealed until the next step reaches it
+cycle end     check all memory                              "Final seal check"
+```
+
+- A **mirror** test's data *is* the seal (TM5's `Capable_UseTst0ForGenAndCheck`): it swaps the
+  sealed words and puts them back, and the seal check after it is its verify, so those errors are
+  the mirror's own (TM5 numbers them by the mirror step). It reseals only a chunk that failed.
+- **Bandwidth, latency, Bench and Mem-Random** never take it (`runner::seal_use`). The worker checks
+  the part of their extent still sealed before they run (a separate dispatch, so their times and
+  MiB/s don't include it) and reseals what they left before the next step that takes the seal. A
+  dependent step (`skip_init`, e.g. a Bench-Verify) must therefore directly follow its writer: a
+  sealed step in between would reseal the data, and the plan refuses it.
+- A TM5 import's test 0 (RefreshStable) is the seal: enabled, the run is sealed and a `0` in
+  `Test Sequence` is a `Seal-Check` step; disabled, the run is unsealed.
+
+**What a test has to do.** Tier 1 gets it for free: `run_phased_test` wraps each chunk when
+`config.seal.wrap` is set. A Tier-2 test calls `runner.check_seal(start, len)` before it works a
+chunk and `runner.reseal(start, len)` after, in bytes from the extent's start (both are no-ops
+in an unsealed run); a test that fills a range up front must fill it per chunk instead when
+`runner.seal_wrap()` (Mem-BlockMove's source half). A new `Mem-*` test takes the seal unless
+`runner::seal_use` lists it, and `every_sealed_test_honours_the_seal` fails until it honours it.
+Opting out per test: `"seal": false` in its JSON entry.
+
+**Cost.** One read pass and one non-temporal write pass per chunk per step. On the dev box, at
+28 GiB, a seal pass runs at ~90 GiB/s (NT) and a check at ~52 GiB/s: about 0.8 s per step, about
+8% on an imported SimpleTest step (4 x (1 + 5) passes).
+
+---
+
 ## 4. Tier 1 — the phased harness (`run_phased_test`)
 
 ### What a Tier-1 test actually is
@@ -158,7 +203,8 @@ would strip the SIMD. So the test keeps its loop and calls the runner between ch
 | Method | Call it | Purpose |
 |---|---|---|
 | `TestRunner::new` | once, at the top | Extent sizing, the extent (`test_memory::extent`: the first bytes of the thread's span), the chunk (resolved once from the extent), the per-thread info log with the extent's page sizes and chunks, starts timers. **Returns `(runner, extent)`** — keep `extent` as a local so you can hold it while calling `&mut self` methods |
-| `restart_clock()` | after untimed setup | Starts the clock again, so a fill or a chain build counts toward neither the duration nor the throughput. The bandwidth and latency tests call it |
+| `restart_clock()` | after untimed setup | Starts the clock again, so a fill or a chain build counts toward neither the duration nor the throughput. The bandwidth and latency tests call it. The ticker shows their setup as "Filling memory" / "Building pointer chain" until then |
+| `check_seal(start, len)` / `reseal(start, len)` | before / after working a chunk | The seal around the chunk (§3a), in bytes from the extent's start. No-ops unless the step wraps (`seal_wrap()`). The check's errors are the seal's, not the test's, but halt it under `errors=halt` |
 | `chunks(piece_size)` | once per piece | The piece's `ChunkSpread` (TODO 76): `count()` chunks of exactly `chunk()` bytes (the test's chunk, or the piece when it is shorter), at `start(k)`, spread evenly from 0 to the piece's end. Chunks overlap by under one chunk in total when the chunk doesn't divide the piece, so every word must depend only on its position. Byte offsets: convert to your own units. `half_chunks` is the same for a copy from a piece's first half to its second; `chunk_bytes()` is the bare size, for tests whose chunks aren't ranges (Mem-Random) |
 | `begin_cycle()` | top of each cycle | Increments and returns the cycle number |
 | `add_bytes(n)` | per chunk, before the halt check | Byte accounting, so a halted or interrupted test reports what ran. **You compute the multiplier** — StuckBit passes `chunk() * 6` (3 writes + 3 reads), Refresh `chunk() * 2`. Overlaps count each time |
@@ -186,8 +232,10 @@ loop {
 
     for k in 0..spread.count() {
         let start = spread.start(k) / lanes;
+        runner.check_seal(spread.start(k), spread.chunk());
         // …your loop nest over start..start + chunk, whatever shape it needs…
         //    kernel goes here, macro-expanded, no fn boundary
+        runner.reseal(spread.start(k), spread.chunk());
 
         runner.add_bytes(spread.chunk() * /* your own multiplier */);
         if runner.should_halt(cycle_errors) { return runner.finish_aborted(/*…*/); }

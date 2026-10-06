@@ -75,6 +75,16 @@ pub enum RunOutcome {
 
 #[derive(Debug, Clone)]
 pub struct TestSummary {
+    /// The step's 1-based position in the cycle (TODO 74)
+    pub step: usize,
+    /// Which of the plan's tests it ran: steps of one test share it
+    pub test_index: usize,
+    /// The test's config id (a TM5 import's test number)
+    pub id: Option<String>,
+    /// The step's name in reports, e.g. `Mem-SimpleV2_A (Test 12)`
+    pub label: String,
+    /// What the seal checks before its chunks found (TODO 74): not the test's errors
+    pub seal_errors: u64,
     pub name: String,
     pub duration_ms: u128,
     pub bytes_processed: u64,
@@ -106,6 +116,8 @@ struct LiveFigures {
     bytes: u64,
     errors: u64,
     bytes_per_sec: f64,
+    /// What the first worker not just testing is doing (TODO 74), e.g. "Checking seal"
+    stage: Option<crate::tests::Stage>,
 }
 
 impl Default for ProgressTracker {
@@ -199,6 +211,13 @@ impl ProgressTracker {
         }
     }
 
+    /// Errors a final seal check found (TODO 74): counted for the run, no test finished.
+    pub fn add_seal_errors(&self, errors: u64) {
+        let mut position = self.position();
+        position.errors += errors;
+        *position.errors_by_test.entry("Final seal check".to_string()).or_insert(0) += errors;
+    }
+
     /// Tests finished in the current cycle (reset at each cycle's start).
     pub fn tests_done(&self) -> u64 {
         self.position().tests_done
@@ -245,6 +264,9 @@ impl ProgressTracker {
                 let _ = write!(line, ", {}%", percent(test.start.elapsed().as_millis(), limit.as_millis()));
             }
             line.push(')');
+            if let Some(stage) = live.stage {
+                let _ = write!(line, " | {}", stage.label());
+            }
             if live.published {
                 let _ = write!(
                     line,
@@ -322,7 +344,12 @@ impl ProgressTracker {
 /// Sum the workers' last published figures. Workers publish at most every 250 ms, at a cycle
 /// boundary of their own loop, so this lags the work by up to one publish.
 fn live_figures(workers: &[TestProgress]) -> LiveFigures {
-    let mut live = LiveFigures::default();
+    let mut live = LiveFigures {
+        stage: workers.iter()
+            .map(|slot| crate::tests::Stage::from_u8(slot.stage.load(Ordering::Relaxed)))
+            .find(|&stage| stage != crate::tests::Stage::Testing),
+        ..Default::default()
+    };
     for slot in workers {
         let ms = slot.last_update_ms.load(Ordering::Relaxed);
         if ms == 0 {

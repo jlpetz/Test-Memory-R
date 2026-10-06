@@ -130,6 +130,7 @@ where
             cycles_completed: 0,
             cycles_planned: timing.cycles,
             stopped_by_time_limit: false,
+            seal_errors: 0,
         };
     }
 
@@ -154,6 +155,7 @@ where
             cycles_completed: 0,
             cycles_planned: timing.cycles,
             stopped_by_time_limit: false,
+            seal_errors: 0,
         };
     }
 
@@ -174,8 +176,15 @@ where
     let chunks = runner.chunks(extent.test_size);
     let chunk_len = chunks.chunk() / std::mem::size_of::<u64>();
 
+    // A sealed step wraps each chunk in the seal (TODO 74): check before, reseal after. Its chunks
+    // hold the seal until the test works them, so the test's own fill moves inside each chunk,
+    // where a test whose first op writes doesn't need one at all.
+    let wrap = runner.seal_wrap();
+    let fill_per_chunk = wrap && test_reps == 0 && !skip_init;
+
     // Initialize the extent with patterns (unless dependent mode — prior test already wrote them)
-    if !skip_init {
+    if !skip_init && !wrap {
+        runner.set_stage(crate::tests::Stage::FillingMemory);
         let ctx = ChunkCtx {
             ptr,
             chunk_start: 0,
@@ -186,6 +195,7 @@ where
         };
         init_fn(&ctx);
         std::sync::atomic::fence(Ordering::SeqCst);
+        runner.set_stage(crate::tests::Stage::Testing);
 
         // Account for init: one write pass over the extent
         runner.add_bytes(extent.test_size);
@@ -211,6 +221,11 @@ where
                 thread_id,
                 check_mask,
             };
+
+            runner.check_seal(chunk_start * std::mem::size_of::<u64>(), chunks.chunk());
+            if fill_per_chunk {
+                init_fn(&ctx);
+            }
 
             // TM5-faithful loop: (write + multi-read) × write_read_cycles
             // TM5 SimpleTest: (1 write + 5 reads) × 4 = tight repeated access per chunk
@@ -238,6 +253,8 @@ where
                     cycle_errors += verify_fn(&ctx);
                 }
             }
+
+            runner.reseal(chunk_start * std::mem::size_of::<u64>(), chunks.chunk());
 
             // Count the chunk when it is done, so a halt or shutdown below reports what ran
             // (TODO 76). Overlaps count each time.
@@ -324,8 +341,6 @@ macro_rules! auto_dispatch {
 mod tests {
     use super::*;
     use crate::pattern_gen;
-    use std::simd::*;
-    use std::simd::cmp::SimdPartialEq;
 
     /// Helper: allocate an aligned u64 buffer for testing.
     /// Returns a Vec and a raw pointer (valid for the Vec's lifetime).
@@ -388,161 +403,6 @@ mod tests {
             total
         };
         assert_eq!(errors, 1, "Should detect exactly 1 corrupted element");
-    }
-
-    // ── MirrorMove v2 scalar error injection ──
-
-    #[test]
-    fn mirror_v2_scalar_detects_corruption_after_roundtrip() {
-        let len = 4096;
-        let mut buf = alloc_test_buffer(len);
-        let ptr = buf.as_mut_ptr();
-        let thread_base = pattern_gen::mirror_thread_base(0);
-
-        // Init: write mirror pattern
-        unsafe {
-            for i in 0..len {
-                *ptr.add(i) = pattern_gen::mirror_pattern_u64(i as u64, thread_base);
-            }
-        }
-
-        // Mirror (reverse)
-        unsafe {
-            let mut lo = 0;
-            let mut hi = len - 1;
-            while lo < hi {
-                let a = *ptr.add(lo);
-                let b = *ptr.add(hi);
-                *ptr.add(lo) = b;
-                *ptr.add(hi) = a;
-                lo += 1;
-                hi -= 1;
-            }
-        }
-
-        // Unmirror (reverse back)
-        unsafe {
-            let mut lo = 0;
-            let mut hi = len - 1;
-            while lo < hi {
-                let a = *ptr.add(lo);
-                let b = *ptr.add(hi);
-                *ptr.add(lo) = b;
-                *ptr.add(hi) = a;
-                lo += 1;
-                hi -= 1;
-            }
-        }
-
-        // Verify clean after round-trip
-        let errors = unsafe {
-            let mut total = 0u64;
-            for i in 0..len {
-                let expected = pattern_gen::mirror_pattern_u64(i as u64, thread_base);
-                if *ptr.add(i) != expected { total += 1; }
-            }
-            total
-        };
-        assert_eq!(errors, 0, "Round-trip mirror should preserve all patterns");
-
-        // Corrupt one element
-        unsafe { *ptr.add(100) ^= 0xFF00FF00FF00FF00; }
-
-        let errors = unsafe {
-            let mut total = 0u64;
-            for i in 0..len {
-                let expected = pattern_gen::mirror_pattern_u64(i as u64, thread_base);
-                if *ptr.add(i) != expected { total += 1; }
-            }
-            total
-        };
-        assert_eq!(errors, 1, "Should detect corrupted element after mirror round-trip");
-    }
-
-    // ── MirrorMove v2 SIMD (u64x2) error injection ──
-
-    #[test]
-    fn mirror_v2_simd_u64x2_detects_corruption() {
-        const SIMD_W: usize = 2;
-        // Must be divisible by SIMD_W
-        let len = 4096;
-        let mut buf = alloc_test_buffer(len);
-        let ptr = buf.as_mut_ptr();
-
-        let thread_base = pattern_gen::mirror_thread_base(0);
-        const MIRROR_CONST: u64 = 0x0123456789ABCDEFu64;
-
-        let base_vec = u64x2::splat(thread_base);
-        let const_vec = u64x2::splat(MIRROR_CONST);
-        let lane_offsets = u64x2::from_array([0, 1]);
-        let step = u64x2::splat((SIMD_W as u64).wrapping_mul(MIRROR_CONST));
-        let zero = u64x2::splat(0);
-
-        // Init: SIMD pattern write
-        unsafe {
-            let mut expected = (u64x2::splat(0) + lane_offsets + base_vec) * const_vec;
-            for i in (0..len).step_by(SIMD_W) {
-                *(ptr.add(i) as *mut u64x2) = expected;
-                expected += step;
-            }
-        }
-
-        // SIMD mirror (forward)
-        unsafe {
-            let mut lo = 0;
-            let mut hi = len - SIMD_W;
-            while lo < hi {
-                let a = *(ptr.add(lo) as *const u64x2);
-                let b = *(ptr.add(hi) as *const u64x2);
-                *(ptr.add(lo) as *mut u64x2) = b;
-                *(ptr.add(hi) as *mut u64x2) = a;
-                lo += SIMD_W;
-                hi -= SIMD_W;
-            }
-        }
-
-        // SIMD unmirror (reverse)
-        unsafe {
-            let mut lo = 0;
-            let mut hi = len - SIMD_W;
-            while lo < hi {
-                let a = *(ptr.add(lo) as *const u64x2);
-                let b = *(ptr.add(hi) as *const u64x2);
-                *(ptr.add(lo) as *mut u64x2) = b;
-                *(ptr.add(hi) as *mut u64x2) = a;
-                lo += SIMD_W;
-                hi -= SIMD_W;
-            }
-        }
-
-        // SIMD verify — clean
-        let errors = unsafe {
-            let mut error_acc = zero;
-            let mut expected = (u64x2::splat(0) + lane_offsets + base_vec) * const_vec;
-            for i in (0..len).step_by(SIMD_W) {
-                let actual = *(ptr.add(i) as *const u64x2);
-                error_acc |= actual ^ expected;
-                expected += step;
-            }
-            if error_acc.simd_ne(zero).any() { 1u64 } else { 0u64 }
-        };
-        assert_eq!(errors, 0, "Clean SIMD buffer should have 0 errors");
-
-        // Corrupt one u64 element (within a SIMD vector)
-        unsafe { *ptr.add(500) ^= 0x1; }
-
-        // SIMD verify — should detect
-        let errors = unsafe {
-            let mut error_acc = zero;
-            let mut expected = (u64x2::splat(0) + lane_offsets + base_vec) * const_vec;
-            for i in (0..len).step_by(SIMD_W) {
-                let actual = *(ptr.add(i) as *const u64x2);
-                error_acc |= actual ^ expected;
-                expected += step;
-            }
-            if error_acc.simd_ne(zero).any() { 1u64 } else { 0u64 }
-        };
-        assert_eq!(errors, 1, "Should detect single-bit corruption in SIMD verify");
     }
 
     // ── Verify batched check_mask path detects errors ──
@@ -609,59 +469,4 @@ mod tests {
 
     // ── Mirror subblock round-trip preserves data ──
 
-    #[test]
-    fn mirror_subblocks_roundtrip_preserves_data() {
-        let len = 4096;
-        let mut buf = alloc_test_buffer(len);
-        let ptr = buf.as_mut_ptr();
-        let thread_base = pattern_gen::mirror_thread_base(0);
-
-        // Init
-        unsafe {
-            for i in 0..len {
-                *ptr.add(i) = pattern_gen::mirror_pattern_u64(i as u64, thread_base);
-            }
-        }
-
-        // Save original for comparison
-        let original: Vec<u64> = buf.clone();
-
-        // Simulate 2-subblock mirror + unmirror
-        let n_sub = 2;
-        let sub_size = len / n_sub;
-        let pairs = sub_size / 2;
-
-        // Forward mirror
-        unsafe {
-            for iter in 0..pairs {
-                for sub in 0..n_sub {
-                    let lo = sub * sub_size + iter;
-                    let hi = (sub + 1) * sub_size - iter - 1;
-                    let a = *ptr.add(lo);
-                    let b = *ptr.add(hi);
-                    *ptr.add(lo) = b;
-                    *ptr.add(hi) = a;
-                }
-            }
-        }
-
-        // Reverse mirror
-        unsafe {
-            for iter in 0..pairs {
-                for sub in 0..n_sub {
-                    let lo = sub * sub_size + iter;
-                    let hi = (sub + 1) * sub_size - iter - 1;
-                    let a = *ptr.add(lo);
-                    let b = *ptr.add(hi);
-                    *ptr.add(lo) = b;
-                    *ptr.add(hi) = a;
-                }
-            }
-        }
-
-        // Verify all elements match original
-        for i in 0..len {
-            assert_eq!(buf[i], original[i], "Element {} changed after subblock round-trip", i);
-        }
-    }
 }
