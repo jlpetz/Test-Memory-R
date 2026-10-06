@@ -386,15 +386,18 @@ pub unsafe fn copy_latency_multi(
         let mut aux = 0u32;
         let start_cycles = __rdtscp(&mut aux);
 
-        // Use pointer chain for source, write to corresponding destination
+        // Use pointer chain for source, write to corresponding destination. The destination is a
+        // pointer bumped against a register end, so the store's address never waits on a load
+        let dst_end = dst_base.add(half_len);
+        let mut dst_ptr = dst_base.add(dst_offset);
         for _ in 0..iterations {
             let value = *src_ptr;  // Read pointer (also serves as data value)
-            let dst_ptr = dst_base.add(dst_offset);
             *dst_ptr = value;  // Write to destination
             src_ptr = value as *mut u64;  // Move source (chain follows the value)
-            dst_offset += 1;
-            if dst_offset >= half_len { dst_offset = 0; }  // Predictable branch — replaces idiv
+            dst_ptr = dst_ptr.add(1);
+            if dst_ptr >= dst_end { dst_ptr = dst_base; }  // Predictable branch — replaces idiv
         }
+        dst_offset = dst_ptr.offset_from(dst_base) as usize;
 
         let end_cycles = __rdtscp(&mut aux);
         fence(Ordering::SeqCst);
