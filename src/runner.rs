@@ -557,11 +557,11 @@ pub fn run_tests_with_layout_and_timing_filtered(
         }
     }
 
-    // Apply the mirror override if provided: it sets the one field on every test, leaving the
-    // rest of each test's parameters as they were; only the mirror tests read it (TODO 85)
+    // Apply the mirror override if provided: it sets the one field on every mirror test, leaving
+    // the rest of each test's parameters as they were (TODO 85)
     if let Some(mirror) = mirror_override {
         log::info!("🔧 Applying CLI mirror override: {}", mirror);
-        for def in test_definitions.iter_mut() {
+        for def in test_definitions.iter_mut().filter(|d| d.actual_name.starts_with("Mem-MirrorV2")) {
             def.config.parameter_context.get_or_insert_with(Default::default).mirror = Some(mirror);
         }
     }
@@ -651,8 +651,16 @@ pub fn run_tests_with_layout_and_timing_filtered(
     let seal_settings = crate::seal::SealSettings::parse(
         seal_override.or(config.and_then(|c| c.system.seal.as_deref())).unwrap_or("tmr"),
         seal_width_override.or(config.and_then(|c| c.system.seal_width.as_deref())).unwrap_or("auto"),
-    ).and_then(|s| Ok((s, s.kernel()?)));
-    let (seal_settings, seal_kernel) = match seal_settings {
+    ).and_then(|s| match s.kernel() {
+        Ok(kernel) => Ok((s, kernel)),
+        // Unsealed, the width only matters to a mirror's data: take the widest there is
+        Err(e) if !s.on => {
+            log::warn!("{e}; the mirror tests use the widest width this CPU has");
+            Ok((s, crate::seal::SealKernel { pattern: s.pattern, width: crate::seal::SealKernel::detect().width }))
+        }
+        Err(e) => Err(e),
+    });
+    let (mut seal_settings, seal_kernel) = match seal_settings {
         Ok(s) => s,
         Err(e) => {
             println!("❌ Config error: {}", e);
@@ -661,6 +669,14 @@ pub fn run_tests_with_layout_and_timing_filtered(
         }
     };
     set_step_seals(&mut test_definitions, seal_kernel, seal_settings.on);
+    // A run with no step that takes the seal (test=Spd-*, --ram-latency) doesn't seal memory at all
+    let mut seal_off_reason = "seal=off";
+    if seal_settings.on && !test_definitions.iter().any(|d| d.config.seal.expects) {
+        log::info!("No step takes the seal, so the run is unsealed");
+        seal_settings.on = false;
+        seal_off_reason = "no step in this plan takes it";
+        set_step_seals(&mut test_definitions, seal_kernel, false);
+    }
     let tm5_run = config.is_some_and(|c| c.legacy_metadata.is_some());
 
     // Validate test plan dependency chain: a step that verifies the data an earlier one left must
@@ -691,6 +707,7 @@ pub fn run_tests_with_layout_and_timing_filtered(
     let plan_sequence = crate::reporting::converters::PlanSequence {
         order: cycle_order.as_deref(),
         seal: seal_settings.on.then_some(seal_kernel),
+        seal_off_reason,
         tm5: tm5_run,
     };
 
@@ -1108,8 +1125,18 @@ fn execute_test_cycle(ctx: &CycleContext, cycle: u64) -> Option<RunOutcome> {
             thread_pool.execute_seal_before_step(test_name, test_config, &step_context);
             for _ in 0..thread_count {
                 match result_receiver.recv() {
-                    Ok(result) => seal_errors_for_test += result.seal_errors,
-                    Err(e) => log::error!("Failed to receive seal result: {}", e),
+                    Ok(result) => {
+                        seal_errors_for_test += result.seal_errors;
+                        if result.seal_errors > 0 {
+                            success.store(false, Ordering::Relaxed);
+                            log::error!("Thread {}: the seal check before step {} ('{}') found {} errors",
+                                        result.thread_id, test_idx + 1, test_name, result.seal_errors);
+                        }
+                    }
+                    Err(e) => {
+                        log::error!("Failed to receive seal result: {}", e);
+                        success.store(false, Ordering::Relaxed);
+                    }
                 }
             }
             seal_stages.between_steps_ms += between.elapsed().as_millis();
@@ -4612,7 +4639,8 @@ mod tests {
         let words = 640 * KIB / 8;
         let base = region.words().as_mut_ptr();
         let mut ran = Vec::new();
-        for pattern in [crate::seal::SealPattern::Tmr, crate::seal::SealPattern::Tm5] {
+        // Two cycles under tm5: a step that runs past its first cycle reseals its extent at the end
+        for (pattern, cycles) in [(crate::seal::SealPattern::Tmr, 1), (crate::seal::SealPattern::Tm5, 2)] {
             let kernel = crate::seal::SealKernel { pattern, ..crate::seal::SealKernel::detect() };
             for (mut def, test_fn) in suite() {
                 if def.seal_use == SealUse::Never {
@@ -4621,6 +4649,7 @@ mod tests {
                 if matches!(def.config.chunk_mode, ChunkMode::Absolute { .. }) {
                     def.config.chunk_mode = ChunkMode::Absolute { size_bytes: 68 * KIB };
                 }
+                def.config.timing = TestTiming::cycles_only(cycles);
                 set_step_seals(std::slice::from_mut(&mut def), kernel, true);
                 unsafe { kernel.fill(base, 0, words) };
                 let stats = unsafe { test_fn(&region.blocks, 0, ErrorMode::Log, &def.config.timing, &def.config, None) };

@@ -154,3 +154,44 @@ builder also omits `flush_before_verify`. Delete it when this lands.
   Want: each error with timestamp, cycle, step, test and thread/CPU, plus the TM5 test number when
   running a TM5 config, so community guides still apply. This ties to #27 (error isolation) and to
   #29's event stream, where an error is one event and console, log and JSON are renderers of it.
+
+## Implemented (2026-10-06, branch `todo85-74`)
+
+Designed with the user on 2026-10-05/06 (the decisions are in the session; summarised here):
+A) the harness wraps each chunk in TM5's test 0, named **the seal**, on by default for every
+correctness test, TMR's runs too ("error 0 occurs in real circumstances… we default it"), with a
+per-test opt-out; B) a compact display: one row per test plus the sequence, errors by step only
+when something failed; C) a sequenced error log. TODO 13's plan-time rule now, its runtime layer
+later ("repair in the middle might not make sense anyway").
+
+- **Sequencing** (`config.rs` `plan`): per-test `id`, top-level `cycle_order` (repeats allowed;
+  a disabled test's step is skipped and marked; unknown or repeated ids are load errors). The TM5
+  importer declares every `[TestN]` as id `"N"`, turns `Test Sequence` into `cycle_order` (read up to
+  a number >= 16, as TM5's `RunTestSequency` does; a sequence that starts there is an error) and
+  `Cycles = 0` into unlimited. The runner's test list is the steps; steps of one test share its
+  `test_index`. The latent `get_test_configs_with_sequence` is gone.
+- **The seal** (`seal.rs`, purpose and contract in `doc/test_harness_tiers.md` §3a):
+  - cycle start: every thread seals its span (non-temporal, ~90 GiB/s here);
+  - each chunk of a correctness step: check, the test's chunk body, reseal. A step that runs more
+    than one cycle of its own wraps only its first and reseals its extent when it finishes, so
+    duration-based built-ins pay for it once, not per cycle;
+  - mirror steps work on the seal (TM5's `Capable_UseTst0ForGenAndCheck`): the seal check after
+    the mirror is its verify, its errors the mirror's (TM5's numbering), resealed only on failure;
+  - TM5's step 0 is `Seal-Check`; Test0 disabled makes the run unsealed;
+  - Spd, Lat, Bench and Mem-Random never take it: the worker checks what they will overwrite (its
+    own dispatch, so their MiB/s exclude it) and reseals it before the next sealed step. A run with
+    no sealed step isn't sealed at all;
+  - cycle end: a final check of all memory.
+  - Patterns: `tmr` (default; `[v, !v]` per 16 B, v a bijective hash of the address, stepped by an
+    add) and `tm5` (`RS_GeneratePattern` bit for bit, from the binary's decompile: the `bin/` asm
+    copy writes only two of the three registers). Kernels at 128/256/512, `auto` = 256 (the 512-bit
+    check measured 15-20% slower here; fills are equal). `seal=tmr|tm5|off`, `seal-width=`.
+- **TODO 13, plan-time**: `validate_test_plan` models a sealed step as leaving the seal, and an
+  unmet dependency is now a load error (was a warning).
+- **Display**: plan rows per test (`×2` when it repeats), a Seal column (✓ / data / check / –),
+  the cycle (`6 → 12 → 2 → …  (17 steps; Test 1 ×2)`) and the seal; ticker stages; per-step report
+  lines with `+ N seal`; error lines `Error found by the seal check before step 7 (Mem-SimpleV2
+  (Test 12)), cycle 2, thread 3, idx …` (every test's rescans say where they ran); final summary
+  rows per test (Runs, Seal), the seal's stage time, an Errors by Step table only on failure.
+  Results are per step (`step`, `id`, `label`, `seal_errors`; `per_step_averages`) and
+  `--compare-results` matches by step and test.

@@ -90,6 +90,8 @@ pub struct PlanSequence<'a> {
     pub order: Option<&'a [(String, bool)]>,
     /// The seal's kernel, when the run is sealed
     pub seal: Option<crate::seal::SealKernel>,
+    /// Why it isn't, when it isn't
+    pub seal_off_reason: &'a str,
     /// A TM5 import: tests go by the `.cfg`'s numbers
     pub tm5: bool,
 }
@@ -244,7 +246,7 @@ pub fn create_test_configuration_report_v2(
         Some(kernel) => format!("🔒 Seal ({}): all memory is sealed at each cycle's start and checked at its end. ✓: the seal is checked \
                                  before every chunk and resealed after. data: the test works on the seal. –: never sealed; what it \
                                  overwrites is checked first and resealed before the next sealed step.", kernel.name()),
-        None => "🔓 Seal: off (seal=off)".to_string(),
+        None => format!("🔓 Seal: off ({})", sequence.seal_off_reason),
     });
 
     TestConfigurationReport {

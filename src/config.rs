@@ -1331,6 +1331,9 @@ impl LegacyConfig {
     let mut cycle_order = Vec::new();
     for &n in &self.main_section.test_sequence {
         if n >= 16 {
+            if cycle_order.is_empty() {
+                return Err(format!("TM5 Test Sequence starts with {n}: TM5 stops reading it at a number of 16 or more, so the cycle would run nothing"));
+            }
             break;
         }
         if !declared.contains(&n) {
@@ -1815,6 +1818,8 @@ mod tests {
         assert_eq!(cfg.to_modern_config().unwrap().system.seal.as_deref(), Some("off"));
         cfg.main_section.test_sequence = vec![1, 7];
         assert!(cfg.to_modern_config().unwrap_err().contains("test 7"));
+        cfg.main_section.test_sequence = vec![16, 1];
+        assert!(cfg.to_modern_config().unwrap_err().contains("run nothing"));
         tests[0].function = "SimpleTest".to_string();
         assert!(legacy(100, tests).to_modern_config().unwrap_err().contains("RefreshStable"));
     }

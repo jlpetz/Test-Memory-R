@@ -2231,17 +2231,24 @@ pub unsafe fn stride_access_multi(
         let chunk_len = spread.chunk() / std::mem::size_of::<u64>();
         let elements_per_subdiv = chunk_len >> subdiv_shift;
 
-        // Each chunk takes every stride pass in turn, inside one seal wrap (TODO 74)
-        for k in 0..spread.count() {
-            let chunk_start = spread.start(k) / std::mem::size_of::<u64>();
-            runner.check_seal(spread.start(k), spread.chunk());
+        // Each stride pass sweeps the extent, so its strided traffic reaches DRAM. In a sealed step
+        // (TODO 74) the first pass checks each chunk's seal, the part no earlier chunk of the pass
+        // has written (chunks may overlap), and the last pass reseals each chunk.
+        let passes: Vec<usize> = strides.iter().copied().filter(|&stride| stride < len).collect();
+        for (pass, &stride) in passes.iter().enumerate() {
+            // Words written and read per chunk: each subdivision from its start, every stride
+            let touched = subdivisions * elements_per_subdiv.div_ceil(stride);
+            // A word's value depends on its index and the pass's stride, not on the chunk
+            let pattern = pattern_base.wrapping_add((stride as u64) << 32);
+            let mut checked_to = 0;
 
-            for &stride in &strides {
-                if stride >= len { continue; }
-                // Words written and read per chunk: each subdivision from its start, every stride
-                let touched = subdivisions * elements_per_subdiv.div_ceil(stride);
-                // A word's value depends on its index and the pass's stride, not on the chunk
-                let pattern = pattern_base.wrapping_add((stride as u64) << 32);
+            for k in 0..spread.count() {
+                let chunk_start = spread.start(k) / std::mem::size_of::<u64>();
+                if pass == 0 {
+                    let from = spread.start(k).max(checked_to);
+                    runner.check_seal(from, spread.start(k) + spread.chunk() - from);
+                    checked_to = spread.start(k) + spread.chunk();
+                }
 
                 for subdiv in 0..subdivisions {
                     let subdiv_start = chunk_start + subdiv * elements_per_subdiv;
@@ -2271,16 +2278,18 @@ pub unsafe fn stride_access_multi(
                     let chunk_end = chunk_start + subdivisions * elements_per_subdiv;
                     cycle_errors += transient_if_none(errors, test_name, chunk_start, chunk_end);
                 }
+                if pass + 1 == passes.len() {
+                    runner.reseal(spread.start(k), spread.chunk());
+                }
 
-                // Count the pass when it is done (one write and one read per word touched)
+                // Count the chunk when it is done (one write and one read per word touched)
                 runner.add_bytes(touched * std::mem::size_of::<u64>() * 2);
-            }
-            runner.reseal(spread.start(k), spread.chunk());
 
-            // A halt stops the test at the chunk that erred
-            if runner.should_halt(cycle_errors) || runner.shutdown_requested() {
-                let total_operations = (runner.bytes_processed() / (2 * std::mem::size_of::<u64>())) as u64;
-                return runner.finish_aborted(cycle_errors, total_operations);
+                // A halt stops the test, not just this stride pass (the finish reseals the extent)
+                if runner.should_halt(cycle_errors) || runner.shutdown_requested() {
+                    let total_operations = (runner.bytes_processed() / (2 * std::mem::size_of::<u64>())) as u64;
+                    return runner.finish_aborted(cycle_errors, total_operations);
+                }
             }
         }
 

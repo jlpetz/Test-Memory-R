@@ -80,3 +80,27 @@ set), so the upsert sets one and clears the other, and `none` clears only the mi
   parameter, and their names.
 - Whether TMR keeps its vector-granular stride as a native mode beside TM5's 128 B-swap jump.
 - The jump cap (a quarter of the block) and the 128 B / 256 B block rounding on TMR's chunks.
+
+## Implemented (2026-10-06, branch `todo85-74`, 07e65a5)
+
+Option A of the 2026-10-06 discussion (the user: "A"; three subblocks "double agree" a load error):
+
+- **One mirror setting, three modes** (`config::MirrorMode`, JSON `"mirror"`, CLI `mirror=`, one
+  parser): `whole`, `subblocks:2|4`, `jump:N`. PageStride, `subblock_count` and `page_stride_bytes`
+  are gone. Every mode is one round trip per test op, as one TM5 pass is: the two ends walk the
+  whole range and cross the middle, so each pair is swapped twice. `jump:N` is MirrorMove128's
+  traversal exactly: 128 B units, step (N + 1) x 128 B with the jump capped at a quarter of the
+  chunk, interleave passes from the last to the first. A pass pairs unit x with n-1-x, so it
+  either swaps its class with another pass's, which swaps them back, or with itself, twice.
+- **Importer**: MirrorMove P 2/4 is `subblocks:P`, P = 3 a load error saying why (a third isn't
+  vector-aligned; TM5 rounds each to 128 B and leaves a tail; no shipped config uses it), anything
+  else `whole`; MirrorMove128 P is `jump:P`. Both run `Mem-MirrorV2-Auto`. The made-up
+  `MirrorMove256/512` names are gone. A JSON mirror test with `"parameter"` is a load error.
+- **Dwell**: `test_reps = N` (was ceil(N/2)).
+- **CLI**: `mirror=` sets the one field on every test and leaves the rest (it replaced the whole
+  context and crashed four tests).
+- **Tests**: a recording pointer shows each mode at each width visits every vector in exactly two
+  swaps with its mirror image; every mirror test runs clean in every mode; every shipped Parameter
+  maps as above. Asm: plain zmm/ymm/xmm load/store swaps, no calls.
+
+Since TODO 74 (551b5f1) the mirror's data is the seal and its verify the seal check, as TM5's.

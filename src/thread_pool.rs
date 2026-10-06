@@ -261,12 +261,13 @@ impl ThreadPool {
 fn handle_test_errors(stats: &crate::tests::TestStats, error_mode: ErrorMode, test_name: &str) -> Result<(), String> {
     match error_mode {
         ErrorMode::Panic => panic!("Memory error detected in {} (see logs)", test_name),
-        ErrorMode::Halt => return Err(format!("Test halted due to {} errors in {}", stats.error_count, test_name)),
+        ErrorMode::Halt => return Err(format!("Test halted due to {} errors + {} seal in {}", stats.error_count, stats.seal_errors, test_name)),
         ErrorMode::Log => {
             log::error!(
-                "[Thread {}] {} errors detected in {} (continuing)",
+                "[Thread {}] {} errors + {} seal detected in {} (continuing)",
                 stats.thread_id,
                 stats.error_count,
+                stats.seal_errors,
                 test_name
             );
         }
@@ -274,7 +275,6 @@ fn handle_test_errors(stats: &crate::tests::TestStats, error_mode: ErrorMode, te
     Ok(())
 }
 
-// Worker thread main loop
 /// Before a step in a sealed run (TODO 74), on the worker's span: a step that takes the seal gets
 /// back the seal on what the steps before it that don't left unsealed; one that doesn't has the
 /// sealed part of what it will overwrite checked first. Returns the bad words that check found.
@@ -288,19 +288,35 @@ pub(crate) fn seal_before_step(blocks: &[AllocationBlock], config: &TestMemoryCo
     let base = span.ptr as *mut u64;
     *unsealed = (*unsealed).min(span.test_size);
     let mut errors = 0;
+    // In 64 MiB pieces, so Ctrl+C is seen within one
+    const PIECE: usize = 64 << 20;
+    let stop = || crate::runner::SHUTDOWN_REQUESTED.load(std::sync::atomic::Ordering::Relaxed);
     if seal.expects {
         if *unsealed > 0 {
             progress.set_stage(Stage::Resealing);
-            // SAFETY: the prefix of this worker's own span
-            unsafe { seal.kernel.fill(base, 0, *unsealed / 8) };
-            *unsealed = 0;
+            let mut at = 0;
+            while at < *unsealed && !stop() {
+                let end = (at + PIECE).min(*unsealed);
+                // SAFETY: the prefix of this worker's own span
+                unsafe { seal.kernel.fill(base, at / 8, end / 8) };
+                at = end;
+            }
+            // A reseal cut short leaves the prefix counted unsealed; resealing it again is harmless
+            if at >= *unsealed {
+                *unsealed = 0;
+            }
         }
     } else {
         let (extent, _) = crate::test_scaffolding::test_extent(blocks, config, test_name);
         if extent.test_size > *unsealed {
             progress.set_stage(Stage::CheckingSeal);
-            // SAFETY: as above
-            errors = unsafe { seal.kernel.check(base, *unsealed / 8, extent.test_size / 8, "seal check before") };
+            let mut at = *unsealed;
+            while at < extent.test_size && !stop() {
+                let end = (at + PIECE).min(extent.test_size);
+                // SAFETY: as above
+                errors += unsafe { seal.kernel.check(base, at / 8, end / 8, "seal check before") };
+                at = end;
+            }
             *unsealed = extent.test_size;
         }
     }
@@ -355,6 +371,7 @@ fn run_seal_stage(blocks: &[AllocationBlock], op: SealOp, kernel: SealKernel, pr
     }
 }
 
+// Worker thread main loop
 fn worker_thread_loop(context: &mut WorkerContext) {
     loop {
         match context.receiver.recv() {
@@ -388,8 +405,8 @@ fn worker_thread_loop(context: &mut WorkerContext) {
                     }
                 };
 
-                // Handle any errors from the test
-                if stats.error_count > 0
+                // Handle any errors from the test, the seal's around its chunks too
+                if stats.error_count + stats.seal_errors > 0
                     && let Err(e) = handle_test_errors(&stats, error_mode, test_name) {
                         log::error!("[Thread {} on CPU {}] {}", context.thread_id, context.cpu_id, e);
                     }

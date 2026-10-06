@@ -187,7 +187,7 @@ macro_rules! lat_v2_read_impl {
 
             let (mut runner, extent) = TestRunner::new(blocks, thread_id, error_mode, timing, config, progress, test_name, TestAction::Latency);
             if extent.test_size == 0 {
-                return finalize_stats(&runner, test_name, thread_id, 0, Vec::new());
+                return finalize_stats(&mut runner, test_name, thread_id, 0, Vec::new());
             }
 
             const ITER: usize = 1000;
@@ -241,7 +241,7 @@ macro_rules! lat_v2_read_impl {
                 if runner.shutdown_requested() || !runner.should_continue() { break; }
             }
 
-            finalize_stats(&runner, test_name, thread_id, total_ops, latencies_ns)
+            finalize_stats(&mut runner, test_name, thread_id, total_ops, latencies_ns)
         }
     }
 }
@@ -282,7 +282,7 @@ macro_rules! lat_v2_write_impl {
 
             let (mut runner, extent) = TestRunner::new(blocks, thread_id, error_mode, timing, config, progress, test_name, TestAction::Latency);
             if extent.test_size == 0 {
-                return finalize_stats(&runner, test_name, thread_id, 0, Vec::new());
+                return finalize_stats(&mut runner, test_name, thread_id, 0, Vec::new());
             }
 
             const ITER: usize = 1000;
@@ -329,7 +329,7 @@ macro_rules! lat_v2_write_impl {
                 if runner.shutdown_requested() || !runner.should_continue() { break; }
             }
 
-            finalize_stats(&runner, test_name, thread_id, total_ops, latencies_ns)
+            finalize_stats(&mut runner, test_name, thread_id, total_ops, latencies_ns)
         }
     }
 }
@@ -372,7 +372,7 @@ macro_rules! lat_v2_copy_impl {
 
             let (mut runner, extent) = TestRunner::new(blocks, thread_id, error_mode, timing, config, progress, test_name, TestAction::Latency);
             if extent.test_size == 0 {
-                return finalize_stats(&runner, test_name, thread_id, 0, Vec::new());
+                return finalize_stats(&mut runner, test_name, thread_id, 0, Vec::new());
             }
 
             const ITER: usize = 1000;
@@ -419,7 +419,7 @@ macro_rules! lat_v2_copy_impl {
                 if runner.shutdown_requested() || !runner.should_continue() { break; }
             }
 
-            finalize_stats(&runner, test_name, thread_id, total_ops, latencies_ns)
+            finalize_stats(&mut runner, test_name, thread_id, total_ops, latencies_ns)
         }
     }
 }
@@ -456,7 +456,7 @@ macro_rules! lat_v2p_read_impl {
 
             let (mut runner, extent) = TestRunner::new(blocks, thread_id, error_mode, timing, config, progress, test_name, TestAction::Latency);
             if extent.test_size == 0 {
-                return finalize_stats(&runner, test_name, thread_id, 0, Vec::new());
+                return finalize_stats(&mut runner, test_name, thread_id, 0, Vec::new());
             }
 
             const ITER: usize = 1000;
@@ -522,7 +522,7 @@ macro_rules! lat_v2p_read_impl {
                 if runner.shutdown_requested() || !runner.should_continue() { break; }
             }
 
-            finalize_stats(&runner, test_name, thread_id, total_ops, latencies_ns)
+            finalize_stats(&mut runner, test_name, thread_id, total_ops, latencies_ns)
         }
     }
 }
@@ -566,7 +566,7 @@ macro_rules! lat_v2p_write_impl {
 
             let (mut runner, extent) = TestRunner::new(blocks, thread_id, error_mode, timing, config, progress, test_name, TestAction::Latency);
             if extent.test_size == 0 {
-                return finalize_stats(&runner, test_name, thread_id, 0, Vec::new());
+                return finalize_stats(&mut runner, test_name, thread_id, 0, Vec::new());
             }
 
             const ITER: usize = 1000;
@@ -628,7 +628,7 @@ macro_rules! lat_v2p_write_impl {
                 if runner.shutdown_requested() || !runner.should_continue() { break; }
             }
 
-            finalize_stats(&runner, test_name, thread_id, total_ops, latencies_ns)
+            finalize_stats(&mut runner, test_name, thread_id, total_ops, latencies_ns)
         }
     }
 }
@@ -678,7 +678,7 @@ macro_rules! lat_v2p_copy_impl {
 
             let (mut runner, extent) = TestRunner::new(blocks, thread_id, error_mode, timing, config, progress, test_name, TestAction::Latency);
             if extent.test_size == 0 {
-                return finalize_stats(&runner, test_name, thread_id, 0, Vec::new());
+                return finalize_stats(&mut runner, test_name, thread_id, 0, Vec::new());
             }
 
             const ITER: usize = 1000;
@@ -738,7 +738,7 @@ macro_rules! lat_v2p_copy_impl {
                 if runner.shutdown_requested() || !runner.should_continue() { break; }
             }
 
-            finalize_stats(&runner, test_name, thread_id, total_ops, latencies_ns)
+            finalize_stats(&mut runner, test_name, thread_id, total_ops, latencies_ns)
         }
     }
 }
@@ -786,7 +786,7 @@ macro_rules! lat_v2p_write_full_impl {
 
             let (mut runner, extent) = TestRunner::new(blocks, thread_id, error_mode, timing, config, progress, test_name, TestAction::Latency);
             if extent.test_size == 0 {
-                return finalize_stats(&runner, test_name, thread_id, 0, Vec::new());
+                return finalize_stats(&mut runner, test_name, thread_id, 0, Vec::new());
             }
 
             const ITER: usize = 1000;
@@ -846,7 +846,7 @@ macro_rules! lat_v2p_write_full_impl {
                 if runner.shutdown_requested() || !runner.should_continue() { break; }
             }
 
-            finalize_stats(&runner, test_name, thread_id, total_ops, latencies_ns)
+            finalize_stats(&mut runner, test_name, thread_id, total_ops, latencies_ns)
         }
     }
 }
@@ -890,7 +890,7 @@ macro_rules! lat_v2p_copy_full_impl {
 
             let (mut runner, extent) = TestRunner::new(blocks, thread_id, error_mode, timing, config, progress, test_name, TestAction::Latency);
             if extent.test_size == 0 {
-                return finalize_stats(&runner, test_name, thread_id, 0, Vec::new());
+                return finalize_stats(&mut runner, test_name, thread_id, 0, Vec::new());
             }
 
             const ITER: usize = 1000;
@@ -948,7 +948,7 @@ macro_rules! lat_v2p_copy_full_impl {
                 if runner.shutdown_requested() || !runner.should_continue() { break; }
             }
 
-            finalize_stats(&runner, test_name, thread_id, total_ops, latencies_ns)
+            finalize_stats(&mut runner, test_name, thread_id, total_ops, latencies_ns)
         }
     }
 }
@@ -1403,7 +1403,7 @@ macro_rules! lat_ntw_write_impl {
 
             let (mut runner, extent) = TestRunner::new(blocks, thread_id, error_mode, timing, config, progress, test_name, TestAction::Latency);
             if extent.test_size == 0 {
-                return finalize_stats(&runner, test_name, thread_id, 0, Vec::new());
+                return finalize_stats(&mut runner, test_name, thread_id, 0, Vec::new());
             }
 
             // Stores per sample. Large enough to saturate WCBs and dilute the warmup phase
@@ -1420,7 +1420,7 @@ macro_rules! lat_ntw_write_impl {
             // random permutation of its lines, repeated when it has fewer
             let line_count = extent.test_size / CACHE_LINE_BYTES;
             if line_count < 2 {
-                return finalize_stats(&runner, test_name, thread_id, 0, Vec::new());
+                return finalize_stats(&mut runner, test_name, thread_id, 0, Vec::new());
             }
             let lines = random_prefix(line_count, line_count.min(STORES_PER_SAMPLE), thread_id ^ 0xC1);
             let table: Vec<*mut $vec_type> = (0..STORES_PER_SAMPLE)
@@ -1462,7 +1462,7 @@ macro_rules! lat_ntw_write_impl {
             // Suppress unused-vec_size warning; the value is documentary and may be used in
             // future variants that issue multiple stores per cache line.
             let _ = $vec_size;
-            finalize_stats(&runner, test_name, thread_id, total_ops, latencies_ns)
+            finalize_stats(&mut runner, test_name, thread_id, total_ops, latencies_ns)
         }
     }
 }
@@ -1491,7 +1491,7 @@ pub unsafe fn lat_ntw_write_scalar_multi(
 
     let (mut runner, extent) = TestRunner::new(blocks, thread_id, error_mode, timing, config, progress, test_name, TestAction::Latency);
     if extent.test_size == 0 {
-        return finalize_stats(&runner, test_name, thread_id, 0, Vec::new());
+        return finalize_stats(&mut runner, test_name, thread_id, 0, Vec::new());
     }
 
     const STORES_PER_SAMPLE: usize = 4096;
@@ -1501,7 +1501,7 @@ pub unsafe fn lat_ntw_write_scalar_multi(
     // random permutation of its lines, repeated when it has fewer
     let line_count = extent.test_size / CACHE_LINE_BYTES;
     if line_count < 2 {
-        return finalize_stats(&runner, test_name, thread_id, 0, Vec::new());
+        return finalize_stats(&mut runner, test_name, thread_id, 0, Vec::new());
     }
     let lines = random_prefix(line_count, line_count.min(STORES_PER_SAMPLE), thread_id ^ 0xC1);
     let table: Vec<*mut i64> = (0..STORES_PER_SAMPLE)
@@ -1540,7 +1540,7 @@ pub unsafe fn lat_ntw_write_scalar_multi(
         if runner.shutdown_requested() || !runner.should_continue() { break; }
     }
 
-    finalize_stats(&runner, test_name, thread_id, total_ops, latencies_ns)
+    finalize_stats(&mut runner, test_name, thread_id, total_ops, latencies_ns)
 }
 
 lat_ntw_write_impl!(
@@ -1591,7 +1591,7 @@ pub unsafe fn lat_ntw_write_auto_multi(
 /// The test's stats: the runner's bytes, time and cycles (one sample per cycle), and the
 /// percentiles of the samples.
 fn finalize_stats(
-    runner: &TestRunner<'_>,
+    runner: &mut TestRunner<'_>,
     test_name: &'static str,
     thread_id: usize,
     total_ops: u64,

@@ -61,11 +61,14 @@ impl SealWidth {
     }
 
     /// The width this CPU runs: `Auto` resolved, or an error if the CPU lacks the asked-for one.
+    ///
+    /// `Auto` is 256, not 512, where AVX2 is there: on the dev box (Xeon 6975P, 2026-10-06, 28 GiB,
+    /// 4 threads) every width fills at ~90 GiB/s (the non-temporal store ceiling), but the 512-bit
+    /// check ran at 52-55 GiB/s against 58-63 for 128 and 256. The Bench-*-Seal-* pairs measure it.
     pub fn resolve(self) -> Result<Self, String> {
         let avx512 = is_x86_feature_detected!("avx512f");
         let avx2 = is_x86_feature_detected!("avx2");
         match self {
-            SealWidth::Auto if avx512 => Ok(SealWidth::W512),
             SealWidth::Auto if avx2 => Ok(SealWidth::W256),
             SealWidth::Auto => Ok(SealWidth::W128),
             SealWidth::W512 if !avx512 => Err("seal width 512 needs AVX-512, which this CPU lacks".to_string()),

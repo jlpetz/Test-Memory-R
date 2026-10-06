@@ -44,9 +44,10 @@ pub struct TestRunner<'a> {
     total_bytes_processed: usize,
     last_progress_update: Instant,
 
-    /// The seal as this step runs it (TODO 74), and the extent's start, which its kernels index from
+    /// The seal as this step runs it (TODO 74), and the extent, which its kernels index from
     seal: crate::seal::SealStep,
     seal_base: *mut u64,
+    seal_words: usize,
     /// Bad words the seal checks before chunks found: not this test's errors, but they halt it
     seal_errors: u64,
 }
@@ -103,6 +104,7 @@ impl<'a> TestRunner<'a> {
             last_progress_update: now,
             seal: config.seal,
             seal_base: extent.ptr as *mut u64,
+            seal_words: extent.test_size / 8,
             seal_errors: 0,
         };
         // The untimed setup a latency or bandwidth test does before `restart_clock`, for the ticker
@@ -169,11 +171,15 @@ impl<'a> TestRunner<'a> {
     }
 
     /// Check the seal on bytes `[start, start + len)` of the extent before the test works them
-    /// (TODO 74); a no-op unless the step wraps. Bad words count as seal errors, not the test's,
-    /// and halt it under `errors=halt`.
+    /// (TODO 74); a no-op unless the step wraps, and after the step's first cycle. Bad words count
+    /// as seal errors, not the test's, and halt it under `errors=halt`.
+    ///
+    /// Only the first cycle: a later one finds the chunks as the test left them, so a test that
+    /// runs many cycles of its own (a duration) pays for the wrap once, and its extent is resealed
+    /// once, when it finishes.
     #[inline]
     pub fn check_seal(&mut self, start: usize, len: usize) {
-        if !self.seal.wrap {
+        if !self.seal.wrap || self.cycle > 1 {
             return;
         }
         self.set_stage(Stage::CheckingSeal);
@@ -184,10 +190,10 @@ impl<'a> TestRunner<'a> {
     }
 
     /// Reseal bytes `[start, start + len)` of the extent once the test is done with them (TODO 74);
-    /// a no-op unless the step wraps.
+    /// a no-op unless the step wraps, and after its first cycle (see `check_seal`).
     #[inline]
     pub fn reseal(&mut self, start: usize, len: usize) {
-        if !self.seal.wrap {
+        if !self.seal.wrap || self.cycle > 1 {
             return;
         }
         self.set_stage(Stage::Resealing);
@@ -273,7 +279,7 @@ impl<'a> TestRunner<'a> {
             if now.duration_since(self.last_progress_update).as_millis() >= 250 {
                 progress.cycles_completed.store(cycles_completed, Ordering::Relaxed);
                 progress.bytes_processed.store(self.total_bytes_processed as u64, Ordering::Relaxed);
-                progress.errors_found.store(self.total_error_count, Ordering::Relaxed);
+                progress.errors_found.store(self.total_error_count + self.seal_errors, Ordering::Relaxed);
                 progress.last_update_ms.store(self.start.elapsed().as_millis() as u64, Ordering::Relaxed);
                 self.last_progress_update = now;
             }
@@ -287,15 +293,30 @@ impl<'a> TestRunner<'a> {
         self.timing.should_continue(self.cycle, elapsed_secs)
     }
 
+    /// A step that wrapped its chunks in the seal reseals its whole extent as it finishes when it
+    /// ran past its first cycle (TODO 74, `check_seal`), or was cut short (`aborted`), which can
+    /// leave a chunk it was working unsealed. Returns the test's time, taken before.
+    fn reseal_extent(&mut self, aborted: bool) -> u128 {
+        let elapsed_ms = self.start.elapsed().as_millis();
+        if self.seal.wrap && (self.cycle > 1 || aborted) {
+            self.set_stage(Stage::Resealing);
+            // SAFETY: the extent the test has just finished with
+            unsafe { self.seal.kernel.fill(self.seal_base, 0, self.seal_words) };
+            self.set_stage(Stage::Testing);
+        }
+        elapsed_ms
+    }
+
     /// Build `TestStats` for a mid-cycle abort (Halt on error, or shutdown).
     /// `error_count = running total + this cycle's errors`, `stopped_by_time_limit = false`.
     #[inline]
-    pub fn finish_aborted(&self, cycle_errors: u64, total_operations: u64) -> TestStats {
+    pub fn finish_aborted(&mut self, cycle_errors: u64, total_operations: u64) -> TestStats {
+        let elapsed_ms = self.reseal_extent(true);
         TestStats {
             name: self.test_name,
             action: self.action,
             bytes_processed: self.total_bytes_processed,
-            elapsed_ms: self.start.elapsed().as_millis(),
+            elapsed_ms,
             thread_id: self.thread_id,
             error_count: self.total_error_count + cycle_errors,
             total_operations,
@@ -309,12 +330,13 @@ impl<'a> TestRunner<'a> {
     /// Build `TestStats` for a normal completion (timing/cycle limit reached).
     /// Assumes the final cycle's errors were already folded via `commit_cycle_errors`.
     #[inline]
-    pub fn finish_completed(&self, total_operations: u64) -> TestStats {
+    pub fn finish_completed(&mut self, total_operations: u64) -> TestStats {
+        let elapsed_ms = self.reseal_extent(false);
         TestStats {
             name: self.test_name,
             action: self.action,
             bytes_processed: self.total_bytes_processed,
-            elapsed_ms: self.start.elapsed().as_millis(),
+            elapsed_ms,
             thread_id: self.thread_id,
             error_count: self.total_error_count,
             total_operations,
