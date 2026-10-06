@@ -1188,7 +1188,7 @@ macro_rules! stuck_bit_impl {
 
 /// One write+verify phase of StuckBit at a SIMD width. Writes `$pat` across the chunk, fences,
 /// then verifies with 4 independent XOR/OR accumulator chains (MLP), merged once at the end.
-/// Increments `$errs` per tripped chunk (coarse — #27 does exact localization). Expanded
+/// Adds each bad word to `$errs`, counted in a cold rescan when an accumulator trips. Expanded
 /// inside the `#[target_feature]` fn so the SIMD width is honored (no fn-call boundary).
 macro_rules! stuck_bit_write_verify {
     ($simd_type:ty, $base:expr, $start:expr, $end:expr, $pat:expr, $errs:expr, $test_name:expr, $thread_id:expr, $phase:literal, $flush:expr, $line_bytes:expr) => {{
@@ -1228,9 +1228,11 @@ macro_rules! stuck_bit_write_verify {
         }
         let acc = (a0 | a1) | (a2 | a3);
         if acc.simd_ne(<$simd_type>::splat(0)).any() {
-            *$errs += 1;
-            log::error!("{}: memory error detected in phase {} chunk (thread {})",
-                        $test_name, $phase, $thread_id);
+            // Count and log each bad word, as every width does (TODO 89)
+            let words = std::mem::size_of::<$simd_type>() / std::mem::size_of::<u64>();
+            let pat = $pat.as_array()[0];
+            log::error!("{}: phase {} found a bad word (thread {})", $test_name, $phase, $thread_id);
+            *$errs += rescan_words($base as *const u64, $start * words, $end * words, $test_name, |_| pat);
         }
     }};
 }
@@ -1300,14 +1302,7 @@ pub unsafe fn stuck_bit_test_multi(
             std::sync::atomic::fence(Ordering::SeqCst);
             flush_chunk_if_enabled!();
 
-            for i in processed..chunk_end {
-                let v = *base.add(i);
-                if v != pattern1 {
-                    cycle_errors += 1;
-                    log::error!("{}: Phase 1 memory error at index {} - expected {:#x}, got {:#x}",
-                               test_name, i, pattern1, v);
-                }
-            }
+            cycle_errors += verify_words(base, processed, chunk_end, test_name, |_| pattern1);
 
             // Phase 2: Write P2 (0x55AA..., = !P1), verify
             for i in processed..chunk_end {
@@ -1317,14 +1312,7 @@ pub unsafe fn stuck_bit_test_multi(
             std::sync::atomic::fence(Ordering::SeqCst);
             flush_chunk_if_enabled!();
 
-            for i in processed..chunk_end {
-                let v = *base.add(i);
-                if v != pattern2 {
-                    cycle_errors += 1;
-                    log::error!("{}: Phase 2 memory error at index {} - expected {:#x}, got {:#x}",
-                               test_name, i, pattern2, v);
-                }
-            }
+            cycle_errors += verify_words(base, processed, chunk_end, test_name, |_| pattern2);
 
             // Phase 3: Write back to P1, verify
             for i in processed..chunk_end {
@@ -1334,14 +1322,7 @@ pub unsafe fn stuck_bit_test_multi(
             std::sync::atomic::fence(Ordering::SeqCst);
             flush_chunk_if_enabled!();
 
-            for i in processed..chunk_end {
-                let v = *base.add(i);
-                if v != pattern1 {
-                    cycle_errors += 1;
-                    log::error!("{}: Phase 3 memory error at index {} - expected {:#x}, got {:#x}",
-                               test_name, i, pattern1, v);
-                }
-            }
+            cycle_errors += verify_words(base, processed, chunk_end, test_name, |_| pattern1);
 
             // Count the chunk when it is done; overlaps count each time
             runner.add_bytes(spread.chunk() * 6);
@@ -1514,8 +1495,8 @@ pub const REFRESH_PATTERN: u64 = 0xA55AA55AA55AA55Au64;
 /// MFENCE → sleep 64ms → verify. The flush is what makes the post-sleep verify actually read
 /// DRAM (defeats cache masking of bit-fade). Verify uses **4 independent accumulator chains**
 /// (MLP; see `memory/simd-loop-optimization.md`) — this is the cold-DRAM regime where MLP
-/// mattered most in benchmarking. No intermediate `ErrorCheckInterval` mode (TODO #27 does
-/// exact localization). `TestRunner` owns extent/timer/progress/stats/shutdown.
+/// mattered most in benchmarking. A tripped accumulator rescans the chunk to count and log each
+/// bad word. `TestRunner` owns extent/timer/progress/stats/shutdown.
 ///
 /// The chunk-vector floor stays `.max(256)` (matching the pre-macro per-width code; note the
 /// scalar `refresh_stable_multi` uses its own operation-based floor).
@@ -1607,8 +1588,10 @@ macro_rules! refresh_impl {
                     }
                     let acc = (a0 | a1) | (a2 | a3);
                     if acc.simd_ne(<$simd_type>::splat(0)).any() {
-                        cycle_errors += 1;
-                        log::error!("{}: memory error detected in chunk (thread {})", test_name, thread_id);
+                        // Count and log each bad word, as every width does (TODO 89)
+                        let words = lanes / std::mem::size_of::<u64>();
+                        cycle_errors += rescan_words(base as *const u64, processed * words, chunk_end * words,
+                                                     test_name, |_| REFRESH_PATTERN);
                     }
 
                     // Count the chunk when it is done; overlaps count each time
@@ -1693,14 +1676,7 @@ pub unsafe fn refresh_stable_multi(
             std::thread::sleep(std::time::Duration::from_millis(64)); // DRAM refresh cycle timing
 
             // Verify phase
-            for i in processed..chunk_end {
-                let v = *base.add(i);
-                if v != pattern {
-                    cycle_errors += 1;
-                    log::error!("{}: memory error at index {} - expected {:#x}, got {:#x}",
-                               test_name, i, pattern, v);
-                }
-            }
+            cycle_errors += verify_words(base, processed, chunk_end, test_name, |_| pattern);
 
             // Count the chunk when it is done; overlaps count each time
             runner.add_bytes(spread.chunk() * 2);
@@ -1939,20 +1915,14 @@ pub unsafe fn cache_busting_multi(
 
                     std::sync::atomic::fence(Ordering::SeqCst);
 
-                    // Verify with same stride pattern within chunk
+                    // Verify with same stride pattern within chunk; the walk covers every word
+                    let expected = |i: usize| pattern_base.wrapping_add(i as u64);
+                    let mut acc = [0u64; 4];
                     for offset in 0..base_stride.min(chunk_end - processed) {
-                        let mut i = processed + offset;
-                        while i < chunk_end {
-                            let v = *base.add(i);
-                            let expected = pattern_base.wrapping_add(i as u64);
-                            if v != expected {
-                                cycle_errors += 1;
-                                log::error!("{}: memory error at index {} - expected {:#x}, got {:#x}",
-                                           test_name, i, expected, v);
-                            }
-                            i += base_stride;
-                            if i >= chunk_end { break; }
-                        }
+                        accumulate_stride(&mut acc, base, processed + offset, chunk_end, base_stride, expected);
+                    }
+                    if (acc[0] | acc[1]) | (acc[2] | acc[3]) != 0 {
+                        cycle_errors += rescan_words(base, processed, chunk_end, test_name, expected);
                     }
                 }
                 _ => {
@@ -1972,23 +1942,21 @@ pub unsafe fn cache_busting_multi(
 
                     std::sync::atomic::fence(Ordering::SeqCst);
 
-                    // Verify all offsets with their respective variant patterns
+                    // Verify all offsets with their respective variant patterns; the walk covers
+                    // every word, and a word's variant follows from its own index
+                    let mut acc = [0u64; 4];
                     for offset in 0..base_stride.min(chunk_end - processed) {
                         let variant = (((processed + offset) % base_stride) % stride_patterns) as u64;
                         let pattern = pattern_base.wrapping_add(variant * 0x1111111111111111u64);
-
-                        let mut i = processed + offset;
-                        while i < chunk_end {
-                            let v = *base.add(i);
-                            let expected = pattern.wrapping_add(i as u64);
-                            if v != expected {
-                                cycle_errors += 1;
-                                log::error!("{}: memory error at index {} - expected {:#x}, got {:#x}",
-                                           test_name, i, expected, v);
-                            }
-                            i += base_stride;
-                            if i >= chunk_end { break; }
-                        }
+                        accumulate_stride(&mut acc, base, processed + offset, chunk_end, base_stride,
+                                          |i| pattern.wrapping_add(i as u64));
+                    }
+                    if (acc[0] | acc[1]) | (acc[2] | acc[3]) != 0 {
+                        let expected = |i: usize| {
+                            let variant = ((i % base_stride) % stride_patterns) as u64;
+                            pattern_base.wrapping_add(variant * 0x1111111111111111u64).wrapping_add(i as u64)
+                        };
+                        cycle_errors += rescan_words(base, processed, chunk_end, test_name, expected);
                     }
                 }
             }
@@ -2237,20 +2205,20 @@ pub unsafe fn stride_access_multi(
 
                 std::sync::atomic::fence(Ordering::SeqCst);
 
+                let expected = |pos: usize| pattern.wrapping_add(pos as u64);
+                let mut acc = [0u64; 4];
                 for subdiv in 0..subdivisions {
                     let subdiv_start = chunk_start + subdiv * elements_per_subdiv;
-                    let subdiv_end = subdiv_start + elements_per_subdiv;
-                    let mut pos = subdiv_start;
-                    while pos < subdiv_end {
-                        let expected = pattern.wrapping_add(pos as u64);
-                        let actual = *base.add(pos);
-                        if actual != expected {
-                            cycle_errors += 1;
-                            log::error!("{}: memory error at index {} - expected {:#x}, got {:#x}", test_name, pos, expected, actual);
-                        }
-                        pos += stride;
-                        if pos >= subdiv_end { break; }
+                    accumulate_stride(&mut acc, base, subdiv_start, subdiv_start + elements_per_subdiv, stride, expected);
+                }
+                if (acc[0] | acc[1]) | (acc[2] | acc[3]) != 0 {
+                    let mut errors = 0;
+                    for subdiv in 0..subdivisions {
+                        let subdiv_start = chunk_start + subdiv * elements_per_subdiv;
+                        errors += rescan_stride(base, subdiv_start, subdiv_start + elements_per_subdiv, stride, test_name, expected);
                     }
+                    let chunk_end = chunk_start + subdivisions * elements_per_subdiv;
+                    cycle_errors += transient_if_none(errors, test_name, chunk_start, chunk_end);
                 }
 
                 // Count the chunk when it is done (one write and one read per word touched)
@@ -2413,16 +2381,8 @@ pub unsafe fn block_move_multi(
 
             std::sync::atomic::fence(Ordering::SeqCst);
 
-            // Verify copied data
-            for i in processed..chunk_end {
-                let expected = pattern_base.wrapping_add(i as u64);
-                let actual = *dst_base.add(i);
-                if actual != expected {
-                    cycle_errors += 1;
-                    log::error!("{}: error at {} - expected {:#x}, got {:#x}",
-                               test_name, i, expected, actual);
-                }
-            }
+            // Verify copied data (indices from the destination half's start)
+            cycle_errors += verify_words(dst_base, processed, chunk_end, test_name, |i| pattern_base.wrapping_add(i as u64));
 
             // Count the half-chunk when it is done: copy (read + write) and verify (read)
             runner.add_bytes(spread.chunk() * 3);
@@ -2615,6 +2575,47 @@ unsafe fn verify_words(ptr: *const u64, start: usize, end: usize, test_name: &st
         return 0;
     }
     rescan_words(ptr, start, end, test_name, expected)
+}
+
+/// ORs the differences of words `start, start + stride, ...` below `end` into 4 accumulators, 4
+/// strides at a time (TODO 89): the strided twin of `verify_words`'s loop. The caller checks the
+/// accumulators once and rescans on a hit.
+#[inline(always)]
+unsafe fn accumulate_stride(acc: &mut [u64; 4], ptr: *const u64, start: usize, end: usize, stride: usize,
+                            expected: impl Fn(usize) -> u64 + Copy) {
+    let mut idx = start;
+    while idx + 3 * stride < end {
+        for (k, a) in acc.iter_mut().enumerate() {
+            let at = idx + k * stride;
+            *a |= *ptr.add(at) ^ expected(at);
+        }
+        idx += 4 * stride;
+    }
+    while idx < end {
+        acc[0] |= *ptr.add(idx) ^ expected(idx);
+        idx += stride;
+    }
+}
+
+/// Counts and logs the words `start, start + stride, ...` below `end` that differ from
+/// `expected(idx)`, the cold path of `accumulate_stride` (the caller adds `transient_if_none`).
+#[cold]
+#[inline(never)]
+unsafe fn rescan_stride(ptr: *const u64, start: usize, end: usize, stride: usize, test_name: &str,
+                        expected: impl Fn(usize) -> u64) -> u64 {
+    let mut errors = 0u64;
+    let mut idx = start;
+    while idx < end {
+        let (want, actual) = (expected(idx), *ptr.add(idx));
+        if actual != want {
+            errors += 1;
+            if errors <= 10 {
+                log::error!("{}: error at idx {} (stride {}) - expected {:#x}, got {:#x}", test_name, idx, stride, want, actual);
+            }
+        }
+        idx += stride;
+    }
+    errors
 }
 
 /// Counts and logs the words of `[start, end)` that differ from `expected(idx)`, once an
@@ -2912,60 +2913,23 @@ unsafe fn simple_test_v2_strided(
                         }
                     }
                 },
-                // Verify: same strided order (with error_check_interval for v1 parity)
+                // Verify: same strided order, into 4 accumulators; the walk covers every word of the
+                // chunk, so a hit rescans it in order (TODO 89)
                 |ctx: &ChunkCtx| -> u64 {
                     let seed = if effective_mode <= 1 {
                         pattern_gen::block_seed(ctx.ptr as usize, ctx.thread_id, ctx.cycle)
                     } else { base };
-                    let mut total_errors = 0u64;
                     let len = ctx.chunk_end - ctx.chunk_start;
                     if len == 0 { return 0; }
-                    match ctx.check_mask {
-                        Some(check_mask) => {
-                            let mut interval_errors = 0u64;
-                            let mut element_count = 0u32;
-                            for sub_offset in 0..stride.min(len) {
-                                let mut idx = ctx.chunk_start + sub_offset;
-                                while idx < ctx.chunk_end {
-                                    let expected = gen_pattern(idx as u64, seed, cl_shift);
-                                    let actual = *ctx.ptr.add(idx);
-                                    if actual != expected {
-                                        interval_errors += 1;
-                                        if interval_errors <= 10 {
-                                            log::error!("{}: strided error at idx {} (stride={}) - expected {:#x}, got {:#x}",
-                                                       test_name, idx, stride, expected, actual);
-                                        }
-                                    }
-                                    element_count += 1;
-                                    if (element_count & check_mask) == 0
-                                        && interval_errors > 0 {
-                                            total_errors += interval_errors;
-                                            interval_errors = 0;
-                                        }
-                                    idx += stride;
-                                }
-                            }
-                            total_errors += interval_errors;
-                        }
-                        None => {
-                            for sub_offset in 0..stride.min(len) {
-                                let mut idx = ctx.chunk_start + sub_offset;
-                                while idx < ctx.chunk_end {
-                                    let expected = gen_pattern(idx as u64, seed, cl_shift);
-                                    let actual = *ctx.ptr.add(idx);
-                                    if actual != expected {
-                                        total_errors += 1;
-                                        if total_errors <= 10 {
-                                            log::error!("{}: strided error at idx {} (stride={}) - expected {:#x}, got {:#x}",
-                                                       test_name, idx, stride, expected, actual);
-                                        }
-                                    }
-                                    idx += stride;
-                                }
-                            }
-                        }
+                    let expected = |idx: usize| gen_pattern(idx as u64, seed, cl_shift);
+                    let mut acc = [0u64; 4];
+                    for sub_offset in 0..stride.min(len) {
+                        accumulate_stride(&mut acc, ctx.ptr, ctx.chunk_start + sub_offset, ctx.chunk_end, stride, expected);
                     }
-                    total_errors
+                    if (acc[0] | acc[1]) | (acc[2] | acc[3]) == 0 {
+                        return 0;
+                    }
+                    rescan_words(ctx.ptr, ctx.chunk_start, ctx.chunk_end, test_name, expected)
                 },
             )
         }};
@@ -4546,8 +4510,42 @@ pub fn get_test_function_by_name(name: &str) -> Option<crate::runner::TestFuncti
 
 #[cfg(test)]
 mod random_replay_tests {
-    use super::{random_replay, Mode12, Mode2};
+    use super::{accumulate_stride, random_replay, rescan_stride, rescan_words, verify_words, Mode12, Mode2};
     use crate::pattern_gen::PAGE_WORDS;
+
+    /// TODO 89: the strided accumulate sees a bad word wherever its walk passes, at any stride
+    /// and remainder; the rescans count each bad word exactly, the strided one only on its walk.
+    #[test]
+    fn strided_verify_finds_and_counts_each_bad_word() {
+        let len = 1000usize;
+        let expected = |i: usize| (i as u64).wrapping_mul(0x9E3779B97F4A7C15);
+        let mut mem: Vec<u64> = (0..len).map(expected).collect();
+        let p = mem.as_mut_ptr();
+        let clean = |stride: usize| unsafe {
+            let mut acc = [0u64; 4];
+            for offset in 0..stride.min(len) {
+                accumulate_stride(&mut acc, p, offset, len, stride, expected);
+            }
+            (acc[0] | acc[1]) | (acc[2] | acc[3]) == 0
+        };
+        unsafe {
+            for stride in [1, 3, 7, 64, 999, 1000, 4096] {
+                assert!(clean(stride), "stride {stride} on clean memory");
+            }
+            *p.add(0) ^= 1;
+            *p.add(997) ^= 1 << 63;
+            *p.add(500) = 0;
+            for stride in [1, 3, 7, 64, 999, 1000, 4096] {
+                assert!(!clean(stride), "stride {stride} missed a bad word");
+            }
+            assert_eq!(rescan_words(p, 0, len, "test", expected), 3);
+            assert_eq!(verify_words(p, 0, len, "test", expected), 3);
+            // A stride-3 walk from 1 visits 997 (= 1 + 3 x 332) and 500 is off it (500 % 3 = 2)
+            assert_eq!(rescan_stride(p, 1, len, 3, "test", expected), 1);
+            assert_eq!(rescan_stride(p, 2, len, 3, "test", expected), 1);
+            assert_eq!(rescan_stride(p, 0, len, 3, "test", expected), 1);
+        }
+    }
 
     /// TODO 76: modes 2 and 12 depend only on the address, so writing a range in overlapping
     /// pieces, in any order, gives the image one pass gives. The verify finds nothing on it and
