@@ -1967,7 +1967,7 @@ pub unsafe fn cache_busting_multi(
                     let expected = |i: usize| pattern_base.wrapping_add(i as u64);
                     let mut acc = [0u64; 4];
                     for offset in 0..base_stride.min(chunk_end - processed) {
-                        accumulate_stride(&mut acc, base, processed + offset, chunk_end, base_stride, expected);
+                        accumulate_stride_4(&mut acc, base, processed + offset, chunk_end, base_stride, expected);
                     }
                     if (acc[0] | acc[1]) | (acc[2] | acc[3]) != 0 {
                         cycle_errors += rescan_words(base, processed, chunk_end, test_name, expected);
@@ -1996,7 +1996,7 @@ pub unsafe fn cache_busting_multi(
                     for offset in 0..base_stride.min(chunk_end - processed) {
                         let variant = (((processed + offset) % base_stride) % stride_patterns) as u64;
                         let pattern = pattern_base.wrapping_add(variant * 0x1111111111111111u64);
-                        accumulate_stride(&mut acc, base, processed + offset, chunk_end, base_stride,
+                        accumulate_stride_4(&mut acc, base, processed + offset, chunk_end, base_stride,
                                           |i| pattern.wrapping_add(i as u64));
                     }
                     if (acc[0] | acc[1]) | (acc[2] | acc[3]) != 0 {
@@ -2267,7 +2267,7 @@ pub unsafe fn stride_access_multi(
                 let mut acc = [0u64; 4];
                 for subdiv in 0..subdivisions {
                     let subdiv_start = chunk_start + subdiv * elements_per_subdiv;
-                    accumulate_stride(&mut acc, base, subdiv_start, subdiv_start + elements_per_subdiv, stride, expected);
+                    accumulate_stride_4(&mut acc, base, subdiv_start, subdiv_start + elements_per_subdiv, stride, expected);
                 }
                 if (acc[0] | acc[1]) | (acc[2] | acc[3]) != 0 {
                     let mut errors = 0;
@@ -2657,11 +2657,11 @@ unsafe fn verify_words(ptr: *const u64, start: usize, end: usize, test_name: &st
 /// (TODO 89): the strided twin of `verify_words`'s loop. The caller checks them once and rescans
 /// on a hit.
 ///
-/// One load per step, not 4 accumulators 4 strides apart: the walk is memory-bound, not bound by
-/// the OR chain, and on 1usmus_v3 (2026-10-06, 4 threads) the 4-way version took Test 6 (a 15.9 KB
-/// stride over 432 MiB chunks) from 44 s to 78 s, worse than the per-word branch it replaced
-/// (55 s), while the larger strides gained 15-30%. One accumulator is at least as fast as that
-/// branch at every stride the shipped configs use.
+/// One load per step, not 4 accumulators 4 strides apart (`accumulate_stride_4`): the strided
+/// SimpleTest's walk over a big chunk is memory-bound, not bound by the OR chain, and below a
+/// 16 KiB stride the 4-way walk is far slower. On 1usmus_v3 (2026-10-06, 4 threads) it took Test 6
+/// (a 15.9 KB stride over 432 MiB chunks) from 44 s to 78 s, worse than the per-word branch it
+/// replaced (55 s), while at 32 KB and up it was 13-30% faster than this one.
 #[inline(always)]
 unsafe fn accumulate_stride(acc: &mut [u64; 4], ptr: *const u64, start: usize, end: usize, stride: usize,
                             expected: impl Fn(usize) -> u64 + Copy) {
@@ -2671,6 +2671,32 @@ unsafe fn accumulate_stride(acc: &mut [u64; 4], ptr: *const u64, start: usize, e
         idx += stride;
     }
 }
+
+/// `accumulate_stride` 4 strides per step into the 4 accumulators: for a walk over a chunk that
+/// stays in cache (Mem-CacheBust's 1 MiB, Mem-Stride's 2 MiB), where the loop is the limit, and for
+/// the strided SimpleTest at 16 KiB strides and up (`STRIDE_4_FROM`). Measured on the dev box
+/// (2026-10-06): CacheBust 12% and Mem-Stride 5% faster than one load per step; 1usmus_v3's 32-100
+/// KB strides 13-30%.
+#[inline(always)]
+unsafe fn accumulate_stride_4(acc: &mut [u64; 4], ptr: *const u64, start: usize, end: usize, stride: usize,
+                              expected: impl Fn(usize) -> u64 + Copy) {
+    let mut idx = start;
+    while idx + 3 * stride < end {
+        for (k, a) in acc.iter_mut().enumerate() {
+            let at = idx + k * stride;
+            *a |= *ptr.add(at) ^ expected(at);
+        }
+        idx += 4 * stride;
+    }
+    while idx < end {
+        acc[0] |= *ptr.add(idx) ^ expected(idx);
+        idx += stride;
+    }
+}
+
+/// The strided SimpleTest's stride, in words, from which it walks 4 strides per step (16 KiB): see
+/// `accumulate_stride`.
+const STRIDE_4_FROM: usize = 2048;
 
 /// Counts and logs the words `start, start + stride, ...` below `end` that differ from
 /// `expected(idx)`, the cold path of `accumulate_stride` (the caller adds `transient_if_none`).
@@ -2999,7 +3025,12 @@ unsafe fn simple_test_v2_strided(
                     let expected = |idx: usize| gen_pattern(idx as u64, seed, cl_shift);
                     let mut acc = [0u64; 4];
                     for sub_offset in 0..stride.min(len) {
-                        accumulate_stride(&mut acc, ctx.ptr, ctx.chunk_start + sub_offset, ctx.chunk_end, stride, expected);
+                        let from = ctx.chunk_start + sub_offset;
+                        if stride >= STRIDE_4_FROM {
+                            accumulate_stride_4(&mut acc, ctx.ptr, from, ctx.chunk_end, stride, expected);
+                        } else {
+                            accumulate_stride(&mut acc, ctx.ptr, from, ctx.chunk_end, stride, expected);
+                        }
                     }
                     if (acc[0] | acc[1]) | (acc[2] | acc[3]) == 0 {
                         return 0;
@@ -4574,7 +4605,7 @@ pub fn get_test_function_by_name(name: &str) -> Option<crate::runner::TestFuncti
 
 #[cfg(test)]
 mod random_replay_tests {
-    use super::{accumulate_stride, random_replay, rescan_stride, rescan_words, verify_words, Mode12, Mode2};
+    use super::{accumulate_stride, accumulate_stride_4, random_replay, rescan_stride, rescan_words, verify_words, Mode12, Mode2};
     use crate::pattern_gen::PAGE_WORDS;
 
     /// TODO 89: the strided accumulate sees a bad word wherever its walk passes, at any stride
@@ -4586,11 +4617,14 @@ mod random_replay_tests {
         let mut mem: Vec<u64> = (0..len).map(expected).collect();
         let p = mem.as_mut_ptr();
         let clean = |stride: usize| unsafe {
-            let mut acc = [0u64; 4];
+            let (mut acc, mut acc4) = ([0u64; 4], [0u64; 4]);
             for offset in 0..stride.min(len) {
                 accumulate_stride(&mut acc, p, offset, len, stride, expected);
+                accumulate_stride_4(&mut acc4, p, offset, len, stride, expected);
             }
-            (acc[0] | acc[1]) | (acc[2] | acc[3]) == 0
+            let (one, four) = ((acc[0] | acc[1]) | (acc[2] | acc[3]) == 0, (acc4[0] | acc4[1]) | (acc4[2] | acc4[3]) == 0);
+            assert_eq!(one, four, "the two walks disagree at stride {stride}");
+            one
         };
         unsafe {
             for stride in [1, 3, 7, 64, 999, 1000, 4096] {
