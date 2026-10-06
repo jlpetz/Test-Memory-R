@@ -579,7 +579,7 @@ Extent modes (`tests.rs:14-28`):
 
 | `ExtentMode` | Meaning |
 |---|---|
-| `FullAllocation` | Everything the thread owns (unless `requires_locality`, which redirects to a cache-derived size) |
+| `FullAllocation` | Everything the thread owns |
 | `Cache { target }` | Tier-aware: `"L3/2"`, `"L3*4"`, `"DRAM*8"`. Divides per-thread for L3, per-SMT-sibling for L1/L2. Uses calibration data when present |
 | `CacheTotal { fraction }` | `(L1+L2+L3) × fraction`. Not tier- or thread-aware |
 | `Absolute { size_bytes }` | Hard byte count, e.g. `"880MB"`. Not the TM5 window: an import's extent is the full allocation (TODO 76) |

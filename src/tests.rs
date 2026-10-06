@@ -649,7 +649,6 @@ impl TestTiming {
 pub struct TestMemoryConfig {
     pub extent_mode: ExtentMode,
     pub chunk_mode: ChunkMode,
-    pub requires_locality: bool,    // True if test needs temporal locality (small extent)
     pub timing: TestTiming,
     pub pattern_mode: Option<u32>,  // TM5 pattern mode
     pub pattern_param0: Option<u64>, // TM5 pattern parameter 0
@@ -706,11 +705,10 @@ pub struct TestMemoryConfig {
 }
 
 impl TestMemoryConfig {
-    pub fn new(extent_mode: ExtentMode, chunk_mode: ChunkMode, requires_locality: bool) -> Self {
+    pub fn new(extent_mode: ExtentMode, chunk_mode: ChunkMode) -> Self {
         Self {
             extent_mode,
             chunk_mode,
-            requires_locality,
             timing: TestTiming::default(),
             pattern_mode: None,
             pattern_param0: None,
@@ -779,14 +777,7 @@ impl TestMemoryConfig {
     // Calculate extent size with corrected logic
     pub fn calculate_extent_size(&self, test_name: &str, allocated_size: usize) -> usize {
         let size = match &self.extent_mode {
-            ExtentMode::FullAllocation => {
-                // Use full allocation unless test specifically requires locality
-                if self.requires_locality {
-                    self.calculate_locality_extent_size(test_name, allocated_size)
-                } else {
-                    allocated_size
-                }
-            }
+            ExtentMode::FullAllocation => allocated_size,
             ExtentMode::Absolute { size_bytes } => {
                 (*size_bytes).min(allocated_size)
             }
@@ -822,26 +813,6 @@ impl TestMemoryConfig {
         aligned
     }
     
-    // Calculate locality-specific extent for tests that need it
-    fn calculate_locality_extent_size(&self, test_name: &str, allocated_size: usize) -> usize {
-        let cache_info = get_cache_info();
-
-        let optimal_size = match test_name {
-            "Mem-CacheBust" => (cache_info.l3_cache / 2).max(cache_info.l2_cache * 4),
-            // Refresh now flushes each chunk to DRAM before the per-chunk 64ms
-            // sleep, so extent size controls how many DRAM cells get a retention
-            // check. L3*2 covers far more cells than the old l2*2 while keeping
-            // the (per-chunk) sleep count bounded — full-allocation would multiply
-            // runtime by the chunk count.
-            "Mem-Refresh" | "Mem-Refresh128" | "Mem-Refresh256" | "Mem-Refresh512"
-            | "Mem-Refresh-Flush" | "Mem-Refresh-Flush128" | "Mem-Refresh-Flush256"
-            | "Mem-Refresh-Flush512" => cache_info.l3_cache * 2,
-            _ => cache_info.total_cache * 2,
-        };
-
-        optimal_size.min(allocated_size)
-    }
-
     /// The chunk for a test whose extent is `extent_size` bytes, resolved once per test (TODO 76):
     /// the configured size, at least the test's minimum, at most the extent, rounded up to
     /// `test_memory::GRANULE`. Any such multiple works: no kernel needs a power of two (TODO 76's

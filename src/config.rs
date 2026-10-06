@@ -454,7 +454,6 @@ pub struct TestConfig {
     #[serde(default)]
     pub chunk: Option<ChunkSpec>,
 
-    pub requires_locality: Option<bool>,    // Test needs temporal locality
 
     /// Flush each chunk out of cache (CLFLUSHOPT + MFENCE) between the write and verify phases,
     /// so the verify round-trips through DRAM instead of reading the just-written cached copy
@@ -803,18 +802,13 @@ impl ModernConfig {
                 log::info!("test_sequence[{i}] ('{}'): chunk {} bytes -> {} KiB (chunks are multiples of 4 KiB, rounded up; then at least the test's minimum and at most the extent)",
                     test.function, size_bytes, size_bytes.next_multiple_of(crate::test_memory::GRANULE) / 1024);
             }
-            let requires_locality = test.requires_locality.unwrap_or({
-                // Auto-detect based on function name
-                matches!(test.function.as_str(), "Mem-CacheBust" | "Mem-Refresh")
-            });
-
             let timing = TestTiming {
                 cycles: test.cycles.or(self.system.timing.default_test_cycles),
                 duration_secs: test.duration_secs.or(self.system.timing.default_test_duration_secs),
                 min_duration_secs: test.min_duration_secs,
             };
 
-            let mut config = TestMemoryConfig::new(extent_mode, chunk_mode, requires_locality)
+            let mut config = TestMemoryConfig::new(extent_mode, chunk_mode)
                 .with_timing(timing)
                 .with_pattern_config(test.pattern_mode, test.pattern_param0, test.pattern_param1)
                 // #59: CLFLUSHOPT-verify, opt-in per test from the config
@@ -846,87 +840,6 @@ impl ModernConfig {
         }).collect()
     }
 
-    /// Get test configs in TM5 test sequence order (if available) with repetition support
-    #[expect(dead_code, reason = "TODO #74: TM5 `Test Sequence` is parsed but never wired; TMR runs enabled tests in index order")]
-    pub fn get_test_configs_with_sequence(&self) -> Result<Vec<(&str, TestMemoryConfig)>, String> {
-        // Check if we have TM5 test sequence data
-        if let Some(ref metadata) = self.legacy_metadata
-            && !metadata.tm5_test_sequence.is_empty() {
-                return self.get_tm5_sequence_configs(&metadata.tm5_test_sequence);
-            }
-        
-        // Fallback to standard sequential execution
-        self.get_test_configs()
-    }
-    
-    /// Get test configs following TM5 test sequence order and repetition
-    fn get_tm5_sequence_configs(&self, sequence: &[u32]) -> Result<Vec<(&str, TestMemoryConfig)>, String> {
-        // Channels: prefer JSON system.channels, fall back to legacy TM5 metadata, default 2
-        let channels = if self.system.channels > 0 {
-            self.system.channels
-        } else {
-            self.legacy_metadata.as_ref().map_or(2, |m| m.tm5_channels)
-        };
-        let mut result = Vec::new();
-
-        for &test_index in sequence {
-            // Find the test by index (TM5 uses 0-based indexing)
-            if let Some(test) = self.test_sequence.get(test_index as usize) {
-                if test.enabled {
-                    let extent_mode = self.parse_test_extent_mode(test)
-                        .map_err(|e| Self::test_error(test_index as usize, test, e))?;
-                    let chunk_mode = self.parse_test_chunk_mode(test)
-                        .map_err(|e| Self::test_error(test_index as usize, test, e))?;
-                    let requires_locality = test.requires_locality.unwrap_or({
-                        // Auto-detect based on function name
-                        matches!(test.function.as_str(), "Mem-CacheBust" | "Mem-Refresh")
-                    });
-
-                    let timing = TestTiming {
-                        cycles: test.cycles.or(self.system.timing.default_test_cycles),
-                        duration_secs: test.duration_secs.or(self.system.timing.default_test_duration_secs),
-                        min_duration_secs: test.min_duration_secs,
-                    };
-
-                    let mut config = TestMemoryConfig::new(extent_mode, chunk_mode, requires_locality)
-                        .with_timing(timing)
-                        .with_pattern_config(test.pattern_mode, test.pattern_param0, test.pattern_param1);
-
-                    // v2: Attach correctly interpreted parameter context
-                    if let Some(param) = test.parameter {
-                        config = config.with_parameter_context(
-                            interpret_tm5_parameter_with_channels(&test.function, param, channels)
-                        );
-                    }
-
-                    // Fold TMR-native test parameters into parameter_context
-                    if test.stride_patterns.is_some() || test.rng_sequences.is_some()
-                        || test.subdivisions.is_some() || test.copy_directions.is_some()
-                    {
-                        let ctx = config.parameter_context.get_or_insert(TestParameterContext::default());
-                        if let Some(v) = test.stride_patterns { ctx.stride_patterns = Some(v); }
-                        if let Some(v) = test.rng_sequences { ctx.rng_sequences = Some(v); }
-                        if let Some(v) = test.subdivisions { ctx.subdivisions = Some(v); }
-                        if let Some(v) = test.copy_directions { ctx.copy_directions = Some(v); }
-                    }
-
-                    apply_repetition(test, &mut config);
-
-                    result.push((test.function.as_str(), config));
-                }
-            } else {
-                log::warn!("TM5 test sequence references invalid test index: {}", test_index);
-            }
-        }
-        
-        if result.is_empty() {
-            log::warn!("TM5 test sequence produced no valid tests, falling back to sequential order");
-            return self.get_test_configs();
-        }
-        
-        Ok(result)
-    }
-    
 /// Which entry an error belongs to: its `test_sequence` index and function, since a config can
 /// repeat a function (a TM5 import has eleven `Mem-SimpleV2`).
 fn test_error(index: usize, test: &TestConfig, e: String) -> String {
@@ -992,7 +905,6 @@ pub fn create_demo_config() -> Self {
                 cycles: Some(1),                       // 1 cycle is thorough enough
                 extent: Some(ExtentSpec::full_allocation()), // Must test ALL memory
                 chunk: Some(ChunkSpec::absolute("512MiB")),  // Above a desktop L3; capped per block piece
-                requires_locality: Some(false),
                 ..Default::default()
             },
 
@@ -1003,7 +915,6 @@ pub fn create_demo_config() -> Self {
                 cycles: Some(1),
                 extent: Some(ExtentSpec::cache_total(2.0)), // 2x cache for refresh testing
                 chunk: Some(ChunkSpec::absolute("1MB")),    // Small 1MB blocks
-                requires_locality: Some(true),
                 ..Default::default()
             },
             
@@ -1014,7 +925,6 @@ pub fn create_demo_config() -> Self {
                 cycles: Some(1),
                 extent: Some(ExtentSpec::absolute("880MB")), // a fixed extent
                 chunk: Some(ChunkSpec::absolute("16MB")),    // TM5 typical block size
-                requires_locality: Some(false),
                 pattern_mode: Some(1),
                 pattern_param0: Some(0x1E5F),
                 pattern_param1: Some(0x45357354),
@@ -1028,7 +938,6 @@ pub fn create_demo_config() -> Self {
                 cycles: Some(1),
                 extent: Some(ExtentSpec::absolute("64MB")),  // Good SIMD locality
                 chunk: Some(ChunkSpec::absolute("16MB")),    // 16MB for 128-bit alignment
-                requires_locality: Some(true),
                 ..Default::default()
             },
             
@@ -1039,7 +948,6 @@ pub fn create_demo_config() -> Self {
                 cycles: Some(1),
                 extent: Some(ExtentSpec::absolute("128MB")), // Larger for AVX2
                 chunk: Some(ChunkSpec::absolute("32MB")),    // 32MB for 256-bit alignment
-                requires_locality: Some(true),
                 ..Default::default()
             },
             
@@ -1050,7 +958,6 @@ pub fn create_demo_config() -> Self {
                 cycles: Some(1),
                 extent: Some(ExtentSpec::cache_total(0.5)), // Half total cache to ensure busting
                 chunk: Some(ChunkSpec::absolute("1MB")),    // 1MB blocks for cache lines
-                requires_locality: Some(true),
                 stride_patterns: Some(4),              // 4 interleaved stride patterns
                 ..Default::default()
             },
@@ -1062,7 +969,6 @@ pub fn create_demo_config() -> Self {
                 cycles: Some(1),
                 extent: Some(ExtentSpec::full_allocation()), // Need full memory
                 chunk: Some(ChunkSpec::absolute("8MB")),    // 8MB blocks
-                requires_locality: Some(false),
                 rng_sequences: Some(8),                // 8 independent RNG sequences
                 ..Default::default()
             },
@@ -1074,7 +980,6 @@ pub fn create_demo_config() -> Self {
                 cycles: Some(1),
                 extent: Some(ExtentSpec::full_allocation()),
                 chunk: Some(ChunkSpec::auto()),             // Let TMR optimize
-                requires_locality: Some(false),
                 subdivisions: Some(4),                 // 4 chunk subdivisions
                 ..Default::default()
             },
@@ -1086,7 +991,6 @@ pub fn create_demo_config() -> Self {
                 cycles: Some(1),
                 extent: Some(ExtentSpec::full_allocation()), // Need src+dst space
                 chunk: Some(ChunkSpec::absolute("16MB")),    // 16MB blocks
-                requires_locality: Some(false),
                 copy_directions: Some(2),              // Forward + backward copy
                 ..Default::default()
             },
@@ -1097,7 +1001,6 @@ pub fn create_demo_config() -> Self {
                 function: "Mem-SimpleV2".to_string(),
                 cycles: Some(1),
                 chunk: Some(ChunkSpec::absolute("512MiB")),
-                requires_locality: Some(false),
                 pattern_mode: Some(0),
                 pattern_param0: Some(0),
                 pattern_param1: Some(0),
@@ -1151,7 +1054,6 @@ pub fn create_demo_config() -> Self {
                     function: "Mem-StuckBit".to_string(),
                     cycles: Some(1),
                     extent: Some(ExtentSpec::full_allocation()), // Override to test all memory
-                    requires_locality: Some(false),
                     ..Default::default()
                 },
                 TestConfig {
@@ -1159,7 +1061,6 @@ pub fn create_demo_config() -> Self {
                     function: "Mem-SimpleV2".to_string(),
                     cycles: Some(1),
                     chunk: Some(ChunkSpec::absolute("16MB")),    // TM5-style block size
-                    requires_locality: Some(false),
                     pattern_mode: Some(1),
                     pattern_param0: Some(0x1E5F),
                     pattern_param1: Some(0x45357354),
@@ -1285,9 +1186,6 @@ impl LegacyConfig {
                 // locked page, walking its AWE window over them (TODO 76)
                 chunk: Some(self.chunk_spec(test)),
 
-                // Not `None`: the auto-detect would set it for Mem-Refresh, which under a full
-                // allocation caps the extent at L3 x 2
-                requires_locality: Some(false),
                 
                 verify_reps,
                 write_read_cycles,
@@ -1592,14 +1490,12 @@ mod tests {
         assert_eq!((meta.tm5_window_mb, meta.tm5_lock_mb), (880, 16));
     }
 
-    /// TODO 76: an imported RefreshStable covers the full allocation too. Its locality flag would
-    /// cap it at L3 x 2, and `None` would let the auto-detect set it.
+    /// TODO 76: an imported RefreshStable covers the full allocation too.
     #[test]
     fn imported_refresh_covers_the_full_allocation() {
         let modern = legacy(100, vec![test(0, "RefreshStable", 100, 0)]).to_modern_config().unwrap();
         let configs = modern.get_test_configs().unwrap();
         let (name, config) = &configs[0];
-        assert!(!config.requires_locality);
         assert_eq!(config.calculate_extent_size(name, 5 * 1024 * MIB), 5 * 1024 * MIB);
     }
 

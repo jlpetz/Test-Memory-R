@@ -144,8 +144,6 @@ pub fn create_test_configuration_report_v2(
             let (lo, hi) = (extent_at(least), extent_at(most));
             let sizes = if lo == hi { size(lo) } else { format!("{}-{}", size(lo), size(hi)) };
             extent_mode = match &config.extent_mode {
-                // Mem-BlockMove's locality flag sizes it from the caches, not the memory
-                ExtentMode::FullAllocation if config.requires_locality => format!("{sizes} (locality)"),
                 ExtentMode::FullAllocation => format!("Full ({sizes}/thread)"),
                 ExtentMode::Absolute { .. } => sizes,
                 ExtentMode::CacheTotal { fraction } => format!("{sizes} (CacheTotal {fraction:.2}x)"),
@@ -174,10 +172,7 @@ pub fn create_test_configuration_report_v2(
             }
         }
 
-        let mut flags = Vec::new();
-        if config.requires_locality {
-            flags.push("Locality".to_string());
-        }
+        let flags = Vec::new();
 
         let parameter = format_parameter_context(&config.parameter_context);
 
