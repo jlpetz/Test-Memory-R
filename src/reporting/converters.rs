@@ -6,17 +6,13 @@ use crate::progress::TestSummary;
 use crate::constants::{PageType, bytes_to_gib_f64};
 use std::collections::HashSet;
 
-fn format_parameter_context(ctx: &Option<crate::config::TestParameterContext>) -> String {
+/// A test's parameters for the plan and report: the first one set, in the input's own form
+pub(crate) fn format_parameter_context(ctx: &Option<crate::config::TestParameterContext>) -> String {
     match ctx {
         Some(c) => {
-            if let Some(stride) = c.page_stride_bytes
-                && stride > 0 {
-                    return format!("PageStride({})", c.raw_parameter);
-                }
-            if let Some(sub) = c.subblock_count
-                && sub >= 2 {
-                    return format!("Subblocks({})", sub);
-                }
+            if let Some(mirror) = c.mirror {
+                return mirror.to_string();
+            }
             if let Some(stride_cl) = c.stride_cachelines
                 && stride_cl > 0 {
                     let stride_bytes = stride_cl * 64; // cache line = 64 bytes

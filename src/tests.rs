@@ -2461,6 +2461,7 @@ pub unsafe fn block_move_multi(
 use crate::pattern_gen;
 use crate::pattern_gen::{LINE_WORDS, PAGE_WORDS};
 use crate::test_harness::{run_phased_test, ChunkCtx};
+use crate::config::MirrorMode;
 
 // ─── Line patterns: modes 2 and 12 (TODO 76) ─────────────────────────────────
 //
@@ -2980,39 +2981,9 @@ unsafe fn simple_test_v2_strided(
 
 // ─── MirrorMove v2 — u64 migration ──────────────────────────────────────────
 
-// ─── SwapMode: determines mirror access pattern from TM5 Parameter ──────────
-
-/// Mirror swap pattern, derived from config's TestParameterContext.
-///
-/// - `Full`: Mirror entire region as one piece (Parameter=0 or 1)
-/// - `Subblocks(n)`: Split into n subblocks, mirror each in lockstep (Parameter=2-4)
-/// - `PageStride(param)`: Strided access with interleave passes (MirrorMove128 Parameter=N)
-///   The `param` value is scaled by SIMD width at use site.
-#[derive(Debug, Clone, Copy)]
-enum SwapMode {
-    Full,
-    Subblocks(usize),
-    PageStride(usize),
-}
-
-impl SwapMode {
-    /// Derive swap mode from test config's parameter_context.
-    fn from_config(config: &TestMemoryConfig) -> Self {
-        if let Some(ctx) = &config.parameter_context {
-            if let Some(stride_bytes) = ctx.page_stride_bytes
-                && stride_bytes > 0 {
-                    // Store raw parameter for SIMD-width scaling at use site.
-                    // TM5 formula: page_stride_bytes = (param+1)*128, so param = stride_bytes/128 - 1
-                    // But we have raw_parameter directly.
-                    return SwapMode::PageStride(ctx.raw_parameter as usize);
-                }
-            if let Some(sub_count) = ctx.subblock_count
-                && sub_count >= 2 {
-                    return SwapMode::Subblocks(sub_count as usize);
-                }
-        }
-        SwapMode::Full
-    }
+/// The test's mirror mode, `Whole` when unset (TODO 85).
+fn mirror_mode(config: &TestMemoryConfig) -> MirrorMode {
+    config.parameter_context.as_ref().and_then(|c| c.mirror).unwrap_or_default()
 }
 
 // ─── SIMD MirrorMove v2 Macros ──────────────────────────────────────────────
@@ -3037,140 +3008,85 @@ macro_rules! mirror_init_simd {
     }}
 }
 
-/// SIMD Swap — subblocks mode: split chunk into N subblocks, mirror each in lockstep.
-/// N=1 is equivalent to full mirror. N=2-4 creates cross-region cache pressure.
-///
-/// Computes indices per iteration. The multiplies stay in the loop (the release asm keeps
-/// `imul`s there) but are cheap next to the memory traffic; all values stay in registers.
-macro_rules! mirror_swap_subblocks {
-    ($simd_type:ty, $simd_w:expr, $ctx:expr, $n_sub:expr) => {{
-        let chunk_len = $ctx.chunk_end - $ctx.chunk_start;
-        let sub_size = chunk_len / $n_sub;
-        let pairs = sub_size / ($simd_w * 2);
-
-        // Forward mirror: all subblocks advance in lockstep
-        for iter in 0..pairs {
-            for sub in 0..$n_sub {
-                let lo = $ctx.chunk_start + sub * sub_size + iter * $simd_w;
-                let hi = $ctx.chunk_start + (sub + 1) * sub_size - (iter + 1) * $simd_w;
-                let a = *($ctx.ptr.add(lo) as *const $simd_type);
-                let b = *($ctx.ptr.add(hi) as *const $simd_type);
-                *($ctx.ptr.add(lo) as *mut $simd_type) = b;
-                *($ctx.ptr.add(hi) as *mut $simd_type) = a;
-            }
-        }
-        // Reverse mirror (unmirror): restore original positions
-        for iter in 0..pairs {
-            for sub in 0..$n_sub {
-                let lo = $ctx.chunk_start + sub * sub_size + iter * $simd_w;
-                let hi = $ctx.chunk_start + (sub + 1) * sub_size - (iter + 1) * $simd_w;
-                let a = *($ctx.ptr.add(lo) as *const $simd_type);
-                let b = *($ctx.ptr.add(hi) as *const $simd_type);
-                *($ctx.ptr.add(lo) as *mut $simd_type) = b;
-                *($ctx.ptr.add(hi) as *mut $simd_type) = a;
-            }
-        }
+/// Swap one `$t` at element `$a` with one at element `$b`.
+macro_rules! mirror_swap_pair {
+    ($t:ty, $ctx:expr, $a:expr, $b:expr) => {{
+        let x = *($ctx.ptr.add($a) as *const $t);
+        let y = *($ctx.ptr.add($b) as *const $t);
+        *($ctx.ptr.add($a) as *mut $t) = y;
+        *($ctx.ptr.add($b) as *mut $t) = x;
     }}
 }
 
-/// SIMD Swap — page stride mode: strided mirror with interleave passes.
-/// `param` is the raw TM5 Parameter value. Stride scales with SIMD width:
-/// block = simd_w elements, stride = param * simd_w, total = (param+1) * simd_w.
-macro_rules! mirror_swap_strided {
-    ($simd_type:ty, $simd_w:expr, $ctx:expr, $param:expr) => {{
-        let block_elements: usize = $simd_w;
-        let stride_elements: usize = $param * block_elements;
-        let total_stride: usize = stride_elements + block_elements;
-        let interleave_passes: usize = if block_elements > 0 { total_stride / block_elements } else { 1 };
-
-        // Forward strided mirror
-        for pass in 0..interleave_passes {
-            let offset = pass * block_elements;
-            let mut lo = $ctx.chunk_start + offset;
-            let hi_base = $ctx.chunk_end;
-            // hi starts from the end, offset inward by the same pass offset
-            let mut hi = if hi_base >= block_elements + offset {
-                hi_base - block_elements - offset
-            } else {
-                continue;
-            };
-            while lo < hi {
-                let a = *($ctx.ptr.add(lo) as *const $simd_type);
-                let b = *($ctx.ptr.add(hi) as *const $simd_type);
-                *($ctx.ptr.add(lo) as *mut $simd_type) = b;
-                *($ctx.ptr.add(hi) as *mut $simd_type) = a;
-                lo += total_stride;
-                if hi < total_stride { break; }
-                hi -= total_stride;
-            }
-        }
-        // Reverse strided mirror (unmirror)
-        for pass in 0..interleave_passes {
-            let offset = pass * block_elements;
-            let mut lo = $ctx.chunk_start + offset;
-            let hi_base = $ctx.chunk_end;
-            let mut hi = if hi_base >= block_elements + offset {
-                hi_base - block_elements - offset
-            } else {
-                continue;
-            };
-            while lo < hi {
-                let a = *($ctx.ptr.add(lo) as *const $simd_type);
-                let b = *($ctx.ptr.add(hi) as *const $simd_type);
-                *($ctx.ptr.add(lo) as *mut $simd_type) = b;
-                *($ctx.ptr.add(hi) as *mut $simd_type) = a;
-                lo += total_stride;
-                if hi < total_stride { break; }
-                hi -= total_stride;
-            }
-        }
-    }}
-}
-
-/// SIMD Swap — full mirror: simple two-pointer walk, no arrays, no subblock overhead.
-/// Keeps lo/hi as scalar registers for optimal codegen on the most common path.
-macro_rules! mirror_swap_full {
-    ($simd_type:ty, $simd_w:expr, $ctx:expr) => {{
+/// Whole mirror, one `$w`-element vector per step. The two ends walk the whole chunk and cross
+/// the middle, so every pair is swapped twice and the chunk ends as it began: one round trip, as
+/// one pass of TM5 MirrorMove (`mtests0.asm` ~1159-1218, 64 B per step).
+macro_rules! mirror_swap_whole {
+    ($t:ty, $w:expr, $ctx:expr) => {{
         let mut lo = $ctx.chunk_start;
-        let mut hi = $ctx.chunk_end - $simd_w;
-
-        // Forward mirror
-        while lo < hi {
-            let a = *($ctx.ptr.add(lo) as *const $simd_type);
-            let b = *($ctx.ptr.add(hi) as *const $simd_type);
-            *($ctx.ptr.add(lo) as *mut $simd_type) = b;
-            *($ctx.ptr.add(hi) as *mut $simd_type) = a;
-            lo += $simd_w;
-            hi -= $simd_w;
-        }
-
-        // Reverse mirror (unmirror)
-        lo = $ctx.chunk_start;
-        hi = $ctx.chunk_end - $simd_w;
-        while lo < hi {
-            let a = *($ctx.ptr.add(lo) as *const $simd_type);
-            let b = *($ctx.ptr.add(hi) as *const $simd_type);
-            *($ctx.ptr.add(lo) as *mut $simd_type) = b;
-            *($ctx.ptr.add(hi) as *mut $simd_type) = a;
-            lo += $simd_w;
-            hi -= $simd_w;
+        let mut hi = $ctx.chunk_end - $w;
+        for _ in 0..($ctx.chunk_end - $ctx.chunk_start) / $w {
+            mirror_swap_pair!($t, $ctx, lo, hi);
+            lo += $w;
+            hi = hi.wrapping_sub($w);
         }
     }}
 }
 
-/// SIMD Swap dispatcher: routes to full, subblocks, or strided based on SwapMode.
-macro_rules! mirror_swap_simd {
-    ($simd_type:ty, $simd_w:expr, $ctx:expr, $swap_mode:expr) => {{
-        match $swap_mode {
-            SwapMode::Full => {
-                mirror_swap_full!($simd_type, $simd_w, $ctx);
+/// Subblocks: the chunk in `$n` equal parts (a literal, 2 or 4), each mirrored as above, all `$n`
+/// in lockstep (TM5 MirrorMove Parameter 2 and 4, ~1224-1286 and ~1360-1435). A chunk is a
+/// multiple of 4 KiB, so a quarter is a whole number of vectors at any width.
+macro_rules! mirror_swap_subblocks {
+    ($t:ty, $w:expr, $ctx:expr, $n:literal) => {{
+        let sub = ($ctx.chunk_end - $ctx.chunk_start) / $n;
+        let mut lo = $ctx.chunk_start;
+        let mut hi = $ctx.chunk_start + sub - $w;
+        for _ in 0..sub / $w {
+            for s in 0..$n {
+                mirror_swap_pair!($t, $ctx, lo + s * sub, hi + s * sub);
             }
-            SwapMode::Subblocks(n) => {
-                mirror_swap_subblocks!($simd_type, $simd_w, $ctx, n);
+            lo += $w;
+            hi = hi.wrapping_sub($w);
+        }
+    }}
+}
+
+/// Jump: 128 B swaps every (jump + 1) x 128 B, the jump capped at a quarter of the chunk. Each
+/// pass starts 128 B further in, until every 128 B has been visited, last pass first; each pass
+/// crosses the middle. TM5 MirrorMove128 (~1522-1676). A pass pairs 128 B units x and n-1-x,
+/// so it either swaps its units with another pass's, which swaps them back, or with its own,
+/// twice: one round trip over all passes.
+macro_rules! mirror_swap_jump {
+    ($t:ty, $w:expr, $ctx:expr, $jump:expr) => {{
+        const UNIT: usize = 128 / std::mem::size_of::<u64>();
+        let len = $ctx.chunk_end - $ctx.chunk_start;
+        // A chunk is a multiple of 4 KiB, so a quarter of it is a whole number of units
+        let step = ($jump as usize * UNIT).min(len / 4) + UNIT;
+        for pass in (0..step / UNIT).rev() {
+            let mut lo = $ctx.chunk_start + pass * UNIT;
+            let mut hi = $ctx.chunk_end - pass * UNIT - UNIT;
+            while lo < $ctx.chunk_end {
+                for v in (0..UNIT).step_by($w) {
+                    mirror_swap_pair!($t, $ctx, lo + v, hi + v);
+                }
+                lo += step;
+                hi = hi.wrapping_sub(step);
             }
-            SwapMode::PageStride(param) => {
-                mirror_swap_strided!($simd_type, $simd_w, $ctx, param);
+        }
+    }}
+}
+
+/// One mirror round trip over the chunk in the test's `MirrorMode`.
+macro_rules! mirror_swap {
+    ($t:ty, $w:expr, $ctx:expr, $mode:expr) => {{
+        match $mode {
+            MirrorMode::Whole => mirror_swap_whole!($t, $w, $ctx),
+            MirrorMode::Subblocks(2) => mirror_swap_subblocks!($t, $w, $ctx, 2),
+            MirrorMode::Subblocks(n) => {
+                debug_assert_eq!(n, 4, "MirrorMode parsing admits 2 or 4 subblocks");
+                mirror_swap_subblocks!($t, $w, $ctx, 4)
             }
+            MirrorMode::Jump(j) => mirror_swap_jump!($t, $w, $ctx, j),
         }
     }}
 }
@@ -3282,8 +3198,7 @@ macro_rules! mirror_move_v2_impl {
             let step = <$simd_type>::splat((simd_elements as u64).wrapping_mul(MIRROR_CONST));
             let zero = <$simd_type>::splat(0);
 
-            // Determine swap mode from config parameter
-            let swap_mode = SwapMode::from_config(config);
+            let mirror = mirror_mode(config);
 
             run_phased_test(
                 blocks, thread_id, error_mode, timing, config, progress,
@@ -3299,9 +3214,9 @@ macro_rules! mirror_move_v2_impl {
                         base_vec, const_vec, lane_offsets, step);
                 },
 
-                // Test: mirror swap (supports Full, Subblocks, PageStride)
+                // Test: one mirror round trip
                 |ctx: &ChunkCtx| {
-                    mirror_swap_simd!($simd_type, simd_elements, ctx, swap_mode);
+                    mirror_swap!($simd_type, simd_elements, ctx, mirror);
                 },
 
                 // Verify: SIMD incrementing pattern + accumulator
@@ -3329,6 +3244,7 @@ pub unsafe fn mirror_move_v2_multi(
     let test_name = "Mem-MirrorV2";
     // Use upper 32 bits for thread separation (vs old << 16)
     let thread_base = pattern_gen::mirror_thread_base(thread_id);
+    let mirror = mirror_mode(config);
 
     run_phased_test(
         blocks, thread_id, error_mode, timing, config, progress,
@@ -3343,31 +3259,9 @@ pub unsafe fn mirror_move_v2_multi(
                 *ctx.ptr.add(i) = pattern_gen::mirror_pattern_u64(i as u64, thread_base);
             }
         },
-        // Test: round-trip mirror swap (TM5: single loop that crosses midpoint)
-        // Mirror then unmirror — data returns to original position each cycle
+        // Test: one mirror round trip, a u64 per step
         |ctx: &ChunkCtx| {
-            // First pass: mirror (reverse the chunk)
-            let mut lo = ctx.chunk_start;
-            let mut hi = ctx.chunk_end - 1;
-            while lo < hi {
-                let a = *ctx.ptr.add(lo);
-                let b = *ctx.ptr.add(hi);
-                *ctx.ptr.add(lo) = b;
-                *ctx.ptr.add(hi) = a;
-                lo += 1;
-                hi -= 1;
-            }
-            // Second pass: unmirror (restore original order)
-            lo = ctx.chunk_start;
-            hi = ctx.chunk_end - 1;
-            while lo < hi {
-                let a = *ctx.ptr.add(lo);
-                let b = *ctx.ptr.add(hi);
-                *ctx.ptr.add(lo) = b;
-                *ctx.ptr.add(hi) = a;
-                lo += 1;
-                hi -= 1;
-            }
+            mirror_swap!(u64, 1, ctx, mirror);
         },
         // Verify: check original (forward) patterns + repair chunk on error
         // (with error_check_interval for v1 parity)
@@ -4721,5 +4615,86 @@ mod random_replay_tests {
         mem[123] ^= 1;
         mem[999] ^= 1 << 40;
         assert_eq!(unsafe { random_replay(mem.as_mut_ptr(), len, start, 0..20_000, 0, "test") }, 1);
+    }
+}
+
+#[cfg(test)]
+mod mirror_tests {
+    use super::MirrorMode;
+    use std::simd::{u64x2, u64x4, u64x8};
+
+    /// Stands in for `ChunkCtx::ptr`: records every element index a swap kernel touches.
+    struct Recorder {
+        base: *mut u64,
+        seen: std::cell::RefCell<Vec<usize>>,
+    }
+
+    impl Recorder {
+        fn add(&self, i: usize) -> *mut u64 {
+            self.seen.borrow_mut().push(i);
+            unsafe { self.base.add(i) }
+        }
+    }
+
+    struct Probe<'a> {
+        ptr: &'a Recorder,
+        chunk_start: usize,
+        chunk_end: usize,
+    }
+
+    /// TODO 85: one test op of every mirror mode, at every width, visits each vector of the
+    /// chunk in exactly two swaps, swaps it only with its mirror image (in its own subblock;
+    /// 128 B units for a jump), and leaves the chunk as it began.
+    #[test]
+    fn mirror_modes_swap_mirror_pairs_twice_and_round_trip() {
+        let modes = [MirrorMode::Whole, MirrorMode::Subblocks(2), MirrorMode::Subblocks(4),
+                     MirrorMode::Jump(0), MirrorMode::Jump(1), MirrorMode::Jump(2), MirrorMode::Jump(510)];
+        // 4, 68 and 100 KiB chunks, at an offset into the buffer
+        for pages in [1usize, 17, 25] {
+            let (start, len) = (512, pages * 512);
+            let mut buf = vec![u64x8::splat(0); (start + len + 512) / 8];
+            let base = buf.as_mut_ptr() as *mut u64;
+            for mode in modes {
+                for w in [1usize, 2, 4, 8] {
+                    for i in 0..start + len + 512 {
+                        unsafe { *base.add(i) = i as u64 };
+                    }
+                    let rec = Recorder { base, seen: Default::default() };
+                    let ctx = Probe { ptr: &rec, chunk_start: start, chunk_end: start + len };
+                    unsafe {
+                        match w {
+                            1 => mirror_swap!(u64, 1, ctx, mode),
+                            2 => mirror_swap!(u64x2, 2, ctx, mode),
+                            4 => mirror_swap!(u64x4, 4, ctx, mode),
+                            _ => mirror_swap!(u64x8, 8, ctx, mode),
+                        }
+                    }
+                    let what = format!("{mode} at {w} words, {pages} pages");
+                    for i in 0..start + len + 512 {
+                        assert_eq!(unsafe { *base.add(i) }, i as u64, "{what}: word {i} moved");
+                    }
+                    let seen = rec.seen.into_inner();
+                    assert_eq!(seen.len(), 4 * len / w, "{what}: not two swaps per vector");
+                    let mut count = vec![0u8; len / w];
+                    for swap in seen.chunks(4) {
+                        let (a, b) = (swap[0] - start, swap[1] - start);
+                        assert_eq!((swap[2], swap[3]), (swap[0], swap[1]), "{what}: not a swap");
+                        assert!(a % w == 0 && b % w == 0, "{what}: misaligned {a} {b}");
+                        let mirrored = match mode {
+                            MirrorMode::Whole => a + b == len - w,
+                            MirrorMode::Subblocks(n) => {
+                                let sub = len / n as usize;
+                                a / sub == b / sub && a % sub + b % sub == sub - w
+                            }
+                            MirrorMode::Jump(_) => a / 16 + b / 16 == len / 16 - 1 && a % 16 == b % 16,
+                        };
+                        assert!(mirrored, "{what}: swapped {a} with {b}");
+                        count[a / w] += 1;
+                        count[b / w] += 1;
+                    }
+                    assert!(count.iter().all(|&c| c == 2), "{what}: a vector not in exactly two swaps");
+                }
+            }
+        }
     }
 }

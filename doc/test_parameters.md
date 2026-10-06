@@ -22,23 +22,27 @@ Stride distance in cache lines (64-byte units). Controls how far apart sequentia
 
 Derived field: stride in u64 elements. Calculated as `stride_cachelines × (cache_line_bytes / 8)`. Typically `stride_cachelines × 8` for 64-byte cache lines. This is the value used directly in the test loop for pointer arithmetic.
 
-### `subblock_count: Option<u32>`
-**Used by:** MirrorMove (`Mem-MirrorV2-*`)
+### `mirror: Option<MirrorMode>`
+**Used by:** MirrorMove (`Mem-MirrorV2`, `-128`, `-256`, `-512`, `-Auto`)
 
-Number of independent subblocks for mirror operations. Each subblock is mirrored (front-to-back copy + verify) independently.
+How each chunk is mirrored (TODO 85). Every mode is one round trip per test op: the two ends walk
+toward each other, swapping, and cross the middle, so each pair is swapped twice and the chunk ends
+as it began, as one pass of TM5's MirrorMove or MirrorMove128 does.
 
-- **Valid values:** 1, 2, 3, or 4
-- **TM5 mapping:** Exact match on 2, 3, or 4 only. All other values (0, 1, 16384, etc.) fall through to 1 (single-block mirror)
-- **Example:** a JSON `Mem-MirrorV2-Auto` with `"parameter": 4` → subblock_count=4 → the chunk split into 4 independently-mirrored regions
-- **3 crashes the SIMD variants today:** the parts aren't rounded to 128 B as TM5 rounds them, so their addresses aren't vector-aligned. `-256`, `-512` and `-Auto` fault on every power-of-two chunk, `-128` on 2^odd-byte chunks (TODO 85)
-- **Not reached from a TM5 `.cfg` today:** the importer renames MirrorMove to `Mem-MirrorV2-128` before reading the parameter, so it becomes a page stride (TODO 85)
-
-### `page_stride_bytes: Option<usize>`
-**Used by:** MirrorMove128/256/512 (`Mem-MirrorV2-128`, `Mem-MirrorV2-256`, `Mem-MirrorV2-512`)
-
-Set to `(parameter + 1) × 128` (TM5 MirrorMove128's step), but the kernel only checks that it is present: the stride it runs is `raw_parameter` vectors, swapping one vector every (parameter + 1) vectors (16 B every (parameter + 1) × 16 B on `-128`). TODO 85 reworks this.
-
-- **Source:** TM5 `.cfg` parameter field
+- **`whole`** (the default when unset): one mirror over the chunk, one vector per step.
+- **`subblocks:2`**, **`subblocks:4`**: the chunk in 2 or 4 equal parts, each mirrored, all in
+  lockstep. A chunk is a multiple of 4 KiB, so every part is a whole number of vectors at any width.
+  `subblocks:3` is refused with the reason: a third isn't a whole number of vectors, TM5 rounds each
+  third down to 128 B and leaves the tail unmirrored, and no shipped config uses it.
+- **`jump:N`**: 128 B swaps every (N + 1) x 128 B, the jump capped at a quarter of the chunk; each
+  further pass starts 128 B in, last pass first, until every 128 B has been visited (TM5
+  MirrorMove128). `jump:0` swaps adjacent 128 B units.
+- **TM5 mapping** (the importer, `LegacyConfig::mirror_mode`): MirrorMove Parameter 2 or 4 is that
+  many subblocks, 3 is a load error, anything else (0, 1, 16384...) is `whole`; MirrorMove128
+  Parameter N is `jump:N`. Both import as `Mem-MirrorV2-Auto`, the widest SIMD the CPU has.
+- **JSON config field:** `"mirror": "jump:510"`. A mirror test with `"parameter"` is a load error,
+  as is `"mirror"` on any other test.
+- **Display:** the same form, e.g. `subblocks:4`.
 
 ### `stride_patterns: Option<u32>`
 **Used by:** CacheBust (`Mem-CacheBust`)
@@ -85,8 +89,8 @@ Number of copy direction patterns for memory move operations:
 | Source | How parameters are set |
 |--------|----------------------|
 | TM5 `.cfg` file | `interpret_tm5_parameter_with_channels()` maps the raw parameter based on test function name |
-| JSON config v2.0 | Direct fields: `"parameter"` for TM5-style, or named fields (`"stride_patterns"`, etc.) for TMR-native |
-| CLI override | `parameter=subblocks:4` or `parameter=stride:8` overrides for TM5-style params |
+| JSON config v2.0 | Direct fields: `"parameter"` for SimpleTest's TM5-style stride, or named fields (`"mirror"`, `"stride_patterns"`, etc.) |
+| CLI override | `mirror=subblocks:4` (or `whole`, `jump:N`) sets every test's mirror mode and leaves its other parameters |
 | Default test suite | Hard-coded in `create_test_definitions()` in `runner.rs` |
 
 ## Validation
@@ -94,5 +98,5 @@ Number of copy direction patterns for memory move operations:
 All parameters are validated before tests run (in `runner.rs`):
 - `rng_sequences` and `subdivisions` must be >= 1 and power-of-2 when > 1 (both are used as shifts); `subdivisions` at most 512, since a chunk is a multiple of 4 KiB (512 u64) and more would leave part of it untested
 - `stride_patterns` and `copy_directions` must be >= 1 (no power-of-2 constraint)
-- `subblock_count` is mapped by the TM5 parameter interpretation (exact match 2/3/4, else 1). The CLI override `parameter=subblocks:N` accepts 2-4 (`params.rs`); its stride form needs N > 0
+- `mirror` is checked when it is parsed (`MirrorMode::from_str`, shared by JSON, the CLI and the importer): subblocks 2 or 4, any jump
 - Tests panic with a clear error message if their required parameter is missing from `parameter_context`

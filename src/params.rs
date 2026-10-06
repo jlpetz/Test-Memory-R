@@ -200,32 +200,12 @@ impl ParamRegistry {
             },
         });
 
-        params.insert("parameter", ParamDef {
-            key: "parameter",
+        params.insert("mirror", ParamDef {
+            key: "mirror",
             can_override_config: true,
             parser: |v| {
-                match v.to_lowercase().as_str() {
-                    "none" | "off" | "-" => Ok(ParamValue::String("none".to_string())),
-                    s if s.starts_with("subblocks:") || s.starts_with("sub:") => {
-                        let num_str = s.split(':').nth(1).unwrap_or("0");
-                        let n = num_str.parse::<u32>()
-                            .map_err(|_| format!("Invalid subblock count '{}'. Use subblocks:2 or subblocks:4", num_str))?;
-                        if !(2..=4).contains(&n) {
-                            return Err(format!("Subblock count must be 2-4, got {}", n));
-                        }
-                        Ok(ParamValue::String(format!("subblocks:{}", n)))
-                    }
-                    s if s.starts_with("stride:") || s.starts_with("pagestride:") => {
-                        let num_str = s.split(':').nth(1).unwrap_or("0");
-                        let n = num_str.parse::<u32>()
-                            .map_err(|_| format!("Invalid stride parameter '{}'. Use stride:510", num_str))?;
-                        if n == 0 {
-                            return Err("Stride parameter must be > 0".to_string());
-                        }
-                        Ok(ParamValue::String(format!("stride:{}", n)))
-                    }
-                    _ => Err(format!("Invalid parameter '{}'. Valid: none, subblocks:N (2-4), stride:N", v)),
-                }
+                v.to_lowercase().parse::<crate::config::MirrorMode>()
+                    .map(|m| ParamValue::String(m.to_string()))
             },
         });
 
@@ -477,9 +457,9 @@ pub fn print_help(program_name: &str) {
     println!("  blkroundtarget=1GiB                 # Round each thread's share to a multiple of this (of largefloor)");
     println!("  blkround=up                         # ...up (default; a smaller step rather than pass available), down, or nearest");
     println!("  errors=halt                         # Error handling (log/halt/panic)");
-    println!("  parameter=none                      # Clear test parameter (no subblocks/stride)");
-    println!("  parameter=subblocks:4               # Override: 4 subblocks for MirrorMove");
-    println!("  parameter=stride:510                # Override: page stride for MirrorMove");
+    println!("  mirror=whole                        # Mirror tests: one mirror over each chunk (the default)");
+    println!("  mirror=subblocks:4                  #   ...each chunk in 2 or 4 parts, mirrored in lockstep");
+    println!("  mirror=jump:510                     #   ...128 B swaps every (N+1) x 128 B (TM5 MirrorMove128)");
     println!("  pattern-mode=0                      # Pattern mode: 0-2 (TM5-faithful), 10-13 (TMR-native)");
     println!("  verify-reps=5                       # Verify passes per write (TM5 retention stress: 5)");
     println!("  test-reps=3                         # Test op repetitions per write (MirrorMove round-trips)");

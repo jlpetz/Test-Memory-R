@@ -623,7 +623,7 @@ CLI (`params.rs`), all overridable from JSON:
 | `extent_mode` (JSON per test) | 2 | `full` / `cache` / `cache_total` / `absolute` |
 | `chunk_mode` (JSON per test) | 3 | `auto` / `whole` / `cache` / `cache_total` / `absolute` / `tm5_block` |
 | `channels=` (JSON `system.channels`) | test | Stride formula, same role as TM5 `Channels` |
-| `parameter=stride:N` / `subblocks:N` | test | TM5 `Parameter` equivalent |
+| `mirror=whole` / `subblocks:N` / `jump:N` | test | TM5 MirrorMove / MirrorMove128 `Parameter` equivalent |
 | `write-read-cycles=4`, `verify-reps=`, `test-reps=` | test | TM5 `ST_WriteReadCycles` / `dLoopCounter` equivalents |
 | `cycles=`, `duration=` | run | Repeats and wall-clock cap |
 

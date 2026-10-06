@@ -436,7 +436,7 @@ pub struct CpuConfig {
     pub usage_percent: u32, // 1-100
 }
 
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Debug, Clone, Default, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct TestConfig {
     pub enabled: bool,
@@ -470,6 +470,10 @@ pub struct TestConfig {
     pub rng_sequences: Option<u32>,         // RandomTorture: number of independent RNG sequences
     pub subdivisions: Option<u32>,          // StrideAccess: number of chunk subdivisions
     pub copy_directions: Option<u32>,       // BlockMove: number of copy direction patterns
+    /// Mem-MirrorV2-*: `"whole"` (the default), `"subblocks:2"`, `"subblocks:4"` or `"jump:N"`
+    /// (`MirrorMode`). Mirror tests take this, not `parameter`.
+    #[serde(default)]
+    pub mirror: Option<MirrorMode>,
 
     // Per-chunk repetition: how long each chunk is worked (TODO 79 B2). Unset is the test's own
     // default; loading a TM5 `.cfg` fills them from `Time (%)`.
@@ -487,13 +491,88 @@ pub struct TestConfig {
     pub parameter: Option<u32>,             // Raw TM5 parameter — interpreted via TestParameterContext
 }
 
+/// How a Mem-MirrorV2 test walks each chunk (TODO 85). Written `whole`, `subblocks:N` or `jump:N`
+/// in JSON (`"mirror"`) and on the command line (`mirror=`). Every mode is a round trip per test
+/// op: the two ends walk toward each other, swapping, and cross the middle, so each pair is
+/// swapped twice and the chunk ends as it began (TM5 `MirrorMove_Check`/`MirrorMove128_Check`,
+/// `mtests0.asm` ~1159-1435, ~1593-1676).
+/// - `Whole`: one mirror over the chunk, one vector per step (TM5 MirrorMove, any Parameter but
+///   2-4).
+/// - `Subblocks(n)`, n = 2 or 4: the chunk in n equal parts, each mirrored, all n in lockstep
+///   (TM5 MirrorMove Parameter = n).
+/// - `Jump(j)`: 128 B swaps every (j + 1) x 128 B, the jump capped at a quarter of the chunk,
+///   then again from 128 B further in, until every 128 B has been visited (TM5 MirrorMove128
+///   Parameter = j).
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub enum MirrorMode {
+    #[default]
+    Whole,
+    Subblocks(u32),
+    Jump(u32),
+}
+
+impl MirrorMode {
+    /// Why TM5's three-subblock mirror is refused: it is the one split that doesn't divide a
+    /// 4 KiB-multiple chunk into vector-aligned parts.
+    pub const THREE_SUBBLOCKS: &'static str = "three subblocks are not supported: a third of a \
+        chunk isn't a whole number of vectors, and TM5 rounds each third down to 128 B and leaves \
+        the tail unmirrored; no shipped TM5 config uses it";
+}
+
+impl std::str::FromStr for MirrorMode {
+    type Err = String;
+
+    fn from_str(s: &str) -> Result<Self, String> {
+        let s = s.trim();
+        if s == "whole" {
+            return Ok(MirrorMode::Whole);
+        }
+        if let Some(n) = s.strip_prefix("subblocks:") {
+            return match n.parse::<u32>() {
+                Ok(n @ (2 | 4)) => Ok(MirrorMode::Subblocks(n)),
+                Ok(3) => Err(format!("mirror '{s}': {}. Use subblocks:2, subblocks:4 or whole",
+                                     MirrorMode::THREE_SUBBLOCKS)),
+                _ => Err(format!("mirror '{s}': subblocks:N takes 2 or 4")),
+            };
+        }
+        if let Some(n) = s.strip_prefix("jump:") {
+            return n.parse::<u32>().map(MirrorMode::Jump)
+                .map_err(|_| format!("mirror '{s}': jump:N takes a whole number of 128 B steps (0 or more)"));
+        }
+        Err(format!("mirror '{s}': use whole, subblocks:2, subblocks:4 or jump:N"))
+    }
+}
+
+impl std::fmt::Display for MirrorMode {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            MirrorMode::Whole => write!(f, "whole"),
+            MirrorMode::Subblocks(n) => write!(f, "subblocks:{n}"),
+            MirrorMode::Jump(j) => write!(f, "jump:{j}"),
+        }
+    }
+}
+
+impl Serialize for MirrorMode {
+    fn serialize<S: serde::Serializer>(&self, serializer: S) -> Result<S::Ok, S::Error> {
+        serializer.collect_str(self)
+    }
+}
+
+impl<'de> Deserialize<'de> for MirrorMode {
+    fn deserialize<D: serde::Deserializer<'de>>(deserializer: D) -> Result<Self, D::Error> {
+        let s = String::deserialize(deserializer)?;
+        s.parse().map_err(serde::de::Error::custom)
+    }
+}
+
 /// Correctly interpreted TM5 parameter context for v2 tests.
 ///
 /// TM5's `Parameter` field means different things per test type:
 /// - **SimpleTest**: stride in cache lines. TM5 formula: `Channels * Parameter - 1` cache lines.
 ///   Converted to u64 elements: `stride_cachelines * (cache_line_bytes / 8)`.
-/// - **MirrorMove**: subblock count (1-4, how many mirror regions)
-/// - **MirrorMove128**: page stride in bytes ((Parameter + 1) * 128)
+/// - **MirrorMove**, **MirrorMove128**: the importer turns it into a `MirrorMode`, which TMR's
+///   mirror tests take instead of `parameter`.
 ///
 /// The v1 code incorrectly funneled all of these into a single field.
 #[derive(Debug, Clone, Default)]
@@ -507,10 +586,8 @@ pub struct TestParameterContext {
     /// SimpleTest: stride in u64 elements (derived from stride_cachelines at runtime).
     /// `stride_cachelines * (cache_line_bytes / 8)`.
     pub stride_elements: Option<usize>,
-    /// MirrorMove: number of subblocks (1-4). Each subblock is mirrored independently.
-    pub subblock_count: Option<u32>,
-    /// MirrorMove128: page stride in bytes. `(Parameter + 1) * 128`.
-    pub page_stride_bytes: Option<usize>,
+    /// Mem-MirrorV2-*: how each chunk is mirrored. Unset is `Whole`.
+    pub mirror: Option<MirrorMode>,
     /// CacheBust: number of interleaved stride pattern variants (default 4).
     pub stride_patterns: Option<u32>,
     /// RandomTorture: number of independent RNG sequences (default 8).
@@ -546,31 +623,6 @@ pub fn interpret_tm5_parameter_with_channels(function: &str, parameter: u32, cha
                     stride_elements: Some(stride_cl * 8), // 64-byte cache line / 8 bytes per u64
                     ..Default::default()
                 }
-            }
-        }
-        "MirrorMove" | "Mem-Mirror" | "Mem-MirrorV2" | "Mem-MirrorV2-Auto" => {
-            // TM5 MirrorMove only branches on exactly 2, 3, or 4 subblocks.
-            // Any other value (0, 1, 16384, etc.) falls through to single-block mirror (1).
-            let subblocks = match parameter {
-                2..=4 => parameter,
-                _ => 1,
-            };
-            TestParameterContext {
-                raw_parameter: parameter,
-                subblock_count: Some(subblocks),
-                ..Default::default()
-            }
-        }
-        "MirrorMove128" | "MirrorMove256" | "MirrorMove512"
-        | "Mem-MirrorV2-128" | "Mem-MirrorV2-256" | "Mem-MirrorV2-512" => {
-            TestParameterContext {
-                raw_parameter: parameter,
-                page_stride_bytes: if parameter == 0 {
-                    None
-                } else {
-                    Some((parameter as usize + 1) * 128)
-                },
-                ..Default::default()
             }
         }
         _ => {
@@ -738,6 +790,13 @@ impl ModernConfig {
             {
                 return Err(Self::test_error(i, test, format!("pattern_mode {mode} is not a mode; valid: 0-2 (TM5-faithful), 10-13 (TMR-native)")));
             }
+            let is_mirror = test.function.starts_with("Mem-MirrorV2");
+            if is_mirror && test.parameter.is_some() {
+                return Err(Self::test_error(i, test, "a mirror test takes \"mirror\" (whole, subblocks:2, subblocks:4 or jump:N), not \"parameter\"".to_string()));
+            }
+            if !is_mirror && test.mirror.is_some() {
+                return Err(Self::test_error(i, test, "only the Mem-MirrorV2 tests read \"mirror\"".to_string()));
+            }
             if let ChunkMode::Absolute { size_bytes } = chunk_mode
                 && !size_bytes.is_multiple_of(crate::test_memory::GRANULE)
             {
@@ -771,12 +830,14 @@ impl ModernConfig {
             // Fold TMR-native test parameters into parameter_context
             if test.stride_patterns.is_some() || test.rng_sequences.is_some()
                 || test.subdivisions.is_some() || test.copy_directions.is_some()
+                || test.mirror.is_some()
             {
                 let ctx = config.parameter_context.get_or_insert(TestParameterContext::default());
                 if let Some(v) = test.stride_patterns { ctx.stride_patterns = Some(v); }
                 if let Some(v) = test.rng_sequences { ctx.rng_sequences = Some(v); }
                 if let Some(v) = test.subdivisions { ctx.subdivisions = Some(v); }
                 if let Some(v) = test.copy_directions { ctx.copy_directions = Some(v); }
+                if let Some(v) = test.mirror { ctx.mirror = Some(v); }
             }
 
             apply_repetition(test, &mut config);
@@ -929,23 +990,10 @@ pub fn create_demo_config() -> Self {
                 enabled: true,
                 function: "Mem-StuckBit".to_string(),
                 cycles: Some(1),                       // 1 cycle is thorough enough
-                duration_secs: None,
-                min_duration_secs: None,
                 extent: Some(ExtentSpec::full_allocation()), // Must test ALL memory
                 chunk: Some(ChunkSpec::absolute("512MiB")),  // Above a desktop L3; capped per block piece
                 requires_locality: Some(false),
-                flush_before_verify: None,
-                stride_patterns: None,
-                rng_sequences: None,
-                subdivisions: None,
-                copy_directions: None,
-                verify_reps: None,
-                write_read_cycles: None,
-                test_reps: None,
-                pattern_mode: None,
-                pattern_param0: None,
-                pattern_param1: None,
-                parameter: None,
+                ..Default::default()
             },
 
             // Mem-Refresh - needs small extent for refresh timing
@@ -953,23 +1001,10 @@ pub fn create_demo_config() -> Self {
                 enabled: true,
                 function: "Mem-Refresh".to_string(),
                 cycles: Some(1),
-                duration_secs: None,
-                min_duration_secs: None,
                 extent: Some(ExtentSpec::cache_total(2.0)), // 2x cache for refresh testing
                 chunk: Some(ChunkSpec::absolute("1MB")),    // Small 1MB blocks
                 requires_locality: Some(true),
-                flush_before_verify: None,
-                stride_patterns: None,
-                rng_sequences: None,
-                subdivisions: None,
-                copy_directions: None,
-                verify_reps: None,
-                write_read_cycles: None,
-                test_reps: None,
-                pattern_mode: None,
-                pattern_param0: None,
-                pattern_param1: None,
-                parameter: None,
+                ..Default::default()
             },
             
             // Mem-Simple - general pattern test with TM5 compatibility
@@ -977,23 +1012,13 @@ pub fn create_demo_config() -> Self {
                 enabled: true,
                 function: "Mem-SimpleV2".to_string(),
                 cycles: Some(1),
-                duration_secs: None,
-                min_duration_secs: None,
                 extent: Some(ExtentSpec::absolute("880MB")), // a fixed extent
                 chunk: Some(ChunkSpec::absolute("16MB")),    // TM5 typical block size
                 requires_locality: Some(false),
-                flush_before_verify: None,
-                stride_patterns: None,
-                rng_sequences: None,
-                subdivisions: None,
-                copy_directions: None,
-                verify_reps: None,
-                write_read_cycles: None,
-                test_reps: None,
                 pattern_mode: Some(1),
                 pattern_param0: Some(0x1E5F),
                 pattern_param1: Some(0x45357354),
-                parameter: None,
+                ..Default::default()
             },
 
             // Mem-MirrorV2-128 - SIMD test with optimal locality
@@ -1001,23 +1026,10 @@ pub fn create_demo_config() -> Self {
                 enabled: true,
                 function: "Mem-MirrorV2-128".to_string(),
                 cycles: Some(1),
-                duration_secs: None,
-                min_duration_secs: None,
                 extent: Some(ExtentSpec::absolute("64MB")),  // Good SIMD locality
                 chunk: Some(ChunkSpec::absolute("16MB")),    // 16MB for 128-bit alignment
                 requires_locality: Some(true),
-                flush_before_verify: None,
-                stride_patterns: None,
-                rng_sequences: None,
-                subdivisions: None,
-                copy_directions: None,
-                verify_reps: None,
-                write_read_cycles: None,
-                test_reps: None,
-                pattern_mode: None,
-                pattern_param0: None,
-                pattern_param1: None,
-                parameter: None,
+                ..Default::default()
             },
             
             // Mem-MirrorV2-256 - AVX2 with dual subblocks
@@ -1025,23 +1037,10 @@ pub fn create_demo_config() -> Self {
                 enabled: true,
                 function: "Mem-MirrorV2-256".to_string(),
                 cycles: Some(1),
-                duration_secs: None,
-                min_duration_secs: None,
                 extent: Some(ExtentSpec::absolute("128MB")), // Larger for AVX2
                 chunk: Some(ChunkSpec::absolute("32MB")),    // 32MB for 256-bit alignment
                 requires_locality: Some(true),
-                flush_before_verify: None,
-                stride_patterns: None,
-                rng_sequences: None,
-                subdivisions: None,
-                copy_directions: None,
-                verify_reps: None,
-                write_read_cycles: None,
-                test_reps: None,
-                pattern_mode: None,
-                pattern_param0: None,
-                pattern_param1: None,
-                parameter: None,
+                ..Default::default()
             },
             
             // Mem-CacheBust - specifically sized for cache stress
@@ -1049,23 +1048,11 @@ pub fn create_demo_config() -> Self {
                 enabled: true,
                 function: "Mem-CacheBust".to_string(),
                 cycles: Some(1),
-                duration_secs: None,
-                min_duration_secs: None,
                 extent: Some(ExtentSpec::cache_total(0.5)), // Half total cache to ensure busting
                 chunk: Some(ChunkSpec::absolute("1MB")),    // 1MB blocks for cache lines
                 requires_locality: Some(true),
-                flush_before_verify: None,
                 stride_patterns: Some(4),              // 4 interleaved stride patterns
-                rng_sequences: None,
-                subdivisions: None,
-                copy_directions: None,
-                verify_reps: None,
-                write_read_cycles: None,
-                test_reps: None,
-                pattern_mode: None,
-                pattern_param0: None,
-                pattern_param1: None,
-                parameter: None,
+                ..Default::default()
             },
             
             // Mem-Random - full memory random access
@@ -1073,23 +1060,11 @@ pub fn create_demo_config() -> Self {
                 enabled: true,
                 function: "Mem-Random".to_string(),
                 cycles: Some(1),
-                duration_secs: None,
-                min_duration_secs: None,
                 extent: Some(ExtentSpec::full_allocation()), // Need full memory
                 chunk: Some(ChunkSpec::absolute("8MB")),    // 8MB blocks
                 requires_locality: Some(false),
-                flush_before_verify: None,
-                stride_patterns: None,
                 rng_sequences: Some(8),                // 8 independent RNG sequences
-                subdivisions: None,
-                copy_directions: None,
-                verify_reps: None,
-                write_read_cycles: None,
-                test_reps: None,
-                pattern_mode: None,
-                pattern_param0: None,
-                pattern_param1: None,
-                parameter: None,
+                ..Default::default()
             },
             
             // Mem-Stride - test various stride patterns
@@ -1097,23 +1072,11 @@ pub fn create_demo_config() -> Self {
                 enabled: true,
                 function: "Mem-Stride".to_string(),
                 cycles: Some(1),
-                duration_secs: None,
-                min_duration_secs: None,
                 extent: Some(ExtentSpec::full_allocation()),
                 chunk: Some(ChunkSpec::auto()),             // Let TMR optimize
                 requires_locality: Some(false),
-                flush_before_verify: None,
-                stride_patterns: None,
-                rng_sequences: None,
                 subdivisions: Some(4),                 // 4 chunk subdivisions
-                copy_directions: None,
-                verify_reps: None,
-                write_read_cycles: None,
-                test_reps: None,
-                pattern_mode: None,
-                pattern_param0: None,
-                pattern_param1: None,
-                parameter: None,
+                ..Default::default()
             },
             
             // Mem-BlockMove - memory copy test
@@ -1121,23 +1084,11 @@ pub fn create_demo_config() -> Self {
                 enabled: true,
                 function: "Mem-BlockMove".to_string(),
                 cycles: Some(1),
-                duration_secs: None,
-                min_duration_secs: None,
                 extent: Some(ExtentSpec::full_allocation()), // Need src+dst space
                 chunk: Some(ChunkSpec::absolute("16MB")),    // 16MB blocks
                 requires_locality: Some(false),
-                flush_before_verify: None,
-                stride_patterns: None,
-                rng_sequences: None,
-                subdivisions: None,
                 copy_directions: Some(2),              // Forward + backward copy
-                verify_reps: None,
-                write_read_cycles: None,
-                test_reps: None,
-                pattern_mode: None,
-                pattern_param0: None,
-                pattern_param1: None,
-                parameter: None,
+                ..Default::default()
             },
             
             // Legacy TM5-style test with one large block
@@ -1145,23 +1096,12 @@ pub fn create_demo_config() -> Self {
                 enabled: true,
                 function: "Mem-SimpleV2".to_string(),
                 cycles: Some(1),
-                duration_secs: None,
-                min_duration_secs: None,
-                extent: None,                                // Use global default
                 chunk: Some(ChunkSpec::absolute("512MiB")),
                 requires_locality: Some(false),
-                flush_before_verify: None,
-                stride_patterns: None,
-                rng_sequences: None,
-                subdivisions: None,
-                copy_directions: None,
-                verify_reps: None,
-                write_read_cycles: None,
-                test_reps: None,
                 pattern_mode: Some(0),
                 pattern_param0: Some(0),
                 pattern_param1: Some(0),
-                parameter: None,
+                ..Default::default()
             },
         ],
         legacy_metadata: None,
@@ -1210,45 +1150,20 @@ pub fn create_demo_config() -> Self {
                     enabled: true,
                     function: "Mem-StuckBit".to_string(),
                     cycles: Some(1),
-                    duration_secs: None,
-                    min_duration_secs: None,
                     extent: Some(ExtentSpec::full_allocation()), // Override to test all memory
-                    chunk: None,                                 // Use default auto
                     requires_locality: Some(false),
-                    flush_before_verify: None,
-                    stride_patterns: None,
-                    rng_sequences: None,
-                    subdivisions: None,
-                    copy_directions: None,
-                    verify_reps: None,
-                    write_read_cycles: None,
-                    test_reps: None,
-                    pattern_mode: None,
-                    pattern_param0: None,
-                    pattern_param1: None,
-                    parameter: None,
+                    ..Default::default()
                 },
                 TestConfig {
                     enabled: true,
                     function: "Mem-SimpleV2".to_string(),
                     cycles: Some(1),
-                    duration_secs: None,
-                    min_duration_secs: None,
-                    extent: None,                                // the full allocation
                     chunk: Some(ChunkSpec::absolute("16MB")),    // TM5-style block size
                     requires_locality: Some(false),
-                    flush_before_verify: None,
-                    stride_patterns: None,
-                    rng_sequences: None,
-                    subdivisions: None,
-                    copy_directions: None,
-                    verify_reps: None,
-                    write_read_cycles: None,
-                    test_reps: None,
                     pattern_mode: Some(1),
                     pattern_param0: Some(0x1E5F),
                     pattern_param1: Some(0x45357354),
-                    parameter: None,
+                    ..Default::default()
                 },
             ],
             legacy_metadata: None,
@@ -1357,6 +1272,7 @@ impl LegacyConfig {
     for test in &self.tests {
         if test.enabled {
             let (verify_reps, write_read_cycles, test_reps) = self.repetition(test);
+            let mirror = Self::mirror_mode(test)?;
 
             test_sequence.push(TestConfig {
                 enabled: true,
@@ -1364,33 +1280,26 @@ impl LegacyConfig {
                 
                 // One pass per plan cycle; TM5 `Time (%)` is per-chunk dwell, set below (TODO 79 B2)
                 cycles: Some(1),
-                duration_secs: None,  // Don't use duration-based timing
-                min_duration_secs: None,
-                
-                // The default extent, the full allocation: every TM5 test visits every locked
-                // page, walking its AWE window over them (TODO 76)
-                extent: None,
 
+                // `extent` unset is the default, the full allocation: every TM5 test visits every
+                // locked page, walking its AWE window over them (TODO 76)
                 chunk: Some(self.chunk_spec(test)),
 
                 // Not `None`: the auto-detect would set it for Mem-Refresh, which under a full
                 // allocation caps the extent at L3 x 2
                 requires_locality: Some(false),
-                flush_before_verify: None,
                 
-                stride_patterns: None,
-                rng_sequences: None,
-                subdivisions: None,
-                copy_directions: None,
                 verify_reps,
                 write_read_cycles,
                 test_reps,
                 
-                // Preserve legacy test parameters
+                // Preserve legacy test parameters; a mirror test's Parameter becomes its mode
                 pattern_mode: Some(test.pattern_mode),
                 pattern_param0: Some(test.pattern_param0),
                 pattern_param1: Some(test.pattern_param1),
-                parameter: Some(test.parameter),
+                mirror,
+                parameter: if mirror.is_some() { None } else { Some(test.parameter) },
+                ..Default::default()
             });
         }
     }
@@ -1485,19 +1394,36 @@ impl LegacyConfig {
         ChunkSpec::absolute(&format!("{}KiB", chunk / 1024))
     }
 
+    /// TM5's MirrorMove and MirrorMove128 read `Parameter` differently; TMR's mirror tests take
+    /// one `MirrorMode` (TODO 85). MirrorMove: 2 or 4 is that many subblocks, 3 is refused, and
+    /// any other value is the whole block (`mtests0.asm` ~1152-1157). MirrorMove128: the jump, in
+    /// 128 B units (~1527-1543). `None` for every other test.
+    fn mirror_mode(test: &LegacyTest) -> Result<Option<MirrorMode>, String> {
+        match test.function.as_str() {
+            "MirrorMove" => match test.parameter {
+                2 | 4 => Ok(Some(MirrorMode::Subblocks(test.parameter))),
+                3 => Err(format!("TM5 Test{} (MirrorMove): Parameter = 3, {}. Set Parameter to 2 or 4 \
+                                  (subblocks) or 0 (the whole block)", test.id, MirrorMode::THREE_SUBBLOCKS)),
+                _ => Ok(Some(MirrorMode::Whole)),
+            },
+            "MirrorMove128" => Ok(Some(MirrorMode::Jump(test.parameter))),
+            _ => Ok(None),
+        }
+    }
+
     /// TM5 `Time (%)` as per-chunk repetition (TODO 79 B2), returned as (`verify_reps`,
     /// `write_read_cycles`, `test_reps`). N = test % x global % / 2000, at least 1 (`mtests0.asm`
     /// ST_Check :298-308, MirrorMove_Check :1135-1145, MirrorMove128_Check :1566-1576): how long
     /// each chunk is worked, not passes over the extent. SimpleTest does 4 x (1 fill + N
-    /// verifies). MirrorMove does N mirror passes; TMR's test op is a round trip (mirror and
-    /// back), so N/2 rounded up, never less dwell than TM5. RefreshStable ignores `Time (%)`.
-    /// BlockMove reads it too, but no shipped config uses it and TMR's BlockMove has its own loop,
-    /// so it is left at its default.
+    /// verifies). MirrorMove does N passes, and each is a round trip: its two ends cross the
+    /// middle, so every pair is swapped twice, as in TMR's test op (TODO 85). RefreshStable
+    /// ignores `Time (%)`. BlockMove reads it too, but no shipped config uses it and TMR's
+    /// BlockMove has its own loop, so it is left at its default.
     fn repetition(&self, test: &LegacyTest) -> (Option<u32>, Option<u32>, Option<u32>) {
         let n = (test.time_percent as u64 * self.main_section.time_percent as u64 / 2000).max(1) as u32;
         let reps = match test.function.as_str() {
             "SimpleTest" => (Some(n), Some(4), None),
-            "MirrorMove" | "MirrorMove128" => (None, None, Some(n.div_ceil(2))),
+            "MirrorMove" | "MirrorMove128" => (None, None, Some(n)),
             _ => (None, None, None),
         };
         if n != 5 && reps != (None, None, None) {
@@ -1514,10 +1440,9 @@ fn map_legacy_function(legacy_name: &str) -> Result<String, String> {
         // TM5 legacy names -> new prefixed names
         "RefreshStable" => Ok("Mem-Refresh".to_string()),
         "SimpleTest" => Ok("Mem-SimpleV2".to_string()),
-        "MirrorMove" => Ok("Mem-MirrorV2-128".to_string()),  // TM5 base MirrorMove -> v2 128-bit SIMD
-        "MirrorMove128" => Ok("Mem-MirrorV2-128".to_string()),
-        "MirrorMove256" => Ok("Mem-MirrorV2-256".to_string()),
-        "MirrorMove512" => Ok("Mem-MirrorV2-512".to_string()),
+        // Both mirrors run the widest SIMD the CPU has; the 128 in MirrorMove128 is its swap
+        // size, not a vector width (TODO 85)
+        "MirrorMove" | "MirrorMove128" => Ok("Mem-MirrorV2-Auto".to_string()),
         "BlockMove" => Ok("Mem-BlockMove".to_string()),
         // Also accept new names directly
         "Mem-Refresh" => Ok("Mem-Refresh".to_string()),
@@ -1791,13 +1716,58 @@ mod tests {
         assert_eq!(reps, vec![
             (5, 4, 1),   // 100 x 100 / 2000 = 5 verifies, TM5's default
             (15, 4, 1),  // 300 x 100 / 2000 = 15
-            (1, 1, 3),   // 5 mirror passes -> 3 round trips
-            (1, 1, 8),   // 15 mirror passes -> 8 round trips
+            (1, 1, 5),   // 5 mirror passes, each a round trip (TODO 85)
+            (1, 1, 15),  // 15 mirror passes
             (1, 1, 1),   // RefreshStable ignores Time (%)
         ]);
         // A global 50 % halves it: 100 x 50 / 2000 = 2.
         let half = legacy(50, vec![test(0, "SimpleTest", 100, 0)]).to_modern_config().unwrap();
         assert_eq!(half.get_test_configs().unwrap()[0].1.verify_reps, 2);
+    }
+
+    /// TODO 85: each TM5 mirror's `Parameter` becomes TMR's one mirror mode, at the widest SIMD.
+    #[test]
+    fn tm5_mirror_parameters_become_mirror_modes() {
+        let mirror = |function: &str, parameter: u32| {
+            let mut t = test(5, function, 100, 0);
+            t.parameter = parameter;
+            legacy(100, vec![t]).to_modern_config()
+        };
+        // Every Parameter the shipped configs use
+        for (function, parameter, expected) in [
+            ("MirrorMove", 0, MirrorMode::Whole),
+            ("MirrorMove", 1, MirrorMode::Whole),
+            ("MirrorMove", 2, MirrorMode::Subblocks(2)),
+            ("MirrorMove", 4, MirrorMode::Subblocks(4)),
+            ("MirrorMove", 16384, MirrorMode::Whole),
+            ("MirrorMove128", 0, MirrorMode::Jump(0)),
+            ("MirrorMove128", 2, MirrorMode::Jump(2)),
+            ("MirrorMove128", 510, MirrorMode::Jump(510)),
+        ] {
+            let modern = mirror(function, parameter).unwrap();
+            let entry = &modern.test_sequence[0];
+            assert_eq!(entry.function, "Mem-MirrorV2-Auto", "{function} {parameter}");
+            assert_eq!((entry.mirror, entry.parameter), (Some(expected), None), "{function} {parameter}");
+            let configs = modern.get_test_configs().unwrap();
+            let ctx = configs[0].1.parameter_context.as_ref().unwrap();
+            assert_eq!(ctx.mirror, Some(expected), "{function} {parameter}");
+        }
+        let err = mirror("MirrorMove", 3).unwrap_err();
+        assert!(err.contains("Test5") && err.contains("three subblocks"), "{err}");
+    }
+
+    #[test]
+    fn mirror_modes_parse_and_print_one_form() {
+        for s in ["whole", "subblocks:2", "subblocks:4", "jump:0", "jump:510"] {
+            assert_eq!(s.parse::<MirrorMode>().unwrap().to_string(), s);
+        }
+        for bad in ["subblocks:1", "subblocks:8", "jump:-1", "jump:x", "stride:4", "none", ""] {
+            assert!(bad.parse::<MirrorMode>().is_err(), "{bad}");
+        }
+        assert!("subblocks:3".parse::<MirrorMode>().unwrap_err().contains("three subblocks"));
+        let json: TestConfig = serde_json::from_str(r#"{"enabled": true, "function": "Mem-MirrorV2-Auto", "mirror": "jump:2"}"#).unwrap();
+        assert_eq!(json.mirror, Some(MirrorMode::Jump(2)));
+        assert!(serde_json::from_str::<TestConfig>(r#"{"enabled": true, "function": "Mem-MirrorV2", "mirror": "subblocks:3"}"#).is_err());
     }
 
 }

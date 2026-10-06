@@ -1052,9 +1052,9 @@ fn run() -> Result<(), Box<dyn std::error::Error>> {
 		None
 	};
 
-	// Extract parameter override if provided (overrides subblock/stride config)
-	let parameter_override = if params::has_param(&validated_params, "parameter") {
-		Some(params::get_string(&validated_params, "parameter", "none"))
+	// Extract the mirror override if provided (the parser has validated it)
+	let mirror_override = if params::has_param(&validated_params, "mirror") {
+		params::get_string(&validated_params, "mirror", "whole").parse::<crate::config::MirrorMode>().ok()
 	} else {
 		None
 	};
@@ -1106,7 +1106,7 @@ fn run() -> Result<(), Box<dyn std::error::Error>> {
         config_opt.as_ref(),
         crate::runner::TestRunOverrides {
             single_test_filter: final_test_filter,
-            parameter_override: parameter_override.as_deref(),
+            mirror_override,
             pattern_mode_override,
             verify_reps_override,
             test_reps_override,

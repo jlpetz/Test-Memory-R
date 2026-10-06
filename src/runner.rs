@@ -106,8 +106,8 @@ struct CycleContext<'a> {
 pub struct TestRunOverrides<'a> {
     /// Run only the test(s) matching this name/glob filter.
     pub single_test_filter: Option<&'a str>,
-    /// Override the per-test `parameter` string.
-    pub parameter_override: Option<&'a str>,
+    /// Override every mirror test's mode (`mirror=`).
+    pub mirror_override: Option<crate::config::MirrorMode>,
     /// Override the pattern-generation mode.
     pub pattern_mode_override: Option<u32>,
     /// Override the verify-repetition count.
@@ -386,7 +386,7 @@ pub fn run_tests_with_layout_and_timing_filtered(
 ) -> RunStatus {
     let TestRunOverrides {
         single_test_filter,
-        parameter_override,
+        mirror_override,
         pattern_mode_override,
         verify_reps_override,
         test_reps_override,
@@ -461,32 +461,12 @@ pub fn run_tests_with_layout_and_timing_filtered(
         }
     }
 
-    // Apply parameter override if provided (CLI parameter overrides subblock/stride config)
-    if let Some(param_str) = parameter_override {
-        log::info!("🔧 Applying CLI parameter override: {}", param_str);
+    // Apply the mirror override if provided: it sets the one field on every test, leaving the
+    // rest of each test's parameters as they were; only the mirror tests read it (TODO 85)
+    if let Some(mirror) = mirror_override {
+        log::info!("🔧 Applying CLI mirror override: {}", mirror);
         for def in test_definitions.iter_mut() {
-            match param_str {
-                "none" => {
-                    def.config.parameter_context = None;
-                }
-                s if s.starts_with("subblocks:") => {
-                    let n: u32 = s.split(':').nth(1).unwrap_or("2").parse().unwrap_or(2);
-                    def.config.parameter_context = Some(crate::config::TestParameterContext {
-                        raw_parameter: n,
-                        subblock_count: Some(n),
-                        ..Default::default()
-                    });
-                }
-                s if s.starts_with("stride:") => {
-                    let n: u32 = s.split(':').nth(1).unwrap_or("1").parse().unwrap_or(1);
-                    def.config.parameter_context = Some(crate::config::TestParameterContext {
-                        raw_parameter: n,
-                        page_stride_bytes: Some((n as usize + 1) * 128),
-                        ..Default::default()
-                    });
-                }
-                _ => {}
-            }
+            def.config.parameter_context.get_or_insert_with(Default::default).mirror = Some(mirror);
         }
     }
 
@@ -1183,21 +1163,7 @@ fn execute_test_cycle(ctx: &CycleContext, cycle: u64) -> Option<RunOutcome> {
             let formatter = DefaultFormatter::new();
             let extent_str = formatter.format_extent_mode_with_size(&test_def.config.extent_mode, cache_info, thread_count);
             let chunk_str = formatter.format_chunk_mode_with_size(&test_def.config.chunk_mode, cache_info, thread_count);
-            let param_str = match &test_def.config.parameter_context {
-                Some(c) => {
-                    if let Some(stride) = c.page_stride_bytes {
-                        if stride > 0 { format!("PageStride({})", c.raw_parameter) }
-                        else { "-".to_string() }
-                    } else if let Some(sub) = c.subblock_count {
-                        if sub >= 2 { format!("Subblocks({})", sub) }
-                        else { "-".to_string() }
-                    } else if let Some(stride_el) = c.stride_elements {
-                        if stride_el > 0 { format!("Stride({})", stride_el) }
-                        else { "-".to_string() }
-                    } else { "-".to_string() }
-                }
-                None => "-".to_string(),
-            };
+            let param_str = crate::reporting::converters::format_parameter_context(&test_def.config.parameter_context);
             let mode_str = match test_def.config.pattern_mode {
                 Some(m) => match m {
                     0 => "TM5-0".to_string(),
@@ -2160,8 +2126,7 @@ fn create_test_definitions(cache_info: &CacheInfo) -> Vec<TestDefinition> {
                 true
             ).with_timing(TestTiming::duration_only(10))
              .with_parameter_context(crate::config::TestParameterContext {
-                 raw_parameter: 2,
-                 subblock_count: Some(2),
+                 mirror: Some(crate::config::MirrorMode::Subblocks(2)),
                  ..Default::default()
              })
              .with_memory_type(None)
@@ -2176,8 +2141,7 @@ fn create_test_definitions(cache_info: &CacheInfo) -> Vec<TestDefinition> {
                 true
             ).with_timing(TestTiming::duration_only(10))
              .with_parameter_context(crate::config::TestParameterContext {
-                 raw_parameter: 4,
-                 subblock_count: Some(4),
+                 mirror: Some(crate::config::MirrorMode::Subblocks(4)),
                  ..Default::default()
              })
              .with_memory_type(None)
@@ -4477,6 +4441,27 @@ mod tests {
             verified += 1;
         }
         assert!(verified >= 7, "only {verified} Bench pairs verified");
+        assert!(region.guards_intact());
+    }
+
+    /// TODO 85: every mirror test runs clean in every mode, twice per chunk, on joined blocks
+    /// with overlapping 68 KiB chunks, and writes nothing outside the region.
+    #[test]
+    fn mirror_tests_run_clean_in_every_mode() {
+        let mut region = Region::new(&[256 * KIB, 256 * KIB, 128 * KIB]);
+        let mut ran = 0;
+        for (mut def, test_fn) in suite().into_iter().filter(|(d, _)| d.actual_name.starts_with("Mem-MirrorV2")) {
+            def.config.chunk_mode = ChunkMode::Absolute { size_bytes: 68 * KIB };
+            def.config.test_reps = 2;
+            for mirror in ["whole", "subblocks:2", "subblocks:4", "jump:0", "jump:2", "jump:510"] {
+                def.config.parameter_context.get_or_insert_with(Default::default).mirror = Some(mirror.parse().unwrap());
+                region.words().fill(UNTOUCHED);
+                let stats = unsafe { test_fn(&region.blocks, 0, ErrorMode::Log, &def.config.timing, &def.config, None) };
+                assert_eq!(stats.error_count, 0, "{} {mirror} found errors", def.display_name);
+                ran += 1;
+            }
+        }
+        assert!(ran >= 4 * 6, "only {ran} mirror runs");
         assert!(region.guards_intact());
     }
 
