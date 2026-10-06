@@ -99,6 +99,30 @@ struct CycleContext<'a> {
     cache_info: &'a CacheInfo,
 }
 
+/// Keeps the tests whose display, actual or original name matches one of the filter's
+/// comma-separated globs, e.g. `"Lat-*,Mem-*-Read"`.
+pub(crate) fn retain_matching(test_definitions: &mut Vec<TestDefinition>, filter: &str) {
+    let matchers: Vec<GlobMatcher> = filter.split(',').map(|s| s.trim())
+        .filter_map(|pattern| {
+            match Glob::new(pattern) {
+                Ok(glob) => Some(glob.compile_matcher()),
+                Err(e) => {
+                    log::warn!("Invalid glob pattern '{}': {}", pattern, e);
+                    None
+                }
+            }
+        })
+        .collect();
+
+    test_definitions.retain(|def| {
+        matchers.iter().any(|matcher| {
+            matcher.is_match(&def.display_name) ||
+            matcher.is_match(def.actual_name) ||
+            def.original_name.map(|n| matcher.is_match(n)).unwrap_or(false)
+        })
+    });
+}
+
 /// CLI-derived overrides controlling which tests run and how their parameters
 /// are tweaked. Bundled so the run entry point keeps a manageable signature.
 /// All fields are optional — `None` means "use the value from the config/defaults".
@@ -419,29 +443,7 @@ pub fn run_tests_with_layout_and_timing_filtered(
 
     // Apply single test filter if provided (supports glob patterns and comma-separated patterns)
     if let Some(test_name_filter) = single_test_filter {
-        // Support comma-separated patterns: "Lat-*,Mem-*-Read"
-        let patterns: Vec<&str> = test_name_filter.split(',').map(|s| s.trim()).collect();
-
-        // Compile glob matchers for each pattern
-        let matchers: Vec<GlobMatcher> = patterns.iter()
-            .filter_map(|pattern| {
-                match Glob::new(pattern) {
-                    Ok(glob) => Some(glob.compile_matcher()),
-                    Err(e) => {
-                        log::warn!("Invalid glob pattern '{}': {}", pattern, e);
-                        None
-                    }
-                }
-            })
-            .collect();
-
-        test_definitions.retain(|def| {
-            matchers.iter().any(|matcher| {
-                matcher.is_match(&def.display_name) ||
-                matcher.is_match(def.actual_name) ||
-                def.original_name.map(|n| matcher.is_match(n)).unwrap_or(false)
-            })
-        });
+        retain_matching(&mut test_definitions, test_name_filter);
 
         if test_definitions.is_empty() {
             println!("❌ No tests match filter '{}'. Available tests:", test_name_filter);
@@ -4442,6 +4444,28 @@ mod tests {
         }
         assert!(verified >= 7, "only {verified} Bench pairs verified");
         assert!(region.guards_intact());
+    }
+
+    /// TODO 92: each latency shortcut runs the tests its help text names, no more.
+    #[test]
+    fn latency_shortcuts_select_the_tests_they_name() {
+        let cache_info = crate::tests::get_cache_info();
+        let selected = |filter: &str| {
+            let mut defs = create_test_definitions(cache_info);
+            retain_matching(&mut defs, filter);
+            let mut names: Vec<&str> = defs.iter().map(|d| d.actual_name).collect();
+            names.sort();
+            names
+        };
+        let tests = |tiers: &[&str]| {
+            let mut names: Vec<String> = tiers.iter()
+                .flat_map(|t| ["Copy", "Read", "Write"].map(|op| format!("Lat-{t}-{op}")))
+                .collect();
+            names.sort();
+            names
+        };
+        assert_eq!(selected(crate::cli::RAM_LATENCY_FILTER), tests(&["DRAM", "DRAMFull"]));
+        assert_eq!(selected(crate::cli::CACHE_LATENCY_FILTER), tests(&["DRAM", "L1", "L2", "L3"]));
     }
 
     /// TODO 85: every mirror test runs clean in every mode, twice per chunk, on joined blocks

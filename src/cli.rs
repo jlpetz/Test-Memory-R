@@ -17,6 +17,12 @@ use crate::cpu_topology::{display_cpu_topology, get_cpu_topology, is_hybrid_cpu,
 use crate::results::compare_results_command;
 use crate::config::{MemoryAllocationConfig, CpuPinningConfig};
 
+/// `--ram-latency`: the 6 DRAM latency tests, DRAM-* and DRAMFull-* (TODO 92)
+pub(crate) const RAM_LATENCY_FILTER: &str = "Lat-DRAM-*,Lat-DRAMFull-*";
+/// `--cache-latency`: Read/Write/Copy at L1, L2, L3 and DRAM, 12 tests; DRAMFull is
+/// `--ram-latency`'s (TODO 92)
+pub(crate) const CACHE_LATENCY_FILTER: &str = "Lat-L1-*,Lat-L2-*,Lat-L3-*,Lat-DRAM-*";
+
 // Global file logger for dual console+file logging
 static FILE_LOGGER: std::sync::OnceLock<Arc<Mutex<Option<std::fs::File>>>> = std::sync::OnceLock::new();
 
@@ -241,8 +247,7 @@ fn run() -> Result<(), Box<dyn std::error::Error>> {
             }
         }
 
-        // Set filter to run DRAM latency tests (6 tests: DRAM-* and DRAMFull-*)
-        test_filter = Some("DRAM*".to_string());
+        test_filter = Some(RAM_LATENCY_FILTER.to_string());
     }
 
     // Handle --cache-latency: Full cache hierarchy diagnostic (single-thread)
@@ -266,9 +271,7 @@ fn run() -> Result<(), Box<dyn std::error::Error>> {
             }
         }
 
-        // Set filter to run cache hierarchy tests (12 tests: L1-*, L2-*, L3-*, DRAM-*)
-        // Note: Excludes DRAMFull-* tests (those are for --ram-latency)
-        test_filter = Some("L*,DRAM-*".to_string());
+        test_filter = Some(CACHE_LATENCY_FILTER.to_string());
     }
 
     // Handle --quick-test by injecting defaults BEFORE parameter parsing
