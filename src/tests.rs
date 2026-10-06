@@ -2653,20 +2653,19 @@ unsafe fn verify_words(ptr: *const u64, start: usize, end: usize, test_name: &st
     rescan_words(ptr, start, end, test_name, expected)
 }
 
-/// ORs the differences of words `start, start + stride, ...` below `end` into 4 accumulators, 4
-/// strides at a time (TODO 89): the strided twin of `verify_words`'s loop. The caller checks the
-/// accumulators once and rescans on a hit.
+/// ORs the differences of words `start, start + stride, ...` below `end` into the accumulators
+/// (TODO 89): the strided twin of `verify_words`'s loop. The caller checks them once and rescans
+/// on a hit.
+///
+/// One load per step, not 4 accumulators 4 strides apart: the walk is memory-bound, not bound by
+/// the OR chain, and on 1usmus_v3 (2026-10-06, 4 threads) the 4-way version took Test 6 (a 15.9 KB
+/// stride over 432 MiB chunks) from 44 s to 78 s, worse than the per-word branch it replaced
+/// (55 s), while the larger strides gained 15-30%. One accumulator is at least as fast as that
+/// branch at every stride the shipped configs use.
 #[inline(always)]
 unsafe fn accumulate_stride(acc: &mut [u64; 4], ptr: *const u64, start: usize, end: usize, stride: usize,
                             expected: impl Fn(usize) -> u64 + Copy) {
     let mut idx = start;
-    while idx + 3 * stride < end {
-        for (k, a) in acc.iter_mut().enumerate() {
-            let at = idx + k * stride;
-            *a |= *ptr.add(at) ^ expected(at);
-        }
-        idx += 4 * stride;
-    }
     while idx < end {
         acc[0] |= *ptr.add(idx) ^ expected(idx);
         idx += stride;

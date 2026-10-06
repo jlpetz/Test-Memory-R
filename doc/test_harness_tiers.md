@@ -132,6 +132,9 @@ cycle end     check all memory                              "Final seal check"
   sealed step in between would reseal the data, and the plan refuses it.
 - A TM5 import's test 0 (RefreshStable) is the seal: enabled, the run is sealed and a `0` in
   `Test Sequence` is a `Seal-Check` step; disabled, the run is unsealed.
+- A step that runs more than one cycle of its own (a duration) wraps its first cycle only and
+  reseals its extent when it finishes, so it pays for the seal once per step; a step cut short
+  reseals its extent too. A run in which no step takes the seal isn't sealed at all.
 
 **What a test has to do.** Tier 1 gets it for free: `run_phased_test` wraps each chunk when
 `config.seal.wrap` is set. A Tier-2 test calls `runner.check_seal(start, len)` before it works a
@@ -142,8 +145,10 @@ in an unsealed run); a test that fills a range up front must fill it per chunk i
 Opting out per test: `"seal": false` in its JSON entry.
 
 **Cost.** One read pass and one non-temporal write pass per chunk per step. On the dev box, at
-28 GiB, a seal pass runs at ~90 GiB/s (NT) and a check at ~52 GiB/s: about 0.8 s per step, about
-8% on an imported SimpleTest step (4 x (1 + 5) passes).
+28 GiB, a seal pass runs at ~90 GiB/s (NT, any width) and a check at ~60 GiB/s at 256 bits (`auto`;
+the 512-bit check ran 15-20% slower): about 0.8 s per step. On 1usmus_v3 that is 3-7% on a
+sequential SimpleTest step, nothing on a mirror step (its data is the seal anyway), and the
+strided SimpleTest steps got 5-20% faster, since they no longer write a strided fill up front.
 
 ---
 
