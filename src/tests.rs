@@ -2653,34 +2653,11 @@ unsafe fn verify_words(ptr: *const u64, start: usize, end: usize, test_name: &st
     rescan_words(ptr, start, end, test_name, expected)
 }
 
-/// ORs the differences of words `start, start + stride, ...` below `end` into the accumulators
-/// (TODO 89): the strided twin of `verify_words`'s loop. The caller checks them once and rescans
-/// on a hit.
-///
-/// One load per step, not 4 accumulators 4 strides apart (`accumulate_stride_4`): the strided
-/// SimpleTest's walk over a big chunk is memory-bound, not bound by the OR chain, and at strides
-/// of about 12-20 KB the 4-way walk is far slower. On 1usmus_v3 (2026-10-06, 4 threads) it took
-/// Test 6 (a 15.9 KB stride over 432 MiB chunks) from 44 s to 78 s, worse than the per-word branch
-/// it replaced (55 s). A sweep over 432 MiB chunks (2026-10-07, 4-way time / 1-way time): 2-8 KB
-/// 0.97-1.03, 12.7 KB 1.58, 15.9 KB 1.82, 20 KB 1.34, 25.5 KB 0.95, 32-128 KB 0.90-0.94; over
-/// 32 MiB chunks 15.9 KB was 0.97. So the slow band is where one sweep's lines (chunk / stride,
-/// 1.4-2.2 MB here) are about the L2's 2 MiB; the prefetcher's part is unmeasured. A stopgap until
-/// the strided SimpleTest moves whole lines per jump as TM5 does (TODO 93).
-#[inline(always)]
-unsafe fn accumulate_stride(acc: &mut [u64; 4], ptr: *const u64, start: usize, end: usize, stride: usize,
-                            expected: impl Fn(usize) -> u64 + Copy) {
-    let mut idx = start;
-    while idx < end {
-        acc[0] |= *ptr.add(idx) ^ expected(idx);
-        idx += stride;
-    }
-}
-
-/// `accumulate_stride` 4 strides per step into the 4 accumulators: for a walk over a chunk that
-/// stays in cache (Mem-CacheBust's 1 MiB, Mem-Stride's 2 MiB), where the loop is the limit, and for
-/// the strided SimpleTest at 24 KiB strides and up (`STRIDE_4_FROM`). Measured on the dev box
-/// (2026-10-06): CacheBust 12% and Mem-Stride 5% faster than one load per step; 1usmus_v3's 32-100
-/// KB strides 13-30%.
+/// ORs the differences of words `start, start + stride, ...` below `end` into the 4 accumulators,
+/// 4 strides per step (TODO 89): the strided twin of `verify_words`'s loop, for walks over a chunk
+/// that stays in cache (Mem-CacheBust's 1 MiB, Mem-Stride's 2 MiB), where the loop is the limit.
+/// The caller checks them once and rescans on a hit. Measured on the dev box (2026-10-06):
+/// CacheBust 12% and Mem-Stride 5% faster than one load per step.
 #[inline(always)]
 unsafe fn accumulate_stride_4(acc: &mut [u64; 4], ptr: *const u64, start: usize, end: usize, stride: usize,
                               expected: impl Fn(usize) -> u64 + Copy) {
@@ -2698,12 +2675,8 @@ unsafe fn accumulate_stride_4(acc: &mut [u64; 4], ptr: *const u64, start: usize,
     }
 }
 
-/// The strided SimpleTest's stride, in words, from which it walks 4 strides per step (24 KiB, above
-/// the slow band): see `accumulate_stride`.
-const STRIDE_4_FROM: usize = 3072;
-
 /// Counts and logs the words `start, start + stride, ...` below `end` that differ from
-/// `expected(idx)`, the cold path of `accumulate_stride` (the caller adds `transient_if_none`).
+/// `expected(idx)`, the cold path of `accumulate_stride_4` (the caller adds `transient_if_none`).
 #[cold]
 #[inline(never)]
 unsafe fn rescan_stride(ptr: *const u64, start: usize, end: usize, stride: usize, test_name: &str,
@@ -2748,6 +2721,61 @@ fn transient_if_none(errors: u64, test_name: &str, start: usize, end: usize) -> 
     }
     log::error!("{} in idx {}..{} that a reread no longer shows (transient)", crate::error_context::found_by(test_name), start, end);
     1
+}
+
+/// TM5's strided walk (`mtests0.asm` ~336-394, TODO 93): runs `$body` once for each 64 B line of
+/// words `[$start, $end)` of `$ptr`, with `$offset` its first word. TM5 writes or reads a whole
+/// line, then jumps `64 x (Channels x Parameter - 1)` bytes, so a period of `$period` words (a line
+/// plus the jump) is touched one line at a time; each of its lines starts an interleave pass, and a
+/// pass steps a period at a time to the end. A macro, not a closure, so the SIMD variants' bodies
+/// keep their `#[target_feature]`.
+///
+/// Two changes from TM5, both for speed on chunks that don't fit in cache, where TM5's walk ran
+/// at half the speed of TMR's earlier word-per-jump walk (1usmus_v3 6:22 against 5:06):
+/// - Each step prefetches the line above, the one the next pass takes from this period. The
+///   word-per-jump walk read each line's words in 8 passes in a row, so the L1's next-line
+///   prefetcher fetched the line beside it; this fetches it explicitly. Likely why it pays: two
+///   lines in one DRAM row cost one row activation, not two, and a walk that opens a row per line
+///   is bound by activations.
+/// - The passes go up from the period's first line; TM5's count down from its last. Each pass is
+///   the same; only their order is reversed. Prefetching the line below for TM5's order was 0.74x
+///   the word-per-jump walk at 1usmus Test 13's shape, against 1.67x this way, and the two were
+///   within 6% at the other six shapes.
+///
+/// TM5's own prefetch, 8 periods on in the same pass, lands outside the chunk once the period nears
+/// the chunk's size, and a lookahead in walk order (8 to 32 steps) was slower than the next pass's
+/// line. Measured in TODO 93 (`doc/todo/93-strided-simpletest-lines.md`).
+macro_rules! for_each_strided_line {
+    ($ptr:expr, $start:expr, $end:expr, $period:expr, |$offset:ident| $body:block) => {{
+        let (ptr, start, end, period): (*const u64, usize, usize, usize) = ($ptr, $start, $end, $period);
+        debug_assert!(period.is_multiple_of(LINE_WORDS) && start.is_multiple_of(LINE_WORDS) && end.is_multiple_of(LINE_WORDS),
+                      "the strided walk needs whole lines: {start}..{end} by {period}");
+        let mut first = start;
+        while first < start + period {
+            let mut $offset = first;
+            while $offset < end {
+                // In the last pass the line above is the next period's, or off the chunk: a wasted
+                // prefetch, not a fault
+                prefetch_line(ptr.wrapping_add($offset + LINE_WORDS));
+                $body
+                $offset += period;
+            }
+            first += LINE_WORDS;
+        }
+    }};
+}
+
+/// Prefetches the line at `line` into the L2 and below (`prefetcht1`: measured ahead of `t0` on
+/// most strides, TODO 93).
+#[inline(always)]
+fn prefetch_line(line: *const u64) {
+    // SAFETY: SSE is in the x86-64-v3 baseline, and a prefetch neither faults nor writes, at any address
+    unsafe { core::arch::x86_64::_mm_prefetch::<{ core::arch::x86_64::_MM_HINT_T1 }>(line as *const i8) }
+}
+
+/// The strided walk's period in words: a line plus the jump, the stride rounded up to whole lines.
+fn strided_period(stride: usize) -> usize {
+    stride.next_multiple_of(LINE_WORDS) + LINE_WORDS
 }
 
 // ─── SimpleTest v2 ───────────────────────────────────────────────────────────
@@ -2952,11 +2980,13 @@ unsafe fn simple_test_v2_sequential(
     }
 }
 
-/// Strided SimpleTest v2 — tests DRAM row-stress patterns via strided access.
-///
-/// TM5's Parameter field specifies stride in cache lines. When Parameter=254:
-/// stride = 254 * 8 = 2032 u64 elements = 16,256 bytes per step.
-/// This forces access across different DRAM rows, stressing row buffer conflicts.
+/// Strided SimpleTest v2 (TODO 93): TM5's strided SimpleTest (`mtests0.asm` ~336-394), the
+/// `for_each_strided_line!` walk. Each step writes or reads a whole 64 B line, then jumps the
+/// stride: TM5 Parameter 8 on 2 channels jumps 15 lines, so the period is 16 lines (1 KiB) and
+/// each chunk takes 16 interleave passes (in the opposite order to TM5's, see the macro). The image is the sequential test's: the per-word modes
+/// (0, 1, 10, 11, 13) compute each word from its index, and the line modes (2, 12) both write
+/// mode 12's lines, hashed from each line's address, as mode 2's chain runs a page in order.
+#[doc = include_str!("test_fn_safety.md")]
 unsafe fn simple_test_v2_strided(
     blocks: &[crate::runner::AllocationBlock],
     thread_id: usize,
@@ -2968,74 +2998,68 @@ unsafe fn simple_test_v2_strided(
 ) -> TestStats {
     let SimplePatternConfig { mode: pattern_mode, param0, param1, stride } = pattern;
     let test_name = "Mem-SimpleV2";
-    // For strided access, the line patterns (2, 12) fall back to positional mode 10: they are
-    // computed a line at a time, and a stride visits a word at a time. The per-word modes work.
-    let effective_mode = match pattern_mode {
-        0 | 1 | 10 | 11 | 13 => pattern_mode,
-        _ => 10,
-    };
-    let base = match effective_mode {
-        11 => param0 ^ param1,
-        _ => param0,
-    };
+    let period = strided_period(stride);
     let cl_shift = pattern_gen::cache_line_shift(config.cache_line_bytes);
+
+    if matches!(pattern_mode, 2 | 12) {
+        let mode12 = |ctx: &ChunkCtx| Mode12::new(ctx.thread_id, ctx.cycle, param0, param1);
+        let write = |ctx: &ChunkCtx| {
+            let key = mode12(ctx).key;
+            for_each_strided_line!(ctx.ptr, ctx.chunk_start, ctx.chunk_end, period, |offset| {
+                let line = ctx.ptr.add(offset);
+                let (seed, step) = pattern_gen::mode12_line(line as usize, key);
+                *(line as *mut [u64; LINE_WORDS]) = pattern_gen::line_words(seed, step);
+            });
+        };
+        return run_phased_test(
+            blocks, thread_id, error_mode, timing, config, progress,
+            test_name, TestAction::WriteVerify, 1, false, config.test_reps, config.verify_reps,
+            write, write,
+            |ctx: &ChunkCtx| -> u64 {
+                let mode12 = mode12(ctx);
+                let mut acc = [0u64; 4];
+                for_each_strided_line!(ctx.ptr, ctx.chunk_start, ctx.chunk_end, period, |offset| {
+                    let line = ctx.ptr.add(offset);
+                    let (seed, step) = pattern_gen::mode12_line(line as usize, mode12.key);
+                    accumulate_line(&mut acc, line, &pattern_gen::line_words(seed, step));
+                });
+                if (acc[0] | acc[1]) | (acc[2] | acc[3]) == 0 {
+                    return 0;
+                }
+                mode12.rescan(ctx.ptr, ctx.chunk_start, ctx.chunk_end, test_name)
+            },
+        );
+    }
 
     // One copy of the loops per pattern, so each inlines its pattern function. A `fn` pointer picked
     // at run time was called once per element (`callq *%reg` in the release asm, 2026-10-03).
+    // `$seed` gives the chunk's seed for modes 0 and 1, the base for the others.
     macro_rules! run_strided {
-        ($gen:expr) => {{
+        ($seed:expr, $gen:expr) => {{
             let gen_pattern = $gen;
+            let seed_of = $seed;
+            let write = |ctx: &ChunkCtx| {
+                let seed = seed_of(ctx);
+                for_each_strided_line!(ctx.ptr, ctx.chunk_start, ctx.chunk_end, period, |offset| {
+                    for j in 0..LINE_WORDS {
+                        let idx = offset + j;
+                        *ctx.ptr.add(idx) = gen_pattern(idx as u64, seed, cl_shift);
+                    }
+                });
+            };
             run_phased_test(
                 blocks, thread_id, error_mode, timing, config, progress,
                 test_name, TestAction::WriteVerify, 1, false, config.test_reps, config.verify_reps,
-                // Init: first write with stride pattern covering all elements
-                |ctx: &ChunkCtx| {
-                    let seed = if effective_mode <= 1 {
-                        pattern_gen::block_seed(ctx.ptr as usize, ctx.thread_id, ctx.cycle)
-                    } else { base };
-                    let len = ctx.chunk_end - ctx.chunk_start;
-                    if len == 0 { return; }
-                    for sub_offset in 0..stride.min(len) {
-                        let mut idx = ctx.chunk_start + sub_offset;
-                        while idx < ctx.chunk_end {
-                            *ctx.ptr.add(idx) = gen_pattern(idx as u64, seed, cl_shift);
-                            idx += stride;
-                        }
-                    }
-                },
-                // Test: write with stride (every cycle, matching v1 write+verify structure)
-                |ctx: &ChunkCtx| {
-                    let seed = if effective_mode <= 1 {
-                        pattern_gen::block_seed(ctx.ptr as usize, ctx.thread_id, ctx.cycle)
-                    } else { base };
-                    let len = ctx.chunk_end - ctx.chunk_start;
-                    if len == 0 { return; }
-                    for sub_offset in 0..stride.min(len) {
-                        let mut idx = ctx.chunk_start + sub_offset;
-                        while idx < ctx.chunk_end {
-                            *ctx.ptr.add(idx) = gen_pattern(idx as u64, seed, cl_shift);
-                            idx += stride;
-                        }
-                    }
-                },
-                // Verify: same strided order, into 4 accumulators; the walk covers every word of the
-                // chunk, so a hit rescans it in order (TODO 89)
+                write, write,
+                // Verify: the same walk, a line at a time into 4 accumulators; the walk covers every
+                // word of the chunk, so a hit rescans it in order (TODO 89)
                 |ctx: &ChunkCtx| -> u64 {
-                    let seed = if effective_mode <= 1 {
-                        pattern_gen::block_seed(ctx.ptr as usize, ctx.thread_id, ctx.cycle)
-                    } else { base };
-                    let len = ctx.chunk_end - ctx.chunk_start;
-                    if len == 0 { return 0; }
+                    let seed = seed_of(ctx);
                     let expected = |idx: usize| gen_pattern(idx as u64, seed, cl_shift);
                     let mut acc = [0u64; 4];
-                    for sub_offset in 0..stride.min(len) {
-                        let from = ctx.chunk_start + sub_offset;
-                        if stride >= STRIDE_4_FROM {
-                            accumulate_stride_4(&mut acc, ctx.ptr, from, ctx.chunk_end, stride, expected);
-                        } else {
-                            accumulate_stride(&mut acc, ctx.ptr, from, ctx.chunk_end, stride, expected);
-                        }
-                    }
+                    for_each_strided_line!(ctx.ptr, ctx.chunk_start, ctx.chunk_end, period, |offset| {
+                        accumulate_line(&mut acc, ctx.ptr.add(offset), &std::array::from_fn(|j| expected(offset + j)));
+                    });
                     if (acc[0] | acc[1]) | (acc[2] | acc[3]) == 0 {
                         return 0;
                     }
@@ -3044,12 +3068,13 @@ unsafe fn simple_test_v2_strided(
             )
         }};
     }
-    match effective_mode {
-        0 => run_strided!(|idx: u64, seed: u64, _cl: u32| pattern_gen::pattern_mode0(idx, seed)),
-        1 => run_strided!(|idx: u64, seed: u64, cl: u32| pattern_gen::pattern_mode1(idx, seed, cl)),
-        11 => run_strided!(|idx: u64, combined: u64, _cl: u32| pattern_gen::pattern_mode11(idx, combined)),
-        13 => run_strided!(|idx: u64, seed: u64, _cl: u32| pattern_gen::pattern_mode13(idx, seed)),
-        _ => run_strided!(|idx: u64, base: u64, _cl: u32| pattern_gen::pattern_mode10(idx, base)),
+    let chunk_seed = |ctx: &ChunkCtx| pattern_gen::block_seed(ctx.ptr as usize, ctx.thread_id, ctx.cycle);
+    match pattern_mode {
+        0 => run_strided!(chunk_seed, |idx: u64, seed: u64, _cl: u32| pattern_gen::pattern_mode0(idx, seed)),
+        1 => run_strided!(chunk_seed, |idx: u64, seed: u64, cl: u32| pattern_gen::pattern_mode1(idx, seed, cl)),
+        11 => run_strided!(|_: &ChunkCtx| param0 ^ param1, |idx: u64, combined: u64, _cl: u32| pattern_gen::pattern_mode11(idx, combined)),
+        13 => run_strided!(|_: &ChunkCtx| param0, |idx: u64, seed: u64, _cl: u32| pattern_gen::pattern_mode13(idx, seed)),
+        _ => run_strided!(|_: &ChunkCtx| param0, |idx: u64, base: u64, _cl: u32| pattern_gen::pattern_mode10(idx, base)),
     }
 }
 
@@ -3430,114 +3455,70 @@ macro_rules! simple_verify_mode12_simd {
     }}
 }
 
-/// SIMD Write for positional patterns with stride — block-strided access.
-/// Writes contiguous SIMD blocks spaced apart by stride, with interleave passes
-/// for full coverage. Same approach as MirrorMove's `mirror_swap_strided!`.
-///
-/// ```text
-/// stride_param=3, simd_w=8:  total_stride = (3+1)*8 = 32 elements
-///
-/// Pass 0: [████████]________________________[████████]________________________
-///         pos 0                              pos 32
-/// Pass 1: ________[████████]________________________[████████]________________
-///         pos 8                              pos 40
-/// Pass 2: ________________[████████]________________________[████████]________
-///         pos 16                             pos 48
-/// Pass 3: ________________________[████████]________________________[████████]
-///         pos 24                             pos 56
-/// ```
+/// SIMD write for positional patterns with stride (TODO 93): TM5's strided walk
+/// (`for_each_strided_line!`), each 64 B line `idx ^ base` in W-word stores.
 macro_rules! simple_write_strided_positional_simd {
-    ($simd_type:ty, $simd_w:expr, $ctx:expr,
-     $base_vec:expr, $lane_offsets:expr, $stride_param:expr) => {{
-        let block_elements: usize = $simd_w;
-        let stride_elements: usize = $stride_param * block_elements;
-        let total_stride: usize = stride_elements + block_elements;
-        let interleave_passes: usize = total_stride / block_elements;
-
-        for pass in 0..interleave_passes {
-            let offset = pass * block_elements;
-            let mut pos = $ctx.chunk_start + offset;
-            while pos + block_elements <= $ctx.chunk_end {
-                let idx_vec = <$simd_type>::splat(pos as u64) + $lane_offsets;
-                *($ctx.ptr.add(pos) as *mut $simd_type) = idx_vec ^ $base_vec;
-                pos += total_stride;
+    ($simd_type:ty, $simd_w:expr, $ctx:expr, $base_vec:expr, $lane_offsets:expr, $period:expr) => {{
+        for_each_strided_line!($ctx.ptr, $ctx.chunk_start, $ctx.chunk_end, $period, |offset| {
+            for j in (0..LINE_WORDS).step_by($simd_w) {
+                let at = offset + j;
+                *($ctx.ptr.add(at) as *mut $simd_type) = (<$simd_type>::splat(at as u64) + $lane_offsets) ^ $base_vec;
             }
-        }
+        });
     }}
 }
 
-/// SIMD Verify for positional patterns with stride — block-strided access.
-/// Walks the same strided pattern as write, XOR+OR accumulates errors.
+/// SIMD verify for positional patterns with stride: the same walk, XOR+OR into an accumulator;
+/// on a hit the scalar rescan counts and logs each bad word.
 macro_rules! simple_verify_strided_positional_simd {
-    ($simd_type:ty, $simd_w:expr, $ctx:expr,
-     $base_vec:expr, $lane_offsets:expr, $zero:expr, $stride_param:expr) => {{
-        let block_elements: usize = $simd_w;
-        let stride_elements: usize = $stride_param * block_elements;
-        let total_stride: usize = stride_elements + block_elements;
-        let interleave_passes: usize = total_stride / block_elements;
-        let mut total_errors = 0u64;
-        let mut error_acc = $zero;
-
-        for pass in 0..interleave_passes {
-            let offset = pass * block_elements;
-            let mut pos = $ctx.chunk_start + offset;
-            while pos + block_elements <= $ctx.chunk_end {
-                let idx_vec = <$simd_type>::splat(pos as u64) + $lane_offsets;
-                let expected = idx_vec ^ $base_vec;
-                let actual = *($ctx.ptr.add(pos) as *const $simd_type);
-                error_acc |= actual ^ expected;
-                pos += total_stride;
-            }
-        }
-
-        if error_acc.simd_ne($zero).any() {
-            total_errors += 1;
-        }
-        total_errors
-    }}
-}
-
-/// SIMD write for mode 12 with stride: the same image as the sequential write, each W-word
-/// block computed from its line's hash, in the block-strided order of the positional writer.
-macro_rules! simple_write_strided_mode12_simd {
-    ($simd_type:ty, $simd_w:expr, $ctx:expr, $mode12:expr, $lane_offsets:expr, $stride_param:expr) => {{
-        let block_elements: usize = $simd_w;
-        let total_stride: usize = $stride_param * block_elements + block_elements;
-        let interleave_passes: usize = total_stride / block_elements;
-
-        for pass in 0..interleave_passes {
-            let mut pos = $ctx.chunk_start + pass * block_elements;
-            while pos + block_elements <= $ctx.chunk_end {
-                let line = pos & !(LINE_WORDS - 1);
-                let (seed, step) = pattern_gen::mode12_line($ctx.ptr.add(line) as usize, $mode12.key);
-                let lanes = $lane_offsets + <$simd_type>::splat((pos - line) as u64);
-                *($ctx.ptr.add(pos) as *mut $simd_type) = <$simd_type>::splat(seed) + <$simd_type>::splat(step) * lanes;
-                pos += total_stride;
-            }
-        }
-    }}
-}
-
-/// SIMD verify for mode 12 with stride: XOR+OR accumulate; the scalar rescan counts and logs.
-macro_rules! simple_verify_strided_mode12_simd {
-    ($simd_type:ty, $simd_w:expr, $ctx:expr, $mode12:expr, $lane_offsets:expr, $zero:expr, $stride_param:expr, $test_name:expr) => {{
-        let block_elements: usize = $simd_w;
-        let total_stride: usize = $stride_param * block_elements + block_elements;
-        let interleave_passes: usize = total_stride / block_elements;
+    ($simd_type:ty, $simd_w:expr, $ctx:expr, $base:expr, $base_vec:expr, $lane_offsets:expr, $zero:expr, $period:expr, $test_name:expr) => {{
         let mut acc = $zero;
-
-        for pass in 0..interleave_passes {
-            let mut pos = $ctx.chunk_start + pass * block_elements;
-            while pos + block_elements <= $ctx.chunk_end {
-                let line = pos & !(LINE_WORDS - 1);
-                let (seed, step) = pattern_gen::mode12_line($ctx.ptr.add(line) as usize, $mode12.key);
-                let lanes = $lane_offsets + <$simd_type>::splat((pos - line) as u64);
-                let expected = <$simd_type>::splat(seed) + <$simd_type>::splat(step) * lanes;
-                acc |= *($ctx.ptr.add(pos) as *const $simd_type) ^ expected;
-                pos += total_stride;
+        for_each_strided_line!($ctx.ptr, $ctx.chunk_start, $ctx.chunk_end, $period, |offset| {
+            for j in (0..LINE_WORDS).step_by($simd_w) {
+                let at = offset + j;
+                acc |= *($ctx.ptr.add(at) as *const $simd_type) ^ ((<$simd_type>::splat(at as u64) + $lane_offsets) ^ $base_vec);
             }
+        });
+        if acc.simd_ne($zero).any() {
+            let base: u64 = $base;
+            rescan_words($ctx.ptr, $ctx.chunk_start, $ctx.chunk_end, $test_name, |idx| idx as u64 ^ base)
+        } else {
+            0
         }
+    }}
+}
 
+/// SIMD write for mode 12 with stride: TM5's strided walk, each line from its address's hash
+/// (`pattern_gen::mode12_line`) in W-word stores, the same image as the sequential write.
+macro_rules! simple_write_strided_mode12_simd {
+    ($simd_type:ty, $simd_w:expr, $ctx:expr, $mode12:expr, $lane_offsets:expr, $period:expr) => {{
+        for_each_strided_line!($ctx.ptr, $ctx.chunk_start, $ctx.chunk_end, $period, |offset| {
+            let line = $ctx.ptr.add(offset);
+            let (seed, step) = pattern_gen::mode12_line(line as usize, $mode12.key);
+            let advance = <$simd_type>::splat(step.wrapping_mul($simd_w as u64));
+            let mut words = <$simd_type>::splat(seed) + <$simd_type>::splat(step) * $lane_offsets;
+            for j in (0..LINE_WORDS).step_by($simd_w) {
+                *(line.add(j) as *mut $simd_type) = words;
+                words += advance;
+            }
+        });
+    }}
+}
+
+/// SIMD verify for mode 12 with stride: XOR+OR into an accumulator; the scalar rescan counts and logs.
+macro_rules! simple_verify_strided_mode12_simd {
+    ($simd_type:ty, $simd_w:expr, $ctx:expr, $mode12:expr, $lane_offsets:expr, $zero:expr, $period:expr, $test_name:expr) => {{
+        let mut acc = $zero;
+        for_each_strided_line!($ctx.ptr, $ctx.chunk_start, $ctx.chunk_end, $period, |offset| {
+            let line = $ctx.ptr.add(offset);
+            let (seed, step) = pattern_gen::mode12_line(line as usize, $mode12.key);
+            let advance = <$simd_type>::splat(step.wrapping_mul($simd_w as u64));
+            let mut words = <$simd_type>::splat(seed) + <$simd_type>::splat(step) * $lane_offsets;
+            for j in (0..LINE_WORDS).step_by($simd_w) {
+                acc |= *(line.add(j) as *const $simd_type) ^ words;
+                words += advance;
+            }
+        });
         if acc.simd_ne($zero).any() {
             $mode12.rescan($ctx.ptr, $ctx.chunk_start, $ctx.chunk_end, $test_name)
         } else {
@@ -3610,7 +3591,7 @@ macro_rules! simple_test_v2_impl {
             )
         }
 
-        /// Positional strided — block-strided access with idx^base pattern.
+        /// Positional strided — TM5's strided walk with the idx^base pattern (TODO 93).
         #[target_feature(enable = $target_feature)]
         unsafe fn $pos_str_fn(
             blocks: &[crate::runner::AllocationBlock],
@@ -3627,9 +3608,9 @@ macro_rules! simple_test_v2_impl {
             let pattern_mode = config.pattern_mode.unwrap_or(0);
             let param0 = config.pattern_param0.unwrap_or(0xDEADBEEFDEADBEEF);
             let param1 = config.pattern_param1.unwrap_or(0xCAFEBABECAFEBABE);
-            let stride_param = config.parameter_context.as_ref()
+            let period = strided_period(config.parameter_context.as_ref()
                 .and_then(|ctx| ctx.stride_elements)
-                .unwrap_or(0);
+                .unwrap_or(0));
             let base = match pattern_mode {
                 1 | 11 => param0 ^ param1,
                 _ => param0,
@@ -3641,15 +3622,15 @@ macro_rules! simple_test_v2_impl {
                 test_name, TestAction::WriteVerify, 1, false, config.test_reps, config.verify_reps,
                 |ctx: &ChunkCtx| {
                     simple_write_strided_positional_simd!($simd_type, simd_elements, ctx,
-                        base_vec, lane_offsets, stride_param);
+                        base_vec, lane_offsets, period);
                 },
                 |ctx: &ChunkCtx| {
                     simple_write_strided_positional_simd!($simd_type, simd_elements, ctx,
-                        base_vec, lane_offsets, stride_param);
+                        base_vec, lane_offsets, period);
                 },
                 |ctx: &ChunkCtx| -> u64 {
                     simple_verify_strided_positional_simd!($simd_type, simd_elements, ctx,
-                        base_vec, lane_offsets, zero, stride_param)
+                        base, base_vec, lane_offsets, zero, period, test_name)
                 },
             )
         }
@@ -3689,7 +3670,7 @@ macro_rules! simple_test_v2_impl {
             )
         }
 
-        /// Mode 12 strided — block-strided access, the same image as sequential.
+        /// Mode 12 strided — TM5's strided walk, the same image as sequential (TODO 93).
         #[target_feature(enable = $target_feature)]
         unsafe fn $m12_str_fn(
             blocks: &[crate::runner::AllocationBlock],
@@ -3705,24 +3686,24 @@ macro_rules! simple_test_v2_impl {
             let zero = <$simd_type>::splat(0);
             let param0 = config.pattern_param0.unwrap_or(0xDEADBEEFDEADBEEF);
             let param1 = config.pattern_param1.unwrap_or(0xCAFEBABECAFEBABE);
-            let stride_param = config.parameter_context.as_ref()
+            let period = strided_period(config.parameter_context.as_ref()
                 .and_then(|ctx| ctx.stride_elements)
-                .unwrap_or(0);
+                .unwrap_or(0));
 
             run_phased_test(
                 blocks, thread_id, error_mode, timing, config, progress,
                 test_name, TestAction::WriteVerify, 1, false, config.test_reps, config.verify_reps,
                 |ctx: &ChunkCtx| {
                     let mode12 = Mode12::new(ctx.thread_id, ctx.cycle, param0, param1);
-                    simple_write_strided_mode12_simd!($simd_type, simd_elements, ctx, mode12, lane_offsets, stride_param);
+                    simple_write_strided_mode12_simd!($simd_type, simd_elements, ctx, mode12, lane_offsets, period);
                 },
                 |ctx: &ChunkCtx| {
                     let mode12 = Mode12::new(ctx.thread_id, ctx.cycle, param0, param1);
-                    simple_write_strided_mode12_simd!($simd_type, simd_elements, ctx, mode12, lane_offsets, stride_param);
+                    simple_write_strided_mode12_simd!($simd_type, simd_elements, ctx, mode12, lane_offsets, period);
                 },
                 |ctx: &ChunkCtx| -> u64 {
                     let mode12 = Mode12::new(ctx.thread_id, ctx.cycle, param0, param1);
-                    simple_verify_strided_mode12_simd!($simd_type, simd_elements, ctx, mode12, lane_offsets, zero, stride_param, test_name)
+                    simple_verify_strided_mode12_simd!($simd_type, simd_elements, ctx, mode12, lane_offsets, zero, period, test_name)
                 },
             )
         }
@@ -3829,7 +3810,7 @@ pub unsafe fn simple_test_v2_512_multi(
 }
 
 // SimpleTest v2 auto-dispatch — selects best SIMD variant at runtime.
-// SIMD variants handle both sequential and strided access (block-strided with interleave).
+// SIMD variants handle both sequential and strided access (TM5's strided walk, TODO 93).
 crate::auto_dispatch!(
     pub simple_test_v2_auto_multi,
     simple_test_v2_multi,
@@ -4640,8 +4621,34 @@ pub fn get_test_function_by_name(name: &str) -> Option<crate::runner::TestFuncti
 
 #[cfg(test)]
 mod random_replay_tests {
-    use super::{accumulate_stride, accumulate_stride_4, random_replay, rescan_stride, rescan_words, verify_words, Mode12, Mode2};
-    use crate::pattern_gen::PAGE_WORDS;
+    use super::{accumulate_stride_4, prefetch_line, random_replay, rescan_stride, rescan_words, strided_period, verify_words, Mode12, Mode2};
+    use crate::pattern_gen::{LINE_WORDS, PAGE_WORDS};
+
+    /// TODO 93: TM5's strided walk touches each line once, a pass a period at a time, the passes
+    /// from the period's first line up (TM5's count down). Parameter 8 on 2 channels is 15 lines
+    /// of stride.
+    #[test]
+    fn the_strided_walk_is_tm5s() {
+        let mem = [0u64; 1];
+        let walk = |start: usize, end: usize, stride: usize| {
+            let mut lines = Vec::new();
+            for_each_strided_line!(mem.as_ptr(), start, end, strided_period(stride), |offset| { lines.push(offset); });
+            lines
+        };
+        assert_eq!(walk(0, 6 * LINE_WORDS, 2 * LINE_WORDS), [0, 24, 8, 32, 16, 40]);
+        for (start, end, stride) in [(0, 4096, 15 * 8), (512, 4096 + 512, 15 * 8), (0, 4096 + 40, 15 * 8), (0, 4096, 63 * 8), (0, 512, 4095 * 8), (64, 128, 0)] {
+            let lines = walk(start, end, stride);
+            let period = strided_period(stride);
+            let mut sorted = lines.clone();
+            sorted.sort();
+            assert_eq!(sorted, (start..end).step_by(LINE_WORDS).collect::<Vec<_>>(), "{start}..{end} by {stride}: each line once");
+            // The first pass starts the chunk and steps a period
+            assert_eq!(lines[0], start, "{start}..{end} by {stride}: the first line");
+            if period < end - start {
+                assert_eq!(lines[1], start + period, "{start}..{end} by {stride}: the second line");
+            }
+        }
+    }
 
     /// TODO 89: the strided accumulate sees a bad word wherever its walk passes, at any stride
     /// and remainder; the rescans count each bad word exactly, the strided one only on its walk.
@@ -4652,14 +4659,11 @@ mod random_replay_tests {
         let mut mem: Vec<u64> = (0..len).map(expected).collect();
         let p = mem.as_mut_ptr();
         let clean = |stride: usize| unsafe {
-            let (mut acc, mut acc4) = ([0u64; 4], [0u64; 4]);
+            let mut acc = [0u64; 4];
             for offset in 0..stride.min(len) {
-                accumulate_stride(&mut acc, p, offset, len, stride, expected);
-                accumulate_stride_4(&mut acc4, p, offset, len, stride, expected);
+                accumulate_stride_4(&mut acc, p, offset, len, stride, expected);
             }
-            let (one, four) = ((acc[0] | acc[1]) | (acc[2] | acc[3]) == 0, (acc4[0] | acc4[1]) | (acc4[2] | acc4[3]) == 0);
-            assert_eq!(one, four, "the two walks disagree at stride {stride}");
-            one
+            (acc[0] | acc[1]) | (acc[2] | acc[3]) == 0
         };
         unsafe {
             for stride in [1, 3, 7, 64, 999, 1000, 4096] {

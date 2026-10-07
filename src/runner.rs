@@ -4674,6 +4674,62 @@ mod tests {
         assert!(region.guards_intact());
     }
 
+    /// TODO 93: the strided SimpleTest, at every width and in every mode, runs clean and leaves the
+    /// image the sequential one leaves (the scalar test's strided mode 2 writes mode 12's lines),
+    /// over a 15-line stride (TM5 Parameter 8 on 2 channels) and one longer than a chunk; sealed,
+    /// it leaves the span sealed.
+    #[test]
+    fn strided_simple_tests_write_the_sequential_image() {
+        let mut region = Region::new(&[256 * KIB, 256 * KIB, 128 * KIB]);
+        let words = 640 * KIB / 8;
+        let kernel = crate::seal::SealKernel::detect();
+        let mut ran = 0;
+        for (def, test_fn) in suite().into_iter().filter(|(d, _)| d.actual_name.starts_with("Mem-SimpleV2")) {
+            for mode in [0, 1, 2, 10, 11, 12, 13] {
+                let run = |region: &mut Region, stride_cl: usize, sealed: bool| {
+                    let mut def = def.clone();
+                    def.config.chunk_mode = ChunkMode::Absolute { size_bytes: 68 * KIB };
+                    def.config.pattern_mode = Some(mode);
+                    def.config.parameter_context = (stride_cl > 0).then(|| crate::config::TestParameterContext {
+                        stride_cachelines: Some(stride_cl),
+                        stride_elements: Some(stride_cl * 8),
+                        ..Default::default()
+                    });
+                    set_step_seals(std::slice::from_mut(&mut def), kernel, sealed);
+                    if sealed {
+                        unsafe { kernel.fill(region.words().as_mut_ptr(), 0, words) };
+                    } else {
+                        region.words().fill(UNTOUCHED);
+                    }
+                    let stats = unsafe { test_fn(&region.blocks, 0, ErrorMode::Log, &def.config.timing, &def.config, None) };
+                    assert_eq!((stats.error_count, stats.seal_errors), (0, 0), "{} mode {mode} stride {stride_cl}", def.display_name);
+                    region.words().to_vec()
+                };
+                let same_as = if mode == 2 && def.actual_name == "Mem-SimpleV2" { 12 } else { mode };
+                let sequential = {
+                    let mut seq = def.clone();
+                    seq.config.chunk_mode = ChunkMode::Absolute { size_bytes: 68 * KIB };
+                    seq.config.pattern_mode = Some(same_as);
+                    seq.config.parameter_context = None;
+                    set_step_seals(std::slice::from_mut(&mut seq), kernel, false);
+                    region.words().fill(UNTOUCHED);
+                    unsafe { test_fn(&region.blocks, 0, ErrorMode::Log, &seq.config.timing, &seq.config, None) };
+                    region.words().to_vec()
+                };
+                for stride_cl in [15, 4095] {
+                    let image = run(&mut region, stride_cl, false);
+                    assert!(image == sequential, "{} mode {mode} stride {stride_cl}: not the sequential image", def.display_name);
+                    run(&mut region, stride_cl, true);
+                    assert_eq!(unsafe { kernel.check(region.words().as_ptr(), 0, words, "test") }, 0,
+                               "{} mode {mode} stride {stride_cl} left words unsealed", def.display_name);
+                    ran += 1;
+                }
+            }
+        }
+        assert!(ran >= 7 * 2 * 4, "only {ran} strided runs");
+        assert!(region.guards_intact());
+    }
+
     /// TODO 74: a bit flipped in sealed memory is the seal's error before a correctness test's
     /// chunk (TM5 numbers it 0), but the mirror's own after a mirror (TM5's step number), and
     /// either way the chunk ends sealed again.

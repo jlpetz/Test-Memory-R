@@ -8,17 +8,18 @@ All per-test parameters are stored in `TestParameterContext` (`src/config.rs`). 
 The original TM5 parameter value, preserved for debugging and display. Not directly consumed by test logic — it's the input that gets interpreted into the typed fields below.
 
 ### `stride_cachelines: Option<usize>`
-**Used by:** SimpleTest, SimpleNT (`Mem-SimpleV2-*`, `Mem-SimpleNT-*`)
+**Used by:** SimpleTest (`Mem-SimpleV2` at every width; `"parameter"` sets it for each)
 
-Stride distance in cache lines (64-byte units). Controls how far apart sequential memory accesses are, simulating DDR interleave patterns.
+The jump in cache lines (64-byte units) after each line the test writes or reads, simulating DDR interleave patterns.
 
 - **Formula:** `channels × parameter - 1` (from TM5 `JumpStep = BlkSize × (Channels × Parameter - 1)`)
 - **Example:** channels=2, parameter=8 → stride = 15 cache lines
+- **The walk** (TODO 93, TM5's `mtests0.asm` ~336-394): each step writes or reads one whole 64 B line, then jumps the stride, so the period is `stride + 1` lines (`64 × channels × parameter` bytes). Each line of a period starts an interleave pass, and a pass steps a period at a time to the chunk's end, so every line is touched once per pass over the chunk. Reads walk the same way. The image is the sequential test's (the scalar test's strided mode 2 writes mode 12's lines). Two changes from TM5, for speed: the passes go up from the period's first line (TM5's count down), and each step prefetches the line above, the next pass's. Measurements and the trade-off: `doc/todo/93-strided-simpletest-lines.md`
 - **Source:** TM5 `.cfg` parameter field + channels config, or direct value in JSON config
 - **Display:** Shown in Test Configuration table as `Stride(15cl/960B)`
 
 ### `stride_elements: Option<usize>`
-**Used by:** SimpleTest, SimpleNT (same tests as `stride_cachelines`)
+**Used by:** SimpleTest (same tests as `stride_cachelines`)
 
 Derived field: stride in u64 elements. Calculated as `stride_cachelines × (cache_line_bytes / 8)`. Typically `stride_cachelines × 8` for 64-byte cache lines. This is the value used directly in the test loop for pointer arithmetic.
 

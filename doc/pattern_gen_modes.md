@@ -128,4 +128,4 @@ TM5 SimpleTest stride formula: `JumpStep = BlkSize * (Channels * Parameter - 1)`
 
 In TMR: `stride_cachelines = Channels * Parameter - 1` (default Channels=2 for DDR5 dual-channel).
 
-Strided access works with the per-word modes (0, 1, 10, 11, 13). In the scalar test the line modes (2, 12) fall back to Mode 10 when stride is active, since they are computed a line at a time; the SIMD variants run mode 12 strided, with the sequential image.
+Strided access moves a whole 64 B line per jump, as TM5 does (TODO 93), so every mode works strided with the sequential image, except that the scalar test's strided mode 2 writes mode 12's lines: mode 2's chain runs a page in order, and the walk visits a page's lines a period apart.

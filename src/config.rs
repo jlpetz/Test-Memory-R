@@ -625,7 +625,8 @@ pub struct TestParameterContext {
 /// where BlkSize=64 bytes (cache line). In cache line units: `Channels * Parameter - 1`.
 pub fn interpret_tm5_parameter_with_channels(function: &str, parameter: u32, channels: u32) -> TestParameterContext {
     match function {
-        "SimpleTest" | "Mem-Simple" | "Mem-SimpleV2" => {
+        // Every width: Mem-SimpleV2-128/256/512/Auto stride too (TODO 93)
+        f if f == "SimpleTest" || f == "Mem-Simple" || f.starts_with("Mem-SimpleV2") => {
             if parameter == 0 {
                 TestParameterContext {
                     raw_parameter: parameter,
@@ -1766,6 +1767,21 @@ mod tests {
         // A global 50 % halves it: 100 x 50 / 2000 = 2.
         let half = legacy(50, vec![test(1, "SimpleTest", 100, 0)]).to_modern_config().unwrap();
         assert_eq!(half.get_test_configs().unwrap()[0].1.verify_reps, 2);
+    }
+
+    /// TODO 93: `"parameter"` strides the SimpleTest at every width, as TM5's formula on the
+    /// config's channels (2 x 8 - 1 = 15 lines), and nothing else.
+    #[test]
+    fn parameter_strides_simple_tests_at_every_width() {
+        let mut modern = ModernConfig::create_demo_config();
+        modern.test_sequence = ["Mem-SimpleV2", "Mem-SimpleV2-128", "Mem-SimpleV2-256", "Mem-SimpleV2-512", "Mem-SimpleV2-Auto", "Mem-StuckBit"]
+            .iter()
+            .map(|f| TestConfig { enabled: true, function: f.to_string(), parameter: Some(8), ..Default::default() })
+            .collect();
+        for (function, config) in modern.get_test_configs().unwrap() {
+            let stride = config.parameter_context.and_then(|c| c.stride_cachelines);
+            assert_eq!(stride, function.starts_with("Mem-SimpleV2").then_some(15), "{function}");
+        }
     }
 
     /// TODO 74: `cycle_order` lists ids in order, repeats them, and skips a disabled test's; an
