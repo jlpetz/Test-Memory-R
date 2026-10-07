@@ -2765,8 +2765,8 @@ macro_rules! for_each_strided_line {
     }};
 }
 
-/// Prefetches the line at `line` into the L2 and below (`prefetcht1`: measured ahead of `t0` on
-/// most strides, TODO 93).
+/// Prefetches the line at `line` into the L2 and below (`prefetcht1`: ahead of `t0` on most
+/// strides, measured with TM5's pass order, TODO 93).
 #[inline(always)]
 fn prefetch_line(line: *const u64) {
     // SAFETY: SSE is in the x86-64-v3 baseline, and a prefetch neither faults nor writes, at any address
