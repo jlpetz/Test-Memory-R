@@ -4583,6 +4583,37 @@ pub fn get_test_function_by_name(name: &str) -> Option<crate::runner::TestFuncti
         "Spd-DRAMSmall-Copy-Auto" | "Spd-DRAMFull-Copy-Auto"
             => Some(TestFunction::MultiBlock(crate::bandwidth_tests::spd_copy_nt_auto_multi)),
 
+        // The same at one width (TODO 94), as the -Auto names resolve: Spd-{tier}-{op}-{128,256,512}
+        s if s.starts_with("Spd-") && (s.ends_with("-128") || s.ends_with("-256") || s.ends_with("-512")) => {
+            use crate::bandwidth_tests::*;
+            let dram = s.starts_with("Spd-DRAM");
+            let width = &s[s.len() - 3..];
+            // These have no runtime feature check of their own: a width the CPU lacks isn't a test
+            if (width == "512" && !is_x86_feature_detected!("avx512f")) || (width == "256" && !is_x86_feature_detected!("avx2")) {
+                return None;
+            }
+            let op = s.trim_end_matches(&s[s.len() - 4..]).rsplit('-').next()?;
+            let f: crate::runner::TestFunctionMultiBlock = match (op, dram, width) {
+                ("Read", _, "128") => spd_read_128_multi,
+                ("Read", _, "256") => spd_read_256_multi,
+                ("Read", _, _) => spd_read_512_multi,
+                ("Write", false, "128") => spd_write_128_multi,
+                ("Write", false, "256") => spd_write_256_multi,
+                ("Write", false, _) => spd_write_512_multi,
+                ("Write", true, "128") => spd_write_nt_128_multi,
+                ("Write", true, "256") => spd_write_nt_256_multi,
+                ("Write", true, _) => spd_write_nt_512_multi,
+                ("Copy", false, "128") => spd_copy_128_multi,
+                ("Copy", false, "256") => spd_copy_256_multi,
+                ("Copy", false, _) => spd_copy_512_multi,
+                ("Copy", true, "128") => spd_copy_nt_128_multi,
+                ("Copy", true, "256") => spd_copy_nt_256_multi,
+                ("Copy", true, _) => spd_copy_nt_512_multi,
+                _ => return None,
+            };
+            Some(TestFunction::MultiBlock(f))
+        }
+
         // Bench-Init: Pattern generation throughput benchmarks
         "Bench-Init-TM5-0" | "Bench-Init-TM5-1" | "Bench-Init-TM5-2"
         | "Bench-Init-TMR-0" | "Bench-Init-TMR-1" | "Bench-Init-TMR-2"
