@@ -2726,47 +2726,70 @@ fn transient_if_none(errors: u64, test_name: &str, start: usize, end: usize) -> 
 /// TM5's strided walk (`mtests0.asm` ~336-394, TODO 93): runs `$body` once for each 64 B line of
 /// words `[$start, $end)` of `$ptr`, with `$offset` its first word. TM5 writes or reads a whole
 /// line, then jumps `64 x (Channels x Parameter - 1)` bytes, so a period of `$period` words (a line
-/// plus the jump) is touched one line at a time; each of its lines starts an interleave pass, and a
-/// pass steps a period at a time to the end. A macro, not a closure, so the SIMD variants' bodies
-/// keep their `#[target_feature]`.
+/// plus the jump) is touched one line at a time; each of its lines starts an interleave pass, the
+/// last line first, and a pass steps a period at a time to the end. A macro, not a closure, so the
+/// SIMD variants' bodies keep their `#[target_feature]`.
 ///
-/// Two changes from TM5, both for speed on chunks that don't fit in cache, where TM5's walk ran
-/// at half the speed of TMR's earlier word-per-jump walk (1usmus_v3 6:22 against 5:06):
-/// - Each step prefetches the line above, the one the next pass takes from this period. The
-///   word-per-jump walk read each line's words in 8 passes in a row, so the L1's next-line
-///   prefetcher fetched the line beside it; this fetches it explicitly. Likely why it pays: two
-///   lines in one DRAM row cost one row activation, not two, and a walk that opens a row per line
-///   is bound by activations.
-/// - The passes go up from the period's first line; TM5's count down from its last. Each pass is
-///   the same; only their order is reversed. Prefetching the line below for TM5's order was 0.74x
-///   the word-per-jump walk at 1usmus Test 13's shape, against 1.67x this way, and the two were
-///   within 6% at the other six shapes.
-///
-/// TM5's own prefetch, 8 periods on in the same pass, lands outside the chunk once the period nears
-/// the chunk's size, and a lookahead in walk order (8 to 32 steps) was slower than the next pass's
-/// line. Measured in TODO 93 (`doc/todo/93-strided-simpletest-lines.md`).
+/// What the walk is for: every access opens a new DRAM row, as many per second as the timings
+/// allow. So each step prefetches the line the walk reaches `STRIDED_AHEAD` steps on, a period or
+/// more away and so in another row, keeping requests queued without fetching neighbours together.
+/// TM5's descending order serves the same end: the L1's next-line prefetcher fetches the line above
+/// each one, which this order has already done. With passes going up instead and the line above
+/// prefetched, the walk ran 1.2x faster over 1usmus_v3's seven shapes and 1.9x at Test 13's, where
+/// a pass has 57 lines; likely in part by letting the hardware fetch neighbours together, fewer row
+/// openings per line, so its speed was no measure of the stress. See TODO 93's detail file.
 macro_rules! for_each_strided_line {
     ($ptr:expr, $start:expr, $end:expr, $period:expr, |$offset:ident| $body:block) => {{
         let (ptr, start, end, period): (*const u64, usize, usize, usize) = ($ptr, $start, $end, $period);
         debug_assert!(period.is_multiple_of(LINE_WORDS) && start.is_multiple_of(LINE_WORDS) && end.is_multiple_of(LINE_WORDS),
                       "the strided walk needs whole lines: {start}..{end} by {period}");
-        let mut first = start;
-        while first < start + period {
+        let ahead = strided_lookahead(start, end, period);
+        let mut first = start + period;
+        while first > start {
+            first -= LINE_WORDS;
+            let wrap = strided_wrap(first, end, period);
             let mut $offset = first;
             while $offset < end {
-                // In the last pass the line above is the next period's, or off the chunk: a wasted
-                // prefetch, not a fault
-                prefetch_line(ptr.wrapping_add($offset + LINE_WORDS));
+                // The walk's last steps prefetch off the chunk: a wasted prefetch, not a fault
+                prefetch_line(ptr.wrapping_add(strided_ahead($offset, ahead, end, wrap)));
                 $body
                 $offset += period;
             }
-            first += LINE_WORDS;
         }
     }};
 }
 
-/// Prefetches the line at `line` into the L2 and below (`prefetcht1`: ahead of `t0` on most
-/// strides, measured with TM5's pass order, TODO 93).
+/// How many steps ahead the strided walk prefetches. TM5 prefetches 8 periods on in the same pass
+/// (`prefetchnta [edi+esi]`), which lands outside the chunk once a pass has fewer than 8 lines. On
+/// 1usmus_v3's seven shapes (2026-10-08) the walk sped up to 64 steps and was flat from there to
+/// 256 (about level: two shapes moved 8% and 16%, opposite ways); 128 is the middle of it.
+const STRIDED_AHEAD: usize = 128;
+
+/// The strided walk's lookahead in words: `STRIDED_AHEAD` steps, but no more than the shortest
+/// pass has lines, so a step past a pass's end lands in the next pass.
+#[inline(always)]
+fn strided_lookahead(start: usize, end: usize, period: usize) -> usize {
+    STRIDED_AHEAD.min((end - start) / period) * period
+}
+
+/// For the pass whose first line is `first`: how far `strided_ahead` steps back to go from past
+/// this pass's end into the next pass, a line lower. The pass's lines, in words, plus one line.
+#[inline(always)]
+fn strided_wrap(first: usize, end: usize, period: usize) -> usize {
+    end.saturating_sub(first).div_ceil(period) * period + LINE_WORDS
+}
+
+/// The line `ahead` words of steps on from `offset` in the strided walk: on in this pass, or past
+/// its end, on into the next.
+#[inline(always)]
+fn strided_ahead(offset: usize, ahead: usize, end: usize, wrap: usize) -> usize {
+    let next = offset + ahead;
+    if next < end { next } else { next.wrapping_sub(wrap) }
+}
+
+/// Prefetches the line at `line` into the L2 and below. `prefetcht1`, not `t0`: at 128 steps on,
+/// `t0` was 0.79x `t1` at 1usmus Test 6's shape and 0.91x at Test 12's (likely the L1's few miss
+/// slots, which `t0` holds until the line arrives), and within 10% at the other five.
 #[inline(always)]
 fn prefetch_line(line: *const u64) {
     // SAFETY: SSE is in the x86-64-v3 baseline, and a prefetch neither faults nor writes, at any address
@@ -2983,7 +3006,7 @@ unsafe fn simple_test_v2_sequential(
 /// Strided SimpleTest v2 (TODO 93): TM5's strided SimpleTest (`mtests0.asm` ~336-394), the
 /// `for_each_strided_line!` walk. Each step writes or reads a whole 64 B line, then jumps the
 /// stride: TM5 Parameter 8 on 2 channels jumps 15 lines, so the period is 16 lines (1 KiB) and
-/// each chunk takes 16 interleave passes (in the opposite order to TM5's, see the macro). The image is the sequential test's: the per-word modes
+/// each chunk takes 16 interleave passes. The image is the sequential test's: the per-word modes
 /// (0, 1, 10, 11, 13) compute each word from its index, and the line modes (2, 12) both write
 /// mode 12's lines, hashed from each line's address, as mode 2's chain runs a page in order.
 #[doc = include_str!("test_fn_safety.md")]
@@ -4621,12 +4644,14 @@ pub fn get_test_function_by_name(name: &str) -> Option<crate::runner::TestFuncti
 
 #[cfg(test)]
 mod random_replay_tests {
-    use super::{accumulate_stride_4, prefetch_line, random_replay, rescan_stride, rescan_words, strided_period, verify_words, Mode12, Mode2};
+    use super::{accumulate_stride_4, prefetch_line, random_replay, rescan_stride, rescan_words, strided_ahead, strided_lookahead, strided_period,
+                strided_wrap, verify_words, Mode12, Mode2, STRIDED_AHEAD};
     use crate::pattern_gen::{LINE_WORDS, PAGE_WORDS};
 
-    /// TODO 93: TM5's strided walk touches each line once, a pass a period at a time, the passes
-    /// from the period's first line up (TM5's count down). Parameter 8 on 2 channels is 15 lines
-    /// of stride.
+    /// TODO 93: TM5's strided walk touches each line once, in TM5's order: the period's last line
+    /// first, each pass a period at a time. Parameter 8 on 2 channels is 15 lines of stride. Each
+    /// step prefetches the line the walk reaches `STRIDED_AHEAD` steps on, or as many as the
+    /// shortest pass has lines.
     #[test]
     fn the_strided_walk_is_tm5s() {
         let mem = [0u64; 1];
@@ -4635,17 +4660,36 @@ mod random_replay_tests {
             for_each_strided_line!(mem.as_ptr(), start, end, strided_period(stride), |offset| { lines.push(offset); });
             lines
         };
-        assert_eq!(walk(0, 6 * LINE_WORDS, 2 * LINE_WORDS), [0, 24, 8, 32, 16, 40]);
+        // The prefetch targets, by the walk's own loops
+        let targets = |start: usize, end: usize, stride: usize| {
+            let period = strided_period(stride);
+            let ahead = strided_lookahead(start, end, period);
+            let mut targets = Vec::new();
+            let mut first = start + period;
+            while first > start {
+                first -= LINE_WORDS;
+                let wrap = strided_wrap(first, end, period);
+                let mut offset = first;
+                while offset < end {
+                    targets.push(strided_ahead(offset, ahead, end, wrap));
+                    offset += period;
+                }
+            }
+            (targets, ahead / period)
+        };
+        assert_eq!(walk(0, 6 * LINE_WORDS, 2 * LINE_WORDS), [16, 40, 8, 32, 0, 24]);
         for (start, end, stride) in [(0, 4096, 15 * 8), (512, 4096 + 512, 15 * 8), (0, 4096 + 40, 15 * 8), (0, 4096, 63 * 8), (0, 512, 4095 * 8), (64, 128, 0)] {
             let lines = walk(start, end, stride);
             let period = strided_period(stride);
             let mut sorted = lines.clone();
             sorted.sort();
             assert_eq!(sorted, (start..end).step_by(LINE_WORDS).collect::<Vec<_>>(), "{start}..{end} by {stride}: each line once");
-            // The first pass starts the chunk and steps a period
-            assert_eq!(lines[0], start, "{start}..{end} by {stride}: the first line");
-            if period < end - start {
-                assert_eq!(lines[1], start + period, "{start}..{end} by {stride}: the second line");
+            // The last line of the first period, or of the chunk when the period is longer
+            assert_eq!(lines[0], (start + period - LINE_WORDS).min(end - LINE_WORDS), "{start}..{end} by {stride}: the first line");
+            let (targets, steps) = targets(start, end, stride);
+            assert_eq!(steps, STRIDED_AHEAD.min((end - start) / period), "{start}..{end} by {stride}: the lookahead");
+            for i in 0..lines.len().saturating_sub(steps) {
+                assert_eq!(targets[i], lines[i + steps], "{start}..{end} by {stride}: step {i} prefetches {steps} on");
             }
         }
     }

@@ -1,7 +1,7 @@
 # TODO 93. [TMR-APP] Strided SimpleTest: TM5 moves a 64 B block per jump, TMR one word
 
 Entry: `TODO_ARCHIVE.md` 93. Found 2026-10-06 in TODO 89's live runs; implemented 2026-10-07 on
-branch `todo85-74`.
+branch `todo85-74`; the prefetch settled 2026-10-08 (see "The goal").
 
 ## What TM5 does
 
@@ -29,11 +29,12 @@ their verify counted 1 error per chunk.
 ## What TMR does now
 
 - `for_each_strided_line!` (`tests.rs`): TM5's walk, one 64 B line per step, period
-  `strided_period(stride)` = stride + 1 line, each pass a period at a time to the chunk's end.
-  Every line once per pass over the chunk (`the_strided_walk_is_tm5s`). Two changes from TM5,
-  for speed (measurements below): the passes go **up** from the period's first line (TM5's count
-  down from its last), and each step prefetches the line above (`prefetcht1`), the one the next
-  pass takes.
+  `strided_period(stride)` = stride + 1 line, passes from the period's last line down, each a
+  period at a time to the chunk's end. Every line once per pass over the chunk
+  (`the_strided_walk_is_tm5s`). Each step prefetches (`prefetcht1`) the line the walk reaches
+  `STRIDED_AHEAD` = 128 steps on, carried into the next pass at a pass's end and capped at the
+  shortest pass's lines, so it stays in the chunk: TM5's own prefetch, which is 8 periods on in the
+  same pass and leaves the chunk once a pass has fewer than 8 lines.
 - The image is the sequential test's: modes 0, 1, 10, 11, 13 compute each word from its index;
   the scalar test's strided modes 2 and 12 write mode 12's lines (mode 2's chain runs a page in
   order, and the walk visits a page's lines a period apart). The SIMD variants keep their own
@@ -88,6 +89,12 @@ descending order needs the line below instead, and nothing fetches it. Adding pa
 points at DRAM row activations: two lines in one row cost one activation, and a walk that opens a
 new row for every line is bound by activations (tFAW, tRRD).
 
+*Revised 2026-10-08:* wrong for the steady state. The next pass's line is requested a whole pass
+later, after hundreds of other lines, so its row has closed by then: the software prefetch doesn't
+pair lines, it gets more requests in flight. It pairs only in each chunk's first pass, and where a
+pass is bigger than the L2 and the prefetched line is evicted before use. What may group lines is
+the hardware's own prefetching, which the pass order invites or not. See "The goal".
+
 **Round 13, TM5's order with the line below prefetched** (`prefetcht1`): the sweep 1.62, 0.84,
 0.94, 1.61, 1.44 (41.5 s against 48 s). 1usmus_v3 4:49 and 4:39 against head's 5:08 and 5:02: Test 6
 1.59, Test 12 1.61, Test 10 1.47, Test 11 1.13, Test 8 0.94, Test 2 0.88, but **Test 13 0.76**
@@ -115,22 +122,68 @@ streams (the L1's next-line prefetcher only goes up), so they join in.
 **Round 15, Check_absolutnew Test 15's shape** (P 256, 1.5 GiB chunks, three runs each): head 1.00,
 TM5 order 0.98, ascending 1.00. Test 2's shape again: TM5 order 0.95, ascending 0.89.
 
-**Round 16, the final build** (ascending, line above; two runs each): 1usmus_v3 4:22 and 4:33
+**Round 16, ascending with the line above** (committed 2026-10-07; two runs each): 1usmus_v3 4:22 and 4:33
 against head's 5:20 and 5:14, step times 267 s against 317 s. Test 12 1.91, Test 13 1.87, Test 10
 1.62, Test 6 1.59, Test 11 1.12, Test 2 1.01, Test 8 0.97; the sequential and mirror steps 0.95-1.09.
 The seven shapes: 1.88, 0.94, 0.96, 1.65, 1.60, 1.83, 1.16. Every run 0 errors, 0 seal errors.
 Check_absolutnew wasn't rerun on this build: its one strided shape tied in round 15, and the rest
 of its steps don't use the walk.
 
-## Decision for the user
+## The goal (decided with the user, 2026-10-08)
 
-Two departures from TM5's walk, both measured, each one edit to undo in `for_each_strided_line!`:
+What the strided walk is for: every access opens a new DRAM row, as many per second as the
+timings allow. Neither misses nor speed is the aim in itself. A core stalled on a miss leaves the
+memory controller idle; the timings (tRCD, tRP, tRAS, tRC, tRRD, tFAW) are pushed only when it
+has requests queued for other rows. And a walk can get faster in two ways that timing can't tell
+apart: more row openings per second, or more bytes per opening, when neighbouring lines arrive
+together from one open row.
 
-- **The prefetch** changes the DRAM command pattern: every pass's lines come in pairs from one
-  row, as head's word-per-jump walk's did (by the hardware prefetcher). TM5's walk on the same
-  CPU pairs fewer: at most half, and only if the CPU's adjacent-line prefetcher is on (not checked
-  on the dev box). Without it the walk opens a row per line, TM5's pattern, at round 6's speed.
-- **The pass order** is reversed. Each pass is TM5's; only the order of the passes differs.
+So the walk should make grouping unlikely by construction, and then the fastest setting is the
+most stressful one, measurable by time alone (no counters in the VM):
+
+- TM5's descending order: the L1's next-line prefetcher fetches the line above each one, which
+  this order has already done, so it can't hand the walk neighbours.
+- A prefetch to lines in other rows (the walk's own steps ahead, a period or more away), so
+  requests stay queued without grouping.
+
+Ascending passes with the line above prefetched (the build committed 2026-10-07) were faster,
+1.2x over the seven shapes and 1.9x at Test 13's (57 lines a pass, so each page comes round every
+57 steps, short enough for the L2's stream prefetcher to learn it and fetch neighbours ahead).
+Likely in part by grouping, so that speed didn't measure the stress. Head's word-per-jump walk is
+ascending too.
+
+**Round 17, after a reboot (TM5's order, `prefetcht0`, lookahead 32 to 256 steps; two runs each,
+against head's walk):**
+
+| P, chunk | ascending + line above | 32 | 64 | 128 | 256 |
+|---|---|---|---|---|---|
+| 787, 32 MiB | 1.56 | 1.12 | 1.26 | 1.27 | 1.37 |
+| 254, 32 MiB | 0.98 | 0.98 | 1.03 | 1.06 | 1.20 |
+| 358, 880 MiB | 0.92 | 0.68 | 0.68 | 0.68 | 0.67 |
+| 125, 432 MiB | 1.62 | 1.27 | 1.28 | 1.29 | 1.18 |
+| 477, 8 MiB | 1.57 | 1.32 | 1.38 | 1.52 | 1.49 |
+| 8968, 64 MiB | 1.64 | 0.72 | 0.93 | 0.93 | 0.88 |
+| 8568, 16 MiB | 1.15 | 1.03 | 1.03 | 1.05 | 1.05 |
+
+Level from 64 steps, so lead time isn't the limit there.
+
+**Round 18, `prefetcht1`**: at 128 steps 1.50, 1.01, 0.71, 1.63, 1.38, 0.93, 1.03 (`t0` 1.36,
+1.07, 0.69, 1.28, 1.52, 0.88, 1.03); 256 steps with `t1` the same as 128. `t1` closes the gap to
+the ascending build at Test 6's shape (1.63 against 1.62) and most of it at Test 12's; likely the
+L1's few miss slots, which `t0` holds until the line arrives. At Test 13's shape the lookahead is
+capped at the pass's 57 lines, which in TM5's order is the line below: the same as round 14's
+0.74, so the gap there is the pass order. At Test 8's (880 MiB) nothing tried reached head's walk.
+
+**Round 19, the chosen build** (TM5's order, 128 steps, `t1`; two runs each): 1usmus_v3 5:12 and
+5:07 against head's 5:22 and 5:14 (step times 309 s against 317 s): Test 6 1.63, Test 12 1.39,
+Test 10 1.37, Test 11 1.13, Test 2 0.94, Test 13 0.90, Test 8 0.73; the sequential and mirror
+steps 0.98-1.05. Check_absolutnew Test 15's shape (P 256, 1.5 GiB chunks): 0.84 (the ascending
+build 1.05), about 2.5 min more on its 33. Every run 0 errors, 0 seal errors.
+
+Still open: why the very large chunks (880 MiB, 1.5 GiB: over 20k lines a pass) are slower than
+head's walk. A check without counters, on a physical box: run head's walk and this one with the
+hardware prefetchers off in the BIOS. If head's walk falls back to this one's speed, its lead there
+came from the hardware prefetchers.
 
 ## Not done
 
