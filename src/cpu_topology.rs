@@ -192,68 +192,109 @@ pub fn is_hybrid_cpu(topology: &[CpuTopologyInfo]) -> bool {
     has_multiple_classes || has_both_core_types
 }
 
-// Main detection function that tries multiple methods
+/// The default detector: the cores and their threads from `GetLogicalProcessorInformationEx`
+/// (`detect_cpu_topology`), each core's type from `classify_core_types`.
 pub fn detect_cpu_topology_auto() -> Vec<CpuTopologyInfo> {
-    log::info!("*** ENTERED detect_cpu_topology_auto ***");
-    
-    // Method 1: Try V2 first (scheduling classes - most reliable for modern CPUs)
-    log::info!("Method 1: Trying Windows API V2 (scheduling classes)...");
-    let topology = detect_cpu_topology_v2();
-    
-    // Check if we got differentiation
-    let core_types: HashSet<_> = topology.iter().map(|cpu| &cpu.core_type).collect();
-    let has_unknown = core_types.contains(&CoreType::Unknown);
-    let has_multiple_types = core_types.len() > 1;
-    
-    if has_multiple_types && !has_unknown {
-        log::info!("✓ Successfully detected heterogeneous cores using scheduling classes");
-        return topology;
+    let mut topology = detect_cpu_topology();
+    let efficiency: HashMap<usize, u8> = topology.iter().map(|cpu| (cpu.physical_core_id, cpu.efficiency_class)).collect();
+    let amd = if efficiency_classes_vary(&efficiency) { None } else { amd_cpuid_core_types(&topology) };
+    let types = classify_core_types(&efficiency, amd.as_ref());
+    let source = if efficiency_classes_vary(&efficiency) {
+        "efficiency class"
+    } else if amd.is_some() {
+        "AMD CPUID 0x80000026 core type"
+    } else {
+        "none: every core the same type"
+    };
+    log::info!("Core types from {source}");
+    for cpu in &mut topology {
+        cpu.core_type = types.get(&cpu.physical_core_id).copied().unwrap_or(CoreType::Unknown);
     }
+    topology
+}
 
-    // Method 2: If all else fails, try the basic Windows API
-    log::info!("Method 2: Trying basic Windows API (efficiency class)...");
-    let topology = detect_cpu_topology();
-    
-    let core_types: HashSet<_> = topology.iter().map(|cpu| &cpu.core_type).collect();
-    let has_unknown = core_types.contains(&CoreType::Unknown);
-    let has_multiple_types = core_types.len() > 1;
-    
-    if has_multiple_types && !has_unknown {
-        log::info!("✓ Successfully detected heterogeneous cores using efficiency class");
-		return topology;
-     }
-		
-	// Method 3: Try CPUID cache detection (without fallback)
-    log::info!("Method 3: Trying CPUID cache-based detection...");
-    let topology = detect_cpu_topology_cpuid();
-    
-    let core_types: HashSet<_> = topology.iter().map(|cpu| &cpu.core_type).collect();
-    let has_unknown = core_types.contains(&CoreType::Unknown);
-    let has_multiple_types = core_types.len() > 1;
-    
-    if has_multiple_types && !has_unknown {
-        log::info!("✓ Successfully detected heterogeneous cores using cache differences");
-        topology
-	} else {
-        // Log what we ended up with
-        let physical_cores = topology.iter()
-            .map(|cpu| cpu.physical_core_id)
-            .collect::<HashSet<_>>()
-            .len();
-            
-        log::warn!("✗ Unable to differentiate core types for {} physical cores", physical_cores);
-        log::warn!("  All cores will be treated as the same type");
-        log::info!("  This is common for non-hybrid CPUs or when Windows doesn't expose differences");
-        
-        // For uniform systems, treat all cores as Performance cores instead of Efficiency cores
-        let mut updated_topology = topology;
-        for cpu in &mut updated_topology {
-            if matches!(cpu.core_type, CoreType::Efficiency(_)) {
-                cpu.core_type = CoreType::Performance(0);
-            }
-        }
-        updated_topology
+/// Whether the efficiency classes Windows reports differ between cores (0xFF, "not specified",
+/// left out).
+fn efficiency_classes_vary(efficiency: &HashMap<usize, u8>) -> bool {
+    efficiency.values().filter(|&&class| class != 0xFF).collect::<HashSet<_>>().len() > 1
+}
+
+/// Each physical core's type. From the efficiency class Windows reports when it varies (Intel's
+/// P- and E-cores, and any CPU Windows itself treats as hybrid): the highest class is the
+/// performance cores, each lower one an efficiency tier, the lowest tier 0. Else from AMD's CPUID
+/// core type (`amd`: 0 performance, 1 efficiency), given only when the CPU says its cores differ.
+/// Else every core is a performance core.
+///
+/// Scheduling classes are not a core type. On a uniform AMD part they are its preferred-core
+/// (CPPC) ranking, about one class per boost rank, and reading them as types made a Ryzen 5 8600G
+/// "2 P-cores + 4 E-cores" and a Ryzen 7 5700X "2 + 6".
+pub fn classify_core_types(efficiency: &HashMap<usize, u8>, amd: Option<&HashMap<usize, u8>>) -> HashMap<usize, CoreType> {
+    if efficiency_classes_vary(efficiency) {
+        let mut classes: Vec<u8> = efficiency.values().copied().filter(|&class| class != 0xFF).collect();
+        classes.sort_unstable();
+        classes.dedup();
+        let top = *classes.last().expect("the classes vary, so there are some");
+        return efficiency.iter().map(|(&core, &class)| {
+            let core_type = if class == 0xFF {
+                CoreType::Unknown
+            } else if class == top {
+                CoreType::Performance(0)
+            } else {
+                CoreType::Efficiency(classes.iter().position(|&c| c == class).unwrap_or(0) as u8)
+            };
+            (core, core_type)
+        }).collect();
     }
+    if let Some(amd) = amd {
+        return efficiency.keys().map(|&core| {
+            let core_type = match amd.get(&core) {
+                Some(0) => CoreType::Performance(0),
+                Some(1) => CoreType::Efficiency(0),
+                _ => CoreType::Unknown,
+            };
+            (core, core_type)
+        }).collect();
+    }
+    efficiency.keys().map(|&core| (core, CoreType::Performance(0))).collect()
+}
+
+/// AMD's type for each physical core, from CPUID leaf 0x80000026 (Extended CPU Topology): EAX bit 30
+/// (HeterogeneousCores) says the cores differ, and EBX bits 31:28 are each core's type, 0 for
+/// performance and 1 for efficiency (Zen 5 with Zen 5c; whether Zen 4c parts set it is unchecked).
+/// None unless the CPU is AMD, has the leaf, and sets that bit. Each core is read on its first
+/// logical CPU, from a short-lived thread pinned there by group, so above 64 CPUs too and without
+/// touching the caller's affinity.
+fn amd_cpuid_core_types(topology: &[CpuTopologyInfo]) -> Option<HashMap<usize, u8>> {
+    use std::arch::x86_64::{__cpuid, __cpuid_count};
+    use windows::Win32::System::SystemInformation::GROUP_AFFINITY;
+    use windows::Win32::System::Threading::{GetCurrentThread, SetThreadGroupAffinity};
+
+    if CpuId::new().get_vendor_info().is_none_or(|vendor| vendor.as_str() != "AuthenticAMD") {
+        return None;
+    }
+    // Note: __cpuid and __cpuid_count are safe in edition 2024
+    if __cpuid(0x8000_0000).eax < 0x8000_0026 || __cpuid_count(0x8000_0026, 0).eax & (1 << 30) == 0 {
+        return None;
+    }
+    let mut first_cpu: HashMap<usize, usize> = HashMap::new();
+    for cpu in topology {
+        first_cpu.entry(cpu.physical_core_id).or_insert(cpu.logical_id);
+    }
+    std::thread::scope(|scope| {
+        scope.spawn(|| {
+            let mut types = HashMap::new();
+            for (&core, &logical) in &first_cpu {
+                let target = GROUP_AFFINITY { Mask: 1usize << (logical % 64), Group: (logical / 64) as u16, Reserved: [0; 3] };
+                // SAFETY: this thread's own pseudo-handle, and a GROUP_AFFINITY that outlives the call
+                if !unsafe { SetThreadGroupAffinity(GetCurrentThread(), &target, None) }.as_bool() {
+                    log::warn!("Could not pin to logical CPU {logical} to read its core type");
+                    return None;
+                }
+                types.insert(core, (__cpuid_count(0x8000_0026, 0).ebx >> 28) as u8);
+            }
+            Some(types)
+        }).join().ok().flatten()
+    })
 }
 
 pub fn detect_cpu_topology_cpuid() -> Vec<CpuTopologyInfo> {
@@ -1053,4 +1094,47 @@ pub fn show_complete_topology_mapping() {
     println!("\nLegend:");
     println!("  Sched: Scheduling class (higher = performance priority)");
     println!("  NUMA: Non-Uniform Memory Access node");
+}
+#[cfg(test)]
+mod tests {
+    use super::{classify_core_types, detect_cpu_topology_auto, CoreType};
+    use std::collections::HashMap;
+
+    fn by_core(values: &[u8]) -> HashMap<usize, u8> {
+        values.iter().copied().enumerate().collect()
+    }
+
+    fn types(efficiency: &[u8], amd: Option<&[u8]>) -> Vec<CoreType> {
+        let amd = amd.map(by_core);
+        let types = classify_core_types(&by_core(efficiency), amd.as_ref());
+        (0..efficiency.len()).map(|core| types[&core]).collect()
+    }
+
+    /// TODO 96: a core's type comes from the efficiency class when it varies, else from AMD's
+    /// CPUID core type, else every core is a performance core; never from a scheduling class.
+    #[test]
+    fn core_types_come_from_efficiency_class_or_amd_cpuid() {
+        use CoreType::{Efficiency as E, Performance as P};
+        // Uniform: the 8600G, the 5700X, an EPYC VM all report efficiency class 0 on every core
+        assert_eq!(types(&[0; 6], None), [P(0); 6]);
+        // Intel hybrid: P-cores 1, E-cores 0
+        assert_eq!(types(&[1, 1, 0, 0, 0, 0], None), [P(0), P(0), E(0), E(0), E(0), E(0)]);
+        // Three classes (Meteor Lake's LP E-cores): the lowest is efficiency tier 0
+        assert_eq!(types(&[2, 1, 0], None), [P(0), E(1), E(0)]);
+        // "Not specified" is Unknown, and doesn't make the classes vary
+        assert_eq!(types(&[0xFF, 1, 0], None), [CoreType::Unknown, P(0), E(0)]);
+        assert_eq!(types(&[0xFF, 0, 0], None), [P(0); 3]);
+        // AMD heterogeneous (Zen 5 + Zen 5c), efficiency classes uniform
+        assert_eq!(types(&[0; 4], Some(&[0, 0, 1, 1])), [P(0), P(0), E(0), E(0)]);
+        // Varying efficiency classes win over AMD's core types
+        assert_eq!(types(&[1, 0], Some(&[0, 0])), [P(0), E(0)]);
+    }
+
+    /// TODO 96: on the machine running the tests every core gets a type, one entry per logical CPU.
+    #[test]
+    fn detection_types_every_core_here() {
+        let topology = detect_cpu_topology_auto();
+        assert_eq!(topology.len(), num_cpus::get());
+        assert!(topology.iter().all(|cpu| cpu.core_type != CoreType::Unknown), "{topology:?}");
+    }
 }
