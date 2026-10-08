@@ -196,12 +196,16 @@ physical cores. Step-time totals for the sweep:
 | Intel VM (Xeon, DDR5; rounds 14 and 17-18) | 55 s | 81-85 s | 45 s | 53-54 s |
 | petz007: Ryzen 5 8600G (Zen 4), 2 x 16 GiB DDR5-6000, 1 GiB pages | 54.5 s | 49 s | 50.5 s | 44.5 s |
 | daddy-petz: Ryzen 7 5700X (Zen 3), 4 x 16 GiB DDR4-3600, 2 MiB pages | 93.5 s | 84 s | 96 s | 82 s |
+| US dev host: EPYC 9R45 (Zen 5 Turin), m8a.4xlarge VM, 16 cores, 1 GiB pages | 72 s | 65 s | 68 s | 60 s |
 
 On both AMD machines the final walk is the fastest, and TM5's order is faster than head's walk even
 without a prefetch. The ascending walk's lead is Intel's alone (on the 5700X it is 0.74x head at the
-880 MiB shape), consistent with it coming from Intel's prefetchers. AMD uProf (5.3) gave no memory
-counters on the 8600G: only per-core metrics, `-m memory` "unsupported", and no row-activation
-counter at all, so the walks' row openings stay unmeasured.
+880 MiB shape, and on the EPYC too), consistent with it coming from Intel's prefetchers. AMD uProf
+(5.3) gave no memory counters on the 8600G: only per-core metrics, `-m memory` "unsupported". On the
+EPYC it lists memory-controller (`umc`) metrics but refuses them in a VM ("Only Core metrics are
+supported for Guest VM"), and its core prefetch-fill counters there were unusable (identical work
+reported 103 to 1,662 billion instructions). So the walks' row openings stay unmeasured; an m8a
+metal instance (uProf `umc`) or an Intel metal one (VTune) would measure them.
 
 **Errors found, petz007** (DDR5-6000 on a CPU rated for DDR5-5200; P 358 over 880 MiB chunks, three
 tests a run; all transient, the reread clean):
