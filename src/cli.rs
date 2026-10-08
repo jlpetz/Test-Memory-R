@@ -717,9 +717,10 @@ fn run() -> Result<(), Box<dyn std::error::Error>> {
     }
 	
     // Calculate CPU/thread count
+	// From TMR's topology, which covers every processor group (num_cpus sees only one: 64 CPUs)
 	let total_cpus = match cputype.as_str() {
-		"cores" => num_cpus::get_physical(),
-		_ => num_cpus::get(),
+		"cores" => crate::cpu_topology::physical_core_count(),
+		_ => crate::cpu_topology::logical_cpu_ids().len(),
 	};
 
 	// When using cores mode, we should automatically avoid SMT doubling

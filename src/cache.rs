@@ -58,7 +58,8 @@ impl Default for CacheInfo {
 
 impl CacheInfo {
     pub fn detect() -> Self {
-        let physical_cores = num_cpus::get_physical();
+        // Every processor group (num_cpus sees only one)
+        let physical_cores = crate::cpu_topology::physical_core_count();
 
         // Detect TSC frequency using the new multi-method detection
         let tsc_info = TscInfo::detect();
@@ -182,8 +183,9 @@ impl SystemInfo {
             (0, 0, 0)
         };
 
-        let physical_cores = num_cpus::get_physical();
-        let logical_cores = num_cpus::get();
+        // Every processor group (num_cpus sees only one)
+        let physical_cores = crate::cpu_topology::physical_core_count();
+        let logical_cores = crate::cpu_topology::logical_cpu_ids().len();
         let has_hyperthreading = logical_cores > physical_cores;
 
         let cache_info = CacheInfo::detect();

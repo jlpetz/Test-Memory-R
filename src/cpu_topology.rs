@@ -6,7 +6,8 @@ use raw_cpuid::CpuId;
 
 use windows::Win32::System::SystemInformation::{
     GetLogicalProcessorInformationEx,
-    RelationNumaNode,
+    RelationNumaNode, RelationNumaNodeEx,
+    GROUP_AFFINITY,
     SYSTEM_LOGICAL_PROCESSOR_INFORMATION_EX,
 };
 
@@ -121,6 +122,19 @@ pub fn get_cpu_topology() -> &'static Vec<CpuTopologyInfo> {
         
         topology
     })
+}
+
+/// Physical cores across every processor group. `num_cpus::get_physical()` sees only the calling
+/// thread's group on Windows (64 CPUs), so on a 192-CPU m8a.48xlarge TMR started 64 threads.
+pub fn physical_core_count() -> usize {
+    get_cpu_topology().iter().map(|cpu| cpu.physical_core_id).collect::<HashSet<_>>().len()
+}
+
+/// Logical CPUs across every processor group, in TMR's numbering (group * 64 + bit), ascending.
+pub fn logical_cpu_ids() -> Vec<usize> {
+    let mut ids: Vec<usize> = get_cpu_topology().iter().map(|cpu| cpu.logical_id).collect();
+    ids.sort_unstable();
+    ids
 }
 
 /// Physical-core id for a logical CPU, from the real detected topology (the same source the
@@ -820,7 +834,8 @@ pub fn get_system_cpu_set_information() -> Result<Vec<EnhancedCpuInfo>, String> 
             let physical_core_index = logical_index / 2; // Assuming SMT with 2 threads per core
             
             cpu_infos.push(EnhancedCpuInfo {
-                logical_processor_index: info.Anonymous.CpuSet.LogicalProcessorIndex as u32,
+                // Group-relative in the API; TMR numbers CPUs group * 64 + index
+                logical_processor_index: info.Anonymous.CpuSet.Group as u32 * 64 + info.Anonymous.CpuSet.LogicalProcessorIndex as u32,
                 core_index: physical_core_index,  // Now it's u32
                 numa_node: info.Anonymous.CpuSet.NumaNodeIndex as u32,
                 efficiency_class: info.Anonymous.CpuSet.EfficiencyClass,
@@ -837,13 +852,22 @@ pub fn get_system_cpu_set_information() -> Result<Vec<EnhancedCpuInfo>, String> 
 // Modern NUMA topology discovery
 pub fn discover_numa_topology() -> Result<NumaTopology, String> {
     unsafe {
+        // RelationNumaNodeEx: each node with every processor group it spans (GroupCount masks).
+        // RelationNumaNode gives only a node's primary group, so on a node over 64 CPUs (an
+        // m8a.48xlarge: 96 per node, group 1 split between both) the rest defaulted to node 0.
+        let mut relation = RelationNumaNodeEx;
         let mut buffer_size = 0u32;
-        
+
         let _ = GetLogicalProcessorInformationEx(
-            RelationNumaNode,
+            relation,
             None,
             &mut buffer_size,
         );
+        if buffer_size == 0 {
+            // Before RelationNumaNodeEx existed: primary groups only
+            relation = RelationNumaNode;
+            let _ = GetLogicalProcessorInformationEx(relation, None, &mut buffer_size);
+        }
         
         if buffer_size == 0 {
             return Ok(NumaTopology {
@@ -856,7 +880,7 @@ pub fn discover_numa_topology() -> Result<NumaTopology, String> {
         let mut buffer = vec![0u64; (buffer_size as usize).div_ceil(std::mem::size_of::<u64>())];
 
         GetLogicalProcessorInformationEx(
-            RelationNumaNode,
+            relation,
             Some(buffer.as_mut_ptr() as *mut SYSTEM_LOGICAL_PROCESSOR_INFORMATION_EX),
             &mut buffer_size,
         ).map_err(|e| format!("Failed to get NUMA topology: {:?}", e))?;
@@ -868,18 +892,18 @@ pub fn discover_numa_topology() -> Result<NumaTopology, String> {
         while offset < buffer_size as usize {
             let info = &*(base.add(offset) as *const SYSTEM_LOGICAL_PROCESSOR_INFORMATION_EX);
             
+            // Both requests return their nodes as RelationNumaNode records
             if info.Relationship == RelationNumaNode {
                 let numa_info = &info.Anonymous.NumaNode;
                 let node_id = numa_info.NodeNumber;
-                
-                let group_affinity = &numa_info.Anonymous.GroupMask;
-                let group = group_affinity.Group;
-                let mask = group_affinity.Mask;
-                
-                for bit in 0..64 {
-                    if (mask & (1u64 << bit) as usize) != 0 {
-                        let cpu_id = (group as u32 * 64) + bit;
-                        cpu_to_node.insert(cpu_id, node_id);
+                // GroupCount masks follow in the record (0 from the older request: one mask)
+                let masks = &raw const numa_info.Anonymous.GroupMasks as *const GROUP_AFFINITY;
+                for i in 0..(numa_info.GroupCount as usize).max(1) {
+                    let group_affinity = &*masks.add(i);
+                    for bit in 0..64 {
+                        if (group_affinity.Mask & (1usize << bit)) != 0 {
+                            cpu_to_node.insert(group_affinity.Group as u32 * 64 + bit, node_id);
+                        }
                     }
                 }
             }
@@ -1058,11 +1082,11 @@ pub fn show_complete_topology_mapping() {
             .1.push(cpu.logical_id);
     }
     
-    // Get scheduling classes if available
-    let mut core_sched_map: HashMap<u32, u8> = HashMap::new();
+    // Scheduling classes by CPU (a core's first CPU stands for it)
+    let mut cpu_sched_map: HashMap<usize, u8> = HashMap::new();
     if let Ok(cpu_sets) = get_system_cpu_set_information() {
         for cpu_set in &cpu_sets {
-            core_sched_map.insert(cpu_set.core_index, cpu_set.scheduling_class);
+            cpu_sched_map.insert(cpu_set.logical_processor_index as usize, cpu_set.scheduling_class);
         }
     }
     
@@ -1077,7 +1101,7 @@ pub fn show_complete_topology_mapping() {
             .collect::<Vec<_>>()
             .join(",");
         
-        let sched_class = core_sched_map.get(&(phys_core as u32))
+        let sched_class = cpu_sched_map.get(&logicals[0])
             .map(|s| s.to_string())
             .unwrap_or_else(|| "?".to_string());
         
@@ -1130,11 +1154,14 @@ mod tests {
         assert_eq!(types(&[1, 0], Some(&[0, 0])), [P(0), E(0)]);
     }
 
-    /// TODO 96: on the machine running the tests every core gets a type, one entry per logical CPU.
+    /// TODO 96: on the machine running the tests every core gets a type, one entry per logical CPU
+    /// in every processor group.
     #[test]
     fn detection_types_every_core_here() {
+        use windows::Win32::System::Threading::{GetActiveProcessorCount, ALL_PROCESSOR_GROUPS};
         let topology = detect_cpu_topology_auto();
-        assert_eq!(topology.len(), num_cpus::get());
+        // SAFETY: a plain query
+        assert_eq!(topology.len(), unsafe { GetActiveProcessorCount(ALL_PROCESSOR_GROUPS) } as usize);
         assert!(topology.iter().all(|cpu| cpu.core_type != CoreType::Unknown), "{topology:?}");
     }
 }

@@ -4040,9 +4040,9 @@ pub fn detect_runtime_capabilities(alloc_config: &MemoryAllocationConfig) -> Run
         memory_backend,
         large_pages_available,
         cpu_list: {
-            // Use all available CPUs by default
-            let total_cpus = num_cpus::get();
-            Some((0..total_cpus).collect())
+            // Every CPU by default, in TMR's numbering (group * 64 + bit: not 0..n once a
+            // processor group is short of 64)
+            Some(crate::cpu_topology::logical_cpu_ids())
         },
         pin_threads: true,
         enhanced_memory_strategy: crate::memory::allocation_strategy::EnhancedMemoryStrategy::default(),
@@ -4057,17 +4057,29 @@ pub fn pin_thread_to_cpu_with_config(thread_id: usize, cpu_id: usize, enable: bo
     }
     
     use windows::Win32::System::Threading::{
-        SetThreadAffinityMask, SetThreadIdealProcessorEx, GetCurrentThread
+        SetThreadGroupAffinity, SetThreadIdealProcessorEx, GetCurrentThread, GetCurrentProcessorNumberEx
     };
     use windows::Win32::System::Kernel::PROCESSOR_NUMBER;
-    
+    use windows::Win32::System::SystemInformation::GROUP_AFFINITY;
+
     unsafe {
         let thread_handle = GetCurrentThread();
-        
-        // Method 1: Set thread affinity mask (hard pinning)
-        let affinity_mask = 1u64 << cpu_id;
-        if SetThreadAffinityMask(thread_handle, affinity_mask as usize) == 0 {
-            return Err(format!("SetThreadAffinityMask failed for thread {} CPU {}", thread_id, cpu_id));
+
+        // Method 1: hard pinning, in the CPU's own processor group. TMR numbers CPUs
+        // group * 64 + bit (cpu_topology), and SetThreadAffinityMask only reaches the thread's
+        // current group: above CPU 63 its 1 << cpu wrapped, stacking workers on group 0's CPUs.
+        let target = GROUP_AFFINITY { Mask: 1usize << (cpu_id % 64), Group: (cpu_id / 64) as u16, Reserved: [0; 3] };
+        if !SetThreadGroupAffinity(thread_handle, &target, None).as_bool() {
+            return Err(format!("SetThreadGroupAffinity failed for thread {} CPU {} (group {}, bit {})",
+                               thread_id, cpu_id, cpu_id / 64, cpu_id % 64));
+        }
+        // Check where the thread now runs: once per worker, and the only proof the pinning held
+        std::thread::yield_now();
+        let now = GetCurrentProcessorNumberEx();
+        let running_on = now.Group as usize * 64 + now.Number as usize;
+        if running_on != cpu_id {
+            log::warn!("Thread {} pinned to CPU {} but running on CPU {} (group {}, number {})",
+                       thread_id, cpu_id, running_on, now.Group, now.Number);
         }
         
         // Method 2: Set ideal processor (soft preference)
@@ -4084,7 +4096,7 @@ pub fn pin_thread_to_cpu_with_config(thread_id: usize, cpu_id: usize, enable: bo
                 Ok(cpu_id)
             },
             Err(e) => {
-                log::warn!("SetThreadIdealProcessorEx failed for thread {} CPU {}: {:?}, but affinity mask succeeded", 
+                log::warn!("SetThreadIdealProcessorEx failed for thread {} CPU {}: {:?}, but the group affinity succeeded",
                     thread_id, cpu_id, e);
                 Ok(cpu_id) // Affinity mask succeeded, so still return success
             }
