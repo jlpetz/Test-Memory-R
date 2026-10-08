@@ -185,6 +185,39 @@ head's walk. A check without counters, on a physical box: run head's walk and th
 hardware prefetchers off in the BIOS. If head's walk falls back to this one's speed, its lead there
 came from the hardware prefetchers.
 
+## On physical AMD machines (2026-10-08)
+
+The same four builds (head's walk, TM5's order without a prefetch, ascending with the line above,
+the final one) on the seven 1usmus shapes (`sweep93_all.json`), two runs each, memory=50%, all
+physical cores. Step-time totals for the sweep:
+
+| Machine | head | TM5 order, no prefetch | ascending + above | final |
+|---|---|---|---|---|
+| Intel VM (Xeon, DDR5; rounds 14 and 17-18) | 55 s | 81-85 s | 45 s | 53-54 s |
+| petz007: Ryzen 5 8600G (Zen 4), 2 x 16 GiB DDR5-6000, 1 GiB pages | 54.5 s | 49 s | 50.5 s | 44.5 s |
+| daddy-petz: Ryzen 7 5700X (Zen 3), 4 x 16 GiB DDR4-3600, 2 MiB pages | 93.5 s | 84 s | 96 s | 82 s |
+
+On both AMD machines the final walk is the fastest, and TM5's order is faster than head's walk even
+without a prefetch. The ascending walk's lead is Intel's alone (on the 5700X it is 0.74x head at the
+880 MiB shape), consistent with it coming from Intel's prefetchers. AMD uProf (5.3) gave no memory
+counters on the 8600G: only per-core metrics, `-m memory` "unsupported", and no row-activation
+counter at all, so the walks' row openings stay unmeasured.
+
+**Errors found, petz007** (DDR5-6000 on a CPU rated for DDR5-5200; P 358 over 880 MiB chunks, three
+tests a run; all transient, the reread clean):
+
+| Walk | Tests | Errors | Per 100 tests | Per hour |
+|---|---|---|---|---|
+| head | 41 | 0 | 0 | 0 |
+| TM5 order, no prefetch | 41 | 4 | 9.8 | 42 |
+| ascending + above | 32 | 2 | 6.2 | 19 |
+| final | 41 | 2 | 4.9 | 23 |
+
+The line walks found 8 in 114 tests and head's walk none in 41; at the line walks' rate it would have
+found about 3, and none happens by chance about 3-5% of the time. So the line walk catches errors
+the word-per-jump walk missed on this machine. The counts can't rank the three line walks.
+daddy-petz ran clean (8 runs).
+
 ## Not done
 
 - Mode 2's strided image is mode 12's, not TM5's walk-order chain: a walk-order image isn't
