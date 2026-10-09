@@ -21,12 +21,15 @@ These modes replicate TM5's proven error detection patterns, modernized for 64-b
 
 **TM5 origin**: `ST_GeneratePattern` in `mtests0.asm` (1805-1869), which is test 0's
 `RS_GeneratePattern` plus one `xchg`.
-- It runs once per block: a 16-bit word `d` from the block's first page number becomes a 48 B
-  motif `[q0, !q0, q1, !q1, q2, !q2]`, each `q` four rotations of `d`. On an even page `d` and its
-  inverse swap. The motif then fills the whole block, the same on all 4 write passes (the `+wrc`
-  can't change a page-aligned page number): 6 distinct words per block.
-- On a 64-bit bus every other beat flips all 64 lines (46.7 of 64 on average). On DDR5's 32-bit
-  beats it flips 15.7 of 32, the same as random data.
+- It runs once per block: a 16-bit word `d` from the block's first page number becomes three
+  16 B registers `[q0, !q0]`, `[q1, !q1]`, `[q2, !q2]`, each `q` four rotations of `d`. On an even
+  page `d` and its inverse swap.
+- Each 64 B line is the three registers and the first again (the write loop, `mtests0.asm`
+  364-389): `q0 !q0 q1 !q1 q2 !q2 q0 !q0`. Every line of the block is that same line, on all 4
+  write passes (the `+wrc` can't change a page-aligned page number): 6 distinct words per block.
+  Mode 1 inverts the three registers every line; mode 2 multiplies their 16-bit lanes.
+- Inside a line's burst, on a 64-bit bus, 49.1 of 64 lines flip a beat on average. On DDR5's
+  32-bit beats it is 15.7 of 32, the same as random data.
 
 **TMR's version is not TM5's bits.** It writes a pseudo-random word everywhere, seeded per thread
 and cycle, so on DDR5 it flips as many lines (16.0 of 32) and every word differs. Measured

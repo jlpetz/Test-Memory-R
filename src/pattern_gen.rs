@@ -12,10 +12,10 @@
 //!
 //! ## TM5-Faithful Modes
 //!
-//! - **Mode 0**: TM5 fills each block with one 48 B motif, word and inverse alternating (its
-//!   test 0's), from the block's first page number. TMR writes a pseudo-random word everywhere,
-//!   inverted on odd 4 KiB pages: not TM5's bits, but as many line flips on DDR5 and every word
-//!   distinct (`doc/pattern_gen_modes.md`).
+//! - **Mode 0**: TM5 writes every line of a block the same: three word-and-inverse pairs (its
+//!   test 0's) and the first again, from the block's first page number. TMR writes a
+//!   pseudo-random word everywhere, inverted on odd 4 KiB pages: not TM5's bits, but as many line
+//!   flips on DDR5 and every word distinct (`doc/pattern_gen_modes.md`).
 //! - **Mode 1**: Linear step + complement toggle per cache line. TM5 applies
 //!   PADDD step per element and XOR complement every 64 bytes.
 //!   TMR: wrapping_sub step per element, complement every cache line.
@@ -71,9 +71,10 @@ pub fn cache_line_shift(cache_line_bytes: usize) -> u32 {
 
 /// Mode 0: an address-derived pseudo-random word, inverted on odd 4 KiB pages.
 ///
-/// TM5: once per block, a 16-bit word from the block's first page number becomes a 48 B motif
-/// of words each followed by its inverse (test 0's `RS_GeneratePattern`; `test dPageAddr, 1000h`
-/// swaps word and inverse on an even page), repeated across the whole block.
+/// TM5: once per block, a 16-bit word from the block's first page number becomes three 16 B
+/// registers, each a word and its inverse (test 0's `RS_GeneratePattern`; `test dPageAddr, 1000h`
+/// swaps word and inverse on an even page). Every 64 B line of the block is the three and the
+/// first again: `q0 !q0 q1 !q1 q2 !q2 q0 !q0`.
 ///
 /// TMR: wrapping multiply by the golden-ratio constant, every word distinct, the inversion every
 /// 4 KiB page (512 u64 elements). Not TM5's bits; as many line flips on DDR5's 32-bit beats.
