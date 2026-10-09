@@ -153,6 +153,13 @@ impl ParamRegistry {
             },
         });
 
+        // Read early in `cli::run`, before any topology is detected; registered so it validates
+        params.insert("core-priority", ParamDef {
+            key: "core-priority",
+            can_override_config: true,
+            parser: |v| crate::cpu_topology::CorePriority::parse(v).map(|_| ParamValue::String(v.to_string())),
+        });
+
         // Test execution parameters
         params.insert("cycles", ParamDef {
             key: "cycles",
@@ -483,6 +490,8 @@ pub fn print_help(program_name: &str) {
     println!("  test-reps=3                         # Test op repetitions per write (MirrorMove round-trips)");
     println!("  write-read-cycles=4                 # Write+verify cycles per chunk (TM5 SimpleTest: 4)");
     println!("  topology=windowsv2                  # CPU detection method (auto/windows/windowsv2/cpuid)");
+    println!("  core-priority=hybrid                # Hybrid CPUs that report no core types (e.g. Ryzen 8500G):");
+    println!("                                      #   Windows' higher-priority cores are P-cores (default: equal)");
     println!("  --no-calibration                    # Skip loading calibration data (use CPUID heuristics)");
     println!();
     println!("CONFIG FILE OVERRIDES:");

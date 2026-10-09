@@ -169,6 +169,12 @@ fn run() -> Result<(), Box<dyn std::error::Error>> {
 
     let mut args: Vec<String> = env::args().collect();
 
+    // core-priority= first: it decides how the topology is typed, which `--show-topology` and
+    // `--debug-topology` print before any other parameter is read (TODO 96)
+    if let Some(value) = args.iter().rev().find_map(|a| a.strip_prefix("core-priority=")) {
+        crate::cpu_topology::set_core_priority(crate::cpu_topology::CorePriority::parse(value)?);
+    }
+
     // Handle test= parameter for filtering tests by pattern
     let mut test_filter_param: Option<String> = None;
     for arg in &args {

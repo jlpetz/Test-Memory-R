@@ -83,6 +83,36 @@ pub fn set_topology_detection_method(method: TopologyDetectionMethod) {
     TOPOLOGY_METHOD.set(method).ok();
 }
 
+/// `core-priority=`: what Auto makes of Windows' core priority (the scheduling class) when
+/// nothing else tells the cores apart (TODO 96).
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub enum CorePriority {
+    /// The default: a priority ranking alone types nothing. On most CPUs it is only the preferred
+    /// cores (a Ryzen 5 8600G ranks 2 of its 6 identical cores above the rest).
+    #[default]
+    Equal,
+    /// The higher-priority cores are P-cores and the rest E-cores, for a hybrid that reports no
+    /// core types: a Ryzen 5 8500G's Zen 4 and Zen 4c cores show only as that ranking.
+    Hybrid,
+}
+
+impl CorePriority {
+    pub fn parse(s: &str) -> Result<Self, String> {
+        match s.trim().to_lowercase().as_str() {
+            "equal" => Ok(CorePriority::Equal),
+            "hybrid" => Ok(CorePriority::Hybrid),
+            other => Err(format!("core-priority '{other}': use equal or hybrid")),
+        }
+    }
+}
+
+static CORE_PRIORITY: OnceLock<CorePriority> = OnceLock::new();
+
+/// Set before the topology is first detected; later calls change nothing.
+pub fn set_core_priority(priority: CorePriority) {
+    CORE_PRIORITY.set(priority).ok();
+}
+
 // Main wrapper function - all other functions should call this
 pub fn get_cpu_topology() -> &'static Vec<CpuTopologyInfo> {
     CPU_TOPOLOGY.get_or_init(|| {
@@ -211,53 +241,113 @@ pub fn is_hybrid_cpu(topology: &[CpuTopologyInfo]) -> bool {
 pub fn detect_cpu_topology_auto() -> Vec<CpuTopologyInfo> {
     let mut topology = detect_cpu_topology();
     let efficiency: HashMap<usize, u8> = topology.iter().map(|cpu| (cpu.physical_core_id, cpu.efficiency_class)).collect();
-    let amd = if efficiency_classes_vary(&efficiency) { None } else { amd_cpuid_core_types(&topology) };
-    let types = classify_core_types(&efficiency, amd.as_ref());
-    let source = if efficiency_classes_vary(&efficiency) {
+    let amd = if classes_vary(&efficiency) { None } else { amd_cpuid_core_types(&topology) };
+    let priority = core_priorities(&topology);
+    let hybrid = CORE_PRIORITY.get().copied().unwrap_or_default() == CorePriority::Hybrid;
+    let types = classify_core_types(&efficiency, amd.as_ref(), hybrid.then_some(&priority));
+    let ranked_only = ranked_only(&efficiency, amd.as_ref(), &priority);
+    let source = if classes_vary(&efficiency) {
         "efficiency class"
     } else if amd.is_some() {
         "AMD CPUID 0x80000026 core type"
+    } else if hybrid && ranked_only.is_some() {
+        "Windows' core priority (core-priority=hybrid)"
     } else {
         "none: every core the same type"
     };
     log::info!("Core types from {source}");
+    match (hybrid, ranked_only) {
+        (false, Some(top)) => log::warn!(
+            "Every core is typed the same: neither Windows nor the CPU reports core types, but Windows \
+             gives {} a higher priority. On most CPUs that is only the preferred cores. On a hybrid that \
+             doesn't report its types (a Ryzen 8500G's Zen 4 and Zen 4c cores, for one), add \
+             core-priority=hybrid to make those P-cores and the rest E-cores.", core_list(&top)),
+        (true, None) if !classes_vary(&efficiency) && amd.is_none() => log::warn!(
+            "core-priority=hybrid, but Windows gives every core the same priority: every core is typed the same"),
+        _ => {}
+    }
     for cpu in &mut topology {
         cpu.core_type = types.get(&cpu.physical_core_id).copied().unwrap_or(CoreType::Unknown);
     }
     topology
 }
 
-/// Whether the efficiency classes Windows reports differ between cores (0xFF, "not specified",
-/// left out).
-fn efficiency_classes_vary(efficiency: &HashMap<usize, u8>) -> bool {
-    efficiency.values().filter(|&&class| class != 0xFF).collect::<HashSet<_>>().len() > 1
+/// Each physical core's priority (Windows' scheduling class), the highest of its logical CPUs.
+/// Empty if Windows doesn't give the CPU sets.
+fn core_priorities(topology: &[CpuTopologyInfo]) -> HashMap<usize, u8> {
+    let Ok(sets) = get_system_cpu_set_information() else { return HashMap::new() };
+    let by_cpu: HashMap<usize, u8> = sets.iter().map(|set| (set.logical_processor_index as usize, set.scheduling_class)).collect();
+    let mut priority: HashMap<usize, u8> = HashMap::new();
+    for cpu in topology {
+        if let Some(&class) = by_cpu.get(&cpu.logical_id) {
+            let core = priority.entry(cpu.physical_core_id).or_insert(class);
+            *core = (*core).max(class);
+        }
+    }
+    priority
+}
+
+/// The higher-priority cores, ascending, when the priority ranking is the only thing that tells the
+/// cores apart: efficiency classes uniform, no AMD core types, and the priorities differ.
+fn ranked_only(efficiency: &HashMap<usize, u8>, amd: Option<&HashMap<usize, u8>>, priority: &HashMap<usize, u8>) -> Option<Vec<usize>> {
+    if classes_vary(efficiency) || amd.is_some() || !classes_vary(priority) {
+        return None;
+    }
+    let top = priority.values().copied().max()?;
+    let mut cores: Vec<usize> = priority.iter().filter(|&(_, &class)| class == top).map(|(&core, _)| core).collect();
+    cores.sort_unstable();
+    Some(cores)
+}
+
+/// "core 3", "cores 0 and 4", "cores 0, 2 and 4".
+fn core_list(cores: &[usize]) -> String {
+    match cores {
+        [one] => format!("core {one}"),
+        [rest @ .., last] => format!("cores {} and {last}", rest.iter().map(|c| c.to_string()).collect::<Vec<_>>().join(", ")),
+        [] => "no core".to_string(),
+    }
+}
+
+/// Whether the classes Windows reports differ between cores (0xFF, "not specified", left out):
+/// the efficiency classes, or the scheduling classes in `core_priorities`.
+fn classes_vary(classes_by_core: &HashMap<usize, u8>) -> bool {
+    classes_by_core.values().filter(|&&class| class != 0xFF).collect::<HashSet<_>>().len() > 1
+}
+
+/// Types from per-core classes that vary: the highest class is the performance cores, each lower
+/// one an efficiency tier, the lowest tier 0; 0xFF ("not specified") is Unknown.
+fn types_by_class(classes_by_core: &HashMap<usize, u8>) -> HashMap<usize, CoreType> {
+    let mut classes: Vec<u8> = classes_by_core.values().copied().filter(|&class| class != 0xFF).collect();
+    classes.sort_unstable();
+    classes.dedup();
+    let top = classes.last().copied();
+    classes_by_core.iter().map(|(&core, &class)| {
+        let core_type = if class == 0xFF {
+            CoreType::Unknown
+        } else if Some(class) == top {
+            CoreType::Performance(0)
+        } else {
+            CoreType::Efficiency(classes.iter().position(|&c| c == class).unwrap_or(0) as u8)
+        };
+        (core, core_type)
+    }).collect()
 }
 
 /// Each physical core's type. From the efficiency class Windows reports when it varies (Intel's
 /// P- and E-cores, and any CPU Windows itself treats as hybrid): the highest class is the
 /// performance cores, each lower one an efficiency tier, the lowest tier 0. Else from AMD's CPUID
 /// core type (`amd`: 0 performance, 1 efficiency), given only when the CPU says its cores differ.
-/// Else every core is a performance core.
+/// Else, under `core-priority=hybrid` (`priority` given), from Windows' core priority the same way
+/// as the efficiency class. Else every core is a performance core.
 ///
-/// Scheduling classes are not a core type. On a uniform AMD part they are its preferred-core
-/// (CPPC) ranking, about one class per boost rank, and reading them as types made a Ryzen 5 8600G
-/// "2 P-cores + 4 E-cores" and a Ryzen 7 5700X "2 + 6".
-pub fn classify_core_types(efficiency: &HashMap<usize, u8>, amd: Option<&HashMap<usize, u8>>) -> HashMap<usize, CoreType> {
-    if efficiency_classes_vary(efficiency) {
-        let mut classes: Vec<u8> = efficiency.values().copied().filter(|&class| class != 0xFF).collect();
-        classes.sort_unstable();
-        classes.dedup();
-        let top = *classes.last().expect("the classes vary, so there are some");
-        return efficiency.iter().map(|(&core, &class)| {
-            let core_type = if class == 0xFF {
-                CoreType::Unknown
-            } else if class == top {
-                CoreType::Performance(0)
-            } else {
-                CoreType::Efficiency(classes.iter().position(|&c| c == class).unwrap_or(0) as u8)
-            };
-            (core, core_type)
-        }).collect();
+/// A priority ranking is not a core type by default. On a uniform AMD part it is the preferred-core
+/// (CPPC) ranking, and reading it as types made a Ryzen 5 8600G "2 P-cores + 4 E-cores" and a
+/// Ryzen 7 5700X "2 + 6". A Ryzen 5 8500G's ranking looks the same and is its real Zen 4 and
+/// Zen 4c cores (cores 0 and 4 sustain 5.2 GHz, the rest 3.5), hence the opt-in.
+pub fn classify_core_types(efficiency: &HashMap<usize, u8>, amd: Option<&HashMap<usize, u8>>,
+                           priority: Option<&HashMap<usize, u8>>) -> HashMap<usize, CoreType> {
+    if classes_vary(efficiency) {
+        return types_by_class(efficiency);
     }
     if let Some(amd) = amd {
         return efficiency.keys().map(|&core| {
@@ -268,6 +358,10 @@ pub fn classify_core_types(efficiency: &HashMap<usize, u8>, amd: Option<&HashMap
             };
             (core, core_type)
         }).collect();
+    }
+    if let Some(priority) = priority.filter(|p| classes_vary(p)) {
+        let types = types_by_class(priority);
+        return efficiency.keys().map(|&core| (core, types.get(&core).copied().unwrap_or(CoreType::Unknown))).collect();
     }
     efficiency.keys().map(|&core| (core, CoreType::Performance(0))).collect()
 }
@@ -1121,7 +1215,7 @@ pub fn show_complete_topology_mapping() {
 }
 #[cfg(test)]
 mod tests {
-    use super::{classify_core_types, detect_cpu_topology_auto, CoreType};
+    use super::{classify_core_types, core_list, detect_cpu_topology_auto, ranked_only, CorePriority, CoreType};
     use std::collections::HashMap;
 
     fn by_core(values: &[u8]) -> HashMap<usize, u8> {
@@ -1129,13 +1223,49 @@ mod tests {
     }
 
     fn types(efficiency: &[u8], amd: Option<&[u8]>) -> Vec<CoreType> {
-        let amd = amd.map(by_core);
-        let types = classify_core_types(&by_core(efficiency), amd.as_ref());
+        types_ranked(efficiency, amd, None)
+    }
+
+    /// As `types`, with `core-priority=hybrid`'s per-core priorities when `priority` is given.
+    fn types_ranked(efficiency: &[u8], amd: Option<&[u8]>, priority: Option<&[u8]>) -> Vec<CoreType> {
+        let (amd, priority) = (amd.map(by_core), priority.map(by_core));
+        let types = classify_core_types(&by_core(efficiency), amd.as_ref(), priority.as_ref());
         (0..efficiency.len()).map(|core| types[&core]).collect()
     }
 
+    /// TODO 96: under `core-priority=hybrid` Windows' core priority types the cores when nothing
+    /// else does, as the efficiency class would; anything the OS or CPU reports wins over it.
+    /// Under `equal` the ranking only earns the warning, which names the higher-priority cores.
+    #[test]
+    fn core_priority_types_cores_only_when_asked() {
+        use CoreType::{Efficiency as E, Performance as P};
+        // The 8500G: cores 0 and 4 (Zen 4) rank above the four Zen 4c cores
+        let r8500g = [1, 0, 0, 0, 1, 0];
+        assert_eq!(types_ranked(&[0; 6], None, Some(&r8500g)), [P(0), E(0), E(0), E(0), P(0), E(0)]);
+        // Equal priorities type nothing, even when asked
+        assert_eq!(types_ranked(&[0; 6], None, Some(&[0; 6])), [P(0); 6]);
+        // The efficiency class and AMD's core types win
+        assert_eq!(types_ranked(&[1, 0], None, Some(&[0, 1])), [P(0), E(0)]);
+        assert_eq!(types_ranked(&[0, 0], Some(&[1, 0]), Some(&[1, 0])), [E(0), P(0)]);
+
+        let (e, p) = (by_core(&[0; 6]), by_core(&r8500g));
+        assert_eq!(ranked_only(&e, None, &p), Some(vec![0, 4]));
+        assert_eq!(ranked_only(&e, None, &by_core(&[0; 6])), None, "no ranking, no warning");
+        assert_eq!(ranked_only(&by_core(&[1, 0, 0, 0, 0, 0]), None, &p), None, "the efficiency class types the cores");
+        assert_eq!(ranked_only(&e, Some(&by_core(&[0; 6])), &p), None, "AMD's CPUID types the cores");
+        assert_eq!(core_list(&[0, 4]), "cores 0 and 4");
+        assert_eq!(core_list(&[0, 2, 4]), "cores 0, 2 and 4");
+        assert_eq!(core_list(&[3]), "core 3");
+
+        assert_eq!(CorePriority::parse("Hybrid"), Ok(CorePriority::Hybrid));
+        assert_eq!(CorePriority::parse("equal"), Ok(CorePriority::Equal));
+        assert!(CorePriority::parse("on").is_err());
+        assert_eq!(CorePriority::default(), CorePriority::Equal);
+    }
+
     /// TODO 96: a core's type comes from the efficiency class when it varies, else from AMD's
-    /// CPUID core type, else every core is a performance core; never from a scheduling class.
+    /// CPUID core type, else every core is a performance core; never from a scheduling class
+    /// unless `core-priority=hybrid` asks (above).
     #[test]
     fn core_types_come_from_efficiency_class_or_amd_cpuid() {
         use CoreType::{Efficiency as E, Performance as P};
