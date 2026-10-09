@@ -204,8 +204,8 @@ without a prefetch. The ascending walk's lead is Intel's alone (on the 5700X it 
 (5.3) gave no memory counters on the 8600G: only per-core metrics, `-m memory` "unsupported". On the
 EPYC it lists memory-controller (`umc`) metrics but refuses them in a VM ("Only Core metrics are
 supported for Guest VM"), and its core prefetch-fill counters there were unusable (identical work
-reported 103 to 1,662 billion instructions). So the walks' row openings stay unmeasured; an m8a
-metal instance (uProf `umc`) or an Intel metal one (VTune) would measure them.
+reported 103 to 1,662 billion instructions). The walks' row openings were measured on an m8a metal
+instance instead (below).
 
 **Errors found, petz007** (DDR5-6000 on a CPU rated for DDR5-5200; P 358 over 880 MiB chunks, three
 tests a run; all transient, the reread clean):
@@ -221,6 +221,53 @@ The line walks found 8 in 114 tests and head's walk none in 41; at the line walk
 found about 3, and none happens by chance about 3-5% of the time. So the line walk catches errors
 the word-per-jump walk missed on this machine. The counts can't rank the three line walks.
 daddy-petz ran clean (8 runs).
+
+## Row activations on bare metal (EPYC 9R45, 2026-10-09)
+
+m8a.metal-24xl: EPYC 9R45 (Zen 5 Turin), 96 cores, 12 x 32 GiB DDR5 RDIMM, Server 2022. Off a
+hypervisor uProf counts the memory controllers: activates (UMC event 0x05), precharges (0x06), and
+reads and writes (0x0A), sampled each second with a custom config. Each walk on each shape, one
+run, the seal off so the step is the walk alone, memory=50% (2 GiB a thread), all 96 cores. Rates
+come from the samples wholly inside the step. Cells: activates per second (G/s) / DRAM line
+transfers per line the test touched (1.17 is each line once, plus the read for ownership of
+written lines):
+
+| P, chunk | head | TM5 order, no prefetch | ascending + above | final |
+|---|---|---|---|---|
+| 125, 432 MiB | 6.64 / 1.81 | 6.24 / 1.20 | 7.29 / 1.57 | 6.62 / 1.20 |
+| 254, 32 MiB | 7.68 / 1.39 | 6.88 / 1.17 | 7.38 / 1.15 | 7.06 / 1.16 |
+| 358, 880 MiB | 7.64 / 1.26 | 6.62 / 1.23 | 7.47 / 1.78 | 7.44 / 1.21 |
+| 477, 8 MiB | 7.34 / 0.81 | 6.32 / 0.72 | 7.47 / 0.52 | 7.12 / 0.54 |
+| 787, 32 MiB | 7.65 / 1.20 | 7.09 / 1.16 | 7.53 / 1.15 | 7.06 / 1.25 |
+| 8568, 16 MiB | 7.49 / 1.77 | 7.41 / 1.35 | 7.62 / 1.40 | 7.57 / 1.44 |
+| 8968, 64 MiB | 7.62 / 1.64 | 6.98 / 1.35 | 7.58 / 1.33 | 7.51 / 1.33 |
+| mean G/s; step total | 7.44; 117 s | 6.79; 102 s | 7.48; 105 s | 7.20; 95 s |
+
+- **Every walk opens a row for every line it transfers**: 0.97 to 1.02 transfers per activate in
+  all 28 runs. Rows do get reused when the order allows it: the final walk's code over ascending
+  lines (jump 0) gave 1.60, and over every other line 1.52 (the ascending build 1.60 and 1.67). So
+  at the 1usmus shapes none of the walks groups neighbours on this controller, the ascending one's
+  line-above prefetch included. A desktop's two-channel controller may map lines to rows
+  differently; that is unmeasured.
+- **Row openings per second**: the ascending walk and head's 7.5 and 7.4 G/s, the final one 7.2,
+  TM5's order without a prefetch 6.8 (the lookahead adds 6%). About 300 M a second for each of the
+  24 DDR5 subchannels; ascending lines got 4.8 G/s at 497 GB/s.
+- **Not all of them are the test's**: at 125, 358, 8568 and 8968, head's or the ascending walk's
+  transfers run to 1.6-1.8 per line, lines fetched and evicted before the walk reached them, then
+  fetched again. Those openings check nothing. The final walk transfers each line about once and
+  had the shortest step total, as on the other AMD machines.
+- **At P 477 half the test's lines never reach DRAM** (0.52-0.81): its 8 MiB chunks partly stay
+  cached on this CPU (1 MiB L2 and 4 MiB of L3 a core).
+
+**A desktop can't be measured this way** (checked on petz007 the same day). uProf 5.3 has
+memory-controller counters for server parts only: its configs have a `umc` section for family 0x19
+models 0x10-0x1f and 0xa0-0xaf and family 0x1a models 0x00-0x1f, and none for any Ryzen desktop
+(0x19 models 0x20-0x2f and 0x60-0x7f, 0x1a models 0x40-0x4f, the Ryzen 9000s). Given a custom
+`umc` section for the 8600G (0x19 model 0x75), it drops the section silently. As Windows sees it,
+the CPU reports no memory-controller or data-fabric counters (CPUID 0x80000022,
+`../umc-cpuid-test/`), but Windows runs under Hyper-V there (Memory Integrity), which may hide
+them. One boot with the hypervisor off would tell; even then only Linux `perf` or a driver could
+read them.
 
 ## Not done
 
