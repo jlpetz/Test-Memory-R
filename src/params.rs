@@ -143,13 +143,9 @@ impl ParamRegistry {
         params.insert("topology", ParamDef {
             key: "topology",
             can_override_config: true,
-            parser: |v| {
-                match v.to_lowercase().as_str() {
-                    "windows" | "windowsapi" | "windowsv2" | "v2" | "cpuid" | "auto" => {
-                        Ok(ParamValue::String(v.to_string()))
-                    }
-                    _ => Err(format!("Invalid topology method '{}'. Valid: auto, windows, windowsv2, cpuid", v)),
-                }
+            parser: |v| match crate::cpu_topology::TopologyDetectionMethod::parse(v) {
+                Some(_) => Ok(ParamValue::String(v.to_string())),
+                None => Err(format!("Invalid topology method '{}'. Valid: auto, windows, windowsv2, cpuid, amd", v)),
             },
         });
 
@@ -489,7 +485,9 @@ pub fn print_help(program_name: &str) {
     println!("  verify-reps=5                       # Verify passes per write (TM5 retention stress: 5)");
     println!("  test-reps=3                         # Test op repetitions per write (MirrorMove round-trips)");
     println!("  write-read-cycles=4                 # Write+verify cycles per chunk (TM5 SimpleTest: 4)");
-    println!("  topology=windowsv2                  # CPU detection method (auto/windows/windowsv2/cpuid)");
+    println!("  topology=windowsv2                  # Core types from one detector alone (default auto, the cascade):");
+    println!("                                      #   windows efficiency class, windowsv2 Windows' core priority,");
+    println!("                                      #   cpuid L3 size per core, amd AMD's CPUID core type");
     println!("  core-priority=hybrid                # Hybrid CPUs that report no core types (e.g. Ryzen 8500G):");
     println!("                                      #   Windows' higher-priority cores are P-cores (default: equal)");
     println!("  --no-calibration                    # Skip loading calibration data (use CPUID heuristics)");

@@ -618,13 +618,8 @@ fn run() -> Result<(), Box<dyn std::error::Error>> {
 				"topology" => {
 					if let params::ParamValue::String(topology_str) = value {
 						use crate::cpu_topology::{set_topology_detection_method, TopologyDetectionMethod};
-						let method = match topology_str.to_lowercase().as_str() {
-							"windows" | "windowsapi" => TopologyDetectionMethod::WindowsApi,
-							"windowsv2" | "v2" => TopologyDetectionMethod::WindowsApiV2,
-							"cpuid" => TopologyDetectionMethod::CpuidBased,
-							"auto" => TopologyDetectionMethod::Auto,
-							_ => TopologyDetectionMethod::Auto,
-						};
+						// Validated by the parameter's parser
+						let method = TopologyDetectionMethod::parse(topology_str).unwrap_or(TopologyDetectionMethod::Auto);
 						set_topology_detection_method(method);
 						log::debug!("CLI override: topology_detection_method = {:?}", method);
 					}
@@ -1443,15 +1438,10 @@ fn build_config_from_validated_params(
     // Handle topology (has side effect of setting global state)
     if let Some(params::ParamValue::String(topology_str)) = validated.get("topology") {
         use crate::cpu_topology::{set_topology_detection_method, TopologyDetectionMethod};
-        let method = match topology_str.to_lowercase().as_str() {
-            "windows" | "windowsapi" => TopologyDetectionMethod::WindowsApi,
-            "windowsv2" | "v2" => TopologyDetectionMethod::WindowsApiV2,
-            "cpuid" => TopologyDetectionMethod::CpuidBased,
-            "auto" => TopologyDetectionMethod::Auto,
-            _ => TopologyDetectionMethod::Auto,
-        };
+        // Validated by the parameter's parser
+        let method = TopologyDetectionMethod::parse(topology_str).unwrap_or(TopologyDetectionMethod::Auto);
         set_topology_detection_method(method);
-        println!("  Topology Detection: {:?}", method);
+        println!("  Topology Detection: {}", method.name());
     }
 
     // Print skip-cores if specified
