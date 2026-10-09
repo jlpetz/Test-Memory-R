@@ -876,9 +876,9 @@ impl ModernConfig {
         let extent_mode = self.parse_test_extent_mode(test).map_err(|e| Self::test_error(i, test, e))?;
         let chunk_mode = self.parse_test_chunk_mode(test).map_err(|e| Self::test_error(i, test, e))?;
         if let Some(mode) = test.pattern_mode
-            && !matches!(mode, 0..=2 | 10..=13)
+            && !matches!(mode, 0..=2 | 10..=14)
         {
-            return Err(Self::test_error(i, test, format!("pattern_mode {mode} is not a mode; valid: 0-2 (TM5-faithful), 10-13 (TMR-native)")));
+            return Err(Self::test_error(i, test, format!("pattern_mode {mode} is not a mode; valid: 0-2 (TM5-faithful), 10-14 (TMR-native)")));
         }
         let is_mirror = test.function.starts_with("Mem-MirrorV2");
         if is_mirror && test.parameter.is_some() {

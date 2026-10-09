@@ -1,6 +1,6 @@
 # Pattern Generation Modes
 
-TMR supports 7 pattern generation modes, split into two families:
+TMR supports 8 pattern generation modes, split into two families:
 
 | Mode | Family | Name | Description |
 |------|--------|------|-------------|
@@ -11,6 +11,7 @@ TMR supports 7 pattern generation modes, split into two families:
 | 11 | TMR-native | Combined XOR | `idx ^ (param0 ^ param1)` |
 | 12 | TMR-native | Hashed Lines | Mode 2's lines, seed and step hashed from each line's address |
 | 13 | TMR-native | Hash per word | splitmix64 of `idx + param0` |
+| 14 | TMR-native | Bus flip | Each beat of a line the inverse of the one before, at the memory type's beat width |
 
 ## TM5-Faithful Modes (0, 1, 2)
 
@@ -95,6 +96,25 @@ broke when chunks overlap (TODO 76).
 
 `pattern_mode13(idx, param0)`: splitmix64 of `idx + param0`. Pseudo-random per word, no state.
 
+### Mode 14: Bus flip
+
+`pattern_gen::mode14_line(line_addr, key, beat)`: each beat of a 64 B line's burst is the bitwise
+inverse of the one before, so every data line toggles on every beat.
+- **The beat width** comes from the DIMMs' SMBIOS memory type: 64-bit for DDR to DDR4, 32-bit for
+  DDR5 (two subchannels a DIMM), 16-bit for LPDDR4 and LPDDR5. With no type, DDR5's 32 is
+  assumed. The run logs which.
+- **Why a width at all:** a pattern tuned for one width is close to the worst case for another.
+  Measured 2026-10-09: TM5's mode 0 flips 46.7 of 64 lines a beat on DDR4 but 15.7 of 32 on DDR5;
+  a 32-bit-tuned pattern flips 31.0 of 32 on DDR5 and 4.0 of 64 on DDR4.
+- **One value a line**, hashed from its address and `mode12_key` (thread, cycle, params). Each byte
+  holds four 1s and four 0s, so data bus inversion (DBI), which inverts a byte with more than four
+  0s, never undoes a flip.
+- **The trade-off:** the first beat fixes the whole burst, so a line carries 8, 16 or 32 bits of
+  its hash (16-, 32-, 64-bit beats). Two lines can hold the same value, and a misdirected access
+  between them goes unseen; the other modes cover address faults.
+- **Scrambling:** a controller that scrambles data (Intel does by default) turns this into random
+  data on the bus, no worse than mode 13. TMR can't tell, so it assumes scrambling is off.
+
 ## Mode Selection
 
 ### CLI
@@ -109,7 +129,7 @@ tmr.exe verify-reps=5            # 5 verify passes per write
 TM5 configs use `Pattern Mode=0/1/2` which map directly to TM5-faithful modes 0/1/2.
 
 ### TMR JSON configs
-Use `pattern_mode` field in test config. Any mode number (0-2, 10-13) is valid.
+Use `pattern_mode` field in test config. Any mode number (0-2, 10-14) is valid.
 
 ## SIMD Support
 
@@ -122,8 +142,11 @@ Use `pattern_mode` field in test config. Any mode number (0-2, 10-13) is valid.
 | 11 | Yes | Yes | Yes | Yes |
 | 12 | Yes | Yes | Yes | Yes |
 | 13 | Yes | Positional* | Positional* | Positional* |
+| 14 | Yes | Scalar† | Scalar† | Scalar† |
 
 *Modes 0/1/2 and 13 use the positional SIMD path (mode 10/11 patterns) as an approximation when running in SIMD test variants. Full TM5-faithful SIMD implementations are planned (TODO 3).
+
+†Mode 14's SIMD variants run the scalar build: a line is one or two values, which it already stores at the baseline's full width (two 32 B stores a line; four lines a loop iteration sequentially).
 
 ## DDR5 Context
 

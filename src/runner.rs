@@ -1354,6 +1354,7 @@ fn execute_test_cycle(ctx: &CycleContext, cycle: u64) -> Option<RunOutcome> {
                     11 => "TMR-1".to_string(),
                     12 => "TMR-2".to_string(),
                     13 => "TMR-3".to_string(),
+                    14 => "TMR-4".to_string(),
                     other => format!("{}", other),
                 },
                 None => "-".to_string(),
@@ -2443,6 +2444,17 @@ fn create_test_definitions(cache_info: &CacheInfo) -> Vec<TestDefinition> {
              .with_skip_init(true)
              .with_memory_type(None)
         ),
+        (
+            "Bench-Init-TMR-4",
+            TestFunction::MultiBlock(bench_init_multi),
+            TestMemoryConfig::new(
+                ExtentMode::FullAllocation,
+                ChunkMode::Absolute { size_bytes: 4 * MB }
+            ).with_timing(TestTiming::cycles_only(10))
+             .with_pattern_config(Some(14), Some(0xDEADBEEFDEADBEEF), Some(0xCAFEBABECAFEBABE))
+             .with_skip_init(true)
+             .with_memory_type(None)
+        ),
 
         // === Bench-Verify: Pattern Verification Throughput Benchmarks ===
         // Independent mode (default): writes patterns then measures verify throughput
@@ -2515,6 +2527,16 @@ fn create_test_definitions(cache_info: &CacheInfo) -> Vec<TestDefinition> {
                 ChunkMode::Absolute { size_bytes: 4 * MB }
             ).with_timing(TestTiming::cycles_only(10))
              .with_pattern_config(Some(13), Some(0xC0FFEE42C0FFEE42), None)
+             .with_memory_type(None)
+        ),
+        (
+            "Bench-Verify-TMR-4",
+            TestFunction::MultiBlock(bench_verify_multi),
+            TestMemoryConfig::new(
+                ExtentMode::FullAllocation,
+                ChunkMode::Absolute { size_bytes: 4 * MB }
+            ).with_timing(TestTiming::cycles_only(10))
+             .with_pattern_config(Some(14), Some(0xDEADBEEFDEADBEEF), Some(0xCAFEBABECAFEBABE))
              .with_memory_type(None)
         ),
 
@@ -4697,7 +4719,7 @@ mod tests {
         let kernel = crate::seal::SealKernel::detect();
         let mut ran = 0;
         for (def, test_fn) in suite().into_iter().filter(|(d, _)| d.actual_name.starts_with("Mem-SimpleV2")) {
-            for mode in [0, 1, 2, 10, 11, 12, 13] {
+            for mode in [0, 1, 2, 10, 11, 12, 13, 14] {
                 let run = |region: &mut Region, stride_cl: usize, sealed: bool| {
                     let mut def = def.clone();
                     def.config.chunk_mode = ChunkMode::Absolute { size_bytes: 68 * KIB };

@@ -41,6 +41,9 @@ pub struct MemoryModule {
     pub part_number: String,
     /// Configured speed in MT/s
     pub speed_mts: u32,
+    /// SMBIOS memory type (Type 17 offset 0x12): 0x1A DDR4, 0x22 DDR5, 0x23 LPDDR5; 0 if absent
+    #[serde(default)]
+    pub memory_type: u8,
     /// Module capacity in bytes
     pub capacity_bytes: u64,
     /// Human-readable capacity (e.g. "64.0 GB")
@@ -537,6 +540,9 @@ fn parse_type17_memory(formatted: &[u8], strings: &[String]) -> Option<MemoryMod
         (size_field as u64) * 1024 * 1024
     };
 
+    // Offset 0x12: Memory Type (u8)
+    let memory_type = formatted.get(0x12).copied().unwrap_or(0);
+
     // Offset 0x15: Speed in MT/s (u16) — guard for short structs
     let speed_mts = if formatted.len() >= 0x17 {
         u16::from_le_bytes([formatted[0x15], formatted[0x16]])
@@ -577,6 +583,7 @@ fn parse_type17_memory(formatted: &[u8], strings: &[String]) -> Option<MemoryMod
         serial_number,
         part_number,
         speed_mts: speed_mts as u32,
+        memory_type,
         capacity_human: format_capacity(capacity_bytes),
         capacity_bytes,
     })

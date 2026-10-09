@@ -972,9 +972,10 @@ impl TestMemoryConfig {
             "Mem-MirrorV2-Auto" => 64,               // Auto-dispatched, assume AVX-512 possible
             // Bench-Init and Bench-Verify tests (all scalar u64)
             "Bench-Init-TM5-0" | "Bench-Init-TM5-1" | "Bench-Init-TM5-2"
-            | "Bench-Init-TMR-0" | "Bench-Init-TMR-1" | "Bench-Init-TMR-2" | "Bench-Init-TMR-3"
+            | "Bench-Init-TMR-0" | "Bench-Init-TMR-1" | "Bench-Init-TMR-2" | "Bench-Init-TMR-3" | "Bench-Init-TMR-4"
             | "Bench-Verify-TM5-0" | "Bench-Verify-TM5-1" | "Bench-Verify-TM5-2"
-            | "Bench-Verify-TMR-0" | "Bench-Verify-TMR-1" | "Bench-Verify-TMR-2" | "Bench-Verify-TMR-3" => 8,
+            | "Bench-Verify-TMR-0" | "Bench-Verify-TMR-1" | "Bench-Verify-TMR-2" | "Bench-Verify-TMR-3"
+            | "Bench-Verify-TMR-4" => 8,
             // The seal kernels take 64 B-aligned ranges at every width (TODO 74)
             s if s.starts_with("Bench-Init-Seal-") || s.starts_with("Bench-Verify-Seal-") => 64,
             "Seal-Check" => 64,
@@ -2605,6 +2606,95 @@ impl Mode12 {
     }
 }
 
+/// The bus beat mode 14 flips at, from the DIMMs' SMBIOS memory type, read and logged once:
+/// DDR5's 32 bits when SMBIOS doesn't say.
+fn bus_beat() -> pattern_gen::BusBeat {
+    static BEAT: std::sync::OnceLock<pattern_gen::BusBeat> = std::sync::OnceLock::new();
+    *BEAT.get_or_init(|| {
+        let types: Vec<u8> = crate::smbios::get_smbios().memory_modules.iter().map(|m| m.memory_type).collect();
+        match types.iter().find_map(|&t| pattern_gen::BusBeat::from_smbios_type(t)) {
+            Some(beat) => {
+                log::info!("Mode 14: {}-bit beats, from SMBIOS memory type {:#04x}", beat.bits(), types[0]);
+                beat
+            }
+            None => {
+                log::info!("Mode 14: SMBIOS gives no known memory type ({types:#04x?}); assuming DDR5's 32-bit beats");
+                pattern_gen::BusBeat::Bits32
+            }
+        }
+    })
+}
+
+/// Mode 14 for one thread and cycle: the bus-flip lines (`pattern_gen::mode14_line`).
+#[derive(Clone, Copy)]
+struct Mode14 {
+    key: u64,
+    beat: pattern_gen::BusBeat,
+}
+
+/// Runs `$body` with `$line` the line function (`*const u64` to the line's words) for `$mode14`'s
+/// beat, matched once outside the body, so a loop in it is compiled per beat with no branch on it.
+macro_rules! with_mode14_line {
+    ($mode14:expr, |$line:ident| $body:block) => {{
+        let key = $mode14.key;
+        match $mode14.beat {
+            pattern_gen::BusBeat::Bits16 => {
+                let $line = |line: *const u64| pattern_gen::mode14_line(line as usize, key, pattern_gen::BusBeat::Bits16);
+                $body
+            }
+            pattern_gen::BusBeat::Bits32 => {
+                let $line = |line: *const u64| pattern_gen::mode14_line(line as usize, key, pattern_gen::BusBeat::Bits32);
+                $body
+            }
+            pattern_gen::BusBeat::Bits64 => {
+                let $line = |line: *const u64| pattern_gen::mode14_line(line as usize, key, pattern_gen::BusBeat::Bits64);
+                $body
+            }
+        }
+    }};
+}
+
+impl Mode14 {
+    fn new(thread_id: usize, cycle: u32, param0: u64, param1: u64) -> Self {
+        Self { key: pattern_gen::mode12_key(thread_id, cycle, param0, param1), beat: bus_beat() }
+    }
+
+    /// Calls `line(word_offset, expected)` for each line of words `[start, end)` of `ptr`.
+    #[inline(always)]
+    unsafe fn walk(self, ptr: *const u64, start: usize, end: usize, mut line: impl FnMut(usize, [u64; LINE_WORDS])) {
+        debug_assert!(start.is_multiple_of(LINE_WORDS) && end.is_multiple_of(LINE_WORDS), "mode 14 needs whole lines: {start}..{end}");
+        with_mode14_line!(self, |expected| {
+            for offset in (start..end).step_by(LINE_WORDS) {
+                line(offset, expected(ptr.add(offset)));
+            }
+        })
+    }
+
+    #[inline(always)]
+    unsafe fn fill(self, ptr: *mut u64, start: usize, end: usize) {
+        self.walk(ptr, start, end, |offset, words| *(ptr.add(offset) as *mut [u64; LINE_WORDS]) = words);
+    }
+
+    /// Errors in words `[start, end)`: 0 if all hold, else counted and logged by a rescan.
+    #[inline(always)]
+    unsafe fn verify(self, ptr: *const u64, start: usize, end: usize, test_name: &str) -> u64 {
+        let mut acc = [0u64; 4];
+        self.walk(ptr, start, end, |offset, words| accumulate_line(&mut acc, ptr.add(offset), &words));
+        if (acc[0] | acc[1]) | (acc[2] | acc[3]) == 0 {
+            return 0;
+        }
+        self.rescan(ptr, start, end, test_name)
+    }
+
+    #[cold]
+    #[inline(never)]
+    unsafe fn rescan(self, ptr: *const u64, start: usize, end: usize, test_name: &str) -> u64 {
+        let mut errors = 0u64;
+        self.walk(ptr, start, end, |offset, words| count_line(&mut errors, ptr, offset, &words, test_name));
+        transient_if_none(errors, test_name, start, end)
+    }
+}
+
 /// ORs one line's differences into 4 accumulators: words k and k + 4 into accumulator k, so a
 /// vectorised build reads each half-line as one 32 B lane group, with no shuffles.
 #[inline(always)]
@@ -2931,6 +3021,17 @@ unsafe fn simple_test_v2_sequential(
                 |ctx: &ChunkCtx| -> u64 { mode12(ctx).verify(ctx.ptr, ctx.chunk_start, ctx.chunk_end, test_name) },
             )
         }
+        14 => {
+            // Mode 14 (TMR-native): each beat of a line the inverse of the one before
+            let mode14 = |ctx: &ChunkCtx| Mode14::new(ctx.thread_id, ctx.cycle, param0, param1);
+            run_phased_test(
+                blocks, thread_id, error_mode, timing, config, progress,
+                test_name, TestAction::WriteVerify, 1, false, config.test_reps, config.verify_reps,
+                |ctx: &ChunkCtx| mode14(ctx).fill(ctx.ptr, ctx.chunk_start, ctx.chunk_end),
+                |ctx: &ChunkCtx| mode14(ctx).fill(ctx.ptr, ctx.chunk_start, ctx.chunk_end),
+                |ctx: &ChunkCtx| -> u64 { mode14(ctx).verify(ctx.ptr, ctx.chunk_start, ctx.chunk_end, test_name) },
+            )
+        }
         11 => {
             // Mode 11 (TMR-native): inverted constant
             let combined = param0 ^ param1;
@@ -3050,6 +3151,36 @@ unsafe fn simple_test_v2_strided(
                     return 0;
                 }
                 mode12.rescan(ctx.ptr, ctx.chunk_start, ctx.chunk_end, test_name)
+            },
+        );
+    }
+    if pattern_mode == 14 {
+        let mode14 = |ctx: &ChunkCtx| Mode14::new(ctx.thread_id, ctx.cycle, param0, param1);
+        let write = |ctx: &ChunkCtx| {
+            with_mode14_line!(mode14(ctx), |expected| {
+                for_each_strided_line!(ctx.ptr, ctx.chunk_start, ctx.chunk_end, period, |offset| {
+                    let line = ctx.ptr.add(offset);
+                    *(line as *mut [u64; LINE_WORDS]) = expected(line);
+                });
+            })
+        };
+        return run_phased_test(
+            blocks, thread_id, error_mode, timing, config, progress,
+            test_name, TestAction::WriteVerify, 1, false, config.test_reps, config.verify_reps,
+            write, write,
+            |ctx: &ChunkCtx| -> u64 {
+                let mode14 = mode14(ctx);
+                let mut acc = [0u64; 4];
+                with_mode14_line!(mode14, |expected| {
+                    for_each_strided_line!(ctx.ptr, ctx.chunk_start, ctx.chunk_end, period, |offset| {
+                        let line = ctx.ptr.add(offset);
+                        accumulate_line(&mut acc, line, &expected(line));
+                    });
+                });
+                if (acc[0] | acc[1]) | (acc[2] | acc[3]) == 0 {
+                    return 0;
+                }
+                mode14.rescan(ctx.ptr, ctx.chunk_start, ctx.chunk_end, test_name)
             },
         );
     }
@@ -3742,6 +3873,11 @@ macro_rules! simple_test_v2_impl {
             config: &TestMemoryConfig,
             progress: Option<&TestProgress>,
         ) -> TestStats {
+            // Mode 14's lines are one value and its inverse, which the scalar build already stores
+            // at the baseline's full width; the SIMD paths here are positional or mode 12 only
+            if config.pattern_mode == Some(14) {
+                return simple_test_v2_multi(blocks, thread_id, error_mode, timing, config, progress);
+            }
             let is_mode12 = config.pattern_mode.unwrap_or(0) == 12;
             let has_stride = config.parameter_context.as_ref()
                 .and_then(|ctx| ctx.stride_elements)
@@ -4204,6 +4340,7 @@ pub unsafe fn bench_init_multi(
         11 => "Bench-Init-TMR-1",
         12 => "Bench-Init-TMR-2",
         13 => "Bench-Init-TMR-3",
+        14 => "Bench-Init-TMR-4",
         _ => "Bench-Init-Unknown",
     };
 
@@ -4324,6 +4461,17 @@ pub unsafe fn bench_init_multi(
                 |_ctx: &ChunkCtx| -> u64 { 0 },
             )
         }
+        14 => {
+            // Mode 14: the bus-flip lines
+            let mode14 = Mode14::new(thread_id, 0, param0, param1);
+            run_phased_test(
+                blocks, thread_id, error_mode, timing, config, progress,
+                test_name, TestAction::Write, 1, skip_init, 1, 0,
+                |ctx: &ChunkCtx| mode14.fill(ctx.ptr, ctx.chunk_start, ctx.chunk_end),
+                |ctx: &ChunkCtx| mode14.fill(ctx.ptr, ctx.chunk_start, ctx.chunk_end),
+                |_ctx: &ChunkCtx| -> u64 { 0 },
+            )
+        }
         _ => {
             // Mode 12 (and any unknown mode): mode 2's lines, hashed from each line's address
             let mode12 = Mode12::new(thread_id, 0, param0, param1);
@@ -4372,6 +4520,7 @@ pub unsafe fn bench_verify_multi(
         11 => "Bench-Verify-TMR-1",
         12 => "Bench-Verify-TMR-2",
         13 => "Bench-Verify-TMR-3",
+        14 => "Bench-Verify-TMR-4",
         _ => "Bench-Verify-Unknown",
     };
 
@@ -4478,6 +4627,17 @@ pub unsafe fn bench_verify_multi(
                 |ctx: &ChunkCtx| -> u64 {
                     verify_words(ctx.ptr, ctx.chunk_start, ctx.chunk_end, test_name, |idx| pattern_gen::pattern_mode13(idx as u64, seed))
                 },
+            )
+        }
+        14 => {
+            // Mode 14: the bus-flip lines
+            let mode14 = Mode14::new(thread_id, 0, param0, param1);
+            run_phased_test(
+                blocks, thread_id, error_mode, timing, config, progress,
+                test_name, TestAction::Verify, 1, skip_init, 0, 1,
+                |ctx: &ChunkCtx| mode14.fill(ctx.ptr, ctx.chunk_start, ctx.chunk_end),
+                |_ctx: &ChunkCtx| {},
+                |ctx: &ChunkCtx| -> u64 { mode14.verify(ctx.ptr, ctx.chunk_start, ctx.chunk_end, test_name) },
             )
         }
         _ => {

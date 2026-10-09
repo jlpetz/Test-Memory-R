@@ -238,10 +238,10 @@ impl ParamRegistry {
             can_override_config: true,
             parser: |v| {
                 let val = v.parse::<u32>()
-                    .map_err(|_| format!("Invalid pattern-mode '{}'. Must be 0-2 (TM5) or 10-13 (TMR-native)", v))?;
+                    .map_err(|_| format!("Invalid pattern-mode '{}'. Must be 0-2 (TM5) or 10-14 (TMR-native)", v))?;
                 match val {
-                    0 | 1 | 2 | 10 | 11 | 12 | 13 => Ok(ParamValue::U32(val)),
-                    _ => Err(format!("Invalid pattern-mode {}. Valid: 0-2 (TM5-faithful), 10-13 (TMR-native)", val)),
+                    0 | 1 | 2 | 10 | 11 | 12 | 13 | 14 => Ok(ParamValue::U32(val)),
+                    _ => Err(format!("Invalid pattern-mode {}. Valid: 0-2 (TM5-faithful), 10-14 (TMR-native)", val)),
                 }
             },
         });
@@ -485,7 +485,7 @@ pub fn print_help(program_name: &str) {
     println!("  mirror=whole                        # Mirror tests: one mirror over each chunk (the default)");
     println!("  mirror=subblocks:4                  #   ...each chunk in 2 or 4 parts, mirrored in lockstep");
     println!("  mirror=jump:510                     #   ...128 B swaps every (N+1) x 128 B (TM5 MirrorMove128)");
-    println!("  pattern-mode=0                      # Pattern mode: 0-2 (TM5-faithful), 10-13 (TMR-native)");
+    println!("  pattern-mode=0                      # Pattern mode: 0-2 (TM5-faithful), 10-14 (TMR-native)");
     println!("  verify-reps=5                       # Verify passes per write (TM5 retention stress: 5)");
     println!("  test-reps=3                         # Test op repetitions per write (MirrorMove round-trips)");
     println!("  write-read-cycles=4                 # Write+verify cycles per chunk (TM5 SimpleTest: 4)");

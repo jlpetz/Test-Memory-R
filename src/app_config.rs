@@ -410,6 +410,7 @@ mod tests {
                         serial_number: "12345678".to_string(),
                         part_number: "123456789-12345".to_string(),
                         speed_mts: 4800,
+                        memory_type: 0x22,
                         capacity_bytes: cap,
                         capacity_human: crate::smbios::format_capacity(cap),
                     }

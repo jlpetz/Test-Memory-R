@@ -32,6 +32,9 @@
 //! - **Mode 12**: Mode 2's lines without the chain: each 64 B line is `seed + j * step`,
 //!   with seed and step hashed from the line's address (TODO 76).
 //! - **Mode 13**: Positional pseudo-random hash per word.
+//! - **Mode 14**: Bus flip: each beat of a line the inverse of the one before, at the memory
+//!   type's beat width (SMBIOS: 64-bit for DDR4, 32-bit for DDR5), so every data line toggles on
+//!   every beat; one value a line, every byte four 1s so DBI can't undo it.
 //!
 //! See `doc/pattern_gen_modes.md` for detailed descriptions.
 
@@ -206,6 +209,65 @@ pub fn pattern_mode13(idx: u64, seed: u64) -> u64 {
     h
 }
 
+/// How many data bits one bus transfer (beat) of a 64 B line carries, which mode 14 flips.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum BusBeat {
+    /// LPDDR4 and LPDDR5: 16-bit channels.
+    Bits16,
+    /// DDR5: two 32-bit subchannels per DIMM (and LPDDR3's 32-bit channels).
+    Bits32,
+    /// DDR to DDR4: one 64-bit channel per DIMM.
+    Bits64,
+}
+
+impl BusBeat {
+    /// From an SMBIOS memory type (Type 17 offset 0x12), or None for a type it doesn't know.
+    pub fn from_smbios_type(memory_type: u8) -> Option<Self> {
+        match memory_type {
+            0x12 | 0x13 | 0x18 | 0x1A => Some(BusBeat::Bits64),  // DDR, DDR2, DDR3, DDR4
+            0x1D | 0x22 => Some(BusBeat::Bits32),                // LPDDR3, DDR5
+            0x1E | 0x23 => Some(BusBeat::Bits16),                // LPDDR4, LPDDR5
+            _ => None,
+        }
+    }
+
+    pub fn bits(self) -> u32 {
+        match self {
+            BusBeat::Bits16 => 16,
+            BusBeat::Bits32 => 32,
+            BusBeat::Bits64 => 64,
+        }
+    }
+}
+
+/// Mode 14 (TMR-native): the bus-flip line. Each beat of the line's burst is the bitwise inverse
+/// of the one before, at `beat` bits a transfer, so every data line toggles on every beat unless
+/// the controller scrambles the data. Standard burst orders keep that, since they only swap
+/// beats of opposite parity.
+///
+/// One value a line, hashed from its address: 32 bits of the hash spread one nibble to a byte,
+/// each byte's high nibble the inverse of its low one, so every byte holds four 1s and four 0s and
+/// data bus inversion (DBI), which inverts a byte with more than four 0s, never undoes a flip. The
+/// first beat fixes the whole burst, so a line carries 8 to 32 bits of its hash (16-, 32-, 64-bit
+/// beats): two lines can match, and a misdirected access between them goes unseen.
+#[inline(always)]
+pub fn mode14_line(line_addr: usize, key: u64, beat: BusBeat) -> [u64; LINE_WORDS] {
+    const LOW_NIBBLES: u64 = 0x0F0F_0F0F_0F0F_0F0F;
+    let mut x = pattern_mode13(line_addr as u64, key) & 0xFFFF_FFFF;
+    x = (x | (x << 16)) & 0x0000_FFFF_0000_FFFF;
+    x = (x | (x << 8)) & 0x00FF_00FF_00FF_00FF;
+    x = (x | (x << 4)) & LOW_NIBBLES;
+    let a = x | ((!x & LOW_NIBBLES) << 4);
+    match beat {
+        BusBeat::Bits64 => std::array::from_fn(|j| if j % 2 == 0 { a } else { !a }),
+        BusBeat::Bits32 => [(a & 0xFFFF_FFFF) | (!a << 32); LINE_WORDS],
+        BusBeat::Bits16 => {
+            let pair = (a & 0xFFFF) | ((!a & 0xFFFF) << 16);
+            [pair | (pair << 32); LINE_WORDS]
+        }
+    }
+}
+
 // ─── Tests ───────────────────────────────────────────────────────────────────
 
 #[cfg(test)]
@@ -341,6 +403,33 @@ mod tests {
         assert_ne!(s1, s4);
         // Deterministic
         assert_eq!(s1, block_seed(0x1000, 0, 0));
+    }
+
+    /// Mode 14: in address order, every beat of a line is the inverse of the one before, at each
+    /// beat width; every byte holds four 1s (so DBI never inverts one); lines differ.
+    #[test]
+    fn mode14_flips_every_beat_and_dodges_dbi() {
+        let key = mode12_key(3, 1, 0x5DEECE66D, 0xB);
+        for beat in [BusBeat::Bits16, BusBeat::Bits32, BusBeat::Bits64] {
+            let bits = beat.bits() as usize;
+            let mask = if bits == 64 { u64::MAX } else { (1u64 << bits) - 1 };
+            let mut values = std::collections::HashSet::new();
+            for line in 0..4096usize {
+                let words = mode14_line(0x1E98_0000_0000 + 64 * line, key, beat);
+                let beats: Vec<u64> = words.iter().flat_map(|&w| (0..64 / bits).map(move |k| (w >> (k * bits)) & mask)).collect();
+                assert!(beats.windows(2).all(|p| p[1] == !p[0] & mask), "{beat:?} line {line}: {words:x?}");
+                assert!(words.iter().all(|w| w.to_le_bytes().iter().all(|b| b.count_ones() == 4)), "{beat:?} line {line}");
+                values.insert(words[0]);
+            }
+            // 4096 lines drawn from 2^8, 2^16 and 2^32 values (16-, 32-, 64-bit beats): all 256,
+            // about 3970 by the birthday bound, nearly all 4096
+            let floor = match bits { 16 => 250, 32 => 3800, _ => 4090 };
+            assert!(values.len() >= floor, "{beat:?}: {} distinct", values.len());
+        }
+        assert_eq!(BusBeat::from_smbios_type(0x22), Some(BusBeat::Bits32));
+        assert_eq!(BusBeat::from_smbios_type(0x1A), Some(BusBeat::Bits64));
+        assert_eq!(BusBeat::from_smbios_type(0x23), Some(BusBeat::Bits16));
+        assert_eq!(BusBeat::from_smbios_type(0), None);
     }
 
     #[test]
