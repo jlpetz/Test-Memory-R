@@ -4569,9 +4569,10 @@ mod tests {
     /// joined blocks (640 KiB, not a power of two). Tests with an absolute chunk get 68 KiB, which
     /// divides neither the region nor a block, so its 10 chunks overlap by 4 or 8 KiB. Nothing is
     /// written outside the region (guard zones), and the correctness tests leave no extent word
-    /// untouched, so nothing is skipped. Every chunk is exactly 68 KiB: a Bench-Init's bytes are
-    /// its init pass, if it has one, plus 10 x 68 KiB per write pass. (The Spd-* bandwidth tests still take
-    /// power-of-two blocks.)
+    /// untouched, so nothing is skipped. That also checks that a test the harness doesn't fill,
+    /// because it writes first, really writes every word. Every chunk is exactly 68 KiB: a
+    /// Bench-Init writes first, so its bytes are 10 x 68 KiB per write pass. (The Spd-* bandwidth
+    /// tests still take power-of-two blocks.)
     #[test]
     fn built_in_tests_run_clean_on_joined_blocks() {
         let mut region = Region::new(&[256 * KIB, 256 * KIB, 128 * KIB]);
@@ -4591,9 +4592,8 @@ mod tests {
             assert_eq!(stats.error_count, 0, "{} found errors", def.display_name);
             assert!(stats.bytes_processed > 0, "{} tested nothing", def.display_name);
             if def.actual_name.starts_with("Bench-Init-") {
-                let init = if def.config.skip_init { 0 } else { 640 * KIB };
                 let passes = def.config.write_read_cycles as usize;
-                assert_eq!(stats.bytes_processed, init + passes * 10 * 68 * KIB, "{}: a chunk wasn't 68 KiB", def.display_name);
+                assert_eq!(stats.bytes_processed, passes * 10 * 68 * KIB, "{}: a chunk wasn't 68 KiB, or it got a fill", def.display_name);
             }
             if writes_all {
                 let left = region.words().iter().filter(|&&w| w == UNTOUCHED).count();

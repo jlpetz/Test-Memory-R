@@ -51,11 +51,15 @@ pub struct ChunkCtx {
 ///
 /// # Type Parameters
 ///
-/// - `Init`: Called once per block at startup to write initial patterns (unless `skip_init`).
-///   Always provided even when skipped — verify closures may need the same pattern knowledge
-///   for error repair. Signature: `fn(ctx: &ChunkCtx)`
+/// - `Init`: Writes the pattern a test needs in memory before its first op: over the extent at
+///   startup, or per chunk after the seal check in a sealed step. Not called when `skip_init`, or
+///   when the test writes first (below). Always provided even when skipped — verify closures may
+///   need the same pattern knowledge for error repair. Signature: `fn(ctx: &ChunkCtx)`
 /// - `Test`: Called per chunk per cycle for the "shake" operation (mirror swap, pattern write, etc).
-///   May be a no-op closure `|_| {}` for tests that only write+verify.
+///   May be a no-op closure `|_| {}` for tests that only write+verify. In a `Write` or
+///   `WriteVerify` test with `test_reps > 0` it must write every word of its chunk: such a test
+///   writes first, so the harness fills nothing before it, as TM5 has no separate fill
+///   (`built_in_tests_run_clean_on_joined_blocks` checks no word is left unwritten).
 ///   Signature: `fn(ctx: &ChunkCtx)`
 /// - `Verify`: Called per chunk per cycle to verify patterns. Returns error count for this chunk.
 ///   Signature: `fn(ctx: &ChunkCtx) -> u64`
@@ -86,7 +90,7 @@ pub struct ChunkCtx {
 /// # Bytes Accounting
 ///
 /// ```text
-/// init_bytes = if skip_init { 0 } else { block_size }  (one write pass)
+/// init_bytes = block_size if the harness fills up front (unsealed, not skip_init, not writes-first), else 0
 /// cycle_bytes = (bytes_per_test_op × test_reps + verify_reps) × block_size × write_read_cycles
 /// total = init_bytes + cycle_bytes × cycles_completed
 /// ```
@@ -176,14 +180,17 @@ where
     let chunks = runner.chunks(extent.test_size);
     let chunk_len = chunks.chunk() / std::mem::size_of::<u64>();
 
-    // A sealed step wraps each chunk in the seal (TODO 74): check before, reseal after. Its chunks
-    // hold the seal until the test works them, so the test's own fill moves inside each chunk,
-    // where a test whose first op writes doesn't need one at all.
+    // A test whose first op writes every word of its chunk needs no fill, sealed or not. Any other
+    // test fills unless it's dependent (a prior test wrote its pattern). A sealed step wraps each
+    // chunk in the seal (TODO 74): check before, reseal after. Its chunks hold the seal until the
+    // test works them, so the fill moves inside each chunk, after the check.
     let wrap = runner.seal_wrap();
-    let fill_per_chunk = wrap && test_reps == 0 && !skip_init;
+    let writes_first = test_reps > 0 && matches!(action, TestAction::Write | TestAction::WriteVerify);
+    let fill = !skip_init && !writes_first;
+    let fill_per_chunk = wrap && fill;
 
-    // Initialize the extent with patterns (unless dependent mode — prior test already wrote them)
-    if !skip_init && !wrap {
+    // An unsealed step fills the extent up front
+    if fill && !wrap {
         runner.set_stage(crate::tests::Stage::FillingMemory);
         let ctx = ChunkCtx {
             ptr,

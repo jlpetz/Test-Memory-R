@@ -137,7 +137,10 @@ cycle end     check all memory                              "Final seal check"
   reseals its extent too. A run in which no step takes the seal isn't sealed at all.
 
 **What a test has to do.** Tier 1 gets it for free: `run_phased_test` wraps each chunk when
-`config.seal.wrap` is set. A Tier-2 test calls `runner.check_seal(start, len)` before it works a
+`config.seal.wrap` is set. It fills a test's pattern only when the test needs it there before its
+first op, sealed or not: a `Write` or `WriteVerify` test with `test_reps > 0` writes first and gets
+no fill, so its `test_fn` must write every word of its chunk (TM5 has no separate fill either). A
+Tier-2 test calls `runner.check_seal(start, len)` before it works a
 chunk and `runner.reseal(start, len)` after, in bytes from the extent's start (both are no-ops
 in an unsealed run); a test that fills a range up front must fill it per chunk instead when
 `runner.seal_wrap()` (Mem-BlockMove's source half). A new `Mem-*` test takes the seal unless
