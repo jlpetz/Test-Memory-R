@@ -5,16 +5,17 @@
 //!
 //! # Pattern Mode Numbering
 //!
-//! - **Modes 0, 1, 2**: TM5-faithful implementations. Match original TM5 behavior
-//!   (adapted to 64-bit). Used by default when loading TM5 .cfg files.
+//! - **Modes 0, 1, 2**: TM5's modes, adapted to 64-bit; mode 0 keeps TM5's idea rather than its
+//!   bits (below). Used by default when loading TM5 .cfg files.
 //! - **Modes 10, 11, 12**: TMR-native modern alternatives. Simpler, sometimes faster,
 //!   but don't match TM5's specific stress patterns.
 //!
 //! ## TM5-Faithful Modes
 //!
-//! - **Mode 0**: Address-derived static fill with rotation + complement per 4KB page.
-//!   TM5 rotates 16-bit seed per word, alternates normal/complement per page.
-//!   TMR: 64-bit multiply dispersion, complement toggle every 512 u64 elements.
+//! - **Mode 0**: TM5 fills each block with one 48 B motif, word and inverse alternating (its
+//!   test 0's), from the block's first page number. TMR writes a pseudo-random word everywhere,
+//!   inverted on odd 4 KiB pages: not TM5's bits, but as many line flips on DDR5 and every word
+//!   distinct (`doc/pattern_gen_modes.md`).
 //! - **Mode 1**: Linear step + complement toggle per cache line. TM5 applies
 //!   PADDD step per element and XOR complement every 64 bytes.
 //!   TMR: wrapping_sub step per element, complement every cache line.
@@ -65,14 +66,14 @@ pub fn cache_line_shift(cache_line_bytes: usize) -> u32 {
 
 // ─── TM5-Faithful Pattern Modes (0, 1, 2) ──────────────────────────────────
 
-/// Mode 0 (TM5-faithful): Address-derived pattern with bit dispersion + complement.
+/// Mode 0: an address-derived pseudo-random word, inverted on odd 4 KiB pages.
 ///
-/// TM5: Derives 16-bit seed from page number, ROL per word position, alternates
-/// normal/complement per 4KB page. Static within a page (no per-cache-line evolution).
+/// TM5: once per block, a 16-bit word from the block's first page number becomes a 48 B motif
+/// of words each followed by its inverse (test 0's `RS_GeneratePattern`; `test dPageAddr, 1000h`
+/// swaps word and inverse on an even page), repeated across the whole block.
 ///
-/// TMR port: Wrapping multiply by golden-ratio prime for 64-bit bit dispersion
-/// (SIMD-friendly replacement for per-element ROL). Complement toggles every 4KB page
-/// (512 u64 elements), matching TM5's `test dPageAddr, 1000h` behavior.
+/// TMR: wrapping multiply by the golden-ratio constant, every word distinct, the inversion every
+/// 4 KiB page (512 u64 elements). Not TM5's bits; as many line flips on DDR5's 32-bit beats.
 ///
 /// TMR alternative: Mode 10 (unique-per-address XOR).
 #[inline(always)]

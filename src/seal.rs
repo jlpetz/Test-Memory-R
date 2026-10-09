@@ -13,9 +13,9 @@
 //! steps never take it: the worker checks what they will overwrite before they run and reseals it
 //! before the next sealed step. The cycle ends with a final check of all memory.
 //!
-//! **The patterns.** Both depend only on the word's address, so any chunk layout works, and both
-//! alternate a value and its inverse between consecutive 8 B bus transfers, so every data line
-//! toggles on every transfer:
+//! **The patterns.** Both depend only on the word's address, so any chunk layout works, and in
+//! both each 8 B word is followed by its inverse. On a 64-bit bus that flips every data line on
+//! every other transfer. On DDR5's 32-bit beats it flips about half, as random data does:
 //! - `tmr` (the default): each 16 B holds `[v, !v]`, where `v` is a 64-bit bijective hash of the
 //!   16 B unit's address, so no two units anywhere hold the same value and a write that lands at
 //!   the wrong address always shows.

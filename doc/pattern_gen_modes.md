@@ -18,7 +18,18 @@ These modes replicate TM5's proven error detection patterns, modernized for 64-b
 
 ### Mode 0: Complementary Alternating
 
-**TM5 origin**: `ST_GeneratePattern` in `mtests0.asm`. Pattern is static (no per-cache-line evolution). Address-derived with 16-bit ROL per word, complement per 4KB page.
+**TM5 origin**: `ST_GeneratePattern` in `mtests0.asm` (1805-1869), which is test 0's
+`RS_GeneratePattern` plus one `xchg`.
+- It runs once per block: a 16-bit word `d` from the block's first page number becomes a 48 B
+  motif `[q0, !q0, q1, !q1, q2, !q2]`, each `q` four rotations of `d`. On an even page `d` and its
+  inverse swap. The motif then fills the whole block, the same on all 4 write passes (the `+wrc`
+  can't change a page-aligned page number): 6 distinct words per block.
+- On a 64-bit bus every other beat flips all 64 lines (46.7 of 64 on average). On DDR5's 32-bit
+  beats it flips 15.7 of 32, the same as random data.
+
+**TMR's version is not TM5's bits.** It writes a pseudo-random word everywhere, seeded per thread
+and cycle, so on DDR5 it flips as many lines (16.0 of 32) and every word differs. Measured
+2026-10-09 by generating both.
 
 **TMR implementation**: `pattern_mode0(idx, block_seed)`
 - `block_seed` derived via Murmur hash of `(block_addr, thread_id, cycle)` — replaces TM5's `shr addr, 12`
