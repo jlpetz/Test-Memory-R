@@ -1,0 +1,32 @@
+CPU: Intel(R) Xeon(R) 6975P-C
+One thread, x86-64-v3; temporal stores. Not pinned. Not TMR throughput.
+Median of five rounds; rotated/reversed candidate order. GiB/s.
+Working sets 256 KiB and 32 MiB; neither is asserted to bypass the LLC.
+
+Buffer 256 KiB:
+Counter                          fill   49.00 verify   35.86  verify range 33.71..36.47
+Current mode 0 formula           fill   49.43 verify   45.46  verify range 33.44..45.92
+SplitMix per word                fill   11.84 verify   12.12  verify range 11.78..12.36
+Cheap full-address permutation   fill   38.95 verify   48.63  verify range 48.00..48.73
+Current seal formula             fill   50.88 verify   23.08  verify range 23.00..23.14
+Tagged 63-bit pair seal          fill   44.45 verify   21.36  verify range 21.16..21.47
+Mode 14 / 32 formula             fill   46.53 verify   24.28  verify range 23.85..24.29
+Triple 16 balanced               fill   19.87 verify   14.07  verify range 13.28..14.10
+Balanced near-flip / 32          fill    7.80 verify    5.78  verify range 5.60..5.79
+Balanced near-flip / 64          fill   10.92 verify    8.89  verify range 8.79..8.92
+Identity header + flip tail / 32 fill   26.10 verify   16.37  verify range 16.33..16.41
+Identity header + flip tail / 64 fill   23.66 verify   14.41  verify range 13.90..14.73
+
+Buffer 32768 KiB:
+Counter                          fill   27.28 verify   25.24  verify range 24.77..26.62
+Current mode 0 formula           fill   27.31 verify   27.78  verify range 24.97..27.80
+SplitMix per word                fill   11.75 verify   12.23  verify range 12.06..12.26
+Cheap full-address permutation   fill   27.59 verify   27.80  verify range 27.77..27.82
+Current seal formula             fill   27.30 verify   22.70  verify range 21.78..22.76
+Tagged 63-bit pair seal          fill   27.50 verify   19.71  verify range 19.36..20.91
+Mode 14 / 32 formula             fill   27.47 verify   23.13  verify range 22.57..23.47
+Triple 16 balanced               fill   19.64 verify   13.90  verify range 13.64..13.93
+Balanced near-flip / 32          fill    7.87 verify    5.64  verify range 5.61..5.68
+Balanced near-flip / 64          fill   10.82 verify    8.76  verify range 8.65..8.80
+Identity header + flip tail / 32 fill   25.81 verify   16.15  verify range 15.50..16.23
+Identity header + flip tail / 64 fill   23.81 verify   14.54  verify range 14.28..14.55

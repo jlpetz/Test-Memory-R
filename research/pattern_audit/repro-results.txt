@@ -1,0 +1,75 @@
+warn: could not canonicalize path C:\Users\Administrator
+   Compiling tmr v1.0.0 (C:\Users\Administrator\Downloads\TMR\TMR-APP\target\pattern-audit-source)
+    Finished `test` profile [unoptimized + debuginfo] target(s) in 3.15s
+     Running unittests src\lib.rs (target\debug\build\tmr/2c55f13e05401923\out\tmr-2c55f13e05401923.exe)
+
+running 13 tests
+test runner::audit_repros::audit_bench_mode10_ignores_custom_parameter ... BENCH_PARAM mode 10: custom param0 ignored by Bench; 4096 words differ from Simple
+ok
+test runner::audit_repros::audit_dependency_validation_misses_epoch_and_extent ... DEPENDENCY_EPOCH mode 0: validator accepts; 4096 false errors
+DEPENDENCY_EPOCH mode 1: validator accepts; 4096 false errors
+DEPENDENCY_EPOCH mode 2: validator accepts; 4096 false errors
+DEPENDENCY_EPOCH mode 12: validator accepts; 4096 false errors
+DEPENDENCY_EPOCH mode 14: validator accepts; 4096 false errors
+DEPENDENCY_EXTENT: 16 KiB writer -> 32 KiB reader accepted; 2048 false errors
+ok
+test runner::audit_repros::audit_invocation_epoch_is_reused ... EPOCH mode 0: repeated invocation IDENTICAL; local cycle 2 DIFFERENT
+EPOCH mode 1: repeated invocation IDENTICAL; local cycle 2 DIFFERENT
+EPOCH mode 2: repeated invocation IDENTICAL; local cycle 2 DIFFERENT
+EPOCH mode 12: repeated invocation IDENTICAL; local cycle 2 DIFFERENT
+EPOCH mode 14: repeated invocation IDENTICAL; local cycle 2 DIFFERENT
+ok
+test runner::audit_repros::audit_json_plan_accepts_zero_correctness_repetitions ... JSON_ZERO test_reps: accepted, 81920 errors
+JSON_ZERO verify_reps: accepted, 0 errors
+JSON_ZERO write_read_cycles: accepted, 0 errors
+ok
+test runner::audit_repros::audit_relative_patterns_alias_different_workers ... WORKER_ALIAS mode 10: all 4096 words identical at different addresses and thread IDs
+WORKER_ALIAS mode 11: all 4096 words identical at different addresses and thread IDs
+WORKER_ALIAS mode 13: all 4096 words identical at different addresses and thread IDs
+ok
+test runner::audit_repros::audit_seal_halt_still_runs_the_chunk_body ... HALT_ORDER: bad seal counted, but write body still executes and chunk is resealed before halt
+ok
+test runner::audit_repros::audit_seal_has_no_temporal_epoch ... SEAL_EPOCH: four reseals identical; old same-address image accepted
+ok
+test runner::audit_repros::audit_seal_u64_uniqueness_has_a_counterexample ... SEAL_WORD_ALIAS: 0x6b394ce37b10 and 0x6b494ce37b18 both contain 0x405ac1f540548c70
+ok
+test runner::audit_repros::audit_simd_mode_substitutions ... WIDTH mode 0, Mem-SimpleV2-128: scalar_equal=false, different_words=4096
+WIDTH mode 0, Mem-SimpleV2-256: scalar_equal=false, different_words=4096
+WIDTH mode 0, Mem-SimpleV2-512: scalar_equal=false, different_words=4096
+WIDTH mode 1, Mem-SimpleV2-128: scalar_equal=false, different_words=4096
+WIDTH mode 1, Mem-SimpleV2-256: scalar_equal=false, different_words=4096
+WIDTH mode 1, Mem-SimpleV2-512: scalar_equal=false, different_words=4096
+WIDTH mode 2, Mem-SimpleV2-128: scalar_equal=false, different_words=4096
+WIDTH mode 2, Mem-SimpleV2-256: scalar_equal=false, different_words=4096
+WIDTH mode 2, Mem-SimpleV2-512: scalar_equal=false, different_words=4096
+WIDTH mode 10, Mem-SimpleV2-128: scalar_equal=true, different_words=0
+WIDTH mode 10, Mem-SimpleV2-256: scalar_equal=true, different_words=0
+WIDTH mode 10, Mem-SimpleV2-512: scalar_equal=true, different_words=0
+WIDTH mode 11, Mem-SimpleV2-128: scalar_equal=true, different_words=0
+WIDTH mode 11, Mem-SimpleV2-256: scalar_equal=true, different_words=0
+WIDTH mode 11, Mem-SimpleV2-512: scalar_equal=true, different_words=0
+WIDTH mode 12, Mem-SimpleV2-128: scalar_equal=true, different_words=0
+WIDTH mode 12, Mem-SimpleV2-256: scalar_equal=true, different_words=0
+WIDTH mode 12, Mem-SimpleV2-512: scalar_equal=true, different_words=0
+WIDTH mode 13, Mem-SimpleV2-128: scalar_equal=false, different_words=4096
+WIDTH mode 13, Mem-SimpleV2-256: scalar_equal=false, different_words=4096
+WIDTH mode 13, Mem-SimpleV2-512: scalar_equal=false, different_words=4096
+WIDTH mode 14, Mem-SimpleV2-128: scalar_equal=true, different_words=0
+WIDTH mode 14, Mem-SimpleV2-256: scalar_equal=true, different_words=0
+WIDTH mode 14, Mem-SimpleV2-512: scalar_equal=true, different_words=0
+ok
+test runner::audit_repros::audit_zero_test_reps_initializes_the_wrong_epoch ... ZERO_WRITE_REPS mode 0: 4096 false errors in fault-free memory
+ZERO_WRITE_REPS mode 1: 4096 false errors in fault-free memory
+ZERO_WRITE_REPS mode 2: 4096 false errors in fault-free memory
+ZERO_WRITE_REPS mode 12: 4096 false errors in fault-free memory
+ZERO_WRITE_REPS mode 14: 4096 false errors in fault-free memory
+ok
+test tests::audit_repros::audit_check_interval_changes_with_vector_width ... CHECK_INTERVAL: identical two faults, mask 7 -> 128-bit 2 vs 256-bit 1
+ok
+test tests::audit_repros::audit_mode2_low_bits_degrade_before_total_collapse ... MODE2: 1989/16384 lines fully collapse; 5377/16384 have at least 32 shared low bits
+ok
+test tests::audit_repros::audit_simd_positional_counts_batches_not_bad_words ... ERROR_UNITS: three corrupt words -> sequential SIMD 1, scalar 3
+ok
+
+test result: ok. 13 passed; 0 failed; 0 ignored; 0 measured; 142 filtered out; finished in 0.22s
+

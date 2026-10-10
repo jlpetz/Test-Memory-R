@@ -1,0 +1,694 @@
+{
+  "assumptions": "64-byte logical lines, increasing-address data order, no scrambling, DC byte DBI only",
+  "base": "0x1e980000000",
+  "lines": 16384,
+  "thread": 0,
+  "cycle": 1,
+  "param0": "0x5deece66d",
+  "param1": "0xb",
+  "scores": [
+    {
+      "name": "TMR 0",
+      "lines": 16384,
+      "flip_share": {
+        "16": 0.4999876945249496,
+        "32": 0.5000022888183594,
+        "64": 0.49295766013009207
+      },
+      "dbi_share": {
+        "16": 0.4624744538337954,
+        "32": 0.46251373291015624,
+        "64": 0.4647888456072126
+      },
+      "distinct_u64": 131072,
+      "distinct_lines": 16384,
+      "min_distinct_u64_in_line": 8,
+      "single_word_lines": 0,
+      "lines_with_identical_low32": 0,
+      "balanced_byte_share": 0.2734498977661133,
+      "adjacent_line_hamming_share": 0.45969621711530245,
+      "paired_line_hamming_share": 0.459148645401001
+    },
+    {
+      "name": "TMR 1",
+      "lines": 16384,
+      "flip_share": {
+        "16": 0.46007021011844756,
+        "32": 0.41210250854492186,
+        "64": 0.0491070066179548
+      },
+      "dbi_share": {
+        "16": 0.49480930451423893,
+        "32": 0.47031911214192706,
+        "64": 0.04994596753801618
+      },
+      "distinct_u64": 131072,
+      "distinct_lines": 16384,
+      "min_distinct_u64_in_line": 8,
+      "single_word_lines": 0,
+      "lines_with_identical_low32": 0,
+      "balanced_byte_share": 0.33919239044189453,
+      "adjacent_line_hamming_share": 0.9531264305987914,
+      "paired_line_hamming_share": 0.9531269073486328
+    },
+    {
+      "name": "TMR 2, community sequential params",
+      "lines": 16384,
+      "flip_share": {
+        "16": 0.49956992364698843,
+        "32": 0.49987500508626304,
+        "64": 0.2880461556570871
+      },
+      "dbi_share": {
+        "16": 0.4625459486438382,
+        "32": 0.4623554229736328,
+        "64": 0.277839115687779
+      },
+      "distinct_u64": 116193,
+      "distinct_lines": 16384,
+      "min_distinct_u64_in_line": 1,
+      "single_word_lines": 1989,
+      "lines_with_identical_low32": 5377,
+      "balanced_byte_share": 0.2739553451538086,
+      "adjacent_line_hamming_share": 0.5089435075611914,
+      "paired_line_hamming_share": 0.5080397129058838
+    },
+    {
+      "name": "TMR 2, benchmark params",
+      "lines": 16384,
+      "flip_share": {
+        "16": 0.49981972479051157,
+        "32": 0.4996669769287109,
+        "64": 0.2550678253173828
+      },
+      "dbi_share": {
+        "16": 0.4627622788952243,
+        "32": 0.4626628875732422,
+        "64": 0.2488604954310826
+      },
+      "distinct_u64": 126540,
+      "distinct_lines": 16384,
+      "min_distinct_u64_in_line": 1,
+      "single_word_lines": 262,
+      "lines_with_identical_low32": 8433,
+      "balanced_byte_share": 0.2745990753173828,
+      "adjacent_line_hamming_share": 0.5043224350317402,
+      "paired_line_hamming_share": 0.5041990280151367
+    },
+    {
+      "name": "TMR 10",
+      "lines": 16384,
+      "flip_share": {
+        "16": 0.4425403225806452,
+        "32": 0.6125,
+        "64": 0.024553571428571428
+      },
+      "dbi_share": {
+        "16": 0.3162802419354839,
+        "32": 0.3375651041666667,
+        "64": 0.05036272321428571
+      },
+      "distinct_u64": 131072,
+      "distinct_lines": 16384,
+      "min_distinct_u64_in_line": 8,
+      "single_word_lines": 0,
+      "lines_with_identical_low32": 0,
+      "balanced_byte_share": 0.068359375,
+      "adjacent_line_hamming_share": 0.031236647744613318,
+      "paired_line_hamming_share": 0.015625
+    },
+    {
+      "name": "TMR 11",
+      "lines": 16384,
+      "flip_share": {
+        "16": 0.4425403225806452,
+        "32": 0.6083333333333333,
+        "64": 0.024553571428571428
+      },
+      "dbi_share": {
+        "16": 0.3162802419354839,
+        "32": 0.3401692708333333,
+        "64": 0.05036272321428571
+      },
+      "distinct_u64": 131072,
+      "distinct_lines": 16384,
+      "min_distinct_u64_in_line": 8,
+      "single_word_lines": 0,
+      "lines_with_identical_low32": 0,
+      "balanced_byte_share": 0.068359375,
+      "adjacent_line_hamming_share": 0.031236647744613318,
+      "paired_line_hamming_share": 0.015625
+    },
+    {
+      "name": "TMR 12",
+      "lines": 16384,
+      "flip_share": {
+        "16": 0.4997001155730217,
+        "32": 0.5002409617106119,
+        "64": 0.507890156337193
+      },
+      "dbi_share": {
+        "16": 0.4626886921544229,
+        "32": 0.46276054382324217,
+        "64": 0.4628753662109375
+      },
+      "distinct_u64": 131072,
+      "distinct_lines": 16384,
+      "min_distinct_u64_in_line": 8,
+      "single_word_lines": 0,
+      "lines_with_identical_low32": 0,
+      "balanced_byte_share": 0.2733135223388672,
+      "adjacent_line_hamming_share": 0.500015140503876,
+      "paired_line_hamming_share": 0.4998741149902344
+    },
+    {
+      "name": "TMR 13",
+      "lines": 16384,
+      "flip_share": {
+        "16": 0.5002530005670363,
+        "32": 0.5002620697021485,
+        "64": 0.4999204363141741
+      },
+      "dbi_share": {
+        "16": 0.4625768353862147,
+        "32": 0.46264737447102866,
+        "64": 0.4625799996512277
+      },
+      "distinct_u64": 131072,
+      "distinct_lines": 16384,
+      "min_distinct_u64_in_line": 8,
+      "single_word_lines": 0,
+      "lines_with_identical_low32": 0,
+      "balanced_byte_share": 0.27366065979003906,
+      "adjacent_line_hamming_share": 0.4999701958585119,
+      "paired_line_hamming_share": 0.49976038932800293
+    },
+    {
+      "name": "TMR 10, SimpleTest default params",
+      "lines": 16384,
+      "flip_share": {
+        "16": 0.3800403225806452,
+        "32": 0.26875,
+        "64": 0.024553571428571428
+      },
+      "dbi_share": {
+        "16": 0.35688634072580644,
+        "32": 0.22431640625,
+        "64": 0.04059709821428571
+      },
+      "distinct_u64": 131072,
+      "distinct_lines": 16384,
+      "min_distinct_u64_in_line": 8,
+      "single_word_lines": 0,
+      "lines_with_identical_low32": 0,
+      "balanced_byte_share": 0.130859375,
+      "adjacent_line_hamming_share": 0.031236647744613318,
+      "paired_line_hamming_share": 0.015625
+    },
+    {
+      "name": "TMR 11, SimpleTest default params",
+      "lines": 16384,
+      "flip_share": {
+        "16": 0.3155241935483871,
+        "32": 0.26875,
+        "64": 0.024553571428571428
+      },
+      "dbi_share": {
+        "16": 0.4405556955645161,
+        "32": 0.32501627604166666,
+        "64": 0.05036272321428571
+      },
+      "distinct_u64": 131072,
+      "distinct_lines": 16384,
+      "min_distinct_u64_in_line": 8,
+      "single_word_lines": 0,
+      "lines_with_identical_low32": 0,
+      "balanced_byte_share": 0.255859375,
+      "adjacent_line_hamming_share": 0.031236647744613318,
+      "paired_line_hamming_share": 0.015625
+    },
+    {
+      "name": "TM5 seal, 64-bit bus reference",
+      "lines": 16384,
+      "flip_share": {
+        "16": 0.41481854838709675,
+        "32": 0.493359375,
+        "64": 0.7600446428571429
+      },
+      "dbi_share": {
+        "16": 0.42515810074344756,
+        "32": 0.47375742594401044,
+        "64": 0.32385471888950895
+      },
+      "distinct_u64": 1532,
+      "distinct_lines": 768,
+      "min_distinct_u64_in_line": 4,
+      "single_word_lines": 0,
+      "lines_with_identical_low32": 0,
+      "balanced_byte_share": 0.21887588500976562,
+      "adjacent_line_hamming_share": 0.5531152719282183,
+      "paired_line_hamming_share": 0.559661865234375
+    },
+    {
+      "name": "TM5 mode 0, one fixed block, 64-bit bus reference",
+      "lines": 16384,
+      "flip_share": {
+        "16": 0.40725806451612906,
+        "32": 0.49166666666666664,
+        "64": 0.7678571428571429
+      },
+      "dbi_share": {
+        "16": 0.42338709677419356,
+        "32": 0.48333333333333334,
+        "64": 0.33035714285714285
+      },
+      "distinct_u64": 6,
+      "distinct_lines": 1,
+      "min_distinct_u64_in_line": 6,
+      "single_word_lines": 0,
+      "lines_with_identical_low32": 0,
+      "balanced_byte_share": 0.15625,
+      "adjacent_line_hamming_share": 0.0,
+      "paired_line_hamming_share": 0.0
+    },
+    {
+      "name": "TMR seal",
+      "lines": 16384,
+      "flip_share": {
+        "16": 0.5000392544654108,
+        "32": 0.5005680084228515,
+        "64": 0.7880607332502093
+      },
+      "dbi_share": {
+        "16": 0.4624324921638735,
+        "32": 0.4627185821533203,
+        "64": 0.35222666604178293
+      },
+      "distinct_u64": 131072,
+      "distinct_lines": 16384,
+      "min_distinct_u64_in_line": 8,
+      "single_word_lines": 0,
+      "lines_with_identical_low32": 0,
+      "balanced_byte_share": 0.27355384826660156,
+      "adjacent_line_hamming_share": 0.4918830208905573,
+      "paired_line_hamming_share": 0.49187278747558594
+    },
+    {
+      "name": "Cheap full-address permutation",
+      "lines": 16384,
+      "flip_share": {
+        "16": 0.5000093521610383,
+        "32": 0.5007620493570963,
+        "64": 0.4908210209437779
+      },
+      "dbi_share": {
+        "16": 0.4628746278824345,
+        "32": 0.4624780019124349,
+        "64": 0.4656464712960379
+      },
+      "distinct_u64": 131072,
+      "distinct_lines": 16384,
+      "min_distinct_u64_in_line": 8,
+      "single_word_lines": 0,
+      "lines_with_identical_low32": 0,
+      "balanced_byte_share": 0.27327632904052734,
+      "adjacent_line_hamming_share": 0.4633882349462858,
+      "paired_line_hamming_share": 0.4649171829223633
+    },
+    {
+      "name": "Tagged 63-bit pair seal",
+      "lines": 16384,
+      "flip_share": {
+        "16": 0.5000334708921371,
+        "32": 0.5005620320638021,
+        "64": 0.7881174087524414
+      },
+      "dbi_share": {
+        "16": 0.46258766420425906,
+        "32": 0.46273905436197915,
+        "64": 0.35163702283586773
+      },
+      "distinct_u64": 131072,
+      "distinct_lines": 16384,
+      "min_distinct_u64_in_line": 8,
+      "single_word_lines": 0,
+      "lines_with_identical_low32": 0,
+      "balanced_byte_share": 0.27352142333984375,
+      "adjacent_line_hamming_share": 0.4630307044649942,
+      "paired_line_hamming_share": 0.46302032470703125
+    },
+    {
+      "name": "Triple 16 balanced",
+      "lines": 16384,
+      "flip_share": {
+        "16": 0.6774193548387096,
+        "32": 0.6666666666666666,
+        "64": 0.6785714285714286
+      },
+      "dbi_share": {
+        "16": 0.6774193548387096,
+        "32": 0.6666666666666666,
+        "64": 0.6785714285714286
+      },
+      "distinct_u64": 43458,
+      "distinct_lines": 14495,
+      "min_distinct_u64_in_line": 3,
+      "single_word_lines": 0,
+      "lines_with_identical_low32": 0,
+      "balanced_byte_share": 1.0,
+      "adjacent_line_hamming_share": 0.4986156572361594,
+      "paired_line_hamming_share": 0.4984769821166992
+    },
+    {
+      "name": "Triple independently hashed, odd lines inverted",
+      "lines": 16384,
+      "flip_share": {
+        "16": 0.6774193548387096,
+        "32": 0.6666666666666666,
+        "64": 0.6785714285714286
+      },
+      "dbi_share": {
+        "16": 0.6774193548387096,
+        "32": 0.6666666666666666,
+        "64": 0.6785714285714286
+      },
+      "distinct_u64": 43410,
+      "distinct_lines": 14480,
+      "min_distinct_u64_in_line": 3,
+      "single_word_lines": 0,
+      "lines_with_identical_low32": 0,
+      "balanced_byte_share": 1.0,
+      "adjacent_line_hamming_share": 0.5013843427638406,
+      "paired_line_hamming_share": 0.5015230178833008
+    },
+    {
+      "name": "Triple pair-shared hash, odd lines inverted",
+      "lines": 16384,
+      "flip_share": {
+        "16": 0.6774193548387096,
+        "32": 0.6666666666666666,
+        "64": 0.6785714285714286
+      },
+      "dbi_share": {
+        "16": 0.6774193548387096,
+        "32": 0.6666666666666666,
+        "64": 0.6785714285714286
+      },
+      "distinct_u64": 43680,
+      "distinct_lines": 14570,
+      "min_distinct_u64_in_line": 3,
+      "single_word_lines": 0,
+      "lines_with_identical_low32": 0,
+      "balanced_byte_share": 1.0,
+      "adjacent_line_hamming_share": 0.7501125404382591,
+      "paired_line_hamming_share": 1.0
+    },
+    {
+      "name": "TMR 14/16",
+      "lines": 16384,
+      "flip_share": {
+        "16": 1.0,
+        "32": 0.0,
+        "64": 0.0
+      },
+      "dbi_share": {
+        "16": 1.0,
+        "32": 0.0,
+        "64": 0.0
+      },
+      "distinct_u64": 256,
+      "distinct_lines": 256,
+      "min_distinct_u64_in_line": 1,
+      "single_word_lines": 16384,
+      "lines_with_identical_low32": 16384,
+      "balanced_byte_share": 1.0,
+      "adjacent_line_hamming_share": 0.5002365256668497,
+      "paired_line_hamming_share": 0.5013275146484375
+    },
+    {
+      "name": "Balanced near-flip/16",
+      "lines": 16384,
+      "flip_share": {
+        "16": 0.875,
+        "32": 0.1375,
+        "64": 0.22160611833844865
+      },
+      "dbi_share": {
+        "16": 0.875,
+        "32": 0.1375,
+        "64": 0.22160611833844865
+      },
+      "distinct_u64": 60204,
+      "distinct_lines": 16384,
+      "min_distinct_u64_in_line": 5,
+      "single_word_lines": 0,
+      "lines_with_identical_low32": 0,
+      "balanced_byte_share": 1.0,
+      "adjacent_line_hamming_share": 0.4999575589025209,
+      "paired_line_hamming_share": 0.5014505386352539
+    },
+    {
+      "name": "Balanced identity header + flip tail/16",
+      "lines": 16384,
+      "flip_share": {
+        "16": 0.8870106358681956,
+        "32": 0.11647109985351563,
+        "64": 0.12499182564871651
+      },
+      "dbi_share": {
+        "16": 0.8870106358681956,
+        "32": 0.11647109985351563,
+        "64": 0.12499182564871651
+      },
+      "distinct_u64": 33024,
+      "distinct_lines": 16384,
+      "min_distinct_u64_in_line": 3,
+      "single_word_lines": 0,
+      "lines_with_identical_low32": 0,
+      "balanced_byte_share": 1.0,
+      "adjacent_line_hamming_share": 0.5002136360861869,
+      "paired_line_hamming_share": 0.4997706413269043
+    },
+    {
+      "name": "TMR 14/32",
+      "lines": 16384,
+      "flip_share": {
+        "16": 0.5000541440902218,
+        "32": 1.0,
+        "64": 0.0
+      },
+      "dbi_share": {
+        "16": 0.5000541440902218,
+        "32": 1.0,
+        "64": 0.0
+      },
+      "distinct_u64": 14539,
+      "distinct_lines": 14539,
+      "min_distinct_u64_in_line": 1,
+      "single_word_lines": 16384,
+      "lines_with_identical_low32": 16384,
+      "balanced_byte_share": 1.0,
+      "adjacent_line_hamming_share": 0.4993209424403345,
+      "paired_line_hamming_share": 0.500335693359375
+    },
+    {
+      "name": "Balanced near-flip/32",
+      "lines": 16384,
+      "flip_share": {
+        "16": 0.49992567493069556,
+        "32": 0.9375,
+        "64": 0.10047204153878349
+      },
+      "dbi_share": {
+        "16": 0.49992567493069556,
+        "32": 0.9375,
+        "64": 0.10047204153878349
+      },
+      "distinct_u64": 106665,
+      "distinct_lines": 16384,
+      "min_distinct_u64_in_line": 5,
+      "single_word_lines": 0,
+      "lines_with_identical_low32": 0,
+      "balanced_byte_share": 1.0,
+      "adjacent_line_hamming_share": 0.4999036730147104,
+      "paired_line_hamming_share": 0.5008039474487305
+    },
+    {
+      "name": "Balanced identity header + flip tail/32",
+      "lines": 16384,
+      "flip_share": {
+        "16": 0.4999138616746472,
+        "32": 0.8997835795084635,
+        "64": 0.10735648018973214
+      },
+      "dbi_share": {
+        "16": 0.4999138616746472,
+        "32": 0.8997835795084635,
+        "64": 0.10735648018973214
+      },
+      "distinct_u64": 47355,
+      "distinct_lines": 16384,
+      "min_distinct_u64_in_line": 3,
+      "single_word_lines": 0,
+      "lines_with_identical_low32": 0,
+      "balanced_byte_share": 1.0,
+      "adjacent_line_hamming_share": 0.5005455350057987,
+      "paired_line_hamming_share": 0.5007433891296387
+    },
+    {
+      "name": "TMR 14/64",
+      "lines": 16384,
+      "flip_share": {
+        "16": 0.5005872172694052,
+        "32": 0.5000986735026042,
+        "64": 1.0
+      },
+      "dbi_share": {
+        "16": 0.5005872172694052,
+        "32": 0.5000986735026042,
+        "64": 1.0
+      },
+      "distinct_u64": 32768,
+      "distinct_lines": 16384,
+      "min_distinct_u64_in_line": 2,
+      "single_word_lines": 0,
+      "lines_with_identical_low32": 0,
+      "balanced_byte_share": 1.0,
+      "adjacent_line_hamming_share": 0.5000305194408838,
+      "paired_line_hamming_share": 0.5009689331054688
+    },
+    {
+      "name": "Balanced near-flip/64",
+      "lines": 16384,
+      "flip_share": {
+        "16": 0.5000347014396421,
+        "32": 0.49991480509440106,
+        "64": 0.96875
+      },
+      "dbi_share": {
+        "16": 0.5000347014396421,
+        "32": 0.49991480509440106,
+        "64": 0.96875
+      },
+      "distinct_u64": 127930,
+      "distinct_lines": 16384,
+      "min_distinct_u64_in_line": 4,
+      "single_word_lines": 0,
+      "lines_with_identical_low32": 0,
+      "balanced_byte_share": 1.0,
+      "adjacent_line_hamming_share": 0.4994191768906794,
+      "paired_line_hamming_share": 0.49989986419677734
+    },
+    {
+      "name": "Balanced identity header + flip tail/64",
+      "lines": 16384,
+      "flip_share": {
+        "16": 0.4998577487084173,
+        "32": 0.4997835795084635,
+        "64": 0.928633281162807
+      },
+      "dbi_share": {
+        "16": 0.4998577487084173,
+        "32": 0.4997835795084635,
+        "64": 0.928633281162807
+      },
+      "distinct_u64": 49152,
+      "distinct_lines": 16384,
+      "min_distinct_u64_in_line": 3,
+      "single_word_lines": 0,
+      "lines_with_identical_low32": 0,
+      "balanced_byte_share": 1.0,
+      "adjacent_line_hamming_share": 0.5004425318928157,
+      "paired_line_hamming_share": 0.500328540802002
+    }
+  ],
+  "finite_bound_witness": {
+    "binary_sequences": [
+      "0x4925",
+      "0x4926"
+    ],
+    "line_words": [
+      "0x1e1e1e1ee1e1e1e1",
+      "0xf0f0f0f00f0f0f0f",
+      "0xf0f0f0ff0f0f0f0",
+      "0xf0f0f0f0f0f0f0f0",
+      "0xf0f0f0f00f0f0f0f",
+      "0xf0f0f0ff0f0f0f0",
+      "0xf0f0f0f0f0f0f0f0",
+      "0xf0f0f0f00f0f0f0f"
+    ],
+    "p32": "41/60",
+    "p64": "19/28",
+    "p32_float": 0.6833333333333333,
+    "p64_float": 0.6785714285714286,
+    "finite_upper_bound_min_p32_p64": "15/22"
+  },
+  "triple_counterexamples": {
+    "lag48_share": 0,
+    "extrema": {
+      "24": [
+        0.0,
+        1.0
+      ],
+      "12": [
+        0.328,
+        0.496
+      ]
+    },
+    "mean_over_all_65536_payloads": {
+      "24": 0.5000000000000002,
+      "12": 0.4120000000000663
+    },
+    "worst_A_C": {
+      "24": [
+        61455,
+        61680
+      ],
+      "12": [
+        61455,
+        61680
+      ]
+    }
+  },
+  "seal_collision": {
+    "address_a": "0x6b394ce37b10",
+    "address_b": "0x6b494ce37b18",
+    "delta_bytes": 68719476744,
+    "value": "0x405ac1f540548c70"
+  },
+  "rng_coverage": [
+    {
+      "gib": 1,
+      "reads": 50000,
+      "distinct_words": 49990,
+      "word_coverage_percent": 0.03724545240402222,
+      "line_coverage_percent": 0.2976357936859131
+    },
+    {
+      "gib": 8,
+      "reads": 50000,
+      "distinct_words": 49999,
+      "word_coverage_percent": 0.004656519740819931,
+      "line_coverage_percent": 0.03724545240402222
+    },
+    {
+      "gib": 16,
+      "reads": 50000,
+      "distinct_words": 49999,
+      "word_coverage_percent": 0.0023282598704099655,
+      "line_coverage_percent": 0.018625706434249878
+    },
+    {
+      "gib": 32,
+      "reads": 50000,
+      "distinct_words": 50000,
+      "word_coverage_percent": 0.0011641532182693481,
+      "line_coverage_percent": 0.009313039481639862
+    }
+  ],
+  "dbi_balanced_alphabet": {
+    "available_balanced_bytes": 70,
+    "current_mode14_bytes": 16,
+    "max_balanced_bits_per_byte": 6.129283016944966
+  }
+}

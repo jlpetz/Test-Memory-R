@@ -1,0 +1,1157 @@
+[
+  {
+    "source": "target\\release\\build\\tmr\\76da2e2b9a89afd0\\out\\tmr.s",
+    "functions": [
+      {
+        "symbol": "_RNvMs0_NtCsiYjGPJMyZdw_3tmr4sealNtB5_10SealKernel5check",
+        "start_line": 393790,
+        "registers": {
+          "xmm": 260,
+          "ymm": 144,
+          "zmm": 0
+        },
+        "counts": {
+          "vmovntdq": 0,
+          "vmovntdqa": 0,
+          "clflushopt": 0,
+          "sfence": 0,
+          "mfence": 0,
+          "vpmullq": 0,
+          "vpmuludq": 0,
+          "imulq": 2,
+          "vpsrlq": 10,
+          "vpxor": 58,
+          "vpxorq": 0,
+          "vpaddq": 10
+        },
+        "calls": [
+          "_RNvNtCsiYjGPJMyZdw_3tmr4seal13tm5_check_512",
+          "_RNvNtCsiYjGPJMyZdw_3tmr4seal13tmr_check_512",
+          "_RNvNtCsiYjGPJMyZdw_3tmr4seal6rescan",
+          "_RNvNtCsbmPJJqKt0V4_4core9panicking18panic_bounds_check",
+          "_RNvNtCsbmPJJqKt0V4_4core9panicking18panic_bounds_check"
+        ]
+      },
+      {
+        "symbol": "_RNvMs0_NtCsiYjGPJMyZdw_3tmr4sealNtB5_10SealKernel4fill",
+        "start_line": 394563,
+        "registers": {
+          "xmm": 141,
+          "ymm": 81,
+          "zmm": 0
+        },
+        "counts": {
+          "vmovntdq": 11,
+          "vmovntdqa": 0,
+          "clflushopt": 0,
+          "sfence": 1,
+          "mfence": 0,
+          "vpmullq": 0,
+          "vpmuludq": 0,
+          "imulq": 2,
+          "vpsrlq": 10,
+          "vpxor": 20,
+          "vpxorq": 0,
+          "vpaddq": 10
+        },
+        "calls": [
+          "_RNvNtCsiYjGPJMyZdw_3tmr4seal12tm5_fill_512",
+          "_RNvNtCsiYjGPJMyZdw_3tmr4seal12tmr_fill_512",
+          "_RNvNtCsbmPJJqKt0V4_4core9panicking18panic_bounds_check",
+          "_RNvNtCsbmPJJqKt0V4_4core9panicking18panic_bounds_check"
+        ]
+      },
+      {
+        "symbol": "_RNvNtCsiYjGPJMyZdw_3tmr4seal12tmr_fill_512",
+        "start_line": 396731,
+        "registers": {
+          "xmm": 0,
+          "ymm": 0,
+          "zmm": 64
+        },
+        "counts": {
+          "vmovntdq": 5,
+          "vmovntdqa": 0,
+          "clflushopt": 0,
+          "sfence": 1,
+          "mfence": 0,
+          "vpmullq": 0,
+          "vpmuludq": 0,
+          "imulq": 1,
+          "vpsrlq": 5,
+          "vpxor": 0,
+          "vpxorq": 0,
+          "vpaddq": 6
+        },
+        "calls": []
+      },
+      {
+        "symbol": "_RNvNtCsiYjGPJMyZdw_3tmr4seal13tmr_check_512",
+        "start_line": 397152,
+        "registers": {
+          "xmm": 15,
+          "ymm": 0,
+          "zmm": 77
+        },
+        "counts": {
+          "vmovntdq": 0,
+          "vmovntdqa": 0,
+          "clflushopt": 0,
+          "sfence": 0,
+          "mfence": 0,
+          "vpmullq": 0,
+          "vpmuludq": 0,
+          "imulq": 1,
+          "vpsrlq": 5,
+          "vpxor": 3,
+          "vpxorq": 0,
+          "vpaddq": 6
+        },
+        "calls": []
+      },
+      {
+        "symbol": "_RNvNtCsiYjGPJMyZdw_3tmr4seal8tmr_word",
+        "start_line": 397830,
+        "registers": {
+          "xmm": 0,
+          "ymm": 0,
+          "zmm": 0
+        },
+        "counts": {
+          "vmovntdq": 0,
+          "vmovntdqa": 0,
+          "clflushopt": 0,
+          "sfence": 0,
+          "mfence": 0,
+          "vpmullq": 0,
+          "vpmuludq": 0,
+          "imulq": 1,
+          "vpsrlq": 0,
+          "vpxor": 0,
+          "vpxorq": 0,
+          "vpaddq": 0
+        },
+        "calls": []
+      },
+      {
+        "symbol": "_RNvNtCsiYjGPJMyZdw_3tmr5tests24simple_test_nt_256_multi",
+        "start_line": 706321,
+        "registers": {
+          "xmm": 35,
+          "ymm": 227,
+          "zmm": 0
+        },
+        "counts": {
+          "vmovntdq": 6,
+          "vmovntdqa": 0,
+          "clflushopt": 0,
+          "sfence": 1,
+          "mfence": 0,
+          "vpmullq": 0,
+          "vpmuludq": 0,
+          "imulq": 11,
+          "vpsrlq": 0,
+          "vpxor": 32,
+          "vpxorq": 0,
+          "vpaddq": 17
+        },
+        "calls": [
+          "_RNvMNtCsiYjGPJMyZdw_3tmr16test_scaffoldingNtB2_10TestRunner3new",
+          "*32(%rax)",
+          "_RNvMs0_NtCsiYjGPJMyZdw_3tmr4sealNtB5_10SealKernel5check",
+          "_RNvMs0_NtCsiYjGPJMyZdw_3tmr4sealNtB5_10SealKernel5check",
+          "_RNvNtCsiYjGPJMyZdw_3tmr5tests19flush_range_to_dram",
+          "_RNvMs0_NtCsiYjGPJMyZdw_3tmr4sealNtB5_10SealKernel4fill",
+          "_RNvMs0_NtCsiYjGPJMyZdw_3tmr4sealNtB5_10SealKernel4fill",
+          "_RNvMNtCskun03Aar8a0_3std4timeNtB2_7Instant3now",
+          "_RNvMNtCskun03Aar8a0_3std4timeNtB2_7Instant22checked_duration_since",
+          "_RNvMNtCskun03Aar8a0_3std4timeNtB2_7Instant3now",
+          "_RNvMNtCskun03Aar8a0_3std4timeNtB2_7Instant22checked_duration_since",
+          "_RNvMNtCskun03Aar8a0_3std4timeNtB2_7Instant3now",
+          "_RNvMNtCskun03Aar8a0_3std4timeNtB2_7Instant22checked_duration_since",
+          "_RNvMNtCskun03Aar8a0_3std4timeNtB2_7Instant3now",
+          "_RNvMNtCskun03Aar8a0_3std4timeNtB2_7Instant22checked_duration_since",
+          "_RNvMNtCskun03Aar8a0_3std4timeNtB2_7Instant3now",
+          "_RNvMNtCskun03Aar8a0_3std4timeNtB2_7Instant22checked_duration_since",
+          "_RNvMNtCsiYjGPJMyZdw_3tmr16test_scaffoldingNtB2_10TestRunner16finish_completed",
+          "_RNvMNtCskun03Aar8a0_3std4timeNtB2_7Instant3now",
+          "_RNvMNtCskun03Aar8a0_3std4timeNtB2_7Instant22checked_duration_since",
+          "_RNvMNtCskun03Aar8a0_3std4timeNtB2_7Instant3now",
+          "_RNvMNtCskun03Aar8a0_3std4timeNtB2_7Instant22checked_duration_since",
+          "_RNvMs0_NtCsiYjGPJMyZdw_3tmr4sealNtB5_10SealKernel4fill",
+          "_RNvMNtCsiYjGPJMyZdw_3tmr16test_scaffoldingNtB2_10TestRunner14finish_aborted",
+          "_RNvNtCsbmPJJqKt0V4_4core9panicking9panic_fmt"
+        ]
+      },
+      {
+        "symbol": "_RNvNtCsiYjGPJMyZdw_3tmr5tests24refresh_stable_256_multi",
+        "start_line": 708879,
+        "registers": {
+          "xmm": 17,
+          "ymm": 92,
+          "zmm": 0
+        },
+        "counts": {
+          "vmovntdq": 0,
+          "vmovntdqa": 0,
+          "clflushopt": 0,
+          "sfence": 0,
+          "mfence": 0,
+          "vpmullq": 0,
+          "vpmuludq": 0,
+          "imulq": 6,
+          "vpsrlq": 0,
+          "vpxor": 17,
+          "vpxorq": 0,
+          "vpaddq": 0
+        },
+        "calls": [
+          "_RNvMNtCsiYjGPJMyZdw_3tmr16test_scaffoldingNtB2_10TestRunner3new",
+          "_RNvMs0_NtCsiYjGPJMyZdw_3tmr4sealNtB5_10SealKernel5check",
+          "_RNvNtCsiYjGPJMyZdw_3tmr5tests19flush_range_to_dram",
+          "_RNvNtNtCskun03Aar8a0_3std6thread9functions5sleep",
+          "_RNvMs0_NtCsiYjGPJMyZdw_3tmr4sealNtB5_10SealKernel4fill",
+          "_RNvMs0_NtCsiYjGPJMyZdw_3tmr4sealNtB5_10SealKernel4fill",
+          "_RINvNtCsiYjGPJMyZdw_3tmr5tests12rescan_wordsNCNvB2_23refresh_stable_256_impl0EB4_",
+          "_RNvMNtCskun03Aar8a0_3std4timeNtB2_7Instant3now",
+          "_RNvMNtCskun03Aar8a0_3std4timeNtB2_7Instant22checked_duration_since",
+          "_RNvMNtCskun03Aar8a0_3std4timeNtB2_7Instant3now",
+          "_RNvMNtCskun03Aar8a0_3std4timeNtB2_7Instant22checked_duration_since",
+          "_RNvMNtCskun03Aar8a0_3std4timeNtB2_7Instant3now",
+          "_RNvMNtCskun03Aar8a0_3std4timeNtB2_7Instant22checked_duration_since",
+          "_RNvMNtCsiYjGPJMyZdw_3tmr16test_scaffoldingNtB2_10TestRunner16finish_completed",
+          "_RNvMNtCskun03Aar8a0_3std4timeNtB2_7Instant3now",
+          "_RNvMNtCskun03Aar8a0_3std4timeNtB2_7Instant22checked_duration_since",
+          "_RNvMNtCskun03Aar8a0_3std4timeNtB2_7Instant3now",
+          "_RNvMNtCskun03Aar8a0_3std4timeNtB2_7Instant22checked_duration_since",
+          "_RNvMs0_NtCsiYjGPJMyZdw_3tmr4sealNtB5_10SealKernel4fill",
+          "_RNvNtCsbmPJJqKt0V4_4core9panicking9panic_fmt"
+        ]
+      },
+      {
+        "symbol": "_RNvNtCsiYjGPJMyZdw_3tmr5tests16block_move_multi",
+        "start_line": 713166,
+        "registers": {
+          "xmm": 111,
+          "ymm": 375,
+          "zmm": 0
+        },
+        "counts": {
+          "vmovntdq": 0,
+          "vmovntdqa": 0,
+          "clflushopt": 0,
+          "sfence": 0,
+          "mfence": 0,
+          "vpmullq": 0,
+          "vpmuludq": 0,
+          "imulq": 8,
+          "vpsrlq": 0,
+          "vpxor": 18,
+          "vpxorq": 0,
+          "vpaddq": 30
+        },
+        "calls": [
+          "_RNvMNtCsiYjGPJMyZdw_3tmr16test_scaffoldingNtB2_10TestRunner3new",
+          "_RNvMNtCskun03Aar8a0_3std4timeNtB2_7Instant3now",
+          "_RNvMNtCskun03Aar8a0_3std4timeNtB2_7Instant22checked_duration_since",
+          "_RNvMs0_NtCsiYjGPJMyZdw_3tmr4sealNtB5_10SealKernel4fill",
+          "_RNvNtCsbmPJJqKt0V4_4core6option13expect_failed",
+          "_RNvMs0_NtCsiYjGPJMyZdw_3tmr4sealNtB5_10SealKernel5check",
+          "_RNvMs0_NtCsiYjGPJMyZdw_3tmr4sealNtB5_10SealKernel5check",
+          "_RNvMs0_NtCsiYjGPJMyZdw_3tmr4sealNtB5_10SealKernel5check",
+          "_RNvMs0_NtCsiYjGPJMyZdw_3tmr4sealNtB5_10SealKernel4fill",
+          "_RNvMs0_NtCsiYjGPJMyZdw_3tmr4sealNtB5_10SealKernel4fill",
+          "_RNvMs0_NtCsiYjGPJMyZdw_3tmr4sealNtB5_10SealKernel4fill",
+          "_RNvMs0_NtCsiYjGPJMyZdw_3tmr4sealNtB5_10SealKernel4fill",
+          "_RINvNtCsiYjGPJMyZdw_3tmr5tests12rescan_wordsNCNvB2_16block_move_multis_0EB4_",
+          "_RNvMNtCskun03Aar8a0_3std4timeNtB2_7Instant3now",
+          "_RNvMNtCskun03Aar8a0_3std4timeNtB2_7Instant22checked_duration_since",
+          "_RNvMNtCskun03Aar8a0_3std4timeNtB2_7Instant3now",
+          "_RNvMNtCskun03Aar8a0_3std4timeNtB2_7Instant22checked_duration_since",
+          "_RNvMNtCskun03Aar8a0_3std4timeNtB2_7Instant3now",
+          "_RNvMNtCskun03Aar8a0_3std4timeNtB2_7Instant22checked_duration_since",
+          "_RNvMNtCsiYjGPJMyZdw_3tmr16test_scaffoldingNtB2_10TestRunner16finish_completed",
+          "_RNvMNtCskun03Aar8a0_3std4timeNtB2_7Instant3now",
+          "_RNvMNtCskun03Aar8a0_3std4timeNtB2_7Instant22checked_duration_since",
+          "_RNvMs0_NtCsiYjGPJMyZdw_3tmr4sealNtB5_10SealKernel4fill",
+          "_RNvNtCsbmPJJqKt0V4_4core9panicking9panic_fmt"
+        ]
+      },
+      {
+        "symbol": "_RNvNtCsiYjGPJMyZdw_3tmr5tests24simple_test_v2_256_multi",
+        "start_line": 720587,
+        "registers": {
+          "xmm": 121,
+          "ymm": 862,
+          "zmm": 0
+        },
+        "counts": {
+          "vmovntdq": 0,
+          "vmovntdqa": 0,
+          "clflushopt": 0,
+          "sfence": 0,
+          "mfence": 0,
+          "vpmullq": 0,
+          "vpmuludq": 14,
+          "imulq": 94,
+          "vpsrlq": 8,
+          "vpxor": 79,
+          "vpxorq": 0,
+          "vpaddq": 93
+        },
+        "calls": [
+          "_RNvNtCsiYjGPJMyZdw_3tmr5tests22simple_test_v2_strided",
+          "_RNvNtCsiYjGPJMyZdw_3tmr5tests25simple_test_v2_sequential",
+          "_RNvMNtCsiYjGPJMyZdw_3tmr16test_scaffoldingNtB2_10TestRunner3new",
+          "_RNvMNtCsiYjGPJMyZdw_3tmr16test_scaffoldingNtB2_10TestRunner3new",
+          "*32(%rax)",
+          "_RNvMNtCsiYjGPJMyZdw_3tmr16test_scaffoldingNtB2_10TestRunner3new",
+          "_RNvMs0_NtCsiYjGPJMyZdw_3tmr4sealNtB5_10SealKernel5check",
+          "_RNvMs0_NtCsiYjGPJMyZdw_3tmr4sealNtB5_10SealKernel5check",
+          "_RNvNtCsiYjGPJMyZdw_3tmr5tests19flush_range_to_dram",
+          "_RNvMsa_NtCsiYjGPJMyZdw_3tmr5testsNtB5_6Mode126rescan",
+          "_RNvMs0_NtCsiYjGPJMyZdw_3tmr4sealNtB5_10SealKernel4fill",
+          "_RNvMs0_NtCsiYjGPJMyZdw_3tmr4sealNtB5_10SealKernel4fill",
+          "_RNvMNtCskun03Aar8a0_3std4timeNtB2_7Instant3now",
+          "_RNvMNtCskun03Aar8a0_3std4timeNtB2_7Instant22checked_duration_since",
+          "_RNvMNtCskun03Aar8a0_3std4timeNtB2_7Instant3now",
+          "_RNvMNtCskun03Aar8a0_3std4timeNtB2_7Instant22checked_duration_since",
+          "_RNvMNtCskun03Aar8a0_3std4timeNtB2_7Instant3now",
+          "_RNvMNtCskun03Aar8a0_3std4timeNtB2_7Instant22checked_duration_since",
+          "_RNvMNtCskun03Aar8a0_3std4timeNtB2_7Instant3now",
+          "_RNvMNtCskun03Aar8a0_3std4timeNtB2_7Instant22checked_duration_since",
+          "_RNvMNtCskun03Aar8a0_3std4timeNtB2_7Instant3now",
+          "_RNvMNtCskun03Aar8a0_3std4timeNtB2_7Instant22checked_duration_since",
+          "_RNvMNtCsiYjGPJMyZdw_3tmr16test_scaffoldingNtB2_10TestRunner16finish_completed",
+          "_RNvMNtCskun03Aar8a0_3std4timeNtB2_7Instant3now",
+          "_RNvMNtCskun03Aar8a0_3std4timeNtB2_7Instant22checked_duration_since",
+          "_RNvMNtCskun03Aar8a0_3std4timeNtB2_7Instant3now",
+          "_RNvMNtCskun03Aar8a0_3std4timeNtB2_7Instant22checked_duration_since",
+          "_RNvMs0_NtCsiYjGPJMyZdw_3tmr4sealNtB5_10SealKernel4fill",
+          "_RNvMNtCsiYjGPJMyZdw_3tmr16test_scaffoldingNtB2_10TestRunner3new",
+          "*32(%rax)",
+          "*32(%rax)",
+          "_RNvMs0_NtCsiYjGPJMyZdw_3tmr4sealNtB5_10SealKernel5check",
+          "_RNvMs0_NtCsiYjGPJMyZdw_3tmr4sealNtB5_10SealKernel5check",
+          "_RNvNtCsiYjGPJMyZdw_3tmr5tests19flush_range_to_dram",
+          "_RNvMs0_NtCsiYjGPJMyZdw_3tmr4sealNtB5_10SealKernel4fill",
+          "_RNvMs0_NtCsiYjGPJMyZdw_3tmr4sealNtB5_10SealKernel4fill",
+          "_RNvMNtCskun03Aar8a0_3std4timeNtB2_7Instant3now",
+          "_RNvMNtCskun03Aar8a0_3std4timeNtB2_7Instant22checked_duration_since",
+          "_RNvMNtCskun03Aar8a0_3std4timeNtB2_7Instant3now",
+          "_RNvMNtCskun03Aar8a0_3std4timeNtB2_7Instant22checked_duration_since",
+          "_RNvMNtCskun03Aar8a0_3std4timeNtB2_7Instant3now",
+          "_RNvMNtCskun03Aar8a0_3std4timeNtB2_7Instant22checked_duration_since",
+          "_RNvMNtCskun03Aar8a0_3std4timeNtB2_7Instant3now",
+          "_RNvMNtCskun03Aar8a0_3std4timeNtB2_7Instant22checked_duration_since",
+          "_RNvMNtCskun03Aar8a0_3std4timeNtB2_7Instant3now",
+          "_RNvMNtCskun03Aar8a0_3std4timeNtB2_7Instant22checked_duration_since",
+          "_RNvMNtCsiYjGPJMyZdw_3tmr16test_scaffoldingNtB2_10TestRunner16finish_completed",
+          "_RNvMNtCskun03Aar8a0_3std4timeNtB2_7Instant3now",
+          "_RNvMNtCskun03Aar8a0_3std4timeNtB2_7Instant22checked_duration_since",
+          "_RNvMNtCskun03Aar8a0_3std4timeNtB2_7Instant3now",
+          "_RNvMNtCskun03Aar8a0_3std4timeNtB2_7Instant22checked_duration_since",
+          "_RNvMs0_NtCsiYjGPJMyZdw_3tmr4sealNtB5_10SealKernel4fill",
+          "_RNCNvNtCsiYjGPJMyZdw_3tmr5tests26simple_test_v2_256_m12_strs_0B5_",
+          "_RNvMs0_NtCsiYjGPJMyZdw_3tmr4sealNtB5_10SealKernel5check",
+          "_RNvMs0_NtCsiYjGPJMyZdw_3tmr4sealNtB5_10SealKernel5check",
+          "_RNCNvNtCsiYjGPJMyZdw_3tmr5tests26simple_test_v2_256_m12_strs_0B5_",
+          "_RNvNtCsiYjGPJMyZdw_3tmr5tests19flush_range_to_dram",
+          "_RNvMsa_NtCsiYjGPJMyZdw_3tmr5testsNtB5_6Mode126rescan",
+          "_RNvMs0_NtCsiYjGPJMyZdw_3tmr4sealNtB5_10SealKernel4fill",
+          "_RNvMs0_NtCsiYjGPJMyZdw_3tmr4sealNtB5_10SealKernel4fill",
+          "_RNvMNtCskun03Aar8a0_3std4timeNtB2_7Instant3now",
+          "_RNvMNtCskun03Aar8a0_3std4timeNtB2_7Instant22checked_duration_since",
+          "_RNvMNtCskun03Aar8a0_3std4timeNtB2_7Instant3now",
+          "_RNvMNtCskun03Aar8a0_3std4timeNtB2_7Instant22checked_duration_since",
+          "_RNvMNtCskun03Aar8a0_3std4timeNtB2_7Instant3now",
+          "_RNvMNtCskun03Aar8a0_3std4timeNtB2_7Instant22checked_duration_since",
+          "_RNvMNtCskun03Aar8a0_3std4timeNtB2_7Instant7elapsed",
+          "_RNvMNtCskun03Aar8a0_3std4timeNtB2_7Instant3now",
+          "_RNvMNtCskun03Aar8a0_3std4timeNtB2_7Instant22checked_duration_since",
+          "_RNvMNtCsiYjGPJMyZdw_3tmr16test_scaffoldingNtB2_10TestRunner16finish_completed",
+          "_RNvMNtCskun03Aar8a0_3std4timeNtB2_7Instant7elapsed",
+          "_RNvMs0_NtCsiYjGPJMyZdw_3tmr4sealNtB5_10SealKernel4fill",
+          "_RNvMs0_NtCsiYjGPJMyZdw_3tmr4sealNtB5_10SealKernel5check",
+          "_RNvMs0_NtCsiYjGPJMyZdw_3tmr4sealNtB5_10SealKernel5check",
+          "_RNvNtCsiYjGPJMyZdw_3tmr5tests19flush_range_to_dram",
+          "_RINvNtCsiYjGPJMyZdw_3tmr5tests12rescan_wordsNCNCNvB2_26simple_test_v2_256_pos_strs1_00EB4_",
+          "_RNvMs0_NtCsiYjGPJMyZdw_3tmr4sealNtB5_10SealKernel4fill",
+          "_RNvMs0_NtCsiYjGPJMyZdw_3tmr4sealNtB5_10SealKernel4fill",
+          "_RNvMNtCskun03Aar8a0_3std4timeNtB2_7Instant3now",
+          "_RNvMNtCskun03Aar8a0_3std4timeNtB2_7Instant22checked_duration_since",
+          "_RNvMNtCskun03Aar8a0_3std4timeNtB2_7Instant3now",
+          "_RNvMNtCskun03Aar8a0_3std4timeNtB2_7Instant22checked_duration_since",
+          "_RNvMNtCskun03Aar8a0_3std4timeNtB2_7Instant3now",
+          "_RNvMNtCskun03Aar8a0_3std4timeNtB2_7Instant22checked_duration_since",
+          "_RNvMNtCskun03Aar8a0_3std4timeNtB2_7Instant7elapsed",
+          "_RNvMNtCskun03Aar8a0_3std4timeNtB2_7Instant3now",
+          "_RNvMNtCskun03Aar8a0_3std4timeNtB2_7Instant22checked_duration_since",
+          "_RNvMNtCsiYjGPJMyZdw_3tmr16test_scaffoldingNtB2_10TestRunner16finish_completed",
+          "_RNvMNtCskun03Aar8a0_3std4timeNtB2_7Instant7elapsed",
+          "_RNvMNtCskun03Aar8a0_3std4timeNtB2_7Instant7elapsed",
+          "_RNvMs0_NtCsiYjGPJMyZdw_3tmr4sealNtB5_10SealKernel4fill",
+          "_RNvMNtCsiYjGPJMyZdw_3tmr16test_scaffoldingNtB2_10TestRunner14finish_aborted",
+          "_RNvMNtCsiYjGPJMyZdw_3tmr16test_scaffoldingNtB2_10TestRunner14finish_aborted",
+          "_RNvMNtCsiYjGPJMyZdw_3tmr16test_scaffoldingNtB2_10TestRunner14finish_aborted",
+          "_RNvMNtCsiYjGPJMyZdw_3tmr16test_scaffoldingNtB2_10TestRunner14finish_aborted",
+          "_RNvNtCsbmPJJqKt0V4_4core9panicking9panic_fmt",
+          "_RNvNtNtCsbmPJJqKt0V4_4core9panicking11panic_const23panic_const_div_by_zero",
+          "_RNvNtCsbmPJJqKt0V4_4core9panicking5panic"
+        ]
+      },
+      {
+        "symbol": "_RNvNtCsiYjGPJMyZdw_3tmr5tests24mirror_move_v2_256_multi",
+        "start_line": 727844,
+        "registers": {
+          "xmm": 7,
+          "ymm": 84,
+          "zmm": 0
+        },
+        "counts": {
+          "vmovntdq": 0,
+          "vmovntdqa": 0,
+          "clflushopt": 0,
+          "sfence": 0,
+          "mfence": 0,
+          "vpmullq": 0,
+          "vpmuludq": 0,
+          "imulq": 13,
+          "vpsrlq": 0,
+          "vpxor": 0,
+          "vpxorq": 0,
+          "vpaddq": 0
+        },
+        "calls": [
+          "_RNvMNtCsiYjGPJMyZdw_3tmr16test_scaffoldingNtB2_10TestRunner3new",
+          "*32(%rax)",
+          "_RNvMs0_NtCsiYjGPJMyZdw_3tmr4sealNtB5_10SealKernel4fill",
+          "_RNvMs0_NtCsiYjGPJMyZdw_3tmr4sealNtB5_10SealKernel5check",
+          "_RNvMs0_NtCsiYjGPJMyZdw_3tmr4sealNtB5_10SealKernel5check",
+          "_RNvMs0_NtCsiYjGPJMyZdw_3tmr4sealNtB5_10SealKernel4fill",
+          "_RNvNtCsiYjGPJMyZdw_3tmr5tests19flush_range_to_dram",
+          "_RNvMs0_NtCsiYjGPJMyZdw_3tmr4sealNtB5_10SealKernel5check",
+          "_RNvMs0_NtCsiYjGPJMyZdw_3tmr4sealNtB5_10SealKernel4fill",
+          "_RNvMs0_NtCsiYjGPJMyZdw_3tmr4sealNtB5_10SealKernel4fill",
+          "_RNvMs0_NtCsiYjGPJMyZdw_3tmr4sealNtB5_10SealKernel4fill",
+          "_RNvMNtCskun03Aar8a0_3std4timeNtB2_7Instant3now",
+          "_RNvMNtCskun03Aar8a0_3std4timeNtB2_7Instant22checked_duration_since",
+          "_RNvMNtCskun03Aar8a0_3std4timeNtB2_7Instant3now",
+          "_RNvMNtCskun03Aar8a0_3std4timeNtB2_7Instant22checked_duration_since",
+          "_RNvMNtCskun03Aar8a0_3std4timeNtB2_7Instant3now",
+          "_RNvMNtCskun03Aar8a0_3std4timeNtB2_7Instant22checked_duration_since",
+          "_RNvMNtCskun03Aar8a0_3std4timeNtB2_7Instant3now",
+          "_RNvMNtCskun03Aar8a0_3std4timeNtB2_7Instant22checked_duration_since",
+          "_RNvMNtCskun03Aar8a0_3std4timeNtB2_7Instant3now",
+          "_RNvMNtCskun03Aar8a0_3std4timeNtB2_7Instant22checked_duration_since",
+          "_RNvMNtCsiYjGPJMyZdw_3tmr16test_scaffoldingNtB2_10TestRunner16finish_completed",
+          "_RNvMNtCskun03Aar8a0_3std4timeNtB2_7Instant3now",
+          "_RNvMNtCskun03Aar8a0_3std4timeNtB2_7Instant22checked_duration_since",
+          "_RNvMNtCskun03Aar8a0_3std4timeNtB2_7Instant3now",
+          "_RNvMNtCskun03Aar8a0_3std4timeNtB2_7Instant22checked_duration_since",
+          "_RNvMs0_NtCsiYjGPJMyZdw_3tmr4sealNtB5_10SealKernel4fill",
+          "_RNvMNtCsiYjGPJMyZdw_3tmr16test_scaffoldingNtB2_10TestRunner14finish_aborted",
+          "_RNvNtCsbmPJJqKt0V4_4core9panicking9panic_fmt"
+        ]
+      },
+      {
+        "symbol": "_RINvNtCsiYjGPJMyZdw_3tmr5tests12rescan_wordsNCNCNvB2_26simple_test_v2_256_pos_strs1_00EB4_",
+        "start_line": 806036,
+        "registers": {
+          "xmm": 0,
+          "ymm": 0,
+          "zmm": 0
+        },
+        "counts": {
+          "vmovntdq": 0,
+          "vmovntdqa": 0,
+          "clflushopt": 0,
+          "sfence": 0,
+          "mfence": 0,
+          "vpmullq": 0,
+          "vpmuludq": 0,
+          "imulq": 0,
+          "vpsrlq": 0,
+          "vpxor": 0,
+          "vpxorq": 0,
+          "vpaddq": 0
+        },
+        "calls": [
+          "_RNvNtCsiYjGPJMyZdw_3tmr13error_context8found_by",
+          "*32(%rax)",
+          "*__imp_GetProcessHeap(%rip)",
+          "*__imp_HeapFree(%rip)",
+          "_RNvNtCsiYjGPJMyZdw_3tmr5tests17transient_if_none"
+        ]
+      },
+      {
+        "symbol": "_RNCNvNtCsiYjGPJMyZdw_3tmr5tests26simple_test_v2_256_m12_strs_0B5_",
+        "start_line": 806173,
+        "registers": {
+          "xmm": 18,
+          "ymm": 85,
+          "zmm": 0
+        },
+        "counts": {
+          "vmovntdq": 0,
+          "vmovntdqa": 0,
+          "clflushopt": 0,
+          "sfence": 0,
+          "mfence": 0,
+          "vpmullq": 0,
+          "vpmuludq": 3,
+          "imulq": 10,
+          "vpsrlq": 2,
+          "vpxor": 0,
+          "vpxorq": 0,
+          "vpaddq": 19
+        },
+        "calls": [
+          "_RNvNtCsbmPJJqKt0V4_4core9panicking5panic",
+          "_RNvNtNtCsbmPJJqKt0V4_4core9panicking11panic_const23panic_const_div_by_zero"
+        ]
+      },
+      {
+        "symbol": "_RINvNtCsiYjGPJMyZdw_3tmr5tests12rescan_wordsNCNvB2_16block_move_multis_0EB4_",
+        "start_line": 806944,
+        "registers": {
+          "xmm": 0,
+          "ymm": 0,
+          "zmm": 0
+        },
+        "counts": {
+          "vmovntdq": 0,
+          "vmovntdqa": 0,
+          "clflushopt": 0,
+          "sfence": 0,
+          "mfence": 0,
+          "vpmullq": 0,
+          "vpmuludq": 0,
+          "imulq": 0,
+          "vpsrlq": 0,
+          "vpxor": 0,
+          "vpxorq": 0,
+          "vpaddq": 0
+        },
+        "calls": [
+          "_RNvNtCsiYjGPJMyZdw_3tmr13error_context8found_by",
+          "*32(%rax)",
+          "*__imp_GetProcessHeap(%rip)",
+          "*__imp_HeapFree(%rip)",
+          "_RNvNtCsiYjGPJMyZdw_3tmr5tests17transient_if_none"
+        ]
+      },
+      {
+        "symbol": "_RINvNtCsiYjGPJMyZdw_3tmr5tests12rescan_wordsNCNvB2_23refresh_stable_256_impl0EB4_",
+        "start_line": 808518,
+        "registers": {
+          "xmm": 0,
+          "ymm": 0,
+          "zmm": 0
+        },
+        "counts": {
+          "vmovntdq": 0,
+          "vmovntdqa": 0,
+          "clflushopt": 0,
+          "sfence": 0,
+          "mfence": 0,
+          "vpmullq": 0,
+          "vpmuludq": 0,
+          "imulq": 0,
+          "vpsrlq": 0,
+          "vpxor": 0,
+          "vpxorq": 0,
+          "vpaddq": 0
+        },
+        "calls": [
+          "_RNvNtCsiYjGPJMyZdw_3tmr13error_context8found_by",
+          "*32(%rax)",
+          "*__imp_GetProcessHeap(%rip)",
+          "*__imp_HeapFree(%rip)",
+          "_RNvNtCsiYjGPJMyZdw_3tmr5tests17transient_if_none"
+        ]
+      }
+    ]
+  },
+  {
+    "source": "target\\pattern-audit-probe\\cpu_probe.s",
+    "functions": [
+      {
+        "symbol": "_RNvCsb3NwZ8QqHdW_9cpu_probe10fill_cheap",
+        "start_line": 217,
+        "registers": {
+          "xmm": 38,
+          "ymm": 193,
+          "zmm": 0
+        },
+        "counts": {
+          "vmovntdq": 0,
+          "vmovntdqa": 0,
+          "clflushopt": 0,
+          "sfence": 0,
+          "mfence": 0,
+          "vpmullq": 0,
+          "vpmuludq": 3,
+          "imulq": 1,
+          "vpsrlq": 12,
+          "vpxor": 10,
+          "vpxorq": 0,
+          "vpaddq": 14
+        },
+        "calls": []
+      },
+      {
+        "symbol": "_RNvCsb3NwZ8QqHdW_9cpu_probe11fill_flip32",
+        "start_line": 489,
+        "registers": {
+          "xmm": 38,
+          "ymm": 133,
+          "zmm": 0
+        },
+        "counts": {
+          "vmovntdq": 0,
+          "vmovntdqa": 0,
+          "clflushopt": 0,
+          "sfence": 0,
+          "mfence": 0,
+          "vpmullq": 0,
+          "vpmuludq": 6,
+          "imulq": 2,
+          "vpsrlq": 5,
+          "vpxor": 5,
+          "vpxorq": 0,
+          "vpaddq": 6
+        },
+        "calls": []
+      },
+      {
+        "symbol": "_RNvCsb3NwZ8QqHdW_9cpu_probe11fill_near32",
+        "start_line": 772,
+        "registers": {
+          "xmm": 99,
+          "ymm": 911,
+          "zmm": 0
+        },
+        "counts": {
+          "vmovntdq": 0,
+          "vmovntdqa": 0,
+          "clflushopt": 0,
+          "sfence": 0,
+          "mfence": 0,
+          "vpmullq": 0,
+          "vpmuludq": 6,
+          "imulq": 2,
+          "vpsrlq": 17,
+          "vpxor": 39,
+          "vpxorq": 0,
+          "vpaddq": 7
+        },
+        "calls": []
+      },
+      {
+        "symbol": "_RNvCsb3NwZ8QqHdW_9cpu_probe11fill_near64",
+        "start_line": 1498,
+        "registers": {
+          "xmm": 64,
+          "ymm": 609,
+          "zmm": 0
+        },
+        "counts": {
+          "vmovntdq": 0,
+          "vmovntdqa": 0,
+          "clflushopt": 0,
+          "sfence": 0,
+          "mfence": 0,
+          "vpmullq": 0,
+          "vpmuludq": 6,
+          "imulq": 2,
+          "vpsrlq": 12,
+          "vpxor": 26,
+          "vpxorq": 0,
+          "vpaddq": 7
+        },
+        "calls": []
+      },
+      {
+        "symbol": "_RNvCsb3NwZ8QqHdW_9cpu_probe11fill_strong",
+        "start_line": 1951,
+        "registers": {
+          "xmm": 38,
+          "ymm": 667,
+          "zmm": 0
+        },
+        "counts": {
+          "vmovntdq": 0,
+          "vmovntdqa": 0,
+          "clflushopt": 0,
+          "sfence": 0,
+          "mfence": 0,
+          "vpmullq": 0,
+          "vpmuludq": 60,
+          "imulq": 0,
+          "vpsrlq": 51,
+          "vpxor": 30,
+          "vpxorq": 0,
+          "vpaddq": 52
+        },
+        "calls": []
+      },
+      {
+        "symbol": "_RNvCsb3NwZ8QqHdW_9cpu_probe11fill_tagged",
+        "start_line": 2378,
+        "registers": {
+          "xmm": 36,
+          "ymm": 166,
+          "zmm": 0
+        },
+        "counts": {
+          "vmovntdq": 0,
+          "vmovntdqa": 0,
+          "clflushopt": 0,
+          "sfence": 0,
+          "mfence": 0,
+          "vpmullq": 0,
+          "vpmuludq": 3,
+          "imulq": 1,
+          "vpsrlq": 6,
+          "vpxor": 8,
+          "vpxorq": 0,
+          "vpaddq": 8
+        },
+        "calls": []
+      },
+      {
+        "symbol": "_RNvCsb3NwZ8QqHdW_9cpu_probe11fill_triple",
+        "start_line": 2627,
+        "registers": {
+          "xmm": 70,
+          "ymm": 272,
+          "zmm": 0
+        },
+        "counts": {
+          "vmovntdq": 0,
+          "vmovntdqa": 0,
+          "clflushopt": 0,
+          "sfence": 0,
+          "mfence": 0,
+          "vpmullq": 0,
+          "vpmuludq": 6,
+          "imulq": 2,
+          "vpsrlq": 6,
+          "vpxor": 8,
+          "vpxorq": 0,
+          "vpaddq": 7
+        },
+        "calls": []
+      },
+      {
+        "symbol": "_RNvCsb3NwZ8QqHdW_9cpu_probe11verify_seal",
+        "start_line": 2927,
+        "registers": {
+          "xmm": 68,
+          "ymm": 39,
+          "zmm": 0
+        },
+        "counts": {
+          "vmovntdq": 0,
+          "vmovntdqa": 0,
+          "clflushopt": 0,
+          "sfence": 0,
+          "mfence": 0,
+          "vpmullq": 0,
+          "vpmuludq": 0,
+          "imulq": 2,
+          "vpsrlq": 0,
+          "vpxor": 8,
+          "vpxorq": 0,
+          "vpaddq": 0
+        },
+        "calls": []
+      },
+      {
+        "symbol": "_RNvCsb3NwZ8QqHdW_9cpu_probe12fill_counter",
+        "start_line": 3076,
+        "registers": {
+          "xmm": 50,
+          "ymm": 149,
+          "zmm": 0
+        },
+        "counts": {
+          "vmovntdq": 0,
+          "vmovntdqa": 0,
+          "clflushopt": 0,
+          "sfence": 0,
+          "mfence": 0,
+          "vpmullq": 0,
+          "vpmuludq": 0,
+          "imulq": 0,
+          "vpsrlq": 2,
+          "vpxor": 10,
+          "vpxorq": 0,
+          "vpaddq": 10
+        },
+        "calls": []
+      },
+      {
+        "symbol": "_RNvCsb3NwZ8QqHdW_9cpu_probe12verify_cheap",
+        "start_line": 3288,
+        "registers": {
+          "xmm": 40,
+          "ymm": 67,
+          "zmm": 0
+        },
+        "counts": {
+          "vmovntdq": 0,
+          "vmovntdqa": 0,
+          "clflushopt": 0,
+          "sfence": 0,
+          "mfence": 0,
+          "vpmullq": 0,
+          "vpmuludq": 0,
+          "imulq": 2,
+          "vpsrlq": 4,
+          "vpxor": 12,
+          "vpxorq": 0,
+          "vpaddq": 4
+        },
+        "calls": []
+      },
+      {
+        "symbol": "_RNvCsb3NwZ8QqHdW_9cpu_probe13fill_current0",
+        "start_line": 3384,
+        "registers": {
+          "xmm": 45,
+          "ymm": 182,
+          "zmm": 0
+        },
+        "counts": {
+          "vmovntdq": 0,
+          "vmovntdqa": 0,
+          "clflushopt": 0,
+          "sfence": 0,
+          "mfence": 0,
+          "vpmullq": 0,
+          "vpmuludq": 3,
+          "imulq": 1,
+          "vpsrlq": 1,
+          "vpxor": 6,
+          "vpxorq": 0,
+          "vpaddq": 12
+        },
+        "calls": []
+      },
+      {
+        "symbol": "_RNvCsb3NwZ8QqHdW_9cpu_probe13fill_header32",
+        "start_line": 3663,
+        "registers": {
+          "xmm": 91,
+          "ymm": 199,
+          "zmm": 0
+        },
+        "counts": {
+          "vmovntdq": 0,
+          "vmovntdqa": 0,
+          "clflushopt": 0,
+          "sfence": 0,
+          "mfence": 0,
+          "vpmullq": 0,
+          "vpmuludq": 6,
+          "imulq": 2,
+          "vpsrlq": 7,
+          "vpxor": 9,
+          "vpxorq": 0,
+          "vpaddq": 7
+        },
+        "calls": []
+      },
+      {
+        "symbol": "_RNvCsb3NwZ8QqHdW_9cpu_probe13fill_header64",
+        "start_line": 3945,
+        "registers": {
+          "xmm": 93,
+          "ymm": 210,
+          "zmm": 0
+        },
+        "counts": {
+          "vmovntdq": 0,
+          "vmovntdqa": 0,
+          "clflushopt": 0,
+          "sfence": 0,
+          "mfence": 0,
+          "vpmullq": 0,
+          "vpmuludq": 6,
+          "imulq": 2,
+          "vpsrlq": 6,
+          "vpxor": 9,
+          "vpxorq": 0,
+          "vpaddq": 7
+        },
+        "calls": []
+      },
+      {
+        "symbol": "_RNvCsb3NwZ8QqHdW_9cpu_probe13verify_flip32",
+        "start_line": 4209,
+        "registers": {
+          "xmm": 22,
+          "ymm": 33,
+          "zmm": 0
+        },
+        "counts": {
+          "vmovntdq": 0,
+          "vmovntdqa": 0,
+          "clflushopt": 0,
+          "sfence": 0,
+          "mfence": 0,
+          "vpmullq": 0,
+          "vpmuludq": 0,
+          "imulq": 4,
+          "vpsrlq": 0,
+          "vpxor": 9,
+          "vpxorq": 0,
+          "vpaddq": 0
+        },
+        "calls": []
+      },
+      {
+        "symbol": "_RNvCsb3NwZ8QqHdW_9cpu_probe13verify_near32",
+        "start_line": 4347,
+        "registers": {
+          "xmm": 146,
+          "ymm": 318,
+          "zmm": 0
+        },
+        "counts": {
+          "vmovntdq": 0,
+          "vmovntdqa": 0,
+          "clflushopt": 0,
+          "sfence": 0,
+          "mfence": 0,
+          "vpmullq": 0,
+          "vpmuludq": 0,
+          "imulq": 4,
+          "vpsrlq": 0,
+          "vpxor": 22,
+          "vpxorq": 0,
+          "vpaddq": 0
+        },
+        "calls": []
+      },
+      {
+        "symbol": "_RNvCsb3NwZ8QqHdW_9cpu_probe13verify_near64",
+        "start_line": 4794,
+        "registers": {
+          "xmm": 83,
+          "ymm": 181,
+          "zmm": 0
+        },
+        "counts": {
+          "vmovntdq": 0,
+          "vmovntdqa": 0,
+          "clflushopt": 0,
+          "sfence": 0,
+          "mfence": 0,
+          "vpmullq": 0,
+          "vpmuludq": 0,
+          "imulq": 4,
+          "vpsrlq": 0,
+          "vpxor": 13,
+          "vpxorq": 0,
+          "vpaddq": 0
+        },
+        "calls": []
+      },
+      {
+        "symbol": "_RNvCsb3NwZ8QqHdW_9cpu_probe13verify_strong",
+        "start_line": 5075,
+        "registers": {
+          "xmm": 46,
+          "ymm": 263,
+          "zmm": 0
+        },
+        "counts": {
+          "vmovntdq": 0,
+          "vmovntdqa": 0,
+          "clflushopt": 0,
+          "sfence": 0,
+          "mfence": 0,
+          "vpmullq": 0,
+          "vpmuludq": 24,
+          "imulq": 0,
+          "vpsrlq": 20,
+          "vpxor": 20,
+          "vpxorq": 0,
+          "vpaddq": 20
+        },
+        "calls": []
+      },
+      {
+        "symbol": "_RNvCsb3NwZ8QqHdW_9cpu_probe13verify_tagged",
+        "start_line": 5250,
+        "registers": {
+          "xmm": 95,
+          "ymm": 39,
+          "zmm": 0
+        },
+        "counts": {
+          "vmovntdq": 0,
+          "vmovntdqa": 0,
+          "clflushopt": 0,
+          "sfence": 0,
+          "mfence": 0,
+          "vpmullq": 0,
+          "vpmuludq": 0,
+          "imulq": 2,
+          "vpsrlq": 0,
+          "vpxor": 9,
+          "vpxorq": 0,
+          "vpaddq": 0
+        },
+        "calls": []
+      },
+      {
+        "symbol": "_RNvCsb3NwZ8QqHdW_9cpu_probe13verify_triple",
+        "start_line": 5449,
+        "registers": {
+          "xmm": 51,
+          "ymm": 85,
+          "zmm": 0
+        },
+        "counts": {
+          "vmovntdq": 0,
+          "vmovntdqa": 0,
+          "clflushopt": 0,
+          "sfence": 0,
+          "mfence": 0,
+          "vpmullq": 0,
+          "vpmuludq": 0,
+          "imulq": 4,
+          "vpsrlq": 0,
+          "vpxor": 9,
+          "vpxorq": 0,
+          "vpaddq": 0
+        },
+        "calls": []
+      },
+      {
+        "symbol": "_RNvCsb3NwZ8QqHdW_9cpu_probe14verify_counter",
+        "start_line": 5641,
+        "registers": {
+          "xmm": 57,
+          "ymm": 61,
+          "zmm": 0
+        },
+        "counts": {
+          "vmovntdq": 0,
+          "vmovntdqa": 0,
+          "clflushopt": 0,
+          "sfence": 0,
+          "mfence": 0,
+          "vpmullq": 0,
+          "vpmuludq": 0,
+          "imulq": 0,
+          "vpsrlq": 2,
+          "vpxor": 12,
+          "vpxorq": 0,
+          "vpaddq": 4
+        },
+        "calls": []
+      },
+      {
+        "symbol": "_RNvCsb3NwZ8QqHdW_9cpu_probe15verify_current0",
+        "start_line": 5745,
+        "registers": {
+          "xmm": 44,
+          "ymm": 69,
+          "zmm": 0
+        },
+        "counts": {
+          "vmovntdq": 0,
+          "vmovntdqa": 0,
+          "clflushopt": 0,
+          "sfence": 0,
+          "mfence": 0,
+          "vpmullq": 0,
+          "vpmuludq": 0,
+          "imulq": 0,
+          "vpsrlq": 0,
+          "vpxor": 13,
+          "vpxorq": 0,
+          "vpaddq": 4
+        },
+        "calls": []
+      },
+      {
+        "symbol": "_RNvCsb3NwZ8QqHdW_9cpu_probe15verify_header32",
+        "start_line": 5882,
+        "registers": {
+          "xmm": 118,
+          "ymm": 39,
+          "zmm": 0
+        },
+        "counts": {
+          "vmovntdq": 0,
+          "vmovntdqa": 0,
+          "clflushopt": 0,
+          "sfence": 0,
+          "mfence": 0,
+          "vpmullq": 0,
+          "vpmuludq": 0,
+          "imulq": 4,
+          "vpsrlq": 0,
+          "vpxor": 11,
+          "vpxorq": 0,
+          "vpaddq": 0
+        },
+        "calls": []
+      },
+      {
+        "symbol": "_RNvCsb3NwZ8QqHdW_9cpu_probe15verify_header64",
+        "start_line": 6049,
+        "registers": {
+          "xmm": 30,
+          "ymm": 50,
+          "zmm": 0
+        },
+        "counts": {
+          "vmovntdq": 0,
+          "vmovntdqa": 0,
+          "clflushopt": 0,
+          "sfence": 0,
+          "mfence": 0,
+          "vpmullq": 0,
+          "vpmuludq": 0,
+          "imulq": 4,
+          "vpsrlq": 0,
+          "vpxor": 10,
+          "vpxorq": 0,
+          "vpaddq": 0
+        },
+        "calls": []
+      },
+      {
+        "symbol": "_RNvCsb3NwZ8QqHdW_9cpu_probe9fill_seal",
+        "start_line": 9051,
+        "registers": {
+          "xmm": 36,
+          "ymm": 146,
+          "zmm": 0
+        },
+        "counts": {
+          "vmovntdq": 0,
+          "vmovntdqa": 0,
+          "clflushopt": 0,
+          "sfence": 0,
+          "mfence": 0,
+          "vpmullq": 0,
+          "vpmuludq": 3,
+          "imulq": 1,
+          "vpsrlq": 6,
+          "vpxor": 8,
+          "vpxorq": 0,
+          "vpaddq": 7
+        },
+        "calls": []
+      }
+    ]
+  }
+]
