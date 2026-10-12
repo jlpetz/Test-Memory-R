@@ -323,7 +323,7 @@ chunks, 4×(1+5), 10 min a block, one binary):
   already needs a 5700X benchmark: same bytes and coverage, against today's two-line loop at 64
   bits. One line at 256 bits is two vectors, so it feeds two of the four accumulators
   (`research/seed_mask_2x2/README.md`). A 1% throughput gain isn't a 1% detection gain: the
-  access-sequence and coverage work (stage 5 and 6, below) comes first.
+  access-sequence and coverage work (stages 5 and 6, above) comes first.
 - **Equal halves.** At 12, 16, 32 and 64 bits a `switch` line's 32 B halves are equal, so a
   misplaced half-line passes that phase (`ident` and `random` catch it). Separate seeds per half
   cost no switching only if the line really is two bursts; LPDDR4/5 can send it as one 32-transfer
