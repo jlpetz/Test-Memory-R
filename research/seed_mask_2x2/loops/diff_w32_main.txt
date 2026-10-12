@@ -1,0 +1,117 @@
+# switch 32-bit, 256-bit native verify, sequential main loop: SLOW vs FAST
+# SLOW: slow_w32_main.lst
+# FAST: fast_w32_main.lst
+# SLOW 76 instructions, FAST 92; rows: '=' 35, '~' 16, '|' 8, '<' 17, '>' 33
+# '=' same text, '~' same op and immediates with other registers, '|' different op in the same place,
+# '<' SLOW only, '>' FAST only. Aligned on op shape (registers abstracted), then compared exactly.
+#
+#   SLOW (with the seed mask)                                  | FAST (without it)
+=  14023a020  leaq         (%rax,%r12), %r10                  | 14023a030  leaq         (%rax,%r12), %r10
+>                                                             | 14023a034  movq         %r14, %r9
+=  14023a024  movq         %r10, %r11                         | 14023a037  movq         %r10, %r11
+=  14023a027  shrq         $0x1e, %r11                        | 14023a03a  shrq         $0x1e, %r11
+=  14023a02b  xorq         %r10, %r11                         | 14023a03e  xorq         %r10, %r11
+~  14023a02e  imulq        %r15, %r11                         | 14023a041  imulq        %rbp, %r11
+=  14023a032  movq         %r11, %r10                         | 14023a045  movq         %r11, %r10
+=  14023a035  shrq         $0x1b, %r10                        | 14023a048  shrq         $0x1b, %r10
+=  14023a039  xorq         %r11, %r10                         | 14023a04c  xorq         %r11, %r10
+>                                                             | 14023a04f  movq         %rsi, %r14
+>                                                             | 14023a052  movq         %r8, %rsi
+>                                                             | 14023a055  movabsq      $-0x6b2fb644ecceee15, %r8
+~  14023a03c  imulq        %r14, %r10                         | 14023a05f  imulq        %r8, %r10
+=  14023a040  movq         %r10, %r11                         | 14023a063  movq         %r10, %r11
+=  14023a043  shrq         $0x1f, %r11                        | 14023a066  shrq         $0x1f, %r11
+=  14023a047  xorl         %r10d, %r11d                       | 14023a06a  xorl         %r10d, %r11d
+|  14023a04a  movzbl       %r11b, %r10d                       | 14023a06d  movq         %r11, %r10
+|  14023a04e  shll         $0x8, %r11d                        | 14023a070  shlq         $0x10, %r10
+|  14023a052  orl          %r10d, %r11d                       | 14023a074  orq          %r11, %r10
+|  14023a055  andl         $0xff00ff, %r11d                   | 14023a077  andq         %r15, %r10
+>                                                             | 14023a07a  movq         %r10, %r11
+>                                                             | 14023a07d  shlq         $0x8, %r11
+>                                                             | 14023a081  orq          %r10, %r11
+>                                                             | 14023a084  andq         %rsi, %r11
+>                                                             | 14023a087  movq         %r11, %r10
+>                                                             | 14023a08a  shlq         $0x4, %r10
+>                                                             | 14023a08e  orq          %r11, %r10
+>                                                             | 14023a091  movq         %r10, %r11
+>                                                             | 14023a094  andq         %r14, %r11
+>                                                             | 14023a097  shlq         $0x4, %r10
+>                                                             | 14023a09b  movabsq      $-0xf0f0f0f0f0f0f10, %rdi
+>                                                             | 14023a0a5  andq         %rdi, %r10
+>                                                             | 14023a0a8  orq          %r11, %r10
+~  14023a05c  movl         %r11d, %r10d                       | 14023a0ab  movl         %r10d, %r11d
+<  14023a05f  shll         $0x4, %r10d                        | 
+<  14023a063  orl          %r11d, %r10d                       | 
+<  14023a066  movl         %r10d, %r11d                       | 
+<  14023a069  andl         $0xf0f0f0f, %r11d                  | 
+<  14023a070  shll         $0x4, %r10d                        | 
+<  14023a074  andl         $0xf0f0f0f0, %r10d                 | 
+<  14023a07b  orl          %r11d, %r10d                       | 
+<  14023a07e  movq         %r10, %r11                         | 
+~  14023a081  shlq         $0x20, %r11                        | 14023a0ae  shlq         $0x20, %r10
+~  14023a085  orq          %r10, %r11                         | 14023a0b2  orq          %r11, %r10
+~  14023a088  xorq         %r9, %r11                          | 14023a0b5  xorq         %r9, %r10
+~  14023a08b  vmovq        %r11, %xmm3                        | 14023a0b8  vmovq        %r10, %xmm3
+=  14023a090  vpxor        %xmm5, %xmm3, %xmm3                | 14023a0bd  vpxor        %xmm5, %xmm3, %xmm3
+=  14023a094  vpbroadcastq %xmm3, %ymm3                       | 14023a0c1  vpbroadcastq %xmm3, %ymm3
+=  14023a099  vpxor        (%r13,%rdx,8), %ymm3, %ymm9        | 14023a0c6  vpxor        (%r13,%rdx,8), %ymm3, %ymm9
+>                                                             | 14023a0cd  vpor         %ymm1, %ymm9, %ymm1
+=  14023a0a0  vpxor        0x20(%r13,%rdx,8), %ymm3, %ymm3    | 14023a0d1  vpxor        0x20(%r13,%rdx,8), %ymm3, %ymm3
+<  14023a0a7  vpor         %ymm1, %ymm9, %ymm1                | 
+=  14023a0ab  leaq         (%rax,%r12), %r10                  | 14023a0d8  leaq         (%rax,%r12), %r10
+=  14023a0af  incq         %r10                               | 14023a0dc  incq         %r10
+=  14023a0b2  movq         %r10, %r11                         | 14023a0df  movq         %r10, %r11
+=  14023a0b5  shrq         $0x1e, %r11                        | 14023a0e2  shrq         $0x1e, %r11
+=  14023a0b9  xorq         %r10, %r11                         | 14023a0e6  xorq         %r10, %r11
+~  14023a0bc  imulq        %r15, %r11                         | 14023a0e9  imulq        %rbp, %r11
+=  14023a0c0  movq         %r11, %r10                         | 14023a0ed  movq         %r11, %r10
+=  14023a0c3  shrq         $0x1b, %r10                        | 14023a0f0  shrq         $0x1b, %r10
+=  14023a0c7  xorq         %r11, %r10                         | 14023a0f4  xorq         %r11, %r10
+~  14023a0ca  imulq        %r14, %r10                         | 14023a0f7  imulq        %r8, %r10
+~  14023a0ce  movq         %r10, %r11                         | 14023a0fb  movq         %rsi, %r8
+>                                                             | 14023a0fe  movq         %r14, %rsi
+>                                                             | 14023a101  movq         %r10, %r11
+=  14023a0d1  shrq         $0x1f, %r11                        | 14023a104  shrq         $0x1f, %r11
+=  14023a0d5  xorl         %r10d, %r11d                       | 14023a108  xorl         %r10d, %r11d
+|  14023a0d8  movzbl       %r11b, %r10d                       | 14023a10b  movq         %r11, %r10
+|  14023a0dc  shll         $0x8, %r11d                        | 14023a10e  shlq         $0x10, %r10
+|  14023a0e0  orl          %r10d, %r11d                       | 14023a112  orq          %r11, %r10
+|  14023a0e3  andl         $0xff00ff, %r11d                   | 14023a115  andq         %r15, %r10
+>                                                             | 14023a118  movq         %r10, %r11
+>                                                             | 14023a11b  shlq         $0x8, %r11
+>                                                             | 14023a11f  orq          %r10, %r11
+>                                                             | 14023a122  andq         %r8, %r11
+>                                                             | 14023a125  movq         %r11, %r10
+>                                                             | 14023a128  shlq         $0x4, %r10
+>                                                             | 14023a12c  orq          %r11, %r10
+>                                                             | 14023a12f  movq         %r10, %r11
+>                                                             | 14023a132  andq         %r14, %r11
+>                                                             | 14023a135  shlq         $0x4, %r10
+>                                                             | 14023a139  andq         %rdi, %r10
+>                                                             | 14023a13c  orq          %r11, %r10
+~  14023a0ea  movl         %r11d, %r10d                       | 14023a13f  movl         %r10d, %r11d
+<  14023a0ed  shll         $0x4, %r10d                        | 
+<  14023a0f1  orl          %r11d, %r10d                       | 
+<  14023a0f4  movl         %r10d, %r11d                       | 
+<  14023a0f7  andl         $0xf0f0f0f, %r11d                  | 
+<  14023a0fe  shll         $0x4, %r10d                        | 
+<  14023a102  andl         $0xf0f0f0f0, %r10d                 | 
+<  14023a109  orl          %r11d, %r10d                       | 
+<  14023a10c  movq         %r10, %r11                         | 
+~  14023a10f  shlq         $0x20, %r11                        | 14023a142  shlq         $0x20, %r10
+~  14023a113  orq          %r10, %r11                         | 14023a146  orq          %r11, %r10
+>                                                             | 14023a149  movq         %r9, %r14
+~  14023a116  xorq         %r9, %r11                          | 14023a14c  xorq         %r9, %r10
+~  14023a119  vmovq        %r11, %xmm9                        | 14023a14f  vmovq        %r10, %xmm9
+=  14023a11e  vpxor        %xmm5, %xmm9, %xmm9                | 14023a154  vpxor        %xmm5, %xmm9, %xmm9
+=  14023a122  vpbroadcastq %xmm9, %ymm9                       | 14023a158  vpbroadcastq %xmm9, %ymm9
+=  14023a127  vpxor        0x40(%r13,%rdx,8), %ymm9, %ymm10   | 14023a15d  vpxor        0x40(%r13,%rdx,8), %ymm9, %ymm10
+=  14023a12e  vpor         %ymm0, %ymm3, %ymm0                | 14023a164  vpor         %ymm0, %ymm3, %ymm0
+=  14023a132  vpxor        0x60(%r13,%rdx,8), %ymm9, %ymm3    | 14023a168  vpxor        0x60(%r13,%rdx,8), %ymm9, %ymm3
+=  14023a139  movq         %rcx, %rdx                         | 14023a16f  movq         %rcx, %rdx
+=  14023a13c  vpor         %ymm4, %ymm10, %ymm4               | 14023a172  vpor         %ymm4, %ymm10, %ymm4
+=  14023a140  vpor         %ymm2, %ymm3, %ymm2                | 14023a176  vpor         %ymm2, %ymm3, %ymm2
+=  14023a144  addq         $0x2, %rax                         | 14023a17a  addq         $0x2, %rax
+=  14023a148  addq         $0x10, %rcx                        | 14023a17e  addq         $0x10, %rcx
+~  14023a14c  cmpq         %r8, %rcx                          | 14023a182  cmpq         %rbx, %rcx
+=  14023a14f  jbe          0x14023a020 <.text+0x239020>       | 14023a185  jbe          0x14023a030 <.text+0x239030>

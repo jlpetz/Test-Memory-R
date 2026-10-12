@@ -1,0 +1,104 @@
+{
+  "scope": "Contiguous payload models, only adjacent payload-to-payload edges; no encoding or overhead.",
+  "current": [
+    {
+      "width": 12,
+      "payload_bits": 256,
+      "hash_bits_reaching_line": 8,
+      "seeds_checked": 256,
+      "exhaustive": true,
+      "equal_32_byte_halves": 256,
+      "distinct_word_counts": {
+        "1": 16,
+        "3": 240
+      },
+      "known_payload_edge_switching": 1.0
+    },
+    {
+      "width": 16,
+      "payload_bits": 256,
+      "hash_bits_reaching_line": 8,
+      "seeds_checked": 256,
+      "exhaustive": true,
+      "equal_32_byte_halves": 256,
+      "distinct_word_counts": {
+        "1": 256
+      },
+      "known_payload_edge_switching": 1.0
+    },
+    {
+      "width": 24,
+      "payload_bits": 512,
+      "hash_bits_reaching_line": 12,
+      "seeds_checked": 4096,
+      "exhaustive": true,
+      "equal_32_byte_halves": 16,
+      "distinct_word_counts": {
+        "1": 16,
+        "3": 4080
+      },
+      "known_payload_edge_switching": 1.0
+    },
+    {
+      "width": 32,
+      "payload_bits": 512,
+      "hash_bits_reaching_line": 16,
+      "seeds_checked": 4096,
+      "exhaustive": false,
+      "equal_32_byte_halves": 4096,
+      "distinct_word_counts": {
+        "1": 4096
+      },
+      "known_payload_edge_switching": 1.0
+    },
+    {
+      "width": 64,
+      "payload_bits": 512,
+      "hash_bits_reaching_line": 32,
+      "seeds_checked": 4096,
+      "exhaustive": false,
+      "equal_32_byte_halves": 4096,
+      "distinct_word_counts": {
+        "2": 4096
+      },
+      "known_payload_edge_switching": 1.0
+    }
+  ],
+  "experimental_second_half_complement": [
+    {
+      "width": 12,
+      "payload_bits": 256,
+      "invert_second_half_flips": 488,
+      "known_payload_edges": 488,
+      "rate": 1.0
+    },
+    {
+      "width": 16,
+      "payload_bits": 256,
+      "invert_second_half_flips": 480,
+      "known_payload_edges": 480,
+      "rate": 1.0
+    },
+    {
+      "width": 24,
+      "payload_bits": 512,
+      "invert_second_half_flips": 464,
+      "known_payload_edges": 488,
+      "rate": 0.9508196721311475
+    },
+    {
+      "width": 32,
+      "payload_bits": 512,
+      "invert_second_half_flips": 448,
+      "known_payload_edges": 480,
+      "rate": 0.9333333333333333
+    },
+    {
+      "width": 64,
+      "payload_bits": 512,
+      "invert_second_half_flips": 384,
+      "known_payload_edges": 448,
+      "rate": 0.8571428571428571
+    }
+  ]
+}

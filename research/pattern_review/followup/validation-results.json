@@ -1,0 +1,19 @@
+{
+  "submitted_source_unchanged": true,
+  "head": "468f23e35446760e1316930629a0b6efcf410cc4",
+  "index_diff": "",
+  "submitted_tests_passed": 177,
+  "additional_probes_passed": 13,
+  "injected_corruption_checks": 32076,
+  "exhaustive_balanced_model_seeds": 4352,
+  "old_profile_image_comparisons": 12288,
+  "submitted_clippy_all_targets": "passed, -D warnings",
+  "submitted_release": "passed, post-LTO asm inspected",
+  "candidate_tests_passed": 190,
+  "candidate_clippy_all_targets": "passed, -D warnings",
+  "candidate_release": "passed, post-LTO asm inspected",
+  "candidate_patch_applied_to_production": false,
+  "tmr_executed": false,
+  "live_hardware_tests": false,
+  "recommended_patch": "switch-seed-mask-candidate.patch"
+}

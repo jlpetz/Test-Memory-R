@@ -1,0 +1,325 @@
+{
+  "scope": "mathematical transfer models; no physical measurement or normative DDR6 implementation",
+  "overhead_location_source": "https://patents.google.com/patent/US20250363001A1/en",
+  "profiles": [
+    {
+      "name": "plain-16x32",
+      "status": "unencoded address-order mathematical model",
+      "dq": 16,
+      "beats": 32,
+      "payload_bytes": 64,
+      "unknown_slots": 0,
+      "profile_switch": {
+        "data_to_data_edges": 496,
+        "data_to_data_flips": 496,
+        "all_dq_edges": 496,
+        "min_flips": 496,
+        "max_flips": 496,
+        "min_fraction": 1.0,
+        "max_fraction": 1.0,
+        "iid_unknown_expected_fraction": 1.0
+      },
+      "packing_validation": {
+        "tested_seeds": 5120,
+        "table_groups": 4,
+        "table_bytes": 4096,
+        "base_bytes": 64,
+        "table_sha256": "175bcf9bdb83e6a01b34def9f9cd9b902a8a88c6bbf65d857ce9145a89eda63f"
+      },
+      "candidate_data_edge_fractions": {
+        "native-switch16": {
+          "mean": 1.0,
+          "min": 1.0,
+          "max": 1.0
+        },
+        "native-switch32": {
+          "mean": 0.5002165763608871,
+          "min": 0.4838709677419355,
+          "max": 0.5161290322580645
+        },
+        "native-switch64": {
+          "mean": 0.5021539503528226,
+          "min": 0.24193548387096775,
+          "max": 0.7540322580645161
+        },
+        "raw-width16": {
+          "mean": 1.0,
+          "min": 1.0,
+          "max": 1.0
+        },
+        "profile-mapped": {
+          "mean": 1.0,
+          "min": 1.0,
+          "max": 1.0
+        },
+        "random-payload": {
+          "mean": 0.49990352507560487,
+          "min": 0.41935483870967744,
+          "max": 0.5665322580645161
+        }
+      }
+    },
+    {
+      "name": "plain-32x16",
+      "status": "unencoded address-order mathematical model",
+      "dq": 32,
+      "beats": 16,
+      "payload_bytes": 64,
+      "unknown_slots": 0,
+      "profile_switch": {
+        "data_to_data_edges": 480,
+        "data_to_data_flips": 480,
+        "all_dq_edges": 480,
+        "min_flips": 480,
+        "max_flips": 480,
+        "min_fraction": 1.0,
+        "max_fraction": 1.0,
+        "iid_unknown_expected_fraction": 1.0
+      },
+      "packing_validation": {
+        "tested_seeds": 5120,
+        "table_groups": 8,
+        "table_bytes": 8192,
+        "base_bytes": 64,
+        "table_sha256": "ac4bf3c628b632d3982580656f330b7fd3cbe73d1888f9fd49cac02f9bf859a9"
+      },
+      "candidate_data_edge_fractions": {
+        "native-switch16": {
+          "mean": 0.0,
+          "min": 0.0,
+          "max": 0.0
+        },
+        "native-switch32": {
+          "mean": 1.0,
+          "min": 1.0,
+          "max": 1.0
+        },
+        "native-switch64": {
+          "mean": 0.5000203450520834,
+          "min": 0.475,
+          "max": 0.5291666666666667
+        },
+        "raw-width32": {
+          "mean": 1.0,
+          "min": 1.0,
+          "max": 1.0
+        },
+        "profile-mapped": {
+          "mean": 1.0,
+          "min": 1.0,
+          "max": 1.0
+        },
+        "random-payload": {
+          "mean": 0.500201416015625,
+          "min": 0.43125,
+          "max": 0.5791666666666667
+        }
+      }
+    },
+    {
+      "name": "plain-64x8",
+      "status": "unencoded address-order mathematical model",
+      "dq": 64,
+      "beats": 8,
+      "payload_bytes": 64,
+      "unknown_slots": 0,
+      "profile_switch": {
+        "data_to_data_edges": 448,
+        "data_to_data_flips": 448,
+        "all_dq_edges": 448,
+        "min_flips": 448,
+        "max_flips": 448,
+        "min_fraction": 1.0,
+        "max_fraction": 1.0,
+        "iid_unknown_expected_fraction": 1.0
+      },
+      "packing_validation": {
+        "tested_seeds": 5120,
+        "table_groups": 16,
+        "table_bytes": 16384,
+        "base_bytes": 64,
+        "table_sha256": "d6c684188ef7d380b7acb9dcfc998c7422329e96fe7dc7b36c907be69109dfc9"
+      },
+      "candidate_data_edge_fractions": {
+        "native-switch16": {
+          "mean": 0.0,
+          "min": 0.0,
+          "max": 0.0
+        },
+        "native-switch32": {
+          "mean": 0.0,
+          "min": 0.0,
+          "max": 0.0
+        },
+        "native-switch64": {
+          "mean": 1.0,
+          "min": 1.0,
+          "max": 1.0
+        },
+        "raw-width64": {
+          "mean": 1.0,
+          "min": 1.0,
+          "max": 1.0
+        },
+        "profile-mapped": {
+          "mean": 1.0,
+          "min": 1.0,
+          "max": 1.0
+        },
+        "random-payload": {
+          "mean": 0.5,
+          "min": 0.4107142857142857,
+          "max": 0.5758928571428571
+        }
+      }
+    },
+    {
+      "name": "illustrative-12dq-bl24",
+      "status": "experimental: public-patent overhead locations, SYNTHETIC payload numbering",
+      "dq": 12,
+      "beats": 24,
+      "payload_bytes": 32,
+      "unknown_slots": 32,
+      "profile_switch": {
+        "data_to_data_edges": 240,
+        "data_to_data_flips": 240,
+        "all_dq_edges": 276,
+        "min_flips": 244,
+        "max_flips": 276,
+        "min_fraction": 0.8840579710144928,
+        "max_fraction": 1.0,
+        "iid_unknown_expected_fraction": 0.9347826086956522
+      },
+      "packing_validation": {
+        "tested_seeds": 5120,
+        "table_groups": 3,
+        "table_bytes": 1536,
+        "base_bytes": 32,
+        "table_sha256": "5829870379b71b2fb797119be019399eeb74c5502b4225632236a7d7e50bc618"
+      },
+      "candidate_data_edge_fractions": {
+        "native-switch16": {
+          "mean": 0.31639404296875,
+          "min": 0.2916666666666667,
+          "max": 0.3416666666666667
+        },
+        "native-switch32": {
+          "mean": 0.5012898763020833,
+          "min": 0.43333333333333335,
+          "max": 0.5666666666666667
+        },
+        "native-switch64": {
+          "mean": 0.5015096028645833,
+          "min": 0.3625,
+          "max": 0.6583333333333333
+        },
+        "raw-width12": {
+          "mean": 0.86783447265625,
+          "min": 0.7583333333333333,
+          "max": 0.925
+        },
+        "profile-mapped": {
+          "mean": 1.0,
+          "min": 1.0,
+          "max": 1.0
+        },
+        "random-payload": {
+          "mean": 0.5005940755208333,
+          "min": 0.4041666666666667,
+          "max": 0.6041666666666666
+        }
+      }
+    },
+    {
+      "name": "illustrative-24dq-bl24",
+      "status": "experimental 24-DQ extension; NOT a JEDEC DDR6 profile",
+      "dq": 24,
+      "beats": 24,
+      "payload_bytes": 64,
+      "unknown_slots": 64,
+      "profile_switch": {
+        "data_to_data_edges": 480,
+        "data_to_data_flips": 480,
+        "all_dq_edges": 552,
+        "min_flips": 488,
+        "max_flips": 552,
+        "min_fraction": 0.8840579710144928,
+        "max_fraction": 1.0,
+        "iid_unknown_expected_fraction": 0.9347826086956522
+      },
+      "packing_validation": {
+        "tested_seeds": 5120,
+        "table_groups": 6,
+        "table_bytes": 6144,
+        "base_bytes": 64,
+        "table_sha256": "ae32d352d1779829a76abd13fbfaa497fe598311bbee3afff1fcce57d500f215"
+      },
+      "candidate_data_edge_fractions": {
+        "native-switch16": {
+          "mean": 0.599932861328125,
+          "min": 0.5916666666666667,
+          "max": 0.6083333333333333
+        },
+        "native-switch32": {
+          "mean": 0.5012674967447917,
+          "min": 0.3145833333333333,
+          "max": 0.7145833333333333
+        },
+        "native-switch64": {
+          "mean": 0.4995015462239583,
+          "min": 0.29375,
+          "max": 0.7104166666666667
+        },
+        "raw-width24": {
+          "mean": 0.857421875,
+          "min": 0.7854166666666667,
+          "max": 0.9125
+        },
+        "profile-mapped": {
+          "mean": 1.0,
+          "min": 1.0,
+          "max": 1.0
+        },
+        "random-payload": {
+          "mean": 0.4996866861979167,
+          "min": 0.42291666666666666,
+          "max": 0.5604166666666667
+        }
+      }
+    }
+  ],
+  "programmable_xor_counterexample": {
+    "status": "possible programmable-XOR transform, NOT a measured LPDDR6 controller",
+    "input_bytes": [
+      165,
+      90
+    ],
+    "selected_masks": [
+      165,
+      90
+    ],
+    "wire_bytes": [
+      0,
+      0
+    ],
+    "input_flips": 8,
+    "output_flips": 0
+  },
+  "linepair_collision_replay": {
+    "seed": "0x1707e896db9674fb",
+    "suite_cycle": 1,
+    "step": 0,
+    "pair": 0,
+    "family": "linepair",
+    "key": "0x405ac1f500000000",
+    "byte_offsets": [
+      "0x0",
+      "0x800000040"
+    ],
+    "equal_word": "0x405ac1f5405ac1f5"
+  },
+  "metadata_bounds_validation": {
+    "traces": 729,
+    "completed_binary_traces": 4096
+  }
+}

@@ -1,0 +1,115 @@
+# SLOW (tmr-r5, with the seed mask): simple_native_256, sequential verify, switch 32-bit, main loop
+# exe: the build with the seed mask (r5)
+# post-LTO asm labels: path entry .LBB2443_171, loop header .LBB2443_173; one basic block, one back edge
+#   start_va: 0x14023a020
+#   end_va: 0x14023a155
+#   start_mod64: 32
+#   bytes: 309
+#   instructions: 76
+#   windows_64b: 6
+#   windows_32b: 10
+#   loads: 4
+#   test_memory_ymm_loads: 4
+#   stack_loads: 0
+#   lines_per_iteration: 2
+#   instructions_per_line: 38.0
+#   movabsq_in_loop: 0
+#   reg_reg_movs: 13
+#   imul: 4
+#   vector_insns: 14
+#   scalar_insns: 62
+#   gprs: ['rax', 'rcx', 'rdx', 'r8', 'r9', 'r10', 'r11', 'r12', 'r13', 'r14', 'r15']
+#   vregs: ['ymm0', 'ymm1', 'ymm2', 'xmm3', 'ymm3', 'ymm4', 'xmm5', 'xmm9', 'ymm9', 'ymm10']
+#
+# --- setup before the loop (runs once per chunk, not per iteration) ---
+#  140239fde: c5 e9 ef d2                                  vpxor	%xmm2, %xmm2, %xmm2
+#  140239fe2: c5 d9 ef e4                                  vpxor	%xmm4, %xmm4, %xmm4
+#  140239fe6: c5 f9 ef c0                                  vpxor	%xmm0, %xmm0, %xmm0
+#  140239fea: c5 f1 ef c9                                  vpxor	%xmm1, %xmm1, %xmm1
+#  140239fee: 4c 89 d8                                     movq	%r11, %rax
+#  140239ff1: 48 89 da                                     movq	%rbx, %rdx
+#  140239ff4: 48 81 7c 24 78 80 00 00 00                   cmpq	$0x80, 0x78(%rsp)
+#  140239ffd: 4c 8b 44 24 60                               movq	0x60(%rsp), %r8
+#  14023a002: 49 b9 f0 f0 f0 f0 0f 0f 0f 0f                movabsq	$0xf0f0f0ff0f0f0f0, %r9
+#  14023a00c: 0f 82 43 01 00 00                            jb	0x14023a155 <.text+0x239155>
+#  14023a012: 48 8b 8c 24 a8 00 00 00                      movq	0xa8(%rsp), %rcx
+#  14023a01a: 48 89 da                                     movq	%rbx, %rdx
+#  14023a01d: 4c 89 d8                                     movq	%r11, %rax
+#
+# --- loop body: address, raw bytes, instruction ---
+14023a020: 4e 8d 14 20                                  leaq	(%rax,%r12), %r10
+14023a024: 4d 89 d3                                     movq	%r10, %r11
+14023a027: 49 c1 eb 1e                                  shrq	$0x1e, %r11
+14023a02b: 4d 31 d3                                     xorq	%r10, %r11
+14023a02e: 4d 0f af df                                  imulq	%r15, %r11
+14023a032: 4d 89 da                                     movq	%r11, %r10
+14023a035: 49 c1 ea 1b                                  shrq	$0x1b, %r10
+14023a039: 4d 31 da                                     xorq	%r11, %r10
+14023a03c: 4d 0f af d6                                  imulq	%r14, %r10
+14023a040: 4d 89 d3                                     movq	%r10, %r11
+14023a043: 49 c1 eb 1f                                  shrq	$0x1f, %r11
+14023a047: 45 31 d3                                     xorl	%r10d, %r11d
+14023a04a: 45 0f b6 d3                                  movzbl	%r11b, %r10d
+14023a04e: 41 c1 e3 08                                  shll	$0x8, %r11d
+14023a052: 45 09 d3                                     orl	%r10d, %r11d
+14023a055: 41 81 e3 ff 00 ff 00                         andl	$0xff00ff, %r11d
+14023a05c: 45 89 da                                     movl	%r11d, %r10d
+14023a05f: 41 c1 e2 04                                  shll	$0x4, %r10d
+14023a063: 45 09 da                                     orl	%r11d, %r10d
+14023a066: 45 89 d3                                     movl	%r10d, %r11d
+14023a069: 41 81 e3 0f 0f 0f 0f                         andl	$0xf0f0f0f, %r11d
+14023a070: 41 c1 e2 04                                  shll	$0x4, %r10d
+14023a074: 41 81 e2 f0 f0 f0 f0                         andl	$0xf0f0f0f0, %r10d
+14023a07b: 45 09 da                                     orl	%r11d, %r10d
+14023a07e: 4d 89 d3                                     movq	%r10, %r11
+14023a081: 49 c1 e3 20                                  shlq	$0x20, %r11
+14023a085: 4d 09 d3                                     orq	%r10, %r11
+14023a088: 4d 31 cb                                     xorq	%r9, %r11
+14023a08b: c4 c1 f9 6e db                               vmovq	%r11, %xmm3
+14023a090: c5 e1 ef dd                                  vpxor	%xmm5, %xmm3, %xmm3
+14023a094: c4 e2 7d 59 db                               vpbroadcastq	%xmm3, %ymm3
+14023a099: c4 41 65 ef 4c d5 00                         vpxor	(%r13,%rdx,8), %ymm3, %ymm9
+14023a0a0: c4 c1 65 ef 5c d5 20                         vpxor	0x20(%r13,%rdx,8), %ymm3, %ymm3
+14023a0a7: c5 b5 eb c9                                  vpor	%ymm1, %ymm9, %ymm1
+14023a0ab: 4e 8d 14 20                                  leaq	(%rax,%r12), %r10
+14023a0af: 49 ff c2                                     incq	%r10
+14023a0b2: 4d 89 d3                                     movq	%r10, %r11
+14023a0b5: 49 c1 eb 1e                                  shrq	$0x1e, %r11
+14023a0b9: 4d 31 d3                                     xorq	%r10, %r11
+14023a0bc: 4d 0f af df                                  imulq	%r15, %r11
+14023a0c0: 4d 89 da                                     movq	%r11, %r10
+14023a0c3: 49 c1 ea 1b                                  shrq	$0x1b, %r10
+14023a0c7: 4d 31 da                                     xorq	%r11, %r10
+14023a0ca: 4d 0f af d6                                  imulq	%r14, %r10
+14023a0ce: 4d 89 d3                                     movq	%r10, %r11
+14023a0d1: 49 c1 eb 1f                                  shrq	$0x1f, %r11
+14023a0d5: 45 31 d3                                     xorl	%r10d, %r11d
+14023a0d8: 45 0f b6 d3                                  movzbl	%r11b, %r10d
+14023a0dc: 41 c1 e3 08                                  shll	$0x8, %r11d
+14023a0e0: 45 09 d3                                     orl	%r10d, %r11d
+14023a0e3: 41 81 e3 ff 00 ff 00                         andl	$0xff00ff, %r11d
+14023a0ea: 45 89 da                                     movl	%r11d, %r10d
+14023a0ed: 41 c1 e2 04                                  shll	$0x4, %r10d
+14023a0f1: 45 09 da                                     orl	%r11d, %r10d
+14023a0f4: 45 89 d3                                     movl	%r10d, %r11d
+14023a0f7: 41 81 e3 0f 0f 0f 0f                         andl	$0xf0f0f0f, %r11d
+14023a0fe: 41 c1 e2 04                                  shll	$0x4, %r10d
+14023a102: 41 81 e2 f0 f0 f0 f0                         andl	$0xf0f0f0f0, %r10d
+14023a109: 45 09 da                                     orl	%r11d, %r10d
+14023a10c: 4d 89 d3                                     movq	%r10, %r11
+14023a10f: 49 c1 e3 20                                  shlq	$0x20, %r11
+14023a113: 4d 09 d3                                     orq	%r10, %r11
+14023a116: 4d 31 cb                                     xorq	%r9, %r11
+14023a119: c4 41 f9 6e cb                               vmovq	%r11, %xmm9
+14023a11e: c5 31 ef cd                                  vpxor	%xmm5, %xmm9, %xmm9
+14023a122: c4 42 7d 59 c9                               vpbroadcastq	%xmm9, %ymm9
+14023a127: c4 41 35 ef 54 d5 40                         vpxor	0x40(%r13,%rdx,8), %ymm9, %ymm10
+14023a12e: c5 e5 eb c0                                  vpor	%ymm0, %ymm3, %ymm0
+14023a132: c4 c1 35 ef 5c d5 60                         vpxor	0x60(%r13,%rdx,8), %ymm9, %ymm3
+14023a139: 48 89 ca                                     movq	%rcx, %rdx
+14023a13c: c5 ad eb e4                                  vpor	%ymm4, %ymm10, %ymm4
+14023a140: c5 e5 eb d2                                  vpor	%ymm2, %ymm3, %ymm2
+14023a144: 48 83 c0 02                                  addq	$0x2, %rax
+14023a148: 48 83 c1 10                                  addq	$0x10, %rcx
+14023a14c: 4c 39 c1                                     cmpq	%r8, %rcx
+14023a14f: 0f 86 cb fe ff ff                            jbe	0x14023a020 <.text+0x239020>

@@ -1,0 +1,122 @@
+[
+  {
+    "simd": 128,
+    "beat": 12,
+    "original_count": 42,
+    "candidate_count": 42,
+    "original_asm_line": 821187,
+    "candidate_asm_line": 819646
+  },
+  {
+    "simd": 128,
+    "beat": 16,
+    "original_count": 47,
+    "candidate_count": 39,
+    "original_asm_line": 821244,
+    "candidate_asm_line": 819698
+  },
+  {
+    "simd": 128,
+    "beat": 24,
+    "original_count": 59,
+    "candidate_count": 53,
+    "original_asm_line": 821056,
+    "candidate_asm_line": 819529
+  },
+  {
+    "simd": 128,
+    "beat": 32,
+    "original_count": 43,
+    "candidate_count": 39,
+    "original_asm_line": 821130,
+    "candidate_asm_line": 819593
+  },
+  {
+    "simd": 128,
+    "beat": 64,
+    "original_count": 41,
+    "candidate_count": 41,
+    "original_asm_line": 821000,
+    "candidate_asm_line": 819475
+  },
+  {
+    "simd": 256,
+    "beat": 12,
+    "original_count": 39,
+    "candidate_count": 39,
+    "original_asm_line": 725546,
+    "candidate_asm_line": 725083
+  },
+  {
+    "simd": 256,
+    "beat": 16,
+    "original_count": 45,
+    "candidate_count": 37,
+    "original_asm_line": 725601,
+    "candidate_asm_line": 725132
+  },
+  {
+    "simd": 256,
+    "beat": 24,
+    "original_count": 52,
+    "candidate_count": 48,
+    "original_asm_line": 725425,
+    "candidate_asm_line": 724975
+  },
+  {
+    "simd": 256,
+    "beat": 32,
+    "original_count": 41,
+    "candidate_count": 37,
+    "original_asm_line": 725493,
+    "candidate_asm_line": 725034
+  },
+  {
+    "simd": 256,
+    "beat": 64,
+    "original_count": 39,
+    "candidate_count": 39,
+    "original_asm_line": 725372,
+    "candidate_asm_line": 724924
+  },
+  {
+    "simd": 512,
+    "beat": 12,
+    "original_count": 38,
+    "candidate_count": 38,
+    "original_asm_line": 722001,
+    "candidate_asm_line": 721629
+  },
+  {
+    "simd": 512,
+    "beat": 16,
+    "original_count": 44,
+    "candidate_count": 36,
+    "original_asm_line": 722055,
+    "candidate_asm_line": 721677
+  },
+  {
+    "simd": 512,
+    "beat": 24,
+    "original_count": 49,
+    "candidate_count": 45,
+    "original_asm_line": 721883,
+    "candidate_asm_line": 721524
+  },
+  {
+    "simd": 512,
+    "beat": 32,
+    "original_count": 40,
+    "candidate_count": 36,
+    "original_asm_line": 721948,
+    "candidate_asm_line": 721580
+  },
+  {
+    "simd": 512,
+    "beat": 64,
+    "original_count": 38,
+    "candidate_count": 38,
+    "original_asm_line": 721830,
+    "candidate_asm_line": 721473
+  }
+]

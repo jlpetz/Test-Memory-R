@@ -1,0 +1,74 @@
+[
+  {
+    "kib": 8,
+    "variant": "old",
+    "unit": "ns per 64 B",
+    "median": 2.927521,
+    "min": 2.91893,
+    "max": 2.958874,
+    "n": 9
+  },
+  {
+    "kib": 8,
+    "variant": "shared",
+    "unit": "ns per 64 B",
+    "median": 3.083611,
+    "min": 3.047655,
+    "max": 3.143777,
+    "n": 9
+  },
+  {
+    "kib": 8,
+    "variant": "cast",
+    "unit": "ns per 64 B",
+    "median": 2.888638,
+    "min": 2.84403,
+    "max": 2.938305,
+    "n": 9
+  },
+  {
+    "kib": 8,
+    "variant": "masked",
+    "unit": "ns per 64 B",
+    "median": 2.312076,
+    "min": 2.283369,
+    "max": 2.321069,
+    "n": 9
+  },
+  {
+    "kib": 256,
+    "variant": "old",
+    "unit": "ns per 64 B",
+    "median": 2.894611,
+    "min": 2.866325,
+    "max": 2.951304,
+    "n": 9
+  },
+  {
+    "kib": 256,
+    "variant": "shared",
+    "unit": "ns per 64 B",
+    "median": 3.048003,
+    "min": 2.994409,
+    "max": 3.112257,
+    "n": 9
+  },
+  {
+    "kib": 256,
+    "variant": "cast",
+    "unit": "ns per 64 B",
+    "median": 2.838549,
+    "min": 2.799355,
+    "max": 2.924028,
+    "n": 9
+  },
+  {
+    "kib": 256,
+    "variant": "masked",
+    "unit": "ns per 64 B",
+    "median": 2.277956,
+    "min": 2.248398,
+    "max": 2.330634,
+    "n": 9
+  }
+]

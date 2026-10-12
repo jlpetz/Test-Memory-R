@@ -1,0 +1,110 @@
+warn: could not canonicalize path C:\Users\Administrator
+   Compiling windows-link v0.2.1
+   Compiling proc-macro2 v1.0.107
+   Compiling unicode-ident v1.0.26
+   Compiling quote v1.0.47
+   Compiling cfg-if v1.0.5
+   Compiling memchr v2.8.3
+   Compiling getrandom v0.3.4
+   Compiling regex-syntax v0.8.11
+   Compiling windows-sys v0.61.2
+   Compiling windows-result v0.4.1
+   Compiling windows-strings v0.5.1
+   Compiling serde_core v1.0.229
+   Compiling autocfg v1.5.1
+   Compiling aho-corasick v1.1.5
+   Compiling zerocopy v0.8.59
+   Compiling getrandom v0.4.3
+   Compiling num-traits v0.2.19
+   Compiling syn v2.0.119
+   Compiling rand_core v0.9.5
+   Compiling syn v3.0.6
+   Compiling anstyle v1.0.14
+   Compiling log v0.4.34
+   Compiling regex-automata v0.4.18
+   Compiling utf8parse v0.2.2
+   Compiling once_cell v1.21.4
+   Compiling zmij v1.0.23
+   Compiling once_cell_polyfill v1.70.2
+   Compiling serde v1.0.229
+   Compiling fastrand v2.5.0
+   Compiling tempfile v3.27.0
+   Compiling anstyle-wincon v3.0.11
+   Compiling anstyle-parse v1.0.0
+   Compiling regex v1.13.1
+   Compiling anstyle-query v1.1.5
+   Compiling serde_derive v1.0.229
+   Compiling windows-threading v0.2.1
+   Compiling fnv v1.0.7
+   Compiling bit-vec v0.8.0
+   Compiling wait-timeout v0.2.1
+   Compiling is_terminal_polyfill v1.70.2
+   Compiling colorchoice v1.0.5
+   Compiling bitflags v2.13.2
+   Compiling serde_json v1.0.151
+   Compiling jiff-core v0.1.1
+   Compiling quick-error v1.2.3
+   Compiling rusty-fork v0.3.1
+   Compiling anstream v1.0.0
+   Compiling bit-set v0.8.0
+   Compiling env_filter v2.0.0
+   Compiling windows-implement v0.60.2
+   Compiling windows-interface v0.59.3
+   Compiling ppv-lite86 v0.2.21
+   Compiling jiff v0.2.37
+   Compiling rand v0.9.5
+   Compiling rand_xorshift v0.4.0
+   Compiling rand_chacha v0.9.0
+   Compiling bstr v1.13.1
+   Compiling windows-core v0.62.2
+   Compiling unarray v0.1.4
+   Compiling itoa v1.0.18
+   Compiling proptest v1.11.0
+   Compiling globset v0.4.20
+   Compiling windows-future v0.3.2
+   Compiling windows-numerics v0.3.1
+   Compiling windows-collections v0.3.2
+   Compiling raw-cpuid v11.6.0
+   Compiling ctrlc v3.5.2
+   Compiling windows v0.62.2
+   Compiling num_cpus v1.17.0
+   Compiling chrono v0.4.45
+   Compiling env_logger v0.11.11
+   Compiling tmr v1.0.0 (C:\Users\Administrator\Downloads\TMR\TMR-APP\target\pattern-review-source)
+    Finished `test` profile [unoptimized + debuginfo] target(s) in 26.51s
+     Running unittests src\lib.rs (target\pattern-review-artifacts\debug\build\tmr/2c55f13e05401923\out\tmr-2c55f13e05401923.exe)
+
+running 12 tests
+test pattern::native_review::review_identity_bounds_are_math_not_allocation_requirements ... PASS: ident/random distinguish linepair's witness; thread IDs partition 8 TiB ranges.
+ok
+test pattern::native_review::review_repro_linepair_collision_above_32_gib ... REPRO: linepair seed 0x1707e896db9674fb, key 0x405ac1f500000000, byte offsets 0 and 0x800000040, same value 0x405ac1f5405ac1f5
+ok
+test pattern::native_review::review_repro_odd_round_switch_pairs_never_get_inverted ... REPRO: wrc=3, own cycles=1: 16 suite cycles all run switch-P, never switch-~P.
+ok
+test pattern::native_review::review_switch_wire_formula_equals_legacy_mode14 ... PASS: native switch and legacy14 encoder images equal for 1,536 matched hash inputs.
+ok
+test results::native_review::review_halt_after_a_previously_completed_step_does_not_hit_zero_runs ... PASS: same path after an earlier completed execution retains one run and one seal error.
+ok
+test results::native_review::review_repro_halt_before_step_panics_while_finalizing ... 
+thread 'results::native_review::review_repro_halt_before_step_panics_while_finalizing' (10664) panicked at src\results.rs:459:35:
+attempt to divide by zero
+note: run with `RUST_BACKTRACE=1` environment variable to display a backtrace
+REPRO: first-cycle seal halt -> finalize panics (zero-run division), before result save.
+ok
+test runner::native_review::review_repro_matching_native_bench_dependency_rejected ... REPRO (internal API): matching native Bench pair rejected: 'Bench-Verify-Ident' (dependent) expects pattern mode=10 but memory has mode=300
+ok
+test tests::native_review::review_clean_rescan_still_fails_and_rescan_off_does_not_claim_reproduction ... PASS: simulated vanished failure still fails; rescan=off records an unlocalised alarm, not a rescan result.
+ok
+test tests::native_review::review_every_native_word_detects_injected_bits_including_tails ... PASS: 24948 corruption checks over all available widths, five families, three walks and tail lines.
+ok
+test tests::native_review::review_native_halt_retains_the_corrupt_image_after_cold_rescan ... PASS: four persistent corruptions counted; local halt does not rewrite the test buffer.
+ok
+test tests::native_review::review_repro_native_interval_is_ignored ... REPRO: requested interval 8, two separated bad words -> native scans whole chunk and records one alarm.
+ok
+test tests::native_review::review_repro_persistent_hit_omits_phase_and_initial_difference_mask ... REPRO: persistent rescan counts the bad word but omits the phase and initial OR mask:
+Error found by Mem-SimpleV2, idx 0 (address 0x1dc1002e000): expected 0xed51cfdc84e820eb, got 0xed51cfdc84e820ea, XOR 0x0000000000000001 (1 bits)
+Error found by Mem-SimpleV2, idx 0: 4 of 4 rereads still wrong; after flushing its line, wrong (0xed51cfdc84e820ea)
+ok
+
+test result: ok. 12 passed; 0 failed; 0 ignored; 0 measured; 169 filtered out; finished in 0.46s
+

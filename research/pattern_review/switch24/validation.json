@@ -1,0 +1,48 @@
+{
+  "date": "2026-10-11",
+  "status": "applied_uncommitted",
+  "product_tests": 179,
+  "full_candidate_tests": 192,
+  "independent_kernel_bit_injections": 32076,
+  "standalone_bit_injections": 122880,
+  "balanced_seeds_exhausted": 4096,
+  "clippy_all_targets": "passed",
+  "release_build": "passed",
+  "product_asm_sha256": "a16ce768dcbd16bb8b3bbbb45b3a990de2fb4b5d71db31054849ba2e46edc194",
+  "candidate_asm_sha256": "801cb52e440652ed437f7dec7f3eb5f994da6e77a4319402f0ddd9e36e9c7d77",
+  "reviewed_functions_equal": true,
+  "new_24_bit_writer_loops": [
+    {
+      "simd": 128,
+      "instructions": 31,
+      "stores": [
+        "\tvmovdqa\t%xmm9, (%rdx,%rdi,8)",
+        "\tvmovdqa\t%xmm10, 16(%rdx,%rdi,8)",
+        "\tvmovdqa\t%xmm8, 32(%rdx,%rdi,8)",
+        "\tvmovdqa\t%xmm9, 48(%rdx,%rdi,8)"
+      ]
+    },
+    {
+      "simd": 256,
+      "instructions": 28,
+      "stores": [
+        "\tvmovdqa\t%ymm7, (%rdx,%rdi,8)",
+        "\tvmovdqa\t%ymm6, 32(%rdx,%rdi,8)"
+      ]
+    },
+    {
+      "simd": 512,
+      "instructions": 25,
+      "stores": [
+        "\tvmovdqa64\t%zmm5, (%rdx,%rdi,8)"
+      ]
+    }
+  ],
+  "source_inputs_checked": 54,
+  "unexpected_source_changes": [],
+  "module_hash_matches": true,
+  "git_index": "empty",
+  "git_head": "468f23e35446760e1316930629a0b6efcf410cc4",
+  "live_tmr_runs": 0,
+  "scope": "Native 24-bit SIMD encoding only; same bytes, seed, polarity, scheduling and transfer model."
+}

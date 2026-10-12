@@ -1,0 +1,919 @@
+{
+  "source": "target/pattern-review-artifacts/release/build/tmr/76da2e2b9a89afd0/out/tmr.s",
+  "sha256": "765a7c18ba4834eade9337d2013bb81d6b0cd8b6e923b2e422b201179bc597f5",
+  "loops": [
+    {
+      "symbol": "_RNvNtCsiYjGPJMyZdw_3tmr5tests17simple_native_256",
+      "line": 715136,
+      "instructions": 47,
+      "stores": [
+        "\tvmovups\t%xmm0, (%rdi)",
+        "\tvmovdqu\t%xmm0, 48(%rdi)"
+      ],
+      "body": ".LBB2443_296:\n\tleaq\t304(%rsp), %rcx\n\tmovb\t$1, %dl\n\txorl\t%r8d, %r8d\n\tcallq\t_RNvMNtCsiYjGPJMyZdw_3tmr16test_scaffoldingNtB2_10TestRunner13reseal_extent\n\tmovl\t_tls_index(%rip), %ecx\n\tmovq\t%gs:88, %r8\n\tmovq\t(%r8,%rcx,8), %rcx\n\tvmovaps\t304(%rsp), %xmm0\n\tmovl\t452(%rsp), %r8d\n\tmovq\t384(%rsp), %r9\n\tmovl\t448(%rsp), %r10d\n\tmovq\t416(%rsp), %r11\n\tmovq\t408(%rsp), %rsi\n\tmovq\t224(%rsp), %rdi\n\tvmovups\t%xmm0, (%rdi)\n\tmovl\t%r8d, 16(%rdi)\n\tmovq\t%r9, 24(%rdi)\n\tmovq\t%rax, 32(%rdi)\n\tvmovdqa\t352(%rsp), %xmm0\n\tvpblendd\t$12, 368(%rsp), %xmm0, %xmm0\n\tmovl\t%edx, 40(%rdi)\n\tvmovdqu\t%xmm0, 48(%rdi)\n\tmovq\t168(%rsp), %rax\n\tmovq\t%rax, 64(%rdi)\n\tmovl\t%r10d, 72(%rdi)\n\tmovq\t(%r11), %rax\n\tmovq\t%rax, 76(%rdi)\n\tmovb\t$0, 84(%rdi)\n\tmovq\t%rsi, 88(%rdi)\n\tjmp\t.LBB2443_321\n.LBB2443_19:\n\tmovl\t220(%rsp), %ecx\n\torb\t%cl, %al\n\tje\t.LBB2443_298\n\txorb\t$1, %cl\n\tmovl\t$0, 156(%rsp)\n\tmovq\t136(%rsp), %rdx\n\tmovl\t%ecx, %eax\n\tcmpq\t$0, 792(%rsp)\n\tjne\t.LBB2443_21\n.LBB2443_308:\n\tmovl\t448(%rsp), %r13d\n\tleaq\t584(%rsp), %rdi\n\tmovq\t$0, 168(%rsp)\n\tleaq\t256(%rsp), %r14\n\tjmp\t.LBB2443_310\n\t.p2align\t4\n.LBB2443_309:\n\tmovzbl\t_RNvNtCsiYjGPJMyZdw_3tmr6runner18SHUTDOWN_REQUESTED.0(%rip), %eax\n\ttestb\t%al, %al\n\tjne\t.LBB2443_296"
+    },
+    {
+      "symbol": "_RNvNtCsiYjGPJMyZdw_3tmr5tests17simple_native_512",
+      "line": 719091,
+      "instructions": 47,
+      "stores": [
+        "\tvmovups\t%xmm0, (%rdi)",
+        "\tvmovdqu\t%xmm0, 48(%rdi)"
+      ],
+      "body": ".LBB2444_294:\n\tleaq\t288(%rsp), %rcx\n\tmovb\t$1, %dl\n\txorl\t%r8d, %r8d\n\tcallq\t_RNvMNtCsiYjGPJMyZdw_3tmr16test_scaffoldingNtB2_10TestRunner13reseal_extent\n\tmovl\t_tls_index(%rip), %ecx\n\tmovq\t%gs:88, %r8\n\tmovq\t(%r8,%rcx,8), %rcx\n\tvmovaps\t288(%rsp), %xmm0\n\tmovl\t436(%rsp), %r8d\n\tmovq\t368(%rsp), %r9\n\tmovl\t432(%rsp), %r10d\n\tmovq\t400(%rsp), %r11\n\tmovq\t392(%rsp), %rsi\n\tmovq\t216(%rsp), %rdi\n\tvmovups\t%xmm0, (%rdi)\n\tmovl\t%r8d, 16(%rdi)\n\tmovq\t%r9, 24(%rdi)\n\tmovq\t%rax, 32(%rdi)\n\tvmovdqa\t336(%rsp), %xmm0\n\tvpblendd\t$12, 352(%rsp), %xmm0, %xmm0\n\tmovl\t%edx, 40(%rdi)\n\tvmovdqu\t%xmm0, 48(%rdi)\n\tmovq\t168(%rsp), %rax\n\tmovq\t%rax, 64(%rdi)\n\tmovl\t%r10d, 72(%rdi)\n\tmovq\t(%r11), %rax\n\tmovq\t%rax, 76(%rdi)\n\tmovb\t$0, 84(%rdi)\n\tmovq\t%rsi, 88(%rdi)\n\tjmp\t.LBB2444_319\n.LBB2444_21:\n\tmovl\t212(%rsp), %ecx\n\torb\t%cl, %al\n\tje\t.LBB2444_296\n\txorb\t$1, %cl\n\tmovl\t$0, 140(%rsp)\n\tmovq\t104(%rsp), %rdx\n\tmovl\t%ecx, %eax\n\tcmpq\t$0, 784(%rsp)\n\tjne\t.LBB2444_23\n.LBB2444_306:\n\tmovl\t432(%rsp), %r13d\n\tleaq\t568(%rsp), %rdi\n\tmovq\t$0, 168(%rsp)\n\tleaq\t240(%rsp), %r14\n\tjmp\t.LBB2444_308\n\t.p2align\t4\n.LBB2444_307:\n\tmovzbl\t_RNvNtCsiYjGPJMyZdw_3tmr6runner18SHUTDOWN_REQUESTED.0(%rip), %eax\n\ttestb\t%al, %al\n\tjne\t.LBB2444_294"
+    },
+    {
+      "symbol": "_RNCNvNtCsiYjGPJMyZdw_3tmr5tests17simple_native_512s1_0B5_",
+      "line": 721275,
+      "instructions": 21,
+      "stores": [
+        "\tvmovdqa64\t%zmm2, (%rcx,%rdi,8)"
+      ],
+      "body": ".LBB2446_20:\n\tmovl\t%r15d, %ecx\n\tandl\t$1, %ecx\n\tnegq\t%rcx\n\tvmovq\t%rcx, %xmm2\n\tmovq\t%rax, %rcx\n\tandq\t$-16, %rcx\n\timulq\t%rdx, %rcx\n\taddq\t72(%rsp), %rcx\n\tvpbroadcastq\t%rcx, %zmm3\n\tvpaddq\t%zmm0, %zmm3, %zmm3\n\tvpsrlq\t$32, %zmm3, %zmm4\n\tvpxor\t%xmm1, %xmm2, %xmm2\n\tvpbroadcastq\t%xmm2, %zmm2\n\tvpternlogq\t$150, %zmm4, %zmm3, %zmm2\n\tmovq\t64(%rsp), %rcx\n\tvmovdqa64\t%zmm2, (%rcx,%rdi,8)\n\tincq\t%r15\n\taddq\t$8, %rdi\n\taddq\t$8, %rax\n\tcmpq\t56(%rsp), %rdi\n\tjb\t.LBB2446_20"
+    },
+    {
+      "symbol": "_RNCNvNtCsiYjGPJMyZdw_3tmr5tests17simple_native_512s1_0B5_",
+      "line": 721309,
+      "instructions": 25,
+      "stores": [
+        "\tvmovdqa64\t%zmm2, (%rcx,%rdi,8)"
+      ],
+      "body": ".LBB2446_16:\n\tmovq\t%r12, %r9\n\tshrq\t$30, %r9\n\txorq\t%r12, %r9\n\timulq\t%rax, %r9\n\tmovq\t%r9, %r10\n\tshrq\t$27, %r10\n\txorq\t%r9, %r10\n\timulq\t%rdx, %r10\n\tmovq\t%r10, %r9\n\tshrq\t$31, %r9\n\txorq\t%r10, %r9\n\tvpbroadcastq\t%r9, %zmm2\n\txorq\t72(%rsp), %r9\n\trorxq\t$35, %r9, %r9\n\timulq\t%r8, %r9\n\torq\t$1, %r9\n\tvpbroadcastq\t%r9, %zmm3\n\tvpmullq\t%zmm1, %zmm3, %zmm3\n\tvpaddq\t%zmm2, %zmm3, %zmm2\n\tvpxorq\t%zmm0, %zmm2, %zmm2\n\tvmovdqa64\t%zmm2, (%rcx,%rdi,8)\n\taddq\t$8, %rdi\n\tincq\t%r12\n\tcmpq\t56(%rsp), %rdi\n\tjb\t.LBB2446_16"
+    },
+    {
+      "symbol": "_RNCNvNtCsiYjGPJMyZdw_3tmr5tests17simple_native_512s1_0B5_",
+      "line": 721346,
+      "instructions": 11,
+      "stores": [
+        "\tvmovdqa64\t%zmm3, (%rcx,%rdi,8)"
+      ],
+      "body": ".LBB2446_7:\n\tmovq\t72(%rsp), %rdx\n\tvpbroadcastq\t%rdx, %zmm2\n\tvpaddq\t%zmm1, %zmm2, %zmm2\n\tvpsrlq\t$32, %zmm2, %zmm3\n\tvpternlogq\t$150, %zmm2, %zmm0, %zmm3\n\tvmovdqa64\t%zmm3, (%rcx,%rdi,8)\n\taddq\t$8, %rdi\n\taddq\t%rax, %rdx\n\tmovq\t%rdx, 72(%rsp)\n\tcmpq\t56(%rsp), %rdi\n\tjb\t.LBB2446_7"
+    },
+    {
+      "symbol": "_RNCNvNtCsiYjGPJMyZdw_3tmr5tests17simple_native_512s1_0B5_",
+      "line": 721369,
+      "instructions": 15,
+      "stores": [
+        "\tvmovdqa64\t%zmm5, (%rcx,%rdi,8)"
+      ],
+      "body": ".LBB2446_11:\n\tvpbroadcastq\t%rax, %zmm4\n\tvpaddq\t%zmm1, %zmm4, %zmm4\n\tvpsrlq\t$30, %zmm4, %zmm5\n\tvpxorq\t%zmm4, %zmm5, %zmm4\n\tvpmullq\t%zmm2, %zmm4, %zmm4\n\tvpsrlq\t$27, %zmm4, %zmm5\n\tvpxorq\t%zmm4, %zmm5, %zmm4\n\tvpmullq\t%zmm3, %zmm4, %zmm4\n\tvpsrlq\t$31, %zmm4, %zmm5\n\tvpternlogq\t$150, %zmm4, %zmm0, %zmm5\n\tvmovdqa64\t%zmm5, (%rcx,%rdi,8)\n\taddq\t$8, %rdi\n\taddq\t$8, %rax\n\tcmpq\t56(%rsp), %rdi\n\tjb\t.LBB2446_11"
+    },
+    {
+      "symbol": "_RNCNvNtCsiYjGPJMyZdw_3tmr5tests17simple_native_512s1_0B5_",
+      "line": 721503,
+      "instructions": 36,
+      "stores": [
+        "\tvmovdqa64\t%zmm2, (%r15,%r12,8)"
+      ],
+      "body": ".LBB2446_158:\n\tmovq\t%rbp, %r12\n\tleaq\t(%rdx,%r14), %rcx\n\tmovq\t%r14, %rdi\n\tmovq\t56(%rsp), %r14\n\tcmpq\t%r14, %rcx\n\tmovq\t%r13, %r15\n\tmovq\t%rax, %r13\n\tmovl\t$0, %ebp\n\tcmovbq\t%rbp, %r13\n\tsubq\t%r13, %rcx\n\tprefetcht1\t(%rsi,%rcx,8)\n\tleaq\t(%r8,%r12), %rbp\n\tmovq\t%rbp, %r13\n\tshrq\t$3, %r13\n\taddq\t%rbx, %r13\n\tmovl\t%r13d, %ecx\n\tandl\t$1, %ecx\n\tnegq\t%rcx\n\tvmovq\t%rcx, %xmm2\n\tshlq\t$3, %r13\n\tandq\t$-16, %r13\n\timulq\t%r9, %r13\n\taddq\t%r10, %r13\n\tvpbroadcastq\t%r13, %zmm3\n\tmovq\t%r15, %r13\n\tvpaddq\t%zmm0, %zmm3, %zmm3\n\tvpsrlq\t$32, %zmm3, %zmm4\n\tvpxor\t%xmm1, %xmm2, %xmm2\n\tvpbroadcastq\t%xmm2, %zmm2\n\tvpternlogq\t$150, %zmm4, %zmm3, %zmm2\n\tvmovdqa64\t%zmm2, (%r15,%r12,8)\n\taddq\t%r8, %rdx\n\tleaq\t(%r11,%rbp), %rcx\n\tcmpq\t%r14, %rcx\n\tmovq\t%rdi, %r14\n\tjb\t.LBB2446_158"
+    },
+    {
+      "symbol": "_RNCNvNtCsiYjGPJMyZdw_3tmr5tests17simple_native_512s1_0B5_",
+      "line": 721469,
+      "instructions": 65,
+      "stores": [
+        "\tvmovdqa64\t%zmm2, (%r15,%r12,8)"
+      ],
+      "body": ".LBB2446_152:\n\taddq\t$-8, 96(%rsp)\n\tmovq\t80(%rsp), %r9\n\tcmpq\t104(%rsp), %r9\n\tmovl\t$0, %ecx\n\tjbe\t.LBB2446_21\n.LBB2446_153:\n\taddq\t$-8, %r9\n\tmovq\t56(%rsp), %rax\n\tsubq\t%r9, %rax\n\tcmovbq\t%rcx, %rax\n\tmovq\t%rax, %rcx\n\torq\t%r8, %rcx\n\tshrq\t$32, %rcx\n\tje\t.LBB2446_154\n\txorl\t%edx, %edx\n\tdivq\t%r8\n\tjmp\t.LBB2446_156\n\t.p2align\t4\n.LBB2446_154:\n\txorl\t%edx, %edx\n\tdivl\t%r8d\n.LBB2446_156:\n\tcmpq\t$1, %rdx\n\tsbbq\t$-1, %rax\n\tmovq\t%r9, 80(%rsp)\n\tcmpq\t56(%rsp), %r9\n\tmovabsq\t$-7046029254386353131, %r9\n\tjae\t.LBB2446_152\n\timulq\t%r8, %rax\n\taddq\t$8, %rax\n\tmovq\t96(%rsp), %rbp\n\tmovq\t80(%rsp), %rdx\n\t.p2align\t4\n.LBB2446_158:\n\tmovq\t%rbp, %r12\n\tleaq\t(%rdx,%r14), %rcx\n\tmovq\t%r14, %rdi\n\tmovq\t56(%rsp), %r14\n\tcmpq\t%r14, %rcx\n\tmovq\t%r13, %r15\n\tmovq\t%rax, %r13\n\tmovl\t$0, %ebp\n\tcmovbq\t%rbp, %r13\n\tsubq\t%r13, %rcx\n\tprefetcht1\t(%rsi,%rcx,8)\n\tleaq\t(%r8,%r12), %rbp\n\tmovq\t%rbp, %r13\n\tshrq\t$3, %r13\n\taddq\t%rbx, %r13\n\tmovl\t%r13d, %ecx\n\tandl\t$1, %ecx\n\tnegq\t%rcx\n\tvmovq\t%rcx, %xmm2\n\tshlq\t$3, %r13\n\tandq\t$-16, %r13\n\timulq\t%r9, %r13\n\taddq\t%r10, %r13\n\tvpbroadcastq\t%r13, %zmm3\n\tmovq\t%r15, %r13\n\tvpaddq\t%zmm0, %zmm3, %zmm3\n\tvpsrlq\t$32, %zmm3, %zmm4\n\tvpxor\t%xmm1, %xmm2, %xmm2\n\tvpbroadcastq\t%xmm2, %zmm2\n\tvpternlogq\t$150, %zmm4, %zmm3, %zmm2\n\tvmovdqa64\t%zmm2, (%r15,%r12,8)\n\taddq\t%r8, %rdx\n\tleaq\t(%r11,%rbp), %rcx\n\tcmpq\t%r14, %rcx\n\tmovq\t%rdi, %r14\n\tjb\t.LBB2446_158\n\tjmp\t.LBB2446_152"
+    },
+    {
+      "symbol": "_RNCNvNtCsiYjGPJMyZdw_3tmr5tests17simple_native_512s1_0B5_",
+      "line": 721601,
+      "instructions": 44,
+      "stores": [
+        "\tvmovdqa64\t%zmm2, (%rdi,%r10,8)"
+      ],
+      "body": ".LBB2446_145:\n\tmovq\t%rbx, %r10\n\tmovq\t%rsi, %rdi\n\tleaq\t(%rdx,%r9), %rsi\n\tmovq\t%r9, %r15\n\tmovq\t56(%rsp), %r9\n\tcmpq\t%r9, %rsi\n\tmovq\t%rcx, %rax\n\tmovl\t$0, %ebx\n\tcmovbq\t%rbx, %rax\n\tsubq\t%rax, %rsi\n\tprefetcht1\t(%r11,%rsi,8)\n\tleaq\t(%r8,%r10), %rbx\n\tmovq\t%rbx, %rsi\n\tshrq\t$3, %rsi\n\taddq\t%r14, %rsi\n\tmovq\t%rsi, %rax\n\tshrq\t$30, %rax\n\txorq\t%rsi, %rax\n\tmovabsq\t$-4658895280553007687, %rsi\n\timulq\t%rsi, %rax\n\tmovq\t%rax, %rsi\n\tshrq\t$27, %rsi\n\txorq\t%rax, %rsi\n\tmovabsq\t$-7723592293110705685, %rax\n\timulq\t%rax, %rsi\n\tmovq\t%rsi, %rax\n\tshrq\t$31, %rax\n\txorq\t%rsi, %rax\n\tmovq\t%rdi, %rsi\n\tvpbroadcastq\t%rax, %zmm2\n\txorq\t%r13, %rax\n\trorxq\t$35, %rax, %rax\n\timulq\t%r12, %rax\n\torq\t$1, %rax\n\tvpbroadcastq\t%rax, %zmm3\n\tvpmullq\t%zmm1, %zmm3, %zmm3\n\tvpaddq\t%zmm2, %zmm3, %zmm2\n\tvpxorq\t%zmm0, %zmm2, %zmm2\n\tvmovdqa64\t%zmm2, (%rdi,%r10,8)\n\taddq\t%r8, %rdx\n\tleaq\t(%rbx,%rbp), %rax\n\tcmpq\t%r9, %rax\n\tmovq\t%r15, %r9\n\tjb\t.LBB2446_145"
+    },
+    {
+      "symbol": "_RNCNvNtCsiYjGPJMyZdw_3tmr5tests17simple_native_512s1_0B5_",
+      "line": 721565,
+      "instructions": 75,
+      "stores": [
+        "\tvmovdqa64\t%zmm2, (%rdi,%r10,8)"
+      ],
+      "body": ".LBB2446_139:\n\taddq\t$-8, 96(%rsp)\n\tmovq\t80(%rsp), %r11\n\tcmpq\t104(%rsp), %r11\n\tmovl\t$0, %ecx\n\tjbe\t.LBB2446_21\n.LBB2446_140:\n\taddq\t$-8, %r11\n\tmovq\t56(%rsp), %rax\n\tsubq\t%r11, %rax\n\tcmovbq\t%rcx, %rax\n\tmovq\t%rax, %rdx\n\torq\t%r8, %rdx\n\tshrq\t$32, %rdx\n\tje\t.LBB2446_141\n\txorl\t%edx, %edx\n\tdivq\t%r8\n\tmovq\t%rax, %rcx\n\tjmp\t.LBB2446_143\n\t.p2align\t4\n.LBB2446_141:\n\txorl\t%edx, %edx\n\tdivl\t%r8d\n\tmovl\t%eax, %ecx\n.LBB2446_143:\n\tcmpq\t$1, %rdx\n\tsbbq\t$-1, %rcx\n\tmovq\t%r11, 80(%rsp)\n\tcmpq\t56(%rsp), %r11\n\tmovq\t64(%rsp), %r11\n\tjae\t.LBB2446_139\n\timulq\t%r8, %rcx\n\taddq\t$8, %rcx\n\tmovq\t96(%rsp), %rbx\n\tmovq\t80(%rsp), %rdx\n\t.p2align\t4\n.LBB2446_145:\n\tmovq\t%rbx, %r10\n\tmovq\t%rsi, %rdi\n\tleaq\t(%rdx,%r9), %rsi\n\tmovq\t%r9, %r15\n\tmovq\t56(%rsp), %r9\n\tcmpq\t%r9, %rsi\n\tmovq\t%rcx, %rax\n\tmovl\t$0, %ebx\n\tcmovbq\t%rbx, %rax\n\tsubq\t%rax, %rsi\n\tprefetcht1\t(%r11,%rsi,8)\n\tleaq\t(%r8,%r10), %rbx\n\tmovq\t%rbx, %rsi\n\tshrq\t$3, %rsi\n\taddq\t%r14, %rsi\n\tmovq\t%rsi, %rax\n\tshrq\t$30, %rax\n\txorq\t%rsi, %rax\n\tmovabsq\t$-4658895280553007687, %rsi\n\timulq\t%rsi, %rax\n\tmovq\t%rax, %rsi\n\tshrq\t$27, %rsi\n\txorq\t%rax, %rsi\n\tmovabsq\t$-7723592293110705685, %rax\n\timulq\t%rax, %rsi\n\tmovq\t%rsi, %rax\n\tshrq\t$31, %rax\n\txorq\t%rsi, %rax\n\tmovq\t%rdi, %rsi\n\tvpbroadcastq\t%rax, %zmm2\n\txorq\t%r13, %rax\n\trorxq\t$35, %rax, %rax\n\timulq\t%r12, %rax\n\torq\t$1, %rax\n\tvpbroadcastq\t%rax, %zmm3\n\tvpmullq\t%zmm1, %zmm3, %zmm3\n\tvpaddq\t%zmm2, %zmm3, %zmm2\n\tvpxorq\t%zmm0, %zmm2, %zmm2\n\tvmovdqa64\t%zmm2, (%rdi,%r10,8)\n\taddq\t%r8, %rdx\n\tleaq\t(%rbx,%rbp), %rax\n\tcmpq\t%r9, %rax\n\tmovq\t%r15, %r9\n\tjb\t.LBB2446_145\n\tjmp\t.LBB2446_139"
+    },
+    {
+      "symbol": "_RNCNvNtCsiYjGPJMyZdw_3tmr5tests17simple_native_512s1_0B5_",
+      "line": 721790,
+      "instructions": 25,
+      "stores": [
+        "\tvmovdqa64\t%zmm5, (%rsi,%rdx,8)"
+      ],
+      "body": ".LBB2446_47:\n\tleaq\t(%rbx,%r9), %r12\n\tcmpq\t%r14, %r12\n\tmovq\t%rax, %r13\n\tcmovbq\t%r15, %r13\n\tsubq\t%r13, %r12\n\tprefetcht1\t(%rcx,%r12,8)\n\tleaq\t(%rdi,%rdx), %r12\n\tandq\t$-8, %r12\n\taddq\t%rbp, %r12\n\tvpbroadcastq\t%r12, %zmm4\n\tvpaddq\t%zmm1, %zmm4, %zmm4\n\tvpsrlq\t$30, %zmm4, %zmm5\n\tvpxorq\t%zmm4, %zmm5, %zmm4\n\tvpmullq\t%zmm2, %zmm4, %zmm4\n\tvpsrlq\t$27, %zmm4, %zmm5\n\tvpxorq\t%zmm4, %zmm5, %zmm4\n\tvpmullq\t%zmm3, %zmm4, %zmm4\n\tvpsrlq\t$31, %zmm4, %zmm5\n\tvpternlogq\t$150, %zmm4, %zmm0, %zmm5\n\tvmovdqa64\t%zmm5, (%rsi,%rdx,8)\n\taddq\t%r8, %rbx\n\taddq\t%r8, %rdx\n\tleaq\t(%r11,%rdx), %r12\n\tcmpq\t%r14, %r12\n\tjb\t.LBB2446_47"
+    },
+    {
+      "symbol": "_RNCNvNtCsiYjGPJMyZdw_3tmr5tests17simple_native_512s1_0B5_",
+      "line": 721756,
+      "instructions": 54,
+      "stores": [
+        "\tvmovdqa64\t%zmm5, (%rsi,%rdx,8)"
+      ],
+      "body": ".LBB2446_41:\n\taddq\t$-8, %r11\n\taddq\t$-64, %rsi\n\taddq\t$-8, %rdi\n\tcmpq\t104(%rsp), %r10\n\tjbe\t.LBB2446_21\n.LBB2446_42:\n\taddq\t$-8, %r10\n\tmovq\t56(%rsp), %rax\n\tsubq\t%r10, %rax\n\tcmovbq\t%r15, %rax\n\tmovq\t%rax, %rdx\n\torq\t%r8, %rdx\n\tshrq\t$32, %rdx\n\tje\t.LBB2446_43\n\txorl\t%edx, %edx\n\tdivq\t%r8\n\tjmp\t.LBB2446_45\n\t.p2align\t4\n.LBB2446_43:\n\txorl\t%edx, %edx\n\tdivl\t%r8d\n.LBB2446_45:\n\tmovq\t64(%rsp), %rcx\n\tmovq\t72(%rsp), %rbp\n\tcmpq\t$1, %rdx\n\tsbbq\t$-1, %rax\n\tcmpq\t56(%rsp), %r10\n\tjae\t.LBB2446_41\n\timulq\t%r8, %rax\n\taddq\t$8, %rax\n\txorl\t%edx, %edx\n\tmovq\t%r10, %rbx\n\t.p2align\t4\n.LBB2446_47:\n\tleaq\t(%rbx,%r9), %r12\n\tcmpq\t%r14, %r12\n\tmovq\t%rax, %r13\n\tcmovbq\t%r15, %r13\n\tsubq\t%r13, %r12\n\tprefetcht1\t(%rcx,%r12,8)\n\tleaq\t(%rdi,%rdx), %r12\n\tandq\t$-8, %r12\n\taddq\t%rbp, %r12\n\tvpbroadcastq\t%r12, %zmm4\n\tvpaddq\t%zmm1, %zmm4, %zmm4\n\tvpsrlq\t$30, %zmm4, %zmm5\n\tvpxorq\t%zmm4, %zmm5, %zmm4\n\tvpmullq\t%zmm2, %zmm4, %zmm4\n\tvpsrlq\t$27, %zmm4, %zmm5\n\tvpxorq\t%zmm4, %zmm5, %zmm4\n\tvpmullq\t%zmm3, %zmm4, %zmm4\n\tvpsrlq\t$31, %zmm4, %zmm5\n\tvpternlogq\t$150, %zmm4, %zmm0, %zmm5\n\tvmovdqa64\t%zmm5, (%rsi,%rdx,8)\n\taddq\t%r8, %rbx\n\taddq\t%r8, %rdx\n\tleaq\t(%r11,%rdx), %r12\n\tcmpq\t%r14, %r12\n\tjb\t.LBB2446_47\n\tjmp\t.LBB2446_41"
+    },
+    {
+      "symbol": "_RNCNvNtCsiYjGPJMyZdw_3tmr5tests17simple_native_512s1_0B5_",
+      "line": 721830,
+      "instructions": 38,
+      "stores": [
+        "\tvmovdqa64\t%zmm2, (%r11,%rdi,8)"
+      ],
+      "body": ".LBB2446_67:\n\tmovq\t%r12, %r11\n\tshrq\t$30, %r11\n\txorq\t%r12, %r11\n\timulq\t%rax, %r11\n\tmovq\t%r11, %rsi\n\tshrq\t$27, %rsi\n\txorq\t%r11, %rsi\n\timulq\t%rcx, %rsi\n\tmovq\t%rsi, %r11\n\tshrq\t$31, %r11\n\txorl\t%esi, %r11d\n\tmovq\t%r11, %rsi\n\tshlq\t$16, %rsi\n\torq\t%r11, %rsi\n\tandq\t%rdx, %rsi\n\tmovq\t%rsi, %r11\n\tshlq\t$8, %r11\n\torq\t%rsi, %r11\n\tandq\t%r8, %r11\n\tmovq\t%r11, %rsi\n\tshlq\t$4, %rsi\n\torq\t%r11, %rsi\n\tmovq\t%rsi, %r11\n\tandq\t%r9, %r11\n\tshlq\t$4, %rsi\n\tandq\t%r10, %rsi\n\torq\t%r11, %rsi\n\txorq\t%r10, %rsi\n\tvmovq\t%rsi, %xmm2\n\tvpxor\t%xmm2, %xmm1, %xmm2\n\tvpbroadcastq\t%xmm2, %zmm2\n\tvpxorq\t%zmm0, %zmm2, %zmm2\n\tmovq\t64(%rsp), %r11\n\tvmovdqa64\t%zmm2, (%r11,%rdi,8)\n\taddq\t$8, %rdi\n\tincq\t%r12\n\tcmpq\t56(%rsp), %rdi\n\tjb\t.LBB2446_67"
+    },
+    {
+      "symbol": "_RNCNvNtCsiYjGPJMyZdw_3tmr5tests17simple_native_512s1_0B5_",
+      "line": 721883,
+      "instructions": 49,
+      "stores": [
+        "\tvmovdqa64\t%zmm3, (%rdx,%rdi,8)"
+      ],
+      "body": ".LBB2446_59:\n\tmovq\t%r12, %rdx\n\tshrq\t$30, %rdx\n\txorq\t%r12, %rdx\n\timulq\t%rax, %rdx\n\tmovq\t%rdx, %r11\n\tshrq\t$27, %r11\n\txorq\t%rdx, %r11\n\timulq\t%rcx, %r11\n\tmovq\t%r11, %rdx\n\tshrq\t$31, %rdx\n\txorl\t%r11d, %edx\n\tmovq\t%rdx, %r11\n\tshlq\t$16, %r11\n\torq\t%rdx, %r11\n\tandq\t%r8, %r11\n\tmovq\t%r11, %rdx\n\tshlq\t$8, %rdx\n\torq\t%r11, %rdx\n\tandq\t%r9, %rdx\n\tmovq\t%rdx, %r11\n\tshlq\t$4, %r11\n\torq\t%rdx, %r11\n\tmovl\t%r11d, %edx\n\tandl\t$986895, %edx\n\tshll\t$4, %r11d\n\tandl\t$15790320, %r11d\n\torq\t%rdx, %r11\n\txorq\t$15790320, %r11\n\tmovq\t%r11, %rdx\n\tshlq\t$24, %rdx\n\torq\t%r11, %rdx\n\tmulxq\t%r10, %rdx, %r11\n\tmovq\t%rdx, %rsi\n\tshrdq\t$8, %r11, %rsi\n\tshldq\t$48, %rdx, %r11\n\tvmovq\t%rdx, %xmm3\n\tvmovq\t%r11, %xmm4\n\tvpunpcklqdq\t%xmm4, %xmm3, %xmm3\n\tvmovq\t%rsi, %xmm4\n\tvinserti128\t$1, %xmm4, %ymm3, %ymm3\n\tvpxor\t%ymm1, %ymm3, %ymm3\n\tvpermq\t%zmm3, %zmm2, %zmm3\n\tvpxorq\t%zmm0, %zmm3, %zmm3\n\tmovq\t64(%rsp), %rdx\n\tvmovdqa64\t%zmm3, (%rdx,%rdi,8)\n\taddq\t$8, %rdi\n\tincq\t%r12\n\tcmpq\t56(%rsp), %rdi\n\tjb\t.LBB2446_59"
+    },
+    {
+      "symbol": "_RNCNvNtCsiYjGPJMyZdw_3tmr5tests17simple_native_512s1_0B5_",
+      "line": 721948,
+      "instructions": 40,
+      "stores": [
+        "\tvmovdqa64\t%zmm0, (%rsi,%rbx,8)"
+      ],
+      "body": ".LBB2446_63:\n\tmovq\t%r12, %rsi\n\tshrq\t$30, %rsi\n\txorq\t%r12, %rsi\n\timulq\t%rax, %rsi\n\tmovq\t%rsi, %rdi\n\tshrq\t$27, %rdi\n\txorq\t%rsi, %rdi\n\timulq\t%rcx, %rdi\n\tmovq\t%rdi, %rsi\n\tshrq\t$31, %rsi\n\txorl\t%edi, %esi\n\tmovq\t%rsi, %rdi\n\tshlq\t$16, %rdi\n\torq\t%rsi, %rdi\n\tandq\t%rdx, %rdi\n\tmovq\t%rdi, %rsi\n\tshlq\t$8, %rsi\n\torq\t%rdi, %rsi\n\tandq\t%r8, %rsi\n\tmovq\t%rsi, %rdi\n\tshlq\t$4, %rdi\n\torq\t%rsi, %rdi\n\tmovq\t%rdi, %rsi\n\tandq\t%r9, %rsi\n\tshlq\t$4, %rdi\n\tandq\t%r10, %rdi\n\torq\t%rsi, %rdi\n\tmovl\t%edi, %esi\n\tshlq\t$32, %rdi\n\torq\t%rsi, %rdi\n\txorq\t%r11, %rdi\n\tvmovq\t%rdi, %xmm0\n\tvpxor\t%xmm1, %xmm0, %xmm0\n\tvpbroadcastq\t%xmm0, %zmm0\n\tmovq\t64(%rsp), %rsi\n\tvmovdqa64\t%zmm0, (%rsi,%rbx,8)\n\taddq\t$8, %rbx\n\tincq\t%r12\n\tcmpq\t56(%rsp), %rbx\n\tjb\t.LBB2446_63"
+    },
+    {
+      "symbol": "_RNCNvNtCsiYjGPJMyZdw_3tmr5tests17simple_native_512s1_0B5_",
+      "line": 722001,
+      "instructions": 38,
+      "stores": [
+        "\tvmovdqa64\t%zmm3, (%r8,%rdi,8)"
+      ],
+      "body": ".LBB2446_51:\n\tmovq\t%r12, %r8\n\tshrq\t$30, %r8\n\txorq\t%r12, %r8\n\timulq\t%rax, %r8\n\tmovq\t%r8, %r9\n\tshrq\t$27, %r9\n\txorq\t%r8, %r9\n\timulq\t%rcx, %r9\n\tmovq\t%r9, %r8\n\tshrq\t$31, %r8\n\txorl\t%r9d, %r8d\n\tmovzbl\t%r8b, %r9d\n\tandl\t$15, %r8d\n\tshll\t$4, %r9d\n\torl\t%r8d, %r9d\n\txorq\t$240, %r9\n\timulq\t%rdx, %r9\n\tmovq\t%r9, %r8\n\tshlq\t$48, %r8\n\torq\t%r9, %r8\n\tshrq\t$16, %r9\n\tmovq\t%r8, %r10\n\tshrdq\t$4, %r9, %r10\n\tshldq\t$56, %r8, %r9\n\tvmovq\t%r8, %xmm3\n\tvmovq\t%r10, %xmm4\n\tvpunpcklqdq\t%xmm4, %xmm3, %xmm3\n\tvmovq\t%r9, %xmm4\n\tvinserti128\t$1, %xmm4, %ymm3, %ymm3\n\tvpxor\t%ymm1, %ymm3, %ymm3\n\tvpermq\t%zmm3, %zmm2, %zmm3\n\tvpxorq\t%zmm0, %zmm3, %zmm3\n\tmovq\t64(%rsp), %r8\n\tvmovdqa64\t%zmm3, (%r8,%rdi,8)\n\taddq\t$8, %rdi\n\tincq\t%r12\n\tcmpq\t56(%rsp), %rdi\n\tjb\t.LBB2446_51"
+    },
+    {
+      "symbol": "_RNCNvNtCsiYjGPJMyZdw_3tmr5tests17simple_native_512s1_0B5_",
+      "line": 722055,
+      "instructions": 44,
+      "stores": [
+        "\tvmovdqa64\t%zmm0, (%rsi,%rbx,8)"
+      ],
+      "body": ".LBB2446_55:\n\tmovq\t%r12, %rsi\n\tshrq\t$30, %rsi\n\txorq\t%r12, %rsi\n\timulq\t%rax, %rsi\n\tmovq\t%rsi, %rdi\n\tshrq\t$27, %rdi\n\txorq\t%rsi, %rdi\n\timulq\t%rcx, %rdi\n\tmovq\t%rdi, %rsi\n\tshrq\t$31, %rsi\n\txorl\t%edi, %esi\n\tmovq\t%rsi, %rdi\n\tshlq\t$16, %rdi\n\torq\t%rsi, %rdi\n\tandq\t%rdx, %rdi\n\tmovq\t%rdi, %rsi\n\tshlq\t$8, %rsi\n\torq\t%rdi, %rsi\n\tandq\t%r8, %rsi\n\tmovq\t%rsi, %rdi\n\tshlq\t$4, %rdi\n\torq\t%rsi, %rdi\n\tmovq\t%rdi, %rsi\n\tandq\t%r9, %rsi\n\tshlq\t$4, %rdi\n\tandq\t%r10, %rdi\n\torq\t%rsi, %rdi\n\txorq\t%r10, %rdi\n\tmovzwl\t%di, %esi\n\tshll\t$16, %edi\n\torq\t%rsi, %rdi\n\txorq\t%r11, %rdi\n\tmovq\t%rdi, %rsi\n\tshlq\t$32, %rsi\n\torq\t%rdi, %rsi\n\tvmovq\t%rsi, %xmm0\n\tvpxor\t%xmm1, %xmm0, %xmm0\n\tvpbroadcastq\t%xmm0, %zmm0\n\tmovq\t64(%rsp), %rsi\n\tvmovdqa64\t%zmm0, (%rsi,%rbx,8)\n\taddq\t$8, %rbx\n\tincq\t%r12\n\tcmpq\t56(%rsp), %rbx\n\tjb\t.LBB2446_55"
+    },
+    {
+      "symbol": "_RNCNvNtCsiYjGPJMyZdw_3tmr5tests17simple_native_512s1_0B5_",
+      "line": 722160,
+      "instructions": 55,
+      "stores": [
+        "\tvmovdqa64\t%zmm2, (%r10,%r13,8)"
+      ],
+      "body": ".LBB2446_132:\n\tmovq\t%rbx, %r13\n\tmovq\t%rdi, %r10\n\tleaq\t(%rdx,%r9), %rdi\n\tcmpq\t%r14, %rdi\n\tmovq\t%r12, %rax\n\tmovl\t$0, %ebx\n\tcmovbq\t%rbx, %rax\n\tsubq\t%rax, %rdi\n\tprefetcht1\t(%rcx,%rdi,8)\n\tleaq\t(%r8,%r13), %rbx\n\tmovq\t%rbx, %rdi\n\tshrq\t$3, %rdi\n\taddq\t%rbp, %rdi\n\tmovq\t%rdi, %rax\n\tshrq\t$30, %rax\n\txorq\t%rdi, %rax\n\tmovabsq\t$-4658895280553007687, %rdi\n\timulq\t%rdi, %rax\n\tmovq\t%rax, %rdi\n\tshrq\t$27, %rdi\n\txorq\t%rax, %rdi\n\tmovabsq\t$-7723592293110705685, %rax\n\timulq\t%rax, %rdi\n\tmovq\t%rdi, %rax\n\tshrq\t$31, %rax\n\txorl\t%edi, %eax\n\tmovq\t%rax, %rdi\n\tshlq\t$16, %rdi\n\torq\t%rax, %rdi\n\tmovabsq\t$281470681808895, %rax\n\tandq\t%rax, %rdi\n\tmovq\t%rdi, %rax\n\tshlq\t$8, %rax\n\torq\t%rdi, %rax\n\tmovabsq\t$71777214294589695, %rdi\n\tandq\t%rdi, %rax\n\tmovq\t%rax, %rdi\n\tshlq\t$4, %rdi\n\torq\t%rax, %rdi\n\tmovq\t%rdi, %rax\n\tandq\t%r15, %rax\n\tshlq\t$4, %rdi\n\tandq\t%r11, %rdi\n\torq\t%rax, %rdi\n\txorq\t%r11, %rdi\n\tvmovq\t%rdi, %xmm2\n\tmovq\t%r10, %rdi\n\tvpxor\t%xmm2, %xmm1, %xmm2\n\tvpbroadcastq\t%xmm2, %zmm2\n\tvpxorq\t%zmm0, %zmm2, %zmm2\n\tvmovdqa64\t%zmm2, (%r10,%r13,8)\n\taddq\t%r8, %rdx\n\tleaq\t(%rsi,%rbx), %rax\n\tcmpq\t%r14, %rax\n\tjb\t.LBB2446_132"
+    },
+    {
+      "symbol": "_RNCNvNtCsiYjGPJMyZdw_3tmr5tests17simple_native_512s1_0B5_",
+      "line": 722125,
+      "instructions": 86,
+      "stores": [
+        "\tvmovdqa64\t%zmm2, (%r10,%r13,8)"
+      ],
+      "body": ".LBB2446_126:\n\taddq\t$-8, 88(%rsp)\n\tmovq\t80(%rsp), %r10\n\tcmpq\t104(%rsp), %r10\n\tmovl\t$0, %ecx\n\tjbe\t.LBB2446_21\n.LBB2446_127:\n\taddq\t$-8, %r10\n\tmovq\t56(%rsp), %rax\n\tsubq\t%r10, %rax\n\tcmovbq\t%rcx, %rax\n\tmovq\t%rax, %rdx\n\torq\t%r8, %rdx\n\tshrq\t$32, %rdx\n\tje\t.LBB2446_128\n\txorl\t%edx, %edx\n\tdivq\t%r8\n\tmovq\t%rax, %r12\n\tjmp\t.LBB2446_130\n.LBB2446_128:\n\txorl\t%edx, %edx\n\tdivl\t%r8d\n\tmovl\t%eax, %r12d\n.LBB2446_130:\n\tmovq\t64(%rsp), %rcx\n\tcmpq\t$1, %rdx\n\tsbbq\t$-1, %r12\n\tmovq\t%r10, 80(%rsp)\n\tcmpq\t56(%rsp), %r10\n\tjae\t.LBB2446_126\n\timulq\t%r8, %r12\n\taddq\t$8, %r12\n\tmovq\t88(%rsp), %rbx\n\tmovq\t80(%rsp), %rdx\n\t.p2align\t4\n.LBB2446_132:\n\tmovq\t%rbx, %r13\n\tmovq\t%rdi, %r10\n\tleaq\t(%rdx,%r9), %rdi\n\tcmpq\t%r14, %rdi\n\tmovq\t%r12, %rax\n\tmovl\t$0, %ebx\n\tcmovbq\t%rbx, %rax\n\tsubq\t%rax, %rdi\n\tprefetcht1\t(%rcx,%rdi,8)\n\tleaq\t(%r8,%r13), %rbx\n\tmovq\t%rbx, %rdi\n\tshrq\t$3, %rdi\n\taddq\t%rbp, %rdi\n\tmovq\t%rdi, %rax\n\tshrq\t$30, %rax\n\txorq\t%rdi, %rax\n\tmovabsq\t$-4658895280553007687, %rdi\n\timulq\t%rdi, %rax\n\tmovq\t%rax, %rdi\n\tshrq\t$27, %rdi\n\txorq\t%rax, %rdi\n\tmovabsq\t$-7723592293110705685, %rax\n\timulq\t%rax, %rdi\n\tmovq\t%rdi, %rax\n\tshrq\t$31, %rax\n\txorl\t%edi, %eax\n\tmovq\t%rax, %rdi\n\tshlq\t$16, %rdi\n\torq\t%rax, %rdi\n\tmovabsq\t$281470681808895, %rax\n\tandq\t%rax, %rdi\n\tmovq\t%rdi, %rax\n\tshlq\t$8, %rax\n\torq\t%rdi, %rax\n\tmovabsq\t$71777214294589695, %rdi\n\tandq\t%rdi, %rax\n\tmovq\t%rax, %rdi\n\tshlq\t$4, %rdi\n\torq\t%rax, %rdi\n\tmovq\t%rdi, %rax\n\tandq\t%r15, %rax\n\tshlq\t$4, %rdi\n\tandq\t%r11, %rdi\n\torq\t%rax, %rdi\n\txorq\t%r11, %rdi\n\tvmovq\t%rdi, %xmm2\n\tmovq\t%r10, %rdi\n\tvpxor\t%xmm2, %xmm1, %xmm2\n\tvpbroadcastq\t%xmm2, %zmm2\n\tvpxorq\t%zmm0, %zmm2, %zmm2\n\tvmovdqa64\t%zmm2, (%r10,%r13,8)\n\taddq\t%r8, %rdx\n\tleaq\t(%rsi,%rbx), %rax\n\tcmpq\t%r14, %rax\n\tjb\t.LBB2446_132\n\tjmp\t.LBB2446_126"
+    },
+    {
+      "symbol": "_RNCNvNtCsiYjGPJMyZdw_3tmr5tests17simple_native_512s1_0B5_",
+      "line": 722277,
+      "instructions": 80,
+      "stores": [
+        "\tvmovdqa64\t%zmm3, (%r13,%rax,8)"
+      ],
+      "body": ".LBB2446_106:\n\tleaq\t(%rdi,%r9), %rdx\n\tmovq\t56(%rsp), %r11\n\tcmpq\t%r11, %rdx\n\tmovq\t88(%rsp), %rax\n\tcmovbq\t%rbx, %rax\n\tmovq\t%rsi, 80(%rsp)\n\tsubq\t%rax, %rdx\n\tprefetcht1\t(%r14,%rdx,8)\n\taddq\t%r8, %rsi\n\tmovq\t%rsi, %rax\n\tshrq\t$3, %rax\n\taddq\t72(%rsp), %rax\n\tmovq\t%rax, %rdx\n\tshrq\t$30, %rdx\n\txorq\t%rax, %rdx\n\timulq\t%r10, %rdx\n\tmovq\t%rdx, %rax\n\tshrq\t$27, %rax\n\txorq\t%rdx, %rax\n\timulq\t%r15, %rax\n\tmovq\t%rax, %rdx\n\tshrq\t$31, %rdx\n\txorl\t%eax, %edx\n\tmovq\t%rdx, %rax\n\tshlq\t$16, %rax\n\torq\t%rdx, %rax\n\tandq\t%rcx, %rax\n\tmovq\t%rax, %rdx\n\tshlq\t$8, %rdx\n\torq\t%rax, %rdx\n\tandq\t%rbp, %rdx\n\tmovq\t%rdx, %rax\n\tshlq\t$4, %rax\n\torq\t%rdx, %rax\n\tmovl\t%eax, %edx\n\tandl\t$986895, %edx\n\tshll\t$4, %eax\n\tandl\t$15790320, %eax\n\torq\t%rdx, %rax\n\txorq\t$15790320, %rax\n\tmovq\t%rax, %rdx\n\tshlq\t$24, %rdx\n\torq\t%rax, %rdx\n\tmulxq\t%r12, %rax, %rdx\n\tmovq\t%r12, %rbx\n\tmovq\t%r8, %r12\n\tmovq\t%rbp, %r8\n\tmovq\t%rcx, %rbp\n\tmovq\t%r9, %rcx\n\tmovq\t%r15, %r9\n\tmovq\t%r10, %r15\n\tmovq\t%r13, %r10\n\tmovq\t%rax, %r13\n\tshrdq\t$8, %rdx, %r13\n\tshldq\t$48, %rax, %rdx\n\tvmovq\t%rax, %xmm3\n\tvmovq\t%rdx, %xmm4\n\tvmovq\t%r13, %xmm5\n\tmovq\t%r10, %r13\n\tmovq\t%r15, %r10\n\tmovq\t%r9, %r15\n\tmovq\t%rcx, %r9\n\tmovq\t%rbp, %rcx\n\tmovq\t%r8, %rbp\n\tmovq\t%r12, %r8\n\tmovq\t%rbx, %r12\n\tmovq\t%r11, %rdx\n\tvpunpcklqdq\t%xmm4, %xmm3, %xmm3\n\tvinserti128\t$1, %xmm5, %ymm3, %ymm3\n\tvpxor\t%ymm1, %ymm3, %ymm3\n\tvpermq\t%zmm3, %zmm2, %zmm3\n\tvpxorq\t%zmm0, %zmm3, %zmm3\n\tmovq\t80(%rsp), %rax\n\tvmovdqa64\t%zmm3, (%r13,%rax,8)\n\tmovq\t96(%rsp), %r11\n\txorl\t%ebx, %ebx\n\taddq\t%r8, %rdi\n\tleaq\t(%r11,%rsi), %rax\n\tcmpq\t%rdx, %rax\n\tjb\t.LBB2446_106"
+    },
+    {
+      "symbol": "_RNCNvNtCsiYjGPJMyZdw_3tmr5tests17simple_native_512s1_0B5_",
+      "line": 722244,
+      "instructions": 109,
+      "stores": [
+        "\tvmovdqa64\t%zmm3, (%r13,%rax,8)"
+      ],
+      "body": ".LBB2446_100:\n\taddq\t$-8, 112(%rsp)\n\tmovq\t120(%rsp), %rdi\n\tcmpq\t104(%rsp), %rdi\n\tjbe\t.LBB2446_21\n.LBB2446_101:\n\taddq\t$-8, %rdi\n\tmovq\t56(%rsp), %rax\n\tsubq\t%rdi, %rax\n\tcmovbq\t%rbx, %rax\n\tmovq\t%rax, %rdx\n\torq\t%r8, %rdx\n\tshrq\t$32, %rdx\n\tje\t.LBB2446_102\n\txorl\t%edx, %edx\n\tdivq\t%r8\n\tjmp\t.LBB2446_104\n.LBB2446_102:\n\txorl\t%edx, %edx\n\tdivl\t%r8d\n.LBB2446_104:\n\tmovq\t64(%rsp), %r14\n\tcmpq\t$1, %rdx\n\tsbbq\t$-1, %rax\n\tmovq\t%rdi, 120(%rsp)\n\tcmpq\t56(%rsp), %rdi\n\tjae\t.LBB2446_100\n\timulq\t%r8, %rax\n\taddq\t$8, %rax\n\tmovq\t%rax, 88(%rsp)\n\tmovq\t112(%rsp), %rsi\n\tmovq\t120(%rsp), %rdi\n\t.p2align\t4\n.LBB2446_106:\n\tleaq\t(%rdi,%r9), %rdx\n\tmovq\t56(%rsp), %r11\n\tcmpq\t%r11, %rdx\n\tmovq\t88(%rsp), %rax\n\tcmovbq\t%rbx, %rax\n\tmovq\t%rsi, 80(%rsp)\n\tsubq\t%rax, %rdx\n\tprefetcht1\t(%r14,%rdx,8)\n\taddq\t%r8, %rsi\n\tmovq\t%rsi, %rax\n\tshrq\t$3, %rax\n\taddq\t72(%rsp), %rax\n\tmovq\t%rax, %rdx\n\tshrq\t$30, %rdx\n\txorq\t%rax, %rdx\n\timulq\t%r10, %rdx\n\tmovq\t%rdx, %rax\n\tshrq\t$27, %rax\n\txorq\t%rdx, %rax\n\timulq\t%r15, %rax\n\tmovq\t%rax, %rdx\n\tshrq\t$31, %rdx\n\txorl\t%eax, %edx\n\tmovq\t%rdx, %rax\n\tshlq\t$16, %rax\n\torq\t%rdx, %rax\n\tandq\t%rcx, %rax\n\tmovq\t%rax, %rdx\n\tshlq\t$8, %rdx\n\torq\t%rax, %rdx\n\tandq\t%rbp, %rdx\n\tmovq\t%rdx, %rax\n\tshlq\t$4, %rax\n\torq\t%rdx, %rax\n\tmovl\t%eax, %edx\n\tandl\t$986895, %edx\n\tshll\t$4, %eax\n\tandl\t$15790320, %eax\n\torq\t%rdx, %rax\n\txorq\t$15790320, %rax\n\tmovq\t%rax, %rdx\n\tshlq\t$24, %rdx\n\torq\t%rax, %rdx\n\tmulxq\t%r12, %rax, %rdx\n\tmovq\t%r12, %rbx\n\tmovq\t%r8, %r12\n\tmovq\t%rbp, %r8\n\tmovq\t%rcx, %rbp\n\tmovq\t%r9, %rcx\n\tmovq\t%r15, %r9\n\tmovq\t%r10, %r15\n\tmovq\t%r13, %r10\n\tmovq\t%rax, %r13\n\tshrdq\t$8, %rdx, %r13\n\tshldq\t$48, %rax, %rdx\n\tvmovq\t%rax, %xmm3\n\tvmovq\t%rdx, %xmm4\n\tvmovq\t%r13, %xmm5\n\tmovq\t%r10, %r13\n\tmovq\t%r15, %r10\n\tmovq\t%r9, %r15\n\tmovq\t%rcx, %r9\n\tmovq\t%rbp, %rcx\n\tmovq\t%r8, %rbp\n\tmovq\t%r12, %r8\n\tmovq\t%rbx, %r12\n\tmovq\t%r11, %rdx\n\tvpunpcklqdq\t%xmm4, %xmm3, %xmm3\n\tvinserti128\t$1, %xmm5, %ymm3, %ymm3\n\tvpxor\t%ymm1, %ymm3, %ymm3\n\tvpermq\t%zmm3, %zmm2, %zmm3\n\tvpxorq\t%zmm0, %zmm3, %zmm3\n\tmovq\t80(%rsp), %rax\n\tvmovdqa64\t%zmm3, (%r13,%rax,8)\n\tmovq\t96(%rsp), %r11\n\txorl\t%ebx, %ebx\n\taddq\t%r8, %rdi\n\tleaq\t(%r11,%rsi), %rax\n\tcmpq\t%rdx, %rax\n\tjb\t.LBB2446_106\n\tjmp\t.LBB2446_100"
+    },
+    {
+      "symbol": "_RNCNvNtCsiYjGPJMyZdw_3tmr5tests17simple_native_512s1_0B5_",
+      "line": 722544,
+      "instructions": 55,
+      "stores": [
+        "\tvmovdqa64\t%zmm3, (%r11,%r10,8)"
+      ],
+      "body": ".LBB2446_80:\n\tmovq\t%rbx, %r10\n\tleaq\t(%rdx,%r9), %rdi\n\tcmpq\t%r14, %rdi\n\tmovq\t%rsi, %rax\n\tcmovbq\t%r15, %rax\n\tsubq\t%rax, %rdi\n\tprefetcht1\t(%rcx,%rdi,8)\n\taddq\t%r8, %rbx\n\tmovq\t%rbx, %rdi\n\tshrq\t$3, %rdi\n\taddq\t%r12, %rdi\n\tmovq\t%rdi, %rax\n\tshrq\t$30, %rax\n\txorq\t%rdi, %rax\n\timulq\t%rbp, %rax\n\tmovq\t%rax, %rdi\n\tshrq\t$27, %rdi\n\txorq\t%rax, %rdi\n\tmovabsq\t$-7723592293110705685, %rax\n\timulq\t%rax, %rdi\n\tmovq\t%rdi, %rax\n\tshrq\t$31, %rax\n\txorl\t%edi, %eax\n\tmovzbl\t%al, %edi\n\tandl\t$15, %eax\n\tshll\t$4, %edi\n\torl\t%eax, %edi\n\txorq\t$240, %rdi\n\tmovabsq\t$68736258049, %rax\n\timulq\t%rax, %rdi\n\tmovq\t%rdi, %rax\n\tshlq\t$48, %rax\n\torq\t%rdi, %rax\n\tshrq\t$16, %rdi\n\tmovq\t%rbp, %r15\n\tmovq\t%r11, %rbp\n\tmovq\t%rax, %r11\n\tshrdq\t$4, %rdi, %r11\n\tshldq\t$56, %rax, %rdi\n\tvmovq\t%rax, %xmm3\n\tvmovq\t%r11, %xmm4\n\tmovq\t%rbp, %r11\n\tmovq\t%r15, %rbp\n\txorl\t%r15d, %r15d\n\tvmovq\t%rdi, %xmm5\n\tvpunpcklqdq\t%xmm4, %xmm3, %xmm3\n\tvinserti128\t$1, %xmm5, %ymm3, %ymm3\n\tvpxor\t%ymm1, %ymm3, %ymm3\n\tvpermq\t%zmm3, %zmm2, %zmm3\n\tvpxorq\t%zmm0, %zmm3, %zmm3\n\tvmovdqa64\t%zmm3, (%r11,%r10,8)\n\taddq\t%r8, %rdx\n\tleaq\t(%rbx,%r13), %rax\n\tcmpq\t%r14, %rax\n\tjb\t.LBB2446_80"
+    },
+    {
+      "symbol": "_RNCNvNtCsiYjGPJMyZdw_3tmr5tests17simple_native_512s1_0B5_",
+      "line": 722510,
+      "instructions": 85,
+      "stores": [
+        "\tvmovdqa64\t%zmm3, (%r11,%r10,8)"
+      ],
+      "body": ".LBB2446_74:\n\taddq\t$-8, 88(%rsp)\n\tmovq\t80(%rsp), %rdi\n\tcmpq\t104(%rsp), %rdi\n\tjbe\t.LBB2446_21\n.LBB2446_75:\n\taddq\t$-8, %rdi\n\tmovq\t56(%rsp), %rax\n\tsubq\t%rdi, %rax\n\tcmovbq\t%r15, %rax\n\tmovq\t%rax, %rdx\n\torq\t%r8, %rdx\n\tshrq\t$32, %rdx\n\tje\t.LBB2446_76\n\txorl\t%edx, %edx\n\tdivq\t%r8\n\tmovq\t%rax, %rsi\n\tjmp\t.LBB2446_78\n.LBB2446_76:\n\txorl\t%edx, %edx\n\tdivl\t%r8d\n\tmovl\t%eax, %esi\n.LBB2446_78:\n\tmovq\t64(%rsp), %rcx\n\tcmpq\t$1, %rdx\n\tsbbq\t$-1, %rsi\n\tmovq\t%rdi, 80(%rsp)\n\tcmpq\t56(%rsp), %rdi\n\tjae\t.LBB2446_74\n\timulq\t%r8, %rsi\n\taddq\t$8, %rsi\n\tmovq\t88(%rsp), %rbx\n\tmovq\t80(%rsp), %rdx\n\t.p2align\t4\n.LBB2446_80:\n\tmovq\t%rbx, %r10\n\tleaq\t(%rdx,%r9), %rdi\n\tcmpq\t%r14, %rdi\n\tmovq\t%rsi, %rax\n\tcmovbq\t%r15, %rax\n\tsubq\t%rax, %rdi\n\tprefetcht1\t(%rcx,%rdi,8)\n\taddq\t%r8, %rbx\n\tmovq\t%rbx, %rdi\n\tshrq\t$3, %rdi\n\taddq\t%r12, %rdi\n\tmovq\t%rdi, %rax\n\tshrq\t$30, %rax\n\txorq\t%rdi, %rax\n\timulq\t%rbp, %rax\n\tmovq\t%rax, %rdi\n\tshrq\t$27, %rdi\n\txorq\t%rax, %rdi\n\tmovabsq\t$-7723592293110705685, %rax\n\timulq\t%rax, %rdi\n\tmovq\t%rdi, %rax\n\tshrq\t$31, %rax\n\txorl\t%edi, %eax\n\tmovzbl\t%al, %edi\n\tandl\t$15, %eax\n\tshll\t$4, %edi\n\torl\t%eax, %edi\n\txorq\t$240, %rdi\n\tmovabsq\t$68736258049, %rax\n\timulq\t%rax, %rdi\n\tmovq\t%rdi, %rax\n\tshlq\t$48, %rax\n\torq\t%rdi, %rax\n\tshrq\t$16, %rdi\n\tmovq\t%rbp, %r15\n\tmovq\t%r11, %rbp\n\tmovq\t%rax, %r11\n\tshrdq\t$4, %rdi, %r11\n\tshldq\t$56, %rax, %rdi\n\tvmovq\t%rax, %xmm3\n\tvmovq\t%r11, %xmm4\n\tmovq\t%rbp, %r11\n\tmovq\t%r15, %rbp\n\txorl\t%r15d, %r15d\n\tvmovq\t%rdi, %xmm5\n\tvpunpcklqdq\t%xmm4, %xmm3, %xmm3\n\tvinserti128\t$1, %xmm5, %ymm3, %ymm3\n\tvpxor\t%ymm1, %ymm3, %ymm3\n\tvpermq\t%zmm3, %zmm2, %zmm3\n\tvpxorq\t%zmm0, %zmm3, %zmm3\n\tvmovdqa64\t%zmm3, (%r11,%r10,8)\n\taddq\t%r8, %rdx\n\tleaq\t(%rbx,%r13), %rax\n\tcmpq\t%r14, %rax\n\tjb\t.LBB2446_80\n\tjmp\t.LBB2446_74"
+    },
+    {
+      "symbol": "_RNCNvNtCsiYjGPJMyZdw_3tmr5tests17simple_native_256s1_0B5_",
+      "line": 724681,
+      "instructions": 28,
+      "stores": [
+        "\tvmovdqa\t%ymm5, (%rcx,%rdi,8)",
+        "\tvmovdqa\t%ymm3, 32(%rcx,%rdi,8)"
+      ],
+      "body": ".LBB2455_20:\n\tmovl\t%r15d, %ecx\n\tandl\t$1, %ecx\n\tnegq\t%rcx\n\tvmovq\t%rcx, %xmm3\n\tvpbroadcastq\t%xmm3, %ymm3\n\tmovq\t%rax, %rcx\n\tandq\t$-16, %rcx\n\timulq\t%rdx, %rcx\n\taddq\t72(%rsp), %rcx\n\tvmovq\t%rcx, %xmm4\n\tvpbroadcastq\t%xmm4, %ymm4\n\tvpaddq\t%ymm1, %ymm4, %ymm5\n\tvpsrlq\t$32, %ymm5, %ymm6\n\tvpaddq\t%ymm2, %ymm4, %ymm4\n\tvpsrlq\t$32, %ymm4, %ymm7\n\tvpxor\t%ymm3, %ymm0, %ymm3\n\tvpxor\t%ymm5, %ymm3, %ymm5\n\tvpxor\t%ymm6, %ymm5, %ymm5\n\tvpxor\t%ymm4, %ymm3, %ymm3\n\tvpxor\t%ymm7, %ymm3, %ymm3\n\tmovq\t64(%rsp), %rcx\n\tvmovdqa\t%ymm5, (%rcx,%rdi,8)\n\tvmovdqa\t%ymm3, 32(%rcx,%rdi,8)\n\tincq\t%r15\n\taddq\t$8, %rdi\n\taddq\t$8, %rax\n\tcmpq\t%r14, %rdi\n\tjb\t.LBB2455_20"
+    },
+    {
+      "symbol": "_RNCNvNtCsiYjGPJMyZdw_3tmr5tests17simple_native_256s1_0B5_",
+      "line": 724723,
+      "instructions": 38,
+      "stores": [
+        "\tvmovdqa\t%ymm4, (%rcx,%rdi,8)",
+        "\tvmovdqa\t%ymm3, 32(%rcx,%rdi,8)"
+      ],
+      "body": ".LBB2455_16:\n\tmovq\t%r12, %r9\n\tshrq\t$30, %r9\n\txorq\t%r12, %r9\n\timulq\t%rax, %r9\n\tmovq\t%r9, %r10\n\tshrq\t$27, %r10\n\txorq\t%r9, %r10\n\timulq\t%rdx, %r10\n\tmovq\t%r10, %r9\n\tshrq\t$31, %r9\n\txorq\t%r10, %r9\n\tvmovq\t%r9, %xmm3\n\txorq\t72(%rsp), %r9\n\trorxq\t$35, %r9, %r9\n\timulq\t%r8, %r9\n\torq\t$1, %r9\n\tvmovq\t%r9, %xmm4\n\tvpbroadcastq\t%xmm4, %ymm4\n\tvpbroadcastq\t%xmm3, %ymm3\n\tvpmuludq\t%ymm1, %ymm4, %ymm5\n\tvpsrlq\t$32, %ymm4, %ymm6\n\tvpmuludq\t%ymm1, %ymm6, %ymm7\n\tvpsllq\t$32, %ymm7, %ymm7\n\tvpaddq\t%ymm3, %ymm5, %ymm5\n\tvpaddq\t%ymm7, %ymm5, %ymm5\n\tvpmuludq\t%ymm2, %ymm4, %ymm4\n\tvpmuludq\t%ymm2, %ymm6, %ymm6\n\tvpsllq\t$32, %ymm6, %ymm6\n\tvpaddq\t%ymm3, %ymm4, %ymm3\n\tvpaddq\t%ymm6, %ymm3, %ymm3\n\tvpxor\t%ymm0, %ymm5, %ymm4\n\tvpxor\t%ymm0, %ymm3, %ymm3\n\tvmovdqa\t%ymm4, (%rcx,%rdi,8)\n\tvmovdqa\t%ymm3, 32(%rcx,%rdi,8)\n\taddq\t$8, %rdi\n\tincq\t%r12\n\tcmpq\t%r14, %rdi\n\tjb\t.LBB2455_16"
+    },
+    {
+      "symbol": "_RNCNvNtCsiYjGPJMyZdw_3tmr5tests17simple_native_256s1_0B5_",
+      "line": 724774,
+      "instructions": 18,
+      "stores": [
+        "\tvmovdqa\t%ymm4, (%rcx,%rdi,8)",
+        "\tvmovdqa\t%ymm3, 32(%rcx,%rdi,8)"
+      ],
+      "body": ".LBB2455_7:\n\tmovq\t72(%rsp), %rdx\n\tvmovq\t%rdx, %xmm3\n\tvpbroadcastq\t%xmm3, %ymm3\n\tvpaddq\t%ymm1, %ymm3, %ymm4\n\tvpsrlq\t$32, %ymm4, %ymm5\n\tvpaddq\t%ymm2, %ymm3, %ymm3\n\tvpsrlq\t$32, %ymm3, %ymm6\n\tvpxor\t%ymm4, %ymm0, %ymm4\n\tvpxor\t%ymm5, %ymm4, %ymm4\n\tvpxor\t%ymm3, %ymm0, %ymm3\n\tvpxor\t%ymm6, %ymm3, %ymm3\n\tvmovdqa\t%ymm4, (%rcx,%rdi,8)\n\tvmovdqa\t%ymm3, 32(%rcx,%rdi,8)\n\taddq\t$8, %rdi\n\taddq\t%rax, %rdx\n\tmovq\t%rdx, 72(%rsp)\n\tcmpq\t%r14, %rdi\n\tjb\t.LBB2455_7"
+    },
+    {
+      "symbol": "_RNCNvNtCsiYjGPJMyZdw_3tmr5tests17simple_native_256s1_0B5_",
+      "line": 724807,
+      "instructions": 52,
+      "stores": [
+        "\tvmovdqa\t%ymm8, (%rcx,%rdi,8)",
+        "\tvmovdqa\t%ymm7, 32(%rcx,%rdi,8)"
+      ],
+      "body": ".LBB2455_11:\n\tvmovq\t%rax, %xmm7\n\tvpbroadcastq\t%xmm7, %ymm7\n\tvpaddq\t%ymm1, %ymm7, %ymm8\n\tvpsrlq\t$30, %ymm8, %ymm9\n\tvpxor\t%ymm8, %ymm9, %ymm8\n\tvpmuludq\t%ymm2, %ymm8, %ymm9\n\tvpsrlq\t$32, %ymm8, %ymm10\n\tvpmuludq\t%ymm3, %ymm10, %ymm10\n\tvpaddq\t%ymm10, %ymm9, %ymm9\n\tvpsllq\t$32, %ymm9, %ymm9\n\tvpmuludq\t%ymm3, %ymm8, %ymm8\n\tvpaddq\t%ymm9, %ymm8, %ymm8\n\tvpsrlq\t$27, %ymm8, %ymm9\n\tvpxor\t%ymm8, %ymm9, %ymm8\n\tvpmuludq\t%ymm4, %ymm8, %ymm9\n\tvpsrlq\t$32, %ymm8, %ymm10\n\tvpmuludq\t%ymm5, %ymm10, %ymm10\n\tvpaddq\t%ymm10, %ymm9, %ymm9\n\tvpsllq\t$32, %ymm9, %ymm9\n\tvpmuludq\t%ymm5, %ymm8, %ymm8\n\tvpaddq\t%ymm9, %ymm8, %ymm8\n\tvpsrlq\t$31, %ymm8, %ymm9\n\tvpaddq\t%ymm6, %ymm7, %ymm7\n\tvpsrlq\t$30, %ymm7, %ymm10\n\tvpxor\t%ymm7, %ymm10, %ymm7\n\tvpmuludq\t%ymm2, %ymm7, %ymm10\n\tvpsrlq\t$32, %ymm7, %ymm11\n\tvpmuludq\t%ymm3, %ymm11, %ymm11\n\tvpaddq\t%ymm11, %ymm10, %ymm10\n\tvpsllq\t$32, %ymm10, %ymm10\n\tvpmuludq\t%ymm3, %ymm7, %ymm7\n\tvpaddq\t%ymm7, %ymm10, %ymm7\n\tvpsrlq\t$27, %ymm7, %ymm10\n\tvpxor\t%ymm7, %ymm10, %ymm7\n\tvpmuludq\t%ymm4, %ymm7, %ymm10\n\tvpsrlq\t$32, %ymm7, %ymm11\n\tvpmuludq\t%ymm5, %ymm11, %ymm11\n\tvpaddq\t%ymm11, %ymm10, %ymm10\n\tvpsllq\t$32, %ymm10, %ymm10\n\tvpmuludq\t%ymm5, %ymm7, %ymm7\n\tvpaddq\t%ymm7, %ymm10, %ymm7\n\tvpsrlq\t$31, %ymm7, %ymm10\n\tvpxor\t%ymm0, %ymm8, %ymm8\n\tvpxor\t%ymm9, %ymm8, %ymm8\n\tvpxor\t%ymm7, %ymm0, %ymm7\n\tvpxor\t%ymm7, %ymm10, %ymm7\n\tvmovdqa\t%ymm8, (%rcx,%rdi,8)\n\tvmovdqa\t%ymm7, 32(%rcx,%rdi,8)\n\taddq\t$8, %rdi\n\taddq\t$8, %rax\n\tcmpq\t%r14, %rdi\n\tjb\t.LBB2455_11"
+    },
+    {
+      "symbol": "_RNCNvNtCsiYjGPJMyZdw_3tmr5tests17simple_native_256s1_0B5_",
+      "line": 724982,
+      "instructions": 42,
+      "stores": [
+        "\tvmovdqa\t%ymm5, (%r11,%r12,8)",
+        "\tvmovdqa\t%ymm3, 32(%r11,%r12,8)"
+      ],
+      "body": ".LBB2455_158:\n\tmovq\t%r12, %r15\n\tmovq\t%rbp, %r12\n\tleaq\t(%rdx,%r13), %rcx\n\tcmpq\t%r14, %rcx\n\tmovq\t%r13, %rdi\n\tmovq\t%rax, %r13\n\tmovl\t$0, %ebp\n\tcmovbq\t%rbp, %r13\n\tsubq\t%r13, %rcx\n\tprefetcht1\t(%rsi,%rcx,8)\n\tleaq\t(%r8,%r12), %rbp\n\tmovq\t%rbp, %r13\n\tshrq\t$3, %r13\n\taddq\t%rbx, %r13\n\tmovl\t%r13d, %ecx\n\tandl\t$1, %ecx\n\tnegq\t%rcx\n\tvmovq\t%rcx, %xmm3\n\tshlq\t$3, %r13\n\tandq\t$-16, %r13\n\timulq\t%r9, %r13\n\taddq\t%r10, %r13\n\tvmovq\t%r13, %xmm4\n\tmovq\t%rdi, %r13\n\tvpbroadcastq\t%xmm3, %ymm3\n\tvpbroadcastq\t%xmm4, %ymm4\n\tvpaddq\t%ymm1, %ymm4, %ymm5\n\tvpsrlq\t$32, %ymm5, %ymm6\n\tvpaddq\t%ymm2, %ymm4, %ymm4\n\tvpsrlq\t$32, %ymm4, %ymm7\n\tvpxor\t%ymm3, %ymm0, %ymm3\n\tvpxor\t%ymm5, %ymm3, %ymm5\n\tvpxor\t%ymm6, %ymm5, %ymm5\n\tvpxor\t%ymm4, %ymm3, %ymm3\n\tvpxor\t%ymm7, %ymm3, %ymm3\n\tvmovdqa\t%ymm5, (%r11,%r12,8)\n\tvmovdqa\t%ymm3, 32(%r11,%r12,8)\n\tmovq\t%r15, %r12\n\taddq\t%r8, %rdx\n\tleaq\t(%r15,%rbp), %rcx\n\tcmpq\t%r14, %rcx\n\tjb\t.LBB2455_158"
+    },
+    {
+      "symbol": "_RNCNvNtCsiYjGPJMyZdw_3tmr5tests17simple_native_256s1_0B5_",
+      "line": 724944,
+      "instructions": 75,
+      "stores": [
+        "\tvmovdqa\t%ymm5, (%r11,%r12,8)",
+        "\tvmovdqa\t%ymm3, 32(%r11,%r12,8)"
+      ],
+      "body": ".LBB2455_152:\n\taddq\t$-8, 96(%rsp)\n\tmovq\t88(%rsp), %r10\n\tcmpq\t104(%rsp), %r10\n\tmovl\t$0, %ecx\n\tjbe\t.LBB2455_21\n.LBB2455_153:\n\taddq\t$-8, %r10\n\tmovq\t%r14, %r9\n\tsubq\t%r10, %r14\n\tcmovbq\t%rcx, %r14\n\tmovq\t%r14, %rcx\n\torq\t%r8, %rcx\n\tshrq\t$32, %rcx\n\tje\t.LBB2455_154\n\tmovq\t%r14, %rax\n\txorl\t%edx, %edx\n\tdivq\t%r8\n\tjmp\t.LBB2455_156\n\t.p2align\t4\n.LBB2455_154:\n\tmovl\t%r14d, %eax\n\txorl\t%edx, %edx\n\tdivl\t%r8d\n.LBB2455_156:\n\tcmpq\t$1, %rdx\n\tsbbq\t$-1, %rax\n\tmovq\t%r9, %r14\n\tmovq\t%r10, 88(%rsp)\n\tcmpq\t%r9, %r10\n\tmovq\t72(%rsp), %r10\n\tmovabsq\t$-7046029254386353131, %r9\n\tjae\t.LBB2455_152\n\timulq\t%r8, %rax\n\taddq\t$8, %rax\n\tmovq\t96(%rsp), %rbp\n\tmovq\t88(%rsp), %rdx\n\t.p2align\t4\n.LBB2455_158:\n\tmovq\t%r12, %r15\n\tmovq\t%rbp, %r12\n\tleaq\t(%rdx,%r13), %rcx\n\tcmpq\t%r14, %rcx\n\tmovq\t%r13, %rdi\n\tmovq\t%rax, %r13\n\tmovl\t$0, %ebp\n\tcmovbq\t%rbp, %r13\n\tsubq\t%r13, %rcx\n\tprefetcht1\t(%rsi,%rcx,8)\n\tleaq\t(%r8,%r12), %rbp\n\tmovq\t%rbp, %r13\n\tshrq\t$3, %r13\n\taddq\t%rbx, %r13\n\tmovl\t%r13d, %ecx\n\tandl\t$1, %ecx\n\tnegq\t%rcx\n\tvmovq\t%rcx, %xmm3\n\tshlq\t$3, %r13\n\tandq\t$-16, %r13\n\timulq\t%r9, %r13\n\taddq\t%r10, %r13\n\tvmovq\t%r13, %xmm4\n\tmovq\t%rdi, %r13\n\tvpbroadcastq\t%xmm3, %ymm3\n\tvpbroadcastq\t%xmm4, %ymm4\n\tvpaddq\t%ymm1, %ymm4, %ymm5\n\tvpsrlq\t$32, %ymm5, %ymm6\n\tvpaddq\t%ymm2, %ymm4, %ymm4\n\tvpsrlq\t$32, %ymm4, %ymm7\n\tvpxor\t%ymm3, %ymm0, %ymm3\n\tvpxor\t%ymm5, %ymm3, %ymm5\n\tvpxor\t%ymm6, %ymm5, %ymm5\n\tvpxor\t%ymm4, %ymm3, %ymm3\n\tvpxor\t%ymm7, %ymm3, %ymm3\n\tvmovdqa\t%ymm5, (%r11,%r12,8)\n\tvmovdqa\t%ymm3, 32(%r11,%r12,8)\n\tmovq\t%r15, %r12\n\taddq\t%r8, %rdx\n\tleaq\t(%r15,%rbp), %rcx\n\tcmpq\t%r14, %rcx\n\tjb\t.LBB2455_158\n\tjmp\t.LBB2455_152"
+    },
+    {
+      "symbol": "_RNCNvNtCsiYjGPJMyZdw_3tmr5tests17simple_native_256s1_0B5_",
+      "line": 725087,
+      "instructions": 54,
+      "stores": [
+        "\tvmovdqa\t%ymm4, (%r11,%r10,8)",
+        "\tvmovdqa\t%ymm3, 32(%r11,%r10,8)"
+      ],
+      "body": ".LBB2455_145:\n\tmovq\t%r10, %rdi\n\tmovq\t%rbx, %r10\n\tleaq\t(%rdx,%r9), %rsi\n\tcmpq\t%r14, %rsi\n\tmovq\t%rcx, %rax\n\tmovl\t$0, %ebx\n\tcmovbq\t%rbx, %rax\n\tsubq\t%rax, %rsi\n\tprefetcht1\t(%r13,%rsi,8)\n\tleaq\t(%r8,%r10), %rbx\n\tmovq\t%rbx, %rsi\n\tshrq\t$3, %rsi\n\taddq\t%r15, %rsi\n\tmovq\t%rsi, %rax\n\tshrq\t$30, %rax\n\txorq\t%rsi, %rax\n\tmovabsq\t$-4658895280553007687, %rsi\n\timulq\t%rsi, %rax\n\tmovq\t%rax, %rsi\n\tshrq\t$27, %rsi\n\txorq\t%rax, %rsi\n\tmovabsq\t$-7723592293110705685, %rax\n\timulq\t%rax, %rsi\n\tmovq\t%rsi, %rax\n\tshrq\t$31, %rax\n\txorq\t%rsi, %rax\n\tvmovq\t%rax, %xmm3\n\txorq\t%rbp, %rax\n\trorxq\t$35, %rax, %rax\n\timulq\t%r12, %rax\n\torq\t$1, %rax\n\tvmovq\t%rax, %xmm4\n\tvpbroadcastq\t%xmm4, %ymm4\n\tvpbroadcastq\t%xmm3, %ymm3\n\tvpmuludq\t%ymm1, %ymm4, %ymm5\n\tvpsrlq\t$32, %ymm4, %ymm6\n\tvpmuludq\t%ymm1, %ymm6, %ymm7\n\tvpsllq\t$32, %ymm7, %ymm7\n\tvpaddq\t%ymm3, %ymm5, %ymm5\n\tvpaddq\t%ymm7, %ymm5, %ymm5\n\tvpmuludq\t%ymm2, %ymm4, %ymm4\n\tvpmuludq\t%ymm2, %ymm6, %ymm6\n\tvpsllq\t$32, %ymm6, %ymm6\n\tvpaddq\t%ymm3, %ymm4, %ymm3\n\tvpaddq\t%ymm6, %ymm3, %ymm3\n\tvpxor\t%ymm0, %ymm5, %ymm4\n\tvpxor\t%ymm0, %ymm3, %ymm3\n\tvmovdqa\t%ymm4, (%r11,%r10,8)\n\tvmovdqa\t%ymm3, 32(%r11,%r10,8)\n\tmovq\t%rdi, %r10\n\taddq\t%r8, %rdx\n\tleaq\t(%rdi,%rbx), %rax\n\tcmpq\t%r14, %rax\n\tjb\t.LBB2455_145"
+    },
+    {
+      "symbol": "_RNCNvNtCsiYjGPJMyZdw_3tmr5tests17simple_native_256s1_0B5_",
+      "line": 725052,
+      "instructions": 84,
+      "stores": [
+        "\tvmovdqa\t%ymm4, (%r11,%r10,8)",
+        "\tvmovdqa\t%ymm3, 32(%r11,%r10,8)"
+      ],
+      "body": ".LBB2455_139:\n\taddq\t$-8, 96(%rsp)\n\tmovq\t88(%rsp), %rdi\n\tcmpq\t104(%rsp), %rdi\n\tmovl\t$0, %ecx\n\tjbe\t.LBB2455_21\n.LBB2455_140:\n\taddq\t$-8, %rdi\n\tmovq\t%r14, %rax\n\tsubq\t%rdi, %rax\n\tcmovbq\t%rcx, %rax\n\tmovq\t%rax, %rdx\n\torq\t%r8, %rdx\n\tshrq\t$32, %rdx\n\tje\t.LBB2455_141\n\txorl\t%edx, %edx\n\tdivq\t%r8\n\tmovq\t%rax, %rcx\n\tjmp\t.LBB2455_143\n\t.p2align\t4\n.LBB2455_141:\n\txorl\t%edx, %edx\n\tdivl\t%r8d\n\tmovl\t%eax, %ecx\n.LBB2455_143:\n\tcmpq\t$1, %rdx\n\tsbbq\t$-1, %rcx\n\tmovq\t%rdi, 88(%rsp)\n\tcmpq\t%r14, %rdi\n\tjae\t.LBB2455_139\n\timulq\t%r8, %rcx\n\taddq\t$8, %rcx\n\tmovq\t96(%rsp), %rbx\n\tmovq\t88(%rsp), %rdx\n\t.p2align\t4\n.LBB2455_145:\n\tmovq\t%r10, %rdi\n\tmovq\t%rbx, %r10\n\tleaq\t(%rdx,%r9), %rsi\n\tcmpq\t%r14, %rsi\n\tmovq\t%rcx, %rax\n\tmovl\t$0, %ebx\n\tcmovbq\t%rbx, %rax\n\tsubq\t%rax, %rsi\n\tprefetcht1\t(%r13,%rsi,8)\n\tleaq\t(%r8,%r10), %rbx\n\tmovq\t%rbx, %rsi\n\tshrq\t$3, %rsi\n\taddq\t%r15, %rsi\n\tmovq\t%rsi, %rax\n\tshrq\t$30, %rax\n\txorq\t%rsi, %rax\n\tmovabsq\t$-4658895280553007687, %rsi\n\timulq\t%rsi, %rax\n\tmovq\t%rax, %rsi\n\tshrq\t$27, %rsi\n\txorq\t%rax, %rsi\n\tmovabsq\t$-7723592293110705685, %rax\n\timulq\t%rax, %rsi\n\tmovq\t%rsi, %rax\n\tshrq\t$31, %rax\n\txorq\t%rsi, %rax\n\tvmovq\t%rax, %xmm3\n\txorq\t%rbp, %rax\n\trorxq\t$35, %rax, %rax\n\timulq\t%r12, %rax\n\torq\t$1, %rax\n\tvmovq\t%rax, %xmm4\n\tvpbroadcastq\t%xmm4, %ymm4\n\tvpbroadcastq\t%xmm3, %ymm3\n\tvpmuludq\t%ymm1, %ymm4, %ymm5\n\tvpsrlq\t$32, %ymm4, %ymm6\n\tvpmuludq\t%ymm1, %ymm6, %ymm7\n\tvpsllq\t$32, %ymm7, %ymm7\n\tvpaddq\t%ymm3, %ymm5, %ymm5\n\tvpaddq\t%ymm7, %ymm5, %ymm5\n\tvpmuludq\t%ymm2, %ymm4, %ymm4\n\tvpmuludq\t%ymm2, %ymm6, %ymm6\n\tvpsllq\t$32, %ymm6, %ymm6\n\tvpaddq\t%ymm3, %ymm4, %ymm3\n\tvpaddq\t%ymm6, %ymm3, %ymm3\n\tvpxor\t%ymm0, %ymm5, %ymm4\n\tvpxor\t%ymm0, %ymm3, %ymm3\n\tvmovdqa\t%ymm4, (%r11,%r10,8)\n\tvmovdqa\t%ymm3, 32(%r11,%r10,8)\n\tmovq\t%rdi, %r10\n\taddq\t%r8, %rdx\n\tleaq\t(%rdi,%rbx), %rax\n\tcmpq\t%r14, %rax\n\tjb\t.LBB2455_145\n\tjmp\t.LBB2455_139"
+    },
+    {
+      "symbol": "_RNCNvNtCsiYjGPJMyZdw_3tmr5tests17simple_native_256s1_0B5_",
+      "line": 725295,
+      "instructions": 62,
+      "stores": [
+        "\tvmovdqa\t%ymm8, -32(%r11,%rdx,8)",
+        "\tvmovdqa\t%ymm7, (%r11,%rdx,8)"
+      ],
+      "body": ".LBB2455_47:\n\tleaq\t(%rdi,%r9), %rbx\n\tcmpq\t%r14, %rbx\n\tmovq\t%rax, %r13\n\tcmovbq\t%r12, %r13\n\tsubq\t%r13, %rbx\n\tprefetcht1\t(%rcx,%rbx,8)\n\tleaq\t(%r15,%rdx), %rbx\n\tandq\t$-8, %rbx\n\taddq\t%rbp, %rbx\n\tvmovq\t%rbx, %xmm7\n\tvpbroadcastq\t%xmm7, %ymm7\n\tvpaddq\t%ymm1, %ymm7, %ymm8\n\tvpsrlq\t$30, %ymm8, %ymm9\n\tvpxor\t%ymm8, %ymm9, %ymm8\n\tvpmuludq\t%ymm2, %ymm8, %ymm9\n\tvpsrlq\t$32, %ymm8, %ymm10\n\tvpmuludq\t%ymm3, %ymm10, %ymm10\n\tvpaddq\t%ymm10, %ymm9, %ymm9\n\tvpsllq\t$32, %ymm9, %ymm9\n\tvpmuludq\t%ymm3, %ymm8, %ymm8\n\tvpaddq\t%ymm9, %ymm8, %ymm8\n\tvpsrlq\t$27, %ymm8, %ymm9\n\tvpxor\t%ymm8, %ymm9, %ymm8\n\tvpmuludq\t%ymm4, %ymm8, %ymm9\n\tvpsrlq\t$32, %ymm8, %ymm10\n\tvpmuludq\t%ymm5, %ymm10, %ymm10\n\tvpaddq\t%ymm10, %ymm9, %ymm9\n\tvpsllq\t$32, %ymm9, %ymm9\n\tvpmuludq\t%ymm5, %ymm8, %ymm8\n\tvpaddq\t%ymm9, %ymm8, %ymm8\n\tvpsrlq\t$31, %ymm8, %ymm9\n\tvpaddq\t%ymm6, %ymm7, %ymm7\n\tvpsrlq\t$30, %ymm7, %ymm10\n\tvpxor\t%ymm7, %ymm10, %ymm7\n\tvpmuludq\t%ymm2, %ymm7, %ymm10\n\tvpsrlq\t$32, %ymm7, %ymm11\n\tvpmuludq\t%ymm3, %ymm11, %ymm11\n\tvpaddq\t%ymm11, %ymm10, %ymm10\n\tvpsllq\t$32, %ymm10, %ymm10\n\tvpmuludq\t%ymm3, %ymm7, %ymm7\n\tvpaddq\t%ymm7, %ymm10, %ymm7\n\tvpsrlq\t$27, %ymm7, %ymm10\n\tvpxor\t%ymm7, %ymm10, %ymm7\n\tvpmuludq\t%ymm4, %ymm7, %ymm10\n\tvpsrlq\t$32, %ymm7, %ymm11\n\tvpmuludq\t%ymm5, %ymm11, %ymm11\n\tvpaddq\t%ymm11, %ymm10, %ymm10\n\tvpsllq\t$32, %ymm10, %ymm10\n\tvpmuludq\t%ymm5, %ymm7, %ymm7\n\tvpaddq\t%ymm7, %ymm10, %ymm7\n\tvpsrlq\t$31, %ymm7, %ymm10\n\tvpxor\t%ymm0, %ymm8, %ymm8\n\tvpxor\t%ymm9, %ymm8, %ymm8\n\tvpxor\t%ymm7, %ymm0, %ymm7\n\tvpxor\t%ymm7, %ymm10, %ymm7\n\tvmovdqa\t%ymm8, -32(%r11,%rdx,8)\n\tvmovdqa\t%ymm7, (%r11,%rdx,8)\n\taddq\t%r8, %rdi\n\taddq\t%r8, %rdx\n\tleaq\t(%rsi,%rdx), %rbx\n\tcmpq\t%r14, %rbx\n\tjb\t.LBB2455_47"
+    },
+    {
+      "symbol": "_RNCNvNtCsiYjGPJMyZdw_3tmr5tests17simple_native_256s1_0B5_",
+      "line": 725261,
+      "instructions": 91,
+      "stores": [
+        "\tvmovdqa\t%ymm8, -32(%r11,%rdx,8)",
+        "\tvmovdqa\t%ymm7, (%r11,%rdx,8)"
+      ],
+      "body": ".LBB2455_41:\n\taddq\t$-64, %r11\n\taddq\t$-8, %rsi\n\taddq\t$-8, %r15\n\tcmpq\t104(%rsp), %r10\n\tjbe\t.LBB2455_21\n.LBB2455_42:\n\taddq\t$-8, %r10\n\tmovq\t%r14, %rax\n\tsubq\t%r10, %rax\n\tcmovbq\t%r12, %rax\n\tmovq\t%rax, %rdx\n\torq\t%r8, %rdx\n\tshrq\t$32, %rdx\n\tje\t.LBB2455_43\n\txorl\t%edx, %edx\n\tdivq\t%r8\n\tjmp\t.LBB2455_45\n\t.p2align\t4\n.LBB2455_43:\n\txorl\t%edx, %edx\n\tdivl\t%r8d\n.LBB2455_45:\n\tmovq\t64(%rsp), %rcx\n\tmovq\t72(%rsp), %rbp\n\tcmpq\t$1, %rdx\n\tsbbq\t$-1, %rax\n\tcmpq\t%r14, %r10\n\tjae\t.LBB2455_41\n\timulq\t%r8, %rax\n\taddq\t$8, %rax\n\txorl\t%edx, %edx\n\tmovq\t%r10, %rdi\n\t.p2align\t4\n.LBB2455_47:\n\tleaq\t(%rdi,%r9), %rbx\n\tcmpq\t%r14, %rbx\n\tmovq\t%rax, %r13\n\tcmovbq\t%r12, %r13\n\tsubq\t%r13, %rbx\n\tprefetcht1\t(%rcx,%rbx,8)\n\tleaq\t(%r15,%rdx), %rbx\n\tandq\t$-8, %rbx\n\taddq\t%rbp, %rbx\n\tvmovq\t%rbx, %xmm7\n\tvpbroadcastq\t%xmm7, %ymm7\n\tvpaddq\t%ymm1, %ymm7, %ymm8\n\tvpsrlq\t$30, %ymm8, %ymm9\n\tvpxor\t%ymm8, %ymm9, %ymm8\n\tvpmuludq\t%ymm2, %ymm8, %ymm9\n\tvpsrlq\t$32, %ymm8, %ymm10\n\tvpmuludq\t%ymm3, %ymm10, %ymm10\n\tvpaddq\t%ymm10, %ymm9, %ymm9\n\tvpsllq\t$32, %ymm9, %ymm9\n\tvpmuludq\t%ymm3, %ymm8, %ymm8\n\tvpaddq\t%ymm9, %ymm8, %ymm8\n\tvpsrlq\t$27, %ymm8, %ymm9\n\tvpxor\t%ymm8, %ymm9, %ymm8\n\tvpmuludq\t%ymm4, %ymm8, %ymm9\n\tvpsrlq\t$32, %ymm8, %ymm10\n\tvpmuludq\t%ymm5, %ymm10, %ymm10\n\tvpaddq\t%ymm10, %ymm9, %ymm9\n\tvpsllq\t$32, %ymm9, %ymm9\n\tvpmuludq\t%ymm5, %ymm8, %ymm8\n\tvpaddq\t%ymm9, %ymm8, %ymm8\n\tvpsrlq\t$31, %ymm8, %ymm9\n\tvpaddq\t%ymm6, %ymm7, %ymm7\n\tvpsrlq\t$30, %ymm7, %ymm10\n\tvpxor\t%ymm7, %ymm10, %ymm7\n\tvpmuludq\t%ymm2, %ymm7, %ymm10\n\tvpsrlq\t$32, %ymm7, %ymm11\n\tvpmuludq\t%ymm3, %ymm11, %ymm11\n\tvpaddq\t%ymm11, %ymm10, %ymm10\n\tvpsllq\t$32, %ymm10, %ymm10\n\tvpmuludq\t%ymm3, %ymm7, %ymm7\n\tvpaddq\t%ymm7, %ymm10, %ymm7\n\tvpsrlq\t$27, %ymm7, %ymm10\n\tvpxor\t%ymm7, %ymm10, %ymm7\n\tvpmuludq\t%ymm4, %ymm7, %ymm10\n\tvpsrlq\t$32, %ymm7, %ymm11\n\tvpmuludq\t%ymm5, %ymm11, %ymm11\n\tvpaddq\t%ymm11, %ymm10, %ymm10\n\tvpsllq\t$32, %ymm10, %ymm10\n\tvpmuludq\t%ymm5, %ymm7, %ymm7\n\tvpaddq\t%ymm7, %ymm10, %ymm7\n\tvpsrlq\t$31, %ymm7, %ymm10\n\tvpxor\t%ymm0, %ymm8, %ymm8\n\tvpxor\t%ymm9, %ymm8, %ymm8\n\tvpxor\t%ymm7, %ymm0, %ymm7\n\tvpxor\t%ymm7, %ymm10, %ymm7\n\tvmovdqa\t%ymm8, -32(%r11,%rdx,8)\n\tvmovdqa\t%ymm7, (%r11,%rdx,8)\n\taddq\t%r8, %rdi\n\taddq\t%r8, %rdx\n\tleaq\t(%rsi,%rdx), %rbx\n\tcmpq\t%r14, %rbx\n\tjb\t.LBB2455_47\n\tjmp\t.LBB2455_41"
+    },
+    {
+      "symbol": "_RNCNvNtCsiYjGPJMyZdw_3tmr5tests17simple_native_256s1_0B5_",
+      "line": 725372,
+      "instructions": 39,
+      "stores": [
+        "\tvmovdqa\t%ymm2, (%r11,%rdi,8)",
+        "\tvmovdqa\t%ymm2, 32(%r11,%rdi,8)"
+      ],
+      "body": ".LBB2455_67:\n\tmovq\t%r12, %r11\n\tshrq\t$30, %r11\n\txorq\t%r12, %r11\n\timulq\t%rax, %r11\n\tmovq\t%r11, %rsi\n\tshrq\t$27, %rsi\n\txorq\t%r11, %rsi\n\timulq\t%rcx, %rsi\n\tmovq\t%rsi, %r11\n\tshrq\t$31, %r11\n\txorl\t%esi, %r11d\n\tmovq\t%r11, %rsi\n\tshlq\t$16, %rsi\n\torq\t%r11, %rsi\n\tandq\t%rdx, %rsi\n\tmovq\t%rsi, %r11\n\tshlq\t$8, %r11\n\torq\t%rsi, %r11\n\tandq\t%r8, %r11\n\tmovq\t%r11, %rsi\n\tshlq\t$4, %rsi\n\torq\t%r11, %rsi\n\tmovq\t%rsi, %r11\n\tandq\t%r9, %r11\n\tshlq\t$4, %rsi\n\tandq\t%r10, %rsi\n\torq\t%r11, %rsi\n\txorq\t%r10, %rsi\n\tvmovq\t%rsi, %xmm2\n\tvpxor\t%xmm1, %xmm2, %xmm2\n\tvpbroadcastq\t%xmm2, %ymm2\n\tvpxor\t%ymm0, %ymm2, %ymm2\n\tmovq\t64(%rsp), %r11\n\tvmovdqa\t%ymm2, (%r11,%rdi,8)\n\tvmovdqa\t%ymm2, 32(%r11,%rdi,8)\n\taddq\t$8, %rdi\n\tincq\t%r12\n\tcmpq\t%r14, %rdi\n\tjb\t.LBB2455_67"
+    },
+    {
+      "symbol": "_RNCNvNtCsiYjGPJMyZdw_3tmr5tests17simple_native_256s1_0B5_",
+      "line": 725425,
+      "instructions": 52,
+      "stores": [
+        "\tvmovdqa\t%ymm2, (%rdx,%rdi,8)",
+        "\tvmovdqa\t%ymm3, 32(%rdx,%rdi,8)"
+      ],
+      "body": ".LBB2455_59:\n\tmovq\t%r12, %rdx\n\tshrq\t$30, %rdx\n\txorq\t%r12, %rdx\n\timulq\t%rax, %rdx\n\tmovq\t%rdx, %r11\n\tshrq\t$27, %r11\n\txorq\t%rdx, %r11\n\timulq\t%rcx, %r11\n\tmovq\t%r11, %rdx\n\tshrq\t$31, %rdx\n\txorl\t%r11d, %edx\n\tmovq\t%rdx, %r11\n\tshlq\t$16, %r11\n\torq\t%rdx, %r11\n\tandq\t%r8, %r11\n\tmovq\t%r11, %rdx\n\tshlq\t$8, %rdx\n\torq\t%r11, %rdx\n\tandq\t%r9, %rdx\n\tmovq\t%rdx, %r11\n\tshlq\t$4, %r11\n\torq\t%rdx, %r11\n\tmovl\t%r11d, %edx\n\tandl\t$986895, %edx\n\tshll\t$4, %r11d\n\tandl\t$15790320, %r11d\n\torq\t%rdx, %r11\n\txorq\t$15790320, %r11\n\tmovq\t%r11, %rdx\n\tshlq\t$24, %rdx\n\torq\t%r11, %rdx\n\tmulxq\t%r10, %rdx, %r11\n\tmovq\t%rdx, %rsi\n\tshrdq\t$16, %r11, %rsi\n\tshldq\t$56, %rdx, %r11\n\tvmovq\t%r11, %xmm2\n\tvmovq\t%rsi, %xmm3\n\tvpunpcklqdq\t%xmm2, %xmm3, %xmm2\n\tvmovq\t%rdx, %xmm3\n\tvinserti128\t$1, %xmm3, %ymm2, %ymm2\n\tvpxor\t%ymm1, %ymm2, %ymm2\n\tvpermq\t$36, %ymm2, %ymm3\n\tvpermq\t$146, %ymm2, %ymm2\n\tvpxor\t%ymm0, %ymm2, %ymm2\n\tvpxor\t%ymm0, %ymm3, %ymm3\n\tmovq\t64(%rsp), %rdx\n\tvmovdqa\t%ymm2, (%rdx,%rdi,8)\n\tvmovdqa\t%ymm3, 32(%rdx,%rdi,8)\n\taddq\t$8, %rdi\n\tincq\t%r12\n\tcmpq\t%r14, %rdi\n\tjb\t.LBB2455_59"
+    },
+    {
+      "symbol": "_RNCNvNtCsiYjGPJMyZdw_3tmr5tests17simple_native_256s1_0B5_",
+      "line": 725493,
+      "instructions": 41,
+      "stores": [
+        "\tvmovdqa\t%ymm0, (%rsi,%rbx,8)",
+        "\tvmovdqa\t%ymm0, 32(%rsi,%rbx,8)"
+      ],
+      "body": ".LBB2455_63:\n\tmovq\t%r12, %rsi\n\tshrq\t$30, %rsi\n\txorq\t%r12, %rsi\n\timulq\t%rax, %rsi\n\tmovq\t%rsi, %rdi\n\tshrq\t$27, %rdi\n\txorq\t%rsi, %rdi\n\timulq\t%rcx, %rdi\n\tmovq\t%rdi, %rsi\n\tshrq\t$31, %rsi\n\txorl\t%edi, %esi\n\tmovq\t%rsi, %rdi\n\tshlq\t$16, %rdi\n\torq\t%rsi, %rdi\n\tandq\t%rdx, %rdi\n\tmovq\t%rdi, %rsi\n\tshlq\t$8, %rsi\n\torq\t%rdi, %rsi\n\tandq\t%r8, %rsi\n\tmovq\t%rsi, %rdi\n\tshlq\t$4, %rdi\n\torq\t%rsi, %rdi\n\tmovq\t%rdi, %rsi\n\tandq\t%r9, %rsi\n\tshlq\t$4, %rdi\n\tandq\t%r10, %rdi\n\torq\t%rsi, %rdi\n\tmovl\t%edi, %esi\n\tshlq\t$32, %rdi\n\torq\t%rsi, %rdi\n\txorq\t%r11, %rdi\n\tvmovq\t%rdi, %xmm0\n\tvpxor\t%xmm1, %xmm0, %xmm0\n\tvpbroadcastq\t%xmm0, %ymm0\n\tmovq\t64(%rsp), %rsi\n\tvmovdqa\t%ymm0, (%rsi,%rbx,8)\n\tvmovdqa\t%ymm0, 32(%rsi,%rbx,8)\n\taddq\t$8, %rbx\n\tincq\t%r12\n\tcmpq\t%r14, %rbx\n\tjb\t.LBB2455_63"
+    },
+    {
+      "symbol": "_RNCNvNtCsiYjGPJMyZdw_3tmr5tests17simple_native_256s1_0B5_",
+      "line": 725546,
+      "instructions": 39,
+      "stores": [
+        "\tvmovdqa\t%ymm2, (%r8,%rdi,8)",
+        "\tvmovdqa\t%ymm2, 32(%r8,%rdi,8)"
+      ],
+      "body": ".LBB2455_51:\n\tmovq\t%r12, %r8\n\tshrq\t$30, %r8\n\txorq\t%r12, %r8\n\timulq\t%rax, %r8\n\tmovq\t%r8, %r9\n\tshrq\t$27, %r9\n\txorq\t%r8, %r9\n\timulq\t%rcx, %r9\n\tmovq\t%r9, %r8\n\tshrq\t$31, %r8\n\txorl\t%r9d, %r8d\n\tmovzbl\t%r8b, %r9d\n\tandl\t$15, %r8d\n\tshll\t$4, %r9d\n\torl\t%r8d, %r9d\n\txorq\t$240, %r9\n\timulq\t%rdx, %r9\n\tmovq\t%r9, %r8\n\tshlq\t$48, %r8\n\torq\t%r9, %r8\n\tshrq\t$16, %r9\n\tmovq\t%r8, %r10\n\tshrdq\t$4, %r9, %r10\n\tshldq\t$56, %r8, %r9\n\tvmovq\t%r8, %xmm2\n\tvmovq\t%r10, %xmm3\n\tvpunpcklqdq\t%xmm3, %xmm2, %xmm2\n\tvmovq\t%r9, %xmm3\n\tvinserti128\t$1, %xmm3, %ymm2, %ymm2\n\tvpermq\t$36, %ymm2, %ymm2\n\tvpxor\t%ymm1, %ymm2, %ymm2\n\tvpxor\t%ymm0, %ymm2, %ymm2\n\tmovq\t64(%rsp), %r8\n\tvmovdqa\t%ymm2, (%r8,%rdi,8)\n\tvmovdqa\t%ymm2, 32(%r8,%rdi,8)\n\taddq\t$8, %rdi\n\tincq\t%r12\n\tcmpq\t%r14, %rdi\n\tjb\t.LBB2455_51"
+    },
+    {
+      "symbol": "_RNCNvNtCsiYjGPJMyZdw_3tmr5tests17simple_native_256s1_0B5_",
+      "line": 725601,
+      "instructions": 45,
+      "stores": [
+        "\tvmovdqa\t%ymm0, (%rsi,%rbx,8)",
+        "\tvmovdqa\t%ymm0, 32(%rsi,%rbx,8)"
+      ],
+      "body": ".LBB2455_55:\n\tmovq\t%r12, %rsi\n\tshrq\t$30, %rsi\n\txorq\t%r12, %rsi\n\timulq\t%rax, %rsi\n\tmovq\t%rsi, %rdi\n\tshrq\t$27, %rdi\n\txorq\t%rsi, %rdi\n\timulq\t%rcx, %rdi\n\tmovq\t%rdi, %rsi\n\tshrq\t$31, %rsi\n\txorl\t%edi, %esi\n\tmovq\t%rsi, %rdi\n\tshlq\t$16, %rdi\n\torq\t%rsi, %rdi\n\tandq\t%rdx, %rdi\n\tmovq\t%rdi, %rsi\n\tshlq\t$8, %rsi\n\torq\t%rdi, %rsi\n\tandq\t%r8, %rsi\n\tmovq\t%rsi, %rdi\n\tshlq\t$4, %rdi\n\torq\t%rsi, %rdi\n\tmovq\t%rdi, %rsi\n\tandq\t%r9, %rsi\n\tshlq\t$4, %rdi\n\tandq\t%r10, %rdi\n\torq\t%rsi, %rdi\n\txorq\t%r10, %rdi\n\tmovzwl\t%di, %esi\n\tshll\t$16, %edi\n\torq\t%rsi, %rdi\n\txorq\t%r11, %rdi\n\tmovq\t%rdi, %rsi\n\tshlq\t$32, %rsi\n\torq\t%rdi, %rsi\n\tvmovq\t%rsi, %xmm0\n\tvpxor\t%xmm1, %xmm0, %xmm0\n\tvpbroadcastq\t%xmm0, %ymm0\n\tmovq\t64(%rsp), %rsi\n\tvmovdqa\t%ymm0, (%rsi,%rbx,8)\n\tvmovdqa\t%ymm0, 32(%rsi,%rbx,8)\n\taddq\t$8, %rbx\n\tincq\t%r12\n\tcmpq\t%r14, %rbx\n\tjb\t.LBB2455_55"
+    },
+    {
+      "symbol": "_RNCNvNtCsiYjGPJMyZdw_3tmr5tests17simple_native_256s1_0B5_",
+      "line": 725824,
+      "instructions": 83,
+      "stores": [
+        "\tvmovdqa\t%ymm2, (%r11,%r12,8)",
+        "\tvmovdqa\t%ymm3, 32(%r11,%r12,8)"
+      ],
+      "body": ".LBB2455_106:\n\tleaq\t(%rdi,%r9), %rdx\n\tcmpq\t%r14, %rdx\n\tmovq\t88(%rsp), %rax\n\tcmovbq\t%r10, %rax\n\tmovq\t%r12, %r14\n\tmovq\t%rbx, %r12\n\tsubq\t%rax, %rdx\n\tprefetcht1\t(%r13,%rdx,8)\n\taddq\t%r8, %rbx\n\tmovq\t%rbx, %rax\n\tshrq\t$3, %rax\n\taddq\t72(%rsp), %rax\n\tmovq\t%rax, %rdx\n\tshrq\t$30, %rdx\n\txorq\t%rax, %rdx\n\timulq\t%rbp, %rdx\n\tmovq\t%rdx, %rax\n\tshrq\t$27, %rax\n\txorq\t%rdx, %rax\n\timulq\t%r15, %rax\n\tmovq\t%rax, %rdx\n\tshrq\t$31, %rdx\n\txorl\t%eax, %edx\n\tmovq\t%rdx, %rax\n\tshlq\t$16, %rax\n\torq\t%rdx, %rax\n\tandq\t%rcx, %rax\n\tmovq\t%rax, %rdx\n\tshlq\t$8, %rdx\n\torq\t%rax, %rdx\n\tandq\t%rsi, %rdx\n\tmovq\t%rdx, %rax\n\tshlq\t$4, %rax\n\torq\t%rdx, %rax\n\tmovl\t%eax, %edx\n\tandl\t$986895, %edx\n\tshll\t$4, %eax\n\tandl\t$15790320, %eax\n\torq\t%rdx, %rax\n\txorq\t$15790320, %rax\n\tmovq\t%rax, %rdx\n\tshlq\t$24, %rdx\n\torq\t%rax, %rdx\n\tmovq\t%r8, %r10\n\tmovq\t%r13, %r8\n\tmovq\t%rsi, %r13\n\tmovq\t%rcx, %rsi\n\tmovq\t%r11, %rcx\n\tmovq\t%r9, %r11\n\tmovq\t%r15, %r9\n\tmovq\t%rbp, %r15\n\tmovabsq\t$281474976710657, %rax\n\tmulxq\t%rax, %rbp, %rdx\n\tmovq\t%rbp, %rax\n\tshrdq\t$16, %rdx, %rax\n\tshldq\t$56, %rbp, %rdx\n\tvmovq\t%rdx, %xmm2\n\tvmovq\t%rax, %xmm3\n\tvmovq\t%rbp, %xmm4\n\tmovq\t%r15, %rbp\n\tmovq\t%r9, %r15\n\tmovq\t%r11, %r9\n\tmovq\t%rcx, %r11\n\tmovq\t%rsi, %rcx\n\tmovq\t%r13, %rsi\n\tmovq\t%r8, %r13\n\tmovq\t%r10, %r8\n\tvpunpcklqdq\t%xmm2, %xmm3, %xmm2\n\tvinserti128\t$1, %xmm4, %ymm2, %ymm2\n\tvpxor\t%ymm1, %ymm2, %ymm2\n\tvpermq\t$36, %ymm2, %ymm3\n\tvpermq\t$146, %ymm2, %ymm2\n\tvpxor\t%ymm0, %ymm2, %ymm2\n\tvpxor\t%ymm0, %ymm3, %ymm3\n\tvmovdqa\t%ymm2, (%r11,%r12,8)\n\tvmovdqa\t%ymm3, 32(%r11,%r12,8)\n\tmovq\t%r14, %r12\n\tmovq\t112(%rsp), %r14\n\txorl\t%r10d, %r10d\n\taddq\t%r8, %rdi\n\tleaq\t(%r12,%rbx), %rax\n\tcmpq\t%r14, %rax\n\tjb\t.LBB2455_106"
+    },
+    {
+      "symbol": "_RNCNvNtCsiYjGPJMyZdw_3tmr5tests17simple_native_256s1_0B5_",
+      "line": 725789,
+      "instructions": 114,
+      "stores": [
+        "\tvmovdqa\t%ymm2, (%r11,%r12,8)",
+        "\tvmovdqa\t%ymm3, 32(%r11,%r12,8)"
+      ],
+      "body": ".LBB2455_100:\n\taddq\t$-8, 96(%rsp)\n\tmovq\t80(%rsp), %rdi\n\tcmpq\t104(%rsp), %rdi\n\tjbe\t.LBB2455_21\n.LBB2455_101:\n\taddq\t$-8, %rdi\n\tmovq\t%r14, %rax\n\tsubq\t%rdi, %rax\n\tcmovbq\t%r10, %rax\n\tmovq\t%rax, %rdx\n\torq\t%r8, %rdx\n\tshrq\t$32, %rdx\n\tje\t.LBB2455_102\n\txorl\t%edx, %edx\n\tdivq\t%r8\n\tmovq\t%rax, %rbx\n\tjmp\t.LBB2455_104\n.LBB2455_102:\n\txorl\t%edx, %edx\n\tdivl\t%r8d\n\tmovl\t%eax, %ebx\n.LBB2455_104:\n\tmovq\t64(%rsp), %r13\n\tcmpq\t$1, %rdx\n\tsbbq\t$-1, %rbx\n\tmovq\t%rdi, 80(%rsp)\n\tcmpq\t%r14, %rdi\n\tjae\t.LBB2455_100\n\timulq\t%r8, %rbx\n\taddq\t$8, %rbx\n\tmovq\t%rbx, 88(%rsp)\n\tmovq\t96(%rsp), %rbx\n\tmovq\t80(%rsp), %rdi\n\t.p2align\t4\n.LBB2455_106:\n\tleaq\t(%rdi,%r9), %rdx\n\tcmpq\t%r14, %rdx\n\tmovq\t88(%rsp), %rax\n\tcmovbq\t%r10, %rax\n\tmovq\t%r12, %r14\n\tmovq\t%rbx, %r12\n\tsubq\t%rax, %rdx\n\tprefetcht1\t(%r13,%rdx,8)\n\taddq\t%r8, %rbx\n\tmovq\t%rbx, %rax\n\tshrq\t$3, %rax\n\taddq\t72(%rsp), %rax\n\tmovq\t%rax, %rdx\n\tshrq\t$30, %rdx\n\txorq\t%rax, %rdx\n\timulq\t%rbp, %rdx\n\tmovq\t%rdx, %rax\n\tshrq\t$27, %rax\n\txorq\t%rdx, %rax\n\timulq\t%r15, %rax\n\tmovq\t%rax, %rdx\n\tshrq\t$31, %rdx\n\txorl\t%eax, %edx\n\tmovq\t%rdx, %rax\n\tshlq\t$16, %rax\n\torq\t%rdx, %rax\n\tandq\t%rcx, %rax\n\tmovq\t%rax, %rdx\n\tshlq\t$8, %rdx\n\torq\t%rax, %rdx\n\tandq\t%rsi, %rdx\n\tmovq\t%rdx, %rax\n\tshlq\t$4, %rax\n\torq\t%rdx, %rax\n\tmovl\t%eax, %edx\n\tandl\t$986895, %edx\n\tshll\t$4, %eax\n\tandl\t$15790320, %eax\n\torq\t%rdx, %rax\n\txorq\t$15790320, %rax\n\tmovq\t%rax, %rdx\n\tshlq\t$24, %rdx\n\torq\t%rax, %rdx\n\tmovq\t%r8, %r10\n\tmovq\t%r13, %r8\n\tmovq\t%rsi, %r13\n\tmovq\t%rcx, %rsi\n\tmovq\t%r11, %rcx\n\tmovq\t%r9, %r11\n\tmovq\t%r15, %r9\n\tmovq\t%rbp, %r15\n\tmovabsq\t$281474976710657, %rax\n\tmulxq\t%rax, %rbp, %rdx\n\tmovq\t%rbp, %rax\n\tshrdq\t$16, %rdx, %rax\n\tshldq\t$56, %rbp, %rdx\n\tvmovq\t%rdx, %xmm2\n\tvmovq\t%rax, %xmm3\n\tvmovq\t%rbp, %xmm4\n\tmovq\t%r15, %rbp\n\tmovq\t%r9, %r15\n\tmovq\t%r11, %r9\n\tmovq\t%rcx, %r11\n\tmovq\t%rsi, %rcx\n\tmovq\t%r13, %rsi\n\tmovq\t%r8, %r13\n\tmovq\t%r10, %r8\n\tvpunpcklqdq\t%xmm2, %xmm3, %xmm2\n\tvinserti128\t$1, %xmm4, %ymm2, %ymm2\n\tvpxor\t%ymm1, %ymm2, %ymm2\n\tvpermq\t$36, %ymm2, %ymm3\n\tvpermq\t$146, %ymm2, %ymm2\n\tvpxor\t%ymm0, %ymm2, %ymm2\n\tvpxor\t%ymm0, %ymm3, %ymm3\n\tvmovdqa\t%ymm2, (%r11,%r12,8)\n\tvmovdqa\t%ymm3, 32(%r11,%r12,8)\n\tmovq\t%r14, %r12\n\tmovq\t112(%rsp), %r14\n\txorl\t%r10d, %r10d\n\taddq\t%r8, %rdi\n\tleaq\t(%r12,%rbx), %rax\n\tcmpq\t%r14, %rax\n\tjb\t.LBB2455_106\n\tjmp\t.LBB2455_100"
+    },
+    {
+      "symbol": "_RNCNvNtCsiYjGPJMyZdw_3tmr5tests17simple_native_256s1_0B5_",
+      "line": 725965,
+      "instructions": 69,
+      "stores": [
+        "\tvmovdqa\t%ymm0, (%r11,%rsi,8)",
+        "\tvmovdqa\t%ymm0, 32(%r11,%rsi,8)"
+      ],
+      "body": ".LBB2455_119:\n\tmovq\t%rbx, %rsi\n\tleaq\t(%rdx,%r9), %rdi\n\tcmpq\t%r14, %rdi\n\tmovq\t88(%rsp), %rax\n\tmovl\t$0, %ebx\n\tcmovbq\t%rbx, %rax\n\tsubq\t%rax, %rdi\n\tprefetcht1\t(%rcx,%rdi,8)\n\tleaq\t(%rsi,%rbp), %rbx\n\tmovq\t%rbx, %rdi\n\tshrq\t$3, %rdi\n\taddq\t%r10, %rdi\n\tmovq\t%rdi, %rax\n\tshrq\t$30, %rax\n\txorq\t%rdi, %rax\n\tmovabsq\t$-4658895280553007687, %rdi\n\timulq\t%rdi, %rax\n\tmovq\t%rax, %rdi\n\tshrq\t$27, %rdi\n\txorq\t%rax, %rdi\n\tmovabsq\t$-7723592293110705685, %rax\n\timulq\t%rax, %rdi\n\tmovq\t%rdi, %rax\n\tshrq\t$31, %rax\n\txorl\t%edi, %eax\n\tmovq\t%rax, %rdi\n\tshlq\t$16, %rdi\n\torq\t%rax, %rdi\n\tmovabsq\t$281470681808895, %rax\n\tandq\t%rax, %rdi\n\tmovq\t%rdi, %rax\n\tshlq\t$8, %rax\n\torq\t%rdi, %rax\n\tmovabsq\t$71777214294589695, %rdi\n\tandq\t%rdi, %rax\n\tmovq\t%rax, %rdi\n\tshlq\t$4, %rdi\n\torq\t%rax, %rdi\n\tmovq\t%rdi, %rax\n\tmovq\t%r10, %r8\n\tmovq\t%rcx, %r10\n\tmovq\t%r11, %rcx\n\tmovq\t%r9, %r11\n\tmovq\t%r13, %r9\n\tmovq\t%r15, %r13\n\tmovabsq\t$1085102592571150095, %r15\n\tandq\t%r15, %rax\n\tmovq\t%r13, %r15\n\tmovq\t%r9, %r13\n\tmovq\t%r11, %r9\n\tmovq\t%rcx, %r11\n\tmovq\t%r10, %rcx\n\tmovq\t%r8, %r10\n\tshlq\t$4, %rdi\n\tandq\t%r15, %rdi\n\torq\t%rax, %rdi\n\tmovl\t%edi, %eax\n\tshlq\t$32, %rdi\n\torq\t%rax, %rdi\n\txorq\t%r13, %rdi\n\tvmovq\t%rdi, %xmm0\n\tvpxor\t%xmm1, %xmm0, %xmm0\n\tvpbroadcastq\t%xmm0, %ymm0\n\tvmovdqa\t%ymm0, (%r11,%rsi,8)\n\tvmovdqa\t%ymm0, 32(%r11,%rsi,8)\n\taddq\t%rbp, %rdx\n\tleaq\t(%r12,%rbx), %rax\n\tcmpq\t%r14, %rax\n\tjb\t.LBB2455_119"
+    },
+    {
+      "symbol": "_RNCNvNtCsiYjGPJMyZdw_3tmr5tests17simple_native_256s1_0B5_",
+      "line": 725928,
+      "instructions": 102,
+      "stores": [
+        "\tvmovdqa\t%ymm0, (%r11,%rsi,8)",
+        "\tvmovdqa\t%ymm0, 32(%r11,%rsi,8)"
+      ],
+      "body": ".LBB2455_113:\n\taddq\t$-8, 96(%rsp)\n\tmovq\t80(%rsp), %r10\n\tcmpq\t104(%rsp), %r10\n\tmovl\t$0, %ecx\n\tjbe\t.LBB2455_21\n.LBB2455_114:\n\taddq\t$-8, %r10\n\tmovq\t%r14, %rax\n\tsubq\t%r10, %rax\n\tcmovbq\t%rcx, %rax\n\tmovq\t%rax, %rdx\n\torq\t%rbp, %rdx\n\tshrq\t$32, %rdx\n\tje\t.LBB2455_115\n\txorl\t%edx, %edx\n\tdivq\t%rbp\n\tjmp\t.LBB2455_117\n.LBB2455_115:\n\txorl\t%edx, %edx\n\tdivl\t%ebp\n.LBB2455_117:\n\tmovq\t64(%rsp), %rcx\n\tcmpq\t$1, %rdx\n\tsbbq\t$-1, %rax\n\tmovq\t%r10, 80(%rsp)\n\tcmpq\t%r14, %r10\n\tmovq\t72(%rsp), %r10\n\tmovabsq\t$-1085102592571150096, %r15\n\tmovabsq\t$1085102596360827120, %r13\n\tjae\t.LBB2455_113\n\timulq\t%rbp, %rax\n\taddq\t$8, %rax\n\tmovq\t%rax, 88(%rsp)\n\tmovq\t96(%rsp), %rbx\n\tmovq\t80(%rsp), %rdx\n\t.p2align\t4\n.LBB2455_119:\n\tmovq\t%rbx, %rsi\n\tleaq\t(%rdx,%r9), %rdi\n\tcmpq\t%r14, %rdi\n\tmovq\t88(%rsp), %rax\n\tmovl\t$0, %ebx\n\tcmovbq\t%rbx, %rax\n\tsubq\t%rax, %rdi\n\tprefetcht1\t(%rcx,%rdi,8)\n\tleaq\t(%rsi,%rbp), %rbx\n\tmovq\t%rbx, %rdi\n\tshrq\t$3, %rdi\n\taddq\t%r10, %rdi\n\tmovq\t%rdi, %rax\n\tshrq\t$30, %rax\n\txorq\t%rdi, %rax\n\tmovabsq\t$-4658895280553007687, %rdi\n\timulq\t%rdi, %rax\n\tmovq\t%rax, %rdi\n\tshrq\t$27, %rdi\n\txorq\t%rax, %rdi\n\tmovabsq\t$-7723592293110705685, %rax\n\timulq\t%rax, %rdi\n\tmovq\t%rdi, %rax\n\tshrq\t$31, %rax\n\txorl\t%edi, %eax\n\tmovq\t%rax, %rdi\n\tshlq\t$16, %rdi\n\torq\t%rax, %rdi\n\tmovabsq\t$281470681808895, %rax\n\tandq\t%rax, %rdi\n\tmovq\t%rdi, %rax\n\tshlq\t$8, %rax\n\torq\t%rdi, %rax\n\tmovabsq\t$71777214294589695, %rdi\n\tandq\t%rdi, %rax\n\tmovq\t%rax, %rdi\n\tshlq\t$4, %rdi\n\torq\t%rax, %rdi\n\tmovq\t%rdi, %rax\n\tmovq\t%r10, %r8\n\tmovq\t%rcx, %r10\n\tmovq\t%r11, %rcx\n\tmovq\t%r9, %r11\n\tmovq\t%r13, %r9\n\tmovq\t%r15, %r13\n\tmovabsq\t$1085102592571150095, %r15\n\tandq\t%r15, %rax\n\tmovq\t%r13, %r15\n\tmovq\t%r9, %r13\n\tmovq\t%r11, %r9\n\tmovq\t%rcx, %r11\n\tmovq\t%r10, %rcx\n\tmovq\t%r8, %r10\n\tshlq\t$4, %rdi\n\tandq\t%r15, %rdi\n\torq\t%rax, %rdi\n\tmovl\t%edi, %eax\n\tshlq\t$32, %rdi\n\torq\t%rax, %rdi\n\txorq\t%r13, %rdi\n\tvmovq\t%rdi, %xmm0\n\tvpxor\t%xmm1, %xmm0, %xmm0\n\tvpbroadcastq\t%xmm0, %ymm0\n\tvmovdqa\t%ymm0, (%r11,%rsi,8)\n\tvmovdqa\t%ymm0, 32(%r11,%rsi,8)\n\taddq\t%rbp, %rdx\n\tleaq\t(%r12,%rbx), %rax\n\tcmpq\t%r14, %rax\n\tjb\t.LBB2455_119\n\tjmp\t.LBB2455_113"
+    },
+    {
+      "symbol": "_RNCNvNtCsiYjGPJMyZdw_3tmr5tests17simple_native_256s1_0B5_",
+      "line": 726092,
+      "instructions": 54,
+      "stores": [
+        "\tvmovdqa\t%ymm2, (%r11,%r10,8)",
+        "\tvmovdqa\t%ymm2, 32(%r11,%r10,8)"
+      ],
+      "body": ".LBB2455_80:\n\tmovq\t%rbx, %r10\n\tleaq\t(%rdx,%r9), %rdi\n\tcmpq\t%r14, %rdi\n\tmovq\t%rsi, %rax\n\tcmovbq\t%r15, %rax\n\tsubq\t%rax, %rdi\n\tprefetcht1\t(%rcx,%rdi,8)\n\taddq\t%r8, %rbx\n\tmovq\t%rbx, %rdi\n\tshrq\t$3, %rdi\n\taddq\t%r13, %rdi\n\tmovq\t%rdi, %rax\n\tshrq\t$30, %rax\n\txorq\t%rdi, %rax\n\timulq\t%r12, %rax\n\tmovq\t%rax, %rdi\n\tshrq\t$27, %rdi\n\txorq\t%rax, %rdi\n\tmovabsq\t$-7723592293110705685, %rax\n\timulq\t%rax, %rdi\n\tmovq\t%rdi, %rax\n\tshrq\t$31, %rax\n\txorl\t%edi, %eax\n\tmovzbl\t%al, %edi\n\tandl\t$15, %eax\n\tshll\t$4, %edi\n\torl\t%eax, %edi\n\txorq\t$240, %rdi\n\tmovabsq\t$68736258049, %rax\n\timulq\t%rax, %rdi\n\tmovq\t%rdi, %rax\n\tshlq\t$48, %rax\n\torq\t%rdi, %rax\n\tshrq\t$16, %rdi\n\tmovq\t%r12, %r15\n\tmovq\t%rax, %r12\n\tshrdq\t$4, %rdi, %r12\n\tshldq\t$56, %rax, %rdi\n\tvmovq\t%rax, %xmm2\n\tvmovq\t%r12, %xmm3\n\tmovq\t%r15, %r12\n\txorl\t%r15d, %r15d\n\tvmovq\t%rdi, %xmm4\n\tvpunpcklqdq\t%xmm3, %xmm2, %xmm2\n\tvinserti128\t$1, %xmm4, %ymm2, %ymm2\n\tvpermq\t$36, %ymm2, %ymm2\n\tvpxor\t%ymm1, %ymm2, %ymm2\n\tvpxor\t%ymm0, %ymm2, %ymm2\n\tvmovdqa\t%ymm2, (%r11,%r10,8)\n\tvmovdqa\t%ymm2, 32(%r11,%r10,8)\n\taddq\t%r8, %rdx\n\tleaq\t(%rbx,%rbp), %rax\n\tcmpq\t%r14, %rax\n\tjb\t.LBB2455_80"
+    },
+    {
+      "symbol": "_RNCNvNtCsiYjGPJMyZdw_3tmr5tests17simple_native_256s1_0B5_",
+      "line": 726058,
+      "instructions": 84,
+      "stores": [
+        "\tvmovdqa\t%ymm2, (%r11,%r10,8)",
+        "\tvmovdqa\t%ymm2, 32(%r11,%r10,8)"
+      ],
+      "body": ".LBB2455_74:\n\taddq\t$-8, 80(%rsp)\n\tmovq\t88(%rsp), %rdi\n\tcmpq\t104(%rsp), %rdi\n\tjbe\t.LBB2455_21\n.LBB2455_75:\n\taddq\t$-8, %rdi\n\tmovq\t%r14, %rax\n\tsubq\t%rdi, %rax\n\tcmovbq\t%r15, %rax\n\tmovq\t%rax, %rdx\n\torq\t%r8, %rdx\n\tshrq\t$32, %rdx\n\tje\t.LBB2455_76\n\txorl\t%edx, %edx\n\tdivq\t%r8\n\tmovq\t%rax, %rsi\n\tjmp\t.LBB2455_78\n.LBB2455_76:\n\txorl\t%edx, %edx\n\tdivl\t%r8d\n\tmovl\t%eax, %esi\n.LBB2455_78:\n\tmovq\t64(%rsp), %rcx\n\tcmpq\t$1, %rdx\n\tsbbq\t$-1, %rsi\n\tmovq\t%rdi, 88(%rsp)\n\tcmpq\t%r14, %rdi\n\tjae\t.LBB2455_74\n\timulq\t%r8, %rsi\n\taddq\t$8, %rsi\n\tmovq\t80(%rsp), %rbx\n\tmovq\t88(%rsp), %rdx\n\t.p2align\t4\n.LBB2455_80:\n\tmovq\t%rbx, %r10\n\tleaq\t(%rdx,%r9), %rdi\n\tcmpq\t%r14, %rdi\n\tmovq\t%rsi, %rax\n\tcmovbq\t%r15, %rax\n\tsubq\t%rax, %rdi\n\tprefetcht1\t(%rcx,%rdi,8)\n\taddq\t%r8, %rbx\n\tmovq\t%rbx, %rdi\n\tshrq\t$3, %rdi\n\taddq\t%r13, %rdi\n\tmovq\t%rdi, %rax\n\tshrq\t$30, %rax\n\txorq\t%rdi, %rax\n\timulq\t%r12, %rax\n\tmovq\t%rax, %rdi\n\tshrq\t$27, %rdi\n\txorq\t%rax, %rdi\n\tmovabsq\t$-7723592293110705685, %rax\n\timulq\t%rax, %rdi\n\tmovq\t%rdi, %rax\n\tshrq\t$31, %rax\n\txorl\t%edi, %eax\n\tmovzbl\t%al, %edi\n\tandl\t$15, %eax\n\tshll\t$4, %edi\n\torl\t%eax, %edi\n\txorq\t$240, %rdi\n\tmovabsq\t$68736258049, %rax\n\timulq\t%rax, %rdi\n\tmovq\t%rdi, %rax\n\tshlq\t$48, %rax\n\torq\t%rdi, %rax\n\tshrq\t$16, %rdi\n\tmovq\t%r12, %r15\n\tmovq\t%rax, %r12\n\tshrdq\t$4, %rdi, %r12\n\tshldq\t$56, %rax, %rdi\n\tvmovq\t%rax, %xmm2\n\tvmovq\t%r12, %xmm3\n\tmovq\t%r15, %r12\n\txorl\t%r15d, %r15d\n\tvmovq\t%rdi, %xmm4\n\tvpunpcklqdq\t%xmm3, %xmm2, %xmm2\n\tvinserti128\t$1, %xmm4, %ymm2, %ymm2\n\tvpermq\t$36, %ymm2, %ymm2\n\tvpxor\t%ymm1, %ymm2, %ymm2\n\tvpxor\t%ymm0, %ymm2, %ymm2\n\tvmovdqa\t%ymm2, (%r11,%r10,8)\n\tvmovdqa\t%ymm2, 32(%r11,%r10,8)\n\taddq\t%r8, %rdx\n\tleaq\t(%rbx,%rbp), %rax\n\tcmpq\t%r14, %rax\n\tjb\t.LBB2455_80\n\tjmp\t.LBB2455_74"
+    },
+    {
+      "symbol": "_RNCNvNtCsiYjGPJMyZdw_3tmr5tests17simple_native_256s1_0B5_",
+      "line": 726204,
+      "instructions": 63,
+      "stores": [
+        "\tvmovdqa\t%ymm0, (%r11,%rbx,8)",
+        "\tvmovdqa\t%ymm0, 32(%r11,%rbx,8)"
+      ],
+      "body": ".LBB2455_93:\n\tleaq\t(%rdx,%r9), %rbp\n\tcmpq\t%r14, %rbp\n\tmovq\t%rsi, %rax\n\tcmovbq\t%r13, %rax\n\tmovq\t%rbx, %r13\n\tmovq\t%rdi, %rbx\n\tsubq\t%rax, %rbp\n\tprefetcht1\t(%rcx,%rbp,8)\n\taddq\t%r8, %rdi\n\tmovq\t%rdi, %rax\n\tshrq\t$3, %rax\n\taddq\t%r10, %rax\n\tmovq\t%rax, %rbp\n\tshrq\t$30, %rbp\n\txorq\t%rax, %rbp\n\tmovabsq\t$-4658895280553007687, %rax\n\timulq\t%rax, %rbp\n\tmovq\t%rbp, %rax\n\tshrq\t$27, %rax\n\txorq\t%rbp, %rax\n\tmovabsq\t$-7723592293110705685, %rbp\n\timulq\t%rbp, %rax\n\tmovq\t%rax, %rbp\n\tshrq\t$31, %rbp\n\txorl\t%eax, %ebp\n\tmovq\t%rbp, %rax\n\tshlq\t$16, %rax\n\torq\t%rbp, %rax\n\tmovabsq\t$281470681808895, %rbp\n\tandq\t%rbp, %rax\n\tmovq\t%rax, %rbp\n\tshlq\t$8, %rbp\n\torq\t%rax, %rbp\n\tmovabsq\t$71777214294589695, %rax\n\tandq\t%rax, %rbp\n\tmovq\t%rbp, %rax\n\tshlq\t$4, %rax\n\torq\t%rbp, %rax\n\tmovq\t%rax, %rbp\n\tandq\t%r15, %rbp\n\tshlq\t$4, %rax\n\tandq\t%r12, %rax\n\torq\t%rbp, %rax\n\txorq\t%r12, %rax\n\tmovzwl\t%ax, %ebp\n\tshll\t$16, %eax\n\torq\t%rbp, %rax\n\tmovl\t$4294901760, %ebp\n\txorq\t%rbp, %rax\n\tmovq\t%rax, %rbp\n\tshlq\t$32, %rbp\n\torq\t%rax, %rbp\n\tvmovq\t%rbp, %xmm0\n\tvpxor\t%xmm1, %xmm0, %xmm0\n\tvpbroadcastq\t%xmm0, %ymm0\n\tvmovdqa\t%ymm0, (%r11,%rbx,8)\n\tvmovdqa\t%ymm0, 32(%r11,%rbx,8)\n\tmovq\t%r13, %rbx\n\txorl\t%r13d, %r13d\n\taddq\t%r8, %rdx\n\tleaq\t(%rbx,%rdi), %rax\n\tcmpq\t%r14, %rax\n\tjb\t.LBB2455_93"
+    },
+    {
+      "symbol": "_RNCNvNtCsiYjGPJMyZdw_3tmr5tests17simple_native_256s1_0B5_",
+      "line": 726169,
+      "instructions": 94,
+      "stores": [
+        "\tvmovdqa\t%ymm0, (%r11,%rbx,8)",
+        "\tvmovdqa\t%ymm0, 32(%r11,%rbx,8)"
+      ],
+      "body": ".LBB2455_87:\n\taddq\t$-8, 80(%rsp)\n\tmovq\t88(%rsp), %r10\n\tcmpq\t104(%rsp), %r10\n\tjbe\t.LBB2455_21\n.LBB2455_88:\n\taddq\t$-8, %r10\n\tmovq\t%r14, %rax\n\tsubq\t%r10, %rax\n\tcmovbq\t%r13, %rax\n\tmovq\t%rax, %rdx\n\torq\t%r8, %rdx\n\tshrq\t$32, %rdx\n\tje\t.LBB2455_89\n\txorl\t%edx, %edx\n\tdivq\t%r8\n\tmovq\t%rax, %rsi\n\tjmp\t.LBB2455_91\n.LBB2455_89:\n\txorl\t%edx, %edx\n\tdivl\t%r8d\n\tmovl\t%eax, %esi\n.LBB2455_91:\n\tmovq\t64(%rsp), %rcx\n\tcmpq\t$1, %rdx\n\tsbbq\t$-1, %rsi\n\tmovq\t%r10, 88(%rsp)\n\tcmpq\t%r14, %r10\n\tmovq\t72(%rsp), %r10\n\tjae\t.LBB2455_87\n\timulq\t%r8, %rsi\n\taddq\t$8, %rsi\n\tmovq\t80(%rsp), %rdi\n\tmovq\t88(%rsp), %rdx\n\t.p2align\t4\n.LBB2455_93:\n\tleaq\t(%rdx,%r9), %rbp\n\tcmpq\t%r14, %rbp\n\tmovq\t%rsi, %rax\n\tcmovbq\t%r13, %rax\n\tmovq\t%rbx, %r13\n\tmovq\t%rdi, %rbx\n\tsubq\t%rax, %rbp\n\tprefetcht1\t(%rcx,%rbp,8)\n\taddq\t%r8, %rdi\n\tmovq\t%rdi, %rax\n\tshrq\t$3, %rax\n\taddq\t%r10, %rax\n\tmovq\t%rax, %rbp\n\tshrq\t$30, %rbp\n\txorq\t%rax, %rbp\n\tmovabsq\t$-4658895280553007687, %rax\n\timulq\t%rax, %rbp\n\tmovq\t%rbp, %rax\n\tshrq\t$27, %rax\n\txorq\t%rbp, %rax\n\tmovabsq\t$-7723592293110705685, %rbp\n\timulq\t%rbp, %rax\n\tmovq\t%rax, %rbp\n\tshrq\t$31, %rbp\n\txorl\t%eax, %ebp\n\tmovq\t%rbp, %rax\n\tshlq\t$16, %rax\n\torq\t%rbp, %rax\n\tmovabsq\t$281470681808895, %rbp\n\tandq\t%rbp, %rax\n\tmovq\t%rax, %rbp\n\tshlq\t$8, %rbp\n\torq\t%rax, %rbp\n\tmovabsq\t$71777214294589695, %rax\n\tandq\t%rax, %rbp\n\tmovq\t%rbp, %rax\n\tshlq\t$4, %rax\n\torq\t%rbp, %rax\n\tmovq\t%rax, %rbp\n\tandq\t%r15, %rbp\n\tshlq\t$4, %rax\n\tandq\t%r12, %rax\n\torq\t%rbp, %rax\n\txorq\t%r12, %rax\n\tmovzwl\t%ax, %ebp\n\tshll\t$16, %eax\n\torq\t%rbp, %rax\n\tmovl\t$4294901760, %ebp\n\txorq\t%rbp, %rax\n\tmovq\t%rax, %rbp\n\tshlq\t$32, %rbp\n\torq\t%rax, %rbp\n\tvmovq\t%rbp, %xmm0\n\tvpxor\t%xmm1, %xmm0, %xmm0\n\tvpbroadcastq\t%xmm0, %ymm0\n\tvmovdqa\t%ymm0, (%r11,%rbx,8)\n\tvmovdqa\t%ymm0, 32(%r11,%rbx,8)\n\tmovq\t%r13, %rbx\n\txorl\t%r13d, %r13d\n\taddq\t%r8, %rdx\n\tleaq\t(%rbx,%rdi), %rax\n\tcmpq\t%r14, %rax\n\tjb\t.LBB2455_93\n\tjmp\t.LBB2455_87"
+    },
+    {
+      "symbol": "_RNCNvNtCsiYjGPJMyZdw_3tmr5tests17simple_native_128s1_0B5_",
+      "line": 820147,
+      "instructions": 38,
+      "stores": [
+        "\tvmovdqa\t%xmm7, (%rcx,%rbx,8)",
+        "\tvmovdqa\t%xmm8, 16(%rcx,%rbx,8)",
+        "\tvmovdqa\t%xmm9, 32(%rcx,%rbx,8)",
+        "\tvmovdqa\t%xmm5, 48(%rcx,%rbx,8)"
+      ],
+      "body": ".LBB2603_20:\n\tmovl\t%r15d, %ecx\n\tandl\t$1, %ecx\n\tnegq\t%rcx\n\tvmovq\t%rcx, %xmm5\n\tvpbroadcastq\t%xmm5, %xmm5\n\tmovq\t%rax, %rcx\n\tandq\t$-16, %rcx\n\timulq\t%rdx, %rcx\n\taddq\t64(%rsp), %rcx\n\tvmovq\t%rcx, %xmm6\n\tvpbroadcastq\t%xmm6, %xmm6\n\tvpaddq\t%xmm1, %xmm6, %xmm7\n\tvpsrlq\t$32, %xmm7, %xmm8\n\tvpaddq\t%xmm2, %xmm6, %xmm9\n\tvpsrlq\t$32, %xmm9, %xmm10\n\tvpaddq\t%xmm3, %xmm6, %xmm11\n\tvpsrlq\t$32, %xmm11, %xmm12\n\tvpaddq\t%xmm4, %xmm6, %xmm6\n\tvpsrlq\t$32, %xmm6, %xmm13\n\tvpxor\t%xmm5, %xmm0, %xmm5\n\tvpxor\t%xmm7, %xmm5, %xmm7\n\tvpxor\t%xmm7, %xmm8, %xmm7\n\tvpxor\t%xmm5, %xmm9, %xmm8\n\tvpxor\t%xmm10, %xmm8, %xmm8\n\tvpxor\t%xmm5, %xmm11, %xmm9\n\tvpxor\t%xmm12, %xmm9, %xmm9\n\tvpxor\t%xmm6, %xmm5, %xmm5\n\tvpxor\t%xmm5, %xmm13, %xmm5\n\tmovq\t56(%rsp), %rcx\n\tvmovdqa\t%xmm7, (%rcx,%rbx,8)\n\tvmovdqa\t%xmm8, 16(%rcx,%rbx,8)\n\tvmovdqa\t%xmm9, 32(%rcx,%rbx,8)\n\tvmovdqa\t%xmm5, 48(%rcx,%rbx,8)\n\tincq\t%r15\n\taddq\t$8, %rbx\n\taddq\t$8, %rax\n\tcmpq\t%r14, %rbx\n\tjb\t.LBB2603_20"
+    },
+    {
+      "symbol": "_RNCNvNtCsiYjGPJMyZdw_3tmr5tests17simple_native_128s1_0B5_",
+      "line": 820200,
+      "instructions": 49,
+      "stores": [
+        "\tvmovdqa\t%xmm5, (%rcx,%rbx,8)",
+        "\tvmovdqa\t%xmm6, 16(%rcx,%rbx,8)",
+        "\tvmovdqa\t%xmm7, 32(%rcx,%rbx,8)",
+        "\tvmovdqa\t%xmm4, 48(%rcx,%rbx,8)"
+      ],
+      "body": ".LBB2603_16:\n\tmovq\t%r12, %r9\n\tshrq\t$30, %r9\n\txorq\t%r12, %r9\n\timulq\t%rax, %r9\n\tmovq\t%r9, %r10\n\tshrq\t$27, %r10\n\txorq\t%r9, %r10\n\timulq\t%rdx, %r10\n\tmovq\t%r10, %r9\n\tshrq\t$31, %r9\n\txorq\t%r10, %r9\n\tvmovq\t%r9, %xmm4\n\txorq\t64(%rsp), %r9\n\trorxq\t$35, %r9, %r9\n\timulq\t%r8, %r9\n\torq\t$1, %r9\n\tvmovq\t%r9, %xmm5\n\tvpbroadcastq\t%xmm5, %xmm5\n\tvpbroadcastq\t%xmm4, %xmm4\n\tvpslldq\t$8, %xmm5, %xmm6\n\tvpaddq\t%xmm4, %xmm6, %xmm6\n\tvpmuludq\t%xmm1, %xmm5, %xmm7\n\tvpsrlq\t$32, %xmm5, %xmm8\n\tvpmuludq\t%xmm1, %xmm8, %xmm9\n\tvpsllq\t$32, %xmm9, %xmm9\n\tvpaddq\t%xmm4, %xmm7, %xmm7\n\tvpaddq\t%xmm7, %xmm9, %xmm7\n\tvpmuludq\t%xmm2, %xmm5, %xmm9\n\tvpmuludq\t%xmm2, %xmm8, %xmm10\n\tvpsllq\t$32, %xmm10, %xmm10\n\tvpaddq\t%xmm4, %xmm9, %xmm9\n\tvpaddq\t%xmm10, %xmm9, %xmm9\n\tvpmuludq\t%xmm3, %xmm5, %xmm5\n\tvpmuludq\t%xmm3, %xmm8, %xmm8\n\tvpsllq\t$32, %xmm8, %xmm8\n\tvpaddq\t%xmm4, %xmm5, %xmm4\n\tvpaddq\t%xmm4, %xmm8, %xmm4\n\tvpxor\t%xmm0, %xmm6, %xmm5\n\tvpxor\t%xmm0, %xmm7, %xmm6\n\tvpxor\t%xmm0, %xmm9, %xmm7\n\tvpxor\t%xmm0, %xmm4, %xmm4\n\tvmovdqa\t%xmm5, (%rcx,%rbx,8)\n\tvmovdqa\t%xmm6, 16(%rcx,%rbx,8)\n\tvmovdqa\t%xmm7, 32(%rcx,%rbx,8)\n\tvmovdqa\t%xmm4, 48(%rcx,%rbx,8)\n\taddq\t$8, %rbx\n\tincq\t%r12\n\tcmpq\t%r14, %rbx\n\tjb\t.LBB2603_16"
+    },
+    {
+      "symbol": "_RNCNvNtCsiYjGPJMyZdw_3tmr5tests17simple_native_128s1_0B5_",
+      "line": 820264,
+      "instructions": 28,
+      "stores": [
+        "\tvmovdqa\t%xmm6, (%rcx,%rbx,8)",
+        "\tvmovdqa\t%xmm7, 16(%rcx,%rbx,8)",
+        "\tvmovdqa\t%xmm8, 32(%rcx,%rbx,8)",
+        "\tvmovdqa\t%xmm5, 48(%rcx,%rbx,8)"
+      ],
+      "body": ".LBB2603_7:\n\tmovq\t64(%rsp), %rdx\n\tvmovq\t%rdx, %xmm5\n\tvpbroadcastq\t%xmm5, %xmm5\n\tvpaddq\t%xmm1, %xmm5, %xmm6\n\tvpsrlq\t$32, %xmm6, %xmm7\n\tvpaddq\t%xmm2, %xmm5, %xmm8\n\tvpsrlq\t$32, %xmm8, %xmm9\n\tvpaddq\t%xmm3, %xmm5, %xmm10\n\tvpsrlq\t$32, %xmm10, %xmm11\n\tvpaddq\t%xmm4, %xmm5, %xmm5\n\tvpsrlq\t$32, %xmm5, %xmm12\n\tvpxor\t%xmm6, %xmm0, %xmm6\n\tvpxor\t%xmm7, %xmm6, %xmm6\n\tvpxor\t%xmm0, %xmm8, %xmm7\n\tvpxor\t%xmm7, %xmm9, %xmm7\n\tvpxor\t%xmm0, %xmm10, %xmm8\n\tvpxor\t%xmm11, %xmm8, %xmm8\n\tvpxor\t%xmm5, %xmm0, %xmm5\n\tvpxor\t%xmm5, %xmm12, %xmm5\n\tvmovdqa\t%xmm6, (%rcx,%rbx,8)\n\tvmovdqa\t%xmm7, 16(%rcx,%rbx,8)\n\tvmovdqa\t%xmm8, 32(%rcx,%rbx,8)\n\tvmovdqa\t%xmm5, 48(%rcx,%rbx,8)\n\taddq\t$8, %rbx\n\taddq\t%rax, %rdx\n\tmovq\t%rdx, 64(%rsp)\n\tcmpq\t%r14, %rbx\n\tjb\t.LBB2603_7"
+    },
+    {
+      "symbol": "_RNCNvNtCsiYjGPJMyZdw_3tmr5tests17simple_native_128s1_0B5_",
+      "line": 820309,
+      "instructions": 98,
+      "stores": [
+        "\tvmovdqa\t%xmm9, (%rcx,%rbx,8)",
+        "\tvmovdqa\t%xmm11, 16(%rcx,%rbx,8)",
+        "\tvmovdqa\t%xmm12, 32(%rcx,%rbx,8)",
+        "\tvmovdqa\t%xmm10, 48(%rcx,%rbx,8)"
+      ],
+      "body": ".LBB2603_11:\n\tvmovq\t%rax, %xmm9\n\tvpbroadcastq\t%xmm9, %xmm10\n\tvpaddq\t%xmm1, %xmm10, %xmm9\n\tvpsrlq\t$30, %xmm9, %xmm11\n\tvpxor\t%xmm9, %xmm11, %xmm9\n\tvpmuludq\t%xmm2, %xmm9, %xmm11\n\tvpsrlq\t$32, %xmm9, %xmm12\n\tvpmuludq\t%xmm3, %xmm12, %xmm12\n\tvpaddq\t%xmm12, %xmm11, %xmm11\n\tvpsllq\t$32, %xmm11, %xmm11\n\tvpmuludq\t%xmm3, %xmm9, %xmm9\n\tvpaddq\t%xmm11, %xmm9, %xmm9\n\tvpsrlq\t$27, %xmm9, %xmm11\n\tvpxor\t%xmm9, %xmm11, %xmm9\n\tvpmuludq\t%xmm4, %xmm9, %xmm11\n\tvpsrlq\t$32, %xmm9, %xmm12\n\tvpmuludq\t%xmm5, %xmm12, %xmm12\n\tvpaddq\t%xmm12, %xmm11, %xmm11\n\tvpsllq\t$32, %xmm11, %xmm11\n\tvpmuludq\t%xmm5, %xmm9, %xmm9\n\tvpaddq\t%xmm11, %xmm9, %xmm9\n\tvpaddq\t%xmm6, %xmm10, %xmm11\n\tvpsrlq\t$30, %xmm11, %xmm12\n\tvpxor\t%xmm11, %xmm12, %xmm11\n\tvpmuludq\t%xmm2, %xmm11, %xmm12\n\tvpsrlq\t$32, %xmm11, %xmm13\n\tvpmuludq\t%xmm3, %xmm13, %xmm13\n\tvpaddq\t%xmm13, %xmm12, %xmm12\n\tvpsllq\t$32, %xmm12, %xmm12\n\tvpmuludq\t%xmm3, %xmm11, %xmm11\n\tvpaddq\t%xmm12, %xmm11, %xmm11\n\tvpsrlq\t$27, %xmm11, %xmm12\n\tvpxor\t%xmm11, %xmm12, %xmm11\n\tvpmuludq\t%xmm4, %xmm11, %xmm12\n\tvpsrlq\t$32, %xmm11, %xmm13\n\tvpmuludq\t%xmm5, %xmm13, %xmm13\n\tvpaddq\t%xmm13, %xmm12, %xmm12\n\tvpsllq\t$32, %xmm12, %xmm12\n\tvpmuludq\t%xmm5, %xmm11, %xmm11\n\tvpaddq\t%xmm12, %xmm11, %xmm11\n\tvpaddq\t%xmm7, %xmm10, %xmm12\n\tvpsrlq\t$30, %xmm12, %xmm13\n\tvpxor\t%xmm12, %xmm13, %xmm12\n\tvpmuludq\t%xmm2, %xmm12, %xmm13\n\tvpsrlq\t$32, %xmm12, %xmm14\n\tvpmuludq\t%xmm3, %xmm14, %xmm14\n\tvpaddq\t%xmm14, %xmm13, %xmm13\n\tvpsllq\t$32, %xmm13, %xmm13\n\tvpmuludq\t%xmm3, %xmm12, %xmm12\n\tvpaddq\t%xmm13, %xmm12, %xmm12\n\tvpsrlq\t$27, %xmm12, %xmm13\n\tvpxor\t%xmm12, %xmm13, %xmm12\n\tvpmuludq\t%xmm4, %xmm12, %xmm13\n\tvpsrlq\t$32, %xmm12, %xmm14\n\tvpmuludq\t%xmm5, %xmm14, %xmm14\n\tvpaddq\t%xmm14, %xmm13, %xmm13\n\tvpsllq\t$32, %xmm13, %xmm13\n\tvpmuludq\t%xmm5, %xmm12, %xmm12\n\tvpaddq\t%xmm13, %xmm12, %xmm12\n\tvpaddq\t%xmm8, %xmm10, %xmm10\n\tvpsrlq\t$30, %xmm10, %xmm13\n\tvpxor\t%xmm10, %xmm13, %xmm10\n\tvpmuludq\t%xmm2, %xmm10, %xmm13\n\tvpsrlq\t$32, %xmm10, %xmm14\n\tvpmuludq\t%xmm3, %xmm14, %xmm14\n\tvpaddq\t%xmm14, %xmm13, %xmm13\n\tvpsllq\t$32, %xmm13, %xmm13\n\tvpmuludq\t%xmm3, %xmm10, %xmm10\n\tvpaddq\t%xmm13, %xmm10, %xmm10\n\tvpsrlq\t$27, %xmm10, %xmm13\n\tvpxor\t%xmm10, %xmm13, %xmm10\n\tvpmuludq\t%xmm4, %xmm10, %xmm13\n\tvpsrlq\t$32, %xmm10, %xmm14\n\tvpmuludq\t%xmm5, %xmm14, %xmm14\n\tvpaddq\t%xmm14, %xmm13, %xmm13\n\tvpsllq\t$32, %xmm13, %xmm13\n\tvpmuludq\t%xmm5, %xmm10, %xmm10\n\tvpaddq\t%xmm13, %xmm10, %xmm10\n\tvpsrlq\t$31, %xmm9, %xmm13\n\tvpxor\t%xmm0, %xmm9, %xmm9\n\tvpxor\t%xmm13, %xmm9, %xmm9\n\tvpsrlq\t$31, %xmm11, %xmm13\n\tvpxor\t%xmm0, %xmm11, %xmm11\n\tvpxor\t%xmm13, %xmm11, %xmm11\n\tvpsrlq\t$31, %xmm12, %xmm13\n\tvpxor\t%xmm0, %xmm12, %xmm12\n\tvpxor\t%xmm13, %xmm12, %xmm12\n\tvpsrlq\t$31, %xmm10, %xmm13\n\tvpxor\t%xmm0, %xmm10, %xmm10\n\tvpxor\t%xmm13, %xmm10, %xmm10\n\tvmovdqa\t%xmm9, (%rcx,%rbx,8)\n\tvmovdqa\t%xmm11, 16(%rcx,%rbx,8)\n\tvmovdqa\t%xmm12, 32(%rcx,%rbx,8)\n\tvmovdqa\t%xmm10, 48(%rcx,%rbx,8)\n\taddq\t$8, %rbx\n\taddq\t$8, %rax\n\tcmpq\t%r14, %rbx\n\tjb\t.LBB2603_11"
+    },
+    {
+      "symbol": "_RNCNvNtCsiYjGPJMyZdw_3tmr5tests17simple_native_128s1_0B5_",
+      "line": 820642,
+      "instructions": 65,
+      "stores": [
+        "\tvmovdqa\t%xmm5, (%r11,%rsi,8)",
+        "\tvmovdqa\t%xmm6, 16(%r11,%rsi,8)",
+        "\tvmovdqa\t%xmm7, 32(%r11,%rsi,8)",
+        "\tvmovdqa\t%xmm4, 48(%r11,%rsi,8)"
+      ],
+      "body": ".LBB2603_145:\n\tmovq\t%rcx, %rdi\n\tleaq\t(%rdx,%r9), %rcx\n\tcmpq\t%r14, %rcx\n\tmovq\t%r10, %rax\n\tcmovbq\t%rsi, %rax\n\tmovq\t%rbx, %rsi\n\tsubq\t%rax, %rcx\n\tprefetcht1\t(%r13,%rcx,8)\n\taddq\t%r8, %rbx\n\tmovq\t%rbx, %rax\n\tshrq\t$3, %rax\n\taddq\t%r12, %rax\n\tmovq\t%rax, %rcx\n\tshrq\t$30, %rcx\n\txorq\t%rax, %rcx\n\tmovabsq\t$-4658895280553007687, %rax\n\timulq\t%rax, %rcx\n\tmovq\t%rcx, %rax\n\tshrq\t$27, %rax\n\txorq\t%rcx, %rax\n\tmovabsq\t$-7723592293110705685, %rcx\n\timulq\t%rcx, %rax\n\tmovq\t%rax, %rcx\n\tshrq\t$31, %rcx\n\txorq\t%rax, %rcx\n\tvmovq\t%rcx, %xmm4\n\txorq\t%rbp, %rcx\n\trorxq\t$35, %rcx, %rax\n\tmovq\t%rdi, %rcx\n\timulq\t%r15, %rax\n\torq\t$1, %rax\n\tvmovq\t%rax, %xmm5\n\tvpbroadcastq\t%xmm5, %xmm5\n\tvpbroadcastq\t%xmm4, %xmm4\n\tvpslldq\t$8, %xmm5, %xmm6\n\tvpaddq\t%xmm4, %xmm6, %xmm6\n\tvpmuludq\t%xmm1, %xmm5, %xmm7\n\tvpsrlq\t$32, %xmm5, %xmm8\n\tvpmuludq\t%xmm1, %xmm8, %xmm9\n\tvpsllq\t$32, %xmm9, %xmm9\n\tvpaddq\t%xmm4, %xmm7, %xmm7\n\tvpaddq\t%xmm7, %xmm9, %xmm7\n\tvpmuludq\t%xmm2, %xmm5, %xmm9\n\tvpmuludq\t%xmm2, %xmm8, %xmm10\n\tvpsllq\t$32, %xmm10, %xmm10\n\tvpaddq\t%xmm4, %xmm9, %xmm9\n\tvpaddq\t%xmm10, %xmm9, %xmm9\n\tvpmuludq\t%xmm3, %xmm5, %xmm5\n\tvpmuludq\t%xmm3, %xmm8, %xmm8\n\tvpsllq\t$32, %xmm8, %xmm8\n\tvpaddq\t%xmm4, %xmm5, %xmm4\n\tvpaddq\t%xmm4, %xmm8, %xmm4\n\tvpxor\t%xmm0, %xmm6, %xmm5\n\tvpxor\t%xmm0, %xmm7, %xmm6\n\tvpxor\t%xmm0, %xmm9, %xmm7\n\tvpxor\t%xmm0, %xmm4, %xmm4\n\tvmovdqa\t%xmm5, (%r11,%rsi,8)\n\tvmovdqa\t%xmm6, 16(%r11,%rsi,8)\n\tvmovdqa\t%xmm7, 32(%r11,%rsi,8)\n\tvmovdqa\t%xmm4, 48(%r11,%rsi,8)\n\txorl\t%esi, %esi\n\taddq\t%r8, %rdx\n\tleaq\t(%rdi,%rbx), %rax\n\tcmpq\t%r14, %rax\n\tjb\t.LBB2603_145"
+    },
+    {
+      "symbol": "_RNCNvNtCsiYjGPJMyZdw_3tmr5tests17simple_native_128s1_0B5_",
+      "line": 820608,
+      "instructions": 94,
+      "stores": [
+        "\tvmovdqa\t%xmm5, (%r11,%rsi,8)",
+        "\tvmovdqa\t%xmm6, 16(%r11,%rsi,8)",
+        "\tvmovdqa\t%xmm7, 32(%r11,%rsi,8)",
+        "\tvmovdqa\t%xmm4, 48(%r11,%rsi,8)"
+      ],
+      "body": ".LBB2603_139:\n\taddq\t$-8, 88(%rsp)\n\tmovq\t72(%rsp), %rbx\n\tcmpq\t96(%rsp), %rbx\n\tjbe\t.LBB2603_21\n.LBB2603_140:\n\taddq\t$-8, %rbx\n\tmovq\t%r14, %rax\n\tsubq\t%rbx, %rax\n\tcmovbq\t%rsi, %rax\n\tmovq\t%rax, %rdx\n\torq\t%r8, %rdx\n\tshrq\t$32, %rdx\n\tje\t.LBB2603_141\n\txorl\t%edx, %edx\n\tdivq\t%r8\n\tmovq\t%rax, %r10\n\tjmp\t.LBB2603_143\n\t.p2align\t4\n.LBB2603_141:\n\txorl\t%edx, %edx\n\tdivl\t%r8d\n\tmovl\t%eax, %r10d\n.LBB2603_143:\n\tcmpq\t$1, %rdx\n\tsbbq\t$-1, %r10\n\tmovq\t%rbx, 72(%rsp)\n\tcmpq\t%r14, %rbx\n\tjae\t.LBB2603_139\n\timulq\t%r8, %r10\n\taddq\t$8, %r10\n\tmovq\t88(%rsp), %rbx\n\tmovq\t72(%rsp), %rdx\n\t.p2align\t4\n.LBB2603_145:\n\tmovq\t%rcx, %rdi\n\tleaq\t(%rdx,%r9), %rcx\n\tcmpq\t%r14, %rcx\n\tmovq\t%r10, %rax\n\tcmovbq\t%rsi, %rax\n\tmovq\t%rbx, %rsi\n\tsubq\t%rax, %rcx\n\tprefetcht1\t(%r13,%rcx,8)\n\taddq\t%r8, %rbx\n\tmovq\t%rbx, %rax\n\tshrq\t$3, %rax\n\taddq\t%r12, %rax\n\tmovq\t%rax, %rcx\n\tshrq\t$30, %rcx\n\txorq\t%rax, %rcx\n\tmovabsq\t$-4658895280553007687, %rax\n\timulq\t%rax, %rcx\n\tmovq\t%rcx, %rax\n\tshrq\t$27, %rax\n\txorq\t%rcx, %rax\n\tmovabsq\t$-7723592293110705685, %rcx\n\timulq\t%rcx, %rax\n\tmovq\t%rax, %rcx\n\tshrq\t$31, %rcx\n\txorq\t%rax, %rcx\n\tvmovq\t%rcx, %xmm4\n\txorq\t%rbp, %rcx\n\trorxq\t$35, %rcx, %rax\n\tmovq\t%rdi, %rcx\n\timulq\t%r15, %rax\n\torq\t$1, %rax\n\tvmovq\t%rax, %xmm5\n\tvpbroadcastq\t%xmm5, %xmm5\n\tvpbroadcastq\t%xmm4, %xmm4\n\tvpslldq\t$8, %xmm5, %xmm6\n\tvpaddq\t%xmm4, %xmm6, %xmm6\n\tvpmuludq\t%xmm1, %xmm5, %xmm7\n\tvpsrlq\t$32, %xmm5, %xmm8\n\tvpmuludq\t%xmm1, %xmm8, %xmm9\n\tvpsllq\t$32, %xmm9, %xmm9\n\tvpaddq\t%xmm4, %xmm7, %xmm7\n\tvpaddq\t%xmm7, %xmm9, %xmm7\n\tvpmuludq\t%xmm2, %xmm5, %xmm9\n\tvpmuludq\t%xmm2, %xmm8, %xmm10\n\tvpsllq\t$32, %xmm10, %xmm10\n\tvpaddq\t%xmm4, %xmm9, %xmm9\n\tvpaddq\t%xmm10, %xmm9, %xmm9\n\tvpmuludq\t%xmm3, %xmm5, %xmm5\n\tvpmuludq\t%xmm3, %xmm8, %xmm8\n\tvpsllq\t$32, %xmm8, %xmm8\n\tvpaddq\t%xmm4, %xmm5, %xmm4\n\tvpaddq\t%xmm4, %xmm8, %xmm4\n\tvpxor\t%xmm0, %xmm6, %xmm5\n\tvpxor\t%xmm0, %xmm7, %xmm6\n\tvpxor\t%xmm0, %xmm9, %xmm7\n\tvpxor\t%xmm0, %xmm4, %xmm4\n\tvmovdqa\t%xmm5, (%r11,%rsi,8)\n\tvmovdqa\t%xmm6, 16(%r11,%rsi,8)\n\tvmovdqa\t%xmm7, 32(%r11,%rsi,8)\n\tvmovdqa\t%xmm4, 48(%r11,%rsi,8)\n\txorl\t%esi, %esi\n\taddq\t%r8, %rdx\n\tleaq\t(%rdi,%rbx), %rax\n\tcmpq\t%r14, %rax\n\tjb\t.LBB2603_145\n\tjmp\t.LBB2603_139"
+    },
+    {
+      "symbol": "_RNCNvNtCsiYjGPJMyZdw_3tmr5tests17simple_native_128s1_0B5_",
+      "line": 820877,
+      "instructions": 108,
+      "stores": [
+        "\tvmovdqa\t%xmm9, -48(%r11,%rdx,8)",
+        "\tvmovdqa\t%xmm11, -32(%r11,%rdx,8)",
+        "\tvmovdqa\t%xmm12, -16(%r11,%rdx,8)",
+        "\tvmovdqa\t%xmm10, (%r11,%rdx,8)"
+      ],
+      "body": ".LBB2603_47:\n\tleaq\t(%rdi,%r9), %r13\n\tcmpq\t%r14, %r13\n\tmovq\t%rax, %rbp\n\tcmovbq\t%r12, %rbp\n\tleaq\t(%r15,%rdx), %rbx\n\tandq\t$-8, %rbx\n\taddq\t%r10, %rbx\n\tvmovq\t%rbx, %xmm9\n\tvpbroadcastq\t%xmm9, %xmm10\n\tvpaddq\t%xmm1, %xmm10, %xmm9\n\tvpsrlq\t$30, %xmm9, %xmm11\n\tvpxor\t%xmm9, %xmm11, %xmm9\n\tvpmuludq\t%xmm2, %xmm9, %xmm11\n\tvpsrlq\t$32, %xmm9, %xmm12\n\tvpmuludq\t%xmm3, %xmm12, %xmm12\n\tvpaddq\t%xmm12, %xmm11, %xmm11\n\tvpsllq\t$32, %xmm11, %xmm11\n\tvpmuludq\t%xmm3, %xmm9, %xmm9\n\tvpaddq\t%xmm11, %xmm9, %xmm9\n\tvpsrlq\t$27, %xmm9, %xmm11\n\tvpxor\t%xmm9, %xmm11, %xmm9\n\tvpmuludq\t%xmm4, %xmm9, %xmm11\n\tvpsrlq\t$32, %xmm9, %xmm12\n\tvpmuludq\t%xmm5, %xmm12, %xmm12\n\tvpaddq\t%xmm12, %xmm11, %xmm11\n\tvpsllq\t$32, %xmm11, %xmm11\n\tvpmuludq\t%xmm5, %xmm9, %xmm9\n\tvpaddq\t%xmm11, %xmm9, %xmm9\n\tvpaddq\t%xmm6, %xmm10, %xmm11\n\tvpsrlq\t$30, %xmm11, %xmm12\n\tvpxor\t%xmm11, %xmm12, %xmm11\n\tvpmuludq\t%xmm2, %xmm11, %xmm12\n\tvpsrlq\t$32, %xmm11, %xmm13\n\tvpmuludq\t%xmm3, %xmm13, %xmm13\n\tvpaddq\t%xmm13, %xmm12, %xmm12\n\tvpsllq\t$32, %xmm12, %xmm12\n\tvpmuludq\t%xmm3, %xmm11, %xmm11\n\tvpaddq\t%xmm12, %xmm11, %xmm11\n\tvpsrlq\t$27, %xmm11, %xmm12\n\tvpxor\t%xmm11, %xmm12, %xmm11\n\tvpmuludq\t%xmm4, %xmm11, %xmm12\n\tvpsrlq\t$32, %xmm11, %xmm13\n\tvpmuludq\t%xmm5, %xmm13, %xmm13\n\tvpaddq\t%xmm13, %xmm12, %xmm12\n\tvpsllq\t$32, %xmm12, %xmm12\n\tvpmuludq\t%xmm5, %xmm11, %xmm11\n\tvpaddq\t%xmm12, %xmm11, %xmm11\n\tvpaddq\t%xmm7, %xmm10, %xmm12\n\tvpsrlq\t$30, %xmm12, %xmm13\n\tvpxor\t%xmm12, %xmm13, %xmm12\n\tvpmuludq\t%xmm2, %xmm12, %xmm13\n\tvpsrlq\t$32, %xmm12, %xmm14\n\tvpmuludq\t%xmm3, %xmm14, %xmm14\n\tvpaddq\t%xmm14, %xmm13, %xmm13\n\tvpsllq\t$32, %xmm13, %xmm13\n\tvpmuludq\t%xmm3, %xmm12, %xmm12\n\tvpaddq\t%xmm13, %xmm12, %xmm12\n\tvpsrlq\t$27, %xmm12, %xmm13\n\tvpxor\t%xmm12, %xmm13, %xmm12\n\tvpmuludq\t%xmm4, %xmm12, %xmm13\n\tvpsrlq\t$32, %xmm12, %xmm14\n\tvpmuludq\t%xmm5, %xmm14, %xmm14\n\tvpaddq\t%xmm14, %xmm13, %xmm13\n\tvpsllq\t$32, %xmm13, %xmm13\n\tvpmuludq\t%xmm5, %xmm12, %xmm12\n\tvpaddq\t%xmm13, %xmm12, %xmm12\n\tvpaddq\t%xmm8, %xmm10, %xmm10\n\tvpsrlq\t$30, %xmm10, %xmm13\n\tvpxor\t%xmm10, %xmm13, %xmm10\n\tvpmuludq\t%xmm2, %xmm10, %xmm13\n\tvpsrlq\t$32, %xmm10, %xmm14\n\tvpmuludq\t%xmm3, %xmm14, %xmm14\n\tvpaddq\t%xmm14, %xmm13, %xmm13\n\tvpsllq\t$32, %xmm13, %xmm13\n\tvpmuludq\t%xmm3, %xmm10, %xmm10\n\tvpaddq\t%xmm13, %xmm10, %xmm10\n\tvpsrlq\t$27, %xmm10, %xmm13\n\tvpxor\t%xmm10, %xmm13, %xmm10\n\tvpmuludq\t%xmm4, %xmm10, %xmm13\n\tvpsrlq\t$32, %xmm10, %xmm14\n\tvpmuludq\t%xmm5, %xmm14, %xmm14\n\tvpaddq\t%xmm14, %xmm13, %xmm13\n\tvpsllq\t$32, %xmm13, %xmm13\n\tvpmuludq\t%xmm5, %xmm10, %xmm10\n\tvpaddq\t%xmm13, %xmm10, %xmm10\n\tvpsrlq\t$31, %xmm9, %xmm13\n\tvpxor\t%xmm0, %xmm9, %xmm9\n\tvpxor\t%xmm13, %xmm9, %xmm9\n\tvpsrlq\t$31, %xmm11, %xmm13\n\tvpxor\t%xmm0, %xmm11, %xmm11\n\tvpxor\t%xmm13, %xmm11, %xmm11\n\tvpsrlq\t$31, %xmm12, %xmm13\n\tvpxor\t%xmm0, %xmm12, %xmm12\n\tvpxor\t%xmm13, %xmm12, %xmm12\n\tvpsrlq\t$31, %xmm10, %xmm13\n\tvpxor\t%xmm0, %xmm10, %xmm10\n\tvpxor\t%xmm13, %xmm10, %xmm10\n\tsubq\t%rbp, %r13\n\tprefetcht1\t(%rcx,%r13,8)\n\tvmovdqa\t%xmm9, -48(%r11,%rdx,8)\n\tvmovdqa\t%xmm11, -32(%r11,%rdx,8)\n\tvmovdqa\t%xmm12, -16(%r11,%rdx,8)\n\tvmovdqa\t%xmm10, (%r11,%rdx,8)\n\taddq\t%r8, %rdi\n\taddq\t%r8, %rdx\n\tleaq\t(%rsi,%rdx), %rbx\n\tcmpq\t%r14, %rbx\n\tjb\t.LBB2603_47"
+    },
+    {
+      "symbol": "_RNCNvNtCsiYjGPJMyZdw_3tmr5tests17simple_native_128s1_0B5_",
+      "line": 821000,
+      "instructions": 41,
+      "stores": [
+        "\tvmovdqa\t%xmm2, (%r11,%rbx,8)",
+        "\tvmovdqa\t%xmm2, 16(%r11,%rbx,8)",
+        "\tvmovdqa\t%xmm2, 32(%r11,%rbx,8)",
+        "\tvmovdqa\t%xmm2, 48(%r11,%rbx,8)"
+      ],
+      "body": ".LBB2603_67:\n\tmovq\t%r12, %r11\n\tshrq\t$30, %r11\n\txorq\t%r12, %r11\n\timulq\t%rax, %r11\n\tmovq\t%r11, %rsi\n\tshrq\t$27, %rsi\n\txorq\t%r11, %rsi\n\timulq\t%rcx, %rsi\n\tmovq\t%rsi, %r11\n\tshrq\t$31, %r11\n\txorl\t%esi, %r11d\n\tmovq\t%r11, %rsi\n\tshlq\t$16, %rsi\n\torq\t%r11, %rsi\n\tandq\t%rdx, %rsi\n\tmovq\t%rsi, %r11\n\tshlq\t$8, %r11\n\torq\t%rsi, %r11\n\tandq\t%r8, %r11\n\tmovq\t%r11, %rsi\n\tshlq\t$4, %rsi\n\torq\t%r11, %rsi\n\tmovq\t%rsi, %r11\n\tandq\t%r9, %r11\n\tshlq\t$4, %rsi\n\tandq\t%r10, %rsi\n\torq\t%r11, %rsi\n\txorq\t%r10, %rsi\n\tvmovq\t%rsi, %xmm2\n\tvpxor\t%xmm1, %xmm2, %xmm2\n\tvpbroadcastq\t%xmm2, %xmm2\n\tvpxor\t%xmm0, %xmm2, %xmm2\n\tmovq\t56(%rsp), %r11\n\tvmovdqa\t%xmm2, (%r11,%rbx,8)\n\tvmovdqa\t%xmm2, 16(%r11,%rbx,8)\n\tvmovdqa\t%xmm2, 32(%r11,%rbx,8)\n\tvmovdqa\t%xmm2, 48(%r11,%rbx,8)\n\taddq\t$8, %rbx\n\tincq\t%r12\n\tcmpq\t%r14, %rbx\n\tjb\t.LBB2603_67"
+    },
+    {
+      "symbol": "_RNCNvNtCsiYjGPJMyZdw_3tmr5tests17simple_native_128s1_0B5_",
+      "line": 821056,
+      "instructions": 59,
+      "stores": [
+        "\tvmovdqa\t%xmm3, (%rdx,%r15,8)",
+        "\tvmovdqa\t%xmm4, 16(%rdx,%r15,8)",
+        "\tvmovdqa\t%xmm2, 32(%rdx,%r15,8)",
+        "\tvmovdqa\t%xmm3, 48(%rdx,%r15,8)"
+      ],
+      "body": ".LBB2603_59:\n\tmovq\t%r12, %rdx\n\tshrq\t$30, %rdx\n\txorq\t%r12, %rdx\n\timulq\t%rax, %rdx\n\tmovq\t%rdx, %rsi\n\tshrq\t$27, %rsi\n\txorq\t%rdx, %rsi\n\timulq\t%rcx, %rsi\n\tmovq\t%rsi, %rdx\n\tshrq\t$31, %rdx\n\txorl\t%esi, %edx\n\tmovq\t%rdx, %rsi\n\tshlq\t$16, %rsi\n\torq\t%rdx, %rsi\n\tandq\t%r8, %rsi\n\tmovq\t%rsi, %rdx\n\tshlq\t$8, %rdx\n\torq\t%rsi, %rdx\n\tandq\t%r9, %rdx\n\tmovq\t%rdx, %rsi\n\tshlq\t$4, %rsi\n\torq\t%rdx, %rsi\n\tmovl\t%esi, %edx\n\tandl\t$986895, %edx\n\tshll\t$4, %esi\n\tandl\t$15790320, %esi\n\torq\t%rdx, %rsi\n\txorq\t$15790320, %rsi\n\tmovq\t%rsi, %rdx\n\tshlq\t$24, %rdx\n\torq\t%rsi, %rdx\n\tmulxq\t%r10, %rsi, %rdx\n\tmovq\t%rsi, %rdi\n\txorq\t%r11, %rdi\n\tmovq\t%rbx, %r15\n\tmovq\t%rsi, %rbx\n\tshrdq\t$16, %rdx, %rbx\n\tshrdq\t$8, %rdx, %rsi\n\tvmovq\t%rsi, %xmm2\n\tvmovq\t%rbx, %xmm3\n\tmovq\t%r15, %rbx\n\tvpunpcklqdq\t%xmm2, %xmm3, %xmm2\n\tvpxor\t%xmm1, %xmm2, %xmm2\n\tvmovq\t%rdi, %xmm3\n\tvpshufd\t$238, %xmm2, %xmm4\n\tvpinsrq\t$1, %rdi, %xmm4, %xmm4\n\tvpunpcklqdq\t%xmm2, %xmm3, %xmm3\n\tvpxor\t%xmm0, %xmm3, %xmm3\n\tvpxor\t%xmm0, %xmm4, %xmm4\n\tvpxor\t%xmm0, %xmm2, %xmm2\n\tmovq\t56(%rsp), %rdx\n\tvmovdqa\t%xmm3, (%rdx,%r15,8)\n\tvmovdqa\t%xmm4, 16(%rdx,%r15,8)\n\tvmovdqa\t%xmm2, 32(%rdx,%r15,8)\n\tvmovdqa\t%xmm3, 48(%rdx,%r15,8)\n\taddq\t$8, %rbx\n\tincq\t%r12\n\tcmpq\t%r14, %rbx\n\tjb\t.LBB2603_59"
+    },
+    {
+      "symbol": "_RNCNvNtCsiYjGPJMyZdw_3tmr5tests17simple_native_128s1_0B5_",
+      "line": 821130,
+      "instructions": 43,
+      "stores": [
+        "\tvmovdqa\t%xmm0, (%rsi,%rbx,8)",
+        "\tvmovdqa\t%xmm0, 16(%rsi,%rbx,8)",
+        "\tvmovdqa\t%xmm0, 32(%rsi,%rbx,8)",
+        "\tvmovdqa\t%xmm0, 48(%rsi,%rbx,8)"
+      ],
+      "body": ".LBB2603_63:\n\tmovq\t%r12, %rsi\n\tshrq\t$30, %rsi\n\txorq\t%r12, %rsi\n\timulq\t%rax, %rsi\n\tmovq\t%rsi, %rdi\n\tshrq\t$27, %rdi\n\txorq\t%rsi, %rdi\n\timulq\t%rcx, %rdi\n\tmovq\t%rdi, %rsi\n\tshrq\t$31, %rsi\n\txorl\t%edi, %esi\n\tmovq\t%rsi, %rdi\n\tshlq\t$16, %rdi\n\torq\t%rsi, %rdi\n\tandq\t%rdx, %rdi\n\tmovq\t%rdi, %rsi\n\tshlq\t$8, %rsi\n\torq\t%rdi, %rsi\n\tandq\t%r8, %rsi\n\tmovq\t%rsi, %rdi\n\tshlq\t$4, %rdi\n\torq\t%rsi, %rdi\n\tmovq\t%rdi, %rsi\n\tandq\t%r9, %rsi\n\tshlq\t$4, %rdi\n\tandq\t%r10, %rdi\n\torq\t%rsi, %rdi\n\tmovl\t%edi, %esi\n\tshlq\t$32, %rdi\n\torq\t%rsi, %rdi\n\txorq\t%r11, %rdi\n\tvmovq\t%rdi, %xmm0\n\tvpxor\t%xmm1, %xmm0, %xmm0\n\tvpbroadcastq\t%xmm0, %xmm0\n\tmovq\t56(%rsp), %rsi\n\tvmovdqa\t%xmm0, (%rsi,%rbx,8)\n\tvmovdqa\t%xmm0, 16(%rsi,%rbx,8)\n\tvmovdqa\t%xmm0, 32(%rsi,%rbx,8)\n\tvmovdqa\t%xmm0, 48(%rsi,%rbx,8)\n\taddq\t$8, %rbx\n\tincq\t%r12\n\tcmpq\t%r14, %rbx\n\tjb\t.LBB2603_63"
+    },
+    {
+      "symbol": "_RNCNvNtCsiYjGPJMyZdw_3tmr5tests17simple_native_128s1_0B5_",
+      "line": 821187,
+      "instructions": 42,
+      "stores": [
+        "\tvmovdqa\t%xmm4, (%r9,%rbx,8)",
+        "\tvmovdqa\t%xmm3, 16(%r9,%rbx,8)",
+        "\tvmovdqa\t%xmm4, 32(%r9,%rbx,8)",
+        "\tvmovdqa\t%xmm3, 48(%r9,%rbx,8)"
+      ],
+      "body": ".LBB2603_51:\n\tmovq\t%r12, %r9\n\tshrq\t$30, %r9\n\txorq\t%r12, %r9\n\timulq\t%rax, %r9\n\tmovq\t%r9, %r10\n\tshrq\t$27, %r10\n\txorq\t%r9, %r10\n\timulq\t%rcx, %r10\n\tmovq\t%r10, %r9\n\tshrq\t$31, %r9\n\txorl\t%r10d, %r9d\n\tmovzbl\t%r9b, %r10d\n\tandl\t$15, %r9d\n\tshll\t$4, %r10d\n\torl\t%r9d, %r10d\n\txorq\t$240, %r10\n\timulq\t%rdx, %r10\n\tmovq\t%r10, %r9\n\tshlq\t$48, %r9\n\torq\t%r10, %r9\n\tshrq\t$16, %r10\n\tmovq\t%r9, %r11\n\tshrdq\t$4, %r10, %r11\n\txorq\t%r8, %r11\n\tshldq\t$56, %r9, %r10\n\tvmovq\t%r9, %xmm3\n\tvmovq\t%r10, %xmm4\n\tvpunpcklqdq\t%xmm3, %xmm4, %xmm3\n\tvpshufd\t$238, %xmm3, %xmm4\n\tvpxor\t%xmm2, %xmm4, %xmm4\n\tvpinsrq\t$1, %r11, %xmm4, %xmm4\n\tvpxor\t%xmm0, %xmm4, %xmm4\n\tvpxor\t%xmm1, %xmm3, %xmm3\n\tmovq\t56(%rsp), %r9\n\tvmovdqa\t%xmm4, (%r9,%rbx,8)\n\tvmovdqa\t%xmm3, 16(%r9,%rbx,8)\n\tvmovdqa\t%xmm4, 32(%r9,%rbx,8)\n\tvmovdqa\t%xmm3, 48(%r9,%rbx,8)\n\taddq\t$8, %rbx\n\tincq\t%r12\n\tcmpq\t%r14, %rbx\n\tjb\t.LBB2603_51"
+    },
+    {
+      "symbol": "_RNCNvNtCsiYjGPJMyZdw_3tmr5tests17simple_native_128s1_0B5_",
+      "line": 821244,
+      "instructions": 47,
+      "stores": [
+        "\tvmovdqa\t%xmm0, (%rsi,%rbx,8)",
+        "\tvmovdqa\t%xmm0, 16(%rsi,%rbx,8)",
+        "\tvmovdqa\t%xmm0, 32(%rsi,%rbx,8)",
+        "\tvmovdqa\t%xmm0, 48(%rsi,%rbx,8)"
+      ],
+      "body": ".LBB2603_55:\n\tmovq\t%r12, %rsi\n\tshrq\t$30, %rsi\n\txorq\t%r12, %rsi\n\timulq\t%rax, %rsi\n\tmovq\t%rsi, %rdi\n\tshrq\t$27, %rdi\n\txorq\t%rsi, %rdi\n\timulq\t%rcx, %rdi\n\tmovq\t%rdi, %rsi\n\tshrq\t$31, %rsi\n\txorl\t%edi, %esi\n\tmovq\t%rsi, %rdi\n\tshlq\t$16, %rdi\n\torq\t%rsi, %rdi\n\tandq\t%rdx, %rdi\n\tmovq\t%rdi, %rsi\n\tshlq\t$8, %rsi\n\torq\t%rdi, %rsi\n\tandq\t%r8, %rsi\n\tmovq\t%rsi, %rdi\n\tshlq\t$4, %rdi\n\torq\t%rsi, %rdi\n\tmovq\t%rdi, %rsi\n\tandq\t%r9, %rsi\n\tshlq\t$4, %rdi\n\tandq\t%r10, %rdi\n\torq\t%rsi, %rdi\n\txorq\t%r10, %rdi\n\tmovzwl\t%di, %esi\n\tshll\t$16, %edi\n\torq\t%rsi, %rdi\n\txorq\t%r11, %rdi\n\tmovq\t%rdi, %rsi\n\tshlq\t$32, %rsi\n\torq\t%rdi, %rsi\n\tvmovq\t%rsi, %xmm0\n\tvpxor\t%xmm1, %xmm0, %xmm0\n\tvpbroadcastq\t%xmm0, %xmm0\n\tmovq\t56(%rsp), %rsi\n\tvmovdqa\t%xmm0, (%rsi,%rbx,8)\n\tvmovdqa\t%xmm0, 16(%rsi,%rbx,8)\n\tvmovdqa\t%xmm0, 32(%rsi,%rbx,8)\n\tvmovdqa\t%xmm0, 48(%rsi,%rbx,8)\n\taddq\t$8, %rbx\n\tincq\t%r12\n\tcmpq\t%r14, %rbx\n\tjb\t.LBB2603_55"
+    },
+    {
+      "symbol": "_RNCNvNtCsiYjGPJMyZdw_3tmr5tests17simple_native_128s1_0B5_",
+      "line": 821351,
+      "instructions": 58,
+      "stores": [
+        "\tvmovdqa\t%xmm2, (%r11,%rbx,8)",
+        "\tvmovdqa\t%xmm2, 16(%r11,%rbx,8)",
+        "\tvmovdqa\t%xmm2, 32(%r11,%rbx,8)",
+        "\tvmovdqa\t%xmm2, 48(%r11,%rbx,8)"
+      ],
+      "body": ".LBB2603_132:\n\tmovq\t%rbp, %rbx\n\tmovq\t%r12, %rsi\n\tleaq\t(%rdx,%r9), %r12\n\tcmpq\t%r14, %r12\n\tmovq\t%r13, %rax\n\tmovl\t$0, %ebp\n\tcmovbq\t%rbp, %rax\n\tsubq\t%rax, %r12\n\tprefetcht1\t(%rcx,%r12,8)\n\tleaq\t(%r8,%rbx), %rbp\n\tmovq\t%rbp, %r12\n\tshrq\t$3, %r12\n\taddq\t%rdi, %r12\n\tmovq\t%r12, %rax\n\tshrq\t$30, %rax\n\txorq\t%r12, %rax\n\tmovabsq\t$-4658895280553007687, %r12\n\timulq\t%r12, %rax\n\tmovq\t%rax, %r12\n\tshrq\t$27, %r12\n\txorq\t%rax, %r12\n\tmovabsq\t$-7723592293110705685, %rax\n\timulq\t%rax, %r12\n\tmovq\t%r12, %rax\n\tshrq\t$31, %rax\n\txorl\t%r12d, %eax\n\tmovq\t%rax, %r12\n\tshlq\t$16, %r12\n\torq\t%rax, %r12\n\tmovabsq\t$281470681808895, %rax\n\tandq\t%rax, %r12\n\tmovq\t%r12, %rax\n\tshlq\t$8, %rax\n\torq\t%r12, %rax\n\tmovabsq\t$71777214294589695, %r12\n\tandq\t%r12, %rax\n\tmovq\t%rax, %r12\n\tshlq\t$4, %r12\n\torq\t%rax, %r12\n\tmovq\t%r12, %rax\n\tandq\t%r15, %rax\n\tshlq\t$4, %r12\n\tandq\t%r10, %r12\n\torq\t%rax, %r12\n\txorq\t%r10, %r12\n\tvmovq\t%r12, %xmm2\n\tmovq\t%rsi, %r12\n\tvpxor\t%xmm1, %xmm2, %xmm2\n\tvpbroadcastq\t%xmm2, %xmm2\n\tvpxor\t%xmm0, %xmm2, %xmm2\n\tvmovdqa\t%xmm2, (%r11,%rbx,8)\n\tvmovdqa\t%xmm2, 16(%r11,%rbx,8)\n\tvmovdqa\t%xmm2, 32(%r11,%rbx,8)\n\tvmovdqa\t%xmm2, 48(%r11,%rbx,8)\n\taddq\t%r8, %rdx\n\tleaq\t(%rsi,%rbp), %rax\n\tcmpq\t%r14, %rax\n\tjb\t.LBB2603_132"
+    },
+    {
+      "symbol": "_RNCNvNtCsiYjGPJMyZdw_3tmr5tests17simple_native_128s1_0B5_",
+      "line": 821316,
+      "instructions": 89,
+      "stores": [
+        "\tvmovdqa\t%xmm2, (%r11,%rbx,8)",
+        "\tvmovdqa\t%xmm2, 16(%r11,%rbx,8)",
+        "\tvmovdqa\t%xmm2, 32(%r11,%rbx,8)",
+        "\tvmovdqa\t%xmm2, 48(%r11,%rbx,8)"
+      ],
+      "body": ".LBB2603_126:\n\taddq\t$-8, 80(%rsp)\n\tmovq\t72(%rsp), %rsi\n\tcmpq\t96(%rsp), %rsi\n\tmovl\t$0, %ecx\n\tjbe\t.LBB2603_21\n.LBB2603_127:\n\taddq\t$-8, %rsi\n\tmovq\t%r14, %rax\n\tsubq\t%rsi, %rax\n\tcmovbq\t%rcx, %rax\n\tmovq\t%rax, %rdx\n\torq\t%r8, %rdx\n\tshrq\t$32, %rdx\n\tje\t.LBB2603_128\n\txorl\t%edx, %edx\n\tdivq\t%r8\n\tmovq\t%rax, %r13\n\tjmp\t.LBB2603_130\n.LBB2603_128:\n\txorl\t%edx, %edx\n\tdivl\t%r8d\n\tmovl\t%eax, %r13d\n.LBB2603_130:\n\tmovq\t56(%rsp), %rcx\n\tcmpq\t$1, %rdx\n\tsbbq\t$-1, %r13\n\tmovq\t%rsi, 72(%rsp)\n\tcmpq\t%r14, %rsi\n\tjae\t.LBB2603_126\n\timulq\t%r8, %r13\n\taddq\t$8, %r13\n\tmovq\t80(%rsp), %rbp\n\tmovq\t72(%rsp), %rdx\n\t.p2align\t4\n.LBB2603_132:\n\tmovq\t%rbp, %rbx\n\tmovq\t%r12, %rsi\n\tleaq\t(%rdx,%r9), %r12\n\tcmpq\t%r14, %r12\n\tmovq\t%r13, %rax\n\tmovl\t$0, %ebp\n\tcmovbq\t%rbp, %rax\n\tsubq\t%rax, %r12\n\tprefetcht1\t(%rcx,%r12,8)\n\tleaq\t(%r8,%rbx), %rbp\n\tmovq\t%rbp, %r12\n\tshrq\t$3, %r12\n\taddq\t%rdi, %r12\n\tmovq\t%r12, %rax\n\tshrq\t$30, %rax\n\txorq\t%r12, %rax\n\tmovabsq\t$-4658895280553007687, %r12\n\timulq\t%r12, %rax\n\tmovq\t%rax, %r12\n\tshrq\t$27, %r12\n\txorq\t%rax, %r12\n\tmovabsq\t$-7723592293110705685, %rax\n\timulq\t%rax, %r12\n\tmovq\t%r12, %rax\n\tshrq\t$31, %rax\n\txorl\t%r12d, %eax\n\tmovq\t%rax, %r12\n\tshlq\t$16, %r12\n\torq\t%rax, %r12\n\tmovabsq\t$281470681808895, %rax\n\tandq\t%rax, %r12\n\tmovq\t%r12, %rax\n\tshlq\t$8, %rax\n\torq\t%r12, %rax\n\tmovabsq\t$71777214294589695, %r12\n\tandq\t%r12, %rax\n\tmovq\t%rax, %r12\n\tshlq\t$4, %r12\n\torq\t%rax, %r12\n\tmovq\t%r12, %rax\n\tandq\t%r15, %rax\n\tshlq\t$4, %r12\n\tandq\t%r10, %r12\n\torq\t%rax, %r12\n\txorq\t%r10, %r12\n\tvmovq\t%r12, %xmm2\n\tmovq\t%rsi, %r12\n\tvpxor\t%xmm1, %xmm2, %xmm2\n\tvpbroadcastq\t%xmm2, %xmm2\n\tvpxor\t%xmm0, %xmm2, %xmm2\n\tvmovdqa\t%xmm2, (%r11,%rbx,8)\n\tvmovdqa\t%xmm2, 16(%r11,%rbx,8)\n\tvmovdqa\t%xmm2, 32(%r11,%rbx,8)\n\tvmovdqa\t%xmm2, 48(%r11,%rbx,8)\n\taddq\t%r8, %rdx\n\tleaq\t(%rsi,%rbp), %rax\n\tcmpq\t%r14, %rax\n\tjb\t.LBB2603_132\n\tjmp\t.LBB2603_126"
+    },
+    {
+      "symbol": "_RNCNvNtCsiYjGPJMyZdw_3tmr5tests17simple_native_128s1_0B5_",
+      "line": 821464,
+      "instructions": 79,
+      "stores": [
+        "\tvmovdqa\t%xmm3, (%r11,%r13,8)",
+        "\tvmovdqa\t%xmm4, 16(%r11,%r13,8)",
+        "\tvmovdqa\t%xmm2, 32(%r11,%r13,8)",
+        "\tvmovdqa\t%xmm3, 48(%r11,%r13,8)"
+      ],
+      "body": ".LBB2603_106:\n\tmovq\t%rsi, %r13\n\tleaq\t(%rdi,%r9), %rbx\n\tcmpq\t%r14, %rbx\n\tmovq\t%rax, %rdx\n\tcmovbq\t%r15, %rdx\n\tsubq\t%rdx, %rbx\n\taddq\t%r8, %rsi\n\tmovq\t%r9, %rcx\n\tmovq\t%rbp, %r9\n\tmovq\t%rsi, %rbp\n\tshrq\t$3, %rbp\n\taddq\t64(%rsp), %rbp\n\tmovq\t%rbp, %rdx\n\tshrq\t$30, %rdx\n\txorq\t%rbp, %rdx\n\tmovabsq\t$-4658895280553007687, %r15\n\timulq\t%r15, %rdx\n\tmovq\t%rdx, %rbp\n\tshrq\t$27, %rbp\n\txorq\t%rdx, %rbp\n\tmovabsq\t$-7723592293110705685, %rdx\n\timulq\t%rdx, %rbp\n\tmovq\t%rbp, %rdx\n\tshrq\t$31, %rdx\n\txorl\t%ebp, %edx\n\tmovq\t%rdx, %rbp\n\tshlq\t$16, %rbp\n\torq\t%rdx, %rbp\n\tmovabsq\t$281470681808895, %rdx\n\tandq\t%rdx, %rbp\n\tmovq\t%rbp, %rdx\n\tshlq\t$8, %rdx\n\torq\t%rbp, %rdx\n\tmovabsq\t$71777214294589695, %r15\n\tandq\t%r15, %rdx\n\tmovq\t%rdx, %rbp\n\tshlq\t$4, %rbp\n\torq\t%rdx, %rbp\n\tmovl\t%ebp, %edx\n\tandl\t$986895, %edx\n\tshll\t$4, %ebp\n\tandl\t$15790320, %ebp\n\torq\t%rdx, %rbp\n\txorq\t$15790320, %rbp\n\tmovq\t%rbp, %rdx\n\tshlq\t$24, %rdx\n\torq\t%rbp, %rdx\n\tmovabsq\t$281474976710657, %r15\n\tmulxq\t%r15, %rbp, %rdx\n\tprefetcht1\t(%r12,%rbx,8)\n\tmovq\t%rbp, %rbx\n\tmovq\t%r10, %r15\n\tmovq\t%rbp, %r10\n\tshrdq\t$16, %rdx, %r10\n\tshrdq\t$8, %rdx, %rbp\n\tvmovq\t%rbp, %xmm2\n\tmovq\t%r9, %rbp\n\tmovq\t%rcx, %r9\n\tvmovq\t%r10, %xmm3\n\tmovq\t%r15, %r10\n\txorl\t%r15d, %r15d\n\txorq\t%rbp, %rbx\n\tvpunpcklqdq\t%xmm2, %xmm3, %xmm2\n\tvpxor\t%xmm1, %xmm2, %xmm2\n\tvmovq\t%rbx, %xmm3\n\tvpshufd\t$238, %xmm2, %xmm4\n\tvpinsrq\t$1, %rbx, %xmm4, %xmm4\n\tvpunpcklqdq\t%xmm2, %xmm3, %xmm3\n\tvpxor\t%xmm0, %xmm3, %xmm3\n\tvpxor\t%xmm0, %xmm4, %xmm4\n\tvpxor\t%xmm0, %xmm2, %xmm2\n\tvmovdqa\t%xmm3, (%r11,%r13,8)\n\tvmovdqa\t%xmm4, 16(%r11,%r13,8)\n\tvmovdqa\t%xmm2, 32(%r11,%r13,8)\n\tvmovdqa\t%xmm3, 48(%r11,%r13,8)\n\taddq\t%r8, %rdi\n\tleaq\t(%r10,%rsi), %rdx\n\tcmpq\t%r14, %rdx\n\tjb\t.LBB2603_106"
+    },
+    {
+      "symbol": "_RNCNvNtCsiYjGPJMyZdw_3tmr5tests17simple_native_128s1_0B5_",
+      "line": 821432,
+      "instructions": 107,
+      "stores": [
+        "\tvmovdqa\t%xmm3, (%r11,%r13,8)",
+        "\tvmovdqa\t%xmm4, 16(%r11,%r13,8)",
+        "\tvmovdqa\t%xmm2, 32(%r11,%r13,8)",
+        "\tvmovdqa\t%xmm3, 48(%r11,%r13,8)"
+      ],
+      "body": ".LBB2603_100:\n\taddq\t$-8, 80(%rsp)\n\tmovq\t72(%rsp), %rcx\n\tcmpq\t96(%rsp), %rcx\n\tjbe\t.LBB2603_21\n.LBB2603_101:\n\taddq\t$-8, %rcx\n\tmovq\t%r14, %rax\n\tsubq\t%rcx, %rax\n\tcmovbq\t%r15, %rax\n\tmovq\t%rax, %rdx\n\torq\t%r8, %rdx\n\tshrq\t$32, %rdx\n\tje\t.LBB2603_102\n\txorl\t%edx, %edx\n\tdivq\t%r8\n\tjmp\t.LBB2603_104\n.LBB2603_102:\n\txorl\t%edx, %edx\n\tdivl\t%r8d\n.LBB2603_104:\n\tmovq\t56(%rsp), %r12\n\tcmpq\t$1, %rdx\n\tsbbq\t$-1, %rax\n\tmovq\t%rcx, 72(%rsp)\n\tcmpq\t%r14, %rcx\n\tjae\t.LBB2603_100\n\timulq\t%r8, %rax\n\taddq\t$8, %rax\n\tmovq\t80(%rsp), %rsi\n\tmovq\t72(%rsp), %rdi\n\t.p2align\t4\n.LBB2603_106:\n\tmovq\t%rsi, %r13\n\tleaq\t(%rdi,%r9), %rbx\n\tcmpq\t%r14, %rbx\n\tmovq\t%rax, %rdx\n\tcmovbq\t%r15, %rdx\n\tsubq\t%rdx, %rbx\n\taddq\t%r8, %rsi\n\tmovq\t%r9, %rcx\n\tmovq\t%rbp, %r9\n\tmovq\t%rsi, %rbp\n\tshrq\t$3, %rbp\n\taddq\t64(%rsp), %rbp\n\tmovq\t%rbp, %rdx\n\tshrq\t$30, %rdx\n\txorq\t%rbp, %rdx\n\tmovabsq\t$-4658895280553007687, %r15\n\timulq\t%r15, %rdx\n\tmovq\t%rdx, %rbp\n\tshrq\t$27, %rbp\n\txorq\t%rdx, %rbp\n\tmovabsq\t$-7723592293110705685, %rdx\n\timulq\t%rdx, %rbp\n\tmovq\t%rbp, %rdx\n\tshrq\t$31, %rdx\n\txorl\t%ebp, %edx\n\tmovq\t%rdx, %rbp\n\tshlq\t$16, %rbp\n\torq\t%rdx, %rbp\n\tmovabsq\t$281470681808895, %rdx\n\tandq\t%rdx, %rbp\n\tmovq\t%rbp, %rdx\n\tshlq\t$8, %rdx\n\torq\t%rbp, %rdx\n\tmovabsq\t$71777214294589695, %r15\n\tandq\t%r15, %rdx\n\tmovq\t%rdx, %rbp\n\tshlq\t$4, %rbp\n\torq\t%rdx, %rbp\n\tmovl\t%ebp, %edx\n\tandl\t$986895, %edx\n\tshll\t$4, %ebp\n\tandl\t$15790320, %ebp\n\torq\t%rdx, %rbp\n\txorq\t$15790320, %rbp\n\tmovq\t%rbp, %rdx\n\tshlq\t$24, %rdx\n\torq\t%rbp, %rdx\n\tmovabsq\t$281474976710657, %r15\n\tmulxq\t%r15, %rbp, %rdx\n\tprefetcht1\t(%r12,%rbx,8)\n\tmovq\t%rbp, %rbx\n\tmovq\t%r10, %r15\n\tmovq\t%rbp, %r10\n\tshrdq\t$16, %rdx, %r10\n\tshrdq\t$8, %rdx, %rbp\n\tvmovq\t%rbp, %xmm2\n\tmovq\t%r9, %rbp\n\tmovq\t%rcx, %r9\n\tvmovq\t%r10, %xmm3\n\tmovq\t%r15, %r10\n\txorl\t%r15d, %r15d\n\txorq\t%rbp, %rbx\n\tvpunpcklqdq\t%xmm2, %xmm3, %xmm2\n\tvpxor\t%xmm1, %xmm2, %xmm2\n\tvmovq\t%rbx, %xmm3\n\tvpshufd\t$238, %xmm2, %xmm4\n\tvpinsrq\t$1, %rbx, %xmm4, %xmm4\n\tvpunpcklqdq\t%xmm2, %xmm3, %xmm3\n\tvpxor\t%xmm0, %xmm3, %xmm3\n\tvpxor\t%xmm0, %xmm4, %xmm4\n\tvpxor\t%xmm0, %xmm2, %xmm2\n\tvmovdqa\t%xmm3, (%r11,%r13,8)\n\tvmovdqa\t%xmm4, 16(%r11,%r13,8)\n\tvmovdqa\t%xmm2, 32(%r11,%r13,8)\n\tvmovdqa\t%xmm3, 48(%r11,%r13,8)\n\taddq\t%r8, %rdi\n\tleaq\t(%r10,%rsi), %rdx\n\tcmpq\t%r14, %rdx\n\tjb\t.LBB2603_106\n\tjmp\t.LBB2603_100"
+    },
+    {
+      "symbol": "_RNCNvNtCsiYjGPJMyZdw_3tmr5tests17simple_native_128s1_0B5_",
+      "line": 821601,
+      "instructions": 69,
+      "stores": [
+        "\tvmovdqa\t%xmm0, (%r11,%rbx,8)",
+        "\tvmovdqa\t%xmm0, 16(%r11,%rbx,8)",
+        "\tvmovdqa\t%xmm0, 32(%r11,%rbx,8)",
+        "\tvmovdqa\t%xmm0, 48(%r11,%rbx,8)"
+      ],
+      "body": ".LBB2603_119:\n\tmovq\t%rsi, %rbx\n\tleaq\t(%rdx,%r9), %rdi\n\tcmpq\t%r14, %rdi\n\tmovq\t72(%rsp), %rax\n\tmovl\t$0, %esi\n\tcmovbq\t%rsi, %rax\n\tsubq\t%rax, %rdi\n\tprefetcht1\t(%rcx,%rdi,8)\n\tleaq\t(%rbx,%rbp), %rsi\n\tmovq\t%rsi, %rdi\n\tshrq\t$3, %rdi\n\taddq\t%r10, %rdi\n\tmovq\t%rdi, %rax\n\tshrq\t$30, %rax\n\txorq\t%rdi, %rax\n\tmovabsq\t$-4658895280553007687, %rdi\n\timulq\t%rdi, %rax\n\tmovq\t%rax, %rdi\n\tshrq\t$27, %rdi\n\txorq\t%rax, %rdi\n\tmovabsq\t$-7723592293110705685, %rax\n\timulq\t%rax, %rdi\n\tmovq\t%rdi, %rax\n\tshrq\t$31, %rax\n\txorl\t%edi, %eax\n\tmovq\t%rax, %rdi\n\tshlq\t$16, %rdi\n\torq\t%rax, %rdi\n\tmovabsq\t$281470681808895, %rax\n\tandq\t%rax, %rdi\n\tmovq\t%rdi, %rax\n\tshlq\t$8, %rax\n\torq\t%rdi, %rax\n\tmovabsq\t$71777214294589695, %rdi\n\tandq\t%rdi, %rax\n\tmovq\t%rax, %rdi\n\tshlq\t$4, %rdi\n\torq\t%rax, %rdi\n\tmovq\t%rdi, %rax\n\tmovq\t%r10, %r8\n\tmovq\t%rcx, %r10\n\tmovq\t%r9, %rcx\n\tmovq\t%r13, %r9\n\tmovq\t%r15, %r13\n\tmovabsq\t$1085102592571150095, %r15\n\tandq\t%r15, %rax\n\tmovq\t%r13, %r15\n\tmovq\t%r9, %r13\n\tmovq\t%rcx, %r9\n\tmovq\t%r10, %rcx\n\tmovq\t%r8, %r10\n\tshlq\t$4, %rdi\n\tandq\t%r15, %rdi\n\torq\t%rax, %rdi\n\tmovl\t%edi, %eax\n\tshlq\t$32, %rdi\n\torq\t%rax, %rdi\n\txorq\t%r13, %rdi\n\tvmovq\t%rdi, %xmm0\n\tvpxor\t%xmm1, %xmm0, %xmm0\n\tvpbroadcastq\t%xmm0, %xmm0\n\tvmovdqa\t%xmm0, (%r11,%rbx,8)\n\tvmovdqa\t%xmm0, 16(%r11,%rbx,8)\n\tvmovdqa\t%xmm0, 32(%r11,%rbx,8)\n\tvmovdqa\t%xmm0, 48(%r11,%rbx,8)\n\taddq\t%rbp, %rdx\n\tleaq\t(%r12,%rsi), %rax\n\tcmpq\t%r14, %rax\n\tjb\t.LBB2603_119"
+    },
+    {
+      "symbol": "_RNCNvNtCsiYjGPJMyZdw_3tmr5tests17simple_native_128s1_0B5_",
+      "line": 821564,
+      "instructions": 102,
+      "stores": [
+        "\tvmovdqa\t%xmm0, (%r11,%rbx,8)",
+        "\tvmovdqa\t%xmm0, 16(%r11,%rbx,8)",
+        "\tvmovdqa\t%xmm0, 32(%r11,%rbx,8)",
+        "\tvmovdqa\t%xmm0, 48(%r11,%rbx,8)"
+      ],
+      "body": ".LBB2603_113:\n\taddq\t$-8, 88(%rsp)\n\tmovq\t80(%rsp), %r10\n\tcmpq\t96(%rsp), %r10\n\tmovl\t$0, %ecx\n\tjbe\t.LBB2603_21\n.LBB2603_114:\n\taddq\t$-8, %r10\n\tmovq\t%r14, %rax\n\tsubq\t%r10, %rax\n\tcmovbq\t%rcx, %rax\n\tmovq\t%rax, %rdx\n\torq\t%rbp, %rdx\n\tshrq\t$32, %rdx\n\tje\t.LBB2603_115\n\txorl\t%edx, %edx\n\tdivq\t%rbp\n\tjmp\t.LBB2603_117\n.LBB2603_115:\n\txorl\t%edx, %edx\n\tdivl\t%ebp\n.LBB2603_117:\n\tmovq\t56(%rsp), %rcx\n\tcmpq\t$1, %rdx\n\tsbbq\t$-1, %rax\n\tmovq\t%r10, 80(%rsp)\n\tcmpq\t%r14, %r10\n\tmovq\t64(%rsp), %r10\n\tmovabsq\t$-1085102592571150096, %r15\n\tmovabsq\t$1085102596360827120, %r13\n\tjae\t.LBB2603_113\n\timulq\t%rbp, %rax\n\taddq\t$8, %rax\n\tmovq\t%rax, 72(%rsp)\n\tmovq\t88(%rsp), %rsi\n\tmovq\t80(%rsp), %rdx\n\t.p2align\t4\n.LBB2603_119:\n\tmovq\t%rsi, %rbx\n\tleaq\t(%rdx,%r9), %rdi\n\tcmpq\t%r14, %rdi\n\tmovq\t72(%rsp), %rax\n\tmovl\t$0, %esi\n\tcmovbq\t%rsi, %rax\n\tsubq\t%rax, %rdi\n\tprefetcht1\t(%rcx,%rdi,8)\n\tleaq\t(%rbx,%rbp), %rsi\n\tmovq\t%rsi, %rdi\n\tshrq\t$3, %rdi\n\taddq\t%r10, %rdi\n\tmovq\t%rdi, %rax\n\tshrq\t$30, %rax\n\txorq\t%rdi, %rax\n\tmovabsq\t$-4658895280553007687, %rdi\n\timulq\t%rdi, %rax\n\tmovq\t%rax, %rdi\n\tshrq\t$27, %rdi\n\txorq\t%rax, %rdi\n\tmovabsq\t$-7723592293110705685, %rax\n\timulq\t%rax, %rdi\n\tmovq\t%rdi, %rax\n\tshrq\t$31, %rax\n\txorl\t%edi, %eax\n\tmovq\t%rax, %rdi\n\tshlq\t$16, %rdi\n\torq\t%rax, %rdi\n\tmovabsq\t$281470681808895, %rax\n\tandq\t%rax, %rdi\n\tmovq\t%rdi, %rax\n\tshlq\t$8, %rax\n\torq\t%rdi, %rax\n\tmovabsq\t$71777214294589695, %rdi\n\tandq\t%rdi, %rax\n\tmovq\t%rax, %rdi\n\tshlq\t$4, %rdi\n\torq\t%rax, %rdi\n\tmovq\t%rdi, %rax\n\tmovq\t%r10, %r8\n\tmovq\t%rcx, %r10\n\tmovq\t%r9, %rcx\n\tmovq\t%r13, %r9\n\tmovq\t%r15, %r13\n\tmovabsq\t$1085102592571150095, %r15\n\tandq\t%r15, %rax\n\tmovq\t%r13, %r15\n\tmovq\t%r9, %r13\n\tmovq\t%rcx, %r9\n\tmovq\t%r10, %rcx\n\tmovq\t%r8, %r10\n\tshlq\t$4, %rdi\n\tandq\t%r15, %rdi\n\torq\t%rax, %rdi\n\tmovl\t%edi, %eax\n\tshlq\t$32, %rdi\n\torq\t%rax, %rdi\n\txorq\t%r13, %rdi\n\tvmovq\t%rdi, %xmm0\n\tvpxor\t%xmm1, %xmm0, %xmm0\n\tvpbroadcastq\t%xmm0, %xmm0\n\tvmovdqa\t%xmm0, (%r11,%rbx,8)\n\tvmovdqa\t%xmm0, 16(%r11,%rbx,8)\n\tvmovdqa\t%xmm0, 32(%r11,%rbx,8)\n\tvmovdqa\t%xmm0, 48(%r11,%rbx,8)\n\taddq\t%rbp, %rdx\n\tleaq\t(%r12,%rsi), %rax\n\tcmpq\t%r14, %rax\n\tjb\t.LBB2603_119\n\tjmp\t.LBB2603_113"
+    },
+    {
+      "symbol": "_RNCNvNtCsiYjGPJMyZdw_3tmr5tests17simple_native_128s1_0B5_",
+      "line": 821731,
+      "instructions": 59,
+      "stores": [
+        "\tvmovdqa\t%xmm4, (%r11,%rbx,8)",
+        "\tvmovdqa\t%xmm3, 16(%r11,%rbx,8)",
+        "\tvmovdqa\t%xmm4, 32(%r11,%rbx,8)",
+        "\tvmovdqa\t%xmm3, 48(%r11,%rbx,8)"
+      ],
+      "body": ".LBB2603_80:\n\tmovq\t%r12, %rbx\n\tmovq\t%rdi, %rsi\n\tleaq\t(%rdx,%rcx), %rdi\n\tcmpq\t%r14, %rdi\n\tmovq\t%r10, %rax\n\tcmovbq\t%r15, %rax\n\tsubq\t%rax, %rdi\n\tprefetcht1\t(%rbp,%rdi,8)\n\taddq\t%r8, %r12\n\tmovq\t%r12, %rdi\n\tshrq\t$3, %rdi\n\taddq\t64(%rsp), %rdi\n\tmovq\t%rdi, %rax\n\tshrq\t$30, %rax\n\txorq\t%rdi, %rax\n\timulq\t%r13, %rax\n\tmovq\t%rax, %rdi\n\tshrq\t$27, %rdi\n\txorq\t%rax, %rdi\n\tmovabsq\t$-7723592293110705685, %rax\n\timulq\t%rax, %rdi\n\tmovq\t%rdi, %rax\n\tshrq\t$31, %rax\n\txorl\t%edi, %eax\n\tmovzbl\t%al, %edi\n\tandl\t$15, %eax\n\tshll\t$4, %edi\n\torl\t%eax, %edi\n\txorq\t$240, %rdi\n\tmovabsq\t$68736258049, %rax\n\timulq\t%rax, %rdi\n\tmovq\t%rdi, %rax\n\tshlq\t$48, %rax\n\torq\t%rdi, %rax\n\tshrq\t$16, %rdi\n\tmovq\t%r13, %r15\n\tmovq\t%rax, %r13\n\tshrdq\t$4, %rdi, %r13\n\tshldq\t$56, %rax, %rdi\n\tvmovq\t%rax, %xmm3\n\tvmovq\t%rdi, %xmm4\n\tmovq\t%rsi, %rdi\n\txorq\t%r9, %r13\n\tvpunpcklqdq\t%xmm3, %xmm4, %xmm3\n\tvpshufd\t$238, %xmm3, %xmm4\n\tvpxor\t%xmm2, %xmm4, %xmm4\n\tvpinsrq\t$1, %r13, %xmm4, %xmm4\n\tmovq\t%r15, %r13\n\txorl\t%r15d, %r15d\n\tvpxor\t%xmm0, %xmm4, %xmm4\n\tvpxor\t%xmm1, %xmm3, %xmm3\n\tvmovdqa\t%xmm4, (%r11,%rbx,8)\n\tvmovdqa\t%xmm3, 16(%r11,%rbx,8)\n\tvmovdqa\t%xmm4, 32(%r11,%rbx,8)\n\tvmovdqa\t%xmm3, 48(%r11,%rbx,8)\n\taddq\t%r8, %rdx\n\tleaq\t(%rsi,%r12), %rax\n\tcmpq\t%r14, %rax\n\tjb\t.LBB2603_80"
+    },
+    {
+      "symbol": "_RNCNvNtCsiYjGPJMyZdw_3tmr5tests17simple_native_128s1_0B5_",
+      "line": 821696,
+      "instructions": 90,
+      "stores": [
+        "\tvmovdqa\t%xmm4, (%r11,%rbx,8)",
+        "\tvmovdqa\t%xmm3, 16(%r11,%rbx,8)",
+        "\tvmovdqa\t%xmm4, 32(%r11,%rbx,8)",
+        "\tvmovdqa\t%xmm3, 48(%r11,%rbx,8)"
+      ],
+      "body": ".LBB2603_74:\n\taddq\t$-8, 80(%rsp)\n\tmovq\t72(%rsp), %rcx\n\tcmpq\t96(%rsp), %rcx\n\tjbe\t.LBB2603_21\n.LBB2603_75:\n\taddq\t$-8, %rcx\n\tmovq\t%r14, %rax\n\tsubq\t%rcx, %rax\n\tcmovbq\t%r15, %rax\n\tmovq\t%rax, %rdx\n\torq\t%r8, %rdx\n\tshrq\t$32, %rdx\n\tje\t.LBB2603_76\n\txorl\t%edx, %edx\n\tdivq\t%r8\n\tmovq\t%rax, %r10\n\tjmp\t.LBB2603_78\n.LBB2603_76:\n\txorl\t%edx, %edx\n\tdivl\t%r8d\n\tmovl\t%eax, %r10d\n.LBB2603_78:\n\tmovq\t56(%rsp), %rbp\n\tcmpq\t$1, %rdx\n\tsbbq\t$-1, %r10\n\tmovq\t%rcx, 72(%rsp)\n\tcmpq\t%r14, %rcx\n\tmovq\t88(%rsp), %rcx\n\tjae\t.LBB2603_74\n\timulq\t%r8, %r10\n\taddq\t$8, %r10\n\tmovq\t80(%rsp), %r12\n\tmovq\t72(%rsp), %rdx\n\t.p2align\t4\n.LBB2603_80:\n\tmovq\t%r12, %rbx\n\tmovq\t%rdi, %rsi\n\tleaq\t(%rdx,%rcx), %rdi\n\tcmpq\t%r14, %rdi\n\tmovq\t%r10, %rax\n\tcmovbq\t%r15, %rax\n\tsubq\t%rax, %rdi\n\tprefetcht1\t(%rbp,%rdi,8)\n\taddq\t%r8, %r12\n\tmovq\t%r12, %rdi\n\tshrq\t$3, %rdi\n\taddq\t64(%rsp), %rdi\n\tmovq\t%rdi, %rax\n\tshrq\t$30, %rax\n\txorq\t%rdi, %rax\n\timulq\t%r13, %rax\n\tmovq\t%rax, %rdi\n\tshrq\t$27, %rdi\n\txorq\t%rax, %rdi\n\tmovabsq\t$-7723592293110705685, %rax\n\timulq\t%rax, %rdi\n\tmovq\t%rdi, %rax\n\tshrq\t$31, %rax\n\txorl\t%edi, %eax\n\tmovzbl\t%al, %edi\n\tandl\t$15, %eax\n\tshll\t$4, %edi\n\torl\t%eax, %edi\n\txorq\t$240, %rdi\n\tmovabsq\t$68736258049, %rax\n\timulq\t%rax, %rdi\n\tmovq\t%rdi, %rax\n\tshlq\t$48, %rax\n\torq\t%rdi, %rax\n\tshrq\t$16, %rdi\n\tmovq\t%r13, %r15\n\tmovq\t%rax, %r13\n\tshrdq\t$4, %rdi, %r13\n\tshldq\t$56, %rax, %rdi\n\tvmovq\t%rax, %xmm3\n\tvmovq\t%rdi, %xmm4\n\tmovq\t%rsi, %rdi\n\txorq\t%r9, %r13\n\tvpunpcklqdq\t%xmm3, %xmm4, %xmm3\n\tvpshufd\t$238, %xmm3, %xmm4\n\tvpxor\t%xmm2, %xmm4, %xmm4\n\tvpinsrq\t$1, %r13, %xmm4, %xmm4\n\tmovq\t%r15, %r13\n\txorl\t%r15d, %r15d\n\tvpxor\t%xmm0, %xmm4, %xmm4\n\tvpxor\t%xmm1, %xmm3, %xmm3\n\tvmovdqa\t%xmm4, (%r11,%rbx,8)\n\tvmovdqa\t%xmm3, 16(%r11,%rbx,8)\n\tvmovdqa\t%xmm4, 32(%r11,%rbx,8)\n\tvmovdqa\t%xmm3, 48(%r11,%rbx,8)\n\taddq\t%r8, %rdx\n\tleaq\t(%rsi,%r12), %rax\n\tcmpq\t%r14, %rax\n\tjb\t.LBB2603_80\n\tjmp\t.LBB2603_74"
+    },
+    {
+      "symbol": "_RNCNvNtCsiYjGPJMyZdw_3tmr5tests17simple_native_128s1_0B5_",
+      "line": 821848,
+      "instructions": 65,
+      "stores": [
+        "\tvmovdqa\t%xmm0, (%r11,%rdi,8)",
+        "\tvmovdqa\t%xmm0, 16(%r11,%rdi,8)",
+        "\tvmovdqa\t%xmm0, 32(%r11,%rdi,8)",
+        "\tvmovdqa\t%xmm0, 48(%r11,%rdi,8)"
+      ],
+      "body": ".LBB2603_93:\n\tleaq\t(%rdx,%r9), %rbx\n\tcmpq\t%r14, %rbx\n\tmovq\t%rsi, %rax\n\tcmovbq\t%r13, %rax\n\tmovq\t%rdi, %r13\n\tmovq\t%rbp, %rdi\n\tsubq\t%rax, %rbx\n\tprefetcht1\t(%rcx,%rbx,8)\n\taddq\t%r8, %rbp\n\tmovq\t%rbp, %rax\n\tshrq\t$3, %rax\n\taddq\t%r10, %rax\n\tmovq\t%rax, %rbx\n\tshrq\t$30, %rbx\n\txorq\t%rax, %rbx\n\tmovabsq\t$-4658895280553007687, %rax\n\timulq\t%rax, %rbx\n\tmovq\t%rbx, %rax\n\tshrq\t$27, %rax\n\txorq\t%rbx, %rax\n\tmovabsq\t$-7723592293110705685, %rbx\n\timulq\t%rbx, %rax\n\tmovq\t%rax, %rbx\n\tshrq\t$31, %rbx\n\txorl\t%eax, %ebx\n\tmovq\t%rbx, %rax\n\tshlq\t$16, %rax\n\torq\t%rbx, %rax\n\tmovabsq\t$281470681808895, %rbx\n\tandq\t%rbx, %rax\n\tmovq\t%rax, %rbx\n\tshlq\t$8, %rbx\n\torq\t%rax, %rbx\n\tmovabsq\t$71777214294589695, %rax\n\tandq\t%rax, %rbx\n\tmovq\t%rbx, %rax\n\tshlq\t$4, %rax\n\torq\t%rbx, %rax\n\tmovq\t%rax, %rbx\n\tandq\t%r15, %rbx\n\tshlq\t$4, %rax\n\tandq\t%r12, %rax\n\torq\t%rbx, %rax\n\txorq\t%r12, %rax\n\tmovzwl\t%ax, %ebx\n\tshll\t$16, %eax\n\torq\t%rbx, %rax\n\tmovl\t$4294901760, %ebx\n\txorq\t%rbx, %rax\n\tmovq\t%rax, %rbx\n\tshlq\t$32, %rbx\n\torq\t%rax, %rbx\n\tvmovq\t%rbx, %xmm0\n\tvpxor\t%xmm1, %xmm0, %xmm0\n\tvpbroadcastq\t%xmm0, %xmm0\n\tvmovdqa\t%xmm0, (%r11,%rdi,8)\n\tvmovdqa\t%xmm0, 16(%r11,%rdi,8)\n\tvmovdqa\t%xmm0, 32(%r11,%rdi,8)\n\tvmovdqa\t%xmm0, 48(%r11,%rdi,8)\n\tmovq\t%r13, %rdi\n\txorl\t%r13d, %r13d\n\taddq\t%r8, %rdx\n\tleaq\t(%rdi,%rbp), %rax\n\tcmpq\t%r14, %rax\n\tjb\t.LBB2603_93"
+    },
+    {
+      "symbol": "_RNCNvNtCsiYjGPJMyZdw_3tmr5tests17simple_native_128s1_0B5_",
+      "line": 821813,
+      "instructions": 96,
+      "stores": [
+        "\tvmovdqa\t%xmm0, (%r11,%rdi,8)",
+        "\tvmovdqa\t%xmm0, 16(%r11,%rdi,8)",
+        "\tvmovdqa\t%xmm0, 32(%r11,%rdi,8)",
+        "\tvmovdqa\t%xmm0, 48(%r11,%rdi,8)"
+      ],
+      "body": ".LBB2603_87:\n\taddq\t$-8, 80(%rsp)\n\tmovq\t72(%rsp), %r10\n\tcmpq\t96(%rsp), %r10\n\tjbe\t.LBB2603_21\n.LBB2603_88:\n\taddq\t$-8, %r10\n\tmovq\t%r14, %rax\n\tsubq\t%r10, %rax\n\tcmovbq\t%r13, %rax\n\tmovq\t%rax, %rdx\n\torq\t%r8, %rdx\n\tshrq\t$32, %rdx\n\tje\t.LBB2603_89\n\txorl\t%edx, %edx\n\tdivq\t%r8\n\tmovq\t%rax, %rsi\n\tjmp\t.LBB2603_91\n.LBB2603_89:\n\txorl\t%edx, %edx\n\tdivl\t%r8d\n\tmovl\t%eax, %esi\n.LBB2603_91:\n\tmovq\t56(%rsp), %rcx\n\tcmpq\t$1, %rdx\n\tsbbq\t$-1, %rsi\n\tmovq\t%r10, 72(%rsp)\n\tcmpq\t%r14, %r10\n\tmovq\t64(%rsp), %r10\n\tjae\t.LBB2603_87\n\timulq\t%r8, %rsi\n\taddq\t$8, %rsi\n\tmovq\t80(%rsp), %rbp\n\tmovq\t72(%rsp), %rdx\n\t.p2align\t4\n.LBB2603_93:\n\tleaq\t(%rdx,%r9), %rbx\n\tcmpq\t%r14, %rbx\n\tmovq\t%rsi, %rax\n\tcmovbq\t%r13, %rax\n\tmovq\t%rdi, %r13\n\tmovq\t%rbp, %rdi\n\tsubq\t%rax, %rbx\n\tprefetcht1\t(%rcx,%rbx,8)\n\taddq\t%r8, %rbp\n\tmovq\t%rbp, %rax\n\tshrq\t$3, %rax\n\taddq\t%r10, %rax\n\tmovq\t%rax, %rbx\n\tshrq\t$30, %rbx\n\txorq\t%rax, %rbx\n\tmovabsq\t$-4658895280553007687, %rax\n\timulq\t%rax, %rbx\n\tmovq\t%rbx, %rax\n\tshrq\t$27, %rax\n\txorq\t%rbx, %rax\n\tmovabsq\t$-7723592293110705685, %rbx\n\timulq\t%rbx, %rax\n\tmovq\t%rax, %rbx\n\tshrq\t$31, %rbx\n\txorl\t%eax, %ebx\n\tmovq\t%rbx, %rax\n\tshlq\t$16, %rax\n\torq\t%rbx, %rax\n\tmovabsq\t$281470681808895, %rbx\n\tandq\t%rbx, %rax\n\tmovq\t%rax, %rbx\n\tshlq\t$8, %rbx\n\torq\t%rax, %rbx\n\tmovabsq\t$71777214294589695, %rax\n\tandq\t%rax, %rbx\n\tmovq\t%rbx, %rax\n\tshlq\t$4, %rax\n\torq\t%rbx, %rax\n\tmovq\t%rax, %rbx\n\tandq\t%r15, %rbx\n\tshlq\t$4, %rax\n\tandq\t%r12, %rax\n\torq\t%rbx, %rax\n\txorq\t%r12, %rax\n\tmovzwl\t%ax, %ebx\n\tshll\t$16, %eax\n\torq\t%rbx, %rax\n\tmovl\t$4294901760, %ebx\n\txorq\t%rbx, %rax\n\tmovq\t%rax, %rbx\n\tshlq\t$32, %rbx\n\torq\t%rax, %rbx\n\tvmovq\t%rbx, %xmm0\n\tvpxor\t%xmm1, %xmm0, %xmm0\n\tvpbroadcastq\t%xmm0, %xmm0\n\tvmovdqa\t%xmm0, (%r11,%rdi,8)\n\tvmovdqa\t%xmm0, 16(%r11,%rdi,8)\n\tvmovdqa\t%xmm0, 32(%r11,%rdi,8)\n\tvmovdqa\t%xmm0, 48(%r11,%rdi,8)\n\tmovq\t%r13, %rdi\n\txorl\t%r13d, %r13d\n\taddq\t%r8, %rdx\n\tleaq\t(%rdi,%rbp), %rax\n\tcmpq\t%r14, %rax\n\tjb\t.LBB2603_93\n\tjmp\t.LBB2603_87"
+    },
+    {
+      "symbol": "_RNCNvNtCsiYjGPJMyZdw_3tmr5tests20simple_native_scalars1_0B5_",
+      "line": 822912,
+      "instructions": 41,
+      "stores": [
+        "\tvmovdqu\t%ymm5, 8(%rcx,%rbx,8)",
+        "\tvmovdqu\t%xmm3, 40(%rcx,%rbx,8)"
+      ],
+      "body": ".LBB2608_20:\n\tmovl\t%r15d, %r10d\n\tandl\t$1, %r10d\n\tnegq\t%r10\n\tmovq\t%rax, %rcx\n\tandq\t$-16, %rcx\n\timulq\t%rdx, %rcx\n\taddq\t64(%rsp), %rcx\n\tleaq\t(%rcx,%r9), %r8\n\tvmovq\t%r10, %xmm3\n\txorq\t%rdi, %r10\n\tmovq\t%r10, %r11\n\txorq\t%rcx, %r11\n\tvmovq\t%rcx, %xmm4\n\tshrq\t$32, %rcx\n\txorq\t%rcx, %r11\n\txorq\t%r8, %r10\n\tshrq\t$32, %r8\n\txorq\t%r10, %r8\n\tmovq\t72(%rsp), %rcx\n\tmovq\t%r11, (%rcx,%rbx,8)\n\tvpbroadcastq\t%xmm4, %ymm4\n\tvpaddq\t%ymm1, %ymm4, %ymm5\n\tvpsrlq\t$32, %ymm5, %ymm6\n\tvpxor\t%xmm3, %xmm0, %xmm7\n\tvpbroadcastq\t%xmm7, %ymm7\n\tvpxor\t%ymm5, %ymm7, %ymm5\n\tvpxor\t%ymm6, %ymm5, %ymm5\n\tvmovdqu\t%ymm5, 8(%rcx,%rbx,8)\n\tvpaddq\t%xmm2, %xmm4, %xmm4\n\tvpsrlq\t$32, %xmm4, %xmm5\n\tvpxor\t%xmm3, %xmm0, %xmm3\n\tvpbroadcastq\t%xmm3, %xmm3\n\tvpxor\t%xmm4, %xmm3, %xmm3\n\tvpxor\t%xmm5, %xmm3, %xmm3\n\tvmovdqu\t%xmm3, 40(%rcx,%rbx,8)\n\tmovq\t%r8, 56(%rcx,%rbx,8)\n\tincq\t%r15\n\taddq\t$8, %rbx\n\taddq\t$8, %rax\n\tcmpq\t%r14, %rbx\n\tjb\t.LBB2608_20"
+    },
+    {
+      "symbol": "_RNCNvNtCsiYjGPJMyZdw_3tmr5tests20simple_native_scalars1_0B5_",
+      "line": 822966,
+      "instructions": 39,
+      "stores": [
+        "\tvmovdqu\t%ymm2, (%rcx,%rbx,8)",
+        "\tvmovdqu\t%ymm1, 32(%rcx,%rbx,8)"
+      ],
+      "body": ".LBB2608_16:\n\tmovq\t%r12, %rcx\n\tshrq\t$30, %rcx\n\txorq\t%r12, %rcx\n\timulq\t%rax, %rcx\n\tmovq\t%rcx, %r9\n\tshrq\t$27, %r9\n\txorq\t%rcx, %r9\n\timulq\t%rdx, %r9\n\tmovq\t%r9, %rcx\n\tshrq\t$31, %rcx\n\txorq\t%r9, %rcx\n\tmovq\t%rcx, %r9\n\txorq\t64(%rsp), %r9\n\trorxq\t$35, %r9, %r9\n\timulq\t%r8, %r9\n\torq\t$1, %r9\n\tleaq\t(,%r9,4), %r10\n\tleaq\t(%r9,%rcx), %r11\n\tleaq\t(%rcx,%r9,2), %rsi\n\tleaq\t(%r11,%r9,2), %r9\n\tvmovq\t%r10, %xmm1\n\tvpbroadcastq\t%xmm1, %ymm1\n\tvmovq\t%rsi, %xmm2\n\tvmovq\t%r9, %xmm3\n\tvpunpcklqdq\t%xmm3, %xmm2, %xmm2\n\tvmovq\t%r11, %xmm3\n\tvmovq\t%rcx, %xmm4\n\tvpunpcklqdq\t%xmm3, %xmm4, %xmm3\n\tvinserti128\t$1, %xmm2, %ymm3, %ymm2\n\tvpaddq\t%ymm2, %ymm1, %ymm1\n\tvpxor\t%ymm0, %ymm2, %ymm2\n\tvpxor\t%ymm0, %ymm1, %ymm1\n\tmovq\t72(%rsp), %rcx\n\tvmovdqu\t%ymm2, (%rcx,%rbx,8)\n\tvmovdqu\t%ymm1, 32(%rcx,%rbx,8)\n\taddq\t$8, %rbx\n\tincq\t%r12\n\tcmpq\t%r14, %rbx\n\tjb\t.LBB2608_16"
+    },
+    {
+      "symbol": "_RNCNvNtCsiYjGPJMyZdw_3tmr5tests20simple_native_scalars1_0B5_",
+      "line": 823021,
+      "instructions": 29,
+      "stores": [
+        "\tvmovdqu\t%ymm4, 8(%rcx,%rbx,8)",
+        "\tvmovdqu\t%xmm3, 40(%rcx,%rbx,8)"
+      ],
+      "body": ".LBB2608_7:\n\tmovq\t64(%rsp), %r11\n\tmovq\t%r11, %r8\n\tshrq\t$32, %r8\n\tleaq\t(%r11,%rax), %r9\n\tmovq\t%r9, %r10\n\tshrq\t$32, %r10\n\txorq\t%rdi, %r8\n\txorq\t%r11, %r8\n\txorq\t%rdi, %r10\n\txorq\t%r9, %r10\n\tmovq\t%r8, (%rcx,%rbx,8)\n\tvmovq\t%r11, %xmm3\n\tvpbroadcastq\t%xmm3, %ymm3\n\tvpaddq\t%ymm1, %ymm3, %ymm4\n\tvpsrlq\t$32, %ymm4, %ymm5\n\tvpxor\t%ymm4, %ymm0, %ymm4\n\tvpxor\t%ymm5, %ymm4, %ymm4\n\tvmovdqu\t%ymm4, 8(%rcx,%rbx,8)\n\tvpaddq\t%xmm2, %xmm3, %xmm3\n\tvpsrlq\t$32, %xmm3, %xmm4\n\tvpxor\t%xmm3, %xmm0, %xmm3\n\tvpxor\t%xmm4, %xmm3, %xmm3\n\tvmovdqu\t%xmm3, 40(%rcx,%rbx,8)\n\tmovq\t%r10, 56(%rcx,%rbx,8)\n\taddq\t$8, %rbx\n\taddq\t%rdx, %r11\n\tmovq\t%r11, 64(%rsp)\n\tcmpq\t%r14, %rbx\n\tjb\t.LBB2608_7"
+    },
+    {
+      "symbol": "_RNCNvNtCsiYjGPJMyZdw_3tmr5tests20simple_native_scalars1_0B5_",
+      "line": 823066,
+      "instructions": 57,
+      "stores": [
+        "\tvmovdqu\t%ymm7, (%rcx,%rbx,8)",
+        "\tvmovdqu\t%ymm7, 32(%rcx,%rbx,8)"
+      ],
+      "body": ".LBB2608_11:\n\tleaq\t1(%rax), %rcx\n\tvmovq\t%rcx, %xmm7\n\tvmovq\t%rax, %xmm8\n\tvpbroadcastq\t%xmm8, %ymm8\n\tvpunpcklqdq\t%xmm7, %xmm8, %xmm7\n\tvpaddq\t%xmm1, %xmm8, %xmm9\n\tvinserti128\t$1, %xmm9, %ymm7, %ymm7\n\tvpsrlq\t$30, %ymm7, %ymm9\n\tvpxor\t%ymm7, %ymm9, %ymm7\n\tvpmuludq\t%ymm2, %ymm7, %ymm9\n\tvpsrlq\t$32, %ymm7, %ymm10\n\tvpmuludq\t%ymm3, %ymm10, %ymm10\n\tvpaddq\t%ymm10, %ymm9, %ymm9\n\tvpsllq\t$32, %ymm9, %ymm9\n\tvpmuludq\t%ymm3, %ymm7, %ymm7\n\tvpaddq\t%ymm7, %ymm9, %ymm7\n\tvpsrlq\t$27, %ymm7, %ymm9\n\tvpxor\t%ymm7, %ymm9, %ymm7\n\tvpmuludq\t%ymm4, %ymm7, %ymm9\n\tvpsrlq\t$32, %ymm7, %ymm10\n\tvpmuludq\t%ymm5, %ymm10, %ymm10\n\tvpaddq\t%ymm10, %ymm9, %ymm9\n\tvpsllq\t$32, %ymm9, %ymm9\n\tvpmuludq\t%ymm5, %ymm7, %ymm7\n\tvpaddq\t%ymm7, %ymm9, %ymm7\n\tvpsrlq\t$31, %ymm7, %ymm9\n\tvpxor\t%ymm7, %ymm0, %ymm7\n\tvpxor\t%ymm7, %ymm9, %ymm7\n\tmovq\t72(%rsp), %rcx\n\tvmovdqu\t%ymm7, (%rcx,%rbx,8)\n\tvpaddq\t%ymm6, %ymm8, %ymm7\n\tvpsrlq\t$30, %ymm7, %ymm8\n\tvpxor\t%ymm7, %ymm8, %ymm7\n\tvpmuludq\t%ymm2, %ymm7, %ymm8\n\tvpsrlq\t$32, %ymm7, %ymm9\n\tvpmuludq\t%ymm3, %ymm9, %ymm9\n\tvpaddq\t%ymm9, %ymm8, %ymm8\n\tvpsllq\t$32, %ymm8, %ymm8\n\tvpmuludq\t%ymm3, %ymm7, %ymm7\n\tvpaddq\t%ymm7, %ymm8, %ymm7\n\tvpsrlq\t$27, %ymm7, %ymm8\n\tvpxor\t%ymm7, %ymm8, %ymm7\n\tvpmuludq\t%ymm4, %ymm7, %ymm8\n\tvpsrlq\t$32, %ymm7, %ymm9\n\tvpmuludq\t%ymm5, %ymm9, %ymm9\n\tvpaddq\t%ymm9, %ymm8, %ymm8\n\tvpsllq\t$32, %ymm8, %ymm8\n\tvpmuludq\t%ymm5, %ymm7, %ymm7\n\tvpaddq\t%ymm7, %ymm8, %ymm7\n\tvpsrlq\t$31, %ymm7, %ymm8\n\tvpxor\t%ymm7, %ymm0, %ymm7\n\tvpxor\t%ymm7, %ymm8, %ymm7\n\tvmovdqu\t%ymm7, 32(%rcx,%rbx,8)\n\taddq\t$8, %rbx\n\taddq\t$8, %rax\n\tcmpq\t%r14, %rbx\n\tjb\t.LBB2608_11"
+    },
+    {
+      "symbol": "_RNCNvNtCsiYjGPJMyZdw_3tmr5tests20simple_native_scalars1_0B5_",
+      "line": 823245,
+      "instructions": 70,
+      "stores": [
+        "\tvmovdqu\t%ymm5, 8(%rsi,%rbx,8)",
+        "\tvmovdqu\t%xmm3, 40(%rsi,%rbx,8)"
+      ],
+      "body": ".LBB2608_158:\n\tleaq\t(%rdx,%r11), %rcx\n\tcmpq\t%r14, %rcx\n\tmovq\t%r11, %rdi\n\tmovq\t80(%rsp), %r11\n\tcmovbq\t%rbx, %r11\n\tmovq\t%r8, %rbx\n\tsubq\t%r11, %rcx\n\tprefetcht1\t(%r15,%rcx,8)\n\taddq\t%r9, %r8\n\tmovq\t%r8, %r11\n\tshrq\t$3, %r11\n\taddq\t104(%rsp), %r11\n\tmovl\t%r11d, %ecx\n\tandl\t$1, %ecx\n\tnegq\t%rcx\n\tshlq\t$3, %r11\n\tandq\t$-16, %r11\n\timulq\t%r13, %r11\n\taddq\t%r10, %r11\n\tvmovq\t%rcx, %xmm3\n\txorq\t%rbp, %rcx\n\tmovq\t%rbp, %rax\n\tmovq\t%rcx, %rbp\n\txorq\t%r11, %rbp\n\tmovq\t%rsi, %r14\n\tmovq\t%r10, %rsi\n\tmovq\t%r15, %r10\n\tmovq\t%r9, %r15\n\tmovq\t%r13, %r9\n\tmovq\t%r12, %r13\n\tmovq\t%r11, %r12\n\tshrq\t$32, %r12\n\txorq\t%r12, %rbp\n\tmovq\t%r13, %r12\n\tmovq\t%r9, %r13\n\tmovq\t%r15, %r9\n\tmovq\t%r10, %r15\n\tmovq\t%rsi, %r10\n\tmovq\t%r14, %rsi\n\tvmovq\t%r11, %xmm4\n\tmovabsq\t$6018027440424182931, %r14\n\taddq\t%r14, %r11\n\txorq\t%r11, %rcx\n\tshrq\t$32, %r11\n\txorq\t%rcx, %r11\n\tmovq\t%rbp, (%rsi,%rbx,8)\n\tmovq\t%rax, %rbp\n\tvpbroadcastq\t%xmm4, %ymm4\n\tvpaddq\t%ymm1, %ymm4, %ymm5\n\tvpsrlq\t$32, %ymm5, %ymm6\n\tvpxor\t%xmm3, %xmm0, %xmm7\n\tvpbroadcastq\t%xmm7, %ymm7\n\tvpxor\t%ymm5, %ymm7, %ymm5\n\tvpxor\t%ymm6, %ymm5, %ymm5\n\tvmovdqu\t%ymm5, 8(%rsi,%rbx,8)\n\tvpaddq\t%xmm2, %xmm4, %xmm4\n\tvpsrlq\t$32, %xmm4, %xmm5\n\tvpxor\t%xmm3, %xmm0, %xmm3\n\tvpbroadcastq\t%xmm3, %xmm3\n\tvpxor\t%xmm4, %xmm3, %xmm3\n\tvpxor\t%xmm5, %xmm3, %xmm3\n\tvmovdqu\t%xmm3, 40(%rsi,%rbx,8)\n\tmovq\t%r11, 56(%rsi,%rbx,8)\n\txorl\t%ebx, %ebx\n\tmovq\t%rdi, %r11\n\tmovq\t144(%rsp), %r14\n\taddq\t%r9, %rdx\n\tleaq\t(%r12,%r8), %rcx\n\tcmpq\t%r14, %rcx\n\tjb\t.LBB2608_158"
+    },
+    {
+      "symbol": "_RNCNvNtCsiYjGPJMyZdw_3tmr5tests20simple_native_scalars1_0B5_",
+      "line": 823209,
+      "instructions": 101,
+      "stores": [
+        "\tvmovdqu\t%ymm5, 8(%rsi,%rbx,8)",
+        "\tvmovdqu\t%xmm3, 40(%rsi,%rbx,8)"
+      ],
+      "body": ".LBB2608_152:\n\taddq\t$-8, 112(%rsp)\n\tmovq\t88(%rsp), %r8\n\tcmpq\t120(%rsp), %r8\n\tjbe\t.LBB2608_21\n.LBB2608_153:\n\taddq\t$-8, %r8\n\tmovq\t%r14, %rax\n\tsubq\t%r8, %rax\n\tcmovbq\t%rbx, %rax\n\tmovq\t%rax, %rcx\n\torq\t%r9, %rcx\n\tshrq\t$32, %rcx\n\tje\t.LBB2608_154\n\txorl\t%edx, %edx\n\tdivq\t%r9\n\tjmp\t.LBB2608_156\n\t.p2align\t4\n.LBB2608_154:\n\txorl\t%edx, %edx\n\tdivl\t%r9d\n.LBB2608_156:\n\tcmpq\t$1, %rdx\n\tsbbq\t$-1, %rax\n\tmovq\t%r8, 88(%rsp)\n\tcmpq\t%r14, %r8\n\tmovq\t72(%rsp), %r15\n\tmovq\t64(%rsp), %r10\n\tmovq\t96(%rsp), %rbp\n\tjae\t.LBB2608_152\n\timulq\t%r9, %rax\n\taddq\t$8, %rax\n\tmovq\t%rax, 80(%rsp)\n\tmovq\t112(%rsp), %r8\n\tmovq\t88(%rsp), %rdx\n\t.p2align\t4\n.LBB2608_158:\n\tleaq\t(%rdx,%r11), %rcx\n\tcmpq\t%r14, %rcx\n\tmovq\t%r11, %rdi\n\tmovq\t80(%rsp), %r11\n\tcmovbq\t%rbx, %r11\n\tmovq\t%r8, %rbx\n\tsubq\t%r11, %rcx\n\tprefetcht1\t(%r15,%rcx,8)\n\taddq\t%r9, %r8\n\tmovq\t%r8, %r11\n\tshrq\t$3, %r11\n\taddq\t104(%rsp), %r11\n\tmovl\t%r11d, %ecx\n\tandl\t$1, %ecx\n\tnegq\t%rcx\n\tshlq\t$3, %r11\n\tandq\t$-16, %r11\n\timulq\t%r13, %r11\n\taddq\t%r10, %r11\n\tvmovq\t%rcx, %xmm3\n\txorq\t%rbp, %rcx\n\tmovq\t%rbp, %rax\n\tmovq\t%rcx, %rbp\n\txorq\t%r11, %rbp\n\tmovq\t%rsi, %r14\n\tmovq\t%r10, %rsi\n\tmovq\t%r15, %r10\n\tmovq\t%r9, %r15\n\tmovq\t%r13, %r9\n\tmovq\t%r12, %r13\n\tmovq\t%r11, %r12\n\tshrq\t$32, %r12\n\txorq\t%r12, %rbp\n\tmovq\t%r13, %r12\n\tmovq\t%r9, %r13\n\tmovq\t%r15, %r9\n\tmovq\t%r10, %r15\n\tmovq\t%rsi, %r10\n\tmovq\t%r14, %rsi\n\tvmovq\t%r11, %xmm4\n\tmovabsq\t$6018027440424182931, %r14\n\taddq\t%r14, %r11\n\txorq\t%r11, %rcx\n\tshrq\t$32, %r11\n\txorq\t%rcx, %r11\n\tmovq\t%rbp, (%rsi,%rbx,8)\n\tmovq\t%rax, %rbp\n\tvpbroadcastq\t%xmm4, %ymm4\n\tvpaddq\t%ymm1, %ymm4, %ymm5\n\tvpsrlq\t$32, %ymm5, %ymm6\n\tvpxor\t%xmm3, %xmm0, %xmm7\n\tvpbroadcastq\t%xmm7, %ymm7\n\tvpxor\t%ymm5, %ymm7, %ymm5\n\tvpxor\t%ymm6, %ymm5, %ymm5\n\tvmovdqu\t%ymm5, 8(%rsi,%rbx,8)\n\tvpaddq\t%xmm2, %xmm4, %xmm4\n\tvpsrlq\t$32, %xmm4, %xmm5\n\tvpxor\t%xmm3, %xmm0, %xmm3\n\tvpbroadcastq\t%xmm3, %xmm3\n\tvpxor\t%xmm4, %xmm3, %xmm3\n\tvpxor\t%xmm5, %xmm3, %xmm3\n\tvmovdqu\t%xmm3, 40(%rsi,%rbx,8)\n\tmovq\t%r11, 56(%rsi,%rbx,8)\n\txorl\t%ebx, %ebx\n\tmovq\t%rdi, %r11\n\tmovq\t144(%rsp), %r14\n\taddq\t%r9, %rdx\n\tleaq\t(%r12,%r8), %rcx\n\tcmpq\t%r14, %rcx\n\tjb\t.LBB2608_158\n\tjmp\t.LBB2608_152"
+    },
+    {
+      "symbol": "_RNCNvNtCsiYjGPJMyZdw_3tmr5tests20simple_native_scalars1_0B5_",
+      "line": 823374,
+      "instructions": 55,
+      "stores": [
+        "\tvmovdqu\t%ymm2, (%r8,%r11,8)",
+        "\tvmovdqu\t%ymm1, 32(%r8,%r11,8)"
+      ],
+      "body": ".LBB2608_145:\n\tmovq\t%r11, %r15\n\tmovq\t%rsi, %r11\n\tleaq\t(%rdx,%r10), %rcx\n\tcmpq\t%r14, %rcx\n\tmovq\t%rax, %rbx\n\tcmovbq\t%r12, %rbx\n\tsubq\t%rbx, %rcx\n\tprefetcht1\t(%r13,%rcx,8)\n\taddq\t%r9, %rsi\n\tmovq\t%rsi, %rbx\n\tshrq\t$3, %rbx\n\taddq\t%rdi, %rbx\n\tmovq\t%rbx, %rcx\n\tshrq\t$30, %rcx\n\txorq\t%rbx, %rcx\n\tmovabsq\t$-4658895280553007687, %rbx\n\timulq\t%rbx, %rcx\n\tmovq\t%rcx, %rbx\n\tshrq\t$27, %rbx\n\txorq\t%rcx, %rbx\n\tmovabsq\t$-7723592293110705685, %rcx\n\timulq\t%rcx, %rbx\n\tmovq\t%rbx, %rcx\n\tshrq\t$31, %rcx\n\txorq\t%rbx, %rcx\n\tmovq\t%rcx, %rbx\n\txorq\t%rbp, %rbx\n\trorxq\t$35, %rbx, %rbx\n\tmovabsq\t$-7046029254386353131, %r12\n\timulq\t%r12, %rbx\n\torq\t$1, %rbx\n\tleaq\t(,%rbx,4), %r12\n\tvmovq\t%r12, %xmm1\n\tleaq\t(%rcx,%rbx,2), %r12\n\tvmovq\t%r12, %xmm2\n\tleaq\t(%rbx,%rcx), %r12\n\tleaq\t(%r12,%rbx,2), %rbx\n\tvmovq\t%rbx, %xmm3\n\tvmovq\t%r12, %xmm4\n\txorl\t%r12d, %r12d\n\tvmovq\t%rcx, %xmm5\n\tvpunpcklqdq\t%xmm3, %xmm2, %xmm2\n\tvpbroadcastq\t%xmm1, %ymm1\n\tvpunpcklqdq\t%xmm4, %xmm5, %xmm3\n\tvinserti128\t$1, %xmm2, %ymm3, %ymm2\n\tvpaddq\t%ymm2, %ymm1, %ymm1\n\tvpxor\t%ymm0, %ymm2, %ymm2\n\tvpxor\t%ymm0, %ymm1, %ymm1\n\tvmovdqu\t%ymm2, (%r8,%r11,8)\n\tvmovdqu\t%ymm1, 32(%r8,%r11,8)\n\tmovq\t%r15, %r11\n\taddq\t%r9, %rdx\n\tleaq\t(%r15,%rsi), %rcx\n\tcmpq\t%r14, %rcx\n\tjb\t.LBB2608_145"
+    },
+    {
+      "symbol": "_RNCNvNtCsiYjGPJMyZdw_3tmr5tests20simple_native_scalars1_0B5_",
+      "line": 823342,
+      "instructions": 82,
+      "stores": [
+        "\tvmovdqu\t%ymm2, (%r8,%r11,8)",
+        "\tvmovdqu\t%ymm1, 32(%r8,%r11,8)"
+      ],
+      "body": ".LBB2608_139:\n\taddq\t$-8, 96(%rsp)\n\tmovq\t80(%rsp), %rsi\n\tcmpq\t120(%rsp), %rsi\n\tjbe\t.LBB2608_21\n.LBB2608_140:\n\taddq\t$-8, %rsi\n\tmovq\t%r14, %rax\n\tsubq\t%rsi, %rax\n\tcmovbq\t%r12, %rax\n\tmovq\t%rax, %rcx\n\torq\t%r9, %rcx\n\tshrq\t$32, %rcx\n\tje\t.LBB2608_141\n\txorl\t%edx, %edx\n\tdivq\t%r9\n\tjmp\t.LBB2608_143\n\t.p2align\t4\n.LBB2608_141:\n\txorl\t%edx, %edx\n\tdivl\t%r9d\n.LBB2608_143:\n\tcmpq\t$1, %rdx\n\tsbbq\t$-1, %rax\n\tmovq\t%rsi, 80(%rsp)\n\tcmpq\t%r14, %rsi\n\tjae\t.LBB2608_139\n\timulq\t%r9, %rax\n\taddq\t$8, %rax\n\tmovq\t96(%rsp), %rsi\n\tmovq\t80(%rsp), %rdx\n\t.p2align\t4\n.LBB2608_145:\n\tmovq\t%r11, %r15\n\tmovq\t%rsi, %r11\n\tleaq\t(%rdx,%r10), %rcx\n\tcmpq\t%r14, %rcx\n\tmovq\t%rax, %rbx\n\tcmovbq\t%r12, %rbx\n\tsubq\t%rbx, %rcx\n\tprefetcht1\t(%r13,%rcx,8)\n\taddq\t%r9, %rsi\n\tmovq\t%rsi, %rbx\n\tshrq\t$3, %rbx\n\taddq\t%rdi, %rbx\n\tmovq\t%rbx, %rcx\n\tshrq\t$30, %rcx\n\txorq\t%rbx, %rcx\n\tmovabsq\t$-4658895280553007687, %rbx\n\timulq\t%rbx, %rcx\n\tmovq\t%rcx, %rbx\n\tshrq\t$27, %rbx\n\txorq\t%rcx, %rbx\n\tmovabsq\t$-7723592293110705685, %rcx\n\timulq\t%rcx, %rbx\n\tmovq\t%rbx, %rcx\n\tshrq\t$31, %rcx\n\txorq\t%rbx, %rcx\n\tmovq\t%rcx, %rbx\n\txorq\t%rbp, %rbx\n\trorxq\t$35, %rbx, %rbx\n\tmovabsq\t$-7046029254386353131, %r12\n\timulq\t%r12, %rbx\n\torq\t$1, %rbx\n\tleaq\t(,%rbx,4), %r12\n\tvmovq\t%r12, %xmm1\n\tleaq\t(%rcx,%rbx,2), %r12\n\tvmovq\t%r12, %xmm2\n\tleaq\t(%rbx,%rcx), %r12\n\tleaq\t(%r12,%rbx,2), %rbx\n\tvmovq\t%rbx, %xmm3\n\tvmovq\t%r12, %xmm4\n\txorl\t%r12d, %r12d\n\tvmovq\t%rcx, %xmm5\n\tvpunpcklqdq\t%xmm3, %xmm2, %xmm2\n\tvpbroadcastq\t%xmm1, %ymm1\n\tvpunpcklqdq\t%xmm4, %xmm5, %xmm3\n\tvinserti128\t$1, %xmm2, %ymm3, %ymm2\n\tvpaddq\t%ymm2, %ymm1, %ymm1\n\tvpxor\t%ymm0, %ymm2, %ymm2\n\tvpxor\t%ymm0, %ymm1, %ymm1\n\tvmovdqu\t%ymm2, (%r8,%r11,8)\n\tvmovdqu\t%ymm1, 32(%r8,%r11,8)\n\tmovq\t%r15, %r11\n\taddq\t%r9, %rdx\n\tleaq\t(%r15,%rsi), %rcx\n\tcmpq\t%r14, %rcx\n\tjb\t.LBB2608_145\n\tjmp\t.LBB2608_139"
+    },
+    {
+      "symbol": "_RNCNvNtCsiYjGPJMyZdw_3tmr5tests20simple_native_scalars1_0B5_",
+      "line": 823497,
+      "instructions": 46,
+      "stores": [
+        "\tvmovdqu\t%ymm4, 8(%rsi,%r8,8)",
+        "\tvmovdqu\t%xmm3, 40(%rsi,%r8,8)"
+      ],
+      "body": ".LBB2608_34:\n\tmovq\t%r8, %r15\n\tmovq\t%r11, %r8\n\tleaq\t(%rdx,%r13), %rdi\n\tcmpq\t%r14, %rdi\n\tmovq\t%rax, %rbx\n\tmovl\t$0, %ecx\n\tcmovbq\t%rcx, %rbx\n\tsubq\t%rbx, %rdi\n\tmovq\t72(%rsp), %rcx\n\tprefetcht1\t(%rcx,%rdi,8)\n\taddq\t%r9, %r11\n\tmovq\t%r11, %rdi\n\tshrq\t$3, %rdi\n\taddq\t%r10, %rdi\n\tmovabsq\t$-1028001813962170200, %rcx\n\timulq\t%rcx, %rdi\n\taddq\t%rbp, %rdi\n\tmovabsq\t$6018027440424182931, %rcx\n\tleaq\t(%rdi,%rcx), %rbx\n\tmovq\t%r12, %rcx\n\txorq\t%rdi, %rcx\n\tvmovq\t%rdi, %xmm3\n\tshrq\t$32, %rdi\n\txorq\t%rdi, %rcx\n\tmovq\t%r12, %rdi\n\txorq\t%rbx, %rdi\n\tshrq\t$32, %rbx\n\txorq\t%rdi, %rbx\n\tmovq\t%rcx, (%rsi,%r8,8)\n\tvpbroadcastq\t%xmm3, %ymm3\n\tvpaddq\t%ymm1, %ymm3, %ymm4\n\tvpsrlq\t$32, %ymm4, %ymm5\n\tvpxor\t%ymm4, %ymm0, %ymm4\n\tvpxor\t%ymm5, %ymm4, %ymm4\n\tvmovdqu\t%ymm4, 8(%rsi,%r8,8)\n\tvpaddq\t%xmm2, %xmm3, %xmm3\n\tvpsrlq\t$32, %xmm3, %xmm4\n\tvpxor\t%xmm3, %xmm0, %xmm3\n\tvpxor\t%xmm4, %xmm3, %xmm3\n\tvmovdqu\t%xmm3, 40(%rsi,%r8,8)\n\tmovq\t%rbx, 56(%rsi,%r8,8)\n\tmovq\t%r15, %r8\n\taddq\t%r9, %rdx\n\tleaq\t(%r15,%r11), %rcx\n\tcmpq\t%r14, %rcx\n\tjb\t.LBB2608_34"
+    },
+    {
+      "symbol": "_RNCNvNtCsiYjGPJMyZdw_3tmr5tests20simple_native_scalars1_0B5_",
+      "line": 823459,
+      "instructions": 79,
+      "stores": [
+        "\tvmovdqu\t%ymm4, 8(%rsi,%r8,8)",
+        "\tvmovdqu\t%xmm3, 40(%rsi,%r8,8)"
+      ],
+      "body": ".LBB2608_28:\n\taddq\t$-8, 88(%rsp)\n\tmovq\t80(%rsp), %r10\n\tcmpq\t120(%rsp), %r10\n\tmovl\t$0, %edx\n\tjbe\t.LBB2608_21\n.LBB2608_29:\n\taddq\t$-8, %r10\n\tmovq\t%r14, %rcx\n\tsubq\t%r10, %r14\n\tcmovbq\t%rdx, %r14\n\tmovq\t%r14, %rdx\n\torq\t%r9, %rdx\n\tshrq\t$32, %rdx\n\tje\t.LBB2608_30\n\tmovq\t%r14, %rax\n\txorl\t%edx, %edx\n\tdivq\t%r9\n\tjmp\t.LBB2608_32\n\t.p2align\t4\n.LBB2608_30:\n\tmovl\t%r14d, %eax\n\txorl\t%edx, %edx\n\tdivl\t%r9d\n.LBB2608_32:\n\tcmpq\t$1, %rdx\n\tsbbq\t$-1, %rax\n\tmovq\t%rcx, %r14\n\tmovq\t%r10, 80(%rsp)\n\tcmpq\t%rcx, %r10\n\tmovq\t104(%rsp), %r10\n\tmovq\t128(%rsp), %r9\n\tjae\t.LBB2608_28\n\timulq\t%r9, %rax\n\taddq\t$8, %rax\n\tmovq\t88(%rsp), %r11\n\tmovq\t80(%rsp), %rdx\n\t.p2align\t4\n.LBB2608_34:\n\tmovq\t%r8, %r15\n\tmovq\t%r11, %r8\n\tleaq\t(%rdx,%r13), %rdi\n\tcmpq\t%r14, %rdi\n\tmovq\t%rax, %rbx\n\tmovl\t$0, %ecx\n\tcmovbq\t%rcx, %rbx\n\tsubq\t%rbx, %rdi\n\tmovq\t72(%rsp), %rcx\n\tprefetcht1\t(%rcx,%rdi,8)\n\taddq\t%r9, %r11\n\tmovq\t%r11, %rdi\n\tshrq\t$3, %rdi\n\taddq\t%r10, %rdi\n\tmovabsq\t$-1028001813962170200, %rcx\n\timulq\t%rcx, %rdi\n\taddq\t%rbp, %rdi\n\tmovabsq\t$6018027440424182931, %rcx\n\tleaq\t(%rdi,%rcx), %rbx\n\tmovq\t%r12, %rcx\n\txorq\t%rdi, %rcx\n\tvmovq\t%rdi, %xmm3\n\tshrq\t$32, %rdi\n\txorq\t%rdi, %rcx\n\tmovq\t%r12, %rdi\n\txorq\t%rbx, %rdi\n\tshrq\t$32, %rbx\n\txorq\t%rdi, %rbx\n\tmovq\t%rcx, (%rsi,%r8,8)\n\tvpbroadcastq\t%xmm3, %ymm3\n\tvpaddq\t%ymm1, %ymm3, %ymm4\n\tvpsrlq\t$32, %ymm4, %ymm5\n\tvpxor\t%ymm4, %ymm0, %ymm4\n\tvpxor\t%ymm5, %ymm4, %ymm4\n\tvmovdqu\t%ymm4, 8(%rsi,%r8,8)\n\tvpaddq\t%xmm2, %xmm3, %xmm3\n\tvpsrlq\t$32, %xmm3, %xmm4\n\tvpxor\t%xmm3, %xmm0, %xmm3\n\tvpxor\t%xmm4, %xmm3, %xmm3\n\tvmovdqu\t%xmm3, 40(%rsi,%r8,8)\n\tmovq\t%rbx, 56(%rsi,%r8,8)\n\tmovq\t%r15, %r8\n\taddq\t%r9, %rdx\n\tleaq\t(%r15,%r11), %rcx\n\tcmpq\t%r14, %rcx\n\tjb\t.LBB2608_34\n\tjmp\t.LBB2608_28"
+    },
+    {
+      "symbol": "_RNCNvNtCsiYjGPJMyZdw_3tmr5tests20simple_native_scalars1_0B5_",
+      "line": 823611,
+      "instructions": 67,
+      "stores": [
+        "\tvmovdqu\t%ymm7, -32(%rsi,%rdx,8)",
+        "\tvmovdqu\t%ymm7, (%rsi,%rdx,8)"
+      ],
+      "body": ".LBB2608_47:\n\tleaq\t(%rdi,%r10), %rcx\n\tcmpq\t%r14, %rcx\n\tmovq\t%rax, %rbx\n\tcmovbq\t%r12, %rbx\n\tsubq\t%rbx, %rcx\n\tprefetcht1\t(%r13,%rcx,8)\n\tleaq\t(%r15,%rdx), %rcx\n\tandq\t$-8, %rcx\n\tleaq\t(%rcx,%rbp), %rbx\n\tincq\t%rbx\n\taddq\t%rbp, %rcx\n\tvmovq\t%rbx, %xmm7\n\tvmovq\t%rcx, %xmm8\n\tvpbroadcastq\t%xmm8, %ymm8\n\tvpunpcklqdq\t%xmm7, %xmm8, %xmm7\n\tvpaddq\t%xmm1, %xmm8, %xmm9\n\tvinserti128\t$1, %xmm9, %ymm7, %ymm7\n\tvpsrlq\t$30, %ymm7, %ymm9\n\tvpxor\t%ymm7, %ymm9, %ymm7\n\tvpmuludq\t%ymm2, %ymm7, %ymm9\n\tvpsrlq\t$32, %ymm7, %ymm10\n\tvpmuludq\t%ymm3, %ymm10, %ymm10\n\tvpaddq\t%ymm10, %ymm9, %ymm9\n\tvpsllq\t$32, %ymm9, %ymm9\n\tvpmuludq\t%ymm3, %ymm7, %ymm7\n\tvpaddq\t%ymm7, %ymm9, %ymm7\n\tvpsrlq\t$27, %ymm7, %ymm9\n\tvpxor\t%ymm7, %ymm9, %ymm7\n\tvpmuludq\t%ymm4, %ymm7, %ymm9\n\tvpsrlq\t$32, %ymm7, %ymm10\n\tvpmuludq\t%ymm5, %ymm10, %ymm10\n\tvpaddq\t%ymm10, %ymm9, %ymm9\n\tvpsllq\t$32, %ymm9, %ymm9\n\tvpmuludq\t%ymm5, %ymm7, %ymm7\n\tvpaddq\t%ymm7, %ymm9, %ymm7\n\tvpsrlq\t$31, %ymm7, %ymm9\n\tvpxor\t%ymm7, %ymm0, %ymm7\n\tvpxor\t%ymm7, %ymm9, %ymm7\n\tvmovdqu\t%ymm7, -32(%rsi,%rdx,8)\n\tvpaddq\t%ymm6, %ymm8, %ymm7\n\tvpsrlq\t$30, %ymm7, %ymm8\n\tvpxor\t%ymm7, %ymm8, %ymm7\n\tvpmuludq\t%ymm2, %ymm7, %ymm8\n\tvpsrlq\t$32, %ymm7, %ymm9\n\tvpmuludq\t%ymm3, %ymm9, %ymm9\n\tvpaddq\t%ymm9, %ymm8, %ymm8\n\tvpsllq\t$32, %ymm8, %ymm8\n\tvpmuludq\t%ymm3, %ymm7, %ymm7\n\tvpaddq\t%ymm7, %ymm8, %ymm7\n\tvpsrlq\t$27, %ymm7, %ymm8\n\tvpxor\t%ymm7, %ymm8, %ymm7\n\tvpmuludq\t%ymm4, %ymm7, %ymm8\n\tvpsrlq\t$32, %ymm7, %ymm9\n\tvpmuludq\t%ymm5, %ymm9, %ymm9\n\tvpaddq\t%ymm9, %ymm8, %ymm8\n\tvpsllq\t$32, %ymm8, %ymm8\n\tvpmuludq\t%ymm5, %ymm7, %ymm7\n\tvpaddq\t%ymm7, %ymm8, %ymm7\n\tvpsrlq\t$31, %ymm7, %ymm8\n\tvpxor\t%ymm7, %ymm0, %ymm7\n\tvpxor\t%ymm7, %ymm8, %ymm7\n\tvmovdqu\t%ymm7, (%rsi,%rdx,8)\n\taddq\t%r9, %rdi\n\taddq\t%r9, %rdx\n\tleaq\t(%r8,%rdx), %rcx\n\tcmpq\t%r14, %rcx\n\tjb\t.LBB2608_47"
+    },
+    {
+      "symbol": "_RNCNvNtCsiYjGPJMyZdw_3tmr5tests20simple_native_scalars1_0B5_",
+      "line": 823577,
+      "instructions": 96,
+      "stores": [
+        "\tvmovdqu\t%ymm7, -32(%rsi,%rdx,8)",
+        "\tvmovdqu\t%ymm7, (%rsi,%rdx,8)"
+      ],
+      "body": ".LBB2608_41:\n\taddq\t$-8, %r8\n\taddq\t$-64, %rsi\n\taddq\t$-8, %r15\n\tcmpq\t120(%rsp), %r11\n\tjbe\t.LBB2608_21\n.LBB2608_42:\n\taddq\t$-8, %r11\n\tmovq\t%r14, %rax\n\tsubq\t%r11, %rax\n\tcmovbq\t%r12, %rax\n\tmovq\t%rax, %rcx\n\torq\t%r9, %rcx\n\tshrq\t$32, %rcx\n\tje\t.LBB2608_43\n\txorl\t%edx, %edx\n\tdivq\t%r9\n\tjmp\t.LBB2608_45\n\t.p2align\t4\n.LBB2608_43:\n\txorl\t%edx, %edx\n\tdivl\t%r9d\n.LBB2608_45:\n\tmovq\t72(%rsp), %r13\n\tmovq\t64(%rsp), %rbp\n\tcmpq\t$1, %rdx\n\tsbbq\t$-1, %rax\n\tcmpq\t%r14, %r11\n\tjae\t.LBB2608_41\n\timulq\t%r9, %rax\n\taddq\t$8, %rax\n\txorl\t%edx, %edx\n\tmovq\t%r11, %rdi\n\t.p2align\t4\n.LBB2608_47:\n\tleaq\t(%rdi,%r10), %rcx\n\tcmpq\t%r14, %rcx\n\tmovq\t%rax, %rbx\n\tcmovbq\t%r12, %rbx\n\tsubq\t%rbx, %rcx\n\tprefetcht1\t(%r13,%rcx,8)\n\tleaq\t(%r15,%rdx), %rcx\n\tandq\t$-8, %rcx\n\tleaq\t(%rcx,%rbp), %rbx\n\tincq\t%rbx\n\taddq\t%rbp, %rcx\n\tvmovq\t%rbx, %xmm7\n\tvmovq\t%rcx, %xmm8\n\tvpbroadcastq\t%xmm8, %ymm8\n\tvpunpcklqdq\t%xmm7, %xmm8, %xmm7\n\tvpaddq\t%xmm1, %xmm8, %xmm9\n\tvinserti128\t$1, %xmm9, %ymm7, %ymm7\n\tvpsrlq\t$30, %ymm7, %ymm9\n\tvpxor\t%ymm7, %ymm9, %ymm7\n\tvpmuludq\t%ymm2, %ymm7, %ymm9\n\tvpsrlq\t$32, %ymm7, %ymm10\n\tvpmuludq\t%ymm3, %ymm10, %ymm10\n\tvpaddq\t%ymm10, %ymm9, %ymm9\n\tvpsllq\t$32, %ymm9, %ymm9\n\tvpmuludq\t%ymm3, %ymm7, %ymm7\n\tvpaddq\t%ymm7, %ymm9, %ymm7\n\tvpsrlq\t$27, %ymm7, %ymm9\n\tvpxor\t%ymm7, %ymm9, %ymm7\n\tvpmuludq\t%ymm4, %ymm7, %ymm9\n\tvpsrlq\t$32, %ymm7, %ymm10\n\tvpmuludq\t%ymm5, %ymm10, %ymm10\n\tvpaddq\t%ymm10, %ymm9, %ymm9\n\tvpsllq\t$32, %ymm9, %ymm9\n\tvpmuludq\t%ymm5, %ymm7, %ymm7\n\tvpaddq\t%ymm7, %ymm9, %ymm7\n\tvpsrlq\t$31, %ymm7, %ymm9\n\tvpxor\t%ymm7, %ymm0, %ymm7\n\tvpxor\t%ymm7, %ymm9, %ymm7\n\tvmovdqu\t%ymm7, -32(%rsi,%rdx,8)\n\tvpaddq\t%ymm6, %ymm8, %ymm7\n\tvpsrlq\t$30, %ymm7, %ymm8\n\tvpxor\t%ymm7, %ymm8, %ymm7\n\tvpmuludq\t%ymm2, %ymm7, %ymm8\n\tvpsrlq\t$32, %ymm7, %ymm9\n\tvpmuludq\t%ymm3, %ymm9, %ymm9\n\tvpaddq\t%ymm9, %ymm8, %ymm8\n\tvpsllq\t$32, %ymm8, %ymm8\n\tvpmuludq\t%ymm3, %ymm7, %ymm7\n\tvpaddq\t%ymm7, %ymm8, %ymm7\n\tvpsrlq\t$27, %ymm7, %ymm8\n\tvpxor\t%ymm7, %ymm8, %ymm7\n\tvpmuludq\t%ymm4, %ymm7, %ymm8\n\tvpsrlq\t$32, %ymm7, %ymm9\n\tvpmuludq\t%ymm5, %ymm9, %ymm9\n\tvpaddq\t%ymm9, %ymm8, %ymm8\n\tvpsllq\t$32, %ymm8, %ymm8\n\tvpmuludq\t%ymm5, %ymm7, %ymm7\n\tvpaddq\t%ymm7, %ymm8, %ymm7\n\tvpsrlq\t$31, %ymm7, %ymm8\n\tvpxor\t%ymm7, %ymm0, %ymm7\n\tvpxor\t%ymm7, %ymm8, %ymm7\n\tvmovdqu\t%ymm7, (%rsi,%rdx,8)\n\taddq\t%r9, %rdi\n\taddq\t%r9, %rdx\n\tleaq\t(%r8,%rdx), %rcx\n\tcmpq\t%r14, %rcx\n\tjb\t.LBB2608_47\n\tjmp\t.LBB2608_41"
+    },
+    {
+      "symbol": "_RNCNvNtCsiYjGPJMyZdw_3tmr5tests20simple_native_scalars1_0B5_",
+      "line": 823693,
+      "instructions": 38,
+      "stores": [
+        "\tvmovdqu\t%ymm1, 32(%r8,%rbx,8)",
+        "\tvmovdqu\t%ymm1, (%r8,%rbx,8)"
+      ],
+      "body": ".LBB2608_67:\n\tmovq\t%r12, %r8\n\tshrq\t$30, %r8\n\txorq\t%r12, %r8\n\timulq\t%rax, %r8\n\tmovq\t%r8, %rsi\n\tshrq\t$27, %rsi\n\txorq\t%r8, %rsi\n\timulq\t%rcx, %rsi\n\tmovq\t%rsi, %r8\n\tshrq\t$31, %r8\n\txorl\t%esi, %r8d\n\tmovq\t%r8, %rsi\n\tshlq\t$16, %rsi\n\torq\t%r8, %rsi\n\tandq\t%rdx, %rsi\n\tmovq\t%rsi, %r8\n\tshlq\t$8, %r8\n\torq\t%rsi, %r8\n\tandq\t%r9, %r8\n\tmovq\t%r8, %rsi\n\tshlq\t$4, %rsi\n\torq\t%r8, %rsi\n\tmovq\t%rsi, %r8\n\tandq\t%r10, %r8\n\tshlq\t$4, %rsi\n\tandq\t%r11, %rsi\n\torq\t%r8, %rsi\n\txorq\t%rdi, %rsi\n\tvmovq\t%rsi, %xmm1\n\tvpbroadcastq\t%xmm1, %ymm1\n\tvpxor\t%ymm0, %ymm1, %ymm1\n\tmovq\t72(%rsp), %r8\n\tvmovdqu\t%ymm1, 32(%r8,%rbx,8)\n\tvmovdqu\t%ymm1, (%r8,%rbx,8)\n\taddq\t$8, %rbx\n\tincq\t%r12\n\tcmpq\t%r14, %rbx\n\tjb\t.LBB2608_67"
+    },
+    {
+      "symbol": "_RNCNvNtCsiYjGPJMyZdw_3tmr5tests20simple_native_scalars1_0B5_",
+      "line": 823820,
+      "instructions": 40,
+      "stores": [
+        "\tvmovdqu\t%ymm0, (%r8,%rbx,8)",
+        "\tvmovdqu\t%ymm0, 32(%r8,%rbx,8)"
+      ],
+      "body": ".LBB2608_63:\n\tmovq\t%r12, %r8\n\tshrq\t$30, %r8\n\txorq\t%r12, %r8\n\timulq\t%rax, %r8\n\tmovq\t%r8, %rsi\n\tshrq\t$27, %rsi\n\txorq\t%r8, %rsi\n\timulq\t%rcx, %rsi\n\tmovq\t%rsi, %r8\n\tshrq\t$31, %r8\n\txorl\t%esi, %r8d\n\tmovq\t%r8, %rsi\n\tshlq\t$16, %rsi\n\torq\t%r8, %rsi\n\tandq\t%rdx, %rsi\n\tmovq\t%rsi, %r8\n\tshlq\t$8, %r8\n\torq\t%rsi, %r8\n\tandq\t%r9, %r8\n\tmovq\t%r8, %rsi\n\tshlq\t$4, %rsi\n\torq\t%r8, %rsi\n\tmovq\t%rsi, %r8\n\tandq\t%r10, %r8\n\tshlq\t$4, %rsi\n\tandq\t%r11, %rsi\n\torq\t%r8, %rsi\n\tmovl\t%esi, %r8d\n\tshlq\t$32, %rsi\n\torq\t%r8, %rsi\n\txorq\t%rdi, %rsi\n\tvmovq\t%rsi, %xmm0\n\tvpbroadcastq\t%xmm0, %ymm0\n\tmovq\t72(%rsp), %r8\n\tvmovdqu\t%ymm0, (%r8,%rbx,8)\n\tvmovdqu\t%ymm0, 32(%r8,%rbx,8)\n\taddq\t$8, %rbx\n\tincq\t%r12\n\tcmpq\t%r14, %rbx\n\tjb\t.LBB2608_63"
+    },
+    {
+      "symbol": "_RNCNvNtCsiYjGPJMyZdw_3tmr5tests20simple_native_scalars1_0B5_",
+      "line": 823935,
+      "instructions": 45,
+      "stores": [
+        "\tvmovdqu\t%ymm0, (%r8,%rbx,8)",
+        "\tvmovdqu\t%ymm0, 32(%r8,%rbx,8)"
+      ],
+      "body": ".LBB2608_55:\n\tmovq\t%r12, %r8\n\tshrq\t$30, %r8\n\txorq\t%r12, %r8\n\timulq\t%rax, %r8\n\tmovq\t%r8, %rdi\n\tshrq\t$27, %rdi\n\txorq\t%r8, %rdi\n\timulq\t%rcx, %rdi\n\tmovq\t%rdi, %r8\n\tshrq\t$31, %r8\n\txorl\t%edi, %r8d\n\tmovq\t%r8, %rdi\n\tshlq\t$16, %rdi\n\torq\t%r8, %rdi\n\tandq\t%rdx, %rdi\n\tmovq\t%rdi, %r8\n\tshlq\t$8, %r8\n\torq\t%rdi, %r8\n\tandq\t%r9, %r8\n\tmovq\t%r8, %rdi\n\tshlq\t$4, %rdi\n\torq\t%r8, %rdi\n\tmovq\t%rdi, %r8\n\tandq\t%r10, %r8\n\tshlq\t$4, %rdi\n\tandq\t%r11, %rdi\n\torq\t%r8, %rdi\n\txorq\t%r11, %rdi\n\tmovzwl\t%di, %r8d\n\tshll\t$16, %edi\n\torq\t%r8, %rdi\n\txorq\t%rsi, %rdi\n\tmovq\t%rdi, %r8\n\tshlq\t$32, %r8\n\torq\t%rdi, %r8\n\txorq\t96(%rsp), %r8\n\tvmovq\t%r8, %xmm0\n\tvpbroadcastq\t%xmm0, %ymm0\n\tmovq\t72(%rsp), %r8\n\tvmovdqu\t%ymm0, (%r8,%rbx,8)\n\tvmovdqu\t%ymm0, 32(%r8,%rbx,8)\n\taddq\t$8, %rbx\n\tincq\t%r12\n\tcmpq\t%r14, %rbx\n\tjb\t.LBB2608_55"
+    },
+    {
+      "symbol": "_RNCNvNtCsiYjGPJMyZdw_3tmr5tests20simple_native_scalars1_0B5_",
+      "line": 824039,
+      "instructions": 68,
+      "stores": [
+        "\tvmovdqu\t%ymm1, 32(%rsi,%r13,8)",
+        "\tvmovdqu\t%ymm1, (%rsi,%r13,8)"
+      ],
+      "body": ".LBB2608_132:\n\tmovq\t%rbx, %r13\n\tleaq\t(%rdx,%r10), %rcx\n\tcmpq\t%r14, %rcx\n\tmovq\t104(%rsp), %r8\n\tmovl\t$0, %ebx\n\tcmovbq\t%rbx, %r8\n\tsubq\t%r8, %rcx\n\tprefetcht1\t(%rbp,%rcx,8)\n\tleaq\t(%r9,%r13), %rbx\n\tmovq\t%rbx, %rcx\n\tshrq\t$3, %rcx\n\taddq\t%rdi, %rcx\n\tmovq\t%rcx, %r8\n\tshrq\t$30, %r8\n\txorq\t%rcx, %r8\n\tmovabsq\t$-4658895280553007687, %rcx\n\timulq\t%rcx, %r8\n\tmovq\t%r8, %rcx\n\tshrq\t$27, %rcx\n\txorq\t%r8, %rcx\n\tmovabsq\t$-7723592293110705685, %r8\n\timulq\t%r8, %rcx\n\tmovq\t%rcx, %r8\n\tshrq\t$31, %r8\n\txorl\t%ecx, %r8d\n\tmovq\t%r8, %rcx\n\tshlq\t$16, %rcx\n\torq\t%r8, %rcx\n\tmovabsq\t$281470681808895, %r8\n\tandq\t%r8, %rcx\n\tmovq\t%rcx, %r8\n\tshlq\t$8, %r8\n\torq\t%rcx, %r8\n\tmovabsq\t$71777214294589695, %rcx\n\tandq\t%rcx, %r8\n\tmovq\t%r8, %rcx\n\tshlq\t$4, %rcx\n\torq\t%r8, %rcx\n\tmovq\t%rcx, %r8\n\tmovq\t%r11, %rax\n\tmovq\t%rdi, %r11\n\tmovq\t%rbp, %rdi\n\tmovq\t%r9, %rbp\n\tmovq\t%rsi, %r9\n\tmovq\t%r10, %rsi\n\tmovq\t%r15, %r10\n\tmovabsq\t$1085102592571150095, %r15\n\tandq\t%r15, %r8\n\tmovq\t%r10, %r15\n\tmovq\t%rsi, %r10\n\tmovq\t%r9, %rsi\n\tmovq\t%rbp, %r9\n\tmovq\t%rdi, %rbp\n\tmovq\t%r11, %rdi\n\tmovq\t%rax, %r11\n\tshlq\t$4, %rcx\n\tandq\t%r15, %rcx\n\torq\t%r8, %rcx\n\txorq\t%rax, %rcx\n\tvmovq\t%rcx, %xmm1\n\tvpbroadcastq\t%xmm1, %ymm1\n\tvpxor\t%ymm0, %ymm1, %ymm1\n\tvmovdqu\t%ymm1, 32(%rsi,%r13,8)\n\tvmovdqu\t%ymm1, (%rsi,%r13,8)\n\taddq\t%r9, %rdx\n\tleaq\t(%r12,%rbx), %rcx\n\tcmpq\t%r14, %rcx\n\tjb\t.LBB2608_132"
+    },
+    {
+      "symbol": "_RNCNvNtCsiYjGPJMyZdw_3tmr5tests20simple_native_scalars1_0B5_",
+      "line": 824002,
+      "instructions": 101,
+      "stores": [
+        "\tvmovdqu\t%ymm1, 32(%rsi,%r13,8)",
+        "\tvmovdqu\t%ymm1, (%rsi,%r13,8)"
+      ],
+      "body": ".LBB2608_126:\n\taddq\t$-8, 88(%rsp)\n\tmovq\t80(%rsp), %r11\n\tcmpq\t120(%rsp), %r11\n\tmovl\t$0, %ecx\n\tjbe\t.LBB2608_21\n.LBB2608_127:\n\taddq\t$-8, %r11\n\tmovq\t%r14, %rax\n\tsubq\t%r11, %rax\n\tcmovbq\t%rcx, %rax\n\tmovq\t%rax, %rcx\n\torq\t%r9, %rcx\n\tshrq\t$32, %rcx\n\tje\t.LBB2608_128\n\txorl\t%edx, %edx\n\tdivq\t%r9\n\tjmp\t.LBB2608_130\n.LBB2608_128:\n\txorl\t%edx, %edx\n\tdivl\t%r9d\n.LBB2608_130:\n\tcmpq\t$1, %rdx\n\tsbbq\t$-1, %rax\n\tmovq\t%r11, 80(%rsp)\n\tcmpq\t%r14, %r11\n\tmovq\t72(%rsp), %rbp\n\tmovq\t64(%rsp), %rdi\n\tmovq\t96(%rsp), %r11\n\tmovabsq\t$-1085102592571150096, %r15\n\tjae\t.LBB2608_126\n\timulq\t%r9, %rax\n\taddq\t$8, %rax\n\tmovq\t%rax, 104(%rsp)\n\tmovq\t88(%rsp), %rbx\n\tmovq\t80(%rsp), %rdx\n\t.p2align\t4\n.LBB2608_132:\n\tmovq\t%rbx, %r13\n\tleaq\t(%rdx,%r10), %rcx\n\tcmpq\t%r14, %rcx\n\tmovq\t104(%rsp), %r8\n\tmovl\t$0, %ebx\n\tcmovbq\t%rbx, %r8\n\tsubq\t%r8, %rcx\n\tprefetcht1\t(%rbp,%rcx,8)\n\tleaq\t(%r9,%r13), %rbx\n\tmovq\t%rbx, %rcx\n\tshrq\t$3, %rcx\n\taddq\t%rdi, %rcx\n\tmovq\t%rcx, %r8\n\tshrq\t$30, %r8\n\txorq\t%rcx, %r8\n\tmovabsq\t$-4658895280553007687, %rcx\n\timulq\t%rcx, %r8\n\tmovq\t%r8, %rcx\n\tshrq\t$27, %rcx\n\txorq\t%r8, %rcx\n\tmovabsq\t$-7723592293110705685, %r8\n\timulq\t%r8, %rcx\n\tmovq\t%rcx, %r8\n\tshrq\t$31, %r8\n\txorl\t%ecx, %r8d\n\tmovq\t%r8, %rcx\n\tshlq\t$16, %rcx\n\torq\t%r8, %rcx\n\tmovabsq\t$281470681808895, %r8\n\tandq\t%r8, %rcx\n\tmovq\t%rcx, %r8\n\tshlq\t$8, %r8\n\torq\t%rcx, %r8\n\tmovabsq\t$71777214294589695, %rcx\n\tandq\t%rcx, %r8\n\tmovq\t%r8, %rcx\n\tshlq\t$4, %rcx\n\torq\t%r8, %rcx\n\tmovq\t%rcx, %r8\n\tmovq\t%r11, %rax\n\tmovq\t%rdi, %r11\n\tmovq\t%rbp, %rdi\n\tmovq\t%r9, %rbp\n\tmovq\t%rsi, %r9\n\tmovq\t%r10, %rsi\n\tmovq\t%r15, %r10\n\tmovabsq\t$1085102592571150095, %r15\n\tandq\t%r15, %r8\n\tmovq\t%r10, %r15\n\tmovq\t%rsi, %r10\n\tmovq\t%r9, %rsi\n\tmovq\t%rbp, %r9\n\tmovq\t%rdi, %rbp\n\tmovq\t%r11, %rdi\n\tmovq\t%rax, %r11\n\tshlq\t$4, %rcx\n\tandq\t%r15, %rcx\n\torq\t%r8, %rcx\n\txorq\t%rax, %rcx\n\tvmovq\t%rcx, %xmm1\n\tvpbroadcastq\t%xmm1, %ymm1\n\tvpxor\t%ymm0, %ymm1, %ymm1\n\tvmovdqu\t%ymm1, 32(%rsi,%r13,8)\n\tvmovdqu\t%ymm1, (%rsi,%r13,8)\n\taddq\t%r9, %rdx\n\tleaq\t(%r12,%rbx), %rcx\n\tcmpq\t%r14, %rcx\n\tjb\t.LBB2608_132\n\tjmp\t.LBB2608_126"
+    },
+    {
+      "symbol": "_RNCNvNtCsiYjGPJMyZdw_3tmr5tests20simple_native_scalars1_0B5_",
+      "line": 824318,
+      "instructions": 71,
+      "stores": [
+        "\tvmovdqu\t%ymm0, (%rsi,%rax,8)",
+        "\tvmovdqu\t%ymm0, 32(%rsi,%rax,8)"
+      ],
+      "body": ".LBB2608_119:\n\tleaq\t(%rdx,%r10), %rcx\n\tcmpq\t%r14, %rcx\n\tmovq\t104(%rsp), %r8\n\tcmovbq\t%rbx, %r8\n\tmovq\t%rbp, %rax\n\tsubq\t%r8, %rcx\n\tprefetcht1\t(%r15,%rcx,8)\n\taddq\t%r9, %rbp\n\tmovq\t%rbp, %rcx\n\tshrq\t$3, %rcx\n\taddq\t%rdi, %rcx\n\tmovq\t%rcx, %r8\n\tshrq\t$30, %r8\n\txorq\t%rcx, %r8\n\tmovabsq\t$-4658895280553007687, %rcx\n\timulq\t%rcx, %r8\n\tmovq\t%r8, %rcx\n\tshrq\t$27, %rcx\n\txorq\t%r8, %rcx\n\tmovabsq\t$-7723592293110705685, %r8\n\timulq\t%r8, %rcx\n\tmovq\t%rcx, %r8\n\tshrq\t$31, %r8\n\txorl\t%ecx, %r8d\n\tmovq\t%r8, %rcx\n\tshlq\t$16, %rcx\n\torq\t%r8, %rcx\n\tmovabsq\t$281470681808895, %r8\n\tandq\t%r8, %rcx\n\tmovq\t%rcx, %r8\n\tshlq\t$8, %r8\n\torq\t%rcx, %r8\n\tmovabsq\t$71777214294589695, %rcx\n\tandq\t%rcx, %r8\n\tmovq\t%r8, %rcx\n\tshlq\t$4, %rcx\n\torq\t%r8, %rcx\n\tmovq\t%rcx, %r8\n\tmovq\t%r11, %rbx\n\tmovq\t%rdi, %r11\n\tmovq\t%r15, %rdi\n\tmovq\t%r9, %r15\n\tmovq\t%rsi, %r9\n\tmovq\t%r10, %rsi\n\tmovq\t%r12, %r10\n\tmovabsq\t$1085102592571150095, %r12\n\tandq\t%r12, %r8\n\tmovq\t%r10, %r12\n\tmovq\t%rsi, %r10\n\tmovq\t%r9, %rsi\n\tmovq\t%r15, %r9\n\tmovq\t%rdi, %r15\n\tmovq\t%r11, %rdi\n\tmovq\t%rbx, %r11\n\tshlq\t$4, %rcx\n\tandq\t%r12, %rcx\n\torq\t%r8, %rcx\n\tmovl\t%ecx, %r8d\n\tshlq\t$32, %rcx\n\torq\t%r8, %rcx\n\txorq\t%rbx, %rcx\n\tvmovq\t%rcx, %xmm0\n\tvpbroadcastq\t%xmm0, %ymm0\n\tvmovdqu\t%ymm0, (%rsi,%rax,8)\n\tvmovdqu\t%ymm0, 32(%rsi,%rax,8)\n\txorl\t%ebx, %ebx\n\taddq\t%r9, %rdx\n\tmovq\t%r13, %rcx\n\taddq\t%rbp, %rcx\n\tcmpq\t%r14, %rcx\n\tjb\t.LBB2608_119"
+    },
+    {
+      "symbol": "_RNCNvNtCsiYjGPJMyZdw_3tmr5tests20simple_native_scalars1_0B5_",
+      "line": 824282,
+      "instructions": 103,
+      "stores": [
+        "\tvmovdqu\t%ymm0, (%rsi,%rax,8)",
+        "\tvmovdqu\t%ymm0, 32(%rsi,%rax,8)"
+      ],
+      "body": ".LBB2608_113:\n\taddq\t$-8, 88(%rsp)\n\tmovq\t80(%rsp), %r11\n\tcmpq\t120(%rsp), %r11\n\tjbe\t.LBB2608_21\n.LBB2608_114:\n\taddq\t$-8, %r11\n\tmovq\t%r14, %rax\n\tsubq\t%r11, %rax\n\tcmovbq\t%rbx, %rax\n\tmovq\t%rax, %rcx\n\torq\t%r9, %rcx\n\tshrq\t$32, %rcx\n\tje\t.LBB2608_115\n\txorl\t%edx, %edx\n\tdivq\t%r9\n\tjmp\t.LBB2608_117\n.LBB2608_115:\n\txorl\t%edx, %edx\n\tdivl\t%r9d\n.LBB2608_117:\n\tcmpq\t$1, %rdx\n\tsbbq\t$-1, %rax\n\tmovq\t%r11, 80(%rsp)\n\tcmpq\t%r14, %r11\n\tmovq\t72(%rsp), %r15\n\tmovq\t64(%rsp), %rdi\n\tmovq\t96(%rsp), %r11\n\tmovabsq\t$-1085102592571150096, %r12\n\tjae\t.LBB2608_113\n\timulq\t%r9, %rax\n\taddq\t$8, %rax\n\tmovq\t%rax, 104(%rsp)\n\tmovq\t88(%rsp), %rbp\n\tmovq\t80(%rsp), %rdx\n\t.p2align\t4\n.LBB2608_119:\n\tleaq\t(%rdx,%r10), %rcx\n\tcmpq\t%r14, %rcx\n\tmovq\t104(%rsp), %r8\n\tcmovbq\t%rbx, %r8\n\tmovq\t%rbp, %rax\n\tsubq\t%r8, %rcx\n\tprefetcht1\t(%r15,%rcx,8)\n\taddq\t%r9, %rbp\n\tmovq\t%rbp, %rcx\n\tshrq\t$3, %rcx\n\taddq\t%rdi, %rcx\n\tmovq\t%rcx, %r8\n\tshrq\t$30, %r8\n\txorq\t%rcx, %r8\n\tmovabsq\t$-4658895280553007687, %rcx\n\timulq\t%rcx, %r8\n\tmovq\t%r8, %rcx\n\tshrq\t$27, %rcx\n\txorq\t%r8, %rcx\n\tmovabsq\t$-7723592293110705685, %r8\n\timulq\t%r8, %rcx\n\tmovq\t%rcx, %r8\n\tshrq\t$31, %r8\n\txorl\t%ecx, %r8d\n\tmovq\t%r8, %rcx\n\tshlq\t$16, %rcx\n\torq\t%r8, %rcx\n\tmovabsq\t$281470681808895, %r8\n\tandq\t%r8, %rcx\n\tmovq\t%rcx, %r8\n\tshlq\t$8, %r8\n\torq\t%rcx, %r8\n\tmovabsq\t$71777214294589695, %rcx\n\tandq\t%rcx, %r8\n\tmovq\t%r8, %rcx\n\tshlq\t$4, %rcx\n\torq\t%r8, %rcx\n\tmovq\t%rcx, %r8\n\tmovq\t%r11, %rbx\n\tmovq\t%rdi, %r11\n\tmovq\t%r15, %rdi\n\tmovq\t%r9, %r15\n\tmovq\t%rsi, %r9\n\tmovq\t%r10, %rsi\n\tmovq\t%r12, %r10\n\tmovabsq\t$1085102592571150095, %r12\n\tandq\t%r12, %r8\n\tmovq\t%r10, %r12\n\tmovq\t%rsi, %r10\n\tmovq\t%r9, %rsi\n\tmovq\t%r15, %r9\n\tmovq\t%rdi, %r15\n\tmovq\t%r11, %rdi\n\tmovq\t%rbx, %r11\n\tshlq\t$4, %rcx\n\tandq\t%r12, %rcx\n\torq\t%r8, %rcx\n\tmovl\t%ecx, %r8d\n\tshlq\t$32, %rcx\n\torq\t%r8, %rcx\n\txorq\t%rbx, %rcx\n\tvmovq\t%rcx, %xmm0\n\tvpbroadcastq\t%xmm0, %ymm0\n\tvmovdqu\t%ymm0, (%rsi,%rax,8)\n\tvmovdqu\t%ymm0, 32(%rsi,%rax,8)\n\txorl\t%ebx, %ebx\n\taddq\t%r9, %rdx\n\tmovq\t%r13, %rcx\n\taddq\t%rbp, %rcx\n\tcmpq\t%r14, %rcx\n\tjb\t.LBB2608_119\n\tjmp\t.LBB2608_113"
+    },
+    {
+      "symbol": "_RNCNvNtCsiYjGPJMyZdw_3tmr5tests20simple_native_scalars1_0B5_",
+      "line": 824571,
+      "instructions": 76,
+      "stores": [
+        "\tvmovdqu\t%ymm0, (%rsi,%rax,8)",
+        "\tvmovdqu\t%ymm0, 32(%rsi,%rax,8)"
+      ],
+      "body": ".LBB2608_93:\n\tleaq\t(%rdx,%r10), %rcx\n\tcmpq\t%r14, %rcx\n\tmovq\t104(%rsp), %r8\n\tcmovbq\t%rdi, %r8\n\tmovq\t%rbx, %rax\n\tsubq\t%r8, %rcx\n\tprefetcht1\t(%r11,%rcx,8)\n\taddq\t%r9, %rbx\n\tmovq\t%rbx, %rcx\n\tshrq\t$3, %rcx\n\taddq\t%r13, %rcx\n\tmovq\t%rcx, %r8\n\tshrq\t$30, %r8\n\txorq\t%rcx, %r8\n\tmovabsq\t$-4658895280553007687, %rcx\n\timulq\t%rcx, %r8\n\tmovq\t%r8, %rcx\n\tshrq\t$27, %rcx\n\txorq\t%r8, %rcx\n\tmovabsq\t$-7723592293110705685, %r8\n\timulq\t%r8, %rcx\n\tmovq\t%rcx, %r8\n\tshrq\t$31, %r8\n\txorl\t%ecx, %r8d\n\tmovq\t%r8, %rcx\n\tshlq\t$16, %rcx\n\torq\t%r8, %rcx\n\tmovabsq\t$281470681808895, %r8\n\tandq\t%r8, %rcx\n\tmovq\t%rcx, %r8\n\tshlq\t$8, %r8\n\torq\t%rcx, %r8\n\tmovabsq\t$71777214294589695, %rcx\n\tandq\t%rcx, %r8\n\tmovq\t%r8, %rcx\n\tshlq\t$4, %rcx\n\torq\t%r8, %rcx\n\tmovq\t%rcx, %r8\n\tmovq\t%r9, %rdi\n\tmovq\t%r15, %r9\n\tmovq\t%r13, %r15\n\tmovq\t%r11, %r13\n\tmovq\t%rbp, %r11\n\tmovq\t%rsi, %rbp\n\tmovq\t%r10, %rsi\n\tmovabsq\t$1085102592571150095, %r10\n\tandq\t%r10, %r8\n\tmovq\t%rsi, %r10\n\tmovq\t%rbp, %rsi\n\tmovq\t%r11, %rbp\n\tmovq\t%r13, %r11\n\tmovq\t%r15, %r13\n\tmovq\t%r9, %r15\n\tmovq\t%rdi, %r9\n\tshlq\t$4, %rcx\n\tandq\t%rbp, %rcx\n\torq\t%r8, %rcx\n\txorq\t%rbp, %rcx\n\tmovzwl\t%cx, %r8d\n\tshll\t$16, %ecx\n\torq\t%r8, %rcx\n\tmovl\t$4294901760, %r8d\n\txorq\t%r8, %rcx\n\tmovq\t%rcx, %r8\n\tshlq\t$32, %r8\n\torq\t%rcx, %r8\n\txorq\t%r15, %r8\n\tvmovq\t%r8, %xmm0\n\tvpbroadcastq\t%xmm0, %ymm0\n\tvmovdqu\t%ymm0, (%rsi,%rax,8)\n\tvmovdqu\t%ymm0, 32(%rsi,%rax,8)\n\txorl\t%edi, %edi\n\taddq\t%r9, %rdx\n\tleaq\t(%r12,%rbx), %rcx\n\tcmpq\t%r14, %rcx\n\tjb\t.LBB2608_93"
+    },
+    {
+      "symbol": "_RNCNvNtCsiYjGPJMyZdw_3tmr5tests20simple_native_scalars1_0B5_",
+      "line": 824536,
+      "instructions": 107,
+      "stores": [
+        "\tvmovdqu\t%ymm0, (%rsi,%rax,8)",
+        "\tvmovdqu\t%ymm0, 32(%rsi,%rax,8)"
+      ],
+      "body": ".LBB2608_87:\n\taddq\t$-8, 88(%rsp)\n\tmovq\t80(%rsp), %r11\n\tcmpq\t120(%rsp), %r11\n\tjbe\t.LBB2608_21\n.LBB2608_88:\n\taddq\t$-8, %r11\n\tmovq\t%r14, %rax\n\tsubq\t%r11, %rax\n\tcmovbq\t%rdi, %rax\n\tmovq\t%rax, %rcx\n\torq\t%r9, %rcx\n\tshrq\t$32, %rcx\n\tje\t.LBB2608_89\n\txorl\t%edx, %edx\n\tdivq\t%r9\n\tjmp\t.LBB2608_91\n.LBB2608_89:\n\txorl\t%edx, %edx\n\tdivl\t%r9d\n.LBB2608_91:\n\tcmpq\t$1, %rdx\n\tsbbq\t$-1, %rax\n\tmovq\t%r11, 80(%rsp)\n\tcmpq\t%r14, %r11\n\tmovq\t72(%rsp), %r11\n\tmovq\t64(%rsp), %r13\n\tmovq\t96(%rsp), %r15\n\tjae\t.LBB2608_87\n\timulq\t%r9, %rax\n\taddq\t$8, %rax\n\tmovq\t%rax, 104(%rsp)\n\tmovq\t88(%rsp), %rbx\n\tmovq\t80(%rsp), %rdx\n\t.p2align\t4\n.LBB2608_93:\n\tleaq\t(%rdx,%r10), %rcx\n\tcmpq\t%r14, %rcx\n\tmovq\t104(%rsp), %r8\n\tcmovbq\t%rdi, %r8\n\tmovq\t%rbx, %rax\n\tsubq\t%r8, %rcx\n\tprefetcht1\t(%r11,%rcx,8)\n\taddq\t%r9, %rbx\n\tmovq\t%rbx, %rcx\n\tshrq\t$3, %rcx\n\taddq\t%r13, %rcx\n\tmovq\t%rcx, %r8\n\tshrq\t$30, %r8\n\txorq\t%rcx, %r8\n\tmovabsq\t$-4658895280553007687, %rcx\n\timulq\t%rcx, %r8\n\tmovq\t%r8, %rcx\n\tshrq\t$27, %rcx\n\txorq\t%r8, %rcx\n\tmovabsq\t$-7723592293110705685, %r8\n\timulq\t%r8, %rcx\n\tmovq\t%rcx, %r8\n\tshrq\t$31, %r8\n\txorl\t%ecx, %r8d\n\tmovq\t%r8, %rcx\n\tshlq\t$16, %rcx\n\torq\t%r8, %rcx\n\tmovabsq\t$281470681808895, %r8\n\tandq\t%r8, %rcx\n\tmovq\t%rcx, %r8\n\tshlq\t$8, %r8\n\torq\t%rcx, %r8\n\tmovabsq\t$71777214294589695, %rcx\n\tandq\t%rcx, %r8\n\tmovq\t%r8, %rcx\n\tshlq\t$4, %rcx\n\torq\t%r8, %rcx\n\tmovq\t%rcx, %r8\n\tmovq\t%r9, %rdi\n\tmovq\t%r15, %r9\n\tmovq\t%r13, %r15\n\tmovq\t%r11, %r13\n\tmovq\t%rbp, %r11\n\tmovq\t%rsi, %rbp\n\tmovq\t%r10, %rsi\n\tmovabsq\t$1085102592571150095, %r10\n\tandq\t%r10, %r8\n\tmovq\t%rsi, %r10\n\tmovq\t%rbp, %rsi\n\tmovq\t%r11, %rbp\n\tmovq\t%r13, %r11\n\tmovq\t%r15, %r13\n\tmovq\t%r9, %r15\n\tmovq\t%rdi, %r9\n\tshlq\t$4, %rcx\n\tandq\t%rbp, %rcx\n\torq\t%r8, %rcx\n\txorq\t%rbp, %rcx\n\tmovzwl\t%cx, %r8d\n\tshll\t$16, %ecx\n\torq\t%r8, %rcx\n\tmovl\t$4294901760, %r8d\n\txorq\t%r8, %rcx\n\tmovq\t%rcx, %r8\n\tshlq\t$32, %r8\n\torq\t%rcx, %r8\n\txorq\t%r15, %r8\n\tvmovq\t%r8, %xmm0\n\tvpbroadcastq\t%xmm0, %ymm0\n\tvmovdqu\t%ymm0, (%rsi,%rax,8)\n\tvmovdqu\t%ymm0, 32(%rsi,%rax,8)\n\txorl\t%edi, %edi\n\taddq\t%r9, %rdx\n\tleaq\t(%r12,%rbx), %rcx\n\tcmpq\t%r14, %rcx\n\tjb\t.LBB2608_93\n\tjmp\t.LBB2608_87"
+    }
+  ]
+}

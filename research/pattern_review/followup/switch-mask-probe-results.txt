@@ -1,0 +1,37 @@
+warn: could not canonicalize path C:\Users\Administrator
+   Compiling tmr v1.0.0 (C:\Users\Administrator\Downloads\TMR\TMR-APP\target\pattern-review-source)
+    Finished `test` profile [unoptimized + debuginfo] target(s) in 3.68s
+     Running unittests src\lib.rs (target/pattern-review-artifacts\debug\build\tmr/2c55f13e05401923\out\tmr-2c55f13e05401923.exe)
+
+running 13 tests
+test pattern::native_review::review_all_balanced_12_and_24_seeds_match_independent_bit_oracle ... PASS: all 4352 balanced 12/24-bit seeds match an independent bit oracle; both polarities toggle at every payload adjacency.
+ok
+test pattern::native_review::review_old_16_32_64_images_are_preserved_without_calling_the_new_packer_for_expected ... PASS: 12288 matched hash inputs retain the original legacy14 and native switch images.
+ok
+test pattern::native_review::review_polarity_pairs_and_unknown_widths_survive_rotation ... PASS: round pairs and verify-only cycle pairs share keys and opposite polarity, including alternating unknown-width profiles.
+ok
+test results::native_review::review_completed_run_followed_by_skipped_run_keeps_correct_denominator ... ok
+test results::native_review::review_halt_before_any_run_saves_and_has_finite_summary ... PASS: pre-execution seal halt finalizes, JSON round-trips and produces finite summary rows.
+ok
+test runner::native_review::review_all_valid_round_counts_normalize_without_losing_pairs ... PASS: all 10,000 accepted config round counts pair correctly; legacy and verify-only are exempt.
+ok
+test runner::native_review::review_every_native_bench_dependency_matches_only_its_family ... PASS: all five matching native Bench pairs accepted; all twenty mismatched pairs rejected.
+ok
+test runner::native_review::review_submillisecond_thread_throughput_uses_duration_precision ... PASS: a 250 us interval retains its precision for throughput.
+ok
+test tests::native_review::review_clean_rescan_still_fails_and_rescan_off_does_not_claim_reproduction ... PASS: simulated vanished failure still fails; rescan=off records an unlocalised alarm, not a rescan result.
+ok
+test tests::native_review::review_every_native_word_detects_injected_bits_including_tails ... PASS: 32076 corruption checks over all available widths, five families, three walks and tail lines.
+ok
+test tests::native_review::review_native_halt_retains_the_corrupt_image_after_cold_rescan ... PASS: four persistent corruptions counted; local halt does not rewrite the test buffer.
+ok
+test tests::native_review::review_persistent_hit_retains_phase_key_round_and_vanished_bits ... PASS: persistent rescan retains phase, key, round, original mask and vanished bit-47:
+Error found by Mem-SimpleV2, idx 0 (address 0x20923daf000): expected 0xed51cfdc84e820eb, got 0xed51cfdc84e820ea, XOR 0x0000000000000001 (1 bits)
+Error found by Mem-SimpleV2, idx 0: 4 of 4 rereads still wrong; after flushing its line, wrong (0xed51cfdc84e820ea)
+Error found by Mem-SimpleV2 in idx 0..1024 (random-~P, key 0x0000000000000007, round 9): 1 bad words on rescan, their differences ORed 0x0000000000000001; the check's differences, ORed: 0x0000800000000001 (2 bits); the rescan didn't see bits 0x0000800000000000 again
+ok
+test tests::native_review::review_repro_native_interval_is_ignored ... REPRO: requested interval 8, two separated bad words -> native scans whole chunk and records one alarm.
+ok
+
+test result: ok. 13 passed; 0 failed; 0 ignored; 0 measured; 177 filtered out; finished in 0.64s
+
