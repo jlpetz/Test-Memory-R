@@ -265,9 +265,12 @@ impl ChunkSpec {
 /// when set, else the test's default. SimpleTest defaults to TM5's loop at 100 % / 100 %:
 /// 4 x (1 fill + 5 verifies) per chunk (`mtests0.asm` ST_Check :298-308).
 fn apply_repetition(test: &TestConfig, config: &mut TestMemoryConfig) {
-    let simple = test.function.starts_with("Mem-Simple") || test.function == "SimpleTest";
+    let simple = test.function.starts_with("Mem-SimpleV2") || test.function == "Mem-Simple" || test.function == "SimpleTest";
     if simple {
         config.verify_reps = 5;
+        config.write_read_cycles = 4;
+    } else if test.function.starts_with("Mem-SimpleNT") {
+        // SimpleTest's four rounds; it runs one write and one verify a round whatever the knobs say
         config.write_read_cycles = 4;
     }
     if let Some(reps) = test.verify_reps {
@@ -279,6 +282,49 @@ fn apply_repetition(test: &TestConfig, config: &mut TestMemoryConfig) {
     if let Some(reps) = test.test_reps {
         config.test_reps = reps;
     }
+}
+
+/// The most any repetition knob may be: a `.cfg`'s `Time (%)` gives at most a few hundred.
+const MAX_REPS: u32 = 10_000;
+
+/// The repetition knobs as the test reads them must make it test something (the audit's
+/// verification-free settings): a correctness test with no verify reports nothing, and one with no
+/// rounds neither writes nor verifies. Explicit write-only and read-only roles stay valid: the
+/// Bench pairs set their own, and a SimpleTest with `test_reps` 0 verifies the fill. A knob the
+/// test doesn't read is reported, not refused.
+fn validate_repetition(test: &TestConfig, config: &TestMemoryConfig) -> Result<(), String> {
+    let f = test.function.as_str();
+    let (simple, mirror) = (f.starts_with("Mem-SimpleV2") || f == "Mem-Simple" || f == "SimpleTest", f.starts_with("Mem-MirrorV2"));
+    // `run_phased_test` reads write_read_cycles; only SimpleV2 and MirrorV2 pass it the other two
+    let native_bench = crate::tests::native_bench_tests().iter().any(|(init, verify, _, _)| f == *init || f == *verify);
+    let rounds = simple || mirror || f.starts_with("Mem-SimpleNT") || f == "Seal-Check" || (f.starts_with("Bench-") && !native_bench);
+    for (name, set, value, read) in [
+        ("verify_reps", test.verify_reps.is_some(), config.verify_reps, simple || mirror),
+        ("test_reps", test.test_reps.is_some(), config.test_reps, simple || mirror),
+        ("write_read_cycles", test.write_read_cycles.is_some(), config.write_read_cycles, rounds),
+    ] {
+        if read && value > MAX_REPS {
+            return Err(format!("{name} {value} is above {MAX_REPS}"));
+        }
+        if set && !read {
+            log::warn!("{f} doesn't read {name}; its {value} has no effect");
+        }
+    }
+    if (simple || mirror) && config.verify_reps == 0 {
+        return Err("verify_reps 0 never verifies: a correctness test must check what it writes".to_string());
+    }
+    if rounds && config.write_read_cycles == 0 {
+        return Err("write_read_cycles 0 runs no rounds: the test would neither write nor verify".to_string());
+    }
+    if mirror && config.test_reps == 0 {
+        return Err("test_reps 0 never mirrors: the test would only check the seal".to_string());
+    }
+    if simple && config.test_reps == 0 && matches!(config.pattern_mode, Some(0 | 1 | 2 | 12 | 14)) {
+        return Err(format!("test_reps 0 verifies the fill alone, but pattern_mode {} keys its image by the cycle, which \
+            the fill and the verifies don't share, so every word would fail; use a native program, or mode 10, 11 or 13",
+            config.pattern_mode.unwrap_or(0)));
+    }
+    Ok(())
 }
 
 /// Convert a ExtentSpec into a runtime ExtentMode. Returns Err with a human-readable
@@ -501,7 +547,13 @@ pub struct TestConfig {
     #[serde(default)]
     pub test_reps: Option<u32>,             // Test-op repetitions before verifying (MirrorMove: round trips)
 
-    // TM5 pattern configuration (preserved for TM5-faithful pattern generation)
+    /// Mem-SimpleV2: the native pattern program (pattern spec v2, `crate::pattern`), family names
+    /// in order, e.g. `["ident", "switch", "random", "switch"]`; each runs as a P/~P pair. Unset
+    /// with no `pattern_mode` is the default program; a TM5 import sets it from the `.cfg`'s mode.
+    #[serde(default)]
+    pub program: Option<Vec<String>>,
+
+    // TMR's numbered pattern modes (pattern spec 1): 0-2 TM5-derived, 10-14 TMR-native
     pub pattern_mode: Option<u32>,
     pub pattern_param0: Option<u64>,
     pub pattern_param1: Option<u64>,
@@ -880,6 +932,16 @@ impl ModernConfig {
         {
             return Err(Self::test_error(i, test, format!("pattern_mode {mode} is not a mode; valid: 0-2 (TM5-faithful), 10-14 (TMR-native)")));
         }
+        let program = match &test.program {
+            None => None,
+            Some(_) if !test.function.starts_with("Mem-SimpleV2") => {
+                return Err(Self::test_error(i, test, "only the Mem-SimpleV2 tests read \"program\"".to_string()));
+            }
+            Some(_) if test.pattern_mode.is_some() => {
+                return Err(Self::test_error(i, test, "a test takes \"program\" (native patterns) or \"pattern_mode\" (TMR's numbered modes), not both".to_string()));
+            }
+            Some(names) => Some(crate::pattern::Program::parse(names).map_err(|e| Self::test_error(i, test, e))?),
+        };
         let is_mirror = test.function.starts_with("Mem-MirrorV2");
         if is_mirror && test.parameter.is_some() {
             return Err(Self::test_error(i, test, "a mirror test takes \"mirror\" (whole, subblocks:2, subblocks:4 or jump:N), not \"parameter\"".to_string()));
@@ -904,6 +966,9 @@ impl ModernConfig {
             .with_pattern_config(test.pattern_mode, test.pattern_param0, test.pattern_param1)
             // #59: CLFLUSHOPT-verify, opt-in per test from the config
             .with_flush_before_verify(test.flush_before_verify.unwrap_or(false));
+        if let Some(program) = program {
+            config = config.with_program(program);
+        }
 
         // v2: Attach correctly interpreted parameter context
         if let Some(param) = test.parameter {
@@ -926,6 +991,7 @@ impl ModernConfig {
         }
 
         apply_repetition(test, &mut config);
+        validate_repetition(test, &config).map_err(|e| Self::test_error(i, test, e))?;
 
         Ok(config)
     }
@@ -1197,34 +1263,53 @@ impl LegacyConfig {
             }
         }
 
+        // A key that is there must parse: an unparsable value used to become its default silently
+        // (an unreadable Parameter made a strided test sequential)
+        fn num<T: std::str::FromStr>(section: &HashMap<String, String>, name: &str, key: &str, default: T) -> Result<T, String> {
+            match section.get(key) {
+                None => Ok(default),
+                Some(s) => s.parse().map_err(|_| format!("TM5 config [{name}] {key}={s}: not a number")),
+            }
+        }
+        // TM5 writes the pattern parameters in hex, with or without 0x
+        fn hex(section: &HashMap<String, String>, name: &str, key: &str) -> Result<u64, String> {
+            match section.get(key) {
+                None => Ok(0),
+                Some(s) => {
+                    let digits = s.strip_prefix("0x").or_else(|| s.strip_prefix("0X")).unwrap_or(s);
+                    u64::from_str_radix(digits, 16).map_err(|_| format!("TM5 config [{name}] {key}={s}: not a 64-bit hex number"))
+                }
+            }
+        }
+
         // Parse main section
         let main = sections.get("Main Section").ok_or("Missing [Main Section]")?;
 
-        let test_sequence = main
-            .get("Test Sequence")
-            .map(|s| s.split(',').filter_map(|n| n.trim().parse::<u32>().ok()).collect())
-            .unwrap_or_default();
+        let test_sequence = match main.get("Test Sequence") {
+            None => Vec::new(),
+            Some(s) => s.split(',').map(|n| n.trim()).filter(|n| !n.is_empty())
+                .map(|n| n.parse::<u32>().map_err(|_| format!("TM5 config [Main Section] Test Sequence: '{n}' is not a test number")))
+                .collect::<Result<Vec<_>, _>>()?,
+        };
 
         let main_section = LegacyMainSection {
             config_name: main.get("Config Name").unwrap_or(&"Unknown".to_string()).clone(),
             config_author: main.get("Config Author").unwrap_or(&"Unknown".to_string()).clone(),
-            cores: main.get("Cores").and_then(|s| s.parse().ok()).unwrap_or(0),
-            time_percent: main.get("Time (%)").and_then(|s| s.parse().ok()).unwrap_or(100),
-            cycles: main.get("Cycles").and_then(|s| s.parse().ok()).unwrap_or(1),
+            cores: num(main, "Main Section", "Cores", 0)?,
+            time_percent: num(main, "Main Section", "Time (%)", 100)?,
+            cycles: num(main, "Main Section", "Cycles", 1)?,
             test_sequence,
         };
 
         // Parse memory setup
         let memory = sections.get("Global Memory Setup").ok_or("Missing [Global Memory Setup]")?;
+        let gms = "Global Memory Setup";
 
         let memory_setup = LegacyMemorySetup {
-            testing_window_size_mb: memory.get("Testing Window Size (Mb)").and_then(|s| s.parse().ok()).unwrap_or(880),
-            reserved_memory_mb: memory
-                .get("Reserved Memory for Windows (Mb)")
-                .and_then(|s| s.parse().ok())
-                .unwrap_or(128),
-            channels: memory.get("Channels").and_then(|s| s.parse().ok()).unwrap_or(2).clamp(1, 8),
-            lock_granularity_mb: memory.get("Lock Memory Granularity (Mb)").and_then(|s| s.parse().ok()).unwrap_or(16).clamp(1, 512),
+            testing_window_size_mb: num(memory, gms, "Testing Window Size (Mb)", 880)?,
+            reserved_memory_mb: num(memory, gms, "Reserved Memory for Windows (Mb)", 128)?,
+            channels: num::<u32>(memory, gms, "Channels", 2)?.clamp(1, 8),
+            lock_granularity_mb: num::<u32>(memory, gms, "Lock Memory Granularity (Mb)", 16)?.clamp(1, 512),
         };
 
         // Parse tests
@@ -1232,22 +1317,17 @@ impl LegacyConfig {
         for i in 0..=15 {
             let test_section = format!("Test{}", i);
             if let Some(test) = sections.get(&test_section) {
+                let name = test_section.as_str();
                 let legacy_test = LegacyTest {
                     id: i,
-                    enabled: test.get("Enable").and_then(|s| s.parse::<u32>().ok()).unwrap_or(0) == 1,
-                    time_percent: test.get("Time (%)").and_then(|s| s.parse().ok()).unwrap_or(100),
+                    enabled: num::<u32>(test, name, "Enable", 0)? == 1,
+                    time_percent: num(test, name, "Time (%)", 100)?,
                     function: test.get("Function").unwrap_or(&"Unknown".to_string()).clone(),
-                    pattern_mode: test.get("Pattern Mode").and_then(|s| s.parse().ok()).unwrap_or(0),
-                    pattern_param0: test
-                        .get("Pattern Param0")
-                        .and_then(|s| u64::from_str_radix(s.trim_start_matches("0x"), 16).ok())
-                        .unwrap_or(0),
-                    pattern_param1: test
-                        .get("Pattern Param1")
-                        .and_then(|s| u64::from_str_radix(s.trim_start_matches("0x"), 16).ok())
-                        .unwrap_or(0),
-                    parameter: test.get("Parameter").and_then(|s| s.parse().ok()).unwrap_or(0),
-                    test_chunk_size_mb: test.get("Test Block Size (Mb)").and_then(|s| s.parse().ok()).unwrap_or(0),
+                    pattern_mode: num(test, name, "Pattern Mode", 0)?,
+                    pattern_param0: hex(test, name, "Pattern Param0")?,
+                    pattern_param1: hex(test, name, "Pattern Param1")?,
+                    parameter: num(test, name, "Parameter", 0)?,
+                    test_chunk_size_mb: num(test, name, "Test Block Size (Mb)", 0)?,
                 };
                 tests.push(legacy_test);
             }
@@ -1300,11 +1380,28 @@ impl LegacyConfig {
                 other => other?,
             };
 
+            // A SimpleTest's mode becomes a native program (pattern spec v2): its intent's family
+            // and switching, then mixed data and switching (`Program::from_tm5_mode`), at the
+            // widest width, every width writing one image. With patterns=legacy it keeps TMR's
+            // numbered mode on the scalar test (spec 1), to compare. No other function reads the
+            // pattern fields, so they get none.
+            let (function, program, pattern) = match function.as_str() {
+                "Mem-SimpleV2" if crate::pattern::legacy_import() => {
+                    (function, None, Some((test.pattern_mode, test.pattern_param0, test.pattern_param1)))
+                }
+                "Mem-SimpleV2" => match crate::pattern::Program::from_tm5_mode(test.pattern_mode) {
+                    Some(program) => ("Mem-SimpleV2-Auto".to_string(), Some(program.names()), None),
+                    // Not one of TM5's: kept as the TMR mode it names (build_test refuses one TMR
+                    // doesn't have)
+                    None => (function, None, Some((test.pattern_mode, test.pattern_param0, test.pattern_param1))),
+                },
+                _ => (function, None, None),
+            };
             test_sequence.push(TestConfig {
                 id: Some(test.id.to_string()),
                 enabled: test.enabled,
                 function,
-                                
+
                 // One pass per plan cycle; TM5 `Time (%)` is per-chunk dwell, set below (TODO 79 B2)
                 cycles: Some(1),
 
@@ -1312,15 +1409,16 @@ impl LegacyConfig {
                 // locked page, walking its AWE window over them (TODO 76)
                 chunk: Some(self.chunk_spec(test)),
 
-                
+
                 verify_reps,
                 write_read_cycles,
                 test_reps,
-                
-                // Preserve legacy test parameters; a mirror test's Parameter becomes its mode
-                pattern_mode: Some(test.pattern_mode),
-                pattern_param0: Some(test.pattern_param0),
-                pattern_param1: Some(test.pattern_param1),
+
+                program,
+                pattern_mode: pattern.map(|p| p.0),
+                pattern_param0: pattern.map(|p| p.1),
+                pattern_param1: pattern.map(|p| p.2),
+                // A mirror test's Parameter becomes its mode
                 mirror,
                 parameter: if mirror.is_some() { None } else { Some(test.parameter) },
                 ..Default::default()
@@ -1666,7 +1764,7 @@ mod tests {
         modern.system.memory_strategy.default_chunk = ChunkSpec::auto();
         modern.test_sequence[0].extent = Some(ExtentSpec { mode: "bogus".to_string(), ..Default::default() });
         let err = modern.get_test_configs().unwrap_err();
-        assert!(err.contains("test_sequence[0] ('Mem-SimpleV2')") && err.contains("extent"), "{err}");
+        assert!(err.contains("test_sequence[0] ('Mem-SimpleV2-Auto')") && err.contains("extent"), "{err}");
 
         modern.test_sequence[0].extent = None;
         modern.system.memory_strategy.default_extent = ExtentSpec { mode: "bogus".to_string(), ..Default::default() };
@@ -1689,11 +1787,78 @@ mod tests {
         assert!(modern.get_test_configs().is_err());
         modern.test_sequence[0].extent = None;
 
-        // So is a pattern mode that doesn't exist; 13 does
+        // So is a pattern mode that doesn't exist; 13 does. The import gave the test a native
+        // program, and a test takes a program or a mode, not both
         modern.test_sequence[0].pattern_mode = Some(7);
         let err = modern.get_test_configs().unwrap_err();
         assert!(err.contains("pattern_mode 7"), "{err}");
         modern.test_sequence[0].pattern_mode = Some(13);
+        let err = modern.get_test_configs().unwrap_err();
+        assert!(err.contains("not both"), "{err}");
+        modern.test_sequence[0].program = None;
+        assert!(modern.get_test_configs().is_ok());
+
+        // A program must name families TMR has, on a SimpleTest
+        modern.test_sequence[0].pattern_mode = None;
+        modern.test_sequence[0].program = Some(vec!["ident".into(), "zigzag".into()]);
+        assert!(modern.get_test_configs().unwrap_err().contains("zigzag"));
+        modern.test_sequence[0].program = Some(vec!["random".into(), "switch".into()]);
+        assert!(modern.get_test_configs().is_ok());
+    }
+
+    /// The audit's verification-free settings are refused: a correctness test that never verifies,
+    /// or never runs a round, reports nothing. A verify-only SimpleTest stays valid on a program.
+    #[test]
+    fn repetition_that_tests_nothing_is_refused() {
+        let base = legacy(100, vec![test(1, "SimpleTest", 100, 16)]).to_modern_config().unwrap();
+        let with = |f: &dyn Fn(&mut TestConfig)| {
+            let mut modern = base.clone();
+            f(&mut modern.test_sequence[0]);
+            modern.get_test_configs().map(|_| ())
+        };
+        assert!(with(&|t| t.verify_reps = Some(0)).unwrap_err().contains("never verifies"));
+        assert!(with(&|t| t.write_read_cycles = Some(0)).unwrap_err().contains("no rounds"));
+        assert!(with(&|t| t.verify_reps = Some(10_001)).unwrap_err().contains("above"));
+        assert!(with(&|t| t.test_reps = Some(0)).is_ok(), "verifying the fill of a program is valid");
+        let legacy_mode = |t: &mut TestConfig| {
+            t.program = None;
+            t.pattern_mode = Some(0);
+            t.test_reps = Some(0);
+        };
+        assert!(with(&legacy_mode).unwrap_err().contains("keys its image by the cycle"));
+    }
+
+    /// A .cfg value that doesn't parse is an error naming it, not a silent default.
+    #[test]
+    fn unparsable_cfg_values_are_errors() {
+        let cfg = |line: &str| format!("[Main Section]\nTest Sequence=1\n[Global Memory Setup]\nChannels=2\n\
+            [Test1]\nEnable=1\nFunction=SimpleTest\nPattern Mode=0\n{line}\n");
+        assert!(LegacyConfig::parse_legacy_format(&cfg("Parameter=8")).is_ok());
+        for (line, key) in [("Parameter=eight", "Parameter"), ("Pattern Param0=0xZZ", "Pattern Param0"),
+                            ("Pattern Mode=two", "Pattern Mode"), ("Time (%)=lots", "Time (%)")] {
+            let err = LegacyConfig::parse_legacy_format(&cfg(line)).unwrap_err();
+            assert!(err.contains(key), "{line}: {err}");
+        }
+        let seq = "[Main Section]\nTest Sequence=1,x\n[Global Memory Setup]\n";
+        assert!(LegacyConfig::parse_legacy_format(seq).unwrap_err().contains("'x'"));
+    }
+
+    /// patterns=native (the default) imports a SimpleTest's mode as a native program on the
+    /// widest width; no other test gets pattern fields.
+    #[test]
+    fn simpletest_modes_import_as_programs() {
+        let modern = legacy(100, vec![test(1, "SimpleTest", 100, 16), test(2, "MirrorMove", 100, 0)]).to_modern_config().unwrap();
+        let (simple, mirror) = (&modern.test_sequence[0], &modern.test_sequence[1]);
+        assert_eq!(simple.function, "Mem-SimpleV2-Auto");
+        assert_eq!(simple.program.as_deref(), Some(&["ident".to_string(), "switch".into(), "random".into(), "switch".into()][..]));
+        assert_eq!((simple.pattern_mode, mirror.pattern_mode, mirror.program.as_ref()), (None, None, None));
+
+        // A mode TM5 doesn't have but TMR does stays that mode, on the scalar test
+        let mut tmr_mode = test(3, "SimpleTest", 100, 16);
+        tmr_mode.pattern_mode = 13;
+        let modern = legacy(100, vec![tmr_mode]).to_modern_config().unwrap();
+        let t = &modern.test_sequence[0];
+        assert_eq!((t.function.as_str(), t.pattern_mode, t.program.as_ref()), ("Mem-SimpleV2", Some(13), None));
         assert!(modern.get_test_configs().is_ok());
     }
 
@@ -1826,7 +1991,7 @@ mod tests {
         assert_eq!((modern.system.seal.as_deref(), modern.system.timing.global_cycles), (Some("tmr"), None));
         let plan = modern.plan().unwrap();
         let functions: Vec<&str> = plan.steps.iter().map(|&t| plan.tests[t].function).collect();
-        assert_eq!(functions, ["Mem-SimpleV2", "Seal-Check", "Mem-SimpleV2"], "the disabled Test2 is skipped");
+        assert_eq!(functions, ["Mem-SimpleV2-Auto", "Seal-Check", "Mem-SimpleV2-Auto"], "the disabled Test2 is skipped");
 
         tests[0].enabled = false;
         let mut cfg = legacy(100, tests.clone());

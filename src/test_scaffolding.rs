@@ -88,6 +88,8 @@ impl<'a> TestRunner<'a> {
         let total_test_size = extent.test_size;
         let chunk = config.calculate_chunk_size(test_name, total_test_size);
 
+        // This test's failed checks, counted from here by the verifies' cold path (TODO 27)
+        crate::tests::reset_rescan_counts();
         let now = Instant::now();
         let runner = TestRunner {
             test_name,
@@ -296,27 +298,36 @@ impl<'a> TestRunner<'a> {
     /// A step that wrapped its chunks in the seal reseals its whole extent as it finishes when it
     /// ran past its first cycle (TODO 74, `check_seal`), or was cut short (`aborted`), which can
     /// leave a chunk it was working unsealed. Returns the test's time, taken before.
-    fn reseal_extent(&mut self, aborted: bool) -> u128 {
-        let elapsed_ms = self.start.elapsed().as_millis();
-        if self.seal.wrap && (self.cycle > 1 || aborted) {
+    ///
+    /// Not when an error halts it: the bad words stay in memory as the test found them, for a
+    /// look after the run, and the run stops at this step anyway.
+    fn reseal_extent(&mut self, aborted: bool, cycle_errors: u64) -> std::time::Duration {
+        let timed = self.start.elapsed();
+        let halted = matches!(self.error_mode, ErrorMode::Halt) && self.total_error_count + cycle_errors + self.seal_errors > 0;
+        if halted {
+            log::info!("[Thread {}] {}: halted on an error, so the extent keeps what the test found (no reseal)",
+                       self.thread_id, self.test_name);
+        }
+        if self.seal.wrap && (self.cycle > 1 || aborted) && !halted {
             self.set_stage(Stage::Resealing);
             // SAFETY: the extent the test has just finished with
             unsafe { self.seal.kernel.fill(self.seal_base, 0, self.seal_words) };
             self.set_stage(Stage::Testing);
         }
-        elapsed_ms
+        timed
     }
 
     /// Build `TestStats` for a mid-cycle abort (Halt on error, or shutdown).
     /// `error_count = running total + this cycle's errors`, `stopped_by_time_limit = false`.
     #[inline]
     pub fn finish_aborted(&mut self, cycle_errors: u64, total_operations: u64) -> TestStats {
-        let elapsed_ms = self.reseal_extent(true);
+        let timed = Some(self.reseal_extent(true, cycle_errors));
+        let rescans = crate::tests::rescan_counts();
         TestStats {
             name: self.test_name,
             action: self.action,
             bytes_processed: self.total_bytes_processed,
-            elapsed_ms,
+            timed,
             thread_id: self.thread_id,
             error_count: self.total_error_count + cycle_errors,
             total_operations,
@@ -324,6 +335,8 @@ impl<'a> TestRunner<'a> {
             cycles_planned: self.timing.cycles,
             stopped_by_time_limit: false,
             seal_errors: self.seal_errors,
+            alarms: rescans.alarms,
+            not_reproduced: rescans.not_reproduced,
         }
     }
 
@@ -331,12 +344,13 @@ impl<'a> TestRunner<'a> {
     /// Assumes the final cycle's errors were already folded via `commit_cycle_errors`.
     #[inline]
     pub fn finish_completed(&mut self, total_operations: u64) -> TestStats {
-        let elapsed_ms = self.reseal_extent(false);
+        let timed = Some(self.reseal_extent(false, 0));
+        let rescans = crate::tests::rescan_counts();
         TestStats {
             name: self.test_name,
             action: self.action,
             bytes_processed: self.total_bytes_processed,
-            elapsed_ms,
+            timed,
             thread_id: self.thread_id,
             error_count: self.total_error_count,
             total_operations,
@@ -344,6 +358,8 @@ impl<'a> TestRunner<'a> {
             cycles_planned: self.timing.cycles,
             stopped_by_time_limit: self.timing.cycles.is_none_or(|limit| self.cycle < limit),
             seal_errors: self.seal_errors,
+            alarms: rescans.alarms,
+            not_reproduced: rescans.not_reproduced,
         }
     }
 }

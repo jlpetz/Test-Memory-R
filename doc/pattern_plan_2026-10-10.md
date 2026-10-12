@@ -1,5 +1,18 @@
 # Pattern overhaul plan (2026-10-10)
 
+> **Status 2026-10-11: built**, uncommitted, as TODO 97 (`doc/todo/97-native-patterns.md`; the
+> spec is `doc/pattern_spec.md`). Stages 0-4 are in, plus the follow-up's and the review's
+> amendments. Stages 5 and 6's families are not. What changed from the plan below:
+> - **Verify.** It keeps its accumulators; a failed check is rescanned (TODO 27), and `alarms`
+>   are counted apart from bad words. No single error unit.
+> - **Pairs.** A pair's P and ~P share one key.
+> - **The default program** is `[ident, switch, random, switch]`, so mixed data runs too.
+> - **An unknown width** alternates the 64- and 32-bit `switch` profiles; no switching floor is
+>   promised.
+> - **The seal** takes a key per pair of cycles.
+> - **The SIMD Refresh flush** was a measured choice (4b2e11a), not a regression, so it stays.
+> - **Word ids, not addresses**, so `seed=` replays.
+
 Goal: patterns and verification that find errors, by intent first; TM5 faithfulness second. TM5
 `.cfg` files are converted to native patterns on load. Built from five code mappers and checked by
 two adversarial verifiers: 198 premises confirmed, 25 corrected, 32 gaps added (raw output:

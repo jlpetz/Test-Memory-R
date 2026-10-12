@@ -433,6 +433,23 @@ pub struct ExecutionSnapshot {
     /// Configured memory channels. Feeds SimpleTest's stride formula, so it changes the access
     /// pattern rather than just labelling it.
     pub channels: u32,
+    /// The pattern spec SimpleTest's native programs follow (`crate::pattern::VERSION`); absent
+    /// from results written before them.
+    #[serde(default)]
+    pub pattern_version: u32,
+    /// The native patterns' run seed, as `seed=` takes it (`0x...`): with the same layout, the run's
+    /// bytes again.
+    #[serde(default)]
+    pub pattern_seed: Option<String>,
+    /// The transfer width the switch pattern flipped at, and where it came from (`beat=`, SMBIOS's
+    /// memory type, or unknown, when it alternated 64 and 32).
+    #[serde(default)]
+    pub transfer_bits: Option<u32>,
+    #[serde(default)]
+    pub transfer_source: Option<String>,
+    /// Whether failed checks were rescanned to name each bad word (`rescan=`).
+    #[serde(default)]
+    pub rescan: Option<bool>,
 }
 
 /// The calibration that was live during the run. Cache-relative windows are sized from these
@@ -476,6 +493,9 @@ pub struct TestConfigSnapshot {
     pub test_reps: u32,
     pub write_read_cycles: u32,
     pub pattern_mode: Option<u32>,
+    /// The native program a SimpleTest ran (pattern spec v2), when no `pattern_mode` was set.
+    #[serde(default)]
+    pub program: Option<Vec<String>>,
     /// Whether the verify was forced through DRAM with CLFLUSHOPT. Costs real bandwidth by design,
     /// so a flushed and an unflushed run of the same test are not comparable.
     pub flush_before_verify: bool,
@@ -597,6 +617,11 @@ page_mix,
             error_mode: format!("{:?}", error_mode),
             test_filter,
             channels,
+            pattern_version: crate::pattern::VERSION,
+            pattern_seed: Some(format!("{:#018x}", crate::pattern::run_seed())),
+            transfer_bits: crate::pattern::transfer_beat().0.map(|b| b.bits()),
+            transfer_source: Some(crate::pattern::transfer_beat().1.to_string()),
+            rescan: Some(crate::pattern::rescan_enabled()),
         };
 
         let calibration = crate::tests::get_calibration_data().map(|cal| {
@@ -642,6 +667,8 @@ page_mix,
                 test_reps: def.config.test_reps,
                 write_read_cycles: def.config.write_read_cycles,
                 pattern_mode: def.config.pattern_mode,
+                program: def.actual_name.starts_with("Mem-SimpleV2")
+                    .then(|| def.config.native_program().map(|p| p.names())).flatten(),
                 flush_before_verify: def.config.flush_before_verify,
                 skip_init: def.config.skip_init,
             })
@@ -991,6 +1018,20 @@ pub fn compare_config(b: &RunConfigSnapshot, c: &RunConfigSnapshot) -> Vec<RunDi
         diffs.push(RunDifference::new("Memory backend", &b.memory.backend, &c.memory.backend, true));
     }
 
+    // The patterns: a SimpleTest on another spec, width or rescan setting tests something else
+    if b.execution.pattern_version != c.execution.pattern_version {
+        let v = |n: u32| if n == 0 { "1 (before native patterns)".to_string() } else { n.to_string() };
+        diffs.push(RunDifference::new("Pattern spec", v(b.execution.pattern_version), v(c.execution.pattern_version), true));
+    }
+    if b.execution.transfer_bits != c.execution.transfer_bits {
+        let w = |bits: Option<u32>| bits.map_or("unknown".to_string(), |b| format!("{b} bits"));
+        diffs.push(RunDifference::new("Transfer width", w(b.execution.transfer_bits), w(c.execution.transfer_bits), true));
+    }
+    if b.execution.rescan != c.execution.rescan {
+        let r = |on: Option<bool>| on.map_or("-".to_string(), |on| if on { "on".to_string() } else { "off".to_string() });
+        diffs.push(RunDifference::new("Rescan", r(b.execution.rescan), r(c.execution.rescan), false));
+    }
+
     // Per-test config, for tests present in both plans. An extent/chunk/flush change explains a
     // single test moving while its neighbours did not — otherwise easy to misread as a regression.
     for cur_test in &c.tests {
@@ -1020,6 +1061,14 @@ pub fn compare_config(b: &RunConfigSnapshot, c: &RunConfigSnapshot) -> Vec<RunDi
         }
         if base_test.verify_reps != cur_test.verify_reps {
             note("verify reps", base_test.verify_reps.to_string(), cur_test.verify_reps.to_string());
+        }
+        if base_test.pattern_mode != cur_test.pattern_mode || base_test.program != cur_test.program {
+            let p = |t: &TestConfigSnapshot| match (&t.program, t.pattern_mode) {
+                (Some(program), _) => program.join("+"),
+                (None, Some(mode)) => format!("mode {mode}"),
+                (None, None) => "-".to_string(),
+            };
+            note("pattern", p(base_test), p(cur_test));
         }
         if base_test.test_reps != cur_test.test_reps {
             note("test reps", base_test.test_reps.to_string(), cur_test.test_reps.to_string());

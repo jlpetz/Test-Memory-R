@@ -50,9 +50,13 @@ unless you place an MFENCE between them.
   bandwidth (similar wall-clock cost to writing the block back via natural
   eviction, just guaranteed instead of best-effort).
 
-**When to use**: you need a guarantee that subsequent reads come from DRAM,
-regardless of working set size, other threads, or cache pressure. This is
-the user-mode equivalent of UC (uncached) memory access.
+**When to use**: you need the next reads of a range to come from DRAM, regardless
+of working set size, other threads, or cache pressure. It is not UC (uncached)
+memory: the memory type doesn't change, and a prefetch or speculative load can
+bring a line back before the read, so a verify after a long wait may need the
+range invalidated again just before it (the follow-up of the pattern audit,
+`doc/pattern_followup_2026-10-10.md`). For a retention test the order is: write,
+flush and fence, wait, invalidate if needed, verify.
 
 **Hardware availability**: Intel Skylake+ (2015), AMD Excavator+ (2015) / Zen+.
 CPUID feature flag: `clflushopt` (leaf 7, EBX bit 23). NOT part of any psABI

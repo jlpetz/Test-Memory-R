@@ -4,6 +4,7 @@ use crate::memory::buffer::MemoryType;
 use crate::constants::{MB, MB_16, MB_32, MB_64, KB, PAGE_SIZE_4KB};
 use std::simd::*; // Docs here https://doc.rust-lang.org/std/simd/index.html
 use std::simd::cmp::SimdPartialEq;
+use std::simd::num::SimdUint;
 use std::sync::atomic::Ordering;
 use std::sync::OnceLock;
 
@@ -434,7 +435,10 @@ impl ChunkResolution {
 }
 
 /// Controls error checking frequency within tests using power-of-2 intervals.
-/// Only `PER_CHUNK` is constructed today, so the kernels' `check_mask` paths never run.
+/// Only `PER_CHUNK` is constructed today, so the one `check_mask` path (the sequential SIMD
+/// positional verify: SimpleTest's modes 10 and 11, and SimpleNT) never runs. Every other kernel,
+/// the native ones among them, checks once a chunk whatever it says, so constructing another
+/// interval needs them taught it first.
 #[derive(Debug, Clone, Copy)]
 pub struct ErrorCheckInterval {
     /// Power-of-2 shift for check interval (0 = every op, 9 = every 512 ops, etc.)
@@ -525,7 +529,9 @@ pub struct TestStats {
     pub name: &'static str,
     pub action: TestAction,
     pub bytes_processed: usize,
-    pub elapsed_ms: u128,
+    /// The test's own time: its clock restarts after setup it leaves out, such as a Bench-Verify's
+    /// fill (TODO 90). `None` when it didn't run.
+    pub timed: Option<std::time::Duration>,
     pub thread_id: usize,
     pub error_count: u64,
     pub total_operations: u64,  // Total operation count (lightweight tracking)
@@ -535,6 +541,12 @@ pub struct TestStats {
     /// Bad words the seal check before a chunk found (TODO 74): data the previous step left
     /// sealed went bad, so they aren't this test's errors. TM5 numbers them 0.
     pub seal_errors: u64,
+    /// Checks that found a difference (TODO 27's first tier): each failed accumulator, the seal's
+    /// included. `error_count` counts the bad words their rescans found instead.
+    pub alarms: u64,
+    /// Failed checks whose rescan found every word right (`alarms` minus the localised ones, when
+    /// rescanning): each still counts one error.
+    pub not_reproduced: u64,
 }
 
 /// Optional progress reporting structure for tests
@@ -756,6 +768,15 @@ pub struct TestMemoryConfig {
     pub display_name: Option<String>,
     /// The seal as this step runs it (TODO 74), set per step by the runner.
     pub seal: crate::seal::SealStep,
+    /// The native program a SimpleTest runs (pattern spec v2, `crate::pattern`). `None` with no
+    /// `pattern_mode` is the default program; a `pattern_mode` runs that TMR mode (spec 1).
+    pub program: Option<crate::pattern::Program>,
+    /// Where this step runs in the suite (run seed, suite cycle, step), for the native patterns'
+    /// keys; set per dispatch by the runner, all zero outside a run and for the Bench pairs.
+    pub epoch: crate::pattern::StepEpoch,
+    /// The fill before the verifies is setup, not the test: its time and bytes don't count toward
+    /// the test's throughput (a Bench-Verify, TODO 90).
+    pub untimed_init: bool,
 }
 
 impl TestMemoryConfig {
@@ -780,6 +801,25 @@ impl TestMemoryConfig {
             flush_before_verify: false,  // Default: keep existing (cache-resident) verify behaviour
             display_name: None,  // Logging only; falls back to the test fn's baked-in name
             seal: crate::seal::SealStep::default(),  // Unsealed; the runner sets it per step
+            program: None,  // The default program, or the pattern_mode if one is set
+            epoch: crate::pattern::StepEpoch::default(),  // Set per dispatch by the runner
+            untimed_init: false,
+        }
+    }
+
+    /// Builder: the native program this SimpleTest runs.
+    pub fn with_program(mut self, program: crate::pattern::Program) -> Self {
+        self.program = Some(program);
+        self
+    }
+
+    /// The native program a SimpleTest with this config runs, or `None` when a `pattern_mode`
+    /// selects a TMR mode instead.
+    pub fn native_program(&self) -> Option<crate::pattern::Program> {
+        match (self.program, self.pattern_mode) {
+            (Some(program), _) => Some(program),
+            (None, None) => Some(crate::pattern::Program::default_simple()),
+            (None, Some(_)) => None,
         }
     }
 
@@ -821,6 +861,12 @@ impl TestMemoryConfig {
 
     pub fn with_parameter_context(mut self, ctx: crate::config::TestParameterContext) -> Self {
         self.parameter_context = Some(ctx);
+        self
+    }
+
+    /// Builder: rounds per chunk per cycle (`write_read_cycles`).
+    pub fn with_write_read_cycles(mut self, rounds: u32) -> Self {
+        self.write_read_cycles = rounds;
         self
     }
 
@@ -978,6 +1024,8 @@ impl TestMemoryConfig {
             | "Bench-Verify-TMR-4" => 8,
             // The seal kernels take 64 B-aligned ranges at every width (TODO 74)
             s if s.starts_with("Bench-Init-Seal-") || s.starts_with("Bench-Verify-Seal-") => 64,
+            // The native Bench pairs run the widest native SimpleTest (pattern spec v2)
+            s if native_bench_tests().iter().any(|(init, verify, _, _)| s == *init || s == *verify) => 64,
             "Seal-Check" => 64,
             // Sequential bandwidth tests (all SIMD variants: 128/256/512/Auto)
             s if s.starts_with("Spd-") => 64,
@@ -1090,6 +1138,18 @@ pub unsafe fn flush_range_to_dram(base: *const u8, len_bytes: usize, cache_line_
     unsafe { std::arch::x86_64::_mm_mfence(); }
 }
 
+/// Under `errors=halt`, ends a loop-owning test where it is once it has found errors (its own, or
+/// the seal check's before its chunk), before it writes over them: the bad words stay in memory
+/// (TODO 27). `$ops` is the test's operation count so far. Expands to an early return.
+macro_rules! halt_here {
+    ($runner:expr, $cycle_errors:expr, $ops:expr) => {
+        if $runner.should_halt($cycle_errors) {
+            let total_operations = $ops;
+            return $runner.finish_aborted($cycle_errors, total_operations);
+        }
+    };
+}
+
 /// One contiguous piece of the extent a test runs on: `test_size` bytes from `ptr`.
 /// The borrow ties it to the `AllocationBlock`s it lies in, which stay mapped for `'a`.
 #[derive(Debug)]
@@ -1188,13 +1248,16 @@ macro_rules! stuck_bit_impl {
                     // Phase 1: write P1, verify. Phase 2: write P2, verify.
                     // Phase 3: write P1 again, verify (catches transition-induced flips).
                     runner.check_seal(spread.start(k), spread.chunk());
+                    halt_here!(runner, cycle_errors, (runner.bytes_processed() / lanes) as u64);
                     stuck_bit_write_verify!($simd_type, base, processed, chunk_end, p1, &mut cycle_errors, test_name, thread_id, 1, flush_before_verify, line_bytes);
+                    halt_here!(runner, cycle_errors, (runner.bytes_processed() / lanes) as u64);
                     stuck_bit_write_verify!($simd_type, base, processed, chunk_end, p2, &mut cycle_errors, test_name, thread_id, 2, flush_before_verify, line_bytes);
+                    halt_here!(runner, cycle_errors, (runner.bytes_processed() / lanes) as u64);
                     stuck_bit_write_verify!($simd_type, base, processed, chunk_end, p1, &mut cycle_errors, test_name, thread_id, 3, flush_before_verify, line_bytes);
-                    runner.reseal(spread.start(k), spread.chunk());
-
                     // Count the chunk when it is done; overlaps count each time
                     runner.add_bytes(spread.chunk() * 6);
+                    halt_here!(runner, cycle_errors, (runner.bytes_processed() / lanes) as u64);
+                    runner.reseal(spread.start(k), spread.chunk());
 
                     if runner.should_halt(cycle_errors) {
                         let total_operations = (runner.bytes_processed() / lanes) as u64;
@@ -1264,7 +1327,7 @@ macro_rules! stuck_bit_write_verify {
             let words = std::mem::size_of::<$simd_type>() / std::mem::size_of::<u64>();
             let pat = $pat.as_array()[0];
             log::error!("{}: phase {} found a bad word (thread {})", crate::error_context::found_by($test_name), $phase, $thread_id);
-            *$errs += rescan_words($base as *const u64, $start * words, $end * words, $test_name, |_| pat);
+            *$errs += rescan_words($base as *const u64, $start * words, $end * words, $test_name, acc.reduce_or(), |_| pat);
         }
     }};
 }
@@ -1327,6 +1390,7 @@ pub unsafe fn stuck_bit_test_multi(
             }
 
             runner.check_seal(spread.start(k), spread.chunk());
+            halt_here!(runner, cycle_errors, (runner.bytes_processed() / std::mem::size_of::<u64>()) as u64);
 
             // Phase 1: Write P1 (0xAA55...), verify
             for i in processed..chunk_end {
@@ -1337,6 +1401,7 @@ pub unsafe fn stuck_bit_test_multi(
             flush_chunk_if_enabled!();
 
             cycle_errors += verify_words(base, processed, chunk_end, test_name, |_| pattern1);
+            halt_here!(runner, cycle_errors, (runner.bytes_processed() / std::mem::size_of::<u64>()) as u64);
 
             // Phase 2: Write P2 (0x55AA..., = !P1), verify
             for i in processed..chunk_end {
@@ -1347,6 +1412,7 @@ pub unsafe fn stuck_bit_test_multi(
             flush_chunk_if_enabled!();
 
             cycle_errors += verify_words(base, processed, chunk_end, test_name, |_| pattern2);
+            halt_here!(runner, cycle_errors, (runner.bytes_processed() / std::mem::size_of::<u64>()) as u64);
 
             // Phase 3: Write back to P1, verify
             for i in processed..chunk_end {
@@ -1357,10 +1423,10 @@ pub unsafe fn stuck_bit_test_multi(
             flush_chunk_if_enabled!();
 
             cycle_errors += verify_words(base, processed, chunk_end, test_name, |_| pattern1);
-            runner.reseal(spread.start(k), spread.chunk());
-
             // Count the chunk when it is done; overlaps count each time
             runner.add_bytes(spread.chunk() * 6);
+            halt_here!(runner, cycle_errors, (runner.bytes_processed() / std::mem::size_of::<u64>()) as u64);
+            runner.reseal(spread.start(k), spread.chunk());
 
             // Handle errors if found
             if runner.should_halt(cycle_errors) {
@@ -1410,7 +1476,7 @@ pub unsafe fn stuck_bit_test_128_multi(
             name: test_name,
             action: TestAction::StuckBitTest,
             bytes_processed: 0,
-            elapsed_ms: 0,
+            timed: None,
             thread_id,
             error_count: 0,
             total_operations: 0,
@@ -1418,6 +1484,8 @@ pub unsafe fn stuck_bit_test_128_multi(
             cycles_planned: timing.cycles,
             stopped_by_time_limit: false,
             seal_errors: 0,
+            alarms: 0,
+            not_reproduced: 0,
         };
     }
 
@@ -1445,11 +1513,13 @@ pub unsafe fn stuck_bit_test_256_multi(
         log::warn!("{}: AVX2 not available, returning zero stats", test_name);
         return TestStats {
             name: test_name, action: TestAction::StuckBitTest,
-            bytes_processed: 0, elapsed_ms: 0, thread_id,
+            bytes_processed: 0, timed: None, thread_id,
             error_count: 0, total_operations: 0,
             cycles_completed: 0, cycles_planned: timing.cycles,
             stopped_by_time_limit: false,
             seal_errors: 0,
+            alarms: 0,
+            not_reproduced: 0,
         };
     }
 
@@ -1477,11 +1547,13 @@ pub unsafe fn stuck_bit_test_512_multi(
         log::warn!("{}: AVX-512 not available, returning zero stats", test_name);
         return TestStats {
             name: test_name, action: TestAction::StuckBitTest,
-            bytes_processed: 0, elapsed_ms: 0, thread_id,
+            bytes_processed: 0, timed: None, thread_id,
             error_count: 0, total_operations: 0,
             cycles_completed: 0, cycles_planned: timing.cycles,
             stopped_by_time_limit: false,
             seal_errors: 0,
+            alarms: 0,
+            not_reproduced: 0,
         };
     }
 
@@ -1577,6 +1649,7 @@ macro_rules! refresh_impl {
                     let chunk_end = processed + chunk_size_vectors;
 
                     runner.check_seal(spread.start(k), spread.chunk());
+                    halt_here!(runner, cycle_errors, (runner.bytes_processed() / lanes) as u64);
 
                     // Write phase.
                     for i in processed..chunk_end {
@@ -1631,12 +1704,12 @@ macro_rules! refresh_impl {
                         // Count and log each bad word, as every width does (TODO 89)
                         let words = lanes / std::mem::size_of::<u64>();
                         cycle_errors += rescan_words(base as *const u64, processed * words, chunk_end * words,
-                                                     test_name, |_| REFRESH_PATTERN);
+                                                     test_name, acc.reduce_or(), |_| REFRESH_PATTERN);
                     }
-                    runner.reseal(spread.start(k), spread.chunk());
-
                     // Count the chunk when it is done; overlaps count each time
                     runner.add_bytes(spread.chunk() * 2);
+                    halt_here!(runner, cycle_errors, (runner.bytes_processed() / lanes) as u64);
+                    runner.reseal(spread.start(k), spread.chunk());
 
                     if runner.should_halt(cycle_errors) {
                         let total_operations = (runner.bytes_processed() / lanes) as u64;
@@ -1699,6 +1772,7 @@ pub unsafe fn refresh_stable_multi(
             let chunk_end = processed + chunk_size_operations;
 
             runner.check_seal(spread.start(k), spread.chunk());
+            halt_here!(runner, cycle_errors, (runner.bytes_processed() / std::mem::size_of::<u64>()) as u64);
 
             // Non-byte-uniform (see REFRESH_PATTERN / #61): stays a real store loop,
             // not memset.
@@ -1720,10 +1794,10 @@ pub unsafe fn refresh_stable_multi(
 
             // Verify phase
             cycle_errors += verify_words(base, processed, chunk_end, test_name, |_| pattern);
-            runner.reseal(spread.start(k), spread.chunk());
-
             // Count the chunk when it is done; overlaps count each time
             runner.add_bytes(spread.chunk() * 2);
+            halt_here!(runner, cycle_errors, (runner.bytes_processed() / std::mem::size_of::<u64>()) as u64);
+            runner.reseal(spread.start(k), spread.chunk());
 
             // Handle errors if found
             if runner.should_halt(cycle_errors) {
@@ -1773,7 +1847,7 @@ pub unsafe fn refresh_stable_128_multi(
             name: test_name,
             action: TestAction::WriteWaitVerify,
             bytes_processed: 0,
-            elapsed_ms: 0,
+            timed: None,
             thread_id,
             error_count: 0,
             total_operations: 0,
@@ -1781,6 +1855,8 @@ pub unsafe fn refresh_stable_128_multi(
             cycles_planned: timing.cycles,
             stopped_by_time_limit: false,
             seal_errors: 0,
+            alarms: 0,
+            not_reproduced: 0,
         };
     }
 
@@ -1813,7 +1889,7 @@ pub unsafe fn refresh_stable_256_multi(
             name: test_name,
             action: TestAction::WriteWaitVerify,
             bytes_processed: 0,
-            elapsed_ms: 0,
+            timed: None,
             thread_id,
             error_count: 0,
             total_operations: 0,
@@ -1821,6 +1897,8 @@ pub unsafe fn refresh_stable_256_multi(
             cycles_planned: timing.cycles,
             stopped_by_time_limit: false,
             seal_errors: 0,
+            alarms: 0,
+            not_reproduced: 0,
         };
     }
 
@@ -1853,7 +1931,7 @@ pub unsafe fn refresh_stable_512_multi(
             name: test_name,
             action: TestAction::WriteWaitVerify,
             bytes_processed: 0,
-            elapsed_ms: 0,
+            timed: None,
             thread_id,
             error_count: 0,
             total_operations: 0,
@@ -1861,6 +1939,8 @@ pub unsafe fn refresh_stable_512_multi(
             cycles_planned: timing.cycles,
             stopped_by_time_limit: false,
             seal_errors: 0,
+            alarms: 0,
+            not_reproduced: 0,
         };
     }
 
@@ -1948,6 +2028,7 @@ pub unsafe fn cache_busting_multi(
             let chunk_end = processed + chunk_size_operations;
 
             runner.check_seal(spread.start(k), spread.chunk());
+            halt_here!(runner, cycle_errors, (runner.bytes_processed() / std::mem::size_of::<u64>()) as u64);
 
             // Apply stride-pattern-based access patterns within chunk
             match stride_patterns {
@@ -1970,8 +2051,9 @@ pub unsafe fn cache_busting_multi(
                     for offset in 0..base_stride.min(chunk_end - processed) {
                         accumulate_stride_4(&mut acc, base, processed + offset, chunk_end, base_stride, expected);
                     }
-                    if (acc[0] | acc[1]) | (acc[2] | acc[3]) != 0 {
-                        cycle_errors += rescan_words(base, processed, chunk_end, test_name, expected);
+                    let seen = (acc[0] | acc[1]) | (acc[2] | acc[3]);
+                    if seen != 0 {
+                        cycle_errors += rescan_words(base, processed, chunk_end, test_name, seen, expected);
                     }
                 }
                 _ => {
@@ -2000,19 +2082,20 @@ pub unsafe fn cache_busting_multi(
                         accumulate_stride_4(&mut acc, base, processed + offset, chunk_end, base_stride,
                                           |i| pattern.wrapping_add(i as u64));
                     }
-                    if (acc[0] | acc[1]) | (acc[2] | acc[3]) != 0 {
+                    let seen = (acc[0] | acc[1]) | (acc[2] | acc[3]);
+                    if seen != 0 {
                         let expected = |i: usize| {
                             let variant = ((i % base_stride) % stride_patterns) as u64;
                             pattern_base.wrapping_add(variant * 0x1111111111111111u64).wrapping_add(i as u64)
                         };
-                        cycle_errors += rescan_words(base, processed, chunk_end, test_name, expected);
+                        cycle_errors += rescan_words(base, processed, chunk_end, test_name, seen, expected);
                     }
                 }
             }
-            runner.reseal(spread.start(k), spread.chunk());
-
             // Count the chunk when it is done; overlaps count each time
             runner.add_bytes(spread.chunk() * 2);
+            halt_here!(runner, cycle_errors, (runner.bytes_processed() / std::mem::size_of::<u64>()) as u64);
+            runner.reseal(spread.start(k), spread.chunk());
 
             // Handle errors if found
             if runner.should_halt(cycle_errors) {
@@ -2047,25 +2130,21 @@ pub unsafe fn cache_busting_multi(
 #[cold]
 #[inline(never)]
 unsafe fn random_replay(base: *mut u64, len: usize, mut rng_state: u64, iterations: std::ops::Range<usize>,
-                        seq: u32, test_name: &str) -> u64 {
-    let mut errors = 0u64;
-    for iteration in iterations {
+                        seq: u32, test_name: &str, seen: u64) -> u64 {
+    let (first, last) = (iterations.start, iterations.end);
+    if !crate::pattern::rescan_enabled() {
+        return unlocalised(found_by(test_name), format_args!("in rng_seq {seq}, iterations {first}..{last}"), seen);
+    }
+    let mut scan = Rescan::for_test(base, test_name).seen(seen);
+    for _ in iterations {
         rng_state ^= rng_state << 13;
         rng_state ^= rng_state >> 17;
         rng_state ^= rng_state << 5;
         let idx = ((rng_state as u128 * len as u128) >> 64) as usize;
-        let actual = unsafe { *base.add(idx) };
-        if actual != idx as u64 {
-            errors += 1;
-            log::error!("{}, idx {} (iteration {}, rng_seq {}): expected {:#x}, got {:#x}",
-                        crate::error_context::found_by(test_name), idx, iteration, seq, idx, actual);
-        }
+        // SAFETY: idx < len, inside the extent
+        unsafe { scan.word(idx, idx as u64) };
     }
-    if errors == 0 {
-        log::error!("{} in rng_seq {} that a reread no longer shows (transient)", crate::error_context::found_by(test_name), seq);
-        errors = 1;
-    }
-    errors
+    scan.finish(format_args!("in rng_seq {seq}, iterations {first}..{last}"))
 }
 
 /// RandomTorture MultiBlock implementation - random access pattern testing.
@@ -2151,7 +2230,7 @@ pub unsafe fn random_torture_multi(
                 }
 
                 if acc != 0 {
-                    cycle_errors += random_replay(base, len, chunk_rng, chunk_start..chunk_end, seq, test_name);
+                    cycle_errors += random_replay(base, len, chunk_rng, chunk_start..chunk_end, seq, test_name, acc);
                 }
 
                 // Handle errors if found
@@ -2248,6 +2327,7 @@ pub unsafe fn stride_access_multi(
                 if pass == 0 {
                     let from = spread.start(k).max(checked_to);
                     runner.check_seal(from, spread.start(k) + spread.chunk() - from);
+                    halt_here!(runner, cycle_errors, (runner.bytes_processed() / (2 * std::mem::size_of::<u64>())) as u64);
                     checked_to = spread.start(k) + spread.chunk();
                 }
 
@@ -2270,21 +2350,26 @@ pub unsafe fn stride_access_multi(
                     let subdiv_start = chunk_start + subdiv * elements_per_subdiv;
                     accumulate_stride_4(&mut acc, base, subdiv_start, subdiv_start + elements_per_subdiv, stride, expected);
                 }
-                if (acc[0] | acc[1]) | (acc[2] | acc[3]) != 0 {
-                    let mut errors = 0;
-                    for subdiv in 0..subdivisions {
-                        let subdiv_start = chunk_start + subdiv * elements_per_subdiv;
-                        errors += rescan_stride(base, subdiv_start, subdiv_start + elements_per_subdiv, stride, test_name, expected);
-                    }
+                let seen = (acc[0] | acc[1]) | (acc[2] | acc[3]);
+                if seen != 0 {
                     let chunk_end = chunk_start + subdivisions * elements_per_subdiv;
-                    cycle_errors += transient_if_none(errors, test_name, chunk_start, chunk_end);
+                    cycle_errors += if crate::pattern::rescan_enabled() {
+                        let mut scan = Rescan::for_test(base, test_name).seen(seen);
+                        for subdiv in 0..subdivisions {
+                            let subdiv_start = chunk_start + subdiv * elements_per_subdiv;
+                            scan.stride(subdiv_start, subdiv_start + elements_per_subdiv, stride, expected);
+                        }
+                        scan.finish(format_args!("in idx {chunk_start}..{chunk_end} (stride {stride})"))
+                    } else {
+                        unlocalised(found_by(test_name), format_args!("in idx {chunk_start}..{chunk_end} (stride {stride})"), seen)
+                    };
                 }
+                // Count the chunk when it is done (one write and one read per word touched)
+                runner.add_bytes(touched * std::mem::size_of::<u64>() * 2);
+                halt_here!(runner, cycle_errors, (runner.bytes_processed() / (2 * std::mem::size_of::<u64>())) as u64);
                 if pass + 1 == passes.len() {
                     runner.reseal(spread.start(k), spread.chunk());
                 }
-
-                // Count the chunk when it is done (one write and one read per word touched)
-                runner.add_bytes(touched * std::mem::size_of::<u64>() * 2);
 
                 // A halt stops the test, not just this stride pass (the finish reseals the extent)
                 if runner.should_halt(cycle_errors) || runner.shutdown_requested() {
@@ -2375,6 +2460,7 @@ pub unsafe fn block_move_multi(
             // The source piece and its destination, each checked, then the source filled
             runner.check_seal(spread.start(k), spread.chunk());
             runner.check_seal(half_size + spread.start(k), spread.chunk());
+            halt_here!(runner, cycle_errors, (runner.bytes_processed() / (3 * std::mem::size_of::<u64>())) as u64);
             if sealed {
                 for i in processed..chunk_end {
                     *src_base.add(i) = pattern_base.wrapping_add(i as u64);
@@ -2458,11 +2544,11 @@ pub unsafe fn block_move_multi(
 
             // Verify copied data (indices from the destination half's start)
             cycle_errors += verify_words(dst_base, processed, chunk_end, test_name, |i| pattern_base.wrapping_add(i as u64));
-            runner.reseal(spread.start(k), spread.chunk());
-            runner.reseal(half_size + spread.start(k), spread.chunk());
-
             // Count the half-chunk when it is done: copy (read + write) and verify (read)
             runner.add_bytes(spread.chunk() * 3);
+            halt_here!(runner, cycle_errors, (runner.bytes_processed() / (3 * std::mem::size_of::<u64>())) as u64);
+            runner.reseal(spread.start(k), spread.chunk());
+            runner.reseal(half_size + spread.start(k), spread.chunk());
 
             if runner.should_halt(cycle_errors) || runner.shutdown_requested() {
                 let total_operations = (runner.bytes_processed() / (3 * std::mem::size_of::<u64>())) as u64;
@@ -2545,18 +2631,22 @@ impl Mode2 {
     unsafe fn verify(self, ptr: *const u64, start: usize, end: usize, test_name: &str) -> u64 {
         let mut acc = [0u64; 4];
         self.walk(ptr, start, end, |offset, words| accumulate_line(&mut acc, ptr.add(offset), &words));
-        if (acc[0] | acc[1]) | (acc[2] | acc[3]) == 0 {
+        let seen = (acc[0] | acc[1]) | (acc[2] | acc[3]);
+        if seen == 0 {
             return 0;
         }
-        self.rescan(ptr, start, end, test_name)
+        self.rescan(ptr, start, end, test_name, seen)
     }
 
     #[cold]
     #[inline(never)]
-    unsafe fn rescan(self, ptr: *const u64, start: usize, end: usize, test_name: &str) -> u64 {
-        let mut errors = 0u64;
-        self.walk(ptr, start, end, |offset, words| count_line(&mut errors, ptr, offset, &words, test_name));
-        transient_if_none(errors, test_name, start, end)
+    unsafe fn rescan(self, ptr: *const u64, start: usize, end: usize, test_name: &str, seen: u64) -> u64 {
+        if !crate::pattern::rescan_enabled() {
+            return unlocalised(found_by(test_name), format_args!("in idx {start}..{end}"), seen);
+        }
+        let mut scan = Rescan::for_test(ptr, test_name).seen(seen);
+        self.walk(ptr, start, end, |offset, words| scan.line(offset, &words));
+        scan.finish(format_args!("in idx {start}..{end}"))
     }
 }
 
@@ -2591,37 +2681,35 @@ impl Mode12 {
     unsafe fn verify(self, ptr: *const u64, start: usize, end: usize, test_name: &str) -> u64 {
         let mut acc = [0u64; 4];
         self.walk(ptr, start, end, |offset, words| accumulate_line(&mut acc, ptr.add(offset), &words));
-        if (acc[0] | acc[1]) | (acc[2] | acc[3]) == 0 {
+        let seen = (acc[0] | acc[1]) | (acc[2] | acc[3]);
+        if seen == 0 {
             return 0;
         }
-        self.rescan(ptr, start, end, test_name)
+        self.rescan(ptr, start, end, test_name, seen)
     }
 
     #[cold]
     #[inline(never)]
-    unsafe fn rescan(self, ptr: *const u64, start: usize, end: usize, test_name: &str) -> u64 {
-        let mut errors = 0u64;
-        self.walk(ptr, start, end, |offset, words| count_line(&mut errors, ptr, offset, &words, test_name));
-        transient_if_none(errors, test_name, start, end)
+    unsafe fn rescan(self, ptr: *const u64, start: usize, end: usize, test_name: &str, seen: u64) -> u64 {
+        if !crate::pattern::rescan_enabled() {
+            return unlocalised(found_by(test_name), format_args!("in idx {start}..{end}"), seen);
+        }
+        let mut scan = Rescan::for_test(ptr, test_name).seen(seen);
+        self.walk(ptr, start, end, |offset, words| scan.line(offset, &words));
+        scan.finish(format_args!("in idx {start}..{end}"))
     }
 }
 
-/// The bus beat mode 14 flips at, from the DIMMs' SMBIOS memory type, read and logged once:
-/// DDR5's 32 bits when SMBIOS doesn't say.
+/// The bus beat mode 14 flips at: the transfer width (`beat=`, else the DIMMs' SMBIOS memory
+/// type, `crate::pattern::transfer_beat`), or DDR5's 32 bits when neither gives one, as mode 14
+/// always has (the native `switch` alternates 64 and 32 there instead).
 fn bus_beat() -> pattern_gen::BusBeat {
     static BEAT: std::sync::OnceLock<pattern_gen::BusBeat> = std::sync::OnceLock::new();
     *BEAT.get_or_init(|| {
-        let types: Vec<u8> = crate::smbios::get_smbios().memory_modules.iter().map(|m| m.memory_type).collect();
-        match types.iter().find_map(|&t| pattern_gen::BusBeat::from_smbios_type(t)) {
-            Some(beat) => {
-                log::info!("Mode 14: {}-bit beats, from SMBIOS memory type {:#04x}", beat.bits(), types[0]);
-                beat
-            }
-            None => {
-                log::info!("Mode 14: SMBIOS gives no known memory type ({types:#04x?}); assuming DDR5's 32-bit beats");
-                pattern_gen::BusBeat::Bits32
-            }
-        }
+        crate::pattern::transfer_beat().0.unwrap_or_else(|| {
+            log::info!("Mode 14: no known transfer width; assuming DDR5's 32-bit beats");
+            pattern_gen::BusBeat::Bits32
+        })
     })
 }
 
@@ -2638,8 +2726,16 @@ macro_rules! with_mode14_line {
     ($mode14:expr, |$line:ident| $body:block) => {{
         let key = $mode14.key;
         match $mode14.beat {
+            pattern_gen::BusBeat::Bits12 => {
+                let $line = |line: *const u64| pattern_gen::mode14_line(line as usize, key, pattern_gen::BusBeat::Bits12);
+                $body
+            }
             pattern_gen::BusBeat::Bits16 => {
                 let $line = |line: *const u64| pattern_gen::mode14_line(line as usize, key, pattern_gen::BusBeat::Bits16);
+                $body
+            }
+            pattern_gen::BusBeat::Bits24 => {
+                let $line = |line: *const u64| pattern_gen::mode14_line(line as usize, key, pattern_gen::BusBeat::Bits24);
                 $body
             }
             pattern_gen::BusBeat::Bits32 => {
@@ -2680,18 +2776,22 @@ impl Mode14 {
     unsafe fn verify(self, ptr: *const u64, start: usize, end: usize, test_name: &str) -> u64 {
         let mut acc = [0u64; 4];
         self.walk(ptr, start, end, |offset, words| accumulate_line(&mut acc, ptr.add(offset), &words));
-        if (acc[0] | acc[1]) | (acc[2] | acc[3]) == 0 {
+        let seen = (acc[0] | acc[1]) | (acc[2] | acc[3]);
+        if seen == 0 {
             return 0;
         }
-        self.rescan(ptr, start, end, test_name)
+        self.rescan(ptr, start, end, test_name, seen)
     }
 
     #[cold]
     #[inline(never)]
-    unsafe fn rescan(self, ptr: *const u64, start: usize, end: usize, test_name: &str) -> u64 {
-        let mut errors = 0u64;
-        self.walk(ptr, start, end, |offset, words| count_line(&mut errors, ptr, offset, &words, test_name));
-        transient_if_none(errors, test_name, start, end)
+    unsafe fn rescan(self, ptr: *const u64, start: usize, end: usize, test_name: &str, seen: u64) -> u64 {
+        if !crate::pattern::rescan_enabled() {
+            return unlocalised(found_by(test_name), format_args!("in idx {start}..{end}"), seen);
+        }
+        let mut scan = Rescan::for_test(ptr, test_name).seen(seen);
+        self.walk(ptr, start, end, |offset, words| scan.line(offset, &words));
+        scan.finish(format_args!("in idx {start}..{end}"))
     }
 }
 
@@ -2702,20 +2802,6 @@ unsafe fn accumulate_line(acc: &mut [u64; 4], line: *const u64, words: &[u64; LI
     let actual = *(line as *const [u64; LINE_WORDS]);
     for k in 0..4 {
         acc[k] |= (actual[k] ^ words[k]) | (actual[k + 4] ^ words[k + 4]);
-    }
-}
-
-/// Counts one line's bad words, logging the first 10 of the scan.
-#[inline(always)]
-unsafe fn count_line(errors: &mut u64, ptr: *const u64, offset: usize, words: &[u64; LINE_WORDS], test_name: &str) {
-    for (j, &expected) in words.iter().enumerate() {
-        let actual = *ptr.add(offset + j);
-        if actual != expected {
-            *errors += 1;
-            if *errors <= 10 {
-                log::error!("{}, idx {}: expected {:#x}, got {:#x}", crate::error_context::found_by(test_name), offset + j, expected, actual);
-            }
-        }
     }
 }
 
@@ -2737,10 +2823,11 @@ unsafe fn verify_words(ptr: *const u64, start: usize, end: usize, test_name: &st
         acc[0] |= *ptr.add(idx) ^ expected(idx);
         idx += 1;
     }
-    if (acc[0] | acc[1]) | (acc[2] | acc[3]) == 0 {
+    let seen = (acc[0] | acc[1]) | (acc[2] | acc[3]);
+    if seen == 0 {
         return 0;
     }
-    rescan_words(ptr, start, end, test_name, expected)
+    rescan_words(ptr, start, end, test_name, seen, expected)
 }
 
 /// ORs the differences of words `start, start + stride, ...` below `end` into the 4 accumulators,
@@ -2765,52 +2852,243 @@ unsafe fn accumulate_stride_4(acc: &mut [u64; 4], ptr: *const u64, start: usize,
     }
 }
 
-/// Counts and logs the words `start, start + stride, ...` below `end` that differ from
-/// `expected(idx)`, the cold path of `accumulate_stride_4` (the caller adds `transient_if_none`).
+// ─── The cold path of every verify (TODO 27's second tier) ──────────────────────────────────────
+//
+// A verify ORs each word's difference into accumulators and branches once per chunk: the first
+// tier, unchanged. When an accumulator is set, the region is rescanned before anything overwrites
+// or reseals it. Each bad word is logged with its index, address, expected and actual values and
+// their XOR, and the first few are reread: volatile loads, so each is a real load, then once more
+// after flushing the word's line. A reread that still sees the wrong value may be reading a cached
+// copy of a bad read, so neither result locates the fault; they are reported as seen. A rescan that
+// finds every word right reports the check as not reproduced, and it still counts one error: the
+// check saw a difference. `rescan=off` skips all of it and counts one error a failed check.
+
+/// Bad words a rescan logs.
+const RESCAN_LOGGED: u64 = 10;
+/// Bad words a rescan rereads, and the rereads of each before the one after the flush.
+const REREAD_WORDS: u64 = 4;
+const REREADS: u32 = 4;
+/// Rescans a test rereads in, so a run full of errors doesn't slow to the rereads' pace.
+const REREAD_RESCANS: u32 = 16;
+
+/// This thread's failed checks in the current test, for its `TestStats` (TODO 27).
+#[derive(Debug, Default, Clone, Copy)]
+pub(crate) struct RescanCounts {
+    /// Checks that found a difference.
+    pub alarms: u64,
+    /// Of those, the ones whose rescan found every word right.
+    pub not_reproduced: u64,
+    /// Rescans that have reread, against `REREAD_RESCANS`.
+    rereading: u32,
+}
+
+thread_local! {
+    static RESCANS: std::cell::Cell<RescanCounts> =
+        const { std::cell::Cell::new(RescanCounts { alarms: 0, not_reproduced: 0, rereading: 0 }) };
+}
+
+/// Starts a test's counts afresh (`TestRunner::new`).
+pub(crate) fn reset_rescan_counts() {
+    RESCANS.with(|c| c.set(RescanCounts::default()));
+}
+
+/// This thread's counts since the last reset.
+pub(crate) fn rescan_counts() -> RescanCounts {
+    RESCANS.with(|c| c.get())
+}
+
+fn found_by(test_name: &str) -> String {
+    crate::error_context::found_by(test_name)
+}
+
+/// One rescan of a region a check found a difference in.
+pub(crate) struct Rescan {
+    ptr: *const u64,
+    /// The start of each log line: who found it, and where in the run.
+    lead: String,
+    found: u64,
+    reread: bool,
+    /// The check's differences ORed over the region: which bits differed somewhere. The rescan's
+    /// bad words are compared with it, so bits the check saw and the rescan didn't are kept.
+    seen: u64,
+    /// The rescan's bad words' differences, ORed
+    found_xor: u64,
+    /// In the test's alarms and not-reproduced counts (not the seal's own checks)
+    count: bool,
+    /// The first bad words, reread once the scan is done: a flush in mid-scan would make the
+    /// rest of their line a fresh read
+    suspects: [(usize, u64); REREAD_WORDS as usize],
+}
+
+impl Rescan {
+    /// A test's rescan, counted in its alarms.
+    pub(crate) fn for_test(ptr: *const u64, test_name: &str) -> Self {
+        Self::begin(ptr, found_by(test_name), true)
+    }
+
+    /// A rescan whose log lines start with `lead`; `count` puts it in the test's alarms (the seal's
+    /// checks count apart, as seal errors).
+    pub(crate) fn begin(ptr: *const u64, lead: String, count: bool) -> Self {
+        let reread = RESCANS.with(|c| {
+            let mut n = c.get();
+            n.alarms += u64::from(count);
+            c.set(n);
+            n.rereading < REREAD_RESCANS
+        });
+        Rescan { ptr, lead, found: 0, reread, seen: 0, found_xor: 0, count, suspects: [(0, 0); REREAD_WORDS as usize] }
+    }
+
+    /// The check's differences, ORed: 0 where the check didn't keep them.
+    pub(crate) fn seen(mut self, mask: u64) -> Self {
+        self.seen = mask;
+        self
+    }
+
+    /// Checks word `idx` against `want`, with a volatile load.
+    ///
+    /// # Safety
+    /// `ptr.add(idx)` must be valid for reads.
+    #[inline(always)]
+    pub(crate) unsafe fn word(&mut self, idx: usize, want: u64) {
+        let actual = std::ptr::read_volatile(self.ptr.add(idx));
+        if actual != want {
+            self.bad(idx, want, actual);
+        }
+    }
+
+    /// Checks the line of words `offset..offset + 8` against `words`.
+    ///
+    /// # Safety
+    /// As `word`.
+    #[inline(always)]
+    pub(crate) unsafe fn line(&mut self, offset: usize, words: &[u64; LINE_WORDS]) {
+        for (j, &want) in words.iter().enumerate() {
+            self.word(offset + j, want);
+        }
+    }
+
+    /// Checks the words `start, start + stride, ...` below `end` against `expected(idx)`.
+    ///
+    /// # Safety
+    /// As `word`.
+    pub(crate) unsafe fn stride(&mut self, start: usize, end: usize, stride: usize, expected: impl Fn(usize) -> u64) {
+        let mut idx = start;
+        while idx < end {
+            self.word(idx, expected(idx));
+            idx += stride;
+        }
+    }
+
+    #[cold]
+    #[inline(never)]
+    unsafe fn bad(&mut self, idx: usize, want: u64, actual: u64) {
+        self.found += 1;
+        self.found_xor |= want ^ actual;
+        let at = self.ptr.add(idx);
+        if self.found <= RESCAN_LOGGED {
+            let diff = want ^ actual;
+            log::error!("{}, idx {idx} (address {:#x}): expected {want:#x}, got {actual:#x}, XOR {diff:#018x} ({} bits)",
+                        self.lead, at as usize, diff.count_ones());
+        }
+        if self.reread && self.found <= REREAD_WORDS {
+            self.suspects[(self.found - 1) as usize] = (idx, want);
+        }
+    }
+
+    /// Rereads the first bad words, after the scan: `REREADS` times each, then once after flushing
+    /// its line. Neither tells where the fault is: a reread can hit a cached copy of a bad read, and
+    /// the flush writes back a dirty line first.
+    unsafe fn reread(&self) {
+        let suspects = &self.suspects[..self.found.min(REREAD_WORDS) as usize];
+        RESCANS.with(|c| {
+            let mut n = c.get();
+            n.rereading += 1;
+            c.set(n);
+        });
+        // Every suspect's rereads before any flush: a flush evicts the whole line, so a second
+        // suspect in it would be reread fresh from DRAM
+        let still: Vec<usize> = suspects.iter()
+            .map(|&(idx, want)| (0..REREADS).filter(|_| std::ptr::read_volatile(self.ptr.add(idx)) != want).count())
+            .collect();
+        for &(idx, _) in suspects {
+            // SAFETY: the CPU gate requires CLFLUSHOPT, and the line holds a valid word
+            flush_range_to_dram((self.ptr.add(idx) as usize & !63) as *const u8, 64, 64);
+        }
+        for (&(idx, want), still) in suspects.iter().zip(still) {
+            let after = std::ptr::read_volatile(self.ptr.add(idx));
+            let after = if after == want { "right".to_string() } else { format!("wrong ({after:#x})") };
+            log::error!("{}, idx {idx}: {still} of {REREADS} rereads still wrong; after flushing its line, {after}", self.lead);
+        }
+    }
+
+    /// The bad words found, which the caller counts as errors; or one if none was, since the check
+    /// saw a difference. `what` names the region and the pattern (`in idx 0..512 (random-~P, ...)`).
+    /// Every failed check leaves this one record, whatever the rescan found.
+    pub(crate) fn finish(self, what: std::fmt::Arguments) -> u64 {
+        if self.reread && self.found > 0 {
+            // SAFETY: the suspects are words of the region the scan just read
+            unsafe { self.reread() };
+        }
+        log::error!("{} {what}: {}", self.lead, alarm_record(self.found, self.seen, self.found_xor));
+        if self.found > 0 {
+            return self.found;
+        }
+        RESCANS.with(|c| {
+            let mut n = c.get();
+            n.not_reproduced += u64::from(self.count);
+            c.set(n);
+        });
+        1
+    }
+}
+
+/// A failed check's record: what its rescan found, the check's ORed differences, and the bits the
+/// check saw but no bad word of the rescan had (gone by the rescan). An ORed mask names bit
+/// positions over the region, not which words, how many, or which way.
+fn alarm_record(found: u64, seen: u64, found_xor: u64) -> String {
+    let rescan = match found {
+        0 => "not reproduced on rescan, every word read back right".to_string(),
+        n if n > RESCAN_LOGGED => format!("{n} bad words on rescan, the first {RESCAN_LOGGED} logged, their differences ORed {found_xor:#018x}"),
+        n => format!("{n} bad words on rescan, their differences ORed {found_xor:#018x}"),
+    };
+    let gone = seen & !found_xor;
+    let gone = if found > 0 && gone != 0 { format!("; the rescan didn't see bits {gone:#018x} again") } else { String::new() };
+    format!("{rescan}; the check's differences, ORed: {seen:#018x} ({} bits){gone}", seen.count_ones())
+}
+
+/// Under `rescan=off`, a failed check: one error, and one alarm when `count` (as `Rescan::begin`),
+/// naming only the region.
 #[cold]
 #[inline(never)]
-unsafe fn rescan_stride(ptr: *const u64, start: usize, end: usize, stride: usize, test_name: &str,
-                        expected: impl Fn(usize) -> u64) -> u64 {
-    let mut errors = 0u64;
-    let mut idx = start;
-    while idx < end {
-        let (want, actual) = (expected(idx), *ptr.add(idx));
-        if actual != want {
-            errors += 1;
-            if errors <= 10 {
-                log::error!("{}, idx {} (stride {}): expected {:#x}, got {:#x}", crate::error_context::found_by(test_name), idx, stride, want, actual);
-            }
-        }
-        idx += stride;
-    }
-    errors
+pub(crate) fn unlocalised_as(lead: String, what: std::fmt::Arguments, seen: u64, count: bool) -> u64 {
+    RESCANS.with(|c| {
+        let mut n = c.get();
+        n.alarms += u64::from(count);
+        c.set(n);
+    });
+    log::error!("{lead} {what} (rescan=off: not localised); the check's differences, ORed: {seen:#018x}");
+    1
+}
+
+/// `unlocalised_as` for a test's own check: counted in its alarms.
+pub(crate) fn unlocalised(lead: String, what: std::fmt::Arguments, seen: u64) -> u64 {
+    unlocalised_as(lead, what, seen, true)
 }
 
 /// Counts and logs the words of `[start, end)` that differ from `expected(idx)`, once an
 /// accumulator has seen one.
 #[cold]
 #[inline(never)]
-unsafe fn rescan_words(ptr: *const u64, start: usize, end: usize, test_name: &str, expected: impl Fn(usize) -> u64) -> u64 {
-    let mut errors = 0u64;
+unsafe fn rescan_words(ptr: *const u64, start: usize, end: usize, test_name: &str, seen: u64,
+                       expected: impl Fn(usize) -> u64) -> u64 {
+    if !crate::pattern::rescan_enabled() {
+        return unlocalised(found_by(test_name), format_args!("in idx {start}..{end}"), seen);
+    }
+    let mut scan = Rescan::for_test(ptr, test_name).seen(seen);
     for idx in start..end {
-        let (want, actual) = (expected(idx), *ptr.add(idx));
-        if actual != want {
-            errors += 1;
-            if errors <= 10 {
-                log::error!("{}, idx {}: expected {:#x}, got {:#x}", crate::error_context::found_by(test_name), idx, want, actual);
-            }
-        }
+        scan.word(idx, expected(idx));
     }
-    transient_if_none(errors, test_name, start, end)
-}
-
-/// A rescan that finds nothing still reports the error the accumulator saw.
-fn transient_if_none(errors: u64, test_name: &str, start: usize, end: usize) -> u64 {
-    if errors > 0 {
-        return errors;
-    }
-    log::error!("{} in idx {}..{} that a reread no longer shows (transient)", crate::error_context::found_by(test_name), start, end);
-    1
+    scan.finish(format_args!("in idx {start}..{end}"))
 }
 
 /// TM5's strided walk (`mtests0.asm` ~336-394, TODO 93): runs `$body` once for each 64 B line of
@@ -2917,6 +3195,10 @@ pub unsafe fn simple_test_v2_multi(
     config: &TestMemoryConfig,
     progress: Option<&TestProgress>,
 ) -> TestStats {
+    // No pattern_mode: a native program (pattern spec v2)
+    if let Some(program) = config.native_program() {
+        return simple_native_scalar(blocks, thread_id, error_mode, timing, config, progress, NativeRun::simple(program, config));
+    }
     // Determine stride from parameter_context (v2 correct interpretation)
     let stride = config.parameter_context.as_ref()
         .and_then(|ctx| ctx.stride_elements)
@@ -3147,10 +3429,11 @@ unsafe fn simple_test_v2_strided(
                     let (seed, step) = pattern_gen::mode12_line(line as usize, mode12.key);
                     accumulate_line(&mut acc, line, &pattern_gen::line_words(seed, step));
                 });
-                if (acc[0] | acc[1]) | (acc[2] | acc[3]) == 0 {
+                let seen = (acc[0] | acc[1]) | (acc[2] | acc[3]);
+                if seen == 0 {
                     return 0;
                 }
-                mode12.rescan(ctx.ptr, ctx.chunk_start, ctx.chunk_end, test_name)
+                mode12.rescan(ctx.ptr, ctx.chunk_start, ctx.chunk_end, test_name, seen)
             },
         );
     }
@@ -3177,10 +3460,11 @@ unsafe fn simple_test_v2_strided(
                         accumulate_line(&mut acc, line, &expected(line));
                     });
                 });
-                if (acc[0] | acc[1]) | (acc[2] | acc[3]) == 0 {
+                let seen = (acc[0] | acc[1]) | (acc[2] | acc[3]);
+                if seen == 0 {
                     return 0;
                 }
-                mode14.rescan(ctx.ptr, ctx.chunk_start, ctx.chunk_end, test_name)
+                mode14.rescan(ctx.ptr, ctx.chunk_start, ctx.chunk_end, test_name, seen)
             },
         );
     }
@@ -3214,10 +3498,11 @@ unsafe fn simple_test_v2_strided(
                     for_each_strided_line!(ctx.ptr, ctx.chunk_start, ctx.chunk_end, period, |offset| {
                         accumulate_line(&mut acc, ctx.ptr.add(offset), &std::array::from_fn(|j| expected(offset + j)));
                     });
-                    if (acc[0] | acc[1]) | (acc[2] | acc[3]) == 0 {
+                    let seen = (acc[0] | acc[1]) | (acc[2] | acc[3]);
+                    if seen == 0 {
                         return 0;
                     }
-                    rescan_words(ctx.ptr, ctx.chunk_start, ctx.chunk_end, test_name, expected)
+                    rescan_words(ctx.ptr, ctx.chunk_start, ctx.chunk_end, test_name, seen, expected)
                 },
             )
         }};
@@ -3366,18 +3651,19 @@ macro_rules! mirror_move_v2_impl {
                     mirror_swap!($simd_type, simd_elements, ctx, mirror);
                 },
                 // Verify: the seal check, resealing the chunk if it failed (TM5's refill)
-                |ctx: &ChunkCtx| -> u64 { mirror_seal_check(seal.kernel, ctx) },
+                |ctx: &ChunkCtx| -> u64 { mirror_seal_check(seal.kernel, ctx, error_mode) },
             )
         }
     }
 }
 
 /// A mirror test's verify (TODO 74): the seal check after the mirror, its errors the test's own
-/// (TM5 numbers them by the mirror step), and the chunk resealed if it failed.
+/// (TM5 numbers them by the mirror step), and the chunk resealed if it failed, unless the error
+/// halts the run: then the bad words stay in memory.
 #[inline(always)]
-unsafe fn mirror_seal_check(kernel: crate::seal::SealKernel, ctx: &ChunkCtx) -> u64 {
-    let errors = kernel.check(ctx.ptr, ctx.chunk_start, ctx.chunk_end, "seal check after");
-    if errors > 0 {
+unsafe fn mirror_seal_check(kernel: crate::seal::SealKernel, ctx: &ChunkCtx, error_mode: ErrorMode) -> u64 {
+    let errors = kernel.verify(ctx.ptr, ctx.chunk_start, ctx.chunk_end, "seal check after");
+    if errors > 0 && !matches!(error_mode, ErrorMode::Halt) {
         kernel.fill(ctx.ptr, ctx.chunk_start, ctx.chunk_end);
     }
     errors
@@ -3413,7 +3699,7 @@ pub unsafe fn mirror_move_v2_multi(
             mirror_swap!(u64, 1, ctx, mirror);
         },
         // Verify: the seal check, resealing the chunk if it failed (TM5's refill)
-        |ctx: &ChunkCtx| -> u64 { mirror_seal_check(seal.kernel, ctx) },
+        |ctx: &ChunkCtx| -> u64 { mirror_seal_check(seal.kernel, ctx, error_mode) },
     )
 }
 
@@ -3510,16 +3796,18 @@ macro_rules! simple_write_positional_simd {
     }}
 }
 
-/// SIMD Verify for positional patterns (Mode 0/1): XOR+OR accumulator.
+/// SIMD Verify for the positional pattern (modes 10/11, SimpleNT): XOR+OR accumulator, then on a
+/// hit the cold rescan counts and logs each bad word of the failing batch (TODO 27).
 /// Batched error checking matches MirrorMove verify for consistent codegen.
 macro_rules! simple_verify_positional_simd {
     ($simd_type:ty, $simd_w:expr, $ctx:expr,
-     $base_vec:expr, $lane_offsets:expr, $zero:expr) => {{
+     $base:expr, $base_vec:expr, $lane_offsets:expr, $zero:expr, $test_name:expr) => {{
         let _len = $ctx.chunk_end - $ctx.chunk_start;
         debug_assert!(_len % $simd_w == 0, "chunk not aligned to SIMD width");
         let step = <$simd_type>::splat($simd_w as u64);
         let mut idx_vec = <$simd_type>::splat($ctx.chunk_start as u64) + $lane_offsets;
         let mut total_errors = 0u64;
+        let base: u64 = $base;
 
         match $ctx.check_mask {
             Some(check_mask) => {
@@ -3537,7 +3825,7 @@ macro_rules! simple_verify_positional_simd {
                         idx_vec += step;
                     }
                     if error_acc.simd_ne($zero).any() {
-                        total_errors += 1;
+                        total_errors += rescan_words($ctx.ptr, pos, batch_end, $test_name, error_acc.reduce_or(), |idx| idx as u64 ^ base);
                     }
                     pos = batch_end;
                 }
@@ -3550,7 +3838,7 @@ macro_rules! simple_verify_positional_simd {
                         idx_vec += step;
                     }
                     if error_acc.simd_ne($zero).any() {
-                        total_errors += 1;
+                        total_errors += rescan_words($ctx.ptr, pos, $ctx.chunk_end, $test_name, error_acc.reduce_or(), |idx| idx as u64 ^ base);
                     }
                 }
             }
@@ -3562,7 +3850,7 @@ macro_rules! simple_verify_positional_simd {
                     idx_vec += step;
                 }
                 if error_acc.simd_ne($zero).any() {
-                    total_errors += 1;
+                    total_errors += rescan_words($ctx.ptr, $ctx.chunk_start, $ctx.chunk_end, $test_name, error_acc.reduce_or(), |idx| idx as u64 ^ base);
                 }
             }
         }
@@ -3602,7 +3890,7 @@ macro_rules! simple_verify_mode12_simd {
             }
         }
         if acc.simd_ne($zero).any() {
-            $mode12.rescan($ctx.ptr, $ctx.chunk_start, $ctx.chunk_end, $test_name)
+            $mode12.rescan($ctx.ptr, $ctx.chunk_start, $ctx.chunk_end, $test_name, acc.reduce_or())
         } else {
             0
         }
@@ -3635,7 +3923,7 @@ macro_rules! simple_verify_strided_positional_simd {
         });
         if acc.simd_ne($zero).any() {
             let base: u64 = $base;
-            rescan_words($ctx.ptr, $ctx.chunk_start, $ctx.chunk_end, $test_name, |idx| idx as u64 ^ base)
+            rescan_words($ctx.ptr, $ctx.chunk_start, $ctx.chunk_end, $test_name, acc.reduce_or(), |idx| idx as u64 ^ base)
         } else {
             0
         }
@@ -3674,7 +3962,7 @@ macro_rules! simple_verify_strided_mode12_simd {
             }
         });
         if acc.simd_ne($zero).any() {
-            $mode12.rescan($ctx.ptr, $ctx.chunk_start, $ctx.chunk_end, $test_name)
+            $mode12.rescan($ctx.ptr, $ctx.chunk_start, $ctx.chunk_end, $test_name, acc.reduce_or())
         } else {
             0
         }
@@ -3698,6 +3986,7 @@ macro_rules! simple_test_v2_impl {
         $pos_str_fn:ident,
         $m12_seq_fn:ident,
         $m12_str_fn:ident,
+        $native_fn:ident,
         $test_name:literal,
         $simd_type:ty,
         $simd_w:expr,
@@ -3740,7 +4029,7 @@ macro_rules! simple_test_v2_impl {
                 },
                 |ctx: &ChunkCtx| -> u64 {
                     simple_verify_positional_simd!($simd_type, simd_elements, ctx,
-                        base_vec, lane_offsets, zero)
+                        base, base_vec, lane_offsets, zero, test_name)
                 },
             )
         }
@@ -3873,9 +4162,16 @@ macro_rules! simple_test_v2_impl {
             config: &TestMemoryConfig,
             progress: Option<&TestProgress>,
         ) -> TestStats {
-            // Mode 14's lines are one value and its inverse, which the scalar build already stores
-            // at the baseline's full width; the SIMD paths here are positional or mode 12 only
-            if config.pattern_mode == Some(14) {
+            // No pattern_mode: a native program, at this width
+            if let Some(program) = config.native_program() {
+                return $native_fn(blocks, thread_id, error_mode, timing, config, progress, NativeRun::simple(program, config));
+            }
+            // The SIMD paths here are positional (modes 10 and 11) and mode 12. Every other mode
+            // runs the scalar build, which writes that mode's own image: modes 0, 1, 2 and 13 used
+            // to write mode 10's here (TODO 3), and mode 14's lines are a few values (one and its
+            // inverse at 16, 32 and 64 bits, three at 12 and 24), which the scalar build already
+            // stores at the baseline's full width.
+            if matches!(config.pattern_mode, Some(0 | 1 | 2 | 13 | 14)) {
                 return simple_test_v2_multi(blocks, thread_id, error_mode, timing, config, progress);
             }
             let is_mode12 = config.pattern_mode.unwrap_or(0) == 12;
@@ -3897,17 +4193,17 @@ macro_rules! simple_test_v2_impl {
 // Each invocation generates 4 specialized #[target_feature] functions + 1 dispatch.
 simple_test_v2_impl!(simple_test_v2_128_impl,
     simple_test_v2_128_pos_seq, simple_test_v2_128_pos_str,
-    simple_test_v2_128_m12_seq, simple_test_v2_128_m12_str,
+    simple_test_v2_128_m12_seq, simple_test_v2_128_m12_str, simple_native_128,
     "Mem-SimpleV2-128", u64x2, 2, [0, 1],
     "sse4.2,sse4.1,ssse3,sse3,sse2,popcnt");
 simple_test_v2_impl!(simple_test_v2_256_impl,
     simple_test_v2_256_pos_seq, simple_test_v2_256_pos_str,
-    simple_test_v2_256_m12_seq, simple_test_v2_256_m12_str,
+    simple_test_v2_256_m12_seq, simple_test_v2_256_m12_str, simple_native_256,
     "Mem-SimpleV2-256", u64x4, 4, [0, 1, 2, 3],
     "avx2,avx,fma,bmi1,bmi2");
 simple_test_v2_impl!(simple_test_v2_512_impl,
     simple_test_v2_512_pos_seq, simple_test_v2_512_pos_str,
-    simple_test_v2_512_m12_seq, simple_test_v2_512_m12_str,
+    simple_test_v2_512_m12_seq, simple_test_v2_512_m12_str, simple_native_512,
     "Mem-SimpleV2-512", u64x8, 8, [0, 1, 2, 3, 4, 5, 6, 7],
     "avx512f,avx512bw,avx512cd,avx512dq,avx512vl,avx2,avx,fma,bmi1,bmi2");
 
@@ -3977,6 +4273,312 @@ crate::auto_dispatch!(
     simple_test_v2_256_multi,
     simple_test_v2_512_multi
 );
+
+// ─── SimpleTest on the native patterns (pattern spec v2, `crate::pattern`) ──────────────────────
+//
+// A SimpleTest whose config names no `pattern_mode` runs a native program: each write round
+// writes one phase of it (a family, its pair's key, the polarity) and its verifies check that
+// phase. The scalar kernel takes each line from the line functions (`with_phase_line!`), the SIMD
+// ones from their vector forms at the variant's width (`with_phase_vectors!`, so the 128-bit
+// variant stays 128-bit); tests check every width writes the same image. Per chunk the phase is
+// computed once and its family matched once, outside the loops, and the accumulators are checked
+// once, at the chunk's end: `ErrorCheckInterval` isn't read.
+
+/// How a native SimpleTest runs: its program, and SimpleTest's write-and-verify or one side of a
+/// Bench pair.
+#[derive(Clone, Copy)]
+struct NativeRun {
+    program: crate::pattern::Program,
+    action: TestAction,
+    test_reps: u32,
+    verify_reps: u32,
+    /// Every round is round 0 (pair 0's P), whatever the cycle: a Bench pair's image
+    pinned: bool,
+}
+
+impl NativeRun {
+    fn simple(program: crate::pattern::Program, config: &TestMemoryConfig) -> Self {
+        NativeRun { program, action: TestAction::WriteVerify, test_reps: config.test_reps, verify_reps: config.verify_reps, pinned: false }
+    }
+}
+
+/// Writes `$phase` over words `[$start, $end)` of `$ptr`, whose first line is line id `$lid0`;
+/// strided by `$period` words (TM5's walk, `for_each_strided_line!`) when it is `Some`. `scalar`
+/// stores each line as one array; `[u64xN, N]` computes and stores it as vectors of that width.
+macro_rules! native_write {
+    ([scalar], $ptr:expr, $start:expr, $end:expr, $lid0:expr, $period:expr, $phase:expr) => {{
+        let (ptr, start, end, lid0): (*mut u64, usize, usize, u64) = ($ptr, $start, $end, $lid0);
+        crate::pattern::with_phase_line!($phase, |line| {
+            match $period {
+                None => {
+                    let mut lid = lid0;
+                    let mut off = start;
+                    while off < end {
+                        *(ptr.add(off) as *mut [u64; LINE_WORDS]) = line(lid);
+                        lid += 1;
+                        off += LINE_WORDS;
+                    }
+                }
+                Some(period) => {
+                    for_each_strided_line!(ptr, start, end, period, |offset| {
+                        *(ptr.add(offset) as *mut [u64; LINE_WORDS]) = line(lid0 + ((offset - start) / LINE_WORDS) as u64);
+                    });
+                }
+            }
+        })
+    }};
+    ([$simd:ty, $w:tt], $ptr:expr, $start:expr, $end:expr, $lid0:expr, $period:expr, $phase:expr) => {{
+        let (ptr, start, end, lid0): (*mut u64, usize, usize, u64) = ($ptr, $start, $end, $lid0);
+        crate::pattern::with_phase_vectors!($w, $phase, |line| {
+            match $period {
+                None => {
+                    let mut lid = lid0;
+                    let mut off = start;
+                    while off < end {
+                        for (v, x) in line(lid).into_iter().enumerate() {
+                            *(ptr.add(off + v * $w) as *mut $simd) = x;
+                        }
+                        lid += 1;
+                        off += LINE_WORDS;
+                    }
+                }
+                Some(period) => {
+                    for_each_strided_line!(ptr, start, end, period, |offset| {
+                        for (v, x) in line(lid0 + ((offset - start) / LINE_WORDS) as u64).into_iter().enumerate() {
+                            *(ptr.add(offset + v * $w) as *mut $simd) = x;
+                        }
+                    });
+                }
+            }
+        })
+    }};
+}
+
+/// The differences of words `[$start, $end)` from `$phase` (see `native_write`), ORed: 0 when
+/// every word holds. Each word's difference goes into 4 accumulators, one branch at the end. The sequential walk takes 4 vectors
+/// a step (a group of lines), so the 4 accumulators are independent chains at every width.
+macro_rules! native_differs {
+    ([scalar], $ptr:expr, $start:expr, $end:expr, $lid0:expr, $period:expr, $phase:expr) => {{
+        let (ptr, start, end, lid0): (*const u64, usize, usize, u64) = ($ptr, $start, $end, $lid0);
+        let mut acc = [0u64; 4];
+        crate::pattern::with_phase_line!($phase, |line| {
+            match $period {
+                None => {
+                    let mut lid = lid0;
+                    let mut off = start;
+                    while off < end {
+                        accumulate_line(&mut acc, ptr.add(off), &line(lid));
+                        lid += 1;
+                        off += LINE_WORDS;
+                    }
+                }
+                Some(period) => {
+                    for_each_strided_line!(ptr, start, end, period, |offset| {
+                        accumulate_line(&mut acc, ptr.add(offset), &line(lid0 + ((offset - start) / LINE_WORDS) as u64));
+                    });
+                }
+            }
+        });
+        (acc[0] | acc[1]) | (acc[2] | acc[3])
+    }};
+    ([$simd:ty, $w:tt], $ptr:expr, $start:expr, $end:expr, $lid0:expr, $period:expr, $phase:expr) => {{
+        // Vectors a line, and lines a group of 4 vectors
+        const VPL: usize = LINE_WORDS / $w;
+        const LPG: usize = if VPL >= 4 { 1 } else { 4 / VPL };
+        let (ptr, start, end, lid0): (*const u64, usize, usize, u64) = ($ptr, $start, $end, $lid0);
+        let zero = <$simd>::splat(0);
+        let mut acc = [zero; 4];
+        crate::pattern::with_phase_vectors!($w, $phase, |line| {
+            match $period {
+                None => {
+                    let mut lid = lid0;
+                    let mut off = start;
+                    while off + LPG * LINE_WORDS <= end {
+                        for l in 0..LPG {
+                            let words = line(lid + l as u64);
+                            for v in 0..VPL {
+                                let actual = *(ptr.add(off + l * LINE_WORDS + v * $w) as *const $simd);
+                                acc[(l * VPL + v) % 4] |= actual ^ words[v];
+                            }
+                        }
+                        lid += LPG as u64;
+                        off += LPG * LINE_WORDS;
+                    }
+                    while off < end {
+                        let words = line(lid);
+                        for v in 0..VPL {
+                            acc[v % 4] |= *(ptr.add(off + v * $w) as *const $simd) ^ words[v];
+                        }
+                        lid += 1;
+                        off += LINE_WORDS;
+                    }
+                }
+                Some(period) => {
+                    for_each_strided_line!(ptr, start, end, period, |offset| {
+                        let words = line(lid0 + ((offset - start) / LINE_WORDS) as u64);
+                        for v in 0..VPL {
+                            acc[v % 4] |= *(ptr.add(offset + v * $w) as *const $simd) ^ words[v];
+                        }
+                    });
+                }
+            }
+        });
+        ((acc[0] | acc[1]) | (acc[2] | acc[3])).reduce_or()
+    }};
+}
+
+/// The cold path of a native verify: rescan the chunk against its phase (TODO 27).
+#[cold]
+#[inline(never)]
+unsafe fn native_rescan(ctx: &ChunkCtx, lid0: u64, phase: crate::pattern::Phase, test_name: &str, seen: u64) -> u64 {
+    let (ptr, start, end) = (ctx.ptr as *const u64, ctx.chunk_start, ctx.chunk_end);
+    let label = format!("{}, key {:#018x}, round {}", phase.label(), phase.key, ctx.round);
+    if !crate::pattern::rescan_enabled() {
+        return unlocalised(found_by(test_name), format_args!("in idx {start}..{end} ({label})"), seen);
+    }
+    let mut scan = Rescan::for_test(ptr, test_name).seen(seen);
+    let mut off = start;
+    while off < end {
+        scan.line(off, &phase.line(lid0 + ((off - start) / LINE_WORDS) as u64));
+        off += LINE_WORDS;
+    }
+    scan.finish(format_args!("in idx {start}..{end} ({label})"))
+}
+
+/// A native SimpleTest at one width: `[scalar]` or `[u64xN, N]`.
+macro_rules! native_simple_impl {
+    ($fn_name:ident, $test_name:literal, [$($kind:tt)*], $tf:literal) => {
+        /// A native SimpleTest (pattern spec v2) at this width; see the section comment.
+        #[target_feature(enable = $tf)]
+        unsafe fn $fn_name(
+            blocks: &[crate::runner::AllocationBlock],
+            thread_id: usize,
+            error_mode: ErrorMode,
+            timing: &TestTiming,
+            config: &TestMemoryConfig,
+            progress: Option<&TestProgress>,
+            run: NativeRun,
+        ) -> TestStats {
+            let test_name = $test_name;
+            let program = run.program;
+            let (epoch, wrc) = (config.epoch, config.write_read_cycles);
+            let beat = crate::pattern::transfer_beat().0;
+            // Line ids count from the thread's span: the extent starts there (TODO 76)
+            let lid_base = crate::pattern::line_base(thread_id);
+            let stride = config.parameter_context.as_ref().and_then(|c| c.stride_elements).unwrap_or(0);
+            let period = (stride > 0).then(|| strided_period(stride));
+            let pinned = run.pinned;
+            // A step that verifies its fill writes one image a suite cycle, so its pairs span two;
+            // a Bench pair is pinned to pair 0's P, its Init's and its Verify's alike
+            let schedule = match (pinned, run.test_reps) {
+                (false, 0) => crate::pattern::Schedule::OncePerRun,
+                _ => crate::pattern::Schedule::Rounds,
+            };
+            let phase_of = move |ctx: &ChunkCtx| program.phase(&epoch, wrc, if pinned { 0 } else { ctx.round }, schedule, beat);
+            let write = |ctx: &ChunkCtx| {
+                let lid0 = lid_base + (ctx.chunk_start / LINE_WORDS) as u64;
+                native_write!([$($kind)*], ctx.ptr, ctx.chunk_start, ctx.chunk_end, lid0, period, phase_of(ctx));
+            };
+            run_phased_test(
+                blocks, thread_id, error_mode, timing, config, progress,
+                test_name, run.action, 1, config.skip_init, run.test_reps, run.verify_reps,
+                write, write,
+                |ctx: &ChunkCtx| -> u64 {
+                    let lid0 = lid_base + (ctx.chunk_start / LINE_WORDS) as u64;
+                    let phase = phase_of(ctx);
+                    let seen = native_differs!([$($kind)*], ctx.ptr, ctx.chunk_start, ctx.chunk_end, lid0, period, phase);
+                    if seen != 0 {
+                        native_rescan(ctx, lid0, phase, test_name, seen)
+                    } else {
+                        0
+                    }
+                },
+            )
+        }
+    };
+}
+
+native_simple_impl!(simple_native_scalar, "Mem-SimpleV2", [scalar], "avx2,avx,fma,bmi1,bmi2");
+native_simple_impl!(simple_native_128, "Mem-SimpleV2-128", [u64x2, 2], "sse4.2,sse4.1,ssse3,sse3,sse2,popcnt");
+native_simple_impl!(simple_native_256, "Mem-SimpleV2-256", [u64x4, 4], "avx2,avx,fma,bmi1,bmi2");
+native_simple_impl!(simple_native_512, "Mem-SimpleV2-512", [u64x8, 8], "avx512f,avx512bw,avx512cd,avx512dq,avx512vl,avx2,avx,fma,bmi1,bmi2");
+
+/// A native SimpleTest at the widest width this CPU has.
+///
+/// # Safety
+/// As every test function: `blocks` hold valid, aligned, writable memory.
+unsafe fn simple_native_widest(
+    blocks: &[crate::runner::AllocationBlock],
+    thread_id: usize,
+    error_mode: ErrorMode,
+    timing: &TestTiming,
+    config: &TestMemoryConfig,
+    progress: Option<&TestProgress>,
+    run: NativeRun,
+) -> TestStats {
+    if is_x86_feature_detected!("avx512f") {
+        return simple_native_512(blocks, thread_id, error_mode, timing, config, progress, run);
+    }
+    if is_x86_feature_detected!("avx2") {
+        return simple_native_256(blocks, thread_id, error_mode, timing, config, progress, run);
+    }
+    simple_native_128(blocks, thread_id, error_mode, timing, config, progress, run)
+}
+
+/// Bench-Init-<family> and Bench-Verify-<family>: one native family's write or verify alone, at the
+/// widest width, every cycle on its own (`write_read_cycles` 1). Both are pinned to pair 0's P
+/// image under a zero epoch, so the Init writes what the Verify expects; the Verify checks its own
+/// fill and doesn't count it in its time or bytes (TODO 90).
+macro_rules! native_bench {
+    ($init:ident, $verify:ident, $family:expr) => {
+        #[doc = include_str!("test_fn_safety.md")]
+        pub unsafe fn $init(
+            blocks: &[crate::runner::AllocationBlock],
+            thread_id: usize,
+            error_mode: ErrorMode,
+            timing: &TestTiming,
+            config: &TestMemoryConfig,
+            progress: Option<&TestProgress>,
+        ) -> TestStats {
+            let mut config = config.clone();
+            (config.epoch, config.write_read_cycles) = (crate::pattern::StepEpoch::default(), 1);
+            let run = NativeRun { program: crate::pattern::Program::single($family), action: TestAction::Write, test_reps: 1, verify_reps: 0, pinned: true };
+            simple_native_widest(blocks, thread_id, error_mode, timing, &config, progress, run)
+        }
+
+        #[doc = include_str!("test_fn_safety.md")]
+        pub unsafe fn $verify(
+            blocks: &[crate::runner::AllocationBlock],
+            thread_id: usize,
+            error_mode: ErrorMode,
+            timing: &TestTiming,
+            config: &TestMemoryConfig,
+            progress: Option<&TestProgress>,
+        ) -> TestStats {
+            let mut config = config.clone();
+            (config.epoch, config.write_read_cycles, config.untimed_init) = (crate::pattern::StepEpoch::default(), 1, true);
+            let run = NativeRun { program: crate::pattern::Program::single($family), action: TestAction::Verify, test_reps: 0, verify_reps: 1, pinned: true };
+            simple_native_widest(blocks, thread_id, error_mode, timing, &config, progress, run)
+        }
+    };
+}
+
+native_bench!(bench_init_ident, bench_verify_ident, crate::pattern::Family::Ident);
+native_bench!(bench_init_random, bench_verify_random, crate::pattern::Family::Random);
+native_bench!(bench_init_switch, bench_verify_switch, crate::pattern::Family::Switch);
+native_bench!(bench_init_lines, bench_verify_lines, crate::pattern::Family::Lines);
+native_bench!(bench_init_linepair, bench_verify_linepair, crate::pattern::Family::Linepair);
+
+/// The native Bench pairs' names and functions: `Bench-Init-Ident`, `Bench-Verify-Ident`, ...
+pub(crate) fn native_bench_tests() -> [(&'static str, &'static str, crate::runner::TestFunctionMultiBlock, crate::runner::TestFunctionMultiBlock); 5] {
+    [
+        ("Bench-Init-Ident", "Bench-Verify-Ident", bench_init_ident, bench_verify_ident),
+        ("Bench-Init-Random", "Bench-Verify-Random", bench_init_random, bench_verify_random),
+        ("Bench-Init-Switch", "Bench-Verify-Switch", bench_init_switch, bench_verify_switch),
+        ("Bench-Init-Lines", "Bench-Verify-Lines", bench_init_lines, bench_verify_lines),
+        ("Bench-Init-Linepair", "Bench-Verify-Linepair", bench_init_linepair, bench_verify_linepair),
+    ]
+}
 // =============================================================================
 // SimpleTestNT — Non-Temporal SIMD Bandwidth Tests
 // =============================================================================
@@ -4122,7 +4724,7 @@ macro_rules! simple_test_nt_impl {
                 // Verify: regular loads with XOR+OR accumulator
                 |ctx: &ChunkCtx| -> u64 {
                     simple_verify_positional_simd!($simd_type, $simd_w, ctx,
-                        base_vec, lane_offsets, zero)
+                        base, base_vec, lane_offsets, zero, test_name)
                 },
             )
         }
@@ -4200,8 +4802,9 @@ pub unsafe fn seal_check_multi(
         |ctx: &ChunkCtx| seal.kernel.fill(ctx.ptr, ctx.chunk_start, ctx.chunk_end),
         |_ctx: &ChunkCtx| {},
         |ctx: &ChunkCtx| -> u64 {
-            let errors = seal.kernel.check(ctx.ptr, ctx.chunk_start, ctx.chunk_end, "seal check at");
-            if errors > 0 {
+            let errors = seal.kernel.verify(ctx.ptr, ctx.chunk_start, ctx.chunk_end, "seal check at");
+            // The refill, unless the error halts the run: then the bad words stay in memory
+            if errors > 0 && !matches!(error_mode, ErrorMode::Halt) {
                 seal.kernel.fill(ctx.ptr, ctx.chunk_start, ctx.chunk_end);
             }
             errors
@@ -4216,7 +4819,7 @@ fn bench_seal_kernel(pattern: crate::seal::SealPattern, width: crate::seal::Seal
         log::warn!("{test_name}: {e}; measuring the widest width this CPU has");
         crate::seal::SealKernel::detect().width
     });
-    crate::seal::SealKernel { pattern, width }
+    crate::seal::SealKernel::new(pattern, width)
 }
 
 /// Bench-Init-Seal-*: the seal's fill alone (TODO 74), one non-temporal write pass per chunk per
@@ -4254,12 +4857,14 @@ unsafe fn bench_verify_seal(
     test_name: &'static str,
     kernel: crate::seal::SealKernel,
 ) -> TestStats {
+    // The fill is setup: the checks alone are timed and counted (TODO 90)
+    let config = &TestMemoryConfig { untimed_init: true, ..config.clone() };
     run_phased_test(
         blocks, thread_id, error_mode, timing, config, progress,
         test_name, TestAction::Verify, 1, config.skip_init, 0, 1,
         |ctx: &ChunkCtx| kernel.fill(ctx.ptr, ctx.chunk_start, ctx.chunk_end),
         |_ctx: &ChunkCtx| {},
-        |ctx: &ChunkCtx| -> u64 { kernel.check(ctx.ptr, ctx.chunk_start, ctx.chunk_end, "seal check of") },
+        |ctx: &ChunkCtx| -> u64 { kernel.verify(ctx.ptr, ctx.chunk_start, ctx.chunk_end, "seal check of") },
     )
 }
 
@@ -4506,6 +5111,8 @@ pub unsafe fn bench_verify_multi(
     config: &TestMemoryConfig,
     progress: Option<&TestProgress>,
 ) -> TestStats {
+    // The fill is setup: the verifies alone are timed and counted (TODO 90)
+    let config = &TestMemoryConfig { untimed_init: true, ..config.clone() };
     let mode = config.pattern_mode.unwrap_or(10);
     let param0 = config.pattern_param0.unwrap_or(0xDEADBEEFDEADBEEF);
     let param1 = config.pattern_param1.unwrap_or(0xCAFEBABECAFEBABE);
@@ -4658,13 +5265,22 @@ pub unsafe fn bench_verify_multi(
 // Test Registry - Maps config test names to actual function implementations
 // ============================================================================
 
-/// Whether the test runs through `run_phased_test`, so `write_read_cycles`, `test_reps` and
-/// `verify_reps` shape its loop. Tier 2, bandwidth and latency tests ignore all three
-/// (`doc/test_harness_tiers.md`). A new Tier 1 test family adds its prefix here.
-pub fn reads_rep_knobs(actual_name: &str) -> bool {
-    ["Mem-SimpleV2", "Mem-SimpleNT", "Mem-MirrorV2", "Bench-Init-", "Bench-Verify-"]
-        .iter()
-        .any(|prefix| actual_name.starts_with(prefix))
+/// The per-chunk loop a test that runs through `run_phased_test` actually runs, as
+/// (`write_read_cycles`, `test_reps`, `verify_reps`): the config's where the test reads them, its
+/// own where it fixes them. `None` for Tier 2, bandwidth and latency tests, which ignore all three
+/// (`doc/test_harness_tiers.md`). A new Tier 1 test family adds itself here.
+pub fn effective_reps(actual_name: &str, config: &TestMemoryConfig) -> Option<(u32, u32, u32)> {
+    let wrc = config.write_read_cycles;
+    let native_bench = |name: &str| native_bench_tests().iter().any(|(i, v, _, _)| *i == name || *v == name);
+    match actual_name {
+        n if n.starts_with("Mem-SimpleV2") || n.starts_with("Mem-MirrorV2") => Some((wrc, config.test_reps, config.verify_reps)),
+        n if n.starts_with("Mem-SimpleNT") => Some((wrc, 1, 1)),
+        "Seal-Check" => Some((wrc, 0, 1)),
+        n if native_bench(n) => Some((1, u32::from(n.starts_with("Bench-Init-")), u32::from(n.starts_with("Bench-Verify-")))),
+        n if n.starts_with("Bench-Init-") => Some((wrc, 1, 0)),
+        n if n.starts_with("Bench-Verify-") => Some((wrc, 0, 1)),
+        _ => None,
+    }
 }
 
 /// Map test name (from config or CLI) to its function implementation.
@@ -4781,15 +5397,21 @@ pub fn get_test_function_by_name(name: &str) -> Option<crate::runner::TestFuncti
         // Bench-Init: Pattern generation throughput benchmarks
         "Bench-Init-TM5-0" | "Bench-Init-TM5-1" | "Bench-Init-TM5-2"
         | "Bench-Init-TMR-0" | "Bench-Init-TMR-1" | "Bench-Init-TMR-2"
-        | "Bench-Init-TMR-3"
+        | "Bench-Init-TMR-3" | "Bench-Init-TMR-4"
             => Some(TestFunction::MultiBlock(bench_init_multi)),
 
         // Bench-Verify: Pattern verification throughput benchmarks
         // Can run independently (writes patterns first) or dependently (skip_init in config)
         "Bench-Verify-TM5-0" | "Bench-Verify-TM5-1" | "Bench-Verify-TM5-2"
         | "Bench-Verify-TMR-0" | "Bench-Verify-TMR-1" | "Bench-Verify-TMR-2"
-        | "Bench-Verify-TMR-3"
+        | "Bench-Verify-TMR-3" | "Bench-Verify-TMR-4"
             => Some(TestFunction::MultiBlock(bench_verify_multi)),
+
+        // The native families' write and verify alone (pattern spec v2)
+        s if native_bench_tests().iter().any(|(init, verify, _, _)| s == *init || s == *verify)
+            => native_bench_tests().into_iter().find_map(|(init, verify, fi, fv)| {
+                if s == init { Some(TestFunction::MultiBlock(fi)) } else if s == verify { Some(TestFunction::MultiBlock(fv)) } else { None }
+            }),
 
         // TM5's test 0 as a step: the seal check (TODO 74)
         "Seal-Check" => Some(TestFunction::MultiBlock(seal_check_multi)),
@@ -4804,7 +5426,7 @@ pub fn get_test_function_by_name(name: &str) -> Option<crate::runner::TestFuncti
 
 #[cfg(test)]
 mod random_replay_tests {
-    use super::{accumulate_stride_4, prefetch_line, random_replay, rescan_stride, rescan_words, strided_ahead, strided_lookahead, strided_period,
+    use super::{accumulate_stride_4, prefetch_line, random_replay, Rescan, rescan_words, strided_ahead, strided_lookahead, strided_period,
                 strided_wrap, verify_words, Mode12, Mode2, STRIDED_AHEAD};
     use crate::pattern_gen::{LINE_WORDS, PAGE_WORDS};
 
@@ -4854,6 +5476,19 @@ mod random_replay_tests {
         }
     }
 
+    /// A failed check's record keeps the bits the check saw that the rescan didn't see again (Astra's
+    /// review: a partly vanished failure lost its bit-47 evidence).
+    #[test]
+    fn the_alarm_record_keeps_what_the_rescan_lost() {
+        let partly = super::alarm_record(1, 0x0000_8000_0000_0001, 0x1);
+        assert!(partly.contains("1 bad words on rescan") && partly.contains("0x0000800000000001")
+                && partly.contains("didn't see bits 0x0000800000000000 again"), "{partly}");
+        let all = super::alarm_record(2, 0x3, 0x3);
+        assert!(!all.contains("didn't see"), "{all}");
+        let none = super::alarm_record(0, 0x80, 0);
+        assert!(none.contains("not reproduced") && none.contains("0x0000000000000080"), "{none}");
+    }
+
     /// TODO 89: the strided accumulate sees a bad word wherever its walk passes, at any stride
     /// and remainder; the rescans count each bad word exactly, the strided one only on its walk.
     #[test]
@@ -4879,12 +5514,15 @@ mod random_replay_tests {
             for stride in [1, 3, 7, 64, 999, 1000, 4096] {
                 assert!(!clean(stride), "stride {stride} missed a bad word");
             }
-            assert_eq!(rescan_words(p, 0, len, "test", expected), 3);
+            assert_eq!(rescan_words(p, 0, len, "test", 1, expected), 3);
             assert_eq!(verify_words(p, 0, len, "test", expected), 3);
             // A stride-3 walk from 1 visits 997 (= 1 + 3 x 332) and 500 is off it (500 % 3 = 2)
-            assert_eq!(rescan_stride(p, 1, len, 3, "test", expected), 1);
-            assert_eq!(rescan_stride(p, 2, len, 3, "test", expected), 1);
-            assert_eq!(rescan_stride(p, 0, len, 3, "test", expected), 1);
+            let strided = |from: usize| {
+                let mut scan = Rescan::for_test(p, "test");
+                scan.stride(from, len, 3, expected);
+                scan.found
+            };
+            assert_eq!([strided(1), strided(2), strided(0)], [1, 1, 1]);
         }
     }
 
@@ -4947,13 +5585,13 @@ mod random_replay_tests {
             expected += u64::from(mem[idx] != idx as u64);
         }
         assert!(expected > 0);
-        let counted = unsafe { random_replay(mem.as_mut_ptr(), len, start, 0..20_000, 0, "test") };
+        let counted = unsafe { random_replay(mem.as_mut_ptr(), len, start, 0..20_000, 0, "test", 1) };
         assert_eq!(counted, expected);
 
         // A fault gone by the reread still counts once
         mem[123] ^= 1;
         mem[999] ^= 1 << 40;
-        assert_eq!(unsafe { random_replay(mem.as_mut_ptr(), len, start, 0..20_000, 0, "test") }, 1);
+        assert_eq!(unsafe { random_replay(mem.as_mut_ptr(), len, start, 0..20_000, 0, "test", 1) }, 1);
     }
 }
 

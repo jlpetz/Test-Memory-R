@@ -33,6 +33,8 @@ mod latency_tests_v2; // v2 latency tests: Layout A/B reads + NT write saturatio
 mod bandwidth_tests; // Bandwidth measurement tests
 mod calibration; // Adaptive cache calibration
 mod pattern_gen; // v2 pattern generation (LCG, Mode 0/1/2)
+mod pattern; // native patterns (spec v2): families, programs, keys
+mod pattern_switch24; // the native switch's 24-bit lines as SIMD byte shuffles
 mod test_harness; // v2 zero-cost test orchestration harness
 mod test_scaffolding; // shared zero-cost bookkeeping for loop-owning v1 tests (TODO #19 Part A)
 mod test_memory; // where a test's extent lies in a thread's blocks (TODO 76)

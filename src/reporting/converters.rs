@@ -148,10 +148,9 @@ pub fn create_test_configuration_report_v2(
             (None, None) => "default".to_string(),  // Match old behavior
         };
 
-        let per_chunk = if crate::tests::reads_rep_knobs(test_def.actual_name) {
-            format!("{}×({}+{})", config.write_read_cycles, config.test_reps, config.verify_reps)
-        } else {
-            "-".to_string()
+        let per_chunk = match crate::tests::effective_reps(test_def.actual_name, config) {
+            Some((wrc, test_reps, verify_reps)) => format!("{wrc}×({test_reps}+{verify_reps})"),
+            None => "-".to_string(),
         };
 
         // Use the new formatter with calculated sizes for CacheLevel targets
@@ -566,7 +565,7 @@ fn calculate_allocation_fairness(threads: &[ThreadBlockAllocation]) -> Allocatio
 /// `whea` is the count attributed to *this test* (the delta across it), not the run total — it is
 /// what lets the aggregate row fail when the per-thread rows are all clean.
 pub fn create_thread_timing_report(
-    stats: &[(usize, usize, u64, u128, u64, u64, u32)],  // (thread_id, cpu_id, bytes, elapsed_ms, errors, operations, cycles_completed)
+    stats: &[(usize, usize, u64, std::time::Duration, u64, u64, u32)],  // (thread_id, cpu_id, bytes, time, errors, operations, cycles_completed)
     whea: crate::whea::WheaCounts,
 ) -> super::models::ThreadTimingReport {
     use super::models::{ThreadTimingReport, ThreadTiming};
@@ -580,20 +579,20 @@ pub fn create_thread_timing_report(
     }
 
     // Calculate averages
-    let total_elapsed: u128 = stats.iter().map(|(_, _, _, elapsed, _, _, _)| *elapsed).sum();
-    let avg_elapsed = total_elapsed / stats.len() as u128;
+    let total_elapsed: std::time::Duration = stats.iter().map(|(_, _, _, elapsed, _, _, _)| *elapsed).sum();
+    let avg_elapsed = (total_elapsed / stats.len() as u32).as_millis();
 
     let total_bytes: u64 = stats.iter().map(|(_, _, bytes, _, _, _, _)| *bytes).sum();
     let avg_bytes = total_bytes / stats.len() as u64;
 
     // Build thread timing entries with deviations
     let mut thread_timings: Vec<ThreadTiming> = stats.iter().map(|&(thread_id, cpu_id, bytes, elapsed, errors, _operations, cycles_completed)| {
-        let deviation_ms = elapsed as i128 - avg_elapsed as i128;
+        let deviation_ms = elapsed.as_millis() as i128 - avg_elapsed as i128;
         let deviation_data_bytes = bytes as i64 - avg_bytes as i64;
 
         // Calculate throughput
-        let throughput_mib_s = if elapsed > 0 {
-            (bytes as f64 / (1024.0 * 1024.0)) / (elapsed as f64 / 1000.0)
+        let throughput_mib_s = if !elapsed.is_zero() {
+            (bytes as f64 / (1024.0 * 1024.0)) / elapsed.as_secs_f64()
         } else {
             0.0
         };
@@ -608,7 +607,7 @@ pub fn create_thread_timing_report(
             cpu_id,
             physical_core_id,
             numa_node,
-            runtime_ms: elapsed,
+            runtime_ms: elapsed.as_millis(),
             deviation_ms,
             data_bytes: bytes,
             deviation_data_bytes,
@@ -694,7 +693,8 @@ pub fn create_overall_stats_summary_report(
         };
         let entry = &mut per_test_summaries[at];
         let (old, new) = (entry.runs as f64, avg.runs as f64);
-        let mean = |a: f64, b: f64| (a * old + b * new) / (old + new);
+        // A step a halt stopped before it ran adds its seal errors and no figures
+        let mean = |a: f64, b: f64| if old + new > 0.0 { (a * old + b * new) / (old + new) } else { 0.0 };
         entry.average_duration_secs = mean(entry.average_duration_secs, avg.avg_duration_ms as f64 / 1000.0);
         entry.average_data_gib = mean(entry.average_data_gib, avg.avg_bytes_processed as f64 / (1024.0 * 1024.0 * 1024.0));
         entry.average_throughput_mib_s = mean(entry.average_throughput_mib_s, avg.avg_throughput_mib_s);

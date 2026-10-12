@@ -90,6 +90,10 @@ pub struct TestSummary {
     pub bytes_processed: u64,
     pub throughput_mib_s: f64,
     pub errors: u64,
+    /// The test's failed checks, and of those the ones its rescans didn't reproduce (TODO 27):
+    /// `errors` counts the bad words the rescans found, plus one for each not reproduced.
+    pub alarms: u64,
+    pub not_reproduced: u64,
     // Hardware errors WHEA reported to the OS while this test was running (all severities), and
     // the subset the OS reported as corrected. Tracked apart from `errors` because they are not
     // thread-detected: see whea.rs.
@@ -213,9 +217,14 @@ impl ProgressTracker {
 
     /// Errors a final seal check found (TODO 74): counted for the run, no test finished.
     pub fn add_seal_errors(&self, errors: u64) {
+        self.add_errors("Final seal check", errors);
+    }
+
+    /// Errors found outside a finished test, under `label`: counted for the run, no test finished.
+    pub fn add_errors(&self, label: &str, errors: u64) {
         let mut position = self.position();
         position.errors += errors;
-        *position.errors_by_test.entry("Final seal check".to_string()).or_insert(0) += errors;
+        *position.errors_by_test.entry(label.to_string()).or_insert(0) += errors;
     }
 
     /// Tests finished in the current cycle (reset at each cycle's start).

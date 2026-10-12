@@ -13,22 +13,30 @@
 //! steps never take it: the worker checks what they will overwrite before they run and reseals it
 //! before the next sealed step. The cycle ends with a final check of all memory.
 //!
-//! **The patterns.** Both depend only on the word's address, so any chunk layout works, and in
-//! both each 8 B word is followed by its inverse. On a 64-bit bus that flips every data line on
-//! every other transfer. On DDR5's 32-bit beats it flips about half, as random data does:
-//! - `tmr` (the default): each 16 B holds `[v, !v]`, where `v` is a 64-bit bijective hash of the
-//!   16 B unit's address, so no two units anywhere hold the same value and a write that lands at
-//!   the wrong address always shows.
-//! - `tm5`: TM5's `RS_GeneratePattern`, bit for bit (64-bit bus): per 4 KiB page a 16-bit word
-//!   from the page number, written as a 48 B motif `[q0, !q0, q1, !q1, q2, !q2]` repeated across
-//!   the page. Different pages can share it (page 1 and page 65,536 do), and inside a page it
-//!   repeats every 48 B.
+//! **The patterns.** Both depend only on the word's address and the cycle, so any chunk layout
+//! works, and in both each 8 B word is followed by its inverse. On a 64-bit bus that flips every
+//! data line on every other transfer. On DDR5's 32-bit beats it flips about half, as random data
+//! does:
+//! - `tmr` (the default): each 16 B holds `[v, !v]`, where `v` is a 63-bit bijective hash of the
+//!   16 B unit's address and the cycle's key, so `v` has its top bit clear and `!v` set: no two
+//!   words anywhere hold the same value, and a write that lands at the wrong address always shows.
+//! - `tm5`: TM5's `RS_GeneratePattern`, bit for bit in odd cycles (64-bit bus): per 4 KiB page a
+//!   16-bit word from the page number, written as a 48 B motif `[q0, !q0, q1, !q1, q2, !q2]`
+//!   repeated across the page. Different pages can share it (page 1 and page 65,536 do), and inside
+//!   a page it repeats every 48 B.
+//!
+//! **Cycles.** Each cycle seals with its own kernel (`SealKernel::for_cycle`). Cycles go in pairs:
+//! `tmr` takes a key per pair, and the pair's second cycle inverts every word (`tm5` too). So every
+//! sealed bit holds 1 for one cycle's dwell and 0 for the other's, and memory still holding the
+//! last cycle's seal fails this cycle's check: inverted within a pair, another key across pairs.
+//! One kernel serves a whole cycle, from the seal at its start to the final check at its end, so
+//! each check expects what the step before it sealed.
 //!
 //! **The kernels.** Fill (non-temporal stores, so the seal lands in DRAM rather than waiting in
 //! cache) and check (XOR/OR into accumulators; a hit rescans to count and log each bad word),
 //! stamped per width (128/256/512) with `macro_rules!`. One call per chunk, never per word.
 
-use std::simd::cmp::SimdPartialEq;
+use std::simd::num::SimdUint;
 use std::simd::{u64x2, u64x4, u64x8};
 
 /// Which seal pattern a run writes.
@@ -96,18 +104,46 @@ impl SealPattern {
     }
 }
 
-/// A seal pattern at a resolved width: what one fill or check call runs.
+/// A seal pattern at a resolved width, for one cycle: what one fill or check call runs.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct SealKernel {
     pub pattern: SealPattern,
     /// Never `Auto`: resolved when the run starts.
     pub width: SealWidth,
+    /// The cycle's `tmr` key (`tm5` has none), added to each unit's hash.
+    pub key: u64,
+    /// The cycle's polarity: every word inverted.
+    pub invert: bool,
 }
 
 impl SealKernel {
-    /// The default kernel on this CPU: `tmr` at the widest width.
+    /// The default kernel on this CPU: `tmr` at the widest width, key 0, not inverted.
     pub fn detect() -> Self {
-        SealKernel { pattern: SealPattern::Tmr, width: SealWidth::Auto.resolve().unwrap_or(SealWidth::W128) }
+        SealKernel::new(SealPattern::Tmr, SealWidth::Auto.resolve().unwrap_or(SealWidth::W128))
+    }
+
+    /// A pattern at a width, key 0 and not inverted: the kernel outside a run (the Bench pairs,
+    /// plan-time steps).
+    pub fn new(pattern: SealPattern, width: SealWidth) -> Self {
+        SealKernel { pattern, width, key: 0, invert: false }
+    }
+
+    /// This kernel for suite cycle `cycle` (from 1) of a run seeded `seed`: cycles `2n - 1` and
+    /// `2n` share a key, and the even one is inverted, so each bit takes both values over the pair.
+    pub fn for_cycle(self, seed: u64, cycle: u64) -> Self {
+        let pair = cycle.div_ceil(2);
+        let key = crate::pattern::fmix(seed ^ crate::pattern::fmix(pair.wrapping_add(0x5EA1)));
+        SealKernel { key, invert: cycle.is_multiple_of(2), ..self }
+    }
+
+    /// The seal word at byte address `addr` (a multiple of 8).
+    #[inline(always)]
+    pub fn word(self, addr: usize) -> u64 {
+        let w = match self.pattern {
+            SealPattern::Tmr => tmr_word(addr, self.key),
+            SealPattern::Tm5 => tm5_word(addr),
+        };
+        if self.invert { !w } else { w }
     }
 
     pub fn name(self) -> String {
@@ -121,35 +157,56 @@ impl SealKernel {
     /// available (`SealWidth::resolve`).
     pub unsafe fn fill(self, ptr: *mut u64, start: usize, end: usize) {
         debug_assert!((ptr.add(start) as usize).is_multiple_of(64) && (end - start).is_multiple_of(8), "unaligned seal range");
+        let (key, invert) = (self.key, self.invert_mask());
         match (self.pattern, self.width) {
-            (SealPattern::Tmr, SealWidth::W512) => tmr_fill_512(ptr, start, end),
-            (SealPattern::Tmr, SealWidth::W256) => tmr_fill_256(ptr, start, end),
-            (SealPattern::Tmr, _) => tmr_fill_128(ptr, start, end),
-            (SealPattern::Tm5, SealWidth::W512) => tm5_fill_512(ptr, start, end),
-            (SealPattern::Tm5, SealWidth::W256) => tm5_fill_256(ptr, start, end),
-            (SealPattern::Tm5, _) => tm5_fill_128(ptr, start, end),
+            (SealPattern::Tmr, SealWidth::W512) => tmr_fill_512(ptr, start, end, key, invert),
+            (SealPattern::Tmr, SealWidth::W256) => tmr_fill_256(ptr, start, end, key, invert),
+            (SealPattern::Tmr, _) => tmr_fill_128(ptr, start, end, key, invert),
+            (SealPattern::Tm5, SealWidth::W512) => tm5_fill_512(ptr, start, end, invert),
+            (SealPattern::Tm5, SealWidth::W256) => tm5_fill_256(ptr, start, end, invert),
+            (SealPattern::Tm5, _) => tm5_fill_128(ptr, start, end, invert),
         }
     }
 
+    /// The polarity as a mask XORed into every word.
+    fn invert_mask(self) -> u64 {
+        if self.invert { !0 } else { 0 }
+    }
+
     /// Check the words `[start, end)` of `ptr` hold the seal; returns the bad words, the first 10
-    /// logged as found by `what` (e.g. "seal check before") and the thread's error context.
+    /// logged as found by `what` (e.g. "seal check before") and the thread's error context. The
+    /// seal's own check: its errors are seal errors, not in the test's alarms.
     ///
     /// # Safety
     /// As `fill`, for reads.
     pub unsafe fn check(self, ptr: *const u64, start: usize, end: usize, what: &str) -> u64 {
+        self.check_as(ptr, start, end, what, false)
+    }
+
+    /// `check` as a test's own verify (a mirror's, Seal-Check's, Bench-Verify-Seal's): a failed
+    /// check is one of the test's alarms.
+    ///
+    /// # Safety
+    /// As `check`.
+    pub unsafe fn verify(self, ptr: *const u64, start: usize, end: usize, what: &str) -> u64 {
+        self.check_as(ptr, start, end, what, true)
+    }
+
+    unsafe fn check_as(self, ptr: *const u64, start: usize, end: usize, what: &str, count: bool) -> u64 {
         debug_assert!((ptr.add(start) as usize).is_multiple_of(64) && (end - start).is_multiple_of(8), "unaligned seal range");
-        let clean = match (self.pattern, self.width) {
-            (SealPattern::Tmr, SealWidth::W512) => tmr_check_512(ptr, start, end),
-            (SealPattern::Tmr, SealWidth::W256) => tmr_check_256(ptr, start, end),
-            (SealPattern::Tmr, _) => tmr_check_128(ptr, start, end),
-            (SealPattern::Tm5, SealWidth::W512) => tm5_check_512(ptr, start, end),
-            (SealPattern::Tm5, SealWidth::W256) => tm5_check_256(ptr, start, end),
-            (SealPattern::Tm5, _) => tm5_check_128(ptr, start, end),
+        let (key, invert) = (self.key, self.invert_mask());
+        let seen = match (self.pattern, self.width) {
+            (SealPattern::Tmr, SealWidth::W512) => tmr_check_512(ptr, start, end, key, invert),
+            (SealPattern::Tmr, SealWidth::W256) => tmr_check_256(ptr, start, end, key, invert),
+            (SealPattern::Tmr, _) => tmr_check_128(ptr, start, end, key, invert),
+            (SealPattern::Tm5, SealWidth::W512) => tm5_check_512(ptr, start, end, invert),
+            (SealPattern::Tm5, SealWidth::W256) => tm5_check_256(ptr, start, end, invert),
+            (SealPattern::Tm5, _) => tm5_check_128(ptr, start, end, invert),
         };
-        if clean {
+        if seen == 0 {
             return 0;
         }
-        rescan(self.pattern, ptr, start, end, what)
+        rescan(self, ptr, start, end, what, seen, count)
     }
 }
 
@@ -177,7 +234,7 @@ impl SealSettings {
 
     /// The kernel this CPU runs, or why the asked-for width can't run.
     pub fn kernel(&self) -> Result<SealKernel, String> {
-        Ok(SealKernel { pattern: self.pattern, width: self.width.resolve()? })
+        Ok(SealKernel::new(self.pattern, self.width.resolve()?))
     }
 }
 
@@ -205,13 +262,16 @@ impl Default for SealStep {
 
 // ─── The patterns, one word at a time (the reference the kernels must match) ─────────────────────
 
-/// Odd, so `k * SEAL_MUL` is a bijection on u64; `x ^ (x >> 32)` is one too.
+/// Odd, so `k * SEAL_MUL + key` is a bijection mod 2^63; `x ^ (x >> 32)` is one too on 63 bits.
 const SEAL_MUL: u64 = 0x9E37_79B9_7F4A_7C15;
+/// `tmr`'s hash keeps 63 bits, so `v` has its top bit clear and `!v` set and the two never meet.
+const LOW63: u64 = u64::MAX >> 1;
 
-/// The `tmr` seal word at byte address `addr` (a multiple of 8).
+/// The `tmr` seal word at byte address `addr` (a multiple of 8) under `key`, before the cycle's
+/// inversion: `v` for the unit's first 8 B, `!v` for its second.
 #[inline(always)]
-pub fn tmr_word(addr: usize) -> u64 {
-    let x = ((addr >> 4) as u64).wrapping_mul(SEAL_MUL);
+pub fn tmr_word(addr: usize, key: u64) -> u64 {
+    let x = ((addr >> 4) as u64).wrapping_mul(SEAL_MUL).wrapping_add(key) & LOW63;
     let v = x ^ (x >> 32);
     if addr & 8 == 0 { v } else { !v }
 }
@@ -234,30 +294,20 @@ pub fn tm5_word(addr: usize) -> u64 {
 }
 
 /// Counts and logs the words of `[start, end)` that don't hold the seal, once a kernel's
-/// accumulator has seen one. A fault gone by the reread still counts once.
+/// accumulator has seen one (the tests' cold path, `crate::tests::Rescan`). A fault gone by the
+/// rescan still counts once.
 #[cold]
 #[inline(never)]
-unsafe fn rescan(pattern: SealPattern, ptr: *const u64, start: usize, end: usize, what: &str) -> u64 {
-    let word = match pattern {
-        SealPattern::Tmr => tmr_word,
-        SealPattern::Tm5 => tm5_word,
-    };
+unsafe fn rescan(kernel: SealKernel, ptr: *const u64, start: usize, end: usize, what: &str, seen: u64, count: bool) -> u64 {
     let lead = crate::error_context::found_by_the(what);
-    let mut errors = 0u64;
+    if !crate::pattern::rescan_enabled() {
+        return crate::tests::unlocalised_as(lead, format_args!("in idx {start}..{end}"), seen, count);
+    }
+    let mut scan = crate::tests::Rescan::begin(ptr, lead, count).seen(seen);
     for idx in start..end {
-        let (want, actual) = (word(ptr.add(idx) as usize), *ptr.add(idx));
-        if actual != want {
-            errors += 1;
-            if errors <= 10 {
-                log::error!("{lead}, idx {idx}: expected {want:#x}, got {actual:#x}");
-            }
-        }
+        scan.word(idx, kernel.word(ptr.add(idx) as usize));
     }
-    if errors == 0 {
-        log::error!("{lead} in idx {start}..{end} that a reread no longer shows (transient)");
-        errors = 1;
-    }
-    errors
+    scan.finish(format_args!("in idx {start}..{end}"))
 }
 
 // ─── The kernels ─────────────────────────────────────────────────────────────────────────────────
@@ -268,33 +318,33 @@ unsafe fn rescan(pattern: SealPattern, ptr: *const u64, start: usize, end: usize
 macro_rules! tmr_kernels {
     ($fill:ident, $check:ident, $t:ty, $lanes:literal, $arch:ty, $stream:path, $tf:literal) => {
         #[target_feature(enable = $tf)]
-        unsafe fn $fill(ptr: *mut u64, start: usize, end: usize) {
-            let (mut x, step, inv): ($t, u64, $t) = tmr_start::<$lanes>(ptr.add(start) as usize);
-            let (step, thirty_two) = (<$t>::splat(step), <$t>::splat(32));
+        unsafe fn $fill(ptr: *mut u64, start: usize, end: usize, key: u64, invert: u64) {
+            let (mut x, step, inv): ($t, u64, $t) = tmr_start::<$lanes>(ptr.add(start) as usize, key, invert);
+            let (step, thirty_two, low63) = (<$t>::splat(step), <$t>::splat(32), <$t>::splat(LOW63));
             let mut i = start;
             let unrolled = start + (end - start) / (4 * $lanes) * (4 * $lanes);
             while i < unrolled {
                 for u in 0..4 {
                     let v = x ^ (x >> thirty_two) ^ inv;
                     $stream(ptr.add(i + u * $lanes) as *mut $arch, std::mem::transmute::<$t, $arch>(v));
-                    x += step;
+                    x = (x + step) & low63;
                 }
                 i += 4 * $lanes;
             }
             while i < end {
                 let v = x ^ (x >> thirty_two) ^ inv;
                 $stream(ptr.add(i) as *mut $arch, std::mem::transmute::<$t, $arch>(v));
-                x += step;
+                x = (x + step) & low63;
                 i += $lanes;
             }
             std::arch::x86_64::_mm_sfence();
         }
 
-        /// `true` when every word holds the seal.
+        /// The differences from the seal, ORed: 0 when every word holds it.
         #[target_feature(enable = $tf)]
-        unsafe fn $check(ptr: *const u64, start: usize, end: usize) -> bool {
-            let (mut x, step, inv): ($t, u64, $t) = tmr_start::<$lanes>(ptr.add(start) as usize);
-            let (step, thirty_two) = (<$t>::splat(step), <$t>::splat(32));
+        unsafe fn $check(ptr: *const u64, start: usize, end: usize, key: u64, invert: u64) -> u64 {
+            let (mut x, step, inv): ($t, u64, $t) = tmr_start::<$lanes>(ptr.add(start) as usize, key, invert);
+            let (step, thirty_two, low63) = (<$t>::splat(step), <$t>::splat(32), <$t>::splat(LOW63));
             let zero = <$t>::splat(0);
             let mut acc = [zero; 4];
             let mut i = start;
@@ -303,29 +353,30 @@ macro_rules! tmr_kernels {
                 for (u, a) in acc.iter_mut().enumerate() {
                     let v = x ^ (x >> thirty_two) ^ inv;
                     *a |= *(ptr.add(i + u * $lanes) as *const $t) ^ v;
-                    x += step;
+                    x = (x + step) & low63;
                 }
                 i += 4 * $lanes;
             }
             while i < end {
                 let v = x ^ (x >> thirty_two) ^ inv;
                 acc[0] |= *(ptr.add(i) as *const $t) ^ v;
-                x += step;
+                x = (x + step) & low63;
                 i += $lanes;
             }
-            ((acc[0] | acc[1]) | (acc[2] | acc[3])).simd_eq(zero).all()
+            ((acc[0] | acc[1]) | (acc[2] | acc[3])).reduce_or()
         }
     };
 }
 
 /// The first vector's `x` lanes, the per-vector step and the inversion mask for `tmr` at `LANES`
-/// lanes from byte address `addr` (16 B aligned).
+/// lanes from byte address `addr` (16 B aligned), under `key` and the cycle's `invert` mask. `x`
+/// stays below 2^63: the kernels mask each step's sum.
 #[inline(always)]
-fn tmr_start<const LANES: usize>(addr: usize) -> (std::simd::Simd<u64, LANES>, u64, std::simd::Simd<u64, LANES>)
+fn tmr_start<const LANES: usize>(addr: usize, key: u64, invert: u64) -> (std::simd::Simd<u64, LANES>, u64, std::simd::Simd<u64, LANES>)
 {
     let unit = (addr >> 4) as u64;
-    let x = std::simd::Simd::from_array(std::array::from_fn(|j| (unit + j as u64 / 2).wrapping_mul(SEAL_MUL)));
-    let inv = std::simd::Simd::from_array(std::array::from_fn(|j| if j % 2 == 1 { !0 } else { 0 }));
+    let x = std::simd::Simd::from_array(std::array::from_fn(|j| (unit + j as u64 / 2).wrapping_mul(SEAL_MUL).wrapping_add(key) & LOW63));
+    let inv = std::simd::Simd::from_array(std::array::from_fn(|j| if j % 2 == 1 { !invert } else { invert }));
     (x, (LANES as u64 / 2).wrapping_mul(SEAL_MUL), inv)
 }
 
@@ -335,10 +386,10 @@ fn tmr_start<const LANES: usize>(addr: usize) -> (std::simd::Simd<u64, LANES>, u
 macro_rules! tm5_kernels {
     ($fill:ident, $check:ident, $t:ty, $lanes:literal, $arch:ty, $stream:path, $tf:literal) => {
         #[target_feature(enable = $tf)]
-        unsafe fn $fill(ptr: *mut u64, start: usize, end: usize) {
+        unsafe fn $fill(ptr: *mut u64, start: usize, end: usize, invert: u64) {
             let mut i = start;
             while i < end {
-                let (v, page_end): ([$t; 3], usize) = tm5_vectors::<$lanes>(ptr, i, end);
+                let (v, page_end): ([$t; 3], usize) = tm5_vectors::<$lanes>(ptr, i, end, invert);
                 let mut r = 0;
                 while i + 3 * $lanes <= page_end {
                     for (u, x) in v.iter().enumerate() {
@@ -355,14 +406,14 @@ macro_rules! tm5_kernels {
             std::arch::x86_64::_mm_sfence();
         }
 
-        /// `true` when every word holds the seal.
+        /// The differences from the seal, ORed: 0 when every word holds it.
         #[target_feature(enable = $tf)]
-        unsafe fn $check(ptr: *const u64, start: usize, end: usize) -> bool {
+        unsafe fn $check(ptr: *const u64, start: usize, end: usize, invert: u64) -> u64 {
             let zero = <$t>::splat(0);
             let mut acc = [zero; 3];
             let mut i = start;
             while i < end {
-                let (v, page_end): ([$t; 3], usize) = tm5_vectors::<$lanes>(ptr as *mut u64, i, end);
+                let (v, page_end): ([$t; 3], usize) = tm5_vectors::<$lanes>(ptr as *mut u64, i, end, invert);
                 while i + 3 * $lanes <= page_end {
                     for (u, a) in acc.iter_mut().enumerate() {
                         *a |= *(ptr.add(i + u * $lanes) as *const $t) ^ v[u];
@@ -376,22 +427,22 @@ macro_rules! tm5_kernels {
                     i += $lanes;
                 }
             }
-            (acc[0] | acc[1] | acc[2]).simd_eq(zero).all()
+            (acc[0] | acc[1] | acc[2]).reduce_or()
         }
     };
 }
 
 /// The 3 vectors of `tm5` from word `i` of `ptr` to the end of its 4 KiB page (or `end`), and that
-/// end: vector `u`'s lane `j` is the motif word `(m + u * LANES + j) % 6`, where `m` is `i`'s word
-/// in the page.
+/// end: vector `u`'s lane `j` is the motif word `(m + u * LANES + j) % 6` XOR the cycle's `invert`
+/// mask, where `m` is `i`'s word in the page.
 #[inline(always)]
-fn tm5_vectors<const LANES: usize>(ptr: *mut u64, i: usize, end: usize) -> ([std::simd::Simd<u64, LANES>; 3], usize)
+fn tm5_vectors<const LANES: usize>(ptr: *mut u64, i: usize, end: usize, invert: u64) -> ([std::simd::Simd<u64, LANES>; 3], usize)
 {
     let addr = ptr.wrapping_add(i) as usize;
     let motif = tm5_motif(addr & !0xFFF);
     let m = (addr & 0xFFF) >> 3;
     let page_end = (i + (512 - m)).min(end);
-    let vectors = std::array::from_fn(|u| std::simd::Simd::from_array(std::array::from_fn(|j| motif[(m + u * LANES + j) % 6])));
+    let vectors = std::array::from_fn(|u| std::simd::Simd::from_array(std::array::from_fn(|j| motif[(m + u * LANES + j) % 6] ^ invert)));
     (vectors, page_end)
 }
 
@@ -441,7 +492,9 @@ mod tests {
         let mut widths = vec![SealWidth::W128];
         if is_x86_feature_detected!("avx2") { widths.push(SealWidth::W256); }
         if is_x86_feature_detected!("avx512f") { widths.push(SealWidth::W512); }
-        widths.iter().flat_map(|&width| [SealPattern::Tmr, SealPattern::Tm5].map(|pattern| SealKernel { pattern, width })).collect()
+        // Each pattern and width at the plan-time kernel and two cycles' (inverted, and a key)
+        widths.iter().flat_map(|&width| [SealPattern::Tmr, SealPattern::Tm5].map(|pattern| SealKernel::new(pattern, width)))
+            .flat_map(|k| [k, k.for_cycle(7, 2), k.for_cycle(7, 3)]).collect()
     }
 
     #[test]
@@ -455,12 +508,88 @@ mod tests {
 
     #[test]
     fn tmr_words_differ_everywhere_and_alternate() {
-        let mut seen = std::collections::HashSet::new();
-        for unit in 0..100_000usize {
-            let (a, b) = (tmr_word(unit * 16), tmr_word(unit * 16 + 8));
-            assert_eq!(b, !a);
-            assert!(seen.insert(a), "unit {unit} repeats a value");
+        for key in [0, 0x0123_4567_89AB_CDEF, u64::MAX] {
+            let mut seen = std::collections::HashSet::new();
+            for unit in 0..100_000usize {
+                let (a, b) = (tmr_word(unit * 16, key), tmr_word(unit * 16 + 8, key));
+                assert_eq!(b, !a);
+                assert!(seen.insert(a) && seen.insert(b), "unit {unit} repeats a value");
+            }
         }
+        // The audit's pair: one unit's v met another's !v before the hash kept 63 bits
+        assert_ne!(tmr_word(0x6B39_4CE3_7B10, 0), tmr_word(0x6B49_4CE3_7B18, 0));
+    }
+
+
+
+
+    /// Known answers from an independent implementation of `doc/pattern_spec.md`'s seal section
+    /// (Python, from the spec's text alone, 2026-10-11).
+    #[test]
+    fn independent_known_answers() {
+        let keys: &[(u64, u64, u64, bool)] = &[
+            (0x5, 1, 0x6bee77a5232abdd9, false),
+            (0x5, 2, 0x6bee77a5232abdd9, true),
+            (0x5, 3, 0x55ca380d4216c135, false),
+            (0x5, 4, 0x55ca380d4216c135, true)
+        ];
+        for &(seed, cycle, key, invert) in keys {
+            let k = SealKernel::detect().for_cycle(seed, cycle);
+            assert_eq!((k.key, k.invert), (key, invert), "seed {seed} cycle {cycle}");
+        }
+        let words: &[(usize, u64, bool, u64)] = &[
+            (0x0, 0x6bee77a5232abdd9, false, 0x6bee77a548c4ca7c),
+            (0x8, 0x6bee77a5232abdd9, false, 0x9411885ab73b3583),
+            (0x10, 0x6bee77a5232abdd9, false, 0xa25f15ea850c8b0),
+            (0x18, 0x6bee77a5232abdd9, false, 0xf5da0ea157af374f),
+            (0x6b394ce37b10, 0x6bee77a5232abdd9, false, 0x2c49399a0f7032c4),
+            (0x6b494ce37b18, 0x6bee77a5232abdd9, false, 0xd46c4a50f755410e),
+            (0x0, 0x6bee77a5232abdd9, true, 0x9411885ab73b3583),
+            (0x8, 0x6bee77a5232abdd9, true, 0x6bee77a548c4ca7c),
+            (0x10, 0x6bee77a5232abdd9, true, 0xf5da0ea157af374f),
+            (0x18, 0x6bee77a5232abdd9, true, 0xa25f15ea850c8b0),
+            (0x6b394ce37b10, 0x6bee77a5232abdd9, true, 0xd3b6c665f08fcd3b),
+            (0x6b494ce37b18, 0x6bee77a5232abdd9, true, 0x2b93b5af08aabef1)
+        ];
+        for &(addr, key, invert, word) in words {
+            let k = SealKernel { key, invert, ..SealKernel::new(SealPattern::Tmr, SealWidth::W128) };
+            assert_eq!(k.word(addr), word, "addr {addr:#x} key {key:#x} invert {invert}");
+        }
+    }
+
+    /// The seal's own checks are seal errors, never the test's alarms; a test that verifies with
+    /// the seal (a mirror, Seal-Check) counts its failed checks as alarms. With rescan on or off.
+    #[test]
+    fn only_a_tests_own_seal_checks_are_its_alarms() {
+        let mut buf = vec![u64x8::splat(0); 64];
+        let p = buf.as_mut_ptr() as *mut u64;
+        let kernel = SealKernel::detect();
+        unsafe {
+            kernel.fill(p, 0, 512);
+            *p.add(77) ^= 1 << 5;
+            crate::tests::reset_rescan_counts();
+            assert_eq!(kernel.check(p, 0, 512, "test"), 1);
+            assert_eq!(crate::tests::rescan_counts().alarms, 0, "the seal's own check");
+            assert_eq!(kernel.verify(p, 0, 512, "test"), 1);
+            let counts = crate::tests::rescan_counts();
+            assert_eq!((counts.alarms, counts.not_reproduced), (1, 0), "a test's verify");
+        }
+    }
+
+    #[test]
+    fn cycles_change_the_seal() {
+        let k = SealKernel::detect();
+        let (c1, c2, c3) = (k.for_cycle(5, 1), k.for_cycle(5, 2), k.for_cycle(5, 3));
+        assert!(!c1.invert && c2.invert && !c3.invert);
+        for addr in (0..4096).step_by(8) {
+            // A pair of cycles: every bit both ways; the next pair: another key
+            assert_eq!(c1.word(addr), !c2.word(addr));
+            assert_ne!(c1.word(addr), c3.word(addr));
+            assert_ne!(c2.word(addr), c3.word(addr));
+        }
+        let t = SealKernel::new(SealPattern::Tm5, k.width);
+        assert_eq!(t.for_cycle(5, 1).word(0x3000), tm5_word(0x3000));
+        assert_eq!(t.for_cycle(5, 2).word(0x3000), !tm5_word(0x3000));
     }
 
     /// Every kernel writes exactly the reference words over ranges that start and end mid-page,
@@ -472,7 +601,7 @@ mod tests {
         let mut buf = vec![u64x8::splat(0); words / 8 + 2 * 64];
         let p = unsafe { (buf.as_mut_ptr() as *mut u64).add(512) };
         for kernel in kernels() {
-            let word = match kernel.pattern { SealPattern::Tmr => tmr_word, SealPattern::Tm5 => tm5_word };
+            let word = |addr: usize| kernel.word(addr);
             for (start, end) in [(0, words), (8, 512), (256, 1024 + 8), (512, 1024), (1528, words)] {
                 unsafe {
                     std::ptr::write_bytes(p, 0x5A, words);

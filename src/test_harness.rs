@@ -36,6 +36,11 @@ pub struct ChunkCtx {
     /// Error check interval mask from config (None = PER_CHUNK, Some(mask) = check every N elements).
     /// Verify closures should use this for intermediate error batch reporting.
     pub check_mask: Option<u32>,
+    /// The step's write round, from 0 across its own cycles (`(cycle - 1) * write_read_cycles +
+    /// round`), when the test writes first; 0 for the fill and every verify of a test that doesn't,
+    /// so they expect what the fill wrote. The native patterns take their phase from it
+    /// (`crate::pattern::Program::phase`); nothing else reads it.
+    pub round: u64,
 }
 
 /// Run a phased test with monomorphized closures for init, test, and verify phases.
@@ -127,7 +132,7 @@ where
             name: test_name,
             action,
             bytes_processed: 0,
-            elapsed_ms: 0,
+            timed: None,
             thread_id,
             error_count: 0,
             total_operations: 0,
@@ -135,6 +140,8 @@ where
             cycles_planned: timing.cycles,
             stopped_by_time_limit: false,
             seal_errors: 0,
+            alarms: 0,
+            not_reproduced: 0,
         };
     }
 
@@ -152,7 +159,7 @@ where
             name: test_name,
             action,
             bytes_processed: 0,
-            elapsed_ms: 0,
+            timed: None,
             thread_id,
             error_count: 0,
             total_operations: 0,
@@ -160,6 +167,8 @@ where
             cycles_planned: timing.cycles,
             stopped_by_time_limit: false,
             seal_errors: 0,
+            alarms: 0,
+            not_reproduced: 0,
         };
     }
 
@@ -199,13 +208,19 @@ where
             cycle: 0,
             thread_id,
             check_mask,
+            round: 0,
         };
         init_fn(&ctx);
         std::sync::atomic::fence(Ordering::SeqCst);
         runner.set_stage(crate::tests::Stage::Testing);
 
-        // Account for init: one write pass over the extent
-        runner.add_bytes(extent.test_size);
+        if config.untimed_init {
+            // Setup, not the test: a Bench-Verify measures its verifies alone (TODO 90)
+            runner.restart_clock();
+        } else {
+            // Account for init: one write pass over the extent
+            runner.add_bytes(extent.test_size);
+        }
     }
 
     // Per write_read_cycle: bytes_per_test_op × test_reps writes + verify_reps reads
@@ -220,23 +235,31 @@ where
         for k in 0..chunks.count() {
             let chunk_start = chunks.start(k) / std::mem::size_of::<u64>();
             let chunk_end = chunk_start + chunk_len;
-            let ctx = ChunkCtx {
+            let mut ctx = ChunkCtx {
                 ptr,
                 chunk_start,
                 chunk_end,
                 cycle,
                 thread_id,
                 check_mask,
+                round: 0,
             };
 
             runner.check_seal(chunk_start * std::mem::size_of::<u64>(), chunks.chunk());
+            // An error halts before the test overwrites what the seal check found
+            if runner.should_halt(cycle_errors) {
+                return runner.finish_aborted(cycle_errors, total_operations);
+            }
             if fill_per_chunk {
                 init_fn(&ctx);
             }
 
             // TM5-faithful loop: (write + multi-read) × write_read_cycles
             // TM5 SimpleTest: (1 write + 5 reads) × 4 = tight repeated access per chunk
-            for _ in 0..wrc {
+            for round in 0..wrc {
+                if writes_first {
+                    ctx.round = u64::from(cycle - 1) * u64::from(wrc) + u64::from(round);
+                }
                 // Test/write phase — run test_reps times (e.g., mirror round-trips)
                 for _ in 0..test_reps {
                     test_fn(&ctx);
@@ -256,8 +279,17 @@ where
                 }
 
                 // Verify phase — run verify_reps times (e.g., multi-read for retention stress)
-                for _ in 0..verify_reps {
+                for rep in 0..verify_reps {
                     cycle_errors += verify_fn(&ctx);
+                    // An error halts here, before the next round's writes or the reseal overwrite
+                    // the bad words (TODO 27): they stay in memory as the verify found them. The
+                    // chunk's work so far counts.
+                    if cycle_errors > 0 && runner.should_halt(cycle_errors) {
+                        let ops = ops_per_wrc * round as usize + bytes_per_test_op * test_reps as usize + rep as usize + 1;
+                        runner.add_bytes(chunk_len * std::mem::size_of::<u64>() * ops);
+                        let words = chunk_len as u64 * (u64::from(test_reps + verify_reps) * u64::from(round) + u64::from(test_reps + rep + 1));
+                        return runner.finish_aborted(cycle_errors, total_operations + words);
+                    }
                 }
             }
 
@@ -363,6 +395,7 @@ mod tests {
             cycle: 1,
             thread_id: 0,
             check_mask,
+            round: 0,
         }
     }
 

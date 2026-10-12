@@ -1,5 +1,12 @@
 # Pattern Generation Modes
 
+> **These are pattern spec 1: TMR's numbered modes.** A SimpleTest whose config sets no
+> `pattern_mode` runs a native program instead (pattern spec 2, `doc/pattern_spec.md`): families
+> chosen by what they find (identity, mixed data, switching, TM5 mode 2's and mode 1's intents),
+> as P/~P pairs keyed per cycle and step. A TM5 `.cfg` imports as native programs; `patterns=legacy`
+> keeps these modes, to compare. Under a SIMD width (`Mem-SimpleV2-128/256/512/Auto`), modes 0, 1,
+> 2, 13 and 14 run the scalar build's own image; they used to write mode 10's (TODO 3).
+
 TMR supports 8 pattern generation modes, split into two families:
 
 | Mode | Family | Name | Description |
@@ -102,21 +109,28 @@ broke when chunks overlap (TODO 76).
 ### Mode 14: Bus flip
 
 `pattern_gen::mode14_line(line_addr, key, beat)`: each beat of a 64 B line's burst is the bitwise
-inverse of the one before, so every data line toggles on every beat.
-- **The beat width** comes from the DIMMs' SMBIOS memory type: 64-bit for DDR to DDR4, 32-bit for
-  DDR5 (two subchannels a DIMM), 16-bit for LPDDR4 and LPDDR5. With no type, DDR5's 32 is
-  assumed. The run logs which.
+inverse of the one before, so every data line toggles on every beat (under the 12- and 24-bit
+models, between the transfers that carry payload: the last is partial). It packs the line as the
+native `switch` does (`pattern_gen::bus_flip_line`, `doc/pattern_spec.md`).
+- **The beat width** comes from `beat=`, else the DIMMs' SMBIOS memory type: 64-bit for DDR to
+  DDR4, 32-bit for DDR5 (two subchannels a DIMM), 16-bit for LPDDR4 and LPDDR5. With no type,
+  DDR5's 32 is assumed. The run logs which. LPDDR6's 12 and DDR6's 24 are models, set with
+  `beat=lpddr6` or `beat=ddr6`: TMR hasn't verified their packet maps, so a burst's payload is
+  taken to fill its transfers in order.
 - **Why a width at all:** a pattern tuned for one width is close to the worst case for another.
   Measured 2026-10-09: TM5's mode 0 flips 46.7 of 64 lines a beat on DDR4 but 15.7 of 32 on DDR5;
   a 32-bit-tuned pattern flips 31.0 of 32 on DDR5 and 4.0 of 64 on DDR4.
-- **One value a line**, hashed from its address and `mode12_key` (thread, cycle, params). Each byte
-  holds four 1s and four 0s, so data bus inversion (DBI), which inverts a byte with more than four
-  0s, never undoes a flip.
-- **The trade-off:** the first beat fixes the whole burst, so a line carries 8, 16 or 32 bits of
-  its hash (16-, 32-, 64-bit beats). Two lines can hold the same value, and a misdirected access
-  between them goes unseen; the other modes cover address faults.
-- **Scrambling:** a controller that scrambles data (Intel does by default) turns this into random
-  data on the bus, no worse than mode 13. TMR can't tell, so it assumes scrambling is off.
+- **One value a line**, hashed from its address and `mode12_key` (thread, cycle, params). At 64,
+  32, 16 and 24 bits each stored byte holds four 1s and four 0s, so a count-based data bus
+  inversion (DDR4's, LPDDR4's and LPDDR5's DC DBI), which inverts a byte with more than four bits at
+  its costly level, never undoes a flip; at 12 bits most bytes mix two nibbles. Other schemes can
+  undo one: LPDDR6's programmable XOR masks can turn these bytes into steady data.
+- **The trade-off:** the first beat fixes the whole burst, so a line carries 8 to 32 bits of its
+  hash (8 at 12- and 16-bit beats, 12 at 24, 16 at 32, 32 at 64). Two lines can hold the same
+  value, and a misdirected access between them goes unseen; the other modes cover address faults.
+- **Scrambling:** a controller that scrambles data (Intel does by default) with a key that changes
+  from beat to beat turns this into random-looking data on the bus, no worse than mode 13; a fixed
+  XOR on each pin would keep every flip. TMR can't tell, so it assumes scrambling is off.
 
 ## Mode Selection
 

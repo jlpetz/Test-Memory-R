@@ -9,7 +9,7 @@ use std::collections::HashMap;
 use std::sync::{Arc, Barrier};
 use std::sync::mpsc::{channel, Sender, Receiver};
 use std::thread;
-use std::time::Instant;
+use std::time::{Duration, Instant};
 
 /// A worker thread's CPU assignment: `(thread_id, logical_cpu, numa_node)`.
 pub type CpuAssignment = (usize, usize, u32);
@@ -58,7 +58,12 @@ pub enum SealOp {
 pub struct WorkResult {
     pub thread_id: usize,
     pub total_bytes: u64,
-    pub elapsed_ms: u128,
+    /// The worker's time on the item, setup included
+    pub elapsed: Duration,
+    /// The test's own time (`TestStats::timed`): without setup it restarts its clock after, such
+    /// as a Bench-Verify's fill (TODO 90). The step's throughput divides by the longest; `None`
+    /// when the test didn't run.
+    pub timed: Option<Duration>,
     pub total_errors: u64,
     pub total_operations: u64,  // Add operations tracking from runner.rs
     pub cycles_completed: u32,  // Cycles completed (from last block processed)
@@ -68,6 +73,9 @@ pub struct WorkResult {
     /// Bad words the seal checks found during the step: before its chunks, or before a step that
     /// never takes the seal overwrote them (TODO 74). For a final check, its errors.
     pub seal_errors: u64,
+    /// The test's failed checks, and those its rescans didn't reproduce (`TestStats`, TODO 27)
+    pub alarms: u64,
+    pub not_reproduced: u64,
 }
 
 // Thread pool worker context
@@ -284,6 +292,8 @@ pub(crate) fn seal_before_step(blocks: &[AllocationBlock], config: &TestMemoryCo
     if !seal.on {
         return 0;
     }
+    // A fresh reread budget: not what the last test on this worker left
+    crate::tests::reset_rescan_counts();
     let span = crate::test_memory::extent(blocks, usize::MAX);
     let base = span.ptr as *mut u64;
     *unsealed = (*unsealed).min(span.test_size);
@@ -330,6 +340,7 @@ fn run_seal_stage(blocks: &[AllocationBlock], op: SealOp, kernel: SealKernel, pr
                   unsealed: &mut usize, thread_id: usize) -> WorkResult {
     const PIECE: usize = 64 << 20;
     let start = Instant::now();
+    crate::tests::reset_rescan_counts();
     let span = crate::test_memory::extent(blocks, usize::MAX);
     let base = span.ptr as *mut u64;
     let (from, stage) = match op {
@@ -360,7 +371,8 @@ fn run_seal_stage(blocks: &[AllocationBlock], op: SealOp, kernel: SealKernel, pr
     WorkResult {
         thread_id,
         total_bytes: (at - from) as u64,
-        elapsed_ms: start.elapsed().as_millis(),
+        elapsed: start.elapsed(),
+        timed: Some(start.elapsed()),
         total_errors: 0,
         total_operations: 0,
         cycles_completed: 1,
@@ -368,6 +380,8 @@ fn run_seal_stage(blocks: &[AllocationBlock], op: SealOp, kernel: SealKernel, pr
         stopped_by_time_limit: false,
         latency_stats: None,
         seal_errors: errors,
+        alarms: 0,
+        not_reproduced: 0,
     }
 }
 
@@ -411,12 +425,11 @@ fn worker_thread_loop(context: &mut WorkerContext) {
                         log::error!("[Thread {} on CPU {}] {}", context.thread_id, context.cpu_id, e);
                     }
 
-                let elapsed_ms = thread_start.elapsed().as_millis();
-
                 let result = WorkResult {
                     thread_id: context.thread_id,
                     total_bytes: stats.bytes_processed as u64,
-                    elapsed_ms,
+                    elapsed: thread_start.elapsed(),
+                    timed: stats.timed,
                     total_errors: stats.error_count,
                     total_operations: stats.total_operations,
                     cycles_completed: stats.cycles_completed,
@@ -424,6 +437,8 @@ fn worker_thread_loop(context: &mut WorkerContext) {
                     stopped_by_time_limit: stats.stopped_by_time_limit,
                     latency_stats,  // Include detailed latency stats when available
                     seal_errors: stats.seal_errors,
+                    alarms: stats.alarms,
+                    not_reproduced: stats.not_reproduced,
                 };
 
                 if context.result_sender.send(result).is_err() {
@@ -439,7 +454,8 @@ fn worker_thread_loop(context: &mut WorkerContext) {
                 let result = WorkResult {
                     thread_id: context.thread_id,
                     total_bytes: 0,
-                    elapsed_ms: start.elapsed().as_millis(),
+                    elapsed: start.elapsed(),
+                    timed: Some(start.elapsed()),
                     total_errors: 0,
                     total_operations: 0,
                     cycles_completed: 1,
@@ -447,6 +463,8 @@ fn worker_thread_loop(context: &mut WorkerContext) {
                     stopped_by_time_limit: false,
                     latency_stats: None,
                     seal_errors: errors,
+                    alarms: 0,
+                    not_reproduced: 0,
                 };
                 if context.result_sender.send(result).is_err() {
                     log::error!("Failed to send result from thread {}", context.thread_id);

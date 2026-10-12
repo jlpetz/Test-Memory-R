@@ -33,8 +33,9 @@
 //!   with seed and step hashed from the line's address (TODO 76).
 //! - **Mode 13**: Positional pseudo-random hash per word.
 //! - **Mode 14**: Bus flip: each beat of a line the inverse of the one before, at the memory
-//!   type's beat width (SMBIOS: 64-bit for DDR4, 32-bit for DDR5), so every data line toggles on
-//!   every beat; one value a line, every byte four 1s so DBI can't undo it.
+//!   type's beat width (SMBIOS: 64-bit for DDR4, 32-bit for DDR5; `beat=` for LPDDR6's 12 and
+//!   DDR6's 24, both models), so every data line toggles on every beat; one value a line, every
+//!   byte four 1s so a count-based DBI can't undo it.
 //!
 //! See `doc/pattern_gen_modes.md` for detailed descriptions.
 
@@ -210,11 +211,19 @@ pub fn pattern_mode13(idx: u64, seed: u64) -> u64 {
     h
 }
 
-/// How many data bits one bus transfer (beat) of a 64 B line carries, which mode 14 flips.
+/// How many data bits one bus transfer (beat) of a 64 B line carries, which mode 14 and the
+/// native `switch` flip, and how many payload bits a burst carries (`bus_flip_line`).
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum BusBeat {
+    /// LPDDR6: two 12-DQ subchannels a die, 32 B a 24-transfer burst (JESD209-6). A model: TMR
+    /// hasn't verified the packet map or how a controller places a line in it, so the payload is
+    /// taken to come first.
+    Bits12,
     /// LPDDR4 and LPDDR5: 16-bit channels.
     Bits16,
+    /// DDR6 as drafted: four 24-bit subchannels, 64 B a burst assumed. A model: TMR has verified no
+    /// DDR6 layout.
+    Bits24,
     /// DDR5: two 32-bit subchannels per DIMM (and LPDDR3's 32-bit channels).
     Bits32,
     /// DDR to DDR4: one 64-bit channel per DIMM.
@@ -222,7 +231,8 @@ pub enum BusBeat {
 }
 
 impl BusBeat {
-    /// From an SMBIOS memory type (Type 17 offset 0x12), or None for a type it doesn't know.
+    /// From an SMBIOS memory type (Type 17 offset 0x12), or None for a type it doesn't know (DDR6
+    /// and LPDDR6 among them: set `beat=` on those).
     pub fn from_smbios_type(memory_type: u8) -> Option<Self> {
         match memory_type {
             0x12 | 0x13 | 0x18 | 0x1A => Some(BusBeat::Bits64),  // DDR, DDR2, DDR3, DDR4
@@ -232,33 +242,52 @@ impl BusBeat {
         }
     }
 
-    pub fn bits(self) -> u32 {
+    pub const fn bits(self) -> u32 {
         match self {
+            BusBeat::Bits12 => 12,
             BusBeat::Bits16 => 16,
+            BusBeat::Bits24 => 24,
             BusBeat::Bits32 => 32,
             BusBeat::Bits64 => 64,
         }
     }
+
+    /// The payload bits of one burst, which start afresh at its first transfer: 32 B on LPDDR4/5/6,
+    /// 64 B on the rest.
+    pub const fn burst_bits(self) -> u32 {
+        match self {
+            BusBeat::Bits12 | BusBeat::Bits16 => 256,
+            BusBeat::Bits24 | BusBeat::Bits32 | BusBeat::Bits64 => 512,
+        }
+    }
+
+    /// A model rather than a published layout: LPDDR6's and DDR6's.
+    pub fn modelled(self) -> bool {
+        matches!(self, BusBeat::Bits12 | BusBeat::Bits24)
+    }
 }
 
-/// Mode 14 (TMR-native): the bus-flip line. Each beat of the line's burst is the bitwise inverse
-/// of the one before, at `beat` bits a transfer, so every data line toggles on every beat unless
-/// the controller scrambles the data. Standard burst orders keep that, since they only swap
-/// beats of opposite parity.
-///
-/// One value a line, hashed from its address: 32 bits of the hash spread one nibble to a byte,
-/// each byte's high nibble the inverse of its low one, so every byte holds four 1s and four 0s and
-/// data bus inversion (DBI), which inverts a byte with more than four 0s, never undoes a flip. The
-/// first beat fixes the whole burst, so a line carries 8 to 32 bits of its hash (16-, 32-, 64-bit
-/// beats): two lines can match, and a misdirected access between them goes unseen.
+/// `h`'s low 32 bits one nibble to a byte, each byte's high nibble the inverse of its low: every
+/// byte of the result holds four 1s.
 #[inline(always)]
-pub fn mode14_line(line_addr: usize, key: u64, beat: BusBeat) -> [u64; LINE_WORDS] {
+pub fn balanced_bytes(h: u64) -> u64 {
     const LOW_NIBBLES: u64 = 0x0F0F_0F0F_0F0F_0F0F;
-    let mut x = pattern_mode13(line_addr as u64, key) & 0xFFFF_FFFF;
+    let mut x = h & 0xFFFF_FFFF;
     x = (x | (x << 16)) & 0x0000_FFFF_0000_FFFF;
     x = (x | (x << 8)) & 0x00FF_00FF_00FF_00FF;
     x = (x | (x << 4)) & LOW_NIBBLES;
-    let a = x | ((!x & LOW_NIBBLES) << 4);
+    x | ((!x & LOW_NIBBLES) << 4)
+}
+
+/// The bus-flip line of `a`'s low `beat.bits()` bits, `s` (`doc/pattern_spec.md`, `switch`): a
+/// burst's payload fills its transfers in order, `bits` a transfer, so place `q` of a burst is
+/// pin `q mod bits` of transfer `q / bits`, and holds that pin's bit of `s`, inverted on odd
+/// transfers. Every pin toggles between any two transfers that carry payload on it; at 12 and 24
+/// bits, which don't divide a burst, the payload's last transfer is partial and the rest of the
+/// burst is the memory's own. 64, 32 and 16 bits keep their closed forms; 12 and 24 don't divide a
+/// word either, so their words come from `packed_line`.
+#[inline(always)]
+pub fn bus_flip_line(a: u64, beat: BusBeat) -> [u64; LINE_WORDS] {
     match beat {
         BusBeat::Bits64 => std::array::from_fn(|j| if j % 2 == 0 { a } else { !a }),
         BusBeat::Bits32 => [(a & 0xFFFF_FFFF) | (!a << 32); LINE_WORDS],
@@ -266,13 +295,78 @@ pub fn mode14_line(line_addr: usize, key: u64, beat: BusBeat) -> [u64; LINE_WORD
             let pair = (a & 0xFFFF) | ((!a & 0xFFFF) << 16);
             [pair | (pair << 32); LINE_WORDS]
         }
+        BusBeat::Bits12 => packed_line(a & 0xFFF, 12, &PACK12),
+        BusBeat::Bits24 => packed_line(a & 0xFF_FFFF, 24, &PACK24),
     }
+}
+
+/// A beat's packing of a line, from the burst rule: word `j` is `(r >> shift[j]) ^ inv[j]`, `r`
+/// the beat's `bits` bits repeated (`packed_line`).
+pub(crate) struct Packing {
+    shift: [u32; LINE_WORDS],
+    inv: [u64; LINE_WORDS],
+}
+
+/// The packing of `bits`-bit transfers in bursts of `burst` payload bits (a multiple of 64, so a
+/// word never straddles two): word `j` starts at place `q0 = 64 j mod burst`, so its bit `k` is
+/// pin `(q0 + k) mod bits`, inverted when transfer `(q0 + k) / bits` is odd.
+pub(crate) const fn packing(bits: u32, burst: u32) -> Packing {
+    let mut p = Packing { shift: [0; LINE_WORDS], inv: [0; LINE_WORDS] };
+    let mut j = 0;
+    while j < LINE_WORDS {
+        let q0 = (64 * j as u32) % burst;
+        p.shift[j] = q0 % bits;
+        let mut k = 0;
+        while k < 64 {
+            if ((q0 + k) / bits) % 2 == 1 {
+                p.inv[j] |= 1 << k;
+            }
+            k += 1;
+        }
+        j += 1;
+    }
+    p
+}
+
+const PACK12: Packing = packing(BusBeat::Bits12.bits(), BusBeat::Bits12.burst_bits());
+const PACK24: Packing = packing(BusBeat::Bits24.bits(), BusBeat::Bits24.burst_bits());
+
+/// The line of `s`, a beat of `bits` bits (only those set), as `pack` places it: `s` repeated
+/// with its period past bit `64 + bits`, so any word's shift finds 64 bits of it.
+#[inline(always)]
+pub(crate) fn packed_line(s: u64, bits: u32, pack: &Packing) -> [u64; LINE_WORDS] {
+    let mut r = u128::from(s);
+    let mut n = bits;
+    while n < 64 + bits {
+        r |= r << n;
+        n *= 2;
+    }
+    std::array::from_fn(|j| ((r >> pack.shift[j]) as u64) ^ pack.inv[j])
+}
+
+/// Mode 14 (TMR-native): the bus-flip line. Each beat of the line's burst is the bitwise inverse
+/// of the one before, at `beat` bits a transfer, so every data line toggles on every beat unless
+/// the controller scrambles the data (`bus_flip_line`; LPDDR6's and DDR6's are models, where it
+/// toggles between the transfers that carry payload). Standard burst orders keep that, since they
+/// only swap beats of opposite parity.
+///
+/// One value a line, hashed from its address: 32 bits of the hash spread one nibble to a byte,
+/// each byte's high nibble the inverse of its low one (`balanced_bytes`). At 64, 32, 16 and 24 bits
+/// every stored byte is one of those or its inverse, so it holds four 1s and a count-based DBI
+/// (DDR4's, LPDDR4's and LPDDR5's), which inverts a byte with more than four bits at its costly
+/// level, never undoes a flip; at 12 bits most stored bytes mix two nibbles. LPDDR6's programmable
+/// masks can undo one. The first beat fixes the whole burst, so a line carries 8 to 32 bits of its
+/// hash (8 at 12- and 16-bit beats, 32 at 64): two lines can match, and a misdirected access
+/// between them goes unseen.
+#[inline(always)]
+pub fn mode14_line(line_addr: usize, key: u64, beat: BusBeat) -> [u64; LINE_WORDS] {
+    bus_flip_line(balanced_bytes(pattern_mode13(line_addr as u64, key)), beat)
 }
 
 // ─── Tests ───────────────────────────────────────────────────────────────────
 
 #[cfg(test)]
-mod tests {
+pub(crate) mod tests {
     use super::*;
 
     // ── TMR-native mode tests (10, 11) ──
@@ -406,31 +500,68 @@ mod tests {
         assert_eq!(s1, block_seed(0x1000, 0, 0));
     }
 
-    /// Mode 14: in address order, every beat of a line is the inverse of the one before, at each
-    /// beat width; every byte holds four 1s (so DBI never inverts one); lines differ.
+    /// The transfers of each burst of `words` at `beat`: transfer `t` of burst `b` is bits
+    /// `[t * bits, (t + 1) * bits)` of the burst's payload, the last one short when `bits` doesn't
+    /// divide it (`bus_flip_line`).
+    pub(crate) fn transfers(words: &[u64; LINE_WORDS], beat: BusBeat) -> Vec<Vec<(u64, u32)>> {
+        let (bits, burst) = (beat.bits() as usize, beat.burst_bits() as usize);
+        let bit = |p: usize| (words[p / 64] >> (p % 64)) & 1;
+        (0..512 / burst).map(|b| (0..burst.div_ceil(bits)).map(|t| {
+            let pins = bits.min(burst - t * bits);
+            let value = (0..pins).fold(0u64, |acc, l| acc | (bit(b * burst + t * bits + l) << l));
+            (value, pins as u32)
+        }).collect()).collect()
+    }
+
+    /// Every pin of every burst holds the inverse at the next transfer it carries payload on
+    pub(crate) fn flips_every_transfer(words: &[u64; LINE_WORDS], beat: BusBeat) -> bool {
+        transfers(words, beat).iter().all(|burst| burst.windows(2).all(|t| {
+            let mask = if t[1].1 == 64 { u64::MAX } else { (1u64 << t[1].1) - 1 };
+            (t[0].0 ^ t[1].0) & mask == mask
+        }))
+    }
+
+    /// Mode 14: in address order, every beat of a line's burst is the inverse of the one before, at
+    /// each beat width; at 16, 32 and 64 every byte holds four 1s (so a count-based DBI never
+    /// inverts one); lines differ.
     #[test]
     fn mode14_flips_every_beat_and_dodges_dbi() {
         let key = mode12_key(3, 1, 0x5DEECE66D, 0xB);
-        for beat in [BusBeat::Bits16, BusBeat::Bits32, BusBeat::Bits64] {
-            let bits = beat.bits() as usize;
-            let mask = if bits == 64 { u64::MAX } else { (1u64 << bits) - 1 };
+        for beat in [BusBeat::Bits12, BusBeat::Bits16, BusBeat::Bits24, BusBeat::Bits32, BusBeat::Bits64] {
             let mut values = std::collections::HashSet::new();
             for line in 0..4096usize {
                 let words = mode14_line(0x1E98_0000_0000 + 64 * line, key, beat);
-                let beats: Vec<u64> = words.iter().flat_map(|&w| (0..64 / bits).map(move |k| (w >> (k * bits)) & mask)).collect();
-                assert!(beats.windows(2).all(|p| p[1] == !p[0] & mask), "{beat:?} line {line}: {words:x?}");
-                assert!(words.iter().all(|w| w.to_le_bytes().iter().all(|b| b.count_ones() == 4)), "{beat:?} line {line}");
+                assert!(flips_every_transfer(&words, beat), "{beat:?} line {line}: {words:x?}");
+                if !beat.modelled() {
+                    assert!(words.iter().all(|w| w.to_le_bytes().iter().all(|b| b.count_ones() == 4)), "{beat:?} line {line}");
+                }
                 values.insert(words[0]);
             }
-            // 4096 lines drawn from 2^8, 2^16 and 2^32 values (16-, 32-, 64-bit beats): all 256,
-            // about 3970 by the birthday bound, nearly all 4096
-            let floor = match bits { 16 => 250, 32 => 3800, _ => 4090 };
+            // 4096 lines drawn from 2^8 values at 12 and 16 bits (all 256), 2^12 at 24 (about
+            // 2600 by the birthday bound), 2^16 at 32 (about 3970), 2^32 at 64 (nearly all 4096)
+            let floor = match beat.bits() { 12 | 16 => 250, 24 => 2400, 32 => 3800, _ => 4090 };
             assert!(values.len() >= floor, "{beat:?}: {} distinct", values.len());
         }
         assert_eq!(BusBeat::from_smbios_type(0x22), Some(BusBeat::Bits32));
         assert_eq!(BusBeat::from_smbios_type(0x1A), Some(BusBeat::Bits64));
         assert_eq!(BusBeat::from_smbios_type(0x23), Some(BusBeat::Bits16));
         assert_eq!(BusBeat::from_smbios_type(0), None);
+    }
+
+    /// The packer reproduces the closed forms of 16, 32 and 64 bits, so the 12- and 24-bit lines
+    /// come from the same rule; and a 12-bit line's two bursts start alike.
+    #[test]
+    fn the_packer_reproduces_the_closed_forms() {
+        for h in (0..2000u64).map(|i| pattern_mode13(i, 0x5EED)) {
+            let a = balanced_bytes(h);
+            assert_eq!(packed_line(a & 0xFFFF, 16, &packing(16, 256)), bus_flip_line(a, BusBeat::Bits16));
+            assert_eq!(packed_line(a & 0xFFFF_FFFF, 32, &packing(32, 512)), bus_flip_line(a, BusBeat::Bits32));
+            assert_eq!(packed_line(a, 64, &packing(64, 512)), bus_flip_line(a, BusBeat::Bits64));
+            let twelve = bus_flip_line(a, BusBeat::Bits12);
+            assert_eq!(twelve[..4], twelve[4..], "a 12-bit line is two alike 32 B bursts");
+            let ones = |w: &[u64]| w.iter().map(|x| x.count_ones()).sum::<u32>();
+            assert_eq!(ones(&bus_flip_line(a, BusBeat::Bits24)), 256, "a 24-bit burst is 21 full transfers of 12 1s and 8 bits of 4");
+        }
     }
 
     #[test]

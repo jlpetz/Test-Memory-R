@@ -174,6 +174,25 @@ fn run() -> Result<(), Box<dyn std::error::Error>> {
     if let Some(value) = args.iter().rev().find_map(|a| a.strip_prefix("core-priority=")) {
         crate::cpu_topology::set_core_priority(crate::cpu_topology::CorePriority::parse(value)?);
     }
+    // The native patterns' run settings, before a config loads: patterns= decides how a .cfg's
+    // SimpleTests import. The last of each wins, as for every parameter.
+    let mut seen_keys = std::collections::HashSet::new();
+    for (key, value) in args.iter().rev().filter_map(|a| a.split_once('=')) {
+        if !seen_keys.insert(key) {
+            continue;
+        }
+        match key {
+            "seed" => crate::pattern::set_run_seed(crate::pattern::parse_seed(value)?),
+            "rescan" => crate::pattern::set_rescan(!value.eq_ignore_ascii_case("off")),
+            "beat" => {
+                if let Some(beat) = crate::pattern::parse_beat(value)? {
+                    crate::pattern::set_beat_override(beat);
+                }
+            }
+            "patterns" => crate::pattern::set_legacy_import(value.eq_ignore_ascii_case("legacy")),
+            _ => {}
+        }
+    }
 
     // Handle test= parameter for filtering tests by pattern
     let mut test_filter_param: Option<String> = None;

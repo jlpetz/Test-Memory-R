@@ -85,6 +85,30 @@ Number of copy direction patterns for memory move operations:
 - **Constraint:** Must be >= 1 (no power-of-2 requirement)
 - **JSON config field:** `"copy_directions": 2`
 
+## SimpleTest patterns (pattern spec 2)
+
+| Where | Field | Meaning |
+|---|---|---|
+| test entry (Mem-SimpleV2*) | `"program": ["ident", "switch", "random", "switch"]` | The native program: families in order, each run as a P/~P pair (`doc/pattern_spec.md`). Unset with no `pattern_mode`, that default. Not with `pattern_mode`, and only on a SimpleTest |
+| test entry | `"pattern_mode": 14` | One of TMR's numbered modes (spec 1, `doc/pattern_gen_modes.md`) instead of a program |
+| command line | `seed=0x1234` | The native patterns' run seed (default from the clock); logged, printed and saved, so a run's bytes can be replayed on the same layout |
+| command line | `beat=auto\|12\|16\|24\|32\|64` or a memory type | The transfer width `switch` (and mode 14) flips at; auto takes SMBIOS's memory type, else `switch` alternates 64 and 32 and mode 14 takes 32. A memory type names its width: `ddr3`/`ddr4` 64, `ddr5`/`lpddr3` 32, `lpddr4`/`lpddr5` 16, `ddr6` 24, `lpddr6` 12. The last two are models (`doc/pattern_spec.md`): SMBIOS has no code TMR knows for them, so set `beat=` there |
+| command line | `rescan=on\|off` | Whether a failed check is rescanned to name each bad word (on); off counts one error a failed check |
+| command line | `patterns=native\|legacy` | How a TM5 `.cfg`'s SimpleTests import: native programs on `Mem-SimpleV2-Auto` (the default), or the numbered modes on the scalar test |
+
+**Repetition must test something** (checked when the config loads): `verify_reps` 0 on a SimpleTest
+or mirror test, `write_read_cycles` 0 on any `run_phased_test` test, and `test_reps` 0 on a mirror
+are refused; so is `test_reps` 0 with a mode that keys its image by the cycle (0, 1, 2, 12, 14),
+whose fill and verifies would disagree. Each knob is at most 10,000. A knob the test doesn't read is
+logged, not refused. A TM5 `.cfg` value that doesn't parse is an error naming it.
+
+**A native SimpleTest's rounds come in pairs.** Each pattern is written twice in a row on a
+chunk: P, then ~P (every bit flipped), so every bit is checked holding a 0 and a 1. An odd
+`write_read_cycles` on one that writes first (`test_reps` above 0) rounds up to the next even
+number, with a warning: 3 runs as 4, 1 as 2. A config's SimpleTest and a TM5 import take 4 by
+default, the built-in suite's 2. A step that verifies its fill (`test_reps` 0) writes once a
+suite cycle, so it alternates P and ~P between suite cycles instead (`doc/pattern_spec.md`).
+
 ## Parameter Sources
 
 | Source | How parameters are set |

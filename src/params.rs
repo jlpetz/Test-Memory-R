@@ -149,6 +149,35 @@ impl ParamRegistry {
             },
         });
 
+        // The native patterns' run settings (pattern spec v2, `crate::pattern`): read early in
+        // `cli::run`, before a config loads; registered so they validate
+        params.insert("seed", ParamDef {
+            key: "seed",
+            can_override_config: true,
+            parser: |v| crate::pattern::parse_seed(v).map(|_| ParamValue::String(v.to_string())),
+        });
+        params.insert("rescan", ParamDef {
+            key: "rescan",
+            can_override_config: true,
+            parser: |v| match v.to_ascii_lowercase().as_str() {
+                "on" | "off" => Ok(ParamValue::String(v.to_ascii_lowercase())),
+                _ => Err(format!("rescan '{v}': use on or off")),
+            },
+        });
+        params.insert("beat", ParamDef {
+            key: "beat",
+            can_override_config: true,
+            parser: |v| crate::pattern::parse_beat(v).map(|_| ParamValue::String(v.to_string())),
+        });
+        params.insert("patterns", ParamDef {
+            key: "patterns",
+            can_override_config: true,
+            parser: |v| match v.to_ascii_lowercase().as_str() {
+                "native" | "legacy" => Ok(ParamValue::String(v.to_ascii_lowercase())),
+                _ => Err(format!("patterns '{v}': use native or legacy")),
+            },
+        });
+
         // Read early in `cli::run`, before any topology is detected; registered so it validates
         params.insert("core-priority", ParamDef {
             key: "core-priority",
@@ -481,7 +510,18 @@ pub fn print_help(program_name: &str) {
     println!("  mirror=whole                        # Mirror tests: one mirror over each chunk (the default)");
     println!("  mirror=subblocks:4                  #   ...each chunk in 2 or 4 parts, mirrored in lockstep");
     println!("  mirror=jump:510                     #   ...128 B swaps every (N+1) x 128 B (TM5 MirrorMove128)");
-    println!("  pattern-mode=0                      # Pattern mode: 0-2 (TM5-faithful), 10-14 (TMR-native)");
+    println!("  pattern-mode=0                      # Pattern mode: 0-2 (TM5-faithful), 10-14 (TMR-native); unset, SimpleTest");
+    println!("                                      #   runs native programs (doc/pattern_spec.md)");
+    println!("  patterns=legacy                     # A TM5 .cfg's SimpleTest modes as TMR's numbered modes, not native");
+    println!("                                      #   programs (default native), to compare the two");
+    println!("  seed=0x1234                         # The native patterns' run seed (default: from the clock, logged and");
+    println!("                                      #   saved in the results), to replay a run's bytes");
+    println!("  beat=32                             # Transfer width the switch pattern flips at: auto (SMBIOS, the");
+    println!("                                      #   default), 16 (LPDDR4/5), 32 (DDR5), 64 (DDR4), or a memory");
+    println!("                                      #   type (ddr4, ddr5, lpddr5, ...); 12 (lpddr6) and 24 (ddr6) are");
+    println!("                                      #   models: TMR hasn't verified their packet maps");
+    println!("  rescan=off                          # A failed check isn't rescanned to name each bad word (default on;");
+    println!("                                      #   off counts one error a failed check, for runs with many errors)");
     println!("  verify-reps=5                       # Verify passes per write (TM5 retention stress: 5)");
     println!("  test-reps=3                         # Test op repetitions per write (MirrorMove round-trips)");
     println!("  write-read-cycles=4                 # Write+verify cycles per chunk (TM5 SimpleTest: 4)");

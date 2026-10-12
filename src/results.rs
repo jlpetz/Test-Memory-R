@@ -8,6 +8,11 @@ use std::collections::HashMap;
 use std::fs;
 use std::path::Path;
 
+/// For `skip_serializing_if`: a count that is zero is left out, and reads back as zero.
+fn is_zero(n: &u64) -> bool {
+    *n == 0
+}
+
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct TestRunResult {
     pub metadata: TestRunMetadata,
@@ -88,6 +93,13 @@ pub struct TestResult {
     #[serde(serialize_with = "serialize_round_int")]
     pub throughput_mib_s: f64,
     pub errors: u64,
+    /// Checks that found a difference (TODO 27). `errors` counts the bad words their rescans found,
+    /// and one for each check a rescan didn't reproduce (`not_reproduced`): a failing check and a
+    /// bad word are different observations.
+    #[serde(default, skip_serializing_if = "is_zero")]
+    pub alarms: u64,
+    #[serde(default, skip_serializing_if = "is_zero")]
+    pub not_reproduced: u64,
     /// What the seal checks before the step's chunks found (TODO 74): TM5's test 0 errors
     pub seal_errors: u64,
     // OS-reported hardware errors during this test, and the corrected subset (see whea.rs).
@@ -311,6 +323,8 @@ impl TestRunResult {
                 bytes_processed: summary.bytes_processed,
                 throughput_mib_s: summary.throughput_mib_s,
                 errors: summary.errors,
+                alarms: summary.alarms,
+                not_reproduced: summary.not_reproduced,
                 seal_errors: summary.seal_errors,
                 whea_total: summary.whea_total,
                 whea_corrected: summary.whea_corrected,
@@ -376,6 +390,8 @@ impl TestRunResult {
             label: String,
             runs: u64,
             total_duration_ms: u128,
+            /// Each run's own time (its bytes over its speed, which leaves setup out, TODO 90)
+            total_timed_secs: f64,
             total_bytes: u64,
             total_errors: u64,
             total_seal_errors: u64,
@@ -404,8 +420,17 @@ impl TestRunResult {
                 if entry.runs == 0 {
                     (entry.id, entry.test_index, entry.name, entry.label) = (test.id.clone(), test.test_index, test.name.clone(), test.label.clone());
                 }
+                // A step a halt stopped before it ran carries only the seal check's errors
+                if test.duration_ms == 0 && test.bytes_processed == 0 {
+                    entry.total_errors += test.errors;
+                    entry.total_seal_errors += test.seal_errors;
+                    continue;
+                }
                 entry.runs += 1;
                 entry.total_duration_ms += test.duration_ms;
+                if test.throughput_mib_s > 0.0 {
+                    entry.total_timed_secs += (test.bytes_processed as f64 / MB_F64) / test.throughput_mib_s;
+                }
                 entry.total_bytes += test.bytes_processed;
                 entry.total_errors += test.errors;
                 entry.total_seal_errors += test.seal_errors;
@@ -431,9 +456,16 @@ impl TestRunResult {
         }
 
         self.overall_stats.per_step_averages = test_aggregates.into_iter().map(|(step, agg)| {
-            let avg_duration_ms = agg.total_duration_ms / agg.runs as u128;
-            let avg_bytes = agg.total_bytes / agg.runs;
-            let avg_throughput_mib = if avg_duration_ms > 0 {
+            // A step a halt stopped before it ever ran has no runs: it keeps its seal errors and
+            // averages nothing
+            let (avg_duration_ms, avg_bytes) = match agg.runs {
+                0 => (0, 0),
+                runs => (agg.total_duration_ms / runs as u128, agg.total_bytes / runs),
+            };
+            // Over the runs' own time, as each step's speed is (TODO 90)
+            let avg_throughput_mib = if agg.total_timed_secs > 0.0 {
+                (agg.total_bytes as f64 / MB_F64) / agg.total_timed_secs
+            } else if avg_duration_ms > 0 {
                 (avg_bytes as f64 / MB_F64) / (avg_duration_ms as f64 / 1000.0)
             } else {
                 0.0
@@ -702,4 +734,60 @@ pub fn compare_results_command(baseline_path: &str, current_path: &str, output_p
     }
     
     Ok(())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn summary(step: usize, duration_ms: u128, bytes_processed: u64, seal_errors: u64) -> TestSummary {
+        TestSummary {
+            step,
+            test_index: step - 1,
+            id: None,
+            label: format!("step {step}"),
+            seal_errors,
+            name: "Mem-SimpleV2".to_string(),
+            duration_ms,
+            bytes_processed,
+            throughput_mib_s: if duration_ms > 0 { 1000.0 } else { 0.0 },
+            errors: 0,
+            alarms: 0,
+            not_reproduced: 0,
+            whea_total: 0,
+            whea_corrected: 0,
+            latency_samples: None,
+            latency_p5_ns: None,
+            latency_p10_ns: None,
+            latency_p25_ns: None,
+            latency_p50_ns: None,
+            latency_p75_ns: None,
+            latency_p90_ns: None,
+            latency_p95_ns: None,
+            latency_p99_ns: None,
+            latency_p99_9_ns: None,
+            latency_spread: None,
+        }
+    }
+
+    /// A step that never ran, because the seal check before its first run failed under halt, keeps
+    /// its seal errors through finalization and serialization and isn't a run. Astra's review: the
+    /// averages divided by its zero runs, so a release build aborted before saving its results.
+    #[test]
+    fn a_step_that_never_ran_keeps_its_seal_errors() {
+        let mut result = TestRunResult::new(Default::default());
+        result.add_cycle(1, 10, vec![summary(1, 5_000, 1 << 30, 0), summary(2, 0, 0, 3)], None);
+        result.finalize(std::time::Duration::from_secs(10));
+        let never = result.overall_stats.per_step_averages.iter().find(|a| a.step == 2).unwrap();
+        assert_eq!((never.runs, never.total_seal_errors, never.avg_duration_ms, never.avg_bytes_processed), (0, 3, 0, 0));
+        let ran = result.overall_stats.per_step_averages.iter().find(|a| a.step == 1).unwrap();
+        assert_eq!(ran.runs, 1);
+        assert_eq!(result.overall_stats.seal_errors, 3);
+        assert!(serde_json::to_string(&result).unwrap().contains("\"total_seal_errors\":3"));
+        // The final summary shows it with its seal errors and zero figures, not 0/0 (review A)
+        let report = crate::reporting::converters::create_overall_stats_summary_report(&result);
+        let row = &report.per_test_summaries[1];
+        assert_eq!((row.runs, row.seal_errors), (0, 3));
+        assert_eq!((row.average_duration_secs, row.average_data_gib, row.average_throughput_mib_s), (0.0, 0.0, 0.0));
+    }
 }
