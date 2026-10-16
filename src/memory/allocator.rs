@@ -1,5 +1,5 @@
 use crate::memory::backend::{AllocError, Backend, BackendType, WindowsBackend};
-use crate::memory::buffer::{MemoryBuffer, PageType};
+use crate::memory::buffer::MemoryBuffer;
 use crate::memory::buffer::MemoryType as BufferMemoryType;
 use crate::constants::{HUGE_PAGE_SIZE_USIZE, BYTES_PER_MIB_USIZE, MB_16};
 use std::sync::Arc;
@@ -9,7 +9,6 @@ pub(crate) const MIN_LARGE_FLOOR: usize = MB_16;
 
 pub struct MemoryAllocator {
     backend: Arc<dyn Backend>,
-    stats: AllocationStats,
 }
 
 #[derive(Debug, Clone)]
@@ -29,16 +28,8 @@ pub struct AllocationConfig {
 #[derive(Debug, Clone)]
 pub enum PageSizePreference {
     Any,                                    // Let backend decide
-    Prefer(PageType),                       // Prefer but fall back
-    Require(PageType),                      // Must have or fail
-}
-
-#[derive(Debug, Default)]
-pub struct AllocationStats {
-    pub total_allocations: usize,
-    pub total_bytes_allocated: usize,
-    pub large_page_allocations: usize,
-    pub huge_page_allocations: usize,
+    Prefer(PageSizeLevel),                  // Prefer but fall back
+    Require(PageSizeLevel),                 // Must have or fail
 }
 
 /// `largechunk` when it is not set. Stitched commits merge into one run per page size, so a
@@ -85,7 +76,8 @@ impl BlockSizing {
     }
 }
 
-/// Page size level for constraint checking (ordered: Regular < Large < Huge)
+/// A page size: what a request asks for and what the allocator's record says it got (ordered:
+/// Regular < Large < Huge). The one page-size vocabulary, a revived backend's too.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord)]
 pub enum PageSizeLevel {
     Regular = 0,
@@ -94,6 +86,15 @@ pub enum PageSizeLevel {
 }
 
 impl PageSizeLevel {
+    /// The page's size in bytes: also the alignment a request for it needs.
+    pub fn bytes(self) -> usize {
+        match self {
+            PageSizeLevel::Regular => crate::constants::PAGE_SIZE_4KB,
+            PageSizeLevel::Large => crate::constants::LARGE_PAGE_SIZE_USIZE,
+            PageSizeLevel::Huge => HUGE_PAGE_SIZE_USIZE,
+        }
+    }
+
     /// Parse page size level from string (matches config format)
     pub fn from_config_str(s: &str) -> Self {
         match s.to_lowercase().as_str() {
@@ -113,10 +114,7 @@ impl MemoryAllocator {
             }
         };
 
-        Ok(Self {
-            backend,
-            stats: AllocationStats::default(),
-        })
+        Ok(Self { backend })
     }
 
     fn auto_detect_backend() -> Result<Arc<dyn Backend>, String> {
@@ -130,20 +128,8 @@ impl MemoryAllocator {
         }
     }
 
-    pub fn allocate(&mut self, config: &AllocationConfig) -> Result<MemoryBuffer, AllocError> {
+    pub fn allocate(&self, config: &AllocationConfig) -> Result<MemoryBuffer, AllocError> {
         let allocation = self.backend.allocate(config)?;
-
-        // Update statistics
-        self.stats.total_allocations += 1;
-        self.stats.total_bytes_allocated += allocation.size;
-
-        if allocation.info.uses_large_pages() {
-            self.stats.large_page_allocations += 1;
-        }
-        if allocation.info.uses_huge_pages() {
-            self.stats.huge_page_allocations += 1;
-        }
-
         Ok(MemoryBuffer::new(allocation, self.backend.clone()))
     }
 }

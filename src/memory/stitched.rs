@@ -85,7 +85,7 @@ use crate::memory::backend::{
     AllocError, Backend, BackendAllocation, ERROR_INVALID_ADDRESS, NUMA_NODE_MANDATORY,
     describe_error, is_exhaustion,
 };
-use crate::memory::buffer::{BufferInfo, MemoryBuffer, PageInfo, PageType};
+use crate::memory::buffer::MemoryBuffer;
 use crate::memory::fill::{
     self, Fill, Grant, PageSizes, node_label, page_label, size_label,
 };
@@ -1274,34 +1274,6 @@ impl<V: VmOps + Send + Sync + std::fmt::Debug + 'static> Backend for StitchedAre
 // Handing out blocks
 // ---------------------------------------------------------------------------------------------
 
-/// The page type the backend's buffer type needs for a span: its one page size, or `Mixed` (a
-/// segmented allocation) when it has several. Nothing reads it while the tests run; the page sizes
-/// are the allocation report's and the results file's, from the spans.
-fn span_page_type(span: &ThreadSpan) -> PageType {
-    let used: Vec<PageSizeLevel> = [PageSizeLevel::Huge, PageSizeLevel::Large, PageSizeLevel::Regular]
-        .into_iter()
-        .filter(|&page| span.bytes_at(page) > 0)
-        .collect();
-    let page_bytes = |page| match page {
-        PageSizeLevel::Huge => HUGE,
-        PageSizeLevel::Large => LARGE,
-        PageSizeLevel::Regular => crate::constants::PAGE_SIZE_4KB,
-    };
-    match used.as_slice() {
-        [PageSizeLevel::Huge] => PageType::Huge(span.len),
-        [PageSizeLevel::Large] => PageType::Large(span.len),
-        [_] | [] => PageType::Regular(span.len),
-        _ => PageType::Mixed(
-            used.iter()
-                .map(|&page| PageInfo {
-                    size_kb: (page_bytes(page) / 1024) as u32,
-                    count: span.bytes_at(page) / page_bytes(page),
-                })
-                .collect(),
-        ),
-    }
-}
-
 /// Each thread's span as one block: its start and length, a view sharing `arena` as its backend.
 /// The memory is released when the last view drops. The tests take the span as one extent
 /// (`test_memory::extent`, TODO 76).
@@ -1315,11 +1287,7 @@ where
         .into_iter()
         .map(|span| {
             let buffer = MemoryBuffer::new(
-                BackendAllocation {
-                    ptr: span.base as *mut u8,
-                    size: span.len,
-                    info: BufferInfo { page_type: span_page_type(&span) },
-                },
+                BackendAllocation { ptr: span.base as *mut u8, size: span.len },
                 backend.clone(),
             );
             (span.thread_id, vec![AllocationBlock { buffer }])

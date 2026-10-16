@@ -6,7 +6,7 @@
 // you to skip reading these.
 #![warn(clippy::undocumented_unsafe_blocks)]
 
-use crate::memory::buffer::{BufferInfo, PageType};
+use crate::memory::allocator::PageSizeLevel;
 use crate::memory::allocator::AllocationConfig;
 use crate::memory::privileges::setup_large_pages_automatically;
 use crate::constants::{HUGE_PAGE_SIZE_USIZE, LARGE_PAGE_SIZE_USIZE, PAGE_SIZE_4KB, MB};
@@ -97,11 +97,12 @@ pub trait Backend: Send + Sync + std::fmt::Debug {
     fn name(&self) -> &'static str;
 }
 
+/// Where a backend's memory is and how long. A backend reports what it got (page sizes, nodes,
+/// request sizes) per thread span, as the stitcher does (`stitched::ThreadSpan`), not here.
 #[derive(Debug)]
 pub struct BackendAllocation {
     pub ptr: *mut u8,
     pub size: usize,
-    pub info: BufferInfo,
 }
 
 /// Which `Backend` impl to allocate through.
@@ -137,11 +138,11 @@ impl Backend for WindowsBackend {
             let mut modified_config = config.clone();
             // Force regular pages if backend doesn't support large pages
             modified_config.page_size = match &config.page_size {
-                AllocPageSizePref::Any => AllocPageSizePref::Prefer(PageType::Regular(config.size)),
-                AllocPageSizePref::Prefer(_) => AllocPageSizePref::Prefer(PageType::Regular(config.size)),
+                AllocPageSizePref::Any => AllocPageSizePref::Prefer(PageSizeLevel::Regular),
+                AllocPageSizePref::Prefer(_) => AllocPageSizePref::Prefer(PageSizeLevel::Regular),
                 AllocPageSizePref::Require(page_type) => {
                     match page_type {
-                        PageType::Regular(_) => config.page_size.clone(),
+                        PageSizeLevel::Regular => config.page_size.clone(),
                         _ => return Err(AllocError::other("Backend doesn't support large/huge pages but they are required")),
                     }
                 },
@@ -152,23 +153,8 @@ impl Backend for WindowsBackend {
         };
         
         // VirtualAlloc2 implementation (moved from TestBuffer)
-        let (ptr, size, uses_large_pages, uses_huge_pages) = self.allocate_with_virtualalloc2(&final_config)?;
-        
-        let page_type = if uses_huge_pages {
-            PageType::Huge(size)
-        } else if uses_large_pages {
-            PageType::Large(size)
-        } else {
-            PageType::Regular(size)
-        };
-        
-        let info = BufferInfo { page_type };
-        
-        Ok(BackendAllocation {
-            ptr,
-            size,
-            info,
-        })
+        let (ptr, size) = self.allocate_with_virtualalloc2(&final_config)?;
+        Ok(BackendAllocation { ptr, size })
     }
     
     fn free(&self, allocation: BackendAllocation) -> Result<(), String> {
@@ -217,7 +203,8 @@ impl WindowsBackend {
     }
 
     /// VirtualAlloc2 implementation (moved from TestBuffer)
-    fn allocate_with_virtualalloc2(&self, config: &AllocationConfig) -> Result<(*mut u8, usize, bool, bool), AllocError> {
+    /// The page size it got is logged (debug), not returned.
+    fn allocate_with_virtualalloc2(&self, config: &AllocationConfig) -> Result<(*mut u8, usize), AllocError> {
         use crate::memory::allocator::PageSizePreference as AllocPageSizePref;
         
         let size_bytes = config.size;
@@ -227,18 +214,16 @@ impl WindowsBackend {
             AllocPageSizePref::Any => (true, None), // Try best available
             AllocPageSizePref::Prefer(page_type) => {
                 match page_type {
-                    PageType::Regular(_) => (false, Some((false, false))),
-                    PageType::Large(_) => (true, Some((true, false))),
-                    PageType::Huge(_) => (true, Some((true, true))),
-                    PageType::Mixed(_) => (true, None), // Let auto-select
+                    PageSizeLevel::Regular => (false, Some((false, false))),
+                    PageSizeLevel::Large => (true, Some((true, false))),
+                    PageSizeLevel::Huge => (true, Some((true, true))),
                 }
             },
             AllocPageSizePref::Require(page_type) => {
                 match page_type {
-                    PageType::Regular(_) => (false, Some((false, false))),
-                    PageType::Large(_) => (true, Some((true, false))),
-                    PageType::Huge(_) => (true, Some((true, true))),
-                    PageType::Mixed(_) => return Err(AllocError::other("Can't require mixed page types with VirtualAlloc2")),
+                    PageSizeLevel::Regular => (false, Some((false, false))),
+                    PageSizeLevel::Large => (true, Some((true, false))),
+                    PageSizeLevel::Huge => (true, Some((true, true))),
                 }
             },
         };
@@ -254,7 +239,7 @@ impl WindowsBackend {
                     _ => {
                         // Try with regular pages
                         let mut fallback_config = config.clone();
-                        fallback_config.page_size = AllocPageSizePref::Require(PageType::Regular(size_bytes));
+                        fallback_config.page_size = AllocPageSizePref::Require(PageSizeLevel::Regular);
                         return self.allocate_with_virtualalloc2(&fallback_config);
                     }
                 }
@@ -416,13 +401,13 @@ impl WindowsBackend {
                         // Failed with huge pages, try large pages
                         log::debug!("VirtualAlloc2 with huge pages failed (code {}), trying large pages", err.0);
                         let mut fallback_config = config.clone();
-                        fallback_config.page_size = AllocPageSizePref::Prefer(PageType::Large(size_bytes));
+                        fallback_config.page_size = AllocPageSizePref::Prefer(PageSizeLevel::Large);
                         return self.allocate_with_virtualalloc2(&fallback_config);
                     } else if actual_page_type.0 {
                         // Failed with large pages, try regular pages
                         log::debug!("VirtualAlloc2 with large pages failed (code {}), trying regular pages", err.0);
                         let mut fallback_config = config.clone();
-                        fallback_config.page_size = AllocPageSizePref::Prefer(PageType::Regular(size_bytes));
+                        fallback_config.page_size = AllocPageSizePref::Prefer(PageSizeLevel::Regular);
                         return self.allocate_with_virtualalloc2(&fallback_config);
                     }
                 },
@@ -441,7 +426,7 @@ impl WindowsBackend {
                 if let Some(node) = config.numa_node { format!(" on NUMA node {}", node) } else { String::new() }
             );
             
-            Ok((ptr as *mut u8, aligned_size, actual_page_type.0, actual_page_type.1))
+            Ok((ptr as *mut u8, aligned_size))
         }
     }
 }

@@ -117,7 +117,6 @@ mod tests {
     use crate::memory::MemoryBuffer;
     use crate::memory::allocator::AllocationConfig;
     use crate::memory::backend::{AllocError, Backend, BackendAllocation};
-    use crate::memory::buffer::{BufferInfo, PageType};
 
     const MIB: usize = 1024 * 1024;
     const GIB: usize = 1024 * MIB;
@@ -133,19 +132,13 @@ mod tests {
         fn name(&self) -> &'static str { "none" }
     }
 
-    /// One block: `(size, page_type)`.
-    type Spec = (usize, fn(usize) -> PageType);
-
-    /// Blocks at `addr`, in order.
-    fn blocks(addr: usize, spec: &[Spec]) -> Vec<AllocationBlock> {
+    /// Blocks of these sizes at `addr`, in order.
+    fn blocks(addr: usize, sizes: &[usize]) -> Vec<AllocationBlock> {
         let backend: Arc<dyn Backend> = Arc::new(NoMemory);
         let mut at = addr;
-        spec.iter().map(|&(size, page)| {
+        sizes.iter().map(|&size| {
             let block = AllocationBlock {
-                buffer: MemoryBuffer::new(
-                    BackendAllocation { ptr: at as *mut u8, size, info: BufferInfo { page_type: page(size) } },
-                    backend.clone(),
-                ),
+                buffer: MemoryBuffer::new(BackendAllocation { ptr: at as *mut u8, size }, backend.clone()),
             };
             at += size;
             block
@@ -154,8 +147,8 @@ mod tests {
 
     #[test]
     fn the_extent_is_the_first_bytes_of_the_span() {
-        // A span: 8 GiB + 1 GiB of 1 GiB pages, then 256 MiB of 2 MiB pages
-        let span = blocks(1 << 40, &[(8 * GIB, PageType::Huge), (GIB, PageType::Huge), (256 * MIB, PageType::Large)]);
+        // A span in three joined blocks
+        let span = blocks(1 << 40, &[8 * GIB, GIB, 256 * MIB]);
         let size = |e: usize| extent(&span, e).test_size;
         assert_eq!(size(880 * MIB), 880 * MIB);
         assert_eq!(size(9 * GIB + 100 * MIB), 9 * GIB + 100 * MIB);

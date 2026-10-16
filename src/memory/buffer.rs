@@ -9,59 +9,13 @@
 use crate::memory::backend::{Backend, BackendAllocation};
 use std::sync::Arc;
 
-/// Single unified buffer type that works with any backend
+/// Memory from a backend: where it is and how long. What pages and nodes it is on is the
+/// allocator's to report, per thread span (`stitched::ThreadSpan`), not the buffer's.
 #[derive(Debug)]
 pub struct MemoryBuffer {
     ptr: *mut u8,
     size: usize,
-    info: BufferInfo,
     backend: Arc<dyn Backend>,
-}
-
-#[derive(Debug, Clone)]
-pub struct BufferInfo {
-    pub page_type: PageType,
-}
-
-impl BufferInfo {
-    /// Check if this buffer uses large pages (2MB or larger)
-    pub fn uses_large_pages(&self) -> bool {
-        match &self.page_type {
-            PageType::Large(_) | PageType::Huge(_) => true,
-            PageType::Mixed(pages) => pages.iter().any(|p| p.size_kb >= 2048),
-            PageType::Regular(_) => false,
-        }
-    }
-    
-    /// Check if this buffer uses huge pages (1GB)
-    pub fn uses_huge_pages(&self) -> bool {
-        match &self.page_type {
-            PageType::Huge(_) => true,
-            PageType::Mixed(pages) => pages.iter().any(|p| p.size_kb >= 1048576),
-            _ => false,
-        }
-    }
-}
-
-/// The payload is the allocation's size in bytes.
-#[derive(Debug, Clone)]
-#[expect(
-    dead_code,
-    reason = "revival seam (TODO #4/5): `Mixed` and the size payloads are for a backend that returns \
-              segmented allocations; VirtualAlloc2 only ever returns one page size"
-)]
-pub enum PageType {
-    Regular(usize),              // 4KB
-    Large(usize),                // 2MB
-    Huge(usize),                 // 1GB
-    Mixed(Vec<PageInfo>),         // For segmented allocations
-}
-
-#[derive(Debug, Clone, Copy)]
-pub struct PageInfo {
-    pub size_kb: u32,
-    #[expect(dead_code, reason = "revival seam (TODO #4/5), with `PageType::Mixed`")]
-    pub count: usize,
 }
 
 /// Caching behaviour requested for an allocation.
@@ -91,7 +45,6 @@ impl MemoryBuffer {
         Self {
             ptr: allocation.ptr,
             size: allocation.size,
-            info: allocation.info,
             backend,
         }
     }
@@ -111,7 +64,6 @@ impl Drop for MemoryBuffer {
         let allocation = BackendAllocation {
             ptr: self.ptr,
             size: self.size,
-            info: self.info.clone(),
         };
         
         if let Err(e) = self.backend.free(allocation) {

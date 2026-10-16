@@ -411,9 +411,9 @@ impl StatisticsAnalyzer {
 // ============================================================================
 
 use crate::memory::{MemoryAllocator, MemoryBuffer};
-use crate::memory::allocator::{AllocationConfig, PageSizePreference};
+use crate::memory::allocator::{AllocationConfig, PageSizeLevel, PageSizePreference};
 use crate::memory::backend::BackendType;
-use crate::memory::buffer::{MemoryType, PageType};
+use crate::memory::buffer::MemoryType;
 use std::time::Instant;
 
 #[cfg(target_arch = "x86_64")]
@@ -457,15 +457,15 @@ impl ProbeEngine {
         let page_pref = match page_size_str.to_lowercase().as_str() {
             "regular" | "4kb" => {
                 log::info!("ProbeEngine: Using regular 4KB pages");
-                PageSizePreference::Prefer(PageType::Regular(4096))
+                PageSizePreference::Prefer(PageSizeLevel::Regular)
             }
             "huge" | "1gb" => {
                 log::info!("ProbeEngine: Using huge 1GB pages");
-                PageSizePreference::Prefer(PageType::Huge(1024 * 1024 * 1024))
+                PageSizePreference::Prefer(PageSizeLevel::Huge)
             }
             _ => {
                 log::info!("ProbeEngine: Using large 2MB pages");
-                PageSizePreference::Prefer(PageType::Large(2 * 1024 * 1024))
+                PageSizePreference::Prefer(PageSizeLevel::Large)
             }
         };
 
@@ -474,7 +474,7 @@ impl ProbeEngine {
         // A large-page request gets its page size from its alignment: without it the kernel
         // silently gives smaller pages (TODO 87). A fallback to smaller pages keeps it, over-aligned.
         let alignment = match &page_pref {
-            PageSizePreference::Prefer(PageType::Huge(size)) | PageSizePreference::Prefer(PageType::Large(size)) => Some(*size),
+            PageSizePreference::Prefer(page @ (PageSizeLevel::Huge | PageSizeLevel::Large)) => Some(page.bytes()),
             _ => None,
         };
         let config = AllocationConfig {
@@ -487,7 +487,7 @@ impl ProbeEngine {
             numa_strict: false,
         };
 
-        let mut allocator = MemoryAllocator::new(BackendType::Auto)?;
+        let allocator = MemoryAllocator::new(BackendType::Auto)?;
         match allocator.allocate(&config) {
             Ok(buffer) => {
                 // Setup pointer-chase pattern

@@ -189,7 +189,8 @@ pub static SHUTDOWN_REQUESTED: AtomicBool = AtomicBool::new(false);
 // Represents: Physical memory allocated from the OS for testing
 #[derive(Debug)]
 pub struct AllocationBlock {
-    pub buffer: MemoryBuffer,  // Contains BufferInfo with numa_node, page_type, etc.
+    /// The thread's span: its start and length (the allocator's record says what it is on)
+    pub buffer: MemoryBuffer,
 }
 
 // Test definition with display name support
@@ -4754,7 +4755,6 @@ mod tests {
     use super::*;
     use crate::memory::allocator::AllocationConfig;
     use crate::memory::backend::{AllocError, Backend, BackendAllocation};
-    use crate::memory::buffer::{BufferInfo, PageType};
 
     /// Blocks over a heap buffer the test owns: nothing to allocate or free.
     #[derive(Debug)]
@@ -4796,7 +4796,6 @@ mod tests {
                         BackendAllocation {
                             ptr: unsafe { mem.add(at) },
                             size,
-                            info: BufferInfo { page_type: PageType::Large(size) },
                         },
                         backend.clone(),
                     ),
