@@ -488,7 +488,7 @@ a node draw from one page pool, and fairness is judged within it:
   │ reserve one placeholder, carve a 1 GiB-aligned slice per thread         │
   │ request = any multiple of the floor ≤ request size and the thread's gap │
   │ commit = split, free, allocate at that address (never REPLACE: 26100)   │
-  │ neighbouring commits merge; each run is cut into power-of-two blocks    │
+  │ neighbouring commits merge; each thread's span is handed out whole      │
   └─────────────────────────────────────────────────────────────────────────┘
 ```
 
@@ -500,8 +500,9 @@ line per refusal.
 No request is bigger than the gap of the thread it is for, so nothing is over-allocated and
 nothing is freed. At the default `hugechunk=1GiB` a node's threads end at most one 1 GiB page
 apart. A bigger `hugechunk` makes fewer requests, and the threads can end about one `hugechunk`
-apart. The commits merge, so a thread's 1 GiB pages come out as one large power-of-two block; the
-blocks record each part's page size and node, and the tests see the span as one extent (TODO 76).
+apart. The commits merge, and each thread gets its span as one block, its start and length; the
+tests see it as one extent (TODO 76). Its page sizes and nodes are the allocation report's and the
+results file's, from the allocator's record (TODO 81), not the block's.
 (plan-pagesize-pref, which made every request its own block, was removed in TODO 76.)
 
 **NUMA.** Each node's threads draw on that node's pools. 1 GiB and 2 MiB requests name the node

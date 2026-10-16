@@ -88,27 +88,6 @@ pub fn extent(blocks: &[AllocationBlock], extent: usize) -> TestBlock<'_> {
     TestBlock::in_blocks(blocks, first.buffer.as_mut_ptr(), extent.min(span) / GRANULE * GRANULE)
 }
 
-/// Bytes of `[ptr, ptr + len)` on 1 GiB, 2 MiB and 4 KiB pages, and the NUMA nodes it lies on.
-fn page_mix(blocks: &[AllocationBlock], ptr: *mut u8, len: usize) -> ([usize; 3], Vec<u32>) {
-    let (start, end) = (ptr as usize, ptr as usize + len);
-    let mut mix = [0usize; 3];
-    let mut nodes = Vec::new();
-    for block in blocks {
-        let b_start = block.buffer.as_mut_ptr() as usize;
-        let b_end = b_start + block.buffer.size();
-        let overlap = end.min(b_end).saturating_sub(start.max(b_start));
-        if overlap > 0 {
-            let kind = if block.buffer.uses_huge_pages() { 0 } else if block.buffer.uses_large_pages() { 1 } else { 2 };
-            mix[kind] += overlap;
-            let node = block.buffer.info().numa_node;
-            if !nodes.contains(&node) {
-                nodes.push(node);
-            }
-        }
-    }
-    (mix, nodes)
-}
-
 /// A size for log lines: "880 MiB", "293.33 MiB", "64 KiB".
 pub fn size_str(bytes: usize) -> String {
     const MIB: usize = 1024 * 1024;
@@ -120,25 +99,15 @@ pub fn size_str(bytes: usize) -> String {
     }
 }
 
-/// The extent for the per-thread log line, with its page sizes and chunks: `880 MiB 1G (2 x 440
-/// MiB)`, or across a page-size seam `1136 MiB 1G 1024 MiB/2M 112 MiB (3 x 440 MiB, 184 MiB
-/// overlap)`. An extent on more than one NUMA node ends in `nodes 0+1`.
-pub fn describe_extent(blocks: &[AllocationBlock], extent: &TestBlock<'_>, spread: ChunkSpread) -> String {
-    const NAMES: [&str; 3] = ["1G", "2M", "4K"];
-    let (mix, nodes) = page_mix(blocks, extent.ptr, extent.test_size);
-    let kinds: Vec<usize> = (0..3).filter(|&k| mix[k] > 0).collect();
-    let pages = if kinds.len() == 1 {
-        NAMES[kinds[0]].to_string()
-    } else {
-        kinds.iter().map(|&k| format!("{} {}", NAMES[k], size_str(mix[k]))).collect::<Vec<_>>().join("/")
+/// The chunks for the per-thread log line: `2 x 440 MiB chunks, overlap 0`, or `3 x 440 MiB
+/// chunks, overlap 184 MiB` when they don't divide the extent and overlap to cover it. Page sizes
+/// and nodes are the allocation report's, printed once a run.
+pub fn describe_chunks(spread: ChunkSpread) -> String {
+    let overlap = match spread.overlap() {
+        0 => "0".to_string(),
+        bytes => size_str(bytes),
     };
-    let overlap = if spread.overlap() > 0 { format!(", {} overlap", size_str(spread.overlap())) } else { String::new() };
-    let nodes = if nodes.len() > 1 {
-        format!(" nodes {}", nodes.iter().map(|n| n.to_string()).collect::<Vec<_>>().join("+"))
-    } else {
-        String::new()
-    };
-    format!("{} {} ({} x {}{overlap}){nodes}", size_str(extent.test_size), pages, spread.count(), size_str(spread.chunk()))
+    format!("{} x {} chunks, overlap {overlap}", spread.count(), size_str(spread.chunk()))
 }
 
 #[cfg(test)]
@@ -174,7 +143,7 @@ mod tests {
         spec.iter().map(|&(size, page)| {
             let block = AllocationBlock {
                 buffer: MemoryBuffer::new(
-                    BackendAllocation { ptr: at as *mut u8, size, info: BufferInfo { numa_node: 0, page_type: page(size) } },
+                    BackendAllocation { ptr: at as *mut u8, size, info: BufferInfo { page_type: page(size) } },
                     backend.clone(),
                 ),
             };
@@ -199,11 +168,9 @@ mod tests {
     }
 
     #[test]
-    fn the_extent_reports_its_page_sizes_across_a_seam() {
-        let span = blocks(1 << 40, &[(GIB, PageType::Huge), (256 * MIB, PageType::Large)]);
-        let e = extent(&span, GIB + 112 * MIB);
-        let line = describe_extent(&span, &e, ChunkSpread::new(e.test_size, 440 * MIB));
-        assert_eq!(line, "1136 MiB 1G 1024 MiB/2M 112 MiB (3 x 440 MiB, 184 MiB overlap)");
+    fn the_log_line_gives_the_chunks_and_their_overlap() {
+        assert_eq!(describe_chunks(ChunkSpread::new(880 * MIB, 440 * MIB)), "2 x 440 MiB chunks, overlap 0");
+        assert_eq!(describe_chunks(ChunkSpread::new(GIB + 112 * MIB, 440 * MIB)), "3 x 440 MiB chunks, overlap 184 MiB");
         assert_eq!(size_str(293 * MIB + MIB / 3), "293.33 MiB");
         assert_eq!(size_str(64 * 1024), "64 KiB");
     }

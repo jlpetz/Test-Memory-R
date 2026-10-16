@@ -4,7 +4,7 @@
 //!
 //! The stitched allocator (`stitched.rs`) commits into one placeholder slice per thread;
 //! neighbouring commits of one page size merge into a single run, so a request can be any
-//! multiple of the floor, and the run is cut into power-of-two blocks only when it is handed out.
+//! multiple of the floor, and each thread's span is handed out whole.
 //! It implements [`Fill`] and runs the passes of [`fill_all`]. (A second implementation,
 //! plan-pagesize-pref, one `VirtualAlloc2` block per request, went in TODO 76; `Fill` is the seam
 //! another would take.)
@@ -409,11 +409,6 @@ pub(crate) fn hard_error_hint(page: PageSizeLevel) -> &'static str {
     }
 }
 
-/// The largest power of two at most `len` (`len > 0`).
-pub(crate) fn prev_power_of_two(len: usize) -> usize {
-    1 << (usize::BITS - 1 - len.leading_zeros())
-}
-
 pub(crate) fn page_label(page: PageSizeLevel) -> &'static str {
     match page {
         PageSizeLevel::Huge => "1GB huge",
@@ -475,6 +470,11 @@ mod tests {
     use super::*;
 
     const GIB: usize = HUGE_PAGE_SIZE_USIZE;
+
+    /// The largest power of two at most `len` (`len > 0`): the fake's request sizes.
+    fn prev_power_of_two(len: usize) -> usize {
+        1 << (usize::BITS - 1 - len.leading_zeros())
+    }
 
     /// Threads with equal targets drawing on per-node pools of 1 GiB pages; requests are
     /// recorded in order as (thread index, bytes, granted).

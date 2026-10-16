@@ -925,6 +925,12 @@ pub fn run_tests_with_layout_and_timing_filtered(
             }
         };
 
+    // The results file's page mix and request counts, from the spans, before the report takes
+    // them. Outcomes, not requests: 1 GiB pages come only when physical memory is contiguous enough.
+    let page_mix = crate::run_context::PageSizeMix::from_spans(&spans);
+    let requests: usize = spans.iter().map(|s| s.commits.len()).sum();
+    let refused = spans.iter().flat_map(|s| &s.commits).filter(|c| c.refused).count();
+
     // The allocation report (TODO 81). The request record goes with it.
     {
         use crate::reporting::{create_console_reporter, converters};
@@ -965,11 +971,9 @@ pub fn run_tests_with_layout_and_timing_filtered(
 
     let thread_priority = ThreadPriority::default();
 
-    // Tally the page-size mix and the real allocated total while we still own the blocks —
-    // `ThreadPool::new` takes them by value below. Both are *outcomes*, not requests: the
-    // allocator takes 1 GB pages only when physical memory is contiguous enough, and a partially
-    // satisfied request still runs, so neither can be derived from `layout.allocation_result`.
-    let page_mix = crate::run_context::PageSizeMix::from_blocks(&allocated_blocks);
+    // The real allocated total while we still own the blocks (`ThreadPool::new` takes them by value
+    // below). An outcome: a partially satisfied request still runs, so it can't come from
+    // `layout.allocation_result`.
     let allocated_bytes: u64 = allocated_blocks
         .values()
         .flat_map(|blocks| blocks.iter())
@@ -1000,6 +1004,8 @@ pub fn run_tests_with_layout_and_timing_filtered(
             strategy: &layout.strategy,
             runtime_config: &runtime_config,
             page_mix,
+            requests,
+            refused,
             allocated_bytes,
             thread_count,
             cpu_assignments: thread_pool.get_cpu_assignments(),
@@ -1088,14 +1094,12 @@ pub fn run_tests_with_layout_and_timing_filtered(
     let (thread_blocks, cpu_assignments) = thread_pool.shutdown();
 
     // Calculate total memory to be freed for logging
-    let total_blocks: usize = thread_blocks.values().map(|v| v.len()).sum();
     let total_bytes: usize = thread_blocks.values()
         .flat_map(|blocks| blocks.iter())
         .map(|block| block.buffer.size())
         .sum();
 
-    log::info!("Freeing {} memory blocks ({:.2} GiB) across {} threads",
-        total_blocks,
+    log::info!("Freeing {:.2} GiB across {} threads",
         total_bytes as f64 / (1024.0 * 1024.0 * 1024.0),
         thread_blocks.len());
 
@@ -4792,7 +4796,7 @@ mod tests {
                         BackendAllocation {
                             ptr: unsafe { mem.add(at) },
                             size,
-                            info: BufferInfo { numa_node: 0, page_type: PageType::Large(size) },
+                            info: BufferInfo { page_type: PageType::Large(size) },
                         },
                         backend.clone(),
                     ),
@@ -4843,8 +4847,7 @@ mod tests {
     /// written outside the region (guard zones), and the correctness tests leave no extent word
     /// untouched, so nothing is skipped. That also checks that a test the harness doesn't fill,
     /// because it writes first, really writes every word. Every chunk is exactly 68 KiB: a
-    /// Bench-Init writes first, so its bytes are 10 x 68 KiB per write pass. (The Spd-* bandwidth
-    /// tests still take power-of-two blocks.)
+    /// Bench-Init writes first, so its bytes are 10 x 68 KiB per write pass.
     #[test]
     fn built_in_tests_run_clean_on_joined_blocks() {
         let mut region = Region::new(&[256 * KIB, 256 * KIB, 128 * KIB]);

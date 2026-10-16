@@ -64,8 +64,8 @@
 //!
 //! # Handing memory out
 //!
-//! Committed runs become power-of-two [`AllocationBlock`]s whose `MemoryBuffer`s all
-//! point back at the arena as their `Backend`. Dropping a buffer releases nothing; the arena
+//! Each thread's span becomes one [`AllocationBlock`] whose `MemoryBuffer` points back at the
+//! arena as its `Backend`. Dropping a buffer releases nothing; the arena
 //! releases every piece (each commit and each placeholder is its own VAD and needs its own
 //! `VirtualFree`) once the last buffer drops its `Arc`.
 //!
@@ -85,9 +85,9 @@ use crate::memory::backend::{
     AllocError, Backend, BackendAllocation, ERROR_INVALID_ADDRESS, NUMA_NODE_MANDATORY,
     describe_error, is_exhaustion,
 };
-use crate::memory::buffer::{BufferInfo, MemoryBuffer, PageType};
+use crate::memory::buffer::{BufferInfo, MemoryBuffer, PageInfo, PageType};
 use crate::memory::fill::{
-    self, Fill, Grant, PageSizes, node_label, page_label, prev_power_of_two, size_label,
+    self, Fill, Grant, PageSizes, node_label, page_label, size_label,
 };
 use crate::{AllocationBlock, BlockInfo};
 
@@ -164,8 +164,8 @@ pub struct StitchRequest {
     /// 2 MiB pages ask the others in turn, by name (`fill::fill_all`).
     pub numa_nodes: u32,
     /// Every thread size is rounded down to a multiple of this and every LARGE commit is one, so
-    /// no run (and no `PowerOfTwo` block) is smaller. A power of two, 2 MiB ..= 1 GiB; the default
-    /// 16 MiB is TMR's smallest planned block.
+    /// no run is smaller. A power of two, 2 MiB ..= 1 GiB; the default 16 MiB is TMR's smallest
+    /// planned block.
     pub run_quantum: usize,
 }
 
@@ -1123,7 +1123,7 @@ impl<V: VmOps> StitchedArena<V> {
 
 /// stitched's side of `fill::Fill`: a request is a commit at the slice's cursor. Neighbouring
 /// commits of one page size merge into a single run, so a commit can be any multiple of the floor;
-/// the run is cut into power-of-two blocks only when it is handed out.
+/// the span is handed out whole.
 impl<V: VmOps> Fill for StitchedArena<V> {
     fn thread_count(&self) -> usize {
         self.slices.len()
@@ -1274,61 +1274,57 @@ impl<V: VmOps + Send + Sync + std::fmt::Debug + 'static> Backend for StitchedAre
 // Handing out blocks
 // ---------------------------------------------------------------------------------------------
 
-/// `len` as powers of two, largest first (its binary digits).
-fn power_of_two_split(mut len: usize) -> Vec<usize> {
-    let mut sizes = Vec::new();
-    while len > 0 {
-        let size = prev_power_of_two(len);
-        sizes.push(size);
-        len -= size;
+/// The page type the backend's buffer type needs for a span: its one page size, or `Mixed` (a
+/// segmented allocation) when it has several. Nothing reads it while the tests run; the page sizes
+/// are the allocation report's and the results file's, from the spans.
+fn span_page_type(span: &ThreadSpan) -> PageType {
+    let used: Vec<PageSizeLevel> = [PageSizeLevel::Huge, PageSizeLevel::Large, PageSizeLevel::Regular]
+        .into_iter()
+        .filter(|&page| span.bytes_at(page) > 0)
+        .collect();
+    let page_bytes = |page| match page {
+        PageSizeLevel::Huge => HUGE,
+        PageSizeLevel::Large => LARGE,
+        PageSizeLevel::Regular => crate::constants::PAGE_SIZE_4KB,
+    };
+    match used.as_slice() {
+        [PageSizeLevel::Huge] => PageType::Huge(span.len),
+        [PageSizeLevel::Large] => PageType::Large(span.len),
+        [_] | [] => PageType::Regular(span.len),
+        _ => PageType::Mixed(
+            used.iter()
+                .map(|&page| PageInfo {
+                    size_kb: (page_bytes(page) / 1024) as u32,
+                    count: span.bytes_at(page) / page_bytes(page),
+                })
+                .collect(),
+        ),
     }
-    sizes
 }
 
-fn single_page_type(page: PageSizeLevel, size: usize) -> PageType {
-    match page {
-        PageSizeLevel::Huge => PageType::Huge(size),
-        PageSizeLevel::Large => PageType::Large(size),
-        PageSizeLevel::Regular => PageType::Regular(size),
-    }
-}
-
-/// Cut each thread's span into `AllocationBlock`s, in address order: every same-page-size run split
-/// into power-of-two blocks, largest first, each ending where the next begins. The tests see the
-/// span as one extent (`test_memory::extent`, TODO 76); the blocks record each part's page size
-/// and node. The buffers are views: they share `arena` as their backend, and the memory is
-/// released when the last of them drops.
+/// Each thread's span as one block: its start and length, a view sharing `arena` as its backend.
+/// The memory is released when the last view drops. The tests take the span as one extent
+/// (`test_memory::extent`, TODO 76).
 pub fn into_allocation_blocks<V>(arena: Arc<StitchedArena<V>>) -> HashMap<usize, Vec<AllocationBlock>>
 where
     V: VmOps + Send + Sync + std::fmt::Debug + 'static,
 {
     let backend: Arc<dyn Backend> = arena.clone();
-    let mut out = HashMap::new();
-    for span in arena.spans() {
-        let mut blocks = Vec::new();
-        for run in &span.runs {
-            let numa_node = run.numa_node.or(span.numa_node).unwrap_or(0);
-            let mut addr = span.base + run.offset;
-            for size in power_of_two_split(run.len) {
-                blocks.push(AllocationBlock {
-                    buffer: MemoryBuffer::new(
-                        BackendAllocation {
-                            ptr: addr as *mut u8,
-                            size,
-                            info: BufferInfo {
-                                numa_node,
-                                page_type: single_page_type(run.page, size),
-                            },
-                        },
-                        backend.clone(),
-                    ),
-                });
-                addr += size;
-            }
-        }
-        out.insert(span.thread_id, blocks);
-    }
-    out
+    arena
+        .spans()
+        .into_iter()
+        .map(|span| {
+            let buffer = MemoryBuffer::new(
+                BackendAllocation {
+                    ptr: span.base as *mut u8,
+                    size: span.len,
+                    info: BufferInfo { page_type: span_page_type(&span) },
+                },
+                backend.clone(),
+            );
+            (span.thread_id, vec![AllocationBlock { buffer }])
+        })
+        .collect()
 }
 
 // ---------------------------------------------------------------------------------------------
@@ -2224,17 +2220,7 @@ mod tests {
     }
 
     #[test]
-    fn power_of_two_split_is_the_binary_digits() {
-        assert_eq!(
-            power_of_two_split(3 * GIB + 48 * MIB),
-            vec![2 * GIB, GIB, 32 * MIB, 16 * MIB]
-        );
-        assert_eq!(power_of_two_split(GIB), vec![GIB]);
-        assert!(power_of_two_split(0).is_empty());
-    }
-
-    #[test]
-    fn blocks_tile_each_span_and_free_the_arena_last() {
+    fn each_span_is_one_block_and_frees_the_arena_last() {
         let vm = FakeVm::default();
         vm.state().huge_pages.insert(None, 3);
         vm.state().large_bytes.insert(None, 512 * MIB);
@@ -2244,16 +2230,11 @@ mod tests {
 
         let blocks = into_allocation_blocks(arena.clone());
         for span in &spans {
-            let mut addr = span.base;
-            for block in &blocks[&span.thread_id] {
-                assert_eq!(block.buffer.as_mut_ptr() as usize, addr);
-                assert!(block.buffer.size().is_power_of_two());
-                assert!(block.buffer.size() >= 16 * MIB);
-                addr += block.buffer.size();
-            }
-            assert_eq!(addr, span.base + span.len);
-            // The blocks tile the span, so the extent can take all of it (TODO 76)
-            let extent = crate::test_memory::extent(&blocks[&span.thread_id], usize::MAX);
+            let block = &blocks[&span.thread_id];
+            assert_eq!(block.len(), 1);
+            assert_eq!((block[0].buffer.as_mut_ptr() as usize, block[0].buffer.size()), (span.base, span.len));
+            // The extent can take all of it (TODO 76)
+            let extent = crate::test_memory::extent(block, usize::MAX);
             assert_eq!((extent.ptr as usize, extent.test_size), (span.base, span.len));
         }
 

@@ -162,10 +162,7 @@ impl Backend for WindowsBackend {
             PageType::Regular(size)
         };
         
-        let info = BufferInfo {
-            numa_node: config.numa_node.unwrap_or(0),
-            page_type,
-        };
+        let info = BufferInfo { page_type };
         
         Ok(BackendAllocation {
             ptr,

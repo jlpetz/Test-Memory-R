@@ -20,7 +20,6 @@ pub struct MemoryBuffer {
 
 #[derive(Debug, Clone)]
 pub struct BufferInfo {
-    pub numa_node: u32,
     pub page_type: PageType,
 }
 
@@ -105,28 +104,6 @@ impl MemoryBuffer {
         self.size 
     }
     
-    pub fn info(&self) -> &BufferInfo { 
-        &self.info 
-    }
-    
-    
-    /// Check if this buffer uses large pages (2MB or larger)
-    pub fn uses_large_pages(&self) -> bool {
-        match &self.info.page_type {
-            PageType::Large(_) | PageType::Huge(_) => true,
-            PageType::Mixed(pages) => pages.iter().any(|p| p.size_kb >= 2048),
-            PageType::Regular(_) => false,
-        }
-    }
-    
-    /// Check if this buffer uses huge pages (1GB)
-    pub fn uses_huge_pages(&self) -> bool {
-        match &self.info.page_type {
-            PageType::Huge(_) => true,
-            PageType::Mixed(pages) => pages.iter().any(|p| p.size_kb >= 1048576),
-            _ => false,
-        }
-    }
 }
 
 impl Drop for MemoryBuffer {

@@ -288,7 +288,12 @@ pub struct MemorySnapshot {
     pub allocated_gib: f64,
     #[serde(serialize_with = "serialize_round_2dp")]
     pub per_thread_gib: f64,
-    pub blocks_allocated: usize,
+    /// The requests the allocator made to Windows, and how many it refused (the allocation
+    /// report's Requests and Refused); absent from results written before them.
+    #[serde(default)]
+    pub requests: usize,
+    #[serde(default)]
+    pub refused: usize,
 
     /// The API that allocated the memory. The page sizes it actually got are `page_mix`.
     pub backend: String,
@@ -310,9 +315,6 @@ pub struct MemorySnapshot {
 /// runs with identical totals are not automatically comparable** — this is what says so.
 #[derive(Debug, Clone, Serialize, Deserialize, Default)]
 pub struct PageSizeMix {
-    pub huge_1gib_blocks: usize,
-    pub large_2mib_blocks: usize,
-    pub regular_4kib_blocks: usize,
     #[serde(serialize_with = "serialize_round_2dp")]
     pub huge_1gib_gib: f64,
     #[serde(serialize_with = "serialize_round_2dp")]
@@ -322,56 +324,29 @@ pub struct PageSizeMix {
 }
 
 impl PageSizeMix {
-    /// Tally page types across every allocated block.
-    ///
-    /// Takes the allocator's per-thread map and flattens it: the mix is a whole-run property
+    /// The whole run's bytes on each page size, from the allocator's spans: a whole-run property,
     /// because it is driven by physical contiguity, not by thread.
-    ///
-    /// Must be called **before** the blocks are moved into `ThreadPool::new` — after that the
-    /// runner no longer owns them.
-    pub fn from_blocks(
-        thread_blocks: &std::collections::HashMap<usize, Vec<crate::runner::AllocationBlock>>,
-    ) -> Self {
-        let mut mix = Self::default();
-        for blocks in thread_blocks.values() {
-            for block in blocks {
-                let bytes = block.buffer.size() as u64;
-                if block.buffer.uses_huge_pages() {
-                    mix.huge_1gib_blocks += 1;
-                    mix.huge_1gib_gib += to_gib(bytes);
-                } else if block.buffer.uses_large_pages() {
-                    mix.large_2mib_blocks += 1;
-                    mix.large_2mib_gib += to_gib(bytes);
-                } else {
-                    mix.regular_4kib_blocks += 1;
-                    mix.regular_4kib_gib += to_gib(bytes);
-                }
-            }
+    pub fn from_spans(spans: &[crate::memory::stitched::ThreadSpan]) -> Self {
+        use crate::memory::allocator::PageSizeLevel;
+        let gib = |page| to_gib(spans.iter().map(|s| s.bytes_at(page) as u64).sum());
+        Self {
+            huge_1gib_gib: gib(PageSizeLevel::Huge),
+            large_2mib_gib: gib(PageSizeLevel::Large),
+            regular_4kib_gib: gib(PageSizeLevel::Regular),
         }
-        mix
     }
 
-    /// Compact one-line summary for console/report use, e.g. `"1 × 1GB huge, 27 × 2MB large"`.
+    /// Compact one-line summary, e.g. `"18.00 GiB 1 GiB pages, 10.00 GiB 2 MiB pages"`.
     pub fn describe(&self) -> String {
-        let mut parts = Vec::new();
-        if self.huge_1gib_blocks > 0 {
-            parts.push(format!(
-                "{} block(s) 1GB huge ({:.2} GiB)",
-                self.huge_1gib_blocks, self.huge_1gib_gib
-            ));
-        }
-        if self.large_2mib_blocks > 0 {
-            parts.push(format!(
-                "{} block(s) 2MB large ({:.2} GiB)",
-                self.large_2mib_blocks, self.large_2mib_gib
-            ));
-        }
-        if self.regular_4kib_blocks > 0 {
-            parts.push(format!(
-                "{} block(s) 4KB regular ({:.2} GiB)",
-                self.regular_4kib_blocks, self.regular_4kib_gib
-            ));
-        }
+        let parts: Vec<String> = [
+            (self.huge_1gib_gib, "1 GiB"),
+            (self.large_2mib_gib, "2 MiB"),
+            (self.regular_4kib_gib, "4 KiB"),
+        ]
+        .iter()
+        .filter(|&&(gib, _)| gib > 0.0)
+        .map(|&(gib, page)| format!("{gib:.2} GiB {page} pages"))
+        .collect();
         if parts.is_empty() {
             "none".to_string()
         } else {
@@ -524,8 +499,11 @@ pub struct RunConfigInputs<'a> {
     /// `layout.strategy` — the parsed `memory=` spec.
     pub strategy: &'a crate::memory::allocation_strategy::EnhancedMemoryStrategy,
     pub runtime_config: &'a crate::RuntimeConfig,
-    /// Tallied from the blocks that actually came back, so it reflects the outcome.
+    /// From the allocator's spans, so it reflects the outcome.
     pub page_mix: PageSizeMix,
+    /// The requests made to Windows, and how many were refused.
+    pub requests: usize,
+    pub refused: usize,
     pub allocated_bytes: u64,
     pub thread_count: usize,
     pub cpu_assignments: &'a [crate::thread_pool::CpuAssignment],
@@ -552,6 +530,8 @@ impl RunConfigSnapshot {
             strategy,
             runtime_config,
             page_mix,
+            requests,
+            refused,
             allocated_bytes,
             thread_count,
             cpu_assignments,
@@ -582,9 +562,8 @@ impl RunConfigSnapshot {
             } else {
                 0.0
             },
-            blocks_allocated: page_mix.huge_1gib_blocks
-                + page_mix.large_2mib_blocks
-                + page_mix.regular_4kib_blocks,
+            requests,
+            refused,
             backend: format!("{:?}", runtime_config.memory_backend),
             large_pages_available: runtime_config.large_pages_available,
             min_page_size: runtime_config.memory_allocation.min_page_size.clone(),
@@ -978,10 +957,7 @@ pub fn compare_config(b: &RunConfigSnapshot, c: &RunConfigSnapshot) -> Vec<RunDi
         ));
     }
 
-    if b.memory.page_mix.huge_1gib_blocks != c.memory.page_mix.huge_1gib_blocks
-        || b.memory.page_mix.large_2mib_blocks != c.memory.page_mix.large_2mib_blocks
-        || b.memory.page_mix.regular_4kib_blocks != c.memory.page_mix.regular_4kib_blocks
-    {
+    if b.memory.page_mix.describe() != c.memory.page_mix.describe() {
         // Not a config difference — an environment one. The allocator takes what physical
         // contiguity allows, so this varies with uptime even for an identical command line.
         diffs.push(RunDifference::new(
@@ -1234,16 +1210,13 @@ mod tests {
     #[test]
     fn page_mix_describes_every_kind_used() {
         let mut mix = PageSizeMix {
-            huge_1gib_blocks: 1,
             huge_1gib_gib: 1.0,
             ..Default::default()
         };
-        assert!(mix.describe().contains("1GB huge"));
+        assert_eq!(mix.describe(), "1.00 GiB 1 GiB pages");
 
-        mix.large_2mib_blocks = 27;
         mix.large_2mib_gib = 54.0;
-        let described = mix.describe();
-        assert!(described.contains("1GB huge") && described.contains("2MB large"));
+        assert_eq!(mix.describe(), "1.00 GiB 1 GiB pages, 54.00 GiB 2 MiB pages");
 
         assert_eq!(PageSizeMix::default().describe(), "none");
     }
@@ -1254,8 +1227,8 @@ mod tests {
         // rather than disqualify — otherwise every long-uptime run "invalidates" the last one.
         let mut a = config_with(3.0, 8);
         let mut b = config_with(3.0, 8);
-        a.memory.page_mix.huge_1gib_blocks = 8;
-        b.memory.page_mix.large_2mib_blocks = 8;
+        a.memory.page_mix.huge_1gib_gib = 8.0;
+        b.memory.page_mix.large_2mib_gib = 8.0;
         let diffs = compare_config(&a, &b);
         assert!(diffs.iter().any(|d| d.field == "Page-size mix"));
         assert!(!diffs.iter().any(|d| d.invalidates));

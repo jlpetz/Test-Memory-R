@@ -119,15 +119,15 @@ impl<'a> TestRunner<'a> {
         // Log the registration name (carries the `_A` auto-dispatch suffix and distinguishes
         // registrations that share one test fn, e.g. Mem-StuckBit-Flush128); fall back to the
         // fn's baked-in name. Sizing above still keys off `test_name` — do not swap that.
-        // Each piece is listed with its page sizes and chunks (Mem-Random's chunks are RNG
+        // What it covers, the extent asked for, and the chunks (Mem-Random's chunks are RNG
         // iterations, not these byte ranges).
         let log_name = config.display_name.as_deref().unwrap_or(test_name);
         log::info!(
-            "[Thread {}] Running {} on {} (extent {}): {}",
+            "[Thread {}] Running {} on {} (extent {}), {}",
             thread_id, log_name,
             crate::test_memory::size_str(total_test_size),
             crate::test_memory::size_str(extent_size),
-            crate::test_memory::describe_extent(blocks, &extent, runner.chunks(total_test_size)),
+            crate::test_memory::describe_chunks(runner.chunks(total_test_size)),
         );
         (runner, extent)
     }
