@@ -466,6 +466,23 @@ pub struct TestConfigSnapshot {
     pub extent_mode: String,
     /// Stage-3 iteration unit within the extent.
     pub chunk_mode: String,
+    /// What those came to, on the thread with the least memory (threads differ only when
+    /// allocation fell short, which the allocation report flags): the bytes covered, the chunk,
+    /// how many chunks, and how much they overlap to cover the extent.
+    #[serde(default)]
+    pub extent_bytes: u64,
+    #[serde(default)]
+    pub chunk_bytes: u64,
+    #[serde(default)]
+    pub chunks: usize,
+    #[serde(default)]
+    pub overlap_bytes: u64,
+    /// The test's limits: it stops at whichever comes first (none: no such limit). The cycles a
+    /// step completed, and which limit ended it, are in its result.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub cycle_limit: Option<u32>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub time_limit_secs: Option<u32>,
     pub verify_reps: u32,
     pub test_reps: u32,
     pub write_read_cycles: u32,
@@ -503,6 +520,8 @@ pub struct RunConfigInputs<'a> {
     /// The requests made to Windows, and how many were refused.
     pub requests: usize,
     pub refused: usize,
+    /// The smallest thread's memory, which the tests' resolved layouts are worked out on.
+    pub thread_memory_least: usize,
     pub allocated_bytes: u64,
     pub thread_count: usize,
     pub cpu_assignments: &'a [crate::thread_pool::CpuAssignment],
@@ -531,6 +550,7 @@ impl RunConfigSnapshot {
             page_mix,
             requests,
             refused,
+            thread_memory_least,
             allocated_bytes,
             thread_count,
             cpu_assignments,
@@ -637,7 +657,10 @@ page_mix,
         use crate::reporting::formatters::ReportFormatter;
         let tests = tests
             .iter()
-            .map(|def| TestConfigSnapshot {
+            .map(|def| {
+                let layout = crate::test_memory::resolve_layout(&def.config, def.actual_name, thread_memory_least);
+                let (extent, spread) = layout.map_or((0, None), |(extent, spread)| (extent, Some(spread)));
+                TestConfigSnapshot {
                 name: def.display_name.clone(),
                 function: def.actual_name.to_string(),
                 extent_mode: formatter.format_extent_mode_with_size(
@@ -661,7 +684,13 @@ page_mix,
                     .map(|s| format!("{} (order {})", s.name(), s.order.name())),
                 flush_before_verify: def.config.flush_before_verify,
                 skip_init: def.config.skip_init,
-            })
+                extent_bytes: extent as u64,
+                chunk_bytes: spread.as_ref().map_or(0, |s| s.chunk() as u64),
+                chunks: spread.as_ref().map_or(0, |s| s.count()),
+                overlap_bytes: spread.as_ref().map_or(0, |s| s.overlap() as u64),
+                cycle_limit: def.config.timing.cycles,
+                time_limit_secs: def.config.timing.duration_secs,
+            }})
             .collect();
 
         Self {

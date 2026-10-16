@@ -86,6 +86,12 @@ pub struct TestSummary {
     pub name: String,
     pub duration_ms: u128,
     pub bytes_processed: u64,
+    /// Passes over its extent the step's threads completed, the fewest and the most (threads on a
+    /// time limit can differ), and what ended it: `"cycles"` (its cycle limit), `"time"` (its time
+    /// limit) or `"stopped"` (errors=halt, Ctrl+C, or a test that ends without either). `None`
+    /// for a step that didn't run.
+    pub cycles_completed: (u32, u32),
+    pub stopped_by: Option<&'static str>,
     pub throughput_mib_s: f64,
     pub errors: u64,
     /// The test's failed checks, and of those the ones its rescans didn't reproduce (TODO 27):

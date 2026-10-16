@@ -1003,6 +1003,7 @@ pub fn run_tests_with_layout_and_timing_filtered(
             page_mix,
             requests,
             refused,
+            thread_memory_least: allocated.iter().copied().min().unwrap_or(0),
             allocated_bytes,
             thread_count,
             cpu_assignments: thread_pool.get_cpu_assignments(),
@@ -1293,6 +1294,8 @@ fn execute_test_cycle(ctx: &CycleContext, cycle: u64) -> Option<RunOutcome> {
                     name: test_display_name.to_string(),
                     duration_ms: 0,
                     bytes_processed: 0,
+                    cycles_completed: (0, 0),
+                    stopped_by: None,
                     throughput_mib_s: 0.0,
                     errors: 0,
                     alarms: 0,
@@ -1330,6 +1333,7 @@ fn execute_test_cycle(ctx: &CycleContext, cycle: u64) -> Option<RunOutcome> {
 		let mut timed_for_test: Option<std::time::Duration> = None;
 		let mut total_operations_for_test = 0u64;
 		let mut cycles_completed = 0u32;
+		let mut cycles_fewest = u32::MAX;
 		let mut cycle_limit: Option<u32> = None;
 		let mut stopped_by_time_limit = false;
 
@@ -1367,6 +1371,7 @@ fn execute_test_cycle(ctx: &CycleContext, cycle: u64) -> Option<RunOutcome> {
 					if result.cycles_completed > cycles_completed {
 						cycles_completed = result.cycles_completed;
 					}
+					cycles_fewest = cycles_fewest.min(result.cycles_completed);
 					// Track cycle limit from first thread (same for all)
 					if cycle_limit.is_none() {
 						cycle_limit = result.cycle_limit;
@@ -1412,6 +1417,14 @@ fn execute_test_cycle(ctx: &CycleContext, cycle: u64) -> Option<RunOutcome> {
 
         let test_duration = test_start.elapsed();
         let test_duration_secs = test_duration.as_secs_f64();
+        // What ended the step, for the results file (the report line's Cycles and Time Limit)
+        let stopped_by = if stopped_by_time_limit {
+            "time"
+        } else if cycle_limit.is_some_and(|limit| cycles_completed >= limit) {
+            "cycles"
+        } else {
+            "stopped"
+        };
         // Over the test's own time, its slowest thread's: without the setup a test leaves out of its
         // clock (a Bench-Verify's fill, a bandwidth test's page faults, TODO 90), however short. The
         // step's wall time when no thread ran the test.
@@ -1644,6 +1657,8 @@ fn execute_test_cycle(ctx: &CycleContext, cycle: u64) -> Option<RunOutcome> {
             name: test_display_name.to_string(), // Use display_name to preserve _A suffix for AUTO tests
             duration_ms: test_duration.as_millis(),
             bytes_processed: total_bytes_for_test,
+            cycles_completed: (cycles_fewest.min(cycles_completed), cycles_completed),
+            stopped_by: Some(stopped_by),
             throughput_mib_s,
             errors: total_errors_for_test,
             alarms: alarms_for_test,

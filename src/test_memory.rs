@@ -88,6 +88,17 @@ pub fn extent(blocks: &[AllocationBlock], extent: usize) -> TestBlock<'_> {
     TestBlock::in_blocks(blocks, first.buffer.as_mut_ptr(), extent.min(span) / GRANULE * GRANULE)
 }
 
+/// What a test of `config` covers on a thread with `memory` bytes, as `TestRunner::new` resolves
+/// it: the extent floored to 4 KiB (one granule at least), and the chunks spread over it. `None`
+/// with no memory.
+pub fn resolve_layout(config: &crate::tests::TestMemoryConfig, test_name: &str, memory: usize) -> Option<(usize, ChunkSpread)> {
+    if memory < GRANULE {
+        return None;
+    }
+    let extent = (config.calculate_extent_size(test_name, memory).min(memory) / GRANULE * GRANULE).max(GRANULE);
+    Some((extent, ChunkSpread::new(extent, config.calculate_chunk_size(test_name, extent))))
+}
+
 /// A size for log lines: "880 MiB", "293.33 MiB", "64 KiB".
 pub fn size_str(bytes: usize) -> String {
     const MIB: usize = 1024 * 1024;
@@ -158,6 +169,28 @@ mod tests {
         assert_eq!(size(880 * MIB + 100), 880 * MIB);
         assert_eq!(size(GRANULE - 1), 0);
         assert_eq!(extent(&[], 880 * MIB).test_size, 0);
+    }
+
+    /// The results file's layout is the one the test runs with: the extent floored to 4 KiB and
+    /// capped at the thread's memory, the chunks spread over it.
+    #[test]
+    fn the_resolved_layout_is_the_tests() {
+        use crate::tests::{ChunkMode, ExtentMode, TestMemoryConfig};
+        let full = TestMemoryConfig::new(ExtentMode::FullAllocation, ChunkMode::Absolute { size_bytes: 4 * MIB });
+        let (extent, spread) = resolve_layout(&full, "Mem-SimpleV2", 7 * GIB).unwrap();
+        assert_eq!((extent, spread.count(), spread.chunk(), spread.overlap()), (7 * GIB, 1792, 4 * MIB, 0));
+        let window = TestMemoryConfig::new(ExtentMode::Absolute { size_bytes: 1000 * MIB + 100 }, ChunkMode::Absolute { size_bytes: 16 * MIB });
+        let (extent, spread) = resolve_layout(&window, "Mem-BlockMove", 7 * GIB).unwrap();
+        assert_eq!((extent, spread.count(), spread.overlap()), (1000 * MIB, 63, 8 * MIB));
+        assert_eq!(resolve_layout(&full, "Mem-SimpleV2", 7 * GIB).map(|(e, s)| (e, s.count())),
+                   Some((extent_of(&full, 7 * GIB), 1792)));
+        assert!(resolve_layout(&full, "Mem-SimpleV2", 0).is_none());
+    }
+
+    /// What `TestRunner::new` covers: `test_extent` on a span of `memory` bytes.
+    fn extent_of(config: &crate::tests::TestMemoryConfig, memory: usize) -> usize {
+        let span = blocks(1 << 40, &[memory]);
+        crate::test_scaffolding::test_extent(&span, config, "Mem-SimpleV2").0.test_size
     }
 
     #[test]

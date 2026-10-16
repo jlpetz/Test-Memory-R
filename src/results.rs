@@ -91,6 +91,16 @@ pub struct TestResult {
     pub label: String,
     pub duration_ms: u128,
     pub bytes_processed: u64,
+    /// Passes over its extent, the fewest and the most any of the step's threads completed
+    #[serde(default)]
+    pub cycles_completed_min: u32,
+    #[serde(default)]
+    pub cycles_completed_max: u32,
+    /// What ended the step: "cycles" (its cycle limit), "time" (its time limit) or "stopped"
+    /// (errors=halt, Ctrl+C, or a test that ends without either). Absent for a step that didn't
+    /// run, and in results written before it.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub stopped_by: Option<String>,
     /// Recorded in MiB/s only. A GiB/s field alongside it would be the same measurement stored
     /// twice — every producer computed it as `mib_s / 1024.0` — and rounding the pair to
     /// different scales made the two disagree. Readers that want GiB/s divide by 1024.
@@ -345,6 +355,9 @@ impl TestRunResult {
                 label: summary.label.clone(),
                 duration_ms: summary.duration_ms,
                 bytes_processed: summary.bytes_processed,
+                cycles_completed_min: summary.cycles_completed.0,
+                cycles_completed_max: summary.cycles_completed.1,
+                stopped_by: summary.stopped_by.map(str::to_string),
                 throughput_mib_s: summary.throughput_mib_s,
                 errors: summary.errors,
                 alarms: summary.alarms,
@@ -794,6 +807,8 @@ mod tests {
             name: "Mem-SimpleV2".to_string(),
             duration_ms,
             bytes_processed,
+            cycles_completed: (1, 1),
+            stopped_by: Some("cycles"),
             throughput_mib_s: if duration_ms > 0 { 1000.0 } else { 0.0 },
             errors: 0,
             alarms: 0,
