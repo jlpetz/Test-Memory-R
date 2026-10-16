@@ -76,8 +76,10 @@ under one binary.
 - **Bench pairs.** `Bench-Init-/Bench-Verify-{Ident,Random,Switch,Lines,Linepair,Quiet,Header}`.
 
 **Stage 4, conversion and provenance.**
-- **The default.** No `pattern_mode` runs `[random, switch]` (the owner's call, 2026-10-15, after
-  the corrected cost table; it ran `[ident, switch, random, switch]` before).
+- **The default.** No `pattern_mode` runs `[random, header, random, switch, random, quiet]` (the
+  owner's call, 2026-10-16, after the hardware session: `random` every cycle, the three switching
+  families in turn, since one day's evidence can't rank them; `ident` adds nothing to `random`).
+  Before: `[random, switch]` (2026-10-15), `[ident, switch, random, switch]` (2026-10-11).
 - **TM5 imports.** Modes 0, 1 and 2 import as `[ident|linepair|lines, switch, random, switch]`
   on `Mem-SimpleV2-Auto`. Mirror, refresh and blockmove imports no longer get pattern fields.
 - **Provenance.** Results record `pattern_version`, `pattern_seed`, `transfer_bits`,
@@ -373,8 +375,63 @@ chunks, 4×(1+5), 10 min a block, one binary):
 - **The 5700X, native import:** 0 errors in 57 steps (3.6 cycles, `Mem-SimpleV2-256_A`). It ran
   past its 18-minute limit, about 3.5 minutes a cycle.
 
+## The final hardware session (2026-10-16, d6c71c5)
+
+Both desktops freshly restarted, 1 GiB pages, `memory=50% cputype=cores cpus=100% skip-cores=0`;
+the 8600G tests 18 GiB on 6 threads, the 5700X 32 GiB on 8. Three runs each.
+
+**Detection** (`hw_detect`: each pattern a step of one run on the same memory, 880 MiB chunks,
+4x(1+5), 18 minutes; failed checks):
+
+| Step | 8600G (19 cycles) | 5700X (8 cycles) | 8600G MiB/s | 5700X MiB/s |
+|---|---|---|---|---|
+| mode 30 | 0 | 0 | 53,563 | 36,671 |
+| `switch` | 0 | 0 | 52,987 | 36,784 |
+| `quiet` | 0 | 0 | 53,291 | 36,792 |
+| `header` | 41 | 0 | 53,131 | 36,869 |
+| `random` | 15 | 0 | 53,031 | 36,688 |
+| `ident` | 1 | 0 | 53,271 | 36,779 |
+
+- Every failure was the 8600G's bit 31, not reproduced on rescan: the read fault of 10-11. Bit 31
+  and never bit 63 is pin 31 of the 32-bit transfers on even transfers only.
+- `header` found 2.7 times `random`'s; the pure switching patterns found none. One session on one
+  fault, the steps interleaved, so drift hits each alike; 10-11's evening had `switch` 50 and mode
+  14 (30) 34, before `header` existed. Native `switch` against mode 30: no difference today.
+- Every family runs within about 1% of the others on both: `quiet` and `header` cost nothing.
+
+**The new tests** (`hw_newtests`, 12 minutes): no errors on either; the 8600G's fault didn't show in
+them (Mem-MovingInv and Mem-ModuloX write `ident`'s words, Mem-Sequence the default program).
+
+| Test | 8600G MiB/s (71 cycles) | 5700X MiB/s (24 cycles) |
+|---|---|---|
+| Mem-MovingInv | 52,292 | 30,284 |
+| Mem-ModuloX | 25,123 | 14,764 |
+| Mem-Sequence `W 2R RW 2R@random` x2 | 49,173 | 30,515 |
+| Mem-Random, with its sweep | 45,806 | 30,227 |
+
+**The bench** (`hw_bench`, 4 cycles, 880 MiB chunks, program `[random, switch]`):
+
+| Step | 8600G MiB/s | 5700X MiB/s |
+|---|---|---|
+| SimpleTest-Auto `4x(1+5)` (512, 256 bits) | 53,387 | 36,691 |
+| Mem-Sequence `W 5R` x4, forward | 53,421 (+0.1%) | 36,790 (+0.3%) |
+| Mem-Sequence `W 5R@random` x4 | 32,623 | 19,790 |
+| Mem-Sequence `W 4RW R` x4 (an RW counts its read and its write) | 64,605 | 38,943 |
+
+Mem-Sequence lost no ground to SimpleTest like for like. Reads in random order run at 61% (8600G)
+and 54% (5700X) of the forward ones: nearly every access opens a row.
+
 ## Open
 
+- **The long run** (TODO 97's last task, the owner's call 2026-10-16). On the 8600G the switching
+  families found none of its bit-31 reads on 10-16, from a cold restart over 18 minutes (failures
+  began in cycle 3 and stopped after cycle 17), and the most on 10-11's evening, after hours of
+  runs; `random` found some in every session. An hour or two, interleaving the switching
+  families, `random`, `header` and the new tests, with the 10-11 binary beside this one (still on
+  the host), to see how detection moves with time running and step order, and to rule out a
+  regression on the hardware (the images match 10-11's known answers, and the verify finds
+  injected flips at every width).
+- **Mem-Sequence against the dedicated tests:** TODO 98.
 - **Mem-SimpleNT** still writes `idx ^ base`, the same in every thread.
 - **History coverage** is measured offline only (the follow-up). `quiet` holds one pin among
   toggling ones; which pins are neighbours on the board TMR can't know.

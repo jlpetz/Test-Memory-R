@@ -499,12 +499,16 @@ impl Program {
         Program { families: [family; MAX_PROGRAM], len: 1 }
     }
 
-    /// A SimpleTest's program when its config names none: `random` and `switch`, so every cycle
-    /// with TM5's four write rounds a chunk runs a pair of each. `random` is an identity too (every
-    /// word differs) and gives every data line all short bit histories; `ident`, cheaper and more
-    /// regular, stays available by name and in a TM5 mode-0 import.
+    /// A SimpleTest's program when its config names none (the owner's call, 2026-10-16): `random`
+    /// every cycle at TM5's four write rounds a chunk, with `header`, `switch` and `quiet` taking
+    /// turns, each every third. `random` is an identity too (every word differs) and gives every data
+    /// line all short bit histories, so `ident` adds nothing to it (it stays available by name and
+    /// in a TM5 mode-0 import). On the 8600G's read fault `header` found the most, the plain
+    /// switching patterns none that day and the most on another: the evidence can't rank the
+    /// three, so they share the turns.
     pub fn default_simple() -> Self {
-        Program::new(&[Family::Random, Family::Switch]).expect("a valid program")
+        Program::new(&[Family::Random, Family::Header, Family::Random, Family::Switch, Family::Random, Family::Quiet])
+            .expect("a valid program")
     }
 
     /// What a TM5 `.cfg`'s SimpleTest `Pattern Mode` imports as: its intent's family and
@@ -1444,17 +1448,20 @@ mod tests {
         }
     }
 
-    /// The default program runs a `random` pair and a `switch` pair every suite cycle at TM5's four
-    /// rounds, and every other cycle at the built-in suite's two.
+    /// The default program runs a `random` pair every suite cycle at TM5's four rounds, and a
+    /// `header`, `switch` or `quiet` pair in turn; at the built-in suite's two rounds, `random`
+    /// every other cycle and the three in turn between.
     #[test]
-    fn the_default_program_is_random_and_switch() {
+    fn the_default_program_takes_turns_with_random() {
         let program = Program::default_simple();
-        assert_eq!(program.families(), [Family::Random, Family::Switch]);
+        let turns = [Family::Header, Family::Switch, Family::Quiet];
+        assert_eq!(program.families(), [Family::Random, turns[0], Family::Random, turns[1], Family::Random, turns[2]]);
         let at = |cycle, wrc, g| program.phase(&StepEpoch { seed: 1, suite_cycle: cycle, step: 0 }, wrc, g, Schedule::Rounds, None).family;
-        for cycle in 1..=4 {
-            assert_eq!([at(cycle, 4, 0), at(cycle, 4, 2)], [Family::Random, Family::Switch], "cycle {cycle}, 4 rounds");
+        for cycle in 1..=6 {
+            assert_eq!([at(cycle, 4, 0), at(cycle, 4, 2)], [Family::Random, turns[(cycle as usize - 1) % 3]], "cycle {cycle}, 4 rounds");
         }
-        assert_eq!([at(1, 2, 0), at(2, 2, 0), at(3, 2, 0)], [Family::Random, Family::Switch, Family::Random]);
+        let two: Vec<Family> = (1..=6).map(|cycle| at(cycle, 2, 0)).collect();
+        assert_eq!(two, [Family::Random, turns[0], Family::Random, turns[1], Family::Random, turns[2]]);
     }
 
     /// Whatever the program's shape, successive `switch` pairs alternate 64 and 32 on an unknown

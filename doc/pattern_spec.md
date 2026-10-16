@@ -213,8 +213,9 @@ and imports as below; one of TMR's own (10, 11, 13, 20, 30) stays that numbered 
 family's number (Families) is that family alone.
 
 **Programs TMR sets.**
-- **No `program` and no `pattern_mode`:** `[random, switch]`: a pair of each every cycle at
-  four rounds. `random` is an identity too and gives every data line all short histories.
+- **No `program` and no `pattern_mode`:** `[random, header, random, switch, random, quiet]`:
+  at four rounds a `random` pair every cycle, and a `header`, `switch` or `quiet` pair in turn.
+  `random` is an identity too and gives every data line all short histories.
 - **TM5 `.cfg` SimpleTest:** Pattern Mode 0 imports as `[ident, switch, random, switch]`, 1 as
   `[linepair, switch, random, switch]`, 2 as `[lines, switch, random, switch]`, all on
   `Mem-SimpleV2-Auto`. Switching runs every suite cycle, the mode's intent and mixed data every

@@ -89,7 +89,7 @@ Number of copy direction patterns for memory move operations:
 
 | Where | Field | Meaning |
 |---|---|---|
-| test entry (Mem-SimpleV2*, Mem-Sequence) | `"program": ["random", "switch"]` | The native program: families in order, each run as a P/~P pair (`doc/pattern_spec.md`). Unset with no `pattern_mode`, that default. Not with `pattern_mode`, and only on a SimpleTest or Mem-Sequence |
+| test entry (Mem-SimpleV2*, Mem-Sequence) | `"program": ["random", "switch"]` | The native program: families in order, each run as a P/~P pair (`doc/pattern_spec.md`). Unset with no `pattern_mode`, `["random", "header", "random", "switch", "random", "quiet"]`. Not with `pattern_mode`, and only on a SimpleTest or Mem-Sequence |
 | test entry | `"pattern_mode": 30` | One of TMR's numbered modes (spec 1, `doc/pattern_gen_modes.md`: 0-2, 10, 11, 13, 20, 30) instead of a program, or a native family's number (15 `ident`, 16 `random`, 17 `linepair`, 21 `lines`, 31 `switch`, 32 `quiet`, 33 `header`) for a program of it alone |
 | command line | `seed=0x1234` | The native patterns' run seed (default from the clock); logged, printed and saved, so a run's bytes can be replayed on the same layout |
 | command line | `beat=auto\|12\|16\|24\|32\|64` or a memory type | The transfer width `switch` (and mode 30) flips at; auto takes SMBIOS's memory type, else `switch` alternates 64 and 32 and mode 30 takes 32. A memory type names its width: `ddr3`/`ddr4` 64, `ddr5`/`lpddr3` 32, `lpddr4`/`lpddr5` 16, `ddr6` 24, `lpddr6` 12. The last two are models (`doc/pattern_spec.md`): SMBIOS has no code TMR knows for them, so set `beat=` there |
