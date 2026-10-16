@@ -1,4 +1,3 @@
-use std::collections::HashMap;
 use std::fmt::Write as _;
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, Mutex, MutexGuard, OnceLock};
@@ -42,7 +41,6 @@ struct Position {
     tests_done: u64, // tests finished in this cycle
     test: Option<RunningTest>,
     errors: u64, // from finished tests, whole run
-    errors_by_test: HashMap<String, u64>,
 }
 
 /// The test the workers are running now, or the one that just finished.
@@ -143,7 +141,6 @@ impl ProgressTracker {
                 tests_done: 0,
                 test: None,
                 errors: 0,
-                errors_by_test: HashMap::new(),
             }),
             finished: AtomicBool::new(false),
             // Inert until `whea.start()` is called by the runner — constructing a tracker must not
@@ -206,13 +203,10 @@ impl ProgressTracker {
     }
 
     /// Record a finished test's errors, reported by its workers' results.
-    pub fn complete_test(&self, test_name: &str, errors: u64) {
+    pub fn complete_test(&self, errors: u64) {
         let mut position = self.position();
         position.tests_done += 1;
         position.errors += errors;
-        if errors > 0 {
-            *position.errors_by_test.entry(test_name.to_string()).or_insert(0) += errors;
-        }
         if let Some(test) = position.test.as_mut() {
             test.finished = true;
         }
@@ -220,14 +214,13 @@ impl ProgressTracker {
 
     /// Errors a final seal check found (TODO 74): counted for the run, no test finished.
     pub fn add_seal_errors(&self, errors: u64) {
-        self.add_errors("Final seal check", errors);
+        self.add_errors(errors);
     }
 
-    /// Errors found outside a finished test, under `label`: counted for the run, no test finished.
-    pub fn add_errors(&self, label: &str, errors: u64) {
-        let mut position = self.position();
-        position.errors += errors;
-        *position.errors_by_test.entry(label.to_string()).or_insert(0) += errors;
+    /// Errors found outside a finished test: counted for the run, no test finished. Where they
+    /// were is the final summary's to say (its Errors by Step table).
+    pub fn add_errors(&self, errors: u64) {
+        self.position().errors += errors;
     }
 
     /// Tests finished in the current cycle (reset at each cycle's start).
@@ -431,14 +424,5 @@ pub fn progress_reporter(progress: Arc<ProgressTracker>) {
     // noise. The runner flushes anything later still, once monitoring stops.
     for event in progress.whea.take_pending() {
         println!("{}", event);
-    }
-
-    // Print per-test error summary if there were any errors
-    let error_summary = progress.position().errors_by_test.clone();
-    if !error_summary.is_empty() {
-        println!("\nError Summary by Test:");
-        for (test_name, error_count) in error_summary {
-            println!("  {}: {} errors", test_name, error_count);
-        }
     }
 }

@@ -1304,7 +1304,7 @@ fn execute_test_cycle(ctx: &CycleContext, cycle: u64) -> Option<RunOutcome> {
             if seal_errors_for_test > 0 && matches!(error_mode, ErrorMode::Halt) {
                 log::error!("Halting before step {} ('{}'): the seal check before it found {} errors; memory keeps them",
                             test_idx + 1, test_name, seal_errors_for_test);
-                progress.add_errors(&format!("{step_label} (seal check before it)"), seal_errors_for_test);
+                progress.add_errors(seal_errors_for_test);
                 // The step didn't run; its entry carries the seal check's errors
                 cycle_test_summaries.push(TestSummary {
                     step: test_idx + 1,
@@ -1582,7 +1582,7 @@ fn execute_test_cycle(ctx: &CycleContext, cycle: u64) -> Option<RunOutcome> {
         }
 
         // Update progress tracker with test completion
-        progress.complete_test(test_name, total_errors_for_test + seal_errors_for_test);
+        progress.complete_test(total_errors_for_test + seal_errors_for_test);
 
         // Generate thread timing deviation report
         {

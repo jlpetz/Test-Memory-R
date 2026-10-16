@@ -205,3 +205,16 @@ the WHEA total.
   identification, instead of inferring severity from `Level`.
 - Feed events into #29's transcript with timestamps for time-correlation.
 - A CLI switch to disable monitoring (currently always on when available).
+
+## Closing (2026-10-16)
+
+- **The liveness signal: not built** (the owner: not worth setting up). `whea_monitored` keeps
+  meaning "the subscription opened"; a drain that dies later still reads as a quiet system.
+- **The duplicate per-test summary: removed.** "Error Summary by Test" at the end of the run
+  repeated the final summary's Errors by Step table, the final seal check included; it went with
+  the tally only it read (`Position::errors_by_test`).
+- **Not fixed, recorded:** `read_record()` still renders events past `MAX_DESCRIBED` (32) only to
+  discard the text; it costs anything only in a run with more than 32 WHEA events.
+- **Not taken:** decoding `WHEA_ERROR_RECORD`, feeding events into TODO 29's transcript, and a
+  switch to turn monitoring off.
+
