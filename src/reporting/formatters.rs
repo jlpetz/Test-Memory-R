@@ -76,6 +76,7 @@ pub trait ReportFormatter: Send + Sync {
     fn prepare_final_summary_overview_table(&self, report: &FinalTestSummaryReport) -> TableData;
     fn prepare_final_summary_performance_table(&self, report: &FinalTestSummaryReport) -> TableData;
     fn prepare_errors_by_step_table(&self, report: &FinalTestSummaryReport) -> TableData;
+    fn prepare_failing_bits_table(&self, report: &FinalTestSummaryReport) -> TableData;
     
     /// Prepare block allocation report tables (Option B layout - separate tables)
     fn prepare_block_size_distribution_table(&self, report: &BlockAllocationReport) -> TableData;
@@ -1220,6 +1221,31 @@ impl ReportFormatter for DefaultFormatter {
             table = table.add_row(vec!["end".to_string(), "Final seal check".to_string(), "-".to_string(), seal.final_check_errors.to_string()]);
         }
         table.with_footer("Seal: found by the seal check before the step's chunks (TM5 test 0); a mirror's own errors are its seal check after it.".to_string())
+    }
+
+    /// Which bits failed, by test, the seal's checks, and over all of them when there's more than
+    /// one row (TODO 97)
+    fn prepare_failing_bits_table(&self, report: &FinalTestSummaryReport) -> TableData {
+        let mut rows: Vec<(String, &crate::failing_bits::FailingBits)> = report.per_test_summaries.iter()
+            .filter(|t| !t.failing_bits.is_empty())
+            .map(|t| (t.name.clone(), &t.failing_bits))
+            .collect();
+        if !report.seal_failing_bits.is_empty() {
+            rows.push(("Seal".to_string(), &report.seal_failing_bits));
+        }
+        let mut all = report.failing_bits.clone();
+        all.add(&report.seal_failing_bits);
+        if rows.len() > 1 {
+            rows.push(("All".to_string(), &all));
+        }
+        let mut table = TableData::new()
+            .with_title("Failing Bits")
+            .add_header("Test", ColumnAlignment::Left)
+            .add_header("Bit: failed checks / bad words found (0→1 + 1→0)", ColumnAlignment::Left);
+        for (name, bits) in rows {
+            table = table.add_row(vec![name, bits.detail()]);
+        }
+        table.with_footer("A failed check counts each bit its differences had; a bad word, each bit it had wrong. Every bit is in the results JSON.".to_string())
     }
     
     /// Prepare block size distribution table (Table 1)

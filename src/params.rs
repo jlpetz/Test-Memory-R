@@ -263,10 +263,11 @@ impl ParamRegistry {
             can_override_config: true,
             parser: |v| {
                 let val = v.parse::<u32>()
-                    .map_err(|_| format!("Invalid pattern-mode '{}'. Must be 0-2 (TM5) or 10-14 (TMR-native)", v))?;
-                match val {
-                    0 | 1 | 2 | 10 | 11 | 12 | 13 | 14 => Ok(ParamValue::U32(val)),
-                    _ => Err(format!("Invalid pattern-mode {}. Valid: 0-2 (TM5-faithful), 10-14 (TMR-native)", val)),
+                    .map_err(|_| format!("Invalid pattern-mode '{}'. Valid: {}", v, crate::pattern::pattern_modes()))?;
+                if crate::pattern::is_pattern_mode(val) {
+                    Ok(ParamValue::U32(val))
+                } else {
+                    Err(format!("Invalid pattern-mode {}{}. Valid: {}", val, crate::pattern::renumbered(val), crate::pattern::pattern_modes()))
                 }
             },
         });
@@ -510,8 +511,10 @@ pub fn print_help(program_name: &str) {
     println!("  mirror=whole                        # Mirror tests: one mirror over each chunk (the default)");
     println!("  mirror=subblocks:4                  #   ...each chunk in 2 or 4 parts, mirrored in lockstep");
     println!("  mirror=jump:510                     #   ...128 B swaps every (N+1) x 128 B (TM5 MirrorMove128)");
-    println!("  pattern-mode=0                      # Pattern mode: 0-2 (TM5-faithful), 10-14 (TMR-native); unset, SimpleTest");
-    println!("                                      #   runs native programs (doc/pattern_spec.md)");
+    println!("  pattern-mode=0                      # Pattern mode: 0-2 (TM5's), 10, 11, 13, 20, 30 (TMR's), or a native");
+    println!("                                      #   family alone on SimpleTest: 15 ident, 16 random, 17 linepair,");
+    println!("                                      #   21 lines, 31 switch, 32 quiet, 33 header; unset, SimpleTest runs");
+    println!("                                      #   native programs (doc/pattern_spec.md)");
     println!("  patterns=legacy                     # A TM5 .cfg's SimpleTest modes as TMR's numbered modes, not native");
     println!("                                      #   programs (default native), to compare the two");
     println!("  seed=0x1234                         # The native patterns' run seed (default: from the clock, logged and");
@@ -605,4 +608,21 @@ fn print_usage(program_name: &str) {
     println!("  {} config=legacy.cfg            # Auto-convert TM5 config + add stuck bit test", program_name);
     println!("  {} --create-demo-configs        # Create demo configurations", program_name);
     println!("  {} --compare-results old.json new.json # Compare results from .\\results\\", program_name);
+}
+
+#[cfg(test)]
+mod tests {
+    /// `pattern-mode=` takes the numbered modes and the native families' numbers; 12 and 14, the
+    /// old numbers of 20 and 30, are refused, saying so (TODO 97).
+    #[test]
+    fn pattern_mode_takes_the_numbers_there_are() {
+        let parse = |v: &str| super::parse_and_validate_args(&[format!("pattern-mode={v}")]);
+        for ok in ["0", "2", "13", "20", "30", "15", "31", "33"] {
+            assert!(parse(ok).is_ok(), "pattern-mode={ok}");
+        }
+        for bad in ["12", "14", "3", "99"] {
+            assert!(parse(bad).is_err(), "pattern-mode={bad}");
+        }
+        assert!(parse("14").unwrap_err().contains("is 30 since"));
+    }
 }

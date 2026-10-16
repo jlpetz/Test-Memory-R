@@ -4,6 +4,7 @@ use crate::runner::{TestFunction, ThreadPriority};
 use crate::cpu_topology::get_numa_node_for_cpu;
 use crate::latency_tests::LatencyTestStats;
 use crate::seal::SealKernel;
+use crate::failing_bits::FailingBits;
 use crate::tests::Stage;
 use std::collections::HashMap;
 use std::sync::{Arc, Barrier};
@@ -76,6 +77,9 @@ pub struct WorkResult {
     /// The test's failed checks, and those its rescans didn't reproduce (`TestStats`, TODO 27)
     pub alarms: u64,
     pub not_reproduced: u64,
+    /// The bits that failed the test's own checks, and the seal's (TODO 97)
+    pub failing_bits: FailingBits,
+    pub seal_failing_bits: FailingBits,
 }
 
 // Thread pool worker context
@@ -368,6 +372,7 @@ fn run_seal_stage(blocks: &[AllocationBlock], op: SealOp, kernel: SealKernel, pr
         *unsealed = if at >= span.test_size { 0 } else { span.test_size };
     }
     progress.set_stage(Stage::Testing);
+    let bits = crate::tests::take_failing_bits();
     WorkResult {
         thread_id,
         total_bytes: (at - from) as u64,
@@ -382,6 +387,8 @@ fn run_seal_stage(blocks: &[AllocationBlock], op: SealOp, kernel: SealKernel, pr
         seal_errors: errors,
         alarms: 0,
         not_reproduced: 0,
+        failing_bits: bits.test,
+        seal_failing_bits: bits.seal,
     }
 }
 
@@ -425,6 +432,7 @@ fn worker_thread_loop(context: &mut WorkerContext) {
                         log::error!("[Thread {} on CPU {}] {}", context.thread_id, context.cpu_id, e);
                     }
 
+                let bits = crate::tests::take_failing_bits();
                 let result = WorkResult {
                     thread_id: context.thread_id,
                     total_bytes: stats.bytes_processed as u64,
@@ -439,6 +447,8 @@ fn worker_thread_loop(context: &mut WorkerContext) {
                     seal_errors: stats.seal_errors,
                     alarms: stats.alarms,
                     not_reproduced: stats.not_reproduced,
+                    failing_bits: bits.test,
+                    seal_failing_bits: bits.seal,
                 };
 
                 if context.result_sender.send(result).is_err() {
@@ -451,6 +461,7 @@ fn worker_thread_loop(context: &mut WorkerContext) {
                 crate::error_context::set(format!("{step}, thread {}", context.thread_id));
                 let progress = &context.live[context.thread_id];
                 let errors = seal_before_step(&context.allocated_blocks, &test_config, test_name, progress, &mut context.unsealed);
+                let bits = crate::tests::take_failing_bits();
                 let result = WorkResult {
                     thread_id: context.thread_id,
                     total_bytes: 0,
@@ -465,6 +476,8 @@ fn worker_thread_loop(context: &mut WorkerContext) {
                     seal_errors: errors,
                     alarms: 0,
                     not_reproduced: 0,
+                    failing_bits: bits.test,
+                    seal_failing_bits: bits.seal,
                 };
                 if context.result_sender.send(result).is_err() {
                     log::error!("Failed to send result from thread {}", context.thread_id);

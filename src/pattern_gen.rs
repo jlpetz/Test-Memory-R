@@ -7,8 +7,9 @@
 //!
 //! - **Modes 0, 1, 2**: TM5's modes, adapted to 64-bit; mode 0 keeps TM5's idea rather than its
 //!   bits (below). Used by default when loading TM5 .cfg files.
-//! - **Modes 10, 11, 12**: TMR-native modern alternatives. Simpler, sometimes faster,
-//!   but don't match TM5's specific stress patterns.
+//! - **Modes 10, 11, 13, 20, 30**: TMR's modern alternatives, grouped by tens (`MODES`): 1x
+//!   positional identities, 2x in-line arithmetic, 3x switching. Simpler, sometimes faster, but
+//!   don't match TM5's specific stress patterns.
 //!
 //! ## TM5-Faithful Modes
 //!
@@ -29,10 +30,10 @@
 //!
 //! - **Mode 10**: Unique-per-address XOR (`idx ^ base`). Substitutes for Mode 0.
 //! - **Mode 11**: Simple XOR with combined constant (`idx ^ combined`). Substitutes for Mode 1.
-//! - **Mode 12**: Mode 2's lines without the chain: each 64 B line is `seed + j * step`,
-//!   with seed and step hashed from the line's address (TODO 76).
 //! - **Mode 13**: Positional pseudo-random hash per word.
-//! - **Mode 14**: Bus flip: each beat of a line the inverse of the one before, at the memory
+//! - **Mode 20**: Mode 2's lines without the chain: each 64 B line is `seed + j * step`,
+//!   with seed and step hashed from the line's address (TODO 76).
+//! - **Mode 30**: Bus flip: each beat of a line the inverse of the one before, at the memory
 //!   type's beat width (SMBIOS: 64-bit for DDR4, 32-bit for DDR5; `beat=` for LPDDR6's 12 and
 //!   DDR6's 24, both models), so every data line toggles on every beat; one value a line, every
 //!   byte four 1s so a count-based DBI can't undo it.
@@ -121,7 +122,7 @@ pub fn pattern_mode1(idx: u64, block_seed: u64, cl_shift: u32) -> u64 {
 /// TMR port: 64-bit wrapping_mul/add. Called once per cache line (every 8 u64 elements
 /// for 64-byte cache lines). Returns (new_seed, new_step).
 ///
-/// TMR alternative: Mode 12 (the same lines, hashed rather than chained).
+/// TMR alternative: Mode 20 (the same lines, hashed rather than chained).
 #[inline(always)]
 pub fn mode2_evolve(seed: u64, step: u64, param0: u64, param1: u64) -> (u64, u64) {
     let new_seed = seed.wrapping_mul(param0).wrapping_add(param1);
@@ -130,7 +131,7 @@ pub fn mode2_evolve(seed: u64, step: u64, param0: u64, param1: u64) -> (u64, u64
 }
 
 /// Words per 64 B line: TM5's block length (`dBlockLength`), the unit mode 2 evolves on and
-/// mode 12 hashes. Fixed, not the CPU's cache line, so the image is the same on every machine.
+/// mode 20 hashes. Fixed, not the CPU's cache line, so the image is the same on every machine.
 pub const LINE_WORDS: usize = 8;
 
 /// Words per 4 KiB page. Mode 2 restarts its chain on each page, and chunks start on pages.
@@ -144,7 +145,7 @@ pub fn mode2_page_start(page_addr: usize, thread_id: usize, cycle: u32) -> (u64,
     (seed, seed.wrapping_mul(0x5DEECE66D))
 }
 
-/// One 64 B line of modes 2 and 12: `seed + j * step` for j in 0..8, from adds only.
+/// One 64 B line of modes 2 and 20: `seed + j * step` for j in 0..8, from adds only.
 ///
 /// TM5: within a block, writes xmm0, then PADDD xmm0, xmm6 (adds the step per 16-byte group).
 #[inline(always)]
@@ -157,22 +158,28 @@ pub fn line_words(seed: u64, step: u64) -> [u64; LINE_WORDS] {
     [seed, w1, w2, w3, seed.wrapping_add(s4), w1.wrapping_add(s4), w2.wrapping_add(s4), w3.wrapping_add(s4)]
 }
 
-/// Mode 12's key for one thread and cycle, folding in both parameters. Computed once per chunk.
+/// Mode 20's key for one thread and cycle, folding in both parameters. Computed once per chunk.
 #[inline]
-pub fn mode12_key(thread_id: usize, cycle: u32, param0: u64, param1: u64) -> u64 {
+pub fn mode20_key(thread_id: usize, cycle: u32, param0: u64, param1: u64) -> u64 {
     block_seed(0, thread_id, cycle) ^ param0.wrapping_mul(0xD6E8FEB86659FD93) ^ param1.rotate_left(32)
 }
 
-/// Mode 12: seed and step of the 64 B line at `line_addr`, hashed from it. No chain, so any
+/// Mode 20: seed and step of the 64 B line at `line_addr`, hashed from it. No chain, so any
 /// line can be computed on its own. The step is odd, so a line's 8 words all differ.
 #[inline(always)]
-pub fn mode12_line(line_addr: usize, key: u64) -> (u64, u64) {
+pub fn mode20_line(line_addr: usize, key: u64) -> (u64, u64) {
     let seed = pattern_mode13(line_addr as u64, key);
     let step = (seed ^ key).rotate_left(29).wrapping_mul(0x9E3779B97F4A7C15) | 1;
     (seed, step)
 }
 
-// ─── TMR-Native Pattern Modes (10, 11, 12) ─────────────────────────────────
+/// TMR's numbered modes (pattern spec 1), grouped by kind: TM5's 0-2, then by tens: 1x positional
+/// identities (10, 11, 13), 2x in-line arithmetic (20: mode 2's lines, hashed), 3x switching (30:
+/// the bus-flip lines). The native families take numbers in the same groups
+/// (`pattern::Family::number`). 12 and 14, the old numbers of 20 and 30, stay unused.
+pub const MODES: [u32; 8] = [0, 1, 2, 10, 11, 13, 20, 30];
+
+// ─── TMR-Native Pattern Modes (10, 11, 20) ─────────────────────────────────
 
 /// Mode 10 (TMR-native): Address-derived unique pattern. Substitutes for Mode 0.
 ///
@@ -211,7 +218,7 @@ pub fn pattern_mode13(idx: u64, seed: u64) -> u64 {
     h
 }
 
-/// How many data bits one bus transfer (beat) of a 64 B line carries, which mode 14 and the
+/// How many data bits one bus transfer (beat) of a 64 B line carries, which mode 30 and the
 /// native `switch` flip, and how many payload bits a burst carries (`bus_flip_line`).
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum BusBeat {
@@ -344,7 +351,23 @@ pub(crate) fn packed_line(s: u64, bits: u32, pack: &Packing) -> [u64; LINE_WORDS
     std::array::from_fn(|j| ((r >> pack.shift[j]) as u64) ^ pack.inv[j])
 }
 
-/// Mode 14 (TMR-native): the bus-flip line. Each beat of the line's burst is the bitwise inverse
+/// The bits of a line that pin `pin` carries at `beat`, every transfer's, by the packer's rule
+/// (`packing`): word `j`'s bit `k` is pin `(64 j mod burst + k) mod bits`. So at 64 bits it is bit
+/// `pin` of every word, at 32 bits bits `pin` and `32 + pin`. The native `quiet` holds them.
+#[inline(always)]
+pub fn pin_mask(pin: u32, beat: BusBeat) -> [u64; LINE_WORDS] {
+    let (bits, burst) = (beat.bits(), beat.burst_bits());
+    // Bit 0 of every transfer a word starts on a transfer's first bit
+    let mut every = 0u64;
+    let mut k = 0;
+    while k < 64 {
+        every |= 1 << k;
+        k += bits;
+    }
+    std::array::from_fn(|j| every << ((pin + bits - (64 * j as u32 % burst) % bits) % bits))
+}
+
+/// Mode 30 (TMR-native): the bus-flip line. Each beat of the line's burst is the bitwise inverse
 /// of the one before, at `beat` bits a transfer, so every data line toggles on every beat unless
 /// the controller scrambles the data (`bus_flip_line`; LPDDR6's and DDR6's are models, where it
 /// toggles between the transfers that carry payload). Standard burst orders keep that, since they
@@ -359,7 +382,7 @@ pub(crate) fn packed_line(s: u64, bits: u32, pack: &Packing) -> [u64; LINE_WORDS
 /// hash (8 at 12- and 16-bit beats, 32 at 64): two lines can match, and a misdirected access
 /// between them goes unseen.
 #[inline(always)]
-pub fn mode14_line(line_addr: usize, key: u64, beat: BusBeat) -> [u64; LINE_WORDS] {
+pub fn mode30_line(line_addr: usize, key: u64, beat: BusBeat) -> [u64; LINE_WORDS] {
     bus_flip_line(balanced_bytes(pattern_mode13(line_addr as u64, key)), beat)
 }
 
@@ -472,18 +495,18 @@ pub(crate) mod tests {
     }
 
     #[test]
-    fn mode12_lines_depend_on_address_thread_cycle_and_parameters() {
-        let key = mode12_key(3, 1, 0x5DEECE66D, 0xB);
-        let (seed, step) = mode12_line(0x4000_0040, key);
-        assert_eq!(mode12_line(0x4000_0040, key), (seed, step));
+    fn mode20_lines_depend_on_address_thread_cycle_and_parameters() {
+        let key = mode20_key(3, 1, 0x5DEECE66D, 0xB);
+        let (seed, step) = mode20_line(0x4000_0040, key);
+        assert_eq!(mode20_line(0x4000_0040, key), (seed, step));
         assert_eq!(step & 1, 1);
         let words = line_words(seed, step);
         let unique: std::collections::HashSet<u64> = words.iter().copied().collect();
         assert_eq!(unique.len(), 8);
-        assert_ne!(mode12_line(0x4000_0080, key).0, seed);
-        for other in [mode12_key(4, 1, 0x5DEECE66D, 0xB), mode12_key(3, 2, 0x5DEECE66D, 0xB),
-                      mode12_key(3, 1, 0x5DEECE66E, 0xB), mode12_key(3, 1, 0x5DEECE66D, 0xC)] {
-            assert_ne!(mode12_line(0x4000_0040, other).0, seed);
+        assert_ne!(mode20_line(0x4000_0080, key).0, seed);
+        for other in [mode20_key(4, 1, 0x5DEECE66D, 0xB), mode20_key(3, 2, 0x5DEECE66D, 0xB),
+                      mode20_key(3, 1, 0x5DEECE66E, 0xB), mode20_key(3, 1, 0x5DEECE66D, 0xC)] {
+            assert_ne!(mode20_line(0x4000_0040, other).0, seed);
         }
     }
 
@@ -521,16 +544,16 @@ pub(crate) mod tests {
         }))
     }
 
-    /// Mode 14: in address order, every beat of a line's burst is the inverse of the one before, at
+    /// Mode 30: in address order, every beat of a line's burst is the inverse of the one before, at
     /// each beat width; at 16, 32 and 64 every byte holds four 1s (so a count-based DBI never
     /// inverts one); lines differ.
     #[test]
-    fn mode14_flips_every_beat_and_dodges_dbi() {
-        let key = mode12_key(3, 1, 0x5DEECE66D, 0xB);
+    fn mode30_flips_every_beat_and_dodges_dbi() {
+        let key = mode20_key(3, 1, 0x5DEECE66D, 0xB);
         for beat in [BusBeat::Bits12, BusBeat::Bits16, BusBeat::Bits24, BusBeat::Bits32, BusBeat::Bits64] {
             let mut values = std::collections::HashSet::new();
             for line in 0..4096usize {
-                let words = mode14_line(0x1E98_0000_0000 + 64 * line, key, beat);
+                let words = mode30_line(0x1E98_0000_0000 + 64 * line, key, beat);
                 assert!(flips_every_transfer(&words, beat), "{beat:?} line {line}: {words:x?}");
                 if !beat.modelled() {
                     assert!(words.iter().all(|w| w.to_le_bytes().iter().all(|b| b.count_ones() == 4)), "{beat:?} line {line}");

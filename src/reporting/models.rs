@@ -276,6 +276,9 @@ pub struct FinalTestSummaryReport {
     pub seal: Option<SealStagesSummary>,
     /// The steps that found errors, in cycle order; empty on a clean run (TODO 74)
     pub errors_by_step: Vec<StepErrorsEntry>,
+    /// The bits that failed the tests' own checks, and the seal's (TODO 97)
+    pub failing_bits: crate::failing_bits::FailingBits,
+    pub seal_failing_bits: crate::failing_bits::FailingBits,
 }
 
 /// The seal's run-wide stages over the run: sealing all memory and the final checks (TODO 74).
@@ -308,6 +311,8 @@ pub struct TestSummaryEntry {
     pub average_data_gib: f64,
     pub average_throughput_mib_s: f64,
     pub total_errors: u64,
+    /// The bits that failed its own checks, over its runs (TODO 97)
+    pub failing_bits: crate::failing_bits::FailingBits,
     // WHEA counts summed over every cycle this test ran in (see whea.rs).
     pub whea_total: u64,
     pub whea_corrected: u64,

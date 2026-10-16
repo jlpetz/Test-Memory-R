@@ -1,3 +1,4 @@
+use crate::failing_bits::FailingBits;
 use crate::progress::TestSummary;
 use crate::constants::{BYTES_PER_GIB_F64, MB_F64};
 use crate::formatting::{
@@ -60,7 +61,7 @@ pub struct CycleResult {
 
 /// A cycle's run-wide seal stages (TODO 74): sealing all memory at its start, checking it all at
 /// its end. Their time is the cycle's, not any step's.
-#[derive(Debug, Clone, Copy, Default, Serialize, Deserialize)]
+#[derive(Debug, Clone, Default, Serialize, Deserialize)]
 pub struct CycleSeal {
     pub seal_ms: u128,
     pub seal_bytes: u64,
@@ -70,6 +71,9 @@ pub struct CycleSeal {
     pub final_check_bytes: u64,
     /// TM5 numbers them 0
     pub final_check_errors: u64,
+    /// The bits that failed the final check (TODO 97)
+    #[serde(default, skip_serializing_if = "FailingBits::is_empty")]
+    pub final_check_failing_bits: FailingBits,
 }
 
 /// One step of a cycle.
@@ -100,8 +104,15 @@ pub struct TestResult {
     pub alarms: u64,
     #[serde(default, skip_serializing_if = "is_zero")]
     pub not_reproduced: u64,
+    /// The bits that failed the step's own checks (TODO 97): each bit's failed checks, and the bad
+    /// words its rescans found with it wrong, 0→1 and 1→0. None on a clean step.
+    #[serde(default, skip_serializing_if = "FailingBits::is_empty")]
+    pub failing_bits: FailingBits,
     /// What the seal checks before the step's chunks found (TODO 74): TM5's test 0 errors
     pub seal_errors: u64,
+    /// The bits that failed them
+    #[serde(default, skip_serializing_if = "FailingBits::is_empty")]
+    pub seal_failing_bits: FailingBits,
     // OS-reported hardware errors during this test, and the corrected subset (see whea.rs).
     pub whea_total: u64,
     pub whea_corrected: u64,
@@ -157,6 +168,12 @@ pub struct OverallStats {
     pub whea_monitored: bool,
     /// The seal's errors, all of them in `total_errors` too (TODO 74)
     pub seal_errors: u64,
+    /// The bits that failed the tests' own checks over the run, and the seal's checks (TODO 97): as
+    /// a step's, the seal's apart
+    #[serde(default, skip_serializing_if = "FailingBits::is_empty")]
+    pub failing_bits: FailingBits,
+    #[serde(default, skip_serializing_if = "FailingBits::is_empty")]
+    pub seal_failing_bits: FailingBits,
     /// Each step's figures over the cycles (TODO 74)
     pub per_step_averages: Vec<TestAverage>,
 }
@@ -176,6 +193,11 @@ pub struct TestAverage {
     pub avg_throughput_mib_s: f64,
     pub total_errors: u64,
     pub total_seal_errors: u64,
+    /// The bits that failed the step's own checks and its seal checks, over every cycle (TODO 97)
+    #[serde(default, skip_serializing_if = "FailingBits::is_empty")]
+    pub failing_bits: FailingBits,
+    #[serde(default, skip_serializing_if = "FailingBits::is_empty")]
+    pub seal_failing_bits: FailingBits,
     /// Cycles the step ran in
     pub runs: u64,
     // WHEA counts summed across every cycle this test ran in (totals, not averages — a hardware
@@ -297,6 +319,8 @@ impl TestRunResult {
                 whea_corrected: 0,
                 whea_monitored: false,
                 seal_errors: 0,
+                failing_bits: FailingBits::default(),
+                seal_failing_bits: FailingBits::default(),
                 per_step_averages: Vec::new(),
             },
         }
@@ -305,7 +329,7 @@ impl TestRunResult {
     pub fn add_cycle(&mut self, cycle_number: u32, duration_secs: u32, test_summaries: Vec<TestSummary>, seal: Option<CycleSeal>) {
         let total_bytes: u64 = test_summaries.iter().map(|t| t.bytes_processed).sum();
         let total_errors: u64 = test_summaries.iter().map(|t| t.errors + t.seal_errors).sum::<u64>()
-            + seal.map_or(0, |s| s.final_check_errors);
+            + seal.as_ref().map_or(0, |s| s.final_check_errors);
         let avg_throughput_mib = if duration_secs > 0 {
             (total_bytes as f64 / MB_F64) / duration_secs as f64
         } else {
@@ -325,7 +349,9 @@ impl TestRunResult {
                 errors: summary.errors,
                 alarms: summary.alarms,
                 not_reproduced: summary.not_reproduced,
+                failing_bits: summary.failing_bits.clone(),
                 seal_errors: summary.seal_errors,
+                seal_failing_bits: summary.seal_failing_bits.clone(),
                 whea_total: summary.whea_total,
                 whea_corrected: summary.whea_corrected,
                 // Copy latency data from TestSummary
@@ -373,8 +399,19 @@ impl TestRunResult {
         
         self.overall_stats.total_errors = self.cycles.iter().map(|c| c.cycle_stats.total_errors).sum();
         self.overall_stats.seal_errors = self.cycles.iter()
-            .map(|c| c.tests.iter().map(|t| t.seal_errors).sum::<u64>() + c.seal.map_or(0, |s| s.final_check_errors))
+            .map(|c| c.tests.iter().map(|t| t.seal_errors).sum::<u64>() + c.seal.as_ref().map_or(0, |s| s.final_check_errors))
             .sum();
+        let (mut bits, mut seal_bits) = (FailingBits::default(), FailingBits::default());
+        for cycle in &self.cycles {
+            for test in &cycle.tests {
+                bits.add(&test.failing_bits);
+                seal_bits.add(&test.seal_failing_bits);
+            }
+            if let Some(seal) = &cycle.seal {
+                seal_bits.add(&seal.final_check_failing_bits);
+            }
+        }
+        (self.overall_stats.failing_bits, self.overall_stats.seal_failing_bits) = (bits, seal_bits);
 
         // Calculate per-test averages
         self.calculate_per_test_averages();
@@ -395,6 +432,8 @@ impl TestRunResult {
             total_bytes: u64,
             total_errors: u64,
             total_seal_errors: u64,
+            failing_bits: FailingBits,
+            seal_failing_bits: FailingBits,
             total_whea: u64,
             total_whea_corrected: u64,
             // Latency aggregation
@@ -422,11 +461,14 @@ impl TestRunResult {
                 }
                 // A step a halt stopped before it ran carries only the seal check's errors
                 if test.duration_ms == 0 && test.bytes_processed == 0 {
+                    entry.seal_failing_bits.add(&test.seal_failing_bits);
                     entry.total_errors += test.errors;
                     entry.total_seal_errors += test.seal_errors;
                     continue;
                 }
                 entry.runs += 1;
+                entry.failing_bits.add(&test.failing_bits);
+                entry.seal_failing_bits.add(&test.seal_failing_bits);
                 entry.total_duration_ms += test.duration_ms;
                 if test.throughput_mib_s > 0.0 {
                     entry.total_timed_secs += (test.bytes_processed as f64 / MB_F64) / test.throughput_mib_s;
@@ -502,6 +544,8 @@ impl TestRunResult {
                 avg_throughput_mib_s: avg_throughput_mib,
                 total_errors: agg.total_errors,
                 total_seal_errors: agg.total_seal_errors,
+                failing_bits: agg.failing_bits,
+                seal_failing_bits: agg.seal_failing_bits,
                 runs: agg.runs,
                 whea_total: agg.total_whea,
                 whea_corrected: agg.total_whea_corrected,
@@ -754,6 +798,8 @@ mod tests {
             errors: 0,
             alarms: 0,
             not_reproduced: 0,
+            failing_bits: Default::default(),
+            seal_failing_bits: Default::default(),
             whea_total: 0,
             whea_corrected: 0,
             latency_samples: None,
@@ -789,5 +835,44 @@ mod tests {
         let row = &report.per_test_summaries[1];
         assert_eq!((row.runs, row.seal_errors), (0, 3));
         assert_eq!((row.average_duration_secs, row.average_data_gib, row.average_throughput_mib_s), (0.0, 0.0, 0.0));
+    }
+
+    /// Failing bits add up by step over the cycles, and over the run with the seal's, the final
+    /// checks' included; the final summary's table has a row per test, the seal's, and all (TODO 97).
+    #[test]
+    fn failing_bits_add_up_by_step_and_run() {
+        let bits = |mask: u64, want: u64, actual: u64| {
+            let mut b = FailingBits::default();
+            b.add_check(mask);
+            if want != actual {
+                b.add_word(want, actual);
+            }
+            b
+        };
+        let mut result = TestRunResult::new(Default::default());
+        let step = |n, test: FailingBits, seal: FailingBits| TestSummary {
+            name: format!("test {n}"), failing_bits: test, seal_failing_bits: seal, ..summary(n, 5_000, 1 << 30, 0)
+        };
+        let final_check = |b: FailingBits| Some(CycleSeal { final_check_failing_bits: b, ..Default::default() });
+        result.add_cycle(1, 10, vec![step(1, bits(1 << 31, 0, 1 << 31), FailingBits::default()), step(2, FailingBits::default(), FailingBits::default())],
+                         final_check(FailingBits::default()));
+        result.add_cycle(2, 10, vec![step(1, bits(1 << 31, 0, 0), FailingBits::default()), step(2, bits(1 << 39, 1 << 39, 0), bits(1 << 7, 0, 0))],
+                         final_check(bits(1 << 7, 0, 1 << 7)));
+        result.finalize(std::time::Duration::from_secs(20));
+        let by_step: Vec<String> = result.overall_stats.per_step_averages.iter().map(|a| a.failing_bits.detail()).collect();
+        assert_eq!(by_step, ["31: 2 / 1 (1 + 0)", "39: 1 / 1 (0 + 1)"]);
+        assert_eq!(result.overall_stats.seal_failing_bits.detail(), "7: 2 / 1 (1 + 0)");
+        assert_eq!(result.overall_stats.failing_bits.detail(), "31: 2 / 1 (1 + 0), 39: 1 / 1 (0 + 1)");
+        let json = serde_json::to_string(&result).unwrap();
+        assert!(json.contains(r#""failing_bits":[{"bit":31,"checks":1,"words_0to1":1,"words_1to0":0}]"#), "{json}");
+        let back: TestRunResult = serde_json::from_str(&json).unwrap();
+        assert_eq!(back.overall_stats.failing_bits, result.overall_stats.failing_bits);
+
+        use crate::reporting::formatters::ReportFormatter;
+        let report = crate::reporting::converters::create_overall_stats_summary_report(&result);
+        let table = crate::reporting::formatters::DefaultFormatter::new().prepare_failing_bits_table(&report);
+        let rows: Vec<(&str, &str)> = table.rows.iter().map(|r| (r[0].as_str(), r[1].as_str())).collect();
+        assert_eq!(rows, [("test 1", "31: 2 / 1 (1 + 0)"), ("test 2", "39: 1 / 1 (0 + 1)"), ("Seal", "7: 2 / 1 (1 + 0)"),
+                          ("All", "7: 2 / 1 (1 + 0), 31: 2 / 1 (1 + 0), 39: 1 / 1 (0 + 1)")]);
     }
 }

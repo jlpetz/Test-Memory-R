@@ -13,7 +13,7 @@ use crate::tests::{
     simple_test_nt_auto_multi,
     cache_busting_multi,
     random_torture_multi,
-    stride_access_multi, block_move_multi,
+    stride_access_multi, block_move_multi, moving_inversions_multi, modulo_x_multi,
     // v2 tests
     simple_test_v2_multi,
     simple_test_v2_128_multi, simple_test_v2_256_multi, simple_test_v2_512_multi,
@@ -266,6 +266,29 @@ impl std::fmt::Display for MemoryEffect {
     }
 }
 
+/// The command line's `pattern-mode=`. On a SimpleTest it replaces the native program, which would
+/// otherwise win and leave the mode reported but not run. A native family's number runs the family
+/// alone on every SimpleTest and leaves the other tests as they were; with no SimpleTest in the
+/// plan it changes nothing, and says so.
+fn apply_pattern_mode(defs: &mut [TestDefinition], mode: u32) {
+    let Some(family) = crate::pattern::Family::from_number(mode) else {
+        for def in defs.iter_mut() {
+            def.config.pattern_mode = Some(mode);
+            def.config.program = None;
+        }
+        return;
+    };
+    let mut simple = defs.iter_mut().filter(|d| d.actual_name.starts_with("Mem-SimpleV2")).peekable();
+    if simple.peek().is_none() {
+        log::warn!("pattern-mode={mode} is the native `{}` family, which only the SimpleTests run, and this plan has \
+            none: it changes nothing", family.name());
+    }
+    for def in simple {
+        def.config.pattern_mode = None;
+        def.config.program = Some(crate::pattern::Program::single(family));
+    }
+}
+
 /// A native SimpleTest that writes first writes each pattern as a pair, P then its inverse ~P, in
 /// a chunk's back-to-back rounds (`Program::phase`): an odd `write_read_cycles` rounds up to even,
 /// so no pattern goes without its inverse, whatever the cycles or the time limit. After the CLI's
@@ -319,7 +342,9 @@ fn derive_memory_effect(test_name: &str, config: &crate::tests::TestMemoryConfig
 ///
 /// Walks the steps in order, tracking what pattern is currently in memory. Reports each step that
 /// uses `skip_init=true` (dependent mode) but finds no pattern in memory or the wrong one: a load
-/// error, since it would verify data nothing wrote. A step that takes the seal leaves the seal.
+/// error, since it would verify data nothing wrote. A step that takes the seal leaves the seal. A
+/// native SimpleTest that verifies without writing is refused outright: its image is keyed by its
+/// own step, which no other step writes, and only a native Bench pair shares one (TODO 13).
 ///
 /// Returns a list of (step_index, message) for any issues found.
 pub fn validate_test_plan(tests: &[TestDefinition]) -> Vec<(usize, String)> {
@@ -329,6 +354,16 @@ pub fn validate_test_plan(tests: &[TestDefinition]) -> Vec<(usize, String)> {
 
     for (i, test) in tests.iter().enumerate() {
         let is_dependent = test.config.skip_init;
+
+        if is_dependent && test.actual_name.starts_with("Mem-SimpleV2") && test.config.native_program().is_some()
+            && test.config.test_reps == 0
+        {
+            warnings.push((i, format!(
+                "'{}' (dependent, test_reps 0) would only verify, but a native program's image is keyed by its own \
+                 step, which no other step writes; give it test_reps 1 or more, or use a Bench-Init-* and its Bench-Verify-*",
+                test.display_name
+            )));
+        }
 
         if is_dependent {
             // Dependent test skips its own init — needs compatible pattern already in memory.
@@ -601,14 +636,9 @@ pub fn run_tests_with_layout_and_timing_filtered(
         }
     }
 
-    // Apply pattern-mode override if provided. On a SimpleTest it replaces the native program, which
-    // would otherwise win and leave the mode reported but not run
     if let Some(mode) = pattern_mode_override {
         log::info!("Applying CLI pattern-mode override: {}", mode);
-        for def in test_definitions.iter_mut() {
-            def.config.pattern_mode = Some(mode);
-            def.config.program = None;
-        }
+        apply_pattern_mode(&mut test_definitions, mode);
     }
 
     // Apply verify-reps override if provided
@@ -661,7 +691,7 @@ pub fn run_tests_with_layout_and_timing_filtered(
         // After the CLI's overrides too: a verify of the fill with a cycle-keyed TMR mode fails on
         // every word, as the config check refuses (`validate_repetition`)
         if def.actual_name.starts_with("Mem-SimpleV2") && def.config.test_reps == 0
-            && matches!(def.config.pattern_mode, Some(0 | 1 | 2 | 12 | 14))
+            && matches!(def.config.pattern_mode, Some(0 | 1 | 2 | 20 | 30))
         {
             param_errors.push(format!("{}: test_reps 0 verifies the fill alone, but pattern_mode {} keys its image by the \
                 cycle, which the fill and the verifies don't share; use a native program, or mode 10, 11 or 13",
@@ -1150,7 +1180,7 @@ fn execute_test_cycle(ctx: &CycleContext, cycle: u64) -> Option<RunOutcome> {
     let run_seed = crate::pattern::run_seed();
     let seal = seal.map(|kernel| kernel.for_cycle(run_seed, cycle));
     if let Some(kernel) = seal {
-        let (bytes, _, duration) = run_seal_stage(ctx, crate::thread_pool::SealOp::SealAll, kernel, cycle);
+        let (bytes, _, _, duration) = run_seal_stage(ctx, crate::thread_pool::SealOp::SealAll, kernel, cycle);
         seal_stages.seal_ms = duration.as_millis();
         seal_stages.seal_bytes = bytes;
     }
@@ -1191,6 +1221,7 @@ fn execute_test_cycle(ctx: &CycleContext, cycle: u64) -> Option<RunOutcome> {
         let step_context = format!("step {} ({}), cycle {}", test_idx + 1, step_label, cycle);
         // The seal's work between steps first, on its own clock (TODO 74)
         let mut seal_errors_for_test = 0u64;
+        let mut seal_bits_for_test = crate::failing_bits::FailingBits::default();
         if seal.is_some() {
             let between = Instant::now();
             thread_pool.execute_seal_before_step(test_name, test_config, &step_context);
@@ -1198,6 +1229,7 @@ fn execute_test_cycle(ctx: &CycleContext, cycle: u64) -> Option<RunOutcome> {
                 match result_receiver.recv() {
                     Ok(result) => {
                         seal_errors_for_test += result.seal_errors;
+                        seal_bits_for_test.add(&result.seal_failing_bits);
                         if result.seal_errors > 0 {
                             success.store(false, Ordering::Relaxed);
                             log::error!("Thread {}: the seal check before step {} ('{}') found {} errors",
@@ -1230,6 +1262,8 @@ fn execute_test_cycle(ctx: &CycleContext, cycle: u64) -> Option<RunOutcome> {
                     errors: 0,
                     alarms: 0,
                     not_reproduced: 0,
+                    failing_bits: Default::default(),
+                    seal_failing_bits: seal_bits_for_test,
                     whea_total: 0,
                     whea_corrected: 0,
                     latency_samples: None,
@@ -1257,6 +1291,7 @@ fn execute_test_cycle(ctx: &CycleContext, cycle: u64) -> Option<RunOutcome> {
 		let mut total_bytes_for_test = 0u64;
 		let mut total_errors_for_test = 0u64;
 		let (mut alarms_for_test, mut not_reproduced_for_test) = (0u64, 0u64);
+		let mut bits_for_test = crate::failing_bits::FailingBits::default();
 		let mut timed_for_test: Option<std::time::Duration> = None;
 		let mut total_operations_for_test = 0u64;
 		let mut cycles_completed = 0u32;
@@ -1287,6 +1322,8 @@ fn execute_test_cycle(ctx: &CycleContext, cycle: u64) -> Option<RunOutcome> {
 					total_errors_for_test += result.total_errors;
 					alarms_for_test += result.alarms;
 					not_reproduced_for_test += result.not_reproduced;
+					bits_for_test.add(&result.failing_bits);
+					seal_bits_for_test.add(&result.seal_failing_bits);
 					timed_for_test = timed_for_test.max(result.timed);
 					seal_errors_for_test += result.seal_errors;
 					total_operations_for_test += result.total_operations;
@@ -1427,19 +1464,21 @@ fn execute_test_cycle(ctx: &CycleContext, cycle: u64) -> Option<RunOutcome> {
         let test_passed = total_errors_for_test == 0 && seal_errors_for_test == 0 && whea_for_test.total == 0;
         let pass_indicator = if test_passed { "✅" } else { "❌" };
         // The seal's errors, in a sealed run: what the checks before this step's chunks found
-        let seal_info = if seal.is_some() { format!(" + {} seal", seal_errors_for_test) } else { String::new() };
+        let seal_info = if seal.is_some() { format!(" + {} seal{}", seal_errors_for_test, seal_bits_for_test.brief()) } else { String::new() };
 
         // WHEA is always shown, even at zero, so a clean line still states that we were watching;
         // the C/UC split only appears when there is something to split. "errors" is the word every
         // table uses for these (the `Errors` column) — "data" would collide with the `Data` column,
         // which is bytes processed.
-        println!("📊 Test report - Cycle {} - Step {} {}: {} {:.1}s, {} errors{} + {} WHEA{}, {:.2} GiB @ {:.1} MiB/s ({:.2} GiB/s), {} ops @ {} ops/s{}{}",
+        // The bits that failed follow each count: ` (bit 31)`
+        println!("📊 Test report - Cycle {} - Step {} {}: {} {:.1}s, {} errors{}{} + {} WHEA{}, {:.2} GiB @ {:.1} MiB/s ({:.2} GiB/s), {} ops @ {} ops/s{}{}",
                  cycle,
                  test_idx + 1,
                  step_label,
                  pass_indicator,
                  test_duration.as_secs_f64(),
                  total_errors_for_test,
+                 bits_for_test.brief(),
                  seal_info,
                  whea_for_test.total,
                  whea_for_test.split_suffix(),
@@ -1459,17 +1498,8 @@ fn execute_test_cycle(ctx: &CycleContext, cycle: u64) -> Option<RunOutcome> {
             let chunk_str = formatter.format_chunk_mode_with_size(&test_def.config.chunk_mode, cache_info, thread_count);
             let param_str = crate::reporting::converters::format_parameter_context(&test_def.config.parameter_context);
             let mode_str = match test_def.config.pattern_mode {
-                Some(m) => match m {
-                    0 => "TM5-0".to_string(),
-                    1 => "TM5-1".to_string(),
-                    2 => "TM5-2".to_string(),
-                    10 => "TMR-0".to_string(),
-                    11 => "TMR-1".to_string(),
-                    12 => "TMR-2".to_string(),
-                    13 => "TMR-3".to_string(),
-                    14 => "TMR-4".to_string(),
-                    other => format!("{}", other),
-                },
+                Some(m @ 0..=2) => format!("TM5-{m}"),
+                Some(m) => format!("TMR-{m}"),
                 // A native program (pattern spec v2)
                 None if test_def.actual_name.starts_with("Mem-SimpleV2") => {
                     test_def.config.native_program().map_or("-".to_string(), |p| p.name())
@@ -1578,6 +1608,8 @@ fn execute_test_cycle(ctx: &CycleContext, cycle: u64) -> Option<RunOutcome> {
             errors: total_errors_for_test,
             alarms: alarms_for_test,
             not_reproduced: not_reproduced_for_test,
+            failing_bits: bits_for_test,
+            seal_failing_bits: seal_bits_for_test,
             whea_total: whea_for_test.total,
             whea_corrected: whea_for_test.corrected,
             latency_samples,
@@ -1612,10 +1644,11 @@ fn execute_test_cycle(ctx: &CycleContext, cycle: u64) -> Option<RunOutcome> {
     if let Some(kernel) = seal
         && stopped.is_none()
     {
-        let (bytes, errors, duration) = run_seal_stage(ctx, crate::thread_pool::SealOp::FinalCheck, kernel, cycle);
+        let (bytes, errors, bits, duration) = run_seal_stage(ctx, crate::thread_pool::SealOp::FinalCheck, kernel, cycle);
         seal_stages.final_check_ms = duration.as_millis();
         seal_stages.final_check_bytes = bytes;
         seal_stages.final_check_errors = errors;
+        seal_stages.final_check_failing_bits = bits;
         if errors > 0 {
             progress.add_seal_errors(errors);
             if matches!(error_mode, ErrorMode::Halt) {
@@ -1636,9 +1669,10 @@ fn execute_test_cycle(ctx: &CycleContext, cycle: u64) -> Option<RunOutcome> {
     stopped
 }
 
-/// Run a seal stage on every worker (TODO 74) and report it: the bytes, the errors (a final check's)
-/// and the wall time.
-fn run_seal_stage(ctx: &CycleContext, op: crate::thread_pool::SealOp, kernel: crate::seal::SealKernel, cycle: u64) -> (u64, u64, Duration) {
+/// Run a seal stage on every worker (TODO 74) and report it: the bytes, the errors and the bits
+/// that failed (a final check's), and the wall time.
+fn run_seal_stage(ctx: &CycleContext, op: crate::thread_pool::SealOp, kernel: crate::seal::SealKernel,
+                  cycle: u64) -> (u64, u64, crate::failing_bits::FailingBits, Duration) {
     use crate::thread_pool::SealOp;
     let (name, lead) = match op {
         SealOp::SealAll => ("Sealing memory", "🔒 Sealing memory"),
@@ -1648,24 +1682,26 @@ fn run_seal_stage(ctx: &CycleContext, op: crate::thread_pool::SealOp, kernel: cr
     ctx.progress.start_test(0, name, start, None, true);
     ctx.thread_pool.execute_seal(op, kernel, &format!("cycle {cycle}"));
     let (mut bytes, mut errors) = (0u64, 0u64);
+    let mut bits = crate::failing_bits::FailingBits::default();
     for _ in 0..ctx.thread_count {
         match ctx.result_receiver.recv() {
             Ok(result) => {
                 bytes += result.total_bytes;
                 errors += result.seal_errors;
+                bits.add(&result.seal_failing_bits);
             }
             Err(e) => log::error!("Failed to receive seal stage result: {}", e),
         }
     }
     let duration = start.elapsed();
     let gib = bytes as f64 / (1024.0 * 1024.0 * 1024.0);
-    let errors_info = if op == SealOp::FinalCheck { format!("{errors} errors, ") } else { String::new() };
+    let errors_info = if op == SealOp::FinalCheck { format!("{errors} errors{}, ", bits.brief()) } else { String::new() };
     crate::console::print_above(&format!("{lead} ({}): {errors_info}{gib:.2} GiB in {:.1}s ({:.2} GiB/s)",
         kernel.name(), duration.as_secs_f64(), gib / duration.as_secs_f64().max(1e-9)));
     if errors > 0 {
         log::error!("The final seal check of cycle {cycle} found {errors} errors");
     }
-    (bytes, errors, duration)
+    (bytes, errors, bits, duration)
 }
 
 // Generic auto-dispatch resolver - converts "*-Auto" test names to best SIMD variant
@@ -2352,6 +2388,29 @@ fn create_test_definitions(cache_info: &CacheInfo) -> Vec<TestDefinition> {
              .with_memory_type(None)
         ),
 
+        // Moving inversions, memtest86's (TODO 97): chunks twice the L3, so every pass reaches DRAM
+        (
+            "Mem-MovingInv",
+            TestFunction::MultiBlock(moving_inversions_multi),
+            TestMemoryConfig::new(
+                ExtentMode::FullAllocation,
+                ChunkMode::Cache { target: CacheTarget::Dram { scale: 2.0 } }
+            ).with_timing(TestTiming::duration_only(30))
+             .with_memory_type(None)
+        ),
+
+        // Protected victims, memtest86's modulo-20 (TODO 97): chunks twice the L3, as the moving
+        // inversions'
+        (
+            "Mem-ModuloX",
+            TestFunction::MultiBlock(modulo_x_multi),
+            TestMemoryConfig::new(
+                ExtentMode::FullAllocation,
+                ChunkMode::Cache { target: CacheTarget::Dram { scale: 2.0 } }
+            ).with_timing(TestTiming::duration_only(30))
+             .with_memory_type(None)
+        ),
+
         (
             "Mem-BlockMove",
             TestFunction::MultiBlock(block_move_multi),
@@ -2526,7 +2585,7 @@ fn create_test_definitions(cache_info: &CacheInfo) -> Vec<TestDefinition> {
              .with_memory_type(None)
         ),
         (
-            "Bench-Init-TMR-0",
+            "Bench-Init-TMR-10",
             TestFunction::MultiBlock(bench_init_multi),
             TestMemoryConfig::new(
                 ExtentMode::FullAllocation,
@@ -2537,7 +2596,7 @@ fn create_test_definitions(cache_info: &CacheInfo) -> Vec<TestDefinition> {
              .with_memory_type(None)
         ),
         (
-            "Bench-Init-TMR-1",
+            "Bench-Init-TMR-11",
             TestFunction::MultiBlock(bench_init_multi),
             TestMemoryConfig::new(
                 ExtentMode::FullAllocation,
@@ -2548,18 +2607,7 @@ fn create_test_definitions(cache_info: &CacheInfo) -> Vec<TestDefinition> {
              .with_memory_type(None)
         ),
         (
-            "Bench-Init-TMR-2",
-            TestFunction::MultiBlock(bench_init_multi),
-            TestMemoryConfig::new(
-                ExtentMode::FullAllocation,
-                ChunkMode::Absolute { size_bytes: 4 * MB }
-            ).with_timing(TestTiming::cycles_only(10))
-             .with_pattern_config(Some(12), Some(0xDEADBEEFDEADBEEF), Some(0xCAFEBABECAFEBABE))
-             .with_skip_init(true)
-             .with_memory_type(None)
-        ),
-        (
-            "Bench-Init-TMR-3",
+            "Bench-Init-TMR-13",
             TestFunction::MultiBlock(bench_init_multi),
             TestMemoryConfig::new(
                 ExtentMode::FullAllocation,
@@ -2570,13 +2618,24 @@ fn create_test_definitions(cache_info: &CacheInfo) -> Vec<TestDefinition> {
              .with_memory_type(None)
         ),
         (
-            "Bench-Init-TMR-4",
+            "Bench-Init-TMR-20",
             TestFunction::MultiBlock(bench_init_multi),
             TestMemoryConfig::new(
                 ExtentMode::FullAllocation,
                 ChunkMode::Absolute { size_bytes: 4 * MB }
             ).with_timing(TestTiming::cycles_only(10))
-             .with_pattern_config(Some(14), Some(0xDEADBEEFDEADBEEF), Some(0xCAFEBABECAFEBABE))
+             .with_pattern_config(Some(20), Some(0xDEADBEEFDEADBEEF), Some(0xCAFEBABECAFEBABE))
+             .with_skip_init(true)
+             .with_memory_type(None)
+        ),
+        (
+            "Bench-Init-TMR-30",
+            TestFunction::MultiBlock(bench_init_multi),
+            TestMemoryConfig::new(
+                ExtentMode::FullAllocation,
+                ChunkMode::Absolute { size_bytes: 4 * MB }
+            ).with_timing(TestTiming::cycles_only(10))
+             .with_pattern_config(Some(30), Some(0xDEADBEEFDEADBEEF), Some(0xCAFEBABECAFEBABE))
              .with_skip_init(true)
              .with_memory_type(None)
         ),
@@ -2615,7 +2674,7 @@ fn create_test_definitions(cache_info: &CacheInfo) -> Vec<TestDefinition> {
              .with_memory_type(None)
         ),
         (
-            "Bench-Verify-TMR-0",
+            "Bench-Verify-TMR-10",
             TestFunction::MultiBlock(bench_verify_multi),
             TestMemoryConfig::new(
                 ExtentMode::FullAllocation,
@@ -2625,7 +2684,7 @@ fn create_test_definitions(cache_info: &CacheInfo) -> Vec<TestDefinition> {
              .with_memory_type(None)
         ),
         (
-            "Bench-Verify-TMR-1",
+            "Bench-Verify-TMR-11",
             TestFunction::MultiBlock(bench_verify_multi),
             TestMemoryConfig::new(
                 ExtentMode::FullAllocation,
@@ -2635,17 +2694,7 @@ fn create_test_definitions(cache_info: &CacheInfo) -> Vec<TestDefinition> {
              .with_memory_type(None)
         ),
         (
-            "Bench-Verify-TMR-2",
-            TestFunction::MultiBlock(bench_verify_multi),
-            TestMemoryConfig::new(
-                ExtentMode::FullAllocation,
-                ChunkMode::Absolute { size_bytes: 4 * MB }
-            ).with_timing(TestTiming::cycles_only(10))
-             .with_pattern_config(Some(12), Some(0xDEADBEEFDEADBEEF), Some(0xCAFEBABECAFEBABE))
-             .with_memory_type(None)
-        ),
-        (
-            "Bench-Verify-TMR-3",
+            "Bench-Verify-TMR-13",
             TestFunction::MultiBlock(bench_verify_multi),
             TestMemoryConfig::new(
                 ExtentMode::FullAllocation,
@@ -2655,13 +2704,23 @@ fn create_test_definitions(cache_info: &CacheInfo) -> Vec<TestDefinition> {
              .with_memory_type(None)
         ),
         (
-            "Bench-Verify-TMR-4",
+            "Bench-Verify-TMR-20",
             TestFunction::MultiBlock(bench_verify_multi),
             TestMemoryConfig::new(
                 ExtentMode::FullAllocation,
                 ChunkMode::Absolute { size_bytes: 4 * MB }
             ).with_timing(TestTiming::cycles_only(10))
-             .with_pattern_config(Some(14), Some(0xDEADBEEFDEADBEEF), Some(0xCAFEBABECAFEBABE))
+             .with_pattern_config(Some(20), Some(0xDEADBEEFDEADBEEF), Some(0xCAFEBABECAFEBABE))
+             .with_memory_type(None)
+        ),
+        (
+            "Bench-Verify-TMR-30",
+            TestFunction::MultiBlock(bench_verify_multi),
+            TestMemoryConfig::new(
+                ExtentMode::FullAllocation,
+                ChunkMode::Absolute { size_bytes: 4 * MB }
+            ).with_timing(TestTiming::cycles_only(10))
+             .with_pattern_config(Some(30), Some(0xDEADBEEFDEADBEEF), Some(0xCAFEBABECAFEBABE))
              .with_memory_type(None)
         ),
 
@@ -4846,7 +4905,7 @@ mod tests {
     }
 
     /// TODO 93: the strided SimpleTest, at every width and in every mode, runs clean and leaves the
-    /// image the sequential one leaves (the scalar test's strided mode 2 writes mode 12's lines),
+    /// image the sequential one leaves (the scalar test's strided mode 2 writes mode 20's lines),
     /// over a 15-line stride (TM5 Parameter 8 on 2 channels) and one longer than a chunk; sealed,
     /// it leaves the span sealed.
     #[test]
@@ -4856,7 +4915,7 @@ mod tests {
         let kernel = crate::seal::SealKernel::detect();
         let mut ran = 0;
         for (def, test_fn) in suite().into_iter().filter(|(d, _)| d.actual_name.starts_with("Mem-SimpleV2")) {
-            for mode in [0, 1, 2, 10, 11, 12, 13, 14] {
+            for mode in crate::pattern_gen::MODES {
                 let run = |region: &mut Region, stride_cl: usize, sealed: bool| {
                     let mut def = def.clone();
                     def.config.chunk_mode = ChunkMode::Absolute { size_bytes: 68 * KIB };
@@ -4876,8 +4935,8 @@ mod tests {
                     assert_eq!((stats.error_count, stats.seal_errors), (0, 0), "{} mode {mode} stride {stride_cl}", def.display_name);
                     region.words().to_vec()
                 };
-                // Every width runs mode 2 on the scalar build, whose strided walk writes mode 12's lines
-                let same_as = if mode == 2 { 12 } else { mode };
+                // Every width runs mode 2 on the scalar build, whose strided walk writes mode 20's lines
+                let same_as = if mode == 2 { 20 } else { mode };
                 let sequential = {
                     let mut seq = def.clone();
                     seq.config.chunk_mode = ChunkMode::Absolute { size_bytes: 68 * KIB };
@@ -4937,7 +4996,7 @@ mod tests {
         let suite = suite();
         let find = |name: &str| suite.iter().find(|(d, _)| d.display_name == name).cloned().unwrap();
         let progress = crate::tests::TestProgress::new();
-        let (mut never, _) = find("Bench-Init-TMR-0");
+        let (mut never, _) = find("Bench-Init-TMR-10");
         let (mut sealed, _) = find("Mem-StuckBit");
         set_step_seals(std::slice::from_mut(&mut never), kernel, true);
         set_step_seals(std::slice::from_mut(&mut sealed), kernel, true);
@@ -4948,6 +5007,10 @@ mod tests {
         region.words()[100] ^= 1;
         let errors = crate::thread_pool::seal_before_step(&region.blocks, &never.config, never.actual_name, &progress, &mut unsealed);
         assert_eq!((errors, unsealed), (1, 640 * KIB), "the whole span is Bench-Init's extent");
+        // The seal's bits, not the test's, taken with the work item (TODO 97)
+        let bits = crate::tests::take_failing_bits();
+        assert!(bits.test.is_empty() && !bits.seal.is_empty() && bits.seal.detail().starts_with("0: 1 / 1"), "{bits:?}");
+        assert!(crate::tests::take_failing_bits().seal.is_empty());
         region.words().fill(UNTOUCHED);
         let errors = crate::thread_pool::seal_before_step(&region.blocks, &sealed.config, sealed.actual_name, &progress, &mut unsealed);
         assert_eq!((errors, unsealed), (0, 0));
@@ -5070,8 +5133,8 @@ mod tests {
         let mut region = Region::new(&[256 * KIB, 256 * KIB, 128 * KIB]);
         let suite = suite();
         let find = |name: &str| suite.iter().find(|(d, _)| d.display_name == name).cloned().unwrap();
-        let (init, init_fn) = find("Bench-Init-TMR-0");
-        let (mut verify, verify_fn) = find("Bench-Verify-TMR-0");
+        let (init, init_fn) = find("Bench-Init-TMR-10");
+        let (mut verify, verify_fn) = find("Bench-Verify-TMR-10");
         verify.config.skip_init = true;
         verify.config.chunk_mode = ChunkMode::Absolute { size_bytes: 68 * KIB };
 
@@ -5233,6 +5296,15 @@ mod tests {
                 let stats = unsafe { test_fn(&region.blocks, 0, mode, &def.config.timing, &def.config, None) };
                 assert_eq!(stats.error_count, errors, "{} {mode:?}", def.display_name);
                 assert_eq!((stats.alarms, stats.not_reproduced), (errors, 0), "{} {mode:?}", def.display_name);
+                if mode == ErrorMode::Log {
+                    // Each check's bits and each bad word's, by the way they went (TODO 97)
+                    let mut want = crate::failing_bits::FailingBits::default();
+                    for &w in &flips {
+                        want.add_check(region.words()[w] ^ image[w]);
+                        want.add_word(image[w], region.words()[w]);
+                    }
+                    assert_eq!(crate::tests::take_failing_bits().test, want, "{}", def.display_name);
+                }
                 if mode == ErrorMode::Halt {
                     // It stopped at the first, so the second was never checked; both are still bad
                     assert_eq!(region.words()[34_000], image[34_000] ^ (1 << 3), "{}", def.display_name);
@@ -5288,6 +5360,9 @@ mod tests {
         region.words()[bad] ^= 1;
         let stats = unsafe { test_fn(&region.blocks, 0, ErrorMode::Halt, &def.config.timing, &def.config, None) };
         assert_eq!((stats.error_count, stats.seal_errors), (0, 1));
+        // The seal check before a chunk counts in the seal's bits (TODO 97)
+        let bits = crate::tests::take_failing_bits();
+        assert!(bits.test.is_empty() && bits.seal.detail().starts_with("0: 1 / 1"), "{bits:?}");
         let want = kernel.word(region.words().as_ptr().wrapping_add(bad) as usize) ^ 1;
         assert_eq!(region.words()[bad], want, "the bad seal word was overwritten");
     }
@@ -5330,7 +5405,8 @@ mod tests {
             phases.push(program.phase(&def.config.epoch, 1, 0, crate::pattern::Schedule::OncePerRun, None));
         }
         let families: Vec<_> = phases.iter().step_by(2).map(|p| p.family).collect();
-        assert_eq!(families, program.families(), "one place in the program each two suite cycles");
+        let laps: Vec<_> = program.families().iter().copied().cycle().take(families.len()).collect();
+        assert_eq!(families, laps, "one place in the program each two suite cycles");
         assert!(phases.chunks(2).all(|p| p[0].key == p[1].key && (p[0].mask, p[1].mask) == (0, !0)), "P then ~P, one key");
     }
 
@@ -5349,7 +5425,7 @@ mod tests {
             with(1, &|_| {}),
             with(3, &|_| {}),
             with(4, &|_| {}),
-            with(3, &|d| d.config.pattern_mode = Some(14)),
+            with(3, &|d| d.config.pattern_mode = Some(30)),
             with(3, &|d| d.config.test_reps = 0),
             with(3, &|d| d.actual_name = "Mem-MirrorV2-Auto"),
         ];
@@ -5383,6 +5459,100 @@ mod tests {
         let first = native_image(program, def.config.epoch, 4, 2, crate::pattern::Schedule::Rounds, words);
         assert_eq!(region.words().to_vec(), last);
         assert!(last.iter().zip(&first).all(|(l, f)| *l == !*f), "the last round is the pair's ~P");
+    }
+
+    /// A native SimpleTest that verifies without writing (dependent, test_reps 0) is refused
+    /// whatever precedes it: no other step writes its step-keyed image (TODO 13). With its own
+    /// writes, or its own fill, it stands alone.
+    #[test]
+    fn a_dependent_verify_only_native_step_is_refused() {
+        let (writer, _) = native_tests().into_iter().next().unwrap();
+        let step = |skip_init, test_reps| {
+            let mut def = writer.clone();
+            (def.config.skip_init, def.config.test_reps) = (skip_init, test_reps);
+            def
+        };
+        let bench = suite().into_iter().find(|(d, _)| d.display_name == "Bench-Init-Switch").unwrap().0;
+        for before in [vec![], vec![writer.clone()], vec![bench]] {
+            let mut plan = before.clone();
+            plan.push(step(true, 0));
+            let refused = validate_test_plan(&plan);
+            assert!(refused.len() == 1 && refused[0].0 == before.len() && refused[0].1.contains("keyed by its own step"), "{refused:?}");
+        }
+        for (skip_init, test_reps) in [(true, 1), (false, 0)] {
+            let plan = validate_test_plan(&[writer.clone(), step(skip_init, test_reps)]);
+            assert!(plan.is_empty(), "skip_init {skip_init}, test_reps {test_reps}: {plan:?}");
+        }
+    }
+
+    /// Mem-Random, CacheBust, Stride and BlockMove write each word's id into it, so two threads'
+    /// images share no value (TODO 97: they shared the index, or were one apart).
+    #[test]
+    fn other_tests_values_differ_between_threads() {
+        let mut region = Region::new(&[256 * KIB, 256 * KIB, 128 * KIB]);
+        let kernel = crate::seal::SealKernel::detect();
+        let suite = suite();
+        for name in ["Mem-Random", "Mem-CacheBust", "Mem-Stride", "Mem-BlockMove", "Mem-MovingInv", "Mem-ModuloX"] {
+            let (mut def, test_fn) = suite.iter().find(|(d, _)| d.display_name == name).cloned().unwrap();
+            set_step_seals(std::slice::from_mut(&mut def), kernel, false);
+            def.config.chunk_mode = ChunkMode::Absolute { size_bytes: 68 * KIB };
+            let mut image = |thread_id| {
+                region.words().fill(UNTOUCHED);
+                let stats = unsafe { test_fn(&region.blocks, thread_id, ErrorMode::Log, &def.config.timing, &def.config, None) };
+                assert_eq!(stats.error_count, 0, "{name} thread {thread_id}");
+                region.words().iter().copied().filter(|&w| w != UNTOUCHED).collect::<std::collections::HashSet<u64>>()
+            };
+            let (a, b) = (image(0), image(1));
+            assert!(a.len() > 1000 && b.len() > 1000, "{name} wrote {} and {} values", a.len(), b.len());
+            assert_eq!(a.intersection(&b).count(), 0, "{name}: threads 0 and 1 wrote values in common");
+        }
+    }
+
+    /// After a cycle Mem-MovingInv leaves P everywhere, and Mem-ModuloX P in its victim lines and ~P
+    /// in the rest: `ident`'s word of each word's id under the cycle's key (TODO 97).
+    #[test]
+    fn moving_inversions_and_modulo_x_leave_their_images() {
+        let mut region = Region::new(&[256 * KIB, 256 * KIB, 128 * KIB]);
+        let kernel = crate::seal::SealKernel::detect();
+        let suite = suite();
+        let thread = 3;
+        for name in ["Mem-MovingInv", "Mem-ModuloX"] {
+            let (mut def, test_fn) = suite.iter().find(|(d, _)| d.display_name == name).cloned().unwrap();
+            set_step_seals(std::slice::from_mut(&mut def), kernel, false);
+            def.config.epoch = crate::pattern::StepEpoch { seed: 5, suite_cycle: 2, step: 1 };
+            region.words().fill(UNTOUCHED);
+            let stats = unsafe { test_fn(&region.blocks, thread, ErrorMode::Log, &def.config.timing, &def.config, None) };
+            assert_eq!((stats.error_count, stats.cycles_completed), (0, 1), "{name}");
+            let key = crate::pattern::fmix(def.config.epoch.key().wrapping_add(1));
+            let offset = (crate::pattern::fmix(def.config.epoch.key()) % 20) as usize;
+            let ids = crate::pattern::word_base(thread);
+            for (i, &w) in region.words().iter().enumerate() {
+                let p = crate::pattern::ident_word(ids + i as u64, key);
+                let victim = name == "Mem-MovingInv" || (i / 8) % 20 == offset;
+                assert_eq!(w, if victim { p } else { !p }, "{name} word {i}");
+            }
+        }
+    }
+
+    /// `pattern-mode=` sets a numbered mode on every test, replacing a SimpleTest's program; a
+    /// native family's number runs that family alone on the SimpleTests and leaves the rest (the
+    /// second review).
+    #[test]
+    fn the_command_lines_pattern_mode_reaches_the_tests_it_names() {
+        let suite = suite();
+        let find = |name: &str| suite.iter().find(|(d, _)| d.display_name == name).map(|(d, _)| d.clone()).unwrap();
+        let (simple, bench) = (native_tests().into_iter().next().unwrap().0, find("Bench-Init-TMR-30"));
+        let modes = |defs: &[TestDefinition]| defs.iter().map(|d| (d.config.pattern_mode, d.config.native_program())).collect::<Vec<_>>();
+        let mut defs = vec![simple.clone(), bench.clone()];
+        apply_pattern_mode(&mut defs, 31);
+        let switch = crate::pattern::Program::single(crate::pattern::Family::Switch);
+        assert_eq!(modes(&defs), [(None, Some(switch)), (Some(30), None)]);
+        apply_pattern_mode(&mut defs, 20);
+        assert_eq!(modes(&defs), [(Some(20), None), (Some(20), None)]);
+        // No SimpleTest: it changes nothing (and warns)
+        let mut defs = vec![bench];
+        apply_pattern_mode(&mut defs, 31);
+        assert_eq!(modes(&defs), [(Some(30), None)]);
     }
 
     /// A dependent native Bench-Verify follows its own family's Bench-Init and no other (Astra's
@@ -5420,13 +5590,13 @@ mod tests {
         }
     }
 
-    /// The SIMD widths run the TMR modes they have no kernel for (0, 1, 2, 13, 14) on the scalar
+    /// The SIMD widths run the TMR modes they have no kernel for (0, 1, 2, 13, 30) on the scalar
     /// build, so they write the mode's own image, not mode 10's (TODO 3).
     #[test]
     fn simd_widths_write_the_tmr_modes_own_image() {
         let mut region = Region::new(&[256 * KIB, 256 * KIB, 128 * KIB]);
         let tests = suite().into_iter().filter(|(d, _)| d.actual_name.starts_with("Mem-SimpleV2")).collect::<Vec<_>>();
-        for mode in [0, 1, 2, 10, 11, 12, 13, 14] {
+        for mode in crate::pattern_gen::MODES {
             let mut images = Vec::new();
             for (def, test_fn) in &tests {
                 let mut def = def.clone();

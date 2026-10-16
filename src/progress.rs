@@ -94,6 +94,9 @@ pub struct TestSummary {
     /// `errors` counts the bad words the rescans found, plus one for each not reproduced.
     pub alarms: u64,
     pub not_reproduced: u64,
+    /// The bits that failed the step's own checks, and its seal checks' (TODO 97)
+    pub failing_bits: crate::failing_bits::FailingBits,
+    pub seal_failing_bits: crate::failing_bits::FailingBits,
     // Hardware errors WHEA reported to the OS while this test was running (all severities), and
     // the subset the OS reported as corrected. Tracked apart from `errors` because they are not
     // thread-detected: see whea.rs.

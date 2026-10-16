@@ -1005,6 +1005,8 @@ impl TestMemoryConfig {
             "Mem-Random" => 8,       // Basic u64 operations
             "Mem-Stride" => 8,               // Basic u64 operations
             "Mem-BlockMove" => 64,                  // Block operations
+            "Mem-MovingInv" => 32,                  // u64, which the AVX2 baseline vectorises
+            "Mem-ModuloX" => 64,                    // Whole lines
             // v2 tests
             "Mem-SimpleV2" => 8,                     // Basic u64 operations (scalar, auto-vectorized)
             "Mem-SimpleV2-128" => 16,                // u64x2 (128-bit)
@@ -1018,10 +1020,10 @@ impl TestMemoryConfig {
             "Mem-MirrorV2-Auto" => 64,               // Auto-dispatched, assume AVX-512 possible
             // Bench-Init and Bench-Verify tests (all scalar u64)
             "Bench-Init-TM5-0" | "Bench-Init-TM5-1" | "Bench-Init-TM5-2"
-            | "Bench-Init-TMR-0" | "Bench-Init-TMR-1" | "Bench-Init-TMR-2" | "Bench-Init-TMR-3" | "Bench-Init-TMR-4"
+            | "Bench-Init-TMR-10" | "Bench-Init-TMR-11" | "Bench-Init-TMR-13" | "Bench-Init-TMR-20" | "Bench-Init-TMR-30"
             | "Bench-Verify-TM5-0" | "Bench-Verify-TM5-1" | "Bench-Verify-TM5-2"
-            | "Bench-Verify-TMR-0" | "Bench-Verify-TMR-1" | "Bench-Verify-TMR-2" | "Bench-Verify-TMR-3"
-            | "Bench-Verify-TMR-4" => 8,
+            | "Bench-Verify-TMR-10" | "Bench-Verify-TMR-11" | "Bench-Verify-TMR-13" | "Bench-Verify-TMR-20"
+            | "Bench-Verify-TMR-30" => 8,
             // The seal kernels take 64 B-aligned ranges at every width (TODO 74)
             s if s.starts_with("Bench-Init-Seal-") || s.starts_with("Bench-Verify-Seal-") => 64,
             // The native Bench pairs run the widest native SimpleTest (pattern spec v2)
@@ -1326,8 +1328,8 @@ macro_rules! stuck_bit_write_verify {
             // Count and log each bad word, as every width does (TODO 89)
             let words = std::mem::size_of::<$simd_type>() / std::mem::size_of::<u64>();
             let pat = $pat.as_array()[0];
-            log::error!("{}: phase {} found a bad word (thread {})", crate::error_context::found_by($test_name), $phase, $thread_id);
-            *$errs += rescan_words($base as *const u64, $start * words, $end * words, $test_name, acc.reduce_or(), |_| pat);
+            let phase = format!("phase {}", $phase);
+            *$errs += rescan_words_in($base as *const u64, $start * words, $end * words, $test_name, acc.reduce_or(), &phase, |_| pat);
         }
     }};
 }
@@ -2004,9 +2006,10 @@ pub unsafe fn cache_busting_multi(
         .and_then(|c| c.stride_patterns)
         .expect("CacheBust requires stride_patterns in parameter_context") as usize;
 
-    // Pre-calculate stride constants outside all loops
+    // Pre-calculate stride constants outside all loops. Each word holds the constant plus its id
+    // (`pattern::word_base`), so no two threads' words match (TODO 97)
     let base_stride = CACHE_BUSTING_STRIDE / std::mem::size_of::<u64>();
-    let pattern_base = 0x0123456789ABCDEFu64.wrapping_add(thread_id as u64);
+    let thread_base = 0x0123456789ABCDEFu64.wrapping_add(crate::pattern::word_base(thread_id));
 
     let (mut runner, extent) = crate::test_scaffolding::TestRunner::new(
         blocks, thread_id, error_mode, timing, config, progress,
@@ -2014,8 +2017,10 @@ pub unsafe fn cache_busting_multi(
     );
 
     loop {
-        runner.begin_cycle();
+        let cycle = runner.begin_cycle();
         let mut cycle_errors = 0u64;
+        // A cycle's values differ from the last's, so a write that didn't land shows even unsealed
+        let pattern_base = thread_base.wrapping_add(u64::from(cycle));
 
         let base = extent.ptr as *mut u64;
 
@@ -2125,35 +2130,80 @@ pub unsafe fn cache_busting_multi(
 // RandomTorture MultiBlock Implementation
 // ================================================================================================
 
+/// Mem-Random's extent as its reads see it: word `idx` holds `ids | idx`, its word id.
+#[derive(Clone, Copy)]
+struct RandomExtent {
+    base: *const u64,
+    len: usize,
+    ids: u64,
+}
+
 /// Cold path of Mem-Random: rerun one chunk's reads from its saved RNG state, counting and logging
-/// each mismatch. A fault that was gone by the reread still counts once.
+/// each mismatch. A fault that was gone by the reread still counts once. Random reads can land on
+/// a word twice: a bad word counts once, and its repeat reads are counted in the record.
 #[cold]
 #[inline(never)]
-unsafe fn random_replay(base: *mut u64, len: usize, mut rng_state: u64, iterations: std::ops::Range<usize>,
+unsafe fn random_replay(extent: RandomExtent, mut rng_state: u64, iterations: std::ops::Range<usize>,
                         seq: u32, test_name: &str, seen: u64) -> u64 {
+    let RandomExtent { base, len, ids } = extent;
     let (first, last) = (iterations.start, iterations.end);
     if !crate::pattern::rescan_enabled() {
         return unlocalised(found_by(test_name), format_args!("in rng_seq {seq}, iterations {first}..{last}"), seen);
     }
     let mut scan = Rescan::for_test(base, test_name).seen(seen);
+    // The words found bad so far in this replay, and the reads of them since
+    let mut found = std::collections::HashSet::new();
+    let mut repeats = 0u64;
     for _ in iterations {
         rng_state ^= rng_state << 13;
         rng_state ^= rng_state >> 17;
         rng_state ^= rng_state << 5;
         let idx = ((rng_state as u128 * len as u128) >> 64) as usize;
+        if found.contains(&idx) {
+            repeats += 1;
+            continue;
+        }
+        let before = scan.found();
         // SAFETY: idx < len, inside the extent
-        unsafe { scan.word(idx, idx as u64) };
+        unsafe { scan.word(idx, ids | idx as u64) };
+        if scan.found() > before {
+            found.insert(idx);
+        }
     }
-    scan.finish(format_args!("in rng_seq {seq}, iterations {first}..{last}"))
+    let repeats = match repeats {
+        0 => String::new(),
+        n => format!(" ({n} more reads of its bad words, not counted again)"),
+    };
+    scan.finish(format_args!("in rng_seq {seq}, iterations {first}..{last}{repeats}"))
+}
+
+/// Mem-Random's final sweep (TODO 97): every word of the extent read once in order, `piece` words
+/// a check, stopping when `stop(errors so far)` says to. Returns the errors and the words it got
+/// through.
+unsafe fn random_sweep(extent: RandomExtent, piece: usize, test_name: &str, mut stop: impl FnMut(u64) -> bool) -> (u64, usize) {
+    let RandomExtent { base, len, ids } = extent;
+    let mut errors = 0;
+    let mut at = 0;
+    while at < len {
+        let end = (at + piece).min(len);
+        errors += verify_words_in(base, at, end, test_name, "final sweep", |i| ids | i as u64);
+        at = end;
+        if stop(errors) {
+            break;
+        }
+    }
+    (errors, at)
 }
 
 /// RandomTorture MultiBlock implementation - random access pattern testing.
 ///
 /// Pattern per cycle:
-/// - Initializes memory with sequential pattern (index as value)
+/// - Initializes memory with each word's id (the thread's and its index, `pattern::word_base`)
 /// - Performs random reads using XORshift RNG
 /// - Verifies each random read matches expected value
 /// - Supports multiple RNG sequences with different seeds
+///
+/// After the last cycle, a final sweep reads every word once in order (TODO 97).
 ///
 /// Tests blocks in interleaved fashion with shared timer to fix N×duration bug.
 #[doc = include_str!("test_fn_safety.md")]
@@ -2177,12 +2227,14 @@ pub unsafe fn random_torture_multi(
     }
     let total_test_size = extent.test_size;
 
-    // Initialize the extent with a known pattern once
+    // Initialize the extent once, each word with its id: no two threads' words alike (TODO 97)
     let base = extent.ptr as *mut u64;
     let len = extent.test_size / std::mem::size_of::<u64>();
+    let ids = crate::pattern::word_base(thread_id);
+    let reads = RandomExtent { base, len, ids };
 
     for i in 0..len {
-        *base.add(i) = i as u64;
+        *base.add(i) = ids | i as u64;
     }
     std::sync::atomic::fence(Ordering::SeqCst);
     runner.add_bytes(extent.test_size);
@@ -2226,11 +2278,11 @@ pub unsafe fn random_torture_multi(
                     rng_state ^= rng_state << 5;
 
                     let idx = ((rng_state as u128 * len as u128) >> 64) as usize;
-                    acc |= *base.add(idx) ^ idx as u64;
+                    acc |= *base.add(idx) ^ (ids | idx as u64);
                 }
 
                 if acc != 0 {
-                    cycle_errors += random_replay(base, len, chunk_rng, chunk_start..chunk_end, seq, test_name, acc);
+                    cycle_errors += random_replay(reads, chunk_rng, chunk_start..chunk_end, seq, test_name, acc);
                 }
 
                 // Handle errors if found
@@ -2266,7 +2318,19 @@ pub unsafe fn random_torture_multi(
             let iterations_per_seq_final = (base_iterations >> rng_seq_count.trailing_zeros()).max(1);
             let total_operations: u64 = cycle as u64 * (iterations_per_seq_final * rng_seq_count) as u64;
 
-            return runner.finish_completed(total_operations);
+            // The final sweep (TODO 97): the reads sample a few thousand words a cycle, and the
+            // fill has sat since the test began, so every word is read once, in order, a chunk at
+            // a time: a bad word the reads missed shows, and one that decayed over the test
+            let piece = (runner.chunk_bytes() / std::mem::size_of::<u64>()).max(1);
+            let (sweep_errors, swept) = random_sweep(reads, piece, test_name, |errors| {
+                runner.should_halt(errors) || runner.shutdown_requested()
+            });
+            if swept < len {
+                return runner.finish_aborted(sweep_errors, total_operations + swept as u64);
+            }
+            runner.add_bytes(extent.test_size);
+            runner.commit_cycle_errors(sweep_errors);
+            return runner.finish_completed(total_operations + len as u64);
         }
     }
 }
@@ -2302,7 +2366,9 @@ pub unsafe fn stride_access_multi(
         let cycle = runner.begin_cycle();
         let mut cycle_errors = 0u64;
         let strides = [1, 16, 64, 256, 1024, 4096];
-        let pattern_base = 0xFEDCBA9876543210u64.wrapping_add(thread_id as u64).wrapping_add(cycle as u64);
+        // Each word holds the constant plus its id (`pattern::word_base`), so no two threads' words
+        // match (TODO 97), plus the cycle
+        let pattern_base = 0xFEDCBA9876543210u64.wrapping_add(crate::pattern::word_base(thread_id)).wrapping_add(cycle as u64);
 
         let base = extent.ptr as *mut u64;
         let len = extent.test_size / std::mem::size_of::<u64>();
@@ -2318,8 +2384,9 @@ pub unsafe fn stride_access_multi(
         for (pass, &stride) in passes.iter().enumerate() {
             // Words written and read per chunk: each subdivision from its start, every stride
             let touched = subdivisions * elements_per_subdiv.div_ceil(stride);
-            // A word's value depends on its index and the pass's stride, not on the chunk
-            let pattern = pattern_base.wrapping_add((stride as u64) << 32);
+            // A word's value depends on its index and the pass, not on the chunk: the pass in the
+            // top byte, above every thread's ids
+            let pattern = pattern_base.wrapping_add((pass as u64 + 1) << 56);
             let mut checked_to = 0;
 
             for k in 0..spread.count() {
@@ -2422,8 +2489,9 @@ pub unsafe fn block_move_multi(
     }
     let total_test_size = extent.test_size;
 
-    // Initialize the source half
-    let pattern_base = 0xDEADBEEFCAFEBABEu64;
+    // Initialize the source half, each word the constant plus its id (`pattern::word_base`), so no
+    // two threads' words match (TODO 97)
+    let pattern_base = 0xDEADBEEFCAFEBABEu64.wrapping_add(crate::pattern::word_base(thread_id));
     // Divide the extent in half: first half = source, second half = destination
     let half_size = extent.test_size / 2;
     let src_base = extent.ptr as *mut u64;
@@ -2567,6 +2635,255 @@ pub unsafe fn block_move_multi(
     }
 }
 
+// ================================================================================================
+// Moving inversions (TODO 97, TODO 19's order)
+// ================================================================================================
+
+/// One read-then-write pass of moving inversions over words `[start, end)`, going up (`UP`) or
+/// down: each word is checked against `want(i)` and then written `write(i)`. Returns the
+/// differences ORed, in 4 accumulators as every verify keeps them.
+#[inline(always)]
+unsafe fn read_then_write<const UP: bool>(ptr: *mut u64, start: usize, end: usize, want: impl Fn(usize) -> u64,
+                                          write: impl Fn(usize) -> u64) -> u64 {
+    let mut acc = [0u64; 4];
+    let whole = start + (end - start) / 4 * 4;
+    if UP {
+        let mut i = start;
+        while i < whole {
+            for (k, a) in acc.iter_mut().enumerate() {
+                *a |= *ptr.add(i + k) ^ want(i + k);
+                *ptr.add(i + k) = write(i + k);
+            }
+            i += 4;
+        }
+        for i in whole..end {
+            acc[0] |= *ptr.add(i) ^ want(i);
+            *ptr.add(i) = write(i);
+        }
+    } else {
+        for i in (whole..end).rev() {
+            acc[0] |= *ptr.add(i) ^ want(i);
+            *ptr.add(i) = write(i);
+        }
+        let mut i = whole;
+        while i > start {
+            i -= 4;
+            for (k, a) in acc.iter_mut().enumerate() {
+                let at = i + 3 - k;
+                *a |= *ptr.add(at) ^ want(at);
+                *ptr.add(at) = write(at);
+            }
+        }
+    }
+    (acc[0] | acc[1]) | (acc[2] | acc[3])
+}
+
+/// Mem-MovingInv: memtest86's moving inversions, a March X over each chunk. The chunk is written
+/// with P going up; then each word is read as P and written as ~P going up; then read as ~P and
+/// written as P going down; then read as P. So every word is checked just before it is
+/// overwritten, while the words below it hold one value and those above the other: a write that
+/// disturbs other cells, or lands at another address, shows. Chunks are twice the L3 by default,
+/// so each pass reaches DRAM and moves through its rows.
+///
+/// P is `ident`'s word of each word's id (`pattern::word_base`) under a key per step and cycle:
+/// position-unique, and new every cycle. The read-then-write passes keep no copy of what a word
+/// read, so their rescan checks what was written after it: a cell that holds a wrong bit shows
+/// again, a read that went wrong doesn't (not reproduced). The last pass only reads, and its
+/// rescan is every verify's.
+#[doc = include_str!("test_fn_safety.md")]
+pub unsafe fn moving_inversions_multi(
+    blocks: &[crate::runner::AllocationBlock],
+    thread_id: usize,
+    error_mode: ErrorMode,
+    timing: &TestTiming,
+    config: &TestMemoryConfig,
+    progress: Option<&TestProgress>,
+) -> TestStats {
+    let test_name = "Mem-MovingInv";
+    let (mut runner, extent) = crate::test_scaffolding::TestRunner::new(
+        blocks, thread_id, error_mode, timing, config, progress,
+        test_name, TestAction::ReadWrite,
+    );
+    let base = extent.ptr as *mut u64;
+    // Word i's id is ids + i: the span holds fewer than 2^40 words, so the add is the OR
+    let ids = crate::pattern::word_base(thread_id);
+    // Words written or read a chunk: a write, two reads and writes, a read
+    const PASSES: usize = 6;
+    let ops = |runner: &crate::test_scaffolding::TestRunner| (runner.bytes_processed() / std::mem::size_of::<u64>()) as u64;
+
+    loop {
+        let cycle = runner.begin_cycle();
+        let mut cycle_errors = 0u64;
+        let key = crate::pattern::fmix(config.epoch.key().wrapping_add(u64::from(cycle)));
+        let p = |i: usize| crate::pattern::ident_word(ids + i as u64, key);
+        let not_p = |i: usize| !p(i);
+
+        // Chunks of exactly the test's size, spread evenly over the extent (TODO 76)
+        let spread = runner.chunks(extent.test_size);
+        let words = spread.chunk() / std::mem::size_of::<u64>();
+        for k in 0..spread.count() {
+            let start = spread.start(k) / std::mem::size_of::<u64>();
+            let end = start + words;
+            runner.check_seal(spread.start(k), spread.chunk());
+            halt_here!(runner, cycle_errors, ops(&runner));
+
+            for i in start..end {
+                *base.add(i) = p(i);
+            }
+            let seen = read_then_write::<true>(base, start, end, p, not_p);
+            if seen != 0 {
+                cycle_errors += rescan_words_in(base, start, end, test_name, seen, "up: P read, ~P written", not_p);
+            }
+            let seen = read_then_write::<false>(base, start, end, not_p, p);
+            if seen != 0 {
+                cycle_errors += rescan_words_in(base, start, end, test_name, seen, "down: ~P read, P written", p);
+            }
+            cycle_errors += verify_words_in(base, start, end, test_name, "P read", p);
+
+            // Count the chunk when it is done; overlaps count each time
+            runner.add_bytes(spread.chunk() * PASSES);
+            halt_here!(runner, cycle_errors, ops(&runner));
+            runner.reseal(spread.start(k), spread.chunk());
+            if runner.should_halt(cycle_errors) || runner.shutdown_requested() {
+                return runner.finish_aborted(cycle_errors, ops(&runner));
+            }
+        }
+
+        runner.commit_cycle_errors(cycle_errors);
+        runner.update_progress();
+        if !runner.should_continue() {
+            return runner.finish_completed(ops(&runner));
+        }
+    }
+}
+
+// ================================================================================================
+// Protected victims: modulo-X (TODO 97)
+// ================================================================================================
+
+/// Mem-ModuloX's spacing: one victim line in every `MODULO_X`, memtest86's 20.
+const MODULO_X: usize = 20;
+/// The aggressor passes over a chunk between writing its victims and checking them.
+const MODULO_PASSES: usize = 2;
+
+/// Mem-ModuloX's victims and aggressors in lines `[start, end)` of the extent (line `l` from the
+/// extent's start): line `l` is a victim when `l % MODULO_X == offset`. Calls `victim(line)` for
+/// each victim and `aggressors(lines)` for each run of the lines between them, so neither has a
+/// branch a line.
+#[inline(always)]
+fn modulo_lines(start: usize, end: usize, offset: usize, mut victim: impl FnMut(usize), mut aggressors: impl FnMut(std::ops::Range<usize>)) {
+    let mut group = start / MODULO_X * MODULO_X;
+    while group < end {
+        let v = group + offset;
+        let before = start.max(group)..end.min(v);
+        let after = start.max(v + 1)..end.min(group + MODULO_X);
+        if !before.is_empty() {
+            aggressors(before);
+        }
+        if (start..end).contains(&v) {
+            victim(v);
+        }
+        if !after.is_empty() {
+            aggressors(after);
+        }
+        group += MODULO_X;
+    }
+}
+
+/// Mem-ModuloX: memtest86's modulo-20, protected victims. In each chunk one line in every
+/// `MODULO_X` is a victim: it is written with P, then every other line is written with ~P,
+/// `MODULO_PASSES` times over the chunk, then the victims are read. So a victim holds still while
+/// the lines around it are written again and again: a write that disturbs other cells, or lands
+/// at a victim's address, shows. Lines, not words: the cache writes whole lines back. The offset
+/// moves on a line each cycle, from one each step picks, so every line is a victim in turn. P is
+/// `ident`'s word of each word's id under a key per step and cycle, as in Mem-MovingInv.
+#[doc = include_str!("test_fn_safety.md")]
+pub unsafe fn modulo_x_multi(
+    blocks: &[crate::runner::AllocationBlock],
+    thread_id: usize,
+    error_mode: ErrorMode,
+    timing: &TestTiming,
+    config: &TestMemoryConfig,
+    progress: Option<&TestProgress>,
+) -> TestStats {
+    let test_name = "Mem-ModuloX";
+    let (mut runner, extent) = crate::test_scaffolding::TestRunner::new(
+        blocks, thread_id, error_mode, timing, config, progress,
+        test_name, TestAction::ReadWrite,
+    );
+    let base = extent.ptr as *mut u64;
+    // Word i's id is ids + i: the span holds fewer than 2^40 words, so the add is the OR
+    let ids = crate::pattern::word_base(thread_id);
+    let first_offset = (crate::pattern::fmix(config.epoch.key()) % MODULO_X as u64) as usize;
+    let ops = |runner: &crate::test_scaffolding::TestRunner| (runner.bytes_processed() / std::mem::size_of::<u64>()) as u64;
+
+    loop {
+        let cycle = runner.begin_cycle();
+        let mut cycle_errors = 0u64;
+        let key = crate::pattern::fmix(config.epoch.key().wrapping_add(u64::from(cycle)));
+        let offset = (first_offset + cycle as usize - 1) % MODULO_X;
+        let p = |i: usize| crate::pattern::ident_word(ids + i as u64, key);
+
+        // Chunks of exactly the test's size, spread evenly over the extent (TODO 76)
+        let spread = runner.chunks(extent.test_size);
+        for k in 0..spread.count() {
+            let (start, end) = (spread.start(k) / 64, (spread.start(k) + spread.chunk()) / 64);
+            runner.check_seal(spread.start(k), spread.chunk());
+            halt_here!(runner, cycle_errors, ops(&runner));
+
+            let line = |l: usize| base.add(l * LINE_WORDS);
+            modulo_lines(start, end, offset, |v| {
+                for j in 0..LINE_WORDS {
+                    *line(v).add(j) = p(v * LINE_WORDS + j);
+                }
+            }, |_| {});
+            for _ in 0..MODULO_PASSES {
+                modulo_lines(start, end, offset, |_| {}, |lines| {
+                    for i in lines.start * LINE_WORDS..lines.end * LINE_WORDS {
+                        *base.add(i) = !p(i);
+                    }
+                });
+            }
+            let mut acc = [0u64; 4];
+            modulo_lines(start, end, offset, |v| {
+                for j in 0..LINE_WORDS {
+                    acc[j % 4] |= *line(v).add(j) ^ p(v * LINE_WORDS + j);
+                }
+            }, |_| {});
+            let seen = (acc[0] | acc[1]) | (acc[2] | acc[3]);
+            if seen != 0 {
+                cycle_errors += if crate::pattern::rescan_enabled() {
+                    let mut scan = Rescan::for_test(base, test_name).seen(seen);
+                    modulo_lines(start, end, offset, |v| {
+                        let words: [u64; LINE_WORDS] = std::array::from_fn(|j| p(v * LINE_WORDS + j));
+                        scan.line(v * LINE_WORDS, &words);
+                    }, |_| {});
+                    scan.finish(format_args!("in idx {}..{} (victim lines {offset} mod {MODULO_X})", start * LINE_WORDS, end * LINE_WORDS))
+                } else {
+                    unlocalised(found_by(test_name), format_args!("in idx {}..{} (victim lines {offset} mod {MODULO_X})",
+                        start * LINE_WORDS, end * LINE_WORDS), seen)
+                };
+            }
+
+            // Count the chunk when it is done: the victims written and read, the rest written
+            // each pass; overlaps count each time
+            let victims = spread.chunk() / MODULO_X;
+            runner.add_bytes(2 * victims + MODULO_PASSES * (spread.chunk() - victims));
+            halt_here!(runner, cycle_errors, ops(&runner));
+            runner.reseal(spread.start(k), spread.chunk());
+            if runner.should_halt(cycle_errors) || runner.shutdown_requested() {
+                return runner.finish_aborted(cycle_errors, ops(&runner));
+            }
+        }
+
+        runner.commit_cycle_errors(cycle_errors);
+        runner.update_progress();
+        if !runner.should_continue() {
+            return runner.finish_completed(ops(&runner));
+        }
+    }
+}
+
 // ============================================================================
 // Phased Test Implementations (run_phased_test harness)
 // ============================================================================
@@ -2586,10 +2903,10 @@ use crate::pattern_gen::{LINE_WORDS, PAGE_WORDS};
 use crate::test_harness::{run_phased_test, ChunkCtx};
 use crate::config::MirrorMode;
 
-// ─── Line patterns: modes 2 and 12 (TODO 76) ─────────────────────────────────
+// ─── Line patterns: modes 2 and 20 (TODO 76) ─────────────────────────────────
 //
 // Both write each 64 B line as `seed + j * step`. Mode 2 takes seed and step from TM5's chain,
-// restarted at every 4 KiB page; mode 12 hashes them from the line's address. Either way a
+// restarted at every 4 KiB page; mode 20 hashes them from the line's address. Either way a
 // word depends only on its address, so chunks may overlap and start on any page. One writer
 // and one verifier per mode serve SimpleV2 (seeded with the cycle) and Bench-Init/Verify
 // (cycle 0, so a later Bench-Verify can check what Bench-Init wrote). The verifiers OR the
@@ -2650,23 +2967,23 @@ impl Mode2 {
     }
 }
 
-/// Mode 12 for one thread and cycle.
+/// Mode 20 for one thread and cycle.
 #[derive(Clone, Copy)]
-struct Mode12 {
+struct Mode20 {
     key: u64,
 }
 
-impl Mode12 {
+impl Mode20 {
     fn new(thread_id: usize, cycle: u32, param0: u64, param1: u64) -> Self {
-        Self { key: pattern_gen::mode12_key(thread_id, cycle, param0, param1) }
+        Self { key: pattern_gen::mode20_key(thread_id, cycle, param0, param1) }
     }
 
     /// Calls `line(word_offset, expected)` for each line of words `[start, end)` of `ptr`.
     #[inline(always)]
     unsafe fn walk(self, ptr: *const u64, start: usize, end: usize, mut line: impl FnMut(usize, [u64; LINE_WORDS])) {
-        debug_assert!(start.is_multiple_of(LINE_WORDS) && end.is_multiple_of(LINE_WORDS), "mode 12 needs whole lines: {start}..{end}");
+        debug_assert!(start.is_multiple_of(LINE_WORDS) && end.is_multiple_of(LINE_WORDS), "mode 20 needs whole lines: {start}..{end}");
         for offset in (start..end).step_by(LINE_WORDS) {
-            let (seed, step) = pattern_gen::mode12_line(ptr.add(offset) as usize, self.key);
+            let (seed, step) = pattern_gen::mode20_line(ptr.add(offset) as usize, self.key);
             line(offset, pattern_gen::line_words(seed, step));
         }
     }
@@ -2700,66 +3017,66 @@ impl Mode12 {
     }
 }
 
-/// The bus beat mode 14 flips at: the transfer width (`beat=`, else the DIMMs' SMBIOS memory
-/// type, `crate::pattern::transfer_beat`), or DDR5's 32 bits when neither gives one, as mode 14
+/// The bus beat mode 30 flips at: the transfer width (`beat=`, else the DIMMs' SMBIOS memory
+/// type, `crate::pattern::transfer_beat`), or DDR5's 32 bits when neither gives one, as mode 30
 /// always has (the native `switch` alternates 64 and 32 there instead).
 fn bus_beat() -> pattern_gen::BusBeat {
     static BEAT: std::sync::OnceLock<pattern_gen::BusBeat> = std::sync::OnceLock::new();
     *BEAT.get_or_init(|| {
         crate::pattern::transfer_beat().0.unwrap_or_else(|| {
-            log::info!("Mode 14: no known transfer width; assuming DDR5's 32-bit beats");
+            log::info!("Mode 30: no known transfer width; assuming DDR5's 32-bit beats");
             pattern_gen::BusBeat::Bits32
         })
     })
 }
 
-/// Mode 14 for one thread and cycle: the bus-flip lines (`pattern_gen::mode14_line`).
+/// Mode 30 for one thread and cycle: the bus-flip lines (`pattern_gen::mode30_line`).
 #[derive(Clone, Copy)]
-struct Mode14 {
+struct Mode30 {
     key: u64,
     beat: pattern_gen::BusBeat,
 }
 
-/// Runs `$body` with `$line` the line function (`*const u64` to the line's words) for `$mode14`'s
+/// Runs `$body` with `$line` the line function (`*const u64` to the line's words) for `$mode30`'s
 /// beat, matched once outside the body, so a loop in it is compiled per beat with no branch on it.
-macro_rules! with_mode14_line {
-    ($mode14:expr, |$line:ident| $body:block) => {{
-        let key = $mode14.key;
-        match $mode14.beat {
+macro_rules! with_mode30_line {
+    ($mode30:expr, |$line:ident| $body:block) => {{
+        let key = $mode30.key;
+        match $mode30.beat {
             pattern_gen::BusBeat::Bits12 => {
-                let $line = |line: *const u64| pattern_gen::mode14_line(line as usize, key, pattern_gen::BusBeat::Bits12);
+                let $line = |line: *const u64| pattern_gen::mode30_line(line as usize, key, pattern_gen::BusBeat::Bits12);
                 $body
             }
             pattern_gen::BusBeat::Bits16 => {
-                let $line = |line: *const u64| pattern_gen::mode14_line(line as usize, key, pattern_gen::BusBeat::Bits16);
+                let $line = |line: *const u64| pattern_gen::mode30_line(line as usize, key, pattern_gen::BusBeat::Bits16);
                 $body
             }
             pattern_gen::BusBeat::Bits24 => {
-                let $line = |line: *const u64| pattern_gen::mode14_line(line as usize, key, pattern_gen::BusBeat::Bits24);
+                let $line = |line: *const u64| pattern_gen::mode30_line(line as usize, key, pattern_gen::BusBeat::Bits24);
                 $body
             }
             pattern_gen::BusBeat::Bits32 => {
-                let $line = |line: *const u64| pattern_gen::mode14_line(line as usize, key, pattern_gen::BusBeat::Bits32);
+                let $line = |line: *const u64| pattern_gen::mode30_line(line as usize, key, pattern_gen::BusBeat::Bits32);
                 $body
             }
             pattern_gen::BusBeat::Bits64 => {
-                let $line = |line: *const u64| pattern_gen::mode14_line(line as usize, key, pattern_gen::BusBeat::Bits64);
+                let $line = |line: *const u64| pattern_gen::mode30_line(line as usize, key, pattern_gen::BusBeat::Bits64);
                 $body
             }
         }
     }};
 }
 
-impl Mode14 {
+impl Mode30 {
     fn new(thread_id: usize, cycle: u32, param0: u64, param1: u64) -> Self {
-        Self { key: pattern_gen::mode12_key(thread_id, cycle, param0, param1), beat: bus_beat() }
+        Self { key: pattern_gen::mode20_key(thread_id, cycle, param0, param1), beat: bus_beat() }
     }
 
     /// Calls `line(word_offset, expected)` for each line of words `[start, end)` of `ptr`.
     #[inline(always)]
     unsafe fn walk(self, ptr: *const u64, start: usize, end: usize, mut line: impl FnMut(usize, [u64; LINE_WORDS])) {
-        debug_assert!(start.is_multiple_of(LINE_WORDS) && end.is_multiple_of(LINE_WORDS), "mode 14 needs whole lines: {start}..{end}");
-        with_mode14_line!(self, |expected| {
+        debug_assert!(start.is_multiple_of(LINE_WORDS) && end.is_multiple_of(LINE_WORDS), "mode 30 needs whole lines: {start}..{end}");
+        with_mode30_line!(self, |expected| {
             for offset in (start..end).step_by(LINE_WORDS) {
                 line(offset, expected(ptr.add(offset)));
             }
@@ -2811,6 +3128,13 @@ unsafe fn accumulate_line(acc: &mut [u64; 4], line: *const u64, words: &[u64; LI
 /// word, and cost Bench-Verify-TM5-0 30% when the harness around it changed (TODO 76).
 #[inline(always)]
 unsafe fn verify_words(ptr: *const u64, start: usize, end: usize, test_name: &str, expected: impl Fn(usize) -> u64 + Copy) -> u64 {
+    verify_words_in(ptr, start, end, test_name, "", expected)
+}
+
+/// As `verify_words`, a failed check's record naming the region's `label` too (`rescan_words_in`).
+#[inline(always)]
+unsafe fn verify_words_in(ptr: *const u64, start: usize, end: usize, test_name: &str, label: &str,
+                          expected: impl Fn(usize) -> u64 + Copy) -> u64 {
     let mut acc = [0u64; 4];
     let mut idx = start;
     while idx + 4 <= end {
@@ -2827,7 +3151,7 @@ unsafe fn verify_words(ptr: *const u64, start: usize, end: usize, test_name: &st
     if seen == 0 {
         return 0;
     }
-    rescan_words(ptr, start, end, test_name, seen, expected)
+    rescan_words_in(ptr, start, end, test_name, seen, label, expected)
 }
 
 /// ORs the differences of words `start, start + stride, ...` below `end` into the 4 accumulators,
@@ -2885,11 +3209,25 @@ pub(crate) struct RescanCounts {
 thread_local! {
     static RESCANS: std::cell::Cell<RescanCounts> =
         const { std::cell::Cell::new(RescanCounts { alarms: 0, not_reproduced: 0, rereading: 0 }) };
+    /// This thread's failing bits since the last take: the worker sends them with each item's
+    /// result (`thread_pool`)
+    static BITS: std::cell::RefCell<crate::failing_bits::CheckBits> = std::cell::RefCell::default();
 }
 
-/// Starts a test's counts afresh (`TestRunner::new`).
+/// Starts a test's counts afresh (`TestRunner::new`), its failing bits too.
 pub(crate) fn reset_rescan_counts() {
     RESCANS.with(|c| c.set(RescanCounts::default()));
+    BITS.with_borrow_mut(|b| *b = Default::default());
+}
+
+/// This thread's failing bits since the last take or reset, leaving none.
+pub(crate) fn take_failing_bits() -> crate::failing_bits::CheckBits {
+    BITS.with_borrow_mut(std::mem::take)
+}
+
+/// A failed check's bits, the test's own (`count`) or the seal's.
+fn note_bits(count: bool, bits: &crate::failing_bits::FailingBits) {
+    BITS.with_borrow_mut(|b| if count { b.test.add(bits) } else { b.seal.add(bits) });
 }
 
 /// This thread's counts since the last reset.
@@ -2918,6 +3256,8 @@ pub(crate) struct Rescan {
     /// The first bad words, reread once the scan is done: a flush in mid-scan would make the
     /// rest of their line a fresh read
     suspects: [(usize, u64); REREAD_WORDS as usize],
+    /// The bad words' bits, by the way each went
+    words: crate::failing_bits::WordTally,
 }
 
 impl Rescan {
@@ -2935,7 +3275,13 @@ impl Rescan {
             c.set(n);
             n.rereading < REREAD_RESCANS
         });
-        Rescan { ptr, lead, found: 0, reread, seen: 0, found_xor: 0, count, suspects: [(0, 0); REREAD_WORDS as usize] }
+        Rescan { ptr, lead, found: 0, reread, seen: 0, found_xor: 0, count, suspects: [(0, 0); REREAD_WORDS as usize],
+                 words: Default::default() }
+    }
+
+    /// The bad words found so far.
+    pub(crate) fn found(&self) -> u64 {
+        self.found
     }
 
     /// The check's differences, ORed: 0 where the check didn't keep them.
@@ -2984,6 +3330,7 @@ impl Rescan {
     unsafe fn bad(&mut self, idx: usize, want: u64, actual: u64) {
         self.found += 1;
         self.found_xor |= want ^ actual;
+        self.words.add(want, actual);
         let at = self.ptr.add(idx);
         if self.found <= RESCAN_LOGGED {
             let diff = want ^ actual;
@@ -3029,6 +3376,12 @@ impl Rescan {
             // SAFETY: the suspects are words of the region the scan just read
             unsafe { self.reread() };
         }
+        // The check's bits are those its differences had; where it kept none, the rescan's. A bit
+        // only the rescan found (the word changed since) counts in its words alone.
+        let mut bits = crate::failing_bits::FailingBits::default();
+        bits.add_check(if self.seen != 0 { self.seen } else { self.found_xor });
+        bits.add_words(&self.words);
+        note_bits(self.count, &bits);
         log::error!("{} {what}: {}", self.lead, alarm_record(self.found, self.seen, self.found_xor));
         if self.found > 0 {
             return self.found;
@@ -3066,6 +3419,9 @@ pub(crate) fn unlocalised_as(lead: String, what: std::fmt::Arguments, seen: u64,
         n.alarms += u64::from(count);
         c.set(n);
     });
+    let mut bits = crate::failing_bits::FailingBits::default();
+    bits.add_check(seen);
+    note_bits(count, &bits);
     log::error!("{lead} {what} (rescan=off: not localised); the check's differences, ORed: {seen:#018x}");
     1
 }
@@ -3081,14 +3437,38 @@ pub(crate) fn unlocalised(lead: String, what: std::fmt::Arguments, seen: u64) ->
 #[inline(never)]
 unsafe fn rescan_words(ptr: *const u64, start: usize, end: usize, test_name: &str, seen: u64,
                        expected: impl Fn(usize) -> u64) -> u64 {
+    rescan_words_in(ptr, start, end, test_name, seen, "", expected)
+}
+
+/// As `rescan_words`, the region also named by `label` when it isn't empty (StuckBit's phase), as
+/// a native kernel names its phase: `in idx 0..512 (phase 2)`.
+#[cold]
+#[inline(never)]
+unsafe fn rescan_words_in(ptr: *const u64, start: usize, end: usize, test_name: &str, seen: u64, label: &str,
+                          expected: impl Fn(usize) -> u64) -> u64 {
+    let what = |f: &mut std::fmt::Formatter| if label.is_empty() {
+        write!(f, "in idx {start}..{end}")
+    } else {
+        write!(f, "in idx {start}..{end} ({label})")
+    };
+    let what = Region(&what);
     if !crate::pattern::rescan_enabled() {
-        return unlocalised(found_by(test_name), format_args!("in idx {start}..{end}"), seen);
+        return unlocalised(found_by(test_name), format_args!("{what}"), seen);
     }
     let mut scan = Rescan::for_test(ptr, test_name).seen(seen);
     for idx in start..end {
         scan.word(idx, expected(idx));
     }
-    scan.finish(format_args!("in idx {start}..{end}"))
+    scan.finish(format_args!("{what}"))
+}
+
+/// A region's name for a record line, written by a closure
+struct Region<'a>(&'a dyn Fn(&mut std::fmt::Formatter) -> std::fmt::Result);
+
+impl std::fmt::Display for Region<'_> {
+    fn fmt(&self, f: &mut std::fmt::Formatter) -> std::fmt::Result {
+        (self.0)(f)
+    }
 }
 
 /// TM5's strided walk (`mtests0.asm` ~336-394, TODO 93): runs `$body` once for each 64 B line of
@@ -3292,26 +3672,26 @@ unsafe fn simple_test_v2_sequential(
                 |ctx: &ChunkCtx| -> u64 { mode2(ctx).verify(ctx.ptr, ctx.chunk_start, ctx.chunk_end, test_name) },
             )
         }
-        12 => {
-            // Mode 12 (TMR-native): mode 2's lines, seed and step hashed from each line's address
-            let mode12 = |ctx: &ChunkCtx| Mode12::new(ctx.thread_id, ctx.cycle, param0, param1);
+        20 => {
+            // Mode 20 (TMR-native): mode 2's lines, seed and step hashed from each line's address
+            let mode20 = |ctx: &ChunkCtx| Mode20::new(ctx.thread_id, ctx.cycle, param0, param1);
             run_phased_test(
                 blocks, thread_id, error_mode, timing, config, progress,
                 test_name, TestAction::WriteVerify, 1, false, config.test_reps, config.verify_reps,
-                |ctx: &ChunkCtx| mode12(ctx).fill(ctx.ptr, ctx.chunk_start, ctx.chunk_end),
-                |ctx: &ChunkCtx| mode12(ctx).fill(ctx.ptr, ctx.chunk_start, ctx.chunk_end),
-                |ctx: &ChunkCtx| -> u64 { mode12(ctx).verify(ctx.ptr, ctx.chunk_start, ctx.chunk_end, test_name) },
+                |ctx: &ChunkCtx| mode20(ctx).fill(ctx.ptr, ctx.chunk_start, ctx.chunk_end),
+                |ctx: &ChunkCtx| mode20(ctx).fill(ctx.ptr, ctx.chunk_start, ctx.chunk_end),
+                |ctx: &ChunkCtx| -> u64 { mode20(ctx).verify(ctx.ptr, ctx.chunk_start, ctx.chunk_end, test_name) },
             )
         }
-        14 => {
-            // Mode 14 (TMR-native): each beat of a line the inverse of the one before
-            let mode14 = |ctx: &ChunkCtx| Mode14::new(ctx.thread_id, ctx.cycle, param0, param1);
+        30 => {
+            // Mode 30 (TMR-native): each beat of a line the inverse of the one before
+            let mode30 = |ctx: &ChunkCtx| Mode30::new(ctx.thread_id, ctx.cycle, param0, param1);
             run_phased_test(
                 blocks, thread_id, error_mode, timing, config, progress,
                 test_name, TestAction::WriteVerify, 1, false, config.test_reps, config.verify_reps,
-                |ctx: &ChunkCtx| mode14(ctx).fill(ctx.ptr, ctx.chunk_start, ctx.chunk_end),
-                |ctx: &ChunkCtx| mode14(ctx).fill(ctx.ptr, ctx.chunk_start, ctx.chunk_end),
-                |ctx: &ChunkCtx| -> u64 { mode14(ctx).verify(ctx.ptr, ctx.chunk_start, ctx.chunk_end, test_name) },
+                |ctx: &ChunkCtx| mode30(ctx).fill(ctx.ptr, ctx.chunk_start, ctx.chunk_end),
+                |ctx: &ChunkCtx| mode30(ctx).fill(ctx.ptr, ctx.chunk_start, ctx.chunk_end),
+                |ctx: &ChunkCtx| -> u64 { mode30(ctx).verify(ctx.ptr, ctx.chunk_start, ctx.chunk_end, test_name) },
             )
         }
         11 => {
@@ -3390,8 +3770,8 @@ unsafe fn simple_test_v2_sequential(
 /// `for_each_strided_line!` walk. Each step writes or reads a whole 64 B line, then jumps the
 /// stride: TM5 Parameter 8 on 2 channels jumps 15 lines, so the period is 16 lines (1 KiB) and
 /// each chunk takes 16 interleave passes. The image is the sequential test's: the per-word modes
-/// (0, 1, 10, 11, 13) compute each word from its index, and the line modes (2, 12) both write
-/// mode 12's lines, hashed from each line's address, as mode 2's chain runs a page in order.
+/// (0, 1, 10, 11, 13) compute each word from its index, and the line modes (2, 20) both write
+/// mode 20's lines, hashed from each line's address, as mode 2's chain runs a page in order.
 #[doc = include_str!("test_fn_safety.md")]
 unsafe fn simple_test_v2_strided(
     blocks: &[crate::runner::AllocationBlock],
@@ -3407,13 +3787,13 @@ unsafe fn simple_test_v2_strided(
     let period = strided_period(stride);
     let cl_shift = pattern_gen::cache_line_shift(config.cache_line_bytes);
 
-    if matches!(pattern_mode, 2 | 12) {
-        let mode12 = |ctx: &ChunkCtx| Mode12::new(ctx.thread_id, ctx.cycle, param0, param1);
+    if matches!(pattern_mode, 2 | 20) {
+        let mode20 = |ctx: &ChunkCtx| Mode20::new(ctx.thread_id, ctx.cycle, param0, param1);
         let write = |ctx: &ChunkCtx| {
-            let key = mode12(ctx).key;
+            let key = mode20(ctx).key;
             for_each_strided_line!(ctx.ptr, ctx.chunk_start, ctx.chunk_end, period, |offset| {
                 let line = ctx.ptr.add(offset);
-                let (seed, step) = pattern_gen::mode12_line(line as usize, key);
+                let (seed, step) = pattern_gen::mode20_line(line as usize, key);
                 *(line as *mut [u64; LINE_WORDS]) = pattern_gen::line_words(seed, step);
             });
         };
@@ -3422,25 +3802,25 @@ unsafe fn simple_test_v2_strided(
             test_name, TestAction::WriteVerify, 1, false, config.test_reps, config.verify_reps,
             write, write,
             |ctx: &ChunkCtx| -> u64 {
-                let mode12 = mode12(ctx);
+                let mode20 = mode20(ctx);
                 let mut acc = [0u64; 4];
                 for_each_strided_line!(ctx.ptr, ctx.chunk_start, ctx.chunk_end, period, |offset| {
                     let line = ctx.ptr.add(offset);
-                    let (seed, step) = pattern_gen::mode12_line(line as usize, mode12.key);
+                    let (seed, step) = pattern_gen::mode20_line(line as usize, mode20.key);
                     accumulate_line(&mut acc, line, &pattern_gen::line_words(seed, step));
                 });
                 let seen = (acc[0] | acc[1]) | (acc[2] | acc[3]);
                 if seen == 0 {
                     return 0;
                 }
-                mode12.rescan(ctx.ptr, ctx.chunk_start, ctx.chunk_end, test_name, seen)
+                mode20.rescan(ctx.ptr, ctx.chunk_start, ctx.chunk_end, test_name, seen)
             },
         );
     }
-    if pattern_mode == 14 {
-        let mode14 = |ctx: &ChunkCtx| Mode14::new(ctx.thread_id, ctx.cycle, param0, param1);
+    if pattern_mode == 30 {
+        let mode30 = |ctx: &ChunkCtx| Mode30::new(ctx.thread_id, ctx.cycle, param0, param1);
         let write = |ctx: &ChunkCtx| {
-            with_mode14_line!(mode14(ctx), |expected| {
+            with_mode30_line!(mode30(ctx), |expected| {
                 for_each_strided_line!(ctx.ptr, ctx.chunk_start, ctx.chunk_end, period, |offset| {
                     let line = ctx.ptr.add(offset);
                     *(line as *mut [u64; LINE_WORDS]) = expected(line);
@@ -3452,9 +3832,9 @@ unsafe fn simple_test_v2_strided(
             test_name, TestAction::WriteVerify, 1, false, config.test_reps, config.verify_reps,
             write, write,
             |ctx: &ChunkCtx| -> u64 {
-                let mode14 = mode14(ctx);
+                let mode30 = mode30(ctx);
                 let mut acc = [0u64; 4];
-                with_mode14_line!(mode14, |expected| {
+                with_mode30_line!(mode30, |expected| {
                     for_each_strided_line!(ctx.ptr, ctx.chunk_start, ctx.chunk_end, period, |offset| {
                         let line = ctx.ptr.add(offset);
                         accumulate_line(&mut acc, line, &expected(line));
@@ -3464,7 +3844,7 @@ unsafe fn simple_test_v2_strided(
                 if seen == 0 {
                     return 0;
                 }
-                mode14.rescan(ctx.ptr, ctx.chunk_start, ctx.chunk_end, test_name, seen)
+                mode30.rescan(ctx.ptr, ctx.chunk_start, ctx.chunk_end, test_name, seen)
             },
         );
     }
@@ -3778,7 +4158,7 @@ crate::auto_dispatch!(
 // ─── SIMD SimpleTest v2 Macros ──────────────────────────────────────────────
 //
 // These macros stamp out SIMD Write and Verify phases for SimpleTest at any width.
-// Two code paths: positional (idx ^ base, every mode but 12) and mode 12 (hashed lines).
+// Two code paths: positional (idx ^ base, every mode but 20) and mode 20 (hashed lines).
 // The master macro `simple_test_v2_impl!` combines them into a complete test function.
 
 /// SIMD Write for positional patterns (Mode 0/1): stores (idx ^ base) per element.
@@ -3858,13 +4238,13 @@ macro_rules! simple_verify_positional_simd {
     }}
 }
 
-/// SIMD write for mode 12: each 64 B line is `seed + j * step`, with seed and step hashed from
-/// the line's address (`pattern_gen::mode12_line`), stored W words at a time.
-macro_rules! simple_write_mode12_simd {
-    ($simd_type:ty, $simd_w:expr, $ctx:expr, $mode12:expr, $lane_offsets:expr) => {{
+/// SIMD write for mode 20: each 64 B line is `seed + j * step`, with seed and step hashed from
+/// the line's address (`pattern_gen::mode20_line`), stored W words at a time.
+macro_rules! simple_write_mode20_simd {
+    ($simd_type:ty, $simd_w:expr, $ctx:expr, $mode20:expr, $lane_offsets:expr) => {{
         for offset in ($ctx.chunk_start..$ctx.chunk_end).step_by(LINE_WORDS) {
             let line = $ctx.ptr.add(offset);
-            let (seed, step) = pattern_gen::mode12_line(line as usize, $mode12.key);
+            let (seed, step) = pattern_gen::mode20_line(line as usize, $mode20.key);
             let advance = <$simd_type>::splat(step.wrapping_mul($simd_w as u64));
             let mut words = <$simd_type>::splat(seed) + <$simd_type>::splat(step) * $lane_offsets;
             for j in (0..LINE_WORDS).step_by($simd_w) {
@@ -3875,13 +4255,13 @@ macro_rules! simple_write_mode12_simd {
     }}
 }
 
-/// SIMD verify for mode 12: XOR+OR into an accumulator; the scalar rescan counts and logs.
-macro_rules! simple_verify_mode12_simd {
-    ($simd_type:ty, $simd_w:expr, $ctx:expr, $mode12:expr, $lane_offsets:expr, $zero:expr, $test_name:expr) => {{
+/// SIMD verify for mode 20: XOR+OR into an accumulator; the scalar rescan counts and logs.
+macro_rules! simple_verify_mode20_simd {
+    ($simd_type:ty, $simd_w:expr, $ctx:expr, $mode20:expr, $lane_offsets:expr, $zero:expr, $test_name:expr) => {{
         let mut acc = $zero;
         for offset in ($ctx.chunk_start..$ctx.chunk_end).step_by(LINE_WORDS) {
             let line = $ctx.ptr.add(offset);
-            let (seed, step) = pattern_gen::mode12_line(line as usize, $mode12.key);
+            let (seed, step) = pattern_gen::mode20_line(line as usize, $mode20.key);
             let advance = <$simd_type>::splat(step.wrapping_mul($simd_w as u64));
             let mut words = <$simd_type>::splat(seed) + <$simd_type>::splat(step) * $lane_offsets;
             for j in (0..LINE_WORDS).step_by($simd_w) {
@@ -3890,7 +4270,7 @@ macro_rules! simple_verify_mode12_simd {
             }
         }
         if acc.simd_ne($zero).any() {
-            $mode12.rescan($ctx.ptr, $ctx.chunk_start, $ctx.chunk_end, $test_name, acc.reduce_or())
+            $mode20.rescan($ctx.ptr, $ctx.chunk_start, $ctx.chunk_end, $test_name, acc.reduce_or())
         } else {
             0
         }
@@ -3930,13 +4310,13 @@ macro_rules! simple_verify_strided_positional_simd {
     }}
 }
 
-/// SIMD write for mode 12 with stride: TM5's strided walk, each line from its address's hash
-/// (`pattern_gen::mode12_line`) in W-word stores, the same image as the sequential write.
-macro_rules! simple_write_strided_mode12_simd {
-    ($simd_type:ty, $simd_w:expr, $ctx:expr, $mode12:expr, $lane_offsets:expr, $period:expr) => {{
+/// SIMD write for mode 20 with stride: TM5's strided walk, each line from its address's hash
+/// (`pattern_gen::mode20_line`) in W-word stores, the same image as the sequential write.
+macro_rules! simple_write_strided_mode20_simd {
+    ($simd_type:ty, $simd_w:expr, $ctx:expr, $mode20:expr, $lane_offsets:expr, $period:expr) => {{
         for_each_strided_line!($ctx.ptr, $ctx.chunk_start, $ctx.chunk_end, $period, |offset| {
             let line = $ctx.ptr.add(offset);
-            let (seed, step) = pattern_gen::mode12_line(line as usize, $mode12.key);
+            let (seed, step) = pattern_gen::mode20_line(line as usize, $mode20.key);
             let advance = <$simd_type>::splat(step.wrapping_mul($simd_w as u64));
             let mut words = <$simd_type>::splat(seed) + <$simd_type>::splat(step) * $lane_offsets;
             for j in (0..LINE_WORDS).step_by($simd_w) {
@@ -3947,13 +4327,13 @@ macro_rules! simple_write_strided_mode12_simd {
     }}
 }
 
-/// SIMD verify for mode 12 with stride: XOR+OR into an accumulator; the scalar rescan counts and logs.
-macro_rules! simple_verify_strided_mode12_simd {
-    ($simd_type:ty, $simd_w:expr, $ctx:expr, $mode12:expr, $lane_offsets:expr, $zero:expr, $period:expr, $test_name:expr) => {{
+/// SIMD verify for mode 20 with stride: XOR+OR into an accumulator; the scalar rescan counts and logs.
+macro_rules! simple_verify_strided_mode20_simd {
+    ($simd_type:ty, $simd_w:expr, $ctx:expr, $mode20:expr, $lane_offsets:expr, $zero:expr, $period:expr, $test_name:expr) => {{
         let mut acc = $zero;
         for_each_strided_line!($ctx.ptr, $ctx.chunk_start, $ctx.chunk_end, $period, |offset| {
             let line = $ctx.ptr.add(offset);
-            let (seed, step) = pattern_gen::mode12_line(line as usize, $mode12.key);
+            let (seed, step) = pattern_gen::mode20_line(line as usize, $mode20.key);
             let advance = <$simd_type>::splat(step.wrapping_mul($simd_w as u64));
             let mut words = <$simd_type>::splat(seed) + <$simd_type>::splat(step) * $lane_offsets;
             for j in (0..LINE_WORDS).step_by($simd_w) {
@@ -3962,7 +4342,7 @@ macro_rules! simple_verify_strided_mode12_simd {
             }
         });
         if acc.simd_ne($zero).any() {
-            $mode12.rescan($ctx.ptr, $ctx.chunk_start, $ctx.chunk_end, $test_name, acc.reduce_or())
+            $mode20.rescan($ctx.ptr, $ctx.chunk_start, $ctx.chunk_end, $test_name, acc.reduce_or())
         } else {
             0
         }
@@ -3970,7 +4350,7 @@ macro_rules! simple_verify_strided_mode12_simd {
 }
 
 /// Master macro: stamps out a complete SIMD SimpleTest v2 function for a given width.
-/// Two pattern paths: positional (idx^base, or idx^combined for modes 1/11) and mode 12.
+/// Two pattern paths: positional (idx^base, or idx^combined for modes 1/11) and mode 20.
 /// Generates 4 specialized `#[target_feature]` functions (one per pattern/stride combo)
 /// plus a lightweight dispatch function. This prevents LLVM from inlining all 4 code paths
 /// into one mega-function, which caused 9K+ lines of assembly, 46 `vzeroupper` calls,
@@ -3984,8 +4364,8 @@ macro_rules! simple_test_v2_impl {
         $dispatch_fn:ident,
         $pos_seq_fn:ident,
         $pos_str_fn:ident,
-        $m12_seq_fn:ident,
-        $m12_str_fn:ident,
+        $m20_seq_fn:ident,
+        $m20_str_fn:ident,
         $native_fn:ident,
         $test_name:literal,
         $simd_type:ty,
@@ -4078,9 +4458,9 @@ macro_rules! simple_test_v2_impl {
             )
         }
 
-        /// Mode 12 sequential — contiguous access, each line hashed from its address.
+        /// Mode 20 sequential — contiguous access, each line hashed from its address.
         #[target_feature(enable = $target_feature)]
-        unsafe fn $m12_seq_fn(
+        unsafe fn $m20_seq_fn(
             blocks: &[crate::runner::AllocationBlock],
             thread_id: usize,
             error_mode: ErrorMode,
@@ -4099,23 +4479,23 @@ macro_rules! simple_test_v2_impl {
                 blocks, thread_id, error_mode, timing, config, progress,
                 test_name, TestAction::WriteVerify, 1, false, config.test_reps, config.verify_reps,
                 |ctx: &ChunkCtx| {
-                    let mode12 = Mode12::new(ctx.thread_id, ctx.cycle, param0, param1);
-                    simple_write_mode12_simd!($simd_type, simd_elements, ctx, mode12, lane_offsets);
+                    let mode20 = Mode20::new(ctx.thread_id, ctx.cycle, param0, param1);
+                    simple_write_mode20_simd!($simd_type, simd_elements, ctx, mode20, lane_offsets);
                 },
                 |ctx: &ChunkCtx| {
-                    let mode12 = Mode12::new(ctx.thread_id, ctx.cycle, param0, param1);
-                    simple_write_mode12_simd!($simd_type, simd_elements, ctx, mode12, lane_offsets);
+                    let mode20 = Mode20::new(ctx.thread_id, ctx.cycle, param0, param1);
+                    simple_write_mode20_simd!($simd_type, simd_elements, ctx, mode20, lane_offsets);
                 },
                 |ctx: &ChunkCtx| -> u64 {
-                    let mode12 = Mode12::new(ctx.thread_id, ctx.cycle, param0, param1);
-                    simple_verify_mode12_simd!($simd_type, simd_elements, ctx, mode12, lane_offsets, zero, test_name)
+                    let mode20 = Mode20::new(ctx.thread_id, ctx.cycle, param0, param1);
+                    simple_verify_mode20_simd!($simd_type, simd_elements, ctx, mode20, lane_offsets, zero, test_name)
                 },
             )
         }
 
-        /// Mode 12 strided — TM5's strided walk, the same image as sequential (TODO 93).
+        /// Mode 20 strided — TM5's strided walk, the same image as sequential (TODO 93).
         #[target_feature(enable = $target_feature)]
-        unsafe fn $m12_str_fn(
+        unsafe fn $m20_str_fn(
             blocks: &[crate::runner::AllocationBlock],
             thread_id: usize,
             error_mode: ErrorMode,
@@ -4137,16 +4517,16 @@ macro_rules! simple_test_v2_impl {
                 blocks, thread_id, error_mode, timing, config, progress,
                 test_name, TestAction::WriteVerify, 1, false, config.test_reps, config.verify_reps,
                 |ctx: &ChunkCtx| {
-                    let mode12 = Mode12::new(ctx.thread_id, ctx.cycle, param0, param1);
-                    simple_write_strided_mode12_simd!($simd_type, simd_elements, ctx, mode12, lane_offsets, period);
+                    let mode20 = Mode20::new(ctx.thread_id, ctx.cycle, param0, param1);
+                    simple_write_strided_mode20_simd!($simd_type, simd_elements, ctx, mode20, lane_offsets, period);
                 },
                 |ctx: &ChunkCtx| {
-                    let mode12 = Mode12::new(ctx.thread_id, ctx.cycle, param0, param1);
-                    simple_write_strided_mode12_simd!($simd_type, simd_elements, ctx, mode12, lane_offsets, period);
+                    let mode20 = Mode20::new(ctx.thread_id, ctx.cycle, param0, param1);
+                    simple_write_strided_mode20_simd!($simd_type, simd_elements, ctx, mode20, lane_offsets, period);
                 },
                 |ctx: &ChunkCtx| -> u64 {
-                    let mode12 = Mode12::new(ctx.thread_id, ctx.cycle, param0, param1);
-                    simple_verify_strided_mode12_simd!($simd_type, simd_elements, ctx, mode12, lane_offsets, zero, period, test_name)
+                    let mode20 = Mode20::new(ctx.thread_id, ctx.cycle, param0, param1);
+                    simple_verify_strided_mode20_simd!($simd_type, simd_elements, ctx, mode20, lane_offsets, zero, period, test_name)
                 },
             )
         }
@@ -4166,22 +4546,22 @@ macro_rules! simple_test_v2_impl {
             if let Some(program) = config.native_program() {
                 return $native_fn(blocks, thread_id, error_mode, timing, config, progress, NativeRun::simple(program, config));
             }
-            // The SIMD paths here are positional (modes 10 and 11) and mode 12. Every other mode
+            // The SIMD paths here are positional (modes 10 and 11) and mode 20. Every other mode
             // runs the scalar build, which writes that mode's own image: modes 0, 1, 2 and 13 used
-            // to write mode 10's here (TODO 3), and mode 14's lines are a few values (one and its
+            // to write mode 10's here (TODO 3), and mode 30's lines are a few values (one and its
             // inverse at 16, 32 and 64 bits, three at 12 and 24), which the scalar build already
             // stores at the baseline's full width.
-            if matches!(config.pattern_mode, Some(0 | 1 | 2 | 13 | 14)) {
+            if matches!(config.pattern_mode, Some(0 | 1 | 2 | 13 | 30)) {
                 return simple_test_v2_multi(blocks, thread_id, error_mode, timing, config, progress);
             }
-            let is_mode12 = config.pattern_mode.unwrap_or(0) == 12;
+            let is_mode20 = config.pattern_mode.unwrap_or(0) == 20;
             let has_stride = config.parameter_context.as_ref()
                 .and_then(|ctx| ctx.stride_elements)
                 .map_or(false, |s| s > 0);
 
-            match (is_mode12, has_stride) {
-                (true, true)   => $m12_str_fn(blocks, thread_id, error_mode, timing, config, progress),
-                (true, false)  => $m12_seq_fn(blocks, thread_id, error_mode, timing, config, progress),
+            match (is_mode20, has_stride) {
+                (true, true)   => $m20_str_fn(blocks, thread_id, error_mode, timing, config, progress),
+                (true, false)  => $m20_seq_fn(blocks, thread_id, error_mode, timing, config, progress),
                 (false, true)  => $pos_str_fn(blocks, thread_id, error_mode, timing, config, progress),
                 (false, false) => $pos_seq_fn(blocks, thread_id, error_mode, timing, config, progress),
             }
@@ -4193,17 +4573,17 @@ macro_rules! simple_test_v2_impl {
 // Each invocation generates 4 specialized #[target_feature] functions + 1 dispatch.
 simple_test_v2_impl!(simple_test_v2_128_impl,
     simple_test_v2_128_pos_seq, simple_test_v2_128_pos_str,
-    simple_test_v2_128_m12_seq, simple_test_v2_128_m12_str, simple_native_128,
+    simple_test_v2_128_m20_seq, simple_test_v2_128_m20_str, simple_native_128,
     "Mem-SimpleV2-128", u64x2, 2, [0, 1],
     "sse4.2,sse4.1,ssse3,sse3,sse2,popcnt");
 simple_test_v2_impl!(simple_test_v2_256_impl,
     simple_test_v2_256_pos_seq, simple_test_v2_256_pos_str,
-    simple_test_v2_256_m12_seq, simple_test_v2_256_m12_str, simple_native_256,
+    simple_test_v2_256_m20_seq, simple_test_v2_256_m20_str, simple_native_256,
     "Mem-SimpleV2-256", u64x4, 4, [0, 1, 2, 3],
     "avx2,avx,fma,bmi1,bmi2");
 simple_test_v2_impl!(simple_test_v2_512_impl,
     simple_test_v2_512_pos_seq, simple_test_v2_512_pos_str,
-    simple_test_v2_512_m12_seq, simple_test_v2_512_m12_str, simple_native_512,
+    simple_test_v2_512_m20_seq, simple_test_v2_512_m20_str, simple_native_512,
     "Mem-SimpleV2-512", u64x8, 8, [0, 1, 2, 3, 4, 5, 6, 7],
     "avx512f,avx512bw,avx512cd,avx512dq,avx512vl,avx2,avx,fma,bmi1,bmi2");
 
@@ -4568,15 +4948,19 @@ native_bench!(bench_init_random, bench_verify_random, crate::pattern::Family::Ra
 native_bench!(bench_init_switch, bench_verify_switch, crate::pattern::Family::Switch);
 native_bench!(bench_init_lines, bench_verify_lines, crate::pattern::Family::Lines);
 native_bench!(bench_init_linepair, bench_verify_linepair, crate::pattern::Family::Linepair);
+native_bench!(bench_init_quiet, bench_verify_quiet, crate::pattern::Family::Quiet);
+native_bench!(bench_init_header, bench_verify_header, crate::pattern::Family::Header);
 
 /// The native Bench pairs' names and functions: `Bench-Init-Ident`, `Bench-Verify-Ident`, ...
-pub(crate) fn native_bench_tests() -> [(&'static str, &'static str, crate::runner::TestFunctionMultiBlock, crate::runner::TestFunctionMultiBlock); 5] {
+pub(crate) fn native_bench_tests() -> [(&'static str, &'static str, crate::runner::TestFunctionMultiBlock, crate::runner::TestFunctionMultiBlock); 7] {
     [
         ("Bench-Init-Ident", "Bench-Verify-Ident", bench_init_ident, bench_verify_ident),
         ("Bench-Init-Random", "Bench-Verify-Random", bench_init_random, bench_verify_random),
         ("Bench-Init-Switch", "Bench-Verify-Switch", bench_init_switch, bench_verify_switch),
         ("Bench-Init-Lines", "Bench-Verify-Lines", bench_init_lines, bench_verify_lines),
         ("Bench-Init-Linepair", "Bench-Verify-Linepair", bench_init_linepair, bench_verify_linepair),
+        ("Bench-Init-Quiet", "Bench-Verify-Quiet", bench_init_quiet, bench_verify_quiet),
+        ("Bench-Init-Header", "Bench-Verify-Header", bench_init_header, bench_verify_header),
     ]
 }
 // =============================================================================
@@ -4941,11 +5325,11 @@ pub unsafe fn bench_init_multi(
         0 => "Bench-Init-TM5-0",
         1 => "Bench-Init-TM5-1",
         2 => "Bench-Init-TM5-2",
-        10 => "Bench-Init-TMR-0",
-        11 => "Bench-Init-TMR-1",
-        12 => "Bench-Init-TMR-2",
-        13 => "Bench-Init-TMR-3",
-        14 => "Bench-Init-TMR-4",
+        10 => "Bench-Init-TMR-10",
+        11 => "Bench-Init-TMR-11",
+        13 => "Bench-Init-TMR-13",
+        20 => "Bench-Init-TMR-20",
+        30 => "Bench-Init-TMR-30",
         _ => "Bench-Init-Unknown",
     };
 
@@ -5066,25 +5450,25 @@ pub unsafe fn bench_init_multi(
                 |_ctx: &ChunkCtx| -> u64 { 0 },
             )
         }
-        14 => {
-            // Mode 14: the bus-flip lines
-            let mode14 = Mode14::new(thread_id, 0, param0, param1);
+        30 => {
+            // Mode 30: the bus-flip lines
+            let mode30 = Mode30::new(thread_id, 0, param0, param1);
             run_phased_test(
                 blocks, thread_id, error_mode, timing, config, progress,
                 test_name, TestAction::Write, 1, skip_init, 1, 0,
-                |ctx: &ChunkCtx| mode14.fill(ctx.ptr, ctx.chunk_start, ctx.chunk_end),
-                |ctx: &ChunkCtx| mode14.fill(ctx.ptr, ctx.chunk_start, ctx.chunk_end),
+                |ctx: &ChunkCtx| mode30.fill(ctx.ptr, ctx.chunk_start, ctx.chunk_end),
+                |ctx: &ChunkCtx| mode30.fill(ctx.ptr, ctx.chunk_start, ctx.chunk_end),
                 |_ctx: &ChunkCtx| -> u64 { 0 },
             )
         }
         _ => {
-            // Mode 12 (and any unknown mode): mode 2's lines, hashed from each line's address
-            let mode12 = Mode12::new(thread_id, 0, param0, param1);
+            // Mode 20 (and any unknown mode): mode 2's lines, hashed from each line's address
+            let mode20 = Mode20::new(thread_id, 0, param0, param1);
             run_phased_test(
                 blocks, thread_id, error_mode, timing, config, progress,
                 test_name, TestAction::Write, 1, skip_init, 1, 0,
-                |ctx: &ChunkCtx| mode12.fill(ctx.ptr, ctx.chunk_start, ctx.chunk_end),
-                |ctx: &ChunkCtx| mode12.fill(ctx.ptr, ctx.chunk_start, ctx.chunk_end),
+                |ctx: &ChunkCtx| mode20.fill(ctx.ptr, ctx.chunk_start, ctx.chunk_end),
+                |ctx: &ChunkCtx| mode20.fill(ctx.ptr, ctx.chunk_start, ctx.chunk_end),
                 |_ctx: &ChunkCtx| -> u64 { 0 },
             )
         }
@@ -5123,11 +5507,11 @@ pub unsafe fn bench_verify_multi(
         0 => "Bench-Verify-TM5-0",
         1 => "Bench-Verify-TM5-1",
         2 => "Bench-Verify-TM5-2",
-        10 => "Bench-Verify-TMR-0",
-        11 => "Bench-Verify-TMR-1",
-        12 => "Bench-Verify-TMR-2",
-        13 => "Bench-Verify-TMR-3",
-        14 => "Bench-Verify-TMR-4",
+        10 => "Bench-Verify-TMR-10",
+        11 => "Bench-Verify-TMR-11",
+        13 => "Bench-Verify-TMR-13",
+        20 => "Bench-Verify-TMR-20",
+        30 => "Bench-Verify-TMR-30",
         _ => "Bench-Verify-Unknown",
     };
 
@@ -5236,26 +5620,26 @@ pub unsafe fn bench_verify_multi(
                 },
             )
         }
-        14 => {
-            // Mode 14: the bus-flip lines
-            let mode14 = Mode14::new(thread_id, 0, param0, param1);
+        30 => {
+            // Mode 30: the bus-flip lines
+            let mode30 = Mode30::new(thread_id, 0, param0, param1);
             run_phased_test(
                 blocks, thread_id, error_mode, timing, config, progress,
                 test_name, TestAction::Verify, 1, skip_init, 0, 1,
-                |ctx: &ChunkCtx| mode14.fill(ctx.ptr, ctx.chunk_start, ctx.chunk_end),
+                |ctx: &ChunkCtx| mode30.fill(ctx.ptr, ctx.chunk_start, ctx.chunk_end),
                 |_ctx: &ChunkCtx| {},
-                |ctx: &ChunkCtx| -> u64 { mode14.verify(ctx.ptr, ctx.chunk_start, ctx.chunk_end, test_name) },
+                |ctx: &ChunkCtx| -> u64 { mode30.verify(ctx.ptr, ctx.chunk_start, ctx.chunk_end, test_name) },
             )
         }
         _ => {
-            // Mode 12 (and any unknown mode): mode 2's lines, hashed from each line's address
-            let mode12 = Mode12::new(thread_id, 0, param0, param1);
+            // Mode 20 (and any unknown mode): mode 2's lines, hashed from each line's address
+            let mode20 = Mode20::new(thread_id, 0, param0, param1);
             run_phased_test(
                 blocks, thread_id, error_mode, timing, config, progress,
                 test_name, TestAction::Verify, 1, skip_init, 0, 1,
-                |ctx: &ChunkCtx| mode12.fill(ctx.ptr, ctx.chunk_start, ctx.chunk_end),
+                |ctx: &ChunkCtx| mode20.fill(ctx.ptr, ctx.chunk_start, ctx.chunk_end),
                 |_ctx: &ChunkCtx| {},
-                |ctx: &ChunkCtx| -> u64 { mode12.verify(ctx.ptr, ctx.chunk_start, ctx.chunk_end, test_name) },
+                |ctx: &ChunkCtx| -> u64 { mode20.verify(ctx.ptr, ctx.chunk_start, ctx.chunk_end, test_name) },
             )
         }
     }
@@ -5346,6 +5730,8 @@ pub fn get_test_function_by_name(name: &str) -> Option<crate::runner::TestFuncti
         "Mem-Random" => Some(TestFunction::MultiBlock(random_torture_multi)),
         "Mem-Stride" => Some(TestFunction::MultiBlock(stride_access_multi)),
         "Mem-BlockMove" => Some(TestFunction::MultiBlock(block_move_multi)),
+        "Mem-MovingInv" => Some(TestFunction::MultiBlock(moving_inversions_multi)),
+        "Mem-ModuloX" => Some(TestFunction::MultiBlock(modulo_x_multi)),
 
         // Sequential Bandwidth Tests (Spd-*-Auto → auto-dispatched)
         // Cached (L1/L2/L3) variants
@@ -5396,15 +5782,15 @@ pub fn get_test_function_by_name(name: &str) -> Option<crate::runner::TestFuncti
 
         // Bench-Init: Pattern generation throughput benchmarks
         "Bench-Init-TM5-0" | "Bench-Init-TM5-1" | "Bench-Init-TM5-2"
-        | "Bench-Init-TMR-0" | "Bench-Init-TMR-1" | "Bench-Init-TMR-2"
-        | "Bench-Init-TMR-3" | "Bench-Init-TMR-4"
+        | "Bench-Init-TMR-10" | "Bench-Init-TMR-11" | "Bench-Init-TMR-13"
+        | "Bench-Init-TMR-20" | "Bench-Init-TMR-30"
             => Some(TestFunction::MultiBlock(bench_init_multi)),
 
         // Bench-Verify: Pattern verification throughput benchmarks
         // Can run independently (writes patterns first) or dependently (skip_init in config)
         "Bench-Verify-TM5-0" | "Bench-Verify-TM5-1" | "Bench-Verify-TM5-2"
-        | "Bench-Verify-TMR-0" | "Bench-Verify-TMR-1" | "Bench-Verify-TMR-2"
-        | "Bench-Verify-TMR-3" | "Bench-Verify-TMR-4"
+        | "Bench-Verify-TMR-10" | "Bench-Verify-TMR-11" | "Bench-Verify-TMR-13"
+        | "Bench-Verify-TMR-20" | "Bench-Verify-TMR-30"
             => Some(TestFunction::MultiBlock(bench_verify_multi)),
 
         // The native families' write and verify alone (pattern spec v2)
@@ -5427,7 +5813,7 @@ pub fn get_test_function_by_name(name: &str) -> Option<crate::runner::TestFuncti
 #[cfg(test)]
 mod random_replay_tests {
     use super::{accumulate_stride_4, prefetch_line, random_replay, Rescan, rescan_words, strided_ahead, strided_lookahead, strided_period,
-                strided_wrap, verify_words, Mode12, Mode2, STRIDED_AHEAD};
+                strided_wrap, verify_words, Mode20, Mode2, STRIDED_AHEAD};
     use crate::pattern_gen::{LINE_WORDS, PAGE_WORDS};
 
     /// TODO 93: TM5's strided walk touches each line once, in TM5's order: the period's last line
@@ -5526,7 +5912,7 @@ mod random_replay_tests {
         }
     }
 
-    /// TODO 76: modes 2 and 12 depend only on the address, so writing a range in overlapping
+    /// TODO 76: modes 2 and 20 depend only on the address, so writing a range in overlapping
     /// pieces, in any order, gives the image one pass gives. The verify finds nothing on it and
     /// counts each bad word exactly.
     #[test]
@@ -5535,12 +5921,12 @@ mod random_replay_tests {
         let mut buf = vec![std::simd::u64x8::splat(0); words / 8];
         let p = buf.as_mut_ptr() as *mut u64;
         let mode2 = Mode2 { thread_id: 3, cycle: 1, param0: 0x5DEECE66D, param1: 0xB };
-        let mode12 = Mode12::new(3, 1, 0x5DEECE66D, 0xB);
+        let mode20 = Mode20::new(3, 1, 0x5DEECE66D, 0xB);
         let image = |p: *mut u64| unsafe { std::slice::from_raw_parts(p, words).to_vec() };
         unsafe {
             mode2.fill(p, 0, words);
             let one_pass = image(p);
-            mode12.fill(p, 0, words);
+            mode20.fill(p, 0, words);
             for (s, e) in [(4, 6), (0, 3), (2, 5)] {
                 mode2.fill(p, s * PAGE_WORDS, e * PAGE_WORDS);
             }
@@ -5550,48 +5936,143 @@ mod random_replay_tests {
             *p.add(2 * PAGE_WORDS + 9) ^= 1 << 63;
             assert_eq!(mode2.verify(p, 0, words, "test"), 2);
             assert_eq!(mode2.verify(p, 3 * PAGE_WORDS, words, "test"), 0);
-            assert!(mode12.verify(p, 0, words, "test") > 0);
+            assert!(mode20.verify(p, 0, words, "test") > 0);
 
-            mode12.fill(p, 0, words);
+            mode20.fill(p, 0, words);
             let one_pass = image(p);
             mode2.fill(p, 0, words);
             for (s, e) in [(5 * PAGE_WORDS, words), (8, 3 * PAGE_WORDS + 64), (0, 5 * PAGE_WORDS + 8)] {
-                mode12.fill(p, s, e);
+                mode20.fill(p, s, e);
             }
             assert_eq!(image(p), one_pass);
-            assert_eq!(mode12.verify(p, 0, words, "test"), 0);
+            assert_eq!(mode20.verify(p, 0, words, "test"), 0);
             *p.add(5 * PAGE_WORDS + 511) = 0;
-            assert_eq!(mode12.verify(p, 0, words, "test"), 1);
+            assert_eq!(mode20.verify(p, 0, words, "test"), 1);
         }
     }
 
-    /// TODO 76: Mem-Random's replay counts exactly the mismatches the hot loop's accumulator saw,
-    /// on a length that isn't a power of two, and every index stays below it.
+    /// A failed check counts the bits its differences had; a bit only the rescan found (the word
+    /// changed since) counts in the words alone. Under rescan=off a check counts its bits, with no
+    /// words (TODO 97, the second review).
     #[test]
-    fn replay_counts_what_a_plain_loop_counts() {
+    fn failing_bits_count_what_the_check_saw() {
+        let mut mem = [0u64; 8];
+        mem[3] = 1 << 7 | 1 << 9;
+        crate::tests::reset_rescan_counts();
+        let mut scan = Rescan::for_test(mem.as_ptr(), "test").seen(1 << 7);
+        unsafe { scan.line(0, &[0; 8]) };
+        assert_eq!(scan.finish(format_args!("in idx 0..8")), 1);
+        assert_eq!(crate::tests::take_failing_bits().test.detail(), "7: 1 / 1 (1 + 0), 9: 0 / 1 (1 + 0)");
+        assert_eq!(super::unlocalised_as(String::from("test"), format_args!("in idx 0..8"), 1 << 9, false), 1);
+        let bits = crate::tests::take_failing_bits();
+        assert!(bits.test.is_empty() && bits.seal.detail() == "9: 1 / 0", "{bits:?}");
+    }
+
+    /// Moving inversions' passes visit every word once, up in order and down in order, reading
+    /// each before writing it, and find a word that held the wrong value (TODO 97).
+    #[test]
+    fn moving_inversions_passes_go_up_and_down() {
+        for len in [0usize, 3, 4, 13, 64] {
+            let mut mem = vec![0u64; len];
+            let order = std::cell::RefCell::new(Vec::new());
+            let read = |i: usize| { order.borrow_mut().push(i); 0 };
+            let seen = unsafe { super::read_then_write::<true>(mem.as_mut_ptr(), 0, len, read, |i| i as u64 + 1) };
+            assert_eq!(seen, 0);
+            assert_eq!(*order.borrow(), (0..len).collect::<Vec<_>>(), "up, {len} words");
+            assert_eq!(mem, (1..=len as u64).collect::<Vec<_>>());
+            order.borrow_mut().clear();
+            let seen = unsafe { super::read_then_write::<false>(mem.as_mut_ptr(), 0, len, |i| { order.borrow_mut().push(i); i as u64 + 1 }, |_| 7) };
+            assert_eq!(seen, 0);
+            assert_eq!(*order.borrow(), (0..len).rev().collect::<Vec<_>>(), "down, {len} words");
+            assert!(mem.iter().all(|&w| w == 7));
+        }
+        let mut mem = vec![5u64; 40];
+        mem[29] = 5 ^ (1 << 33);
+        assert_eq!(unsafe { super::read_then_write::<false>(mem.as_mut_ptr(), 0, 40, |_| 5, |_| 6) }, 1 << 33);
+    }
+
+    /// Modulo-X's lines: in any range, one victim in every `MODULO_X` at the offset, and the runs
+    /// between them the aggressors, each line exactly once (TODO 97).
+    #[test]
+    fn modulo_lines_split_victims_from_aggressors() {
+        for (start, end) in [(0usize, 100usize), (7, 93), (40, 41), (19, 21), (0, 0)] {
+            for offset in [0, 5, super::MODULO_X - 1] {
+                let seen = std::cell::RefCell::new(vec![0u8; end]);
+                let mut victims = Vec::new();
+                let mut runs = 0;
+                super::modulo_lines(start, end, offset, |v| { victims.push(v); seen.borrow_mut()[v] += 1 }, |lines| {
+                    runs += 1;
+                    lines.for_each(|l| seen.borrow_mut()[l] += 1);
+                });
+                let seen = seen.into_inner();
+                assert!(seen[start..].iter().all(|&n| n == 1) && seen[..start].iter().all(|&n| n == 0), "{start}..{end} at {offset}");
+                assert!(victims.iter().all(|v| v % super::MODULO_X == offset));
+                assert_eq!(victims.len(), (start..end).filter(|l| l % super::MODULO_X == offset).count());
+                assert!(runs <= 2 * end.div_ceil(super::MODULO_X).max(1), "{runs} runs");
+            }
+        }
+    }
+
+    /// Mem-Random's final sweep reads every word, finds a bad one the random reads would miss,
+    /// and stops where it is told (TODO 97).
+    #[test]
+    fn the_final_sweep_reads_every_word() {
+        let ids = crate::pattern::word_base(2);
+        let mut mem: Vec<u64> = (0..1000u64).map(|i| ids | i).collect();
+        let extent = super::RandomExtent { base: mem.as_ptr(), len: mem.len(), ids };
+        assert_eq!(unsafe { super::random_sweep(extent, 64, "test", |_| false) }, (0, 1000));
+        mem[999] ^= 1 << 63;
+        let extent = super::RandomExtent { base: mem.as_ptr(), ..extent };
+        assert_eq!(unsafe { super::random_sweep(extent, 64, "test", |_| false) }, (1, 1000));
+        // Under halt it stops after the piece that failed
+        assert_eq!(unsafe { super::random_sweep(extent, 64, "test", |errors| errors > 0) }, (1, 1000));
+        mem[100] ^= 1;
+        let extent = super::RandomExtent { base: mem.as_ptr(), ..extent };
+        assert_eq!(unsafe { super::random_sweep(extent, 64, "test", |errors| errors > 0) }, (1, 128));
+    }
+
+    /// TODO 76: Mem-Random's replay counts the bad words the hot loop's reads saw, each once however
+    /// often they were read (TODO 97), on a length that isn't a power of two, and every index stays
+    /// below it. Their bits are counted by the way each went.
+    #[test]
+    fn replay_counts_each_bad_word_a_plain_loop_reads_once() {
+        use crate::failing_bits::BitFailures;
         let len = 1000usize;
         let mut mem: Vec<u64> = (0..len as u64).collect();
         mem[123] ^= 1;
         mem[999] ^= 1 << 40;
         let start = 0x123456789ABCDEFu64;
 
-        let (mut rng, mut expected) = (start, 0u64);
+        let (mut rng, mut bad, mut reads, mut seen) = (start, std::collections::BTreeSet::new(), 0, 0);
         for _ in 0..20_000 {
             rng ^= rng << 13;
             rng ^= rng >> 17;
             rng ^= rng << 5;
             let idx = ((rng as u128 * len as u128) >> 64) as usize;
             assert!(idx < len);
-            expected += u64::from(mem[idx] != idx as u64);
+            if mem[idx] != idx as u64 {
+                bad.insert(idx);
+                reads += 1;
+            }
+            seen |= mem[idx] ^ idx as u64;
         }
-        assert!(expected > 0);
-        let counted = unsafe { random_replay(mem.as_mut_ptr(), len, start, 0..20_000, 0, "test", 1) };
-        assert_eq!(counted, expected);
+        assert!(bad.len() == 2 && reads > 2, "each bad word read, and read again");
+        crate::tests::reset_rescan_counts();
+        let extent = super::RandomExtent { base: mem.as_ptr(), len, ids: 0 };
+        let counted = unsafe { random_replay(extent, start, 0..20_000, 0, "test", seen) };
+        assert_eq!(counted, 2);
+        // 123 is odd, so its bit 0 went 1 to 0; 999's bit 40 went 0 to 1
+        let bits = crate::tests::take_failing_bits();
+        assert!(bits.seal.is_empty());
+        assert_eq!(serde_json::to_value(&bits.test).unwrap(), serde_json::to_value([
+            BitFailures { bit: 0, checks: 1, words_0to1: 0, words_1to0: 1 },
+            BitFailures { bit: 40, checks: 1, words_0to1: 1, words_1to0: 0 },
+        ]).unwrap());
 
         // A fault gone by the reread still counts once
         mem[123] ^= 1;
         mem[999] ^= 1 << 40;
-        assert_eq!(unsafe { random_replay(mem.as_mut_ptr(), len, start, 0..20_000, 0, "test", 1) }, 1);
+        assert_eq!(unsafe { random_replay(extent, start, 0..20_000, 0, "test", 1) }, 1);
     }
 }
 

@@ -573,6 +573,11 @@ mod tests {
             assert_eq!(kernel.verify(p, 0, 512, "test"), 1);
             let counts = crate::tests::rescan_counts();
             assert_eq!((counts.alarms, counts.not_reproduced), (1, 0), "a test's verify");
+            // Their failing bits likewise: bit 5 in one check and one word each (TODO 97)
+            let bits = crate::tests::take_failing_bits();
+            let way = if kernel.word(p.add(77) as usize) & 1 << 5 == 0 { "(1 + 0)" } else { "(0 + 1)" };
+            assert_eq!((bits.test.detail(), bits.seal.detail()), (format!("5: 1 / 1 {way}"), format!("5: 1 / 1 {way}")));
+            assert!(crate::tests::take_failing_bits().test.is_empty(), "a take leaves none");
         }
     }
 

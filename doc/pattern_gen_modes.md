@@ -5,20 +5,28 @@
 > chosen by what they find (identity, mixed data, switching, TM5 mode 2's and mode 1's intents),
 > as P/~P pairs keyed per cycle and step. A TM5 `.cfg` imports as native programs; `patterns=legacy`
 > keeps these modes, to compare. Under a SIMD width (`Mem-SimpleV2-128/256/512/Auto`), modes 0, 1,
-> 2, 13 and 14 run the scalar build's own image; they used to write mode 10's (TODO 3).
+> 2, 13 and 30 run the scalar build's own image; they used to write mode 10's (TODO 3).
 
-TMR supports 8 pattern generation modes, split into two families:
+TMR has 8 numbered modes. TM5's keep its numbers, 0-2. TMR's are grouped by tens, by what the
+pattern is: 1x identities (every position its own value), 2x in-line arithmetic (a line's words
+from a seed and a step), 3x switching (each transfer the inverse of the one before). Modes 20
+and 30 were 12 and 14 until 2026-10-16, when the groups were made; 12 and 14 are now refused, not
+reused. The dated audit, plan and reviews use the old numbers. The bytes didn't change.
 
-| Mode | Family | Name | Description |
-|------|--------|------|-------------|
-| 0 | TM5-faithful | Complementary Alternating | Bit dispersion + complement per 4KB page |
-| 1 | TM5-faithful | Linear Step + Complement | wrapping_sub step + complement per cache line |
-| 2 | TM5-faithful | Two-Level Evolving | Per-64 B-line seed+step evolution (PMULLW-style), restarted every 4 KiB page |
-| 10 | TMR-native | Address-Derived XOR | `idx ^ base` (unique per address, fast) |
-| 11 | TMR-native | Combined XOR | `idx ^ (param0 ^ param1)` |
-| 12 | TMR-native | Hashed Lines | Mode 2's lines, seed and step hashed from each line's address |
-| 13 | TMR-native | Hash per word | splitmix64 of `idx + param0` |
-| 14 | TMR-native | Bus flip | Each beat of a line the inverse of the one before, at the memory type's beat width |
+| Mode | Group | Name | Description |
+|------|-------|------|-------------|
+| 0 | TM5's | Complementary Alternating | Bit dispersion + complement per 4KB page |
+| 1 | TM5's | Linear Step + Complement | wrapping_sub step + complement per cache line |
+| 2 | TM5's | Two-Level Evolving | Per-64 B-line seed+step evolution (PMULLW-style), restarted every 4 KiB page |
+| 10 | identity | Address-Derived XOR | `idx ^ base` (unique per address, fast) |
+| 11 | identity | Combined XOR | `idx ^ (param0 ^ param1)` |
+| 13 | identity | Hash per word | splitmix64 of `idx + param0` |
+| 20 | in-line arithmetic | Hashed Lines | Mode 2's lines, seed and step hashed from each line's address |
+| 30 | switching | Bus flip | Each beat of a line the inverse of the one before, at the memory type's beat width |
+
+The native families (pattern spec 2) take numbers in the same groups, so `pattern_mode` or
+`pattern-mode=` can run one alone on a SimpleTest: 15 `ident`, 16 `random`, 17 `linepair`,
+21 `lines`, 31 `switch`, 32 `quiet`, 33 `header`. In a program they go by name.
 
 ## TM5-Faithful Modes (0, 1, 2)
 
@@ -75,7 +83,7 @@ and cycle, so on DDR5 it flips as many lines (16.0 of 32) and every word differs
 - Verify: XOR+OR into 4 accumulators, and a cold rescan counts and logs only if one is set
 - Stresses: pseudo-random pattern per line, excellent at detecting address-dependent faults
 
-## TMR-Native Modes (10, 11, 12, 13)
+## TMR's Modes (10, 11, 13, 20, 30)
 
 These are TMR's modern alternatives, optimized for speed and simplicity:
 
@@ -91,24 +99,24 @@ Simple, fast, unique per element. Good general-purpose pattern. No state, trivia
 
 Similar to Mode 10 but derives base from two parameters. Used when TM5 configs provide param0/param1.
 
-### Mode 12: Hashed Lines (TMR's mode 2)
-
-`mode12_line(line_addr, key) -> (seed, step)`, then `line_words(seed, step)`
-
-Mode 2's line shape without the chain: each 64 B line is `seed + j * step`, with seed and an odd
-step hashed (splitmix64) from the line's address and a key made once from the thread, the cycle
-and both parameters (`mode12_key`). Any line can be computed alone, so the SIMD variants write and
-verify it at full width, strided access works, and there is no step collapse. It replaced an LCG
-chain (`state = state * param0 + param1`) on 2026-10-05, which carried state across chunks and
-broke when chunks overlap (TODO 76).
-
 ### Mode 13: Hash per word
 
 `pattern_mode13(idx, param0)`: splitmix64 of `idx + param0`. Pseudo-random per word, no state.
 
-### Mode 14: Bus flip
+### Mode 20: Hashed Lines (TMR's mode 2)
 
-`pattern_gen::mode14_line(line_addr, key, beat)`: each beat of a 64 B line's burst is the bitwise
+`mode20_line(line_addr, key) -> (seed, step)`, then `line_words(seed, step)`
+
+Mode 2's line shape without the chain: each 64 B line is `seed + j * step`, with seed and an odd
+step hashed (splitmix64) from the line's address and a key made once from the thread, the cycle
+and both parameters (`mode20_key`). Any line can be computed alone, so the SIMD variants write and
+verify it at full width, strided access works, and there is no step collapse. It replaced an LCG
+chain (`state = state * param0 + param1`) on 2026-10-05, which carried state across chunks and
+broke when chunks overlap (TODO 76).
+
+### Mode 30: Bus flip
+
+`pattern_gen::mode30_line(line_addr, key, beat)`: each beat of a 64 B line's burst is the bitwise
 inverse of the one before, so every data line toggles on every beat (under the 12- and 24-bit
 models, between the transfers that carry payload: the last is partial). It packs the line as the
 native `switch` does (`pattern_gen::bus_flip_line`, `doc/pattern_spec.md`).
@@ -120,7 +128,7 @@ native `switch` does (`pattern_gen::bus_flip_line`, `doc/pattern_spec.md`).
 - **Why a width at all:** a pattern tuned for one width is close to the worst case for another.
   Measured 2026-10-09: TM5's mode 0 flips 46.7 of 64 lines a beat on DDR4 but 15.7 of 32 on DDR5;
   a 32-bit-tuned pattern flips 31.0 of 32 on DDR5 and 4.0 of 64 on DDR4.
-- **One value a line**, hashed from its address and `mode12_key` (thread, cycle, params). At 64,
+- **One value a line**, hashed from its address and `mode20_key` (thread, cycle, params). At 64,
   32, 16 and 24 bits each stored byte holds four 1s and four 0s, so a count-based data bus
   inversion (DDR4's, LPDDR4's and LPDDR5's DC DBI), which inverts a byte with more than four bits at
   its costly level, never undoes a flip; at 12 bits most bytes mix two nibbles. Other schemes can
@@ -137,7 +145,8 @@ native `switch` does (`pattern_gen::bus_flip_line`, `doc/pattern_spec.md`).
 ### CLI
 ```bash
 tmr.exe pattern-mode=0           # TM5-faithful mode 0
-tmr.exe pattern-mode=12          # TMR-native hashed lines
+tmr.exe pattern-mode=20          # TMR's hashed lines
+tmr.exe pattern-mode=31          # the native switch family alone, on every SimpleTest
 tmr.exe write-read-cycles=4      # TM5 SimpleTest: (1 write + 5 reads) × 4 per chunk
 tmr.exe verify-reps=5            # 5 verify passes per write
 ```
@@ -146,7 +155,8 @@ tmr.exe verify-reps=5            # 5 verify passes per write
 TM5 configs use `Pattern Mode=0/1/2` which map directly to TM5-faithful modes 0/1/2.
 
 ### TMR JSON configs
-Use `pattern_mode` field in test config. Any mode number (0-2, 10-14) is valid.
+Use `pattern_mode` field in test config: 0-2, 10, 11, 13, 20 or 30, or a native family's number
+(15, 16, 17, 21, 31) for that family alone. Any other number is refused.
 
 ## SIMD Support
 
@@ -157,13 +167,13 @@ Use `pattern_mode` field in test config. Any mode number (0-2, 10-14) is valid.
 | 2 | Yes | Positional* | Positional* | Positional* |
 | 10 | Yes | Yes | Yes | Yes |
 | 11 | Yes | Yes | Yes | Yes |
-| 12 | Yes | Yes | Yes | Yes |
 | 13 | Yes | Positional* | Positional* | Positional* |
-| 14 | Yes | Scalar† | Scalar† | Scalar† |
+| 20 | Yes | Yes | Yes | Yes |
+| 30 | Yes | Scalar† | Scalar† | Scalar† |
 
 *Modes 0/1/2 and 13 use the positional SIMD path (mode 10/11 patterns) as an approximation when running in SIMD test variants. Full TM5-faithful SIMD implementations are planned (TODO 3).
 
-†Mode 14's SIMD variants run the scalar build: a line is one or two values, which it already stores at the baseline's full width (two 32 B stores a line; four lines a loop iteration sequentially).
+†Mode 30's SIMD variants run the scalar build: a line is one or two values, which it already stores at the baseline's full width (two 32 B stores a line; four lines a loop iteration sequentially).
 
 ## DDR5 Context
 
@@ -179,4 +189,4 @@ TM5 SimpleTest stride formula: `JumpStep = BlkSize * (Channels * Parameter - 1)`
 
 In TMR: `stride_cachelines = Channels * Parameter - 1` (default Channels=2 for DDR5 dual-channel).
 
-Strided access moves a whole 64 B line per jump, as TM5 does (TODO 93), so every mode works strided with the sequential image, except that the scalar test's strided mode 2 writes mode 12's lines: mode 2's chain runs a page in order, and the walk visits a page's lines a period apart.
+Strided access moves a whole 64 B line per jump, as TM5 does (TODO 93), so every mode works strided with the sequential image, except that the scalar test's strided mode 2 writes mode 20's lines: mode 2's chain runs a page in order, and the walk visits a page's lines a period apart.

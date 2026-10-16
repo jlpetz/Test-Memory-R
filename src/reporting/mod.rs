@@ -142,6 +142,12 @@ impl<R: Renderer> Reporter<R> {
             let table = self.formatter.prepare_errors_by_step_table(report);
             self.renderer.render_table(&table)?;
         }
+        // Which bits failed, only when any did (TODO 97)
+        if !report.failing_bits.is_empty() || !report.seal_failing_bits.is_empty() {
+            self.renderer.render_separator()?;
+            let table = self.formatter.prepare_failing_bits_table(report);
+            self.renderer.render_table(&table)?;
+        }
         
         Ok(())
     }

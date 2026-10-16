@@ -284,6 +284,14 @@ fn apply_repetition(test: &TestConfig, config: &mut TestMemoryConfig) {
     }
 }
 
+/// The numbered mode a Bench pair's name gives: 30 for `Bench-Init-TMR-30` or `Bench-Verify-TMR-30`,
+/// 2 for `Bench-Init-TM5-2`.
+fn bench_mode(function: &str) -> Option<u32> {
+    let rest = function.strip_prefix("Bench-Init-").or_else(|| function.strip_prefix("Bench-Verify-"))?;
+    let n = rest.strip_prefix("TM5-").or_else(|| rest.strip_prefix("TMR-"))?.parse().ok()?;
+    crate::pattern_gen::MODES.contains(&n).then_some(n)
+}
+
 /// The most any repetition knob may be: a `.cfg`'s `Time (%)` gives at most a few hundred.
 const MAX_REPS: u32 = 10_000;
 
@@ -319,7 +327,7 @@ fn validate_repetition(test: &TestConfig, config: &TestMemoryConfig) -> Result<(
     if mirror && config.test_reps == 0 {
         return Err("test_reps 0 never mirrors: the test would only check the seal".to_string());
     }
-    if simple && config.test_reps == 0 && matches!(config.pattern_mode, Some(0 | 1 | 2 | 12 | 14)) {
+    if simple && config.test_reps == 0 && matches!(config.pattern_mode, Some(0 | 1 | 2 | 20 | 30)) {
         return Err(format!("test_reps 0 verifies the fill alone, but pattern_mode {} keys its image by the cycle, which \
             the fill and the verifies don't share, so every word would fail; use a native program, or mode 10, 11 or 13",
             config.pattern_mode.unwrap_or(0)));
@@ -553,7 +561,8 @@ pub struct TestConfig {
     #[serde(default)]
     pub program: Option<Vec<String>>,
 
-    // TMR's numbered pattern modes (pattern spec 1): 0-2 TM5-derived, 10-14 TMR-native
+    /// TMR's numbered pattern modes (pattern spec 1, `pattern_gen::MODES`): 0-2 TM5-derived; 10,
+    /// 11, 13, 20 and 30 TMR's. A native family's number (`pattern::Family::number`) runs it alone.
     pub pattern_mode: Option<u32>,
     pub pattern_param0: Option<u64>,
     pub pattern_param1: Option<u64>,
@@ -928,12 +937,24 @@ impl ModernConfig {
         let extent_mode = self.parse_test_extent_mode(test).map_err(|e| Self::test_error(i, test, e))?;
         let chunk_mode = self.parse_test_chunk_mode(test).map_err(|e| Self::test_error(i, test, e))?;
         if let Some(mode) = test.pattern_mode
-            && !matches!(mode, 0..=2 | 10..=14)
+            && !crate::pattern::is_pattern_mode(mode)
         {
-            return Err(Self::test_error(i, test, format!("pattern_mode {mode} is not a mode; valid: 0-2 (TM5-faithful), 10-14 (TMR-native)")));
+            return Err(Self::test_error(i, test, format!("pattern_mode {mode} is not a mode{}; valid: {}",
+                crate::pattern::renumbered(mode), crate::pattern::pattern_modes())));
         }
+        // A native family's number is a program of the family alone, not a numbered mode. A Bench
+        // pair of a numbered mode runs the one its name gives, `Bench-Init-TMR-30` mode 30, when
+        // the entry names none
+        let native = test.pattern_mode.and_then(crate::pattern::Family::from_number);
+        let pattern_mode = if native.is_some() { None } else { test.pattern_mode.or_else(|| bench_mode(&test.function)) };
         let program = match &test.program {
-            None => None,
+            None => match native {
+                Some(_) if !test.function.starts_with("Mem-SimpleV2") => {
+                    return Err(Self::test_error(i, test, format!("only the Mem-SimpleV2 tests run native patterns (pattern_mode {})",
+                        test.pattern_mode.unwrap_or(0))));
+                }
+                native => native.map(crate::pattern::Program::single),
+            },
             Some(_) if !test.function.starts_with("Mem-SimpleV2") => {
                 return Err(Self::test_error(i, test, "only the Mem-SimpleV2 tests read \"program\"".to_string()));
             }
@@ -963,7 +984,7 @@ impl ModernConfig {
 
         let mut config = TestMemoryConfig::new(extent_mode, chunk_mode)
             .with_timing(timing)
-            .with_pattern_config(test.pattern_mode, test.pattern_param0, test.pattern_param1)
+            .with_pattern_config(pattern_mode, test.pattern_param0, test.pattern_param1)
             // #59: CLFLUSHOPT-verify, opt-in per test from the config
             .with_flush_before_verify(test.flush_before_verify.unwrap_or(false));
         if let Some(program) = program {
@@ -1381,15 +1402,17 @@ impl LegacyConfig {
             };
 
             // A SimpleTest's mode becomes a native program (pattern spec v2): its intent's family
-            // and switching, then mixed data and switching (`Program::from_tm5_mode`), at the
-            // widest width, every width writing one image. With patterns=legacy it keeps TMR's
+            // and switching, then mixed data and switching (`Program::from_tm5_mode`), or a native
+            // family's number that family alone, at the widest width, every width writing one image. With patterns=legacy it keeps TMR's
             // numbered mode on the scalar test (spec 1), to compare. No other function reads the
             // pattern fields, so they get none.
             let (function, program, pattern) = match function.as_str() {
                 "Mem-SimpleV2" if crate::pattern::legacy_import() => {
                     (function, None, Some((test.pattern_mode, test.pattern_param0, test.pattern_param1)))
                 }
-                "Mem-SimpleV2" => match crate::pattern::Program::from_tm5_mode(test.pattern_mode) {
+                "Mem-SimpleV2" => match crate::pattern::Program::from_tm5_mode(test.pattern_mode)
+                    .or_else(|| crate::pattern::Family::from_number(test.pattern_mode).map(crate::pattern::Program::single))
+                {
                     Some(program) => ("Mem-SimpleV2-Auto".to_string(), Some(program.names()), None),
                     // Not one of TM5's: kept as the TMR mode it names (build_test refuses one TMR
                     // doesn't have)
@@ -1798,12 +1821,41 @@ mod tests {
         modern.test_sequence[0].program = None;
         assert!(modern.get_test_configs().is_ok());
 
+        // 12 and 14 are 20 and 30 now, and refused, saying so (TODO 97). A native family's number
+        // is a program of it alone, on a SimpleTest only
+        for (old, new) in [(12, 20), (14, 30)] {
+            modern.test_sequence[0].pattern_mode = Some(old);
+            let err = modern.get_test_configs().unwrap_err();
+            assert!(err.contains(&format!("pattern_mode {old} is not a mode (TMR's mode {old} is {new} since")) && err.contains("20, 30"), "{err}");
+        }
+        modern.test_sequence[0].pattern_mode = Some(31);
+        let configs = modern.get_test_configs().unwrap();
+        let (_, config) = &configs[0];
+        assert_eq!((config.pattern_mode, config.native_program()), (None, Some(crate::pattern::Program::single(crate::pattern::Family::Switch))));
+        let mut mirror = modern.clone();
+        mirror.test_sequence[0].function = "Mem-MirrorV2-Auto".into();
+        assert!(mirror.get_test_configs().unwrap_err().contains("only the Mem-SimpleV2 tests run native patterns"));
+
         // A program must name families TMR has, on a SimpleTest
         modern.test_sequence[0].pattern_mode = None;
         modern.test_sequence[0].program = Some(vec!["ident".into(), "zigzag".into()]);
         assert!(modern.get_test_configs().unwrap_err().contains("zigzag"));
         modern.test_sequence[0].program = Some(vec!["random".into(), "switch".into()]);
         assert!(modern.get_test_configs().is_ok());
+    }
+
+    /// A Bench pair of a numbered mode runs the mode its name gives when its entry names none, as
+    /// the built-in one does (the second review: `Bench-Init-TMR-30` ran mode 10).
+    #[test]
+    fn a_bench_pair_runs_the_mode_its_name_gives() {
+        let mut modern = legacy(100, vec![test(1, "SimpleTest", 100, 16)]).to_modern_config().unwrap();
+        for (function, mode) in [("Bench-Init-TMR-30", Some(30)), ("Bench-Verify-TM5-2", Some(2)), ("Bench-Init-Ident", None)] {
+            modern.test_sequence[0] = TestConfig { enabled: true, function: function.to_string(), ..Default::default() };
+            let configs = modern.get_test_configs().unwrap();
+            assert_eq!(configs[0].1.pattern_mode, mode, "{function}");
+        }
+        modern.test_sequence[0].pattern_mode = Some(20);
+        assert_eq!(modern.get_test_configs().unwrap()[0].1.pattern_mode, Some(20), "the entry's mode wins");
     }
 
     /// The audit's verification-free settings are refused: a correctness test that never verifies,
@@ -1852,6 +1904,13 @@ mod tests {
         assert_eq!(simple.function, "Mem-SimpleV2-Auto");
         assert_eq!(simple.program.as_deref(), Some(&["ident".to_string(), "switch".into(), "random".into(), "switch".into()][..]));
         assert_eq!((simple.pattern_mode, mirror.pattern_mode, mirror.program.as_ref()), (None, None, None));
+
+        // A native family's number imports as that family alone, at the widest width, as TM5's do
+        let mut native = test(3, "SimpleTest", 100, 16);
+        native.pattern_mode = 32;
+        let modern = legacy(100, vec![native]).to_modern_config().unwrap();
+        let t = &modern.test_sequence[0];
+        assert_eq!((t.function.as_str(), t.pattern_mode, t.program.as_deref()), ("Mem-SimpleV2-Auto", None, Some(&["quiet".to_string()][..])));
 
         // A mode TM5 doesn't have but TMR does stays that mode, on the scalar test
         let mut tmr_mode = test(3, "SimpleTest", 100, 16);

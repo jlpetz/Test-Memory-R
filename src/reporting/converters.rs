@@ -673,6 +673,7 @@ pub fn create_overall_stats_summary_report(
                     average_data_gib: 0.0,
                     average_throughput_mib_s: 0.0,
                     total_errors: 0,
+                    failing_bits: Default::default(),
                     whea_total: 0,
                     whea_corrected: 0,
                     // Copy latency data from the test's first step
@@ -700,12 +701,13 @@ pub fn create_overall_stats_summary_report(
         entry.average_throughput_mib_s = mean(entry.average_throughput_mib_s, avg.avg_throughput_mib_s);
         entry.runs += avg.runs;
         entry.total_errors += avg.total_errors;
+        entry.failing_bits.add(&avg.failing_bits);
         entry.seal_errors += avg.total_seal_errors;
         entry.whea_total += avg.whea_total;
         entry.whea_corrected += avg.whea_corrected;
     }
 
-    let sealed: Vec<crate::results::CycleSeal> = result.cycles.iter().filter_map(|c| c.seal).collect();
+    let sealed: Vec<&crate::results::CycleSeal> = result.cycles.iter().filter_map(|c| c.seal.as_ref()).collect();
     let seal = (!sealed.is_empty()).then(|| SealStagesSummary {
         secs: sealed.iter().map(|s| (s.seal_ms + s.between_steps_ms + s.final_check_ms) as f64 / 1000.0).sum(),
         data_gib: sealed.iter().map(|s| (s.seal_bytes + s.final_check_bytes) as f64).sum::<f64>() / (1024.0 * 1024.0 * 1024.0),
@@ -731,5 +733,7 @@ pub fn create_overall_stats_summary_report(
         per_test_summaries,
         seal,
         errors_by_step,
+        failing_bits: overall_stats.failing_bits.clone(),
+        seal_failing_bits: overall_stats.seal_failing_bits.clone(),
     }
 }

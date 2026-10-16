@@ -1,6 +1,9 @@
 # TODO 97: native patterns and two-tier verify (pattern spec v2)
 
-Built 2026-10-11 on top of 468f23e, uncommitted, for review. The spec is `doc/pattern_spec.md`;
+Modes 20 and 30 are this file's names for 12 and 14, renumbered 2026-10-16 (the same bytes);
+the runs below called them 12 and 14.
+
+Built 2026-10-11 on top of 468f23e, committed 2026-10-12 (f69df41). The spec is `doc/pattern_spec.md`;
 the plan it came from is `doc/pattern_plan_2026-10-10.md`. Both rest on the audit
 (`doc/pattern_audit_2026-10-09.md`) and its follow-up (`doc/pattern_followup_2026-10-10.md`).
 
@@ -35,7 +38,7 @@ under one binary.
   checked when the config loads and again after the command line's overrides. A knob the test
   doesn't read is logged. Mem-SimpleNT keeps SimpleTest's four rounds but no longer shows five
   verifies it never ran. A `.cfg` value that doesn't parse is an error naming it, and a `.cfg`
-  SimpleTest with one of TMR's modes (10-14) keeps it.
+  SimpleTest with one of TMR's modes (10, 11, 13, 20, 30) keeps it.
 - **Bench accounting (TODO 90, part).** Every Bench-Verify leaves its fill out of its time and
   bytes. A step's speed, on the console, in results and in the per-step averages, divides by its
   threads' own timed duration: a `Duration`, `None` when the test didn't run, used at any length
@@ -70,15 +73,66 @@ under one binary.
   DDR6's 24 are models (below).
 - **The command line.** `pattern-mode=` replaces a test's program; it used to be ignored on
   imported tests while still being reported.
-- **Bench pairs.** `Bench-Init-/Bench-Verify-{Ident,Random,Switch,Lines,Linepair}`.
+- **Bench pairs.** `Bench-Init-/Bench-Verify-{Ident,Random,Switch,Lines,Linepair,Quiet,Header}`.
 
 **Stage 4, conversion and provenance.**
-- **The default.** No `pattern_mode` runs `[ident, switch, random, switch]`.
+- **The default.** No `pattern_mode` runs `[random, switch]` (the owner's call, 2026-10-15, after
+  the corrected cost table; it ran `[ident, switch, random, switch]` before).
 - **TM5 imports.** Modes 0, 1 and 2 import as `[ident|linepair|lines, switch, random, switch]`
   on `Mem-SimpleV2-Auto`. Mirror, refresh and blockmove imports no longer get pattern fields.
 - **Provenance.** Results record `pattern_version`, `pattern_seed`, `transfer_bits`,
   `transfer_source`, `rescan` and each test's `program`, all with serde defaults so old results
   load. Step lines show the program.
+
+**Since the commit (2026-10-15/16).**
+- **Failing bits.** Every failed check counts each bit its ORed differences had, and every bad
+  word its rescan finds counts each wrong bit, 0 to 1 or 1 to 0 (`src/failing_bits.rs`). Only the
+  cold path counts. The step line names them after its counts (`3 errors (bit 31) + 0 seal`; more
+  than four bits read `(17 bits)`). The final summary's Failing Bits table has a row per test,
+  the seal's, and all of them (the eight most failed bits a row, then how many more). Results
+  have `failing_bits` per step and over the run, and `seal_failing_bits`, every bit.
+- **Rescan records.** Mem-Random's replay counts a bad word once however often its reads land
+  on it, and its record counts the repeat reads. StuckBit's phase moved into its record line,
+  which it had a line of its own for.
+- **A dependent verify-only native SimpleTest** (`skip_init`, `test_reps` 0) is a plan error,
+  whatever precedes it: no other step writes its step-keyed image. Only a Bench pair shares a
+  native image (TODO 13's close).
+- **Numbering by kind** (the owner's call, 2026-10-15). TM5's 0-2 stay; TMR's modes go by tens:
+  1x identities (10, 11, 13), 2x in-line arithmetic (20, was 12), 3x switching (30, was 14).
+  12 and 14 are refused, not reused, so an old config fails loudly. The native families take
+  numbers in the same groups (15 `ident`, 16 `random`, 17 `linepair`, 21 `lines`, 31 `switch`,
+  32 `quiet`, 33 `header`), and `pattern_mode`/`pattern-mode=` with one runs that family alone.
+  The Bench names follow the numbers (`Bench-Init-TMR-20`). No image changed: the mode number
+  isn't in any key.
+- **Stage 6's families.** `quiet` (32) is `switch` with one pin held a line, 1 under P and 0
+  under ~P, picked by the line's hash so every pin gets turns; DDR4's DBI leaves P's held byte
+  alone and LPDDR's ~P's. `header` (33) is `switch` with `ident`'s word heading each 32 B half
+  (words 0 and 4, not the 0 and 1 first proposed, so LPDDR's two bursts both carry one), so no
+  half-line passes for another, and six words of eight switch. Both are in `pattern_spec.md`,
+  with vector forms and Bench pairs; at 12 and 24 bits their vectors come from scalar words.
+  Python written from the spec alone, without the code, gave 90 known answers, all matching;
+  its three questions (a letter used twice, the codes, a partial transfer) are answered there.
+  Neither is in a default program until the hardware session.
+- **A review of this batch** (one reviewer, the diff before `quiet` and `header`): no high
+  findings, twelve low, all taken. The rescan counts bits in a fixed table (all-bad 4 MiB
+  chunks took 248 ms each with a search, 14 ms now); `failing_bits` is a test's own checks at
+  every level, the seal's apart; a check counts only the bits its differences had; a `.cfg`'s
+  native number imports at the widest width; `pattern-mode=` with a native number and no
+  SimpleTest warns; 12 and 14 are refused saying what they became; a JSON `Bench-*-TMR-30` with
+  no `pattern_mode` runs mode 30, not 10; the leftover `m12` names went.
+- **The other tests' values.** Mem-Random, CacheBust, Stride and BlockMove add each word's id
+  (`pattern::word_base(thread) | idx`, the native one) to their values, so no word of one thread
+  holds what one of another does: they held the index, the same in every thread, or one apart
+  (TODO 19's address-in-address, which `ident` and `random` already are). CacheBust adds the
+  cycle too, so a write that didn't land shows unsealed; Stride's pass moved to the top byte,
+  clear of the thread's bits. Only Mem-Random's loop changed: one `or` a read, off its chain.
+- **Stage 5's tests, part.** Mem-Random ends with a sweep of every word in order (the reads
+  sample a few thousand words a cycle; the fill has sat since the test began). `Mem-MovingInv`
+  is memtest86's moving inversions, a March X over each chunk, and `Mem-ModuloX` its modulo-20,
+  protected victims at line granularity; both write `ident`'s word of each word id under a key
+  per step and cycle, with chunks twice the L3 so each pass reaches DRAM, and both loops are
+  256-bit in the release asm. Random-order writes wait for `Mem-Sequence`, a separate test the
+  owner asked to bench against SimpleTest and Mem-Random before it replaces anything.
 
 ## Review (2026-10-11)
 
@@ -139,7 +193,7 @@ under one binary.
     of one thread's span, 16 M threads). No machine reaches them; nothing enforces them.
 - **DDR6 and LPDDR6** (`beat=24|ddr6`, `beat=12|lpddr6`): one packer for every width (a burst's
   payload fills its transfers in order and starts afresh each burst), which reproduces the 16-,
-  32- and 64-bit images exactly, shared by mode 14 and `switch`. Both new profiles are models,
+  32- and 64-bit images exactly, shared by mode 30 and `switch`. Both new profiles are models,
   labelled so in the log and `transfer_source`: LPDDR6's burst geometry is public (12 DQ, 24
   transfers, 256 payload bits of 288) but not where its overhead sits, and DDR6 isn't published
   (24-bit subchannels from a vendor's draft summary; 64 B bursts assumed). Simulated on Astra's
@@ -209,13 +263,13 @@ Verify MiB/s with the fill left out of the time, one run each (run-to-run noise 
 | switch | 58,956 (32-bit) | 45,338 (64-bit) |
 | lines | 59,816 | 45,617 |
 | random | 59,593 (-0.2%) | 45,130 (-2.1%) |
-| mode 10 (TMR-0, scalar) | 59,670 | 46,520 |
-| mode 13 (TMR-3, scalar) | 58,213 | 45,799 |
-| mode 14 (TMR-4, scalar) | 59,576 | 45,647 |
+| mode 10 (TMR-10, scalar) | 59,670 | 46,520 |
+| mode 13 (TMR-13, scalar) | 58,213 | 45,799 |
+| mode 30 (TMR-30, scalar) | 59,576 | 45,647 |
 
 - **Writes:** 36.0-36.4 GB/s on the 8600G and 21.5-21.7 GB/s on the 5700X for every family.
 - **Verifies:** `random` costs 0.2% against `ident` on the 8600G and 2.1% on the 5700X.
-- **Widths:** `switch` and mode 14 verify within about 2% of each other at 12, 16, 24, 32 and 64
+- **Widths:** `switch` and mode 30 verify within about 2% of each other at 12, 16, 24, 32 and 64
   bits on both (the 8600G's 24-bit `switch` 2% low until the SIMD encoder, above).
 
 **Cost, first measurement** (the morning, the fill included in the step's time; superseded):
@@ -227,8 +281,8 @@ Verify MiB/s with the fill left out of the time, one run each (run-to-run noise 
 | switch | 50,988 | 37,114 |
 | lines | 50,485 | 37,488 |
 | random | 50,374 (-2.1%) | 36,044 (-3.7%) |
-| mode 10 (TMR-0, scalar) | 51,472 | 37,895 |
-| mode 14 (TMR-4, scalar) | 50,665 | 37,479 |
+| mode 10 (TMR-10, scalar) | 51,472 | 37,895 |
+| mode 30 (TMR-30, scalar) | 50,665 | 37,479 |
 
 - **Writes:** every family wrote at the same speed, 36.5 GB/s on the 8600G and 21.6 GB/s on the
   5700X, so the pattern doesn't limit them.
@@ -240,17 +294,17 @@ chunks, 4×(1+5), 10 min a block, one binary):
 
 | Block | 8600G errors | 5700X errors |
 |---|---|---|
-| legacy mode 14 | 38, all not reproduced on rescan | 0 |
+| legacy mode 30 | 38, all not reproduced on rescan | 0 |
 | native default | 24 (23 in `random` phases, 1 `ident`, 0 `switch`), all not reproduced | 0 |
 | native default | 0 | 0 |
-| legacy mode 14 | 0 | 0 |
+| legacy mode 30 | 0 | 0 |
 
 - **Variance.** The 8600G's rate swings widely from block to block: 24 then 0 for one program, and
-  843 then 170 for mode 14 on 10-09. The fall (38, 24, 0, 0) fits drift but doesn't prove time
+  843 then 170 for mode 30 on 10-09. The fall (38, 24, 0, 0) fits drift but doesn't prove time
   rather than pattern. Every run allocates other physical memory, which makes comparisons between
   runs noisier; steps of one run share it.
 - **The interleaved run.** Every pattern was a step of one run, each step one pass, on the same
-  memory, for 30 minutes (`il.json`: legacy mode 14, then native `[switch]`, `[random]` and
+  memory, for 30 minutes (`il.json`: legacy mode 30, then native `[switch]`, `[random]` and
   `[ident]`):
   - **The 8600G:** 46 cycles, 0 errors. Its fault stayed quiet after about 12:04.
   - **The 5700X, the "stable" control:** 19 cycles and 5 errors, all in the `[random]` step. One
@@ -263,20 +317,20 @@ chunks, 4×(1+5), 10 min a block, one binary):
     verify pass, 5 in all: five observations of one word, not five faults.
 - **What the errors are.** Almost every error is a read that a rescan moments later doesn't
   repeat: 791 of 843 on 10-09, all of them today.
-- **A surprise.** Native `switch` found nothing in ~5 min of its phases, where mode 14 found 38
-  in 10 min. Native `random` found 23 in ~2.5 min. The two switch streams differ (mode 14 hashes
+- **A surprise.** Native `switch` found nothing in ~5 min of its phases, where mode 30 found 38
+  in 10 min. Native `random` found 23 in ~2.5 min. The two switch streams differ (mode 30 hashes
   the byte address, `switch` the line id, and writes P/~P), and so do exposure, phase history and
   allocation: this shows neither a verifier that misses (the injected-fault checks find no loss)
-  nor equal stress. Mode 14 stays. The evening reversed it: 50 in `switch`, 34 in mode 14 (below).
+  nor equal stress. Mode 30 stays. The evening reversed it: 50 in `switch`, 34 in mode 30 (below).
 
 **The evening runs** (18:47-20:40, this round's builds, physical cores, 50% of memory):
 - **The interleaved run again** (`il.json`, 30 min):
-  - **The 8600G:** 46 cycles and 102 failed checks: 34 in mode 14, 50 in `switch`, 9 in `random`,
+  - **The 8600G:** 46 cycles and 102 failed checks: 34 in mode 30, 50 in `switch`, 9 in `random`,
     6 in `ident`. Every one was bit 31 of the 64-bit word alone, on all six threads, from 19:01 to
     19:29, and all but one were reads a rescan didn't repeat.
   - **The 5700X:** 19 cycles, 0 errors. Its bit-47 word didn't come back.
-- **The 8600G's bit 31.** It kept failing through the A/Bs: 3 checks at 19:36 (bit 39, mode 14
-  at 24-bit beats), then 793 in 12 seconds at 20:18 (bit 31, mode 14 and `switch` alike, both
+- **The 8600G's bit 31.** It kept failing through the A/Bs: 3 checks at 19:36 (bit 39, mode 30
+  at 24-bit beats), then 793 in 12 seconds at 20:18 (bit 31, mode 30 and `switch` alike, both
   builds). Every word reread after a flush read right, so DRAM held the right data: a read
   fault on one data line, as the user suspected of this overclock. The evening's errors all
   came through the record's ORed differences, which a not-reproduced check now keeps.
@@ -300,26 +354,14 @@ chunks, 4×(1+5), 10 min a block, one binary):
 
 ## Open
 
-- **The default program.** `random` is an identity too, so `[random, switch]` would give
-  identity, all histories and switching every cycle; its verify costs 0.2-2.1% against `ident`'s
-  (the corrected table). Kept `[ident, switch, random, switch]`, as Astra proposed; the switch is one line in
-  `Program::default_simple`.
-- **Other tests' values** (Random, CacheBust, Stride, BlockMove) are still per-thread, not
-  identities (TODO 19's address-in-address). Mem-SimpleNT still writes `idx ^ base`.
-- **Stage 5** (random writes, moving inversions; TODO 19's order) and **stage 6's** experimental
-  families (identity header and switching tail, a quiet lane) are not built.
-- **Quiet-victim and history coverage** are measured offline only (the follow-up); no family
-  targets a quiet lane yet.
-- **Rescan records.** Mem-Random's rescan replays its reads, so a word read twice counts and
-  logs twice: its record counts bad reads. StuckBit's SIMD verify logs a line of its own before
-  the record (both older than the record).
-- **A dependent verify-only SimpleTest** (`skip_init` with `test_reps` 0) would expect an image
-  keyed by its own step, which no other step writes, and plan validation wouldn't catch it. No
-  config or command line can set `skip_init` on a SimpleTest today (review A).
+- **Mem-SimpleNT** still writes `idx ^ base`, the same in every thread.
+- **Random writes** (stage 5's last): `Mem-Sequence`, not built.
+- **History coverage** is measured offline only (the follow-up). `quiet` holds one pin among
+  toggling ones; which pins are neighbours on the board TMR can't know.
 - **One encoder for every width?** The byte-shuffle encoder fits every byte-aligned width (16,
   24, 32, 64; 12 isn't), so it could replace the closed forms, but the seed mask showed that
   fewer instructions can measure slower: only with an A/B on both desktops.
-- **A one-line native verify** (mode 14's shape), a later experiment for when another change
+- **A one-line native verify** (mode 30's shape), a later experiment for when another change
   already needs a 5700X benchmark: same bytes and coverage, against today's two-line loop at 64
   bits. One line at 256 bits is two vectors, so it feeds two of the four accumulators
   (`research/seed_mask_2x2/README.md`). A 1% throughput gain isn't a 1% detection gain: the
@@ -327,6 +369,10 @@ chunks, 4×(1+5), 10 min a block, one binary):
 - **Equal halves.** At 12, 16, 32 and 64 bits a `switch` line's 32 B halves are equal, so a
   misplaced half-line passes that phase (`ident` and `random` catch it). Separate seeds per half
   cost no switching only if the line really is two bursts; LPDDR4/5 can send it as one 32-transfer
-  burst, where it breaks one transition a pin. Not changed.
+  burst, where it breaks one transition a pin. `switch` not changed; `header` gives each half an
+  identity word instead, at the cost of two switching words.
+- **Plan validation after the command line.** `memory_effect` isn't derived again after the
+  overrides, so `validate_test_plan` sees each step's effect from before them. No live effect:
+  nothing on the command line sets `skip_init` (the review of 2026-10-16).
 - **The SIMD Refresh** still flushes only on request. Whether its verify reads cache needs a
   measurement first (the plan's research list).

@@ -2,7 +2,7 @@
 
 Normative: `src/pattern.rs` implements this, and its tests check the implementation against
 these formulas. Results record `pattern_version: 2`. Version 1 is the TM5-numbered modes (0-2,
-10-14, `doc/pattern_gen_modes.md`), which still run when a config sets `pattern_mode`.
+10, 11, 13, 20, 30, `doc/pattern_gen_modes.md`), which still run when a config sets `pattern_mode`.
 
 All arithmetic is on unsigned 64-bit integers, wrapping. `^` is XOR (never a power: powers are
 written out, `0x7FFF_FFFF_FFFF_FFFF`), `!` is bitwise NOT, `>>` and `<<` are logical shifts,
@@ -35,13 +35,19 @@ mix(a, b) = fmix(a ^ fmix(b + G))
 
 For line `lid`, key `k`, the line's 8 words `w[0..7]` before polarity:
 
-| Family | `w[j]` | Intent |
-|---|---|---|
-| `ident` | `x ^ (x >> 32)`, `x = (lid*8 + j) * G + k` | every word of the run distinct (a bijection of its id): a misplaced read or write shows |
-| `random` | `fmix(lid*8 + j + k)` | strongly mixed: every data line sees every short bit history (DDR5 equalisers) |
-| `switch` | per profile, below | every data line toggles on every beat at the transfer width |
-| `lines` | `s + j*d`, `s = fmix(lid + k)`, `d = (rotl(s ^ k, 29) * G) \| 1` | TM5 mode 2's in-line arithmetic chain, hashed per line (no collapse) |
-| `linepair` | `ident`'s word `j` of line `lid & !1` under the same `k`, inverted when `lid` is odd | TM5 mode 1's neighbouring lines opposite: each aligned pair complementary |
+| Family | No. | `w[j]` | Intent |
+|---|---|---|---|
+| `ident` | 15 | `x ^ (x >> 32)`, `x = (lid*8 + j) * G + k` | every word of the run distinct (a bijection of its id): a misplaced read or write shows |
+| `random` | 16 | `fmix(lid*8 + j + k)` | strongly mixed: every data line sees every short bit history (DDR5 equalisers) |
+| `linepair` | 17 | `ident`'s word `j` of line `lid & !1` under the same `k`, inverted when `lid` is odd | TM5 mode 1's neighbouring lines opposite: each aligned pair complementary |
+| `lines` | 21 | `s + j*d`, `s = fmix(lid + k)`, `d = (rotl(s ^ k, 29) * G) \| 1` | TM5 mode 2's in-line arithmetic chain, hashed per line (no collapse) |
+| `switch` | 31 | per profile, below | every data line toggles on every beat at the transfer width |
+| `quiet` | 32 | `switch`'s, one pin held at 1 (below) | one data line steady while every other toggles: the victim `switch` lacks |
+| `header` | 33 | `ident`'s for `j` = 0 and 4, `switch`'s for the rest | `switch` that is an identity per 32 B half: a misplaced half-line shows |
+
+The numbers sit in the numbered modes' groups of ten (`doc/pattern_gen_modes.md`): 1x identities,
+2x in-line arithmetic, 3x switching. `pattern_mode` or `pattern-mode=` with one runs that family
+alone; a program names families.
 
 **`switch`.** `h = fmix(lid + k) & 0xFFFFFFFF`. Byte `b` (0..7) of `a` is `n | ((!n & 0xF) << 4)`
 with `n` nibble `b` of `h`, so every byte holds four 1s. A transfer (beat) carries `W` bits, the
@@ -101,6 +107,28 @@ programmable XOR masks can turn such bytes into steady data. A scrambler or memo
 changes what reaches the pins: a fixed XOR on a pin keeps every transition, but a key that
 changes from beat to beat, or a cipher, can make the flips random-looking.
 
+**`quiet`.** `switch`'s line under the same `h`, `W` and `B`, with one pin held: with `H` the
+high 32 bits of `fmix(lid + k)`, the held pin is `v = (H * W) >> 32` (0 to `W - 1`), and every
+bit `p` of the line on pin `v` (`(p mod B) mod W = v`) is set:
+
+```text
+w[j] = switch's w[j] | (each bit i of the word with ((64 j + i) mod B) mod W = v)
+```
+
+(`i` is a bit of the word, 0..63, not the key.) A partial last transfer (12 and 24) holds pin
+`v` only if it carries payload there: transfer 21 for `v` below 4 at 12 bits, below 8 at 24.
+
+So under P pin `v` is 1 at every transfer of the line and under ~P 0, while every other pin
+toggles as in `switch`. The pin comes from the hash, not from `lid`, so a channel or bank that
+takes every other line still sees every pin held. The held pin's byte has four or five 1s a
+transfer under P and four or three under ~P: a count-based DBI that counts 0s (DDR4) leaves P
+alone and one that counts 1s (LPDDR4, LPDDR5) leaves ~P alone.
+
+**`header`.** `switch`'s line under the same `k` and `W`, except words 0 and 4: those are
+`ident`'s words 0 and 4 of line `lid` under `k` (word ids `lid*8` and `lid*8 + 4`). The two
+heads are distinct over the run, so every 32 B half-line differs from every other; the six
+other words switch as in `switch`; the transitions into and out of a head aren't flips.
+
 **Polarity.** A phase's mask `m` is `0` (P) or all ones (~P); the stored word is `w[j] ^ m`.
 
 **What each family does give, and doesn't.**
@@ -114,7 +142,11 @@ changes from beat to beat, or a cipher, can make the flips random-looking.
   five-bit histories: each upper bit at most 10 (`2h` for an `h`-bit history), whatever `k`; bit 0
   alternates. `random` covers them at any width.
 - `switch` gives each data line only `01010` and `10101` in a burst, and no quiet line next to a
-  toggling one.
+  toggling one: `quiet` holds one in each line. Which pins are physically neighbours TMR can't
+  know (boards swizzle bits within a byte lane), so `quiet` holds one pin among all toggling
+  rather than aiming at a neighbour.
+- `header`'s heads are identities, so a half-line can't pass for another; its other words carry
+  `switch`'s 8-32 bits, and it switches six words of eight.
 
 ## Programs and phases
 
@@ -142,7 +174,7 @@ family   = program[pair mod len]
 step_key = mix(mix(mix(seed, suite_cycle), step), 0x5EED)
 key      = mix(mix(step_key, pair), code(family))
 mask     = all ones if g is odd, else 0
-codes:   ident 0x1D, random 0x2A, switch 0x3C, lines 0x4B, linepair 0x5E
+codes:   ident 0x1D, random 0x2A, switch 0x3C, lines 0x4B, linepair 0x5E, quiet 0x69, header 0x78
 ```
 
 - **Rotation.** A TM5 step runs one cycle of its own with 4 rounds, so it covers the program's
@@ -175,10 +207,12 @@ profile gives 46.7% (7/15) at 32-bit beats, 22.6% (7/31) at 16, and 0% at 128. R
 
 **Program or mode.** A JSON test takes `program` or `pattern_mode`, not both (a load error). The
 command line's `pattern-mode=` replaces any test's program. A `.cfg`'s Pattern Mode is TM5's
-and imports as below; one of TMR's own (10-14) stays that numbered mode.
+and imports as below; one of TMR's own (10, 11, 13, 20, 30) stays that numbered mode, and a native
+family's number (Families) is that family alone.
 
 **Programs TMR sets.**
-- **No `program` and no `pattern_mode`:** `[ident, switch, random, switch]`.
+- **No `program` and no `pattern_mode`:** `[random, switch]`: a pair of each every cycle at
+  four rounds. `random` is an identity too and gives every data line all short histories.
 - **TM5 `.cfg` SimpleTest:** Pattern Mode 0 imports as `[ident, switch, random, switch]`, 1 as
   `[linepair, switch, random, switch]`, 2 as `[lines, switch, random, switch]`, all on
   `Mem-SimpleV2-Auto`. Switching runs every suite cycle, the mode's intent and mixed data every
@@ -230,6 +264,11 @@ check and reseal, and the final check.
     Seal-Check, Bench-Verify-Seal) counts its checks.
   - `not_reproduced`: the test's failed checks whose rescan found nothing; none under
     `rescan=off`.
+  - `failing_bits`, by bit position: the failed checks whose ORed differences had it, and the bad
+    words the rescans found with it wrong, 0 to 1 and 1 to 0; `seal_failing_bits`, the seal's own
+    checks'. Under `rescan=off`, checks alone.
+  - A bad word counts once a rescan, even where Mem-Random's replayed reads land on it again; its
+    record counts the repeat reads.
   - "The first 16 rescans" count per test run on each thread.
 - **What the rescan can't establish.**
   - A word still wrong on reread may be a cached copy of a bad read.

@@ -6,7 +6,7 @@
 //! - `random`: strongly mixed words (splitmix64's finalizer, also a bijection), so every data
 //!   line sees every short bit sequence, which DDR5's equalisers respond to. Needs no bus width.
 //! - `switch`: each beat of a line's burst the inverse of the one before, at the memory's
-//!   transfer width, so every data line toggles on every beat (mode 14 found the 8600G's fault).
+//!   transfer width, so every data line toggles on every beat (mode 30 found the 8600G's fault).
 //! - `lines`: each line an arithmetic chain `seed + j * step` hashed from the line (TM5 mode 2's
 //!   idea, without the chain that collapses).
 //! - `linepair`: aligned pairs of lines, the second the first's complement (TM5 mode 1's idea).
@@ -25,8 +25,8 @@ use crate::pattern_gen::BusBeat;
 use std::sync::OnceLock;
 use std::sync::atomic::{AtomicBool, Ordering};
 
-/// The pattern spec this module implements, recorded in results. Version 1 is the TM5-numbered
-/// modes (0-2, 10-14), which TMR still runs when a config names one.
+/// The pattern spec this module implements, recorded in results. Version 1 is the numbered modes
+/// (`pattern_gen::MODES`), which TMR still runs when a config names one.
 pub const VERSION: u32 = 2;
 
 /// Words in a 64 B cache line.
@@ -59,6 +59,14 @@ pub fn line_base(thread_id: usize) -> u64 {
     (thread_id as u64) << 37
 }
 
+/// The id of word 0 of thread `thread_id`'s span, `thread_id << 40`: word `idx` of the span is
+/// word id `word_base(thread_id) | idx`. The other tests add it to their values, so no word of one
+/// thread holds what a word of another does (TODO 97).
+#[inline(always)]
+pub fn word_base(thread_id: usize) -> u64 {
+    (thread_id as u64) << 40
+}
+
 // ─── Families ────────────────────────────────────────────────────────────────────────────────────
 
 /// A native pattern family (see the module doc).
@@ -69,10 +77,13 @@ pub enum Family {
     Switch,
     Lines,
     Linepair,
+    Quiet,
+    Header,
 }
 
 impl Family {
-    pub const ALL: [Family; 5] = [Family::Ident, Family::Random, Family::Switch, Family::Lines, Family::Linepair];
+    pub const ALL: [Family; 7] = [Family::Ident, Family::Random, Family::Switch, Family::Lines, Family::Linepair,
+                                  Family::Quiet, Family::Header];
 
     pub fn name(self) -> &'static str {
         match self {
@@ -81,11 +92,36 @@ impl Family {
             Family::Switch => "switch",
             Family::Lines => "lines",
             Family::Linepair => "linepair",
+            Family::Quiet => "quiet",
+            Family::Header => "header",
         }
+    }
+
+    /// Whether its lines depend on the transfer width: the switching families'.
+    pub fn uses_beat(self) -> bool {
+        matches!(self, Family::Switch | Family::Quiet | Family::Header)
     }
 
     pub fn parse(s: &str) -> Option<Self> {
         Family::ALL.into_iter().find(|f| f.name().eq_ignore_ascii_case(s.trim()))
+    }
+
+    /// Its number, in the groups of the numbered modes (`pattern_gen::MODES`): 1x identities, 2x
+    /// in-line arithmetic, 3x switching. A `pattern_mode` of it runs the family alone.
+    pub const fn number(self) -> u32 {
+        match self {
+            Family::Ident => 15,
+            Family::Random => 16,
+            Family::Linepair => 17,
+            Family::Lines => 21,
+            Family::Switch => 31,
+            Family::Quiet => 32,
+            Family::Header => 33,
+        }
+    }
+
+    pub fn from_number(n: u32) -> Option<Self> {
+        Family::ALL.into_iter().find(|f| f.number() == n)
     }
 
     /// Folded into the pair key, so two families never share one.
@@ -96,7 +132,33 @@ impl Family {
             Family::Switch => 0x3C,
             Family::Lines => 0x4B,
             Family::Linepair => 0x5E,
+            Family::Quiet => 0x69,
+            Family::Header => 0x78,
         }
+    }
+}
+
+/// Whether `pattern_mode` takes `n`: a numbered mode or a native family's number.
+pub fn is_pattern_mode(n: u32) -> bool {
+    crate::pattern_gen::MODES.contains(&n) || Family::from_number(n).is_some()
+}
+
+/// What `pattern_mode` takes, for an error that names a number it doesn't.
+pub fn pattern_modes() -> String {
+    let (tm5, tmr): (Vec<u32>, Vec<u32>) = crate::pattern_gen::MODES.iter().partition(|&&m| m < 10);
+    let list = |modes: &[u32]| modes.iter().map(u32::to_string).collect::<Vec<_>>().join(", ");
+    let mut native: Vec<Family> = Family::ALL.to_vec();
+    native.sort_by_key(|f| f.number());
+    let native: Vec<String> = native.iter().map(|f| format!("{} {}", f.number(), f.name())).collect();
+    format!("{} (TM5's), {} (TMR's), or a native family's: {}", list(&tm5), list(&tmr), native.join(", "))
+}
+
+/// For an error naming a refused number: what 12 and 14 became, else nothing.
+pub fn renumbered(n: u32) -> &'static str {
+    match n {
+        12 => " (TMR's mode 12 is 20 since 2026-10-16)",
+        14 => " (TMR's mode 14 is 30 since 2026-10-16)",
+        _ => "",
     }
 }
 
@@ -113,6 +175,13 @@ pub fn ident_line(lid: u64, key: u64) -> [u64; LINE_WORDS] {
     })
 }
 
+/// `ident`'s word of word id `id` under `key`, for the tests that write a word at a time.
+#[inline(always)]
+pub fn ident_word(id: u64, key: u64) -> u64 {
+    let x = id.wrapping_mul(G).wrapping_add(key);
+    x ^ (x >> 32)
+}
+
 /// `random` line `lid`: word id `i` holds `fmix(i + key)`, a bijection of `i` (TMR mode 13 keyed
 /// by the word's id), strongly mixed: every bit position sees all short bit sequences.
 #[inline(always)]
@@ -122,7 +191,7 @@ pub fn random_line(lid: u64, key: u64) -> [u64; LINE_WORDS] {
 }
 
 /// `switch` line `lid` at `beat` bits a transfer: each transfer of the line's bursts the inverse
-/// of the one before (TMR mode 14 keyed by the line's id, `pattern_gen::bus_flip_line`; LPDDR6's
+/// of the one before (TMR mode 30 keyed by the line's id, `pattern_gen::bus_flip_line`; LPDDR6's
 /// 12 and DDR6's 24 are models). 32 bits of `fmix(lid + key)` go one nibble to a byte, each byte's
 /// high nibble the inverse of its low, so every byte holds four 1s and a count-based DBI never
 /// undoes a flip at 16, 32 or 64 bits. The first transfer fixes the line, so it carries 8 to 32
@@ -132,7 +201,37 @@ pub fn switch_line(lid: u64, key: u64, beat: BusBeat) -> [u64; LINE_WORDS] {
     crate::pattern_gen::bus_flip_line(crate::pattern_gen::balanced_bytes(fmix(lid.wrapping_add(key))), beat)
 }
 
-/// `lines` line `lid`: `seed + j * step`, both hashed from the line's id (TMR mode 12 keyed by the
+/// The pin `quiet` holds on its line, from the high half of the hash `switch` takes the low half
+/// of: uniform over the transfer's `beat.bits()` pins, so every pin gets turns.
+#[inline(always)]
+pub fn quiet_pin(hash: u64, beat: BusBeat) -> u32 {
+    (((hash >> 32) * u64::from(beat.bits())) >> 32) as u32
+}
+
+/// `quiet` line `lid`: `switch`'s line with one pin held. The line's quiet pin (`quiet_pin`) is 1
+/// in every transfer, 0 under ~P, while every other pin toggles on every beat, so the held line
+/// sits among switching neighbours, the crosstalk case `switch` (all toggling) doesn't make. Its
+/// byte keeps four or five 1s a transfer in P (DDR4's DBI, which counts 0s, leaves it alone) and
+/// four or three in ~P (LPDDR's, which counts 1s, leaves that alone).
+#[inline(always)]
+pub fn quiet_line(lid: u64, key: u64, beat: BusBeat) -> [u64; LINE_WORDS] {
+    let hash = fmix(lid.wrapping_add(key));
+    let held = crate::pattern_gen::pin_mask(quiet_pin(hash, beat), beat);
+    let line = crate::pattern_gen::bus_flip_line(crate::pattern_gen::balanced_bytes(hash), beat);
+    std::array::from_fn(|j| line[j] | held[j])
+}
+
+/// `header` line `lid`: `switch`'s line with an identity word heading each 32 B half: words 0 and
+/// 4 are `ident`'s words 0 and 4 of the line under the same key. So every half-line of the run
+/// differs (a misplaced half shows, as in `switch` it may not), and six words of eight switch.
+#[inline(always)]
+pub fn header_line(lid: u64, key: u64, beat: BusBeat) -> [u64; LINE_WORDS] {
+    let (mut line, ident) = (switch_line(lid, key, beat), ident_line(lid, key));
+    (line[0], line[4]) = (ident[0], ident[4]);
+    line
+}
+
+/// `lines` line `lid`: `seed + j * step`, both hashed from the line's id (TMR mode 20 keyed by the
 /// line's id). The step is odd, so a line's 8 words all differ.
 #[inline(always)]
 pub fn lines_line(lid: u64, key: u64) -> [u64; LINE_WORDS] {
@@ -210,6 +309,36 @@ pub fn switch_line_v<const N: usize, const V: usize>(lid: u64, key: u64, beat: B
     }
 }
 
+/// `quiet_line` as vectors: `switch`'s with the held pin's bits set. At 12 and 24 bits, whose words
+/// differ, from the scalar words, as `switch`'s at 12.
+#[inline(always)]
+pub fn quiet_line_v<const N: usize, const V: usize>(lid: u64, key: u64, beat: BusBeat) -> [V64<N>; V] {
+    match beat {
+        BusBeat::Bits64 | BusBeat::Bits32 | BusBeat::Bits16 => {
+            // Every word holds the same bits of the held pin at these widths
+            let hash = fmix(lid.wrapping_add(key));
+            let held = V64::splat(crate::pattern_gen::pin_mask(quiet_pin(hash, beat), beat)[0]);
+            switch_line_v::<N, V>(lid, key, beat).map(|x| x | held)
+        }
+        BusBeat::Bits12 | BusBeat::Bits24 => {
+            let w = quiet_line(lid, key, beat);
+            std::array::from_fn(|v| V64::from_array(std::array::from_fn(|l| w[v * N + l])))
+        }
+    }
+}
+
+/// `header_line` as vectors: `switch`'s with `ident`'s words 0 and 4 in their lanes.
+#[inline(always)]
+pub fn header_line_v<const N: usize, const V: usize>(lid: u64, key: u64, beat: BusBeat) -> [V64<N>; V] {
+    let mut line = switch_line_v::<N, V>(lid, key, beat);
+    let x0 = (lid << 3).wrapping_mul(G).wrapping_add(key);
+    for j in [0, 4] {
+        let x = x0.wrapping_add((j as u64).wrapping_mul(G));
+        line[j / N][j % N] = x ^ (x >> 32);
+    }
+    line
+}
+
 /// `lines_line` as vectors.
 #[inline(always)]
 pub fn lines_line_v<const N: usize, const V: usize>(lid: u64, key: u64) -> [V64<N>; V] {
@@ -275,6 +404,46 @@ macro_rules! with_phase_vectors {
                 let $line = |lid: u64| $crate::pattern::switch_line_v::<$n, V>(lid, key, BusBeat::Bits64).map(|x| x ^ mask);
                 $body
             }
+            (Family::Quiet, BusBeat::Bits12) => {
+                let $line = |lid: u64| $crate::pattern::quiet_line_v::<$n, V>(lid, key, BusBeat::Bits12).map(|x| x ^ mask);
+                $body
+            }
+            (Family::Quiet, BusBeat::Bits16) => {
+                let $line = |lid: u64| $crate::pattern::quiet_line_v::<$n, V>(lid, key, BusBeat::Bits16).map(|x| x ^ mask);
+                $body
+            }
+            (Family::Quiet, BusBeat::Bits24) => {
+                let $line = |lid: u64| $crate::pattern::quiet_line_v::<$n, V>(lid, key, BusBeat::Bits24).map(|x| x ^ mask);
+                $body
+            }
+            (Family::Quiet, BusBeat::Bits32) => {
+                let $line = |lid: u64| $crate::pattern::quiet_line_v::<$n, V>(lid, key, BusBeat::Bits32).map(|x| x ^ mask);
+                $body
+            }
+            (Family::Quiet, BusBeat::Bits64) => {
+                let $line = |lid: u64| $crate::pattern::quiet_line_v::<$n, V>(lid, key, BusBeat::Bits64).map(|x| x ^ mask);
+                $body
+            }
+            (Family::Header, BusBeat::Bits12) => {
+                let $line = |lid: u64| $crate::pattern::header_line_v::<$n, V>(lid, key, BusBeat::Bits12).map(|x| x ^ mask);
+                $body
+            }
+            (Family::Header, BusBeat::Bits16) => {
+                let $line = |lid: u64| $crate::pattern::header_line_v::<$n, V>(lid, key, BusBeat::Bits16).map(|x| x ^ mask);
+                $body
+            }
+            (Family::Header, BusBeat::Bits24) => {
+                let $line = |lid: u64| $crate::pattern::header_line_v::<$n, V>(lid, key, BusBeat::Bits24).map(|x| x ^ mask);
+                $body
+            }
+            (Family::Header, BusBeat::Bits32) => {
+                let $line = |lid: u64| $crate::pattern::header_line_v::<$n, V>(lid, key, BusBeat::Bits32).map(|x| x ^ mask);
+                $body
+            }
+            (Family::Header, BusBeat::Bits64) => {
+                let $line = |lid: u64| $crate::pattern::header_line_v::<$n, V>(lid, key, BusBeat::Bits64).map(|x| x ^ mask);
+                $body
+            }
         }
     }};
 }
@@ -330,11 +499,12 @@ impl Program {
         Program { families: [family; MAX_PROGRAM], len: 1 }
     }
 
-    /// A SimpleTest's program when its config names none: identity and switching every other cycle,
-    /// mixed data and switching in between. Switching (the pattern with hardware evidence) runs
-    /// every cycle; four write rounds a chunk, TM5's, fit two pairs.
+    /// A SimpleTest's program when its config names none: `random` and `switch`, so every cycle
+    /// with TM5's four write rounds a chunk runs a pair of each. `random` is an identity too (every
+    /// word differs) and gives every data line all short bit histories; `ident`, cheaper and more
+    /// regular, stays available by name and in a TM5 mode-0 import.
     pub fn default_simple() -> Self {
-        Program::new(&[Family::Ident, Family::Switch, Family::Random, Family::Switch]).expect("a valid program")
+        Program::new(&[Family::Random, Family::Switch]).expect("a valid program")
     }
 
     /// What a TM5 `.cfg`'s SimpleTest `Pattern Mode` imports as: its intent's family and
@@ -371,9 +541,9 @@ impl Program {
         let len = u64::from(self.len);
         let at = (pair % len) as usize;
         let family = self.families()[at];
-        // This `switch` pair's place among all of them: the program's switches per lap, and the
-        // ones before it in this lap
-        let switches = |list: &[Family]| list.iter().filter(|&&f| f == Family::Switch).count() as u64;
+        // This switching pair's place among all of them: the program's switching families per lap,
+        // and the ones before it in this lap
+        let switches = |list: &[Family]| list.iter().filter(|f| f.uses_beat()).count() as u64;
         let nth_switch = pair / len * switches(self.families()) + switches(&self.families()[..at]);
         let beat = beat.unwrap_or(if nth_switch.is_multiple_of(2) { BusBeat::Bits64 } else { BusBeat::Bits32 });
         Phase {
@@ -433,16 +603,15 @@ impl Phase {
             Family::Switch => switch_line(lid, self.key, self.beat),
             Family::Lines => lines_line(lid, self.key),
             Family::Linepair => linepair_line(lid, self.key),
+            Family::Quiet => quiet_line(lid, self.key, self.beat),
+            Family::Header => header_line(lid, self.key, self.beat),
         };
         words.map(|w| w ^ self.mask)
     }
 
     /// `ident-P`, `switch32-~P`
     pub fn label(&self) -> String {
-        let beat = match self.family {
-            Family::Switch => self.beat.bits().to_string(),
-            _ => String::new(),
-        };
+        let beat = if self.family.uses_beat() { self.beat.bits().to_string() } else { String::new() };
         format!("{}{}-{}", self.family.name(), beat, if self.mask == 0 { "P" } else { "~P" })
     }
 }
@@ -495,6 +664,46 @@ macro_rules! with_phase_line {
             }
             (Family::Switch, BusBeat::Bits64) => {
                 let $line = |lid: u64| xor($crate::pattern::switch_line(lid, key, BusBeat::Bits64), mask);
+                $body
+            }
+            (Family::Quiet, BusBeat::Bits12) => {
+                let $line = |lid: u64| xor($crate::pattern::quiet_line(lid, key, BusBeat::Bits12), mask);
+                $body
+            }
+            (Family::Quiet, BusBeat::Bits16) => {
+                let $line = |lid: u64| xor($crate::pattern::quiet_line(lid, key, BusBeat::Bits16), mask);
+                $body
+            }
+            (Family::Quiet, BusBeat::Bits24) => {
+                let $line = |lid: u64| xor($crate::pattern::quiet_line(lid, key, BusBeat::Bits24), mask);
+                $body
+            }
+            (Family::Quiet, BusBeat::Bits32) => {
+                let $line = |lid: u64| xor($crate::pattern::quiet_line(lid, key, BusBeat::Bits32), mask);
+                $body
+            }
+            (Family::Quiet, BusBeat::Bits64) => {
+                let $line = |lid: u64| xor($crate::pattern::quiet_line(lid, key, BusBeat::Bits64), mask);
+                $body
+            }
+            (Family::Header, BusBeat::Bits12) => {
+                let $line = |lid: u64| xor($crate::pattern::header_line(lid, key, BusBeat::Bits12), mask);
+                $body
+            }
+            (Family::Header, BusBeat::Bits16) => {
+                let $line = |lid: u64| xor($crate::pattern::header_line(lid, key, BusBeat::Bits16), mask);
+                $body
+            }
+            (Family::Header, BusBeat::Bits24) => {
+                let $line = |lid: u64| xor($crate::pattern::header_line(lid, key, BusBeat::Bits24), mask);
+                $body
+            }
+            (Family::Header, BusBeat::Bits32) => {
+                let $line = |lid: u64| xor($crate::pattern::header_line(lid, key, BusBeat::Bits32), mask);
+                $body
+            }
+            (Family::Header, BusBeat::Bits64) => {
+                let $line = |lid: u64| xor($crate::pattern::header_line(lid, key, BusBeat::Bits64), mask);
                 $body
             }
         }
@@ -563,7 +772,7 @@ pub fn legacy_import() -> bool {
 
 static BEAT_OVERRIDE: OnceLock<BusBeat> = OnceLock::new();
 
-/// `beat=`: the transfer width `switch` (and mode 14) flips at, instead of SMBIOS's.
+/// `beat=`: the transfer width `switch` (and mode 30) flips at, instead of SMBIOS's.
 pub fn set_beat_override(beat: BusBeat) {
     let _ = BEAT_OVERRIDE.set(beat);
 }
@@ -589,7 +798,7 @@ thread_local! {
 }
 
 /// While it lives, `transfer_beat` on this thread gives `beat` (a test's): the run's is resolved
-/// once a process, so tests can't set it. Not for mode 14, whose width `bus_beat` keeps for the
+/// once a process, so tests can't set it. Not for mode 30, whose width `bus_beat` keeps for the
 /// process at its first call.
 #[cfg(test)]
 pub(crate) struct TestBeat {
@@ -664,11 +873,28 @@ mod tests {
     /// The spec's formulas written out a word at a time, separately from the line functions.
     fn reference(phase: &Phase, id: u64) -> u64 {
         let (lid, j) = (id >> 3, id & 7);
+        let ident = |id: u64| {
+            let x = id.wrapping_mul(G).wrapping_add(phase.key);
+            x ^ (x >> 32)
+        };
+        let (bits, burst) = (u64::from(phase.beat.bits()), u64::from(phase.beat.burst_bits()));
+        let h = fmix(lid.wrapping_add(phase.key));
+        // `switch`'s word: byte b of `a` holds nibble b of the hash's low half and its inverse; bit p
+        // of the line is place q = p mod burst of its burst, pin q mod bits of transfer q / bits:
+        // that bit of `a`, inverted on odd transfers
+        let switch = || {
+            let a = (0..8).fold(0u64, |acc, b| {
+                let n = (h >> (4 * b)) & 0xF;
+                acc | ((n | ((!n & 0xF) << 4)) << (8 * b))
+            });
+            (0..64u64).fold(0u64, |acc, k| {
+                let q = (j * 64 + k) % burst;
+                let bit = ((a >> (q % bits)) & 1) ^ ((q / bits) & 1);
+                acc | (bit << k)
+            })
+        };
         let w = match phase.family {
-            Family::Ident => {
-                let x = id.wrapping_mul(G).wrapping_add(phase.key);
-                x ^ (x >> 32)
-            }
+            Family::Ident => ident(id),
             Family::Random => fmix(id.wrapping_add(phase.key)),
             Family::Lines => {
                 let seed = fmix(lid.wrapping_add(phase.key));
@@ -680,22 +906,15 @@ mod tests {
                 let x = base.wrapping_mul(G).wrapping_add(phase.key);
                 (x ^ (x >> 32)) ^ if lid & 1 == 1 { !0 } else { 0 }
             }
-            Family::Switch => {
-                let h = fmix(lid.wrapping_add(phase.key)) as u32;
-                // Byte b holds nibble b of the hash and its inverse
-                let a = (0..8).fold(0u64, |acc, b| {
-                    let n = (u64::from(h) >> (4 * b)) & 0xF;
-                    acc | ((n | ((!n & 0xF) << 4)) << (8 * b))
-                });
-                let (bits, burst) = (u64::from(phase.beat.bits()), u64::from(phase.beat.burst_bits()));
-                // Bit p of the line is place q = p mod burst of its burst, pin q mod bits of
-                // transfer q / bits: that bit of `a`, inverted on odd transfers
-                (0..64u64).fold(0u64, |acc, k| {
-                    let q = (j * 64 + k) % burst;
-                    let bit = ((a >> (q % bits)) & 1) ^ ((q / bits) & 1);
-                    acc | (bit << k)
-                })
+            Family::Switch => switch(),
+            // `switch`'s word with every bit of pin `(h >> 32) * bits >> 32` set
+            Family::Quiet => {
+                let pin = ((h >> 32) * bits) >> 32;
+                switch() | (0..64u64).fold(0u64, |acc, k| acc | (u64::from((j * 64 + k) % burst % bits == pin) << k))
             }
+            // Words 0 and 4 `ident`'s, the rest `switch`'s
+            Family::Header if j % 4 == 0 => ident(id),
+            Family::Header => switch(),
         };
         w ^ phase.mask
     }
@@ -753,6 +972,8 @@ mod tests {
             Family::Switch => switch_line_v::<N, V>(lid, phase.key, phase.beat),
             Family::Lines => lines_line_v::<N, V>(lid, phase.key),
             Family::Linepair => linepair_line_v::<N, V>(lid, phase.key),
+            Family::Quiet => quiet_line_v::<N, V>(lid, phase.key, phase.beat),
+            Family::Header => header_line_v::<N, V>(lid, phase.key, phase.beat),
         };
         lines.map(|x| x ^ V64::splat(phase.mask))
     }
@@ -894,6 +1115,104 @@ mod tests {
             let phase = Phase { family, key, mask, beat: beat.unwrap_or(BusBeat::Bits64) };
             assert_eq!(phase.line(lid), words, "{} line {lid:#x} key {key:#x}", phase.label());
         }
+        // `quiet` and `header` (and `switch` again) from another implementation of the spec alone
+        // (2026-10-16), at every transfer width
+        let stage6: &[Line] = &[
+            (Family::Quiet, 0x0, 0x0, 0x0, Some(BusBeat::Bits12), [0xf0f1f0f0f1f0f0f1, 0xf1f0f0f1f0f0f1f0, 0xf0f0f1f0f0f1f0f0, 0xf0f1f0f0f1f0f0f1, 0xf0f1f0f0f1f0f0f1, 0xf1f0f0f1f0f0f1f0, 0xf0f0f1f0f0f1f0f0, 0xf0f1f0f0f1f0f0f1]),
+            (Family::Quiet, 0x0, 0x0, 0x0, Some(BusBeat::Bits16), [0xf0ff0f10f0ff0f1, 0xf0ff0f10f0ff0f1, 0xf0ff0f10f0ff0f1, 0xf0ff0f10f0ff0f1, 0xf0ff0f10f0ff0f1, 0xf0ff0f10f0ff0f1, 0xf0ff0f10f0ff0f1, 0xf0ff0f10f0ff0f1]),
+            (Family::Quiet, 0x0, 0x0, 0x0, Some(BusBeat::Bits24), [0xf0f10f0f0ff0f0f1, 0xff0f0f10f0f0ff0, 0xf0f0ff0f0f10f0f, 0xf0f10f0f0ff0f0f1, 0xff0f0f10f0f0ff0, 0xf0f0ff0f0f10f0f, 0xf0f10f0f0ff0f0f1, 0xff0f0f10f0f0ff0]),
+            (Family::Quiet, 0x0, 0x0, 0x0, Some(BusBeat::Bits32), [0xf0f0f0ff0f0f0f1, 0xf0f0f0ff0f0f0f1, 0xf0f0f0ff0f0f0f1, 0xf0f0f0ff0f0f0f1, 0xf0f0f0ff0f0f0f1, 0xf0f0f0ff0f0f0f1, 0xf0f0f0ff0f0f0f1, 0xf0f0f0ff0f0f0f1]),
+            (Family::Quiet, 0x0, 0x0, 0x0, Some(BusBeat::Bits64), [0xf0f0f0f0f0f0f0f1, 0xf0f0f0f0f0f0f0f, 0xf0f0f0f0f0f0f0f1, 0xf0f0f0f0f0f0f0f, 0xf0f0f0f0f0f0f0f1, 0xf0f0f0f0f0f0f0f, 0xf0f0f0f0f0f0f0f1, 0xf0f0f0f0f0f0f0f]),
+            (Family::Quiet, 0x0, 0x123456789abcdef, 0xffffffffffffffff, Some(BusBeat::Bits12), [0xccc323ccc323ccc3, 0xc323ccc323ccc323, 0x23ccc323ccc323cc, 0xccc323ccc323ccc3, 0xccc323ccc323ccc3, 0xc323ccc323ccc323, 0x23ccc323ccc323cc, 0xccc323ccc323ccc3]),
+            (Family::Quiet, 0x0, 0x123456789abcdef, 0xffffffffffffffff, Some(BusBeat::Bits16), [0xd23c25c3d23c25c3, 0xd23c25c3d23c25c3, 0xd23c25c3d23c25c3, 0xd23c25c3d23c25c3, 0xd23c25c3d23c25c3, 0xd23c25c3d23c25c3, 0xd23c25c3d23c25c3, 0xd23c25c3d23c25c3]),
+            (Family::Quiet, 0x0, 0x123456789abcdef, 0xffffffffffffffff, Some(BusBeat::Bits24), [0x2dc3e0d23c1e2dc3, 0x3c1e2dc3e0d23c1e, 0xe0d23c1e2dc3e0d2, 0x2dc3e0d23c1e2dc3, 0x3c1e2dc3e0d23c1e, 0xe0d23c1e2dc3e0d2, 0x2dc3e0d23c1e2dc3, 0x3c1e2dc3e0d23c1e]),
+            (Family::Quiet, 0x0, 0x123456789abcdef, 0xffffffffffffffff, Some(BusBeat::Bits32), [0xe1a1d23c1e1e2dc3, 0xe1a1d23c1e1e2dc3, 0xe1a1d23c1e1e2dc3, 0xe1a1d23c1e1e2dc3, 0xe1a1d23c1e1e2dc3, 0xe1a1d23c1e1e2dc3, 0xe1a1d23c1e1e2dc3, 0xe1a1d23c1e1e2dc3]),
+            (Family::Quiet, 0x0, 0x123456789abcdef, 0xffffffffffffffff, Some(BusBeat::Bits64), [0xe1b4a45a1e1e2dc3, 0x1e4b4ba5e1e1d23c, 0xe1b4a45a1e1e2dc3, 0x1e4b4ba5e1e1d23c, 0xe1b4a45a1e1e2dc3, 0x1e4b4ba5e1e1d23c, 0xe1b4a45a1e1e2dc3, 0x1e4b4ba5e1e1d23c]),
+            (Family::Quiet, 0x1, 0x0, 0x0, Some(BusBeat::Bits12), [0xaeb515aeb515aeb5, 0xb515aeb515aeb515, 0x15aeb515aeb515ae, 0xaeb515aeb515aeb5, 0xaeb515aeb515aeb5, 0xb515aeb515aeb515, 0x15aeb515aeb515ae, 0xaeb515aeb515aeb5]),
+            (Family::Quiet, 0x1, 0x0, 0x0, Some(BusBeat::Bits16), [0xe17a1ea5e17a1ea5, 0xe17a1ea5e17a1ea5, 0xe17a1ea5e17a1ea5, 0xe17a1ea5e17a1ea5, 0xe17a1ea5e17a1ea5, 0xe17a1ea5e17a1ea5, 0xe17a1ea5e17a1ea5, 0xe17a1ea5e17a1ea5]),
+            (Family::Quiet, 0x1, 0x0, 0x0, Some(BusBeat::Bits24), [0x1fa55ae15aa51fa5, 0x5aa51fa55ae15aa5, 0x5ae15aa51fa55ae1, 0x1fa55ae15aa51fa5, 0x5aa51fa55ae15aa5, 0x5ae15aa51fa55ae1, 0x1fa55ae15aa51fa5, 0x5aa51fa55ae15aa5]),
+            (Family::Quiet, 0x1, 0x0, 0x0, Some(BusBeat::Bits32), [0xf5ae55af0a51ea5, 0xf5ae55af0a51ea5, 0xf5ae55af0a51ea5, 0xf5ae55af0a51ea5, 0xf5ae55af0a51ea5, 0xf5ae55af0a51ea5, 0xf5ae55af0a51ea5, 0xf5ae55af0a51ea5]),
+            (Family::Quiet, 0x1, 0x0, 0x0, Some(BusBeat::Bits64), [0xe1f0f04bf0a51ea5, 0x1e0f0fb40f7ae15a, 0xe1f0f04bf0a51ea5, 0x1e0f0fb40f7ae15a, 0xe1f0f04bf0a51ea5, 0x1e0f0fb40f7ae15a, 0xe1f0f04bf0a51ea5, 0x1e0f0fb40f7ae15a]),
+            (Family::Quiet, 0x1, 0x123456789abcdef, 0xffffffffffffffff, Some(BusBeat::Bits12), [0x8aa5558aa5558aa5, 0xa5558aa5558aa555, 0x558aa5558aa5558a, 0x8aa5558aa5558aa5, 0x8aa5558aa5558aa5, 0xa5558aa5558aa555, 0x558aa5558aa5558a, 0x8aa5558aa5558aa5]),
+            (Family::Quiet, 0x1, 0x123456789abcdef, 0xffffffffffffffff, Some(BusBeat::Bits16), [0xa5585aa5a5585aa5, 0xa5585aa5a5585aa5, 0xa5585aa5a5585aa5, 0xa5585aa5a5585aa5, 0xa5585aa5a5585aa5, 0xa5585aa5a5585aa5, 0xa5585aa5a5585aa5, 0xa5585aa5a5585aa5]),
+            (Family::Quiet, 0x1, 0x123456789abcdef, 0xffffffffffffffff, Some(BusBeat::Bits24), [0x5aa1d2a55a2d5aa1, 0x5a2d5aa1d2a55a2d, 0xd2a55a2d5aa1d2a5, 0x5aa1d2a55a2d5aa1, 0x5a2d5aa1d2a55a2d, 0xd2a55a2d5aa1d2a5, 0x5aa1d2a55a2d5aa1, 0x5a2d5aa1d2a55a2d]),
+            (Family::Quiet, 0x1, 0x123456789abcdef, 0xffffffffffffffff, Some(BusBeat::Bits32), [0xf0d2a55a0f2d5aa1, 0xf0d2a55a0f2d5aa1, 0xf0d2a55a0f2d5aa1, 0xf0d2a55a0f2d5aa1, 0xf0d2a55a0f2d5aa1, 0xf0d2a55a0f2d5aa1, 0xf0d2a55a0f2d5aa1, 0xf0d2a55a0f2d5aa1]),
+            (Family::Quiet, 0x1, 0x123456789abcdef, 0xffffffffffffffff, Some(BusBeat::Bits64), [0xf02d782d0f2d5a85, 0xfd287d2f0d2a55a, 0xf02d782d0f2d5a85, 0xfd287d2f0d2a55a, 0xf02d782d0f2d5a85, 0xfd287d2f0d2a55a, 0xf02d782d0f2d5a85, 0xfd287d2f0d2a55a]),
+            (Family::Quiet, 0x7, 0x0, 0x0, Some(BusBeat::Bits12), [0xb1b5e4b1b5e4b1b5, 0xb5e4b1b5e4b1b5e4, 0xe4b1b5e4b1b5e4b1, 0xb1b5e4b1b5e4b1b5, 0xb1b5e4b1b5e4b1b5, 0xb5e4b1b5e4b1b5e4, 0xe4b1b5e4b1b5e4b1, 0xb1b5e4b1b5e4b1b5]),
+            (Family::Quiet, 0x7, 0x0, 0x0, Some(BusBeat::Bits16), [0x1e4be1b61e4be1b6, 0x1e4be1b61e4be1b6, 0x1e4be1b61e4be1b6, 0x1e4be1b61e4be1b6, 0x1e4be1b61e4be1b6, 0x1e4be1b61e4be1b6, 0x1e4be1b61e4be1b6, 0x1e4be1b61e4be1b6]),
+            (Family::Quiet, 0x7, 0x0, 0x0, Some(BusBeat::Bits24), [0xe1b6f01e4b0fe1b6, 0x4b0fe1b6f01e4b0f, 0xf01e4b0fe1b6f01e, 0xe1b6f01e4b0fe1b6, 0x4b0fe1b6f01e4b0f, 0xf01e4b0fe1b6f01e, 0xe1b6f01e4b0fe1b6, 0x4b0fe1b6f01e4b0f]),
+            (Family::Quiet, 0x7, 0x0, 0x0, Some(BusBeat::Bits32), [0xd2f01e4f2d0fe1b4, 0xd2f01e4f2d0fe1b4, 0xd2f01e4f2d0fe1b4, 0xd2f01e4f2d0fe1b4, 0xd2f01e4f2d0fe1b4, 0xd2f01e4f2d0fe1b4, 0xd2f01e4f2d0fe1b4, 0xd2f01e4f2d0fe1b4]),
+            (Family::Quiet, 0x7, 0x0, 0x0, Some(BusBeat::Bits64), [0x874be1872d0fe1b4, 0x78b41e78d2f01e5b, 0x874be1872d0fe1b4, 0x78b41e78d2f01e5b, 0x874be1872d0fe1b4, 0x78b41e78d2f01e5b, 0x874be1872d0fe1b4, 0x78b41e78d2f01e5b]),
+            (Family::Quiet, 0x7, 0x123456789abcdef, 0xffffffffffffffff, Some(BusBeat::Bits12), [0xfbf000fbf000f, 0xfbf000fbf000fbf, 0xbf000fbf000fbf00, 0xfbf000fbf000f, 0xfbf000fbf000f, 0xfbf000fbf000fbf, 0xbf000fbf000fbf00, 0xfbf000fbf000f]),
+            (Family::Quiet, 0x7, 0x123456789abcdef, 0xffffffffffffffff, Some(BusBeat::Bits16), [0xff0d00f0ff0d00f, 0xff0d00f0ff0d00f, 0xff0d00f0ff0d00f, 0xff0d00f0ff0d00f, 0xff0d00f0ff0d00f, 0xff0d00f0ff0d00f, 0xff0d00f0ff0d00f, 0xff0d00f0ff0d00f]),
+            (Family::Quiet, 0x7, 0x123456789abcdef, 0xffffffffffffffff, Some(BusBeat::Bits24), [0xf00f4b0ff0a4f00f, 0xf0a4f00f4b0ff0a4, 0x4b0ff0a4f00f4b0f, 0xf00f4b0ff0a4f00f, 0xf0a4f00f4b0ff0a4, 0x4b0ff0a4f00f4b0f, 0xf00f4b0ff0a4f00f, 0xf0a4f00f4b0ff0a4]),
+            (Family::Quiet, 0x7, 0x123456789abcdef, 0xffffffffffffffff, Some(BusBeat::Bits32), [0x74b0ff0f0b4f00f, 0x74b0ff0f0b4f00f, 0x74b0ff0f0b4f00f, 0x74b0ff0f0b4f00f, 0x74b0ff0f0b4f00f, 0x74b0ff0f0b4f00f, 0x74b0ff0f0b4f00f, 0x74b0ff0f0b4f00f]),
+            (Family::Quiet, 0x7, 0x123456789abcdef, 0xffffffffffffffff, Some(BusBeat::Bits64), [0xfb00f69f0b4f00f, 0xf00ff0960f4b0ff0, 0xfb00f69f0b4f00f, 0xf00ff0960f4b0ff0, 0xfb00f69f0b4f00f, 0xf00ff0960f4b0ff0, 0xfb00f69f0b4f00f, 0xf00ff0960f4b0ff0]),
+            (Family::Quiet, 0x6000003039, 0x0, 0x0, Some(BusBeat::Bits12), [0xaeb515aeb515aeb5, 0xb515aeb515aeb515, 0x15aeb515aeb515ae, 0xaeb515aeb515aeb5, 0xaeb515aeb515aeb5, 0xb515aeb515aeb515, 0x15aeb515aeb515ae, 0xaeb515aeb515aeb5]),
+            (Family::Quiet, 0x6000003039, 0x0, 0x0, Some(BusBeat::Bits16), [0xe17a1ea5e17a1ea5, 0xe17a1ea5e17a1ea5, 0xe17a1ea5e17a1ea5, 0xe17a1ea5e17a1ea5, 0xe17a1ea5e17a1ea5, 0xe17a1ea5e17a1ea5, 0xe17a1ea5e17a1ea5, 0xe17a1ea5e17a1ea5]),
+            (Family::Quiet, 0x6000003039, 0x0, 0x0, Some(BusBeat::Bits24), [0x1fa53ce15ac31fa5, 0x5ac31fa53ce15ac3, 0x3ce15ac31fa53ce1, 0x1fa53ce15ac31fa5, 0x5ac31fa53ce15ac3, 0x3ce15ac31fa53ce1, 0x1fa53ce15ac31fa5, 0x5ac31fa53ce15ac3]),
+            (Family::Quiet, 0x6000003039, 0x0, 0x0, Some(BusBeat::Bits32), [0x693ce55a96c31ea5, 0x693ce55a96c31ea5, 0x693ce55a96c31ea5, 0x693ce55a96c31ea5, 0x693ce55a96c31ea5, 0x693ce55a96c31ea5, 0x693ce55a96c31ea5, 0x693ce55a96c31ea5]),
+            (Family::Quiet, 0x6000003039, 0x0, 0x0, Some(BusBeat::Bits64), [0x6978787896e31ea5, 0x96878787693ce15a, 0x6978787896e31ea5, 0x96878787693ce15a, 0x6978787896e31ea5, 0x96878787693ce15a, 0x6978787896e31ea5, 0x96878787693ce15a]),
+            (Family::Quiet, 0x6000003039, 0x123456789abcdef, 0xffffffffffffffff, Some(BusBeat::Bits12), [0x2229dd2229dd2229, 0x29dd2229dd2229dd, 0xdd2229dd2229dd22, 0x2229dd2229dd2229, 0x2229dd2229dd2229, 0x29dd2229dd2229dd, 0xdd2229dd2229dd22, 0x2229dd2229dd2229]),
+            (Family::Quiet, 0x6000003039, 0x123456789abcdef, 0xffffffffffffffff, Some(BusBeat::Bits16), [0x2dd2d2252dd2d225, 0x2dd2d2252dd2d225, 0x2dd2d2252dd2d225, 0x2dd2d2252dd2d225, 0x2dd2d2252dd2d225, 0x2dd2d2252dd2d225, 0x2dd2d2252dd2d225, 0x2dd2d2252dd2d225]),
+            (Family::Quiet, 0x6000003039, 0x123456789abcdef, 0xffffffffffffffff, Some(BusBeat::Bits24), [0xd20d1e2dd2e1d20d, 0xd2e1d20d1e2dd2e1, 0x1e2dd2e1d20d1e2d, 0xd20d1e2dd2e1d20d, 0xd2e1d20d1e2dd2e1, 0x1e2dd2e1d20d1e2d, 0xd20d1e2dd2e1d20d, 0xd2e1d20d1e2dd2e1]),
+            (Family::Quiet, 0x6000003039, 0x123456789abcdef, 0xffffffffffffffff, Some(BusBeat::Bits32), [0x4b1e2d52b4e1d22d, 0x4b1e2d52b4e1d22d, 0x4b1e2d52b4e1d22d, 0x4b1e2d52b4e1d22d, 0x4b1e2d52b4e1d22d, 0x4b1e2d52b4e1d22d, 0x4b1e2d52b4e1d22d, 0x4b1e2d52b4e1d22d]),
+            (Family::Quiet, 0x6000003039, 0x123456789abcdef, 0xffffffffffffffff, Some(BusBeat::Bits64), [0xa5966969b4e1522d, 0x5a6996964b1e2dd2, 0xa5966969b4e1522d, 0x5a6996964b1e2dd2, 0xa5966969b4e1522d, 0x5a6996964b1e2dd2, 0xa5966969b4e1522d, 0x5a6996964b1e2dd2]),
+            (Family::Header, 0x0, 0x0, 0x0, Some(BusBeat::Bits12), [0x0, 0xf0f0f0f0f0f0f0f0, 0xf0f0f0f0f0f0f0f0, 0xf0f0f0f0f0f0f0f0, 0x78dde6e585f416b1, 0xf0f0f0f0f0f0f0f0, 0xf0f0f0f0f0f0f0f0, 0xf0f0f0f0f0f0f0f0]),
+            (Family::Header, 0x0, 0x0, 0x0, Some(BusBeat::Bits16), [0x0, 0xf0ff0f00f0ff0f0, 0xf0ff0f00f0ff0f0, 0xf0ff0f00f0ff0f0, 0x78dde6e585f416b1, 0xf0ff0f00f0ff0f0, 0xf0ff0f00f0ff0f0, 0xf0ff0f00f0ff0f0]),
+            (Family::Header, 0x0, 0x0, 0x0, Some(BusBeat::Bits24), [0x0, 0xff0f0f00f0f0ff0, 0xf0f0ff0f0f00f0f, 0xf0f00f0f0ff0f0f0, 0x78dde6e585f416b1, 0xf0f0ff0f0f00f0f, 0xf0f00f0f0ff0f0f0, 0xff0f0f00f0f0ff0]),
+            (Family::Header, 0x0, 0x0, 0x0, Some(BusBeat::Bits32), [0x0, 0xf0f0f0ff0f0f0f0, 0xf0f0f0ff0f0f0f0, 0xf0f0f0ff0f0f0f0, 0x78dde6e585f416b1, 0xf0f0f0ff0f0f0f0, 0xf0f0f0ff0f0f0f0, 0xf0f0f0ff0f0f0f0]),
+            (Family::Header, 0x0, 0x0, 0x0, Some(BusBeat::Bits64), [0x0, 0xf0f0f0f0f0f0f0f, 0xf0f0f0f0f0f0f0f0, 0xf0f0f0f0f0f0f0f, 0x78dde6e585f416b1, 0xf0f0f0f0f0f0f0f, 0xf0f0f0f0f0f0f0f0, 0xf0f0f0f0f0f0f0f]),
+            (Family::Header, 0x0, 0x123456789abcdef, 0xffffffffffffffff, Some(BusBeat::Bits12), [0xfedcba9877777777, 0xc323cdc323cdc323, 0x23cdc323cdc323cd, 0xcdc323cdc323cdc3, 0x85fed3b2032b6df1, 0xc323cdc323cdc323, 0x23cdc323cdc323cd, 0xcdc323cdc323cdc3]),
+            (Family::Header, 0x0, 0x123456789abcdef, 0xffffffffffffffff, Some(BusBeat::Bits16), [0xfedcba9877777777, 0xd23c2dc3d23c2dc3, 0xd23c2dc3d23c2dc3, 0xd23c2dc3d23c2dc3, 0x85fed3b2032b6df1, 0xd23c2dc3d23c2dc3, 0xd23c2dc3d23c2dc3, 0xd23c2dc3d23c2dc3]),
+            (Family::Header, 0x0, 0x123456789abcdef, 0xffffffffffffffff, Some(BusBeat::Bits24), [0xfedcba9877777777, 0x3c1e2dc3e1d23c1e, 0xe1d23c1e2dc3e1d2, 0x2dc3e1d23c1e2dc3, 0x85fed3b2032b6df1, 0xe1d23c1e2dc3e1d2, 0x2dc3e1d23c1e2dc3, 0x3c1e2dc3e1d23c1e]),
+            (Family::Header, 0x0, 0x123456789abcdef, 0xffffffffffffffff, Some(BusBeat::Bits32), [0xfedcba9877777777, 0xe1e1d23c1e1e2dc3, 0xe1e1d23c1e1e2dc3, 0xe1e1d23c1e1e2dc3, 0x85fed3b2032b6df1, 0xe1e1d23c1e1e2dc3, 0xe1e1d23c1e1e2dc3, 0xe1e1d23c1e1e2dc3]),
+            (Family::Header, 0x0, 0x123456789abcdef, 0xffffffffffffffff, Some(BusBeat::Bits64), [0xfedcba9877777777, 0x1e4b4ba5e1e1d23c, 0xe1b4b45a1e1e2dc3, 0x1e4b4ba5e1e1d23c, 0x85fed3b2032b6df1, 0x1e4b4ba5e1e1d23c, 0xe1b4b45a1e1e2dc3, 0x1e4b4ba5e1e1d23c]),
+            (Family::Header, 0x1, 0x0, 0x0, Some(BusBeat::Bits12), [0xf1bbcdcb0be82d63, 0xa515aea515aea515, 0x15aea515aea515ae, 0xaea515aea515aea5, 0x6a99b4b19de4644d, 0xa515aea515aea515, 0x15aea515aea515ae, 0xaea515aea515aea5]),
+            (Family::Header, 0x1, 0x0, 0x0, Some(BusBeat::Bits16), [0xf1bbcdcb0be82d63, 0xe15a1ea5e15a1ea5, 0xe15a1ea5e15a1ea5, 0xe15a1ea5e15a1ea5, 0x6a99b4b19de4644d, 0xe15a1ea5e15a1ea5, 0xe15a1ea5e15a1ea5, 0xe15a1ea5e15a1ea5]),
+            (Family::Header, 0x1, 0x0, 0x0, Some(BusBeat::Bits24), [0xf1bbcdcb0be82d63, 0x5aa51ea55ae15aa5, 0x5ae15aa51ea55ae1, 0x1ea55ae15aa51ea5, 0x6a99b4b19de4644d, 0x5ae15aa51ea55ae1, 0x1ea55ae15aa51ea5, 0x5aa51ea55ae15aa5]),
+            (Family::Header, 0x1, 0x0, 0x0, Some(BusBeat::Bits32), [0xf1bbcdcb0be82d63, 0xf5ae15af0a51ea5, 0xf5ae15af0a51ea5, 0xf5ae15af0a51ea5, 0x6a99b4b19de4644d, 0xf5ae15af0a51ea5, 0xf5ae15af0a51ea5, 0xf5ae15af0a51ea5]),
+            (Family::Header, 0x1, 0x0, 0x0, Some(BusBeat::Bits64), [0xf1bbcdcb0be82d63, 0x1e0f0fb40f5ae15a, 0xe1f0f04bf0a51ea5, 0x1e0f0fb40f5ae15a, 0x6a99b4b19de4644d, 0x1e0f0fb40f5ae15a, 0xe1f0f04bf0a51ea5, 0x1e0f0fb40f5ae15a]),
+            (Family::Header, 0x1, 0x123456789abcdef, 0xffffffffffffffff, Some(BusBeat::Bits12), [0xd20eccc8edf425b, 0xa555aaa555aaa555, 0x55aaa555aaa555aa, 0xaaa555aaa555aaa5, 0x944305e6156a9b0d, 0xa555aaa555aaa555, 0x55aaa555aaa555aa, 0xaaa555aaa555aaa5]),
+            (Family::Header, 0x1, 0x123456789abcdef, 0xffffffffffffffff, Some(BusBeat::Bits16), [0xd20eccc8edf425b, 0xa55a5aa5a55a5aa5, 0xa55a5aa5a55a5aa5, 0xa55a5aa5a55a5aa5, 0x944305e6156a9b0d, 0xa55a5aa5a55a5aa5, 0xa55a5aa5a55a5aa5, 0xa55a5aa5a55a5aa5]),
+            (Family::Header, 0x1, 0x123456789abcdef, 0xffffffffffffffff, Some(BusBeat::Bits24), [0xd20eccc8edf425b, 0x5a2d5aa5d2a55a2d, 0xd2a55a2d5aa5d2a5, 0x5aa5d2a55a2d5aa5, 0x944305e6156a9b0d, 0xd2a55a2d5aa5d2a5, 0x5aa5d2a55a2d5aa5, 0x5a2d5aa5d2a55a2d]),
+            (Family::Header, 0x1, 0x123456789abcdef, 0xffffffffffffffff, Some(BusBeat::Bits32), [0xd20eccc8edf425b, 0xf0d2a55a0f2d5aa5, 0xf0d2a55a0f2d5aa5, 0xf0d2a55a0f2d5aa5, 0x944305e6156a9b0d, 0xf0d2a55a0f2d5aa5, 0xf0d2a55a0f2d5aa5, 0xf0d2a55a0f2d5aa5]),
+            (Family::Header, 0x1, 0x123456789abcdef, 0xffffffffffffffff, Some(BusBeat::Bits64), [0xd20eccc8edf425b, 0xfd287d2f0d2a55a, 0xf02d782d0f2d5aa5, 0xfd287d2f0d2a55a, 0x944305e6156a9b0d, 0xfd287d2f0d2a55a, 0xf02d782d0f2d5aa5, 0xfd287d2f0d2a55a]),
+            (Family::Header, 0x7, 0x0, 0x0, Some(BusBeat::Bits12), [0x9c22a0934469840b, 0xb4e4b1b4e4b1b4e4, 0xe4b1b4e4b1b4e4b1, 0xb1b4e4b1b4e4b1b4, 0x15008779c0759395, 0xb4e4b1b4e4b1b4e4, 0xe4b1b4e4b1b4e4b1, 0xb1b4e4b1b4e4b1b4]),
+            (Family::Header, 0x7, 0x0, 0x0, Some(BusBeat::Bits16), [0x9c22a0934469840b, 0x1e4be1b41e4be1b4, 0x1e4be1b41e4be1b4, 0x1e4be1b41e4be1b4, 0x15008779c0759395, 0x1e4be1b41e4be1b4, 0x1e4be1b41e4be1b4, 0x1e4be1b41e4be1b4]),
+            (Family::Header, 0x7, 0x0, 0x0, Some(BusBeat::Bits24), [0x9c22a0934469840b, 0x4b0fe1b4f01e4b0f, 0xf01e4b0fe1b4f01e, 0xe1b4f01e4b0fe1b4, 0x15008779c0759395, 0xf01e4b0fe1b4f01e, 0xe1b4f01e4b0fe1b4, 0x4b0fe1b4f01e4b0f]),
+            (Family::Header, 0x7, 0x0, 0x0, Some(BusBeat::Bits32), [0x9c22a0934469840b, 0xd2f01e4b2d0fe1b4, 0xd2f01e4b2d0fe1b4, 0xd2f01e4b2d0fe1b4, 0x15008779c0759395, 0xd2f01e4b2d0fe1b4, 0xd2f01e4b2d0fe1b4, 0xd2f01e4b2d0fe1b4]),
+            (Family::Header, 0x7, 0x0, 0x0, Some(BusBeat::Bits64), [0x9c22a0934469840b, 0x78b41e78d2f01e4b, 0x874be1872d0fe1b4, 0x78b41e78d2f01e4b, 0x15008779c0759395, 0x78b41e78d2f01e4b, 0x874be1872d0fe1b4, 0x78b41e78d2f01e4b]),
+            (Family::Header, 0x7, 0x123456789abcdef, 0xffffffffffffffff, Some(BusBeat::Bits12), [0x62ba1a04034ce883, 0xfff000fff000fff, 0xff000fff000fff00, 0xfff000fff000f, 0xe9dc331eb6fcd1c5, 0xfff000fff000fff, 0xff000fff000fff00, 0xfff000fff000f]),
+            (Family::Header, 0x7, 0x123456789abcdef, 0xffffffffffffffff, Some(BusBeat::Bits16), [0x62ba1a04034ce883, 0xff0f00f0ff0f00f, 0xff0f00f0ff0f00f, 0xff0f00f0ff0f00f, 0xe9dc331eb6fcd1c5, 0xff0f00f0ff0f00f, 0xff0f00f0ff0f00f, 0xff0f00f0ff0f00f]),
+            (Family::Header, 0x7, 0x123456789abcdef, 0xffffffffffffffff, Some(BusBeat::Bits24), [0x62ba1a04034ce883, 0xf0b4f00f4b0ff0b4, 0x4b0ff0b4f00f4b0f, 0xf00f4b0ff0b4f00f, 0xe9dc331eb6fcd1c5, 0x4b0ff0b4f00f4b0f, 0xf00f4b0ff0b4f00f, 0xf0b4f00f4b0ff0b4]),
+            (Family::Header, 0x7, 0x123456789abcdef, 0xffffffffffffffff, Some(BusBeat::Bits32), [0x62ba1a04034ce883, 0xf4b0ff0f0b4f00f, 0xf4b0ff0f0b4f00f, 0xf4b0ff0f0b4f00f, 0xe9dc331eb6fcd1c5, 0xf4b0ff0f0b4f00f, 0xf4b0ff0f0b4f00f, 0xf4b0ff0f0b4f00f]),
+            (Family::Header, 0x7, 0x123456789abcdef, 0xffffffffffffffff, Some(BusBeat::Bits64), [0x62ba1a04034ce883, 0xf00ff0960f4b0ff0, 0xff00f69f0b4f00f, 0xf00ff0960f4b0ff0, 0xe9dc331eb6fcd1c5, 0xf00ff0960f4b0ff0, 0xff00f69f0b4f00f, 0xf00ff0960f4b0ff0]),
+            (Family::Header, 0x6000003039, 0x0, 0x0, Some(BusBeat::Bits12), [0xe8db505a9e17d532, 0xa515aea515aea515, 0x15aea515aea515ae, 0xaea515aea515aea5, 0x61b93740124f42fc, 0xa515aea515aea515, 0x15aea515aea515ae, 0xaea515aea515aea5]),
+            (Family::Header, 0x6000003039, 0x0, 0x0, Some(BusBeat::Bits16), [0xe8db505a9e17d532, 0xe15a1ea5e15a1ea5, 0xe15a1ea5e15a1ea5, 0xe15a1ea5e15a1ea5, 0x61b93740124f42fc, 0xe15a1ea5e15a1ea5, 0xe15a1ea5e15a1ea5, 0xe15a1ea5e15a1ea5]),
+            (Family::Header, 0x6000003039, 0x0, 0x0, Some(BusBeat::Bits24), [0xe8db505a9e17d532, 0x5ac31ea53ce15ac3, 0x3ce15ac31ea53ce1, 0x1ea53ce15ac31ea5, 0x61b93740124f42fc, 0x3ce15ac31ea53ce1, 0x1ea53ce15ac31ea5, 0x5ac31ea53ce15ac3]),
+            (Family::Header, 0x6000003039, 0x0, 0x0, Some(BusBeat::Bits32), [0xe8db505a9e17d532, 0x693ce15a96c31ea5, 0x693ce15a96c31ea5, 0x693ce15a96c31ea5, 0x61b93740124f42fc, 0x693ce15a96c31ea5, 0x693ce15a96c31ea5, 0x693ce15a96c31ea5]),
+            (Family::Header, 0x6000003039, 0x0, 0x0, Some(BusBeat::Bits64), [0xe8db505a9e17d532, 0x96878787693ce15a, 0x6978787896c31ea5, 0x96878787693ce15a, 0x61b93740124f42fc, 0x96878787693ce15a, 0x6978787896c31ea5, 0x96878787693ce15a]),
+            (Family::Header, 0x6000003039, 0x123456789abcdef, 0xffffffffffffffff, Some(BusBeat::Bits12), [0x16016a3d1679396a, 0x2ddd222ddd222ddd, 0xdd222ddd222ddd22, 0x222ddd222ddd222d, 0x9d2383586081c0f3, 0x2ddd222ddd222ddd, 0xdd222ddd222ddd22, 0x222ddd222ddd222d]),
+            (Family::Header, 0x6000003039, 0x123456789abcdef, 0xffffffffffffffff, Some(BusBeat::Bits16), [0x16016a3d1679396a, 0x2dd2d22d2dd2d22d, 0x2dd2d22d2dd2d22d, 0x2dd2d22d2dd2d22d, 0x9d2383586081c0f3, 0x2dd2d22d2dd2d22d, 0x2dd2d22d2dd2d22d, 0x2dd2d22d2dd2d22d]),
+            (Family::Header, 0x6000003039, 0x123456789abcdef, 0xffffffffffffffff, Some(BusBeat::Bits24), [0x16016a3d1679396a, 0xd2e1d22d1e2dd2e1, 0x1e2dd2e1d22d1e2d, 0xd22d1e2dd2e1d22d, 0x9d2383586081c0f3, 0x1e2dd2e1d22d1e2d, 0xd22d1e2dd2e1d22d, 0xd2e1d22d1e2dd2e1]),
+            (Family::Header, 0x6000003039, 0x123456789abcdef, 0xffffffffffffffff, Some(BusBeat::Bits32), [0x16016a3d1679396a, 0x4b1e2dd2b4e1d22d, 0x4b1e2dd2b4e1d22d, 0x4b1e2dd2b4e1d22d, 0x9d2383586081c0f3, 0x4b1e2dd2b4e1d22d, 0x4b1e2dd2b4e1d22d, 0x4b1e2dd2b4e1d22d]),
+            (Family::Header, 0x6000003039, 0x123456789abcdef, 0xffffffffffffffff, Some(BusBeat::Bits64), [0x16016a3d1679396a, 0x5a6996964b1e2dd2, 0xa5966969b4e1d22d, 0x5a6996964b1e2dd2, 0x9d2383586081c0f3, 0x5a6996964b1e2dd2, 0xa5966969b4e1d22d, 0x5a6996964b1e2dd2]),
+            (Family::Switch, 0x6000003039, 0x0, 0x0, Some(BusBeat::Bits12), [0xaea515aea515aea5, 0xa515aea515aea515, 0x15aea515aea515ae, 0xaea515aea515aea5, 0xaea515aea515aea5, 0xa515aea515aea515, 0x15aea515aea515ae, 0xaea515aea515aea5]),
+            (Family::Switch, 0x6000003039, 0x0, 0x0, Some(BusBeat::Bits16), [0xe15a1ea5e15a1ea5, 0xe15a1ea5e15a1ea5, 0xe15a1ea5e15a1ea5, 0xe15a1ea5e15a1ea5, 0xe15a1ea5e15a1ea5, 0xe15a1ea5e15a1ea5, 0xe15a1ea5e15a1ea5, 0xe15a1ea5e15a1ea5]),
+            (Family::Switch, 0x6000003039, 0x0, 0x0, Some(BusBeat::Bits24), [0x1ea53ce15ac31ea5, 0x5ac31ea53ce15ac3, 0x3ce15ac31ea53ce1, 0x1ea53ce15ac31ea5, 0x5ac31ea53ce15ac3, 0x3ce15ac31ea53ce1, 0x1ea53ce15ac31ea5, 0x5ac31ea53ce15ac3]),
+            (Family::Switch, 0x6000003039, 0x0, 0x0, Some(BusBeat::Bits32), [0x693ce15a96c31ea5, 0x693ce15a96c31ea5, 0x693ce15a96c31ea5, 0x693ce15a96c31ea5, 0x693ce15a96c31ea5, 0x693ce15a96c31ea5, 0x693ce15a96c31ea5, 0x693ce15a96c31ea5]),
+            (Family::Switch, 0x6000003039, 0x0, 0x0, Some(BusBeat::Bits64), [0x6978787896c31ea5, 0x96878787693ce15a, 0x6978787896c31ea5, 0x96878787693ce15a, 0x6978787896c31ea5, 0x96878787693ce15a, 0x6978787896c31ea5, 0x96878787693ce15a]),
+            (Family::Switch, 0x6000003039, 0x123456789abcdef, 0xffffffffffffffff, Some(BusBeat::Bits12), [0x222ddd222ddd222d, 0x2ddd222ddd222ddd, 0xdd222ddd222ddd22, 0x222ddd222ddd222d, 0x222ddd222ddd222d, 0x2ddd222ddd222ddd, 0xdd222ddd222ddd22, 0x222ddd222ddd222d]),
+            (Family::Switch, 0x6000003039, 0x123456789abcdef, 0xffffffffffffffff, Some(BusBeat::Bits16), [0x2dd2d22d2dd2d22d, 0x2dd2d22d2dd2d22d, 0x2dd2d22d2dd2d22d, 0x2dd2d22d2dd2d22d, 0x2dd2d22d2dd2d22d, 0x2dd2d22d2dd2d22d, 0x2dd2d22d2dd2d22d, 0x2dd2d22d2dd2d22d]),
+            (Family::Switch, 0x6000003039, 0x123456789abcdef, 0xffffffffffffffff, Some(BusBeat::Bits24), [0xd22d1e2dd2e1d22d, 0xd2e1d22d1e2dd2e1, 0x1e2dd2e1d22d1e2d, 0xd22d1e2dd2e1d22d, 0xd2e1d22d1e2dd2e1, 0x1e2dd2e1d22d1e2d, 0xd22d1e2dd2e1d22d, 0xd2e1d22d1e2dd2e1]),
+            (Family::Switch, 0x6000003039, 0x123456789abcdef, 0xffffffffffffffff, Some(BusBeat::Bits32), [0x4b1e2dd2b4e1d22d, 0x4b1e2dd2b4e1d22d, 0x4b1e2dd2b4e1d22d, 0x4b1e2dd2b4e1d22d, 0x4b1e2dd2b4e1d22d, 0x4b1e2dd2b4e1d22d, 0x4b1e2dd2b4e1d22d, 0x4b1e2dd2b4e1d22d]),
+            (Family::Switch, 0x6000003039, 0x123456789abcdef, 0xffffffffffffffff, Some(BusBeat::Bits64), [0xa5966969b4e1d22d, 0x5a6996964b1e2dd2, 0xa5966969b4e1d22d, 0x5a6996964b1e2dd2, 0xa5966969b4e1d22d, 0x5a6996964b1e2dd2, 0xa5966969b4e1d22d, 0x5a6996964b1e2dd2])
+        ];
+        for &(family, lid, key, mask, beat, words) in stage6 {
+            let phase = Phase { family, key, mask, beat: beat.expect("a width") };
+            assert_eq!(phase.line(lid), words, "{} line {lid:#x} key {key:#x}", phase.label());
+        }
         type Row = (&'static [Family], u64, u32, u32, u32, u64, Option<BusBeat>, Family, u64, u64, Option<BusBeat>);
         let phases: &[Row] = &[
             (&[Family::Ident, Family::Switch, Family::Random, Family::Switch], 0x7, 2, 3, 4, 0, Some(BusBeat::Bits32), Family::Random, 0x754e7689d10c5f8f, 0x0, None),
@@ -997,7 +1316,8 @@ mod tests {
     #[test]
     fn a_pair_complements_every_bit() {
         let epoch = StepEpoch { seed: 42, suite_cycle: 3, step: 5 };
-        for program in [Program::default_simple(), Program::from_tm5_mode(1).unwrap(), Program::single(Family::Lines)] {
+        for program in [Program::default_simple(), Program::from_tm5_mode(0).unwrap(), Program::from_tm5_mode(1).unwrap(),
+                        Program::single(Family::Lines)] {
             for g in (0..16u64).step_by(2) {
                 let (p, q) = (program.phase(&epoch, 4, g, Schedule::Rounds, None), program.phase(&epoch, 4, g + 1, Schedule::Rounds, None));
                 assert_eq!((p.family, p.key, p.beat), (q.family, q.key, q.beat), "round {g}");
@@ -1015,7 +1335,7 @@ mod tests {
     /// and run every family; a verify-only step pairs two suite cycles under one key.
     #[test]
     fn every_pair_is_completed() {
-        let program = Program::default_simple();
+        let program = Program::from_tm5_mode(0).unwrap();
         let epoch = |cycle| StepEpoch { seed: 3, suite_cycle: cycle, step: 1 };
         for wrc in [2u32, 4, 6] {
             for own_cycles in 1..=3u64 {
@@ -1046,7 +1366,8 @@ mod tests {
 
     #[test]
     fn programs_rotate_over_rounds_and_suite_cycles() {
-        let program = Program::default_simple();
+        // A TM5 mode-0 import: four entries, switch twice
+        let program = Program::from_tm5_mode(0).unwrap();
         let at = |cycle, g| program.phase(&StepEpoch { seed: 1, suite_cycle: cycle, step: 0 }, 4, g, Schedule::Rounds, Some(BusBeat::Bits32)).family;
         // A TM5 step: one cycle of its own, rounds 0-3, two pairs a suite cycle
         assert_eq!([at(1, 0), at(1, 2), at(2, 0), at(2, 2), at(3, 0)],
@@ -1055,6 +1376,85 @@ mod tests {
         let key = |cycle, step, g| program.phase(&StepEpoch { seed: 1, suite_cycle: cycle, step }, 4, g, Schedule::Rounds, None).key;
         let keys = [key(1, 0, 0), key(3, 0, 0), key(1, 1, 0), key(1, 0, 4)];
         assert_eq!(keys.iter().collect::<std::collections::HashSet<_>>().len(), keys.len());
+    }
+
+    /// Every pattern number is one pattern's: the native families' sit in the numbered modes' groups
+    /// of ten (1x identities, 2x in-line arithmetic, 3x switching), and none is a numbered mode or
+    /// 12 or 14, the old numbers of 20 and 30 (TODO 97).
+    #[test]
+    fn pattern_numbers_are_grouped_and_unique() {
+        let group = |n: u32| n / 10;
+        for f in Family::ALL {
+            assert_eq!(Family::from_number(f.number()), Some(f));
+            assert!(!crate::pattern_gen::MODES.contains(&f.number()) && ![12, 14].contains(&f.number()), "{}", f.name());
+            let want = match f {
+                Family::Ident | Family::Random | Family::Linepair => 1,
+                Family::Lines => 2,
+                Family::Switch | Family::Quiet | Family::Header => 3,
+            };
+            assert_eq!(group(f.number()), want, "{}", f.name());
+        }
+        assert_eq!(crate::pattern_gen::MODES.map(group), [0, 0, 0, 1, 1, 1, 2, 3]);
+        assert!(is_pattern_mode(31) && is_pattern_mode(20) && !is_pattern_mode(12) && !is_pattern_mode(14));
+        assert!(pattern_modes().ends_with("15 ident, 16 random, 17 linepair, 21 lines, 31 switch, 32 quiet, 33 header"), "{}", pattern_modes());
+    }
+
+    /// `quiet` holds one pin through each line's transfers, 1 under P, and every other pin flips on
+    /// every beat; over lines every pin of the width is held, about equally often (TODO 97).
+    #[test]
+    fn quiet_holds_one_pin_and_flips_the_rest() {
+        for beat in BEATS {
+            let (bits, burst) = (beat.bits() as usize, beat.burst_bits() as usize);
+            let mut held_count = vec![0usize; bits];
+            for lid in 0..4096u64 {
+                let line = quiet_line(lid, 0x5EED, beat);
+                let bit = |p: usize| (line[p / 64] >> (p % 64)) & 1;
+                // Each transfer's bits by pin, within each burst; the last transfer may be partial
+                let mut held = None;
+                for b in 0..512 / burst {
+                    for pin in 0..bits {
+                        let places: Vec<usize> = (pin..burst).step_by(bits).map(|q| b * burst + q).collect();
+                        let toggles = places.windows(2).all(|w| bit(w[0]) != bit(w[1]));
+                        let steady = places.iter().all(|&p| bit(p) == 1);
+                        assert!(toggles != steady, "{} bits, line {lid}, burst {b}, pin {pin}: neither held nor flipping", bits);
+                        if steady {
+                            assert!(held.is_none_or(|h| h == pin), "{} bits, line {lid}: two held pins", bits);
+                            held = Some(pin);
+                        }
+                    }
+                }
+                held_count[held.expect("a held pin")] += 1;
+            }
+            let (lo, hi) = (*held_count.iter().min().unwrap(), *held_count.iter().max().unwrap());
+            assert!(lo > 0 && hi < 3 * lo, "{} bits: pins held {lo} to {hi} times in 4096 lines", bits);
+        }
+    }
+
+    /// Every 32 B half of a `header` line differs from every other's in the run, as no `switch`
+    /// line's do, and its other six words are `switch`'s (TODO 97).
+    #[test]
+    fn header_halves_are_distinct_and_the_rest_switches() {
+        for beat in BEATS {
+            let mut heads = std::collections::HashSet::new();
+            for lid in (0..2048u64).chain(line_base(3)..line_base(3) + 2048) {
+                let (line, switch) = (header_line(lid, 7, beat), switch_line(lid, 7, beat));
+                assert!(heads.insert(line[0]) && heads.insert(line[4]), "{} bits, line {lid}: a repeated head", beat.bits());
+                assert!((1..8).filter(|j| j % 4 != 0).all(|j| line[j] == switch[j]));
+            }
+        }
+    }
+
+    /// The default program runs a `random` pair and a `switch` pair every suite cycle at TM5's four
+    /// rounds, and every other cycle at the built-in suite's two.
+    #[test]
+    fn the_default_program_is_random_and_switch() {
+        let program = Program::default_simple();
+        assert_eq!(program.families(), [Family::Random, Family::Switch]);
+        let at = |cycle, wrc, g| program.phase(&StepEpoch { seed: 1, suite_cycle: cycle, step: 0 }, wrc, g, Schedule::Rounds, None).family;
+        for cycle in 1..=4 {
+            assert_eq!([at(cycle, 4, 0), at(cycle, 4, 2)], [Family::Random, Family::Switch], "cycle {cycle}, 4 rounds");
+        }
+        assert_eq!([at(1, 2, 0), at(2, 2, 0), at(3, 2, 0)], [Family::Random, Family::Switch, Family::Random]);
     }
 
     /// Whatever the program's shape, successive `switch` pairs alternate 64 and 32 on an unknown

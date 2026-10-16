@@ -14,7 +14,7 @@ The jump in cache lines (64-byte units) after each line the test writes or reads
 
 - **Formula:** `channels × parameter - 1` (from TM5 `JumpStep = BlkSize × (Channels × Parameter - 1)`)
 - **Example:** channels=2, parameter=8 → stride = 15 cache lines
-- **The walk** (TODO 93, TM5's `mtests0.asm` ~336-394): each step writes or reads one whole 64 B line, then jumps the stride, so the period is `stride + 1` lines (`64 × channels × parameter` bytes). Each line of a period starts an interleave pass, the last line first, and a pass steps a period at a time to the chunk's end, so every line is touched once per pass over the chunk. Reads walk the same way. The image is the sequential test's (the scalar test's strided mode 2 writes mode 12's lines). Each step prefetches the line the walk reaches 128 steps on (TM5 prefetches 8 periods on, which can land outside the chunk), so requests stay queued while every access still opens a new row. Measurements: `doc/todo/93-strided-simpletest-lines.md`
+- **The walk** (TODO 93, TM5's `mtests0.asm` ~336-394): each step writes or reads one whole 64 B line, then jumps the stride, so the period is `stride + 1` lines (`64 × channels × parameter` bytes). Each line of a period starts an interleave pass, the last line first, and a pass steps a period at a time to the chunk's end, so every line is touched once per pass over the chunk. Reads walk the same way. The image is the sequential test's (the scalar test's strided mode 2 writes mode 20's lines). Each step prefetches the line the walk reaches 128 steps on (TM5 prefetches 8 periods on, which can land outside the chunk), so requests stay queued while every access still opens a new row. Measurements: `doc/todo/93-strided-simpletest-lines.md`
 - **Source:** TM5 `.cfg` parameter field + channels config, or direct value in JSON config
 - **Display:** Shown in Test Configuration table as `Stride(15cl/960B)`
 
@@ -89,16 +89,16 @@ Number of copy direction patterns for memory move operations:
 
 | Where | Field | Meaning |
 |---|---|---|
-| test entry (Mem-SimpleV2*) | `"program": ["ident", "switch", "random", "switch"]` | The native program: families in order, each run as a P/~P pair (`doc/pattern_spec.md`). Unset with no `pattern_mode`, that default. Not with `pattern_mode`, and only on a SimpleTest |
-| test entry | `"pattern_mode": 14` | One of TMR's numbered modes (spec 1, `doc/pattern_gen_modes.md`) instead of a program |
+| test entry (Mem-SimpleV2*) | `"program": ["random", "switch"]` | The native program: families in order, each run as a P/~P pair (`doc/pattern_spec.md`). Unset with no `pattern_mode`, that default. Not with `pattern_mode`, and only on a SimpleTest |
+| test entry | `"pattern_mode": 30` | One of TMR's numbered modes (spec 1, `doc/pattern_gen_modes.md`: 0-2, 10, 11, 13, 20, 30) instead of a program, or a native family's number (15 `ident`, 16 `random`, 17 `linepair`, 21 `lines`, 31 `switch`, 32 `quiet`, 33 `header`) for a program of it alone |
 | command line | `seed=0x1234` | The native patterns' run seed (default from the clock); logged, printed and saved, so a run's bytes can be replayed on the same layout |
-| command line | `beat=auto\|12\|16\|24\|32\|64` or a memory type | The transfer width `switch` (and mode 14) flips at; auto takes SMBIOS's memory type, else `switch` alternates 64 and 32 and mode 14 takes 32. A memory type names its width: `ddr3`/`ddr4` 64, `ddr5`/`lpddr3` 32, `lpddr4`/`lpddr5` 16, `ddr6` 24, `lpddr6` 12. The last two are models (`doc/pattern_spec.md`): SMBIOS has no code TMR knows for them, so set `beat=` there |
+| command line | `beat=auto\|12\|16\|24\|32\|64` or a memory type | The transfer width `switch` (and mode 30) flips at; auto takes SMBIOS's memory type, else `switch` alternates 64 and 32 and mode 30 takes 32. A memory type names its width: `ddr3`/`ddr4` 64, `ddr5`/`lpddr3` 32, `lpddr4`/`lpddr5` 16, `ddr6` 24, `lpddr6` 12. The last two are models (`doc/pattern_spec.md`): SMBIOS has no code TMR knows for them, so set `beat=` there |
 | command line | `rescan=on\|off` | Whether a failed check is rescanned to name each bad word (on); off counts one error a failed check |
 | command line | `patterns=native\|legacy` | How a TM5 `.cfg`'s SimpleTests import: native programs on `Mem-SimpleV2-Auto` (the default), or the numbered modes on the scalar test |
 
 **Repetition must test something** (checked when the config loads): `verify_reps` 0 on a SimpleTest
 or mirror test, `write_read_cycles` 0 on any `run_phased_test` test, and `test_reps` 0 on a mirror
-are refused; so is `test_reps` 0 with a mode that keys its image by the cycle (0, 1, 2, 12, 14),
+are refused; so is `test_reps` 0 with a mode that keys its image by the cycle (0, 1, 2, 20, 30),
 whose fill and verifies would disagree. Each knob is at most 10,000. A knob the test doesn't read is
 logged, not refused. A TM5 `.cfg` value that doesn't parse is an error naming it.
 
@@ -140,6 +140,8 @@ These sit beside the per-test parameters above:
 
 The command line overrides the last two: `seal=tmr|tm5|off`, `seal-width=auto|128|256|512`. A TM5
 `Cycles = 0` runs until stopped. A dependent step (`skip_init`) must directly follow the step that
-wrote its data, with no step that takes the seal in between; otherwise the plan is refused.
+wrote its data, with no step that takes the seal in between; otherwise the plan is refused. A
+dependent native SimpleTest can't only verify (`test_reps` 0): its image is keyed by its own
+step, which no other step writes. One that isn't dependent verifies its own fill.
 `Bench-Init-Seal-{TMR,TM5}[-128|-256|-512]` and their `Bench-Verify-Seal-*` measure the seal's
 fill and check alone.
