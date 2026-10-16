@@ -272,6 +272,20 @@ impl ParamRegistry {
             },
         });
 
+        params.insert("sequence", ParamDef {
+            key: "sequence",
+            can_override_config: true,
+            parser: |v| crate::sequence::Sequence::parse(v, crate::sequence::Order::Forward)
+                .map(|_| ParamValue::String(v.to_string())),
+        });
+
+        params.insert("order", ParamDef {
+            key: "order",
+            can_override_config: true,
+            parser: |v| crate::sequence::Order::parse(v).map(|_| ParamValue::String(v.to_string()))
+                .ok_or_else(|| format!("Invalid order '{v}'. Valid: forward, reverse, random, stride")),
+        });
+
         params.insert("verify-reps", ParamDef {
             key: "verify-reps",
             can_override_config: true,
@@ -515,6 +529,10 @@ pub fn print_help(program_name: &str) {
     println!("                                      #   family alone on SimpleTest: 15 ident, 16 random, 17 linepair,");
     println!("                                      #   21 lines, 31 switch, 32 quiet, 33 header; unset, SimpleTest runs");
     println!("                                      #   native programs (doc/pattern_spec.md)");
+    println!("  sequence=W,2R,RW,2R@random          # Mem-Sequence's passes: W writes, R reads, RW reads and writes each line;");
+    println!("                                      #   a count before, an @order after (spaces or commas between)");
+    println!("  order=random                        # Mem-Sequence's order where a step names none: forward, reverse, random,");
+    println!("                                      #   stride (TM5's, from a config entry's parameter)");
     println!("  patterns=legacy                     # A TM5 .cfg's SimpleTest modes as TMR's numbered modes, not native");
     println!("                                      #   programs (default native), to compare the two");
     println!("  seed=0x1234                         # The native patterns' run seed (default: from the clock, logged and");

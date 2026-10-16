@@ -771,6 +771,10 @@ pub struct TestMemoryConfig {
     /// The native program a SimpleTest runs (pattern spec v2, `crate::pattern`). `None` with no
     /// `pattern_mode` is the default program; a `pattern_mode` runs that TMR mode (spec 1).
     pub program: Option<crate::pattern::Program>,
+    /// Mem-Sequence's passes (`crate::sequence`); `None` is its default, `W 5R`. Boxed: the
+    /// registry builds a config per test by value, and 132 bytes more each made the release
+    /// build 3x slower
+    pub sequence: Option<Box<crate::sequence::Sequence>>,
     /// Where this step runs in the suite (run seed, suite cycle, step), for the native patterns'
     /// keys; set per dispatch by the runner, all zero outside a run and for the Bench pairs.
     pub epoch: crate::pattern::StepEpoch,
@@ -802,9 +806,21 @@ impl TestMemoryConfig {
             display_name: None,  // Logging only; falls back to the test fn's baked-in name
             seal: crate::seal::SealStep::default(),  // Unsealed; the runner sets it per step
             program: None,  // The default program, or the pattern_mode if one is set
+            sequence: None,  // Mem-Sequence's passes; its default when unset
             epoch: crate::pattern::StepEpoch::default(),  // Set per dispatch by the runner
             untimed_init: false,
         }
+    }
+
+    /// Builder: Mem-Sequence's passes.
+    pub fn with_sequence(mut self, sequence: crate::sequence::Sequence) -> Self {
+        self.sequence = Some(Box::new(sequence));
+        self
+    }
+
+    /// Mem-Sequence's passes: its own, or the default.
+    pub fn sequence(&self) -> crate::sequence::Sequence {
+        self.sequence.as_deref().copied().unwrap_or_default()
     }
 
     /// Builder: the native program this SimpleTest runs.
@@ -1007,6 +1023,7 @@ impl TestMemoryConfig {
             "Mem-BlockMove" => 64,                  // Block operations
             "Mem-MovingInv" => 32,                  // u64, which the AVX2 baseline vectorises
             "Mem-ModuloX" => 64,                    // Whole lines
+            "Mem-Sequence" => 64,                   // Native lines at 256 or 512 bits
             // v2 tests
             "Mem-SimpleV2" => 8,                     // Basic u64 operations (scalar, auto-vectorized)
             "Mem-SimpleV2-128" => 16,                // u64x2 (128-bit)
@@ -2678,6 +2695,40 @@ unsafe fn read_then_write<const UP: bool>(ptr: *mut u64, start: usize, end: usiz
     (acc[0] | acc[1]) | (acc[2] | acc[3])
 }
 
+/// The cold path of a read-then-write pass's failed check (Mem-Sequence's `RW`, Mem-MovingInv's
+/// middle passes). The pass kept no copy of what it read, so first rescan what it wrote, `wrote`:
+/// a cell that didn't take the write shows. If every word holds it, the word that read wrong may
+/// be a cell stuck at the value the pass then wrote over it, which it holds fine (the review): so
+/// write back what was read, flush it to DRAM, and rescan for that. A cell stuck shows; a read
+/// that went wrong doesn't (not reproduced). Returns the errors, and whether the chunk now holds
+/// `read`: the caller writes `wrote` again to go on, except under halt, which keeps what it found.
+#[cold]
+#[inline(never)]
+unsafe fn rescan_read_write(ptr: *mut u64, range: std::ops::Range<usize>, test_name: &str, seen: u64, label: &str,
+                            read: &dyn Fn(usize) -> u64, wrote: &dyn Fn(usize) -> u64) -> (u64, bool) {
+    let (start, end) = (range.start, range.end);
+    if !crate::pattern::rescan_enabled() {
+        return (unlocalised(found_by(test_name), format_args!("in idx {start}..{end} ({label})"), seen), false);
+    }
+    let mut scan = Rescan::for_test(ptr, test_name).seen(seen);
+    for idx in start..end {
+        scan.word(idx, wrote(idx));
+    }
+    if scan.found() > 0 {
+        return (scan.finish(format_args!("in idx {start}..{end} ({label}: what it wrote, rescanned)")), false);
+    }
+    for idx in start..end {
+        std::ptr::write_volatile(ptr.add(idx), read(idx));
+    }
+    // SAFETY: the CPU gate requires CLFLUSHOPT, and the chunk is whole lines of the extent
+    flush_range_to_dram(ptr.add(start) as *const u8, (end - start) * std::mem::size_of::<u64>(), 64);
+    for idx in start..end {
+        scan.word(idx, read(idx));
+    }
+    (scan.finish(format_args!("in idx {start}..{end} ({label}: what it wrote held, so what it read was written back, \
+        flushed and rescanned)")), true)
+}
+
 /// Mem-MovingInv: memtest86's moving inversions, a March X over each chunk. The chunk is written
 /// with P going up; then each word is read as P and written as ~P going up; then read as ~P and
 /// written as P going down; then read as P. So every word is checked just before it is
@@ -2687,8 +2738,7 @@ unsafe fn read_then_write<const UP: bool>(ptr: *mut u64, start: usize, end: usiz
 ///
 /// P is `ident`'s word of each word's id (`pattern::word_base`) under a key per step and cycle:
 /// position-unique, and new every cycle. The read-then-write passes keep no copy of what a word
-/// read, so their rescan checks what was written after it: a cell that holds a wrong bit shows
-/// again, a read that went wrong doesn't (not reproduced). The last pass only reads, and its
+/// read, so their failed checks go to `rescan_read_write`. The last pass only reads, and its
 /// rescan is every verify's.
 #[doc = include_str!("test_fn_safety.md")]
 pub unsafe fn moving_inversions_multi(
@@ -2732,11 +2782,21 @@ pub unsafe fn moving_inversions_multi(
             }
             let seen = read_then_write::<true>(base, start, end, p, not_p);
             if seen != 0 {
-                cycle_errors += rescan_words_in(base, start, end, test_name, seen, "up: P read, ~P written", not_p);
+                let (errors, rewrote) = rescan_read_write(base, start..end, test_name, seen, "up: P read, ~P written", &p, &not_p);
+                cycle_errors += errors;
+                halt_here!(runner, cycle_errors, ops(&runner));
+                if rewrote {
+                    (start..end).for_each(|i| *base.add(i) = not_p(i));
+                }
             }
             let seen = read_then_write::<false>(base, start, end, not_p, p);
             if seen != 0 {
-                cycle_errors += rescan_words_in(base, start, end, test_name, seen, "down: ~P read, P written", p);
+                let (errors, rewrote) = rescan_read_write(base, start..end, test_name, seen, "down: ~P read, P written", &not_p, &p);
+                cycle_errors += errors;
+                halt_here!(runner, cycle_errors, ops(&runner));
+                if rewrote {
+                    (start..end).for_each(|i| *base.add(i) = p(i));
+                }
             }
             cycle_errors += verify_words_in(base, start, end, test_name, "P read", p);
 
@@ -4883,6 +4943,321 @@ native_simple_impl!(simple_native_128, "Mem-SimpleV2-128", [u64x2, 2], "sse4.2,s
 native_simple_impl!(simple_native_256, "Mem-SimpleV2-256", [u64x4, 4], "avx2,avx,fma,bmi1,bmi2");
 native_simple_impl!(simple_native_512, "Mem-SimpleV2-512", [u64x8, 8], "avx512f,avx512bw,avx512cd,avx512dq,avx512vl,avx2,avx,fma,bmi1,bmi2");
 
+// ─── Mem-Sequence (TODO 97) ──────────────────────────────────────────────────────────────────────
+//
+// A configurable sequence of passes over each chunk (`crate::sequence`): writes, reads and
+// read-then-writes, each in an order. A write writes the program's next phase; a read checks the
+// phase last written; a read-then-write checks it and writes its inverse in the same visit, so
+// reads and writes alternate line by line. Each pass is one loop, its family, beat, operation and
+// order matched once outside it. A separate test from SimpleTest, to bench against it before it
+// replaces anything (the owner's call, 2026-10-16).
+
+/// One vector of a Mem-Sequence visit at `$at`: `write` stores `$want`, `read` ORs its difference
+/// into `$acc`, `rw` does both and stores the inverse.
+macro_rules! sequence_visit {
+    (write, $at:expr, $want:expr, $acc:expr, $ones:expr) => {{
+        *$at = $want;
+    }};
+    (read, $at:expr, $want:expr, $acc:expr, $ones:expr) => {{
+        $acc |= *$at ^ $want;
+    }};
+    (rw, $at:expr, $want:expr, $acc:expr, $ones:expr) => {{
+        let (at, want) = ($at, $want);
+        $acc |= *at ^ want;
+        *at = want ^ $ones;
+    }};
+}
+
+/// One Mem-Sequence pass of `$op` over the `$lines` lines of `$ptr` from word `$start` (line ids
+/// from `$lid0`) in `$order`, the phase's vectors from `$line`. Lines go `LPG` a step so each
+/// vector's difference has its own accumulator of 4, as every verify's; the strided walk takes a
+/// line a step, as SimpleTest's. Each order's loop starts with `$init` and ends with `$result`,
+/// its value: a read's accumulators live in its own loop, so the register allocator keeps them in
+/// registers (declared once for the function's 57 loops, one was a stack slot in most of them).
+/// `$acc` and `$ones` need exist only where `$op` uses them.
+macro_rules! sequence_walk {
+    ($op:tt, $simd:ty, $w:tt, $ptr:ident, $start:ident, $end:ident, $lines:ident, $lid0:ident, $order:expr, $period:ident,
+     $key:ident, $line:ident, $acc:ident, $ones:ident, [$($init:tt)*], $result:expr) => {{
+        const VPL: usize = LINE_WORDS / $w;
+        const LPG: usize = if VPL >= 4 { 1 } else { 4 / VPL };
+        match $order {
+            // Forward and reverse are one loop, line `first + step * j`, `step` +1 or -1: one loop
+            // to compile for both, and the same induction either way
+            crate::sequence::Order::Forward | crate::sequence::Order::Reverse => {
+                $($init)*
+                let reverse = matches!($order, crate::sequence::Order::Reverse);
+                let (first, step) = if reverse { ($lines - 1, usize::MAX) } else { (0, 1) };
+                let mut j = 0;
+                while j < $lines {
+                    for l in 0..LPG {
+                        let i = first.wrapping_add(step.wrapping_mul(j + l));
+                        let words = $line($lid0 + i as u64);
+                        for v in 0..VPL {
+                            sequence_visit!($op, $ptr.add($start + i * LINE_WORDS + v * $w) as *mut $simd, words[v], $acc[(l * VPL + v) % 4], $ones);
+                        }
+                    }
+                    j += LPG;
+                }
+                $result
+            }
+            // Each power-of-two block of the chunk's lines in its own scrambled order: a chunk is
+            // whole 4 KiB pages, so every block is 64 lines or more
+            crate::sequence::Order::Random => {
+                $($init)*
+                let mut s = 0;
+                while s < $lines {
+                    let bits = ($lines - s).ilog2();
+                    let n = 1usize << bits;
+                    let mut j = 0;
+                    while j < n {
+                        for l in 0..LPG {
+                            let i = s + crate::sequence::random_line((j + l) as u64, bits, $key) as usize;
+                            let words = $line($lid0 + i as u64);
+                            for v in 0..VPL {
+                                sequence_visit!($op, $ptr.add($start + i * LINE_WORDS + v * $w) as *mut $simd, words[v], $acc[(l * VPL + v) % 4], $ones);
+                            }
+                        }
+                        j += LPG;
+                    }
+                    s += n;
+                }
+                $result
+            }
+            crate::sequence::Order::Stride => {
+                $($init)*
+                for_each_strided_line!($ptr, $start, $end, $period, |offset| {
+                    let words = $line($lid0 + ((offset - $start) / LINE_WORDS) as u64);
+                    for v in 0..VPL {
+                        sequence_visit!($op, $ptr.add(offset + v * $w) as *mut $simd, words[v], $acc[v % 4], $ones);
+                    }
+                });
+                $result
+            }
+        }
+    }};
+}
+
+/// One Mem-Sequence pass of `$op` (`write`, `read` or `rw`) over words `[$start, $end)` of `$ptr`
+/// in `$order`; returns the differences the reads found, ORed (0 for a write).
+macro_rules! sequence_pass {
+    (write, $simd:ty, $w:tt, $ptr:expr, $start:expr, $end:expr, $lid0:expr, $order:expr, $period:expr, $key:expr, $phase:expr) => {{
+        let (ptr, start, end, lid0, period, key): (*mut u64, usize, usize, u64, usize, u64) = ($ptr, $start, $end, $lid0, $period, $key);
+        let lines = (end - start) / LINE_WORDS;
+        // A write keeps no differences: `sequence_visit!(write)` drops the accumulator it's named
+        crate::pattern::with_phase_vectors!($w, $phase, |line| {
+            sequence_walk!(write, $simd, $w, ptr, start, end, lines, lid0, $order, period, key, line, no_acc, no_ones, [], 0u64)
+        })
+    }};
+    (read, $simd:ty, $w:tt, $ptr:expr, $start:expr, $end:expr, $lid0:expr, $order:expr, $period:expr, $key:expr, $phase:expr) => {{
+        let (ptr, start, end, lid0, period, key): (*mut u64, usize, usize, u64, usize, u64) = ($ptr, $start, $end, $lid0, $period, $key);
+        let lines = (end - start) / LINE_WORDS;
+        crate::pattern::with_phase_vectors!($w, $phase, |line| {
+            sequence_walk!(read, $simd, $w, ptr, start, end, lines, lid0, $order, period, key, line, acc, no_ones,
+                           [let mut acc = [<$simd>::splat(0); 4];], ((acc[0] | acc[1]) | (acc[2] | acc[3])).reduce_or())
+        })
+    }};
+    (rw, $simd:ty, $w:tt, $ptr:expr, $start:expr, $end:expr, $lid0:expr, $order:expr, $period:expr, $key:expr, $phase:expr) => {{
+        let (ptr, start, end, lid0, period, key): (*mut u64, usize, usize, u64, usize, u64) = ($ptr, $start, $end, $lid0, $period, $key);
+        let lines = (end - start) / LINE_WORDS;
+        let ones = <$simd>::splat(!0);
+        crate::pattern::with_phase_vectors!($w, $phase, |line| {
+            sequence_walk!(rw, $simd, $w, ptr, start, end, lines, lid0, $order, period, key, line, acc, ones,
+                           [let mut acc = [<$simd>::splat(0); 4];], ((acc[0] | acc[1]) | (acc[2] | acc[3])).reduce_or())
+        })
+    }};
+}
+
+/// The cold path of a Mem-Sequence read: rescan the chunk against `phase` (TODO 27). A
+/// read-then-write's goes to `rescan_read_write`.
+#[cold]
+#[inline(never)]
+unsafe fn sequence_rescan(ptr: *const u64, range: std::ops::Range<usize>, lid0: u64, phase: crate::pattern::Phase, pass: &str,
+                          test_name: &str, seen: u64) -> u64 {
+    let (start, end) = (range.start, range.end);
+    let label = format!("{pass}, {}, key {:#018x}", phase.label(), phase.key);
+    if !crate::pattern::rescan_enabled() {
+        return unlocalised(found_by(test_name), format_args!("in idx {start}..{end} ({label})"), seen);
+    }
+    let mut scan = Rescan::for_test(ptr, test_name).seen(seen);
+    let mut off = start;
+    while off < end {
+        scan.line(off, &phase.line(lid0 + ((off - start) / LINE_WORDS) as u64));
+        off += LINE_WORDS;
+    }
+    scan.finish(format_args!("in idx {start}..{end} ({label})"))
+}
+
+/// Where a Mem-Sequence pass runs: words `[start, end)` of the extent at `ptr`, the first line's
+/// id, and TM5's stride period in words (0 when the test has none).
+#[derive(Clone, Copy)]
+struct SequenceChunk {
+    ptr: *mut u64,
+    start: usize,
+    end: usize,
+    lid0: u64,
+    period: usize,
+}
+
+/// Mem-Sequence at one width: the test, and a function per operation for its passes, so no one
+/// function holds every family's loops in every order for every operation (the release build
+/// took 8.5 minutes with one).
+macro_rules! sequence_impl {
+    ($fn_name:ident, $write:ident, $read:ident, $rw:ident, $simd:ty, $w:tt, $tf:literal) => {
+        #[target_feature(enable = $tf)]
+        #[inline(never)]
+        unsafe fn $write(c: SequenceChunk, order: crate::sequence::Order, key: u64, phase: crate::pattern::Phase) -> u64 {
+            sequence_pass!(write, $simd, $w, c.ptr, c.start, c.end, c.lid0, order, c.period, key, phase)
+        }
+
+        #[target_feature(enable = $tf)]
+        #[inline(never)]
+        unsafe fn $read(c: SequenceChunk, order: crate::sequence::Order, key: u64, phase: crate::pattern::Phase) -> u64 {
+            sequence_pass!(read, $simd, $w, c.ptr, c.start, c.end, c.lid0, order, c.period, key, phase)
+        }
+
+        #[target_feature(enable = $tf)]
+        #[inline(never)]
+        unsafe fn $rw(c: SequenceChunk, order: crate::sequence::Order, key: u64, phase: crate::pattern::Phase) -> u64 {
+            sequence_pass!(rw, $simd, $w, c.ptr, c.start, c.end, c.lid0, order, c.period, key, phase)
+        }
+
+        /// Mem-Sequence at this width; see the section comment.
+        #[target_feature(enable = $tf)]
+        unsafe fn $fn_name(
+            blocks: &[crate::runner::AllocationBlock],
+            thread_id: usize,
+            error_mode: ErrorMode,
+            timing: &TestTiming,
+            config: &TestMemoryConfig,
+            progress: Option<&TestProgress>,
+        ) -> TestStats {
+            use crate::sequence::Op;
+            let test_name = "Mem-Sequence";
+            debug_assert!(config.pattern_mode.is_none(), "Mem-Sequence runs native patterns only (the config check)");
+            let program = config.native_program().unwrap_or_else(crate::pattern::Program::default_simple);
+            let seq = config.sequence();
+            let reps = config.write_read_cycles.max(1);
+            // Program rounds a chunk writes a cycle: the phases go by them, as SimpleTest's
+            let writes = seq.rounds(reps);
+            let (reads, written) = seq.visits(reps);
+            let (epoch, beat) = (config.epoch, crate::pattern::transfer_beat().0);
+            let schedule = crate::pattern::Schedule::Rounds;
+            // Line ids count from the thread's span: the extent starts there (TODO 76)
+            let lid_base = crate::pattern::line_base(thread_id);
+            // A stride of 0 (a parameter of 1 on one channel) is TM5's jump 0: in order, as SimpleTest
+            let stride = config.parameter_context.as_ref().and_then(|c| c.stride_elements).unwrap_or(0);
+            let period = if stride > 0 { strided_period(stride) } else { 0 };
+            let (mut runner, extent) = crate::test_scaffolding::TestRunner::new(
+                blocks, thread_id, error_mode, timing, config, progress,
+                test_name, TestAction::WriteVerify,
+            );
+            let base = extent.ptr as *mut u64;
+            let ops = |runner: &crate::test_scaffolding::TestRunner| (runner.bytes_processed() / std::mem::size_of::<u64>()) as u64;
+
+            loop {
+                let cycle = runner.begin_cycle();
+                let mut cycle_errors = 0u64;
+                // Chunks of exactly the test's size, spread evenly over the extent (TODO 76)
+                let spread = runner.chunks(extent.test_size);
+                for k in 0..spread.count() {
+                    let start = spread.start(k) / std::mem::size_of::<u64>();
+                    let end = start + spread.chunk() / std::mem::size_of::<u64>();
+                    let lid0 = lid_base + (start / LINE_WORDS) as u64;
+                    let chunk = SequenceChunk { ptr: base, start, end, lid0, period };
+                    runner.check_seal(spread.start(k), spread.chunk());
+                    halt_here!(runner, cycle_errors, ops(&runner));
+
+                    // The round the chunk holds, and the next a W writes (`sequence::round_after`)
+                    let first = u64::from(cycle - 1) * u64::from(writes);
+                    let (mut current, mut next) = (first, first);
+                    let mut phase = program.phase(&epoch, writes, current, schedule, beat);
+                    // A sequence that reads first reads a fill: one write pass before its steps,
+                    // through the same loops (each pass's loops are compiled once a function)
+                    let fill = crate::sequence::Step { op: Op::Write, count: 1, order: Some(crate::sequence::Order::Forward) };
+                    let fill = if seq.reads_first() { std::slice::from_ref(&fill) } else { &[] };
+                    // Each pass's random order its own: from the step's key, the cycle, the chunk
+                    // and the pass
+                    let mut pass = 0u64;
+                    for rep in 0..reps {
+                        let steps = if rep == 0 { fill } else { &[] }.iter().chain(seq.steps());
+                        for step in steps {
+                            let order = match seq.order_of(step) {
+                                crate::sequence::Order::Stride if period == 0 => crate::sequence::Order::Forward,
+                                order => order,
+                            };
+                            for _ in 0..step.count {
+                                pass += 1;
+                                let key = crate::pattern::fmix(epoch.key() ^ (u64::from(cycle) << 44) ^ ((k as u64) << 24) ^ pass);
+                                let read = phase;
+                                (current, next) = crate::sequence::round_after(step.op, current, next);
+                                phase = program.phase(&epoch, writes, current, schedule, beat);
+                                let (seen, name) = match step.op {
+                                    Op::Write => ($write(chunk, order, key, phase), "W"),
+                                    Op::Read => ($read(chunk, order, key, phase), "R"),
+                                    Op::ReadWrite => {
+                                        // It writes the inverse of what it read, round `current`
+                                        debug_assert_eq!(phase, crate::pattern::Phase { mask: !read.mask, ..read });
+                                        ($rw(chunk, order, key, read), "RW")
+                                    }
+                                };
+                                if seen != 0 {
+                                    let what = format!("pass {pass}: {name}@{}", order.name());
+                                    if step.op == Op::ReadWrite {
+                                        let line = |p: crate::pattern::Phase| move |idx: usize| p.line(lid0 + ((idx - start) / LINE_WORDS) as u64)[idx % LINE_WORDS];
+                                        let (errors, rewrote) = rescan_read_write(base, start..end, test_name, seen, &what, &line(read), &line(phase));
+                                        cycle_errors += errors;
+                                        halt_here!(runner, cycle_errors, ops(&runner));
+                                        if rewrote {
+                                            $write(chunk, crate::sequence::Order::Forward, key, phase);
+                                        }
+                                    } else {
+                                        cycle_errors += sequence_rescan(base, start..end, lid0, phase, &what, test_name, seen);
+                                        halt_here!(runner, cycle_errors, ops(&runner));
+                                    }
+                                }
+                            }
+                        }
+                    }
+
+                    // Count the chunk when it is done: each pass's reads and writes, the fill's
+                    runner.add_bytes(spread.chunk() * (reads + written) as usize);
+                    halt_here!(runner, cycle_errors, ops(&runner));
+                    runner.reseal(spread.start(k), spread.chunk());
+                    if runner.shutdown_requested() {
+                        return runner.finish_aborted(cycle_errors, ops(&runner));
+                    }
+                }
+
+                runner.commit_cycle_errors(cycle_errors);
+                runner.update_progress();
+                if !runner.should_continue() {
+                    return runner.finish_completed(ops(&runner));
+                }
+            }
+        }
+    };
+}
+
+sequence_impl!(sequence_256, sequence_write_256, sequence_read_256, sequence_rw_256, u64x4, 4, "avx2,avx,fma,bmi1,bmi2");
+sequence_impl!(sequence_512, sequence_write_512, sequence_read_512, sequence_rw_512, u64x8, 8,
+               "avx512f,avx512bw,avx512cd,avx512dq,avx512vl,avx2,avx,fma,bmi1,bmi2");
+
+/// Mem-Sequence at the widest width this CPU has: 512 bits, else 256 (the CPU gate requires AVX2).
+#[doc = include_str!("test_fn_safety.md")]
+pub unsafe fn sequence_auto_multi(
+    blocks: &[crate::runner::AllocationBlock],
+    thread_id: usize,
+    error_mode: ErrorMode,
+    timing: &TestTiming,
+    config: &TestMemoryConfig,
+    progress: Option<&TestProgress>,
+) -> TestStats {
+    if is_x86_feature_detected!("avx512f") {
+        return sequence_512(blocks, thread_id, error_mode, timing, config, progress);
+    }
+    sequence_256(blocks, thread_id, error_mode, timing, config, progress)
+}
+
 /// A native SimpleTest at the widest width this CPU has.
 ///
 /// # Safety
@@ -5732,6 +6107,7 @@ pub fn get_test_function_by_name(name: &str) -> Option<crate::runner::TestFuncti
         "Mem-BlockMove" => Some(TestFunction::MultiBlock(block_move_multi)),
         "Mem-MovingInv" => Some(TestFunction::MultiBlock(moving_inversions_multi)),
         "Mem-ModuloX" => Some(TestFunction::MultiBlock(modulo_x_multi)),
+        "Mem-Sequence" => Some(TestFunction::MultiBlock(sequence_auto_multi)),
 
         // Sequential Bandwidth Tests (Spd-*-Auto → auto-dispatched)
         // Cached (L1/L2/L3) variants
@@ -6011,6 +6387,73 @@ mod random_replay_tests {
                 assert!(runs <= 2 * end.div_ceil(super::MODULO_X).max(1), "{runs} runs");
             }
         }
+    }
+
+    /// Mem-Sequence's passes at 256 bits: a write in any order and a read in any order agree; a
+    /// read in each order sees a flipped bit at a block's edges and inside them; a read-then-write
+    /// sees it and leaves the inverse in every line, the bad word's too. The walk is shared by every
+    /// operation, so the write's and the read-then-write's full coverage is the read's (TODO 97).
+    #[test]
+    fn sequence_passes_find_a_bad_word_in_every_order() {
+        use crate::sequence::Order;
+        #[target_feature(enable = "avx2,avx,fma,bmi1,bmi2")]
+        unsafe fn pass(op: u8, ptr: *mut u64, words: usize, order: Order, key: u64, phase: crate::pattern::Phase) -> u64 {
+            use std::simd::{num::SimdUint, u64x4};
+            use super::LINE_WORDS;
+            let period = super::strided_period(15 * 8);
+            match op {
+                0 => sequence_pass!(write, u64x4, 4, ptr, 0, words, 0, order, period, key, phase),
+                1 => sequence_pass!(read, u64x4, 4, ptr, 0, words, 0, order, period, key, phase),
+                _ => sequence_pass!(rw, u64x4, 4, ptr, 0, words, 0, order, period, key, phase),
+            }
+        }
+        let words = 768 * LINE_WORDS;  // 768 lines: blocks of 512 and 256 in random order
+        let mut mem = vec![std::simd::u64x8::splat(0); words / 8];
+        let p = mem.as_mut_ptr() as *mut u64;
+        let program = crate::pattern::Program::single(crate::pattern::Family::Random);
+        let phase = program.phase(&crate::pattern::StepEpoch { seed: 4, suite_cycle: 1, step: 0 }, 2, 0, crate::pattern::Schedule::Rounds, None);
+        let orders = [Order::Forward, Order::Reverse, Order::Random, Order::Stride];
+        for write_order in orders {
+            for read_order in orders {
+                unsafe {
+                    std::slice::from_raw_parts_mut(p, words).fill(0x5A5A);
+                    pass(0, p, words, write_order, 11, phase);
+                    assert_eq!(pass(1, p, words, read_order, 12, phase), 0, "{write_order:?} then {read_order:?}");
+                    for (n, bad) in [0usize, 3001, 512 * LINE_WORDS - 1, 512 * LINE_WORDS, words - 1].into_iter().enumerate() {
+                        pass(0, p, words, write_order, 11, phase);
+                        *p.add(bad) ^= 1 << (21 + n);
+                        assert_eq!(pass(1, p, words, read_order, 13, phase), 1 << (21 + n), "{read_order:?} read, word {bad}");
+                        assert_eq!(pass(2, p, words, read_order, 14, phase), 1 << (21 + n), "{read_order:?} read-then-write");
+                        // It wrote the inverse over every word, the bad one's too: all ~P now
+                        let inverse = crate::pattern::Phase { mask: !phase.mask, ..phase };
+                        assert_eq!(pass(1, p, words, Order::Forward, 15, inverse), 0, "{read_order:?}, word {bad}");
+                    }
+                }
+            }
+        }
+    }
+
+    /// A read-then-write's rescan: a word that didn't take the write is found against what was
+    /// written; if every word took it, what was read is written back, flushed and rescanned, so a
+    /// read that went wrong is not reproduced and the chunk is left holding what was read (TODO 97,
+    /// the review: a cell stuck at the written value read back right).
+    #[test]
+    fn a_read_then_writes_rescan_writes_back_what_it_read() {
+        let mut mem = vec![std::simd::u64x8::splat(0); 16];
+        let p = mem.as_mut_ptr() as *mut u64;
+        let (read, wrote) = (|i: usize| i as u64, |i: usize| !(i as u64));
+        crate::tests::reset_rescan_counts();
+        unsafe {
+            (0..128).for_each(|i| *p.add(i) = wrote(i));
+            *p.add(70) ^= 1 << 9;
+            assert_eq!(super::rescan_read_write(p, 0..128, "test", 1 << 9, "RW", &read, &wrote), (1, false));
+            assert_eq!(*p.add(70), wrote(70) ^ (1 << 9), "found on the first rescan: left as found");
+            *p.add(70) = wrote(70);
+            assert_eq!(super::rescan_read_write(p, 0..128, "test", 1 << 9, "RW", &read, &wrote), (1, true));
+            assert!((0..128).all(|i| *p.add(i) == read(i)), "left holding what was read");
+        }
+        let counts = crate::tests::rescan_counts();
+        assert_eq!((counts.alarms, counts.not_reproduced), (2, 1));
     }
 
     /// Mem-Random's final sweep reads every word, finds a bad one the random reads would miss,

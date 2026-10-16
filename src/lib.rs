@@ -45,6 +45,7 @@ mod run_context; // Run identity + resolved config recorded into result files (T
 mod seal; // the seal: TM5's test 0, checked and resealed around every chunk (TODO 74)
 mod error_context; // where a worker is in the run, for its error lines (TODO 74)
 mod failing_bits; // which bit positions failed checks, from the verifies' cold path (TODO 97)
+mod sequence; // Mem-Sequence's passes: writes, reads and read-then-writes in an order (TODO 97)
 
 // Common result type for the crate
 pub(crate) type Result<T> = std::result::Result<T, Box<dyn std::error::Error>>;

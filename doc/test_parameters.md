@@ -89,7 +89,7 @@ Number of copy direction patterns for memory move operations:
 
 | Where | Field | Meaning |
 |---|---|---|
-| test entry (Mem-SimpleV2*) | `"program": ["random", "switch"]` | The native program: families in order, each run as a P/~P pair (`doc/pattern_spec.md`). Unset with no `pattern_mode`, that default. Not with `pattern_mode`, and only on a SimpleTest |
+| test entry (Mem-SimpleV2*, Mem-Sequence) | `"program": ["random", "switch"]` | The native program: families in order, each run as a P/~P pair (`doc/pattern_spec.md`). Unset with no `pattern_mode`, that default. Not with `pattern_mode`, and only on a SimpleTest or Mem-Sequence |
 | test entry | `"pattern_mode": 30` | One of TMR's numbered modes (spec 1, `doc/pattern_gen_modes.md`: 0-2, 10, 11, 13, 20, 30) instead of a program, or a native family's number (15 `ident`, 16 `random`, 17 `linepair`, 21 `lines`, 31 `switch`, 32 `quiet`, 33 `header`) for a program of it alone |
 | command line | `seed=0x1234` | The native patterns' run seed (default from the clock); logged, printed and saved, so a run's bytes can be replayed on the same layout |
 | command line | `beat=auto\|12\|16\|24\|32\|64` or a memory type | The transfer width `switch` (and mode 30) flips at; auto takes SMBIOS's memory type, else `switch` alternates 64 and 32 and mode 30 takes 32. A memory type names its width: `ddr3`/`ddr4` 64, `ddr5`/`lpddr3` 32, `lpddr4`/`lpddr5` 16, `ddr6` 24, `lpddr6` 12. The last two are models (`doc/pattern_spec.md`): SMBIOS has no code TMR knows for them, so set `beat=` there |
@@ -108,6 +108,30 @@ chunk: P, then ~P (every bit flipped), so every bit is checked holding a 0 and a
 number, with a warning: 3 runs as 4, 1 as 2. A config's SimpleTest and a TM5 import take 4 by
 default, the built-in suite's 2. A step that verifies its fill (`test_reps` 0) writes once a
 suite cycle, so it alternates P and ~P between suite cycles instead (`doc/pattern_spec.md`).
+
+
+## Mem-Sequence
+
+A chunk's passes, given as steps: an optional count, then `W` (write the program's next round), `R`
+(check what the chunk holds) or `RW` (check it and write its inverse in the same visit, so the reads
+are checked in a stream with writes in it), then an optional `@order`. Up to 16 steps, separated by
+spaces or commas; `write_read_cycles` is how many times the sequence runs a chunk (2 when unset).
+
+| Where | Field | Meaning |
+|---|---|---|
+| test entry | `"sequence": "W 2R RW 2R@random"` | The passes, in order. Unset: `W 5R` (the built-in suite's: `W 2R RW 2R@random`, twice) |
+| test entry | `"order": "forward"` | The order of the steps that name none: `forward`, `reverse`, `random` (every line once, scrambled anew each pass) or `stride` (TM5's walk, from the entry's `parameter`, as SimpleTest's; a stride of 0 is in order) |
+| command line | `sequence=W,4R,RW@random,R`, `order=random` | The same, on every Mem-Sequence step; `stride` needs a config entry's `parameter` |
+
+The rounds come in pairs, as SimpleTest's: a `W` writes the next round, and an `RW` the inverse of
+what it read, which is the next round when it read a pattern's P (so no `W` rewrites what an `RW`
+left). A sequence whose rounds a cycle are odd runs once more where that makes them even, with a
+warning. Checked when the config loads: a sequence that never reads, a step of 0 or more than 64
+passes, and `@stride` with no `parameter` are refused, as is a numbered `pattern_mode`
+(`pattern-mode=` with one leaves Mem-Sequence's program). `WR` isn't a step: a read straight after
+a write of the same line is answered by the cache. A sequence that starts with a read reads a fill.
+A write no read checks (`2W R`, or a write last) is allowed, as write stress, with a warning. It runs
+at 512 bits or 256 (the widest the CPU has).
 
 ## Parameter Sources
 

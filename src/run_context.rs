@@ -493,9 +493,13 @@ pub struct TestConfigSnapshot {
     pub test_reps: u32,
     pub write_read_cycles: u32,
     pub pattern_mode: Option<u32>,
-    /// The native program a SimpleTest ran (pattern spec v2), when no `pattern_mode` was set.
+    /// The native program a SimpleTest or Mem-Sequence ran (pattern spec v2), when no
+    /// `pattern_mode` was set.
     #[serde(default)]
     pub program: Option<Vec<String>>,
+    /// Mem-Sequence's passes, and the order of the steps that name none
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub sequence: Option<String>,
     /// Whether the verify was forced through DRAM with CLFLUSHOPT. Costs real bandwidth by design,
     /// so a flushed and an unflushed run of the same test are not comparable.
     pub flush_before_verify: bool,
@@ -667,8 +671,11 @@ page_mix,
                 test_reps: def.config.test_reps,
                 write_read_cycles: def.config.write_read_cycles,
                 pattern_mode: def.config.pattern_mode,
-                program: def.actual_name.starts_with("Mem-SimpleV2")
+                program: (def.actual_name.starts_with("Mem-SimpleV2") || def.actual_name == "Mem-Sequence")
                     .then(|| def.config.native_program().map(|p| p.names())).flatten(),
+                sequence: (def.actual_name == "Mem-Sequence")
+                    .then(|| def.config.sequence())
+                    .map(|s| format!("{} (order {})", s.name(), s.order.name())),
                 flush_before_verify: def.config.flush_before_verify,
                 skip_init: def.config.skip_init,
             })

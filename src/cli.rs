@@ -1106,6 +1106,12 @@ fn run() -> Result<(), Box<dyn std::error::Error>> {
 		None
 	};
 
+	// Mem-Sequence's passes and order, if given (the parser has checked them)
+	let sequence_override = params::has_param(&validated_params, "sequence")
+		.then(|| params::get_string(&validated_params, "sequence", ""));
+	let order_override = params::has_param(&validated_params, "order")
+		.then(|| params::get_string(&validated_params, "order", "forward"));
+
 	// Extract verify-reps override if provided
 	let verify_reps_override = if params::has_param(&validated_params, "verify-reps") {
 		Some(params::get_u32(&validated_params, "verify-reps", 1))
@@ -1150,6 +1156,8 @@ fn run() -> Result<(), Box<dyn std::error::Error>> {
             seal_width_override: seal_width_override.as_deref(),
             mirror_override,
             pattern_mode_override,
+            sequence_override: sequence_override.as_deref(),
+            order_override: order_override.as_deref(),
             verify_reps_override,
             test_reps_override,
             wrc_override,

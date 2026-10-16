@@ -131,8 +131,29 @@ under one binary.
   is memtest86's moving inversions, a March X over each chunk, and `Mem-ModuloX` its modulo-20,
   protected victims at line granularity; both write `ident`'s word of each word id under a key
   per step and cycle, with chunks twice the L3 so each pass reaches DRAM, and both loops are
-  256-bit in the release asm. Random-order writes wait for `Mem-Sequence`, a separate test the
-  owner asked to bench against SimpleTest and Mem-Random before it replaces anything.
+  256-bit in the release asm.
+- **`Mem-Sequence`** (the owner's idea, 2026-10-16; a separate test, to bench against SimpleTest
+  and Mem-Random before it replaces anything). A list of steps, `W`, `R` or `RW` with a count and
+  an `@order`, run `write_read_cycles` times a chunk; orders forward, reverse, random (every line
+  once, each power-of-two block scrambled by a bijection, anew each pass) and TM5's stride. `RW`
+  checks each line and writes its inverse in the same visit. First argued as the only pass that
+  stresses read-write turnarounds; the review corrected that: a `W` pass of ordinary stores reads
+  each line for ownership and writes back evicted ones, so its DRAM traffic mixes reads and writes
+  too, but those reads aren't checked. `RW`'s are: it checks reads made in a stream with writes in
+  it. Neither mix is measured (uProf's UMC counters on the metal box could). `WR` was left out: its
+  read would be answered by the cache. Each pass is one loop, in a function per operation at 256
+  and 512 bits; the release asm is at width with no `memset`/`memcpy`. A review: no wrong read;
+  taken were `pattern-mode=` on it (a numbered mode is left off it, a native number reaches it), a
+  stride of 0 (divided by zero; now in order), rounds (an `RW` that writes the next round counts as
+  it, so `W 2R RW 2R`'s second `W` writes the next pair, not ~P over ~P; odd rounds run once more,
+  as SimpleTest's), and the read-then-write rescan (a cell stuck at the value the pass then wrote
+  read back right: now what was read is written back, flushed and rescanned, Mem-MovingInv's
+  passes too). At 512 bits the 12- and 24-bit loops keep their accumulators on the stack (their
+  scalar-built lines are too big to unroll); every 16-, 32- and 64-bit loop keeps them in
+  registers. Two build lessons: its 132-byte sequence inline in `TestMemoryConfig` made the
+  release build 3x slower (the registry builds ~200 configs by value; boxed, 1m15 against 1m22
+  before), and accumulators declared once for a function of 57 loops left one a stack slot in most
+  of them (declared per loop, none in the common ones).
 
 ## Review (2026-10-11)
 
@@ -355,7 +376,6 @@ chunks, 4×(1+5), 10 min a block, one binary):
 ## Open
 
 - **Mem-SimpleNT** still writes `idx ^ base`, the same in every thread.
-- **Random writes** (stage 5's last): `Mem-Sequence`, not built.
 - **History coverage** is measured offline only (the follow-up). `quiet` holds one pin among
   toggling ones; which pins are neighbours on the board TMR can't know.
 - **One encoder for every width?** The byte-shuffle encoder fits every byte-aligned width (16,

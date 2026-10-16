@@ -269,6 +269,9 @@ fn apply_repetition(test: &TestConfig, config: &mut TestMemoryConfig) {
     if simple {
         config.verify_reps = 5;
         config.write_read_cycles = 4;
+    } else if test.function == "Mem-Sequence" {
+        // Two runs: `W 5R`'s P, then its ~P, as SimpleTest's pairs
+        config.write_read_cycles = 2;
     } else if test.function.starts_with("Mem-SimpleNT") {
         // SimpleTest's four rounds; it runs one write and one verify a round whatever the knobs say
         config.write_read_cycles = 4;
@@ -282,6 +285,42 @@ fn apply_repetition(test: &TestConfig, config: &mut TestMemoryConfig) {
     if let Some(reps) = test.test_reps {
         config.test_reps = reps;
     }
+}
+
+/// Mem-Sequence's `sequence` and `order`, on it alone. A step in TM5's stride needs the stride,
+/// from `parameter`; a write no read checks is allowed (write stress), with a warning.
+fn parse_sequence(test: &TestConfig, config: &TestMemoryConfig) -> Result<Option<crate::sequence::Sequence>, String> {
+    if test.function != "Mem-Sequence" {
+        if test.sequence.is_some() || test.order.is_some() {
+            return Err("only Mem-Sequence reads \"sequence\" and \"order\"".to_string());
+        }
+        return Ok(None);
+    }
+    let order = match test.order.as_deref() {
+        None => crate::sequence::Order::Forward,
+        Some(o) => crate::sequence::Order::parse(o).ok_or_else(|| format!("order '{o}': forward, reverse, random or stride"))?,
+    };
+    let sequence = match test.sequence.as_deref() {
+        None => crate::sequence::Sequence::default().with_order(order),
+        Some(text) => crate::sequence::Sequence::parse(text, order)?,
+    };
+    check_sequence(&sequence, config)?;
+    Ok(Some(sequence))
+}
+
+/// A sequence's needs of its test: the stride, if a step walks it. Warns of writes no read checks.
+pub fn check_sequence(sequence: &crate::sequence::Sequence, config: &TestMemoryConfig) -> Result<(), String> {
+    // A stride of 0 (parameter 1 on one channel) is TM5's jump 0: in order, as SimpleTest's
+    let stride = config.parameter_context.as_ref().and_then(|c| c.stride_elements);
+    if sequence.strides() && stride.is_none() {
+        return Err(format!("'{}' walks TM5's stride, which needs the test's \"parameter\" (the stride is channels x \
+            parameter - 1 lines), so a config entry", sequence.name()));
+    }
+    if sequence.unread_writes() {
+        log::warn!("Mem-Sequence '{}': some writes are never read back (two writes in a row, or a write last), so \
+            they stress the bus but find nothing", sequence.name());
+    }
+    Ok(())
 }
 
 /// The numbered mode a Bench pair's name gives: 30 for `Bench-Init-TMR-30` or `Bench-Verify-TMR-30`,
@@ -305,7 +344,8 @@ fn validate_repetition(test: &TestConfig, config: &TestMemoryConfig) -> Result<(
     let (simple, mirror) = (f.starts_with("Mem-SimpleV2") || f == "Mem-Simple" || f == "SimpleTest", f.starts_with("Mem-MirrorV2"));
     // `run_phased_test` reads write_read_cycles; only SimpleV2 and MirrorV2 pass it the other two
     let native_bench = crate::tests::native_bench_tests().iter().any(|(init, verify, _, _)| f == *init || f == *verify);
-    let rounds = simple || mirror || f.starts_with("Mem-SimpleNT") || f == "Seal-Check" || (f.starts_with("Bench-") && !native_bench);
+    let rounds = simple || mirror || f.starts_with("Mem-SimpleNT") || f == "Seal-Check" || f == "Mem-Sequence"
+        || (f.starts_with("Bench-") && !native_bench);
     for (name, set, value, read) in [
         ("verify_reps", test.verify_reps.is_some(), config.verify_reps, simple || mirror),
         ("test_reps", test.test_reps.is_some(), config.test_reps, simple || mirror),
@@ -555,11 +595,19 @@ pub struct TestConfig {
     #[serde(default)]
     pub test_reps: Option<u32>,             // Test-op repetitions before verifying (MirrorMove: round trips)
 
-    /// Mem-SimpleV2: the native pattern program (pattern spec v2, `crate::pattern`), family names
+    /// Mem-SimpleV2 and Mem-Sequence: the native pattern program (pattern spec v2, `crate::pattern`), family names
     /// in order, e.g. `["ident", "switch", "random", "switch"]`; each runs as a P/~P pair. Unset
     /// with no `pattern_mode` is the default program; a TM5 import sets it from the `.cfg`'s mode.
     #[serde(default)]
     pub program: Option<Vec<String>>,
+
+    /// Mem-Sequence: its passes, e.g. `"W 2R RW 2R@random"` (`crate::sequence`), and the order the
+    /// steps that name none take (`forward`, `reverse`, `random` or `stride`). Unset: `W 5R`,
+    /// forward. `write_read_cycles` is how many times the sequence runs a chunk.
+    #[serde(default)]
+    pub sequence: Option<String>,
+    #[serde(default)]
+    pub order: Option<String>,
 
     /// TMR's numbered pattern modes (pattern spec 1, `pattern_gen::MODES`): 0-2 TM5-derived; 10,
     /// 11, 13, 20 and 30 TMR's. A native family's number (`pattern::Family::number`) runs it alone.
@@ -687,7 +735,7 @@ pub struct TestParameterContext {
 pub fn interpret_tm5_parameter_with_channels(function: &str, parameter: u32, channels: u32) -> TestParameterContext {
     match function {
         // Every width: Mem-SimpleV2-128/256/512/Auto stride too (TODO 93)
-        f if f == "SimpleTest" || f == "Mem-Simple" || f.starts_with("Mem-SimpleV2") => {
+        f if f == "SimpleTest" || f == "Mem-Simple" || f.starts_with("Mem-SimpleV2") || f == "Mem-Sequence" => {
             if parameter == 0 {
                 TestParameterContext {
                     raw_parameter: parameter,
@@ -947,16 +995,22 @@ impl ModernConfig {
         // the entry names none
         let native = test.pattern_mode.and_then(crate::pattern::Family::from_number);
         let pattern_mode = if native.is_some() { None } else { test.pattern_mode.or_else(|| bench_mode(&test.function)) };
+        let is_sequence = test.function == "Mem-Sequence";
+        let native_test = test.function.starts_with("Mem-SimpleV2") || is_sequence;
+        if is_sequence && pattern_mode.is_some() {
+            return Err(Self::test_error(i, test, "Mem-Sequence runs native patterns only: give it a \"program\", or a native \
+                family's number as its pattern_mode".to_string()));
+        }
         let program = match &test.program {
             None => match native {
-                Some(_) if !test.function.starts_with("Mem-SimpleV2") => {
-                    return Err(Self::test_error(i, test, format!("only the Mem-SimpleV2 tests run native patterns (pattern_mode {})",
-                        test.pattern_mode.unwrap_or(0))));
+                Some(_) if !native_test => {
+                    return Err(Self::test_error(i, test, format!("only the Mem-SimpleV2 tests and Mem-Sequence run native patterns \
+                        (pattern_mode {})", test.pattern_mode.unwrap_or(0))));
                 }
                 native => native.map(crate::pattern::Program::single),
             },
-            Some(_) if !test.function.starts_with("Mem-SimpleV2") => {
-                return Err(Self::test_error(i, test, "only the Mem-SimpleV2 tests read \"program\"".to_string()));
+            Some(_) if !native_test => {
+                return Err(Self::test_error(i, test, "only the Mem-SimpleV2 tests and Mem-Sequence read \"program\"".to_string()));
             }
             Some(_) if test.pattern_mode.is_some() => {
                 return Err(Self::test_error(i, test, "a test takes \"program\" (native patterns) or \"pattern_mode\" (TMR's numbered modes), not both".to_string()));
@@ -1011,6 +1065,9 @@ impl ModernConfig {
             if let Some(v) = test.mirror { ctx.mirror = Some(v); }
         }
 
+        if let Some(sequence) = parse_sequence(test, &config).map_err(|e| Self::test_error(i, test, e))? {
+            config = config.with_sequence(sequence);
+        }
         apply_repetition(test, &mut config);
         validate_repetition(test, &config).map_err(|e| Self::test_error(i, test, e))?;
 
@@ -1834,7 +1891,7 @@ mod tests {
         assert_eq!((config.pattern_mode, config.native_program()), (None, Some(crate::pattern::Program::single(crate::pattern::Family::Switch))));
         let mut mirror = modern.clone();
         mirror.test_sequence[0].function = "Mem-MirrorV2-Auto".into();
-        assert!(mirror.get_test_configs().unwrap_err().contains("only the Mem-SimpleV2 tests run native patterns"));
+        assert!(mirror.get_test_configs().unwrap_err().contains("only the Mem-SimpleV2 tests and Mem-Sequence run native patterns"));
 
         // A program must name families TMR has, on a SimpleTest
         modern.test_sequence[0].pattern_mode = None;
@@ -1856,6 +1913,35 @@ mod tests {
         }
         modern.test_sequence[0].pattern_mode = Some(20);
         assert_eq!(modern.get_test_configs().unwrap()[0].1.pattern_mode, Some(20), "the entry's mode wins");
+    }
+
+    /// Mem-Sequence's `sequence` and `order` load on it alone; a stride step needs a parameter; it
+    /// runs native patterns only (TODO 97).
+    #[test]
+    fn mem_sequence_entries() {
+        let mut modern = legacy(100, vec![test(1, "SimpleTest", 100, 16)]).to_modern_config().unwrap();
+        let entry = |sequence: Option<&str>, order: Option<&str>| TestConfig {
+            enabled: true, function: "Mem-Sequence".to_string(),
+            sequence: sequence.map(String::from), order: order.map(String::from), ..Default::default()
+        };
+        let mut load = |t: TestConfig| {
+            modern.test_sequence[0] = t;
+            modern.get_test_configs().map(|c| c[0].1.clone())
+        };
+        let config = load(entry(Some("W 2R RW 2R@random"), Some("reverse"))).unwrap();
+        let seq = config.sequence();
+        assert_eq!((seq.name(), seq.order), ("W 2R RW 2R@random".to_string(), crate::sequence::Order::Reverse));
+        assert_eq!(load(entry(None, None)).unwrap().sequence().name(), "W 5R");
+        assert!(load(entry(Some("W R@stride"), None)).unwrap_err().contains("parameter"));
+        assert!(load(TestConfig { parameter: Some(8), ..entry(Some("W R@stride"), None) }).is_ok());
+        assert!(load(entry(Some("W 2W"), None)).unwrap_err().contains("never reads"));
+        assert!(load(entry(None, Some("sideways"))).unwrap_err().contains("forward, reverse"));
+        assert!(load(TestConfig { pattern_mode: Some(30), ..entry(None, None) }).unwrap_err().contains("native patterns only"));
+        let quiet = load(TestConfig { pattern_mode: Some(32), ..entry(None, None) }).unwrap();
+        assert_eq!(quiet.native_program(), Some(crate::pattern::Program::single(crate::pattern::Family::Quiet)));
+        assert!(load(TestConfig { program: Some(vec!["header".into()]), ..entry(None, None) }).is_ok());
+        let not_it = TestConfig { enabled: true, function: "Mem-StuckBit".into(), sequence: Some("W R".into()), ..Default::default() };
+        assert!(load(not_it).unwrap_err().contains("only Mem-Sequence reads"));
     }
 
     /// The audit's verification-free settings are refused: a correctness test that never verifies,

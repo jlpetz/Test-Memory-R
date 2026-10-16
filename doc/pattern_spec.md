@@ -206,7 +206,9 @@ profile gives 46.7% (7/15) at 32-bit beats, 22.6% (7/31) at 16, and 0% at 128. R
 `transfer_bits` as null and the source as unknown.
 
 **Program or mode.** A JSON test takes `program` or `pattern_mode`, not both (a load error). The
-command line's `pattern-mode=` replaces any test's program. A `.cfg`'s Pattern Mode is TM5's
+command line's `pattern-mode=` replaces every SimpleTest's program; a numbered mode leaves
+Mem-Sequence's (it runs native patterns only), and a native family's number replaces it too. A
+`.cfg`'s Pattern Mode is TM5's
 and imports as below; one of TMR's own (10, 11, 13, 20, 30) stays that numbered mode, and a native
 family's number (Families) is that family alone.
 
@@ -218,6 +220,12 @@ family's number (Families) is that family alone.
   `Mem-SimpleV2-Auto`. Switching runs every suite cycle, the mode's intent and mixed data every
   other.
 - **`patterns=legacy`:** the mode stays TMR's numbered mode on the scalar `Mem-SimpleV2`.
+
+**Mem-Sequence** takes the program's phases as SimpleTest does, `wrc` being the rounds it writes
+a chunk a cycle (`Sequence::rounds`), from `g = (c - 1) * wrc`. Each pass leaves the chunk holding
+round `r`: a `W` writes the next round, `r = g` and `g + 1`; an `RW` checks round `r` and writes
+its inverse, round `r ^ 1`, which is the next round (and `g` moves on) when `r` was a pair's P; a
+read checks round `r`. A fill, when the first pass reads, is a `W`.
 
 ## The seal (spec v2)
 

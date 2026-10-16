@@ -13,7 +13,7 @@ use crate::tests::{
     simple_test_nt_auto_multi,
     cache_busting_multi,
     random_torture_multi,
-    stride_access_multi, block_move_multi, moving_inversions_multi, modulo_x_multi,
+    stride_access_multi, block_move_multi, moving_inversions_multi, modulo_x_multi, sequence_auto_multi,
     // v2 tests
     simple_test_v2_multi,
     simple_test_v2_128_multi, simple_test_v2_256_multi, simple_test_v2_512_multi,
@@ -142,6 +142,9 @@ pub struct TestRunOverrides<'a> {
     pub mirror_override: Option<crate::config::MirrorMode>,
     /// Override the pattern-generation mode.
     pub pattern_mode_override: Option<u32>,
+    /// Override Mem-Sequence's passes and default order (`sequence=`, `order=`).
+    pub sequence_override: Option<&'a str>,
+    pub order_override: Option<&'a str>,
     /// Override the verify-repetition count.
     pub verify_reps_override: Option<u32>,
     /// Override the test-repetition count.
@@ -267,26 +270,55 @@ impl std::fmt::Display for MemoryEffect {
 }
 
 /// The command line's `pattern-mode=`. On a SimpleTest it replaces the native program, which would
-/// otherwise win and leave the mode reported but not run. A native family's number runs the family
-/// alone on every SimpleTest and leaves the other tests as they were; with no SimpleTest in the
-/// plan it changes nothing, and says so.
+/// otherwise win and leave the mode reported but not run. A numbered mode goes on every test but
+/// Mem-Sequence, which runs native patterns only and keeps its program. A native family's number
+/// runs the family alone on every SimpleTest and Mem-Sequence and leaves the other tests as they
+/// were; with neither in the plan it changes nothing, and says so.
 fn apply_pattern_mode(defs: &mut [TestDefinition], mode: u32) {
     let Some(family) = crate::pattern::Family::from_number(mode) else {
         for def in defs.iter_mut() {
+            if def.actual_name == "Mem-Sequence" {
+                log::info!("pattern-mode={mode} is a numbered mode, and Mem-Sequence runs native patterns only: it keeps its program");
+                continue;
+            }
             def.config.pattern_mode = Some(mode);
             def.config.program = None;
         }
         return;
     };
-    let mut simple = defs.iter_mut().filter(|d| d.actual_name.starts_with("Mem-SimpleV2")).peekable();
-    if simple.peek().is_none() {
-        log::warn!("pattern-mode={mode} is the native `{}` family, which only the SimpleTests run, and this plan has \
-            none: it changes nothing", family.name());
+    let mut native = defs.iter_mut().filter(|d| d.actual_name.starts_with("Mem-SimpleV2") || d.actual_name == "Mem-Sequence")
+        .peekable();
+    if native.peek().is_none() {
+        log::warn!("pattern-mode={mode} is the native `{}` family, which only the SimpleTests and Mem-Sequence run, and \
+            this plan has neither: it changes nothing", family.name());
     }
-    for def in simple {
+    for def in native {
         def.config.pattern_mode = None;
         def.config.program = Some(crate::pattern::Program::single(family));
     }
+}
+
+/// The command line's `sequence=` and `order=`, on every Mem-Sequence step: `sequence=` replaces
+/// its passes, `order=` the order its steps take when they name none. Checked as a config's are.
+fn apply_sequence(defs: &mut [TestDefinition], sequence: Option<&str>, order: Option<&str>) -> Result<(), String> {
+    let order = order.map(|o| crate::sequence::Order::parse(o).ok_or_else(|| format!("order={o}: forward, reverse, random or stride")))
+        .transpose()?;
+    let mut any = false;
+    for def in defs.iter_mut().filter(|d| d.actual_name == "Mem-Sequence") {
+        let now = def.config.sequence();
+        let order = order.unwrap_or(now.order);
+        let next = match sequence {
+            Some(text) => crate::sequence::Sequence::parse(text, order).map_err(|e| format!("sequence={text}: {e}"))?,
+            None => now.with_order(order),
+        };
+        crate::config::check_sequence(&next, &def.config).map_err(|e| format!("{}: {e}", def.display_name))?;
+        def.config.sequence = Some(Box::new(next));
+        any = true;
+    }
+    if !any {
+        log::warn!("sequence= and order= set Mem-Sequence's passes, and this plan has no Mem-Sequence: they change nothing");
+    }
+    Ok(())
 }
 
 /// A native SimpleTest that writes first writes each pattern as a pair, P then its inverse ~P, in
@@ -303,6 +335,22 @@ fn pair_native_rounds(defs: &mut [TestDefinition]) {
             log::warn!("{}: write_read_cycles {wrc} is odd, but native patterns are written in pairs (each pattern, then \
                 its inverse), so it runs {}", def.display_name, wrc + 1);
             def.config.write_read_cycles = wrc + 1;
+        }
+        // Mem-Sequence: its program rounds a chunk (`Sequence::rounds`), the same way, where one
+        // more run makes them even
+        if def.actual_name == "Mem-Sequence" {
+            let seq = def.config.sequence();
+            let reps = wrc.max(1);
+            if seq.rounds(reps) % 2 == 1 {
+                if seq.rounds(reps + 1) % 2 == 0 {
+                    log::warn!("{}: '{}' {reps} times writes an odd number of rounds, but native patterns are written in \
+                        pairs (each pattern, then its inverse), so it runs {} times", def.display_name, seq.name(), reps + 1);
+                    def.config.write_read_cycles = reps + 1;
+                } else {
+                    log::warn!("{}: '{}' writes an odd number of rounds however many times it runs, so the last pattern a \
+                        chunk gets each cycle goes without its inverse", def.display_name, seq.name());
+                }
+            }
         }
     }
 }
@@ -574,6 +622,8 @@ pub fn run_tests_with_layout_and_timing_filtered(
         seal_width_override,
         mirror_override,
         pattern_mode_override,
+        sequence_override,
+        order_override,
         verify_reps_override,
         test_reps_override,
         wrc_override,
@@ -639,6 +689,13 @@ pub fn run_tests_with_layout_and_timing_filtered(
     if let Some(mode) = pattern_mode_override {
         log::info!("Applying CLI pattern-mode override: {}", mode);
         apply_pattern_mode(&mut test_definitions, mode);
+    }
+    if (sequence_override.is_some() || order_override.is_some())
+        && let Err(e) = apply_sequence(&mut test_definitions, sequence_override, order_override)
+    {
+        println!("❌ Config error: {e}");
+        log::error!(target: crate::console::FILE_ONLY_TARGET, "Config error: {e}");
+        return RunStatus::NotRun;
     }
 
     // Apply verify-reps override if provided
@@ -1500,9 +1557,14 @@ fn execute_test_cycle(ctx: &CycleContext, cycle: u64) -> Option<RunOutcome> {
             let mode_str = match test_def.config.pattern_mode {
                 Some(m @ 0..=2) => format!("TM5-{m}"),
                 Some(m) => format!("TMR-{m}"),
-                // A native program (pattern spec v2)
+                // A native program (pattern spec v2), and Mem-Sequence's passes
                 None if test_def.actual_name.starts_with("Mem-SimpleV2") => {
                     test_def.config.native_program().map_or("-".to_string(), |p| p.name())
+                }
+                None if test_def.actual_name == "Mem-Sequence" => {
+                    let seq = test_def.config.sequence();
+                    format!("{}, sequence={} (order={})", test_def.config.native_program().map_or("-".to_string(), |p| p.name()),
+                            seq.name(), seq.order.name())
                 }
                 None => "-".to_string(),
             };
@@ -2409,6 +2471,22 @@ fn create_test_definitions(cache_info: &CacheInfo) -> Vec<TestDefinition> {
                 ChunkMode::Cache { target: CacheTarget::Dram { scale: 2.0 } }
             ).with_timing(TestTiming::duration_only(30))
              .with_memory_type(None)
+        ),
+
+        // A configurable sequence of writes, reads and read-then-writes in an order (TODO 97):
+        // SimpleTest's write and reads, a pass that reads and writes line by line, and reads in a
+        // random order, with chunks twice the L3, so each pass reaches DRAM
+        (
+            "Mem-Sequence",
+            TestFunction::MultiBlock(sequence_auto_multi),
+            TestMemoryConfig::new(
+                ExtentMode::FullAllocation,
+                ChunkMode::Cache { target: CacheTarget::Dram { scale: 2.0 } }
+            ).with_timing(TestTiming::duration_only(30))
+             .with_memory_type(None)
+             .with_write_read_cycles(2)
+             .with_sequence(crate::sequence::Sequence::parse("W 2R RW 2R@random", crate::sequence::Order::Forward)
+                 .expect("a valid sequence"))
         ),
 
         (
@@ -5421,6 +5499,10 @@ mod tests {
             edit(&mut def);
             def
         };
+        let sequence = |text: &'static str| move |d: &mut TestDefinition| {
+            d.actual_name = "Mem-Sequence";
+            d.config = d.config.clone().with_sequence(crate::sequence::Sequence::parse(text, crate::sequence::Order::Forward).unwrap());
+        };
         let mut defs = vec![
             with(1, &|_| {}),
             with(3, &|_| {}),
@@ -5428,10 +5510,15 @@ mod tests {
             with(3, &|d| d.config.pattern_mode = Some(30)),
             with(3, &|d| d.config.test_reps = 0),
             with(3, &|d| d.actual_name = "Mem-MirrorV2-Auto"),
+            // Mem-Sequence: one W a run, an odd 3 runs, so 4; W and RW, 2 rounds a run, stay;
+            // a fill and two Ws a run are odd however many runs, so they stay too
+            with(3, &sequence("W 5R")),
+            with(3, &sequence("W 2R RW 2R")),
+            with(1, &sequence("R 2W R")),
         ];
         pair_native_rounds(&mut defs);
         let rounds: Vec<u32> = defs.iter().map(|d| d.config.write_read_cycles).collect();
-        assert_eq!(rounds, [2, 4, 4, 3, 3, 3]);
+        assert_eq!(rounds, [2, 4, 4, 3, 3, 3, 4, 3, 1]);
         // The built-in suite names whole pairs, so a run without a config warns of none (review A)
         let mut builtin = create_test_definitions(crate::tests::get_cache_info());
         let before: Vec<u32> = builtin.iter().map(|d| d.config.write_read_cycles).collect();
@@ -5534,6 +5621,96 @@ mod tests {
         }
     }
 
+    /// The phase a Mem-Sequence chunk ends a cycle on: its last write's, inverted by each
+    /// read-then-write since.
+    fn sequence_end_phase(def: &TestDefinition, cycle: u32) -> crate::pattern::Phase {
+        let seq = def.config.sequence();
+        let reps = def.config.write_read_cycles.max(1);
+        let rounds = seq.rounds(reps);
+        let program = def.config.native_program().unwrap();
+        let beat = crate::pattern::transfer_beat().0;
+        let first = u64::from(cycle - 1) * u64::from(rounds);
+        let (mut current, mut next) = (first, first);
+        if seq.reads_first() {
+            (current, next) = crate::sequence::round_after(crate::sequence::Op::Write, current, next);
+        }
+        for _ in 0..reps {
+            for step in seq.steps() {
+                for _ in 0..step.count {
+                    (current, next) = crate::sequence::round_after(step.op, current, next);
+                }
+            }
+        }
+        program.phase(&def.config.epoch, rounds, current, crate::pattern::Schedule::Rounds, beat)
+    }
+
+    /// Mem-Sequence in every order and with every step: each pass visits every line (an
+    /// untouched word would fail a read), every read finds what the last write left, inverted by
+    /// each read-then-write, and the chunk ends on that phase's image. Sealed and not; over
+    /// overlapping chunks, and a stride (TODO 97).
+    #[test]
+    fn mem_sequence_runs_every_order_and_step() {
+        let mut region = Region::new(&[256 * KIB, 256 * KIB, 128 * KIB]);
+        let words = 640 * KIB / 8;
+        let kernel = crate::seal::SealKernel::detect();
+        let (base_def, test_fn) = suite().into_iter().find(|(d, _)| d.display_name == "Mem-Sequence").unwrap();
+        let stride = crate::config::TestParameterContext { stride_cachelines: Some(15), stride_elements: Some(120), ..Default::default() };
+        let mut ran = 0;
+        for (text, order) in [("W R", "forward"), ("W R", "reverse"), ("W R", "random"), ("W R", "stride"),
+                              ("W@random R RW R@reverse", "forward"), ("2R W RW@random 2R@random", "forward"),
+                              ("W 2R RW 2R@random", "forward"), ("W RW@stride R@random RW R", "reverse")] {
+            for sealed in [false, true] {
+                let mut def = base_def.clone();
+                def.config.chunk_mode = ChunkMode::Absolute { size_bytes: 68 * KIB };
+                def.config.parameter_context = Some(stride.clone());
+                def.config.epoch = crate::pattern::StepEpoch { seed: 9, suite_cycle: 3, step: 2 };
+                let order = crate::sequence::Order::parse(order).unwrap();
+                def.config = def.config.with_sequence(crate::sequence::Sequence::parse(text, order).unwrap());
+                set_step_seals(std::slice::from_mut(&mut def), kernel, sealed);
+                if sealed {
+                    unsafe { kernel.fill(region.words().as_mut_ptr(), 0, words) };
+                } else {
+                    region.words().fill(UNTOUCHED);
+                }
+                let what = format!("'{text}' order {order:?}, sealed {sealed}");
+                let stats = unsafe { test_fn(&region.blocks, 0, ErrorMode::Log, &def.config.timing, &def.config, None) };
+                assert_eq!((stats.error_count, stats.seal_errors, stats.alarms), (0, 0, 0), "{what}");
+                if sealed {
+                    assert_eq!(unsafe { kernel.check(region.words().as_ptr(), 0, words, "test") }, 0, "{what}: left unsealed");
+                } else {
+                    let phase = sequence_end_phase(&def, 1);
+                    let want: Vec<u64> = (0..words).map(|i| phase.line((i / 8) as u64)[i % 8]).collect();
+                    let bad = region.words().iter().zip(&want).position(|(g, w)| g != w);
+                    assert!(bad.is_none(), "{what}: word {} isn't the end phase's", bad.unwrap());
+                }
+                ran += 1;
+            }
+        }
+        assert_eq!(ran, 16);
+        assert!(region.guards_intact());
+    }
+
+    /// `sequence=` and `order=` reach every Mem-Sequence step and no other, checked as a config's
+    /// are (TODO 97).
+    #[test]
+    fn the_command_lines_sequence_reaches_mem_sequence() {
+        let suite = suite();
+        let find = |name: &str| suite.iter().find(|(d, _)| d.display_name == name).map(|(d, _)| d.clone()).unwrap();
+        let mut defs = vec![find("Mem-Sequence"), find("Mem-StuckBit")];
+        apply_sequence(&mut defs, Some("W,4R,RW@random,R"), None).unwrap();
+        let seq = defs[0].config.sequence();
+        assert_eq!((seq.name(), seq.order), ("W 4R RW@random R".to_string(), crate::sequence::Order::Forward));
+        assert!(defs[1].config.sequence.is_none());
+        apply_sequence(&mut defs, None, Some("reverse")).unwrap();
+        assert_eq!(defs[0].config.sequence().name(), "W 4R RW@random R", "order= keeps the steps");
+        assert_eq!(defs[0].config.sequence().order, crate::sequence::Order::Reverse);
+        assert!(apply_sequence(&mut defs, Some("W R@stride"), None).unwrap_err().contains("parameter"), "no stride");
+        // A stride of 0 (parameter 1 on one channel) is TM5's jump 0, in order
+        defs[0].config.parameter_context = Some(crate::config::interpret_tm5_parameter_with_channels("Mem-Sequence", 1, 1));
+        assert!(apply_sequence(&mut defs, Some("W R@stride"), None).is_ok());
+        assert!(apply_sequence(&mut defs, None, Some("sideways")).is_err());
+    }
+
     /// `pattern-mode=` sets a numbered mode on every test, replacing a SimpleTest's program; a
     /// native family's number runs that family alone on the SimpleTests and leaves the rest (the
     /// second review).
@@ -5541,14 +5718,15 @@ mod tests {
     fn the_command_lines_pattern_mode_reaches_the_tests_it_names() {
         let suite = suite();
         let find = |name: &str| suite.iter().find(|(d, _)| d.display_name == name).map(|(d, _)| d.clone()).unwrap();
-        let (simple, bench) = (native_tests().into_iter().next().unwrap().0, find("Bench-Init-TMR-30"));
+        let (simple, bench, sequence) = (native_tests().into_iter().next().unwrap().0, find("Bench-Init-TMR-30"), find("Mem-Sequence"));
         let modes = |defs: &[TestDefinition]| defs.iter().map(|d| (d.config.pattern_mode, d.config.native_program())).collect::<Vec<_>>();
-        let mut defs = vec![simple.clone(), bench.clone()];
+        let mut defs = vec![simple.clone(), bench.clone(), sequence];
         apply_pattern_mode(&mut defs, 31);
         let switch = crate::pattern::Program::single(crate::pattern::Family::Switch);
-        assert_eq!(modes(&defs), [(None, Some(switch)), (Some(30), None)]);
+        assert_eq!(modes(&defs), [(None, Some(switch)), (Some(30), None), (None, Some(switch))]);
+        // A numbered mode: not on Mem-Sequence, which keeps its native program
         apply_pattern_mode(&mut defs, 20);
-        assert_eq!(modes(&defs), [(Some(20), None), (Some(20), None)]);
+        assert_eq!(modes(&defs), [(Some(20), None), (Some(20), None), (None, Some(switch))]);
         // No SimpleTest: it changes nothing (and warns)
         let mut defs = vec![bench];
         apply_pattern_mode(&mut defs, 31);

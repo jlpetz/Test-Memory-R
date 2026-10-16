@@ -148,8 +148,17 @@ pub fn create_test_configuration_report_v2(
             (None, None) => "default".to_string(),  // Match old behavior
         };
 
+        // Mem-Sequence's runs of its passes: `2×(W 2R RW 2R@random)`, the default order apart
         let per_chunk = match crate::tests::effective_reps(test_def.actual_name, config) {
             Some((wrc, test_reps, verify_reps)) => format!("{wrc}×({test_reps}+{verify_reps})"),
+            None if test_def.actual_name == "Mem-Sequence" => {
+                let seq = config.sequence();
+                let order = match seq.order {
+                    crate::sequence::Order::Forward => String::new(),
+                    other => format!(" @{}", other.name()),
+                };
+                format!("{}×({}){order}", config.write_read_cycles.max(1), seq.name())
+            }
             None => "-".to_string(),
         };
 
