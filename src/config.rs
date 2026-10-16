@@ -85,6 +85,10 @@ pub struct SystemConfig {
     /// The seal kernels' SIMD width: `"auto"` (the default, the widest), `"128"`, `"256"`, `"512"`.
     #[serde(default)]
     pub seal_width: Option<String>,
+    /// The workers' scheduling priority (TODO 77): `"normal"`, `"high"` (the default) or
+    /// `"realtime"`; `priority=` overrides it.
+    #[serde(default)]
+    pub thread_priority: Option<String>,
 }
 
 // Define CpuPinningConfig in config.rs
@@ -842,6 +846,7 @@ impl ModernConfig {
             ("cpu-stride", "cpu_pinning.stride_spec", sys.cpu_pinning.stride_spec.as_str()),
             ("seal", "seal", sys.seal.as_deref().unwrap_or("tmr")),
             ("seal-width", "seal_width", sys.seal_width.as_deref().unwrap_or("auto")),
+            ("priority", "thread_priority", sys.thread_priority.as_deref().unwrap_or("high")),
         ];
         for (cli_key, json_key, value) in checks {
             registry.parse_arg(&format!("{cli_key}={value}"))
@@ -921,7 +926,6 @@ impl ModernConfig {
         TestSuiteTiming {
             global_cycles: self.system.timing.global_cycles,
             global_duration_secs: self.system.timing.global_duration_secs,
-            per_test_cycle_multiplier: self.system.timing.default_test_cycles.unwrap_or(1) as f64,
         }
     }
     
@@ -1132,6 +1136,7 @@ pub fn create_demo_config() -> Self {
             channels: 2,
             seal: None,
             seal_width: None,
+            thread_priority: None,
         },
         test_sequence: vec![
             // Critical: Full memory stuck bit test
@@ -1286,6 +1291,7 @@ pub fn create_demo_config() -> Self {
                 channels: 2,
                 seal: None,
                 seal_width: None,
+                thread_priority: None,
 	            },
             test_sequence: vec![
                 TestConfig {
@@ -1559,6 +1565,7 @@ impl LegacyConfig {
             channels: self.memory_setup.channels,
             seal: Some(if sealed { "tmr" } else { "off" }.to_string()),
             seal_width: None,
+            thread_priority: None,
         },
         test_sequence,
         // Without a Test Sequence, every enabled test once, in file order
@@ -2045,11 +2052,16 @@ mod tests {
         let mut bad = config.clone();
         bad.system.memory_strategy.allocation_mode = "max-available".to_string();
         assert!(bad.validate_system().unwrap_err().contains("allocation_mode"));
+        let mut bad = config.clone();
+        bad.system.thread_priority = Some("turbo".to_string());
+        assert!(bad.validate_system().unwrap_err().contains("thread_priority"));
 
         let mut ok = config;
         ok.system.error_mode = "Halt".to_string();
+        ok.system.thread_priority = Some("Realtime".to_string());
         ok.validate_system().unwrap();
         assert!(matches!(ok.to_error_mode(), ErrorMode::Halt));
+        assert_eq!("Realtime".parse::<crate::runner::ThreadPriority>(), Ok(crate::runner::ThreadPriority::Realtime));
     }
 
     /// TODO 79 B2: `Time (%)` is per-chunk dwell, not whole-extent passes.

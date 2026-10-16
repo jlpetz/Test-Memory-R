@@ -385,6 +385,12 @@ impl ParamRegistry {
             parser: |v| Ok(ParamValue::String(v.to_string())),
         });
 
+        params.insert("priority", ParamDef {
+            key: "priority",
+            can_override_config: true,
+            parser: |v| v.parse::<crate::runner::ThreadPriority>().map(|p| ParamValue::String(p.to_string())),
+        });
+
         params.insert("plan", ParamDef {
             key: "plan",
             can_override_config: false,
@@ -525,6 +531,9 @@ pub fn print_help(program_name: &str) {
     println!("  cpu-stride=2                        # Stage 2 SPACING: use every Nth available CPU");
     println!("  cpu-stride=even                     #   ...or spread the requested count evenly across the pool");
     println!("  --disable-pinning                   # Disable CPU thread pinning");
+    println!("  priority=high                       # Worker priority: normal, high (default), realtime");
+    println!("                                      #   realtime is THREAD_PRIORITY_TIME_CRITICAL, the top of the");
+    println!("                                      #   normal range (not the realtime class); leave a core free with it");
     println!("  hugechunk=1GiB                      # First 1GB-page request size, halved on refusal (power of two, >= 1GiB)");
     println!("  largechunk=128MiB                   # First 2MB-page request size, halved on refusal (default 128MiB)");
     println!("  largefloor=16MiB                    # Smallest 2MB-page request (16MiB-1GiB)");

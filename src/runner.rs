@@ -550,7 +550,6 @@ fn set_step_seals(test_definitions: &mut [TestDefinition], kernel: crate::seal::
 pub struct TestSuiteTiming {
     pub global_cycles: Option<u32>,
     pub global_duration_secs: Option<u32>,
-    pub per_test_cycle_multiplier: f64,
 }
 
 impl Default for TestSuiteTiming {
@@ -558,7 +557,6 @@ impl Default for TestSuiteTiming {
         Self {
             global_cycles: Some(3),  // Default 3 cycles to match help text
             global_duration_secs: None,
-            per_test_cycle_multiplier: 1.0,
         }
     }
 }
@@ -568,7 +566,6 @@ impl TestSuiteTiming {
         Self {
             global_cycles: Some(cycles),
             global_duration_secs: None,
-            per_test_cycle_multiplier: 1.0,
         }
     }
     
@@ -576,7 +573,6 @@ impl TestSuiteTiming {
         Self {
             global_cycles: None,
             global_duration_secs: Some(duration_secs),
-            per_test_cycle_multiplier: 1.0,
         }
     }
 }
@@ -970,7 +966,7 @@ pub fn run_tests_with_layout_and_timing_filtered(
         }
     }
 
-    let thread_priority = ThreadPriority::default();
+    let thread_priority = runtime_config.thread_priority;
 
     // The real allocated total while we still own the blocks (`ThreadPool::new` takes them by value
     // below). An outcome: a partially satisfied request still runs, so it can't come from
@@ -4323,6 +4319,7 @@ pub fn detect_runtime_capabilities(alloc_config: &MemoryAllocationConfig) -> Run
             Some(crate::cpu_topology::logical_cpu_ids())
         },
         pin_threads: true,
+        thread_priority: ThreadPriority::default(),
         enhanced_memory_strategy: crate::memory::allocation_strategy::EnhancedMemoryStrategy::default(),
         memory_allocation: alloc_config.clone(),
     }
@@ -4394,15 +4391,26 @@ pub fn set_thread_ideal_processor_ex(_thread_handle: windows::Win32::Foundation:
 /// Relative to TMR's process class, which it leaves at `NORMAL_PRIORITY_CLASS`.
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
 pub enum ThreadPriority {
-    #[expect(dead_code, reason = "no config key selects it yet; see TODO #77 A")]
     Normal,
     #[default]
     High,
     /// `THREAD_PRIORITY_TIME_CRITICAL`: base priority 15, the top of the normal range. Not the
     /// realtime priority *class* (16-31). With a worker on every logical CPU it can still starve
     /// the console and input, so it suits runs that leave cores free.
-    #[expect(dead_code, reason = "no config key selects it yet; see TODO #77 A")]
     Realtime,
+}
+
+/// `priority=` and `system.thread_priority` (TODO 77).
+impl std::str::FromStr for ThreadPriority {
+    type Err = String;
+    fn from_str(s: &str) -> Result<Self, String> {
+        match s.to_ascii_lowercase().as_str() {
+            "normal" => Ok(Self::Normal),
+            "high" => Ok(Self::High),
+            "realtime" => Ok(Self::Realtime),
+            _ => Err(format!("Invalid priority '{s}': normal, high (the default) or realtime")),
+        }
+    }
 }
 
 impl ThreadPriority {

@@ -1097,6 +1097,23 @@ fn run() -> Result<(), Box<dyn std::error::Error>> {
 	let mut runtime_config = detect_runtime_capabilities(&alloc_config);
 	runtime_config.cpu_list = Some(cpu_list);
 	runtime_config.pin_threads = pinning_config.enable_pinning;
+
+	// The workers' priority (TODO 77): priority= over the config's, else High
+	let priority = if params::has_param(&validated_params, "priority") {
+		Some(params::get_string(&validated_params, "priority", "high"))
+	} else {
+		config_opt.as_ref().and_then(|c| c.system.thread_priority.clone())
+	};
+	runtime_config.thread_priority = match priority {
+		Some(p) => p.parse()?,
+		None => crate::runner::ThreadPriority::default(),
+	};
+	if runtime_config.thread_priority == crate::runner::ThreadPriority::Realtime
+		&& runtime_config.cpu_list.as_ref().is_some_and(|cpus| cpus.len() >= crate::cpu_topology::logical_cpu_ids().len())
+	{
+		println!("⚠️  priority=realtime with a worker on every logical CPU: the console and input can freeze \
+		          until the run ends. Leave a core free (skip-cores=1) or use priority=high.");
+	}
 	runtime_config.enhanced_memory_strategy = enhanced_memory_strategy.clone();
 
 	// Extract channels parameter if provided (overrides config default of 2)

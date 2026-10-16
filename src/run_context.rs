@@ -401,7 +401,6 @@ pub struct ExecutionSnapshot {
     /// mistake worth being able to detect.
     pub cycles_requested: Option<u32>,
     pub duration_secs_requested: Option<u32>,
-    pub per_test_cycle_multiplier: f64,
     pub error_mode: String,
     /// Glob filter that selected the plan (`test=Mem-StuckBit*`), if any.
     pub test_filter: Option<String>,
@@ -601,7 +600,6 @@ page_mix,
         let execution = ExecutionSnapshot {
             cycles_requested: suite_timing.global_cycles,
             duration_secs_requested: suite_timing.global_duration_secs,
-            per_test_cycle_multiplier: suite_timing.per_test_cycle_multiplier,
             error_mode: format!("{:?}", error_mode),
             test_filter,
             plan,

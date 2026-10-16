@@ -86,6 +86,8 @@ pub(crate) struct RuntimeConfig {
     /// Pin each worker to its `cpu_list` entry. When false the OS schedules the workers, and
     /// `cpu_list` is only the ids they are numbered by.
     pub pin_threads: bool,
+    /// The workers' scheduling priority (`priority=`, `system.thread_priority`; TODO 77).
+    pub thread_priority: crate::runner::ThreadPriority,
     pub enhanced_memory_strategy: crate::memory::allocation_strategy::EnhancedMemoryStrategy,
     pub memory_allocation: MemoryAllocationConfig,
 }
