@@ -294,3 +294,25 @@ runs: 0 errors, 0 WHEA.
 
 Logs and the comparison script: `%LOCALAPPDATA%\Temp\tmr76\runs_step2\` (`compare2.py`; the
 `*_6ca286d.txt` files are the step-2 build before the accumulator verifies).
+
+## Closing (2026-10-16)
+
+**The gate (TODO 80's): the suite fresh after boot and fragmented, pinned and unpinned.** Stitched
+is the only allocator now, so this was a check, not a decision.
+- Fresh: TODO 97's hardware session, both desktops just restarted, all 1 GiB pages.
+- Fragmented: the owner's two runs on this VM (16 hours up, many builds), `--quick-test
+  test=Mem-* memory=50% cputype=cores cpus=100% skip-cores=0`, one pinned and one with
+  `--disable-pinning`: 33 of 33 tests, 0 errors, 0 WHEA each. 18 x 1 GiB granted, a 19th refused
+  (1450), the rest filled with 2 MiB; 7 GiB on every thread.
+
+**The two "to probe" figures from the 10-05 runs, re-run on this VM, idle:**
+- Lat-L1-Copy: P50 1.3 ns in four runs (three at 4 threads, one at 1; spread 1.00-1.03x) on the
+  24 KiB extent (half the 48 KiB L1), the same as Lat-L1-Read and -Write: an L1 hit, about 5 cycles.
+  10-05's 2.3 ns didn't recur, so it was a disturbance in that run. The copy keeps its source
+  chain and its destination in the extent's two halves, so it never leaves the target tier.
+- Bench-Init-TM5-2: 36.7-37.5k MiB/s in six runs, 0.93x of 10-04's 39.3-39.9k (the same command,
+  binaries from before mode 2 restarted its chain each page). In the same runs Bench-Init-TMR-10
+  wrote 38.7-39.8k, TM5-0 37.4-38.2k and TMR-20 35.3-38.3k: TM5-2 sits about 4% under the
+  simplest writer, in the others' band. What's left fits the per-page restart (a hash each 4 KiB
+  and a serial chain of multiplies); mode 2 runs only under `patterns=legacy` now. Not chased.
+
