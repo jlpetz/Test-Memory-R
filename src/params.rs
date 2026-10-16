@@ -385,6 +385,12 @@ impl ParamRegistry {
             parser: |v| Ok(ParamValue::String(v.to_string())),
         });
 
+        params.insert("plan", ParamDef {
+            key: "plan",
+            can_override_config: false,
+            parser: |v| crate::plans::find(v).map(|p| ParamValue::String(p.name.to_string())),
+        });
+
         Self { params, flags }
     }
 
@@ -483,7 +489,12 @@ pub fn print_help(program_name: &str) {
     println!("  {} --compare-results baseline.json current.json [output.json]", program_name);
     println!("                                          # Compare two test results from .\\results\\");
     println!("  {} --setup-large-pages              # Configure large pages for optimal performance", program_name);
-    println!("  {} --quick-test                     # Run 30-second validation test", program_name);
+    println!("  {} plan=stability                   # The default: the stability tests at the widest width", program_name);
+    println!("  {} plan=quick                       # The stability tests once", program_name);
+    println!("  {} plan=widths                      # Every width of the tests that have them, side by side", program_name);
+    println!("  {} plan=perf                        # Latency and bandwidth", program_name);
+    println!("  {} plan=all                         # Every test in the suite; test= alone picks from it", program_name);
+    println!("  {} --quick-test                     # plan=quick, reserving 60% of available memory", program_name);
     println!("  {} --ram-latency                    # Run DRAM latency tests (6 tests)", program_name);
     println!("  {} --cache-latency                  # Run full cache hierarchy latency tests (12 tests)", program_name);
     println!("  {} test=Spd-*                       # Run tests matching pattern (glob wildcards)", program_name);

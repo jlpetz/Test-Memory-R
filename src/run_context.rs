@@ -430,6 +430,9 @@ pub struct ExecutionSnapshot {
     pub error_mode: String,
     /// Glob filter that selected the plan (`test=Mem-StuckBit*`), if any.
     pub test_filter: Option<String>,
+    /// The built-in plan the tests came from (`stability`, TODO 25); `None` when a config chose
+    /// them, or in results written before plans.
+    pub plan: Option<String>,
     /// Configured memory channels. Feeds SimpleTest's stride formula, so it changes the access
     /// pattern rather than just labelling it.
     pub channels: u32,
@@ -531,6 +534,7 @@ pub struct RunConfigInputs<'a> {
     pub suite_timing: &'a crate::runner::TestSuiteTiming,
     pub error_mode: crate::ErrorMode,
     pub test_filter: Option<String>,
+    pub plan: Option<String>,
     pub channels: u32,
     pub config_name: Option<String>,
     /// The resolved plan — after filtering, overrides, and auto-dispatch.
@@ -556,6 +560,7 @@ impl RunConfigSnapshot {
             suite_timing,
             error_mode,
             test_filter,
+            plan,
             channels,
             config_name,
             tests,
@@ -620,6 +625,7 @@ page_mix,
             per_test_cycle_multiplier: suite_timing.per_test_cycle_multiplier,
             error_mode: format!("{:?}", error_mode),
             test_filter,
+            plan,
             channels,
             pattern_version: crate::pattern::VERSION,
             pattern_seed: Some(format!("{:#018x}", crate::pattern::run_seed())),

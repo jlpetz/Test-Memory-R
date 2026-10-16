@@ -215,6 +215,20 @@ fn run() -> Result<(), Box<dyn std::error::Error>> {
         }
     }
 
+    // plan= (TODO 25): its cycles when none are given. --quick-test names it below; a run that
+    // names no plan, config or filter takes the default when the tests are chosen.
+    let mut plan_param: Option<&'static crate::plans::Plan> = None;
+    for arg in &args {
+        if let Some(name) = arg.strip_prefix("plan=") {
+            plan_param = Some(crate::plans::find(name)?);
+        }
+    }
+    if let Some(cycles) = plan_param.and_then(|p| p.cycles)
+        && !args.iter().any(|a| a.starts_with("cycles="))
+    {
+        args.push(format!("cycles={cycles}"));
+    }
+
     // Validate that all -- flags are recognized before processing
     // This catches typos and deprecated flags early with helpful error messages
     let known_flags = [
@@ -303,9 +317,9 @@ fn run() -> Result<(), Box<dyn std::error::Error>> {
     // This allows CLI overrides to work: --quick-test cycles=2 skip-cores=0
     let has_quick_test = args.iter().any(|a| a == "--quick-test");
     if has_quick_test {
-        println!("🚀 TMR Quick Test Mode");
+        println!("🚀 TMR Quick Test Mode: plan=quick, the stability tests once");
         println!("  Quick test uses reduced memory (60% reserve) for faster validation");
-        println!("  All diagnostics and checks included, CLI overrides supported\n");
+        println!("  CLI overrides supported\n");
 
         // Inject quick-test defaults (only if not already specified)
         let mut quick_defaults = vec![
@@ -313,7 +327,11 @@ fn run() -> Result<(), Box<dyn std::error::Error>> {
             ("cycles", "1"),
             ("skip-cores", "1"),
             ("cpus", "100%"),
+            ("plan", "quick"),
         ];
+        if !args.iter().any(|a| a.starts_with("plan=")) {
+            plan_param = crate::plans::find("quick").ok();
+        }
 
         // Only add defaults that aren't already specified on command line
         for (key, default_value) in quick_defaults.drain(..) {
@@ -1144,6 +1162,12 @@ fn run() -> Result<(), Box<dyn std::error::Error>> {
     // test_filter_param may be set by test=Pattern for CLI filtering
     let final_test_filter = test_filter.as_deref().or(test_filter_param.as_deref());
 
+    let plan = crate::plans::resolve(plan_param, config_opt.is_some(), final_test_filter.is_some())?;
+    if let Some(plan) = plan {
+        let default = if plan_param.is_none() { " (the default)" } else { "" };
+        println!("📋 Plan: {}{default}: {}", plan.name, plan.about);
+    }
+
     let status = run_tests_with_layout_and_timing_filtered(
         enhanced_layout,
         error_mode,
@@ -1152,6 +1176,7 @@ fn run() -> Result<(), Box<dyn std::error::Error>> {
         config_opt.as_ref(),
         crate::runner::TestRunOverrides {
             single_test_filter: final_test_filter,
+            plan,
             seal_override: seal_override.as_deref(),
             seal_width_override: seal_width_override.as_deref(),
             mirror_override,

@@ -135,6 +135,8 @@ pub(crate) fn retain_matching(test_definitions: &mut Vec<TestDefinition>, filter
 pub struct TestRunOverrides<'a> {
     /// Run only the test(s) matching this name/glob filter.
     pub single_test_filter: Option<&'a str>,
+    /// The built-in plan that picks the tests, when no config does (TODO 25); a filter narrows it.
+    pub plan: Option<&'static crate::plans::Plan>,
     /// Override the seal (`seal=tmr|tm5|off`) and its width (`seal-width=`).
     pub seal_override: Option<&'a str>,
     pub seal_width_override: Option<&'a str>,
@@ -617,6 +619,7 @@ pub fn run_tests_with_layout_and_timing_filtered(
 ) -> RunStatus {
     let TestRunOverrides {
         single_test_filter,
+        plan,
         seal_override,
         seal_width_override,
         mirror_override,
@@ -650,8 +653,15 @@ pub fn run_tests_with_layout_and_timing_filtered(
             }
         }
     } else {
-        log::info!("Using default hard-coded test suite");
-        create_test_definitions(cache_info)
+        let plan = plan.unwrap_or(crate::plans::find("all").expect("a built-in plan"));
+        log::info!("Using the built-in suite, plan {}", plan.name);
+        match crate::plans::select(plan, create_test_definitions(cache_info)) {
+            Ok(tests) => tests,
+            Err(e) => {
+                println!("❌ {e}");
+                return RunStatus::NotRun;
+            }
+        }
     };
 
     // Apply single test filter if provided (supports glob patterns and comma-separated patterns)
@@ -659,9 +669,20 @@ pub fn run_tests_with_layout_and_timing_filtered(
         retain_matching(&mut test_definitions, test_name_filter);
 
         if test_definitions.is_empty() {
-            println!("❌ No tests match filter '{}'. Available tests:", test_name_filter);
-            for def in create_test_definitions(cache_info) {
-                println!("  - {}", def.actual_name);
+            match plan.filter(|p| p.tests.is_some()) {
+                // A filter narrows a named plan: list what it could have picked from
+                Some(plan) => {
+                    println!("❌ No test of plan {} matches filter '{}'. Its tests (plan=all for every test):", plan.name, test_name_filter);
+                    for def in crate::plans::select(plan, create_test_definitions(cache_info)).unwrap_or_default() {
+                        println!("  - {}", def.original_name.unwrap_or(def.actual_name));
+                    }
+                }
+                None => {
+                    println!("❌ No tests match filter '{}'. Available tests:", test_name_filter);
+                    for def in create_test_definitions(cache_info) {
+                        println!("  - {}", def.actual_name);
+                    }
+                }
             }
             return RunStatus::NotRun;
         }
@@ -987,6 +1008,7 @@ pub fn run_tests_with_layout_and_timing_filtered(
             suite_timing: &suite_timing,
             error_mode,
             test_filter: single_test_filter.map(|s| s.to_string()),
+            plan: config.is_none().then(|| plan.map_or("all", |p| p.name).to_string()),
             channels: effective_channels,
             config_name: config.map(|c| c.metadata.name.clone()),
             tests: &test_definitions,
@@ -2123,7 +2145,7 @@ fn resolve_auto_dispatch_test(test_name: &str) -> Option<(&'static str, TestFunc
     Some((concrete_name, test_function))
 }
 
-fn create_test_definitions(cache_info: &CacheInfo) -> Vec<TestDefinition> {
+pub(crate) fn create_test_definitions(cache_info: &CacheInfo) -> Vec<TestDefinition> {
     // TSC frequency from the passed cache_info (detected once at startup)
     let tsc_freq = cache_info.tsc_frequency_ghz;
 

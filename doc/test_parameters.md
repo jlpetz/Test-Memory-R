@@ -140,7 +140,7 @@ at 512 bits or 256 (the widest the CPU has).
 | TM5 `.cfg` file | `interpret_tm5_parameter_with_channels()` maps the raw parameter based on test function name |
 | JSON config v2.0 | Direct fields: `"parameter"` for SimpleTest's TM5-style stride, or named fields (`"mirror"`, `"stride_patterns"`, etc.) |
 | CLI override | `mirror=subblocks:4` (or `whole`, `jump:N`) sets every test's mirror mode and leaves its other parameters |
-| Default test suite | Hard-coded in `create_test_definitions()` in `runner.rs` |
+| Default test suite | Hard-coded in `create_test_definitions()` in `runner.rs`; `plan=` (`plans.rs`, TODO 25) picks which of its tests run, keeping their settings: `stability` by default, `quick`, `widths`, `perf`, `all` |
 
 ## Validation
 
