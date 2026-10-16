@@ -1,5 +1,5 @@
 use crate::{ErrorMode, EnhancedMemoryLayout, ProgressTracker, BlockInfo};
-use crate::constants::{HUGE_PAGE_SIZE, LARGE_PAGE_SIZE, REGULAR_PAGE_SIZE, MB};
+use crate::constants::MB;
 use crate::tests::{ExtentMode, ChunkMode, CacheTarget};
 use crate::MemoryAllocationConfig;
 use globset::{Glob, GlobMatcher};
@@ -188,7 +188,6 @@ pub static SHUTDOWN_REQUESTED: AtomicBool = AtomicBool::new(false);
 #[derive(Debug)]
 pub struct AllocationBlock {
     pub buffer: MemoryBuffer,  // Contains BufferInfo with numa_node, page_type, etc.
-    pub block_info: BlockInfo, // Thread assignment and size planning
 }
 
 // Test definition with display name support
@@ -896,66 +895,22 @@ pub fn run_tests_with_layout_and_timing_filtered(
         }
     }
 
-    let allocated_blocks = match allocate_all_blocks_new(&thread_blocks, &runtime_config) {
-        Ok(blocks) => blocks,
-        Err(e) => {
-            println!("❌ Failed to allocate memory blocks: {}\n", e);
-            return RunStatus::NotRun;
-        }
-    };
+    let crate::memory::stitched::StitchedAllocation { blocks: allocated_blocks, spans, elapsed, numa_nodes } =
+        match allocate_all_blocks_new(&thread_blocks, &runtime_config) {
+            Ok(allocation) => allocation,
+            Err(e) => {
+                println!("❌ Failed to allocate memory blocks: {}\n", e);
+                return RunStatus::NotRun;
+            }
+        };
 
-    // Display enhanced block allocation report using new reporting system
+    // The allocation report (TODO 81). The request record goes with it.
     {
         use crate::reporting::{create_console_reporter, converters};
 
-        let report = converters::create_block_allocation_report_from_windows(&allocated_blocks, &thread_blocks);
-
-        let mut reporter = create_console_reporter();
-        if let Err(e) = reporter.report_block_allocation(&report) {
-            log::error!("Failed to display block allocation report: {}", e);
-        }
-    }
-
-    // Display detailed memory allocation tables using the modern reporting system
-    {
-        use crate::reporting::{create_console_reporter, models::{ThreadAllocationReport, ThreadAllocation}};
-        
-        let mut allocations = Vec::new();
-        for (thread_id, blocks) in &allocated_blocks {
-            let total_size: usize = blocks.iter().map(|b| b.buffer.size()).sum();
-            
-            // Calculate actual page counts based on memory size and page type
-            let mut huge_pages = 0u64;
-            let mut large_pages = 0u64;
-            let mut regular_pages = 0u64;
-            
-            for block in blocks {
-                let block_size = block.buffer.size() as u64;
-                if block.buffer.uses_huge_pages() {
-                    // 1GB huge pages
-                    huge_pages += block_size.div_ceil(HUGE_PAGE_SIZE);
-                } else if block.buffer.uses_large_pages() {
-                    // 2MB large pages
-                    large_pages += block_size.div_ceil(LARGE_PAGE_SIZE);
-                } else {
-                    // 4KB regular pages
-                    regular_pages += block_size.div_ceil(REGULAR_PAGE_SIZE);
-                }
-            }
-            
-            allocations.push(ThreadAllocation {
-                thread_id: *thread_id,
-                total_size_bytes: total_size as u64,
-                huge_pages_count: huge_pages,
-                large_pages_count: large_pages,
-                regular_pages_count: regular_pages,
-            });
-        }
-        
-        let report = ThreadAllocationReport { allocations };
-        let mut reporter = create_console_reporter();
-        if let Err(e) = reporter.report_thread_allocations(&report) {
-            log::error!("Failed to display thread allocation table: {}", e);
+        let report = converters::create_allocation_report(spans, elapsed, numa_nodes);
+        if let Err(e) = create_console_reporter().report_allocation(&report) {
+            log::error!("Failed to display the allocation report: {}", e);
         }
     }
 
@@ -4536,7 +4491,7 @@ fn convert_to_latency_level_summary(
 }
 
 /// Every thread's share, from the stitched allocator: one contiguous VA span per thread.
-fn allocate_all_blocks_new(thread_blocks: &HashMap<usize, Vec<BlockInfo>>, runtime_config: &RuntimeConfig) -> Result<HashMap<usize, Vec<AllocationBlock>>, String> {
+fn allocate_all_blocks_new(thread_blocks: &HashMap<usize, Vec<BlockInfo>>, runtime_config: &RuntimeConfig) -> Result<crate::memory::stitched::StitchedAllocation, String> {
     match runtime_config.memory_backend {
         MemoryBackend::VirtualAlloc2 => crate::memory::stitched::chunk_allocate_stitched(thread_blocks, runtime_config),
     }
@@ -4819,7 +4774,6 @@ mod tests {
                         },
                         backend.clone(),
                     ),
-                    block_info: BlockInfo { size_bytes: size, thread_id: 0 },
                 };
                 at += size;
                 block

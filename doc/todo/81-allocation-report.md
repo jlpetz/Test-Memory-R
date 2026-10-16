@@ -50,7 +50,57 @@ Spread (node 0): 14.00-14.00 GiB, 4-8 × 1 GiB pages, smallest block 1-2 GiB
 - Requests, refusals and time: counters in `fill::fill_ladder` and the allocators.
 - The per-thread log lines both allocators print repeat the thread table: move them to debug.
 
-## Fairness per dimension: open
+## Design (agreed 2026-10-16, built the same day)
+
+**Commits, not blocks.** The owner, 2026-10-16: the stitcher commits blocks in each thread's VA
+range, and the report must say which commits make up each thread's range. Each request is now
+recorded against its thread (`stitched::Commit`: size, page size, node, refused;
+`ThreadSpan::commits`), so the report shows what was asked of Windows. Startup only: one small
+entry a request, moved into the report and dropped once it prints; a refusal's error code is in the
+log line where it happened. The memory tests still see only each thread's start and length. The 4096/2048 MB "blocks"
+of the old tables were `power_of_two_split` cuts of the merged runs, made afterwards.
+
+Six tables, each with one job; the old six go once these are in (their code listed for the owner
+before it is deleted).
+
+1. **Memory Allocation, by node** (title: allocator and time): Node, Threads, Target, Allocated,
+   1 GiB, 2 MiB, 4 KiB, Local, Remote, Requests, Refused; a Total row when there is more than one
+   node. A node's Remote is what its own threads got from other nodes. On a one-node machine Local
+   and Remote are hidden and the title says "1 NUMA node, all memory local".
+2. **Commits:** a row per (request size, page size, node asked, home node of the threads asking):
+   Granted, Refused, Threads, Total. A remote row's Node reads `0 for 1`. Node hidden on one node.
+3. **Threads:** Thread, Node, Allocated, 1 GiB, 2 MiB, 4 KiB, Local, Remote, Status. Status names
+   only what is flagged (`🟡 1 GiB -5.00 GiB, remote 512.00 MiB (6.2%)`). Node, Local and Remote
+   hidden on one node.
+4. **Commits by thread:** each page size's granted requests in MB in the order asked, a repeat
+   written `128×44`, one from another node tagged `@N` (`128×44+128@0×4`); Granted; Refused, with
+   their sizes (`1 (1 GiB: 1024)`).
+5. **Fairness by thread:** each dimension's deviation from the median of the other threads
+   (Allocated, 1 GiB, 2 MiB, 4 KiB, Remote, Requests), `=` when equal, flagged in the cell. Kept for
+   debugging; can be switched off later.
+6. **Fairness summary:** a row per dimension: Min, Median, Max, Worst (threads and deviation, `±`
+   when tied on both sides), Verdict.
+5 and 6 print only with more than one thread.
+
+Rules to start (each thread against the median of the others):
+- Allocated: below target, or 1% below the others, ⚠️.
+- 1 GiB: more than one page fewer than the others, 🟡. Only the side that lost out (the owner,
+  2026-10-16): two-sided, a short node flagged every thread.
+- 2 MiB: shown, never flagged. More is the 1 GiB shortfall again; fewer is more 1 GiB or 4 KiB.
+- 4 KiB: any, 🟡 (slower, and tested differently).
+- Remote: any, 🟡; over 10%, ⚠️.
+- Requests (granted and refused): more than twice the others', 🟡 (fed in small pieces).
+
+Units: every byte quantity in GiB/MiB, the 1 GiB deviation too (one form per quantity, where the
+mock-up had "pages"). Requests is the node table's name for the count, so the fairness dimension
+takes it too.
+
+The owner kept the request record visible (2026-10-16: "if in debug logs only, issues may be
+missed"), wanted the per-thread fairness as well as the summary, Refused as its own column, and the
+per-thread commits as their own table (in the thread table they pushed Status off to the side). The
+per-thread allocator log lines are at debug now.
+
+## Fairness per dimension: the options weighed (2026-10-02)
 
 The user's options:
 - A) A third table, one fairness column per dimension (bytes, 1 GiB pages, smallest block,

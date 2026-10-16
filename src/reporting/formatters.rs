@@ -1,10 +1,8 @@
 /// Formatting logic for transforming raw data into presentation-ready format
 /// This layer handles all the "how to format" decisions
 use super::models::*;
-use crate::constants::bytes_to_gib_f64;
+use crate::constants::BYTES_PER_MIB;
 use crate::whea::WheaCounts;
-use std::cmp::Ordering;
-use std::collections::HashMap;
 use std::time::Duration;
 
 /// Footer for the tables whose CPU columns are marked ⚠️ when pinning is off.
@@ -37,8 +35,6 @@ pub trait ReportFormatter: Send + Sync {
     /// Prepare thread timing deviation table
     fn prepare_thread_timing_table(&self, report: &ThreadTimingReport) -> TableData;
     
-    /// Prepare thread allocation table
-    fn prepare_thread_allocation_table(&self, report: &ThreadAllocationReport) -> TableData;
     
     /// Prepare performance by thread table
     fn prepare_performance_by_thread_table(&self, report: &PerformanceByThreadReport) -> TableData;
@@ -78,12 +74,13 @@ pub trait ReportFormatter: Send + Sync {
     fn prepare_errors_by_step_table(&self, report: &FinalTestSummaryReport) -> TableData;
     fn prepare_failing_bits_table(&self, report: &FinalTestSummaryReport) -> TableData;
     
-    /// Prepare block allocation report tables (Option B layout - separate tables)
-    fn prepare_block_size_distribution_table(&self, report: &BlockAllocationReport) -> TableData;
-    fn prepare_page_type_summary_table(&self, report: &BlockAllocationReport) -> TableData;
-    fn prepare_thread_block_allocation_table(&self, report: &BlockAllocationReport) -> TableData;
-    fn prepare_numa_distribution_table(&self, report: &BlockAllocationReport) -> TableData;
-    fn prepare_allocation_fairness_table(&self, report: &BlockAllocationReport) -> TableData;
+    /// The allocation report's tables (TODO 81)
+    fn prepare_allocation_nodes_table(&self, report: &AllocationReport) -> TableData;
+    fn prepare_allocation_commits_table(&self, report: &AllocationReport) -> TableData;
+    fn prepare_allocation_threads_table(&self, report: &AllocationReport) -> TableData;
+    fn prepare_thread_commits_table(&self, report: &AllocationReport) -> TableData;
+    fn prepare_fairness_by_thread_table(&self, report: &AllocationReport) -> TableData;
+    fn prepare_fairness_summary_table(&self, report: &AllocationReport) -> TableData;
 
     /// Prepare latency test summary tables (multi-threaded results)
     fn prepare_latency_per_thread_table(&self, level: &LatencyLevelSummary) -> TableData;
@@ -145,6 +142,165 @@ impl DefaultFormatter {
         let whea_total = whea.map_or(0, |w| w.total);
         row.push(self.pass_cell(errors == 0 && whea_total == 0));
     }
+
+    fn bytes_or_dash(&self, bytes: u64) -> String {
+        if bytes == 0 { "-".to_string() } else { self.format_bytes(bytes) }
+    }
+
+    /// Remote bytes and their share of the allocation, `0.50 GiB (3.3%)`, or `-`.
+    fn remote_cell(&self, remote: u64, allocated: u64) -> String {
+        if remote == 0 {
+            return "-".to_string();
+        }
+        format!("{} ({:.1}%)", self.format_bytes(remote), 100.0 * remote as f64 / allocated.max(1) as f64)
+    }
+
+    /// A deviation from the other threads' median, in the dimension's unit; `=` when none.
+    fn deviation_text(&self, dimension: FairnessDimension, deviation: f64) -> String {
+        if deviation == 0.0 {
+            "=".to_string()
+        } else if dimension == FairnessDimension::Requests {
+            if deviation.fract() == 0.0 { format!("{:+}", deviation as i64) } else { format!("{deviation:+.1}") }
+        } else {
+            self.format_bytes_signed(deviation.round() as i64)
+        }
+    }
+
+    /// A dimension's value for the summary: bytes, or for Requests a count.
+    fn dimension_value(&self, dimension: FairnessDimension, value: f64) -> String {
+        match dimension {
+            FairnessDimension::Requests if value.fract() == 0.0 => format!("{}", value as u64),
+            FairnessDimension::Requests => format!("{value:.1}"),
+            _ => self.bytes_or_dash(value.round() as u64),
+        }
+    }
+
+    /// The thread table's Status: ✅, or the worst flag and each dimension that has one.
+    fn thread_status(&self, report: &AllocationReport, i: usize) -> String {
+        let t = &report.threads[i];
+        let mut worst = FairnessFlag::Fine;
+        let mut notes = Vec::new();
+        for d in &report.fairness {
+            let cell = &d.cells[i];
+            if cell.flag == FairnessFlag::Fine {
+                continue;
+            }
+            worst = worst.max(cell.flag);
+            let deviation = self.deviation_text(d.dimension, cell.deviation);
+            notes.push(match d.dimension {
+                FairnessDimension::Allocated if t.allocated_bytes < t.target_bytes => {
+                    format!("short {}", self.format_bytes(t.target_bytes - t.allocated_bytes))
+                }
+                FairnessDimension::Allocated => format!("{deviation} vs the others"),
+                FairnessDimension::Huge | FairnessDimension::Large => {
+                    format!("{} {deviation}", dimension_name(d.dimension))
+                }
+                FairnessDimension::Regular => format!("4 KiB {}", self.format_bytes(t.regular_bytes)),
+                FairnessDimension::Remote => format!("remote {}", self.remote_cell(t.remote_bytes, t.allocated_bytes)),
+                FairnessDimension::Requests => format!("{} requests", t.commits.len()),
+            });
+        }
+        match worst {
+            FairnessFlag::Fine => "✅".to_string(),
+            flag => format!("{} {}", flag_glyph(flag), notes.join(", ")),
+        }
+    }
+}
+
+fn count_or_dash(count: usize) -> String {
+    if count == 0 { "-".to_string() } else { count.to_string() }
+}
+
+fn node_cell(node: Option<u32>) -> String {
+    node.map_or_else(|| "-".to_string(), |n| n.to_string())
+}
+
+/// A request size in MB: whole, or to two places when it isn't (4 KiB requests can be any size).
+fn mb_label(bytes: u64) -> String {
+    if bytes.is_multiple_of(BYTES_PER_MIB) {
+        (bytes / BYTES_PER_MIB).to_string()
+    } else {
+        format!("{:.2}", bytes as f64 / BYTES_PER_MIB as f64)
+    }
+}
+
+fn page_name(page: crate::memory::allocator::PageSizeLevel) -> &'static str {
+    use crate::memory::allocator::PageSizeLevel;
+    match page {
+        PageSizeLevel::Huge => "1 GiB",
+        PageSizeLevel::Large => "2 MiB",
+        PageSizeLevel::Regular => "4 KiB",
+    }
+}
+
+/// Requests in order as their sizes in MB, a run of equal ones written once with `×count`, and
+/// a 1 GiB or 2 MiB one from a node other than `home` tagged `@node`: `1024×2+128×4@0`.
+fn commit_signature<'a>(
+    commits: impl Iterator<Item = &'a crate::memory::stitched::Commit>,
+    home: Option<u32>,
+) -> String {
+    use crate::memory::allocator::PageSizeLevel;
+    let mut runs: Vec<(String, usize)> = Vec::new();
+    for c in commits {
+        let mut label = mb_label(c.len as u64);
+        if c.page != PageSizeLevel::Regular
+            && let Some(node) = c.numa_node.filter(|&n| Some(n) != home)
+        {
+            label.push_str(&format!("@{node}"));
+        }
+        match runs.last_mut() {
+            Some((last, count)) if *last == label => *count += 1,
+            _ => runs.push((label, 1)),
+        }
+    }
+    runs.iter()
+        .map(|(label, count)| if *count == 1 { label.clone() } else { format!("{label}×{count}") })
+        .collect::<Vec<_>>()
+        .join("+")
+}
+
+/// The fairness dimensions a report shows: Remote only where memory can be remote.
+fn shown_dimensions(report: &AllocationReport) -> Vec<&DimensionFairness> {
+    report
+        .fairness
+        .iter()
+        .filter(|d| report.numa_nodes > 1 || d.dimension != FairnessDimension::Remote)
+        .collect()
+}
+
+/// A dimension's name, the same as its column in the node and thread tables.
+fn dimension_name(dimension: FairnessDimension) -> &'static str {
+    match dimension {
+        FairnessDimension::Allocated => "Allocated",
+        FairnessDimension::Huge => "1 GiB",
+        FairnessDimension::Large => "2 MiB",
+        FairnessDimension::Regular => "4 KiB",
+        FairnessDimension::Remote => "Remote",
+        FairnessDimension::Requests => "Requests",
+    }
+}
+
+fn flag_glyph(flag: FairnessFlag) -> &'static str {
+    match flag {
+        FairnessFlag::Fine => "",
+        FairnessFlag::Notice => "🟡",
+        FairnessFlag::Warn => "⚠️",
+    }
+}
+
+/// Thread ids as ranges where they run on: `4-6, 9`.
+fn thread_ids_label(ids: &[usize]) -> String {
+    let mut parts: Vec<String> = Vec::new();
+    let mut k = 0;
+    while k < ids.len() {
+        let start = ids[k];
+        while k + 1 < ids.len() && ids[k + 1] == ids[k] + 1 {
+            k += 1;
+        }
+        parts.push(if ids[k] == start { start.to_string() } else { format!("{start}-{}", ids[k]) });
+        k += 1;
+    }
+    parts.join(", ")
 }
 
 impl ReportFormatter for DefaultFormatter {
@@ -431,58 +587,6 @@ impl ReportFormatter for DefaultFormatter {
         table
     }
 
-    fn prepare_thread_allocation_table(&self, report: &ThreadAllocationReport) -> TableData {
-        let mut table = TableData::new()
-            .with_title("Per-Thread Allocation Breakdown")
-            .add_header("Thread", ColumnAlignment::Right)
-            .add_header("Total Size", ColumnAlignment::Right)
-            .add_header("Huge #", ColumnAlignment::Right)
-            .add_header("Huge GiB", ColumnAlignment::Right)
-            .add_header("Large #", ColumnAlignment::Right)
-            .add_header("Large GiB", ColumnAlignment::Right)
-            .add_header("Regular #", ColumnAlignment::Right)
-            .add_header("Regular GiB", ColumnAlignment::Right);
-        
-        for alloc in &report.allocations {
-            table = table.add_row(vec![
-                alloc.thread_id.to_string(),
-                self.format_bytes(alloc.total_size_bytes),
-                if alloc.huge_pages_count > 0 {
-                    alloc.huge_pages_count.to_string()
-                } else {
-                    "-".to_string()
-                },
-                if alloc.huge_pages_count > 0 {
-                    format!("{:.2}", alloc.huge_pages_count as f64)
-                } else {
-                    "-".to_string()
-                },
-                if alloc.large_pages_count > 0 {
-                    alloc.large_pages_count.to_string()
-                } else {
-                    "-".to_string()
-                },
-                if alloc.large_pages_count > 0 {
-                    format!("{:.2}", (alloc.large_pages_count * 2) as f64 / 1024.0)
-                } else {
-                    "-".to_string()
-                },
-                if alloc.regular_pages_count > 0 {
-                    alloc.regular_pages_count.to_string()
-                } else {
-                    "-".to_string()
-                },
-                if alloc.regular_pages_count > 0 {
-                    format!("{:.2}", (alloc.regular_pages_count * 4) as f64 / (1024.0 * 1024.0))
-                } else {
-                    "-".to_string()
-                },
-            ]);
-        }
-        
-        table
-    }
-    
     fn prepare_performance_by_thread_table(&self, report: &PerformanceByThreadReport) -> TableData {
         let has_whea = report.whea.total > 0;
         let cpu_mark = if report.pinned { "" } else { " ⚠️" };
@@ -1248,244 +1352,261 @@ impl ReportFormatter for DefaultFormatter {
         table.with_footer("A failed check counts each bit its differences had; a bad word, each bit it had wrong. Every bit is in the results JSON.".to_string())
     }
     
-    /// Prepare block size distribution table (Table 1)
-    fn prepare_block_size_distribution_table(&self, report: &BlockAllocationReport) -> TableData {
+    fn prepare_allocation_nodes_table(&self, report: &AllocationReport) -> TableData {
+        let multi = report.numa_nodes > 1;
+        let mut title = format!("Memory Allocation ({}, {:.2} s)", report.allocator, report.elapsed.as_secs_f64());
+        if !multi {
+            title.push_str(": 1 NUMA node, all memory local");
+        }
         let mut table = TableData::new()
-            .with_title("Block Size Distribution")
-            .add_header("Block Size", ColumnAlignment::Right)
-            .add_header("Page Type", ColumnAlignment::Center)
-            .add_header("Count", ColumnAlignment::Right)
-            .add_header("Blocks/Thread", ColumnAlignment::Right)
-            .add_header("Threads Using", ColumnAlignment::Right)
-            .add_header("Total Bytes", ColumnAlignment::Right)
-            .add_header("% Total", ColumnAlignment::Right);
-
-        let total_bytes = report.total_allocated_bytes as f64;
-
-        for block_dist in &report.block_size_distribution {
-            let pct = if total_bytes > 0.0 {
-                (block_dist.total_bytes as f64 / total_bytes) * 100.0
-            } else {
-                0.0
-            };
-
-            table = table.add_row(vec![
-                format!("{} MB", block_dist.block_size_mb),
-                block_dist.page_type.clone(),
-                block_dist.block_count.to_string(),
-                format!("{:.1}", block_dist.average_per_thread),
-                block_dist.threads_with_this_size.to_string(),
-                self.format_bytes(block_dist.total_bytes),
-                format!("{:.1}%", pct),
-            ]);
-        }
-
-        table
-    }
-    
-    /// Prepare page type summary table (Table 2)
-    fn prepare_page_type_summary_table(&self, report: &BlockAllocationReport) -> TableData {
-        let mut table = TableData::new()
-            .with_title("Page Type Summary")
-            .add_header("Page Type", ColumnAlignment::Left)
-            .add_header("Page Count", ColumnAlignment::Right)
-            .add_header("Blocks", ColumnAlignment::Right)
-            .add_header("Threads Using", ColumnAlignment::Right)
-            .add_header("Total Bytes", ColumnAlignment::Right)
-            .add_header("% Total", ColumnAlignment::Right);
-
-        let page_summary = &report.page_type_summary;
-
-        // Huge pages row (only if used)
-        if page_summary.huge_pages.page_count > 0 {
-            table = table.add_row(vec![
-                "Huge (1GB)".to_string(),
-                page_summary.huge_pages.page_count.to_string(),
-                page_summary.huge_pages.block_count.to_string(),
-                page_summary.huge_pages.threads_using.to_string(),
-                self.format_bytes(page_summary.huge_pages.total_bytes),
-                format!("{:.1}%", page_summary.huge_pages.percentage_of_total),
-            ]);
-        }
-
-        // Large pages row (only if used)
-        if page_summary.large_pages.page_count > 0 {
-            table = table.add_row(vec![
-                "Large (2MB)".to_string(),
-                page_summary.large_pages.page_count.to_string(),
-                page_summary.large_pages.block_count.to_string(),
-                page_summary.large_pages.threads_using.to_string(),
-                self.format_bytes(page_summary.large_pages.total_bytes),
-                format!("{:.1}%", page_summary.large_pages.percentage_of_total),
-            ]);
-        }
-
-        // Regular pages row (only if used)
-        if page_summary.regular_pages.page_count > 0 {
-            table = table.add_row(vec![
-                "Regular (4KB)".to_string(),
-                page_summary.regular_pages.page_count.to_string(),
-                page_summary.regular_pages.block_count.to_string(),
-                page_summary.regular_pages.threads_using.to_string(),
-                self.format_bytes(page_summary.regular_pages.total_bytes),
-                format!("{:.1}%", page_summary.regular_pages.percentage_of_total),
-            ]);
-        }
-
-        table
-    }
-    
-    /// Prepare per-thread block allocation table (Table 3)
-    fn prepare_thread_block_allocation_table(&self, report: &BlockAllocationReport) -> TableData {
-        let mut table = TableData::new()
-            .with_title("Per-Thread Block Allocation")
-            .add_header("Thread", ColumnAlignment::Right)
-            .add_header("CPU", ColumnAlignment::Right)
-            .add_header("NUMA", ColumnAlignment::Center)
-            .add_header("Total Size", ColumnAlignment::Right)
-            .add_header("Block Sizes", ColumnAlignment::Left)
-            .add_header("Huge Pages", ColumnAlignment::Right)
-            .add_header("Large Pages", ColumnAlignment::Right)
-            .add_header("Regular Pages", ColumnAlignment::Right);
-
-        for thread_alloc in &report.per_thread_allocation {
-            // Format block sizes as "1024MB×2, 512MB×1" etc.
-            let block_sizes_str = thread_alloc.block_sizes.iter()
-                .map(|bs| format!("{}MB×{}", bs.size_mb, bs.count))
-                .collect::<Vec<_>>()
-                .join(", ");
-
-            let breakdown = &thread_alloc.page_type_breakdown;
-            
-            table = table.add_row(vec![
-                thread_alloc.thread_id.to_string(),
-                thread_alloc.cpu_id.to_string(),
-                thread_alloc.numa_node.to_string(),
-                self.format_bytes(thread_alloc.total_bytes),
-                if block_sizes_str.is_empty() { "-".to_string() } else { block_sizes_str },
-                if breakdown.huge_pages_count > 0 {
-                    format!("{} ({})", breakdown.huge_pages_count, self.format_bytes(breakdown.huge_pages_bytes))
-                } else {
-                    "-".to_string()
-                },
-                if breakdown.large_pages_count > 0 {
-                    format!("{} ({})", breakdown.large_pages_count, self.format_bytes(breakdown.large_pages_bytes))
-                } else {
-                    "-".to_string()
-                },
-                if breakdown.regular_pages_count > 0 {
-                    format!("{} ({})", breakdown.regular_pages_count, self.format_bytes(breakdown.regular_pages_bytes))
-                } else {
-                    "-".to_string()
-                },
-            ]);
-        }
-
-        table
-    }
-    
-    /// Prepare NUMA distribution table (Table 4)
-    fn prepare_numa_distribution_table(&self, report: &BlockAllocationReport) -> TableData {
-        let mut table = TableData::new()
-            .with_title("NUMA Node Distribution")
-            .add_header("NUMA Node", ColumnAlignment::Center)
-            .add_header("Thread Count", ColumnAlignment::Right)
-            .add_header("Total Bytes", ColumnAlignment::Right)
-            .add_header("Block Sizes", ColumnAlignment::Left)
-            .add_header("Huge Pages", ColumnAlignment::Right)
-            .add_header("Large Pages", ColumnAlignment::Right)
-            .add_header("Regular Pages", ColumnAlignment::Right);
-
-        for numa_dist in &report.numa_distribution {
-            // Format block sizes as "1024MB, 512MB" etc.
-            let block_sizes_str = numa_dist.block_sizes.iter()
-                .map(|&size| format!("{}MB", size))
-                .collect::<Vec<_>>()
-                .join(", ");
-
-            let page_types = &numa_dist.page_types;
-            
-            table = table.add_row(vec![
-                numa_dist.node_id.to_string(),
-                numa_dist.thread_count.to_string(),
-                self.format_bytes(numa_dist.total_bytes),
-                if block_sizes_str.is_empty() { "-".to_string() } else { block_sizes_str },
-                if page_types.huge_pages_count > 0 {
-                    format!("{} ({})", page_types.huge_pages_count, self.format_bytes(page_types.huge_pages_bytes))
-                } else {
-                    "-".to_string()
-                },
-                if page_types.large_pages_count > 0 {
-                    format!("{} ({})", page_types.large_pages_count, self.format_bytes(page_types.large_pages_bytes))
-                } else {
-                    "-".to_string()
-                },
-                if page_types.regular_pages_count > 0 {
-                    format!("{} ({})", page_types.regular_pages_count, self.format_bytes(page_types.regular_pages_bytes))
-                } else {
-                    "-".to_string()
-                },
-            ]);
-        }
-
-        table
-    }
-    
-    /// Prepare allocation fairness analysis table (Table 5)
-    fn prepare_allocation_fairness_table(&self, report: &BlockAllocationReport) -> TableData {
-        let mut table = TableData::new()
-            .with_title("Allocation Fairness Analysis")
-            .add_header("Thread ID", ColumnAlignment::Center)
+            .with_title(title)
+            .add_header("Node", ColumnAlignment::Right)
+            .add_header("Threads", ColumnAlignment::Right)
+            .add_header("Target", ColumnAlignment::Right)
             .add_header("Allocated", ColumnAlignment::Right)
-            .add_header("vs Target", ColumnAlignment::Right)
-            .add_header("Status", ColumnAlignment::Left);
-
-        let fairness = &report.allocation_fairness;
-
-        // Each node's 1 GiB pages are one pool, so a thread is measured against the best-served
-        // thread on its node. One page apart is the most an even split can promise.
-        let mut node_max_huge: HashMap<u32, u64> = HashMap::new();
-        for thread_alloc in &report.per_thread_allocation {
-            let max = node_max_huge.entry(thread_alloc.numa_node).or_default();
-            *max = (*max).max(thread_alloc.page_type_breakdown.huge_pages_count);
+            .add_header("1 GiB", ColumnAlignment::Right)
+            .add_header("2 MiB", ColumnAlignment::Right)
+            .add_header("4 KiB", ColumnAlignment::Right);
+        if multi {
+            table = table
+                .add_header("Local", ColumnAlignment::Right)
+                .add_header("Remote", ColumnAlignment::Right);
         }
+        table = table
+            .add_header("Requests", ColumnAlignment::Right)
+            .add_header("Refused", ColumnAlignment::Right);
 
-        // Show all threads, not just unfair ones
-        for thread_alloc in &report.per_thread_allocation {
-            let vs_target = thread_alloc.total_bytes as i64 - thread_alloc.target_bytes as i64;
-            let fewer_huge = node_max_huge[&thread_alloc.numa_node] - thread_alloc.page_type_breakdown.huge_pages_count;
-            let huge_note = (fewer_huge > 1).then(|| format!("{} fewer 1 GiB pages", fewer_huge));
+        let mut total = AllocationNode {
+            numa_node: None,
+            threads: 0,
+            target_bytes: 0,
+            allocated_bytes: 0,
+            huge_bytes: 0,
+            large_bytes: 0,
+            regular_bytes: 0,
+            remote_bytes: 0,
+            requests: 0,
+            refused: 0,
+        };
+        let row = |label: String, n: &AllocationNode| {
+            let mut cells = vec![
+                label,
+                n.threads.to_string(),
+                self.format_bytes(n.target_bytes),
+                self.format_bytes(n.allocated_bytes),
+                self.bytes_or_dash(n.huge_bytes),
+                self.bytes_or_dash(n.large_bytes),
+                self.bytes_or_dash(n.regular_bytes),
+            ];
+            if multi {
+                cells.push(self.format_bytes(n.allocated_bytes - n.remote_bytes));
+                cells.push(self.remote_cell(n.remote_bytes, n.allocated_bytes));
+            }
+            cells.push(n.requests.to_string());
+            cells.push(count_or_dash(n.refused));
+            cells
+        };
+        for n in &report.nodes {
+            table = table.add_row(row(node_cell(n.numa_node), n));
+            total.threads += n.threads;
+            total.target_bytes += n.target_bytes;
+            total.allocated_bytes += n.allocated_bytes;
+            total.huge_bytes += n.huge_bytes;
+            total.large_bytes += n.large_bytes;
+            total.regular_bytes += n.regular_bytes;
+            total.remote_bytes += n.remote_bytes;
+            total.requests += n.requests;
+            total.refused += n.refused;
+        }
+        if report.nodes.len() > 1 {
+            table = table.add_row(row("Total".to_string(), &total));
+        }
+        table
+    }
 
-            let side = match vs_target.cmp(&0) {
-                Ordering::Less => Some("Short"),
-                Ordering::Greater => Some("Over"),
-                Ordering::Equal => None,
+    fn prepare_allocation_commits_table(&self, report: &AllocationReport) -> TableData {
+        let multi = report.numa_nodes > 1;
+        let mut table = TableData::new()
+            .with_title("Commits (the requests to Windows, by size, page size and node)")
+            .add_header("Size", ColumnAlignment::Right)
+            .add_header("Pages", ColumnAlignment::Right);
+        if multi {
+            table = table.add_header("Node", ColumnAlignment::Right);
+        }
+        table = table
+            .add_header("Granted", ColumnAlignment::Right)
+            .add_header("Refused", ColumnAlignment::Right)
+            .add_header("Threads", ColumnAlignment::Right)
+            .add_header("Total", ColumnAlignment::Right);
+        for g in &report.commit_groups {
+            let mut cells = vec![format!("{} MB", mb_label(g.bytes)), page_name(g.page).to_string()];
+            if multi {
+                cells.push(if g.numa_node == g.home_node {
+                    node_cell(g.numa_node)
+                } else {
+                    format!("{} for {}", node_cell(g.numa_node), node_cell(g.home_node))
+                });
+            }
+            cells.extend([
+                count_or_dash(g.granted),
+                count_or_dash(g.refused),
+                g.threads.to_string(),
+                self.bytes_or_dash(g.granted_bytes),
+            ]);
+            table = table.add_row(cells);
+        }
+        table
+    }
+
+    fn prepare_allocation_threads_table(&self, report: &AllocationReport) -> TableData {
+        let multi = report.numa_nodes > 1;
+        let mut table = TableData::new()
+            .with_title("Threads")
+            .add_header("Thread", ColumnAlignment::Right);
+        if multi {
+            table = table.add_header("Node", ColumnAlignment::Right);
+        }
+        table = table
+            .add_header("Allocated", ColumnAlignment::Right)
+            .add_header("1 GiB", ColumnAlignment::Right)
+            .add_header("2 MiB", ColumnAlignment::Right)
+            .add_header("4 KiB", ColumnAlignment::Right);
+        if multi {
+            table = table
+                .add_header("Local", ColumnAlignment::Right)
+                .add_header("Remote", ColumnAlignment::Right);
+        }
+        table = table.add_header("Status", ColumnAlignment::Left);
+
+        for (i, t) in report.threads.iter().enumerate() {
+            let mut cells = vec![t.thread_id.to_string()];
+            if multi {
+                cells.push(node_cell(t.numa_node));
+            }
+            cells.extend([
+                self.format_bytes(t.allocated_bytes),
+                self.bytes_or_dash(t.huge_bytes),
+                self.bytes_or_dash(t.large_bytes),
+                self.bytes_or_dash(t.regular_bytes),
+            ]);
+            if multi {
+                cells.push(self.format_bytes(t.allocated_bytes - t.remote_bytes));
+                cells.push(self.remote_cell(t.remote_bytes, t.allocated_bytes));
+            }
+            cells.push(self.thread_status(report, i));
+            table = table.add_row(cells);
+        }
+        if multi && report.threads.iter().any(|t| t.regular_bytes > 0) {
+            table = table.with_footer("4 KiB pages only prefer the thread's node, and count as local.");
+        }
+        table
+    }
+
+    fn prepare_thread_commits_table(&self, report: &AllocationReport) -> TableData {
+        use crate::memory::allocator::PageSizeLevel;
+        const PAGES: [PageSizeLevel; 3] = [PageSizeLevel::Huge, PageSizeLevel::Large, PageSizeLevel::Regular];
+        let mut table = TableData::new()
+            .with_title("Commits by thread (MB each in the order asked, ×repeats, @node from another node)")
+            .add_header("Thread", ColumnAlignment::Right)
+            .add_header("1 GiB", ColumnAlignment::Left)
+            .add_header("2 MiB", ColumnAlignment::Left)
+            .add_header("4 KiB", ColumnAlignment::Left)
+            .add_header("Granted", ColumnAlignment::Right)
+            .add_header("Refused", ColumnAlignment::Left);
+        for t in &report.threads {
+            let signature = |page, refused: bool| {
+                commit_signature(
+                    t.commits.iter().filter(|c| c.page == page && c.refused == refused),
+                    t.numa_node,
+                )
             };
-            let status = match (side, huge_note) {
-                (None, None) => "✅ Fair".to_string(),
-                (None, Some(note)) => format!("🟡 {}", note),
-                (Some(side), None) => format!("⚠️ {}", side),
-                (Some(side), Some(note)) => format!("⚠️ {}, {}", side, note),
-            };
+            let mut cells = vec![t.thread_id.to_string()];
+            cells.extend(PAGES.iter().map(|&page| {
+                let s = signature(page, false);
+                if s.is_empty() { "-".to_string() } else { s }
+            }));
+            let refused = t.commits.iter().filter(|c| c.refused).count();
+            cells.push(count_or_dash(t.commits.len() - refused));
+            cells.push(if refused == 0 {
+                "-".to_string()
+            } else {
+                let by_page: Vec<String> = PAGES
+                    .iter()
+                    .filter_map(|&page| {
+                        let s = signature(page, true);
+                        (!s.is_empty()).then(|| format!("{}: {s}", page_name(page)))
+                    })
+                    .collect();
+                format!("{refused} ({})", by_page.join("; "))
+            });
+            table = table.add_row(cells);
+        }
+        table
+    }
 
+    fn prepare_fairness_by_thread_table(&self, report: &AllocationReport) -> TableData {
+        let dimensions = shown_dimensions(report);
+        let mut table = TableData::new()
+            .with_title("Fairness by thread (each against the median of the other threads)")
+            .add_header("Thread", ColumnAlignment::Right);
+        for d in &dimensions {
+            table = table.add_header(dimension_name(d.dimension), ColumnAlignment::Left);
+        }
+        for (i, t) in report.threads.iter().enumerate() {
+            let mut cells = vec![t.thread_id.to_string()];
+            for d in &dimensions {
+                let cell = &d.cells[i];
+                let text = self.deviation_text(d.dimension, cell.deviation);
+                cells.push(match cell.flag {
+                    FairnessFlag::Fine => text,
+                    flag => format!("{text} {}", flag_glyph(flag)),
+                });
+            }
+            table = table.add_row(cells);
+        }
+        table
+    }
+
+    fn prepare_fairness_summary_table(&self, report: &AllocationReport) -> TableData {
+        let mut table = TableData::new()
+            .with_title("Fairness summary")
+            .add_header("Dimension", ColumnAlignment::Left)
+            .add_header("Min", ColumnAlignment::Right)
+            .add_header("Median", ColumnAlignment::Right)
+            .add_header("Max", ColumnAlignment::Right)
+            .add_header("Worst", ColumnAlignment::Left)
+            .add_header("Verdict", ColumnAlignment::Center);
+        for d in shown_dimensions(report) {
+            let worst = d.cells.iter().map(|c| c.badness).fold(0.0, f64::max);
+            let worst_cell = if worst > 0.0 {
+                let at: Vec<usize> = (0..d.cells.len())
+                    .filter(|&i| d.cells[i].badness >= worst * (1.0 - 1e-9))
+                    .collect();
+                let ids: Vec<usize> = at.iter().map(|&i| report.threads[i].thread_id).collect();
+                let first = d.cells[at[0]].deviation;
+                let mut deviation = self.deviation_text(d.dimension, first);
+                // Tied on either side of the others: two nodes' threads, one short, one over.
+                if at.iter().any(|&i| d.cells[i].deviation.signum() != first.signum()) {
+                    deviation = format!("±{}", deviation.trim_start_matches(['+', '-']));
+                }
+                format!("{} ({deviation})", thread_ids_label(&ids))
+            } else {
+                "-".to_string()
+            };
+            let flag = d.cells.iter().map(|c| c.flag).max().unwrap_or(FairnessFlag::Fine);
             table = table.add_row(vec![
-                thread_alloc.thread_id.to_string(),
-                self.format_bytes(thread_alloc.total_bytes),
-                if vs_target == 0 { "-".to_string() } else { self.format_bytes_signed(vs_target) },
-                status,
+                dimension_name(d.dimension).to_string(),
+                self.dimension_value(d.dimension, d.min),
+                self.dimension_value(d.dimension, d.median),
+                self.dimension_value(d.dimension, d.max),
+                worst_cell,
+                match flag {
+                    FairnessFlag::Fine => "✅".to_string(),
+                    flag => flag_glyph(flag).to_string(),
+                },
             ]);
         }
-
-        table.with_footer(format!(
-            "Fairness Stats: Min={}, Max={}, Mean={:.1} GiB, CV={:.3} ({}), 1 GiB pages per thread: {}-{}",
-            self.format_bytes(fairness.min_allocation_bytes),
-            self.format_bytes(fairness.max_allocation_bytes),
-            bytes_to_gib_f64(fairness.mean_allocation_bytes as u64),
-            fairness.coefficient_of_variation,
-            if fairness.coefficient_of_variation < 0.1 { "Fair Distribution" } else { "Unfair Distribution" },
-            fairness.min_huge_pages,
-            fairness.max_huge_pages,
-        ))
+        table
     }
 
     fn prepare_latency_per_thread_table(&self, level: &LatencyLevelSummary) -> TableData {

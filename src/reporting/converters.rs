@@ -3,7 +3,7 @@
 use super::models::*;
 use crate::memory::allocation_strategy::{SystemMemoryInfo, AllocationResult};
 use crate::progress::TestSummary;
-use crate::constants::{PageType, bytes_to_gib_f64};
+use crate::constants::{HUGE_PAGE_SIZE_USIZE, bytes_to_gib_f64};
 use std::collections::HashSet;
 
 /// A test's parameters for the plan and report: the first one set, in the input's own form
@@ -295,278 +295,196 @@ pub fn create_cycle_report(
     }
 }
 
-/// Create block allocation report from Windows VirtualAlloc2 allocation results. `requested` is
-/// the layout the allocator was given, each thread's blocks summing to its target.
-pub fn create_block_allocation_report_from_windows(
-    allocations: &std::collections::HashMap<usize, Vec<crate::AllocationBlock>>,
-    requested: &std::collections::HashMap<usize, Vec<crate::BlockInfo>>,
-) -> BlockAllocationReport {
-    let allocator_backend = "Windows VirtualAlloc2".to_string();
-    
-    analyze_block_allocations(allocations, requested, allocator_backend)
-}
+/// The allocation report (TODO 81) from the stitched allocator's spans and the requests that
+/// built them. Takes the spans so their request record moves in, and goes with the report.
+pub fn create_allocation_report(
+    spans: Vec<crate::memory::stitched::ThreadSpan>,
+    elapsed: std::time::Duration,
+    numa_nodes: u32,
+) -> AllocationReport {
+    use crate::memory::allocator::PageSizeLevel;
+    use std::cmp::Reverse;
+    use std::collections::BTreeMap;
 
-/// Shared block-allocation analysis, independent of which backend allocated.
-fn analyze_block_allocations(
-    allocations: &std::collections::HashMap<usize, Vec<crate::AllocationBlock>>,
-    requested: &std::collections::HashMap<usize, Vec<crate::BlockInfo>>,
-    allocator_backend: String,
-) -> BlockAllocationReport {
-    use std::collections::HashMap;
-    
-    let total_threads = allocations.len();
-    let mut total_allocated_bytes = 0u64;
-    let mut block_size_stats = HashMap::new();
-    let mut numa_stats = HashMap::new();
-    let mut thread_allocations = Vec::new();
-    let mut all_allocations = Vec::new();
-    
-    // Analyze each thread's allocations
-    for (&thread_id, blocks) in allocations {
-        let mut thread_total_bytes = 0u64;
-        let mut thread_block_sizes: Vec<ThreadBlockSize> = Vec::new();
-        let mut thread_page_breakdown = ThreadPageTypeBreakdown {
-            huge_pages_count: 0,
-            large_pages_count: 0,
-            regular_pages_count: 0,
-            huge_pages_bytes: 0,
-            large_pages_bytes: 0,
-            regular_pages_bytes: 0,
-        };
-        
-        let cpu_id = blocks.first().map(|b| b.block_info.thread_id).unwrap_or(thread_id);
-        let numa_node = blocks.first().map(|b| b.buffer.info().numa_node).unwrap_or(0);
-        
-        for block in blocks {
-            let block_size_mb = (block.buffer.size() as f64 / (1024.0 * 1024.0)).ceil() as u32;
-            let block_size_bytes = block.buffer.size() as u64;
-            
-            thread_total_bytes += block_size_bytes;
-            total_allocated_bytes += block_size_bytes;
-            
-            // Determine page type and update breakdowns
-            let page_type = PageType::from_buffer(block);
-            let page_count = page_type.pages_needed(block_size_bytes);
-            
-            match page_type {
-                PageType::Huge => {
-                    thread_page_breakdown.huge_pages_count += page_count;
-                    thread_page_breakdown.huge_pages_bytes += block_size_bytes;
-                }
-                PageType::Large => {
-                    thread_page_breakdown.large_pages_count += page_count;
-                    thread_page_breakdown.large_pages_bytes += block_size_bytes;
-                }
-                PageType::Regular => {
-                    thread_page_breakdown.regular_pages_count += page_count;
-                    thread_page_breakdown.regular_pages_bytes += block_size_bytes;
-                }
-            }
-            
-            // Track block size distribution
-            let size_key = block_size_mb;
-            let size_entry = block_size_stats.entry(size_key).or_insert((0, 0u64, HashSet::new(), HashSet::new()));
-            size_entry.0 += 1; // block count
-            size_entry.1 += block_size_bytes; // total bytes
-            size_entry.2.insert(page_type.display_name().to_string()); // page types for this size
-            size_entry.3.insert(thread_id); // threads with this size
-            
-            // Track NUMA distribution
-            let numa_entry = numa_stats.entry(numa_node).or_insert((std::collections::HashSet::new(), 0u64, Vec::new(), NumaPageTypeStats {
-                huge_pages_count: 0,
-                large_pages_count: 0,
-                regular_pages_count: 0,
-                huge_pages_bytes: 0,
-                large_pages_bytes: 0,
-                regular_pages_bytes: 0,
-            }));
-            numa_entry.0.insert(thread_id);
-            numa_entry.1 += block_size_bytes;
-            if !numa_entry.2.contains(&block_size_mb) {
-                numa_entry.2.push(block_size_mb);
-            }
-            
-            // Update NUMA page type stats
-            match page_type {
-                PageType::Huge => {
-                    numa_entry.3.huge_pages_count += page_count as u32;
-                    numa_entry.3.huge_pages_bytes += block_size_bytes;
-                }
-                PageType::Large => {
-                    numa_entry.3.large_pages_count += page_count as u32;
-                    numa_entry.3.large_pages_bytes += block_size_bytes;
-                }
-                PageType::Regular => {
-                    numa_entry.3.regular_pages_count += page_count as u32;
-                    numa_entry.3.regular_pages_bytes += block_size_bytes;
-                }
-            }
-            
-            // Track individual block size for thread
-            let existing_size = thread_block_sizes.iter_mut().find(|bs| bs.size_mb == block_size_mb);
-            if let Some(existing) = existing_size {
-                existing.count += 1;
-                existing.total_bytes += block_size_bytes;
+    let mut threads: Vec<AllocationThread> = spans
+        .into_iter()
+        .map(|span| AllocationThread {
+            thread_id: span.thread_id,
+            numa_node: span.numa_node,
+            target_bytes: span.target as u64,
+            allocated_bytes: span.len as u64,
+            huge_bytes: span.bytes_at(PageSizeLevel::Huge) as u64,
+            large_bytes: span.bytes_at(PageSizeLevel::Large) as u64,
+            regular_bytes: span.bytes_at(PageSizeLevel::Regular) as u64,
+            remote_bytes: span.remote_bytes() as u64,
+            commits: span.commits,
+        })
+        .collect();
+    threads.sort_by_key(|t| t.thread_id);
+
+    // Threads with no node sort last.
+    let node_key = |node: Option<u32>| (node.is_none(), node);
+    let mut nodes: BTreeMap<(bool, Option<u32>), AllocationNode> = BTreeMap::new();
+    for t in &threads {
+        let node = nodes.entry(node_key(t.numa_node)).or_insert_with(|| AllocationNode {
+            numa_node: t.numa_node,
+            threads: 0,
+            target_bytes: 0,
+            allocated_bytes: 0,
+            huge_bytes: 0,
+            large_bytes: 0,
+            regular_bytes: 0,
+            remote_bytes: 0,
+            requests: 0,
+            refused: 0,
+        });
+        node.threads += 1;
+        node.target_bytes += t.target_bytes;
+        node.allocated_bytes += t.allocated_bytes;
+        node.huge_bytes += t.huge_bytes;
+        node.large_bytes += t.large_bytes;
+        node.regular_bytes += t.regular_bytes;
+        node.remote_bytes += t.remote_bytes;
+        node.requests += t.commits.len();
+        node.refused += t.commits.iter().filter(|c| c.refused).count();
+    }
+
+    let mut groups: BTreeMap<_, (CommitGroup, HashSet<usize>)> = BTreeMap::new();
+    for t in &threads {
+        for c in &t.commits {
+            let key = (Reverse(c.page), node_key(c.numa_node), node_key(t.numa_node), Reverse(c.len));
+            let (group, users) = groups.entry(key).or_insert_with(|| {
+                (
+                    CommitGroup {
+                        bytes: c.len as u64,
+                        page: c.page,
+                        numa_node: c.numa_node,
+                        home_node: t.numa_node,
+                        granted: 0,
+                        refused: 0,
+                        threads: 0,
+                        granted_bytes: 0,
+                    },
+                    HashSet::new(),
+                )
+            });
+            if c.refused {
+                group.refused += 1;
             } else {
-                thread_block_sizes.push(ThreadBlockSize {
-                    size_mb: block_size_mb,
-                    count: 1,
-                    total_bytes: block_size_bytes,
-                    page_type: page_type.display_name().to_string(),
-                });
+                group.granted += 1;
+                group.granted_bytes += c.len as u64;
             }
-            
-            all_allocations.push((thread_id, block_size_bytes));
-        }
-        
-        let target_bytes = requested.get(&thread_id)
-            .map_or(0, |blocks| blocks.iter().map(|b| b.size_bytes as u64).sum());
-        thread_allocations.push(ThreadBlockAllocation {
-            thread_id,
-            cpu_id,
-            numa_node,
-            target_bytes,
-            total_bytes: thread_total_bytes,
-            block_sizes: thread_block_sizes,
-            page_type_breakdown: thread_page_breakdown,
-        });
-    }
-    thread_allocations.sort_by_key(|t| t.thread_id);
-    
-    // Build block size distribution
-    let mut block_size_distribution = Vec::new();
-    for (size_mb, (count, total_bytes, page_types, threads)) in block_size_stats {
-        // Format page types - sort for consistency
-        let mut page_type_vec: Vec<String> = page_types.into_iter().collect();
-        page_type_vec.sort();
-        let page_type = if page_type_vec.len() == 1 {
-            page_type_vec[0].clone()
-        } else {
-            format!("Mixed ({})", page_type_vec.join(", "))
-        };
-        
-        block_size_distribution.push(BlockSizeDistribution {
-            block_size_mb: size_mb,
-            block_count: count,
-            total_bytes,
-            page_type,
-            threads_with_this_size: threads.len() as u32,
-            average_per_thread: count as f64 / threads.len() as f64,
-        });
-    }
-    block_size_distribution.sort_by_key(|b| std::cmp::Reverse(b.block_size_mb)); // Largest first
-    
-    // Build NUMA distribution
-    let mut numa_distribution = Vec::new();
-    for (node_id, (threads, total_bytes, mut block_sizes, page_types)) in numa_stats {
-        block_sizes.sort_by(|a, b| b.cmp(a)); // Largest first
-        numa_distribution.push(NumaNodeDistribution {
-            node_id,
-            thread_count: threads.len() as u32,
-            total_bytes,
-            block_sizes,
-            page_types,
-        });
-    }
-    numa_distribution.sort_by_key(|a| a.node_id);
-    
-    // Calculate page type summary
-    let mut huge_stats = PageTypeStats { page_count: 0, total_bytes: 0, block_count: 0, threads_using: 0, percentage_of_total: 0.0 };
-    let mut large_stats = PageTypeStats { page_count: 0, total_bytes: 0, block_count: 0, threads_using: 0, percentage_of_total: 0.0 };
-    let mut regular_stats = PageTypeStats { page_count: 0, total_bytes: 0, block_count: 0, threads_using: 0, percentage_of_total: 0.0 };
-    
-    for thread_alloc in &thread_allocations {
-        let breakdown = &thread_alloc.page_type_breakdown;
-        
-        if breakdown.huge_pages_count > 0 {
-            huge_stats.page_count += breakdown.huge_pages_count;
-            huge_stats.total_bytes += breakdown.huge_pages_bytes;
-            huge_stats.threads_using += 1;
-        }
-        if breakdown.large_pages_count > 0 {
-            large_stats.page_count += breakdown.large_pages_count;
-            large_stats.total_bytes += breakdown.large_pages_bytes;
-            large_stats.threads_using += 1;
-        }
-        if breakdown.regular_pages_count > 0 {
-            regular_stats.page_count += breakdown.regular_pages_count;
-            regular_stats.total_bytes += breakdown.regular_pages_bytes;
-            regular_stats.threads_using += 1;
-        }
-        
-        // Count blocks by page type
-        for block_size in &thread_alloc.block_sizes {
-            if block_size.page_type.contains("huge") {
-                huge_stats.block_count += block_size.count;
-            } else if block_size.page_type.contains("large") {
-                large_stats.block_count += block_size.count;
-            } else {
-                regular_stats.block_count += block_size.count;
-            }
+            users.insert(t.thread_id);
         }
     }
-    
-    // Calculate percentages
-    if total_allocated_bytes > 0 {
-        huge_stats.percentage_of_total = (huge_stats.total_bytes as f64 / total_allocated_bytes as f64) * 100.0;
-        large_stats.percentage_of_total = (large_stats.total_bytes as f64 / total_allocated_bytes as f64) * 100.0;
-        regular_stats.percentage_of_total = (regular_stats.total_bytes as f64 / total_allocated_bytes as f64) * 100.0;
-    }
-    
-    // Calculate allocation fairness
-    let fairness = calculate_allocation_fairness(&thread_allocations);
-    
-    BlockAllocationReport {
-        allocator_backend,
-        total_threads,
-        total_allocated_bytes,
-        block_size_distribution,
-        page_type_summary: PageTypeSummary {
-            huge_pages: huge_stats,
-            large_pages: large_stats,
-            regular_pages: regular_stats,
-        },
-        per_thread_allocation: thread_allocations,
-        numa_distribution,
-        allocation_fairness: fairness,
+    let commit_groups = groups
+        .into_values()
+        .map(|(mut group, users)| {
+            group.threads = users.len();
+            group
+        })
+        .collect();
+
+    AllocationReport {
+        allocator: "stitched".to_string(),
+        elapsed,
+        numa_nodes,
+        fairness: allocation_fairness(&threads),
+        nodes: nodes.into_values().collect(),
+        commit_groups,
+        threads,
     }
 }
 
-/// Calculate allocation fairness statistics
-fn calculate_allocation_fairness(threads: &[ThreadBlockAllocation]) -> AllocationFairness {
-    if threads.is_empty() {
-        return AllocationFairness {
-            coefficient_of_variation: 0.0,
-            min_allocation_bytes: 0,
-            max_allocation_bytes: 0,
-            mean_allocation_bytes: 0.0,
-            min_huge_pages: 0,
-            max_huge_pages: 0,
-        };
+/// The middle value; the mean of the two middle ones when even. `None` when empty.
+fn median(values: &[f64]) -> Option<f64> {
+    let mut sorted = values.to_vec();
+    sorted.sort_by(f64::total_cmp);
+    let n = sorted.len();
+    match n {
+        0 => None,
+        _ if n % 2 == 1 => Some(sorted[n / 2]),
+        _ => Some((sorted[n / 2 - 1] + sorted[n / 2]) / 2.0),
     }
-    
-    let allocation_sizes: Vec<u64> = threads.iter().map(|t| t.total_bytes).collect();
-    let huge_pages = threads.iter().map(|t| t.page_type_breakdown.huge_pages_count);
-    
-    let min_allocation = *allocation_sizes.iter().min().unwrap();
-    let max_allocation = *allocation_sizes.iter().max().unwrap();
-    let mean_allocation = allocation_sizes.iter().sum::<u64>() as f64 / allocation_sizes.len() as f64;
-    
-    // Calculate coefficient of variation (standard deviation / mean)
-    let variance = allocation_sizes.iter()
-        .map(|&size| (size as f64 - mean_allocation).powi(2))
-        .sum::<f64>() / allocation_sizes.len() as f64;
-    let std_dev = variance.sqrt();
-    let coefficient_of_variation = if mean_allocation > 0.0 { std_dev / mean_allocation } else { 0.0 };
-    
-    AllocationFairness {
-        coefficient_of_variation,
-        min_allocation_bytes: min_allocation,
-        max_allocation_bytes: max_allocation,
-        mean_allocation_bytes: mean_allocation,
-        min_huge_pages: huge_pages.clone().min().unwrap_or(0),
-        max_huge_pages: huge_pages.max().unwrap_or(0),
-    }
+}
+
+/// Each dimension's values, every thread against the median of the others (TODO 81's rules).
+fn allocation_fairness(threads: &[AllocationThread]) -> Vec<DimensionFairness> {
+    let page = HUGE_PAGE_SIZE_USIZE as f64;
+    FairnessDimension::ALL
+        .iter()
+        .map(|&dimension| {
+            let values: Vec<f64> = threads
+                .iter()
+                .map(|t| match dimension {
+                    FairnessDimension::Allocated => t.allocated_bytes as f64,
+                    FairnessDimension::Huge => t.huge_bytes as f64,
+                    FairnessDimension::Large => t.large_bytes as f64,
+                    FairnessDimension::Regular => t.regular_bytes as f64,
+                    FairnessDimension::Remote => t.remote_bytes as f64,
+                    FairnessDimension::Requests => t.commits.len() as f64,
+                })
+                .collect();
+            let cells = threads
+                .iter()
+                .enumerate()
+                .map(|(i, t)| {
+                    let others: Vec<f64> =
+                        values.iter().enumerate().filter(|&(j, _)| j != i).map(|(_, &v)| v).collect();
+                    let value = values[i];
+                    let median_others = median(&others);
+                    let deviation = median_others.map_or(0.0, |m| value - m);
+                    let (flag, badness) = match dimension {
+                        FairnessDimension::Allocated => {
+                            let short = t.target_bytes.saturating_sub(t.allocated_bytes) as f64;
+                            let behind = median_others.is_some_and(|m| deviation < -0.01 * m);
+                            let flag = if short > 0.0 || behind { FairnessFlag::Warn } else { FairnessFlag::Fine };
+                            (flag, short.max(-deviation).max(0.0))
+                        }
+                        // More than one 1 GiB page fewer than the others: an even split promises
+                        // one apart. Only the side that lost out, or every thread is flagged.
+                        FairnessDimension::Huge => {
+                            let flag = if deviation < -page { FairnessFlag::Notice } else { FairnessFlag::Fine };
+                            (flag, (-deviation).max(0.0))
+                        }
+                        // Shown, never flagged: more 2 MiB pages is the 1 GiB shortfall again, and
+                        // fewer is more 1 GiB pages or 4 KiB ones, which 4 KiB flags.
+                        FairnessDimension::Large => (FairnessFlag::Fine, deviation.abs()),
+                        FairnessDimension::Regular => {
+                            let flag = if value > 0.0 { FairnessFlag::Notice } else { FairnessFlag::Fine };
+                            (flag, value)
+                        }
+                        FairnessDimension::Remote => {
+                            let share = if t.allocated_bytes > 0 { value / t.allocated_bytes as f64 } else { 0.0 };
+                            let flag = match share {
+                                s if s > 0.10 => FairnessFlag::Warn,
+                                s if s > 0.0 => FairnessFlag::Notice,
+                                _ => FairnessFlag::Fine,
+                            };
+                            (flag, share)
+                        }
+                        // Fed in small pieces: more than twice the others' requests.
+                        FairnessDimension::Requests => {
+                            let flag = if median_others.is_some_and(|m| value > 2.0 * m) {
+                                FairnessFlag::Notice
+                            } else {
+                                FairnessFlag::Fine
+                            };
+                            (flag, deviation.max(0.0))
+                        }
+                    };
+                    FairnessCell { deviation, flag, badness }
+                })
+                .collect();
+            DimensionFairness {
+                dimension,
+                cells,
+                min: values.iter().copied().reduce(f64::min).unwrap_or(0.0),
+                median: median(&values).unwrap_or(0.0),
+                max: values.iter().copied().reduce(f64::max).unwrap_or(0.0),
+            }
+        })
+        .collect()
 }
 
 /// Convert thread stats to thread timing report
@@ -744,5 +662,181 @@ pub fn create_overall_stats_summary_report(
         errors_by_step,
         failing_bits: overall_stats.failing_bits.clone(),
         seal_failing_bits: overall_stats.seal_failing_bits.clone(),
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::memory::allocator::PageSizeLevel::{self, Huge, Large};
+    use crate::memory::stitched::{Commit, Run, ThreadSpan};
+    use crate::reporting::formatters::{DefaultFormatter, ReportFormatter};
+
+    const MIB: usize = 1 << 20;
+    const GIB: usize = 1 << 30;
+
+    /// A span from its requests in order, `(bytes, page, node, refused)`, laid out as the
+    /// stitched allocator lays them: each at the cursor, granted ones merging into runs.
+    fn span(thread_id: usize, home: u32, target: usize, requests: &[(usize, PageSizeLevel, u32, bool)]) -> ThreadSpan {
+        let (mut runs, mut commits, mut cursor) = (Vec::<Run>::new(), Vec::new(), 0);
+        for &(len, page, node, refused) in requests {
+            commits.push(Commit { len, page, numa_node: Some(node), refused });
+            if refused {
+                continue;
+            }
+            match runs.last_mut() {
+                Some(run) if run.page == page && run.numa_node == Some(node) => run.len += len,
+                _ => runs.push(Run { offset: cursor, len, page, numa_node: Some(node) }),
+            }
+            cursor += len;
+        }
+        ThreadSpan { thread_id, numa_node: Some(home), base: thread_id * 16 * GIB, len: cursor, target, runs, commits }
+    }
+
+    fn repeat(n: usize, len: usize, page: PageSizeLevel, node: u32) -> Vec<(usize, PageSizeLevel, u32, bool)> {
+        vec![(len, page, node, false); n]
+    }
+
+    fn report(spans: Vec<ThreadSpan>, numa_nodes: u32) -> AllocationReport {
+        create_allocation_report(spans, std::time::Duration::from_millis(1234), numa_nodes)
+    }
+
+    fn cell<'a>(table: &'a TableData, row: usize, header: &str) -> &'a str {
+        let col = table.headers.iter().position(|h| h.text == header).unwrap_or_else(|| panic!("no {header} column"));
+        &table.rows[row][col]
+    }
+
+    /// The 2026-10-16 run on this box, as its log tallied it: 18 × 1 GiB granted, thread 2's
+    /// last 1 GiB request refused (1450), 80 × 128 MiB granted.
+    fn one_node_run() -> AllocationReport {
+        let threads = (0..4)
+            .map(|t| {
+                let (huge, large) = if t < 2 { (5, 16) } else { (4, 24) };
+                let mut requests = repeat(huge, GIB, Huge, 0);
+                if t == 2 {
+                    requests.push((GIB, Huge, 0, true));
+                }
+                requests.extend(repeat(large, 128 * MIB, Large, 0));
+                span(t, 0, 7 * GIB, &requests)
+            })
+            .collect();
+        report(threads, 1)
+    }
+
+    #[test]
+    fn one_node_reads_as_local_and_fair() {
+        let report = one_node_run();
+        let f = DefaultFormatter::new();
+
+        let nodes = f.prepare_allocation_nodes_table(&report);
+        assert!(nodes.title.as_deref().unwrap().ends_with("1 NUMA node, all memory local"));
+        assert!(nodes.headers.iter().all(|h| h.text != "Remote" && h.text != "Local"));
+        assert_eq!(nodes.rows.len(), 1, "no Total row on one node");
+        assert_eq!(cell(&nodes, 0, "1 GiB"), "18.00 GiB");
+        assert_eq!(cell(&nodes, 0, "2 MiB"), "10.00 GiB");
+        assert_eq!(cell(&nodes, 0, "Requests"), "99");
+        assert_eq!(cell(&nodes, 0, "Refused"), "1");
+
+        let commits = f.prepare_allocation_commits_table(&report);
+        let rows: Vec<Vec<&str>> = commits.rows.iter().map(|r| r.iter().map(String::as_str).collect()).collect();
+        assert_eq!(rows, vec![
+            vec!["1024 MB", "1 GiB", "18", "1", "4", "18.00 GiB"],
+            vec!["128 MB", "2 MiB", "80", "-", "4", "10.00 GiB"],
+        ]);
+
+        let by_thread = f.prepare_thread_commits_table(&report);
+        assert_eq!(cell(&by_thread, 0, "1 GiB"), "1024×5");
+        assert_eq!(cell(&by_thread, 0, "2 MiB"), "128×16");
+        assert_eq!(cell(&by_thread, 0, "4 KiB"), "-");
+        assert_eq!(cell(&by_thread, 2, "Granted"), "28");
+        assert_eq!(cell(&by_thread, 2, "Refused"), "1 (1 GiB: 1024)");
+
+        // 5/5/4/4 pages is one page apart: fair.
+        let threads = f.prepare_allocation_threads_table(&report);
+        assert!(threads.rows.iter().all(|r| r.last().unwrap() == "✅"));
+        let summary = f.prepare_fairness_summary_table(&report);
+        assert!(summary.rows.iter().all(|r| r.last().unwrap() == "✅"));
+        assert!(summary.rows.iter().all(|r| r[0] != "Remote"));
+        crate::reporting::create_console_reporter().report_allocation(&report).unwrap();
+    }
+
+    /// Two nodes; node 1 is short of 1 GiB pages, so its threads take more 2 MiB pages, and
+    /// thread 3 gets 512 MiB of them from node 0, asked for after a refusal on its own node.
+    #[test]
+    fn a_short_node_shows_in_every_table() {
+        let mut spans = Vec::new();
+        for t in 0..4 {
+            let home = (t / 2) as u32;
+            let mut requests = if home == 0 { repeat(7, GIB, Huge, 0) } else { repeat(2, GIB, Huge, 1) };
+            if home == 0 {
+                requests.extend(repeat(8, 128 * MIB, Large, 0));
+            } else if t == 2 {
+                requests.extend(repeat(48, 128 * MIB, Large, 1));
+            } else {
+                requests.extend(repeat(44, 128 * MIB, Large, 1));
+                requests.push((128 * MIB, Large, 1, true));
+                requests.extend(repeat(4, 128 * MIB, Large, 0));
+            }
+            spans.push(span(t, home, 8 * GIB, &requests));
+        }
+        let report = report(spans, 2);
+        let f = DefaultFormatter::new();
+
+        let nodes = f.prepare_allocation_nodes_table(&report);
+        assert_eq!(nodes.rows.len(), 3, "a Total row");
+        assert_eq!(cell(&nodes, 1, "Remote"), "512.00 MiB (3.1%)");
+        assert_eq!(cell(&nodes, 1, "Local"), "15.50 GiB");
+        assert_eq!(cell(&nodes, 2, "Node"), "Total");
+        assert_eq!(cell(&nodes, 2, "Refused"), "1");
+
+        let commits = f.prepare_allocation_commits_table(&report);
+        let remote = commits.rows.iter().find(|r| r[2] == "0 for 1").expect("a remote row");
+        assert_eq!(remote, &["128 MB", "2 MiB", "0 for 1", "4", "-", "1", "512.00 MiB"]);
+
+        let by_thread = f.prepare_thread_commits_table(&report);
+        assert_eq!(cell(&by_thread, 3, "2 MiB"), "128×44+128@0×4");
+        assert_eq!(cell(&by_thread, 3, "Refused"), "1 (2 MiB: 128)");
+
+        // Node 0's threads got more 1 GiB pages, which is not their problem.
+        let threads = f.prepare_allocation_threads_table(&report);
+        assert_eq!(cell(&threads, 0, "Status"), "✅");
+        assert_eq!(cell(&threads, 2, "Status"), "🟡 1 GiB -5.00 GiB, 50 requests");
+        assert_eq!(cell(&threads, 3, "Status"), "🟡 1 GiB -5.00 GiB, remote 512.00 MiB (6.2%), 51 requests");
+
+        let fairness = f.prepare_fairness_by_thread_table(&report);
+        assert_eq!(cell(&fairness, 3, "Remote"), "+512.00 MiB 🟡");
+        assert_eq!(cell(&fairness, 2, "Remote"), "=");
+        let summary = f.prepare_fairness_summary_table(&report);
+        let remote = summary.rows.iter().find(|r| r[0] == "Remote").unwrap();
+        assert_eq!(remote[4], "3 (+512.00 MiB)");
+        assert_eq!(remote[5], "🟡");
+        let huge = summary.rows.iter().find(|r| r[0] == "1 GiB").unwrap();
+        assert_eq!(huge[4], "2-3 (-5.00 GiB)");
+        let large = summary.rows.iter().find(|r| r[0] == "2 MiB").unwrap();
+        assert_eq!((large[4].as_str(), large[5].as_str()), ("0-3 (±5.00 GiB)", "✅"));
+        crate::reporting::create_console_reporter().report_allocation(&report).unwrap();
+    }
+
+    /// A thread short of its target is ⚠️, and one fed in small pieces is 🟡 on Requests.
+    #[test]
+    fn short_and_piecemeal_threads_are_flagged() {
+        let mut small = repeat(3, GIB, Huge, 0);
+        small.extend(repeat(64, 16 * MIB, Large, 0));
+        let spans = vec![
+            span(0, 0, 4 * GIB, &repeat(4, GIB, Huge, 0)),
+            span(1, 0, 4 * GIB, &repeat(4, GIB, Huge, 0)),
+            span(2, 0, 4 * GIB, &small),
+            span(3, 0, 4 * GIB, &repeat(3, GIB, Huge, 0)),
+        ];
+        let report = report(spans, 1);
+        let f = DefaultFormatter::new();
+        let threads = f.prepare_allocation_threads_table(&report);
+        // Its 1 GiB of 2 MiB pages is one page from the others': fair; 67 requests to their 4 aren't.
+        assert_eq!(cell(&threads, 2, "Status"), "🟡 67 requests");
+        assert_eq!(cell(&threads, 3, "Status"), "⚠️ short 1.00 GiB");
+        let summary = f.prepare_fairness_summary_table(&report);
+        let allocated = summary.rows.iter().find(|r| r[0] == "Allocated").unwrap();
+        assert_eq!(allocated[4], "3 (-1.00 GiB)");
+        assert_eq!(allocated[5], "⚠️");
     }
 }

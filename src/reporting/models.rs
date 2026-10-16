@@ -84,22 +84,6 @@ pub struct ThreadTiming {
     pub cycles_completed: u32,
 }
 
-/// Per-thread allocation breakdown
-#[derive(Debug, Clone)]
-pub struct ThreadAllocationReport {
-    pub allocations: Vec<ThreadAllocation>,
-}
-
-/// Individual thread allocation info
-#[derive(Debug, Clone)]
-pub struct ThreadAllocation {
-    pub thread_id: usize,
-    pub total_size_bytes: u64,
-    pub huge_pages_count: u64,
-    pub large_pages_count: u64,
-    pub regular_pages_count: u64,
-}
-
 /// Performance statistics by thread
 #[derive(Debug, Clone)]
 pub struct PerformanceByThreadReport {
@@ -361,112 +345,124 @@ pub struct ConsolidatedMemoryReport {
     pub warnings: Vec<String>,
 }
 
-/// Block allocation distribution report - backend-agnostic; `allocator_backend` names the source
+/// The allocation report (TODO 81): what each thread got, by node, page size and request, and how
+/// evenly. Built from the stitched allocator's record of every request.
 #[derive(Debug, Clone)]
-pub struct BlockAllocationReport {
-    pub allocator_backend: String,
-    pub total_threads: usize,
-    pub total_allocated_bytes: u64,
-    pub block_size_distribution: Vec<BlockSizeDistribution>,
-    pub page_type_summary: PageTypeSummary,
-    pub per_thread_allocation: Vec<ThreadBlockAllocation>,
-    pub numa_distribution: Vec<NumaNodeDistribution>,
-    pub allocation_fairness: AllocationFairness,
+pub struct AllocationReport {
+    pub allocator: String,
+    pub elapsed: std::time::Duration,
+    /// The machine's: with one, nothing can be remote and the report says so instead.
+    pub numa_nodes: u32,
+    /// By thread id.
+    pub threads: Vec<AllocationThread>,
+    /// By home node; threads with no node last.
+    pub nodes: Vec<AllocationNode>,
+    /// Every request, grouped: largest page size first, then node, then the largest request.
+    pub commit_groups: Vec<CommitGroup>,
+    /// One per dimension, in [`FairnessDimension::ALL`] order.
+    pub fairness: Vec<DimensionFairness>,
 }
 
-/// Block size distribution statistics
 #[derive(Debug, Clone)]
-pub struct BlockSizeDistribution {
-    pub block_size_mb: u32,
-    pub block_count: u32,
-    pub total_bytes: u64,
-    pub page_type: String,
-    pub threads_with_this_size: u32,
-    pub average_per_thread: f64,
-}
-
-/// Page type allocation summary
-#[derive(Debug, Clone)]
-pub struct PageTypeSummary {
-    pub huge_pages: PageTypeStats,
-    pub large_pages: PageTypeStats,
-    pub regular_pages: PageTypeStats,
-}
-
-/// Statistics for a specific page type
-#[derive(Debug, Clone)]
-pub struct PageTypeStats {
-    pub page_count: u64,
-    pub total_bytes: u64,
-    pub block_count: u32,
-    pub threads_using: u32,
-    pub percentage_of_total: f64,
-}
-
-/// Per-thread block allocation details
-#[derive(Debug, Clone)]
-pub struct ThreadBlockAllocation {
+pub struct AllocationThread {
     pub thread_id: usize,
-    pub cpu_id: usize,
-    pub numa_node: u32,
-    /// The thread's share from the layout: what the allocator was asked for
+    pub numa_node: Option<u32>,
     pub target_bytes: u64,
-    pub total_bytes: u64,
-    pub block_sizes: Vec<ThreadBlockSize>,
-    pub page_type_breakdown: ThreadPageTypeBreakdown,
+    pub allocated_bytes: u64,
+    pub huge_bytes: u64,
+    pub large_bytes: u64,
+    pub regular_bytes: u64,
+    /// 1 GiB and 2 MiB pages from a node other than the thread's own, which the requests named
+    /// strictly. 4 KiB pages only prefer the home node and count as local.
+    pub remote_bytes: u64,
+    /// Every request, in the order made: the allocator's record, moved here.
+    pub commits: Vec<crate::memory::stitched::Commit>,
 }
 
-/// Block size allocation for a specific thread
+/// One home node's threads, summed.
 #[derive(Debug, Clone)]
-pub struct ThreadBlockSize {
-    pub size_mb: u32,
-    pub count: u32,
-    pub total_bytes: u64,
-    pub page_type: String,
+pub struct AllocationNode {
+    pub numa_node: Option<u32>,
+    pub threads: usize,
+    pub target_bytes: u64,
+    pub allocated_bytes: u64,
+    pub huge_bytes: u64,
+    pub large_bytes: u64,
+    pub regular_bytes: u64,
+    /// What this node's threads got from other nodes.
+    pub remote_bytes: u64,
+    pub requests: usize,
+    pub refused: usize,
 }
 
-/// Page type breakdown for a specific thread
+/// The requests of one size, page size and node, from threads on one home node.
 #[derive(Debug, Clone)]
-pub struct ThreadPageTypeBreakdown {
-    pub huge_pages_count: u64,
-    pub large_pages_count: u64,
-    pub regular_pages_count: u64,
-    pub huge_pages_bytes: u64,
-    pub large_pages_bytes: u64,
-    pub regular_pages_bytes: u64,
+pub struct CommitGroup {
+    pub bytes: u64,
+    pub page: crate::memory::allocator::PageSizeLevel,
+    /// The node the requests named.
+    pub numa_node: Option<u32>,
+    /// The home node of the threads that made them; differs from `numa_node` when remote.
+    pub home_node: Option<u32>,
+    pub granted: usize,
+    pub refused: usize,
+    /// Threads that made at least one.
+    pub threads: usize,
+    pub granted_bytes: u64,
 }
 
-/// NUMA node distribution statistics
-#[derive(Debug, Clone)]
-pub struct NumaNodeDistribution {
-    pub node_id: u32,
-    pub thread_count: u32,
-    pub total_bytes: u64,
-    pub block_sizes: Vec<u32>, // Block sizes in MB allocated on this node
-    pub page_types: NumaPageTypeStats,
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum FairnessDimension {
+    Allocated,
+    Huge,
+    Large,
+    Regular,
+    Remote,
+    /// Requests made, granted or refused: many is a thread fed in small pieces.
+    Requests,
 }
 
-/// Page type statistics per NUMA node
-#[derive(Debug, Clone)]
-pub struct NumaPageTypeStats {
-    pub huge_pages_count: u32,
-    pub large_pages_count: u32,
-    pub regular_pages_count: u32,
-    pub huge_pages_bytes: u64,
-    pub large_pages_bytes: u64,
-    pub regular_pages_bytes: u64,
+impl FairnessDimension {
+    pub const ALL: [FairnessDimension; 6] = [
+        FairnessDimension::Allocated,
+        FairnessDimension::Huge,
+        FairnessDimension::Large,
+        FairnessDimension::Regular,
+        FairnessDimension::Remote,
+        FairnessDimension::Requests,
+    ];
 }
 
-/// Allocation fairness analysis
+/// How far a thread's value is from the others', and whether that's worth a look.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord)]
+pub enum FairnessFlag {
+    Fine,
+    /// 🟡: slower or uneven, still tested.
+    Notice,
+    /// ⚠️: short of its share, or mostly remote.
+    Warn,
+}
+
+/// One dimension across the threads.
 #[derive(Debug, Clone)]
-pub struct AllocationFairness {
-    pub coefficient_of_variation: f64, // Standard deviation / mean for allocation sizes
-    pub min_allocation_bytes: u64,
-    pub max_allocation_bytes: u64,
-    pub mean_allocation_bytes: f64,
-    /// Fewest and most 1 GiB pages any thread got
-    pub min_huge_pages: u64,
-    pub max_huge_pages: u64,
+pub struct DimensionFairness {
+    pub dimension: FairnessDimension,
+    /// In `AllocationReport::threads` order.
+    pub cells: Vec<FairnessCell>,
+    /// Over every thread: bytes, except Requests, a count.
+    pub min: f64,
+    pub median: f64,
+    pub max: f64,
+}
+
+/// One thread on one dimension, in its unit: bytes, except Requests, a count.
+#[derive(Debug, Clone, Copy)]
+pub struct FairnessCell {
+    /// From the median of the other threads; 0 with no other threads.
+    pub deviation: f64,
+    pub flag: FairnessFlag,
+    /// What ranks this cell for the summary's Worst column: higher is worse, 0 is nothing to show.
+    pub badness: f64,
 }
 
 // Note: CacheLatencyReport was removed - --cache-latency now uses LatencyTestSummaryReport

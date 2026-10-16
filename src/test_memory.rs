@@ -145,7 +145,6 @@ pub fn describe_extent(blocks: &[AllocationBlock], extent: &TestBlock<'_>, sprea
 mod tests {
     use super::*;
     use std::sync::Arc;
-    use crate::BlockInfo;
     use crate::memory::MemoryBuffer;
     use crate::memory::allocator::AllocationConfig;
     use crate::memory::backend::{AllocError, Backend, BackendAllocation};
@@ -178,7 +177,6 @@ mod tests {
                     BackendAllocation { ptr: at as *mut u8, size, info: BufferInfo { numa_node: 0, page_type: page(size) } },
                     backend.clone(),
                 ),
-                block_info: BlockInfo { size_bytes: size, thread_id: 0 },
             };
             at += size;
             block

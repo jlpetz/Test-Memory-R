@@ -308,6 +308,20 @@ pub struct ThreadSpan {
     /// Committed runs from `base` upward. Each starts on its own page size's boundary: 1 GiB runs
     /// can follow 2 MiB ones from another node when those end on a whole GiB.
     pub runs: Vec<Run>,
+    /// Every request made for this thread, in the order made, for the allocation report
+    /// (TODO 81). Startup only: one small entry a request, dropped once the report prints.
+    pub commits: Vec<Commit>,
+}
+
+/// One request to the OS for a thread: a commit of `len` bytes at its cursor, granted or refused.
+/// The runs are the granted ones merged. A refusal's error is in the log, where it happened.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct Commit {
+    pub len: usize,
+    pub page: PageSizeLevel,
+    /// The node the request named: required for HUGE and LARGE, preferred for REGULAR.
+    pub numa_node: Option<u32>,
+    pub refused: bool,
 }
 
 impl ThreadSpan {
@@ -667,6 +681,8 @@ struct Slice {
     cursor: usize,
     /// Covers the slice, in address order.
     pieces: Vec<Piece>,
+    /// Every request made for the slice, in order.
+    commits: Vec<Commit>,
 }
 
 impl Slice {
@@ -676,6 +692,18 @@ impl Slice {
 
     fn next_addr(&self) -> usize {
         self.base + self.cursor
+    }
+
+    fn span(&self, commits: Vec<Commit>) -> ThreadSpan {
+        ThreadSpan {
+            thread_id: self.thread_id,
+            numa_node: self.numa_node,
+            base: self.base,
+            len: self.cursor,
+            target: self.target,
+            runs: self.runs(),
+            commits,
+        }
     }
 
     fn runs(&self) -> Vec<Run> {
@@ -735,11 +763,6 @@ pub struct StitchedArena<V: VmOps = Win32Vm> {
 }
 
 impl StitchedArena<Win32Vm> {
-    /// Reserve, carve and fill for real.
-    pub fn build(req: &StitchRequest) -> Result<Arc<Self>, String> {
-        Self::build_with(Win32Vm, req).map(Arc::new)
-    }
-
     /// Large-page bytes each thread got from another node, by (home, source), for
     /// `fill::warn_remote`.
     fn remote_memory(&self) -> fill::RemoteMemory {
@@ -856,6 +879,7 @@ impl<V: VmOps> StitchedArena<V> {
                     len: plan.stride,
                     holding: Holding::Placeholder,
                 }],
+                commits: Vec::new(),
             });
         }
         Ok(())
@@ -1055,15 +1079,17 @@ impl<V: VmOps> StitchedArena<V> {
 
     /// Per-thread spans, in slice (address) order.
     pub fn spans(&self) -> Vec<ThreadSpan> {
+        self.slices.iter().map(|s| s.span(s.commits.clone())).collect()
+    }
+
+    /// [`Self::spans`], with the request record moved out rather than copied: the allocation
+    /// report is its only reader.
+    fn take_spans(&mut self) -> Vec<ThreadSpan> {
         self.slices
-            .iter()
-            .map(|s| ThreadSpan {
-                thread_id: s.thread_id,
-                numa_node: s.numa_node,
-                base: s.base,
-                len: s.cursor,
-                target: s.target,
-                runs: s.runs(),
+            .iter_mut()
+            .map(|s| {
+                let commits = std::mem::take(&mut s.commits);
+                s.span(commits)
             })
             .collect()
     }
@@ -1076,9 +1102,10 @@ impl<V: VmOps> StitchedArena<V> {
             self.slices.len(),
             gib(self.stride)
         );
+        // The allocation report's thread table says the same (TODO 81).
         for span in self.spans() {
             let remote = span.remote_bytes();
-            log::info!(
+            log::debug!(
                 "  thread {:>3} {:<8} {:#014x}  1GB {:>7.2} | 2MB {:>7.2} | 4KB {:>7.2} GiB = {:.2}/{:.2} GiB{}",
                 span.thread_id,
                 node_label(span.numa_node),
@@ -1146,7 +1173,10 @@ impl<V: VmOps> Fill for StitchedArena<V> {
         page: PageSizeLevel,
         node: Option<u32>,
     ) -> Result<Grant, String> {
-        self.commit(i, len, page, node)
+        let grant = self.commit(i, len, page, node)?;
+        let refused = matches!(grant, Grant::Refused(_));
+        self.slices[i].commits.push(Commit { len, page, numa_node: node, refused });
+        Ok(grant)
     }
 
     /// 1 GiB pages need a 1 GiB-aligned cursor. The base is one, and every 1 GiB commit and every
@@ -1292,10 +1322,6 @@ where
                         },
                         backend.clone(),
                     ),
-                    block_info: BlockInfo {
-                        size_bytes: size,
-                        thread_id: span.thread_id,
-                    },
                 });
                 addr += size;
             }
@@ -1309,12 +1335,23 @@ where
 // TMR entry point
 // ---------------------------------------------------------------------------------------------
 
-/// Every thread's share as one span: blocks keyed by thread, power-of-two shaped, each ending
-/// where the next begins.
+/// What [`chunk_allocate_stitched`] hands the runner.
+pub struct StitchedAllocation {
+    /// Keyed by thread, power-of-two shaped, each ending where the next begins.
+    pub blocks: HashMap<usize, Vec<AllocationBlock>>,
+    /// Each thread's span with the requests that built it, for the allocation report.
+    pub spans: Vec<ThreadSpan>,
+    /// Reserving, carving and filling.
+    pub elapsed: std::time::Duration,
+    /// The machine's NUMA nodes.
+    pub numa_nodes: u32,
+}
+
+/// Every thread's share as one span.
 pub fn chunk_allocate_stitched(
     thread_blocks: &HashMap<usize, Vec<BlockInfo>>,
     runtime_config: &crate::RuntimeConfig,
-) -> Result<HashMap<usize, Vec<AllocationBlock>>, String> {
+) -> Result<StitchedAllocation, String> {
     let threads: Vec<StitchThread> = fill::thread_shares(thread_blocks, runtime_config)
         .into_iter()
         .map(|share| StitchThread {
@@ -1341,10 +1378,18 @@ pub fn chunk_allocate_stitched(
         size_label(request.large_floor)
     );
 
-    let arena = StitchedArena::build(&request)?;
+    let start = std::time::Instant::now();
+    let mut arena = StitchedArena::build_with(Win32Vm, &request)?;
+    let elapsed = start.elapsed();
+    let spans = arena.take_spans();
     arena.log_summary();
     fill::warn_remote(WHO, &arena.remote_memory());
-    Ok(into_allocation_blocks(arena))
+    Ok(StitchedAllocation {
+        blocks: into_allocation_blocks(Arc::new(arena)),
+        spans,
+        elapsed,
+        numa_nodes: request.numa_nodes,
+    })
 }
 
 #[cfg(test)]
@@ -1643,6 +1688,16 @@ mod tests {
             }
             assert_eq!(offset, span.len);
             assert_eq!(span.base % GIB, 0);
+            // The report's record agrees with what was committed, page size by page size.
+            for page in [PageSizeLevel::Huge, PageSizeLevel::Large, PageSizeLevel::Regular] {
+                let granted: usize = span
+                    .commits
+                    .iter()
+                    .filter(|c| !c.refused && c.page == page)
+                    .map(|c| c.len)
+                    .sum();
+                assert_eq!(granted, span.bytes_at(page));
+            }
         }
     }
 
@@ -1905,6 +1960,11 @@ mod tests {
         assert_eq!(spans[1].bytes_at(PageSizeLevel::Large), 256 * MIB);
         assert!(spans.iter().all(|s| s.len == s.target));
         assert_eq!(vm.state().large_bytes[&None], 0);
+        // Thread 1's record keeps the two refusals the ladder halved through.
+        let asked: Vec<(usize, bool)> =
+            spans[1].commits.iter().take(3).map(|c| (c.len / MIB, c.refused)).collect();
+        assert_eq!(asked, vec![(1024, true), (512, true), (256, false)]);
+        assert!(spans[1].commits.iter().all(|c| c.page != PageSizeLevel::Huge));
     }
 
     /// Plain round-robin would give 1, 1, 0.5, 0 GiB of 2 MiB pages here: 3, 3, 1.5, 1 GiB locked,
@@ -2189,8 +2249,6 @@ mod tests {
                 assert_eq!(block.buffer.as_mut_ptr() as usize, addr);
                 assert!(block.buffer.size().is_power_of_two());
                 assert!(block.buffer.size() >= 16 * MIB);
-                assert_eq!(block.block_info.size_bytes, block.buffer.size());
-                assert_eq!(block.block_info.thread_id, span.thread_id);
                 addr += block.buffer.size();
             }
             assert_eq!(addr, span.base + span.len);
