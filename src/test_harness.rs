@@ -18,7 +18,6 @@ use crate::tests::{
     TestAction, TestMemoryConfig, TestProgress, TestStats, TestTiming,
 };
 use crate::ErrorMode;
-use std::sync::atomic::Ordering;
 
 /// Chunk-level context passed to closures.
 /// Contains pre-computed values so closures don't need to recompute them.
@@ -90,7 +89,7 @@ pub struct ChunkCtx {
 ///   writes once then reads/verifies `dLoopCounter` times (typically 5), stressing DRAM
 ///   refresh and retention. Default 1.
 ///
-/// Per cycle per chunk: `(test_fn × test_reps → fence → verify_fn × verify_reps) × write_read_cycles`
+/// Per cycle per chunk: `(test_fn × test_reps → verify_fn × verify_reps) × write_read_cycles`
 ///
 /// # Bytes Accounting
 ///
@@ -213,8 +212,6 @@ where
             round: 0,
         };
         init_fn(&ctx);
-        // The verifies read it back on this thread: no hardware barrier needed (as below)
-        std::sync::atomic::compiler_fence(Ordering::SeqCst);
         // Setup, not the test: its time and bytes are left out (TODO 90)
         runner.restart_clock();
     }
@@ -261,11 +258,9 @@ where
                     test_fn(&ctx);
                 }
 
-                // The writes before the verifies, for the optimiser only (TODO 16): this thread
-                // reads its own writes in order on the cached memory TMR tests, and the
-                // non-temporal kernels end in their own SFENCE. A hardware barrier was for
-                // uncached and write-combining memory, the driver's.
-                std::sync::atomic::compiler_fence(Ordering::SeqCst);
+                // No fence before the verifies (TODO 16): this thread reads its own writes in
+                // order on the cached memory TMR tests, and the non-temporal kernels end in their
+                // own SFENCE. A barrier was for uncached and write-combining memory, the driver's.
 
                 // Optional flush phase (TODO #59): evict this chunk so the verify below
                 // round-trips through DRAM instead of reading the just-written cached copy.
