@@ -211,7 +211,8 @@ where
             round: 0,
         };
         init_fn(&ctx);
-        std::sync::atomic::fence(Ordering::SeqCst);
+        // The verifies read it back on this thread: no hardware barrier needed (as below)
+        std::sync::atomic::compiler_fence(Ordering::SeqCst);
         runner.set_stage(crate::tests::Stage::Testing);
 
         if config.untimed_init {
@@ -265,13 +266,18 @@ where
                     test_fn(&ctx);
                 }
 
-                std::sync::atomic::fence(Ordering::SeqCst);
+                // The writes before the verifies, for the optimiser only (TODO 16): this thread
+                // reads its own writes in order on the cached memory TMR tests, and the
+                // non-temporal kernels end in their own SFENCE. A hardware barrier was for
+                // uncached and write-combining memory, the driver's.
+                std::sync::atomic::compiler_fence(Ordering::SeqCst);
 
                 // Optional flush phase (TODO #59): evict this chunk so the verify below
                 // round-trips through DRAM instead of reading the just-written cached copy.
-                // Placed AFTER the fence (writes globally ordered) and BEFORE the reads —
-                // flush_range_to_dram ends in its own MFENCE, so the flushes are drained
-                // before any verify load can issue. Off by default; costs real bandwidth.
+                // After the writes (CLFLUSHOPT is ordered after older stores to its line) and
+                // before the reads: flush_range_to_dram ends in its own MFENCE, so the flushes
+                // are drained before any verify load can issue. Off by default; costs real
+                // bandwidth.
                 if flush_before_verify {
                     let chunk_ptr = ctx.ptr.add(chunk_start) as *const u8;
                     let chunk_bytes = (chunk_end - chunk_start) * std::mem::size_of::<u64>();
