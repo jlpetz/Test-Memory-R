@@ -14,7 +14,7 @@
 //!
 //! See TODO #19 Part A for the design and the three-tier execution model.
 
-use std::time::Instant;
+use std::time::{Duration, Instant};
 use std::sync::atomic::Ordering;
 
 use crate::ErrorMode;
@@ -39,6 +39,9 @@ pub struct TestRunner<'a> {
     /// spread evenly over the extent (`chunks`).
     chunk: usize,
     start: Instant,
+    /// Setup inside the clock (TODO 90): the seal's checks and reseals in the first cycle, and a
+    /// fill a sealed step does per chunk. Left out of the test's time when it finishes.
+    setup: Duration,
     cycle: u32,
     total_error_count: u64,
     total_bytes_processed: usize,
@@ -100,6 +103,7 @@ impl<'a> TestRunner<'a> {
             progress,
             chunk,
             start: now,
+            setup: Duration::ZERO,
             cycle: 0,
             total_error_count: 0,
             total_bytes_processed: 0,
@@ -162,7 +166,18 @@ impl<'a> TestRunner<'a> {
         self.set_stage(Stage::Testing);
         let now = Instant::now();
         self.start = now;
+        self.setup = Duration::ZERO;
         self.last_progress_update = now;
+    }
+
+    /// Run `f`, setup the test's time leaves out (TODO 90): a fill a sealed step does per chunk.
+    /// Two clock reads a call, so for per-chunk work, not per word.
+    #[inline]
+    pub fn untimed<R>(&mut self, f: impl FnOnce() -> R) -> R {
+        let at = Instant::now();
+        let r = f();
+        self.setup += at.elapsed();
+        r
     }
 
     /// Whether this step wraps each chunk in the seal (TODO 74): `check_seal` before the test works
@@ -185,9 +200,12 @@ impl<'a> TestRunner<'a> {
             return;
         }
         self.set_stage(Stage::CheckingSeal);
+        let at = Instant::now();
         let (from, to) = (start / 8, (start + len) / 8);
         // SAFETY: the range is inside the extent, which the test is about to work
         self.seal_errors += unsafe { self.seal.kernel.check(self.seal_base, from, to, "seal check before") };
+        // The seal's work, not the test's (TODO 90)
+        self.setup += at.elapsed();
         self.set_stage(Stage::Testing);
     }
 
@@ -199,8 +217,10 @@ impl<'a> TestRunner<'a> {
             return;
         }
         self.set_stage(Stage::Resealing);
+        let at = Instant::now();
         // SAFETY: as `check_seal`
         unsafe { self.seal.kernel.fill(self.seal_base, start / 8, (start + len) / 8) };
+        self.setup += at.elapsed();
         self.set_stage(Stage::Testing);
     }
 
@@ -297,12 +317,13 @@ impl<'a> TestRunner<'a> {
 
     /// A step that wrapped its chunks in the seal reseals its whole extent as it finishes when it
     /// ran past its first cycle (TODO 74, `check_seal`), or was cut short (`aborted`), which can
-    /// leave a chunk it was working unsealed. Returns the test's time, taken before.
+    /// leave a chunk it was working unsealed. Returns the test's time, taken before, without its
+    /// setup (TODO 90).
     ///
     /// Not when an error halts it: the bad words stay in memory as the test found them, for a
     /// look after the run, and the run stops at this step anyway.
     fn reseal_extent(&mut self, aborted: bool, cycle_errors: u64) -> std::time::Duration {
-        let timed = self.start.elapsed();
+        let timed = self.start.elapsed().saturating_sub(self.setup);
         let halted = matches!(self.error_mode, ErrorMode::Halt) && self.total_error_count + cycle_errors + self.seal_errors > 0;
         if halted {
             log::info!("[Thread {}] {}: halted on an error, so the extent keeps what the test found (no reseal)",

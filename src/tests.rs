@@ -778,9 +778,6 @@ pub struct TestMemoryConfig {
     /// Where this step runs in the suite (run seed, suite cycle, step), for the native patterns'
     /// keys; set per dispatch by the runner, all zero outside a run and for the Bench pairs.
     pub epoch: crate::pattern::StepEpoch,
-    /// The fill before the verifies is setup, not the test: its time and bytes don't count toward
-    /// the test's throughput (a Bench-Verify, TODO 90).
-    pub untimed_init: bool,
 }
 
 impl TestMemoryConfig {
@@ -808,7 +805,6 @@ impl TestMemoryConfig {
             program: None,  // The default program, or the pattern_mode if one is set
             sequence: None,  // Mem-Sequence's passes; its default when unset
             epoch: crate::pattern::StepEpoch::default(),  // Set per dispatch by the runner
-            untimed_init: false,
         }
     }
 
@@ -2254,7 +2250,8 @@ pub unsafe fn random_torture_multi(
         *base.add(i) = ids | i as u64;
     }
     std::sync::atomic::fence(Ordering::SeqCst);
-    runner.add_bytes(extent.test_size);
+    // Setup, not the test: its time and bytes are left out (TODO 90)
+    runner.restart_clock();
 
     loop {
         let cycle = runner.begin_cycle();
@@ -2522,6 +2519,8 @@ pub unsafe fn block_move_multi(
             *src_base.add(i) = pattern_base.wrapping_add(i as u64);
         }
         std::sync::atomic::fence(Ordering::SeqCst);
+        // Setup, not the test: its time is left out, and its bytes never counted (TODO 90)
+        runner.restart_clock();
     }
 
     loop {
@@ -2547,9 +2546,12 @@ pub unsafe fn block_move_multi(
             runner.check_seal(half_size + spread.start(k), spread.chunk());
             halt_here!(runner, cycle_errors, (runner.bytes_processed() / (3 * std::mem::size_of::<u64>())) as u64);
             if sealed {
-                for i in processed..chunk_end {
-                    *src_base.add(i) = pattern_base.wrapping_add(i as u64);
-                }
+                // Setup, as the unsealed fill (TODO 90)
+                runner.untimed(|| {
+                    for i in processed..chunk_end {
+                        *src_base.add(i) = pattern_base.wrapping_add(i as u64);
+                    }
+                });
             }
 
             // Copy from source to destination with direction patterns
@@ -5311,7 +5313,7 @@ macro_rules! native_bench {
             progress: Option<&TestProgress>,
         ) -> TestStats {
             let mut config = config.clone();
-            (config.epoch, config.write_read_cycles, config.untimed_init) = (crate::pattern::StepEpoch::default(), 1, true);
+            (config.epoch, config.write_read_cycles) = (crate::pattern::StepEpoch::default(), 1);
             let run = NativeRun { program: crate::pattern::Program::single($family), action: TestAction::Verify, test_reps: 0, verify_reps: 1, pinned: true };
             simple_native_widest(blocks, thread_id, error_mode, timing, &config, progress, run)
         }
@@ -5616,8 +5618,7 @@ unsafe fn bench_verify_seal(
     test_name: &'static str,
     kernel: crate::seal::SealKernel,
 ) -> TestStats {
-    // The fill is setup: the checks alone are timed and counted (TODO 90)
-    let config = &TestMemoryConfig { untimed_init: true, ..config.clone() };
+    // The fill is setup: the checks alone are timed and counted (TODO 90, the harness)
     run_phased_test(
         blocks, thread_id, error_mode, timing, config, progress,
         test_name, TestAction::Verify, 1, config.skip_init, 0, 1,
@@ -5870,8 +5871,7 @@ pub unsafe fn bench_verify_multi(
     config: &TestMemoryConfig,
     progress: Option<&TestProgress>,
 ) -> TestStats {
-    // The fill is setup: the verifies alone are timed and counted (TODO 90)
-    let config = &TestMemoryConfig { untimed_init: true, ..config.clone() };
+    // The fill is setup: the verifies alone are timed and counted (TODO 90, the harness)
     let mode = config.pattern_mode.unwrap_or(10);
     let param0 = config.pattern_param0.unwrap_or(0xDEADBEEFDEADBEEF);
     let param1 = config.pattern_param1.unwrap_or(0xCAFEBABECAFEBABE);

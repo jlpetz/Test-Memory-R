@@ -4902,6 +4902,32 @@ mod tests {
         assert!(ran.len() > 30, "only {} tests ran: {:?}", ran.len(), ran);
     }
 
+    /// TODO 90: a step's time and bytes are its test sequence only. A mirror test fills its
+    /// extent before its swaps (unsealed), and that pass is setup: two cycles count twice one
+    /// cycle's bytes, with no fill pass on top. Time run `untimed` is left out of the test's.
+    #[test]
+    fn fills_and_setup_are_left_out_of_a_tests_time_and_bytes() {
+        let region = Region::new(&[256 * KIB, 256 * KIB, 128 * KIB]);
+        let (def, test_fn) = suite().into_iter().find(|(d, _)| d.actual_name == "Mem-MirrorV2").expect("Mem-MirrorV2");
+        assert!(!def.config.seal.on, "an unsealed run: the mirror fills up front");
+        let bytes = |cycles| {
+            let mut config = def.config.clone();
+            config.timing = TestTiming::cycles_only(cycles);
+            unsafe { test_fn(&region.blocks, 0, ErrorMode::Log, &config.timing, &config, None) }.bytes_processed
+        };
+        let one = bytes(1);
+        assert!(one > 0);
+        assert_eq!(bytes(2), 2 * one, "a fill pass was counted");
+
+        let timing = TestTiming::cycles_only(1);
+        let (mut runner, _extent) = crate::test_scaffolding::TestRunner::new(
+            &region.blocks, 0, ErrorMode::Log, &timing, &def.config, None, "Mem-MirrorV2", crate::tests::TestAction::Verify,
+        );
+        runner.untimed(|| std::thread::sleep(std::time::Duration::from_millis(60)));
+        let timed = runner.finish_completed(0).timed.expect("it ran");
+        assert!(timed < std::time::Duration::from_millis(60), "setup counted: {timed:?}");
+    }
+
     /// TODO 76: chunks overlap where they don't tile, so a word's value may depend only on its
     /// position. Each writer whose last pass covers every word leaves the same image at 68 KiB
     /// and 100 KiB chunks (Mem-Stride's last pass doesn't), and each Bench-Verify finds its

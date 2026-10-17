@@ -95,10 +95,12 @@ pub struct ChunkCtx {
 /// # Bytes Accounting
 ///
 /// ```text
-/// init_bytes = block_size if the harness fills up front (unsealed, not skip_init, not writes-first), else 0
 /// cycle_bytes = (bytes_per_test_op × test_reps + verify_reps) × block_size × write_read_cycles
-/// total = init_bytes + cycle_bytes × cycles_completed
+/// total = cycle_bytes × cycles_completed
 /// ```
+///
+/// A fill the harness does (up front unsealed, per chunk sealed) is setup: its time and bytes are
+/// left out (TODO 90), as are the seal's checks and reseals.
 ///
 /// # Safety
 ///
@@ -213,15 +215,8 @@ where
         init_fn(&ctx);
         // The verifies read it back on this thread: no hardware barrier needed (as below)
         std::sync::atomic::compiler_fence(Ordering::SeqCst);
-        runner.set_stage(crate::tests::Stage::Testing);
-
-        if config.untimed_init {
-            // Setup, not the test: a Bench-Verify measures its verifies alone (TODO 90)
-            runner.restart_clock();
-        } else {
-            // Account for init: one write pass over the extent
-            runner.add_bytes(extent.test_size);
-        }
+        // Setup, not the test: its time and bytes are left out (TODO 90)
+        runner.restart_clock();
     }
 
     // Per write_read_cycle: bytes_per_test_op × test_reps writes + verify_reps reads
@@ -252,7 +247,7 @@ where
                 return runner.finish_aborted(cycle_errors, total_operations);
             }
             if fill_per_chunk {
-                init_fn(&ctx);
+                runner.untimed(|| init_fn(&ctx));
             }
 
             // TM5-faithful loop: (write + multi-read) × write_read_cycles
