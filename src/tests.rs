@@ -2565,6 +2565,170 @@ pub unsafe fn stride_access_multi(
     }
 }
 
+/// One Mem-BlockMove half-chunk: the source's words `[start, end)` copied to the same offsets of
+/// the destination half, in the test's direction pattern, then checked there, each word the
+/// pattern plus its index. The copies and the verify are functions of their own so their loops
+/// keep every value in registers (TODO 99): in the test's function a backward copy reloaded its
+/// bound, and the verify a vector constant, every iteration. A call a half-chunk.
+///
+/// Each walks a pointer, every access at it plus a fixed displacement. The vector copies and the
+/// verify move 16 words a step as four 32 B vectors, the shape the compiler gave the inlined loops
+/// at the `x86-64-v3` baseline; the strided copies move one word a step, as written.
+#[derive(Clone, Copy)]
+struct BlockMoveChunk {
+    src: *mut u64,
+    dst: *mut u64,
+    start: usize,
+    end: usize,
+    pattern_base: u64,
+}
+
+impl BlockMoveChunk {
+    /// Word `i`'s value in either half.
+    #[inline(always)]
+    fn expected(self, i: usize) -> u64 {
+        self.pattern_base.wrapping_add(i as u64)
+    }
+
+    /// The copy of `[start, end)` for `dirs` directions: 1 up; 2 the first half up and the second
+    /// down; 4 four quarters, up, down, even words then odd, up; any other count `dirs`
+    /// interleaved strided passes, each up.
+    #[inline(always)]
+    unsafe fn copy(self, dirs: u32) {
+        let (start, end) = (self.start, self.end);
+        match dirs {
+            1 => self.copy_up(start, end),
+            2 => {
+                let mid = start + (end - start) / 2;
+                self.copy_up(start, mid);
+                self.copy_down(mid, end);
+            }
+            4 => {
+                let block = (end - start) / 4;
+                for stream in 0..4 {
+                    let from = start + stream * block;
+                    let to = (start + (stream + 1) * block).min(end);
+                    if from < to {
+                        match stream {
+                            1 => self.copy_down(from, to),
+                            2 => self.copy_strided::<2>(from, to, 2),
+                            _ => self.copy_up(from, to),
+                        }
+                    }
+                }
+            }
+            dirs => self.copy_strided::<0>(start, end, dirs as usize),
+        }
+    }
+
+    /// Words `[from, to)` copied up, 16 a step: four vectors read, then the four written.
+    #[inline(never)]
+    unsafe fn copy_up(self, from: usize, to: usize) {
+        let (mut s, mut d) = (self.src.add(from) as *const u64, self.dst.add(from));
+        for _ in 0..(to - from) / 16 {
+            let v0 = s.cast::<u64x4>().read_unaligned();
+            let v1 = s.add(4).cast::<u64x4>().read_unaligned();
+            let v2 = s.add(8).cast::<u64x4>().read_unaligned();
+            let v3 = s.add(12).cast::<u64x4>().read_unaligned();
+            d.cast::<u64x4>().write_unaligned(v0);
+            d.add(4).cast::<u64x4>().write_unaligned(v1);
+            d.add(8).cast::<u64x4>().write_unaligned(v2);
+            d.add(12).cast::<u64x4>().write_unaligned(v3);
+            s = s.wrapping_add(16);
+            d = d.wrapping_add(16);
+        }
+        for _ in 0..(to - from) % 16 {
+            *d = *s;
+            s = s.wrapping_add(1);
+            d = d.wrapping_add(1);
+        }
+    }
+
+    /// Words `[from, to)` copied down from the top, 16 a step, the step's four vectors from its
+    /// top too; the words below the last whole step one at a time, down.
+    #[inline(never)]
+    unsafe fn copy_down(self, from: usize, to: usize) {
+        let (mut s, mut d) = (self.src.add(to) as *const u64, self.dst.add(to));
+        for _ in 0..(to - from) / 16 {
+            s = s.wrapping_sub(16);
+            d = d.wrapping_sub(16);
+            let v3 = s.add(12).cast::<u64x4>().read_unaligned();
+            let v2 = s.add(8).cast::<u64x4>().read_unaligned();
+            let v1 = s.add(4).cast::<u64x4>().read_unaligned();
+            let v0 = s.cast::<u64x4>().read_unaligned();
+            d.add(12).cast::<u64x4>().write_unaligned(v3);
+            d.add(8).cast::<u64x4>().write_unaligned(v2);
+            d.add(4).cast::<u64x4>().write_unaligned(v1);
+            d.cast::<u64x4>().write_unaligned(v0);
+        }
+        for _ in 0..(to - from) % 16 {
+            s = s.wrapping_sub(1);
+            d = d.wrapping_sub(1);
+            *d = *s;
+        }
+    }
+
+    /// Words `[from, to)` copied in `stride` passes, pass `k` the words `from + k`, `from + k +
+    /// stride`, ..., each pass up. The stride is `S`, or `stride` when `S` is 0: the 4-way copy's
+    /// even-then-odd quarter is a constant 2, so its accesses are fixed displacements.
+    #[inline(never)]
+    unsafe fn copy_strided<const S: usize>(self, from: usize, to: usize, stride: usize) {
+        let stride = if S == 0 { stride } else { S };
+        debug_assert!(stride > 0, "copy_directions is at least 1");
+        for first in from..(from + stride).min(to) {
+            let (mut s, mut d) = (self.src.add(first) as *const u64, self.dst.add(first));
+            for _ in 0..(to - first).div_ceil(stride) {
+                *d = *s;
+                s = s.wrapping_add(stride);
+                d = d.wrapping_add(stride);
+            }
+        }
+    }
+
+    /// The source's words written, each its value: a sealed step's setup for each half-chunk, an
+    /// unsealed one's once for the half. Setup, so left to the vectorizer as written: in vectors
+    /// of its own, the unroller gave each of 16 stores an offset and spilled two.
+    #[inline(never)]
+    unsafe fn fill(self) {
+        let (mut p, mut value) = (self.src.add(self.start), self.expected(self.start));
+        for _ in self.start..self.end {
+            *p = value;
+            value = value.wrapping_add(1);
+            p = p.wrapping_add(1);
+        }
+    }
+
+    /// The destination's words checked: the accumulators ORed, nonzero when a word differs. Each
+    /// step reads 16 words as four vectors into four vector accumulators and steps a vector of
+    /// their expected values; the words past the last whole step go to a scalar accumulator.
+    #[inline(never)]
+    unsafe fn verify(self) -> u64 {
+        let lanes = u64x4::from_array([0, 1, 2, 3]);
+        let (quarter, step) = (u64x4::splat(4), u64x4::splat(16));
+        let mut acc = [u64x4::splat(0); 4];
+        let len = self.end - self.start;
+        let mut expected = u64x4::splat(self.expected(self.start)) + lanes;
+        let mut p = self.dst.add(self.start) as *const u64;
+        for _ in 0..len / 16 {
+            let mut e = expected;
+            for (k, a) in acc.iter_mut().enumerate() {
+                *a |= p.add(4 * k).cast::<u64x4>().read_unaligned() ^ e;
+                e += quarter;
+            }
+            expected += step;
+            p = p.wrapping_add(16);
+        }
+        let mut value = self.expected(self.start + len / 16 * 16);
+        let mut tail = 0u64;
+        for _ in 0..len % 16 {
+            tail |= *p ^ value;
+            value = value.wrapping_add(1);
+            p = p.wrapping_add(1);
+        }
+        ((acc[0] | acc[1]) | (acc[2] | acc[3])).reduce_or() | tail
+    }
+}
+
 /// BlockMove MultiBlock - sequential block memory moves.
 #[doc = include_str!("test_fn_safety.md")]
 pub unsafe fn block_move_multi(
@@ -2603,9 +2767,7 @@ pub unsafe fn block_move_multi(
     // instead (TODO 74)
     let sealed = runner.seal_wrap();
     if !sealed {
-        for i in 0..len {
-            *src_base.add(i) = pattern_base.wrapping_add(i as u64);
-        }
+        BlockMoveChunk { src: src_base, dst: src_base.wrapping_add(len), start: 0, end: len, pattern_base }.fill();
         // Setup, not the test: its own record (TODO 90)
         runner.setup_done(crate::ops::Op::PatternFill, (len * std::mem::size_of::<u64>()) as u64);
     }
@@ -2632,91 +2794,19 @@ pub unsafe fn block_move_multi(
             runner.check_seal(spread.start(k), spread.chunk());
             runner.check_seal(half_size + spread.start(k), spread.chunk());
             halt_here!(runner, cycle_errors, (runner.bytes_processed() / (3 * std::mem::size_of::<u64>())) as u64);
+            let chunk = BlockMoveChunk { src: src_base, dst: dst_base, start: processed, end: chunk_end, pattern_base };
             if sealed {
                 // Setup, as the unsealed fill (TODO 90)
-                runner.untimed(crate::ops::Op::PatternFill, spread.chunk() as u64, || {
-                    for i in processed..chunk_end {
-                        *src_base.add(i) = pattern_base.wrapping_add(i as u64);
-                    }
-                });
+                runner.untimed(crate::ops::Op::PatternFill, spread.chunk() as u64, || chunk.fill());
             }
 
-            // Copy from source to destination with direction patterns
-            match copy_dirs {
-                1 => {
-                    // Single direction: Simple forward copy
-                    for i in processed..chunk_end {
-                        let val = *src_base.add(i);
-                        *dst_base.add(i) = val;
-                    }
-                }
-                2 => {
-                    // Two directions: Copy forward and backward simultaneously
-                    let chunk_size = chunk_end - processed;
-                    let mid = processed + chunk_size / 2;
-
-                    // Stream 1: First half forward
-                    for i in processed..mid {
-                        *dst_base.add(i) = *src_base.add(i);
-                    }
-
-                    // Stream 2: Second half backward
-                    for i in 0..(chunk_end - mid) {
-                        let idx = chunk_end - 1 - i;
-                        *dst_base.add(idx) = *src_base.add(idx);
-                    }
-                }
-                4 => {
-                    // Four directions: Interleaved block copy with different patterns
-                    let chunk_size = chunk_end - processed;
-                    let block_size = chunk_size / 4;
-
-                    for stream in 0..4 {
-                        let start_idx = processed + stream * block_size;
-                        let end_idx = (processed + (stream + 1) * block_size).min(chunk_end);
-
-                        if start_idx < end_idx {
-                            match stream & 3 {
-                                0 | 3 => {
-                                    // Forward copy
-                                    for i in start_idx..end_idx {
-                                        *dst_base.add(i) = *src_base.add(i);
-                                    }
-                                }
-                                1 => {
-                                    // Backward copy within block
-                                    for i in 0..(end_idx - start_idx) {
-                                        let idx = end_idx - 1 - i;
-                                        *dst_base.add(idx) = *src_base.add(idx);
-                                    }
-                                }
-                                _ => {
-                                    // Skip pattern (every other element)
-                                    for i in (start_idx..end_idx).step_by(2) {
-                                        *dst_base.add(i) = *src_base.add(i);
-                                    }
-                                    for i in ((start_idx + 1)..end_idx).step_by(2) {
-                                        *dst_base.add(i) = *src_base.add(i);
-                                    }
-                                }
-                            }
-                        }
-                    }
-                }
-                _ => {
-                    // Many directions: Strided copy pattern
-                    let dirs = copy_dirs as usize;
-                    for dir in 0..dirs {
-                        for i in (processed + dir..chunk_end).step_by(dirs) {
-                            *dst_base.add(i) = *src_base.add(i);
-                        }
-                    }
-                }
+            // Copy from source to destination in the direction pattern, then verify the copy
+            // (indices from the destination half's start)
+            chunk.copy(copy_dirs);
+            let seen = chunk.verify();
+            if seen != 0 {
+                cycle_errors += rescan_words(dst_base, processed, chunk_end, test_name, seen, |i| chunk.expected(i));
             }
-
-
-            // Verify copied data (indices from the destination half's start)
-            cycle_errors += verify_words(dst_base, processed, chunk_end, test_name, |i| pattern_base.wrapping_add(i as u64));
             // Count the half-chunk when it is done: copy (read + write) and verify (read)
             runner.add_bytes(spread.chunk() * 3);
             halt_here!(runner, cycle_errors, (runner.bytes_processed() / (3 * std::mem::size_of::<u64>())) as u64);
@@ -7063,6 +7153,326 @@ pub fn bench_seal_tests() -> [(&'static str, crate::runner::TestFunction); 16] {
     ]
 }
 
+// ─── Bench-Init and Bench-Verify kernels (TODO 99) ──────────────────────────────────────────────
+//
+// Each mode's write and check of one chunk is a function of its own, called once a chunk, so its
+// loop keeps its values in registers: inlined into the dispatchers, with every mode's loops and the
+// harness live, the checks reloaded constants from the stack every iteration and the line modes
+// were vectorized across lines. The per-word modes (0, 1, 10, 11, 13) walk a pointer, 16 words a
+// step as four 32 B vectors at fixed displacements (the width the compiler gave the inlined loops
+// at the `x86-64-v3` baseline), the expected values a vector stepped beside it, the checks into
+// four vector accumulators. Bench-Init's write and Bench-Verify's fill are one function, so the
+// verify checks what the init wrote.
+
+/// Writes words `[start, end)` of `ptr`: 16 a step as four vectors, each call of `next` the next
+/// four words' values, then the words past the last whole step from `word`.
+#[inline(always)]
+unsafe fn fill_words_by_16(ptr: *mut u64, start: usize, end: usize, mut next: impl FnMut() -> u64x4,
+                           word: impl Fn(usize) -> u64) {
+    let len = end - start;
+    let mut p = ptr.add(start);
+    for _ in 0..len / 16 {
+        for k in 0..4 {
+            p.add(4 * k).cast::<u64x4>().write_unaligned(next());
+        }
+        p = p.wrapping_add(16);
+    }
+    let rest = start + len / 16 * 16;
+    for j in 0..len % 16 {
+        *p = word(rest + j);
+        p = p.wrapping_add(1);
+    }
+}
+
+/// Checks words `[start, end)` of `ptr` against the same values: each step's four vectors into
+/// four vector accumulators, the words past the last whole step into a scalar one. The
+/// accumulators ORed: nonzero when a word differs.
+#[inline(always)]
+unsafe fn verify_words_by_16(ptr: *const u64, start: usize, end: usize, mut next: impl FnMut() -> u64x4,
+                             word: impl Fn(usize) -> u64) -> u64 {
+    let len = end - start;
+    let mut acc = [u64x4::splat(0); 4];
+    let mut p = ptr.add(start);
+    for _ in 0..len / 16 {
+        for (k, a) in acc.iter_mut().enumerate() {
+            *a |= p.add(4 * k).cast::<u64x4>().read_unaligned() ^ next();
+        }
+        p = p.wrapping_add(16);
+    }
+    let (rest, mut tail) = (start + len / 16 * 16, 0u64);
+    for j in 0..len % 16 {
+        tail |= *p ^ word(rest + j);
+        p = p.wrapping_add(1);
+    }
+    ((acc[0] | acc[1]) | (acc[2] | acc[3])).reduce_or() | tail
+}
+
+/// Calls `body(from, to)` for the pieces of `[start, end)` split at the multiples of `segment`
+/// words, or once for the whole range when `segment` is 0.
+#[inline(always)]
+fn for_segments(start: usize, end: usize, segment: usize, mut body: impl FnMut(usize, usize)) {
+    if segment == 0 {
+        return body(start, end);
+    }
+    let mut from = start;
+    while from < end {
+        let to = (from - from % segment + segment).min(end);
+        body(from, to);
+        from = to;
+    }
+}
+
+/// A per-word pattern's chunk kernels, from its `word(i)` and `lanes(start)` (the generator of the
+/// values of each next four words from word `start` on, within a piece of `$segment` words, 0 for
+/// no pieces): `fill`, `verify` (the accumulators ORed) and `check` (the errors, counted and
+/// logged by a rescan when the verify sees one).
+macro_rules! word_kernels {
+    ($segment:expr) => {
+        #[inline(never)]
+        unsafe fn fill(self, ptr: *mut u64, start: usize, end: usize) {
+            for_segments(start, end, $segment, |from, to| fill_words_by_16(ptr, from, to, self.lanes(from), |i| self.word(i)));
+        }
+
+        #[inline(never)]
+        unsafe fn verify(self, ptr: *const u64, start: usize, end: usize) -> u64 {
+            let mut seen = 0;
+            for_segments(start, end, $segment, |from, to| seen |= verify_words_by_16(ptr, from, to, self.lanes(from), |i| self.word(i)));
+            seen
+        }
+
+        #[inline(always)]
+        unsafe fn check(self, ptr: *const u64, start: usize, end: usize, test_name: &str) -> u64 {
+            match self.verify(ptr, start, end) {
+                0 => 0,
+                seen => rescan_words(ptr, start, end, test_name, seen, |i| self.word(i)),
+            }
+        }
+    };
+}
+
+/// The indices of four words from `start`, a vector.
+#[inline(always)]
+fn word_lanes(start: usize) -> u64x4 {
+    u64x4::splat(start as u64) + u64x4::from_array([0, 1, 2, 3])
+}
+
+/// Mode 0 (`pattern_gen::pattern_mode0`): the seed XOR the word's index times the golden-ratio
+/// constant, inverted on odd 4 KiB pages. The kernels go a page at a time, the page's inversion
+/// folded into the seed, and step each vector's product, an add a vector: with the index stepped
+/// too for the inversion, the step's offsets spilled to the stack.
+#[derive(Clone, Copy)]
+struct Mode0Words {
+    seed: u64,
+}
+
+impl Mode0Words {
+    #[inline(always)]
+    fn word(self, i: usize) -> u64 {
+        pattern_gen::pattern_mode0(i as u64, self.seed)
+    }
+
+    /// The values from word `start` on, to the end of its page.
+    #[inline(always)]
+    fn lanes(self, start: usize) -> impl FnMut() -> u64x4 {
+        // The multiplier: word 1's value under a zero seed (an even page)
+        let golden = pattern_gen::pattern_mode0(1, 0);
+        // The page's inversion: word `start`'s value under a zero seed, less its product
+        let inversion = pattern_gen::pattern_mode0(start as u64, 0) ^ (start as u64).wrapping_mul(golden);
+        let seed = u64x4::splat(self.seed ^ inversion);
+        // A product per vector of the step, each stepped a whole step on: one product and an
+        // offset per vector became a constant per vector once the loop was unrolled, and those
+        // were reloaded from memory every iteration
+        let mut product: [u64x4; 4] = std::array::from_fn(|k| word_lanes(start + 4 * k) * u64x4::splat(golden));
+        let step = u64x4::splat(golden.wrapping_mul(16));
+        move || {
+            let words = seed ^ product[0];
+            product = [product[1], product[2], product[3], product[0] + step];
+            words
+        }
+    }
+
+    word_kernels!(PAGE_WORDS);
+}
+
+/// Mode 1 (`pattern_gen::pattern_mode1`): the seed less three times the word's index, inverted
+/// on odd cache lines (of `1 << cl_shift` words). Both from one stepped vector of indices: with the
+/// difference stepped too, the step's offsets spilled to the stack.
+#[derive(Clone, Copy)]
+struct Mode1Words {
+    seed: u64,
+    cl_shift: u32,
+}
+
+impl Mode1Words {
+    #[inline(always)]
+    fn word(self, i: usize) -> u64 {
+        pattern_gen::pattern_mode1(i as u64, self.seed, self.cl_shift)
+    }
+
+    #[inline(always)]
+    fn lanes(self, start: usize) -> impl FnMut() -> u64x4 {
+        let mut idx = word_lanes(start);
+        let (seed, three, four) = (u64x4::splat(self.seed), u64x4::splat(3), u64x4::splat(4));
+        let (shift, zero, one) = (u64x4::splat(u64::from(self.cl_shift)), u64x4::splat(0), u64x4::splat(1));
+        move || {
+            let line_mask = zero - ((idx >> shift) & one);
+            let words = (seed - idx * three) ^ line_mask;
+            idx += four;
+            words
+        }
+    }
+
+    word_kernels!(0);
+}
+
+/// Modes 10 and 11 (`pattern_gen::pattern_mode10` and `pattern_mode11`, one function): the word's
+/// index XOR a key, mode 10's base or mode 11's two parameters XORed.
+#[derive(Clone, Copy)]
+struct XorWords {
+    key: u64,
+}
+
+impl XorWords {
+    #[inline(always)]
+    fn word(self, i: usize) -> u64 {
+        pattern_gen::pattern_mode10(i as u64, self.key)
+    }
+
+    #[inline(always)]
+    fn lanes(self, start: usize) -> impl FnMut() -> u64x4 {
+        let mut idx = word_lanes(start);
+        let (key, four) = (u64x4::splat(self.key), u64x4::splat(4));
+        move || {
+            let words = idx ^ key;
+            idx += four;
+            words
+        }
+    }
+
+    word_kernels!(0);
+}
+
+/// Mode 13 (`pattern_gen::pattern_mode13`): the splitmix64 finalizer of the word's index plus the
+/// seed, four lanes at once. The constants are `pattern_mode13`'s; the unit test holds the two
+/// equal.
+#[derive(Clone, Copy)]
+struct Mode13Words {
+    seed: u64,
+}
+
+impl Mode13Words {
+    #[inline(always)]
+    fn word(self, i: usize) -> u64 {
+        pattern_gen::pattern_mode13(i as u64, self.seed)
+    }
+
+    #[inline(always)]
+    fn lanes(self, start: usize) -> impl FnMut() -> u64x4 {
+        let mut sum = word_lanes(start) + u64x4::splat(self.seed);
+        let (m1, m2, four) = (u64x4::splat(0xbf58476d1ce4e5b9), u64x4::splat(0x94d049bb133111eb), u64x4::splat(4));
+        move || {
+            let mut h = sum;
+            h ^= h >> 30;
+            h *= m1;
+            h ^= h >> 27;
+            h *= m2;
+            h ^= h >> 31;
+            sum += four;
+            h
+        }
+    }
+
+    word_kernels!(0);
+}
+
+/// Mode 2's fill and check of one chunk as functions of their own, for the same reason. `Mode2`
+/// holds the loop, which SimpleV2 shares: its chain keeps the compiler a line at a time.
+#[inline(never)]
+unsafe fn mode2_fill_chunk(mode: Mode2, ptr: *mut u64, start: usize, end: usize) {
+    mode.fill(ptr, start, end)
+}
+
+#[inline(never)]
+unsafe fn mode2_check_chunk(mode: Mode2, ptr: *const u64, start: usize, end: usize, test_name: &str) -> u64 {
+    mode.verify(ptr, start, end, test_name)
+}
+
+/// Writes the lines of words `[start, end)` of `ptr` (whole lines), each the words `words(line)`
+/// gives it, as two 32 B vectors from a walked pointer. Explicit vectors keep the walk a line at a
+/// time: from the 8-word arrays the compiler vectorized the walk across four lines, transposing
+/// them, and spilled (modes 20 and 30).
+#[inline(always)]
+unsafe fn fill_lines(ptr: *mut u64, start: usize, end: usize, mut words: impl FnMut(*const u64) -> [u64; LINE_WORDS]) {
+    debug_assert!(start.is_multiple_of(LINE_WORDS) && end.is_multiple_of(LINE_WORDS), "whole lines: {start}..{end}");
+    let mut p = ptr.add(start);
+    for _ in 0..(end - start) / LINE_WORDS {
+        let w = words(p);
+        p.cast::<u64x4>().write_unaligned(u64x4::from_slice(&w[..4]));
+        p.add(4).cast::<u64x4>().write_unaligned(u64x4::from_slice(&w[4..]));
+        p = p.wrapping_add(LINE_WORDS);
+    }
+}
+
+/// Checks the same lines: the differences ORed into the four accumulators `accumulate_line` keeps,
+/// words `k` and `k + 4` into accumulator `k`, here the lanes of one vector. Nonzero when a word
+/// differs.
+#[inline(always)]
+unsafe fn verify_lines(ptr: *const u64, start: usize, end: usize, mut words: impl FnMut(*const u64) -> [u64; LINE_WORDS]) -> u64 {
+    debug_assert!(start.is_multiple_of(LINE_WORDS) && end.is_multiple_of(LINE_WORDS), "whole lines: {start}..{end}");
+    let mut acc = u64x4::splat(0);
+    let mut p = ptr.add(start);
+    for _ in 0..(end - start) / LINE_WORDS {
+        let w = words(p);
+        let low = p.cast::<u64x4>().read_unaligned() ^ u64x4::from_slice(&w[..4]);
+        let high = p.add(4).cast::<u64x4>().read_unaligned() ^ u64x4::from_slice(&w[4..]);
+        acc |= low | high;
+        p = p.wrapping_add(LINE_WORDS);
+    }
+    acc.reduce_or()
+}
+
+/// Mode 20's fill of one chunk (`Mode20::fill`'s lines).
+#[inline(never)]
+unsafe fn mode20_fill_chunk(mode: Mode20, ptr: *mut u64, start: usize, end: usize) {
+    fill_lines(ptr, start, end, |line| {
+        let (seed, step) = pattern_gen::mode20_line(line as usize, mode.key);
+        pattern_gen::line_words(seed, step)
+    })
+}
+
+/// Mode 20's check of one chunk: `Mode20::verify`'s, its rescan on a hit.
+#[inline(never)]
+unsafe fn mode20_check_chunk(mode: Mode20, ptr: *const u64, start: usize, end: usize, test_name: &str) -> u64 {
+    let seen = verify_lines(ptr, start, end, |line| {
+        let (seed, step) = pattern_gen::mode20_line(line as usize, mode.key);
+        pattern_gen::line_words(seed, step)
+    });
+    if seen == 0 {
+        return 0;
+    }
+    mode.rescan(ptr, start, end, test_name, seen)
+}
+
+/// Mode 30's fill of one chunk (`Mode30::fill`'s lines), a loop per beat.
+#[inline(never)]
+unsafe fn mode30_fill_chunk(mode: Mode30, ptr: *mut u64, start: usize, end: usize) {
+    with_mode30_line!(mode, |expected| {
+        fill_lines(ptr, start, end, expected)
+    })
+}
+
+/// Mode 30's check of one chunk: `Mode30::verify`'s, its rescan on a hit.
+#[inline(never)]
+unsafe fn mode30_check_chunk(mode: Mode30, ptr: *const u64, start: usize, end: usize, test_name: &str) -> u64 {
+    let seen = with_mode30_line!(mode, |expected| {
+        verify_lines(ptr, start, end, expected)
+    });
+    if seen == 0 {
+        return 0;
+    }
+    mode.rescan(ptr, start, end, test_name, seen)
+}
+
 /// Bench-Init dispatcher: routes to the correct pattern mode based on config.pattern_mode.
 /// Each Bench-Init-* test sets pattern_mode in its config, then calls this.
 #[doc = include_str!("test_fn_safety.md")]
@@ -7080,6 +7490,8 @@ pub unsafe fn bench_init_multi(
     let cl_shift = pattern_gen::cache_line_shift(config.cache_line_bytes);
 
     let skip_init = config.skip_init;
+    let mode0 = |ctx: &ChunkCtx| Mode0Words { seed: pattern_gen::block_seed(ctx.ptr as usize, ctx.thread_id, 0) };
+    let mode1 = |ctx: &ChunkCtx| Mode1Words { seed: pattern_gen::block_seed(ctx.ptr as usize, ctx.thread_id, 0), cl_shift };
 
     let test_name = match mode {
         0 => "Bench-Init-TM5-0",
@@ -7104,18 +7516,8 @@ pub unsafe fn bench_init_multi(
             run_phased_test(
                 blocks, thread_id, error_mode, timing, config, progress,
                 test_name, TestAction::Write, 1, skip_init, 1, 0,
-                |ctx: &ChunkCtx| {
-                    let seed = pattern_gen::block_seed(ctx.ptr as usize, ctx.thread_id, 0);
-                    for idx in ctx.chunk_start..ctx.chunk_end {
-                        *ctx.ptr.add(idx) = pattern_gen::pattern_mode0(idx as u64, seed);
-                    }
-                },
-                |ctx: &ChunkCtx| {
-                    let seed = pattern_gen::block_seed(ctx.ptr as usize, ctx.thread_id, 0);
-                    for idx in ctx.chunk_start..ctx.chunk_end {
-                        *ctx.ptr.add(idx) = pattern_gen::pattern_mode0(idx as u64, seed);
-                    }
-                },
+                |ctx: &ChunkCtx| mode0(ctx).fill(ctx.ptr, ctx.chunk_start, ctx.chunk_end),
+                |ctx: &ChunkCtx| mode0(ctx).fill(ctx.ptr, ctx.chunk_start, ctx.chunk_end),
                 |_ctx: &ChunkCtx| -> u64 { 0 },
             )
         }
@@ -7124,18 +7526,8 @@ pub unsafe fn bench_init_multi(
             run_phased_test(
                 blocks, thread_id, error_mode, timing, config, progress,
                 test_name, TestAction::Write, 1, skip_init, 1, 0,
-                |ctx: &ChunkCtx| {
-                    let seed = pattern_gen::block_seed(ctx.ptr as usize, ctx.thread_id, 0);
-                    for idx in ctx.chunk_start..ctx.chunk_end {
-                        *ctx.ptr.add(idx) = pattern_gen::pattern_mode1(idx as u64, seed, cl_shift);
-                    }
-                },
-                |ctx: &ChunkCtx| {
-                    let seed = pattern_gen::block_seed(ctx.ptr as usize, ctx.thread_id, 0);
-                    for idx in ctx.chunk_start..ctx.chunk_end {
-                        *ctx.ptr.add(idx) = pattern_gen::pattern_mode1(idx as u64, seed, cl_shift);
-                    }
-                },
+                |ctx: &ChunkCtx| mode1(ctx).fill(ctx.ptr, ctx.chunk_start, ctx.chunk_end),
+                |ctx: &ChunkCtx| mode1(ctx).fill(ctx.ptr, ctx.chunk_start, ctx.chunk_end),
                 |_ctx: &ChunkCtx| -> u64 { 0 },
             )
         }
@@ -7145,8 +7537,8 @@ pub unsafe fn bench_init_multi(
             run_phased_test(
                 blocks, thread_id, error_mode, timing, config, progress,
                 test_name, TestAction::Write, 1, skip_init, 1, 0,
-                |ctx: &ChunkCtx| mode2.fill(ctx.ptr, ctx.chunk_start, ctx.chunk_end),
-                |ctx: &ChunkCtx| mode2.fill(ctx.ptr, ctx.chunk_start, ctx.chunk_end),
+                |ctx: &ChunkCtx| mode2_fill_chunk(mode2, ctx.ptr, ctx.chunk_start, ctx.chunk_end),
+                |ctx: &ChunkCtx| mode2_fill_chunk(mode2, ctx.ptr, ctx.chunk_start, ctx.chunk_end),
                 |_ctx: &ChunkCtx| -> u64 { 0 },
             )
         }
@@ -7157,16 +7549,8 @@ pub unsafe fn bench_init_multi(
             run_phased_test(
                 blocks, thread_id, error_mode, timing, config, progress,
                 test_name, TestAction::Write, 1, skip_init, 1, 0,
-                |ctx: &ChunkCtx| {
-                    for idx in ctx.chunk_start..ctx.chunk_end {
-                        *ctx.ptr.add(idx) = pattern_gen::pattern_mode10(idx as u64, base);
-                    }
-                },
-                |ctx: &ChunkCtx| {
-                    for idx in ctx.chunk_start..ctx.chunk_end {
-                        *ctx.ptr.add(idx) = pattern_gen::pattern_mode10(idx as u64, base);
-                    }
-                },
+                |ctx: &ChunkCtx| XorWords { key: base }.fill(ctx.ptr, ctx.chunk_start, ctx.chunk_end),
+                |ctx: &ChunkCtx| XorWords { key: base }.fill(ctx.ptr, ctx.chunk_start, ctx.chunk_end),
                 |_ctx: &ChunkCtx| -> u64 { 0 },
             )
         }
@@ -7176,16 +7560,8 @@ pub unsafe fn bench_init_multi(
             run_phased_test(
                 blocks, thread_id, error_mode, timing, config, progress,
                 test_name, TestAction::Write, 1, skip_init, 1, 0,
-                |ctx: &ChunkCtx| {
-                    for idx in ctx.chunk_start..ctx.chunk_end {
-                        *ctx.ptr.add(idx) = pattern_gen::pattern_mode11(idx as u64, combined);
-                    }
-                },
-                |ctx: &ChunkCtx| {
-                    for idx in ctx.chunk_start..ctx.chunk_end {
-                        *ctx.ptr.add(idx) = pattern_gen::pattern_mode11(idx as u64, combined);
-                    }
-                },
+                |ctx: &ChunkCtx| XorWords { key: combined }.fill(ctx.ptr, ctx.chunk_start, ctx.chunk_end),
+                |ctx: &ChunkCtx| XorWords { key: combined }.fill(ctx.ptr, ctx.chunk_start, ctx.chunk_end),
                 |_ctx: &ChunkCtx| -> u64 { 0 },
             )
         }
@@ -7197,16 +7573,8 @@ pub unsafe fn bench_init_multi(
             run_phased_test(
                 blocks, thread_id, error_mode, timing, config, progress,
                 test_name, TestAction::Write, 1, skip_init, 1, 0,
-                |ctx: &ChunkCtx| {
-                    for idx in ctx.chunk_start..ctx.chunk_end {
-                        *ctx.ptr.add(idx) = pattern_gen::pattern_mode13(idx as u64, seed);
-                    }
-                },
-                |ctx: &ChunkCtx| {
-                    for idx in ctx.chunk_start..ctx.chunk_end {
-                        *ctx.ptr.add(idx) = pattern_gen::pattern_mode13(idx as u64, seed);
-                    }
-                },
+                |ctx: &ChunkCtx| Mode13Words { seed }.fill(ctx.ptr, ctx.chunk_start, ctx.chunk_end),
+                |ctx: &ChunkCtx| Mode13Words { seed }.fill(ctx.ptr, ctx.chunk_start, ctx.chunk_end),
                 |_ctx: &ChunkCtx| -> u64 { 0 },
             )
         }
@@ -7216,8 +7584,8 @@ pub unsafe fn bench_init_multi(
             run_phased_test(
                 blocks, thread_id, error_mode, timing, config, progress,
                 test_name, TestAction::Write, 1, skip_init, 1, 0,
-                |ctx: &ChunkCtx| mode30.fill(ctx.ptr, ctx.chunk_start, ctx.chunk_end),
-                |ctx: &ChunkCtx| mode30.fill(ctx.ptr, ctx.chunk_start, ctx.chunk_end),
+                |ctx: &ChunkCtx| mode30_fill_chunk(mode30, ctx.ptr, ctx.chunk_start, ctx.chunk_end),
+                |ctx: &ChunkCtx| mode30_fill_chunk(mode30, ctx.ptr, ctx.chunk_start, ctx.chunk_end),
                 |_ctx: &ChunkCtx| -> u64 { 0 },
             )
         }
@@ -7227,8 +7595,8 @@ pub unsafe fn bench_init_multi(
             run_phased_test(
                 blocks, thread_id, error_mode, timing, config, progress,
                 test_name, TestAction::Write, 1, skip_init, 1, 0,
-                |ctx: &ChunkCtx| mode20.fill(ctx.ptr, ctx.chunk_start, ctx.chunk_end),
-                |ctx: &ChunkCtx| mode20.fill(ctx.ptr, ctx.chunk_start, ctx.chunk_end),
+                |ctx: &ChunkCtx| mode20_fill_chunk(mode20, ctx.ptr, ctx.chunk_start, ctx.chunk_end),
+                |ctx: &ChunkCtx| mode20_fill_chunk(mode20, ctx.ptr, ctx.chunk_start, ctx.chunk_end),
                 |_ctx: &ChunkCtx| -> u64 { 0 },
             )
         }
@@ -7261,6 +7629,8 @@ pub unsafe fn bench_verify_multi(
     let param1 = config.pattern_param1.unwrap_or(0xCAFEBABECAFEBABE);
     let cl_shift = pattern_gen::cache_line_shift(config.cache_line_bytes);
     let skip_init = config.skip_init;
+    let mode0 = |ctx: &ChunkCtx| Mode0Words { seed: pattern_gen::block_seed(ctx.ptr as usize, ctx.thread_id, 0) };
+    let mode1 = |ctx: &ChunkCtx| Mode1Words { seed: pattern_gen::block_seed(ctx.ptr as usize, ctx.thread_id, 0), cl_shift };
 
     let test_name = match mode {
         0 => "Bench-Verify-TM5-0",
@@ -7283,17 +7653,9 @@ pub unsafe fn bench_verify_multi(
             run_phased_test(
                 blocks, thread_id, error_mode, timing, config, progress,
                 test_name, TestAction::Verify, 1, skip_init, 0, 1,
-                |ctx: &ChunkCtx| {
-                    let seed = pattern_gen::block_seed(ctx.ptr as usize, ctx.thread_id, 0);
-                    for idx in ctx.chunk_start..ctx.chunk_end {
-                        *ctx.ptr.add(idx) = pattern_gen::pattern_mode0(idx as u64, seed);
-                    }
-                },
+                |ctx: &ChunkCtx| mode0(ctx).fill(ctx.ptr, ctx.chunk_start, ctx.chunk_end),
                 |_ctx: &ChunkCtx| {},
-                |ctx: &ChunkCtx| -> u64 {
-                    let seed = pattern_gen::block_seed(ctx.ptr as usize, ctx.thread_id, 0);
-                    verify_words(ctx.ptr, ctx.chunk_start, ctx.chunk_end, test_name, |idx| pattern_gen::pattern_mode0(idx as u64, seed))
-                },
+                |ctx: &ChunkCtx| -> u64 { mode0(ctx).check(ctx.ptr, ctx.chunk_start, ctx.chunk_end, test_name) },
             )
         }
         1 => {
@@ -7301,17 +7663,9 @@ pub unsafe fn bench_verify_multi(
             run_phased_test(
                 blocks, thread_id, error_mode, timing, config, progress,
                 test_name, TestAction::Verify, 1, skip_init, 0, 1,
-                |ctx: &ChunkCtx| {
-                    let seed = pattern_gen::block_seed(ctx.ptr as usize, ctx.thread_id, 0);
-                    for idx in ctx.chunk_start..ctx.chunk_end {
-                        *ctx.ptr.add(idx) = pattern_gen::pattern_mode1(idx as u64, seed, cl_shift);
-                    }
-                },
+                |ctx: &ChunkCtx| mode1(ctx).fill(ctx.ptr, ctx.chunk_start, ctx.chunk_end),
                 |_ctx: &ChunkCtx| {},
-                |ctx: &ChunkCtx| -> u64 {
-                    let seed = pattern_gen::block_seed(ctx.ptr as usize, ctx.thread_id, 0);
-                    verify_words(ctx.ptr, ctx.chunk_start, ctx.chunk_end, test_name, |idx| pattern_gen::pattern_mode1(idx as u64, seed, cl_shift))
-                },
+                |ctx: &ChunkCtx| -> u64 { mode1(ctx).check(ctx.ptr, ctx.chunk_start, ctx.chunk_end, test_name) },
             )
         }
         2 => {
@@ -7320,9 +7674,9 @@ pub unsafe fn bench_verify_multi(
             run_phased_test(
                 blocks, thread_id, error_mode, timing, config, progress,
                 test_name, TestAction::Verify, 1, skip_init, 0, 1,
-                |ctx: &ChunkCtx| mode2.fill(ctx.ptr, ctx.chunk_start, ctx.chunk_end),
+                |ctx: &ChunkCtx| mode2_fill_chunk(mode2, ctx.ptr, ctx.chunk_start, ctx.chunk_end),
                 |_ctx: &ChunkCtx| {},
-                |ctx: &ChunkCtx| -> u64 { mode2.verify(ctx.ptr, ctx.chunk_start, ctx.chunk_end, test_name) },
+                |ctx: &ChunkCtx| -> u64 { mode2_check_chunk(mode2, ctx.ptr, ctx.chunk_start, ctx.chunk_end, test_name) },
             )
         }
         // --- TMR-native modes ---
@@ -7332,15 +7686,9 @@ pub unsafe fn bench_verify_multi(
             run_phased_test(
                 blocks, thread_id, error_mode, timing, config, progress,
                 test_name, TestAction::Verify, 1, skip_init, 0, 1,
-                |ctx: &ChunkCtx| {
-                    for idx in ctx.chunk_start..ctx.chunk_end {
-                        *ctx.ptr.add(idx) = pattern_gen::pattern_mode10(idx as u64, base);
-                    }
-                },
+                |ctx: &ChunkCtx| XorWords { key: base }.fill(ctx.ptr, ctx.chunk_start, ctx.chunk_end),
                 |_ctx: &ChunkCtx| {},
-                |ctx: &ChunkCtx| -> u64 {
-                    verify_words(ctx.ptr, ctx.chunk_start, ctx.chunk_end, test_name, |idx| pattern_gen::pattern_mode10(idx as u64, base))
-                },
+                |ctx: &ChunkCtx| -> u64 { XorWords { key: base }.check(ctx.ptr, ctx.chunk_start, ctx.chunk_end, test_name) },
             )
         }
         11 => {
@@ -7349,15 +7697,9 @@ pub unsafe fn bench_verify_multi(
             run_phased_test(
                 blocks, thread_id, error_mode, timing, config, progress,
                 test_name, TestAction::Verify, 1, skip_init, 0, 1,
-                |ctx: &ChunkCtx| {
-                    for idx in ctx.chunk_start..ctx.chunk_end {
-                        *ctx.ptr.add(idx) = pattern_gen::pattern_mode11(idx as u64, combined);
-                    }
-                },
+                |ctx: &ChunkCtx| XorWords { key: combined }.fill(ctx.ptr, ctx.chunk_start, ctx.chunk_end),
                 |_ctx: &ChunkCtx| {},
-                |ctx: &ChunkCtx| -> u64 {
-                    verify_words(ctx.ptr, ctx.chunk_start, ctx.chunk_end, test_name, |idx| pattern_gen::pattern_mode11(idx as u64, combined))
-                },
+                |ctx: &ChunkCtx| -> u64 { XorWords { key: combined }.check(ctx.ptr, ctx.chunk_start, ctx.chunk_end, test_name) },
             )
         }
         13 => {
@@ -7368,15 +7710,9 @@ pub unsafe fn bench_verify_multi(
             run_phased_test(
                 blocks, thread_id, error_mode, timing, config, progress,
                 test_name, TestAction::Verify, 1, skip_init, 0, 1,
-                |ctx: &ChunkCtx| {
-                    for idx in ctx.chunk_start..ctx.chunk_end {
-                        *ctx.ptr.add(idx) = pattern_gen::pattern_mode13(idx as u64, seed);
-                    }
-                },
+                |ctx: &ChunkCtx| Mode13Words { seed }.fill(ctx.ptr, ctx.chunk_start, ctx.chunk_end),
                 |_ctx: &ChunkCtx| {},
-                |ctx: &ChunkCtx| -> u64 {
-                    verify_words(ctx.ptr, ctx.chunk_start, ctx.chunk_end, test_name, |idx| pattern_gen::pattern_mode13(idx as u64, seed))
-                },
+                |ctx: &ChunkCtx| -> u64 { Mode13Words { seed }.check(ctx.ptr, ctx.chunk_start, ctx.chunk_end, test_name) },
             )
         }
         30 => {
@@ -7385,9 +7721,9 @@ pub unsafe fn bench_verify_multi(
             run_phased_test(
                 blocks, thread_id, error_mode, timing, config, progress,
                 test_name, TestAction::Verify, 1, skip_init, 0, 1,
-                |ctx: &ChunkCtx| mode30.fill(ctx.ptr, ctx.chunk_start, ctx.chunk_end),
+                |ctx: &ChunkCtx| mode30_fill_chunk(mode30, ctx.ptr, ctx.chunk_start, ctx.chunk_end),
                 |_ctx: &ChunkCtx| {},
-                |ctx: &ChunkCtx| -> u64 { mode30.verify(ctx.ptr, ctx.chunk_start, ctx.chunk_end, test_name) },
+                |ctx: &ChunkCtx| -> u64 { mode30_check_chunk(mode30, ctx.ptr, ctx.chunk_start, ctx.chunk_end, test_name) },
             )
         }
         _ => {
@@ -7396,11 +7732,237 @@ pub unsafe fn bench_verify_multi(
             run_phased_test(
                 blocks, thread_id, error_mode, timing, config, progress,
                 test_name, TestAction::Verify, 1, skip_init, 0, 1,
-                |ctx: &ChunkCtx| mode20.fill(ctx.ptr, ctx.chunk_start, ctx.chunk_end),
+                |ctx: &ChunkCtx| mode20_fill_chunk(mode20, ctx.ptr, ctx.chunk_start, ctx.chunk_end),
                 |_ctx: &ChunkCtx| {},
-                |ctx: &ChunkCtx| -> u64 { mode20.verify(ctx.ptr, ctx.chunk_start, ctx.chunk_end, test_name) },
+                |ctx: &ChunkCtx| -> u64 { mode20_check_chunk(mode20, ctx.ptr, ctx.chunk_start, ctx.chunk_end, test_name) },
             )
         }
+    }
+}
+
+#[cfg(test)]
+mod bench_move_tests {
+    use super::{BlockMoveChunk, Mode0Words, Mode1Words, Mode13Words, Mode2, Mode20, Mode30, XorWords, mode2_check_chunk,
+                mode2_fill_chunk, mode20_check_chunk, mode20_fill_chunk, mode30_check_chunk, mode30_fill_chunk};
+    use crate::pattern_gen::{self, BusBeat, LINE_WORDS, PAGE_WORDS};
+
+    /// Mem-BlockMove's copy loops before TODO 99, as they were: the image the new copies must leave.
+    unsafe fn old_copy(src_base: *const u64, dst_base: *mut u64, processed: usize, chunk_end: usize, copy_dirs: u32) {
+        match copy_dirs {
+            1 => {
+                for i in processed..chunk_end {
+                    *dst_base.add(i) = *src_base.add(i);
+                }
+            }
+            2 => {
+                let mid = processed + (chunk_end - processed) / 2;
+                for i in processed..mid {
+                    *dst_base.add(i) = *src_base.add(i);
+                }
+                for i in 0..(chunk_end - mid) {
+                    let idx = chunk_end - 1 - i;
+                    *dst_base.add(idx) = *src_base.add(idx);
+                }
+            }
+            4 => {
+                let block_size = (chunk_end - processed) / 4;
+                for stream in 0..4 {
+                    let start_idx = processed + stream * block_size;
+                    let end_idx = (processed + (stream + 1) * block_size).min(chunk_end);
+                    if start_idx < end_idx {
+                        match stream & 3 {
+                            0 | 3 => {
+                                for i in start_idx..end_idx {
+                                    *dst_base.add(i) = *src_base.add(i);
+                                }
+                            }
+                            1 => {
+                                for i in 0..(end_idx - start_idx) {
+                                    let idx = end_idx - 1 - i;
+                                    *dst_base.add(idx) = *src_base.add(idx);
+                                }
+                            }
+                            _ => {
+                                for i in (start_idx..end_idx).step_by(2) {
+                                    *dst_base.add(i) = *src_base.add(i);
+                                }
+                                for i in ((start_idx + 1)..end_idx).step_by(2) {
+                                    *dst_base.add(i) = *src_base.add(i);
+                                }
+                            }
+                        }
+                    }
+                }
+            }
+            _ => {
+                let dirs = copy_dirs as usize;
+                for dir in 0..dirs {
+                    for i in (processed + dir..chunk_end).step_by(dirs) {
+                        *dst_base.add(i) = *src_base.add(i);
+                    }
+                }
+            }
+        }
+    }
+
+    /// TODO 99: Mem-BlockMove's half-chunk kernels. The fill writes each source word the pattern
+    /// plus its index and nothing else; each direction pattern's copy leaves the image the old
+    /// loops left (the 4-way's quarters too, which miss the last words of a half-chunk that isn't
+    /// a multiple of 4); a whole copy reads clean, and a bad word is seen in each lane of each
+    /// accumulator and in the tail.
+    #[test]
+    fn block_move_copies_as_before_and_sees_every_bad_word() {
+        let pattern_base = 0xDEADBEEFCAFEBABEu64;
+        // Whole steps; a start off the step with a tail and quarters of 85 words and 3 over; a short one
+        for (start, len) in [(256usize, 512usize), (300, 16 * 21 + 7), (40, 16 * 3 + 2)] {
+            for dirs in [1u32, 2, 4, 3, 5, 8] {
+                let half = start + len + 64;
+                let mut mem = vec![!0u64; 2 * half];
+                let base = mem.as_mut_ptr();
+                let chunk = BlockMoveChunk { src: base, dst: base.wrapping_add(half), start, end: start + len, pattern_base };
+                unsafe { chunk.fill() };
+                for (i, &word) in mem.iter().enumerate() {
+                    let want = if (start..start + len).contains(&i) { pattern_base.wrapping_add(i as u64) } else { !0 };
+                    assert_eq!(word, want, "fill: word {i}");
+                }
+                let mut old = mem.clone();
+                let old_base = old.as_mut_ptr();
+                unsafe {
+                    old_copy(old_base, old_base.add(half), start, start + len, dirs);
+                    chunk.copy(dirs);
+                }
+                assert_eq!(mem, old, "{dirs} directions, words {start} + {len}: the copy's image");
+                let whole = (start..start + len).all(|i| mem[half + i] == pattern_base.wrapping_add(i as u64));
+                assert_eq!(unsafe { chunk.verify() } == 0, whole, "{dirs} directions, words {start} + {len}: the verify");
+                assert!(whole || dirs == 4, "{dirs} directions copy every word");
+            }
+            // The check, on a whole copy: each word of the first step (every lane of the four
+            // accumulators), each of the tail, and a spread
+            let half = start + len + 64;
+            let mut mem = vec![!0u64; 2 * half];
+            let base = mem.as_mut_ptr();
+            let chunk = BlockMoveChunk { src: base, dst: base.wrapping_add(half), start, end: start + len, pattern_base };
+            unsafe {
+                chunk.fill();
+                chunk.copy(1);
+            }
+            assert_eq!(unsafe { chunk.verify() }, 0, "words {start} + {len}: clean");
+            let end = start + len;
+            let words = (start..start + 16).chain(end - len % 16..end).chain((start..end).step_by(37));
+            for word in words {
+                mem[half + word] ^= 1 << 40;
+                assert_ne!(unsafe { chunk.verify() }, 0, "words {start} + {len}: missed word {word}");
+                mem[half + word] ^= 1 << 40;
+            }
+        }
+    }
+
+    /// TODO 99: the per-word Bench kernels (modes 0, 1 at four line sizes, 10, 11 and 13) write each
+    /// word its mode's value, `pattern_gen`'s word by word, and nothing else; read clean; and see a
+    /// bad word in each lane of each accumulator, at each page edge and in the tails, which the
+    /// check counts once.
+    #[test]
+    fn bench_word_kernels_write_their_pattern_and_see_every_bad_word() {
+        let seed = 0x0123_4567_89AB_CDEFu64;
+        // Whole pages; a start off the step, across pages, with a tail; pieces shorter than a step
+        // either side of a page edge
+        let ranges = [(0usize, 2 * PAGE_WORDS), (300, 300 + 16 * 45 + 11), (3 * PAGE_WORDS - 5, 3 * PAGE_WORDS + 40)];
+        macro_rules! case {
+            ($words:expr, $want:expr) => {{
+                let (words, want) = ($words, $want);
+                for (start, end) in ranges {
+                    let mut mem = vec![!0u64; end + 64];
+                    let p = mem.as_mut_ptr();
+                    unsafe { words.fill(p, start, end) };
+                    for (i, &word) in mem.iter().enumerate() {
+                        let expected = if (start..end).contains(&i) { want(i as u64) } else { !0 };
+                        assert_eq!(word, expected, "{}: word {i} of {start}..{end}", stringify!($words));
+                    }
+                    assert_eq!(unsafe { words.verify(p, start, end) }, 0, "{}: {start}..{end} clean", stringify!($words));
+                    assert_eq!(unsafe { words.check(p, start, end, "test") }, 0);
+                    let len = end - start;
+                    let page_edges = (start..end).filter(|i| i % PAGE_WORDS == 0 || i % PAGE_WORDS == PAGE_WORDS - 1);
+                    let bad = (start..start + 16).chain(end - len % 16..end).chain(page_edges).chain((start..end).step_by(97));
+                    for word in bad {
+                        mem[word] ^= 1 << 40;
+                        assert_ne!(unsafe { words.verify(p, start, end) }, 0, "{}: {start}..{end} missed word {word}", stringify!($words));
+                        assert_eq!(unsafe { words.check(p, start, end, "test") }, 1, "{}: word {word} counted once", stringify!($words));
+                        mem[word] ^= 1 << 40;
+                    }
+                }
+            }};
+        }
+        case!(Mode0Words { seed }, |i| pattern_gen::pattern_mode0(i, seed));
+        for cl_shift in [3, 0, 2, 4] {
+            case!(Mode1Words { seed, cl_shift }, |i| pattern_gen::pattern_mode1(i, seed, cl_shift));
+        }
+        let base = 0xDEADBEEFDEADBEEFu64;
+        case!(XorWords { key: base }, |i| pattern_gen::pattern_mode10(i, base));
+        let combined = base ^ 0xCAFEBABECAFEBABE;
+        case!(XorWords { key: combined }, |i| pattern_gen::pattern_mode11(i, combined));
+        case!(Mode13Words { seed }, |i| pattern_gen::pattern_mode13(i, seed));
+    }
+
+    /// TODO 99: the line Bench kernels (modes 20 and 30 at every beat, and mode 2 out of line)
+    /// write each line its mode's words, `pattern_gen`'s line by line, and nothing else; read
+    /// clean; and see a bad word in each lane of the accumulator, in either half of a line, and in
+    /// the last line, which the check counts once.
+    #[test]
+    fn bench_line_kernels_write_their_lines_and_see_every_bad_word() {
+        let total = 4 * PAGE_WORDS;
+        // 64-byte aligned, so each line is a cache line, as in a test's memory
+        let mut buf = vec![std::simd::u64x8::splat(0); total / LINE_WORDS];
+        let p = buf.as_mut_ptr() as *mut u64;
+        let run = |name: &str, start: usize, end: usize, fill: &dyn Fn(*mut u64, usize, usize),
+                   check: &dyn Fn(*const u64, usize, usize) -> u64, want: &dyn Fn(usize) -> [u64; LINE_WORDS]| unsafe {
+            std::slice::from_raw_parts_mut(p, total).fill(!0);
+            fill(p, start, end);
+            for i in 0..total {
+                let expected = if (start..end).contains(&i) { want(p.add(i - i % LINE_WORDS) as usize)[i % LINE_WORDS] } else { !0 };
+                assert_eq!(*p.add(i), expected, "{name}: word {i} of {start}..{end}");
+            }
+            assert_eq!(check(p, start, end), 0, "{name}: {start}..{end} clean");
+            let bad = (start..start + LINE_WORDS).chain(end - LINE_WORDS..end).chain((start..end).step_by(61));
+            for word in bad {
+                *p.add(word) ^= 1 << 40;
+                assert_eq!(check(p, start, end), 1, "{name}: {start}..{end}, word {word} counted once");
+                *p.add(word) ^= 1 << 40;
+            }
+        };
+
+        let mode20 = Mode20::new(3, 0, 0x5DEECE66D, 0xB);
+        let lines20 = |line: usize| {
+            let (seed, step) = pattern_gen::mode20_line(line, mode20.key);
+            pattern_gen::line_words(seed, step)
+        };
+        for (start, end) in [(0, total), (3 * LINE_WORDS, total - 5 * LINE_WORDS)] {
+            run("mode 20", start, end, &|p, s, e| unsafe { mode20_fill_chunk(mode20, p, s, e) },
+                &|p, s, e| unsafe { mode20_check_chunk(mode20, p, s, e, "test") }, &lines20);
+        }
+
+        let key = pattern_gen::mode20_key(3, 0, 0x5DEECE66D, 0xB);
+        for beat in [BusBeat::Bits12, BusBeat::Bits16, BusBeat::Bits24, BusBeat::Bits32, BusBeat::Bits64] {
+            let mode30 = Mode30 { key, beat };
+            for (start, end) in [(0, total), (3 * LINE_WORDS, total - 5 * LINE_WORDS)] {
+                run(&format!("mode 30 at {} bits", beat.bits()), start, end, &|p, s, e| unsafe { mode30_fill_chunk(mode30, p, s, e) },
+                    &|p, s, e| unsafe { mode30_check_chunk(mode30, p, s, e, "test") }, &|line| pattern_gen::mode30_line(line, key, beat));
+            }
+        }
+
+        // Mode 2's chain, from the start of each page of the range (pages count from the pointer)
+        let mode2 = Mode2 { thread_id: 3, cycle: 0, param0: 0x5DEECE66D, param1: 0xB };
+        let base = p as usize;
+        let lines2 = |line: usize| {
+            let word = (line - base) / 8;
+            let page = word - word % PAGE_WORDS;
+            let (mut seed, mut step) = pattern_gen::mode2_page_start(base + page * 8, 3, 0);
+            for _ in 0..(word - page) / LINE_WORDS {
+                (seed, step) = pattern_gen::mode2_evolve(seed, step, 0x5DEECE66D, 0xB);
+            }
+            pattern_gen::line_words(seed, step)
+        };
+        run("mode 2", PAGE_WORDS, total, &|p, s, e| unsafe { mode2_fill_chunk(mode2, p, s, e) },
+            &|p, s, e| unsafe { mode2_check_chunk(mode2, p, s, e, "test") }, &lines2);
     }
 }
 
