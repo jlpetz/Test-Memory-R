@@ -32,7 +32,9 @@ different name shows up until it is added. It can't see:
   memory, Rule 6.10), which reads as a clean loop;
 - a loop whose skip path forms a smaller backward branch: only the skip loop is innermost, so the
   body isn't classified;
-- the loop's width or shape (Rule 6.5), or the order it walks memory in.
+- the loop's shape (Rule 6.5), or the order it walks memory in. The `width` column checks the
+  register width against the kernel's name, but only for kernels whose name has one; the Spd tests'
+  untimed setup fill (inlined, vectorized to ymm) shows there in their 128- and 512-bit functions.
 
 Fixed in round 3 (2026-10-19): stack arrays indexed by a register (`128(%rsp,%r10)`) count as
 stack accesses; loops up to 600 instructions are classified (over 150 flagged `long`, where the

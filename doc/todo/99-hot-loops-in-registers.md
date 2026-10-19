@@ -2,110 +2,115 @@
 
 **Raised** 2026-10-19 by the owner, from the TODO 16 asm review: "we should be methodical and try to
 keep kernels' hot loops 100% in registers, even basic loop counters". Per-chunk bookkeeping (the
-seal calls, the stats, the timers) may spill: it runs once a chunk, not once a word.
+seal calls, the stats, the timers) may spill: it runs once a chunk, not once a word. Later the same
+day: speed decides, and a loop that can't fit in registers is flagged, not forced (the owner).
 
-## The check
+## The tools and the rules
 
-`tools/hot_loop_spills.py` reads the post-LTO asm (`cargo rustc --release --bin tmr -- --emit asm`)
-and lists, per kernel, the hot loops that touch the stack. A hot loop is an innermost loop in a
-test module's function with no call that touches memory off the stack, at most 150 instructions;
-rescans, parsers and setup are left out by name. Two kinds:
-- **round trip**: a slot stored and reloaded every iteration, a value carried through memory. A
-  store-to-load forwarding latency (about 5 cycles) sits on the loop's dependency chain.
-- **reload**: a value the loop never changes, reloaded every iteration. An L1 load; hidden when the
-  loop waits on DRAM, but it takes a load slot when the data is in cache, as in SimpleTest's verify
-  passes over a 4 MiB chunk.
-`--detail NAME` prints a kernel's flagged loops; `--max N` fails over N, for a check before releases
-that ratchets down as kernels are fixed.
-
-## Baseline (2026-10-19, bf3660b)
-
-39 kernels; 28 round-trip loops, 519 reload loops. By register (the split came in 1e0f938; the
-first version of this file wrongly said none were vector registers): round trips 23 gpr and 5
-SIMD, reloads 434 gpr and 85 SIMD. The leaders:
-
-| Kernel | Round trip | Reload |
-|---|---|---|
-| `sequence_rw_256` | 5 | 33 |
-| `simple_native_512` (closures) | 4 | 69 |
-| `simple_native_scalar` | 4 | 56 |
-| `simple_native_256` | 3 | 49 |
-| `simple_native_128` | 2 | 57 |
-| `sequence_read_256`, `_512` | 2, 2 | 44, 34 |
-| `sequence_write_512`, `_256` | 2, 0 | 19, 36 |
-| `simple_test_v2_sequential` (legacy) | 1 | 12 |
-| `bench_verify_multi` | 1 | 10 |
-| `stride_access_multi` | 1 | 6 |
-| `block_move_multi` | 1 | 3 |
-| `sequence_rw_512` | 0 | 31 |
-| `cache_busting_multi` | 0 | 8 |
-
-The cause is more live scalars than the 15 usable general registers: line ids, pattern keys,
-bounds, pointers, counters. Mem-Stride's verify (`accumulate_stride_4`) is the worked example: four
-loads a stride apart into four accumulators, which the compiler keeps as four data pointers and four
-expected-value offsets, with the index, bound, step and a temporary: 16 values, so two live on the
-stack. CacheBust's strided write has registers free but the allocator, working across the whole
-function, gave its pattern base a stack slot.
-
-## Approach
-
-1. Fix in order of cost: the round trips in native SimpleTest (the default stability test) and
-   Mem-Sequence first, then their reloads (the most-run kernels), then the rest.
-2. Per kernel, read what is live and cut it, keeping the accumulators (a settled decision, measured):
-   one moving pointer with offset addressing instead of several pointers (its loads stay
-   independent: every address comes from the iteration's start, and the only carried value is the
-   position, as today), values derived from others, loop constants in vector registers (AVX-512 has
-   32), or a loop split in two.
-3. Confirm in the asm that the loop touches no stack (`--detail`), and that it does the same work.
-4. Measure: the variants where they trade (four accumulators with one pointer, two pointers, two
-   accumulators) as steps of one run beside the test that showed four was best, on the desktops when
-   they are free; a changed binary against the old in separate runs, three each, with a reference
-   test in every run.
-5. Lower `--max` as each kernel lands, and run it before each release build.
+- `tools/hot_loop_spills.py` reads the post-LTO asm and lists, per kernel, the hot loops that touch
+  the stack (round trips and reloads, gpr and SIMD), with review columns `indexed`, `const`, `long`
+  and `width`. Its blind spots and fixes: `tools/README.md`.
+- `tools/bench_ab.py` runs binaries alternately against a reference test (`Mem-StuckBit512_A`).
+  Noise floor on the dev box: identical binaries land 1.0-1.6% apart (A/A, 2026-10-19).
+- What the rounds taught is `doc/simd_codegen_rules.md` Rule 6 (6.1-6.18). The headline: clean asm
+  is necessary, not sufficient. A verify with every value in registers ran 2.1x slower than one
+  with a spill (6.12), and a store loop full of spills beat every clean one (6.17). Measure.
 
 ## Rounds
 
-One kernel a round: its loops saved before and after (`--detail NAME --all`), then the old binary
-and the new alternately (`tools/bench_ab.py`), three runs each, with `Mem-StuckBit512_A` the
-reference in every run (`test=NAME,Mem-StuckBitAuto cycles=2` and the standard live settings).
-Noise floor: round 1's binary against a copy of itself gave 1.010 against the reference (raw
-1.016), so a change inside about 1.5% is no change.
+Every change was benchmarked on the dev box (Granite Rapids, AVX-512, 4 physical cores) against the
+binary before it, alternating, three runs each, `cycles=2 memory=8GiB-target` from round 3 on.
 
-| Round | Kernel | What changed | Speed vs ref | Commit |
-|---|---|---|---|---|
-| 1 | Mem-Stride | write and verify each a function; the verify at each of the test's strides a const generic: fixed displacements, four accumulators, no stack | 1.983× | 1e0f938 |
-| 2 | Mem-CacheBust | write and verify each a function, both walking a pointer; the verify explicit `u64x4` (16 words a step, four accumulators); one path for one pattern and many | 1.009 (parity) | round 2 |
+| Round | What | Result | Commit |
+|---|---|---|---|
+| 1 | Mem-Stride: write and verify each a function, the verify's strides const generics | 1.98x | 1e0f938 |
+| 2 | Mem-CacheBust: walks on a walked pointer; the verify explicit `u64x4`. Indexed addressing had cost 6% | parity, clean | d895c6a |
+| 3 | A workflow (the owner's call, Ultracode): an agent per kernel family in its own worktree, an adversarial reviewer each, then merged and benchmarked here. Native SimpleTest's grouped verify, clean, ran 0.47x for `random` at 512; checking each line before computing the next fixed it (6.12) | see below | 830c919 |
+| 3b | Agents prepared up to three candidates per regression or opportunity (17 in all), checked by a reviewer; benchmarked here, the winners merged. ModuloX kept round 2's aggressor loop; Bench-Verify mode 30 round 2's check | see below | da06138, c2644ab |
 
-Round 2 is where clean wasn't enough. The first clean version used one index for the address and
-the value (`(%base,%index,8)`, an instruction fewer) and ran 0.944; moving the write alone, 0.979.
-Every access in this test misses L1 (a page apart, one set), and there the walked pointer the old
-inlined code had is worth 6%. Written as four scalar chains instead, the verify was vectorized by
-the compiler itself, eight accumulators wide with five constants reloaded from the stack: the
-explicit vector form keeps four, in registers. Rewriting Mem-Stride's loops the same way hit the
-same vectorizer (SIMD reloads 82 → 98), so it was reverted; its addressing is still to do.
+The hot-loop counts with today's tool (the round-2 binary re-measured; the old tool missed loops over
+150 instructions and stack arrays indexed by a register):
 
-What this taught went into `doc/simd_codegen_rules.md` Rule 6, and the tool gained two review
-columns: `indexed` (1207 hot loops) and `const` (77, a constant read from `.rdata` every iteration).
-After round 2: round trips 23 gpr + 5 SIMD, reloads 428 gpr + 82 SIMD (one of the gpr reloads is
-CacheBust's write's outer loop, a false positive).
+| | Round trips gpr / SIMD | Reloads gpr / SIMD | Indexed | Const | Clean kernels |
+|---|---|---|---|---|---|
+| Round 2 (d895c6a) | 56 / 30 | 472 / 93 | 1286 | 88 | 28 |
+| Now (c2644ab) | 1 / 5 | 102 / 17 | 295 | 62 | 164 |
 
-## The rest: a workflow, then one benchmark at a time
+## Speed, round 2 to now (2026-10-20)
 
-From round 3 (the owner, 2026-10-19, Ultracode): an agent per kernel family, each in its own
-worktree from the round-2 commit, applies Rule 6 and checks the asm, with tests and clippy; an
-independent reviewer checks each family's change for correctness (the same words written and
-checked, every error still seen, widths kept). No agent benchmarks: the box would be noise. Then
-each family is merged and benchmarked here against the round-2 binary, alone on the box.
+Round 2's binary against round 3b's, alternating, three runs each, with re-runs of the rows that
+looked off (rule: three idle re-runs before a theory). Ratio = round 3b / round 2.
 
-## Decisions so far
+| Test | Ratio |
+|---|---|
+| Bench-Verify-TM5-0 / TM5-1 | 2.91 / 2.14 |
+| Mem-MovingInv | 2.28 |
+| Bench-Verify-Header / Quiet | 2.19 / 1.88 |
+| Mem-Sequence: default / W,R@reverse,RW@random,R@random / pattern-mode=33 | 1.26 / 1.24 / 1.55 |
+| Mem-SimpleV2 mode 0 | 1.32 |
+| Mem-BlockMove | 1.16 |
+| Mem-Stride (after round 1's 1.98) | 1.13 |
+| Mem-SimpleV2 scalar / 512 / Auto | 1.12 / 1.09 / 1.08 |
+| Mem-SimpleNT-512 / 256 | 1.075 / 1.025 |
+| TM5 1usmus_v3.cfg strided SimpleTests (Tests 13, 10, 8, 12, 11) | 1.17, 1.11, 1.10, 1.09, 1.07 |
+| Seal checks (Bench-Verify-Seal-*) | 0.98-1.14 |
+| Mem-SimpleV2 modes 2, 10, 13, 20 | 1.03-1.06 |
+| Bench-Verify-TMR-13 / 20 | 1.07 / 1.05-1.10 |
+| Mem-ModuloX | 1.03 |
+| Mem-Random, MirrorMove, StuckBit, Spd copies, Bench-Init-* | 0.99-1.03 |
+| Bench-Verify-TMR-30 (after c2644ab) | 0.99 |
+| Mem-SimpleV2 mode 30 | 0.99 |
+| Mem-SimpleV2-128 mode 10 / Mem-SimpleNT-128 | 0.98 / 0.986 |
+
+Not measured: the 128- and 256-bit Spd copies (not selectable by name; Spd-Copy-128 had been
+running at 256 bits and is 128 now, so its numbers will drop, rightly); anything at cache-resident
+sizes (see the follow-ups).
+
+## What stays flagged, and why
+
+- **Mem-ModuloX's aggressor pass** (emulated 64-bit multiply, `.rdata` constants, a stack reload):
+  every clean walk tried (four) ran 7-10% slower at DRAM (Rule 6.17).
+- **Bench-Verify mode 20's check** reloads two multiplier halves from the stack: AVX2's 64-bit
+  multiply is emulated and needs more than the 16 ymm registers. 14% faster than the clean version.
+- **Bench-Verify mode 30's check** is round 2's walk again (2 SIMD round trips): round 3's clean
+  checks ran 0.91-0.95x.
+- **The heavy pattern families' lines** (quiet, header, switch at 12/24 bits, in native SimpleTest
+  and Mem-Sequence 256): their scalar line code in the shared generators (fmix, balanced_bytes'
+  masks, pin_mask) needs more values than 15 gprs alongside the walk. Mem-Sequence 256's random
+  walks hold 16 values (13-14 reloads); the scalar strided walks 8-9.
+- **Mem-Sequence 512's quiet12/24** forward and reverse read one constant from `.rdata` a line
+  (round 3b's rotate form, 1.6% faster than the alternative on mixed orders).
+- **Mem-Stride's one round trip** is the per-stride-pass setup (cold).
+- **The strided checks** keep 1 accumulator chain at 512 and 2 at 256 (unchanged): four chains
+  measured slower on the TM5 config (0.83-1.01x), so per the owner they stay.
+
+## Decisions
 
 - 2026-10-19: the per-chunk seal calls are an `#[inline(always)]` guard around an `#[inline(never)]`
-  chunk function (bf3660b): no call per chunk after a step's first cycle, the seal's work out of the
-  test functions. Inlining the work too would save one call per chunk in the first cycle (about 2 ns
-  against a chunk's millisecond of seal work) for 73 copies; it made no difference to the hot-loop
-  spill count (544 inlined, 547 not).
-- 2026-10-19: drop no accumulator to save registers without measuring it (the owner: "validate it
-  based on the test that showed 4 was better and see what's best").
+  chunk function (bf3660b).
+- 2026-10-19: drop no accumulator to save registers without measuring it (the owner).
+- 2026-10-19: no 8-wide variant timing for CacheBust: the clean form stays (the owner).
+- 2026-10-20: Mem-MovingInv reads, checks and writes 32 B at a time (the owner: fine, and closer to
+  whole-line writes).
+- 2026-10-20: no release-mode check that chunks are whole 4 KiB granules; documented instead on
+  `test_memory::GRANULE` (the owner).
+- 2026-10-20: the strided checks keep their chains (four measured slower).
 
-**Done** when the check shows no hot loop touching the stack, or each that remains has a written
-reason it can't be avoided.
+## Open, for the owner
+
+1. The empty-`asm!` barrier (native's pointer step and header line id, Mem-Sequence's strided line
+   id): no instruction, stops loop strength reduction merging or splitting counters; behind the
+   header and quiet gains. Recommended: accept, as one shared documented helper.
+2. Drop the scalar variants (Mem-SimpleV2, Mem-StuckBit, Mem-Refresh, Mem-MirrorV2): the AVX2 gate
+   makes them no fallback, they were never scalar-shaped, and the DRAM can't tell. The owner leans
+   yes; the list of what goes needs approval.
+3. Merge the duplicate kernels: Bench-Init/Verify's numbered modes and legacy SimpleTest's were
+   rewritten separately by two agents, so Bench no longer measures what SimpleTest runs; and three
+   strided walks (native, Mem-Sequence, legacy) replace the one. Keep the faster per mode, measured.
+4. A kernel-efficiency plan: every kernel at L1/L2-resident sizes, to see its CPU limit (the
+   owner's idea, 2026-10-20). Mind 6.17: decide stress kernels at DRAM.
+5. Mem-SimpleV2-128 mode 10 (0.98) and SimpleNT-128 (0.986): small, not chased.
+6. Mem-Random: an early stop reports `cycle x the last batch's length` operations (a pre-TODO-99
+   bug); and its random phase reads at most 50,000 words a cycle whatever the extent (intended?).
+7. The agents' worktrees (`.claude/worktrees/`, about 23) hold many GB of build output; their
+   branches stay in git.
