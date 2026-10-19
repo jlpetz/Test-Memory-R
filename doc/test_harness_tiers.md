@@ -21,9 +21,12 @@ These four words get used loosely in conversation; in this doc they mean exactly
 | **Registration name** | The string a config or `tests=` filter matches. Several names can map to one function. | `Mem-StuckBit-Flush256` |
 | **Test function** | The `unsafe fn(blocks, thread_id, error_mode, timing, config, progress) -> TestStats` that the thread pool calls once per thread. Owns everything from there down. | `stuck_bit_test_256_multi` |
 | **Harness / scaffolding** | Shared code the test function delegates *orchestration* to. Two exist: `run_phased_test` (owns the loop) and `TestRunner` (owns bookkeeping only). | `test_harness.rs`, `test_scaffolding.rs` |
-| **Kernel** | The innermost loop that actually issues the loads and stores. Not a distinct code object in TMR — it is a *region* inside the test function, expanded there by macro. | the body of `stuck_bit_write_verify!` |
+| **Kernel** | The innermost loop that actually issues the loads and stores. Expanded by macro inside the width's `#[target_feature]` function, and since TODO 99 usually a small `#[inline(never)]` function of its own taking a `Copy` struct, called once a chunk, so its loop keeps every value in registers (`doc/simd_codegen_rules.md` Rule 6). | `CacheBustChunk::verify`, the body of `stuck_bit_write_verify!` |
 
 The last row is the important one and the reason the tiers look the way they do. See §2.
+
+Every chunk and extent piece is a whole number of 4 KiB granules (`test_memory::GRANULE`), and the
+kernels rely on it: see the constant's docs before handing a kernel any other range.
 
 ---
 

@@ -3711,8 +3711,6 @@ impl Mode30 {
     }
 
     /// Errors in words `[start, end)`: 0 if all hold, else counted and logged by a rescan.
-    // Test-only since TODO 99 round 3 (the kernels have their own): the tests' reference
-    #[cfg(test)]
     #[inline(always)]
     unsafe fn verify(self, ptr: *const u64, start: usize, end: usize, test_name: &str) -> u64 {
         let mut acc = [0u64; 4];
@@ -8248,22 +8246,7 @@ unsafe fn mode30_fill_chunk(mode: Mode30, ptr: *mut u64, start: usize, end: usiz
 /// the fill goes four a step.
 #[inline(never)]
 unsafe fn mode30_check_chunk(mode: Mode30, ptr: *const u64, start: usize, end: usize, test_name: &str) -> u64 {
-    use pattern_gen::BusBeat;
-    let (key, k) = (u64x4::splat(mode.key), mode.key);
-    let seen = match mode.beat {
-        BusBeat::Bits64 => verify_lines_by_4(ptr, start, end, |addrs| mode30_lines4::<64>(addrs, key),
-                                             |line| pattern_gen::mode30_line(line as usize, k, BusBeat::Bits64)),
-        BusBeat::Bits32 => verify_lines_by_4(ptr, start, end, |addrs| mode30_lines4::<32>(addrs, key),
-                                             |line| pattern_gen::mode30_line(line as usize, k, BusBeat::Bits32)),
-        BusBeat::Bits16 => verify_lines_by_4(ptr, start, end, |addrs| mode30_lines4::<16>(addrs, key),
-                                             |line| pattern_gen::mode30_line(line as usize, k, BusBeat::Bits16)),
-        BusBeat::Bits12 => verify_lines(ptr, start, end, |line| pattern_gen::mode30_line(line as usize, k, BusBeat::Bits12)),
-        BusBeat::Bits24 => verify_lines(ptr, start, end, |line| pattern_gen::mode30_line(line as usize, k, BusBeat::Bits24)),
-    };
-    if seen == 0 {
-        return 0;
-    }
-    mode.rescan(ptr, start, end, test_name, seen)
+    mode.verify(ptr, start, end, test_name)
 }
 
 /// Bench-Init dispatcher: routes to the correct pattern mode based on config.pattern_mode.

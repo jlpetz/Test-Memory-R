@@ -9,6 +9,13 @@ use crate::tests::TestBlock;
 
 /// Extent pieces and chunks are multiples of this, and chunks start on it. It makes halves,
 /// quarters and subdivisions exact for every vector width, and keeps chunk starts page-aligned.
+///
+/// The kernels rely on it (TODO 99): their walks step whole vectors, lines and groups of four
+/// lines to a bound, and some would loop forever or run past the end on a part-page range
+/// (Mem-Sequence's 512-bit random step, mirror's whole tail), guarded only by `debug_assert`s.
+/// Powers of two are not needed; whole granules are. If chunks ever stop being uniform (threads
+/// handing each other ranges), drop the tail or clip it to a granule multiple rather than give a
+/// kernel a part page.
 pub const GRANULE: usize = 4096;
 
 /// How a test's chunks cover its extent (TODO 76): `count()` chunks of exactly `chunk()` bytes,

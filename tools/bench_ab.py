@@ -33,7 +33,8 @@ def run(exe, args, out_path):
     speeds = {}
     for cycle in result["cycles"]:
         for test in cycle["tests"]:
-            speeds.setdefault(test["name"], []).append(test["throughput_mib_s"])
+            # The label tells a .cfg's steps apart ("Mem-SimpleV2-512_A (Test 6)"); the name doesn't
+            speeds.setdefault(test.get("label") or test["name"], []).append(test["throughput_mib_s"])
     return {name: statistics.mean(v) for name, v in speeds.items()}, m.group(1)
 
 

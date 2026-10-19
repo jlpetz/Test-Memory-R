@@ -18,6 +18,9 @@ review and measurement rather than failure:
               stack one, that the stack columns can't see.
   long        over 150 instructions: the heavy pattern families' unrolled steps run to 200 and more,
               so read it rather than assume it is cold (loops over 600 are left out).
+  width       in a kernel whose name gives a width (128, 256 or 512), an access to test memory
+              through a vector register of another width: the compiler widened a narrow variant
+              (Spd-Copy-128 ran on ymm) or split a wide one (a u64x8 as two ymm halves).
 A stack access through an index register (`128(%rsp,%r10)`, an array kept on the stack) counts as a
 stack access; an indexed prefetch doesn't count as indexed (it folds into no other op). A "loop"
 whose range holds a `ret` is an epilogue laid out inside an outer loop's blocks, and is skipped.
@@ -26,7 +29,7 @@ Cold functions (rescans, parsers, setup) are left out by name, below.
 Build the asm, then run this (with no file, the newest one under target/release/build):
     cargo rustc --release --bin tmr -- --emit asm
     python tools/hot_loop_spills.py [file.s] [--detail SUBSTRING [--all]] [--max N]
---detail prints each flagged loop (stack, indexed or const) of the kernels whose name contains
+--detail prints each flagged loop (stack or any review flag) of the kernels whose name contains
 SUBSTRING (with --all, their clean hot loops too); --max exits 1 when the loops touching the stack
 exceed N (a ratchet for a check before releases).
 """
@@ -51,7 +54,26 @@ STACK = re.compile(r"(-?\d*)\(%rsp(?:,%r\w+(?:,\d)?)?\)")
 SIMD = re.compile(r"%[xyz]mm\d+|%k[0-7]\b")
 KINDS = ["round trip gpr", "round trip simd", "reload gpr", "reload simd"]
 # Counted for review, not failure: see the module docs
-REVIEW = ["indexed", "const", "long"]
+REVIEW = ["indexed", "const", "long", "width"]
+# The width a kernel's name gives, and the width of each vector register class
+NAMED_WIDTH = re.compile(r"(?<![0-9])(128|256|512)(?![0-9])")
+REG_WIDTH = {"x": 128, "y": 256, "z": 512}
+
+
+def off_width(name, loop):
+    """Whether a loop of the kernel `name` accesses test memory (off the stack, not the binary's
+    constants) through a vector register of another width than its name gives."""
+    m = NAMED_WIDTH.search(name)
+    if not m:
+        return False
+    want = int(m.group(1))
+    for x in loop:
+        if not OFF_STACK.search(x) or "(%rip)" in x or x.startswith(("lea", "prefetch")):
+            continue
+        widths = {REG_WIDTH[r] for r in re.findall(r"%([xyz])mm\d+", x)}
+        if widths and max(widths) != want:
+            return True
+    return False
 # A memory operand with an index register, off the stack (an `lea` is arithmetic, not an access)
 INDEXED = re.compile(r"-?\d*\(%r(?!sp\b)\w+,%r\w+(,\d)?\)")
 
@@ -189,6 +211,8 @@ def main():
             if not found:
                 continue
             kind, stack, flags = found
+            if off_width(name, loop):
+                flags = flags + ["width"]
             hot.add(name)
             if kind != "clean":
                 counts[name][kind] += 1
@@ -199,10 +223,10 @@ def main():
             if detail and detail in name:
                 print(f"--- {name}: {', '.join([kind] + flags)}, {len(loop)} instructions, {len(stack)} on the stack")
                 print("    " + "\n    ".join(re.sub(r"\s+", " ", x) for x in loop))
-    widths = (7, 8, 7, 6, 8, 6, 5)
+    widths = (7, 8, 7, 6, 8, 6, 5, 6)
     total = {k: sum(c[k] for c in counts.values()) for k in columns}
     print(f"{'':48s} {'round trip':>16s} {'reload':>14s}")
-    print(f"{'kernel':48s} {'gpr':>7s} {'simd':>8s} {'gpr':>7s} {'simd':>6s} {'indexed':>8s} {'const':>6s} {'long':>5s}")
+    print(f"{'kernel':48s} {'gpr':>7s} {'simd':>8s} {'gpr':>7s} {'simd':>6s} {'indexed':>8s} {'const':>6s} {'long':>5s} {'width':>6s}")
     for name in sorted(counts, key=lambda n: tuple(-counts[n][k] for k in columns) + (n,)):
         c = counts[name]
         print(f"{name[:48]:48s} " + " ".join(f"{c[k]:{w}d}" for k, w in zip(columns, widths)))
