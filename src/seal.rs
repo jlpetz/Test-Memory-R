@@ -680,10 +680,16 @@ mod tests {
     /// Ranges from 1 vector to over two pages, starting at and inside a page, at every width.
     #[test]
     fn kernel_walks_write_the_seal_and_see_every_bad_word() {
-        let words = 3 * 512 + 64;
-        // A guard page either side
-        let mut buf = vec![u64x8::splat(0); words / 8 + 2 * 64];
+        let words: usize = 3 * 512 + 64;
+        // A guard page either side, in 4 KiB pages: a `Vec<u64x8>` is only 64 B aligned, so where
+        // its pages began was the heap's choice (`p` 0xf40 into one on the dev box), and with it
+        // which tails a range's first and last page took (round 3's review; TODO 99)
+        #[derive(Clone, Copy)]
+        #[repr(C, align(4096))]
+        struct Page([u64; 512]);
+        let mut buf = vec![Page([0; 512]); (words + 2 * 512).div_ceil(512)];
         let p = unsafe { (buf.as_mut_ptr() as *mut u64).add(512) };
+        assert!(p.addr().is_multiple_of(4096), "the range's word 0 a page's first");
         const FILLER: u64 = 0x5A5A_5A5A_5A5A_5A5A;
         for kernel in kernels() {
             let lanes = match kernel.width { SealWidth::W512 => 8, SealWidth::W256 => 4, _ => 2 };

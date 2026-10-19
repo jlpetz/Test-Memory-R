@@ -6436,14 +6436,14 @@ macro_rules! sequence_acc {
 
 /// Mem-Sequence's step: `[line: [vector accumulator, ...], ...]`, the lines it visits, in order,
 /// each vector of each and the accumulator its difference goes to. A step is four vectors, one an
-/// accumulator, as every verify's: two lines at 256 bits, four at 512. Checked against the old
-/// walk's `(l * VPL + v) % 4` when it compiles.
+/// accumulator, as every verify's: two lines at 256 bits, four at 512. Checked when it compiles:
+/// each line once, each of its vectors `0..VPL` once, each to the old walk's `(l * VPL + v) % 4`.
 macro_rules! sequence_step_check {
     ($w:tt, [$($l:literal: [$($v:literal $a:literal),*]),*]) => {
         const _: () = {
             const VPL: usize = LINE_WORDS / $w;
-            assert!([$($l),*].len() * VPL == 4, "a step is four vectors");
-            $($(assert!($a == ($l * VPL + $v) % 4 && $v < VPL, "each vector its accumulator");)*)*
+            assert!([$($l),*].len() * VPL == 4 && 0 $(| 1u64 << $l)* == (1u64 << (4 / VPL)) - 1, "a step is four vectors, each line once");
+            $(assert!([$($v),*].len() == VPL && 0 $(| 1u64 << $v)* == (1u64 << VPL) - 1 $(&& $a == ($l * VPL + $v) % 4)*, "each vector once, its accumulator");)*
         };
     };
 }
@@ -9005,47 +9005,57 @@ mod random_replay_tests {
     /// every stride, the pattern plus the index, and nothing else; read clean; and see a bad word in
     /// each lane of each accumulator (the first 16 words a subdivision visits) and in the tails (its
     /// last 20), in every subdivision, with a tail and without, at each stride and the fallback's.
+    /// And with each subdivision a word short of the verify's next whole step (round 3's review): 15
+    /// mod 16 words at stride 1, whose steps are 16 words; elsewhere 3 mod 4 visits, the subdivision
+    /// a whole number of strides long, so a fourth would be the word after it. A main loop's bound
+    /// a step long reads that word: in the chunk, the next subdivision's first, which holds what the
+    /// walk expects, so it shows only past the last subdivision, at the chunk's end.
     #[test]
     fn stride_walks_write_their_words_and_see_every_lane_and_tail() {
         const UNTOUCHED: u64 = 0xDEAD_0000_0000_0000;
         let pattern = 0x5A5A_0000_0000_1234u64;
-        for (chunk_start, elements_per_subdiv) in [(64usize, 4 * 4096 + 5), (0, 4 * 4096)] {
+        let short_of_a_step = |stride: usize| if stride == 1 { 4 * 4096 + 15 } else { 4 * 4096 / stride * stride + 3 * stride };
+        let shapes = [1usize, 16, 64, 256, 1024, 4096, 7].into_iter()
+            .flat_map(|stride| [(64usize, 4 * 4096 + 5, stride), (0, 4 * 4096, stride), (0, short_of_a_step(stride), stride)]);
+        for (chunk_start, elements_per_subdiv, stride) in shapes {
             let subdivisions = 4;
             let mut mem = vec![UNTOUCHED; chunk_start + subdivisions * elements_per_subdiv + 64];
-            for stride in [1usize, 16, 64, 256, 1024, 4096, 7] {
-                mem.fill(UNTOUCHED);
-                let walk = StrideWalk { base: mem.as_mut_ptr(), chunk_start, subdivisions, elements_per_subdiv, stride, pattern };
-                unsafe { walk.write() };
-                let visits: Vec<Vec<usize>> = (0..subdivisions).map(|s| {
-                    let start = chunk_start + s * elements_per_subdiv;
-                    (start..start + elements_per_subdiv).step_by(stride).collect()
-                }).collect();
-                let mut want = vec![UNTOUCHED; mem.len()];
-                for &i in visits.iter().flatten() {
-                    want[i] = pattern.wrapping_add(i as u64);
-                }
-                assert!(mem == want, "stride {stride}, {elements_per_subdiv} a subdivision: not the walk's image");
-                assert_eq!(unsafe { walk.verify() }, 0, "stride {stride}: clean");
-                // Through the walk's own pointer, which a write through `mem` would invalidate
-                for visits in &visits {
-                    let ends = visits.iter().take(16).chain(visits.iter().rev().take(20));
-                    for &word in ends {
-                        unsafe { *walk.base.add(word) ^= 1 << 40 };
-                        assert_eq!(unsafe { walk.verify() }, 1 << 40, "stride {stride}: missed word {word}");
-                        unsafe { *walk.base.add(word) ^= 1 << 40 };
-                    }
+            let walk = StrideWalk { base: mem.as_mut_ptr(), chunk_start, subdivisions, elements_per_subdiv, stride, pattern };
+            unsafe { walk.write() };
+            let visits: Vec<Vec<usize>> = (0..subdivisions).map(|s| {
+                let start = chunk_start + s * elements_per_subdiv;
+                (start..start + elements_per_subdiv).step_by(stride).collect()
+            }).collect();
+            let mut want = vec![UNTOUCHED; mem.len()];
+            for &i in visits.iter().flatten() {
+                want[i] = pattern.wrapping_add(i as u64);
+            }
+            let what = format!("stride {stride}, {elements_per_subdiv} a subdivision");
+            assert!(mem == want, "{what}: not the walk's image");
+            assert_eq!(unsafe { walk.verify() }, 0, "{what}: clean");
+            // Through the walk's own pointer, which a write through `mem` would invalidate
+            for visits in &visits {
+                let ends = visits.iter().take(16).chain(visits.iter().rev().take(20));
+                for &word in ends {
+                    unsafe { *walk.base.add(word) ^= 1 << 40 };
+                    assert_eq!(unsafe { walk.verify() }, 1 << 40, "{what}: missed word {word}");
+                    unsafe { *walk.base.add(word) ^= 1 << 40 };
                 }
             }
         }
     }
 
     /// TODO 99 round 3: the scalar Mem-StuckBit and Mem-Refresh chunk fills its words with the
-    /// pattern and nothing else, from any start, with every length of tail; reads clean; sees a bad
-    /// word anywhere in it (each accumulator's lane and the tail); and counts it once.
+    /// pattern and nothing else, from odd and even starts, with every length of tail (every length
+    /// to 47 words: the write's 0-15 words after none, one or two 16-word steps, the verify's 0-3
+    /// after its 4-word steps; round 3's review: the cases had run write tails 0, 3, 7 and 15 and
+    /// verify tails 0 and 3); reads clean; sees a bad word anywhere in it (each accumulator's lane
+    /// and the tail); and counts it once.
     #[test]
     fn const_chunks_fill_their_words_and_see_every_bad_word() {
         const UNTOUCHED: u64 = 0xDEAD_0000_0000_0000;
-        for (start, len) in [(0usize, 64usize), (3, 16 * 5 + 15), (5, 16 * 2 + 7), (8, 3), (1, 0)] {
+        let cases = [(0usize, 64usize), (3, 16 * 5 + 15), (5, 16 * 2 + 7), (8, 3), (1, 0)].into_iter().chain((0..48).map(|len| (7, len)));
+        for (start, len) in cases {
             let mut mem = vec![UNTOUCHED; start + len + 32];
             let chunk = super::ConstChunk { base: mem.as_mut_ptr(), start, end: start + len, pattern: super::STUCKBIT_P1 };
             unsafe { chunk.write() };
@@ -9146,6 +9156,9 @@ mod random_replay_tests {
     /// verify reads that clean, and a flipped bit is seen in each word of the first 4 lines (every
     /// lane of every accumulator), of the last 3 (the lines past the last whole group: 3 at 512
     /// bits, 1 at 256), in a word of every line (every strided pass, round 3b) and in a spread.
+    /// Strided, in every word: at a period of 16 lines, a word of every line is the same word of
+    /// each line of a pass, so a strided verify that skipped another vector of a pass passed
+    /// (round 3's review had found passes with no flip at all; TODO 99).
     #[test]
     fn native_walks_write_their_phase_and_see_every_bad_word() {
         use crate::pattern::{Family, Phase};
@@ -9170,6 +9183,7 @@ mod random_replay_tests {
         let total = buf.len() * 8;
         let flips: Vec<usize> = (start..start + 4 * LINE_WORDS).chain(end - 3 * LINE_WORDS..end)
             .chain((0..lines).map(|l| start + l * LINE_WORDS + l % LINE_WORDS)).chain((start..end).step_by(37)).collect();
+        let every_word: Vec<usize> = (start..end).collect();
         let mut ran = 0;
         for (width, (write, differs)) in &widths {
             for family in Family::ALL {
@@ -9193,7 +9207,7 @@ mod random_replay_tests {
                                 assert_eq!(unsafe { *base.add(i) }, want, "{what}: word {i}");
                             }
                             assert_eq!(unsafe { differs(c) }, 0, "{what}: clean");
-                            for &word in &flips {
+                            for &word in if period == 0 { &flips } else { &every_word } {
                                 let bit = 1u64 << (word % 64);
                                 unsafe { *base.add(word) ^= bit };
                                 assert_ne!(unsafe { differs(c) }, 0, "{what}: missed word {word}");
@@ -9490,10 +9504,16 @@ mod random_replay_tests {
 
     /// The orders a Mem-Sequence test runs, each with a stride: the strided walk at a period shorter
     /// than the 192 lines of these tests' chunks (16 lines, passes of 12) and at one longer (4096,
-    /// passes of one line or none).
-    const SEQUENCE_ORDERS: [(crate::sequence::Order, usize); 5] = [(crate::sequence::Order::Forward, 15 * 8),
+    /// passes of one line or none). Neither has a pass take steps in both of its loops: at 16 lines
+    /// the lookahead is the whole chunk, so every step is the second loop's (its prefetch in the
+    /// next pass); at 4096 it is 0, so every step is the first's. At periods that don't divide the
+    /// chunk (5, 7 and 101 lines: 2, 3 and 91 passes) a pass steps in the first loop, then on in
+    /// the second from where it left off, as every pass does in a chunk of 128 periods or more
+    /// (TODO 99 round 3's review).
+    const SEQUENCE_ORDERS: [(crate::sequence::Order, usize); 8] = [(crate::sequence::Order::Forward, 15 * 8),
         (crate::sequence::Order::Reverse, 15 * 8), (crate::sequence::Order::Random, 15 * 8),
-        (crate::sequence::Order::Stride, 15 * 8), (crate::sequence::Order::Stride, 4095 * 8)];
+        (crate::sequence::Order::Stride, 15 * 8), (crate::sequence::Order::Stride, 4095 * 8),
+        (crate::sequence::Order::Stride, 4 * 8), (crate::sequence::Order::Stride, 6 * 8), (crate::sequence::Order::Stride, 100 * 8)];
 
     /// TODO 99: Mem-Sequence's walks, a function each per width, operation, order and family. At
     /// each width, in every order, for every family and beat in both polarities: a write leaves each
@@ -9874,6 +9894,51 @@ mod mirror_tests {
                         count[b / w] += 1;
                     }
                     assert!(count.iter().all(|&c| c == 2), "{what}: a vector not in exactly two swaps");
+                }
+            }
+        }
+    }
+
+    /// TODO 99 round 3: the whole mirror's swaps after its steps of four (`mirror_swap_whole!`'s
+    /// second loop). A test op's chunk is whole 4 KiB pages, a multiple of four vectors at every
+    /// width, so that loop never runs there, nor in the test above (round 3's review). Chunks of 1
+    /// to 13 vectors run it for 1, 2 and 3 swaps, after none to three steps: each walk swaps the
+    /// index loop's pairs in its order, and round trips. A chunk must be whole vectors: of `len`
+    /// words at `w` lanes the walk swaps `len.div_ceil(w)` times, where the index loop swapped
+    /// `len / w`, the last swap across the chunk's ends.
+    #[test]
+    fn a_whole_mirror_swaps_past_its_last_step() {
+        for w in [1usize, 2, 4, 8] {
+            for vectors in 1..=13usize {
+                // The chunk a line into its buffer, a line after it
+                let (start, len) = (8, vectors * w);
+                let total = start + len + 8;
+                let mut buf = vec![u64x8::splat(0); total.div_ceil(8)];
+                let base = buf.as_mut_ptr() as *mut u64;
+                for i in 0..total {
+                    unsafe { *base.add(i) = i as u64 };
+                }
+                let seen = std::cell::RefCell::new(Vec::new());
+                macro_rules! record_swap {
+                    ($t:ty, $a:expr, $b:expr) => {{
+                        let (a, b): (*mut u64, *mut u64) = ($a, $b);
+                        seen.borrow_mut().push((a.offset_from(base) as usize, b.offset_from(base) as usize));
+                        mirror_swap_pair!($t, a, b);
+                    }}
+                }
+                let chunk = MirrorChunk { ptr: base, start, end: start + len };
+                unsafe {
+                    match w {
+                        1 => mirror_swap!(u64, 1, chunk, MirrorMode::Whole, record_swap),
+                        2 => mirror_swap!(u64x2, 2, chunk, MirrorMode::Whole, record_swap),
+                        4 => mirror_swap!(u64x4, 4, chunk, MirrorMode::Whole, record_swap),
+                        _ => mirror_swap!(u64x8, 8, chunk, MirrorMode::Whole, record_swap),
+                    }
+                }
+                let what = format!("{vectors} vectors of {w} words");
+                assert_eq!(seen.into_inner(), index_swaps(MirrorMode::Whole, w, start, start + len), "{what}: not the index loop's swaps");
+                for i in 0..total {
+                    assert_eq!(unsafe { *base.add(i) }, i as u64, "{what}: word {i} moved");
                 }
             }
         }
