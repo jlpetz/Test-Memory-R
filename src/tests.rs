@@ -1371,6 +1371,78 @@ macro_rules! stuck_bit_write_verify {
     }};
 }
 
+/// One constant over a chunk, for the scalar Mem-StuckBit and Mem-Refresh: words `start..end`
+/// from `base`, each `pattern`. The write and the verify are functions of their own so their loops
+/// walk a pointer, each access at it plus a fixed displacement (TODO 99): in the test functions they
+/// addressed every word through an index.
+///
+/// Both loops run while the pointer is below their last step's start, rather than for a count,
+/// and that is what keeps their shape: with a count the compiler vectorizes them itself, the
+/// verify into eight vector accumulators that spill. Compiled this way they get the shape the
+/// test functions had (the source is scalar; the baseline's 256-bit registers take it): the write
+/// four 32 B stores a step, the verify its four accumulators as the four lanes of one register.
+#[derive(Clone, Copy)]
+struct ConstChunk {
+    base: *mut u64,
+    start: usize,
+    end: usize,
+    pattern: u64,
+}
+
+impl ConstChunk {
+    /// Fills the chunk with the pattern: 16 words a step, then a word at a time.
+    #[inline(never)]
+    unsafe fn write(self) {
+        let ConstChunk { base, start, end, pattern } = self;
+        let mut p = base.add(start);
+        let stop = base.wrapping_add(end);
+        let last = base.wrapping_add(end.saturating_sub(15));
+        while p < last {
+            for k in 0..16 {
+                *p.add(k) = pattern;
+            }
+            p = p.wrapping_add(16);
+        }
+        while p < stop {
+            *p = pattern;
+            p = p.wrapping_add(1);
+        }
+    }
+
+    /// The four accumulators ORed: nonzero when a word differs. Four words a step, word `k` of each
+    /// into accumulator `k`, then the rest into the first, as `verify_words`.
+    #[inline(never)]
+    unsafe fn verify(self) -> u64 {
+        let ConstChunk { base, start, end, pattern } = self;
+        let mut p = base.add(start) as *const u64;
+        let stop = base.wrapping_add(end) as *const u64;
+        let last = base.wrapping_add(end.saturating_sub(3)) as *const u64;
+        let mut acc = [0u64; 4];
+        while p < last {
+            for (k, a) in acc.iter_mut().enumerate() {
+                *a |= *p.add(k) ^ pattern;
+            }
+            p = p.wrapping_add(4);
+        }
+        while p < stop {
+            acc[0] |= *p ^ pattern;
+            p = p.wrapping_add(1);
+        }
+        (acc[0] | acc[1]) | (acc[2] | acc[3])
+    }
+
+    /// The verify, then the cold rescan when it saw a difference: the errors, as `verify_words`.
+    #[inline(always)]
+    unsafe fn check(self, test_name: &str) -> u64 {
+        let seen = self.verify();
+        if seen == 0 {
+            return 0;
+        }
+        let pattern = self.pattern;
+        rescan_words(self.base, self.start, self.end, test_name, seen, |_| pattern)
+    }
+}
+
 /// StuckBitTest MultiBlock implementation - tests for stuck bits using alternating patterns.
 ///
 /// 3-Phase Pattern per cycle:
@@ -1430,35 +1502,30 @@ pub unsafe fn stuck_bit_test_multi(
 
             runner.check_seal(spread.start(k), spread.chunk());
             halt_here!(runner, cycle_errors, (runner.bytes_processed() / std::mem::size_of::<u64>()) as u64);
+            let phase = |pattern| ConstChunk { base, start: processed, end: chunk_end, pattern };
 
             // Phase 1: Write P1 (0xAA55...), verify
-            for i in processed..chunk_end {
-                *base.add(i) = pattern1;
-            }
+            phase(pattern1).write();
 
             flush_chunk_if_enabled!();
 
-            cycle_errors += verify_words(base, processed, chunk_end, test_name, |_| pattern1);
+            cycle_errors += phase(pattern1).check(test_name);
             halt_here!(runner, cycle_errors, (runner.bytes_processed() / std::mem::size_of::<u64>()) as u64);
 
             // Phase 2: Write P2 (0x55AA..., = !P1), verify
-            for i in processed..chunk_end {
-                *base.add(i) = pattern2;
-            }
+            phase(pattern2).write();
 
             flush_chunk_if_enabled!();
 
-            cycle_errors += verify_words(base, processed, chunk_end, test_name, |_| pattern2);
+            cycle_errors += phase(pattern2).check(test_name);
             halt_here!(runner, cycle_errors, (runner.bytes_processed() / std::mem::size_of::<u64>()) as u64);
 
             // Phase 3: Write back to P1, verify
-            for i in processed..chunk_end {
-                *base.add(i) = pattern1;
-            }
+            phase(pattern1).write();
 
             flush_chunk_if_enabled!();
 
-            cycle_errors += verify_words(base, processed, chunk_end, test_name, |_| pattern1);
+            cycle_errors += phase(pattern1).check(test_name);
             // Count the chunk when it is done; overlaps count each time
             runner.add_bytes(spread.chunk() * 6);
             halt_here!(runner, cycle_errors, (runner.bytes_processed() / std::mem::size_of::<u64>()) as u64);
@@ -1780,10 +1847,8 @@ pub unsafe fn refresh_stable_multi(
 
             // Non-byte-uniform (see REFRESH_PATTERN / #61): stays a real store loop,
             // not memset.
-            let pattern = REFRESH_PATTERN;
-            for i in processed..chunk_end {
-                *base.add(i) = pattern;
-            }
+            let chunk = ConstChunk { base, start: processed, end: chunk_end, pattern: REFRESH_PATTERN };
+            chunk.write();
 
             // Flush the written chunk to DRAM so the verify after the sleep
             // round-trips through DRAM instead of reading a cache-resident
@@ -1797,7 +1862,7 @@ pub unsafe fn refresh_stable_multi(
             std::thread::sleep(std::time::Duration::from_millis(64)); // DRAM refresh cycle timing
 
             // Verify phase
-            cycle_errors += verify_words(base, processed, chunk_end, test_name, |_| pattern);
+            cycle_errors += chunk.check(test_name);
             // Count the chunk when it is done; overlaps count each time
             runner.add_bytes(spread.chunk() * 2);
             halt_here!(runner, cycle_errors, (runner.bytes_processed() / std::mem::size_of::<u64>()) as u64);
@@ -2338,6 +2403,11 @@ pub unsafe fn random_torture_multi(
 /// word the pattern plus its index. The write and the verify are functions of their own so their
 /// loops keep every value in registers (TODO 99): in the test's function, with its passes and
 /// chunks live too, the allocator kept the stride on the stack. A call a chunk, not a word.
+///
+/// Each loop walks a pointer, every access at it plus a fixed displacement, the expected value
+/// carried beside it, and runs while the pointer is below its last step's start rather than for a
+/// count (TODO 99 round 3). With a count the compiler vectorizes the strided verify itself, eight
+/// vector accumulators wide with five constants spilled, and turns the walks back into indexes.
 #[derive(Clone, Copy)]
 struct StrideWalk {
     base: *mut u64,
@@ -2349,16 +2419,34 @@ struct StrideWalk {
 }
 
 impl StrideWalk {
-    #[inline(never)]
+    /// Each of the test's strides a compile-time constant, as `verify`.
+    #[inline]
     unsafe fn write(self) {
+        match self.stride {
+            1 => self.write_strided::<1>(),
+            16 => self.write_strided::<16>(),
+            64 => self.write_strided::<64>(),
+            256 => self.write_strided::<256>(),
+            1024 => self.write_strided::<1024>(),
+            4096 => self.write_strided::<4096>(),
+            _ => self.write_strided::<0>(),
+        }
+    }
+
+    /// `write` at stride `S`, or at `self.stride` when `S` is 0: a word a step.
+    #[inline(never)]
+    unsafe fn write_strided<const S: usize>(self) {
         let StrideWalk { base, chunk_start, subdivisions, elements_per_subdiv, stride, pattern } = self;
+        let stride = if S == 0 { stride } else { S };
         for subdiv in 0..subdivisions {
             let start = chunk_start + subdiv * elements_per_subdiv;
-            let end = start + elements_per_subdiv;
-            let mut pos = start;
-            while pos < end {
-                *base.add(pos) = pattern.wrapping_add(pos as u64);
-                pos += stride;
+            let mut p = base.add(start);
+            let stop = base.wrapping_add(start + elements_per_subdiv);
+            let mut value = pattern.wrapping_add(start as u64);
+            while p < stop {
+                *p = value;
+                p = p.wrapping_add(stride);
+                value = value.wrapping_add(stride as u64);
             }
         }
     }
@@ -2370,21 +2458,20 @@ impl StrideWalk {
     #[inline]
     unsafe fn verify(self) -> u64 {
         match self.stride {
-            1 => self.verify_strided::<1>(),
+            1 => self.verify_unit(),
             16 => self.verify_strided::<16>(),
             64 => self.verify_strided::<64>(),
             256 => self.verify_strided::<256>(),
             1024 => self.verify_strided::<1024>(),
             4096 => self.verify_strided::<4096>(),
-            _ => self.verify_strided::<0>(),
+            _ => self.verify_any(),
         }
     }
 
-    /// `verify` at stride `S`, or at `self.stride` when `S` is 0.
+    /// `verify` at a stride the test doesn't use, so a runtime one: the strided accumulate.
     #[inline(never)]
-    unsafe fn verify_strided<const S: usize>(self) -> u64 {
+    unsafe fn verify_any(self) -> u64 {
         let StrideWalk { base, chunk_start, subdivisions, elements_per_subdiv, stride, pattern } = self;
-        let stride = if S == 0 { stride } else { S };
         let expected = move |pos: usize| pattern.wrapping_add(pos as u64);
         let mut acc = [0u64; 4];
         for subdiv in 0..subdivisions {
@@ -2392,6 +2479,70 @@ impl StrideWalk {
             accumulate_stride_4(&mut acc, base, start, start + elements_per_subdiv, stride, expected);
         }
         (acc[0] | acc[1]) | (acc[2] | acc[3])
+    }
+
+    /// `verify` at stride `S`: four words a stride apart a step, word `k` into accumulator `k`,
+    /// then the rest into the first, as `accumulate_stride_4`.
+    #[inline(never)]
+    unsafe fn verify_strided<const S: usize>(self) -> u64 {
+        let StrideWalk { base, chunk_start, subdivisions, elements_per_subdiv, pattern, .. } = self;
+        let stride = S;
+        let mut acc = [0u64; 4];
+        for subdiv in 0..subdivisions {
+            let start = chunk_start + subdiv * elements_per_subdiv;
+            let mut p = base.add(start) as *const u64;
+            let stop = base.wrapping_add(start + elements_per_subdiv) as *const u64;
+            let last = base.wrapping_add(start + elements_per_subdiv.saturating_sub(3 * stride)) as *const u64;
+            let mut value = pattern.wrapping_add(start as u64);
+            while p < last {
+                for (k, a) in acc.iter_mut().enumerate() {
+                    *a |= *p.add(k * stride) ^ value.wrapping_add((k * stride) as u64);
+                }
+                p = p.wrapping_add(4 * stride);
+                value = value.wrapping_add(4 * stride as u64);
+            }
+            while p < stop {
+                acc[0] |= *p ^ value;
+                p = p.wrapping_add(stride);
+                value = value.wrapping_add(stride as u64);
+            }
+        }
+        (acc[0] | acc[1]) | (acc[2] | acc[3])
+    }
+
+    /// `verify` at stride 1, where the words are contiguous: 16 a step, as four vectors of four,
+    /// one into each accumulator, each against its own vector of expected values (so no constant
+    /// is reloaded); then the rest a word at a time. Explicit vectors, at the baseline's 256 bits
+    /// (Mem-Stride has no width variants): from four scalar chains the compiler built a mix of
+    /// scalar and 128-bit loads through an index, four words a step.
+    #[inline(never)]
+    unsafe fn verify_unit(self) -> u64 {
+        let StrideWalk { base, chunk_start, subdivisions, elements_per_subdiv, pattern, .. } = self;
+        let step = u64x4::splat(16);
+        let mut acc = [u64x4::splat(0); 4];
+        let mut tail = 0u64;
+        for subdiv in 0..subdivisions {
+            let start = chunk_start + subdiv * elements_per_subdiv;
+            let mut p = base.add(start) as *const u64;
+            let stop = base.wrapping_add(start + elements_per_subdiv) as *const u64;
+            let last = base.wrapping_add(start + elements_per_subdiv.saturating_sub(15)) as *const u64;
+            let first = u64x4::splat(pattern.wrapping_add(start as u64)) + u64x4::from_array([0, 1, 2, 3]);
+            let mut expected: [u64x4; 4] = std::array::from_fn(|k| first + u64x4::splat(4 * k as u64));
+            while p < last {
+                for (k, a) in acc.iter_mut().enumerate() {
+                    *a |= std::ptr::read_unaligned(p.add(4 * k) as *const u64x4) ^ expected[k];
+                    expected[k] += step;
+                }
+                p = p.wrapping_add(16);
+            }
+            let mut value = expected[0][0];
+            while p < stop {
+                tail |= *p ^ value;
+                value = value.wrapping_add(1);
+                p = p.wrapping_add(1);
+            }
+        }
+        ((acc[0] | acc[1]) | (acc[2] | acc[3])).reduce_or() | tail
     }
 }
 
@@ -3996,27 +4147,54 @@ fn mirror_mode(config: &TestMemoryConfig) -> MirrorMode {
 // sealed words and puts them back, and the seal check after it is its verify. In an unsealed run
 // it writes the seal first. These macros stamp the swaps per width; `mirror_move_v2_impl!` makes
 // the test function.
+//
+// Each width's swaps are a function of their own (`mirror_swap_fn!`, TODO 99 round 3). The whole
+// and jump mirrors walk two pointers, each access at one plus a fixed displacement, while the low
+// end is below its last step's start: inlined into the test function they addressed every access
+// through an index, and with a count instead of the bound the compiler unrolls them and addresses
+// the leftover steps through one. The swap itself is a macro passed in (`$swap`), so the unit test
+// can record each swap of the same walks.
 
-/// Swap one `$t` at element `$a` with one at element `$b`.
+/// The chunk a mirror swaps: words `start..end` from `ptr`, a test op's `ChunkCtx`.
+#[derive(Clone, Copy)]
+struct MirrorChunk {
+    ptr: *mut u64,
+    start: usize,
+    end: usize,
+}
+
+/// Swap one `$t` at `$a` with one at `$b` (both `*mut u64`).
 macro_rules! mirror_swap_pair {
-    ($t:ty, $ctx:expr, $a:expr, $b:expr) => {{
-        let x = *($ctx.ptr.add($a) as *const $t);
-        let y = *($ctx.ptr.add($b) as *const $t);
-        *($ctx.ptr.add($a) as *mut $t) = y;
-        *($ctx.ptr.add($b) as *mut $t) = x;
+    ($t:ty, $a:expr, $b:expr) => {{
+        let (a, b) = ($a as *mut $t, $b as *mut $t);
+        let x = *a;
+        let y = *b;
+        *a = y;
+        *b = x;
     }}
 }
 
-/// Whole mirror, one `$w`-element vector per step. The two ends walk the whole chunk and cross
-/// the middle, so every pair is swapped twice and the chunk ends as it began: one round trip, as
-/// one pass of TM5 MirrorMove (`mtests0.asm` ~1159-1218, 64 B per step).
+/// Whole mirror, one `$w`-element vector per swap, four swaps a step. The two ends walk the whole
+/// chunk and cross the middle, so every pair is swapped twice and the chunk ends as it began: one
+/// round trip, as one pass of TM5 MirrorMove (`mtests0.asm` ~1159-1218, 64 B per step).
 macro_rules! mirror_swap_whole {
-    ($t:ty, $w:expr, $ctx:expr) => {{
-        let mut lo = $ctx.chunk_start;
-        let mut hi = $ctx.chunk_end - $w;
-        for _ in 0..($ctx.chunk_end - $ctx.chunk_start) / $w {
-            mirror_swap_pair!($t, $ctx, lo, hi);
-            lo += $w;
+    ($t:ty, $w:expr, $chunk:expr, $swap:ident) => {{
+        let MirrorChunk { ptr, start, end } = $chunk;
+        let mut lo = ptr.add(start);
+        let mut hi = ptr.add(end - $w);
+        let stop = ptr.wrapping_add(end);
+        let last = ptr.wrapping_add(end.saturating_sub(3 * $w));
+        while lo < last {
+            $swap!($t, lo, hi);
+            $swap!($t, lo.add($w), hi.sub($w));
+            $swap!($t, lo.add(2 * $w), hi.sub(2 * $w));
+            $swap!($t, lo.add(3 * $w), hi.sub(3 * $w));
+            lo = lo.wrapping_add(4 * $w);
+            hi = hi.wrapping_sub(4 * $w);
+        }
+        while lo < stop {
+            $swap!($t, lo, hi);
+            lo = lo.wrapping_add($w);
             hi = hi.wrapping_sub($w);
         }
     }}
@@ -4024,15 +4202,18 @@ macro_rules! mirror_swap_whole {
 
 /// Subblocks: the chunk in `$n` equal parts (a literal, 2 or 4), each mirrored as above, all `$n`
 /// in lockstep (TM5 MirrorMove Parameter 2 and 4, ~1224-1286 and ~1360-1435). A chunk is a
-/// multiple of 4 KiB, so a quarter is a whole number of vectors at any width.
+/// multiple of 4 KiB, so a quarter is a whole number of vectors at any width. Still indexed: the
+/// parts are a runtime length apart, and from a pointer for each end of each part the compiler
+/// makes bases and shared offsets anyway, in more instructions than from these indexes.
 macro_rules! mirror_swap_subblocks {
-    ($t:ty, $w:expr, $ctx:expr, $n:literal) => {{
-        let sub = ($ctx.chunk_end - $ctx.chunk_start) / $n;
-        let mut lo = $ctx.chunk_start;
-        let mut hi = $ctx.chunk_start + sub - $w;
+    ($t:ty, $w:expr, $chunk:expr, $n:literal, $swap:ident) => {{
+        let MirrorChunk { ptr, start, end } = $chunk;
+        let sub = (end - start) / $n;
+        let mut lo = start;
+        let mut hi = start + sub - $w;
         for _ in 0..sub / $w {
             for s in 0..$n {
-                mirror_swap_pair!($t, $ctx, lo + s * sub, hi + s * sub);
+                $swap!($t, ptr.add(lo + s * sub), ptr.add(hi + s * sub));
             }
             lo += $w;
             hi = hi.wrapping_sub($w);
@@ -4046,38 +4227,53 @@ macro_rules! mirror_swap_subblocks {
 /// so it either swaps its units with another pass's, which swaps them back, or with its own,
 /// twice: one round trip over all passes.
 macro_rules! mirror_swap_jump {
-    ($t:ty, $w:expr, $ctx:expr, $jump:expr) => {{
+    ($t:ty, $w:expr, $chunk:expr, $jump:expr, $swap:ident) => {{
         const UNIT: usize = 128 / std::mem::size_of::<u64>();
-        let len = $ctx.chunk_end - $ctx.chunk_start;
+        let MirrorChunk { ptr, start, end } = $chunk;
+        let len = end - start;
         // A chunk is a multiple of 4 KiB, so a quarter of it is a whole number of units
         let step = ($jump as usize * UNIT).min(len / 4) + UNIT;
+        let stop = ptr.wrapping_add(end);
         for pass in (0..step / UNIT).rev() {
-            let mut lo = $ctx.chunk_start + pass * UNIT;
-            let mut hi = $ctx.chunk_end - pass * UNIT - UNIT;
-            while lo < $ctx.chunk_end {
+            let mut lo = ptr.add(start + pass * UNIT);
+            let mut hi = ptr.add(end - pass * UNIT - UNIT);
+            while lo < stop {
                 for v in (0..UNIT).step_by($w) {
-                    mirror_swap_pair!($t, $ctx, lo + v, hi + v);
+                    $swap!($t, lo.add(v), hi.add(v));
                 }
-                lo += step;
+                lo = lo.wrapping_add(step);
                 hi = hi.wrapping_sub(step);
             }
         }
     }}
 }
 
-/// One mirror round trip over the chunk in the test's `MirrorMode`.
+/// One mirror round trip over the chunk in the test's `MirrorMode`, each swap by `$swap`.
 macro_rules! mirror_swap {
-    ($t:ty, $w:expr, $ctx:expr, $mode:expr) => {{
+    ($t:ty, $w:expr, $chunk:expr, $mode:expr, $swap:ident) => {{
         match $mode {
-            MirrorMode::Whole => mirror_swap_whole!($t, $w, $ctx),
-            MirrorMode::Subblocks(2) => mirror_swap_subblocks!($t, $w, $ctx, 2),
+            MirrorMode::Whole => mirror_swap_whole!($t, $w, $chunk, $swap),
+            MirrorMode::Subblocks(2) => mirror_swap_subblocks!($t, $w, $chunk, 2, $swap),
             MirrorMode::Subblocks(n) => {
                 debug_assert_eq!(n, 4, "MirrorMode parsing admits 2 or 4 subblocks");
-                mirror_swap_subblocks!($t, $w, $ctx, 4)
+                mirror_swap_subblocks!($t, $w, $chunk, 4, $swap)
             }
-            MirrorMode::Jump(j) => mirror_swap_jump!($t, $w, $ctx, j),
+            MirrorMode::Jump(j) => mirror_swap_jump!($t, $w, $chunk, j, $swap),
         }
     }}
+}
+
+/// The function a mirror test calls for one round trip over a chunk: `mirror_swap!` at `$t`,
+/// `#[inline(never)]` so its loops are allocated registers on their own, with the variant's
+/// target features (`$tf`) so the width holds.
+macro_rules! mirror_swap_fn {
+    ($name:ident, $t:ty, $w:expr $(, $tf:literal)?) => {
+        #[inline(never)]
+        $(#[target_feature(enable = $tf)])?
+        unsafe fn $name(chunk: MirrorChunk, mode: MirrorMode) {
+            mirror_swap!($t, $w, chunk, mode, mirror_swap_pair);
+        }
+    };
 }
 
 /// Master macro: stamps out a complete MirrorMove v2 impl function for a given SIMD width.
@@ -4099,8 +4295,8 @@ macro_rules! mirror_move_v2_impl {
             config: &TestMemoryConfig,
             progress: Option<&TestProgress>,
         ) -> TestStats {
+            mirror_swap_fn!(swap, $simd_type, $simd_w, $target_feature);
             let test_name = $test_name;
-            let simd_elements: usize = $simd_w;
             let mirror = mirror_mode(config);
             let seal = config.seal;
             run_phased_test(
@@ -4113,9 +4309,7 @@ macro_rules! mirror_move_v2_impl {
                 // Init: the seal, in an unsealed run
                 |ctx: &ChunkCtx| seal.kernel.fill(ctx.ptr, ctx.chunk_start, ctx.chunk_end),
                 // Test: one mirror round trip
-                |ctx: &ChunkCtx| {
-                    mirror_swap!($simd_type, simd_elements, ctx, mirror);
-                },
+                |ctx: &ChunkCtx| swap(MirrorChunk { ptr: ctx.ptr, start: ctx.chunk_start, end: ctx.chunk_end }, mirror),
                 // Verify: the seal check, resealing the chunk if it failed (TM5's refill)
                 |ctx: &ChunkCtx| -> u64 { mirror_seal_check(seal.kernel, ctx, error_mode) },
             )
@@ -4147,6 +4341,7 @@ pub unsafe fn mirror_move_v2_multi(
     config: &TestMemoryConfig,
     progress: Option<&TestProgress>,
 ) -> TestStats {
+    mirror_swap_fn!(swap, u64, 1);
     let test_name = "Mem-MirrorV2";
     let mirror = mirror_mode(config);
     let seal = config.seal;
@@ -4160,10 +4355,8 @@ pub unsafe fn mirror_move_v2_multi(
         config.verify_reps,  // verify_reps: verification passes
         // Init: the seal, in an unsealed run
         |ctx: &ChunkCtx| seal.kernel.fill(ctx.ptr, ctx.chunk_start, ctx.chunk_end),
-        // Test: one mirror round trip, a u64 per step
-        |ctx: &ChunkCtx| {
-            mirror_swap!(u64, 1, ctx, mirror);
-        },
+        // Test: one mirror round trip, a u64 per swap
+        |ctx: &ChunkCtx| swap(MirrorChunk { ptr: ctx.ptr, start: ctx.chunk_start, end: ctx.chunk_end }, mirror),
         // Verify: the seal check, resealing the chunk if it failed (TM5's refill)
         |ctx: &ChunkCtx| -> u64 { mirror_seal_check(seal.kernel, ctx, error_mode) },
     )
@@ -6297,6 +6490,70 @@ mod random_replay_tests {
         }
     }
 
+    /// TODO 99 round 3: Mem-Stride's walked pointers write each subdivision's words from its start,
+    /// every stride, the pattern plus the index, and nothing else; read clean; and see a bad word in
+    /// each lane of each accumulator (the first 16 words a subdivision visits) and in the tails (its
+    /// last 20), in every subdivision, with a tail and without, at each stride and the fallback's.
+    #[test]
+    fn stride_walks_write_their_words_and_see_every_lane_and_tail() {
+        const UNTOUCHED: u64 = 0xDEAD_0000_0000_0000;
+        let pattern = 0x5A5A_0000_0000_1234u64;
+        for (chunk_start, elements_per_subdiv) in [(64usize, 4 * 4096 + 5), (0, 4 * 4096)] {
+            let subdivisions = 4;
+            let mut mem = vec![UNTOUCHED; chunk_start + subdivisions * elements_per_subdiv + 64];
+            for stride in [1usize, 16, 64, 256, 1024, 4096, 7] {
+                mem.fill(UNTOUCHED);
+                let walk = StrideWalk { base: mem.as_mut_ptr(), chunk_start, subdivisions, elements_per_subdiv, stride, pattern };
+                unsafe { walk.write() };
+                let visits: Vec<Vec<usize>> = (0..subdivisions).map(|s| {
+                    let start = chunk_start + s * elements_per_subdiv;
+                    (start..start + elements_per_subdiv).step_by(stride).collect()
+                }).collect();
+                let mut want = vec![UNTOUCHED; mem.len()];
+                for &i in visits.iter().flatten() {
+                    want[i] = pattern.wrapping_add(i as u64);
+                }
+                assert!(mem == want, "stride {stride}, {elements_per_subdiv} a subdivision: not the walk's image");
+                assert_eq!(unsafe { walk.verify() }, 0, "stride {stride}: clean");
+                // Through the walk's own pointer, which a write through `mem` would invalidate
+                for visits in &visits {
+                    let ends = visits.iter().take(16).chain(visits.iter().rev().take(20));
+                    for &word in ends {
+                        unsafe { *walk.base.add(word) ^= 1 << 40 };
+                        assert_eq!(unsafe { walk.verify() }, 1 << 40, "stride {stride}: missed word {word}");
+                        unsafe { *walk.base.add(word) ^= 1 << 40 };
+                    }
+                }
+            }
+        }
+    }
+
+    /// TODO 99 round 3: the scalar Mem-StuckBit and Mem-Refresh chunk fills its words with the
+    /// pattern and nothing else, from any start, with every length of tail; reads clean; sees a bad
+    /// word anywhere in it (each accumulator's lane and the tail); and counts it once.
+    #[test]
+    fn const_chunks_fill_their_words_and_see_every_bad_word() {
+        const UNTOUCHED: u64 = 0xDEAD_0000_0000_0000;
+        for (start, len) in [(0usize, 64usize), (3, 16 * 5 + 15), (5, 16 * 2 + 7), (8, 3), (1, 0)] {
+            let mut mem = vec![UNTOUCHED; start + len + 32];
+            let chunk = super::ConstChunk { base: mem.as_mut_ptr(), start, end: start + len, pattern: super::STUCKBIT_P1 };
+            unsafe { chunk.write() };
+            for (i, &word) in mem.iter().enumerate() {
+                let want = if (start..start + len).contains(&i) { super::STUCKBIT_P1 } else { UNTOUCHED };
+                assert_eq!(word, want, "{start}..{}: word {i}", start + len);
+            }
+            assert_eq!(unsafe { chunk.verify() }, 0, "{start}..{}: clean", start + len);
+            assert_eq!(unsafe { chunk.check("test") }, 0, "{start}..{}: clean check", start + len);
+            // Through the chunk's own pointer, which a write through `mem` would invalidate
+            for word in start..start + len {
+                unsafe { *chunk.base.add(word) ^= 1 << 40 };
+                assert_eq!(unsafe { chunk.verify() }, 1 << 40, "{start}..{}: missed word {word}", start + len);
+                assert_eq!(unsafe { chunk.check("test") }, 1, "{start}..{}: word {word} not counted once", start + len);
+                unsafe { *chunk.base.add(word) ^= 1 << 40 };
+            }
+        }
+    }
+
     /// TODO 99: Mem-CacheBust's chunk walks write each word its variant's pattern plus its index and
     /// nothing outside the chunk, read clean, and see a bad word in each lane of each accumulator
     /// and in the tails, with one pattern and with four.
@@ -6597,31 +6854,70 @@ mod random_replay_tests {
 
 #[cfg(test)]
 mod mirror_tests {
-    use super::MirrorMode;
+    use super::{MirrorChunk, MirrorMode};
     use std::simd::{u64x2, u64x4, u64x8};
 
-    /// Stands in for `ChunkCtx::ptr`: records every element index a swap kernel touches.
-    struct Recorder {
-        base: *mut u64,
-        seen: std::cell::RefCell<Vec<usize>>,
-    }
-
-    impl Recorder {
-        fn add(&self, i: usize) -> *mut u64 {
-            self.seen.borrow_mut().push(i);
-            unsafe { self.base.add(i) }
+    /// The swaps of one round trip as the index loops before TODO 99 made them, in their order:
+    /// element pairs from the chunk's start, from each mode's definition.
+    fn index_swaps(mode: MirrorMode, w: usize, start: usize, end: usize) -> Vec<(usize, usize)> {
+        let (len, mut swaps) = (end - start, Vec::new());
+        match mode {
+            MirrorMode::Whole => swaps.extend((0..len / w).map(|i| (start + i * w, end - w - i * w))),
+            MirrorMode::Subblocks(n) => {
+                let sub = len / n as usize;
+                for i in 0..sub / w {
+                    swaps.extend((0..n as usize).map(|s| (start + s * sub + i * w, start + s * sub + sub - w - i * w)));
+                }
+            }
+            MirrorMode::Jump(j) => {
+                let step = (j as usize * 16).min(len / 4) + 16;
+                for pass in (0..step / 16).rev() {
+                    let (mut lo, mut hi) = (start + pass * 16, end - pass * 16 - 16);
+                    while lo < end {
+                        swaps.extend((0..16).step_by(w).map(|v| (lo + v, hi + v)));
+                        lo += step;
+                        hi = hi.wrapping_sub(step);
+                    }
+                }
+            }
         }
+        swaps
     }
 
-    struct Probe<'a> {
-        ptr: &'a Recorder,
-        chunk_start: usize,
-        chunk_end: usize,
+    /// TODO 99: a swap exchanges two vectors, at every width (a round trip would hide one that
+    /// didn't), and touches nothing else.
+    #[test]
+    fn a_mirror_swap_exchanges_its_two_vectors() {
+        let mut buf = vec![u64x8::splat(0); 6];
+        let base = buf.as_mut_ptr() as *mut u64;
+        for w in [1usize, 2, 4, 8] {
+            for i in 0..48 {
+                unsafe { *base.add(i) = i as u64 };
+            }
+            let (a, b) = unsafe { (base.add(8), base.add(32)) };
+            unsafe {
+                match w {
+                    1 => mirror_swap_pair!(u64, a, b),
+                    2 => mirror_swap_pair!(u64x2, a, b),
+                    4 => mirror_swap_pair!(u64x4, a, b),
+                    _ => mirror_swap_pair!(u64x8, a, b),
+                }
+            }
+            for i in 0..48 {
+                let want = match i {
+                    8..=15 if i - 8 < w => i + 24,
+                    32..=39 if i - 32 < w => i - 24,
+                    _ => i,
+                };
+                assert_eq!(unsafe { *base.add(i) }, want as u64, "{w} words: word {i}");
+            }
+        }
     }
 
     /// TODO 85: one test op of every mirror mode, at every width, visits each vector of the
     /// chunk in exactly two swaps, swaps it only with its mirror image (in its own subblock;
-    /// 128 B units for a jump), and leaves the chunk as it began.
+    /// 128 B units for a jump), and leaves the chunk as it began. TODO 99: the walked pointers swap
+    /// the pairs the index loops did, in their order.
     #[test]
     fn mirror_modes_swap_mirror_pairs_twice_and_round_trip() {
         let modes = [MirrorMode::Whole, MirrorMode::Subblocks(2), MirrorMode::Subblocks(4),
@@ -6636,26 +6932,34 @@ mod mirror_tests {
                     for i in 0..start + len + 512 {
                         unsafe { *base.add(i) = i as u64 };
                     }
-                    let rec = Recorder { base, seen: Default::default() };
-                    let ctx = Probe { ptr: &rec, chunk_start: start, chunk_end: start + len };
+                    // Each swap the walks make, by element, then made
+                    let seen = std::cell::RefCell::new(Vec::new());
+                    macro_rules! record_swap {
+                        ($t:ty, $a:expr, $b:expr) => {{
+                            let (a, b): (*mut u64, *mut u64) = ($a, $b);
+                            seen.borrow_mut().push((a.offset_from(base) as usize, b.offset_from(base) as usize));
+                            mirror_swap_pair!($t, a, b);
+                        }}
+                    }
+                    let chunk = MirrorChunk { ptr: base, start, end: start + len };
                     unsafe {
                         match w {
-                            1 => mirror_swap!(u64, 1, ctx, mode),
-                            2 => mirror_swap!(u64x2, 2, ctx, mode),
-                            4 => mirror_swap!(u64x4, 4, ctx, mode),
-                            _ => mirror_swap!(u64x8, 8, ctx, mode),
+                            1 => mirror_swap!(u64, 1, chunk, mode, record_swap),
+                            2 => mirror_swap!(u64x2, 2, chunk, mode, record_swap),
+                            4 => mirror_swap!(u64x4, 4, chunk, mode, record_swap),
+                            _ => mirror_swap!(u64x8, 8, chunk, mode, record_swap),
                         }
                     }
                     let what = format!("{mode} at {w} words, {pages} pages");
                     for i in 0..start + len + 512 {
                         assert_eq!(unsafe { *base.add(i) }, i as u64, "{what}: word {i} moved");
                     }
-                    let seen = rec.seen.into_inner();
-                    assert_eq!(seen.len(), 4 * len / w, "{what}: not two swaps per vector");
+                    let seen = seen.into_inner();
+                    assert_eq!(seen, index_swaps(mode, w, start, start + len), "{what}: not the index loops' swaps");
+                    assert_eq!(seen.len(), len / w, "{what}: not two swaps per vector");
                     let mut count = vec![0u8; len / w];
-                    for swap in seen.chunks(4) {
-                        let (a, b) = (swap[0] - start, swap[1] - start);
-                        assert_eq!((swap[2], swap[3]), (swap[0], swap[1]), "{what}: not a swap");
+                    for &(a, b) in &seen {
+                        let (a, b) = (a - start, b - start);
                         assert!(a % w == 0 && b % w == 0, "{what}: misaligned {a} {b}");
                         let mirrored = match mode {
                             MirrorMode::Whole => a + b == len - w,
