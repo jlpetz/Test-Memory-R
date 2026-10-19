@@ -7723,6 +7723,38 @@ unsafe fn fill_lines_tail(ptr: *mut u64, start: usize, end: usize, words: impl F
     fill_lines(ptr, start, end, words)
 }
 
+/// Checks the same lines four a step, from the same `lines` and `line`: the step's eight
+/// differences ORed together, then into one accumulator, whose lanes are `accumulate_line`'s four
+/// (words `k` and `k + 4` of each line into lane `k`), as `verify_lines` has them; ORing the step
+/// first leaves the accumulator one OR a step to wait on. Nonzero when a word differs.
+#[inline(always)]
+unsafe fn verify_lines_by_4(ptr: *const u64, start: usize, end: usize, mut lines: impl FnMut(u64x4) -> [u64x4; 8],
+                            line: impl FnMut(*const u64) -> [u64; LINE_WORDS]) -> u64 {
+    debug_assert!(start.is_multiple_of(LINE_WORDS) && end.is_multiple_of(LINE_WORDS), "whole lines: {start}..{end}");
+    let rest = start + (end - start) / (4 * LINE_WORDS) * (4 * LINE_WORDS);
+    let mut p = ptr.add(start);
+    let last = ptr.wrapping_add(rest);
+    let mut addrs = u64x4::splat(p as u64) + u64x4::from_array([0, 64, 128, 192]);
+    let step = u64x4::splat(4 * 64);
+    let mut acc = u64x4::splat(0);
+    while p < last {
+        let v = lines(addrs);
+        let d: [u64x4; 8] = std::array::from_fn(|k| p.add(4 * k).cast::<u64x4>().read_unaligned() ^ v[k]);
+        acc |= ((d[0] | d[1]) | (d[2] | d[3])) | ((d[4] | d[5]) | (d[6] | d[7]));
+        addrs += step;
+        p = p.wrapping_add(4 * LINE_WORDS);
+    }
+    let tail = if rest < end { verify_lines_tail(ptr, rest, end, line) } else { 0 };
+    acc.reduce_or() | tail
+}
+
+/// `verify_lines` for the last lines of a range, out of the hot function.
+#[cold]
+#[inline(never)]
+unsafe fn verify_lines_tail(ptr: *const u64, start: usize, end: usize, words: impl FnMut(*const u64) -> [u64; LINE_WORDS]) -> u64 {
+    verify_lines(ptr, start, end, words)
+}
+
 /// The splitmix64 finalizer of each lane: `pattern_gen::pattern_mode13` of an index and seed
 /// whose sum the lane holds. The constants are `pattern_mode13`'s; the unit tests hold the two
 /// equal.
@@ -7782,6 +7814,24 @@ fn splat_lines4(v: u64x4, inv: u64x4) -> [u64x4; 8] {
     [l0, l0, l1, l1, l2, l2, l3, l3]
 }
 
+/// Mode 30's four lines at the addresses in `addrs` at a beat of `BITS` bits, 64, 32 or 16, whose
+/// lines are one word and its inverse (`pattern_gen::bus_flip_line`), as `fill_lines_by_4` takes
+/// them.
+#[inline(always)]
+fn mode30_lines4<const BITS: u32>(addrs: u64x4, key: u64x4) -> [u64x4; 8] {
+    let a = mode30_values4(addrs, key);
+    match BITS {
+        64 => splat_lines4(a, u64x4::from_array([0, !0, 0, !0])),
+        32 => splat_lines4((a & u64x4::splat(0xFFFF_FFFF)) | (!a << 32), u64x4::splat(0)),
+        16 => {
+            let half = u64x4::splat(0xFFFF);
+            let pair = (a & half) | ((!a & half) << 16);
+            splat_lines4(pair | (pair << 32), u64x4::splat(0))
+        }
+        _ => unreachable!("mode 30 has no closed form at {BITS} bits"),
+    }
+}
+
 /// Mode 20's fill of one chunk (`Mode20::fill`'s lines), four a step.
 #[inline(never)]
 unsafe fn mode20_fill_chunk(mode: Mode20, ptr: *mut u64, start: usize, end: usize) {
@@ -7792,10 +7842,11 @@ unsafe fn mode20_fill_chunk(mode: Mode20, ptr: *mut u64, start: usize, end: usiz
     })
 }
 
-/// Mode 20's check of one chunk: `Mode20::verify`'s, its rescan on a hit.
+/// Mode 20's check of one chunk: `Mode20::verify`'s, four lines a step, its rescan on a hit.
 #[inline(never)]
 unsafe fn mode20_check_chunk(mode: Mode20, ptr: *const u64, start: usize, end: usize, test_name: &str) -> u64 {
-    let seen = verify_lines(ptr, start, end, |line| {
+    let key = u64x4::splat(mode.key);
+    let seen = verify_lines_by_4(ptr, start, end, |addrs| mode20_lines4(addrs, key), |line| {
         let (seed, step) = pattern_gen::mode20_line(line as usize, mode.key);
         pattern_gen::line_words(seed, step)
     });
@@ -7813,33 +7864,33 @@ unsafe fn mode30_fill_chunk(mode: Mode30, ptr: *mut u64, start: usize, end: usiz
     use pattern_gen::BusBeat;
     let (key, k) = (u64x4::splat(mode.key), mode.key);
     match mode.beat {
-        BusBeat::Bits64 => fill_lines_by_4(ptr, start, end,
-            |addrs| splat_lines4(mode30_values4(addrs, key), u64x4::from_array([0, !0, 0, !0])),
-            |line| pattern_gen::mode30_line(line as usize, k, BusBeat::Bits64)),
-        BusBeat::Bits32 => fill_lines_by_4(ptr, start, end,
-            |addrs| {
-                let a = mode30_values4(addrs, key);
-                splat_lines4((a & u64x4::splat(0xFFFF_FFFF)) | (!a << 32), u64x4::splat(0))
-            },
-            |line| pattern_gen::mode30_line(line as usize, k, BusBeat::Bits32)),
-        BusBeat::Bits16 => fill_lines_by_4(ptr, start, end,
-            |addrs| {
-                let (a, half) = (mode30_values4(addrs, key), u64x4::splat(0xFFFF));
-                let pair = (a & half) | ((!a & half) << 16);
-                splat_lines4(pair | (pair << 32), u64x4::splat(0))
-            },
-            |line| pattern_gen::mode30_line(line as usize, k, BusBeat::Bits16)),
+        BusBeat::Bits64 => fill_lines_by_4(ptr, start, end, |addrs| mode30_lines4::<64>(addrs, key),
+                                           |line| pattern_gen::mode30_line(line as usize, k, BusBeat::Bits64)),
+        BusBeat::Bits32 => fill_lines_by_4(ptr, start, end, |addrs| mode30_lines4::<32>(addrs, key),
+                                           |line| pattern_gen::mode30_line(line as usize, k, BusBeat::Bits32)),
+        BusBeat::Bits16 => fill_lines_by_4(ptr, start, end, |addrs| mode30_lines4::<16>(addrs, key),
+                                           |line| pattern_gen::mode30_line(line as usize, k, BusBeat::Bits16)),
         BusBeat::Bits12 => fill_lines(ptr, start, end, |line| pattern_gen::mode30_line(line as usize, k, BusBeat::Bits12)),
         BusBeat::Bits24 => fill_lines(ptr, start, end, |line| pattern_gen::mode30_line(line as usize, k, BusBeat::Bits24)),
     }
 }
 
-/// Mode 30's check of one chunk: `Mode30::verify`'s, its rescan on a hit.
+/// Mode 30's check of one chunk: `Mode30::verify`'s, its rescan on a hit; four lines a step where
+/// the fill goes four a step.
 #[inline(never)]
 unsafe fn mode30_check_chunk(mode: Mode30, ptr: *const u64, start: usize, end: usize, test_name: &str) -> u64 {
-    let seen = with_mode30_line!(mode, |expected| {
-        verify_lines(ptr, start, end, expected)
-    });
+    use pattern_gen::BusBeat;
+    let (key, k) = (u64x4::splat(mode.key), mode.key);
+    let seen = match mode.beat {
+        BusBeat::Bits64 => verify_lines_by_4(ptr, start, end, |addrs| mode30_lines4::<64>(addrs, key),
+                                             |line| pattern_gen::mode30_line(line as usize, k, BusBeat::Bits64)),
+        BusBeat::Bits32 => verify_lines_by_4(ptr, start, end, |addrs| mode30_lines4::<32>(addrs, key),
+                                             |line| pattern_gen::mode30_line(line as usize, k, BusBeat::Bits32)),
+        BusBeat::Bits16 => verify_lines_by_4(ptr, start, end, |addrs| mode30_lines4::<16>(addrs, key),
+                                             |line| pattern_gen::mode30_line(line as usize, k, BusBeat::Bits16)),
+        BusBeat::Bits12 => verify_lines(ptr, start, end, |line| pattern_gen::mode30_line(line as usize, k, BusBeat::Bits12)),
+        BusBeat::Bits24 => verify_lines(ptr, start, end, |line| pattern_gen::mode30_line(line as usize, k, BusBeat::Bits24)),
+    };
     if seen == 0 {
         return 0;
     }
@@ -8280,8 +8331,8 @@ mod bench_move_tests {
     /// TODO 99: the line Bench kernels (modes 20 and 30 at every beat, and mode 2 out of line)
     /// write each line its mode's words, `pattern_gen`'s line by line, and nothing else, in whole
     /// steps of four lines, with a tail of one to three, and in ranges shorter than a step; read
-    /// clean; and see a bad word in each lane of the accumulator, in either half of a line, and in
-    /// the last line, which the check counts once.
+    /// clean; and see a bad word in each lane of the accumulator, in either half of each line of a
+    /// step, and in the last line, which the check counts once.
     #[test]
     fn bench_line_kernels_write_their_lines_and_see_every_bad_word() {
         let total = 4 * PAGE_WORDS;
@@ -8297,7 +8348,8 @@ mod bench_move_tests {
                 assert_eq!(*p.add(i), expected, "{name}: word {i} of {start}..{end}");
             }
             assert_eq!(check(p, start, end), 0, "{name}: {start}..{end} clean");
-            let bad = (start..start + LINE_WORDS).chain(end - LINE_WORDS..end).chain((start..end).step_by(61));
+            // Every word of the first four lines (each vector of a four-line step), the last line's, a spread
+            let bad = (start..(start + 4 * LINE_WORDS).min(end)).chain(end - LINE_WORDS..end).chain((start..end).step_by(61));
             for word in bad {
                 *p.add(word) ^= 1 << 40;
                 assert_eq!(check(p, start, end), 1, "{name}: {start}..{end}, word {word} counted once");
