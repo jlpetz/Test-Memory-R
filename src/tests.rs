@@ -2133,6 +2133,77 @@ struct RandomExtent {
     ids: u64,
 }
 
+/// Words a step of Mem-Random's sweep check: four vectors of four, one per accumulator.
+const RANDOM_SWEEP_STEP: usize = 16;
+
+impl RandomExtent {
+    /// The RNG's next step and the index it picks: `rng * len >> 64`, uniform over any length, one
+    /// multiply off the RNG's dependency chain (TODO 76; the old `& (len - 1)` needed a power of
+    /// two). `random_replay` takes the same steps.
+    #[inline(always)]
+    fn pick(self, rng: &mut u64) -> usize {
+        *rng ^= *rng << 13;
+        *rng ^= *rng >> 17;
+        *rng ^= *rng << 5;
+        ((*rng as u128 * self.len as u128) >> 64) as usize
+    }
+
+    /// `n` random reads from RNG state `rng`, each word checked against its id. Returns the
+    /// differences ORed, four reads a step into four accumulators, and the RNG's state after. A
+    /// function of its own so its loop keeps every value in registers (TODO 99), called once a
+    /// batch. The index is random, so each read is the base and an index, not a walked pointer.
+    #[inline(never)]
+    unsafe fn reads(self, mut rng: u64, n: usize) -> (u64, u64) {
+        let RandomExtent { base, ids, .. } = self;
+        let mut acc = [0u64; 4];
+        for _ in 0..n / 4 {
+            for a in acc.iter_mut() {
+                let idx = self.pick(&mut rng);
+                *a |= *base.add(idx) ^ (ids | idx as u64);
+            }
+        }
+        for _ in 0..n % 4 {
+            let idx = self.pick(&mut rng);
+            acc[0] |= *base.add(idx) ^ (ids | idx as u64);
+        }
+        ((acc[0] | acc[1]) | (acc[2] | acc[3]), rng)
+    }
+
+    /// The final sweep's check of words `[from, to)`, in order: 16 words a step as four `u64x4`
+    /// (the AVX2 baseline's width, which the compiler gave it) into four accumulators, on a walked
+    /// pointer with the indices carried, then a word at a time. Returns the differences ORed. A
+    /// function of its own (TODO 99): inlined, the compiler made five loops of it, reloading the
+    /// lanes' offsets from the stack or shuffling the words into the accumulators' order.
+    #[inline(never)]
+    unsafe fn verify(self, from: usize, to: usize) -> u64 {
+        let RandomExtent { base, ids, .. } = self;
+        // The words past the whole steps are volatile, so they stay a word at a time: as a plain
+        // loop the compiler folded it into masked vector loads (a sweep's pieces are whole steps)
+        let (steps, rest) = ((to - from) / RANDOM_SWEEP_STEP, (to - from) % RANDOM_SWEEP_STEP);
+        let ids_v = u64x4::splat(ids);
+        let (q1, q2, q3, step) = (u64x4::splat(4), u64x4::splat(8), u64x4::splat(12), u64x4::splat(RANDOM_SWEEP_STEP as u64));
+        let mut idx = u64x4::splat(from as u64) + u64x4::from_array([0, 1, 2, 3]);
+        let mut acc = [u64x4::splat(0); 4];
+        let mut p = base.add(from);
+        for _ in 0..steps {
+            let v = p as *const u64x4;
+            let idxs = [idx, idx + q1, idx + q2, idx + q3];
+            for (k, a) in acc.iter_mut().enumerate() {
+                *a |= v.add(k).read_unaligned() ^ (ids_v | idxs[k]);
+            }
+            idx += step;
+            p = p.wrapping_add(RANDOM_SWEEP_STEP);
+        }
+        let mut tail = 0u64;
+        let whole = from + steps * RANDOM_SWEEP_STEP;
+        for i in whole..whole + rest {
+            tail |= p.read_volatile() ^ (ids | i as u64);
+            p = p.wrapping_add(1);
+        }
+        ((acc[0] | acc[1]) | (acc[2] | acc[3])).reduce_or() | tail
+    }
+}
+
 /// Cold path of Mem-Random: rerun one chunk's reads from its saved RNG state, counting and logging
 /// each mismatch. A fault that was gone by the reread still counts once. Random reads can land on
 /// a word twice: a bad word counts once, and its repeat reads are counted in the record.
@@ -2140,7 +2211,7 @@ struct RandomExtent {
 #[inline(never)]
 unsafe fn random_replay(extent: RandomExtent, mut rng_state: u64, iterations: std::ops::Range<usize>,
                         seq: u32, test_name: &str, seen: u64) -> u64 {
-    let RandomExtent { base, len, ids } = extent;
+    let RandomExtent { base, ids, .. } = extent;
     let (first, last) = (iterations.start, iterations.end);
     if !crate::pattern::rescan_enabled() {
         return unlocalised(found_by(test_name), format_args!("in rng_seq {seq}, iterations {first}..{last}"), seen);
@@ -2150,10 +2221,7 @@ unsafe fn random_replay(extent: RandomExtent, mut rng_state: u64, iterations: st
     let mut found = std::collections::HashSet::new();
     let mut repeats = 0u64;
     for _ in iterations {
-        rng_state ^= rng_state << 13;
-        rng_state ^= rng_state >> 17;
-        rng_state ^= rng_state << 5;
-        let idx = ((rng_state as u128 * len as u128) >> 64) as usize;
+        let idx = extent.pick(&mut rng_state);
         if found.contains(&idx) {
             repeats += 1;
             continue;
@@ -2181,7 +2249,10 @@ unsafe fn random_sweep(extent: RandomExtent, piece: usize, test_name: &str, mut 
     let mut at = 0;
     while at < len {
         let end = (at + piece).min(len);
-        errors += verify_words_in(base, at, end, test_name, "final sweep", |i| ids | i as u64);
+        let seen = extent.verify(at, end);
+        if seen != 0 {
+            errors += rescan_words_in(base, at, end, test_name, seen, "final sweep", |i| ids | i as u64);
+        }
         at = end;
         if stop(errors) {
             break;
@@ -2257,24 +2328,15 @@ pub unsafe fn random_torture_multi(
                 .wrapping_add(cycle as u64)
                 .wrapping_add((seq as u64).wrapping_mul(0x8765432187654321u64));
 
-            // Random read verification for this sequence - chunked for responsive shutdown.
-            // The index is `rng * len >> 64`: uniform over any length, one multiply off the
-            // RNG's dependency chain (TODO 76; the old `& (len - 1)` needed a power of two).
-            // Mismatches OR into one accumulator; a nonzero one replays the chunk to count
-            // and log each bad word, so the loop has no branch and no logging.
+            // Random read verification for this sequence - chunked for responsive shutdown
+            // (`RandomExtent::pick` picks each index). Mismatches OR into the accumulators; a
+            // nonzero one replays the chunk to count and log each bad word, so the loop has no
+            // branch and no logging.
             for chunk_start in (0..iterations_per_seq).step_by(chunk_size_operations) {
                 let chunk_end = (chunk_start + chunk_size_operations).min(iterations_per_seq);
                 let chunk_rng = rng_state;
-                let mut acc = 0u64;
-
-                for _ in chunk_start..chunk_end {
-                    rng_state ^= rng_state << 13;
-                    rng_state ^= rng_state >> 17;
-                    rng_state ^= rng_state << 5;
-
-                    let idx = ((rng_state as u128 * len as u128) >> 64) as usize;
-                    acc |= *base.add(idx) ^ (ids | idx as u64);
-                }
+                let acc;
+                (acc, rng_state) = reads.reads(rng_state, chunk_end - chunk_start);
 
                 if acc != 0 {
                     cycle_errors += random_replay(reads, chunk_rng, chunk_start..chunk_end, seq, test_name, acc);
@@ -2682,43 +2744,179 @@ pub unsafe fn block_move_multi(
 // Moving inversions (TODO 97, TODO 19's order)
 // ================================================================================================
 
-/// One read-then-write pass of moving inversions over words `[start, end)`, going up (`UP`) or
-/// down: each word is checked against `want(i)` and then written `write(i)`. Returns the
-/// differences ORed, in 4 accumulators as every verify keeps them.
+/// `pattern::ident_word`'s `x` for word id `id` under `key`: the word is `ident_mix(x)`, and word
+/// id `id + n`'s `x` is `x + n * G`, so a walk carries it and adds G a word instead of multiplying.
 #[inline(always)]
-unsafe fn read_then_write<const UP: bool>(ptr: *mut u64, start: usize, end: usize, want: impl Fn(usize) -> u64,
-                                          write: impl Fn(usize) -> u64) -> u64 {
-    let mut acc = [0u64; 4];
-    let whole = start + (end - start) / 4 * 4;
-    if UP {
-        let mut i = start;
-        while i < whole {
-            for (k, a) in acc.iter_mut().enumerate() {
-                *a |= *ptr.add(i + k) ^ want(i + k);
-                *ptr.add(i + k) = write(i + k);
-            }
-            i += 4;
+fn ident_x(id: u64, key: u64) -> u64 {
+    id.wrapping_mul(crate::pattern::G).wrapping_add(key)
+}
+
+/// `pattern::ident_word` from its `x`.
+#[inline(always)]
+fn ident_mix(x: u64) -> u64 {
+    x ^ (x >> 32)
+}
+
+/// `ident_mix` on every lane.
+#[inline(always)]
+fn ident_mix_v(x: u64x4) -> u64x4 {
+    x ^ (x >> u64x4::splat(32))
+}
+
+/// `n` steps of `ident_x`'s walk, `n * G`, in every lane.
+#[inline(always)]
+fn ident_steps(n: usize) -> u64x4 {
+    u64x4::splat((n as u64).wrapping_mul(crate::pattern::G))
+}
+
+/// The `x`s of word ids `id .. id + 4` under `key`, a lane each.
+#[inline(always)]
+fn ident_x_v(id: u64, key: u64) -> u64x4 {
+    let g = crate::pattern::G;
+    u64x4::splat(ident_x(id, key)) + u64x4::from_array([0, g, g.wrapping_mul(2), g.wrapping_mul(3)])
+}
+
+/// Words a Mem-MovingInv step covers: four vectors of four, one per accumulator.
+const MOVING_INV_STEP: usize = 16;
+
+/// One Mem-MovingInv chunk, words `[start, end)` of `base`: word `i`'s P is `ident`'s word of its
+/// id `ids + i` under `key`. Each pass is a function of its own, so its loop keeps every value in
+/// registers (TODO 99): in the test's function each word reloaded `ids` and `key` through the
+/// closures' references and multiplied by G. Here each pass walks a pointer, 16 words a step as
+/// four `u64x4` (the AVX2 baseline's width, which the compiler gave the fill and the verify), with
+/// `ident_x` carried, and a word at a time for the rest. A call a pass.
+#[derive(Clone, Copy)]
+struct MovingInvChunk {
+    base: *mut u64,
+    start: usize,
+    end: usize,
+    ids: u64,
+    key: u64,
+}
+
+impl MovingInvChunk {
+    /// The chunk's whole steps, and the words past them, which go a word at a time. Those are
+    /// volatile so they stay that: as plain loops the compiler folded them into masked vector
+    /// loads and stores. (A chunk is whole 4 KiB granules, so a test's never has them.)
+    #[inline(always)]
+    fn steps(self) -> (usize, usize) {
+        let len = self.end - self.start;
+        (len / MOVING_INV_STEP, len % MOVING_INV_STEP)
+    }
+
+    /// Writes P over the chunk, going up.
+    #[inline(never)]
+    unsafe fn fill(self) {
+        let MovingInvChunk { base, start, ids, key, .. } = self;
+        let (steps, rest) = self.steps();
+        let (q1, q2, q3, step) = (ident_steps(4), ident_steps(8), ident_steps(12), ident_steps(MOVING_INV_STEP));
+        let mut x = ident_x_v(ids.wrapping_add(start as u64), key);
+        let mut p = base.add(start);
+        for _ in 0..steps {
+            let v = p as *mut u64x4;
+            v.write_unaligned(ident_mix_v(x));
+            v.add(1).write_unaligned(ident_mix_v(x + q1));
+            v.add(2).write_unaligned(ident_mix_v(x + q2));
+            v.add(3).write_unaligned(ident_mix_v(x + q3));
+            x += step;
+            p = p.wrapping_add(MOVING_INV_STEP);
         }
-        for i in whole..end {
-            acc[0] |= *ptr.add(i) ^ want(i);
-            *ptr.add(i) = write(i);
-        }
-    } else {
-        for i in (whole..end).rev() {
-            acc[0] |= *ptr.add(i) ^ want(i);
-            *ptr.add(i) = write(i);
-        }
-        let mut i = whole;
-        while i > start {
-            i -= 4;
-            for (k, a) in acc.iter_mut().enumerate() {
-                let at = i + 3 - k;
-                *a |= *ptr.add(at) ^ want(at);
-                *ptr.add(at) = write(at);
-            }
+        let mut x = ident_x(ids.wrapping_add((start + steps * MOVING_INV_STEP) as u64), key);
+        for _ in 0..rest {
+            p.write_volatile(ident_mix(x));
+            x = x.wrapping_add(crate::pattern::G);
+            p = p.wrapping_add(1);
         }
     }
-    (acc[0] | acc[1]) | (acc[2] | acc[3])
+
+    /// A read-then-write pass: going up (`UP`), each word checked as P and written ~P; going down,
+    /// checked as ~P and written P. Down starts with the words past the whole steps, from the top,
+    /// then takes the steps from the top, their vectors from the top. Returns the differences ORed,
+    /// in four accumulators as every verify keeps them.
+    #[inline(never)]
+    unsafe fn pass<const UP: bool>(self) -> u64 {
+        let MovingInvChunk { base, start, end, ids, key } = self;
+        let (steps, rest) = self.steps();
+        let whole = start + steps * MOVING_INV_STEP;
+        let (q1, q2, q3, step) = (ident_steps(4), ident_steps(8), ident_steps(12), ident_steps(MOVING_INV_STEP));
+        let ones = u64x4::splat(!0);
+        let mut acc = [u64x4::splat(0); 4];
+        let mut tail = 0u64;
+        if UP {
+            let mut x = ident_x_v(ids.wrapping_add(start as u64), key);
+            let mut p = base.add(start);
+            for _ in 0..steps {
+                let v = p as *mut u64x4;
+                let xs = [x, x + q1, x + q2, x + q3];
+                for (k, a) in acc.iter_mut().enumerate() {
+                    let e = ident_mix_v(xs[k]);
+                    *a |= v.add(k).read_unaligned() ^ e;
+                    v.add(k).write_unaligned(e ^ ones);
+                }
+                x += step;
+                p = p.wrapping_add(MOVING_INV_STEP);
+            }
+            let mut x = ident_x(ids.wrapping_add(whole as u64), key);
+            for _ in 0..rest {
+                let e = ident_mix(x);
+                tail |= p.read_volatile() ^ e;
+                p.write_volatile(!e);
+                x = x.wrapping_add(crate::pattern::G);
+                p = p.wrapping_add(1);
+            }
+        } else {
+            let mut x = ident_x(ids.wrapping_add(end as u64), key);
+            let mut p = base.wrapping_add(end);
+            for _ in 0..rest {
+                x = x.wrapping_sub(crate::pattern::G);
+                p = p.wrapping_sub(1);
+                let e = ident_mix(x);
+                tail |= p.read_volatile() ^ !e;
+                p.write_volatile(e);
+            }
+            let mut x = ident_x_v(ids.wrapping_add(whole as u64), key);
+            for _ in 0..steps {
+                x -= step;
+                p = p.wrapping_sub(MOVING_INV_STEP);
+                let v = p as *mut u64x4;
+                let xs = [x, x + q1, x + q2, x + q3];
+                for (k, a) in acc.iter_mut().enumerate().rev() {
+                    let e = ident_mix_v(xs[k]);
+                    *a |= v.add(k).read_unaligned() ^ (e ^ ones);
+                    v.add(k).write_unaligned(e);
+                }
+            }
+        }
+        ((acc[0] | acc[1]) | (acc[2] | acc[3])).reduce_or() | tail
+    }
+
+    /// The last pass: each word checked as P, going up. Returns the differences ORed.
+    #[inline(never)]
+    unsafe fn verify(self) -> u64 {
+        let MovingInvChunk { base, start, ids, key, .. } = self;
+        let (steps, rest) = self.steps();
+        let (q1, q2, q3, step) = (ident_steps(4), ident_steps(8), ident_steps(12), ident_steps(MOVING_INV_STEP));
+        let mut acc = [u64x4::splat(0); 4];
+        let mut x = ident_x_v(ids.wrapping_add(start as u64), key);
+        let mut p = base.add(start) as *const u64;
+        for _ in 0..steps {
+            let v = p as *const u64x4;
+            let xs = [x, x + q1, x + q2, x + q3];
+            for (k, a) in acc.iter_mut().enumerate() {
+                *a |= v.add(k).read_unaligned() ^ ident_mix_v(xs[k]);
+            }
+            x += step;
+            p = p.wrapping_add(MOVING_INV_STEP);
+        }
+        let mut tail = 0u64;
+        let mut x = ident_x(ids.wrapping_add((start + steps * MOVING_INV_STEP) as u64), key);
+        for _ in 0..rest {
+            tail |= p.read_volatile() ^ ident_mix(x);
+            x = x.wrapping_add(crate::pattern::G);
+            p = p.wrapping_add(1);
+        }
+        ((acc[0] | acc[1]) | (acc[2] | acc[3])).reduce_or() | tail
+    }
 }
 
 /// The cold path of a read-then-write pass's failed check (Mem-Sequence's `RW`, Mem-MovingInv's
@@ -2803,10 +3001,9 @@ pub unsafe fn moving_inversions_multi(
             runner.check_seal(spread.start(k), spread.chunk());
             halt_here!(runner, cycle_errors, ops(&runner));
 
-            for i in start..end {
-                *base.add(i) = p(i);
-            }
-            let seen = read_then_write::<true>(base, start, end, p, not_p);
+            let chunk = MovingInvChunk { base, start, end, ids, key };
+            chunk.fill();
+            let seen = chunk.pass::<true>();
             if seen != 0 {
                 let (errors, rewrote) = rescan_read_write(base, start..end, test_name, seen, "up: P read, ~P written", &p, &not_p);
                 cycle_errors += errors;
@@ -2815,7 +3012,7 @@ pub unsafe fn moving_inversions_multi(
                     (start..end).for_each(|i| *base.add(i) = not_p(i));
                 }
             }
-            let seen = read_then_write::<false>(base, start, end, not_p, p);
+            let seen = chunk.pass::<false>();
             if seen != 0 {
                 let (errors, rewrote) = rescan_read_write(base, start..end, test_name, seen, "down: ~P read, P written", &not_p, &p);
                 cycle_errors += errors;
@@ -2824,7 +3021,10 @@ pub unsafe fn moving_inversions_multi(
                     (start..end).for_each(|i| *base.add(i) = p(i));
                 }
             }
-            cycle_errors += verify_words_in(base, start, end, test_name, "P read", p);
+            let seen = chunk.verify();
+            if seen != 0 {
+                cycle_errors += rescan_words_in(base, start, end, test_name, seen, "P read", p);
+            }
 
             // Count the chunk when it is done; overlaps count each time
             runner.add_bytes(spread.chunk() * PASSES);
@@ -2876,6 +3076,122 @@ fn modulo_lines(start: usize, end: usize, offset: usize, mut victim: impl FnMut(
     }
 }
 
+/// Words from one Mem-ModuloX victim to the next.
+const MODULO_APART: usize = MODULO_X * LINE_WORDS;
+
+/// One Mem-ModuloX chunk, lines `[start, end)` of `base`: the victims and aggressors of
+/// `modulo_lines`, word `i`'s P `ident`'s word of its id `ids + i` under `key`. The victims'
+/// write, the aggressors' pass and the victims' check are functions of their own, so their loops
+/// keep every value in registers (TODO 99): in the test's function each aggressor store redid its
+/// run's bounds, and the victims' loops reloaded G and their offsets. Each walks a pointer, a line
+/// as two `u64x4` (the AVX2 baseline's width, which the compiler gave them), with `ident_x`
+/// carried. A call a pass.
+#[derive(Clone, Copy)]
+struct ModuloChunk {
+    base: *mut u64,
+    start: usize,
+    end: usize,
+    offset: usize,
+    ids: u64,
+    key: u64,
+}
+
+impl ModuloChunk {
+    /// The first victim line at or after `start`, and the victims from it to `end`.
+    #[inline(always)]
+    fn victims(self) -> (usize, usize) {
+        let first = self.start + (self.offset + MODULO_X - self.start % MODULO_X) % MODULO_X;
+        (first, self.end.saturating_sub(first).div_ceil(MODULO_X))
+    }
+
+    /// The `x`s of line `line`'s first four words.
+    #[inline(always)]
+    fn line_x(self, line: usize) -> u64x4 {
+        ident_x_v(self.ids.wrapping_add((line * LINE_WORDS) as u64), self.key)
+    }
+
+    /// Writes P over each victim line, going up: the first alone if their count is odd, then two a
+    /// step.
+    #[inline(never)]
+    unsafe fn write_victims(self) {
+        let (first, victims) = self.victims();
+        let (half, apart, step) = (ident_steps(4), ident_steps(MODULO_APART), ident_steps(2 * MODULO_APART));
+        let mut x = self.line_x(first);
+        let mut p = self.base.wrapping_add(first * LINE_WORDS);
+        if victims % 2 == 1 {
+            let v = p as *mut u64x4;
+            v.write_unaligned(ident_mix_v(x));
+            v.add(1).write_unaligned(ident_mix_v(x + half));
+            x += apart;
+            p = p.wrapping_add(MODULO_APART);
+        }
+        for _ in 0..victims / 2 {
+            let (v, w) = (p as *mut u64x4, p.add(MODULO_APART) as *mut u64x4);
+            v.write_unaligned(ident_mix_v(x));
+            v.add(1).write_unaligned(ident_mix_v(x + half));
+            w.write_unaligned(ident_mix_v(x + apart));
+            w.add(1).write_unaligned(ident_mix_v(x + apart + half));
+            x += step;
+            p = p.wrapping_add(2 * MODULO_APART);
+        }
+    }
+
+    /// One aggressor pass: ~P over every other line, going up, a run of lines from each victim to
+    /// the next, in `modulo_lines`'s order.
+    #[inline(never)]
+    unsafe fn aggress(self) {
+        let ModuloChunk { base, start, end, .. } = self;
+        let (half, line) = (ident_steps(4), ident_steps(LINE_WORDS));
+        let ones = u64x4::splat(!0);
+        let mut x = self.line_x(start);
+        let mut p = base.wrapping_add(start * LINE_WORDS);
+        let (mut at, mut victim) = (start, self.victims().0);
+        while at < end {
+            let run = victim.min(end) - at;
+            for _ in 0..run {
+                let v = p as *mut u64x4;
+                v.write_unaligned(ident_mix_v(x) ^ ones);
+                v.add(1).write_unaligned(ident_mix_v(x + half) ^ ones);
+                x += line;
+                p = p.wrapping_add(LINE_WORDS);
+            }
+            // Over the victim
+            x += line;
+            p = p.wrapping_add(LINE_WORDS);
+            at += run + 1;
+            victim += MODULO_X;
+        }
+    }
+
+    /// Checks each victim line for P, going up: the first alone if their count is odd, then two
+    /// a step, a vector each into the four accumulators. Returns the differences ORed.
+    #[inline(never)]
+    unsafe fn verify_victims(self) -> u64 {
+        let (first, victims) = self.victims();
+        let (half, apart, step) = (ident_steps(4), ident_steps(MODULO_APART), ident_steps(2 * MODULO_APART));
+        let mut acc = [u64x4::splat(0); 4];
+        let mut x = self.line_x(first);
+        let mut p = self.base.wrapping_add(first * LINE_WORDS) as *const u64;
+        if victims % 2 == 1 {
+            let v = p as *const u64x4;
+            acc[0] |= v.read_unaligned() ^ ident_mix_v(x);
+            acc[1] |= v.add(1).read_unaligned() ^ ident_mix_v(x + half);
+            x += apart;
+            p = p.wrapping_add(MODULO_APART);
+        }
+        for _ in 0..victims / 2 {
+            let (v, w) = (p as *const u64x4, p.add(MODULO_APART) as *const u64x4);
+            acc[0] |= v.read_unaligned() ^ ident_mix_v(x);
+            acc[1] |= v.add(1).read_unaligned() ^ ident_mix_v(x + half);
+            acc[2] |= w.read_unaligned() ^ ident_mix_v(x + apart);
+            acc[3] |= w.add(1).read_unaligned() ^ ident_mix_v(x + apart + half);
+            x += step;
+            p = p.wrapping_add(2 * MODULO_APART);
+        }
+        ((acc[0] | acc[1]) | (acc[2] | acc[3])).reduce_or()
+    }
+}
+
 /// Mem-ModuloX: memtest86's modulo-20, protected victims. In each chunk one line in every
 /// `MODULO_X` is a victim: it is written with P, then every other line is written with ~P,
 /// `MODULO_PASSES` times over the chunk, then the victims are read. So a victim holds still while
@@ -2917,26 +3233,12 @@ pub unsafe fn modulo_x_multi(
             runner.check_seal(spread.start(k), spread.chunk());
             halt_here!(runner, cycle_errors, ops(&runner));
 
-            let line = |l: usize| base.add(l * LINE_WORDS);
-            modulo_lines(start, end, offset, |v| {
-                for j in 0..LINE_WORDS {
-                    *line(v).add(j) = p(v * LINE_WORDS + j);
-                }
-            }, |_| {});
+            let chunk = ModuloChunk { base, start, end, offset, ids, key };
+            chunk.write_victims();
             for _ in 0..MODULO_PASSES {
-                modulo_lines(start, end, offset, |_| {}, |lines| {
-                    for i in lines.start * LINE_WORDS..lines.end * LINE_WORDS {
-                        *base.add(i) = !p(i);
-                    }
-                });
+                chunk.aggress();
             }
-            let mut acc = [0u64; 4];
-            modulo_lines(start, end, offset, |v| {
-                for j in 0..LINE_WORDS {
-                    acc[j % 4] |= *line(v).add(j) ^ p(v * LINE_WORDS + j);
-                }
-            }, |_| {});
-            let seen = (acc[0] | acc[1]) | (acc[2] | acc[3]);
+            let seen = chunk.verify_victims();
             if seen != 0 {
                 cycle_errors += if crate::pattern::rescan_enabled() {
                     let mut scan = Rescan::for_test(base, test_name).seen(seen);
@@ -6420,27 +6722,42 @@ mod random_replay_tests {
         assert!(bits.test.is_empty() && bits.seal.detail() == "9: 1 / 0", "{bits:?}");
     }
 
-    /// Moving inversions' passes visit every word once, up in order and down in order, reading
-    /// each before writing it, and find a word that held the wrong value (TODO 97).
+    /// TODO 99 (and TODO 97): Mem-MovingInv's passes over a chunk write `ident`'s word of each
+    /// word's id (P, then ~P going up, then P going down) and nothing outside the chunk, read
+    /// clean, and see a bad word wherever it is: in each lane of each accumulator and in the words
+    /// past the whole steps, going up and going down.
     #[test]
-    fn moving_inversions_passes_go_up_and_down() {
-        for len in [0usize, 3, 4, 13, 64] {
-            let mut mem = vec![0u64; len];
-            let order = std::cell::RefCell::new(Vec::new());
-            let read = |i: usize| { order.borrow_mut().push(i); 0 };
-            let seen = unsafe { super::read_then_write::<true>(mem.as_mut_ptr(), 0, len, read, |i| i as u64 + 1) };
-            assert_eq!(seen, 0);
-            assert_eq!(*order.borrow(), (0..len).collect::<Vec<_>>(), "up, {len} words");
-            assert_eq!(mem, (1..=len as u64).collect::<Vec<_>>());
-            order.borrow_mut().clear();
-            let seen = unsafe { super::read_then_write::<false>(mem.as_mut_ptr(), 0, len, |i| { order.borrow_mut().push(i); i as u64 + 1 }, |_| 7) };
-            assert_eq!(seen, 0);
-            assert_eq!(*order.borrow(), (0..len).rev().collect::<Vec<_>>(), "down, {len} words");
-            assert!(mem.iter().all(|&w| w == 7));
+    fn moving_inversions_passes_write_their_images_and_see_every_bad_word() {
+        const UNTOUCHED: u64 = 0x0BAD_F00D_DEAD_BEEF;
+        let (ids, key) = (crate::pattern::word_base(3), 0x1234_5678_9ABC_DEF1u64);
+        let p = |i: usize| crate::pattern::ident_word(ids + i as u64, key);
+        // Steps and the rest, steps alone, the rest alone, nothing
+        for (start, len) in [(0usize, 16 * 5 + 7), (37, 16 * 3), (3, 5), (8, 0)] {
+            let mut mem = vec![UNTOUCHED; start + len + 8];
+            let chunk = super::MovingInvChunk { base: mem.as_mut_ptr(), start, end: start + len, ids, key };
+            let image = |mem: &[u64], inverse: bool| mem.iter().enumerate().all(|(i, &w)| w == if (start..start + len).contains(&i) {
+                if inverse { !p(i) } else { p(i) }
+            } else { UNTOUCHED });
+            unsafe {
+                chunk.fill();
+                assert!(image(&mem, false), "{start}+{len}: the fill wrote P");
+                assert_eq!(chunk.verify(), 0, "{start}+{len}: P reads clean");
+                assert_eq!(chunk.pass::<true>(), 0, "{start}+{len}: up reads P clean");
+                assert!(image(&mem, true), "{start}+{len}: up wrote ~P");
+                assert_eq!(chunk.pass::<false>(), 0, "{start}+{len}: down reads ~P clean");
+                assert!(image(&mem, false), "{start}+{len}: down wrote P");
+                for word in start..start + len {
+                    let bit = 1u64 << (word % 64);
+                    mem[word] ^= bit;
+                    assert_eq!(chunk.verify(), bit, "{start}+{len}: the verify missed word {word}");
+                    assert_eq!(chunk.pass::<true>(), bit, "{start}+{len}: up missed word {word}");
+                    assert!(image(&mem, true), "{start}+{len}: up wrote ~P over word {word} too");
+                    mem[word] ^= bit;
+                    assert_eq!(chunk.pass::<false>(), bit, "{start}+{len}: down missed word {word}");
+                    assert!(image(&mem, false), "{start}+{len}: down wrote P over word {word} too");
+                }
+            }
         }
-        let mut mem = vec![5u64; 40];
-        mem[29] = 5 ^ (1 << 33);
-        assert_eq!(unsafe { super::read_then_write::<false>(mem.as_mut_ptr(), 0, 40, |_| 5, |_| 6) }, 1 << 33);
     }
 
     /// Modulo-X's lines: in any range, one victim in every `MODULO_X` at the offset, and the runs
@@ -6461,6 +6778,45 @@ mod random_replay_tests {
                 assert!(victims.iter().all(|v| v % super::MODULO_X == offset));
                 assert_eq!(victims.len(), (start..end).filter(|l| l % super::MODULO_X == offset).count());
                 assert!(runs <= 2 * end.div_ceil(super::MODULO_X).max(1), "{runs} runs");
+            }
+        }
+    }
+
+    /// TODO 99: Mem-ModuloX's passes over a chunk write P over its victim lines and ~P over the
+    /// rest (`ident`'s word of each word's id), and nothing outside the chunk; the victims' check
+    /// reads clean and sees a bad word in every victim line, an even count of them and an odd.
+    #[test]
+    fn modulo_x_passes_write_their_images_and_see_every_bad_victim_word() {
+        use super::{LINE_WORDS, MODULO_X};
+        const UNTOUCHED: u64 = 0x0BAD_F00D_DEAD_BEEF;
+        let (ids, key) = (crate::pattern::word_base(2), 0x0FED_CBA9_8765_4321u64);
+        let p = |i: usize| crate::pattern::ident_word(ids + i as u64, key);
+        for (start, end) in [(0usize, 100usize), (7, 93), (7, 113), (40, 41), (19, 21), (5, 5), (0, 3 * MODULO_X)] {
+            for offset in [0, 5, MODULO_X - 1] {
+                let mut mem = vec![UNTOUCHED; (end + 2) * LINE_WORDS];
+                let chunk = super::ModuloChunk { base: mem.as_mut_ptr(), start, end, offset, ids, key };
+                let victim = |i: usize| (i / LINE_WORDS) % MODULO_X == offset;
+                let inside = |i: usize| (start * LINE_WORDS..end * LINE_WORDS).contains(&i);
+                unsafe {
+                    chunk.write_victims();
+                    for (i, &w) in mem.iter().enumerate() {
+                        assert_eq!(w, if inside(i) && victim(i) { p(i) } else { UNTOUCHED }, "{start}..{end} at {offset}: victims, word {i}");
+                    }
+                    for _ in 0..super::MODULO_PASSES {
+                        chunk.aggress();
+                    }
+                    for (i, &w) in mem.iter().enumerate() {
+                        let want = if !inside(i) { UNTOUCHED } else if victim(i) { p(i) } else { !p(i) };
+                        assert_eq!(w, want, "{start}..{end} at {offset}: word {i}");
+                    }
+                    assert_eq!(chunk.verify_victims(), 0, "{start}..{end} at {offset}: clean");
+                    for word in (0..mem.len()).filter(|&i| inside(i) && victim(i)) {
+                        let bit = 1u64 << (word % 64);
+                        mem[word] ^= bit;
+                        assert_eq!(chunk.verify_victims(), bit, "{start}..{end} at {offset}: missed word {word}");
+                        mem[word] ^= bit;
+                    }
+                }
             }
         }
     }
@@ -6548,6 +6904,62 @@ mod random_replay_tests {
         mem[100] ^= 1;
         let extent = super::RandomExtent { base: mem.as_ptr(), ..extent };
         assert_eq!(unsafe { super::random_sweep(extent, 64, "test", |errors| errors > 0) }, (1, 128));
+    }
+
+    /// TODO 99: Mem-Random's reads take xorshift's steps and `rng * len >> 64`'s indices, as a
+    /// plain loop does, and leave the RNG where it does; they read clean, and see a bad word at
+    /// the read of each accumulator and of the reads past the last step of four.
+    #[test]
+    fn random_reads_take_the_rngs_steps_and_see_every_bad_word() {
+        let (ids, len) = (crate::pattern::word_base(5), 1000usize);
+        let mut mem: Vec<u64> = (0..len as u64).map(|i| ids | i).collect();
+        let start = 0x123456789ABCDEFu64;
+        // The plain loop's indices and state after each read
+        let plain = |n: usize| {
+            let (mut rng, mut picks) = (start, Vec::new());
+            for _ in 0..n {
+                rng ^= rng << 13;
+                rng ^= rng >> 17;
+                rng ^= rng << 5;
+                picks.push(((rng as u128 * len as u128) >> 64) as usize);
+            }
+            (picks, rng)
+        };
+        for n in [0usize, 1, 3, 4, 5, 8, 1003] {
+            let extent = super::RandomExtent { base: mem.as_ptr(), len, ids };
+            let (picks, rng) = plain(n);
+            assert_eq!(unsafe { extent.reads(start, n) }, (0, rng), "{n} reads: clean, and the RNG after");
+            // The reads of each accumulator in the first step, the second step's first, and the last
+            for k in [0, 1, 2, 3, 4, n.saturating_sub(1)].into_iter().filter(|&k| k < n) {
+                let (word, bit) = (picks[k], 1u64 << (k % 64));
+                mem[word] ^= bit;
+                let extent = super::RandomExtent { base: mem.as_ptr(), len, ids };
+                assert_eq!(unsafe { extent.reads(start, n) }, (bit, rng), "{n} reads: missed read {k}, word {word}");
+                mem[word] ^= bit;
+            }
+        }
+    }
+
+    /// TODO 99: Mem-Random's sweep check reads each word of its range against its id and nothing
+    /// outside it: clean, it reads clean, and it sees a bad word in each lane of each accumulator
+    /// and in the words past the whole steps.
+    #[test]
+    fn the_sweep_check_sees_every_bad_word_of_its_range() {
+        let ids = crate::pattern::word_base(7);
+        let mut mem: Vec<u64> = (0..300u64).map(|i| ids | i).collect();
+        // Steps and the rest, steps alone, the rest alone, nothing
+        for (from, to) in [(0usize, 16 * 5 + 7), (37, 37 + 16 * 3), (3, 10), (9, 9)] {
+            let extent = super::RandomExtent { base: mem.as_ptr(), len: mem.len(), ids };
+            assert_eq!(unsafe { extent.verify(from, to) }, 0, "{from}..{to}: clean");
+            for word in from.saturating_sub(2)..to + 2 {
+                let bit = 1u64 << (word % 64);
+                mem[word] ^= bit;
+                let extent = super::RandomExtent { base: mem.as_ptr(), len: mem.len(), ids };
+                let want = if (from..to).contains(&word) { bit } else { 0 };
+                assert_eq!(unsafe { extent.verify(from, to) }, want, "{from}..{to}: word {word}");
+                mem[word] ^= bit;
+            }
+        }
     }
 
     /// TODO 76: Mem-Random's replay counts the bad words the hot loop's reads saw, each once however
