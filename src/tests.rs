@@ -2716,6 +2716,116 @@ pub unsafe fn stride_access_multi(
     }
 }
 
+/// How Mem-BlockMove's and Mem-MovingInv's kernels read and write test memory, so a unit test can
+/// see their accesses in order (TODO 99): the image a kernel leaves doesn't show which way it went.
+/// Each access goes through an `Access`, which makes it and reports it to `seen`. A kernel's
+/// out-of-line function is its loop by `Direct`, whose `seen` is nothing: the accesses as written,
+/// which inline to the loop they were (the release asm is the same, instruction for instruction).
+/// A unit test runs the same loop by `Recorded`.
+///
+/// A module of its own because a symbol names an impl by the number of impls before it in its
+/// module: `Direct`'s impl here leaves the symbols of the impls below, and so the asm, as they were.
+mod access {
+    use std::simd::u64x4;
+
+    pub(super) trait Access: Copy {
+        /// Whether this is `Direct`: a kernel's dispatch then calls its out-of-line functions.
+        const DIRECT: bool = false;
+
+        /// An access made: a write or a read, at `at`, of `values`.
+        #[inline(always)]
+        fn seen(self, _write: bool, _at: *const u64, _values: &[u64]) {}
+
+        /// A 32 B vector read.
+        #[inline(always)]
+        unsafe fn read(self, p: *const u64x4) -> u64x4 {
+            let v = p.read_unaligned();
+            self.seen(false, p.cast(), v.as_array());
+            v
+        }
+
+        /// A 32 B vector written.
+        #[inline(always)]
+        unsafe fn write(self, p: *mut u64x4, v: u64x4) {
+            self.seen(true, p.cast_const().cast(), v.as_array());
+            p.write_unaligned(v);
+        }
+
+        /// A word read.
+        #[inline(always)]
+        unsafe fn read_word(self, p: *const u64) -> u64 {
+            let v = *p;
+            self.seen(false, p, &[v]);
+            v
+        }
+
+        /// A word written.
+        #[inline(always)]
+        unsafe fn write_word(self, p: *mut u64, v: u64) {
+            self.seen(true, p.cast_const(), &[v]);
+            *p = v;
+        }
+
+        /// A word read, volatile (a plain loop of them can become masked vectors).
+        #[inline(always)]
+        unsafe fn read_volatile(self, p: *const u64) -> u64 {
+            let v = p.read_volatile();
+            self.seen(false, p, &[v]);
+            v
+        }
+
+        /// A word written, volatile.
+        #[inline(always)]
+        unsafe fn write_volatile(self, p: *mut u64, v: u64) {
+            self.seen(true, p.cast_const(), &[v]);
+            p.write_volatile(v);
+        }
+    }
+
+    /// The test's own access: each as written, reported to no one.
+    #[derive(Clone, Copy)]
+    pub(super) struct Direct;
+
+    impl Access for Direct {
+        const DIRECT: bool = true;
+    }
+
+    /// One access a kernel made: its first word, from the recorder's base, and the words it read or
+    /// wrote.
+    #[cfg(test)]
+    #[derive(Clone, Debug, PartialEq, Eq)]
+    pub(super) enum Visit {
+        Read(usize, Vec<u64>),
+        Write(usize, Vec<u64>),
+    }
+
+    /// The access that records each access, in order, then makes it.
+    #[cfg(test)]
+    #[derive(Clone, Copy)]
+    pub(super) struct Recorded<'a> {
+        pub(super) base: *const u64,
+        pub(super) visits: &'a std::cell::RefCell<Vec<Visit>>,
+    }
+
+    #[cfg(test)]
+    impl Access for Recorded<'_> {
+        fn seen(self, write: bool, at: *const u64, values: &[u64]) {
+            let (at, values) = ((at.addr() - self.base.addr()) / size_of::<u64>(), values.to_vec());
+            self.visits.borrow_mut().push(if write { Visit::Write(at, values) } else { Visit::Read(at, values) });
+        }
+    }
+
+    /// Fails at the first of `got` that isn't `want`'s, or at a visit missing or extra.
+    #[cfg(test)]
+    pub(super) fn assert_visits(got: &[Visit], want: &[Visit], what: &str) {
+        if let Some(i) = (0..got.len().min(want.len())).find(|&i| got[i] != want[i]) {
+            panic!("{what}: visit {i} is {:x?}, not {:x?} (after {:x?})", got[i], want[i], &want[i.saturating_sub(2)..i]);
+        }
+        assert_eq!(got.len(), want.len(), "{what}: {} visits, not {}", got.len(), want.len());
+    }
+}
+use access::{Access, Direct};
+
 /// One Mem-BlockMove half-chunk: the source's words `[start, end)` copied to the same offsets of
 /// the destination half, in the test's direction pattern, then checked there, each word the
 /// pattern plus its index. The copies and the verify are functions of their own so their loops
@@ -2746,13 +2856,20 @@ impl BlockMoveChunk {
     /// interleaved strided passes, each up.
     #[inline(always)]
     unsafe fn copy(self, dirs: u32) {
+        self.copy_by(dirs, Direct)
+    }
+
+    /// `copy`, each access by `access` (TODO 99): by `Direct` through the out-of-line copies, which
+    /// is `copy`; by a unit test's recorder through the same loops.
+    #[inline(always)]
+    unsafe fn copy_by<A: Access>(self, dirs: u32, access: A) {
         let (start, end) = (self.start, self.end);
         match dirs {
-            1 => self.copy_up(start, end),
+            1 => self.up(start, end, access),
             2 => {
                 let mid = start + (end - start) / 2;
-                self.copy_up(start, mid);
-                self.copy_down(mid, end);
+                self.up(start, mid, access);
+                self.down(mid, end, access);
             }
             4 => {
                 let block = (end - start) / 4;
@@ -2761,35 +2878,57 @@ impl BlockMoveChunk {
                     let to = (start + (stream + 1) * block).min(end);
                     if from < to {
                         match stream {
-                            1 => self.copy_down(from, to),
-                            2 => self.copy_strided::<2>(from, to, 2),
-                            _ => self.copy_up(from, to),
+                            1 => self.down(from, to, access),
+                            2 => self.strided::<2, A>(from, to, 2, access),
+                            _ => self.up(from, to, access),
                         }
                     }
                 }
             }
-            dirs => self.copy_strided::<0>(start, end, dirs as usize),
+            dirs => self.strided::<0, A>(start, end, dirs as usize, access),
         }
+    }
+
+    /// `copy_up` by `Direct`, else its loop by `access`: so `copy` calls the function, and a unit
+    /// test the loop, recorded. `down` and `strided` the same.
+    #[inline(always)]
+    unsafe fn up<A: Access>(self, from: usize, to: usize, access: A) {
+        if A::DIRECT { self.copy_up(from, to) } else { self.copy_up_by(from, to, access) }
+    }
+
+    #[inline(always)]
+    unsafe fn down<A: Access>(self, from: usize, to: usize, access: A) {
+        if A::DIRECT { self.copy_down(from, to) } else { self.copy_down_by(from, to, access) }
+    }
+
+    #[inline(always)]
+    unsafe fn strided<const S: usize, A: Access>(self, from: usize, to: usize, stride: usize, access: A) {
+        if A::DIRECT { self.copy_strided::<S>(from, to, stride) } else { self.copy_strided_by::<S, A>(from, to, stride, access) }
     }
 
     /// Words `[from, to)` copied up, 16 a step: four vectors read, then the four written.
     #[inline(never)]
     unsafe fn copy_up(self, from: usize, to: usize) {
+        self.copy_up_by(from, to, Direct)
+    }
+
+    #[inline(always)]
+    unsafe fn copy_up_by<A: Access>(self, from: usize, to: usize, access: A) {
         let (mut s, mut d) = (self.src.add(from) as *const u64, self.dst.add(from));
         for _ in 0..(to - from) / 16 {
-            let v0 = s.cast::<u64x4>().read_unaligned();
-            let v1 = s.add(4).cast::<u64x4>().read_unaligned();
-            let v2 = s.add(8).cast::<u64x4>().read_unaligned();
-            let v3 = s.add(12).cast::<u64x4>().read_unaligned();
-            d.cast::<u64x4>().write_unaligned(v0);
-            d.add(4).cast::<u64x4>().write_unaligned(v1);
-            d.add(8).cast::<u64x4>().write_unaligned(v2);
-            d.add(12).cast::<u64x4>().write_unaligned(v3);
+            let v0 = access.read(s.cast());
+            let v1 = access.read(s.add(4).cast());
+            let v2 = access.read(s.add(8).cast());
+            let v3 = access.read(s.add(12).cast());
+            access.write(d.cast(), v0);
+            access.write(d.add(4).cast(), v1);
+            access.write(d.add(8).cast(), v2);
+            access.write(d.add(12).cast(), v3);
             s = s.wrapping_add(16);
             d = d.wrapping_add(16);
         }
         for _ in 0..(to - from) % 16 {
-            *d = *s;
+            access.write_word(d, access.read_word(s));
             s = s.wrapping_add(1);
             d = d.wrapping_add(1);
         }
@@ -2799,23 +2938,28 @@ impl BlockMoveChunk {
     /// top too; the words below the last whole step one at a time, down.
     #[inline(never)]
     unsafe fn copy_down(self, from: usize, to: usize) {
+        self.copy_down_by(from, to, Direct)
+    }
+
+    #[inline(always)]
+    unsafe fn copy_down_by<A: Access>(self, from: usize, to: usize, access: A) {
         let (mut s, mut d) = (self.src.add(to) as *const u64, self.dst.add(to));
         for _ in 0..(to - from) / 16 {
             s = s.wrapping_sub(16);
             d = d.wrapping_sub(16);
-            let v3 = s.add(12).cast::<u64x4>().read_unaligned();
-            let v2 = s.add(8).cast::<u64x4>().read_unaligned();
-            let v1 = s.add(4).cast::<u64x4>().read_unaligned();
-            let v0 = s.cast::<u64x4>().read_unaligned();
-            d.add(12).cast::<u64x4>().write_unaligned(v3);
-            d.add(8).cast::<u64x4>().write_unaligned(v2);
-            d.add(4).cast::<u64x4>().write_unaligned(v1);
-            d.cast::<u64x4>().write_unaligned(v0);
+            let v3 = access.read(s.add(12).cast());
+            let v2 = access.read(s.add(8).cast());
+            let v1 = access.read(s.add(4).cast());
+            let v0 = access.read(s.cast());
+            access.write(d.add(12).cast(), v3);
+            access.write(d.add(8).cast(), v2);
+            access.write(d.add(4).cast(), v1);
+            access.write(d.cast(), v0);
         }
         for _ in 0..(to - from) % 16 {
             s = s.wrapping_sub(1);
             d = d.wrapping_sub(1);
-            *d = *s;
+            access.write_word(d, access.read_word(s));
         }
     }
 
@@ -2824,12 +2968,17 @@ impl BlockMoveChunk {
     /// even-then-odd quarter is a constant 2, so its accesses are fixed displacements.
     #[inline(never)]
     unsafe fn copy_strided<const S: usize>(self, from: usize, to: usize, stride: usize) {
+        self.copy_strided_by::<S, Direct>(from, to, stride, Direct)
+    }
+
+    #[inline(always)]
+    unsafe fn copy_strided_by<const S: usize, A: Access>(self, from: usize, to: usize, stride: usize, access: A) {
         let stride = if S == 0 { stride } else { S };
         debug_assert!(stride > 0, "copy_directions is at least 1");
         for first in from..(from + stride).min(to) {
             let (mut s, mut d) = (self.src.add(first) as *const u64, self.dst.add(first));
             for _ in 0..(to - first).div_ceil(stride) {
-                *d = *s;
+                access.write_word(d, access.read_word(s));
                 s = s.wrapping_add(stride);
                 d = d.wrapping_add(stride);
             }
@@ -3048,6 +3197,13 @@ impl MovingInvChunk {
     /// Writes P over the chunk, going up.
     #[inline(never)]
     unsafe fn fill(self) {
+        self.fill_by(Direct)
+    }
+
+    /// `fill`'s loop, each access by `access`: `Direct` for `fill`, a recorder for a unit test
+    /// (TODO 99). `pass_by` and `verify_by` are the same for theirs.
+    #[inline(always)]
+    unsafe fn fill_by<A: Access>(self, access: A) {
         let MovingInvChunk { base, start, ids, key, .. } = self;
         let (steps, rest) = self.steps();
         let (q1, q2, q3, step) = (ident_steps(4), ident_steps(8), ident_steps(12), ident_steps(MOVING_INV_STEP));
@@ -3055,16 +3211,16 @@ impl MovingInvChunk {
         let mut p = base.add(start);
         for _ in 0..steps {
             let v = p as *mut u64x4;
-            v.write_unaligned(ident_mix_v(x));
-            v.add(1).write_unaligned(ident_mix_v(x + q1));
-            v.add(2).write_unaligned(ident_mix_v(x + q2));
-            v.add(3).write_unaligned(ident_mix_v(x + q3));
+            access.write(v, ident_mix_v(x));
+            access.write(v.add(1), ident_mix_v(x + q1));
+            access.write(v.add(2), ident_mix_v(x + q2));
+            access.write(v.add(3), ident_mix_v(x + q3));
             x += step;
             p = p.wrapping_add(MOVING_INV_STEP);
         }
         let mut x = ident_x(ids.wrapping_add((start + steps * MOVING_INV_STEP) as u64), key);
         for _ in 0..rest {
-            p.write_volatile(ident_mix(x));
+            access.write_volatile(p, ident_mix(x));
             x = x.wrapping_add(crate::pattern::G);
             p = p.wrapping_add(1);
         }
@@ -3076,6 +3232,11 @@ impl MovingInvChunk {
     /// in four accumulators as every verify keeps them.
     #[inline(never)]
     unsafe fn pass<const UP: bool>(self) -> u64 {
+        self.pass_by::<UP, Direct>(Direct)
+    }
+
+    #[inline(always)]
+    unsafe fn pass_by<const UP: bool, A: Access>(self, access: A) -> u64 {
         let MovingInvChunk { base, start, end, ids, key } = self;
         let (steps, rest) = self.steps();
         let whole = start + steps * MOVING_INV_STEP;
@@ -3091,8 +3252,8 @@ impl MovingInvChunk {
                 let xs = [x, x + q1, x + q2, x + q3];
                 for (k, a) in acc.iter_mut().enumerate() {
                     let e = ident_mix_v(xs[k]);
-                    *a |= v.add(k).read_unaligned() ^ e;
-                    v.add(k).write_unaligned(e ^ ones);
+                    *a |= access.read(v.add(k)) ^ e;
+                    access.write(v.add(k), e ^ ones);
                 }
                 x += step;
                 p = p.wrapping_add(MOVING_INV_STEP);
@@ -3100,8 +3261,8 @@ impl MovingInvChunk {
             let mut x = ident_x(ids.wrapping_add(whole as u64), key);
             for _ in 0..rest {
                 let e = ident_mix(x);
-                tail |= p.read_volatile() ^ e;
-                p.write_volatile(!e);
+                tail |= access.read_volatile(p) ^ e;
+                access.write_volatile(p, !e);
                 x = x.wrapping_add(crate::pattern::G);
                 p = p.wrapping_add(1);
             }
@@ -3112,8 +3273,8 @@ impl MovingInvChunk {
                 x = x.wrapping_sub(crate::pattern::G);
                 p = p.wrapping_sub(1);
                 let e = ident_mix(x);
-                tail |= p.read_volatile() ^ !e;
-                p.write_volatile(e);
+                tail |= access.read_volatile(p) ^ !e;
+                access.write_volatile(p, e);
             }
             let mut x = ident_x_v(ids.wrapping_add(whole as u64), key);
             for _ in 0..steps {
@@ -3123,8 +3284,8 @@ impl MovingInvChunk {
                 let xs = [x, x + q1, x + q2, x + q3];
                 for (k, a) in acc.iter_mut().enumerate().rev() {
                     let e = ident_mix_v(xs[k]);
-                    *a |= v.add(k).read_unaligned() ^ (e ^ ones);
-                    v.add(k).write_unaligned(e);
+                    *a |= access.read(v.add(k)) ^ (e ^ ones);
+                    access.write(v.add(k), e);
                 }
             }
         }
@@ -3134,6 +3295,11 @@ impl MovingInvChunk {
     /// The last pass: each word checked as P, going up. Returns the differences ORed.
     #[inline(never)]
     unsafe fn verify(self) -> u64 {
+        self.verify_by(Direct)
+    }
+
+    #[inline(always)]
+    unsafe fn verify_by<A: Access>(self, access: A) -> u64 {
         let MovingInvChunk { base, start, ids, key, .. } = self;
         let (steps, rest) = self.steps();
         let (q1, q2, q3, step) = (ident_steps(4), ident_steps(8), ident_steps(12), ident_steps(MOVING_INV_STEP));
@@ -3144,7 +3310,7 @@ impl MovingInvChunk {
             let v = p as *const u64x4;
             let xs = [x, x + q1, x + q2, x + q3];
             for (k, a) in acc.iter_mut().enumerate() {
-                *a |= v.add(k).read_unaligned() ^ ident_mix_v(xs[k]);
+                *a |= access.read(v.add(k)) ^ ident_mix_v(xs[k]);
             }
             x += step;
             p = p.wrapping_add(MOVING_INV_STEP);
@@ -3152,7 +3318,7 @@ impl MovingInvChunk {
         let mut tail = 0u64;
         let mut x = ident_x(ids.wrapping_add((start + steps * MOVING_INV_STEP) as u64), key);
         for _ in 0..rest {
-            tail |= p.read_volatile() ^ ident_mix(x);
+            tail |= access.read_volatile(p) ^ ident_mix(x);
             x = x.wrapping_add(crate::pattern::G);
             p = p.wrapping_add(1);
         }
@@ -8633,6 +8799,90 @@ mod bench_move_tests {
         }
     }
 
+    /// Mem-BlockMove's accesses copying words `[start, end)` for `dirs` directions, in order, from
+    /// each pattern's definition: each word read from the source, where it holds `value`, and
+    /// written to the same offset of the destination, `half` words on. A whole step is 16 words,
+    /// its four vectors read, then the four written. Up takes the steps from the bottom, their
+    /// vectors from the bottom, then the words past them, up; down the steps from the top, their
+    /// vectors from the top, then the words below them, down; a strided pass goes a word at a time,
+    /// up. 1 direction is up; 2 the first half up and the second down; 4 the quarters up, down,
+    /// even words then odd, up (the last `len % 4` words left); any other count that many strided
+    /// passes, pass `k` from word `start + k`.
+    fn copy_visits(start: usize, end: usize, half: usize, dirs: u32, value: &dyn Fn(usize) -> u64) -> Vec<super::access::Visit> {
+        use super::access::Visit;
+        let read = |v: &mut Vec<Visit>, at: usize, n: usize| v.push(Visit::Read(at, (at..at + n).map(value).collect()));
+        let write = |v: &mut Vec<Visit>, at: usize, n: usize| v.push(Visit::Write(half + at, (at..at + n).map(value).collect()));
+        let step = |v: &mut Vec<Visit>, at: usize, vectors: [usize; 4]| {
+            vectors.iter().for_each(|k| read(v, at + 4 * k, 4));
+            vectors.iter().for_each(|k| write(v, at + 4 * k, 4));
+        };
+        let word = |v: &mut Vec<Visit>, at: usize| {
+            read(v, at, 1);
+            write(v, at, 1);
+        };
+        let up = |v: &mut Vec<Visit>, from: usize, to: usize| {
+            let past = from + (to - from) / 16 * 16;
+            (from..past).step_by(16).for_each(|at| step(v, at, [0, 1, 2, 3]));
+            (past..to).for_each(|at| word(v, at));
+        };
+        let down = |v: &mut Vec<Visit>, from: usize, to: usize| {
+            let below = to - (to - from) / 16 * 16;
+            (below..to).step_by(16).rev().for_each(|at| step(v, at, [3, 2, 1, 0]));
+            (from..below).rev().for_each(|at| word(v, at));
+        };
+        let strided = |v: &mut Vec<Visit>, from: usize, to: usize, stride: usize| {
+            for first in from..(from + stride).min(to) {
+                (first..to).step_by(stride).for_each(|at| word(v, at));
+            }
+        };
+        let mut visits = Vec::new();
+        let v = &mut visits;
+        match dirs {
+            1 => up(v, start, end),
+            2 => {
+                let mid = start + (end - start) / 2;
+                up(v, start, mid);
+                down(v, mid, end);
+            }
+            4 => {
+                let quarter = |q: usize| start + q * ((end - start) / 4);
+                up(v, quarter(0), quarter(1));
+                down(v, quarter(1), quarter(2));
+                strided(v, quarter(2), quarter(3), 2);
+                up(v, quarter(3), quarter(4));
+            }
+            dirs => strided(v, start, end, dirs as usize),
+        }
+        visits
+    }
+
+    /// TODO 99: Mem-BlockMove's copies go in their pattern's order, `copy_visits`': which source
+    /// word goes to which destination word, in what sequence, each read before it is written. The
+    /// image test above can't see it: copying the second half up, or the even-then-odd quarter
+    /// straight, leaves the same image.
+    #[test]
+    fn block_move_copies_in_their_patterns_order() {
+        use super::access::{assert_visits, Recorded};
+        let pattern_base = 0xDEADBEEFCAFEBABEu64;
+        let value = |i: usize| pattern_base.wrapping_add(i as u64);
+        // Whole steps; a start off the step with tails and quarters of 85 words and 3 over; a short one
+        for (start, len) in [(256usize, 512usize), (300, 16 * 21 + 7), (40, 16 * 3 + 2)] {
+            for dirs in [1u32, 2, 4, 3, 5, 8] {
+                let half = start + len + 64;
+                let mut mem = vec![!0u64; 2 * half];
+                let base = mem.as_mut_ptr();
+                let chunk = BlockMoveChunk { src: base, dst: base.wrapping_add(half), start, end: start + len, pattern_base };
+                let visits = std::cell::RefCell::new(Vec::new());
+                unsafe {
+                    chunk.fill();
+                    chunk.copy_by(dirs, Recorded { base: base.cast_const(), visits: &visits });
+                }
+                let want = copy_visits(start, start + len, half, dirs, &value);
+                assert_visits(&visits.into_inner(), &want, &format!("{dirs} directions, words {start} + {len}"));
+            }
+        }
+    }
+
     /// TODO 99: the per-word Bench kernels (modes 0, 1 at six line sizes, 10, 11 and 13) write each
     /// word its mode's value, `pattern_gen`'s word by word, and nothing else; read clean; and see a
     /// bad word in each lane of each accumulator, at each page edge and in the tails, which the
@@ -9335,6 +9585,48 @@ mod random_replay_tests {
                     assert_eq!(chunk.pass::<false>(), bit, "{start}+{len}: down missed word {word}");
                     assert!(image(&mem, false), "{start}+{len}: down wrote P over word {word} too");
                 }
+            }
+        }
+    }
+
+    /// TODO 99: Mem-MovingInv's passes visit a chunk in March X's order, a 32 B vector at a time in
+    /// the whole steps and a word at a time past them. The fill writes P going up. The up pass
+    /// reads each vector (P), then writes it (~P), from the bottom; the down pass reads each (~P),
+    /// then writes it (P), from the top: the words past the whole steps first, then the steps,
+    /// their vectors from the top. The verify reads P going up. So each vector is read just before
+    /// it is written, while the vectors below it hold one value and those above the other.
+    #[test]
+    fn moving_inversions_passes_visit_in_march_order() {
+        use super::access::{assert_visits, Recorded, Visit};
+        let (ids, key) = (crate::pattern::word_base(3), 0x1234_5678_9ABC_DEF1u64);
+        let p = |i: usize| crate::pattern::ident_word(ids + i as u64, key);
+        // Steps and the rest, steps alone, the rest alone, nothing, a 4 KiB chunk
+        for (start, len) in [(0usize, 16 * 5 + 7), (37, 16 * 3), (3, 5), (8, 0), (512, 512)] {
+            let mut mem = vec![0u64; start + len + 8];
+            let base = mem.as_mut_ptr();
+            let chunk = super::MovingInvChunk { base, start, end: start + len, ids, key };
+            // What a pass visits, going up, as (first word, words): each whole step's four vectors,
+            // then each word past them
+            let past = start + len / 16 * 16;
+            let units: Vec<(usize, usize)> = (start..past).step_by(4).map(|at| (at, 4)).chain((past..start + len).map(|at| (at, 1))).collect();
+            let words = |(at, n): (usize, usize), inverse: bool| (at..at + n).map(|i| if inverse { !p(i) } else { p(i) }).collect();
+            let read = |unit: (usize, usize), inverse: bool| Visit::Read(unit.0, words(unit, inverse));
+            let write = |unit: (usize, usize), inverse: bool| Visit::Write(unit.0, words(unit, inverse));
+            let fill: Vec<_> = units.iter().map(|&u| write(u, false)).collect();
+            let up: Vec<_> = units.iter().flat_map(|&u| [read(u, false), write(u, true)]).collect();
+            let down: Vec<_> = units.iter().rev().flat_map(|&u| [read(u, true), write(u, false)]).collect();
+            let verify: Vec<_> = units.iter().map(|&u| read(u, false)).collect();
+            let visits = std::cell::RefCell::new(Vec::new());
+            let by = Recorded { base: base.cast_const(), visits: &visits };
+            unsafe {
+                chunk.fill_by(by);
+                assert_visits(&visits.take(), &fill, &format!("{start}+{len}: the fill"));
+                assert_eq!(chunk.pass_by::<true, _>(by), 0, "{start}+{len}: up reads P clean");
+                assert_visits(&visits.take(), &up, &format!("{start}+{len}: up"));
+                assert_eq!(chunk.pass_by::<false, _>(by), 0, "{start}+{len}: down reads ~P clean");
+                assert_visits(&visits.take(), &down, &format!("{start}+{len}: down"));
+                assert_eq!(chunk.verify_by(by), 0, "{start}+{len}: the verify reads P clean");
+                assert_visits(&visits.take(), &verify, &format!("{start}+{len}: the verify"));
             }
         }
     }
