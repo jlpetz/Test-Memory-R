@@ -121,40 +121,57 @@ macro_rules! spd_read_hot {
 // COPY — Hot loop macros (4x unrolled load from src + store to dst)
 // ============================================================================
 
+/// One Spd-Copy chunk: `bytes` from `src` to `dst`, the chunk at one offset in each half.
+#[derive(Clone, Copy)]
+struct CopyChunk {
+    src: *const u8,
+    dst: *mut u8,
+    bytes: usize,
+}
+
 /// 4x unrolled SIMD copy loop. Reads from src, writes to dst.
 /// $store_fn is _mm*_store_si* (cached) or _mm*_stream_si* (NT).
+///
+/// It walks both pointers over the chunk's vectors, four a step, then the rest, and runs in a
+/// function of its own (`$chunk_fn`, called once a chunk; TODO 99): inlined in the test function,
+/// where the compiler knows the halves' distance, it kept one pointer and addressed the other half
+/// through an index, `(walked,distance)` for each store (or each load), and the NT copy indexed
+/// both from one offset.
 macro_rules! spd_copy_hot {
-    ($src_ptr:expr, $dst_ptr:expr, $byte_len:expr, $arch_type:ty,
-     $load_fn:path, $store_fn:path) => {{
-        let mut sp = $src_ptr as *const $arch_type;
-        let mut dp = $dst_ptr as *mut $arch_type;
-        let vec_size = std::mem::size_of::<$arch_type>();
-        let stride = vec_size * 4;
-        let total = $byte_len;
-        let unrolled_end = (total / stride) * stride;
-        let end = total;
-
-        let mut offset = 0usize;
-        while offset < unrolled_end {
-            let v0 = $load_fn(sp);
-            let v1 = $load_fn(sp.add(1));
-            let v2 = $load_fn(sp.add(2));
-            let v3 = $load_fn(sp.add(3));
-            $store_fn(dp, v0);
-            $store_fn(dp.add(1), v1);
-            $store_fn(dp.add(2), v2);
-            $store_fn(dp.add(3), v3);
-            sp = sp.add(4);
-            dp = dp.add(4);
-            offset += stride;
+    ($chunk_fn:ident, $target_feature:literal, $arch_type:ty, $load_fn:path, $store_fn:path) => {
+        #[target_feature(enable = $target_feature)]
+        #[inline(never)]
+        unsafe fn $chunk_fn(chunk: CopyChunk) {
+            let CopyChunk { src, dst, bytes } = chunk;
+            let mut sp = src as *const $arch_type;
+            let mut dp = dst as *mut $arch_type;
+            let vectors = bytes.div_ceil(std::mem::size_of::<$arch_type>());
+            for _ in 0..vectors / 4 {
+                let v0 = $load_fn(sp);
+                let v1 = $load_fn(sp.add(1));
+                let v2 = $load_fn(sp.add(2));
+                let v3 = $load_fn(sp.add(3));
+                $store_fn(dp, v0);
+                $store_fn(dp.add(1), v1);
+                $store_fn(dp.add(2), v2);
+                $store_fn(dp.add(3), v3);
+                sp = sp.wrapping_add(4);
+                dp = dp.wrapping_add(4);
+            }
+            // The rest, at most 3, in line: as a loop, the NT copy's (its stores are asm, so the
+            // compiler doesn't unroll it) indexed both from one offset
+            let rest = vectors % 4;
+            if rest > 0 {
+                $store_fn(dp, $load_fn(sp));
+            }
+            if rest > 1 {
+                $store_fn(dp.add(1), $load_fn(sp.add(1)));
+            }
+            if rest > 2 {
+                $store_fn(dp.add(2), $load_fn(sp.add(2)));
+            }
         }
-        while offset < end {
-            $store_fn(dp, $load_fn(sp));
-            sp = sp.add(1);
-            dp = dp.add(1);
-            offset += vec_size;
-        }
-    }}
+    };
 }
 
 // ============================================================================
@@ -303,13 +320,15 @@ macro_rules! spd_read_impl {
 
 macro_rules! spd_copy_impl {
     (
-        $impl_fn:ident, $pub_fn:ident,
+        $impl_fn:ident, $pub_fn:ident, $chunk_fn:ident,
         $target_feature:literal,
         $arch_type:ty,
         $load_fn:path,
         $store_fn:path,
         $need_sfence:expr
     ) => {
+        spd_copy_hot!($chunk_fn, $target_feature, $arch_type, $load_fn, $store_fn);
+
         #[target_feature(enable = $target_feature)]
         unsafe fn $impl_fn(
             blocks: &[AllocationBlock],
@@ -350,7 +369,7 @@ macro_rules! spd_copy_impl {
                 for (src, dst) in [(half_a, half_b), (half_b, half_a)] {
                     for k in 0..spread.count() {
                         let offset = spread.start(k);
-                        spd_copy_hot!(src.add(offset), dst.add(offset), spread.chunk(), $arch_type, $load_fn, $store_fn);
+                        $chunk_fn(CopyChunk { src: src.add(offset), dst: dst.add(offset), bytes: spread.chunk() });
                         // Traffic: the chunk read plus the chunk written
                         runner.add_bytes(spread.chunk() * 2);
                     }
@@ -500,17 +519,20 @@ crate::auto_dispatch!(
 // Regular load + regular store — measures cache copy bandwidth.
 // ============================================================================
 
+// Volatile 16 B loads and stores, which the compiler can't merge: with `_mm_load_si128` and
+// `_mm_store_si128` it copied each two adjacent vectors as one 32 B `ymm` move (the AVX2 baseline),
+// so Spd-Copy-128 ran at 256 bits (TODO 99). The same instructions otherwise (`vmovaps xmm`).
 spd_copy_impl!(
-    spd_copy_128_impl, spd_copy_128_multi,
+    spd_copy_128_impl, spd_copy_128_multi, spd_copy_128_chunk,
     "sse4.2,sse4.1,ssse3,sse3,sse2,popcnt",
     std::arch::x86_64::__m128i,
-    std::arch::x86_64::_mm_load_si128,
-    std::arch::x86_64::_mm_store_si128,
+    std::ptr::read_volatile,
+    std::ptr::write_volatile,
     false
 );
 
 spd_copy_impl!(
-    spd_copy_256_impl, spd_copy_256_multi,
+    spd_copy_256_impl, spd_copy_256_multi, spd_copy_256_chunk,
     "avx2,avx,fma,bmi1,bmi2",
     std::arch::x86_64::__m256i,
     std::arch::x86_64::_mm256_load_si256,
@@ -519,7 +541,7 @@ spd_copy_impl!(
 );
 
 spd_copy_impl!(
-    spd_copy_512_impl, spd_copy_512_multi,
+    spd_copy_512_impl, spd_copy_512_multi, spd_copy_512_chunk,
     "avx512f,avx512bw,avx512cd,avx512dq,avx512vl,avx2,avx,fma,bmi1,bmi2",
     std::arch::x86_64::__m512i,
     std::arch::x86_64::_mm512_load_si512,
@@ -541,7 +563,7 @@ crate::auto_dispatch!(
 // ============================================================================
 
 spd_copy_impl!(
-    spd_copy_nt_128_impl, spd_copy_nt_128_multi,
+    spd_copy_nt_128_impl, spd_copy_nt_128_multi, spd_copy_nt_128_chunk,
     "sse4.2,sse4.1,ssse3,sse3,sse2,popcnt",
     std::arch::x86_64::__m128i,
     std::arch::x86_64::_mm_load_si128,
@@ -550,7 +572,7 @@ spd_copy_impl!(
 );
 
 spd_copy_impl!(
-    spd_copy_nt_256_impl, spd_copy_nt_256_multi,
+    spd_copy_nt_256_impl, spd_copy_nt_256_multi, spd_copy_nt_256_chunk,
     "avx2,avx,fma,bmi1,bmi2",
     std::arch::x86_64::__m256i,
     std::arch::x86_64::_mm256_load_si256,
@@ -559,7 +581,7 @@ spd_copy_impl!(
 );
 
 spd_copy_impl!(
-    spd_copy_nt_512_impl, spd_copy_nt_512_multi,
+    spd_copy_nt_512_impl, spd_copy_nt_512_multi, spd_copy_nt_512_chunk,
     "avx512f,avx512bw,avx512cd,avx512dq,avx512vl,avx2,avx,fma,bmi1,bmi2",
     std::arch::x86_64::__m512i,
     std::arch::x86_64::_mm512_load_si512,
@@ -574,3 +596,50 @@ crate::auto_dispatch!(
     spd_copy_nt_256_multi,
     spd_copy_nt_512_multi
 );
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// TODO 99: each width's copy chunk, cached and NT, copies exactly its chunk, each vector to
+    /// its own place, over lengths that take its steps of 4 vectors (and the compiler's unrolling
+    /// of them) and each tail of 1-3, and writes nothing else.
+    #[test]
+    fn copy_chunks_copy_every_vector_and_nothing_else() {
+        type Chunk = unsafe fn(CopyChunk);
+        let mut widths: Vec<(usize, &str, Chunk)> = vec![(16, "128", spd_copy_128_chunk), (16, "NT 128", spd_copy_nt_128_chunk)];
+        if is_x86_feature_detected!("avx2") {
+            widths.extend([(32, "256", spd_copy_256_chunk as Chunk), (32, "NT 256", spd_copy_nt_256_chunk)]);
+        }
+        if is_x86_feature_detected!("avx512f") {
+            widths.extend([(64, "512", spd_copy_512_chunk as Chunk), (64, "NT 512", spd_copy_nt_512_chunk)]);
+        }
+        const FILLER: u64 = 0x5A5A_5A5A_5A5A_5A5A;
+        // A distinct value at every source word, so a vector copied to the wrong place shows
+        let source = |i: usize| (i as u64).wrapping_mul(0x9E37_79B9_7F4A_7C15) ^ 0xA55A_A55A_A55A_A55A;
+        // The destination 64 words into its buffer, a guard either side
+        let (guard, words) = (64usize, 1024usize);
+        for (vec_bytes, name, chunk) in widths {
+            for vectors in (1..=9).chain([16, 17, 18, 19, 64, 67]) {
+                let bytes = vectors * vec_bytes;
+                let mut src = vec![std::simd::u64x8::splat(0); words / 8];
+                let mut dst = vec![std::simd::u64x8::splat(0); words / 8];
+                let (s, d) = (src.as_mut_ptr() as *mut u64, dst.as_mut_ptr() as *mut u64);
+                unsafe {
+                    for i in 0..words {
+                        *s.add(i) = source(i);
+                        *d.add(i) = FILLER;
+                    }
+                    chunk(CopyChunk { src: s as *const u8, dst: d.add(guard) as *mut u8, bytes });
+                    std::arch::x86_64::_mm_sfence();
+                    for i in 0..words {
+                        assert_eq!(*s.add(i), source(i), "{name}, {vectors} vectors: source word {i} changed");
+                        let copied = (guard..guard + bytes / 8).contains(&i);
+                        let want = if copied { source(i - guard) } else { FILLER };
+                        assert_eq!(*d.add(i), want, "{name}, {vectors} vectors: destination word {i}");
+                    }
+                }
+            }
+        }
+    }
+}
