@@ -129,21 +129,7 @@ where
     Verify: FnMut(&ChunkCtx) -> u64,
 {
     if blocks.is_empty() {
-        return TestStats {
-            name: test_name,
-            action,
-            bytes_processed: 0,
-            timed: None,
-            thread_id,
-            error_count: 0,
-            total_operations: 0,
-            cycles_completed: 0,
-            cycles_planned: timing.cycles,
-            stopped_by_time_limit: false,
-            seal_errors: 0,
-            alarms: 0,
-            not_reproduced: 0,
-        };
+        return TestStats::not_run(test_name, action, thread_id, timing.cycles);
     }
 
     // Block prep, extent sizing, the info log, and the timers all live in TestRunner
@@ -156,21 +142,7 @@ where
 
     if extent.test_size == 0 {
         log::warn!("{}: No blocks prepared for testing", test_name);
-        return TestStats {
-            name: test_name,
-            action,
-            bytes_processed: 0,
-            timed: None,
-            thread_id,
-            error_count: 0,
-            total_operations: 0,
-            cycles_completed: 0,
-            cycles_planned: timing.cycles,
-            stopped_by_time_limit: false,
-            seal_errors: 0,
-            alarms: 0,
-            not_reproduced: 0,
-        };
+        return TestStats::not_run(test_name, action, thread_id, timing.cycles);
     }
 
     // Pre-compute error check interval mask from config (v1 parity)
@@ -212,8 +184,8 @@ where
             round: 0,
         };
         init_fn(&ctx);
-        // Setup, not the test: its time and bytes are left out (TODO 90)
-        runner.restart_clock();
+        // Setup, not the test: its own record (TODO 90)
+        runner.setup_done(crate::ops::Op::PatternFill, extent.test_size as u64);
     }
 
     // Per write_read_cycle: bytes_per_test_op × test_reps writes + verify_reps reads
@@ -244,7 +216,7 @@ where
                 return runner.finish_aborted(cycle_errors, total_operations);
             }
             if fill_per_chunk {
-                runner.untimed(|| init_fn(&ctx));
+                runner.untimed(crate::ops::Op::PatternFill, chunks.chunk() as u64, || init_fn(&ctx));
             }
 
             // TM5-faithful loop: (write + multi-read) × write_read_cycles

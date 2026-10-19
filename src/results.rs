@@ -5,7 +5,7 @@ use crate::formatting::{
     serialize_round_2dp, serialize_round_int, serialize_round_opt_2dp,
 };
 use serde::{Deserialize, Serialize};
-use std::collections::HashMap;
+use std::collections::{BTreeMap, HashMap};
 use std::fs;
 use std::path::Path;
 
@@ -101,6 +101,10 @@ pub struct TestResult {
     /// run, and in results written before it.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub stopped_by: Option<String>,
+    /// The step's work around its test sequence, by operation (`ops::Op::key`): the seal's
+    /// between the steps and around its chunks, its fills. Only the operations it did.
+    #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
+    pub intermediate: OpRecords,
     /// Recorded in MiB/s only. A GiB/s field alongside it would be the same measurement stored
     /// twice — every producer computed it as `mib_s / 1024.0` — and rounding the pair to
     /// different scales made the two disagree. Readers that want GiB/s divide by 1024.
@@ -159,6 +163,25 @@ pub struct CycleStats {
     pub avg_throughput_mib_s: f64,
 }
 
+/// One operation's work in the results file (TODO 90): its time and the bytes it covered.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Serialize, Deserialize)]
+pub struct OpRecord {
+    #[serde(serialize_with = "serialize_round_2dp")]
+    pub ms: f64,
+    pub bytes: u64,
+}
+
+/// Operations by their key (`ops::Op::key`)
+pub type OpRecords = BTreeMap<String, OpRecord>;
+
+/// The operations a tally did, as records.
+pub fn op_records(ops: &crate::ops::OpTally) -> OpRecords {
+    ops.iter()
+        .filter(|(_, work)| !work.is_empty())
+        .map(|(op, work)| (op.key().to_string(), OpRecord { ms: work.time.as_secs_f64() * 1000.0, bytes: work.bytes }))
+        .collect()
+}
+
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct OverallStats {
     pub total_runtime_secs: u64,
@@ -185,6 +208,10 @@ pub struct OverallStats {
     #[serde(default, skip_serializing_if = "FailingBits::is_empty")]
     pub seal_failing_bits: FailingBits,
     /// Each step's figures over the cycles (TODO 74)
+    /// The run's work around its tests, by operation (TODO 90): every step's, and each cycle's
+    /// seal at its start and check at its end
+    #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
+    pub intermediate: OpRecords,
     pub per_step_averages: Vec<TestAverage>,
 }
 
@@ -331,6 +358,7 @@ impl TestRunResult {
                 seal_errors: 0,
                 failing_bits: FailingBits::default(),
                 seal_failing_bits: FailingBits::default(),
+                intermediate: OpRecords::new(),
                 per_step_averages: Vec::new(),
             },
         }
@@ -358,6 +386,7 @@ impl TestRunResult {
                 cycles_completed_min: summary.cycles_completed.0,
                 cycles_completed_max: summary.cycles_completed.1,
                 stopped_by: summary.stopped_by.map(str::to_string),
+                intermediate: op_records(&summary.ops),
                 throughput_mib_s: summary.throughput_mib_s,
                 errors: summary.errors,
                 alarms: summary.alarms,
@@ -397,6 +426,32 @@ impl TestRunResult {
         self.cycles.push(cycle_result);
     }
 
+    /// Every step's operations, and each cycle's seal at its start and check at its end.
+    fn intermediate_totals(&self) -> OpRecords {
+        let mut totals = OpRecords::new();
+        let mut add = |key: &str, ms: f64, bytes: u64| {
+            let record = totals.entry(key.to_string()).or_default();
+            (record.ms, record.bytes) = (record.ms + ms, record.bytes + bytes);
+        };
+        for cycle in &self.cycles {
+            for test in &cycle.tests {
+                for (key, record) in &test.intermediate {
+                    add(key, record.ms, record.bytes);
+                }
+            }
+            if let Some(seal) = &cycle.seal {
+                use crate::ops::Op;
+                if seal.seal_bytes > 0 {
+                    add(Op::SealFill.key(), seal.seal_ms as f64, seal.seal_bytes);
+                }
+                if seal.final_check_bytes > 0 {
+                    add(Op::SealCheck.key(), seal.final_check_ms as f64, seal.final_check_bytes);
+                }
+            }
+        }
+        totals
+    }
+
     pub fn finalize(&mut self, total_runtime: std::time::Duration) {
         self.overall_stats.total_runtime_secs = total_runtime.as_secs();
         self.overall_stats.cycles_completed = self.cycles.len() as u32;
@@ -425,6 +480,7 @@ impl TestRunResult {
             }
         }
         (self.overall_stats.failing_bits, self.overall_stats.seal_failing_bits) = (bits, seal_bits);
+        self.overall_stats.intermediate = self.intermediate_totals();
 
         // Calculate per-test averages
         self.calculate_per_test_averages();
@@ -809,6 +865,7 @@ mod tests {
             bytes_processed,
             cycles_completed: (1, 1),
             stopped_by: Some("cycles"),
+            ops: Default::default(),
             throughput_mib_s: if duration_ms > 0 { 1000.0 } else { 0.0 },
             errors: 0,
             alarms: 0,

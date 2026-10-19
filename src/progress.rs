@@ -92,6 +92,9 @@ pub struct TestSummary {
     /// for a step that didn't run.
     pub cycles_completed: (u32, u32),
     pub stopped_by: Option<&'static str>,
+    /// The work around its test sequence, by operation (TODO 90): the seal's between the steps
+    /// and around its chunks, its fills
+    pub ops: crate::ops::OpTally,
     pub throughput_mib_s: f64,
     pub errors: u64,
     /// The test's failed checks, and of those the ones its rescans didn't reproduce (TODO 27):

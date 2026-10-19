@@ -39,9 +39,11 @@ pub struct TestRunner<'a> {
     /// spread evenly over the extent (`chunks`).
     chunk: usize,
     start: Instant,
-    /// Setup inside the clock (TODO 90): the seal's checks and reseals in the first cycle, and a
-    /// fill a sealed step does per chunk. Left out of the test's time when it finishes.
-    setup: Duration,
+    /// The work around the test sequence, by operation (TODO 90)
+    ops: crate::ops::OpTally,
+    /// The part of it inside the clock (the first cycle's seal checks and reseals, a sealed step's
+    /// per-chunk fill): left out of the test's time when it finishes
+    inside: Duration,
     cycle: u32,
     total_error_count: u64,
     total_bytes_processed: usize,
@@ -103,7 +105,8 @@ impl<'a> TestRunner<'a> {
             progress,
             chunk,
             start: now,
-            setup: Duration::ZERO,
+            ops: Default::default(),
+            inside: Duration::ZERO,
             cycle: 0,
             total_error_count: 0,
             total_bytes_processed: 0,
@@ -158,25 +161,36 @@ impl<'a> TestRunner<'a> {
         self.chunk
     }
 
-    /// Start the clock again after untimed setup (a bandwidth test's page-faulting fill, a
-    /// latency test's chain build), so the setup counts toward neither the test's duration nor
-    /// its throughput. Call it before counting any bytes.
+    /// Start the clock again, leaving out what came before, with no record of it. A test with
+    /// setup to leave out says what it was: `setup_done`. Call it before counting any bytes.
     #[inline]
     pub fn restart_clock(&mut self) {
         self.set_stage(Stage::Testing);
         let now = Instant::now();
         self.start = now;
-        self.setup = Duration::ZERO;
+        self.inside = Duration::ZERO;
         self.last_progress_update = now;
     }
 
-    /// Run `f`, setup the test's time leaves out (TODO 90): a fill a sealed step does per chunk.
-    /// Two clock reads a call, so for per-chunk work, not per word.
+    /// Setup since the clock started is done (TODO 90): recorded as `op` over `bytes`, and the
+    /// clock starts again, so it counts toward neither the test's time nor its throughput. A fill
+    /// (Mem-Random's, a bandwidth test's first touch) or a latency test's chain build.
     #[inline]
-    pub fn untimed<R>(&mut self, f: impl FnOnce() -> R) -> R {
+    pub fn setup_done(&mut self, op: crate::ops::Op, bytes: u64) {
+        self.ops.add(op, self.start.elapsed(), bytes);
+        self.restart_clock();
+    }
+
+    /// Run `f`, setup inside the test's clock (TODO 90): recorded as `op` over `bytes` and left
+    /// out of the test's time, as a sealed step's per-chunk fill. Two clock reads a call, so for
+    /// per-chunk work, not per word.
+    #[inline]
+    pub fn untimed<R>(&mut self, op: crate::ops::Op, bytes: u64, f: impl FnOnce() -> R) -> R {
         let at = Instant::now();
         let r = f();
-        self.setup += at.elapsed();
+        let time = at.elapsed();
+        self.ops.add(op, time, bytes);
+        self.inside += time;
         r
     }
 
@@ -205,7 +219,9 @@ impl<'a> TestRunner<'a> {
         // SAFETY: the range is inside the extent, which the test is about to work
         self.seal_errors += unsafe { self.seal.kernel.check(self.seal_base, from, to, "seal check before") };
         // The seal's work, not the test's (TODO 90)
-        self.setup += at.elapsed();
+        let time = at.elapsed();
+        self.ops.add(crate::ops::Op::SealCheck, time, len as u64);
+        self.inside += time;
         self.set_stage(Stage::Testing);
     }
 
@@ -220,7 +236,9 @@ impl<'a> TestRunner<'a> {
         let at = Instant::now();
         // SAFETY: as `check_seal`
         unsafe { self.seal.kernel.fill(self.seal_base, start / 8, (start + len) / 8) };
-        self.setup += at.elapsed();
+        let time = at.elapsed();
+        self.ops.add(crate::ops::Op::SealFill, time, len as u64);
+        self.inside += time;
         self.set_stage(Stage::Testing);
     }
 
@@ -323,7 +341,7 @@ impl<'a> TestRunner<'a> {
     /// Not when an error halts it: the bad words stay in memory as the test found them, for a
     /// look after the run, and the run stops at this step anyway.
     fn reseal_extent(&mut self, aborted: bool, cycle_errors: u64) -> std::time::Duration {
-        let timed = self.start.elapsed().saturating_sub(self.setup);
+        let timed = self.start.elapsed().saturating_sub(self.inside);
         let halted = matches!(self.error_mode, ErrorMode::Halt) && self.total_error_count + cycle_errors + self.seal_errors > 0;
         if halted {
             log::info!("[Thread {}] {}: halted on an error, so the extent keeps what the test found (no reseal)",
@@ -331,8 +349,11 @@ impl<'a> TestRunner<'a> {
         }
         if self.seal.wrap && (self.cycle > 1 || aborted) && !halted {
             self.set_stage(Stage::Resealing);
+            let at = Instant::now();
             // SAFETY: the extent the test has just finished with
             unsafe { self.seal.kernel.fill(self.seal_base, 0, self.seal_words) };
+            // After the test's time: the seal's work, on its own record (TODO 90)
+            self.ops.add(crate::ops::Op::SealFill, at.elapsed(), (self.seal_words * 8) as u64);
             self.set_stage(Stage::Testing);
         }
         timed
@@ -358,6 +379,7 @@ impl<'a> TestRunner<'a> {
             seal_errors: self.seal_errors,
             alarms: rescans.alarms,
             not_reproduced: rescans.not_reproduced,
+            ops: self.ops,
         }
     }
 
@@ -381,6 +403,7 @@ impl<'a> TestRunner<'a> {
             seal_errors: self.seal_errors,
             alarms: rescans.alarms,
             not_reproduced: rescans.not_reproduced,
+            ops: self.ops,
         }
     }
 }

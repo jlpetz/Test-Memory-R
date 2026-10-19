@@ -199,7 +199,7 @@ macro_rules! lat_v2_read_impl {
             let mut latencies_ns = Vec::with_capacity(10000);
             let mut total_ops = 0u64;
             // Start timing AFTER setup - setup time should not count against test duration
-            runner.restart_clock();
+            runner.setup_done(crate::ops::Op::ChainBuild, 0);
 
             loop {
                 runner.begin_cycle();
@@ -295,7 +295,7 @@ macro_rules! lat_v2_write_impl {
             let mut latencies_ns = Vec::with_capacity(10000);
             let mut total_ops = 0u64;
             // Start timing AFTER setup - setup time should not count against test duration
-            runner.restart_clock();
+            runner.setup_done(crate::ops::Op::ChainBuild, 0);
 
             loop {
                 runner.begin_cycle();
@@ -385,7 +385,7 @@ macro_rules! lat_v2_copy_impl {
             let mut latencies_ns = Vec::with_capacity(10000);
             let mut total_ops = 0u64;
             // Start timing AFTER setup - setup time should not count against test duration
-            runner.restart_clock();
+            runner.setup_done(crate::ops::Op::ChainBuild, 0);
 
             loop {
                 runner.begin_cycle();
@@ -468,7 +468,7 @@ macro_rules! lat_v2p_read_impl {
             let mut latencies_ns = Vec::with_capacity(10000);
             let mut total_ops = 0u64;
             // Start timing AFTER setup - setup time should not count against test duration
-            runner.restart_clock();
+            runner.setup_done(crate::ops::Op::ChainBuild, 0);
 
             loop {
                 runner.begin_cycle();
@@ -579,7 +579,7 @@ macro_rules! lat_v2p_write_impl {
             let mut latencies_ns = Vec::with_capacity(10000);
             let mut total_ops = 0u64;
             // Start timing AFTER setup - setup time should not count against test duration
-            runner.restart_clock();
+            runner.setup_done(crate::ops::Op::ChainBuild, 0);
 
             loop {
                 runner.begin_cycle();
@@ -691,7 +691,7 @@ macro_rules! lat_v2p_copy_impl {
             let mut latencies_ns = Vec::with_capacity(10000);
             let mut total_ops = 0u64;
             // Start timing AFTER setup - setup time should not count against test duration
-            runner.restart_clock();
+            runner.setup_done(crate::ops::Op::ChainBuild, 0);
 
             loop {
                 runner.begin_cycle();
@@ -799,7 +799,7 @@ macro_rules! lat_v2p_write_full_impl {
             let mut latencies_ns = Vec::with_capacity(10000);
             let mut total_ops = 0u64;
             // Start timing AFTER setup - setup time should not count against test duration
-            runner.restart_clock();
+            runner.setup_done(crate::ops::Op::ChainBuild, 0);
 
             loop {
                 runner.begin_cycle();
@@ -903,7 +903,7 @@ macro_rules! lat_v2p_copy_full_impl {
             let mut latencies_ns = Vec::with_capacity(10000);
             let mut total_ops = 0u64;
             // Start timing AFTER setup - setup time should not count against test duration
-            runner.restart_clock();
+            runner.setup_done(crate::ops::Op::ChainBuild, 0);
 
             loop {
                 runner.begin_cycle();
@@ -1430,7 +1430,7 @@ macro_rules! lat_ntw_write_impl {
             let mut latencies_ns = Vec::with_capacity(10000);
             let mut total_ops = 0u64;
             // Start timing AFTER setup - setup time should not count against test duration
-            runner.restart_clock();
+            runner.setup_done(crate::ops::Op::ChainBuild, 0);
 
             loop {
                 runner.begin_cycle();
@@ -1511,7 +1511,7 @@ pub unsafe fn lat_ntw_write_scalar_multi(
     let mut latencies_ns = Vec::with_capacity(10000);
     let mut total_ops = 0u64;
     // Start timing AFTER setup - setup time should not count against test duration
-    runner.restart_clock();
+    runner.setup_done(crate::ops::Op::ChainBuild, 0);
 
     loop {
         runner.begin_cycle();

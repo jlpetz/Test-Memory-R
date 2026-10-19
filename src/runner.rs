@@ -1258,6 +1258,9 @@ fn execute_test_cycle(ctx: &CycleContext, cycle: u64) -> Option<RunOutcome> {
         // The seal's work between steps first, on its own clock (TODO 74)
         let mut seal_errors_for_test = 0u64;
         let mut seal_bits_for_test = crate::failing_bits::FailingBits::default();
+        // The seal's work before the step, and the step's own around its test (TODO 90): each the
+        // slowest thread's time over all threads' bytes
+        let (mut between_ops, mut test_ops) = (crate::ops::OpTally::default(), crate::ops::OpTally::default());
         if seal.is_some() {
             let between = Instant::now();
             thread_pool.execute_seal_before_step(test_name, test_config, &step_context);
@@ -1266,6 +1269,7 @@ fn execute_test_cycle(ctx: &CycleContext, cycle: u64) -> Option<RunOutcome> {
                     Ok(result) => {
                         seal_errors_for_test += result.seal_errors;
                         seal_bits_for_test.add(&result.seal_failing_bits);
+                        between_ops.merge_thread(&result.ops);
                         if result.seal_errors > 0 {
                             success.store(false, Ordering::Relaxed);
                             log::error!("Thread {}: the seal check before step {} ('{}') found {} errors",
@@ -1296,6 +1300,7 @@ fn execute_test_cycle(ctx: &CycleContext, cycle: u64) -> Option<RunOutcome> {
                     bytes_processed: 0,
                     cycles_completed: (0, 0),
                     stopped_by: None,
+                    ops: between_ops,
                     throughput_mib_s: 0.0,
                     errors: 0,
                     alarms: 0,
@@ -1366,6 +1371,7 @@ fn execute_test_cycle(ctx: &CycleContext, cycle: u64) -> Option<RunOutcome> {
 					timed_for_test = timed_for_test.max(result.timed);
 					seal_errors_for_test += result.seal_errors;
 					total_operations_for_test += result.total_operations;
+					test_ops.merge_thread(&result.ops);
 
 					// Track maximum cycle count (to detect if any thread hit the limit)
 					if result.cycles_completed > cycles_completed {
@@ -1417,6 +1423,9 @@ fn execute_test_cycle(ctx: &CycleContext, cycle: u64) -> Option<RunOutcome> {
 
         let test_duration = test_start.elapsed();
         let test_duration_secs = test_duration.as_secs_f64();
+        // The step's work around its test: the seal's before it, then its own (TODO 90)
+        let mut step_ops = between_ops;
+        step_ops.add_all(&test_ops);
         // What ended the step, for the results file (the report line's Cycles and Time Limit)
         let stopped_by = if stopped_by_time_limit {
             "time"
@@ -1519,7 +1528,9 @@ fn execute_test_cycle(ctx: &CycleContext, cycle: u64) -> Option<RunOutcome> {
         // table uses for these (the `Errors` column) — "data" would collide with the `Data` column,
         // which is bytes processed.
         // The bits that failed follow each count: ` (bit 31)`
-        println!("📊 Test report - Cycle {} - Step {} {}: {} {:.1}s, {} errors{}{} + {} WHEA{}, {:.2} GiB @ {:.1} MiB/s ({:.2} GiB/s), {} ops @ {} ops/s{}{}",
+        // The step's verdict and wall time, then its test's own figures, the work around it by
+        // operation (TODO 90, `n/a` where it did none), and its config
+        println!("📊 Test report - Cycle {} - Step {} {}: {} {:.1}s, {} errors{}{} + {} WHEA{}{}",
                  cycle,
                  test_idx + 1,
                  step_label,
@@ -1530,13 +1541,15 @@ fn execute_test_cycle(ctx: &CycleContext, cycle: u64) -> Option<RunOutcome> {
                  seal_info,
                  whea_for_test.total,
                  whea_for_test.split_suffix(),
+                 cycles_info);
+        println!("   Test: {:.1}s, {:.2} GiB @ {:.0} MiB/s, {} ops @ {} ops/s{}",
+                 timed_secs,
                  total_bytes_for_test as f64 / (1024.0 * 1024.0 * 1024.0),
                  throughput_mib_s,
-                 throughput_mib_s / 1024.0,
                  format_ops(total_operations_for_test),
                  format_ops(ops_per_sec as u64),
-                 latency_info,
-                 cycles_info);
+                 latency_info);
+        println!("   Intermediate: {}", step_ops.line());
 
         // Add config line with calculated extent size (uses passed cache_info to avoid re-detection)
         {
@@ -1659,6 +1672,7 @@ fn execute_test_cycle(ctx: &CycleContext, cycle: u64) -> Option<RunOutcome> {
             bytes_processed: total_bytes_for_test,
             cycles_completed: (cycles_fewest.min(cycles_completed), cycles_completed),
             stopped_by: Some(stopped_by),
+            ops: step_ops,
             throughput_mib_s,
             errors: total_errors_for_test,
             alarms: alarms_for_test,
@@ -1751,8 +1765,9 @@ fn run_seal_stage(ctx: &CycleContext, op: crate::thread_pool::SealOp, kernel: cr
     let duration = start.elapsed();
     let gib = bytes as f64 / (1024.0 * 1024.0 * 1024.0);
     let errors_info = if op == SealOp::FinalCheck { format!("{errors} errors{}, ", bits.brief()) } else { String::new() };
-    crate::console::print_above(&format!("{lead} ({}): {errors_info}{gib:.2} GiB in {:.1}s ({:.2} GiB/s)",
-        kernel.name(), duration.as_secs_f64(), gib / duration.as_secs_f64().max(1e-9)));
+    // The step report's form for an operation (TODO 90): time, data @ speed
+    crate::console::print_above(&format!("{lead} ({}): {errors_info}{:.1}s, {gib:.2} GiB @ {:.0} MiB/s",
+        kernel.name(), duration.as_secs_f64(), gib * 1024.0 / duration.as_secs_f64().max(1e-9)));
     if errors > 0 {
         log::error!("The final seal check of cycle {cycle} found {errors} errors");
     }
@@ -4923,9 +4938,13 @@ mod tests {
         let (mut runner, _extent) = crate::test_scaffolding::TestRunner::new(
             &region.blocks, 0, ErrorMode::Log, &timing, &def.config, None, "Mem-MirrorV2", crate::tests::TestAction::Verify,
         );
-        runner.untimed(|| std::thread::sleep(std::time::Duration::from_millis(60)));
-        let timed = runner.finish_completed(0).timed.expect("it ran");
+        runner.untimed(crate::ops::Op::PatternFill, 4096, || std::thread::sleep(std::time::Duration::from_millis(60)));
+        let stats = runner.finish_completed(0);
+        let timed = stats.timed.expect("it ran");
         assert!(timed < std::time::Duration::from_millis(60), "setup counted: {timed:?}");
+        // On its own record instead
+        let fill = stats.ops.get(crate::ops::Op::PatternFill);
+        assert!(fill.time >= std::time::Duration::from_millis(60) && fill.bytes == 4096, "{fill:?}");
     }
 
     /// TODO 76: chunks overlap where they don't tile, so a word's value may depend only on its
@@ -5110,14 +5129,14 @@ mod tests {
         unsafe { kernel.fill(base, 0, words) };
         let mut unsealed = 0;
         region.words()[100] ^= 1;
-        let errors = crate::thread_pool::seal_before_step(&region.blocks, &never.config, never.actual_name, &progress, &mut unsealed);
+        let (errors, _) = crate::thread_pool::seal_before_step(&region.blocks, &never.config, never.actual_name, &progress, &mut unsealed);
         assert_eq!((errors, unsealed), (1, 640 * KIB), "the whole span is Bench-Init's extent");
         // The seal's bits, not the test's, taken with the work item (TODO 97)
         let bits = crate::tests::take_failing_bits();
         assert!(bits.test.is_empty() && !bits.seal.is_empty() && bits.seal.detail().starts_with("0: 1 / 1"), "{bits:?}");
         assert!(crate::tests::take_failing_bits().seal.is_empty());
         region.words().fill(UNTOUCHED);
-        let errors = crate::thread_pool::seal_before_step(&region.blocks, &sealed.config, sealed.actual_name, &progress, &mut unsealed);
+        let (errors, _) = crate::thread_pool::seal_before_step(&region.blocks, &sealed.config, sealed.actual_name, &progress, &mut unsealed);
         assert_eq!((errors, unsealed), (0, 0));
         assert_eq!(unsafe { kernel.check(region.words().as_ptr(), 0, words, "test") }, 0);
     }

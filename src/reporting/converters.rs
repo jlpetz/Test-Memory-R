@@ -636,10 +636,20 @@ pub fn create_overall_stats_summary_report(
 
     let sealed: Vec<&crate::results::CycleSeal> = result.cycles.iter().filter_map(|c| c.seal.as_ref()).collect();
     let seal = (!sealed.is_empty()).then(|| SealStagesSummary {
-        secs: sealed.iter().map(|s| (s.seal_ms + s.between_steps_ms + s.final_check_ms) as f64 / 1000.0).sum(),
-        data_gib: sealed.iter().map(|s| (s.seal_bytes + s.final_check_bytes) as f64).sum::<f64>() / (1024.0 * 1024.0 * 1024.0),
         final_check_errors: sealed.iter().map(|s| s.final_check_errors).sum(),
     });
+    // Every operation, the ones the run did none of too (TODO 90)
+    let intermediate = crate::ops::Op::ALL
+        .iter()
+        .map(|&op| {
+            let record = overall_stats.intermediate.get(op.key());
+            super::models::IntermediateEntry {
+                name: op.name(),
+                secs: record.map(|r| r.ms / 1000.0),
+                bytes: record.filter(|_| op.has_bytes()).map(|r| r.bytes),
+            }
+        })
+        .collect();
     let errors_by_step = overall_stats.per_step_averages.iter()
         .filter(|s| s.total_errors + s.total_seal_errors > 0)
         .map(|s| StepErrorsEntry { step: s.step, label: s.label.clone(), errors: s.total_errors, seal_errors: s.total_seal_errors })
@@ -662,6 +672,7 @@ pub fn create_overall_stats_summary_report(
         errors_by_step,
         failing_bits: overall_stats.failing_bits.clone(),
         seal_failing_bits: overall_stats.seal_failing_bits.clone(),
+        intermediate,
     }
 }
 

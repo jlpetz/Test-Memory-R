@@ -126,6 +126,10 @@ impl<R: Renderer> Reporter<R> {
             self.renderer.render_separator()?;
             let performance_table = self.formatter.prepare_final_summary_performance_table(report);
             self.renderer.render_table(&performance_table)?;
+            // The work around the tests, by operation (TODO 90)
+            self.renderer.render_separator()?;
+            let table = self.formatter.prepare_intermediate_table(report);
+            self.renderer.render_table(&table)?;
         }
 
         // Where in the sequence it failed, only when something did (TODO 74)

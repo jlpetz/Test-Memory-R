@@ -47,6 +47,7 @@ mod error_context; // where a worker is in the run, for its error lines (TODO 74
 mod failing_bits; // which bit positions failed checks, from the verifies' cold path (TODO 97)
 mod sequence; // Mem-Sequence's passes: writes, reads and read-then-writes in an order (TODO 97)
 mod plans; // built-in test plans: which of the suite's tests a run takes (TODO 25)
+mod ops; // the work around a test, by operation: seal fills and checks, fills (TODO 90)
 
 // Common result type for the crate
 pub(crate) type Result<T> = std::result::Result<T, Box<dyn std::error::Error>>;

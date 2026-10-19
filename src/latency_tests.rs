@@ -38,21 +38,7 @@ impl LatencyTestStats {
     fn calculate_percentiles(mut latencies: Vec<f64>) -> Self {
         if latencies.is_empty() {
             return Self {
-                basic_stats: TestStats {
-                    name: "",
-                    action: TestAction::Latency,
-                    bytes_processed: 0,
-                    timed: None,
-                    thread_id: 0,
-                    error_count: 0,
-                    total_operations: 0,
-                    cycles_completed: 0,
-                    cycles_planned: None,
-                    stopped_by_time_limit: false,
-                    seal_errors: 0,
-                    alarms: 0,
-                    not_reproduced: 0,
-                },
+                basic_stats: TestStats::not_run("", TestAction::Latency, 0, None),
                 latencies_ns: vec![],
                 sample_count: 0,
                 p1_ns: 0.0,
@@ -92,21 +78,7 @@ impl LatencyTestStats {
         let spread_ratio = if p5 > 0.0 { p95 / p5 } else { 0.0 };
 
         Self {
-            basic_stats: TestStats {
-                name: "",
-                action: TestAction::Latency,
-                bytes_processed: 0,
-                timed: None,
-                thread_id: 0,
-                error_count: 0,
-                total_operations: 0,
-                cycles_completed: 0,
-                cycles_planned: None,
-                stopped_by_time_limit: false,
-                seal_errors: 0,
-                alarms: 0,
-                not_reproduced: 0,
-            },
+            basic_stats: TestStats::not_run("", TestAction::Latency, 0, None),
             latencies_ns: latencies,
             sample_count: len,
             p1_ns: p1,
@@ -186,7 +158,7 @@ pub unsafe fn read_latency_multi(
     build_cycle_u64(base, len, thread_id as u64);
 
     // Start timing AFTER setup - setup time should not count against test duration
-    runner.restart_clock();
+    runner.setup_done(crate::ops::Op::ChainBuild, 0);
 
     let mut latencies_ns = Vec::with_capacity(10000);
     // Each sample CONTINUES the chase from where the last one stopped, so it walks the whole
@@ -279,7 +251,7 @@ pub unsafe fn write_latency_multi(
     build_cycle_u64(chain_base, chain_len, thread_id as u64);
 
     // Start timing AFTER setup - setup time should not count against test duration
-    runner.restart_clock();
+    runner.setup_done(crate::ops::Op::ChainBuild, 0);
 
     let mut latencies_ns = Vec::with_capacity(10000);
     // CONTINUE from where the last sample stopped
@@ -375,7 +347,7 @@ pub unsafe fn copy_latency_multi(
     build_cycle_u64(src_base, half_len, thread_id as u64);
 
     // Start timing AFTER setup - setup time should not count against test duration
-    runner.restart_clock();
+    runner.setup_done(crate::ops::Op::ChainBuild, 0);
 
     let mut latencies_ns = Vec::with_capacity(10000);
     // CONTINUE from where the last sample stopped; the destination walks forward and wraps

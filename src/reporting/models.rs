@@ -263,13 +263,23 @@ pub struct FinalTestSummaryReport {
     /// The bits that failed the tests' own checks, and the seal's (TODO 97)
     pub failing_bits: crate::failing_bits::FailingBits,
     pub seal_failing_bits: crate::failing_bits::FailingBits,
+    /// The run's work around its tests, one row per operation in `ops::Op::ALL` (TODO 90)
+    pub intermediate: Vec<IntermediateEntry>,
 }
 
-/// The seal's run-wide stages over the run: sealing all memory and the final checks (TODO 74).
+/// One operation over the run: `None` time when the run did none of it, `None` bytes when its
+/// bytes mean nothing (a chain build).
+#[derive(Debug, Clone)]
+pub struct IntermediateEntry {
+    pub name: &'static str,
+    pub secs: Option<f64>,
+    pub bytes: Option<u64>,
+}
+
+/// The seal over the run, in a sealed run (TODO 74): its time and data are the Intermediate
+/// Operations table's.
 #[derive(Debug, Clone)]
 pub struct SealStagesSummary {
-    pub secs: f64,
-    pub data_gib: f64,
     /// The final checks' errors (TM5 numbers them 0)
     pub final_check_errors: u64,
 }

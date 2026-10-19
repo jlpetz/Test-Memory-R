@@ -80,6 +80,8 @@ pub struct WorkResult {
     /// The bits that failed the test's own checks, and the seal's (TODO 97)
     pub failing_bits: FailingBits,
     pub seal_failing_bits: FailingBits,
+    /// The work around the test, by operation (TODO 90): for a seal stage, the stage itself
+    pub ops: crate::ops::OpTally,
 }
 
 // Thread pool worker context
@@ -291,11 +293,13 @@ fn handle_test_errors(stats: &crate::tests::TestStats, error_mode: ErrorMode, te
 /// back the seal on what the steps before it that don't left unsealed; one that doesn't has the
 /// sealed part of what it will overwrite checked first. Returns the bad words that check found.
 pub(crate) fn seal_before_step(blocks: &[AllocationBlock], config: &TestMemoryConfig, test_name: &str,
-                    progress: &TestProgress, unsealed: &mut usize) -> u64 {
+                    progress: &TestProgress, unsealed: &mut usize) -> (u64, crate::ops::OpTally) {
     let seal = config.seal;
+    let mut ops = crate::ops::OpTally::default();
     if !seal.on {
-        return 0;
+        return (0, ops);
     }
+    let start = Instant::now();
     // A fresh reread budget: not what the last test on this worker left
     crate::tests::reset_rescan_counts();
     let span = crate::test_memory::extent(blocks, usize::MAX);
@@ -315,6 +319,7 @@ pub(crate) fn seal_before_step(blocks: &[AllocationBlock], config: &TestMemoryCo
                 unsafe { seal.kernel.fill(base, at / 8, end / 8) };
                 at = end;
             }
+            ops.add(crate::ops::Op::SealFill, start.elapsed(), at as u64);
             // A reseal cut short leaves the prefix counted unsealed; resealing it again is harmless
             if at >= *unsealed {
                 *unsealed = 0;
@@ -331,11 +336,12 @@ pub(crate) fn seal_before_step(blocks: &[AllocationBlock], config: &TestMemoryCo
                 errors += unsafe { seal.kernel.check(base, at / 8, end / 8, "seal check before") };
                 at = end;
             }
+            ops.add(crate::ops::Op::SealCheck, start.elapsed(), (at - *unsealed) as u64);
             *unsealed = extent.test_size;
         }
     }
     progress.set_stage(Stage::Testing);
-    errors
+    (errors, ops)
 }
 
 /// A run-wide seal stage on the worker's whole span, in 64 MiB pieces so Ctrl+C and the ticker see
@@ -373,6 +379,9 @@ fn run_seal_stage(blocks: &[AllocationBlock], op: SealOp, kernel: SealKernel, pr
     }
     progress.set_stage(Stage::Testing);
     let bits = crate::tests::take_failing_bits();
+    let mut ops = crate::ops::OpTally::default();
+    let kind = if op == SealOp::SealAll { crate::ops::Op::SealFill } else { crate::ops::Op::SealCheck };
+    ops.add(kind, start.elapsed(), (at - from) as u64);
     WorkResult {
         thread_id,
         total_bytes: (at - from) as u64,
@@ -389,6 +398,7 @@ fn run_seal_stage(blocks: &[AllocationBlock], op: SealOp, kernel: SealKernel, pr
         not_reproduced: 0,
         failing_bits: bits.test,
         seal_failing_bits: bits.seal,
+        ops,
     }
 }
 
@@ -449,6 +459,7 @@ fn worker_thread_loop(context: &mut WorkerContext) {
                     not_reproduced: stats.not_reproduced,
                     failing_bits: bits.test,
                     seal_failing_bits: bits.seal,
+                    ops: stats.ops,
                 };
 
                 if context.result_sender.send(result).is_err() {
@@ -460,7 +471,7 @@ fn worker_thread_loop(context: &mut WorkerContext) {
                 let start = Instant::now();
                 crate::error_context::set(format!("{step}, thread {}", context.thread_id));
                 let progress = &context.live[context.thread_id];
-                let errors = seal_before_step(&context.allocated_blocks, &test_config, test_name, progress, &mut context.unsealed);
+                let (errors, ops) = seal_before_step(&context.allocated_blocks, &test_config, test_name, progress, &mut context.unsealed);
                 let bits = crate::tests::take_failing_bits();
                 let result = WorkResult {
                     thread_id: context.thread_id,
@@ -478,6 +489,7 @@ fn worker_thread_loop(context: &mut WorkerContext) {
                     not_reproduced: 0,
                     failing_bits: bits.test,
                     seal_failing_bits: bits.seal,
+                    ops,
                 };
                 if context.result_sender.send(result).is_err() {
                     log::error!("Failed to send result from thread {}", context.thread_id);

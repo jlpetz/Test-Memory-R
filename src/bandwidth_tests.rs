@@ -191,8 +191,10 @@ macro_rules! spd_write_impl {
             // Init phase: scalar fill to fault in pages (skipped in dependent mode), not timed
             if !config.skip_init {
                 scalar_fill(base as *mut u64, extent.test_size / 8);
+                runner.setup_done(crate::ops::Op::PatternFill, extent.test_size as u64);
+            } else {
+                runner.restart_clock();
             }
-            runner.restart_clock();
 
             let pattern = $set1_fn(STATIC_PATTERN as i64);
             // The extent as one chunk under the `whole` chunk mode the built-ins use
@@ -260,8 +262,10 @@ macro_rules! spd_read_impl {
             // Init phase: scalar fill to ensure physical pages (skipped in dependent mode), not timed
             if !config.skip_init {
                 scalar_fill(base as *mut u64, extent.test_size / 8);
+                runner.setup_done(crate::ops::Op::PatternFill, extent.test_size as u64);
+            } else {
+                runner.restart_clock();
             }
-            runner.restart_clock();
 
             // The extent as one chunk under the `whole` chunk mode the built-ins use
             let spread = runner.chunks(extent.test_size);
@@ -330,8 +334,10 @@ macro_rules! spd_copy_impl {
             // Init phase: scalar fill source half (skipped in dependent mode), not timed
             if !config.skip_init {
                 scalar_fill(base as *mut u64, half_bytes / 8);
+                runner.setup_done(crate::ops::Op::PatternFill, half_bytes as u64);
+            } else {
+                runner.restart_clock();
             }
-            runner.restart_clock();
 
             // Each half as one chunk under the `whole` chunk mode the built-ins use
             let spread = runner.half_chunks(extent.test_size);

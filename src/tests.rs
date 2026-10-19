@@ -546,6 +546,31 @@ pub struct TestStats {
     /// Failed checks whose rescan found every word right (`alarms` minus the localised ones, when
     /// rescanning): each still counts one error.
     pub not_reproduced: u64,
+    /// The work around the test sequence, by operation (TODO 90): the seal's fills and checks, a
+    /// fill, a chain build. Left out of `timed` and `bytes_processed`.
+    pub ops: crate::ops::OpTally,
+}
+
+impl TestStats {
+    /// A test that didn't run: no memory, or a SIMD width the CPU lacks.
+    pub fn not_run(name: &'static str, action: TestAction, thread_id: usize, cycles_planned: Option<u32>) -> Self {
+        TestStats {
+            name,
+            action,
+            bytes_processed: 0,
+            timed: None,
+            thread_id,
+            error_count: 0,
+            total_operations: 0,
+            cycles_completed: 0,
+            cycles_planned,
+            stopped_by_time_limit: false,
+            seal_errors: 0,
+            alarms: 0,
+            not_reproduced: 0,
+            ops: Default::default(),
+        }
+    }
 }
 
 /// Optional progress reporting structure for tests
@@ -1483,21 +1508,7 @@ pub unsafe fn stuck_bit_test_128_multi(
     // Runtime CPU feature check
     if !is_x86_feature_detected!("sse2") {
         log::warn!("{}: SSE2 not available, returning zero stats", test_name);
-        return TestStats {
-            name: test_name,
-            action: TestAction::StuckBitTest,
-            bytes_processed: 0,
-            timed: None,
-            thread_id,
-            error_count: 0,
-            total_operations: 0,
-            cycles_completed: 0,
-            cycles_planned: timing.cycles,
-            stopped_by_time_limit: false,
-            seal_errors: 0,
-            alarms: 0,
-            not_reproduced: 0,
-        };
+        return TestStats::not_run(test_name, TestAction::StuckBitTest, thread_id, timing.cycles);
     }
 
     // Call the SSE2 optimized implementation
@@ -1522,16 +1533,7 @@ pub unsafe fn stuck_bit_test_256_multi(
     // Runtime CPU feature check
     if !is_x86_feature_detected!("avx2") {
         log::warn!("{}: AVX2 not available, returning zero stats", test_name);
-        return TestStats {
-            name: test_name, action: TestAction::StuckBitTest,
-            bytes_processed: 0, timed: None, thread_id,
-            error_count: 0, total_operations: 0,
-            cycles_completed: 0, cycles_planned: timing.cycles,
-            stopped_by_time_limit: false,
-            seal_errors: 0,
-            alarms: 0,
-            not_reproduced: 0,
-        };
+        return TestStats::not_run(test_name, TestAction::StuckBitTest, thread_id, timing.cycles);
     }
 
     // Call the AVX2 optimized implementation
@@ -1556,16 +1558,7 @@ pub unsafe fn stuck_bit_test_512_multi(
     // Runtime CPU feature check
     if !is_x86_feature_detected!("avx512f") {
         log::warn!("{}: AVX-512 not available, returning zero stats", test_name);
-        return TestStats {
-            name: test_name, action: TestAction::StuckBitTest,
-            bytes_processed: 0, timed: None, thread_id,
-            error_count: 0, total_operations: 0,
-            cycles_completed: 0, cycles_planned: timing.cycles,
-            stopped_by_time_limit: false,
-            seal_errors: 0,
-            alarms: 0,
-            not_reproduced: 0,
-        };
+        return TestStats::not_run(test_name, TestAction::StuckBitTest, thread_id, timing.cycles);
     }
 
     // Call the AVX-512 optimized implementation
@@ -1854,21 +1847,7 @@ pub unsafe fn refresh_stable_128_multi(
     // Runtime CPU feature check
     if !is_x86_feature_detected!("sse2") {
         log::warn!("{}: SSE2 not available, returning zero stats", test_name);
-        return TestStats {
-            name: test_name,
-            action: TestAction::WriteWaitVerify,
-            bytes_processed: 0,
-            timed: None,
-            thread_id,
-            error_count: 0,
-            total_operations: 0,
-            cycles_completed: 0,
-            cycles_planned: timing.cycles,
-            stopped_by_time_limit: false,
-            seal_errors: 0,
-            alarms: 0,
-            not_reproduced: 0,
-        };
+        return TestStats::not_run(test_name, TestAction::WriteWaitVerify, thread_id, timing.cycles);
     }
 
     // Call the SSE2 optimized implementation
@@ -1896,21 +1875,7 @@ pub unsafe fn refresh_stable_256_multi(
     // Runtime CPU feature check
     if !is_x86_feature_detected!("avx2") {
         log::warn!("{}: AVX2 not available, returning zero stats", test_name);
-        return TestStats {
-            name: test_name,
-            action: TestAction::WriteWaitVerify,
-            bytes_processed: 0,
-            timed: None,
-            thread_id,
-            error_count: 0,
-            total_operations: 0,
-            cycles_completed: 0,
-            cycles_planned: timing.cycles,
-            stopped_by_time_limit: false,
-            seal_errors: 0,
-            alarms: 0,
-            not_reproduced: 0,
-        };
+        return TestStats::not_run(test_name, TestAction::WriteWaitVerify, thread_id, timing.cycles);
     }
 
     // Call the AVX2 optimized implementation
@@ -1938,21 +1903,7 @@ pub unsafe fn refresh_stable_512_multi(
     // Runtime CPU feature check
     if !is_x86_feature_detected!("avx512f") {
         log::warn!("{}: AVX-512 not available, returning zero stats", test_name);
-        return TestStats {
-            name: test_name,
-            action: TestAction::WriteWaitVerify,
-            bytes_processed: 0,
-            timed: None,
-            thread_id,
-            error_count: 0,
-            total_operations: 0,
-            cycles_completed: 0,
-            cycles_planned: timing.cycles,
-            stopped_by_time_limit: false,
-            seal_errors: 0,
-            alarms: 0,
-            not_reproduced: 0,
-        };
+        return TestStats::not_run(test_name, TestAction::WriteWaitVerify, thread_id, timing.cycles);
     }
 
     // Call the AVX-512 optimized implementation
@@ -2243,8 +2194,8 @@ pub unsafe fn random_torture_multi(
     for i in 0..len {
         *base.add(i) = ids | i as u64;
     }
-    // Setup, not the test: its time and bytes are left out (TODO 90)
-    runner.restart_clock();
+    // Setup, not the test: its own record (TODO 90)
+    runner.setup_done(crate::ops::Op::PatternFill, extent.test_size as u64);
 
     loop {
         let cycle = runner.begin_cycle();
@@ -2510,8 +2461,8 @@ pub unsafe fn block_move_multi(
         for i in 0..len {
             *src_base.add(i) = pattern_base.wrapping_add(i as u64);
         }
-        // Setup, not the test: its time is left out, and its bytes never counted (TODO 90)
-        runner.restart_clock();
+        // Setup, not the test: its own record (TODO 90)
+        runner.setup_done(crate::ops::Op::PatternFill, (len * std::mem::size_of::<u64>()) as u64);
     }
 
     loop {
@@ -2538,7 +2489,7 @@ pub unsafe fn block_move_multi(
             halt_here!(runner, cycle_errors, (runner.bytes_processed() / (3 * std::mem::size_of::<u64>())) as u64);
             if sealed {
                 // Setup, as the unsealed fill (TODO 90)
-                runner.untimed(|| {
+                runner.untimed(crate::ops::Op::PatternFill, spread.chunk() as u64, || {
                     for i in processed..chunk_end {
                         *src_base.add(i) = pattern_base.wrapping_add(i as u64);
                     }

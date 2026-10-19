@@ -72,6 +72,7 @@ pub trait ReportFormatter: Send + Sync {
     fn prepare_final_summary_overview_table(&self, report: &FinalTestSummaryReport) -> TableData;
     fn prepare_final_summary_performance_table(&self, report: &FinalTestSummaryReport) -> TableData;
     fn prepare_errors_by_step_table(&self, report: &FinalTestSummaryReport) -> TableData;
+    fn prepare_intermediate_table(&self, report: &FinalTestSummaryReport) -> TableData;
     fn prepare_failing_bits_table(&self, report: &FinalTestSummaryReport) -> TableData;
     
     /// The allocation report's tables (TODO 81)
@@ -1181,11 +1182,10 @@ impl ReportFormatter for DefaultFormatter {
                 report.total_errors.to_string(),
             ])
             .add_row(vec![
-                // The run-wide stages; the checks around each chunk are in the steps' times
+                // Its time and data are the Intermediate Operations table's
                 "Seal".to_string(),
                 match &report.seal {
-                    Some(seal) => format!("{} errors in the final checks, {:.1}s for {:.2} GiB sealed and checked",
-                                          seal.final_check_errors, seal.secs, seal.data_gib),
+                    Some(seal) => format!("{} errors in the final checks", seal.final_check_errors),
                     None => "off".to_string(),
                 },
             ])
@@ -1302,6 +1302,31 @@ impl ReportFormatter for DefaultFormatter {
             if sealed { "/Seal (the seal checks before its chunks, TM5's test 0)" } else { "" },
             if has_whea { "/WHEA" } else { "" },
         ))
+    }
+
+    /// The run's work around its tests, by operation (TODO 90): `n/a` where it did none
+    fn prepare_intermediate_table(&self, report: &FinalTestSummaryReport) -> TableData {
+        let mut table = TableData::new()
+            .with_title("Final Test Summary - Intermediate Operations")
+            .add_header("Operation", ColumnAlignment::Left)
+            .add_header("Time", ColumnAlignment::Right)
+            .add_header("Data", ColumnAlignment::Right)
+            .add_header("Speed", ColumnAlignment::Right);
+        for entry in &report.intermediate {
+            let row = match entry.secs {
+                None => vec![entry.name.to_string(), "n/a".to_string(), "n/a".to_string(), "n/a".to_string()],
+                Some(secs) => {
+                    let data = entry.bytes.map_or("-".to_string(), |b| format!("{:.2} GiB", b as f64 / (1u64 << 30) as f64));
+                    let speed = match entry.bytes {
+                        Some(b) if secs > 0.0 => format!("{:.0} MiB/s", b as f64 / (1u64 << 20) as f64 / secs),
+                        _ => "-".to_string(),
+                    };
+                    vec![entry.name.to_string(), format!("{secs:.1}s"), data, speed]
+                }
+            };
+            table = table.add_row(row);
+        }
+        table.with_footer("Over the run: each cycle's seal at its start and check at its end, and every step's work around its test. A step's time is its slowest thread's.")
     }
 
     fn prepare_errors_by_step_table(&self, report: &FinalTestSummaryReport) -> TableData {
