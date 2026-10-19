@@ -5092,11 +5092,32 @@ macro_rules! sequence_step_check {
 }
 
 /// Mem-Sequence's forward walk (`$rev` false) or reverse (true) of `$op` over the chunk of `$walk`,
-/// its family's line `[$kind]`: a pointer walked a step at a time from the chunk's first line or
-/// its last, each of the step's lines and vectors at a fixed displacement from it, its first line's
-/// id beside it. One loop to a function (`sequence_orders!`), so its values stay in registers.
+/// its family's line `[$kind]`: a pointer walked from the chunk's first line or its last, each line
+/// and vector at a fixed displacement from it, the line's id beside it. One loop to a function
+/// (`sequence_orders!`), so its values stay in registers. In the width's form (`sequence_random!`):
+/// `steps` a step's lines an iteration (at 512 bits), `rotate` a line an iteration with the
+/// accumulators rotated (at 256, where two lines' words at once spilled for the heavier families).
 macro_rules! sequence_linear {
-    ($op:tt, $simd:ty, $w:tt, [$($l:literal: [$($v:literal $a:literal),*]),*], $kind:tt, $walk:ident, $rev:literal) => {{
+    (rotate, $op:tt, $simd:ty, $w:tt, [$l0:literal: [$($v:literal $a:literal),*] $(, $l:literal: $rest:tt)*], $kind:tt, $walk:ident, $rev:literal) => {{
+        sequence_step_check!($w, [$l0: [$($v $a),*] $(, $l: $rest)*]);
+        let SequenceWalk { ptr, start, end, lid0, pkey, mask, .. } = $walk;
+        let mask = <$simd>::splat(mask);
+        sequence_acc!(init $op, acc, ones, $simd);
+        let lines = (end - start) / LINE_WORDS;
+        let first = if $rev { lines - 1 } else { 0 };
+        let mut p = ptr.add(start + first * LINE_WORDS);
+        let mut lid = lid0 + first as u64;
+        for _ in 0..lines {
+            let words = sequence_line!($w, $kind, lid, pkey).map(|x| x ^ mask);
+            $(sequence_visit!($op, p.add($v * $w) as *mut $simd, words[$v], acc[$a], ones);)*
+            sequence_acc!(rotate $op, acc, LINE_WORDS / $w);
+            // The last step lands off the chunk
+            p = if $rev { p.wrapping_sub(LINE_WORDS) } else { p.wrapping_add(LINE_WORDS) };
+            lid = if $rev { lid.wrapping_sub(1) } else { lid.wrapping_add(1) };
+        }
+        sequence_acc!(result $op, acc)
+    }};
+    (steps, $op:tt, $simd:ty, $w:tt, [$($l:literal: [$($v:literal $a:literal),*]),*], $kind:tt, $walk:ident, $rev:literal) => {{
         sequence_step_check!($w, [$($l: [$($v $a),*]),*]);
         const LPG: usize = [$($l),*].len();
         let SequenceWalk { ptr, start, end, lid0, pkey, mask, .. } = $walk;
@@ -5188,6 +5209,10 @@ macro_rules! sequence_random {
 /// Mem-Sequence's strided walk of `$op` over the chunk of `$walk`: `for_each_strided_line!`'s
 /// lines and prefetches, a line a step, on a walked pointer: each pass from its first line, a
 /// period at a time, each vector of the line `acc[v % 4]`'s as the old walk's (at 512 bits one).
+/// The pointer goes from pass to pass (back `wrap`), so a pass keeps nothing else live: at TM5's
+/// large strides a pass is a line or two. Each pass is two loops, the steps whose prefetch lands in
+/// the pass and those whose lands in the next, so neither picks its target, and each line's id
+/// goes through `opaque_line_id`.
 macro_rules! sequence_strided {
     ($op:tt, $simd:ty, $w:tt, [$($l:literal: [$($v:literal $a:literal),*]),*], $kind:tt, $walk:ident) => {
         sequence_strided!(@line $op, $simd, $w, $kind, $walk, [$($l: [$($v $a),*]),*])
@@ -5207,11 +5232,20 @@ macro_rules! sequence_strided {
             // start keeps no more than the walk does
             let wrap = sequence_wrap(p, stop, period);
             let mut lid = lid0 + ((p.addr() - bottom.addr()) / 64) as u64;
+            // `strided_ahead`'s targets, a loop each: the steps whose line `ahead` on is in this
+            // pass, then the rest, whose is in the next
+            let near = stop.wrapping_sub(ahead);
+            while p < near {
+                prefetch_line(p.wrapping_add(ahead));
+                let words = sequence_line!($w, $kind, opaque_line_id(lid), pkey).map(|x| x ^ mask);
+                $(sequence_visit!($op, p.add($v * $w) as *mut $simd, words[$v], acc[$v % 4], ones);)*
+                p = p.wrapping_add(period);
+                lid = lid.wrapping_add(lid_step);
+            }
             while p < stop {
                 // The walk's last steps prefetch off the chunk: a wasted prefetch, not a fault
-                let next = p.wrapping_add(ahead);
-                prefetch_line(if next < stop { next } else { next.wrapping_byte_sub(wrap) });
-                let words = sequence_line!($w, $kind, lid, pkey).map(|x| x ^ mask);
+                prefetch_line(p.wrapping_add(ahead).wrapping_byte_sub(wrap));
+                let words = sequence_line!($w, $kind, opaque_line_id(lid), pkey).map(|x| x ^ mask);
                 $(sequence_visit!($op, p.add($v * $w) as *mut $simd, words[$v], acc[$v % 4], ones);)*
                 p = p.wrapping_add(period);
                 lid = lid.wrapping_add(lid_step);
@@ -5224,6 +5258,19 @@ macro_rules! sequence_strided {
         }
         sequence_acc!(result $op, acc)
     }};
+}
+
+/// `lid`, through an empty `asm!` the compiler can't see through: the strided walk computes each
+/// line's values from its id, rather than stepping each beside the id. At a period known only at
+/// run time, each value a family takes from the id (`lid + key`, `ident`'s `(lid << 3) * G + key`,
+/// ...) stepped on its own took two registers, itself and its step, and the walks of `header` and
+/// `quiet` spilled (TODO 99: 25 hot loops reloading from the stack, 13 with this). No instruction:
+/// the block is a comment, its operand the register `lid` is already in.
+#[inline(always)]
+fn opaque_line_id(mut lid: u64) -> u64 {
+    // SAFETY: an empty block that reads and writes one register and touches nothing else
+    unsafe { core::arch::asm!("/* {0} */", inout(reg) lid, options(pure, nomem, nostack, preserves_flags)) };
+    lid
 }
 
 /// `strided_wrap` for the pass from `p` in bytes, from the pointers: the pass's lines rounded up to
@@ -5240,13 +5287,13 @@ fn sequence_wrap(p: *const u64, stop: *const u64, period: usize) -> usize {
 /// (TODO 99): in one function for every family and order, the loops kept their bounds, keys and
 /// at 512 bits their accumulators on the stack.
 macro_rules! sequence_orders {
-    ($op:tt, $simd:ty, $w:tt, $tf:literal, $step:tt, $random:ident, $walk:ident, $order:expr, $kind:tt) => {
+    ($op:tt, $simd:ty, $w:tt, $tf:literal, $step:tt, $form:ident, $walk:ident, $order:expr, $kind:tt) => {
         match $order {
             crate::sequence::Order::Forward => {
                 #[target_feature(enable = $tf)]
                 #[inline(never)]
                 unsafe fn forward(walk: SequenceWalk) -> u64 {
-                    sequence_linear!($op, $simd, $w, $step, $kind, walk, false)
+                    sequence_linear!($form, $op, $simd, $w, $step, $kind, walk, false)
                 }
                 forward($walk)
             }
@@ -5254,7 +5301,7 @@ macro_rules! sequence_orders {
                 #[target_feature(enable = $tf)]
                 #[inline(never)]
                 unsafe fn reverse(walk: SequenceWalk) -> u64 {
-                    sequence_linear!($op, $simd, $w, $step, $kind, walk, true)
+                    sequence_linear!($form, $op, $simd, $w, $step, $kind, walk, true)
                 }
                 reverse($walk)
             }
@@ -5262,7 +5309,7 @@ macro_rules! sequence_orders {
                 #[target_feature(enable = $tf)]
                 #[inline(never)]
                 unsafe fn random(walk: SequenceWalk) -> u64 {
-                    sequence_random!($random, $op, $simd, $w, $step, $kind, walk)
+                    sequence_random!($form, $op, $simd, $w, $step, $kind, walk)
                 }
                 random($walk)
             }
@@ -5332,28 +5379,28 @@ impl SequenceWalk {
 
 /// Mem-Sequence at one width: the test, and a function per operation for its passes, each
 /// picking its family's walk in its order (`sequence_orders!`). `$step` is the width's step
-/// (`sequence_step_check!`), `$random` its random walk's form (`sequence_random!`).
+/// (`sequence_step_check!`), `$form` its linear and random walks' form (`sequence_random!`).
 macro_rules! sequence_impl {
-    ($fn_name:ident, $write:ident, $read:ident, $rw:ident, $simd:ty, $w:tt, $step:tt, $random:ident, $tf:literal) => {
+    ($fn_name:ident, $write:ident, $read:ident, $rw:ident, $simd:ty, $w:tt, $step:tt, $form:ident, $tf:literal) => {
         #[target_feature(enable = $tf)]
         #[inline(never)]
         unsafe fn $write(c: SequenceChunk, order: crate::sequence::Order, key: u64, phase: crate::pattern::Phase) -> u64 {
             let walk = SequenceWalk::new(c, key, phase);
-            sequence_families!(phase, sequence_orders!(write, $simd, $w, $tf, $step, $random, walk, order,))
+            sequence_families!(phase, sequence_orders!(write, $simd, $w, $tf, $step, $form, walk, order,))
         }
 
         #[target_feature(enable = $tf)]
         #[inline(never)]
         unsafe fn $read(c: SequenceChunk, order: crate::sequence::Order, key: u64, phase: crate::pattern::Phase) -> u64 {
             let walk = SequenceWalk::new(c, key, phase);
-            sequence_families!(phase, sequence_orders!(read, $simd, $w, $tf, $step, $random, walk, order,))
+            sequence_families!(phase, sequence_orders!(read, $simd, $w, $tf, $step, $form, walk, order,))
         }
 
         #[target_feature(enable = $tf)]
         #[inline(never)]
         unsafe fn $rw(c: SequenceChunk, order: crate::sequence::Order, key: u64, phase: crate::pattern::Phase) -> u64 {
             let walk = SequenceWalk::new(c, key, phase);
-            sequence_families!(phase, sequence_orders!(rw, $simd, $w, $tf, $step, $random, walk, order,))
+            sequence_families!(phase, sequence_orders!(rw, $simd, $w, $tf, $step, $form, walk, order,))
         }
 
         /// Mem-Sequence at this width; see the section comment.
