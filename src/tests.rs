@@ -5222,41 +5222,227 @@ struct SimpleMode20 {
     key: u64,
 }
 
+/// A width's sequential mode 20 loops, `m20_write` and `m20_verify`, inside its
+/// `simple_simd_loops!` module: `by_line` hashes each line in scalar code (128 and 256 bits, which
+/// have no 64-bit vector multiply), `by_lanes` hashes a vector of lines at once (512 bits, a line a
+/// vector).
+macro_rules! simple_m20_seq_loops {
+    (by_line, $lane_offsets:expr, $target_feature:literal) => {
+        /// The mode 20 write: each line from its address's hash, in `W`-word stores.
+        #[target_feature(enable = $target_feature)]
+        #[inline(never)]
+        pub(super) unsafe fn m20_write(c: SimpleMode20) {
+            let SimpleMode20 { ptr, start, end, key } = c;
+            let lanes = V::from_array($lane_offsets);
+            let mut line = ptr.add(start);
+            for _ in 0..(end - start) / LINE_WORDS {
+                let (seed, step) = pattern_gen::mode20_line(line as usize, key);
+                let advance = V::splat(step.wrapping_mul(W as u64));
+                let mut words = V::splat(seed) + V::splat(step) * lanes;
+                for j in 0..LINE_WORDS / W {
+                    *(line.add(j * W) as *mut V) = words;
+                    words += advance;
+                }
+                line = line.wrapping_add(LINE_WORDS);
+            }
+        }
+
+        /// The mode 20 verify: four lines a step, each into its own accumulator, then the rest
+        /// into the first.
+        #[target_feature(enable = $target_feature)]
+        #[inline(never)]
+        pub(super) unsafe fn m20_verify(c: SimpleMode20) -> u64 {
+            let SimpleMode20 { ptr, start, end, key } = c;
+            let lanes = V::from_array($lane_offsets);
+            let mut acc = [V::splat(0); 4];
+            let mut line = ptr.add(start) as *const u64;
+            let lines = (end - start) / LINE_WORDS;
+            for _ in 0..lines / 4 {
+                for (k, a) in acc.iter_mut().enumerate() {
+                    let at = line.add(k * LINE_WORDS);
+                    let (seed, step) = pattern_gen::mode20_line(at as usize, key);
+                    let advance = V::splat(step.wrapping_mul(W as u64));
+                    let mut words = V::splat(seed) + V::splat(step) * lanes;
+                    for j in 0..LINE_WORDS / W {
+                        *a |= *(at.add(j * W) as *const V) ^ words;
+                        words += advance;
+                    }
+                }
+                line = line.wrapping_add(4 * LINE_WORDS);
+            }
+            for _ in 0..lines % 4 {
+                let (seed, step) = pattern_gen::mode20_line(line as usize, key);
+                let advance = V::splat(step.wrapping_mul(W as u64));
+                let mut words = V::splat(seed) + V::splat(step) * lanes;
+                for j in 0..LINE_WORDS / W {
+                    acc[0] |= *(line.add(j * W) as *const V) ^ words;
+                    words += advance;
+                }
+                line = line.wrapping_add(LINE_WORDS);
+            }
+            ((acc[0] | acc[1]) | (acc[2] | acc[3])).reduce_or()
+        }
+    };
+    (by_lanes, $lane_offsets:expr, $target_feature:literal) => {
+        /// Mode 20's hash of a vector of lines at once (`pattern_gen::mode20_line`, whose
+        /// definition it repeats; the loop tests check it against that): lane `l` of `at` is line
+        /// `l`'s address plus the key, the hash's first sum; the lines' seeds and steps.
+        #[inline(always)]
+        fn mode20_lanes(at: V, key: V) -> (V, V) {
+            let mut h = at;
+            h ^= h >> V::splat(30);
+            h *= V::splat(0xbf58476d1ce4e5b9);
+            h ^= h >> V::splat(27);
+            h *= V::splat(0x94d049bb133111eb);
+            h ^= h >> V::splat(31);
+            let x = h ^ key;
+            (h, ((x << V::splat(29)) | (x >> V::splat(35))) * V::splat(0x9E3779B97F4A7C15) | V::splat(1))
+        }
+
+        /// The mode 20 write at a line a vector: the hashes of `W` lines a step in one vector
+        /// each (`mode20_lanes`), then each line from its lanes, in address order, to a bound
+        /// pointer; the lines after the last step from the scalar hash.
+        #[target_feature(enable = $target_feature)]
+        #[inline(never)]
+        pub(super) unsafe fn m20_write(c: SimpleMode20) {
+            const { assert!(W == LINE_WORDS, "a line a vector") };
+            let SimpleMode20 { ptr, start, end, key } = c;
+            let lanes = V::from_array($lane_offsets);
+            let lines = (end - start) / LINE_WORDS;
+            let mut line = ptr.add(start);
+            let steps_end = ptr.add(start + lines / W * W * LINE_WORDS);
+            let stop = ptr.add(start + lines * LINE_WORDS);
+            let keys = V::splat(key);
+            let mut at = V::splat((line as usize as u64).wrapping_add(key)) + lanes * V::splat(8 * LINE_WORDS as u64);
+            let step_bytes = V::splat((W * 8 * LINE_WORDS) as u64);
+            while line < steps_end {
+                let (seeds, steps) = mode20_lanes(at, keys);
+                for j in 0..W {
+                    *(line.add(j * LINE_WORDS) as *mut V) = V::splat(seeds[j]) + V::splat(steps[j]) * lanes;
+                }
+                at += step_bytes;
+                line = line.wrapping_add(W * LINE_WORDS);
+            }
+            while line < stop {
+                let (seed, step) = pattern_gen::mode20_line(line as usize, key);
+                *(line as *mut V) = V::splat(seed) + V::splat(step) * lanes;
+                line = line.wrapping_add(LINE_WORDS);
+            }
+        }
+
+        /// The mode 20 verify at a line a vector: the hashes of `W` lines a step in one vector
+        /// each, then each line built from its lanes and checked before the next (Rule 6.12), line
+        /// `j` into accumulator `j % 4`, in address order, to a bound pointer; the lines after the
+        /// last step from the scalar hash, into the first.
+        #[target_feature(enable = $target_feature)]
+        #[inline(never)]
+        pub(super) unsafe fn m20_verify(c: SimpleMode20) -> u64 {
+            const { assert!(W == LINE_WORDS, "a line a vector") };
+            let SimpleMode20 { ptr, start, end, key } = c;
+            let lanes = V::from_array($lane_offsets);
+            let lines = (end - start) / LINE_WORDS;
+            let mut line = ptr.add(start) as *const u64;
+            let steps_end = ptr.add(start + lines / W * W * LINE_WORDS) as *const u64;
+            let stop = ptr.add(start + lines * LINE_WORDS) as *const u64;
+            let keys = V::splat(key);
+            let mut at = V::splat((line as usize as u64).wrapping_add(key)) + lanes * V::splat(8 * LINE_WORDS as u64);
+            let step_bytes = V::splat((W * 8 * LINE_WORDS) as u64);
+            let mut acc = [V::splat(0); 4];
+            while line < steps_end {
+                let (seeds, steps) = mode20_lanes(at, keys);
+                for j in 0..W {
+                    acc[j % 4] |= *(line.add(j * LINE_WORDS) as *const V) ^ (V::splat(seeds[j]) + V::splat(steps[j]) * lanes);
+                }
+                at += step_bytes;
+                line = line.wrapping_add(W * LINE_WORDS);
+            }
+            while line < stop {
+                let (seed, step) = pattern_gen::mode20_line(line as usize, key);
+                acc[0] |= *(line as *const V) ^ (V::splat(seed) + V::splat(step) * lanes);
+                line = line.wrapping_add(LINE_WORDS);
+            }
+            ((acc[0] | acc[1]) | (acc[2] | acc[3])).reduce_or()
+        }
+    };
+}
+
 /// Stamps a width's SimpleTest loops into module `$module`: `$simd_type` vectors of `$w` words,
-/// lanes `$lane_offsets`, NT stores through `$stream_fn` on `$arch_type`. Each verify returns its
-/// accumulators ORed, nonzero when a word differs; the caller rescans.
+/// lanes `$lane_offsets`, NT stores through `$stream_fn` on `$arch_type`, the sequential mode 20
+/// loops `$m20` (`simple_m20_seq_loops!`). Each verify returns its accumulators ORed, nonzero when
+/// a word differs; the caller rescans.
 macro_rules! simple_simd_loops {
-    ($module:ident, $simd_type:ty, $w:expr, $lane_offsets:expr, $arch_type:ty, $stream_fn:path, $target_feature:literal) => {
+    ($module:ident, $simd_type:ty, $w:expr, $lane_offsets:expr, $arch_type:ty, $stream_fn:path, $m20:ident, $target_feature:literal) => {
         mod $module {
             use super::*;
 
             type V = $simd_type;
             const W: usize = $w;
 
-            /// The positional write: `i ^ base` to each word, four vectors a step, then the rest.
+            /// Where the positional steps run in the whole vectors of words `[start, end)` (`start`
+            /// on a vector, as every access is), which end at `whole`: `(first, last, whole)`, the
+            /// steps `[first, last)` of four vectors each starting on a multiple of `4 * W`, the
+            /// head `[start, first)` and the tail `[last, whole)` a vector at a time. A chunk of
+            /// whole pages has neither.
+            #[inline(always)]
+            fn pos_steps(start: usize, end: usize) -> (usize, usize, usize) {
+                debug_assert!(start.is_multiple_of(W), "chunk not aligned to SIMD width");
+                let whole = start + (end - start) / W * W;
+                let first = start.next_multiple_of(4 * W).min(whole);
+                (first, first + (whole - first) / (4 * W) * (4 * W), whole)
+            }
+
+            /// Vector `k`'s value in a step is the step's first index XOR constant `k`: that index
+            /// is a multiple of `4 * W`, so adding a word's offset in the step, `k * W + lane`
+            /// (under `4 * W`), is XORing it, and `(at + offset) ^ base == at ^ (offset ^ base)`.
+            #[inline(always)]
+            fn pos_constants(base: u64) -> [V; 4] {
+                std::array::from_fn(|k| (V::from_array($lane_offsets) + V::splat((k * W) as u64)) ^ V::splat(base))
+            }
+
+            /// The positional write of the head or tail, words `[from, to)` (whole vectors), a
+            /// vector at a time, to a bound pointer (from a count the compiler unrolls it).
+            #[target_feature(enable = $target_feature)]
+            #[cold]
+            #[inline(never)]
+            unsafe fn pos_write_rest(ptr: *mut u64, from: usize, to: usize, base: u64) {
+                let base = V::splat(base);
+                let mut idx = V::splat(from as u64) + V::from_array($lane_offsets);
+                let mut p = ptr.add(from) as *mut V;
+                let stop = ptr.add(to) as *mut V;
+                while p < stop {
+                    *p = idx ^ base;
+                    idx += V::splat(W as u64);
+                    p = p.wrapping_add(1);
+                }
+            }
+
+            /// The positional write: `i ^ base` to each word, four vectors a step in address order,
+            /// each one XOR of the step's first index with its constant (`pos_constants`), run to a
+            /// bound pointer (Rule 6.3); the head and tail a vector at a time.
             #[target_feature(enable = $target_feature)]
             #[inline(never)]
             pub(super) unsafe fn pos_write(c: SimplePositional) {
                 let SimplePositional { ptr, start, end, base } = c;
                 debug_assert!((end - start).is_multiple_of(W), "chunk not aligned to SIMD width");
-                let base = V::splat(base);
-                let (w1, w2, w3, w4) = (V::splat(W as u64), V::splat(2 * W as u64), V::splat(3 * W as u64), V::splat(4 * W as u64));
-                let mut idx = V::splat(start as u64) + V::from_array($lane_offsets);
-                let mut p = ptr.add(start) as *mut V;
-                let vectors = (end - start) / W;
-                // Four a step and the rest, so the compiler's own unroll leaves no indexed remainder
-                for _ in 0..vectors / 4 {
-                    *p = idx ^ base;
-                    *p.add(1) = (idx + w1) ^ base;
-                    *p.add(2) = (idx + w2) ^ base;
-                    *p.add(3) = (idx + w3) ^ base;
-                    idx += w4;
+                let (first, last, whole) = pos_steps(start, end);
+                if first > start {
+                    pos_write_rest(ptr, start, first, base);
+                }
+                let k = pos_constants(base);
+                let four = V::splat(4 * W as u64);
+                let mut at = V::splat(first as u64);
+                let mut p = ptr.add(first) as *mut V;
+                let stop = ptr.add(last) as *mut V;
+                while p < stop {
+                    *p = at ^ k[0];
+                    *p.add(1) = at ^ k[1];
+                    *p.add(2) = at ^ k[2];
+                    *p.add(3) = at ^ k[3];
+                    at += four;
                     p = p.wrapping_add(4);
                 }
-                for _ in 0..vectors % 4 {
-                    *p = idx ^ base;
-                    idx += w1;
-                    p = p.wrapping_add(1);
+                if last < whole {
+                    pos_write_rest(ptr, last, whole, base);
                 }
             }
 
@@ -5288,33 +5474,56 @@ macro_rules! simple_simd_loops {
                 std::arch::x86_64::_mm_sfence();
             }
 
-            /// The positional verify: four vectors a step into four accumulators, then the rest
-            /// into the first.
+            /// The positional verify of the head or tail, words `[from, to)` (whole vectors), a
+            /// vector at a time to a bound pointer: its differences ORed.
+            #[target_feature(enable = $target_feature)]
+            #[cold]
+            #[inline(never)]
+            unsafe fn pos_verify_rest(ptr: *const u64, from: usize, to: usize, base: u64) -> u64 {
+                let base = V::splat(base);
+                let mut idx = V::splat(from as u64) + V::from_array($lane_offsets);
+                let mut p = ptr.add(from) as *const V;
+                let stop = ptr.add(to) as *const V;
+                let mut acc = V::splat(0);
+                while p < stop {
+                    acc |= *p ^ (idx ^ base);
+                    idx += V::splat(W as u64);
+                    p = p.wrapping_add(1);
+                }
+                acc.reduce_or()
+            }
+
+            /// The positional verify: four vectors a step in address order, each XORed with the
+            /// step's first index and its constant (`pos_constants`) into its own accumulator, run
+            /// to a bound pointer (Rule 6.3); the head and tail a vector at a time.
             #[target_feature(enable = $target_feature)]
             #[inline(never)]
             pub(super) unsafe fn pos_verify(c: SimplePositional) -> u64 {
                 let SimplePositional { ptr, start, end, base } = c;
                 debug_assert!((end - start).is_multiple_of(W), "chunk not aligned to SIMD width");
-                let base = V::splat(base);
-                let (w1, w2, w3, w4) = (V::splat(W as u64), V::splat(2 * W as u64), V::splat(3 * W as u64), V::splat(4 * W as u64));
-                let mut idx = V::splat(start as u64) + V::from_array($lane_offsets);
-                let mut p = ptr.add(start) as *const V;
+                let (first, last, whole) = pos_steps(start, end);
+                let mut rest = 0;
+                if first > start {
+                    rest |= pos_verify_rest(ptr, start, first, base);
+                }
+                let k = pos_constants(base);
+                let four = V::splat(4 * W as u64);
+                let mut at = V::splat(first as u64);
+                let mut p = ptr.add(first) as *const V;
+                let stop = ptr.add(last) as *const V;
                 let mut acc = [V::splat(0); 4];
-                let vectors = (end - start) / W;
-                for _ in 0..vectors / 4 {
-                    acc[0] |= *p ^ (idx ^ base);
-                    acc[1] |= *p.add(1) ^ ((idx + w1) ^ base);
-                    acc[2] |= *p.add(2) ^ ((idx + w2) ^ base);
-                    acc[3] |= *p.add(3) ^ ((idx + w3) ^ base);
-                    idx += w4;
+                while p < stop {
+                    acc[0] |= *p ^ (at ^ k[0]);
+                    acc[1] |= *p.add(1) ^ (at ^ k[1]);
+                    acc[2] |= *p.add(2) ^ (at ^ k[2]);
+                    acc[3] |= *p.add(3) ^ (at ^ k[3]);
+                    at += four;
                     p = p.wrapping_add(4);
                 }
-                for _ in 0..vectors % 4 {
-                    acc[0] |= *p ^ (idx ^ base);
-                    idx += w1;
-                    p = p.wrapping_add(1);
+                if last < whole {
+                    rest |= pos_verify_rest(ptr, last, whole, base);
                 }
-                ((acc[0] | acc[1]) | (acc[2] | acc[3])).reduce_or()
+                ((acc[0] | acc[1]) | (acc[2] | acc[3])).reduce_or() | rest
             }
 
             /// The positional write on TM5's strided walk (TODO 93): each line `i ^ base` in
@@ -5354,60 +5563,7 @@ macro_rules! simple_simd_loops {
                 ((acc[0] | acc[1]) | (acc[2] | acc[3])).reduce_or()
             }
 
-            /// The mode 20 write: each line from its address's hash, in `W`-word stores.
-            #[target_feature(enable = $target_feature)]
-            #[inline(never)]
-            pub(super) unsafe fn m20_write(c: SimpleMode20) {
-                let SimpleMode20 { ptr, start, end, key } = c;
-                let lanes = V::from_array($lane_offsets);
-                let mut line = ptr.add(start);
-                for _ in 0..(end - start) / LINE_WORDS {
-                    let (seed, step) = pattern_gen::mode20_line(line as usize, key);
-                    let advance = V::splat(step.wrapping_mul(W as u64));
-                    let mut words = V::splat(seed) + V::splat(step) * lanes;
-                    for j in 0..LINE_WORDS / W {
-                        *(line.add(j * W) as *mut V) = words;
-                        words += advance;
-                    }
-                    line = line.wrapping_add(LINE_WORDS);
-                }
-            }
-
-            /// The mode 20 verify: four lines a step, each into its own accumulator, then the rest
-            /// into the first.
-            #[target_feature(enable = $target_feature)]
-            #[inline(never)]
-            pub(super) unsafe fn m20_verify(c: SimpleMode20) -> u64 {
-                let SimpleMode20 { ptr, start, end, key } = c;
-                let lanes = V::from_array($lane_offsets);
-                let mut acc = [V::splat(0); 4];
-                let mut line = ptr.add(start) as *const u64;
-                let lines = (end - start) / LINE_WORDS;
-                for _ in 0..lines / 4 {
-                    for (k, a) in acc.iter_mut().enumerate() {
-                        let at = line.add(k * LINE_WORDS);
-                        let (seed, step) = pattern_gen::mode20_line(at as usize, key);
-                        let advance = V::splat(step.wrapping_mul(W as u64));
-                        let mut words = V::splat(seed) + V::splat(step) * lanes;
-                        for j in 0..LINE_WORDS / W {
-                            *a |= *(at.add(j * W) as *const V) ^ words;
-                            words += advance;
-                        }
-                    }
-                    line = line.wrapping_add(4 * LINE_WORDS);
-                }
-                for _ in 0..lines % 4 {
-                    let (seed, step) = pattern_gen::mode20_line(line as usize, key);
-                    let advance = V::splat(step.wrapping_mul(W as u64));
-                    let mut words = V::splat(seed) + V::splat(step) * lanes;
-                    for j in 0..LINE_WORDS / W {
-                        acc[0] |= *(line.add(j * W) as *const V) ^ words;
-                        words += advance;
-                    }
-                    line = line.wrapping_add(LINE_WORDS);
-                }
-                ((acc[0] | acc[1]) | (acc[2] | acc[3])).reduce_or()
-            }
+            simple_m20_seq_loops!($m20, $lane_offsets, $target_feature);
 
             /// The mode 20 write on TM5's strided walk: the sequential write's lines.
             #[target_feature(enable = $target_feature)]
@@ -5450,13 +5606,13 @@ macro_rules! simple_simd_loops {
 }
 
 simple_simd_loops!(simple_test_v2_128_loops, u64x2, 2, [0, 1],
-    std::arch::x86_64::__m128i, std::arch::x86_64::_mm_stream_si128,
+    std::arch::x86_64::__m128i, std::arch::x86_64::_mm_stream_si128, by_line,
     "sse4.2,sse4.1,ssse3,sse3,sse2,popcnt");
 simple_simd_loops!(simple_test_v2_256_loops, u64x4, 4, [0, 1, 2, 3],
-    std::arch::x86_64::__m256i, std::arch::x86_64::_mm256_stream_si256,
+    std::arch::x86_64::__m256i, std::arch::x86_64::_mm256_stream_si256, by_line,
     "avx2,avx,fma,bmi1,bmi2");
 simple_simd_loops!(simple_test_v2_512_loops, u64x8, 8, [0, 1, 2, 3, 4, 5, 6, 7],
-    std::arch::x86_64::__m512i, std::arch::x86_64::_mm512_stream_si512,
+    std::arch::x86_64::__m512i, std::arch::x86_64::_mm512_stream_si512, by_lanes,
     "avx512f,avx512bw,avx512cd,avx512dq,avx512vl,avx2,avx,fma,bmi1,bmi2");
 
 /// A positional verify of a chunk (modes 10 and 11, SimpleNT): the width's `$verify` on the chunk,
@@ -7266,14 +7422,39 @@ mod simple_loops_tests {
             unsafe { $loops::pos_write_nt(pos) };
             mem.assert_image(start, end, |i| i as u64 ^ base, what);
             mem.assert_sees(flips(start, end, 16 * W, 3 * W), || unsafe { $loops::pos_verify(pos) }, what);
-            // Fifteen lines: three steps of four lines and a tail of three
-            let (start, end) = (64, 64 + 15 * LINE_WORDS);
+            // A step starts on a multiple of four vectors: every head (from 3 vectors to none) and
+            // every tail (none to 3) around four steps, and a range shorter than a step
+            for skip in 0..4 {
+                for rest in 0..4 {
+                    let (start, end) = (64 + skip * W, 64 + (20 + rest) * W);
+                    let pos = SimplePositional { ptr, start, end, base };
+                    let what = format!("{what}: {start}..{end}");
+                    mem.reset();
+                    unsafe { $loops::pos_write(pos) };
+                    mem.assert_image(start, end, |i| i as u64 ^ base, &what);
+                    mem.assert_sees(flips(start, end, 8 * W, 4 * W), || unsafe { $loops::pos_verify(pos) }, &what);
+                }
+                let (start, end) = (64 + skip * W, 64 + (skip + 2) * W);
+                let pos = SimplePositional { ptr, start, end, base };
+                mem.reset();
+                unsafe { $loops::pos_write(pos) };
+                mem.assert_image(start, end, |i| i as u64 ^ base, what);
+                mem.assert_sees(start..end, || unsafe { $loops::pos_verify(pos) }, what);
+            }
+            // Mode 20 in steps of four lines (by line) or eight (512 bits, by lanes): fifteen lines
+            // (a tail of three or seven), steps and no tail, one line over, and under a step
             let key = Mode20::new(3, 1, 0xDEADBEEFDEADBEEF, 0xCAFEBABECAFEBABE).key;
-            let m20 = SimpleMode20 { ptr, start, end, key };
-            mem.reset();
-            unsafe { $loops::m20_write(m20) };
-            mem.assert_image(start, end, |i| mode20_word(ptr, key, i), what);
-            mem.assert_sees(flips(start, end, 4 * LINE_WORDS, 3 * LINE_WORDS), || unsafe { $loops::m20_verify(m20) }, what);
+            for lines in [15, 16, 17, 3, 8] {
+                let (start, end) = (64, 64 + lines * LINE_WORDS);
+                let m20 = SimpleMode20 { ptr, start, end, key };
+                let what = format!("{what}: mode 20, {lines} lines");
+                mem.reset();
+                unsafe { $loops::m20_write(m20) };
+                mem.assert_image(start, end, |i| mode20_word(ptr, key, i), &what);
+                // Every word of the first step (each accumulator's lines) and of the tail
+                let len = end - start;
+                mem.assert_sees(flips(start, end, (8 * LINE_WORDS).min(len), (7 * LINE_WORDS).min(len)), || unsafe { $loops::m20_verify(m20) }, &what);
+            }
             for (start, end, stride) in WALKS {
                 let period = strided_period(stride);
                 let pos = SimplePositional { ptr, start, end, base };
