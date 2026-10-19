@@ -208,11 +208,17 @@ impl<'a> TestRunner<'a> {
     /// Only the first cycle: a later one finds the chunks as the test left them, so a test that
     /// runs many cycles of its own (a duration) pays for the wrap once, and its extent is resealed
     /// once, when it finishes.
-    #[inline]
+    ///
+    /// The guard, every chunk, is inlined; the work, a chunk's worth of the seal kernel, is a call.
+    #[inline(always)]
     pub fn check_seal(&mut self, start: usize, len: usize) {
-        if !self.seal.wrap || self.cycle > 1 {
-            return;
+        if self.seal.wrap && self.cycle <= 1 {
+            self.check_seal_chunk(start, len);
         }
+    }
+
+    #[inline(never)]
+    fn check_seal_chunk(&mut self, start: usize, len: usize) {
         self.set_stage(Stage::CheckingSeal);
         let at = Instant::now();
         let (from, to) = (start / 8, (start + len) / 8);
@@ -226,12 +232,17 @@ impl<'a> TestRunner<'a> {
     }
 
     /// Reseal bytes `[start, start + len)` of the extent once the test is done with them (TODO 74);
-    /// a no-op unless the step wraps, and after its first cycle (see `check_seal`).
-    #[inline]
+    /// a no-op unless the step wraps, and after its first cycle (see `check_seal`, which splits
+    /// the same way).
+    #[inline(always)]
     pub fn reseal(&mut self, start: usize, len: usize) {
-        if !self.seal.wrap || self.cycle > 1 {
-            return;
+        if self.seal.wrap && self.cycle <= 1 {
+            self.reseal_chunk(start, len);
         }
+    }
+
+    #[inline(never)]
+    fn reseal_chunk(&mut self, start: usize, len: usize) {
         self.set_stage(Stage::Resealing);
         let at = Instant::now();
         // SAFETY: as `check_seal`
