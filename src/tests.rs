@@ -6276,12 +6276,182 @@ macro_rules! sequence_step_check {
     };
 }
 
+/// One step of Mem-Sequence's forward, reverse or random walk at its width's step: `[line:
+/// [vector accumulator, ...] => (its first word, its id), ...]` (`sequence_step_check!`). Each line
+/// is computed and visited before the next, as `sequence_line!` gives it; but at 512 bits a line
+/// whose words come from one scalar hash (`switch`, `quiet` and `header` at 16, 32 and 64 bits)
+/// takes `sequence_hashed_step!`, the step's four hashes as one vector.
+macro_rules! sequence_step {
+    (@lines $op:tt, $simd:ty, $w:tt, $kind:tt, $pkey:ident, $mask:ident, $acc:ident, $ones:ident,
+     [$($l:literal: [$($v:literal $a:literal),*] => $line:expr),*]) => {
+        $({
+            let (at, id): (*mut u64, u64) = $line;
+            let words = sequence_line!($w, $kind, id, $pkey).map(|x| x ^ $mask);
+            $(sequence_visit!($op, at.add($v * $w) as *mut $simd, words[$v], $acc[$a], $ones);)*
+        })*
+    };
+    ($op:tt, $simd:ty, 8, [$family:ident $beat:ident], $($rest:tt)*) => {
+        sequence_hashed_step!($op, $simd, [$family $beat], $($rest)*)
+    };
+    ($op:tt, $simd:ty, $w:tt, $kind:tt, $($rest:tt)*) => {
+        sequence_step!(@lines $op, $simd, $w, $kind, $($rest)*)
+    };
+}
+
+/// A 512-bit Mem-Sequence step of four lines whose words come from one scalar hash a line, at a
+/// beat that divides a word (TODO 99 round 3b): the four hashes, `switch`'s words and `header`'s
+/// ident words computed as vectors of the four lines (`sequence_hashed`), then each line a
+/// permute of them (`@line`), visited before the next is permuted. A line at a time, the 512-bit
+/// walks hashed each line's word in some 35 general-purpose instructions, about 54 a line with its
+/// check, and at a step of four lines the heavier families' values went to the stack. Every other
+/// family and beat takes the step a line at a time (`sequence_step!`).
+macro_rules! sequence_hashed_step {
+    ($op:tt, $simd:ty, [switch Bits16], $($rest:tt)*) => { sequence_hashed_step!(@step $op, splat, switch_word, Bits16, $($rest)*) };
+    ($op:tt, $simd:ty, [switch Bits32], $($rest:tt)*) => { sequence_hashed_step!(@step $op, splat, switch_word, Bits32, $($rest)*) };
+    ($op:tt, $simd:ty, [switch Bits64], $($rest:tt)*) => { sequence_hashed_step!(@step $op, alt, switch_alt, Bits64, $($rest)*) };
+    ($op:tt, $simd:ty, [quiet Bits16], $($rest:tt)*) => { sequence_hashed_step!(@step $op, splat, quiet_word, Bits16, $($rest)*) };
+    ($op:tt, $simd:ty, [quiet Bits32], $($rest:tt)*) => { sequence_hashed_step!(@step $op, splat, quiet_word, Bits32, $($rest)*) };
+    ($op:tt, $simd:ty, [quiet Bits64], $($rest:tt)*) => { sequence_hashed_step!(@step $op, alt, quiet_alt, Bits64, $($rest)*) };
+    ($op:tt, $simd:ty, [header Bits16], $($rest:tt)*) => { sequence_hashed_step!(@step $op, header, header_word, Bits16, $($rest)*) };
+    ($op:tt, $simd:ty, [header Bits32], $($rest:tt)*) => { sequence_hashed_step!(@step $op, header, header_word, Bits32, $($rest)*) };
+    ($op:tt, $simd:ty, [header Bits64], $($rest:tt)*) => { sequence_hashed_step!(@step $op, header64, header_alt, Bits64, $($rest)*) };
+    (@step $op:tt, $shape:ident, $parts:ident, $beat:ident, $pkey:ident, $mask:ident, $acc:ident, $ones:ident,
+     [$($l:literal: [$v:literal $a:literal] => $line:expr),*]) => {{
+        let lines: [(*mut u64, u64); 4] = [$($line),*];
+        let ids = u64x4::from_array([lines[0].1, lines[1].1, lines[2].1, lines[3].1]);
+        let parts = sequence_hashed::$parts(ids, $pkey, crate::pattern_gen::BusBeat::$beat);
+        $(sequence_visit!($op, lines[$l].0.add($v * 8) as *mut u64x8, sequence_hashed_step!(@line $shape, parts, $l) ^ $mask, $acc[$a], $ones);)*
+    }};
+    // Line `l` of the four: `splat` its word in every lane; `alt` its word and the word's inverse
+    // in turn (64 bits); `header` its ident words 0 and 4 and its word in the rest, `header64` its
+    // ident words, then its word in even lanes and the inverse in odd
+    (@line splat, $parts:ident, $l:literal) => { simd_swizzle!($parts.0, [$l; 8]) };
+    (@line alt, $parts:ident, $l:literal) => { simd_swizzle!($parts.0, [$l, 4 + $l, $l, 4 + $l, $l, 4 + $l, $l, 4 + $l]) };
+    (@line header, $parts:ident, $l:literal) => {
+        simd_swizzle!($parts.0, $parts.1, [$l, 8 + $l, 8 + $l, 8 + $l, 4 + $l, 8 + $l, 8 + $l, 8 + $l])
+    };
+    (@line header64, $parts:ident, $l:literal) => {
+        simd_swizzle!($parts.0, $parts.1, [$l, 12 + $l, 8 + $l, 12 + $l, 4 + $l, 12 + $l, 8 + $l, 12 + $l])
+    };
+    // `switch` at 12 and 24 bits (not a word a line), `quiet` and `header` at 12 and 24
+    ($op:tt, $simd:ty, $kind:tt, $($rest:tt)*) => { sequence_step!(@lines $op, $simd, 8, $kind, $($rest)*) };
+}
+
+/// What four Mem-Sequence lines are permutes of (`sequence_hashed_step!`), `ids` their ids a lane
+/// each: `pattern`'s `switch_line`, `quiet_line` and `header_line` at 16, 32 and 64 bits, computed
+/// for four lines at once. Each returns two vectors, the parts its lines' permutes take; the beat
+/// is a constant where they are inlined.
+mod sequence_hashed {
+    use crate::pattern_gen::BusBeat;
+    use std::simd::{simd_swizzle, u64x4, u64x8};
+
+    /// Each line's hash and `switch`'s value `a` from it (`pattern_gen::balanced_bytes`: the hash's
+    /// low 32 bits a nibble to a byte, each byte's high nibble the inverse of its low).
+    #[inline(always)]
+    fn hash(ids: u64x4, key: u64) -> (u64x4, u64x4) {
+        const LOW_NIBBLES: u64 = 0x0F0F_0F0F_0F0F_0F0F;
+        let s = u64x4::splat;
+        let h = crate::pattern::fmix_v::<4>(ids + s(key));
+        let mut x = h & s(0xFFFF_FFFF);
+        x = (x | (x << s(16))) & s(0x0000_FFFF_0000_FFFF);
+        x = (x | (x << s(8))) & s(0x00FF_00FF_00FF_00FF);
+        x = (x | (x << s(4))) & s(LOW_NIBBLES);
+        (h, x | ((!x & s(LOW_NIBBLES)) << s(4)))
+    }
+
+    /// `switch`'s word at 16 or 32 bits from `a` (`pattern_gen::bus_flip_line`), every word of its
+    /// line.
+    #[inline(always)]
+    fn word(a: u64x4, beat: BusBeat) -> u64x4 {
+        let s = u64x4::splat;
+        debug_assert!(matches!(beat, BusBeat::Bits16 | BusBeat::Bits32), "{beat:?}");
+        if beat == BusBeat::Bits32 {
+            (a & s(0xFFFF_FFFF)) | (!a << s(32))
+        } else {
+            let pair = (a & s(0xFFFF)) | ((!a & s(0xFFFF)) << s(16));
+            pair | (pair << s(32))
+        }
+    }
+
+    /// `quiet`'s held pin's bits from the hash, the same in every word of the line at 16, 32 and 64
+    /// bits: `pattern_gen::pin_mask`'s first word for `pattern::quiet_pin`, each transfer's bit 0
+    /// shifted to the pin.
+    #[inline(always)]
+    fn held(h: u64x4, beat: BusBeat) -> u64x4 {
+        let s = u64x4::splat;
+        let pin = ((h >> s(32)) * s(u64::from(beat.bits()))) >> s(32);
+        s(crate::pattern_gen::pin_mask(0, beat)[0]) << pin
+    }
+
+    /// The four lines' `ident` words 0 and 4 (`header_line`'s), line `l`'s at lanes `l` and
+    /// `4 + l`.
+    #[inline(always)]
+    fn ident(ids: u64x4, key: u64) -> u64x8 {
+        let s = u64x4::splat;
+        let x0 = (ids << s(3)) * s(crate::pattern::G) + s(key);
+        let x4 = x0 + s(4u64.wrapping_mul(crate::pattern::G));
+        let x = simd_swizzle!(x0, x4, [0, 1, 2, 3, 4, 5, 6, 7]);
+        x ^ (x >> u64x8::splat(32))
+    }
+
+    #[inline(always)]
+    fn cat(lo: u64x4, hi: u64x4) -> u64x8 {
+        simd_swizzle!(lo, hi, [0, 1, 2, 3, 4, 5, 6, 7])
+    }
+
+    /// `switch` at 16 and 32 bits: each line's word, at lane `l` (`splat`).
+    #[inline(always)]
+    pub(super) fn switch_word(ids: u64x4, key: u64, beat: BusBeat) -> (u64x8, u64x8) {
+        let w = cat(word(hash(ids, key).1, beat), u64x4::splat(0));
+        (w, w)
+    }
+
+    /// `switch` at 64 bits: each line's `a` at lane `l`, `!a` at `4 + l` (`alt`).
+    #[inline(always)]
+    pub(super) fn switch_alt(ids: u64x4, key: u64, _beat: BusBeat) -> (u64x8, u64x8) {
+        let a = hash(ids, key).1;
+        (cat(a, !a), cat(a, !a))
+    }
+
+    /// `quiet` at 16 and 32 bits: `switch`'s word with the held pin's bits set (`splat`).
+    #[inline(always)]
+    pub(super) fn quiet_word(ids: u64x4, key: u64, beat: BusBeat) -> (u64x8, u64x8) {
+        let (h, a) = hash(ids, key);
+        let w = cat(word(a, beat) | held(h, beat), u64x4::splat(0));
+        (w, w)
+    }
+
+    /// `quiet` at 64 bits: `a` and `!a` with the held pin's bits set (`alt`).
+    #[inline(always)]
+    pub(super) fn quiet_alt(ids: u64x4, key: u64, beat: BusBeat) -> (u64x8, u64x8) {
+        let (h, a) = hash(ids, key);
+        let held = held(h, beat);
+        (cat(a | held, !a | held), cat(a | held, !a | held))
+    }
+
+    /// `header` at 16 and 32 bits: the ident words, then `switch`'s word at lane `l` (`header`).
+    #[inline(always)]
+    pub(super) fn header_word(ids: u64x4, key: u64, beat: BusBeat) -> (u64x8, u64x8) {
+        (ident(ids, key), cat(word(hash(ids, key).1, beat), u64x4::splat(0)))
+    }
+
+    /// `header` at 64 bits: the ident words, then `a` at lane `l` and `!a` at `4 + l` (`header64`).
+    #[inline(always)]
+    pub(super) fn header_alt(ids: u64x4, key: u64, _beat: BusBeat) -> (u64x8, u64x8) {
+        let a = hash(ids, key).1;
+        (ident(ids, key), cat(a, !a))
+    }
+}
+
 /// Mem-Sequence's forward walk (`$rev` false) or reverse (true) of `$op` over the chunk of `$walk`,
 /// its family's line `[$kind]`: a pointer walked from the chunk's first line or its last, each line
 /// and vector at a fixed displacement from it, the line's id beside it. One loop to a function
-/// (`sequence_orders!`), so its values stay in registers. In the width's form (`sequence_random!`):
-/// `steps` a step's lines an iteration (at 512 bits), `rotate` a line an iteration with the
-/// accumulators rotated (at 256, where two lines' words at once spilled for the heavier families).
+/// (`sequence_orders!`), so its values stay in registers. In the width's form: `steps` a step's
+/// lines an iteration (`sequence_step!`), `rotate` a line an iteration with the accumulators
+/// rotated (both widths). Two lines' words at once spilled at 256 bits for the heavier families;
+/// at 512, four lines a step kept two id-derived values a line stepped beside the pointer, and
+/// `header`'s step stored up to 25 of its values to the stack and reloaded them, with the four
+/// lines' scalar hashes first and their checks after (Rule 6.12; TODO 99 round 3b).
 macro_rules! sequence_linear {
     (rotate, $op:tt, $simd:ty, $w:tt, [$l0:literal: [$($v:literal $a:literal),*] $(, $l:literal: $rest:tt)*], $kind:tt, $walk:ident, $rev:literal) => {{
         sequence_step_check!($w, [$l0: [$($v $a),*] $(, $l: $rest)*]);
@@ -6315,11 +6485,11 @@ macro_rules! sequence_linear {
         let mut p = ptr.add(start + first * LINE_WORDS);
         let mut lid = lid0 + first as u64;
         for _ in 0..lines / LPG {
-            $({
-                let (at, line) = if $rev { (p.sub($l * LINE_WORDS), lid.wrapping_sub($l)) } else { (p.add($l * LINE_WORDS), lid.wrapping_add($l)) };
-                let words = sequence_line!($w, $kind, line, pkey).map(|x| x ^ mask);
-                $(sequence_visit!($op, at.add($v * $w) as *mut $simd, words[$v], acc[$a], ones);)*
-            })*
+            sequence_step!($op, $simd, $w, $kind, pkey, mask, acc, ones, [$($l: [$($v $a),*] => if $rev {
+                (p.sub($l * LINE_WORDS), lid.wrapping_sub($l))
+            } else {
+                (p.add($l * LINE_WORDS), lid.wrapping_add($l))
+            }),*]);
             // The last step lands off the chunk
             p = if $rev { p.wrapping_sub(LPG * LINE_WORDS) } else { p.wrapping_add(LPG * LINE_WORDS) };
             lid = if $rev { lid.wrapping_sub(LPG as u64) } else { lid.wrapping_add(LPG as u64) };
@@ -6334,10 +6504,11 @@ macro_rules! sequence_linear {
 /// addressed from the block's first by its index. `j` counts from `-n` up to 0, so the loop needs
 /// no bound: `random_line` masks `j` to the block first, and `-n` is 0 there.
 ///
-/// `steps` visits a step's lines an iteration (`$step`): at 512 bits the compiler vectorizes their
-/// four scrambles. `rotate` visits a line an iteration and rotates the accumulators by its vectors,
-/// so each vector's difference goes to the accumulator it would in a step: at 256 bits the
-/// scrambles are scalar, and two lines' at once (and their hashes) didn't fit in the registers.
+/// `steps` visits a step's lines an iteration (`$step`, `sequence_step!`): at 512 bits the compiler
+/// vectorizes their four scrambles, so 512 keeps it here. `rotate` visits a line an iteration and
+/// rotates the accumulators by its vectors, so each vector's difference goes to the accumulator it
+/// would in a step: at 256 bits the scrambles are scalar, and two lines' at once (and their hashes)
+/// didn't fit in the registers.
 macro_rules! sequence_random {
     (steps, $op:tt, $simd:ty, $w:tt, [$($l:literal: [$($v:literal $a:literal),*]),*], $kind:tt, $walk:ident) => {{
         sequence_step_check!($w, [$($l: [$($v $a),*]),*]);
@@ -6355,12 +6526,10 @@ macro_rules! sequence_random {
             let (block, block_lid) = (ptr.add(start + s * LINE_WORDS), lid0 + s as u64);
             let mut j = n.wrapping_neg();
             while j != 0 {
-                $({
+                sequence_step!($op, $simd, $w, $kind, pkey, mask, acc, ones, [$($l: [$($v $a),*] => {
                     let i = crate::sequence::random_line(j.wrapping_add($l) as u64, bits, key) as usize;
-                    let words = sequence_line!($w, $kind, block_lid + i as u64, pkey).map(|x| x ^ mask);
-                    let at = block.add(i * LINE_WORDS);
-                    $(sequence_visit!($op, at.add($v * $w) as *mut $simd, words[$v], acc[$a], ones);)*
-                })*
+                    (block.add(i * LINE_WORDS), block_lid + i as u64)
+                }),*]);
                 j = j.wrapping_add(LPG);
             }
             s += n;
@@ -6474,13 +6643,13 @@ fn sequence_wrap(p: *const u64, stop: *const u64, period: usize) -> usize {
 /// (TODO 99): in one function for every family and order, the loops kept their bounds, keys and
 /// at 512 bits their accumulators on the stack.
 macro_rules! sequence_orders {
-    ($op:tt, $simd:ty, $w:tt, $tf:literal, $step:tt, $form:ident, $walk:ident, $order:expr, $kind:tt) => {
+    ($op:tt, $simd:ty, $w:tt, $tf:literal, $step:tt, $lform:ident, $rform:ident, $walk:ident, $order:expr, $kind:tt) => {
         match $order {
             crate::sequence::Order::Forward => {
                 #[target_feature(enable = $tf)]
                 #[inline(never)]
                 unsafe fn forward(walk: SequenceWalk) -> u64 {
-                    sequence_linear!($form, $op, $simd, $w, $step, $kind, walk, false)
+                    sequence_linear!($lform, $op, $simd, $w, $step, $kind, walk, false)
                 }
                 forward($walk)
             }
@@ -6488,7 +6657,7 @@ macro_rules! sequence_orders {
                 #[target_feature(enable = $tf)]
                 #[inline(never)]
                 unsafe fn reverse(walk: SequenceWalk) -> u64 {
-                    sequence_linear!($form, $op, $simd, $w, $step, $kind, walk, true)
+                    sequence_linear!($lform, $op, $simd, $w, $step, $kind, walk, true)
                 }
                 reverse($walk)
             }
@@ -6496,7 +6665,7 @@ macro_rules! sequence_orders {
                 #[target_feature(enable = $tf)]
                 #[inline(never)]
                 unsafe fn random(walk: SequenceWalk) -> u64 {
-                    sequence_random!($form, $op, $simd, $w, $step, $kind, walk)
+                    sequence_random!($rform, $op, $simd, $w, $step, $kind, walk)
                 }
                 random($walk)
             }
@@ -6566,28 +6735,29 @@ impl SequenceWalk {
 
 /// Mem-Sequence at one width: the test, and a function per operation for its passes, each
 /// picking its family's walk in its order (`sequence_orders!`). `$step` is the width's step
-/// (`sequence_step_check!`), `$form` its linear and random walks' form (`sequence_random!`).
+/// (`sequence_step_check!`), `$lform` its forward and reverse walks' form (`sequence_linear!`) and
+/// `$rform` its random walk's (`sequence_random!`).
 macro_rules! sequence_impl {
-    ($fn_name:ident, $write:ident, $read:ident, $rw:ident, $simd:ty, $w:tt, $step:tt, $form:ident, $tf:literal) => {
+    ($fn_name:ident, $write:ident, $read:ident, $rw:ident, $simd:ty, $w:tt, $step:tt, $lform:ident, $rform:ident, $tf:literal) => {
         #[target_feature(enable = $tf)]
         #[inline(never)]
         unsafe fn $write(c: SequenceChunk, order: crate::sequence::Order, key: u64, phase: crate::pattern::Phase) -> u64 {
             let walk = SequenceWalk::new(c, key, phase);
-            sequence_families!(phase, sequence_orders!(write, $simd, $w, $tf, $step, $form, walk, order,))
+            sequence_families!(phase, sequence_orders!(write, $simd, $w, $tf, $step, $lform, $rform, walk, order,))
         }
 
         #[target_feature(enable = $tf)]
         #[inline(never)]
         unsafe fn $read(c: SequenceChunk, order: crate::sequence::Order, key: u64, phase: crate::pattern::Phase) -> u64 {
             let walk = SequenceWalk::new(c, key, phase);
-            sequence_families!(phase, sequence_orders!(read, $simd, $w, $tf, $step, $form, walk, order,))
+            sequence_families!(phase, sequence_orders!(read, $simd, $w, $tf, $step, $lform, $rform, walk, order,))
         }
 
         #[target_feature(enable = $tf)]
         #[inline(never)]
         unsafe fn $rw(c: SequenceChunk, order: crate::sequence::Order, key: u64, phase: crate::pattern::Phase) -> u64 {
             let walk = SequenceWalk::new(c, key, phase);
-            sequence_families!(phase, sequence_orders!(rw, $simd, $w, $tf, $step, $form, walk, order,))
+            sequence_families!(phase, sequence_orders!(rw, $simd, $w, $tf, $step, $lform, $rform, walk, order,))
         }
 
         /// Mem-Sequence at this width; see the section comment.
@@ -6707,9 +6877,9 @@ macro_rules! sequence_impl {
     };
 }
 
-sequence_impl!(sequence_256, sequence_write_256, sequence_read_256, sequence_rw_256, u64x4, 4, [0: [0 0, 1 1], 1: [0 2, 1 3]], rotate,
+sequence_impl!(sequence_256, sequence_write_256, sequence_read_256, sequence_rw_256, u64x4, 4, [0: [0 0, 1 1], 1: [0 2, 1 3]], rotate, rotate,
                "avx2,avx,fma,bmi1,bmi2");
-sequence_impl!(sequence_512, sequence_write_512, sequence_read_512, sequence_rw_512, u64x8, 8, [0: [0 0], 1: [0 1], 2: [0 2], 3: [0 3]], steps,
+sequence_impl!(sequence_512, sequence_write_512, sequence_read_512, sequence_rw_512, u64x8, 8, [0: [0 0], 1: [0 1], 2: [0 2], 3: [0 3]], rotate, steps,
                "avx512f,avx512bw,avx512cd,avx512dq,avx512vl,avx2,avx,fma,bmi1,bmi2");
 
 /// Mem-Sequence at the widest width this CPU has: 512 bits, else 256 (the CPU gate requires AVX2).
@@ -8975,8 +9145,9 @@ mod random_replay_tests {
     /// exactly a bit flipped in any lane of any accumulator and at each walk's edges: every word of
     /// the first and last four lines visited (a step is two lines at 256 bits, four at 512, each
     /// vector its own accumulator), of each random block's first and last, and of each strided
-    /// pass's. Four families: `ident`'s lines are vector arithmetic, `switch`'s scalar, `quiet`'s at
-    /// 24 bits and `header`'s at 12 the heaviest.
+    /// pass's. `ident`'s lines are vector arithmetic; `switch`, `quiet` and `header` hash a scalar
+    /// word a line, at each beat a 512-bit step can take as one vector of four (16, 32 and 64
+    /// bits), and `quiet` at 24 bits and `header` at 12, the heaviest lines (TODO 99 round 3b).
     #[test]
     fn sequence_walks_see_a_bad_word_in_every_lane() {
         use crate::pattern::{Family, Phase};
@@ -8984,8 +9155,12 @@ mod random_replay_tests {
         use crate::sequence::Order;
         let (pad, lines) = (64usize, 192usize);
         let lid_base = crate::pattern::line_base(5);
-        for (family, beat, mask) in [(Family::Ident, BusBeat::Bits64, 0), (Family::Switch, BusBeat::Bits32, !0),
-                                     (Family::Quiet, BusBeat::Bits24, 0), (Family::Header, BusBeat::Bits12, !0)] {
+        for (family, beat, mask) in [(Family::Ident, BusBeat::Bits64, 0), (Family::Switch, BusBeat::Bits16, 0),
+                                     (Family::Switch, BusBeat::Bits32, !0), (Family::Switch, BusBeat::Bits64, 0),
+                                     (Family::Quiet, BusBeat::Bits16, !0), (Family::Quiet, BusBeat::Bits24, 0),
+                                     (Family::Quiet, BusBeat::Bits32, 0), (Family::Quiet, BusBeat::Bits64, !0),
+                                     (Family::Header, BusBeat::Bits12, !0), (Family::Header, BusBeat::Bits16, 0),
+                                     (Family::Header, BusBeat::Bits32, !0), (Family::Header, BusBeat::Bits64, 0)] {
             let phase = Phase { family, key: 0x7E57_0000_0000_0099, mask, beat };
             for width in sequence_widths() {
                 for (order, stride) in SEQUENCE_ORDERS {
