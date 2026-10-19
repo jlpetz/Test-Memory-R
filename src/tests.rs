@@ -3377,31 +3377,18 @@ impl ModuloChunk {
         }
     }
 
-    /// One aggressor pass: ~P over every other line, going up, a run of lines from each victim to
-    /// the next, in `modulo_lines`'s order.
-    #[inline(never)]
+    /// One aggressor pass: ~P over every line but the victims, going up, in `modulo_lines`'s order.
+    /// Round 2's loop, inlined into the test and left to the compiler: written as a walk of its own
+    /// (u64x4, a pointer, the pattern stepped), every value in registers, the test ran 7% slower;
+    /// with this loop it runs 3% faster than round 2 (TODO 99 round 3b; the cause is unmeasured).
+    #[inline(always)]
     unsafe fn aggress(self) {
-        let ModuloChunk { base, start, end, .. } = self;
-        let (half, line) = (ident_steps(4), ident_steps(LINE_WORDS));
-        let ones = u64x4::splat(!0);
-        let mut x = self.line_x(start);
-        let mut p = base.wrapping_add(start * LINE_WORDS);
-        let (mut at, mut victim) = (start, self.victims().0);
-        while at < end {
-            let run = victim.min(end) - at;
-            for _ in 0..run {
-                let v = p as *mut u64x4;
-                v.write_unaligned(ident_mix_v(x) ^ ones);
-                v.add(1).write_unaligned(ident_mix_v(x + half) ^ ones);
-                x += line;
-                p = p.wrapping_add(LINE_WORDS);
+        let ModuloChunk { base, start, end, offset, ids, key } = self;
+        modulo_lines(start, end, offset, |_| {}, |lines| {
+            for i in lines.start * LINE_WORDS..lines.end * LINE_WORDS {
+                *base.add(i) = !crate::pattern::ident_word(ids + i as u64, key);
             }
-            // Over the victim
-            x += line;
-            p = p.wrapping_add(LINE_WORDS);
-            at += run + 1;
-            victim += MODULO_X;
-        }
+        });
     }
 
     /// Checks each victim line for P, going up: the first alone if their count is odd, then two

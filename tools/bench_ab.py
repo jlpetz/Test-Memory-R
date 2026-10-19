@@ -57,6 +57,9 @@ def main():
     header = f"{'test':28s}" + "".join(f" {label + ' MiB/s':>22s}" for label, _ in bins)
     if len(bins) == 2:
         header += f" {'raw':>7s} {'vs ref':>7s}"
+    else:
+        # Each binary after the first against the first, raw and relative to the reference
+        header += "".join(f" {label + ' raw':>10s} {label + ' ref':>10s}" for label, _ in bins[1:])
     print(header)
     for test in tests:
         row = f"{test[:28]:28s}"
@@ -70,6 +73,8 @@ def main():
             row += f" {mean:9.0f} ({min(values):5.0f}-{max(values):5.0f})"
         if len(bins) == 2:
             row += f" {means[1] / means[0]:7.3f} {rel[1] / rel[0]:7.3f}"
+        else:
+            row += "".join(f" {means[i] / means[0]:10.3f} {rel[i] / rel[0]:10.3f}" for i in range(1, len(bins)))
         print(row)
 
 

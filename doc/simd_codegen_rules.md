@@ -314,7 +314,31 @@ From TODO 99 (2026-10-19, dev box, Granite Rapids with AVX-512). Check every one
     line and checking it before the next, which also ran `header` 1.57× faster and the default
     stability test (Mem-SimpleV2-512) 5% faster than round 2 instead of 11% slower (2026-10-19).
     Clean asm is necessary, not sufficient: measure every restructured hot loop.
-13. **A generic over the pattern is fine; a generic over the width is not.** A walk generic over a
+13. **Hash four lines in one vector when each line's hash is scalar.** Mem-Sequence's 512-bit
+    switch, quiet and header lines each took one scalar hash, about 35 general-purpose instructions
+    a line, and loop strength reduction made header's ident words 8 more counters: stack round
+    trips in every forward and reverse walk. Hashing a step's four lines as one `u64x4` and
+    building each line with a permute took them to 10-17 instructions a line: Mem-Sequence +22%,
+    a header-heavy program +50% (round 3b).
+14. **Hide a line id from loop strength reduction when it multiplies out into many counters.**
+    Native SimpleTest's header turned each ident word into its own induction variable, eight at
+    512 bits. Passing the line id each step through an empty `asm!` (no instruction; the compiler
+    can't see through it, as round 3 did for the walked pointer) kept them one value:
+    Bench-Verify-Header +42%, Bench-Verify-Quiet +78% (round 3b). The barrier awaits the owner's
+    ruling (TODO 99).
+15. **A counted step can be unrolled out of address order.** Legacy SimpleTest's 4-vector verify
+    ran from a count, so LLVM unrolled it twice and loaded each 512 B out of order (lines 1, 2, 0,
+    3...): mode 10 at 512 lost 3%. To a bound pointer it loads in order (round 3b).
+16. **On Windows a struct over 8 bytes goes through the stack.** Win64 passes it as a pointer to a
+    copy, so a function called once a short chunk starts each chunk with stores and the loads that
+    forward from them. Pass the few scalars instead: Spd-L1-Copy +3% (round 3b).
+17. **A write-bound pass can run faster with more work per store.** Mem-ModuloX's aggressor pass,
+    written as a clean walk (the pattern stepped, `u64x4`, no stack), ran 7% slower than round 2's
+    loop left to the compiler (an emulated 64-bit multiply per vector, constants from `.rdata`, one
+    stack reload), at one line a step and at four. The old loop stays, flagged: the cause is
+    unmeasured (store pacing against the DRAM writes is the guess). Measure before cleaning a
+    store loop that is bound by memory.
+18. **A generic over the pattern is fine; a generic over the width is not.** A walk generic over a
     line closure, inside the width's `#[target_feature]` fn and carrying it, gets one copy per
     pattern at the right width (native SimpleTest, round 3). Rule 4 forbids generics that pick the
     width.
