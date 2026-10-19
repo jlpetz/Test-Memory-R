@@ -2299,6 +2299,67 @@ pub unsafe fn random_torture_multi(
 
 /// StrideAccess MultiBlock implementation - tests various stride patterns.
 #[doc = include_str!("test_fn_safety.md")]
+/// One Mem-Stride pass over a chunk: each subdivision from its start, every `stride` words, each
+/// word the pattern plus its index. The write and the verify are functions of their own so their
+/// loops keep every value in registers (TODO 99): in the test's function, with its passes and
+/// chunks live too, the allocator kept the stride on the stack. A call a chunk, not a word.
+#[derive(Clone, Copy)]
+struct StrideWalk {
+    base: *mut u64,
+    chunk_start: usize,
+    subdivisions: usize,
+    elements_per_subdiv: usize,
+    stride: usize,
+    pattern: u64,
+}
+
+impl StrideWalk {
+    #[inline(never)]
+    unsafe fn write(self) {
+        let StrideWalk { base, chunk_start, subdivisions, elements_per_subdiv, stride, pattern } = self;
+        for subdiv in 0..subdivisions {
+            let start = chunk_start + subdiv * elements_per_subdiv;
+            let end = start + elements_per_subdiv;
+            let mut pos = start;
+            while pos < end {
+                *base.add(pos) = pattern.wrapping_add(pos as u64);
+                pos += stride;
+            }
+        }
+    }
+
+    /// The four accumulators ORed: nonzero when a word differs. Each of the test's strides is a
+    /// compile-time constant here, so the four loads a stride apart are one pointer and fixed
+    /// displacements, and the four expected values one value and fixed offsets: with the four
+    /// accumulators, every value fits in registers (at a runtime stride two didn't).
+    #[inline]
+    unsafe fn verify(self) -> u64 {
+        match self.stride {
+            1 => self.verify_strided::<1>(),
+            16 => self.verify_strided::<16>(),
+            64 => self.verify_strided::<64>(),
+            256 => self.verify_strided::<256>(),
+            1024 => self.verify_strided::<1024>(),
+            4096 => self.verify_strided::<4096>(),
+            _ => self.verify_strided::<0>(),
+        }
+    }
+
+    /// `verify` at stride `S`, or at `self.stride` when `S` is 0.
+    #[inline(never)]
+    unsafe fn verify_strided<const S: usize>(self) -> u64 {
+        let StrideWalk { base, chunk_start, subdivisions, elements_per_subdiv, stride, pattern } = self;
+        let stride = if S == 0 { stride } else { S };
+        let expected = move |pos: usize| pattern.wrapping_add(pos as u64);
+        let mut acc = [0u64; 4];
+        for subdiv in 0..subdivisions {
+            let start = chunk_start + subdiv * elements_per_subdiv;
+            accumulate_stride_4(&mut acc, base, start, start + elements_per_subdiv, stride, expected);
+        }
+        (acc[0] | acc[1]) | (acc[2] | acc[3])
+    }
+}
+
 pub unsafe fn stride_access_multi(
     blocks: &[crate::runner::AllocationBlock],
     thread_id: usize,
@@ -2356,25 +2417,10 @@ pub unsafe fn stride_access_multi(
                     checked_to = spread.start(k) + spread.chunk();
                 }
 
-                for subdiv in 0..subdivisions {
-                    let subdiv_start = chunk_start + subdiv * elements_per_subdiv;
-                    let subdiv_end = subdiv_start + elements_per_subdiv;
-                    let mut pos = subdiv_start;
-                    while pos < subdiv_end {
-                        *base.add(pos) = pattern.wrapping_add(pos as u64);
-                        pos += stride;
-                        if pos >= subdiv_end { break; }
-                    }
-                }
-
-
+                let walk = StrideWalk { base, chunk_start, subdivisions, elements_per_subdiv, stride, pattern };
+                walk.write();
+                let seen = walk.verify();
                 let expected = |pos: usize| pattern.wrapping_add(pos as u64);
-                let mut acc = [0u64; 4];
-                for subdiv in 0..subdivisions {
-                    let subdiv_start = chunk_start + subdiv * elements_per_subdiv;
-                    accumulate_stride_4(&mut acc, base, subdiv_start, subdiv_start + elements_per_subdiv, stride, expected);
-                }
-                let seen = (acc[0] | acc[1]) | (acc[2] | acc[3]);
                 if seen != 0 {
                     let chunk_end = chunk_start + subdivisions * elements_per_subdiv;
                     cycle_errors += if crate::pattern::rescan_enabled() {
@@ -6129,7 +6175,7 @@ pub fn get_test_function_by_name(name: &str) -> Option<crate::runner::TestFuncti
 
 #[cfg(test)]
 mod random_replay_tests {
-    use super::{accumulate_stride_4, prefetch_line, random_replay, Rescan, rescan_words, strided_ahead, strided_lookahead, strided_period,
+    use super::{accumulate_stride_4, prefetch_line, random_replay, Rescan, rescan_words, strided_ahead, strided_lookahead, strided_period, StrideWalk,
                 strided_wrap, verify_words, Mode20, Mode2, STRIDED_AHEAD};
     use crate::pattern_gen::{LINE_WORDS, PAGE_WORDS};
 
@@ -6190,6 +6236,28 @@ mod random_replay_tests {
         assert!(!all.contains("didn't see"), "{all}");
         let none = super::alarm_record(0, 0x80, 0);
         assert!(none.contains("not reproduced") && none.contains("0x0000000000000080"), "{none}");
+    }
+
+    /// TODO 99: Mem-Stride's write and verify at each of its strides as a constant, and at one
+    /// that isn't (the runtime fallback): a clean pass reads clean, and a bad word is seen in each
+    /// of the four accumulators' lanes and in the tail.
+    #[test]
+    fn stride_walks_see_a_bad_word_in_every_lane_at_every_stride() {
+        let (subdivisions, elements_per_subdiv) = (4usize, 4 * 4096 + 5);
+        let mut mem = vec![0u64; subdivisions * elements_per_subdiv];
+        for stride in [1, 16, 64, 256, 1024, 4096, 7] {
+            let walk = StrideWalk { base: mem.as_mut_ptr(), chunk_start: 0, subdivisions, elements_per_subdiv, stride, pattern: 0x5A5A_0000_0000_1234 };
+            unsafe { walk.write() };
+            assert_eq!(unsafe { walk.verify() }, 0, "stride {stride}: clean");
+            // The last subdivision's walk: its first four words (one per accumulator) and its last
+            let start = 3 * elements_per_subdiv;
+            let visits: Vec<usize> = (start..start + elements_per_subdiv).step_by(stride).collect();
+            for &word in visits.iter().take(4).chain(visits.last()) {
+                mem[word] ^= 1 << 40;
+                assert_ne!(unsafe { walk.verify() }, 0, "stride {stride}: missed word {word}");
+                mem[word] ^= 1 << 40;
+            }
+        }
     }
 
     /// TODO 89: the strided accumulate sees a bad word wherever its walk passes, at any stride
