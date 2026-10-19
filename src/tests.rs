@@ -4768,125 +4768,216 @@ impl NativeRun {
     }
 }
 
-/// Writes `$phase` over words `[$start, $end)` of `$ptr`, whose first line is line id `$lid0`;
-/// strided by `$period` words (TM5's walk, `for_each_strided_line!`) when it is `Some`. `scalar`
-/// stores each line as one array; `[u64xN, N]` computes and stores it as vectors of that width.
-macro_rules! native_write {
-    ([scalar], $ptr:expr, $start:expr, $end:expr, $lid0:expr, $period:expr, $phase:expr) => {{
-        let (ptr, start, end, lid0): (*mut u64, usize, usize, u64) = ($ptr, $start, $end, $lid0);
-        crate::pattern::with_phase_line!($phase, |line| {
-            match $period {
-                None => {
-                    let mut lid = lid0;
-                    let mut off = start;
-                    while off < end {
-                        *(ptr.add(off) as *mut [u64; LINE_WORDS]) = line(lid);
-                        lid += 1;
-                        off += LINE_WORDS;
-                    }
-                }
-                Some(period) => {
-                    for_each_strided_line!(ptr, start, end, period, |offset| {
-                        *(ptr.add(offset) as *mut [u64; LINE_WORDS]) = line(lid0 + ((offset - start) / LINE_WORDS) as u64);
-                    });
-                }
+/// One native SimpleTest walk over a chunk: words `[start, end)` of `base`, in whole lines, its
+/// first line line id `lid0`, each line `phase`'s. Sequential, or TM5's strided walk
+/// (`native_strided_walk!`) when `period`, its period in words, isn't 0. Each walk at each width
+/// is a function of its own (`native_simple_impl!`'s walks module), called once a chunk, so its
+/// loops keep every value in registers (TODO 99): in the per-chunk closures, with both walks of
+/// every family and beat in one function, values spilled to the stack in loops of a dozen
+/// instructions.
+#[derive(Clone, Copy)]
+struct NativeChunk {
+    base: *mut u64,
+    start: usize,
+    end: usize,
+    lid0: u64,
+    period: usize,
+    phase: crate::pattern::Phase,
+}
+
+/// The walked pointer of a native walk's next step, hidden from the compiler's loop strength
+/// reduction (TODO 99). In view, it rewrote the strided walk's pointer and line id as four
+/// induction variables (a prefetch pointer, an offset from a base, the line id and the id times
+/// 8), each with its own step in a register, and the lines that hash with 64-bit constants
+/// spilled; and it made the 512-bit `random` verify's pointer and word id one index, every load
+/// `(%base,%index,8)`. An empty `asm!` with the pointer in a register: no instruction, no flags,
+/// and it writes no memory (it says it may read it, as an asm given a pointer must).
+#[inline(always)]
+fn native_opaque_step(mut p: *mut u64) -> *mut u64 {
+    // SAFETY: the template is a comment: the register comes out as it went in
+    unsafe { std::arch::asm!("/* {0} */", inout(reg) p, options(pure, readonly, nostack, preserves_flags)) };
+    p
+}
+
+/// TM5's strided walk as `for_each_strided_line!` takes it, the same lines in the same order and
+/// the same line prefetched at each step (by `$prefetch`, `prefetch_line` but in a test), on a
+/// walked pointer: `$body` runs with `$p` the line's first word and `$lid` its line id, from
+/// `$lid0` at `$start`. Each pass is two loops, split at the step where its prefetches go from on
+/// in the pass to on into the next, so no step selects: in one loop with an index, its offset,
+/// end, step and the prefetch's two offsets didn't all fit in registers (TODO 99). Each loop runs
+/// to a pointer bound, as the old one ran to its end: with a count, the compiler unrolled them,
+/// and the unrolled loops spilled. The line id comes from the pointer, so a step carries one value.
+macro_rules! native_strided_walk {
+    ($prefetch:expr, $base:expr, $start:expr, $end:expr, $period:expr, $lid0:expr, |$p:ident, $lid:ident| $body:block) => {{
+        let (base, start, end, period, lid0): (*mut u64, usize, usize, usize, u64) = ($base, $start, $end, $period, $lid0);
+        debug_assert!(period.is_multiple_of(LINE_WORDS) && start.is_multiple_of(LINE_WORDS) && end.is_multiple_of(LINE_WORDS),
+                      "the strided walk needs whole lines: {start}..{end} by {period}");
+        // A line's id is its address's distance from `at` in lines: `lid0` at `start`, exact while
+        // ids are under 2^58 (thread ids under 2^21, `pattern::line_base`)
+        debug_assert!(lid0 + ((end - start) / LINE_WORDS) as u64 <= 1 << 58, "line ids from {lid0} past 2^58");
+        let at = (base.wrapping_add(start) as u64).wrapping_sub(lid0 << 6);
+        let ahead = strided_lookahead(start, end, period);
+        let stop = base.wrapping_add(end);
+        // Each pass's first line, from the last line of the first period down
+        let mut first = base.wrapping_add(start + period);
+        for _ in 0..period / LINE_WORDS {
+            first = first.wrapping_sub(LINE_WORDS);
+            let mut $p = first;
+            // While the line `ahead` words on is in the chunk, `strided_ahead` takes it; from there it
+            // steps back `strided_wrap` words from it, into the next pass
+            while $p.wrapping_add(ahead) < stop {
+                $prefetch($p.wrapping_add(ahead));
+                let $lid = ($p as u64).wrapping_sub(at) >> 6;
+                $body
+                $p = native_opaque_step($p.wrapping_add(period));
             }
-        })
-    }};
-    ([$simd:ty, $w:tt], $ptr:expr, $start:expr, $end:expr, $lid0:expr, $period:expr, $phase:expr) => {{
-        let (ptr, start, end, lid0): (*mut u64, usize, usize, u64) = ($ptr, $start, $end, $lid0);
-        crate::pattern::with_phase_vectors!($w, $phase, |line| {
-            match $period {
-                None => {
-                    let mut lid = lid0;
-                    let mut off = start;
-                    while off < end {
-                        for (v, x) in line(lid).into_iter().enumerate() {
-                            *(ptr.add(off + v * $w) as *mut $simd) = x;
-                        }
-                        lid += 1;
-                        off += LINE_WORDS;
-                    }
-                }
-                Some(period) => {
-                    for_each_strided_line!(ptr, start, end, period, |offset| {
-                        for (v, x) in line(lid0 + ((offset - start) / LINE_WORDS) as u64).into_iter().enumerate() {
-                            *(ptr.add(offset + v * $w) as *mut $simd) = x;
-                        }
-                    });
-                }
+            // The pass's words to the chunk's end, as `strided_wrap` takes them
+            let left = (stop as usize).saturating_sub(first as usize) / std::mem::size_of::<u64>();
+            let back = ahead.wrapping_sub(strided_wrap(0, left, period));
+            while $p < stop {
+                // The walk's last steps prefetch off the chunk: a wasted prefetch, not a fault
+                $prefetch($p.wrapping_add(back));
+                let $lid = ($p as u64).wrapping_sub(at) >> 6;
+                $body
+                $p = native_opaque_step($p.wrapping_add(period));
             }
-        })
+        }
     }};
 }
 
-/// The differences of words `[$start, $end)` from `$phase` (see `native_write`), ORed: 0 when
-/// every word holds. Each word's difference goes into 4 accumulators, one branch at the end. The sequential walk takes 4 vectors
-/// a step (a group of lines), so the 4 accumulators are independent chains at every width.
-macro_rules! native_differs {
-    ([scalar], $ptr:expr, $start:expr, $end:expr, $lid0:expr, $period:expr, $phase:expr) => {{
-        let (ptr, start, end, lid0): (*const u64, usize, usize, u64) = ($ptr, $start, $end, $lid0);
-        let mut acc = [0u64; 4];
-        crate::pattern::with_phase_line!($phase, |line| {
-            match $period {
-                None => {
-                    let mut lid = lid0;
-                    let mut off = start;
-                    while off < end {
-                        accumulate_line(&mut acc, ptr.add(off), &line(lid));
-                        lid += 1;
-                        off += LINE_WORDS;
-                    }
-                }
-                Some(period) => {
-                    for_each_strided_line!(ptr, start, end, period, |offset| {
-                        accumulate_line(&mut acc, ptr.add(offset), &line(lid0 + ((offset - start) / LINE_WORDS) as u64));
-                    });
-                }
+/// The line type of a native walk at a width: `[scalar]` one array of words, `[u64xN, N]` vectors.
+macro_rules! native_line_ty {
+    ([scalar]) => { [u64; LINE_WORDS] };
+    ([$simd:ty, $w:tt]) => { [$simd; LINE_WORDS / $w] };
+}
+
+/// Runs `$body` with `$line` the line function of `$phase` at a width (`with_phase_line!` for
+/// `[scalar]`, `with_phase_vectors!` at `N` lanes for `[u64xN, N]`): its family and beat matched
+/// once, outside the walk.
+macro_rules! native_with_line {
+    ([scalar], $phase:expr, |$line:ident| $body:block) => {
+        crate::pattern::with_phase_line!($phase, |$line| $body)
+    };
+    ([$simd:ty, $w:tt], $phase:expr, |$line:ident| $body:block) => {
+        crate::pattern::with_phase_vectors!($w, $phase, |$line| $body)
+    };
+}
+
+/// The sequential write of `$c`, a `NativeChunk`, each line `$line`'s: from the chunk's start, a
+/// pointer walked a line a step, to the chunk's end as the old loop ran (with a count, the
+/// compiler vectorized the scalar walks across lines, and spilled their constants). `scalar`
+/// stores each line as one array; `[u64xN, N]` stores it as vectors of that width.
+macro_rules! native_write_seq {
+    ([scalar], $c:expr, $line:expr) => {{
+        let (NativeChunk { base, start, end, lid0, .. }, line) = ($c, $line);
+        let (mut p, stop) = (base.add(start), base.wrapping_add(end));
+        let mut lid = lid0;
+        while p < stop {
+            *(p as *mut [u64; LINE_WORDS]) = line(lid);
+            lid += 1;
+            p = native_opaque_step(p.wrapping_add(LINE_WORDS));
+        }
+    }};
+    ([$simd:ty, $w:tt], $c:expr, $line:expr) => {{
+        let (NativeChunk { base, start, end, lid0, .. }, line) = ($c, $line);
+        let (mut p, stop) = (base.add(start), base.wrapping_add(end));
+        let mut lid = lid0;
+        while p < stop {
+            for (v, x) in line(lid).into_iter().enumerate() {
+                *(p.add(v * $w) as *mut $simd) = x;
+            }
+            lid += 1;
+            p = native_opaque_step(p.wrapping_add(LINE_WORDS));
+        }
+    }};
+}
+
+/// The strided write of `$c` (see `native_write_seq`): TM5's walk, `native_strided_walk!`.
+macro_rules! native_write_strided {
+    ([scalar], $c:expr, $line:expr) => {{
+        let (NativeChunk { base, start, end, lid0, period, .. }, line) = ($c, $line);
+        native_strided_walk!(prefetch_line, base, start, end, period, lid0, |p, lid| {
+            *(p as *mut [u64; LINE_WORDS]) = line(lid);
+        });
+    }};
+    ([$simd:ty, $w:tt], $c:expr, $line:expr) => {{
+        let (NativeChunk { base, start, end, lid0, period, .. }, line) = ($c, $line);
+        native_strided_walk!(prefetch_line, base, start, end, period, lid0, |p, lid| {
+            for (v, x) in line(lid).into_iter().enumerate() {
+                *(p.add(v * $w) as *mut $simd) = x;
             }
         });
+    }};
+}
+
+/// The differences of `$c`'s words from `$line`'s on the sequential walk (see `native_write_seq`),
+/// ORed: 0 when every word holds. Each word's difference goes into 4 accumulators, one branch at
+/// the end. The SIMD walk takes 4 vectors a step (a group of lines), so the 4 accumulators are
+/// independent chains at every width, and the lines past the last whole group one at a time.
+macro_rules! native_differs_seq {
+    ([scalar], $c:expr, $line:expr) => {{
+        let (NativeChunk { base, start, end, lid0, .. }, line) = ($c, $line);
+        let mut acc = [0u64; 4];
+        let (mut p, stop) = (base.add(start), base.wrapping_add(end));
+        let mut lid = lid0;
+        while p < stop {
+            accumulate_line(&mut acc, p, &line(lid));
+            lid += 1;
+            p = native_opaque_step(p.wrapping_add(LINE_WORDS));
+        }
         (acc[0] | acc[1]) | (acc[2] | acc[3])
     }};
-    ([$simd:ty, $w:tt], $ptr:expr, $start:expr, $end:expr, $lid0:expr, $period:expr, $phase:expr) => {{
+    ([$simd:ty, $w:tt], $c:expr, $line:expr) => {{
         // Vectors a line, and lines a group of 4 vectors
         const VPL: usize = LINE_WORDS / $w;
         const LPG: usize = if VPL >= 4 { 1 } else { 4 / VPL };
-        let (ptr, start, end, lid0): (*const u64, usize, usize, u64) = ($ptr, $start, $end, $lid0);
-        let zero = <$simd>::splat(0);
-        let mut acc = [zero; 4];
-        crate::pattern::with_phase_vectors!($w, $phase, |line| {
-            match $period {
-                None => {
-                    let mut lid = lid0;
-                    let mut off = start;
-                    while off + LPG * LINE_WORDS <= end {
-                        for l in 0..LPG {
-                            let words = line(lid + l as u64);
-                            for v in 0..VPL {
-                                let actual = *(ptr.add(off + l * LINE_WORDS + v * $w) as *const $simd);
-                                acc[(l * VPL + v) % 4] |= actual ^ words[v];
-                            }
-                        }
-                        lid += LPG as u64;
-                        off += LPG * LINE_WORDS;
-                    }
-                    while off < end {
-                        let words = line(lid);
-                        for v in 0..VPL {
-                            acc[v % 4] |= *(ptr.add(off + v * $w) as *const $simd) ^ words[v];
-                        }
-                        lid += 1;
-                        off += LINE_WORDS;
-                    }
-                }
-                Some(period) => {
-                    for_each_strided_line!(ptr, start, end, period, |offset| {
-                        let words = line(lid0 + ((offset - start) / LINE_WORDS) as u64);
-                        for v in 0..VPL {
-                            acc[v % 4] |= *(ptr.add(offset + v * $w) as *const $simd) ^ words[v];
-                        }
-                    });
-                }
+        let (NativeChunk { base, start, end, lid0, .. }, line) = ($c, $line);
+        let mut acc = [<$simd>::splat(0); 4];
+        let (mut p, stop) = (base.add(start), base.wrapping_add(end));
+        let mut lid = lid0;
+        while p.wrapping_add(LPG * LINE_WORDS) <= stop {
+            // The group's lines first (a width with fewer than 4 lines a group leaves the rest
+            // unused), then its 4 vectors, the group's vector `k` into accumulator `k`: a family
+            // whose line takes many instructions kept a loop over the lines, its accumulators in
+            // memory, indexed by the line (TODO 99)
+            let words = [line(lid), line(lid + 1), line(lid + 2), line(lid + 3)];
+            let words = words.as_flattened();
+            for (k, a) in acc.iter_mut().enumerate() {
+                *a |= *(p.add(k * $w) as *const $simd) ^ words[k];
+            }
+            lid += LPG as u64;
+            p = native_opaque_step(p.wrapping_add(LPG * LINE_WORDS));
+        }
+        while p < stop {
+            let words = line(lid);
+            for v in 0..VPL {
+                acc[v % 4] |= *(p.add(v * $w) as *const $simd) ^ words[v];
+            }
+            lid += 1;
+            p = native_opaque_step(p.wrapping_add(LINE_WORDS));
+        }
+        ((acc[0] | acc[1]) | (acc[2] | acc[3])).reduce_or()
+    }};
+}
+
+/// The differences of `$c`'s words from `$line`'s on the strided walk (see `native_differs_seq`).
+macro_rules! native_differs_strided {
+    ([scalar], $c:expr, $line:expr) => {{
+        let (NativeChunk { base, start, end, lid0, period, .. }, line) = ($c, $line);
+        let mut acc = [0u64; 4];
+        native_strided_walk!(prefetch_line, base, start, end, period, lid0, |p, lid| {
+            accumulate_line(&mut acc, p, &line(lid));
+        });
+        (acc[0] | acc[1]) | (acc[2] | acc[3])
+    }};
+    ([$simd:ty, $w:tt], $c:expr, $line:expr) => {{
+        const VPL: usize = LINE_WORDS / $w;
+        let (NativeChunk { base, start, end, lid0, period, .. }, line) = ($c, $line);
+        let mut acc = [<$simd>::splat(0); 4];
+        native_strided_walk!(prefetch_line, base, start, end, period, lid0, |p, lid| {
+            let words = line(lid);
+            for v in 0..VPL {
+                acc[v % 4] |= *(p.add(v * $w) as *const $simd) ^ words[v];
             }
         });
         ((acc[0] | acc[1]) | (acc[2] | acc[3])).reduce_or()
@@ -4911,9 +5002,61 @@ unsafe fn native_rescan(ctx: &ChunkCtx, lid0: u64, phase: crate::pattern::Phase,
     scan.finish(format_args!("in idx {start}..{end} ({label})"))
 }
 
-/// A native SimpleTest at one width: `[scalar]` or `[u64xN, N]`.
+/// A native SimpleTest at one width: `[scalar]` or `[u64xN, N]`, and its walks module `$walks`.
 macro_rules! native_simple_impl {
-    ($fn_name:ident, $test_name:literal, [$($kind:tt)*], $tf:literal) => {
+    ($fn_name:ident, $walks:ident, $test_name:literal, [$($kind:tt)*], $tf:literal) => {
+        /// The native SimpleTest's walks at this width, called once a chunk (`NativeChunk`). The
+        /// phase's family and beat are matched once a chunk, here, and each walk is generic over
+        /// the line function it gets, so each family and beat has its own function of each walk,
+        /// `#[inline(never)]` with the width's target features: in one function holding every
+        /// family's walk, what the walks share was kept across all of them, and values spilled in
+        /// walks that had registers free (TODO 99).
+        mod $walks {
+            use super::*;
+
+            /// Writes `c`'s phase over its words, on its walk.
+            #[inline]
+            #[target_feature(enable = $tf)]
+            pub(super) unsafe fn write(c: NativeChunk) {
+                native_with_line!([$($kind)*], c.phase, |line| {
+                    if c.period == 0 { write_seq(c, line) } else { write_strided(c, line) }
+                })
+            }
+
+            /// The differences of `c`'s words from its phase, ORed: 0 when every word holds.
+            #[inline]
+            #[target_feature(enable = $tf)]
+            pub(super) unsafe fn differs(c: NativeChunk) -> u64 {
+                native_with_line!([$($kind)*], c.phase, |line| {
+                    if c.period == 0 { differs_seq(c, line) } else { differs_strided(c, line) }
+                })
+            }
+
+            #[inline(never)]
+            #[target_feature(enable = $tf)]
+            unsafe fn write_seq<L: Fn(u64) -> native_line_ty!([$($kind)*])>(c: NativeChunk, line: L) {
+                native_write_seq!([$($kind)*], c, line)
+            }
+
+            #[inline(never)]
+            #[target_feature(enable = $tf)]
+            unsafe fn write_strided<L: Fn(u64) -> native_line_ty!([$($kind)*])>(c: NativeChunk, line: L) {
+                native_write_strided!([$($kind)*], c, line)
+            }
+
+            #[inline(never)]
+            #[target_feature(enable = $tf)]
+            unsafe fn differs_seq<L: Fn(u64) -> native_line_ty!([$($kind)*])>(c: NativeChunk, line: L) -> u64 {
+                native_differs_seq!([$($kind)*], c, line)
+            }
+
+            #[inline(never)]
+            #[target_feature(enable = $tf)]
+            unsafe fn differs_strided<L: Fn(u64) -> native_line_ty!([$($kind)*])>(c: NativeChunk, line: L) -> u64 {
+                native_differs_strided!([$($kind)*], c, line)
+            }
+        }
+
         /// A native SimpleTest (pattern spec v2) at this width; see the section comment.
         #[target_feature(enable = $tf)]
         unsafe fn $fn_name(
@@ -4932,7 +5075,8 @@ macro_rules! native_simple_impl {
             // Line ids count from the thread's span: the extent starts there (TODO 76)
             let lid_base = crate::pattern::line_base(thread_id);
             let stride = config.parameter_context.as_ref().and_then(|c| c.stride_elements).unwrap_or(0);
-            let period = (stride > 0).then(|| strided_period(stride));
+            // TM5's strided walk's period, or 0 for the sequential walk
+            let period = if stride > 0 { strided_period(stride) } else { 0 };
             let pinned = run.pinned;
             // A step that verifies its fill writes one image a suite cycle, so its pairs span two;
             // a Bench pair is pinned to pair 0's P, its Init's and its Verify's alike
@@ -4941,20 +5085,24 @@ macro_rules! native_simple_impl {
                 _ => crate::pattern::Schedule::Rounds,
             };
             let phase_of = move |ctx: &ChunkCtx| program.phase(&epoch, wrc, if pinned { 0 } else { ctx.round }, schedule, beat);
-            let write = |ctx: &ChunkCtx| {
-                let lid0 = lid_base + (ctx.chunk_start / LINE_WORDS) as u64;
-                native_write!([$($kind)*], ctx.ptr, ctx.chunk_start, ctx.chunk_end, lid0, period, phase_of(ctx));
+            let chunk = move |ctx: &ChunkCtx| NativeChunk {
+                base: ctx.ptr,
+                start: ctx.chunk_start,
+                end: ctx.chunk_end,
+                lid0: lid_base + (ctx.chunk_start / LINE_WORDS) as u64,
+                period,
+                phase: phase_of(ctx),
             };
+            let write = |ctx: &ChunkCtx| $walks::write(chunk(ctx));
             run_phased_test(
                 blocks, thread_id, error_mode, timing, config, progress,
                 test_name, run.action, 1, config.skip_init, run.test_reps, run.verify_reps,
                 write, write,
                 |ctx: &ChunkCtx| -> u64 {
-                    let lid0 = lid_base + (ctx.chunk_start / LINE_WORDS) as u64;
-                    let phase = phase_of(ctx);
-                    let seen = native_differs!([$($kind)*], ctx.ptr, ctx.chunk_start, ctx.chunk_end, lid0, period, phase);
+                    let c = chunk(ctx);
+                    let seen = $walks::differs(c);
                     if seen != 0 {
-                        native_rescan(ctx, lid0, phase, test_name, seen)
+                        native_rescan(ctx, c.lid0, c.phase, test_name, seen)
                     } else {
                         0
                     }
@@ -4964,10 +5112,10 @@ macro_rules! native_simple_impl {
     };
 }
 
-native_simple_impl!(simple_native_scalar, "Mem-SimpleV2", [scalar], "avx2,avx,fma,bmi1,bmi2");
-native_simple_impl!(simple_native_128, "Mem-SimpleV2-128", [u64x2, 2], "sse4.2,sse4.1,ssse3,sse3,sse2,popcnt");
-native_simple_impl!(simple_native_256, "Mem-SimpleV2-256", [u64x4, 4], "avx2,avx,fma,bmi1,bmi2");
-native_simple_impl!(simple_native_512, "Mem-SimpleV2-512", [u64x8, 8], "avx512f,avx512bw,avx512cd,avx512dq,avx512vl,avx2,avx,fma,bmi1,bmi2");
+native_simple_impl!(simple_native_scalar, simple_native_scalar_walks, "Mem-SimpleV2", [scalar], "avx2,avx,fma,bmi1,bmi2");
+native_simple_impl!(simple_native_128, simple_native_128_walks, "Mem-SimpleV2-128", [u64x2, 2], "sse4.2,sse4.1,ssse3,sse3,sse2,popcnt");
+native_simple_impl!(simple_native_256, simple_native_256_walks, "Mem-SimpleV2-256", [u64x4, 4], "avx2,avx,fma,bmi1,bmi2");
+native_simple_impl!(simple_native_512, simple_native_512_walks, "Mem-SimpleV2-512", [u64x8, 8], "avx512f,avx512bw,avx512cd,avx512dq,avx512vl,avx2,avx,fma,bmi1,bmi2");
 
 // ─── Mem-Sequence (TODO 97) ──────────────────────────────────────────────────────────────────────
 //
@@ -6325,6 +6473,118 @@ mod random_replay_tests {
                 }
             }
         }
+    }
+
+    /// TODO 99: the native SimpleTest's strided walk is `for_each_strided_line!`'s: the same lines
+    /// in the same order, each with its line id, and the same line prefetched at each step, in both
+    /// of a pass's loops (on in the pass, then on into the next).
+    #[test]
+    fn the_native_strided_walk_is_tm5s() {
+        use super::native_opaque_step;
+        let mut mem = [0u64; 1];
+        let base = mem.as_mut_ptr();
+        // A pointer's word offset from `base`; a prefetch's may be off the chunk, either side
+        let at = |q: *const u64| ((q as usize).wrapping_sub(base as usize) as isize) / 8;
+        let shapes = [(0, 4096, 15 * 8), (512, 4096 + 512, 15 * 8), (0, 4096 + 40, 15 * 8), (0, 4096, 63 * 8),
+                      (0, 512, 4095 * 8), (64, 128, 0), (0, 6 * LINE_WORDS, 2 * LINE_WORDS), (0, 344, 15 * 8)];
+        for (start, end, stride) in shapes {
+            let period = strided_period(stride);
+            let mut old = Vec::new();
+            for_each_strided_line!(base as *const u64, start, end, period, |offset| { old.push(offset); });
+            // The old walk's prefetch targets, by its own loops (`the_strided_walk_is_tm5s`)
+            let ahead = strided_lookahead(start, end, period);
+            let mut targets = Vec::new();
+            let mut first = start + period;
+            while first > start {
+                first -= LINE_WORDS;
+                let wrap = strided_wrap(first, end, period);
+                let mut offset = first;
+                while offset < end {
+                    targets.push(strided_ahead(offset, ahead, end, wrap) as isize);
+                    offset += period;
+                }
+            }
+            let lid0 = (7u64 << 37) + (start / LINE_WORDS) as u64;
+            let (mut lines, mut prefetched) = (Vec::new(), Vec::new());
+            let mut prefetch = |q: *mut u64| prefetched.push(at(q));
+            native_strided_walk!(prefetch, base, start, end, period, lid0, |p, lid| {
+                lines.push((at(p) as usize, lid));
+            });
+            let what = format!("{start}..{end} by {stride}");
+            assert_eq!(lines.iter().map(|&(offset, _)| offset).collect::<Vec<_>>(), old, "{what}: the lines");
+            for &(offset, lid) in &lines {
+                assert_eq!(lid, lid0 + ((offset - start) / LINE_WORDS) as u64, "{what}: line {offset}'s id");
+            }
+            assert_eq!(prefetched, targets, "{what}: the prefetches");
+        }
+    }
+
+    /// TODO 99: the native SimpleTest's walks at every width this CPU has, for every family and
+    /// beat and both polarities, sequential and strided (passes of 2 or 3 lines, and passes of one
+    /// line, the period longer than the chunk): the write leaves each word of the chunk its
+    /// phase's (`Phase::line`, the spec's) and nothing outside it, a verify reads that clean, and
+    /// a flipped bit is seen in each word of the first 4 lines (every lane of every accumulator),
+    /// of the last 3 (the lines past the last whole group: 3 at 512 bits, 1 at 256) and in a spread.
+    #[test]
+    fn native_walks_write_their_phase_and_see_every_bad_word() {
+        use crate::pattern::{Family, Phase};
+        use crate::pattern_gen::BusBeat;
+        type Walks = (unsafe fn(super::NativeChunk), unsafe fn(super::NativeChunk) -> u64);
+        let mut widths: Vec<(&str, Walks)> = vec![
+            ("scalar", (super::simple_native_scalar_walks::write, super::simple_native_scalar_walks::differs)),
+            ("128", (super::simple_native_128_walks::write, super::simple_native_128_walks::differs)),
+            ("256", (super::simple_native_256_walks::write, super::simple_native_256_walks::differs)),
+        ];
+        if is_x86_feature_detected!("avx512f") && is_x86_feature_detected!("avx512bw") && is_x86_feature_detected!("avx512cd")
+            && is_x86_feature_detected!("avx512dq") && is_x86_feature_detected!("avx512vl") {
+            widths.push(("512", (super::simple_native_512_walks::write, super::simple_native_512_walks::differs)));
+        }
+        const UNTOUCHED: u64 = 0x0DD0_F00D_0DD0_F00D;
+        // 43 lines from line 8 of the buffer (64 B aligned), so whole groups and a tail at 512
+        // and 256 bits
+        let (start, lines) = (64usize, 43usize);
+        let end = start + lines * LINE_WORDS;
+        let mut buf = vec![std::simd::u64x8::splat(UNTOUCHED); end / 8 + 8];
+        let base = buf.as_mut_ptr() as *mut u64;
+        let total = buf.len() * 8;
+        let lid0 = (3u64 << 37) + 1000;
+        let flips: Vec<usize> = (start..start + 4 * LINE_WORDS).chain(end - 3 * LINE_WORDS..end).chain((start..end).step_by(37)).collect();
+        let mut ran = 0;
+        for (width, (write, differs)) in &widths {
+            for family in Family::ALL {
+                let beats = if family.uses_beat() { &[BusBeat::Bits12, BusBeat::Bits16, BusBeat::Bits24, BusBeat::Bits32, BusBeat::Bits64][..] } else { &[BusBeat::Bits64][..] };
+                for &beat in beats {
+                    for mask in [0, !0] {
+                        let phase = Phase { family, key: 0x5A5A_1234_C0FF_EE00, mask, beat };
+                        for period in [0, strided_period(15 * 8), strided_period(4095 * 8)] {
+                            let what = format!("{width} {} period {period}", phase.label());
+                            let c = super::NativeChunk { base, start, end, lid0, period, phase };
+                            for i in 0..total {
+                                unsafe { *base.add(i) = UNTOUCHED };
+                            }
+                            unsafe { write(c) };
+                            for i in 0..total {
+                                let want = if (start..end).contains(&i) {
+                                    phase.line(lid0 + ((i - start) / LINE_WORDS) as u64)[(i - start) % LINE_WORDS]
+                                } else {
+                                    UNTOUCHED
+                                };
+                                assert_eq!(unsafe { *base.add(i) }, want, "{what}: word {i}");
+                            }
+                            assert_eq!(unsafe { differs(c) }, 0, "{what}: clean");
+                            for &word in &flips {
+                                let bit = 1u64 << (word % 64);
+                                unsafe { *base.add(word) ^= bit };
+                                assert_ne!(unsafe { differs(c) }, 0, "{what}: missed word {word}");
+                                unsafe { *base.add(word) ^= bit };
+                            }
+                            ran += 1;
+                        }
+                    }
+                }
+            }
+        }
+        assert_eq!(ran, widths.len() * 19 * 2 * 3);
     }
 
     /// TODO 89: the strided accumulate sees a bad word wherever its walk passes, at any stride
