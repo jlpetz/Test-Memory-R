@@ -20,8 +20,9 @@ that ratchets down as kernels are fixed.
 
 ## Baseline (2026-10-19, bf3660b)
 
-39 kernels; 28 round-trip loops, 519 reload loops. Every one is a general-purpose register: no
-hot loop spills a vector register. The leaders:
+39 kernels; 28 round-trip loops, 519 reload loops. By register (the split came in 1e0f938; the
+first version of this file wrongly said none were vector registers): round trips 23 gpr and 5
+SIMD, reloads 434 gpr and 85 SIMD. The leaders:
 
 | Kernel | Round trip | Reload |
 |---|---|---|
@@ -61,6 +62,40 @@ function, gave its pattern base a stack slot.
    they are free; a changed binary against the old in separate runs, three each, with a reference
    test in every run.
 5. Lower `--max` as each kernel lands, and run it before each release build.
+
+## Rounds
+
+One kernel a round: its loops saved before and after (`--detail NAME --all`), then the old binary
+and the new alternately (`tools/bench_ab.py`), three runs each, with `Mem-StuckBit512_A` the
+reference in every run (`test=NAME,Mem-StuckBitAuto cycles=2` and the standard live settings).
+Noise floor: round 1's binary against a copy of itself gave 1.010 against the reference (raw
+1.016), so a change inside about 1.5% is no change.
+
+| Round | Kernel | What changed | Speed vs ref | Commit |
+|---|---|---|---|---|
+| 1 | Mem-Stride | write and verify each a function; the verify at each of the test's strides a const generic: fixed displacements, four accumulators, no stack | 1.983× | 1e0f938 |
+| 2 | Mem-CacheBust | write and verify each a function, both walking a pointer; the verify explicit `u64x4` (16 words a step, four accumulators); one path for one pattern and many | 1.009 (parity) | round 2 |
+
+Round 2 is where clean wasn't enough. The first clean version used one index for the address and
+the value (`(%base,%index,8)`, an instruction fewer) and ran 0.944; moving the write alone, 0.979.
+Every access in this test misses L1 (a page apart, one set), and there the walked pointer the old
+inlined code had is worth 6%. Written as four scalar chains instead, the verify was vectorized by
+the compiler itself, eight accumulators wide with five constants reloaded from the stack: the
+explicit vector form keeps four, in registers. Rewriting Mem-Stride's loops the same way hit the
+same vectorizer (SIMD reloads 82 → 98), so it was reverted; its addressing is still to do.
+
+What this taught went into `doc/simd_codegen_rules.md` Rule 6, and the tool gained two review
+columns: `indexed` (1207 hot loops) and `const` (77, a constant read from `.rdata` every iteration).
+After round 2: round trips 23 gpr + 5 SIMD, reloads 428 gpr + 82 SIMD (one of the gpr reloads is
+CacheBust's write's outer loop, a false positive).
+
+## The rest: a workflow, then one benchmark at a time
+
+From round 3 (the owner, 2026-10-19, Ultracode): an agent per kernel family, each in its own
+worktree from the round-2 commit, applies Rule 6 and checks the asm, with tests and clippy; an
+independent reviewer checks each family's change for correctness (the same words written and
+checked, every error still seen, widths kept). No agent benchmarks: the box would be noise. Then
+each family is merged and benchmarked here against the round-2 binary, alone on the box.
 
 ## Decisions so far
 

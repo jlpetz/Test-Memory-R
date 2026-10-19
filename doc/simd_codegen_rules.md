@@ -251,6 +251,47 @@ Hard-won from the `refresh-test` work:
 
 ---
 
+## Rule 6 — Keep each hot loop in registers, on a walked pointer, in the shape you wrote
+
+From TODO 99 (2026-10-19, dev box, Granite Rapids with AVX-512). Check every one of these with
+`tools/hot_loop_spills.py` (its columns: stack round trips and reloads, gpr and SIMD; `indexed`;
+`const`) before and after, and measure with `tools/bench_ab.py` (`tools/README.md`).
+
+1. **Give each hot loop its own small function.** LLVM allocates registers per function. Inlined
+   into a test function, with its passes, chunks, seal and stats live, a loop's own values spill:
+   Mem-Stride kept its stride on the stack, Mem-CacheBust reloaded its pattern every store. Move
+   the loop into an `#[inline(never)]` fn taking a `Copy` struct by value (base, bounds, pattern),
+   called once a chunk, and destructure it into locals. Mem-Stride ran 1.98× faster for it.
+2. **An extracted SIMD loop carries its variant's `#[target_feature]`.** A new function compiles at
+   the `x86-64-v3` baseline unless it says otherwise, so a `u64x8` in it runs as two `ymm` halves
+   with correct results: the silent width loss Rule 4 exists for. Give the helper the same
+   `#[target_feature(enable = ...)]` as the fn it came from, or expand it from the variant's macro,
+   and confirm the width in the asm (`zmm` for 512).
+3. **Walk a pointer, and address at fixed displacements from it, not through an index.** Write the
+   loop as a pointer and a count: the pointer stepped by the stride, each access at it plus a
+   constant, the expected value carried beside it. One index serving the address and the value
+   saves an instruction and gives `(%base,%index,8)`, which cost Mem-CacheBust (every access an L1
+   miss) about 6%, and a 512-bit verify at L2 speed 16% (`fearless_simd/FINDINGS.md`; a load folded
+   into a 3-operand vector op splits in two on Intel when it has an index). It isn't always slower
+   (the same study's 128/256-bit `chunks_exact` loops were 3–7% faster in L2), so measure an index
+   you keep rather than assume.
+4. **Make a fixed set of strides compile-time constants** (a const generic, a `match` dispatching to
+   `#[inline(never)]` instances): fixed displacements and fewer live values (Mem-Stride).
+5. **Check the shape you got, not the shape you wrote: the auto-vectorizer takes counted scalar
+   loops.** Four scalar accumulator chains in a loop with a computable count got vectorized and
+   interleaved by LLVM itself, eight vector accumulators wide with five constants reloaded from the
+   stack each step (Mem-CacheBust's verify, and Mem-Stride's when rewritten that way). When that
+   happens, write the vector form with its four accumulators explicitly (`CacheBustChunk::verify`).
+6. **No constant read from memory every iteration.** `vpbroadcastq __real@…(%rip)` in a loop is a
+   reload like a stack one. Splat it before the loop so it stays in a register.
+7. **Step a pointer past the end with `wrapping_add`.** `ptr.add` to outside the allocation is
+   undefined behaviour even if never read, and a walk's last step usually lands there.
+8. **Rewording the source rarely changes LLVM's choices** (loop strength reduction normalises it).
+   Change the structure instead (a function boundary, a const generic, explicit vectors, how the
+   loop counts) and read the asm after each change.
+
+---
+
 ## Upstream Rust/LLVM issues — what actually affects TMR
 
 > **A systematic sweep of open `rust-lang/rust` + `rust-lang/stdarch` issues is tracked as
@@ -290,3 +331,6 @@ those are the intrinsic families most likely to carry emulation overhead.
 5. New intrinsic in a hot loop? → **`--emit asm` and verify** it is the instruction you expect.
 6. Measuring? → flush outside the timed region · median not best-of · `black_box` against DCE ·
    pin to distinct physical cores.
+7. Hot loop? → its own function (with its variant's `#[target_feature]`), a walked pointer, the
+   shape you meant: `tools/hot_loop_spills.py` shows no stack, `indexed` or `const` flag you can't
+   explain, before and after (Rule 6). Then `tools/bench_ab.py`, with an A/A run for the noise.

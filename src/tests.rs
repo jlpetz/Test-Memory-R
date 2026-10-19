@@ -1943,6 +1943,95 @@ pub unsafe fn refresh_stable_auto_multi(
 // CacheBusting MultiBlock Implementation
 // ================================================================================================
 
+/// Mem-CacheBust's walk: a page apart, in words.
+const CACHE_BUST_WORDS: usize = CACHE_BUSTING_STRIDE / std::mem::size_of::<u64>();
+
+/// One Mem-CacheBust pass over a chunk: from each offset in its first page, every word a page on,
+/// each word its variant's pattern plus its index. The variant follows from the word's index, a
+/// page round, so a word's value is position-pure. The write and the verify are functions of their
+/// own so their loops keep every value in registers (TODO 99): in the test's function the write
+/// reloaded its pattern and the verify a vector constant every iteration. A call a chunk.
+///
+/// Both walk a pointer, so each access is that register plus a fixed displacement. Every access
+/// misses L1 (a page apart, all in one set), and there an index serving the address and the value
+/// too, one instruction fewer, ran 6% slower (TODO 99 round 2).
+#[derive(Clone, Copy)]
+struct CacheBustChunk {
+    base: *mut u64,
+    start: usize,
+    end: usize,
+    pattern_base: u64,
+    stride_patterns: usize,
+}
+
+impl CacheBustChunk {
+    /// The pattern of the variant word `i` is in (with one pattern, the base).
+    #[inline(always)]
+    fn pattern_at(self, i: usize) -> u64 {
+        let variant = ((i % CACHE_BUST_WORDS) % self.stride_patterns) as u64;
+        self.pattern_base.wrapping_add(variant.wrapping_mul(0x1111111111111111))
+    }
+
+    /// The words from offset `first` to the chunk's end, a page apart.
+    #[inline(always)]
+    fn walk_len(self, first: usize) -> usize {
+        (self.end - first).div_ceil(CACHE_BUST_WORDS)
+    }
+
+    #[inline(never)]
+    unsafe fn write(self) {
+        for offset in 0..CACHE_BUST_WORDS.min(self.end - self.start) {
+            let first = self.start + offset;
+            let mut value = self.pattern_at(first).wrapping_add(first as u64);
+            let mut p = self.base.add(first);
+            for _ in 0..self.walk_len(first) {
+                *p = value;
+                value = value.wrapping_add(CACHE_BUST_WORDS as u64);
+                p = p.wrapping_add(CACHE_BUST_WORDS);
+            }
+        }
+    }
+
+    /// The accumulators ORed: nonzero when a word differs. Each step reads 16 words a page apart, as
+    /// four vectors of four, into four vector accumulators, and steps a vector of their expected
+    /// values: the shape the compiler gave the inlined loop. Written as vectors because from four
+    /// scalar chains the compiler vectorizes it itself, eight accumulators wide, and spills five of
+    /// its constants.
+    #[inline(never)]
+    unsafe fn verify(self) -> u64 {
+        const W: usize = CACHE_BUST_WORDS;
+        let lanes = u64x4::from_array([0, W as u64, 2 * W as u64, 3 * W as u64]);
+        let (quarter, step) = (u64x4::splat(4 * W as u64), u64x4::splat(16 * W as u64));
+        let mut acc = [u64x4::splat(0); 4];
+        let mut tail = 0u64;
+        for offset in 0..W.min(self.end - self.start) {
+            let first = self.start + offset;
+            let mut value = self.pattern_at(first).wrapping_add(first as u64);
+            let mut expected = u64x4::splat(value) + lanes;
+            let mut p = self.base.add(first) as *const u64;
+            let len = self.walk_len(first);
+            for _ in 0..len / 16 {
+                let mut e = expected;
+                for (k, a) in acc.iter_mut().enumerate() {
+                    let q = p.add(4 * k * W);
+                    let words = u64x4::from_array([*q, *q.add(W), *q.add(2 * W), *q.add(3 * W)]);
+                    *a |= words ^ e;
+                    e += quarter;
+                }
+                expected += step;
+                p = p.wrapping_add(16 * W);
+            }
+            value = value.wrapping_add((len / 16 * 16 * W) as u64);
+            for _ in 0..len % 16 {
+                tail |= *p ^ value;
+                value = value.wrapping_add(W as u64);
+                p = p.wrapping_add(W);
+            }
+        }
+        ((acc[0] | acc[1]) | (acc[2] | acc[3])).reduce_or() | tail
+    }
+}
+
 /// CacheBusting MultiBlock implementation - tests memory with stride-based cache-busting patterns.
 ///
 /// Pattern per cycle:
@@ -1966,9 +2055,8 @@ pub unsafe fn cache_busting_multi(
         .and_then(|c| c.stride_patterns)
         .expect("CacheBust requires stride_patterns in parameter_context") as usize;
 
-    // Pre-calculate stride constants outside all loops. Each word holds the constant plus its id
-    // (`pattern::word_base`), so no two threads' words match (TODO 97)
-    let base_stride = CACHE_BUSTING_STRIDE / std::mem::size_of::<u64>();
+    // Each word holds the constant plus its id (`pattern::word_base`), so no two threads' words
+    // match (TODO 97)
     let thread_base = 0x0123456789ABCDEFu64.wrapping_add(crate::pattern::word_base(thread_id));
 
     let (mut runner, extent) = crate::test_scaffolding::TestRunner::new(
@@ -1995,65 +2083,14 @@ pub unsafe fn cache_busting_multi(
             runner.check_seal(spread.start(k), spread.chunk());
             halt_here!(runner, cycle_errors, (runner.bytes_processed() / std::mem::size_of::<u64>()) as u64);
 
-            // Apply stride-pattern-based access patterns within chunk
-            match stride_patterns {
-                1 => {
-                    // Single pattern with large strides to bust cache
-                    for offset in 0..base_stride.min(chunk_end - processed) {
-                        let mut i = processed + offset;
-                        while i < chunk_end {
-                            *base.add(i) = pattern_base.wrapping_add(i as u64);
-                            i += base_stride;
-                            if i >= chunk_end { break; }
-                        }
-                    }
-
-
-                    // Verify with same stride pattern within chunk; the walk covers every word
-                    let expected = |i: usize| pattern_base.wrapping_add(i as u64);
-                    let mut acc = [0u64; 4];
-                    for offset in 0..base_stride.min(chunk_end - processed) {
-                        accumulate_stride_4(&mut acc, base, processed + offset, chunk_end, base_stride, expected);
-                    }
-                    let seen = (acc[0] | acc[1]) | (acc[2] | acc[3]);
-                    if seen != 0 {
-                        cycle_errors += rescan_words(base, processed, chunk_end, test_name, seen, expected);
-                    }
-                }
-                _ => {
-                    // Multiple patterns - divide offsets among stride variants
-                    // Each variant handles a subset of offsets, but ALL offsets are covered
-                    for offset in 0..base_stride.min(chunk_end - processed) {
-                        let variant = (((processed + offset) % base_stride) % stride_patterns) as u64;
-                        let pattern = pattern_base.wrapping_add(variant * 0x1111111111111111u64);
-
-                        let mut i = processed + offset;
-                        while i < chunk_end {
-                            *base.add(i) = pattern.wrapping_add(i as u64);
-                            i += base_stride;
-                            if i >= chunk_end { break; }
-                        }
-                    }
-
-
-                    // Verify all offsets with their respective variant patterns; the walk covers
-                    // every word, and a word's variant follows from its own index
-                    let mut acc = [0u64; 4];
-                    for offset in 0..base_stride.min(chunk_end - processed) {
-                        let variant = (((processed + offset) % base_stride) % stride_patterns) as u64;
-                        let pattern = pattern_base.wrapping_add(variant * 0x1111111111111111u64);
-                        accumulate_stride_4(&mut acc, base, processed + offset, chunk_end, base_stride,
-                                          |i| pattern.wrapping_add(i as u64));
-                    }
-                    let seen = (acc[0] | acc[1]) | (acc[2] | acc[3]);
-                    if seen != 0 {
-                        let expected = |i: usize| {
-                            let variant = ((i % base_stride) % stride_patterns) as u64;
-                            pattern_base.wrapping_add(variant * 0x1111111111111111u64).wrapping_add(i as u64)
-                        };
-                        cycle_errors += rescan_words(base, processed, chunk_end, test_name, seen, expected);
-                    }
-                }
+            // Every word from each offset in the chunk's first page, a page apart, so each write
+            // and read lands in a different page; the walks cover every word
+            let chunk = CacheBustChunk { base, start: processed, end: chunk_end, pattern_base, stride_patterns };
+            chunk.write();
+            let seen = chunk.verify();
+            if seen != 0 {
+                let expected = |i: usize| chunk.pattern_at(i).wrapping_add(i as u64);
+                cycle_errors += rescan_words(base, processed, chunk_end, test_name, seen, expected);
             }
             // Count the chunk when it is done; overlaps count each time
             runner.add_bytes(spread.chunk() * 2);
@@ -2297,8 +2334,6 @@ pub unsafe fn random_torture_multi(
 // StrideAccess, BandwidthSat, BlockMove MultiBlock Implementations
 // ================================================================================================
 
-/// StrideAccess MultiBlock implementation - tests various stride patterns.
-#[doc = include_str!("test_fn_safety.md")]
 /// One Mem-Stride pass over a chunk: each subdivision from its start, every `stride` words, each
 /// word the pattern plus its index. The write and the verify are functions of their own so their
 /// loops keep every value in registers (TODO 99): in the test's function, with its passes and
@@ -2360,6 +2395,8 @@ impl StrideWalk {
     }
 }
 
+/// StrideAccess MultiBlock implementation - tests various stride patterns.
+#[doc = include_str!("test_fn_safety.md")]
 pub unsafe fn stride_access_multi(
     blocks: &[crate::runner::AllocationBlock],
     thread_id: usize,
@@ -6175,7 +6212,7 @@ pub fn get_test_function_by_name(name: &str) -> Option<crate::runner::TestFuncti
 
 #[cfg(test)]
 mod random_replay_tests {
-    use super::{accumulate_stride_4, prefetch_line, random_replay, Rescan, rescan_words, strided_ahead, strided_lookahead, strided_period, StrideWalk,
+    use super::{accumulate_stride_4, prefetch_line, random_replay, Rescan, rescan_words, strided_ahead, strided_lookahead, strided_period, StrideWalk, CacheBustChunk, CACHE_BUST_WORDS,
                 strided_wrap, verify_words, Mode20, Mode2, STRIDED_AHEAD};
     use crate::pattern_gen::{LINE_WORDS, PAGE_WORDS};
 
@@ -6256,6 +6293,36 @@ mod random_replay_tests {
                 mem[word] ^= 1 << 40;
                 assert_ne!(unsafe { walk.verify() }, 0, "stride {stride}: missed word {word}");
                 mem[word] ^= 1 << 40;
+            }
+        }
+    }
+
+    /// TODO 99: Mem-CacheBust's chunk walks write each word its variant's pattern plus its index and
+    /// nothing outside the chunk, read clean, and see a bad word in each lane of each accumulator
+    /// and in the tails, with one pattern and with four.
+    #[test]
+    fn cache_bust_walks_write_their_pattern_and_see_every_bad_word() {
+        // Walks of 22 and 21 words (a vector step and a tail), then of 32 (two steps, no tail)
+        for (start, len) in [(300usize, CACHE_BUST_WORDS * 21 + 37), (0, CACHE_BUST_WORDS * 32)] {
+            for stride_patterns in [1usize, 4] {
+                let mut mem = vec![0u64; start + len + 64];
+                let chunk = CacheBustChunk { base: mem.as_mut_ptr(), start, end: start + len, pattern_base: 0x5A5A_0000_0000_1234, stride_patterns };
+                unsafe { chunk.write() };
+                for (i, &word) in mem.iter().enumerate() {
+                    let want = if (start..start + len).contains(&i) { chunk.pattern_at(i).wrapping_add(i as u64) } else { 0 };
+                    assert_eq!(word, want, "{stride_patterns} patterns: word {i}");
+                }
+                assert_eq!(unsafe { chunk.verify() }, 0, "{stride_patterns} patterns: clean");
+                // Every word of the first and the last offset's walks, and a spread over the rest
+                let last = start + CACHE_BUST_WORDS - 1;
+                let words = (start..start + len).step_by(CACHE_BUST_WORDS)
+                    .chain((last..start + len).step_by(CACHE_BUST_WORDS))
+                    .chain((start..start + len).step_by(97));
+                for word in words {
+                    mem[word] ^= 1 << 40;
+                    assert_ne!(unsafe { chunk.verify() }, 0, "{stride_patterns} patterns: missed word {word}");
+                    mem[word] ^= 1 << 40;
+                }
             }
         }
     }

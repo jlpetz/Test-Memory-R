@@ -8,15 +8,22 @@ kinds, worst first:
               store-to-load latency on the loop's dependency chain
   reload      a value the loop never changes, reloaded each iteration: an L1 load slot
 Each is counted by the register it spills: general purpose (gpr), or SIMD (a vector register,
-xmm/ymm/zmm, or an AVX-512 mask, k0-k7). Cold functions (rescans, parsers, setup) are left out by
-name, below.
+xmm/ymm/zmm, or an AVX-512 mask, k0-k7). Two last columns count hot loops, spilling or not, for
+review and measurement rather than failure:
+  indexed     memory addressed with an index register (`disp(%base,%index,8)`) rather than a walked
+              pointer and a fixed displacement. It cost Mem-CacheBust 6% and a 512-bit verify 16%
+              in L2 (and a folded load in a 3-operand vector op splits in two on Intel), but it
+              isn't always slower.
+  const       a constant loaded from the binary's data (`(%rip)`) every iteration: a reload, like a
+              stack one, that the stack columns can't see.
+Cold functions (rescans, parsers, setup) are left out by name, below.
 
 Build the asm, then run this (with no file, the newest one under target/release/build):
     cargo rustc --release --bin tmr -- --emit asm
     python tools/hot_loop_spills.py [file.s] [--detail SUBSTRING [--all]] [--max N]
---detail prints each flagged loop of the kernels whose name contains SUBSTRING (with --all, their
-clean hot loops too); --max exits 1 when the total flagged loops exceed N (a ratchet for a check
-before releases).
+--detail prints each flagged loop (stack, indexed or const) of the kernels whose name contains
+SUBSTRING (with --all, their clean hot loops too); --max exits 1 when the loops touching the stack
+exceed N (a ratchet for a check before releases).
 """
 import glob
 import os
@@ -37,6 +44,10 @@ OFF_STACK = re.compile(r"-?\d*\((%r(?!sp\b)\w+)")
 STACK = re.compile(r"(-?\d*)\(%rsp\)")
 SIMD = re.compile(r"%[xyz]mm\d+|%k[0-7]\b")
 KINDS = ["round trip gpr", "round trip simd", "reload gpr", "reload simd"]
+# Counted for review, not failure: see the module docs
+REVIEW = ["indexed", "const"]
+# A memory operand with an index register, off the stack (an `lea` is arithmetic, not an access)
+INDEXED = re.compile(r"-?\d*\(%r(?!sp\b)\w+,%r\w+(,\d)?\)")
 
 
 def short_name(sym):
@@ -110,15 +121,20 @@ def innermost_loops(body):
 
 
 def classify(loop):
-    """None for a loop that isn't hot, else (kind, stack lines): "clean" when it keeps everything in
-    registers."""
+    """None for a loop that isn't hot, else (kind, stack lines, review flags): kind "clean" when it
+    keeps everything in registers; the flags are `REVIEW` names."""
     if len(loop) > MAX_INSTRUCTIONS or any(x.startswith("call") for x in loop):
         return None
     if not any(OFF_STACK.search(x) for x in loop):
         return None
-    stack = [x for x in loop if "(%rsp)" in x]
+    flags = []
+    if any(INDEXED.search(x) and not x.startswith("lea") for x in loop):
+        flags.append("indexed")
+    if any("(%rip)" in x and not x.startswith("lea") for x in loop):
+        flags.append("const")
+    stack =[x for x in loop if "(%rsp)" in x]
     if not stack:
-        return "clean", []
+        return "clean", [], flags
     loads, stores, simd = set(), set(), set()
     for x in stack:
         offset = STACK.search(x).group(1)
@@ -133,8 +149,8 @@ def classify(loop):
     trips = loads & stores
     # The loop's worst spill decides its kind; SIMD when that spill is a SIMD register's
     if trips:
-        return ("round trip simd" if trips & simd else "round trip gpr"), stack
-    return ("reload simd" if simd else "reload gpr"), stack
+        return ("round trip simd" if trips & simd else "round trip gpr"), stack, flags
+    return ("reload simd" if simd else "reload gpr"), stack, flags
 
 
 def main():
@@ -143,31 +159,39 @@ def main():
     show_clean = "--all" in args
     limit = int(args[args.index("--max") + 1]) if "--max" in args else None
     files = [a for a in args if a.endswith(".s")]
-    path = files[0] if files else max(glob.glob("target/release/build/tmr-*/out/tmr.s"), key=os.path.getmtime)
-    counts = defaultdict(lambda: dict.fromkeys(KINDS, 0))
+    found = glob.glob("target/release/build/tmr*/**/tmr.s", recursive=True) + glob.glob("target/release/deps/tmr-*.s")
+    if not files and not found:
+        sys.exit("no asm: build it with `cargo rustc --release --bin tmr -- --emit asm`")
+    path = files[0] if files else max(found, key=os.path.getmtime)
+    columns = KINDS + REVIEW
+    counts = defaultdict(lambda: dict.fromkeys(columns, 0))
     for sym, body in functions(path).items():
         name = short_name(sym)
         for loop in innermost_loops(body):
             found = classify(loop)
             if not found:
                 continue
-            kind, stack = found
+            kind, stack, flags = found
             if kind != "clean":
                 counts[name][kind] += 1
-            elif not show_clean:
+            for flag in flags:
+                counts[name][flag] += 1
+            if kind == "clean" and not flags and not show_clean:
                 continue
             if detail and detail in name:
-                print(f"--- {name}: {kind}, {len(loop)} instructions, {len(stack)} on the stack")
+                print(f"--- {name}: {', '.join([kind] + flags)}, {len(loop)} instructions, {len(stack)} on the stack")
                 print("    " + "\n    ".join(re.sub(r"\s+", " ", x) for x in loop))
-    total = {k: sum(c[k] for c in counts.values()) for k in KINDS}
+    widths = (7, 8, 7, 6, 8, 6)
+    total = {k: sum(c[k] for c in counts.values()) for k in columns}
     print(f"{'':48s} {'round trip':>16s} {'reload':>14s}")
-    print(f"{'kernel':48s} {'gpr':>7s} {'simd':>8s} {'gpr':>7s} {'simd':>6s}")
-    for name in sorted(counts, key=lambda n: tuple(-counts[n][k] for k in KINDS) + (n,)):
+    print(f"{'kernel':48s} {'gpr':>7s} {'simd':>8s} {'gpr':>7s} {'simd':>6s} {'indexed':>8s} {'const':>6s}")
+    for name in sorted(counts, key=lambda n: tuple(-counts[n][k] for k in columns) + (n,)):
         c = counts[name]
-        print(f"{name[:48]:48s} " + " ".join(f"{c[k]:{w}d}" for k, w in zip(KINDS, (7, 8, 7, 6))))
-    print(f"{'total (' + str(len(counts)) + ' kernels)':48s} " + " ".join(f"{total[k]:{w}d}" for k, w in zip(KINDS, (7, 8, 7, 6))))
-    if limit is not None and sum(total.values()) > limit:
-        print(f"FAIL: {sum(total.values())} hot loops touch the stack, over {limit}")
+        print(f"{name[:48]:48s} " + " ".join(f"{c[k]:{w}d}" for k, w in zip(columns, widths)))
+    print(f"{'total (' + str(len(counts)) + ' kernels)':48s} " + " ".join(f"{total[k]:{w}d}" for k, w in zip(columns, widths)))
+    spilling = sum(total[k] for k in KINDS)
+    if limit is not None and spilling > limit:
+        print(f"FAIL: {spilling} hot loops touch the stack, over {limit}")
         sys.exit(1)
 
 
