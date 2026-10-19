@@ -5161,6 +5161,8 @@ macro_rules! sequence_random {
         let mask = <$simd>::splat(mask);
         sequence_acc!(init $op, acc, ones, $simd);
         let lines = (end - start) / LINE_WORDS;
+        // Whole 4 KiB pages (`test_memory::GRANULE`): every block whole steps, so `j` lands on 0
+        debug_assert!(lines.is_multiple_of(64), "{lines} lines");
         let mut s = 0;
         while s < lines {
             let bits = (lines - s).ilog2();
