@@ -315,27 +315,32 @@ unsafe fn rescan(kernel: SealKernel, ptr: *const u64, start: usize, end: usize, 
 /// `tmr` at one width: lane j of the vector at address `a` is the word at `a + 8j`, so the lanes
 /// hold the 16 B units `a/16 + j/2`, odd lanes inverted. `x = unit * SEAL_MUL` steps by a constant,
 /// so the hash costs an add, a shift and two XORs per vector, no multiply.
+///
+/// Both walk a pointer over the range's vectors, four a step, then the rest, each access at the
+/// pointer plus a fixed displacement (TODO 99). Counting words from `start` instead, the check's
+/// loads were `(base,index,8)` for the index its tail continued from, and on Intel a load with an
+/// index folded into a three-operand vector op splits in two (Rule 6.3).
 macro_rules! tmr_kernels {
     ($fill:ident, $check:ident, $t:ty, $lanes:literal, $arch:ty, $stream:path, $tf:literal) => {
         #[target_feature(enable = $tf)]
         unsafe fn $fill(ptr: *mut u64, start: usize, end: usize, key: u64, invert: u64) {
             let (mut x, step, inv): ($t, u64, $t) = tmr_start::<$lanes>(ptr.add(start) as usize, key, invert);
             let (step, thirty_two, low63) = (<$t>::splat(step), <$t>::splat(32), <$t>::splat(LOW63));
-            let mut i = start;
-            let unrolled = start + (end - start) / (4 * $lanes) * (4 * $lanes);
-            while i < unrolled {
+            let vectors = (end - start).div_ceil($lanes);
+            let mut p = ptr.add(start) as *mut $arch;
+            for _ in 0..vectors / 4 {
                 for u in 0..4 {
                     let v = x ^ (x >> thirty_two) ^ inv;
-                    $stream(ptr.add(i + u * $lanes) as *mut $arch, std::mem::transmute::<$t, $arch>(v));
+                    $stream(p.add(u), std::mem::transmute::<$t, $arch>(v));
                     x = (x + step) & low63;
                 }
-                i += 4 * $lanes;
+                p = p.wrapping_add(4);
             }
-            while i < end {
+            for _ in 0..vectors % 4 {
                 let v = x ^ (x >> thirty_two) ^ inv;
-                $stream(ptr.add(i) as *mut $arch, std::mem::transmute::<$t, $arch>(v));
+                $stream(p, std::mem::transmute::<$t, $arch>(v));
                 x = (x + step) & low63;
-                i += $lanes;
+                p = p.wrapping_add(1);
             }
             std::arch::x86_64::_mm_sfence();
         }
@@ -347,21 +352,21 @@ macro_rules! tmr_kernels {
             let (step, thirty_two, low63) = (<$t>::splat(step), <$t>::splat(32), <$t>::splat(LOW63));
             let zero = <$t>::splat(0);
             let mut acc = [zero; 4];
-            let mut i = start;
-            let unrolled = start + (end - start) / (4 * $lanes) * (4 * $lanes);
-            while i < unrolled {
+            let vectors = (end - start).div_ceil($lanes);
+            let mut p = ptr.add(start) as *const $t;
+            for _ in 0..vectors / 4 {
                 for (u, a) in acc.iter_mut().enumerate() {
                     let v = x ^ (x >> thirty_two) ^ inv;
-                    *a |= *(ptr.add(i + u * $lanes) as *const $t) ^ v;
+                    *a |= *p.add(u) ^ v;
                     x = (x + step) & low63;
                 }
-                i += 4 * $lanes;
+                p = p.wrapping_add(4);
             }
-            while i < end {
+            for _ in 0..vectors % 4 {
                 let v = x ^ (x >> thirty_two) ^ inv;
-                acc[0] |= *(ptr.add(i) as *const $t) ^ v;
+                acc[0] |= *p ^ v;
                 x = (x + step) & low63;
-                i += $lanes;
+                p = p.wrapping_add(1);
             }
             ((acc[0] | acc[1]) | (acc[2] | acc[3])).reduce_or()
         }
@@ -383,6 +388,9 @@ fn tmr_start<const LANES: usize>(addr: usize, key: u64, invert: u64) -> (std::si
 /// `tm5` at one width. The motif is 6 words, so at any width it repeats every 3 vectors: per page
 /// (or the part of one in range) the kernel builds the 3 from the page's motif and the range's
 /// phase in it, then stores or checks them in turn.
+///
+/// Per page, both walk a pointer over its vectors, three a step, then the rest (`tmr_kernels`: no
+/// index in the check's loads, TODO 99).
 macro_rules! tm5_kernels {
     ($fill:ident, $check:ident, $t:ty, $lanes:literal, $arch:ty, $stream:path, $tf:literal) => {
         #[target_feature(enable = $tf)]
@@ -390,18 +398,23 @@ macro_rules! tm5_kernels {
             let mut i = start;
             while i < end {
                 let (v, page_end): ([$t; 3], usize) = tm5_vectors::<$lanes>(ptr, i, end, invert);
-                let mut r = 0;
-                while i + 3 * $lanes <= page_end {
+                let vectors = (page_end - i).div_ceil($lanes);
+                let mut p = ptr.add(i) as *mut $arch;
+                for _ in 0..vectors / 3 {
                     for (u, x) in v.iter().enumerate() {
-                        $stream(ptr.add(i + u * $lanes) as *mut $arch, std::mem::transmute::<$t, $arch>(*x));
+                        $stream(p.add(u), std::mem::transmute::<$t, $arch>(*x));
                     }
-                    i += 3 * $lanes;
+                    p = p.wrapping_add(3);
                 }
-                while i < page_end {
-                    $stream(ptr.add(i) as *mut $arch, std::mem::transmute::<$t, $arch>(v[r]));
-                    r += 1;
-                    i += $lanes;
+                // The rest, at most 2 (a loop over `v` here kept it on the stack)
+                let rest = vectors % 3;
+                if rest > 0 {
+                    $stream(p, std::mem::transmute::<$t, $arch>(v[0]));
                 }
+                if rest > 1 {
+                    $stream(p.add(1), std::mem::transmute::<$t, $arch>(v[1]));
+                }
+                i += vectors * $lanes;
             }
             std::arch::x86_64::_mm_sfence();
         }
@@ -414,18 +427,23 @@ macro_rules! tm5_kernels {
             let mut i = start;
             while i < end {
                 let (v, page_end): ([$t; 3], usize) = tm5_vectors::<$lanes>(ptr as *mut u64, i, end, invert);
-                while i + 3 * $lanes <= page_end {
+                let vectors = (page_end - i).div_ceil($lanes);
+                let mut p = ptr.add(i) as *const $t;
+                for _ in 0..vectors / 3 {
                     for (u, a) in acc.iter_mut().enumerate() {
-                        *a |= *(ptr.add(i + u * $lanes) as *const $t) ^ v[u];
+                        *a |= *p.add(u) ^ v[u];
                     }
-                    i += 3 * $lanes;
+                    p = p.wrapping_add(3);
                 }
-                let mut r = 0;
-                while i < page_end {
-                    acc[r] |= *(ptr.add(i) as *const $t) ^ v[r];
-                    r += 1;
-                    i += $lanes;
+                // The rest, at most 2
+                let rest = vectors % 3;
+                if rest > 0 {
+                    acc[0] |= *p ^ v[0];
                 }
+                if rest > 1 {
+                    acc[1] |= *p.add(1) ^ v[1];
+                }
+                i += vectors * $lanes;
             }
             (acc[0] | acc[1] | acc[2]).reduce_or()
         }
@@ -622,6 +640,78 @@ mod tests {
                     assert_eq!(kernel.check(p, start, end, "test"), 3, "{} {start}..{end}", kernel.name());
                     let guard = |i: usize| *(buf.as_ptr() as *const u64).add(i);
                     assert!((0..512).chain(512 + words..1024 + words).all(|i| guard(i) == 0), "{} wrote outside {start}..{end}", kernel.name());
+                }
+            }
+        }
+    }
+
+    /// The raw fill at a kernel's pattern and width, past `fill`'s 64 B contract: any whole number
+    /// of vectors, so a test reaches the tails a 64 B-aligned range can't (at 128 bits a line is
+    /// exactly one step).
+    unsafe fn raw_fill(k: SealKernel, p: *mut u64, start: usize, end: usize) {
+        let (key, invert) = (k.key, k.invert_mask());
+        match (k.pattern, k.width) {
+            (SealPattern::Tmr, SealWidth::W512) => tmr_fill_512(p, start, end, key, invert),
+            (SealPattern::Tmr, SealWidth::W256) => tmr_fill_256(p, start, end, key, invert),
+            (SealPattern::Tmr, _) => tmr_fill_128(p, start, end, key, invert),
+            (SealPattern::Tm5, SealWidth::W512) => tm5_fill_512(p, start, end, invert),
+            (SealPattern::Tm5, SealWidth::W256) => tm5_fill_256(p, start, end, invert),
+            (SealPattern::Tm5, _) => tm5_fill_128(p, start, end, invert),
+        }
+    }
+
+    /// The raw check (as `raw_fill`): the differences ORed, before any rescan.
+    unsafe fn raw_check(k: SealKernel, p: *const u64, start: usize, end: usize) -> u64 {
+        let (key, invert) = (k.key, k.invert_mask());
+        match (k.pattern, k.width) {
+            (SealPattern::Tmr, SealWidth::W512) => tmr_check_512(p, start, end, key, invert),
+            (SealPattern::Tmr, SealWidth::W256) => tmr_check_256(p, start, end, key, invert),
+            (SealPattern::Tmr, _) => tmr_check_128(p, start, end, key, invert),
+            (SealPattern::Tm5, SealWidth::W512) => tm5_check_512(p, start, end, invert),
+            (SealPattern::Tm5, SealWidth::W256) => tm5_check_256(p, start, end, invert),
+            (SealPattern::Tm5, _) => tm5_check_128(p, start, end, invert),
+        }
+    }
+
+    /// TODO 99: the kernels' walks write exactly the seal's words (`SealKernel::word`, the pattern
+    /// one word at a time) and nothing else, check clean, and see a bad bit in every word of the
+    /// range: each lane of each accumulator, each tail (tmr: 1-3 vectors after its steps of 4; tm5:
+    /// 1-2 after a page's steps of 3) and the steps the compiler's unrolling leaves to a remainder.
+    /// Ranges from 1 vector to over two pages, starting at and inside a page, at every width.
+    #[test]
+    fn kernel_walks_write_the_seal_and_see_every_bad_word() {
+        let words = 3 * 512 + 64;
+        // A guard page either side
+        let mut buf = vec![u64x8::splat(0); words / 8 + 2 * 64];
+        let p = unsafe { (buf.as_mut_ptr() as *mut u64).add(512) };
+        const FILLER: u64 = 0x5A5A_5A5A_5A5A_5A5A;
+        for kernel in kernels() {
+            let lanes = match kernel.width { SealWidth::W512 => 8, SealWidth::W256 => 4, _ => 2 };
+            // Starts at a page, one vector in, mid-page, and 16 words before a page's end; lengths
+            // in vectors from one to 25, then over two pages (a full page is 21 steps at 512 bits,
+            // 42 at 256 and 85 at 128)
+            let starts = [0, lanes, 40, 496];
+            let lengths = (1..=9).chain([15, 22, 23, 24, 25]).chain([1100 / lanes]);
+            let ranges: Vec<(usize, usize)> = lengths.flat_map(|n| starts.map(|s| (s, s + n * lanes))).collect();
+            for (start, end) in ranges {
+                let name = format!("{} {start}..{end}", kernel.name());
+                unsafe {
+                    for i in 0..words + 1024 {
+                        *p.wrapping_sub(512).add(i) = FILLER;
+                    }
+                    raw_fill(kernel, p, start, end);
+                    for i in 0..words + 1024 {
+                        let at = p.wrapping_sub(512).wrapping_add(i);
+                        let word = i.wrapping_sub(512);
+                        let want = if (start..end).contains(&word) { kernel.word(at as usize) } else { FILLER };
+                        assert_eq!(*at, want, "{name}: word {word}");
+                    }
+                    assert_eq!(raw_check(kernel, p, start, end), 0, "{name}: clean");
+                    for i in start..end {
+                        *p.add(i) ^= 1 << (i % 64);
+                        assert_ne!(raw_check(kernel, p, start, end), 0, "{name}: missed word {i}");
+                        *p.add(i) ^= 1 << (i % 64);
+                    }
                 }
             }
         }
