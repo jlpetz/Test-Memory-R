@@ -3939,6 +3939,63 @@ fn strided_period(stride: usize) -> usize {
 
 // ─── SimpleTest v2 ───────────────────────────────────────────────────────────
 
+/// `for_each_strided_line!` on a walked pointer, for the numbered-mode SimpleTest's loops (TODO 99):
+/// the same lines in the same order with the same prefetches, `$line` the line's first word
+/// (`*mut u64`), `$offset`, when asked for, its index, and `$target` the line it prefetched (for the
+/// tests). The pointer steps a period a line, so each access is a register and a fixed displacement
+/// rather than a base and an index; every access here is a new row, as in Mem-CacheBust, where the
+/// index cost 6% (TODO 99 round 2).
+///
+/// The prefetch target (`strided_ahead`) is `steps` lines on in the pass for the pass's first
+/// `lines - steps` lines, and for the rest that less the pass's `wrap`, in the next pass. So each
+/// pass is two loops, the target a fixed distance from the line in each and walked beside it: no
+/// compare and select a line, and the registers they took free for the body.
+macro_rules! for_each_strided_line_at {
+    ($ptr:expr, $start:expr, $end:expr, $period:expr, |$line:ident, $offset:ident, $target:ident| $body:block) => {{
+        let (ptr, start, end, period): (*mut u64, usize, usize, usize) = ($ptr, $start, $end, $period);
+        debug_assert!(period.is_multiple_of(LINE_WORDS) && start.is_multiple_of(LINE_WORDS) && end.is_multiple_of(LINE_WORDS),
+                      "the strided walk needs whole lines: {start}..{end} by {period}");
+        // `strided_lookahead` in lines
+        let steps = STRIDED_AHEAD.min((end - start) / period);
+        let ahead = steps * period;
+        let mut first = start + period;
+        while first > start {
+            first -= LINE_WORDS;
+            // `strided_wrap`: the pass's lines, and a line
+            let lines = end.saturating_sub(first).div_ceil(period);
+            let wrap = lines * period + LINE_WORDS;
+            let mut $line = ptr.wrapping_add(first);
+            let mut $offset = first;
+            let mut $target = $line.wrapping_add(ahead);
+            // Each loop runs to a line, not a count: a counted loop the compiler unrolls, and its
+            // copies' lines a run-time period apart take an index register each
+            let (switch, stop) = ($line.wrapping_add(lines.saturating_sub(steps) * period), $line.wrapping_add(lines * period));
+            while $line < switch {
+                prefetch_line($target);
+                $body
+                $line = $line.wrapping_add(period);
+                $offset += period;
+                $target = $target.wrapping_add(period);
+            }
+            // The walk's last steps prefetch off the chunk: a wasted prefetch, not a fault
+            $target = $target.wrapping_sub(wrap);
+            while $line < stop {
+                prefetch_line($target);
+                $body
+                $line = $line.wrapping_add(period);
+                $offset += period;
+                $target = $target.wrapping_add(period);
+            }
+        }
+    }};
+    ($ptr:expr, $start:expr, $end:expr, $period:expr, |$line:ident, $offset:ident| $body:block) => {
+        for_each_strided_line_at!($ptr, $start, $end, $period, |$line, $offset, _target| $body)
+    };
+    ($ptr:expr, $start:expr, $end:expr, $period:expr, |$line:ident| $body:block) => {
+        for_each_strided_line_at!($ptr, $start, $end, $period, |$line, _offset, _target| $body)
+    };
+}
+
 /// Pattern-generation parameters for the SimpleTest v2 implementations.
 /// Bundles the mode selector, its two free parameters, and the access stride
 /// so the test functions keep to the standard 6-arg test signature + this config.
@@ -3949,6 +4006,408 @@ struct SimplePatternConfig {
     param1: u64,
     /// Element stride for strided access; `0` means sequential.
     stride: usize,
+}
+
+// ─── SimpleTest v2's scalar loops (TODO 99) ──────────────────────────────────────────────────────
+//
+// The scalar build runs every numbered mode (the SIMD builds send modes 0, 1, 2, 13 and 30 here).
+// Each pattern's write and verify, sequential and strided, is a function of its own in
+// `simple_test_v2_loops`, taking its chunk as a `Copy` struct by value and called once a chunk:
+// in the test function, with every mode's closures and the harness's chunks, seal and stats live
+// too, the loops reloaded their constants and spilled their accumulators. Each walks a pointer, the
+// expected value computed from the word's index (or a line's address) beside it.
+//
+// The build's width is the baseline's, 256 bits, which the compiler reached on its own before: it
+// vectorized the loops over words and lines itself, four iterations wide, the verify's four
+// accumulators transposed into lanes by shuffles and their constants spilled (Rule 6.5). So the
+// loops here are written as `u64x4` vectors, which the compiler leaves in that shape: four words
+// a vector, a line two, the expected words computed per word or per line as before.
+//
+// The shared `Mode2`/`Mode20`/`Mode30` walks stay as they are for Bench-Init/Verify and the
+// rescans; these loops write the same words (`pattern_gen`'s line functions) in the same order.
+
+/// SimpleTest's per-word patterns on words `[start, end)` of `ptr`, the scalar build: word `i`
+/// holds `expected(i)`, mode `MODE` (0, 1, 11 and 13, and 10 for any other, as the test's match
+/// has it) from `seed` (the chunk's seed for modes 0 and 1, the base for the others) and, for mode
+/// 1, `cl_shift`. The mode is a constant so each mode's loops are compiled with its pattern inlined.
+#[derive(Clone, Copy)]
+struct SimpleWords<const MODE: u32> {
+    ptr: *mut u64,
+    start: usize,
+    end: usize,
+    seed: u64,
+    cl_shift: u32,
+}
+
+impl<const MODE: u32> SimpleWords<MODE> {
+    /// Word `idx`'s pattern.
+    #[inline(always)]
+    fn expected(self, idx: usize) -> u64 {
+        match MODE {
+            0 => pattern_gen::pattern_mode0(idx as u64, self.seed),
+            1 => pattern_gen::pattern_mode1(idx as u64, self.seed, self.cl_shift),
+            11 => pattern_gen::pattern_mode11(idx as u64, self.seed),
+            13 => pattern_gen::pattern_mode13(idx as u64, self.seed),
+            _ => pattern_gen::pattern_mode10(idx as u64, self.seed),
+        }
+    }
+
+    /// Words `idx` to `idx + 3`'s patterns.
+    #[inline(always)]
+    fn expected4(self, idx: usize) -> u64x4 {
+        u64x4::from_array([self.expected(idx), self.expected(idx + 1), self.expected(idx + 2), self.expected(idx + 3)])
+    }
+
+    /// The patterns of the four words whose indices are `idx`'s lanes. A vector of indices, so a
+    /// loop can carry it beside its pointer: from one scalar index the compiler addressed the words
+    /// through it, as `(%base,%index,8)`.
+    #[inline(always)]
+    fn expected_at(self, idx: u64x4) -> u64x4 {
+        u64x4::from_array(idx.to_array().map(|i| self.expected(i as usize)))
+    }
+
+    /// The sequential verify and, on a hit, the cold rescan that counts and logs each bad word.
+    #[inline(always)]
+    unsafe fn check(self, test_name: &str) -> u64 {
+        let seen = simple_test_v2_loops::words_verify(self);
+        if seen == 0 {
+            return 0;
+        }
+        rescan_words(self.ptr, self.start, self.end, test_name, seen, |idx| self.expected(idx))
+    }
+
+    /// The strided verify (the walk covers every word of the chunk, so a hit rescans it in order,
+    /// TODO 89).
+    #[inline(always)]
+    unsafe fn check_strided(self, period: usize, test_name: &str) -> u64 {
+        let seen = simple_test_v2_loops::words_verify_str(self, period);
+        if seen == 0 {
+            return 0;
+        }
+        rescan_words(self.ptr, self.start, self.end, test_name, seen, |idx| self.expected(idx))
+    }
+}
+
+/// Mode 2 on the whole pages of words `[start, end)` of `ptr`, the scalar build: TM5's evolving
+/// lines, the chain restarted at each page (`Mode2`).
+#[derive(Clone, Copy)]
+struct SimpleMode2 {
+    ptr: *mut u64,
+    start: usize,
+    end: usize,
+    mode2: Mode2,
+}
+
+/// Mode 30 on the whole lines of words `[start, end)` of `ptr`, the scalar build: each line the
+/// bus-flip line of its address (`Mode30`).
+#[derive(Clone, Copy)]
+struct SimpleMode30 {
+    ptr: *mut u64,
+    start: usize,
+    end: usize,
+    mode30: Mode30,
+}
+
+/// The scalar build's loops (mode 20 takes `SimpleMode20`, as the SIMD builds do). Each verify
+/// returns its accumulators ORed, nonzero when a word differs; the caller rescans. A sequential
+/// verify takes four vectors a step, each into its own accumulator; a strided one a line at a time
+/// into one, whose lanes are `accumulate_line`'s four (words `k` and `k + 4` into the `k`th).
+mod simple_test_v2_loops {
+    use super::*;
+
+    /// A mode 2 or 20 line, `seed + j * step` (`pattern_gen::line_words`), as its two halves.
+    #[inline(always)]
+    fn line_vectors(seed: u64, step: u64) -> (u64x4, u64x4) {
+        let lo = u64x4::splat(seed) + u64x4::splat(step) * u64x4::from_array([0, 1, 2, 3]);
+        (lo, lo + u64x4::splat(step.wrapping_mul(4)))
+    }
+
+    /// A line's words as its two halves.
+    #[inline(always)]
+    fn halves(w: [u64; LINE_WORDS]) -> (u64x4, u64x4) {
+        (u64x4::from_array([w[0], w[1], w[2], w[3]]), u64x4::from_array([w[4], w[5], w[6], w[7]]))
+    }
+
+    /// Stores a line's halves.
+    #[inline(always)]
+    unsafe fn store_line(line: *mut u64, (lo, hi): (u64x4, u64x4)) {
+        *(line as *mut u64x4) = lo;
+        *(line.add(4) as *mut u64x4) = hi;
+    }
+
+    /// A line's differences from its halves, ORed: words `k` and `k + 4` into lane `k`.
+    #[inline(always)]
+    unsafe fn line_diff(line: *const u64, (lo, hi): (u64x4, u64x4)) -> u64x4 {
+        (*(line as *const u64x4) ^ lo) | (*(line.add(4) as *const u64x4) ^ hi)
+    }
+
+    /// The per-word write: each word its pattern, in order, four vectors a step, then the rest a
+    /// vector at a time and the last words, under a vector, out of line (no chunk has any: chunks
+    /// and extents are whole 4 KiB pages). The vector of indices steps beside the pointer.
+    #[inline(never)]
+    pub(super) unsafe fn words_write<const MODE: u32>(c: SimpleWords<MODE>) {
+        debug_assert!((c.ptr as usize + 8 * c.start).is_multiple_of(32), "the words start on a vector");
+        let words = c.end - c.start;
+        let four = u64x4::splat(4);
+        let mut idx = u64x4::splat(c.start as u64) + u64x4::from_array([0, 1, 2, 3]);
+        let mut p = c.ptr.add(c.start) as *mut u64x4;
+        for _ in 0..words / 16 {
+            for k in 0..4 {
+                *p.add(k) = c.expected_at(idx);
+                idx += four;
+            }
+            p = p.wrapping_add(4);
+        }
+        // To a pointer, not a count: counted, at most three, the compiler unrolled these into
+        // straight-line code laid out beside the epilogue, which the check then read as a loop
+        let vectors_end = c.ptr.wrapping_add(c.end - words % 4) as *mut u64x4;
+        while p < vectors_end {
+            *p = c.expected_at(idx);
+            idx += four;
+            p = p.wrapping_add(1);
+        }
+        if !words.is_multiple_of(4) {
+            words_write_rest(c);
+        }
+    }
+
+    /// The per-word verify: four vectors a step into four accumulators, then the rest a vector at
+    /// a time into the first, and the last words, under a vector, out of line (`verify_words`'s
+    /// loop, at the width the compiler gave it).
+    #[inline(never)]
+    pub(super) unsafe fn words_verify<const MODE: u32>(c: SimpleWords<MODE>) -> u64 {
+        debug_assert!((c.ptr as usize + 8 * c.start).is_multiple_of(32), "the words start on a vector");
+        let words = c.end - c.start;
+        let four = u64x4::splat(4);
+        let mut idx = u64x4::splat(c.start as u64) + u64x4::from_array([0, 1, 2, 3]);
+        let mut acc = [u64x4::splat(0); 4];
+        let mut p = c.ptr.add(c.start) as *const u64x4;
+        for _ in 0..words / 16 {
+            for (k, a) in acc.iter_mut().enumerate() {
+                *a |= *p.add(k) ^ c.expected_at(idx);
+                idx += four;
+            }
+            p = p.wrapping_add(4);
+        }
+        let vectors_end = c.ptr.wrapping_add(c.end - words % 4) as *const u64x4;
+        while p < vectors_end {
+            acc[0] |= *p ^ c.expected_at(idx);
+            idx += four;
+            p = p.wrapping_add(1);
+        }
+        let seen = ((acc[0] | acc[1]) | (acc[2] | acc[3])).reduce_or();
+        if words.is_multiple_of(4) { seen } else { seen | words_verify_rest(c) }
+    }
+
+    /// The per-word write's last words, under a vector: at most three, each on its own.
+    #[cold]
+    #[inline(never)]
+    unsafe fn words_write_rest<const MODE: u32>(c: SimpleWords<MODE>) {
+        let rest = (c.end - c.start) % 4;
+        for k in 0..3 {
+            if k < rest {
+                let idx = c.end - rest + k;
+                *c.ptr.add(idx) = c.expected(idx);
+            }
+        }
+    }
+
+    /// The per-word verify's last words, under a vector.
+    #[cold]
+    #[inline(never)]
+    unsafe fn words_verify_rest<const MODE: u32>(c: SimpleWords<MODE>) -> u64 {
+        let (rest, mut seen) = ((c.end - c.start) % 4, 0);
+        for k in 0..3 {
+            if k < rest {
+                let idx = c.end - rest + k;
+                seen |= *c.ptr.add(idx) ^ c.expected(idx);
+            }
+        }
+        seen
+    }
+
+    /// The per-word write on TM5's strided walk (TODO 93): each line's words their patterns.
+    #[inline(never)]
+    pub(super) unsafe fn words_write_str<const MODE: u32>(c: SimpleWords<MODE>, period: usize) {
+        for_each_strided_line_at!(c.ptr, c.start, c.end, period, |line, offset| {
+            store_line(line, (c.expected4(offset), c.expected4(offset + 4)));
+        });
+    }
+
+    /// The per-word verify on the strided walk, a line at a time.
+    #[inline(never)]
+    pub(super) unsafe fn words_verify_str<const MODE: u32>(c: SimpleWords<MODE>, period: usize) -> u64 {
+        let mut acc = u64x4::splat(0);
+        for_each_strided_line_at!(c.ptr, c.start, c.end, period, |line, offset| {
+            acc |= line_diff(line, (c.expected4(offset), c.expected4(offset + 4)));
+        });
+        acc.reduce_or()
+    }
+
+    /// Mode 2's write: each page's chain from the page's address, a line a link.
+    #[inline(never)]
+    pub(super) unsafe fn mode2_write(c: SimpleMode2) {
+        let SimpleMode2 { ptr, start, end, mode2 } = c;
+        debug_assert!(start.is_multiple_of(PAGE_WORDS) && end.is_multiple_of(PAGE_WORDS), "mode 2 needs whole pages: {start}..{end}");
+        let mut line = ptr.add(start);
+        for _ in 0..(end - start) / PAGE_WORDS {
+            let (mut seed, mut step) = pattern_gen::mode2_page_start(line as usize, mode2.thread_id, mode2.cycle);
+            // To the page's end, not a count: from 64 lines the compiler addressed each from the
+            // page through an offset register
+            let page_end = line.wrapping_add(PAGE_WORDS);
+            while line < page_end {
+                store_line(line, line_vectors(seed, step));
+                (seed, step) = pattern_gen::mode2_evolve(seed, step, mode2.param0, mode2.param1);
+                line = line.wrapping_add(LINE_WORDS);
+            }
+        }
+    }
+
+    /// Mode 2's verify: the write's chain, four lines a step, each into its own accumulator.
+    #[inline(never)]
+    pub(super) unsafe fn mode2_verify(c: SimpleMode2) -> u64 {
+        let SimpleMode2 { ptr, start, end, mode2 } = c;
+        debug_assert!(start.is_multiple_of(PAGE_WORDS) && end.is_multiple_of(PAGE_WORDS), "mode 2 needs whole pages: {start}..{end}");
+        let mut acc = [u64x4::splat(0); 4];
+        let mut line = ptr.add(start) as *const u64;
+        for _ in 0..(end - start) / PAGE_WORDS {
+            let (mut seed, mut step) = pattern_gen::mode2_page_start(line as usize, mode2.thread_id, mode2.cycle);
+            let page_end = line.wrapping_add(PAGE_WORDS);
+            while line < page_end {
+                for (k, a) in acc.iter_mut().enumerate() {
+                    *a |= line_diff(line.add(k * LINE_WORDS), line_vectors(seed, step));
+                    (seed, step) = pattern_gen::mode2_evolve(seed, step, mode2.param0, mode2.param1);
+                }
+                line = line.wrapping_add(4 * LINE_WORDS);
+            }
+        }
+        ((acc[0] | acc[1]) | (acc[2] | acc[3])).reduce_or()
+    }
+
+    /// Mode 20's write: each line from its address's hash.
+    #[inline(never)]
+    pub(super) unsafe fn mode20_write(c: SimpleMode20) {
+        let SimpleMode20 { ptr, start, end, key } = c;
+        debug_assert!(start.is_multiple_of(LINE_WORDS) && end.is_multiple_of(LINE_WORDS), "mode 20 needs whole lines: {start}..{end}");
+        let mut line = ptr.add(start);
+        for _ in 0..(end - start) / LINE_WORDS {
+            let (seed, step) = pattern_gen::mode20_line(line as usize, key);
+            store_line(line, line_vectors(seed, step));
+            line = line.wrapping_add(LINE_WORDS);
+        }
+    }
+
+    /// Mode 20's verify: four lines a step, each into its own accumulator, then the rest into the
+    /// first.
+    #[inline(never)]
+    pub(super) unsafe fn mode20_verify(c: SimpleMode20) -> u64 {
+        let SimpleMode20 { ptr, start, end, key } = c;
+        debug_assert!(start.is_multiple_of(LINE_WORDS) && end.is_multiple_of(LINE_WORDS), "mode 20 needs whole lines: {start}..{end}");
+        let mut acc = [u64x4::splat(0); 4];
+        let mut line = ptr.add(start) as *const u64;
+        let lines = (end - start) / LINE_WORDS;
+        for _ in 0..lines / 4 {
+            for (k, a) in acc.iter_mut().enumerate() {
+                let at = line.add(k * LINE_WORDS);
+                let (seed, step) = pattern_gen::mode20_line(at as usize, key);
+                *a |= line_diff(at, line_vectors(seed, step));
+            }
+            line = line.wrapping_add(4 * LINE_WORDS);
+        }
+        for _ in 0..lines % 4 {
+            let (seed, step) = pattern_gen::mode20_line(line as usize, key);
+            acc[0] |= line_diff(line, line_vectors(seed, step));
+            line = line.wrapping_add(LINE_WORDS);
+        }
+        ((acc[0] | acc[1]) | (acc[2] | acc[3])).reduce_or()
+    }
+
+    /// Mode 20's write on TM5's strided walk: the sequential write's lines (and mode 2's strided
+    /// image, as the test's doc says).
+    #[inline(never)]
+    pub(super) unsafe fn mode20_write_str(c: SimpleMode20, period: usize) {
+        let SimpleMode20 { ptr, start, end, key } = c;
+        for_each_strided_line_at!(ptr, start, end, period, |line| {
+            let (seed, step) = pattern_gen::mode20_line(line as usize, key);
+            store_line(line, line_vectors(seed, step));
+        });
+    }
+
+    /// Mode 20's verify on the strided walk.
+    #[inline(never)]
+    pub(super) unsafe fn mode20_verify_str(c: SimpleMode20, period: usize) -> u64 {
+        let SimpleMode20 { ptr, start, end, key } = c;
+        let mut acc = u64x4::splat(0);
+        for_each_strided_line_at!(ptr, start, end, period, |line| {
+            let (seed, step) = pattern_gen::mode20_line(line as usize, key);
+            acc |= line_diff(line, line_vectors(seed, step));
+        });
+        acc.reduce_or()
+    }
+
+    /// Mode 30's write: each line the bus-flip line of its address, the beat matched once outside
+    /// the loop (`with_mode30_line!`).
+    #[inline(never)]
+    pub(super) unsafe fn mode30_write(c: SimpleMode30) {
+        let SimpleMode30 { ptr, start, end, mode30 } = c;
+        debug_assert!(start.is_multiple_of(LINE_WORDS) && end.is_multiple_of(LINE_WORDS), "mode 30 needs whole lines: {start}..{end}");
+        with_mode30_line!(mode30, |expected| {
+            let mut line = ptr.add(start);
+            for _ in 0..(end - start) / LINE_WORDS {
+                store_line(line, halves(expected(line)));
+                line = line.wrapping_add(LINE_WORDS);
+            }
+        })
+    }
+
+    /// Mode 30's verify: four lines a step, each into its own accumulator, then the rest into the
+    /// first.
+    #[inline(never)]
+    pub(super) unsafe fn mode30_verify(c: SimpleMode30) -> u64 {
+        let SimpleMode30 { ptr, start, end, mode30 } = c;
+        debug_assert!(start.is_multiple_of(LINE_WORDS) && end.is_multiple_of(LINE_WORDS), "mode 30 needs whole lines: {start}..{end}");
+        let mut acc = [u64x4::splat(0); 4];
+        let lines = (end - start) / LINE_WORDS;
+        with_mode30_line!(mode30, |expected| {
+            let mut line = ptr.add(start) as *const u64;
+            for _ in 0..lines / 4 {
+                for (k, a) in acc.iter_mut().enumerate() {
+                    let at = line.add(k * LINE_WORDS);
+                    *a |= line_diff(at, halves(expected(at)));
+                }
+                line = line.wrapping_add(4 * LINE_WORDS);
+            }
+            for _ in 0..lines % 4 {
+                acc[0] |= line_diff(line, halves(expected(line)));
+                line = line.wrapping_add(LINE_WORDS);
+            }
+        });
+        ((acc[0] | acc[1]) | (acc[2] | acc[3])).reduce_or()
+    }
+
+    /// Mode 30's write on TM5's strided walk.
+    #[inline(never)]
+    pub(super) unsafe fn mode30_write_str(c: SimpleMode30, period: usize) {
+        let SimpleMode30 { ptr, start, end, mode30 } = c;
+        with_mode30_line!(mode30, |expected| {
+            for_each_strided_line_at!(ptr, start, end, period, |line| {
+                store_line(line, halves(expected(line)));
+            });
+        })
+    }
+
+    /// Mode 30's verify on the strided walk.
+    #[inline(never)]
+    pub(super) unsafe fn mode30_verify_str(c: SimpleMode30, period: usize) -> u64 {
+        let SimpleMode30 { ptr, start, end, mode30 } = c;
+        let mut acc = u64x4::splat(0);
+        with_mode30_line!(mode30, |expected| {
+            for_each_strided_line_at!(ptr, start, end, period, |line| {
+                acc |= line_diff(line, halves(expected(line)));
+            });
+        });
+        acc.reduce_or()
+    }
 }
 
 /// SimpleTest v2 entry point — correct Mode 2 LCG + strided access.
@@ -4001,156 +4460,92 @@ unsafe fn simple_test_v2_sequential(
     let SimplePatternConfig { mode: pattern_mode, param0, param1, .. } = pattern;
     let test_name = "Mem-SimpleV2";
     let cl_shift = pattern_gen::cache_line_shift(config.cache_line_bytes);
+    let chunk_seed = |ctx: &ChunkCtx| pattern_gen::block_seed(ctx.ptr as usize, ctx.thread_id, ctx.cycle);
+
+    // A per-word mode `$mode` (`SimpleWords`), its seed per chunk from `$seed`
+    macro_rules! run_words {
+        ($mode:literal, $seed:expr) => {{
+            let seed_of = $seed;
+            let words = |ctx: &ChunkCtx| SimpleWords::<$mode> { ptr: ctx.ptr, start: ctx.chunk_start, end: ctx.chunk_end, seed: seed_of(ctx), cl_shift };
+            run_phased_test(
+                blocks, thread_id, error_mode, timing, config, progress,
+                test_name, TestAction::WriteVerify, 1, false, config.test_reps, config.verify_reps,
+                // Init: first write
+                |ctx: &ChunkCtx| simple_test_v2_loops::words_write(words(ctx)),
+                // Test: write patterns (every cycle)
+                |ctx: &ChunkCtx| simple_test_v2_loops::words_write(words(ctx)),
+                // Verify: four accumulators, then a rescan on a hit
+                |ctx: &ChunkCtx| -> u64 { words(ctx).check(test_name) },
+            )
+        }};
+    }
 
     match pattern_mode {
-        0 => {
-            // Mode 0 (TM5-faithful): bit dispersion + branchless 4KB page complement
-            run_phased_test(
-                blocks, thread_id, error_mode, timing, config, progress,
-                test_name, TestAction::WriteVerify, 1, false, config.test_reps, config.verify_reps,
-                |ctx: &ChunkCtx| {
-                    let seed = pattern_gen::block_seed(ctx.ptr as usize, ctx.thread_id, ctx.cycle);
-                    for idx in ctx.chunk_start..ctx.chunk_end {
-                        *ctx.ptr.add(idx) = pattern_gen::pattern_mode0(idx as u64, seed);
-                    }
-                },
-                |ctx: &ChunkCtx| {
-                    let seed = pattern_gen::block_seed(ctx.ptr as usize, ctx.thread_id, ctx.cycle);
-                    for idx in ctx.chunk_start..ctx.chunk_end {
-                        *ctx.ptr.add(idx) = pattern_gen::pattern_mode0(idx as u64, seed);
-                    }
-                },
-                |ctx: &ChunkCtx| -> u64 {
-                    let seed = pattern_gen::block_seed(ctx.ptr as usize, ctx.thread_id, ctx.cycle);
-                    verify_words(ctx.ptr, ctx.chunk_start, ctx.chunk_end, test_name, |idx| pattern_gen::pattern_mode0(idx as u64, seed))
-                },
-            )
-        }
-        1 => {
-            // Mode 1 (TM5-faithful): linear step + cache-line complement
-            run_phased_test(
-                blocks, thread_id, error_mode, timing, config, progress,
-                test_name, TestAction::WriteVerify, 1, false, config.test_reps, config.verify_reps,
-                |ctx: &ChunkCtx| {
-                    let seed = pattern_gen::block_seed(ctx.ptr as usize, ctx.thread_id, ctx.cycle);
-                    for idx in ctx.chunk_start..ctx.chunk_end {
-                        *ctx.ptr.add(idx) = pattern_gen::pattern_mode1(idx as u64, seed, cl_shift);
-                    }
-                },
-                |ctx: &ChunkCtx| {
-                    let seed = pattern_gen::block_seed(ctx.ptr as usize, ctx.thread_id, ctx.cycle);
-                    for idx in ctx.chunk_start..ctx.chunk_end {
-                        *ctx.ptr.add(idx) = pattern_gen::pattern_mode1(idx as u64, seed, cl_shift);
-                    }
-                },
-                |ctx: &ChunkCtx| -> u64 {
-                    let seed = pattern_gen::block_seed(ctx.ptr as usize, ctx.thread_id, ctx.cycle);
-                    verify_words(ctx.ptr, ctx.chunk_start, ctx.chunk_end, test_name, |idx| pattern_gen::pattern_mode1(idx as u64, seed, cl_shift))
-                },
-            )
-        }
+        // Mode 0 (TM5-faithful): bit dispersion + branchless 4KB page complement
+        0 => run_words!(0, chunk_seed),
+        // Mode 1 (TM5-faithful): linear step + cache-line complement
+        1 => run_words!(1, chunk_seed),
         2 => {
             // Mode 2 (TM5-faithful): TM5's evolving lines, the chain restarted per 4 KiB page
             let mode2 = |ctx: &ChunkCtx| Mode2 { thread_id: ctx.thread_id, cycle: ctx.cycle, param0, param1 };
+            let chunk = |ctx: &ChunkCtx| SimpleMode2 { ptr: ctx.ptr, start: ctx.chunk_start, end: ctx.chunk_end, mode2: mode2(ctx) };
             run_phased_test(
                 blocks, thread_id, error_mode, timing, config, progress,
                 test_name, TestAction::WriteVerify, 1, false, config.test_reps, config.verify_reps,
-                |ctx: &ChunkCtx| mode2(ctx).fill(ctx.ptr, ctx.chunk_start, ctx.chunk_end),
-                |ctx: &ChunkCtx| mode2(ctx).fill(ctx.ptr, ctx.chunk_start, ctx.chunk_end),
-                |ctx: &ChunkCtx| -> u64 { mode2(ctx).verify(ctx.ptr, ctx.chunk_start, ctx.chunk_end, test_name) },
+                |ctx: &ChunkCtx| simple_test_v2_loops::mode2_write(chunk(ctx)),
+                |ctx: &ChunkCtx| simple_test_v2_loops::mode2_write(chunk(ctx)),
+                |ctx: &ChunkCtx| -> u64 {
+                    let seen = simple_test_v2_loops::mode2_verify(chunk(ctx));
+                    if seen == 0 {
+                        return 0;
+                    }
+                    mode2(ctx).rescan(ctx.ptr, ctx.chunk_start, ctx.chunk_end, test_name, seen)
+                },
             )
         }
         20 => {
             // Mode 20 (TMR-native): mode 2's lines, seed and step hashed from each line's address
             let mode20 = |ctx: &ChunkCtx| Mode20::new(ctx.thread_id, ctx.cycle, param0, param1);
+            let chunk = |ctx: &ChunkCtx| SimpleMode20 { ptr: ctx.ptr, start: ctx.chunk_start, end: ctx.chunk_end, key: mode20(ctx).key };
             run_phased_test(
                 blocks, thread_id, error_mode, timing, config, progress,
                 test_name, TestAction::WriteVerify, 1, false, config.test_reps, config.verify_reps,
-                |ctx: &ChunkCtx| mode20(ctx).fill(ctx.ptr, ctx.chunk_start, ctx.chunk_end),
-                |ctx: &ChunkCtx| mode20(ctx).fill(ctx.ptr, ctx.chunk_start, ctx.chunk_end),
-                |ctx: &ChunkCtx| -> u64 { mode20(ctx).verify(ctx.ptr, ctx.chunk_start, ctx.chunk_end, test_name) },
+                |ctx: &ChunkCtx| simple_test_v2_loops::mode20_write(chunk(ctx)),
+                |ctx: &ChunkCtx| simple_test_v2_loops::mode20_write(chunk(ctx)),
+                |ctx: &ChunkCtx| -> u64 {
+                    let seen = simple_test_v2_loops::mode20_verify(chunk(ctx));
+                    if seen == 0 {
+                        return 0;
+                    }
+                    mode20(ctx).rescan(ctx.ptr, ctx.chunk_start, ctx.chunk_end, test_name, seen)
+                },
             )
         }
         30 => {
             // Mode 30 (TMR-native): each beat of a line the inverse of the one before
             let mode30 = |ctx: &ChunkCtx| Mode30::new(ctx.thread_id, ctx.cycle, param0, param1);
+            let chunk = |ctx: &ChunkCtx| SimpleMode30 { ptr: ctx.ptr, start: ctx.chunk_start, end: ctx.chunk_end, mode30: mode30(ctx) };
             run_phased_test(
                 blocks, thread_id, error_mode, timing, config, progress,
                 test_name, TestAction::WriteVerify, 1, false, config.test_reps, config.verify_reps,
-                |ctx: &ChunkCtx| mode30(ctx).fill(ctx.ptr, ctx.chunk_start, ctx.chunk_end),
-                |ctx: &ChunkCtx| mode30(ctx).fill(ctx.ptr, ctx.chunk_start, ctx.chunk_end),
-                |ctx: &ChunkCtx| -> u64 { mode30(ctx).verify(ctx.ptr, ctx.chunk_start, ctx.chunk_end, test_name) },
-            )
-        }
-        11 => {
-            // Mode 11 (TMR-native): inverted constant
-            let combined = param0 ^ param1;
-            run_phased_test(
-                blocks, thread_id, error_mode, timing, config, progress,
-                test_name, TestAction::WriteVerify, 1, false, config.test_reps, config.verify_reps,
-                // Init: first write
-                |ctx: &ChunkCtx| {
-                    for idx in ctx.chunk_start..ctx.chunk_end {
-                        *ctx.ptr.add(idx) = pattern_gen::pattern_mode11(idx as u64, combined);
-                    }
-                },
-                // Test: write patterns (every cycle)
-                |ctx: &ChunkCtx| {
-                    for idx in ctx.chunk_start..ctx.chunk_end {
-                        *ctx.ptr.add(idx) = pattern_gen::pattern_mode11(idx as u64, combined);
-                    }
-                },
-                // Verify: read and compare (with error_check_interval for v1 parity)
+                |ctx: &ChunkCtx| simple_test_v2_loops::mode30_write(chunk(ctx)),
+                |ctx: &ChunkCtx| simple_test_v2_loops::mode30_write(chunk(ctx)),
                 |ctx: &ChunkCtx| -> u64 {
-                    verify_words(ctx.ptr, ctx.chunk_start, ctx.chunk_end, test_name, |idx| pattern_gen::pattern_mode11(idx as u64, combined))
+                    let c = chunk(ctx);
+                    let seen = simple_test_v2_loops::mode30_verify(c);
+                    if seen == 0 {
+                        return 0;
+                    }
+                    c.mode30.rescan(ctx.ptr, ctx.chunk_start, ctx.chunk_end, test_name, seen)
                 },
             )
         }
-        13 => {
-            // Mode 13 (TMR-native): a hash per word
-            let seed = param0;
-            run_phased_test(
-                blocks, thread_id, error_mode, timing, config, progress,
-                test_name, TestAction::WriteVerify, 1, false, config.test_reps, config.verify_reps,
-                |ctx: &ChunkCtx| {
-                    for idx in ctx.chunk_start..ctx.chunk_end {
-                        *ctx.ptr.add(idx) = pattern_gen::pattern_mode13(idx as u64, seed);
-                    }
-                },
-                |ctx: &ChunkCtx| {
-                    for idx in ctx.chunk_start..ctx.chunk_end {
-                        *ctx.ptr.add(idx) = pattern_gen::pattern_mode13(idx as u64, seed);
-                    }
-                },
-                |ctx: &ChunkCtx| -> u64 {
-                    verify_words(ctx.ptr, ctx.chunk_start, ctx.chunk_end, test_name, |idx| pattern_gen::pattern_mode13(idx as u64, seed))
-                },
-            )
-        }
-        _ => {
-            // Mode 10 (TMR-native): address-derived unique (default fallback)
-            let base = param0;
-            run_phased_test(
-                blocks, thread_id, error_mode, timing, config, progress,
-                test_name, TestAction::WriteVerify, 1, false, config.test_reps, config.verify_reps,
-                // Init: first write
-                |ctx: &ChunkCtx| {
-                    for idx in ctx.chunk_start..ctx.chunk_end {
-                        *ctx.ptr.add(idx) = pattern_gen::pattern_mode10(idx as u64, base);
-                    }
-                },
-                // Test: write patterns (every cycle)
-                |ctx: &ChunkCtx| {
-                    for idx in ctx.chunk_start..ctx.chunk_end {
-                        *ctx.ptr.add(idx) = pattern_gen::pattern_mode10(idx as u64, base);
-                    }
-                },
-                // Verify: read and compare (with error_check_interval for v1 parity)
-                |ctx: &ChunkCtx| -> u64 {
-                    verify_words(ctx.ptr, ctx.chunk_start, ctx.chunk_end, test_name, |idx| pattern_gen::pattern_mode10(idx as u64, base))
-                },
-            )
-        }
+        // Mode 11 (TMR-native): inverted constant
+        11 => run_words!(11, |_: &ChunkCtx| param0 ^ param1),
+        // Mode 13 (TMR-native): a hash per word
+        13 => run_words!(13, |_: &ChunkCtx| param0),
+        // Mode 10 (TMR-native): address-derived unique (default fallback)
+        _ => run_words!(10, |_: &ChunkCtx| param0),
     }
 }
 
@@ -4177,111 +4572,66 @@ unsafe fn simple_test_v2_strided(
 
     if matches!(pattern_mode, 2 | 20) {
         let mode20 = |ctx: &ChunkCtx| Mode20::new(ctx.thread_id, ctx.cycle, param0, param1);
-        let write = |ctx: &ChunkCtx| {
-            let key = mode20(ctx).key;
-            for_each_strided_line!(ctx.ptr, ctx.chunk_start, ctx.chunk_end, period, |offset| {
-                let line = ctx.ptr.add(offset);
-                let (seed, step) = pattern_gen::mode20_line(line as usize, key);
-                *(line as *mut [u64; LINE_WORDS]) = pattern_gen::line_words(seed, step);
-            });
-        };
+        let chunk = |ctx: &ChunkCtx| SimpleMode20 { ptr: ctx.ptr, start: ctx.chunk_start, end: ctx.chunk_end, key: mode20(ctx).key };
         return run_phased_test(
             blocks, thread_id, error_mode, timing, config, progress,
             test_name, TestAction::WriteVerify, 1, false, config.test_reps, config.verify_reps,
-            write, write,
+            |ctx: &ChunkCtx| simple_test_v2_loops::mode20_write_str(chunk(ctx), period),
+            |ctx: &ChunkCtx| simple_test_v2_loops::mode20_write_str(chunk(ctx), period),
             |ctx: &ChunkCtx| -> u64 {
-                let mode20 = mode20(ctx);
-                let mut acc = [0u64; 4];
-                for_each_strided_line!(ctx.ptr, ctx.chunk_start, ctx.chunk_end, period, |offset| {
-                    let line = ctx.ptr.add(offset);
-                    let (seed, step) = pattern_gen::mode20_line(line as usize, mode20.key);
-                    accumulate_line(&mut acc, line, &pattern_gen::line_words(seed, step));
-                });
-                let seen = (acc[0] | acc[1]) | (acc[2] | acc[3]);
+                let seen = simple_test_v2_loops::mode20_verify_str(chunk(ctx), period);
                 if seen == 0 {
                     return 0;
                 }
-                mode20.rescan(ctx.ptr, ctx.chunk_start, ctx.chunk_end, test_name, seen)
+                mode20(ctx).rescan(ctx.ptr, ctx.chunk_start, ctx.chunk_end, test_name, seen)
             },
         );
     }
     if pattern_mode == 30 {
         let mode30 = |ctx: &ChunkCtx| Mode30::new(ctx.thread_id, ctx.cycle, param0, param1);
-        let write = |ctx: &ChunkCtx| {
-            with_mode30_line!(mode30(ctx), |expected| {
-                for_each_strided_line!(ctx.ptr, ctx.chunk_start, ctx.chunk_end, period, |offset| {
-                    let line = ctx.ptr.add(offset);
-                    *(line as *mut [u64; LINE_WORDS]) = expected(line);
-                });
-            })
-        };
+        let chunk = |ctx: &ChunkCtx| SimpleMode30 { ptr: ctx.ptr, start: ctx.chunk_start, end: ctx.chunk_end, mode30: mode30(ctx) };
         return run_phased_test(
             blocks, thread_id, error_mode, timing, config, progress,
             test_name, TestAction::WriteVerify, 1, false, config.test_reps, config.verify_reps,
-            write, write,
+            |ctx: &ChunkCtx| simple_test_v2_loops::mode30_write_str(chunk(ctx), period),
+            |ctx: &ChunkCtx| simple_test_v2_loops::mode30_write_str(chunk(ctx), period),
             |ctx: &ChunkCtx| -> u64 {
-                let mode30 = mode30(ctx);
-                let mut acc = [0u64; 4];
-                with_mode30_line!(mode30, |expected| {
-                    for_each_strided_line!(ctx.ptr, ctx.chunk_start, ctx.chunk_end, period, |offset| {
-                        let line = ctx.ptr.add(offset);
-                        accumulate_line(&mut acc, line, &expected(line));
-                    });
-                });
-                let seen = (acc[0] | acc[1]) | (acc[2] | acc[3]);
+                let c = chunk(ctx);
+                let seen = simple_test_v2_loops::mode30_verify_str(c, period);
                 if seen == 0 {
                     return 0;
                 }
-                mode30.rescan(ctx.ptr, ctx.chunk_start, ctx.chunk_end, test_name, seen)
+                c.mode30.rescan(ctx.ptr, ctx.chunk_start, ctx.chunk_end, test_name, seen)
             },
         );
     }
 
-    // One copy of the loops per pattern, so each inlines its pattern function. A `fn` pointer picked
-    // at run time was called once per element (`callq *%reg` in the release asm, 2026-10-03).
-    // `$seed` gives the chunk's seed for modes 0 and 1, the base for the others.
+    // One copy of the loops per pattern (`SimpleWords`'s mode is a constant), so each inlines its
+    // pattern function. A `fn` pointer picked at run time was called once per element (`callq
+    // *%reg` in the release asm, 2026-10-03). `$seed` gives the chunk's seed for modes 0 and 1,
+    // the base for the others.
     macro_rules! run_strided {
-        ($seed:expr, $gen:expr) => {{
-            let gen_pattern = $gen;
+        ($mode:literal, $seed:expr) => {{
             let seed_of = $seed;
-            let write = |ctx: &ChunkCtx| {
-                let seed = seed_of(ctx);
-                for_each_strided_line!(ctx.ptr, ctx.chunk_start, ctx.chunk_end, period, |offset| {
-                    for j in 0..LINE_WORDS {
-                        let idx = offset + j;
-                        *ctx.ptr.add(idx) = gen_pattern(idx as u64, seed, cl_shift);
-                    }
-                });
-            };
+            let words = |ctx: &ChunkCtx| SimpleWords::<$mode> { ptr: ctx.ptr, start: ctx.chunk_start, end: ctx.chunk_end, seed: seed_of(ctx), cl_shift };
             run_phased_test(
                 blocks, thread_id, error_mode, timing, config, progress,
                 test_name, TestAction::WriteVerify, 1, false, config.test_reps, config.verify_reps,
-                write, write,
+                |ctx: &ChunkCtx| simple_test_v2_loops::words_write_str(words(ctx), period),
+                |ctx: &ChunkCtx| simple_test_v2_loops::words_write_str(words(ctx), period),
                 // Verify: the same walk, a line at a time into 4 accumulators; the walk covers every
                 // word of the chunk, so a hit rescans it in order (TODO 89)
-                |ctx: &ChunkCtx| -> u64 {
-                    let seed = seed_of(ctx);
-                    let expected = |idx: usize| gen_pattern(idx as u64, seed, cl_shift);
-                    let mut acc = [0u64; 4];
-                    for_each_strided_line!(ctx.ptr, ctx.chunk_start, ctx.chunk_end, period, |offset| {
-                        accumulate_line(&mut acc, ctx.ptr.add(offset), &std::array::from_fn(|j| expected(offset + j)));
-                    });
-                    let seen = (acc[0] | acc[1]) | (acc[2] | acc[3]);
-                    if seen == 0 {
-                        return 0;
-                    }
-                    rescan_words(ctx.ptr, ctx.chunk_start, ctx.chunk_end, test_name, seen, expected)
-                },
+                |ctx: &ChunkCtx| -> u64 { words(ctx).check_strided(period, test_name) },
             )
         }};
     }
     let chunk_seed = |ctx: &ChunkCtx| pattern_gen::block_seed(ctx.ptr as usize, ctx.thread_id, ctx.cycle);
     match pattern_mode {
-        0 => run_strided!(chunk_seed, |idx: u64, seed: u64, _cl: u32| pattern_gen::pattern_mode0(idx, seed)),
-        1 => run_strided!(chunk_seed, |idx: u64, seed: u64, cl: u32| pattern_gen::pattern_mode1(idx, seed, cl)),
-        11 => run_strided!(|_: &ChunkCtx| param0 ^ param1, |idx: u64, combined: u64, _cl: u32| pattern_gen::pattern_mode11(idx, combined)),
-        13 => run_strided!(|_: &ChunkCtx| param0, |idx: u64, seed: u64, _cl: u32| pattern_gen::pattern_mode13(idx, seed)),
-        _ => run_strided!(|_: &ChunkCtx| param0, |idx: u64, base: u64, _cl: u32| pattern_gen::pattern_mode10(idx, base)),
+        0 => run_strided!(0, chunk_seed),
+        1 => run_strided!(1, chunk_seed),
+        11 => run_strided!(11, |_: &ChunkCtx| param0 ^ param1),
+        13 => run_strided!(13, |_: &ChunkCtx| param0),
+        _ => run_strided!(10, |_: &ChunkCtx| param0),
     }
 }
 
@@ -4543,197 +4893,305 @@ crate::auto_dispatch!(
     mirror_move_v2_512_multi
 );
 
-// ─── SIMD SimpleTest v2 Macros ──────────────────────────────────────────────
+// ─── SIMD SimpleTest v2: the loops, a module a width (TODO 99) ──────────────────────────────────
 //
-// These macros stamp out SIMD Write and Verify phases for SimpleTest at any width.
-// Two code paths: positional (idx ^ base, every mode but 20) and mode 20 (hashed lines).
-// The master macro `simple_test_v2_impl!` combines them into a complete test function.
+// SimpleTest's SIMD paths are positional (modes 10 and 11, and SimpleNT) and mode 20, each
+// sequential and strided. Each width's writes and verifies are functions of their own, stamped per
+// width by `simple_simd_loops!` with the width's `#[target_feature]` (Rule 4), each taking its
+// chunk as a `Copy` struct by value and called once a chunk. In the test functions, with the
+// harness's chunks, seal and stats live too, the loops were indexed (`(%base,%index,8)`), and
+// their verifies had one accumulator. Here each walks a pointer, addressing at fixed
+// displacements from it, and each sequential verify keeps four accumulators. The master macro
+// `simple_test_v2_impl!` makes the test functions.
 
-/// SIMD Write for positional patterns (Mode 0/1): stores (idx ^ base) per element.
-/// Pattern is purely position-based, so no state to carry between chunks.
-macro_rules! simple_write_positional_simd {
-    ($simd_type:ty, $simd_w:expr, $ctx:expr, $base_vec:expr, $lane_offsets:expr) => {{
-        let _len = $ctx.chunk_end - $ctx.chunk_start;
-        debug_assert!(_len % $simd_w == 0, "chunk not aligned to SIMD width");
-        let step = <$simd_type>::splat($simd_w as u64);
-        let mut idx_vec = <$simd_type>::splat($ctx.chunk_start as u64) + $lane_offsets;
-        for i in ($ctx.chunk_start..$ctx.chunk_end).step_by($simd_w) {
-            *($ctx.ptr.add(i) as *mut $simd_type) = idx_vec ^ $base_vec;
-            idx_vec += step;
-        }
-    }}
+/// SimpleTest's positional pattern on words `[start, end)` of `ptr` at a SIMD width (modes 10 and
+/// 11, and SimpleNT): word `i` holds `i ^ base`. The words are whole vectors.
+#[derive(Clone, Copy)]
+struct SimplePositional {
+    ptr: *mut u64,
+    start: usize,
+    end: usize,
+    base: u64,
 }
 
-/// SIMD Verify for the positional pattern (modes 10/11, SimpleNT): XOR+OR accumulator, then on a
-/// hit the cold rescan counts and logs each bad word of the failing batch (TODO 27).
-/// Batched error checking matches MirrorMove verify for consistent codegen.
-macro_rules! simple_verify_positional_simd {
-    ($simd_type:ty, $simd_w:expr, $ctx:expr,
-     $base:expr, $base_vec:expr, $lane_offsets:expr, $zero:expr, $test_name:expr) => {{
-        let _len = $ctx.chunk_end - $ctx.chunk_start;
-        debug_assert!(_len % $simd_w == 0, "chunk not aligned to SIMD width");
-        let step = <$simd_type>::splat($simd_w as u64);
-        let mut idx_vec = <$simd_type>::splat($ctx.chunk_start as u64) + $lane_offsets;
-        let mut total_errors = 0u64;
+/// Mode 20 on the whole lines of words `[start, end)` of `ptr`, in the SIMD builds and the scalar
+/// one: a line holds `seed + j * step` in word `j`, both hashed from its address and `key`
+/// (`pattern_gen::mode20_line`).
+#[derive(Clone, Copy)]
+struct SimpleMode20 {
+    ptr: *mut u64,
+    start: usize,
+    end: usize,
+    key: u64,
+}
+
+/// Stamps a width's SimpleTest loops into module `$module`: `$simd_type` vectors of `$w` words,
+/// lanes `$lane_offsets`, NT stores through `$stream_fn` on `$arch_type`. Each verify returns its
+/// accumulators ORed, nonzero when a word differs; the caller rescans.
+macro_rules! simple_simd_loops {
+    ($module:ident, $simd_type:ty, $w:expr, $lane_offsets:expr, $arch_type:ty, $stream_fn:path, $target_feature:literal) => {
+        mod $module {
+            use super::*;
+
+            type V = $simd_type;
+            const W: usize = $w;
+
+            /// The positional write: `i ^ base` to each word, four vectors a step, then the rest.
+            #[target_feature(enable = $target_feature)]
+            #[inline(never)]
+            pub(super) unsafe fn pos_write(c: SimplePositional) {
+                let SimplePositional { ptr, start, end, base } = c;
+                debug_assert!((end - start).is_multiple_of(W), "chunk not aligned to SIMD width");
+                let base = V::splat(base);
+                let (w1, w2, w3, w4) = (V::splat(W as u64), V::splat(2 * W as u64), V::splat(3 * W as u64), V::splat(4 * W as u64));
+                let mut idx = V::splat(start as u64) + V::from_array($lane_offsets);
+                let mut p = ptr.add(start) as *mut V;
+                let vectors = (end - start) / W;
+                // Four a step and the rest, so the compiler's own unroll leaves no indexed remainder
+                for _ in 0..vectors / 4 {
+                    *p = idx ^ base;
+                    *p.add(1) = (idx + w1) ^ base;
+                    *p.add(2) = (idx + w2) ^ base;
+                    *p.add(3) = (idx + w3) ^ base;
+                    idx += w4;
+                    p = p.wrapping_add(4);
+                }
+                for _ in 0..vectors % 4 {
+                    *p = idx ^ base;
+                    idx += w1;
+                    p = p.wrapping_add(1);
+                }
+            }
+
+            /// The positional write in non-temporal stores (SimpleNT), four a step (the manual
+            /// unroll, `doc/nt_stores.md`), then the rest one at a time, and an SFENCE.
+            #[target_feature(enable = $target_feature)]
+            #[inline(never)]
+            pub(super) unsafe fn pos_write_nt(c: SimplePositional) {
+                let SimplePositional { ptr, start, end, base } = c;
+                let base = V::splat(base);
+                let (w1, w2, w3, w4) = (V::splat(W as u64), V::splat(2 * W as u64), V::splat(3 * W as u64), V::splat(4 * W as u64));
+                let mut idx = V::splat(start as u64) + V::from_array($lane_offsets);
+                let mut p = ptr.add(start);
+                let vectors = (end - start) / W;
+                for _ in 0..vectors / 4 {
+                    let (v0, v1, v2, v3) = (idx ^ base, (idx + w1) ^ base, (idx + w2) ^ base, (idx + w3) ^ base);
+                    $stream_fn(p as *mut $arch_type, std::mem::transmute::<V, $arch_type>(v0));
+                    $stream_fn(p.add(W) as *mut $arch_type, std::mem::transmute::<V, $arch_type>(v1));
+                    $stream_fn(p.add(2 * W) as *mut $arch_type, std::mem::transmute::<V, $arch_type>(v2));
+                    $stream_fn(p.add(3 * W) as *mut $arch_type, std::mem::transmute::<V, $arch_type>(v3));
+                    idx += w4;
+                    p = p.wrapping_add(4 * W);
+                }
+                for _ in 0..vectors % 4 {
+                    $stream_fn(p as *mut $arch_type, std::mem::transmute::<V, $arch_type>(idx ^ base));
+                    idx += w1;
+                    p = p.wrapping_add(W);
+                }
+                std::arch::x86_64::_mm_sfence();
+            }
+
+            /// The positional verify: four vectors a step into four accumulators, then the rest
+            /// into the first.
+            #[target_feature(enable = $target_feature)]
+            #[inline(never)]
+            pub(super) unsafe fn pos_verify(c: SimplePositional) -> u64 {
+                let SimplePositional { ptr, start, end, base } = c;
+                debug_assert!((end - start).is_multiple_of(W), "chunk not aligned to SIMD width");
+                let base = V::splat(base);
+                let (w1, w2, w3, w4) = (V::splat(W as u64), V::splat(2 * W as u64), V::splat(3 * W as u64), V::splat(4 * W as u64));
+                let mut idx = V::splat(start as u64) + V::from_array($lane_offsets);
+                let mut p = ptr.add(start) as *const V;
+                let mut acc = [V::splat(0); 4];
+                let vectors = (end - start) / W;
+                for _ in 0..vectors / 4 {
+                    acc[0] |= *p ^ (idx ^ base);
+                    acc[1] |= *p.add(1) ^ ((idx + w1) ^ base);
+                    acc[2] |= *p.add(2) ^ ((idx + w2) ^ base);
+                    acc[3] |= *p.add(3) ^ ((idx + w3) ^ base);
+                    idx += w4;
+                    p = p.wrapping_add(4);
+                }
+                for _ in 0..vectors % 4 {
+                    acc[0] |= *p ^ (idx ^ base);
+                    idx += w1;
+                    p = p.wrapping_add(1);
+                }
+                ((acc[0] | acc[1]) | (acc[2] | acc[3])).reduce_or()
+            }
+
+            /// The positional write on TM5's strided walk (TODO 93): each line `i ^ base` in
+            /// `W`-word stores.
+            #[target_feature(enable = $target_feature)]
+            #[inline(never)]
+            pub(super) unsafe fn pos_write_str(c: SimplePositional, period: usize) {
+                let SimplePositional { ptr, start, end, base } = c;
+                let base = V::splat(base);
+                // Each vector's lanes, from the line's first word
+                let lanes: [V; LINE_WORDS / W] = std::array::from_fn(|j| V::from_array($lane_offsets) + V::splat((j * W) as u64));
+                for_each_strided_line_at!(ptr, start, end, period, |line, offset| {
+                    let at = V::splat(offset as u64);
+                    for (j, &lane) in lanes.iter().enumerate() {
+                        *(line.add(j * W) as *mut V) = (at + lane) ^ base;
+                    }
+                });
+            }
+
+            /// The positional verify on the strided walk: a line a step, in the walk's order, its
+            /// vectors into the accumulators in turn (four at 128 bits, two at 256, one at 512,
+            /// where a line is one vector). Four lines a step would take the period, a run-time
+            /// value, as an index register.
+            #[target_feature(enable = $target_feature)]
+            #[inline(never)]
+            pub(super) unsafe fn pos_verify_str(c: SimplePositional, period: usize) -> u64 {
+                let SimplePositional { ptr, start, end, base } = c;
+                let base = V::splat(base);
+                let lanes: [V; LINE_WORDS / W] = std::array::from_fn(|j| V::from_array($lane_offsets) + V::splat((j * W) as u64));
+                let mut acc = [V::splat(0); 4];
+                for_each_strided_line_at!(ptr, start, end, period, |line, offset| {
+                    let at = V::splat(offset as u64);
+                    for (j, &lane) in lanes.iter().enumerate() {
+                        acc[j % 4] |= *(line.add(j * W) as *const V) ^ ((at + lane) ^ base);
+                    }
+                });
+                ((acc[0] | acc[1]) | (acc[2] | acc[3])).reduce_or()
+            }
+
+            /// The mode 20 write: each line from its address's hash, in `W`-word stores.
+            #[target_feature(enable = $target_feature)]
+            #[inline(never)]
+            pub(super) unsafe fn m20_write(c: SimpleMode20) {
+                let SimpleMode20 { ptr, start, end, key } = c;
+                let lanes = V::from_array($lane_offsets);
+                let mut line = ptr.add(start);
+                for _ in 0..(end - start) / LINE_WORDS {
+                    let (seed, step) = pattern_gen::mode20_line(line as usize, key);
+                    let advance = V::splat(step.wrapping_mul(W as u64));
+                    let mut words = V::splat(seed) + V::splat(step) * lanes;
+                    for j in 0..LINE_WORDS / W {
+                        *(line.add(j * W) as *mut V) = words;
+                        words += advance;
+                    }
+                    line = line.wrapping_add(LINE_WORDS);
+                }
+            }
+
+            /// The mode 20 verify: four lines a step, each into its own accumulator, then the rest
+            /// into the first.
+            #[target_feature(enable = $target_feature)]
+            #[inline(never)]
+            pub(super) unsafe fn m20_verify(c: SimpleMode20) -> u64 {
+                let SimpleMode20 { ptr, start, end, key } = c;
+                let lanes = V::from_array($lane_offsets);
+                let mut acc = [V::splat(0); 4];
+                let mut line = ptr.add(start) as *const u64;
+                let lines = (end - start) / LINE_WORDS;
+                for _ in 0..lines / 4 {
+                    for (k, a) in acc.iter_mut().enumerate() {
+                        let at = line.add(k * LINE_WORDS);
+                        let (seed, step) = pattern_gen::mode20_line(at as usize, key);
+                        let advance = V::splat(step.wrapping_mul(W as u64));
+                        let mut words = V::splat(seed) + V::splat(step) * lanes;
+                        for j in 0..LINE_WORDS / W {
+                            *a |= *(at.add(j * W) as *const V) ^ words;
+                            words += advance;
+                        }
+                    }
+                    line = line.wrapping_add(4 * LINE_WORDS);
+                }
+                for _ in 0..lines % 4 {
+                    let (seed, step) = pattern_gen::mode20_line(line as usize, key);
+                    let advance = V::splat(step.wrapping_mul(W as u64));
+                    let mut words = V::splat(seed) + V::splat(step) * lanes;
+                    for j in 0..LINE_WORDS / W {
+                        acc[0] |= *(line.add(j * W) as *const V) ^ words;
+                        words += advance;
+                    }
+                    line = line.wrapping_add(LINE_WORDS);
+                }
+                ((acc[0] | acc[1]) | (acc[2] | acc[3])).reduce_or()
+            }
+
+            /// The mode 20 write on TM5's strided walk: the sequential write's lines.
+            #[target_feature(enable = $target_feature)]
+            #[inline(never)]
+            pub(super) unsafe fn m20_write_str(c: SimpleMode20, period: usize) {
+                let SimpleMode20 { ptr, start, end, key } = c;
+                let lanes = V::from_array($lane_offsets);
+                for_each_strided_line_at!(ptr, start, end, period, |line| {
+                    let (seed, step) = pattern_gen::mode20_line(line as usize, key);
+                    let advance = V::splat(step.wrapping_mul(W as u64));
+                    let mut words = V::splat(seed) + V::splat(step) * lanes;
+                    for j in 0..LINE_WORDS / W {
+                        *(line.add(j * W) as *mut V) = words;
+                        words += advance;
+                    }
+                });
+            }
+
+            /// The mode 20 verify on the strided walk: a line a step, its vectors into the
+            /// accumulators in turn, as `pos_verify_str`.
+            #[target_feature(enable = $target_feature)]
+            #[inline(never)]
+            pub(super) unsafe fn m20_verify_str(c: SimpleMode20, period: usize) -> u64 {
+                let SimpleMode20 { ptr, start, end, key } = c;
+                let lanes = V::from_array($lane_offsets);
+                let mut acc = [V::splat(0); 4];
+                for_each_strided_line_at!(ptr, start, end, period, |line| {
+                    let (seed, step) = pattern_gen::mode20_line(line as usize, key);
+                    let advance = V::splat(step.wrapping_mul(W as u64));
+                    let mut words = V::splat(seed) + V::splat(step) * lanes;
+                    for j in 0..LINE_WORDS / W {
+                        acc[j % 4] |= *(line.add(j * W) as *const V) ^ words;
+                        words += advance;
+                    }
+                });
+                ((acc[0] | acc[1]) | (acc[2] | acc[3])).reduce_or()
+            }
+        }
+    };
+}
+
+simple_simd_loops!(simple_test_v2_128_loops, u64x2, 2, [0, 1],
+    std::arch::x86_64::__m128i, std::arch::x86_64::_mm_stream_si128,
+    "sse4.2,sse4.1,ssse3,sse3,sse2,popcnt");
+simple_simd_loops!(simple_test_v2_256_loops, u64x4, 4, [0, 1, 2, 3],
+    std::arch::x86_64::__m256i, std::arch::x86_64::_mm256_stream_si256,
+    "avx2,avx,fma,bmi1,bmi2");
+simple_simd_loops!(simple_test_v2_512_loops, u64x8, 8, [0, 1, 2, 3, 4, 5, 6, 7],
+    std::arch::x86_64::__m512i, std::arch::x86_64::_mm512_stream_si512,
+    "avx512f,avx512bw,avx512cd,avx512dq,avx512vl,avx2,avx,fma,bmi1,bmi2");
+
+/// A positional verify of a chunk (modes 10 and 11, SimpleNT): the width's `$verify` on the chunk,
+/// or on each batch of `check_mask + 1` vectors when an `ErrorCheckInterval` asks for one (none
+/// does yet), and the cold rescan of each chunk or batch whose accumulators saw a difference.
+macro_rules! simple_verify_positional {
+    ($verify:path, $simd_w:expr, $ctx:expr, $base:expr, $test_name:expr) => {{
+        let ctx: &ChunkCtx = $ctx;
         let base: u64 = $base;
-
-        match $ctx.check_mask {
+        let mut total_errors = 0u64;
+        let mut check = |start: usize, end: usize| {
+            let seen = $verify(SimplePositional { ptr: ctx.ptr, start, end, base });
+            if seen != 0 {
+                total_errors += rescan_words(ctx.ptr, start, end, $test_name, seen, |idx| idx as u64 ^ base);
+            }
+        };
+        match ctx.check_mask {
             Some(check_mask) => {
-                let vectors_per_check = (check_mask as usize) + 1;
-                let batch_elements = vectors_per_check * $simd_w;
-                let mut pos = $ctx.chunk_start;
-                let aligned_end = $ctx.chunk_end - ($ctx.chunk_end - $ctx.chunk_start) % batch_elements;
-
+                let batch_elements = (check_mask as usize + 1) * $simd_w;
+                let mut pos = ctx.chunk_start;
+                let aligned_end = ctx.chunk_end - (ctx.chunk_end - ctx.chunk_start) % batch_elements;
                 while pos < aligned_end {
-                    let mut error_acc = $zero;
-                    let batch_end = pos + batch_elements;
-                    for i in (pos..batch_end).step_by($simd_w) {
-                        let actual = *($ctx.ptr.add(i) as *const $simd_type);
-                        error_acc |= actual ^ (idx_vec ^ $base_vec);
-                        idx_vec += step;
-                    }
-                    if error_acc.simd_ne($zero).any() {
-                        total_errors += rescan_words($ctx.ptr, pos, batch_end, $test_name, error_acc.reduce_or(), |idx| idx as u64 ^ base);
-                    }
-                    pos = batch_end;
+                    check(pos, pos + batch_elements);
+                    pos += batch_elements;
                 }
-
-                if pos < $ctx.chunk_end {
-                    let mut error_acc = $zero;
-                    for i in (pos..$ctx.chunk_end).step_by($simd_w) {
-                        let actual = *($ctx.ptr.add(i) as *const $simd_type);
-                        error_acc |= actual ^ (idx_vec ^ $base_vec);
-                        idx_vec += step;
-                    }
-                    if error_acc.simd_ne($zero).any() {
-                        total_errors += rescan_words($ctx.ptr, pos, $ctx.chunk_end, $test_name, error_acc.reduce_or(), |idx| idx as u64 ^ base);
-                    }
+                if pos < ctx.chunk_end {
+                    check(pos, ctx.chunk_end);
                 }
             }
-            None => {
-                let mut error_acc = $zero;
-                for i in ($ctx.chunk_start..$ctx.chunk_end).step_by($simd_w) {
-                    let actual = *($ctx.ptr.add(i) as *const $simd_type);
-                    error_acc |= actual ^ (idx_vec ^ $base_vec);
-                    idx_vec += step;
-                }
-                if error_acc.simd_ne($zero).any() {
-                    total_errors += rescan_words($ctx.ptr, $ctx.chunk_start, $ctx.chunk_end, $test_name, error_acc.reduce_or(), |idx| idx as u64 ^ base);
-                }
-            }
+            None => check(ctx.chunk_start, ctx.chunk_end),
         }
         total_errors
-    }}
-}
-
-/// SIMD write for mode 20: each 64 B line is `seed + j * step`, with seed and step hashed from
-/// the line's address (`pattern_gen::mode20_line`), stored W words at a time.
-macro_rules! simple_write_mode20_simd {
-    ($simd_type:ty, $simd_w:expr, $ctx:expr, $mode20:expr, $lane_offsets:expr) => {{
-        for offset in ($ctx.chunk_start..$ctx.chunk_end).step_by(LINE_WORDS) {
-            let line = $ctx.ptr.add(offset);
-            let (seed, step) = pattern_gen::mode20_line(line as usize, $mode20.key);
-            let advance = <$simd_type>::splat(step.wrapping_mul($simd_w as u64));
-            let mut words = <$simd_type>::splat(seed) + <$simd_type>::splat(step) * $lane_offsets;
-            for j in (0..LINE_WORDS).step_by($simd_w) {
-                *(line.add(j) as *mut $simd_type) = words;
-                words += advance;
-            }
-        }
-    }}
-}
-
-/// SIMD verify for mode 20: XOR+OR into an accumulator; the scalar rescan counts and logs.
-macro_rules! simple_verify_mode20_simd {
-    ($simd_type:ty, $simd_w:expr, $ctx:expr, $mode20:expr, $lane_offsets:expr, $zero:expr, $test_name:expr) => {{
-        let mut acc = $zero;
-        for offset in ($ctx.chunk_start..$ctx.chunk_end).step_by(LINE_WORDS) {
-            let line = $ctx.ptr.add(offset);
-            let (seed, step) = pattern_gen::mode20_line(line as usize, $mode20.key);
-            let advance = <$simd_type>::splat(step.wrapping_mul($simd_w as u64));
-            let mut words = <$simd_type>::splat(seed) + <$simd_type>::splat(step) * $lane_offsets;
-            for j in (0..LINE_WORDS).step_by($simd_w) {
-                acc |= *(line.add(j) as *const $simd_type) ^ words;
-                words += advance;
-            }
-        }
-        if acc.simd_ne($zero).any() {
-            $mode20.rescan($ctx.ptr, $ctx.chunk_start, $ctx.chunk_end, $test_name, acc.reduce_or())
-        } else {
-            0
-        }
-    }}
-}
-
-/// SIMD write for positional patterns with stride (TODO 93): TM5's strided walk
-/// (`for_each_strided_line!`), each 64 B line `idx ^ base` in W-word stores.
-macro_rules! simple_write_strided_positional_simd {
-    ($simd_type:ty, $simd_w:expr, $ctx:expr, $base_vec:expr, $lane_offsets:expr, $period:expr) => {{
-        for_each_strided_line!($ctx.ptr, $ctx.chunk_start, $ctx.chunk_end, $period, |offset| {
-            for j in (0..LINE_WORDS).step_by($simd_w) {
-                let at = offset + j;
-                *($ctx.ptr.add(at) as *mut $simd_type) = (<$simd_type>::splat(at as u64) + $lane_offsets) ^ $base_vec;
-            }
-        });
-    }}
-}
-
-/// SIMD verify for positional patterns with stride: the same walk, XOR+OR into an accumulator;
-/// on a hit the scalar rescan counts and logs each bad word.
-macro_rules! simple_verify_strided_positional_simd {
-    ($simd_type:ty, $simd_w:expr, $ctx:expr, $base:expr, $base_vec:expr, $lane_offsets:expr, $zero:expr, $period:expr, $test_name:expr) => {{
-        let mut acc = $zero;
-        for_each_strided_line!($ctx.ptr, $ctx.chunk_start, $ctx.chunk_end, $period, |offset| {
-            for j in (0..LINE_WORDS).step_by($simd_w) {
-                let at = offset + j;
-                acc |= *($ctx.ptr.add(at) as *const $simd_type) ^ ((<$simd_type>::splat(at as u64) + $lane_offsets) ^ $base_vec);
-            }
-        });
-        if acc.simd_ne($zero).any() {
-            let base: u64 = $base;
-            rescan_words($ctx.ptr, $ctx.chunk_start, $ctx.chunk_end, $test_name, acc.reduce_or(), |idx| idx as u64 ^ base)
-        } else {
-            0
-        }
-    }}
-}
-
-/// SIMD write for mode 20 with stride: TM5's strided walk, each line from its address's hash
-/// (`pattern_gen::mode20_line`) in W-word stores, the same image as the sequential write.
-macro_rules! simple_write_strided_mode20_simd {
-    ($simd_type:ty, $simd_w:expr, $ctx:expr, $mode20:expr, $lane_offsets:expr, $period:expr) => {{
-        for_each_strided_line!($ctx.ptr, $ctx.chunk_start, $ctx.chunk_end, $period, |offset| {
-            let line = $ctx.ptr.add(offset);
-            let (seed, step) = pattern_gen::mode20_line(line as usize, $mode20.key);
-            let advance = <$simd_type>::splat(step.wrapping_mul($simd_w as u64));
-            let mut words = <$simd_type>::splat(seed) + <$simd_type>::splat(step) * $lane_offsets;
-            for j in (0..LINE_WORDS).step_by($simd_w) {
-                *(line.add(j) as *mut $simd_type) = words;
-                words += advance;
-            }
-        });
-    }}
-}
-
-/// SIMD verify for mode 20 with stride: XOR+OR into an accumulator; the scalar rescan counts and logs.
-macro_rules! simple_verify_strided_mode20_simd {
-    ($simd_type:ty, $simd_w:expr, $ctx:expr, $mode20:expr, $lane_offsets:expr, $zero:expr, $period:expr, $test_name:expr) => {{
-        let mut acc = $zero;
-        for_each_strided_line!($ctx.ptr, $ctx.chunk_start, $ctx.chunk_end, $period, |offset| {
-            let line = $ctx.ptr.add(offset);
-            let (seed, step) = pattern_gen::mode20_line(line as usize, $mode20.key);
-            let advance = <$simd_type>::splat(step.wrapping_mul($simd_w as u64));
-            let mut words = <$simd_type>::splat(seed) + <$simd_type>::splat(step) * $lane_offsets;
-            for j in (0..LINE_WORDS).step_by($simd_w) {
-                acc |= *(line.add(j) as *const $simd_type) ^ words;
-                words += advance;
-            }
-        });
-        if acc.simd_ne($zero).any() {
-            $mode20.rescan($ctx.ptr, $ctx.chunk_start, $ctx.chunk_end, $test_name, acc.reduce_or())
-        } else {
-            0
-        }
     }}
 }
 
@@ -4745,8 +5203,10 @@ macro_rules! simple_verify_strided_mode20_simd {
 /// and instruction cache pressure that made wider SIMD slower than narrower.
 ///
 /// Each specialized function contains exactly ONE run_phased_test call with its closures,
-/// producing tight, focused assembly. The dispatch function has NO `#[target_feature]`
-/// so it compiles to a simple branch without pulling in SIMD register state.
+/// producing tight, focused assembly, and is `#[inline(never)]`: the 128-bit ones' features are
+/// the baseline's, so the compiler inlined all four into the dispatch's caller. The dispatch
+/// function has NO `#[target_feature]` so it compiles to a simple branch without pulling in SIMD
+/// register state.
 macro_rules! simple_test_v2_impl {
     (
         $dispatch_fn:ident,
@@ -4756,13 +5216,13 @@ macro_rules! simple_test_v2_impl {
         $m20_str_fn:ident,
         $native_fn:ident,
         $test_name:literal,
-        $simd_type:ty,
         $simd_w:expr,
-        $lane_offsets:expr,
+        $loops:ident,
         $target_feature:literal
     ) => {
         /// Positional sequential — contiguous access with idx^base pattern.
         #[target_feature(enable = $target_feature)]
+        #[inline(never)]
         unsafe fn $pos_seq_fn(
             blocks: &[crate::runner::AllocationBlock],
             thread_id: usize,
@@ -4772,9 +5232,6 @@ macro_rules! simple_test_v2_impl {
             progress: Option<&TestProgress>,
         ) -> TestStats {
             let test_name = $test_name;
-            let simd_elements: usize = $simd_w;
-            let lane_offsets = <$simd_type>::from_array($lane_offsets);
-            let zero = <$simd_type>::splat(0);
             let pattern_mode = config.pattern_mode.unwrap_or(0);
             let param0 = config.pattern_param0.unwrap_or(0xDEADBEEFDEADBEEF);
             let param1 = config.pattern_param1.unwrap_or(0xCAFEBABECAFEBABE);
@@ -4782,28 +5239,20 @@ macro_rules! simple_test_v2_impl {
                 1 | 11 => param0 ^ param1,
                 _ => param0,
             };
-            let base_vec = <$simd_type>::splat(base);
+            let chunk = |ctx: &ChunkCtx| SimplePositional { ptr: ctx.ptr, start: ctx.chunk_start, end: ctx.chunk_end, base };
 
             run_phased_test(
                 blocks, thread_id, error_mode, timing, config, progress,
                 test_name, TestAction::WriteVerify, 1, false, config.test_reps, config.verify_reps,
-                |ctx: &ChunkCtx| {
-                    simple_write_positional_simd!($simd_type, simd_elements, ctx,
-                        base_vec, lane_offsets);
-                },
-                |ctx: &ChunkCtx| {
-                    simple_write_positional_simd!($simd_type, simd_elements, ctx,
-                        base_vec, lane_offsets);
-                },
-                |ctx: &ChunkCtx| -> u64 {
-                    simple_verify_positional_simd!($simd_type, simd_elements, ctx,
-                        base, base_vec, lane_offsets, zero, test_name)
-                },
+                |ctx: &ChunkCtx| $loops::pos_write(chunk(ctx)),
+                |ctx: &ChunkCtx| $loops::pos_write(chunk(ctx)),
+                |ctx: &ChunkCtx| -> u64 { simple_verify_positional!($loops::pos_verify, $simd_w, ctx, base, test_name) },
             )
         }
 
         /// Positional strided — TM5's strided walk with the idx^base pattern (TODO 93).
         #[target_feature(enable = $target_feature)]
+        #[inline(never)]
         unsafe fn $pos_str_fn(
             blocks: &[crate::runner::AllocationBlock],
             thread_id: usize,
@@ -4813,9 +5262,6 @@ macro_rules! simple_test_v2_impl {
             progress: Option<&TestProgress>,
         ) -> TestStats {
             let test_name = $test_name;
-            let simd_elements: usize = $simd_w;
-            let lane_offsets = <$simd_type>::from_array($lane_offsets);
-            let zero = <$simd_type>::splat(0);
             let pattern_mode = config.pattern_mode.unwrap_or(0);
             let param0 = config.pattern_param0.unwrap_or(0xDEADBEEFDEADBEEF);
             let param1 = config.pattern_param1.unwrap_or(0xCAFEBABECAFEBABE);
@@ -4826,28 +5272,26 @@ macro_rules! simple_test_v2_impl {
                 1 | 11 => param0 ^ param1,
                 _ => param0,
             };
-            let base_vec = <$simd_type>::splat(base);
+            let chunk = |ctx: &ChunkCtx| SimplePositional { ptr: ctx.ptr, start: ctx.chunk_start, end: ctx.chunk_end, base };
 
             run_phased_test(
                 blocks, thread_id, error_mode, timing, config, progress,
                 test_name, TestAction::WriteVerify, 1, false, config.test_reps, config.verify_reps,
-                |ctx: &ChunkCtx| {
-                    simple_write_strided_positional_simd!($simd_type, simd_elements, ctx,
-                        base_vec, lane_offsets, period);
-                },
-                |ctx: &ChunkCtx| {
-                    simple_write_strided_positional_simd!($simd_type, simd_elements, ctx,
-                        base_vec, lane_offsets, period);
-                },
+                |ctx: &ChunkCtx| $loops::pos_write_str(chunk(ctx), period),
+                |ctx: &ChunkCtx| $loops::pos_write_str(chunk(ctx), period),
                 |ctx: &ChunkCtx| -> u64 {
-                    simple_verify_strided_positional_simd!($simd_type, simd_elements, ctx,
-                        base, base_vec, lane_offsets, zero, period, test_name)
+                    let seen = $loops::pos_verify_str(chunk(ctx), period);
+                    if seen == 0 {
+                        return 0;
+                    }
+                    rescan_words(ctx.ptr, ctx.chunk_start, ctx.chunk_end, test_name, seen, |idx| idx as u64 ^ base)
                 },
             )
         }
 
         /// Mode 20 sequential — contiguous access, each line hashed from its address.
         #[target_feature(enable = $target_feature)]
+        #[inline(never)]
         unsafe fn $m20_seq_fn(
             blocks: &[crate::runner::AllocationBlock],
             thread_id: usize,
@@ -4857,32 +5301,29 @@ macro_rules! simple_test_v2_impl {
             progress: Option<&TestProgress>,
         ) -> TestStats {
             let test_name = $test_name;
-            let simd_elements: usize = $simd_w;
-            let lane_offsets = <$simd_type>::from_array($lane_offsets);
-            let zero = <$simd_type>::splat(0);
             let param0 = config.pattern_param0.unwrap_or(0xDEADBEEFDEADBEEF);
             let param1 = config.pattern_param1.unwrap_or(0xCAFEBABECAFEBABE);
+            let mode20 = |ctx: &ChunkCtx| Mode20::new(ctx.thread_id, ctx.cycle, param0, param1);
+            let chunk = |ctx: &ChunkCtx| SimpleMode20 { ptr: ctx.ptr, start: ctx.chunk_start, end: ctx.chunk_end, key: mode20(ctx).key };
 
             run_phased_test(
                 blocks, thread_id, error_mode, timing, config, progress,
                 test_name, TestAction::WriteVerify, 1, false, config.test_reps, config.verify_reps,
-                |ctx: &ChunkCtx| {
-                    let mode20 = Mode20::new(ctx.thread_id, ctx.cycle, param0, param1);
-                    simple_write_mode20_simd!($simd_type, simd_elements, ctx, mode20, lane_offsets);
-                },
-                |ctx: &ChunkCtx| {
-                    let mode20 = Mode20::new(ctx.thread_id, ctx.cycle, param0, param1);
-                    simple_write_mode20_simd!($simd_type, simd_elements, ctx, mode20, lane_offsets);
-                },
+                |ctx: &ChunkCtx| $loops::m20_write(chunk(ctx)),
+                |ctx: &ChunkCtx| $loops::m20_write(chunk(ctx)),
                 |ctx: &ChunkCtx| -> u64 {
-                    let mode20 = Mode20::new(ctx.thread_id, ctx.cycle, param0, param1);
-                    simple_verify_mode20_simd!($simd_type, simd_elements, ctx, mode20, lane_offsets, zero, test_name)
+                    let seen = $loops::m20_verify(chunk(ctx));
+                    if seen == 0 {
+                        return 0;
+                    }
+                    mode20(ctx).rescan(ctx.ptr, ctx.chunk_start, ctx.chunk_end, test_name, seen)
                 },
             )
         }
 
         /// Mode 20 strided — TM5's strided walk, the same image as sequential (TODO 93).
         #[target_feature(enable = $target_feature)]
+        #[inline(never)]
         unsafe fn $m20_str_fn(
             blocks: &[crate::runner::AllocationBlock],
             thread_id: usize,
@@ -4892,29 +5333,25 @@ macro_rules! simple_test_v2_impl {
             progress: Option<&TestProgress>,
         ) -> TestStats {
             let test_name = $test_name;
-            let simd_elements: usize = $simd_w;
-            let lane_offsets = <$simd_type>::from_array($lane_offsets);
-            let zero = <$simd_type>::splat(0);
             let param0 = config.pattern_param0.unwrap_or(0xDEADBEEFDEADBEEF);
             let param1 = config.pattern_param1.unwrap_or(0xCAFEBABECAFEBABE);
             let period = strided_period(config.parameter_context.as_ref()
                 .and_then(|ctx| ctx.stride_elements)
                 .unwrap_or(0));
+            let mode20 = |ctx: &ChunkCtx| Mode20::new(ctx.thread_id, ctx.cycle, param0, param1);
+            let chunk = |ctx: &ChunkCtx| SimpleMode20 { ptr: ctx.ptr, start: ctx.chunk_start, end: ctx.chunk_end, key: mode20(ctx).key };
 
             run_phased_test(
                 blocks, thread_id, error_mode, timing, config, progress,
                 test_name, TestAction::WriteVerify, 1, false, config.test_reps, config.verify_reps,
-                |ctx: &ChunkCtx| {
-                    let mode20 = Mode20::new(ctx.thread_id, ctx.cycle, param0, param1);
-                    simple_write_strided_mode20_simd!($simd_type, simd_elements, ctx, mode20, lane_offsets, period);
-                },
-                |ctx: &ChunkCtx| {
-                    let mode20 = Mode20::new(ctx.thread_id, ctx.cycle, param0, param1);
-                    simple_write_strided_mode20_simd!($simd_type, simd_elements, ctx, mode20, lane_offsets, period);
-                },
+                |ctx: &ChunkCtx| $loops::m20_write_str(chunk(ctx), period),
+                |ctx: &ChunkCtx| $loops::m20_write_str(chunk(ctx), period),
                 |ctx: &ChunkCtx| -> u64 {
-                    let mode20 = Mode20::new(ctx.thread_id, ctx.cycle, param0, param1);
-                    simple_verify_strided_mode20_simd!($simd_type, simd_elements, ctx, mode20, lane_offsets, zero, period, test_name)
+                    let seen = $loops::m20_verify_str(chunk(ctx), period);
+                    if seen == 0 {
+                        return 0;
+                    }
+                    mode20(ctx).rescan(ctx.ptr, ctx.chunk_start, ctx.chunk_end, test_name, seen)
                 },
             )
         }
@@ -4962,17 +5399,17 @@ macro_rules! simple_test_v2_impl {
 simple_test_v2_impl!(simple_test_v2_128_impl,
     simple_test_v2_128_pos_seq, simple_test_v2_128_pos_str,
     simple_test_v2_128_m20_seq, simple_test_v2_128_m20_str, simple_native_128,
-    "Mem-SimpleV2-128", u64x2, 2, [0, 1],
+    "Mem-SimpleV2-128", 2, simple_test_v2_128_loops,
     "sse4.2,sse4.1,ssse3,sse3,sse2,popcnt");
 simple_test_v2_impl!(simple_test_v2_256_impl,
     simple_test_v2_256_pos_seq, simple_test_v2_256_pos_str,
     simple_test_v2_256_m20_seq, simple_test_v2_256_m20_str, simple_native_256,
-    "Mem-SimpleV2-256", u64x4, 4, [0, 1, 2, 3],
+    "Mem-SimpleV2-256", 4, simple_test_v2_256_loops,
     "avx2,avx,fma,bmi1,bmi2");
 simple_test_v2_impl!(simple_test_v2_512_impl,
     simple_test_v2_512_pos_seq, simple_test_v2_512_pos_str,
     simple_test_v2_512_m20_seq, simple_test_v2_512_m20_str, simple_native_512,
-    "Mem-SimpleV2-512", u64x8, 8, [0, 1, 2, 3, 4, 5, 6, 7],
+    "Mem-SimpleV2-512", 8, simple_test_v2_512_loops,
     "avx512f,avx512bw,avx512cd,avx512dq,avx512vl,avx2,avx,fma,bmi1,bmi2");
 
 /// SimpleTest v2 SSE2 (u64x2) — 128-bit SIMD.
@@ -6107,7 +6544,8 @@ pub(crate) fn native_bench_tests() -> [(&'static str, &'static str, crate::runne
 //    inline asm, but produces suboptimal code (extra leaq address calculations
 //    between each #APP/#NO_APP block). Also a global flag affecting ALL loops.
 //
-// SOLUTION: Manual 4x unroll using std::arch intrinsics. This gives us:
+// SOLUTION: Manual 4x unroll using std::arch intrinsics (each width's `pos_write_nt`,
+// `simple_simd_loops!`). This gives us:
 //   - Correct NT stores (vmovntdq confirmed in assembly output)
 //   - 4 stores per loop iteration (amortizes loop overhead)
 //   - Clean address offsets (ptr+0, ptr+w, ptr+2w, ptr+3w)
@@ -6131,60 +6569,16 @@ pub(crate) fn native_bench_tests() -> [(&'static str, &'static str, crate::runne
 //
 // =============================================================================
 
-/// NT (non-temporal) SIMD Write for positional patterns.
-/// Uses streaming stores to bypass cache, writing idx^base directly to DRAM.
-/// Requires _mm_sfence() after completion to ensure stores are globally visible.
-macro_rules! simple_write_nt_positional_simd {
-    ($simd_type:ty, $simd_w:expr, $ctx:expr, $base_vec:expr, $lane_offsets:expr,
-     $arch_type:ty, $stream_fn:path) => {{
-        let w = $simd_w;
-        let step1 = <$simd_type>::splat(w as u64);
-        let step4 = <$simd_type>::splat((w * 4) as u64);
-        let mut idx_vec = <$simd_type>::splat($ctx.chunk_start as u64) + $lane_offsets;
-        let len = $ctx.chunk_end - $ctx.chunk_start;
-        let unrolled_end = $ctx.chunk_start + (len / (w * 4)) * (w * 4);
-
-        // Unrolled main loop: 4 NT stores per iteration
-        let mut i = $ctx.chunk_start;
-        while i < unrolled_end {
-            let v0: $simd_type = idx_vec ^ $base_vec;
-            let idx1 = idx_vec + step1;
-            let v1: $simd_type = idx1 ^ $base_vec;
-            let idx2 = idx1 + step1;
-            let v2: $simd_type = idx2 ^ $base_vec;
-            let idx3 = idx2 + step1;
-            let v3: $simd_type = idx3 ^ $base_vec;
-            $stream_fn($ctx.ptr.add(i) as *mut $arch_type, std::mem::transmute::<$simd_type, $arch_type>(v0));
-            $stream_fn($ctx.ptr.add(i + w) as *mut $arch_type, std::mem::transmute::<$simd_type, $arch_type>(v1));
-            $stream_fn($ctx.ptr.add(i + w * 2) as *mut $arch_type, std::mem::transmute::<$simd_type, $arch_type>(v2));
-            $stream_fn($ctx.ptr.add(i + w * 3) as *mut $arch_type, std::mem::transmute::<$simd_type, $arch_type>(v3));
-            idx_vec += step4;
-            i += w * 4;
-        }
-
-        // Remainder: 1 NT store per iteration
-        while i < $ctx.chunk_end {
-            let val: $simd_type = idx_vec ^ $base_vec;
-            $stream_fn($ctx.ptr.add(i) as *mut $arch_type, std::mem::transmute::<$simd_type, $arch_type>(val));
-            idx_vec += step1;
-            i += w;
-        }
-        std::arch::x86_64::_mm_sfence();
-    }}
-}
-
 /// Stamps out a complete SimpleTestNT implementation for a given SIMD width.
-/// Generates one #[target_feature] impl function + one public wrapper.
+/// Generates one #[target_feature] impl function + one public wrapper. The NT write and the verify
+/// are the width's `pos_write_nt` and `pos_verify` (`simple_simd_loops!`, TODO 99).
 macro_rules! simple_test_nt_impl {
     (
         $impl_fn:ident,
         $pub_fn:ident,
         $test_name:literal,
-        $simd_type:ty,
         $simd_w:expr,
-        $lane_offsets:expr,
-        $arch_type:ty,
-        $stream_fn:path,
+        $loops:ident,
         $target_feature:literal
     ) => {
         #[target_feature(enable = $target_feature)]
@@ -6198,28 +6592,17 @@ macro_rules! simple_test_nt_impl {
         ) -> TestStats {
             let test_name = $test_name;
             let base = 0xDEADBEEFDEADBEEF_u64 ^ thread_id as u64;
-            let base_vec = <$simd_type>::splat(base);
-            let lane_offsets = <$simd_type>::from_array($lane_offsets);
-            let zero = <$simd_type>::splat(0);
+            let chunk = |ctx: &ChunkCtx| SimplePositional { ptr: ctx.ptr, start: ctx.chunk_start, end: ctx.chunk_end, base };
 
             run_phased_test(
                 blocks, thread_id, error_mode, timing, config, progress,
                 test_name, TestAction::WriteVerify, 1, false, 1, 1,
                 // Init: NT write (fill memory with pattern, bypassing cache)
-                |ctx: &ChunkCtx| {
-                    simple_write_nt_positional_simd!($simd_type, $simd_w, ctx,
-                        base_vec, lane_offsets, $arch_type, $stream_fn);
-                },
+                |ctx: &ChunkCtx| $loops::pos_write_nt(chunk(ctx)),
                 // Test: NT write (re-write same pattern via streaming stores)
-                |ctx: &ChunkCtx| {
-                    simple_write_nt_positional_simd!($simd_type, $simd_w, ctx,
-                        base_vec, lane_offsets, $arch_type, $stream_fn);
-                },
-                // Verify: regular loads with XOR+OR accumulator
-                |ctx: &ChunkCtx| -> u64 {
-                    simple_verify_positional_simd!($simd_type, $simd_w, ctx,
-                        base, base_vec, lane_offsets, zero, test_name)
-                },
+                |ctx: &ChunkCtx| $loops::pos_write_nt(chunk(ctx)),
+                // Verify: regular loads into four accumulators
+                |ctx: &ChunkCtx| -> u64 { simple_verify_positional!($loops::pos_verify, $simd_w, ctx, base, test_name) },
             )
         }
 
@@ -6240,22 +6623,19 @@ macro_rules! simple_test_nt_impl {
 // Stamp out NT implementations for each SIMD width.
 simple_test_nt_impl!(
     simple_test_nt_128_impl, simple_test_nt_128_multi,
-    "Mem-SimpleNT-128", u64x2, 2, [0, 1],
-    std::arch::x86_64::__m128i, std::arch::x86_64::_mm_stream_si128,
+    "Mem-SimpleNT-128", 2, simple_test_v2_128_loops,
     "sse4.2,sse4.1,ssse3,sse3,sse2,popcnt"
 );
 
 simple_test_nt_impl!(
     simple_test_nt_256_impl, simple_test_nt_256_multi,
-    "Mem-SimpleNT-256", u64x4, 4, [0, 1, 2, 3],
-    std::arch::x86_64::__m256i, std::arch::x86_64::_mm256_stream_si256,
+    "Mem-SimpleNT-256", 4, simple_test_v2_256_loops,
     "avx2,avx,fma,bmi1,bmi2"
 );
 
 simple_test_nt_impl!(
     simple_test_nt_512_impl, simple_test_nt_512_multi,
-    "Mem-SimpleNT-512", u64x8, 8, [0, 1, 2, 3, 4, 5, 6, 7],
-    std::arch::x86_64::__m512i, std::arch::x86_64::_mm512_stream_si512,
+    "Mem-SimpleNT-512", 8, simple_test_v2_512_loops,
     "avx512f,avx512bw,avx512cd,avx512dq,avx512vl,avx2,avx,fma,bmi1,bmi2"
 );
 
@@ -6267,6 +6647,277 @@ crate::auto_dispatch!(
     simple_test_nt_256_multi,
     simple_test_nt_512_multi
 );
+
+// ─── SimpleTest v2's loops: tests (TODO 99) ──────────────────────────────────────────────────────
+
+#[cfg(test)]
+mod simple_loops_tests {
+    use super::*;
+
+    /// What a word outside the loops' range holds, and must still hold after a write.
+    const GUARD: u64 = 0x6A09_E667_F3BC_C908;
+    /// The bit each check flips.
+    const BIT: u64 = 1 << 40;
+
+    /// 64-byte-aligned words, every one `GUARD`, as the extent's are aligned.
+    struct Mem(Vec<u64x8>);
+
+    impl Mem {
+        fn new(words: usize) -> Self {
+            Mem(vec![u64x8::splat(GUARD); words.div_ceil(8)])
+        }
+        fn ptr(&mut self) -> *mut u64 {
+            self.0.as_mut_ptr() as *mut u64
+        }
+        fn words(&mut self) -> &mut [u64] {
+            let n = self.0.len() * 8;
+            // SAFETY: the vectors' words, as long as the borrow of `self`
+            unsafe { std::slice::from_raw_parts_mut(self.ptr(), n) }
+        }
+        fn reset(&mut self) {
+            self.words().fill(GUARD);
+        }
+        /// Every word of `[start, end)` is `expected(i)` and every other one is `GUARD`.
+        fn assert_image(&mut self, start: usize, end: usize, expected: impl Fn(usize) -> u64, what: &str) {
+            for (i, &word) in self.words().iter().enumerate() {
+                let want = if (start..end).contains(&i) { expected(i) } else { GUARD };
+                assert_eq!(word, want, "{what}: word {i} of {start}..{end}");
+            }
+        }
+        /// `verify` sees `BIT` flipped in each of `words`, and nothing once it's back.
+        fn assert_sees(&mut self, words: impl IntoIterator<Item = usize>, verify: impl Fn() -> u64, what: &str) {
+            assert_eq!(verify(), 0, "{what}: clean");
+            for i in words {
+                self.words()[i] ^= BIT;
+                assert_ne!(verify() & BIT, 0, "{what}: missed word {i}");
+                self.words()[i] ^= BIT;
+            }
+            assert_eq!(verify(), 0, "{what}: clean again");
+        }
+    }
+
+    /// The first `head` words of `[start, end)`, its last `tail`, and every 13th between.
+    fn flips(start: usize, end: usize, head: usize, tail: usize) -> Vec<usize> {
+        (start..start + head).chain((start..end).step_by(13)).chain(end - tail..end).collect()
+    }
+
+    /// The strided chunks the walk tests take: a pass shorter than the lookahead (TM5 Parameter 8
+    /// on 2 channels, its period 16 lines), one longer (two-line periods, 300 of them), and a
+    /// period of 64 lines off a page.
+    const WALKS: [(usize, usize, usize); 3] = [(0, 4096, 15 * 8), (0, 300 * 16, 8), (64, 64 + 4096 + 40, 63 * 8)];
+
+    /// TODO 99: the walk on a pointer visits `for_each_strided_line!`'s lines in its order, each at
+    /// its offset, and prefetches each step what `strided_ahead` gives, where a pass is shorter
+    /// than the lookahead, longer, and empty (a period longer than the chunk).
+    #[test]
+    fn the_pointer_walk_is_the_strided_walk() {
+        let mem = [0u64; 1];
+        let ptr = mem.as_ptr() as *mut u64;
+        let shapes = WALKS.iter().copied().chain([(512, 4096 + 512, 15 * 8), (0, 512, 4095 * 8), (64, 128, 0), (8, 8 + 200 * 24, 16)]);
+        for (start, end, stride) in shapes {
+            let period = strided_period(stride);
+            let mut old = Vec::new();
+            for_each_strided_line!(ptr, start, end, period, |offset| { old.push(offset); });
+            // The old walk's prefetch targets, from its loops and helpers
+            let ahead = strided_lookahead(start, end, period);
+            let mut targets = Vec::new();
+            let mut first = start + period;
+            while first > start {
+                first -= LINE_WORDS;
+                let wrap = strided_wrap(first, end, period);
+                targets.extend((first..end).step_by(period).map(|offset| strided_ahead(offset, ahead, end, wrap)));
+            }
+            let mut new = Vec::new();
+            for_each_strided_line_at!(ptr, start, end, period, |line, offset, target| {
+                new.push((line as usize, offset, target as usize));
+            });
+            assert_eq!(new.len(), old.len(), "{start}..{end} by {stride}: the lines");
+            for (k, (&(line, offset, target), (&want, &ahead))) in new.iter().zip(old.iter().zip(&targets)).enumerate() {
+                assert_eq!(offset, want, "{start}..{end} by {stride}: line {k}");
+                assert_eq!(line, ptr.wrapping_add(offset) as usize, "{start}..{end} by {stride}: line {k}'s pointer");
+                assert_eq!(target, ptr.wrapping_add(ahead) as usize, "{start}..{end} by {stride}: line {k}'s prefetch");
+            }
+        }
+    }
+
+    /// Mode 20's words, from the definition: a line `seed + j * step`, both hashed from its address.
+    fn mode20_word(ptr: *mut u64, key: u64, i: usize) -> u64 {
+        let line = ptr.wrapping_add(i - i % LINE_WORDS);
+        let (seed, step) = pattern_gen::mode20_line(line as usize, key);
+        pattern_gen::line_words(seed, step)[i % LINE_WORDS]
+    }
+
+    /// One width's loops (`simple_simd_loops!`): each write leaves its pattern on its words and no
+    /// other, the NT write the cached one's image and each strided write the sequential one's; each
+    /// verify reads clean and sees a bad word in every lane of every accumulator and in each tail.
+    macro_rules! check_simd_loops {
+        ($loops:ident, $w:expr) => {{
+            const W: usize = $w;
+            let base = 0x5A5A_0000_0000_1234u64;
+            let mut mem = Mem::new(8192);
+            let ptr = mem.ptr();
+            let what = stringify!($loops);
+            // Four steps of four vectors and three more: the first step's words are every lane of
+            // every accumulator, the last three vectors the tail
+            let (start, end) = (64, 64 + 19 * W);
+            let pos = SimplePositional { ptr, start, end, base };
+            unsafe { $loops::pos_write(pos) };
+            mem.assert_image(start, end, |i| i as u64 ^ base, what);
+            mem.reset();
+            unsafe { $loops::pos_write_nt(pos) };
+            mem.assert_image(start, end, |i| i as u64 ^ base, what);
+            mem.assert_sees(flips(start, end, 16 * W, 3 * W), || unsafe { $loops::pos_verify(pos) }, what);
+            // Fifteen lines: three steps of four lines and a tail of three
+            let (start, end) = (64, 64 + 15 * LINE_WORDS);
+            let key = Mode20::new(3, 1, 0xDEADBEEFDEADBEEF, 0xCAFEBABECAFEBABE).key;
+            let m20 = SimpleMode20 { ptr, start, end, key };
+            mem.reset();
+            unsafe { $loops::m20_write(m20) };
+            mem.assert_image(start, end, |i| mode20_word(ptr, key, i), what);
+            mem.assert_sees(flips(start, end, 4 * LINE_WORDS, 3 * LINE_WORDS), || unsafe { $loops::m20_verify(m20) }, what);
+            for (start, end, stride) in WALKS {
+                let period = strided_period(stride);
+                let pos = SimplePositional { ptr, start, end, base };
+                mem.reset();
+                unsafe { $loops::pos_write_str(pos, period) };
+                mem.assert_image(start, end, |i| i as u64 ^ base, what);
+                mem.assert_sees(flips(start, end, 2 * LINE_WORDS, 2 * LINE_WORDS), || unsafe { $loops::pos_verify_str(pos, period) }, what);
+                let m20 = SimpleMode20 { ptr, start, end, key };
+                mem.reset();
+                unsafe { $loops::m20_write_str(m20, period) };
+                mem.assert_image(start, end, |i| mode20_word(ptr, key, i), what);
+                mem.assert_sees(flips(start, end, 2 * LINE_WORDS, 2 * LINE_WORDS), || unsafe { $loops::m20_verify_str(m20, period) }, what);
+            }
+        }};
+    }
+
+    /// TODO 99: the SIMD loops at each width the CPU has (`check_simd_loops!`).
+    #[test]
+    fn simd_loops_write_their_patterns_and_see_every_bad_word() {
+        check_simd_loops!(simple_test_v2_128_loops, 2);
+        check_simd_loops!(simple_test_v2_256_loops, 4);
+        if is_x86_feature_detected!("avx512f") && is_x86_feature_detected!("avx512bw") && is_x86_feature_detected!("avx512cd")
+            && is_x86_feature_detected!("avx512dq") && is_x86_feature_detected!("avx512vl") {
+            check_simd_loops!(simple_test_v2_512_loops, 8);
+        }
+    }
+
+    /// One per-word mode's scalar loops (`SimpleWords`): the image, sequential and strided, at
+    /// lengths that end on a step, a vector and each word under a vector; the verifies see a bad
+    /// word in every lane of every accumulator and in the tails.
+    macro_rules! check_words {
+        ($mode:literal, $definition:expr) => {{
+            let definition = $definition;
+            let what = concat!("mode ", $mode);
+            let seed = 0x0123_4567_89AB_CDEFu64;
+            let mut mem = Mem::new(8192);
+            let ptr = mem.ptr();
+            for rest in 0..4 {
+                // Five steps of four vectors, three vectors and `rest` words
+                let (start, end) = (64, 64 + 5 * 16 + 3 * 4 + rest);
+                let c = SimpleWords::<$mode> { ptr, start, end, seed, cl_shift: 3 };
+                mem.reset();
+                unsafe { simple_test_v2_loops::words_write(c) };
+                mem.assert_image(start, end, |i| definition(i as u64, seed), what);
+                mem.assert_sees(flips(start, end, 16, 12 + rest), || unsafe { simple_test_v2_loops::words_verify(c) }, what);
+            }
+            for (start, end, stride) in WALKS {
+                let period = strided_period(stride);
+                let c = SimpleWords::<$mode> { ptr, start, end, seed, cl_shift: 3 };
+                mem.reset();
+                unsafe { simple_test_v2_loops::words_write_str(c, period) };
+                mem.assert_image(start, end, |i| definition(i as u64, seed), what);
+                mem.assert_sees(flips(start, end, 2 * LINE_WORDS, 2 * LINE_WORDS), || unsafe { simple_test_v2_loops::words_verify_str(c, period) }, what);
+            }
+        }};
+    }
+
+    /// TODO 99: the scalar build's per-word modes, each from its `pattern_gen` definition (mode 1's
+    /// lines are 64 B, `cl_shift` 3).
+    #[test]
+    fn scalar_word_loops_write_their_patterns_and_see_every_bad_word() {
+        check_words!(0, pattern_gen::pattern_mode0);
+        check_words!(1, |i, seed| pattern_gen::pattern_mode1(i, seed, 3));
+        check_words!(10, pattern_gen::pattern_mode10);
+        check_words!(11, pattern_gen::pattern_mode11);
+        check_words!(13, pattern_gen::pattern_mode13);
+    }
+
+    /// TODO 99: the scalar build's line modes write what the shared walks (`Mode2`, `Mode20`,
+    /// `Mode30`) write and what the definitions give, sequential and strided, mode 30 at every beat;
+    /// the verifies see a bad word in every lane of every accumulator and in the tails.
+    #[test]
+    fn scalar_line_loops_write_their_patterns_and_see_every_bad_word() {
+        let mut mem = Mem::new(8192);
+        let ptr = mem.ptr();
+        // Mode 2: three pages, each chain from its address
+        let (start, end) = (512, 512 + 3 * PAGE_WORDS);
+        let mode2 = Mode2 { thread_id: 3, cycle: 1, param0: 0x5DEECE66D, param1: 0xB };
+        let mut chain = vec![0u64; end];
+        for page in (start..end).step_by(PAGE_WORDS) {
+            let (mut seed, mut step) = pattern_gen::mode2_page_start(ptr.wrapping_add(page) as usize, 3, 1);
+            for line in (page..page + PAGE_WORDS).step_by(LINE_WORDS) {
+                chain[line..line + LINE_WORDS].copy_from_slice(&pattern_gen::line_words(seed, step));
+                (seed, step) = pattern_gen::mode2_evolve(seed, step, 0x5DEECE66D, 0xB);
+            }
+        }
+        unsafe { mode2.fill(ptr, start, end) };
+        let old = mem.words().to_vec();
+        mem.reset();
+        let c = SimpleMode2 { ptr, start, end, mode2 };
+        unsafe { simple_test_v2_loops::mode2_write(c) };
+        assert!(mem.words() == old.as_slice(), "mode 2: not the shared walk's image");
+        mem.assert_image(start, end, |i| chain[i], "mode 2");
+        mem.assert_sees(flips(start, end, 4 * LINE_WORDS, 4 * LINE_WORDS), || unsafe { simple_test_v2_loops::mode2_verify(c) }, "mode 2");
+
+        // Mode 20: fifteen lines (steps of four and a tail of three), then the walks
+        let mode20 = Mode20::new(3, 1, 0xDEADBEEFDEADBEEF, 0xCAFEBABECAFEBABE);
+        let (start, end) = (64, 64 + 15 * LINE_WORDS);
+        mem.reset();
+        unsafe { mode20.fill(ptr, start, end) };
+        let old = mem.words().to_vec();
+        mem.reset();
+        let c = SimpleMode20 { ptr, start, end, key: mode20.key };
+        unsafe { simple_test_v2_loops::mode20_write(c) };
+        assert!(mem.words() == old.as_slice(), "mode 20: not the shared walk's image");
+        mem.assert_image(start, end, |i| mode20_word(ptr, mode20.key, i), "mode 20");
+        mem.assert_sees(flips(start, end, 4 * LINE_WORDS, 3 * LINE_WORDS), || unsafe { simple_test_v2_loops::mode20_verify(c) }, "mode 20");
+        for (start, end, stride) in WALKS {
+            let period = strided_period(stride);
+            let c = SimpleMode20 { ptr, start, end, key: mode20.key };
+            mem.reset();
+            unsafe { simple_test_v2_loops::mode20_write_str(c, period) };
+            mem.assert_image(start, end, |i| mode20_word(ptr, mode20.key, i), "mode 20 strided");
+            mem.assert_sees(flips(start, end, 2 * LINE_WORDS, 2 * LINE_WORDS), || unsafe { simple_test_v2_loops::mode20_verify_str(c, period) }, "mode 20 strided");
+        }
+
+        // Mode 30 at each beat
+        use pattern_gen::BusBeat;
+        for beat in [BusBeat::Bits12, BusBeat::Bits16, BusBeat::Bits24, BusBeat::Bits32, BusBeat::Bits64] {
+            let mode30 = Mode30 { key: mode20.key, beat };
+            let word = |i: usize| pattern_gen::mode30_line(ptr.wrapping_add(i - i % LINE_WORDS) as usize, mode30.key, beat)[i % LINE_WORDS];
+            let what = format!("mode 30 at {} bits", beat.bits());
+            let (start, end) = (64, 64 + 15 * LINE_WORDS);
+            mem.reset();
+            unsafe { mode30.fill(ptr, start, end) };
+            let old = mem.words().to_vec();
+            mem.reset();
+            let c = SimpleMode30 { ptr, start, end, mode30 };
+            unsafe { simple_test_v2_loops::mode30_write(c) };
+            assert!(mem.words() == old.as_slice(), "{what}: not the shared walk's image");
+            mem.assert_image(start, end, word, &what);
+            mem.assert_sees(flips(start, end, 4 * LINE_WORDS, 3 * LINE_WORDS), || unsafe { simple_test_v2_loops::mode30_verify(c) }, &what);
+            for (start, end, stride) in WALKS {
+                let period = strided_period(stride);
+                let c = SimpleMode30 { ptr, start, end, mode30 };
+                mem.reset();
+                unsafe { simple_test_v2_loops::mode30_write_str(c, period) };
+                mem.assert_image(start, end, word, &what);
+                mem.assert_sees(flips(start, end, 2 * LINE_WORDS, 2 * LINE_WORDS), || unsafe { simple_test_v2_loops::mode30_verify_str(c, period) }, &what);
+            }
+        }
+    }
+}
 
 // v1 stream2/stream4/streamN variants removed — replaced by v2 stride + SimpleTestNT.
 // See git history for the original implementations.
