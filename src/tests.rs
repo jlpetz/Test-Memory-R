@@ -3617,12 +3617,16 @@ impl Mode20 {
         }
     }
 
+    // Test-only since TODO 99 round 3 (the kernels have their own): the tests' reference
+    #[cfg(test)]
     #[inline(always)]
     unsafe fn fill(self, ptr: *mut u64, start: usize, end: usize) {
         self.walk(ptr, start, end, |offset, words| *(ptr.add(offset) as *mut [u64; LINE_WORDS]) = words);
     }
 
     /// Errors in words `[start, end)`: 0 if all hold, else counted and logged by a rescan.
+    // Test-only since TODO 99 round 3 (the kernels have their own): the tests' reference
+    #[cfg(test)]
     #[inline(always)]
     unsafe fn verify(self, ptr: *const u64, start: usize, end: usize, test_name: &str) -> u64 {
         let mut acc = [0u64; 4];
@@ -3712,12 +3716,16 @@ impl Mode30 {
         })
     }
 
+    // Test-only since TODO 99 round 3 (the kernels have their own): the tests' reference
+    #[cfg(test)]
     #[inline(always)]
     unsafe fn fill(self, ptr: *mut u64, start: usize, end: usize) {
         self.walk(ptr, start, end, |offset, words| *(ptr.add(offset) as *mut [u64; LINE_WORDS]) = words);
     }
 
     /// Errors in words `[start, end)`: 0 if all hold, else counted and logged by a rescan.
+    // Test-only since TODO 99 round 3 (the kernels have their own): the tests' reference
+    #[cfg(test)]
     #[inline(always)]
     unsafe fn verify(self, ptr: *const u64, start: usize, end: usize, test_name: &str) -> u64 {
         let mut acc = [0u64; 4];
@@ -3755,12 +3763,15 @@ unsafe fn accumulate_line(acc: &mut [u64; 4], line: *const u64, words: &[u64; LI
 /// `expected(idx)` and OR into 4 accumulators, then count and log in a cold rescan only if one is
 /// set. A per-word branch and `log::error!` kept the log's arguments spilled to the stack on every
 /// word, and cost Bench-Verify-TM5-0 30% when the harness around it changed (TODO 76).
+// Test-only since TODO 99 round 3 (the kernels have their own): the tests' reference
+#[cfg(test)]
 #[inline(always)]
 unsafe fn verify_words(ptr: *const u64, start: usize, end: usize, test_name: &str, expected: impl Fn(usize) -> u64 + Copy) -> u64 {
     verify_words_in(ptr, start, end, test_name, "", expected)
 }
 
 /// As `verify_words`, a failed check's record naming the region's `label` too (`rescan_words_in`).
+#[cfg(test)]
 #[inline(always)]
 unsafe fn verify_words_in(ptr: *const u64, start: usize, end: usize, test_name: &str, label: &str,
                           expected: impl Fn(usize) -> u64 + Copy) -> u64 {
@@ -4115,6 +4126,8 @@ impl std::fmt::Display for Region<'_> {
 /// prefetched, the walk ran 1.2x faster over 1usmus_v3's seven shapes and 1.9x at Test 13's, where
 /// a pass has 57 lines; likely in part by letting the hardware fetch neighbours together, fewer row
 /// openings per line, so its speed was no measure of the stress. See TODO 93's detail file.
+// Test-only since TODO 99 round 3: the reference the kernels' own strided walks are tested against
+#[cfg(test)]
 macro_rules! for_each_strided_line {
     ($ptr:expr, $start:expr, $end:expr, $period:expr, |$offset:ident| $body:block) => {{
         let (ptr, start, end, period): (*const u64, usize, usize, usize) = ($ptr, $start, $end, $period);
@@ -4158,6 +4171,7 @@ fn strided_wrap(first: usize, end: usize, period: usize) -> usize {
 
 /// The line `ahead` words of steps on from `offset` in the strided walk: on in this pass, or past
 /// its end, on into the next.
+#[cfg(test)]
 #[inline(always)]
 fn strided_ahead(offset: usize, ahead: usize, end: usize, wrap: usize) -> usize {
     let next = offset + ahead;
@@ -5958,14 +5972,15 @@ macro_rules! native_differs_seq {
         let (mut p, stop) = (base.add(start), base.wrapping_add(end));
         let mut lid = lid0;
         while p.wrapping_add(LPG * LINE_WORDS) <= stop {
-            // The group's lines first (a width with fewer than 4 lines a group leaves the rest
-            // unused), then its 4 vectors, the group's vector `k` into accumulator `k`: a family
-            // whose line takes many instructions kept a loop over the lines, its accumulators in
-            // memory, indexed by the line (TODO 99)
-            let words = [line(lid), line(lid + 1), line(lid + 2), line(lid + 3)];
-            let words = words.as_flattened();
-            for (k, a) in acc.iter_mut().enumerate() {
-                *a |= *(p.add(k * $w) as *const $simd) ^ words[k];
+            // Each line computed and checked before the next, the group's vector `k` into
+            // accumulator `k`. Computing the group's lines first and checking them after had the
+            // same instructions and ran 2.1x slower for `random` at 512 bits (Rule 6.12, TODO 99)
+            for l in 0..LPG {
+                let words = line(lid + l as u64);
+                for v in 0..VPL {
+                    let k = l * VPL + v;
+                    acc[k] |= *(p.add(k * $w) as *const $simd) ^ words[v];
+                }
             }
             lid += LPG as u64;
             p = native_opaque_step(p.wrapping_add(LPG * LINE_WORDS));

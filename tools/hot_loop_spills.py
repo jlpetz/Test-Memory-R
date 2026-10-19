@@ -16,6 +16,11 @@ review and measurement rather than failure:
               isn't always slower.
   const       a constant loaded from the binary's data (`(%rip)`) every iteration: a reload, like a
               stack one, that the stack columns can't see.
+  long        over 150 instructions: the heavy pattern families' unrolled steps run to 200 and more,
+              so read it rather than assume it is cold (loops over 600 are left out).
+A stack access through an index register (`128(%rsp,%r10)`, an array kept on the stack) counts as a
+stack access; an indexed prefetch doesn't count as indexed (it folds into no other op). A "loop"
+whose range holds a `ret` is an epilogue laid out inside an outer loop's blocks, and is skipped.
 Cold functions (rescans, parsers, setup) are left out by name, below.
 
 Build the asm, then run this (with no file, the newest one under target/release/build):
@@ -35,17 +40,18 @@ from collections import defaultdict
 MODULES = ["5tests", "8sequence", "4seal", "15bandwidth_tests", "13latency_tests", "16latency_tests_v2",
            "12test_harness", "7pattern", "11pattern_gen", "16pattern_switch24"]
 # Functions in them that run off the hot path: on an error, once per test, or at load time
-COLD = ["rescan", "parse", "percentiles", "TestRunner", "scale_or"]
-MAX_INSTRUCTIONS = 150
+COLD = ["rescan", "parse", "percentiles", "finalize_stats", "TestRunner", "scale_or"]
+MAX_INSTRUCTIONS = 600
+LONG = 150
 
 LABEL = re.compile(r"^(\.L\w+):")
 BRANCH = re.compile(r"^\s+(j[a-z]+)\s+(\.L\w+)")
 OFF_STACK = re.compile(r"-?\d*\((%r(?!sp\b)\w+)")
-STACK = re.compile(r"(-?\d*)\(%rsp\)")
+STACK = re.compile(r"(-?\d*)\(%rsp(?:,%r\w+(?:,\d)?)?\)")
 SIMD = re.compile(r"%[xyz]mm\d+|%k[0-7]\b")
 KINDS = ["round trip gpr", "round trip simd", "reload gpr", "reload simd"]
 # Counted for review, not failure: see the module docs
-REVIEW = ["indexed", "const"]
+REVIEW = ["indexed", "const", "long"]
 # A memory operand with an index register, off the stack (an `lea` is arithmetic, not an access)
 INDEXED = re.compile(r"-?\d*\(%r(?!sp\b)\w+,%r\w+(,\d)?\)")
 
@@ -58,9 +64,14 @@ def short_name(sym):
         return sym[:60]
     # Every identifier after the crate's: `<length><name>`, skipping the path tags between them
     # (an impl's `NtB2_`, a closure's `s0_`)
-    names, i, closure = [], at, False
+    names, i, closure, consts = [], at, False, []
     while i < len(sym):
         if not sym[i].isdigit():
+            # A const-generic argument: `K`, its type, then its value in hex (`Kj10_` is 16)
+            if sym[i] == "K" and (m := re.match(r"K[a-z](n?)([0-9a-f]*)_", sym[i:])):
+                consts.append(("-" if m.group(1) else "") + str(int(m.group(2) or "0", 16)))
+                i += m.end()
+                continue
             # A back-reference (`B5_`) or a disambiguator (`s0_`, `s_`) runs to its `_`
             if sym[i] in "Bs" and (m := re.match(r"[Bs][0-9A-Za-z]*_", sym[i:])):
                 closure |= sym[i] == "s"
@@ -81,6 +92,8 @@ def short_name(sym):
             names.append(ident)
         i = j + n
     name = "::".join(names[1:]) or sym[:60]
+    if consts:
+        name += "::<" + ",".join(consts) + ">"
     return name + ("::{closure}" if closure else "")
 
 
@@ -123,23 +136,26 @@ def innermost_loops(body):
 def classify(loop):
     """None for a loop that isn't hot, else (kind, stack lines, review flags): kind "clean" when it
     keeps everything in registers; the flags are `REVIEW` names."""
-    if len(loop) > MAX_INSTRUCTIONS or any(x.startswith("call") for x in loop):
+    if len(loop) > MAX_INSTRUCTIONS or any(x.startswith(("call", "ret")) for x in loop):
         return None
     if not any(OFF_STACK.search(x) for x in loop):
         return None
     flags = []
-    if any(INDEXED.search(x) and not x.startswith("lea") for x in loop):
+    if any(INDEXED.search(x) and not x.startswith(("lea", "prefetch")) for x in loop):
         flags.append("indexed")
     if any("(%rip)" in x and not x.startswith("lea") for x in loop):
         flags.append("const")
-    stack =[x for x in loop if "(%rsp)" in x]
+    if len(loop) > LONG:
+        flags.append("long")
+    stack = [x for x in loop if STACK.search(x)]
     if not stack:
         return "clean", [], flags
     loads, stores, simd = set(), set(), set()
     for x in stack:
         offset = STACK.search(x).group(1)
         operands = x.split(None, 1)[1] if " " in x else ""
-        dest = operands.rsplit(",", 1)[-1].strip()
+        # The last operand: split at the commas outside an address's parentheses
+        dest = re.split(r",(?![^(]*\))", operands)[-1].strip()
         if STACK.search(dest) and not x.startswith(("cmp", "test")):
             stores.add(offset)
         else:
@@ -165,6 +181,7 @@ def main():
     path = files[0] if files else max(found, key=os.path.getmtime)
     columns = KINDS + REVIEW
     counts = defaultdict(lambda: dict.fromkeys(columns, 0))
+    hot = set()
     for sym, body in functions(path).items():
         name = short_name(sym)
         for loop in innermost_loops(body):
@@ -172,6 +189,7 @@ def main():
             if not found:
                 continue
             kind, stack, flags = found
+            hot.add(name)
             if kind != "clean":
                 counts[name][kind] += 1
             for flag in flags:
@@ -181,14 +199,15 @@ def main():
             if detail and detail in name:
                 print(f"--- {name}: {', '.join([kind] + flags)}, {len(loop)} instructions, {len(stack)} on the stack")
                 print("    " + "\n    ".join(re.sub(r"\s+", " ", x) for x in loop))
-    widths = (7, 8, 7, 6, 8, 6)
+    widths = (7, 8, 7, 6, 8, 6, 5)
     total = {k: sum(c[k] for c in counts.values()) for k in columns}
     print(f"{'':48s} {'round trip':>16s} {'reload':>14s}")
-    print(f"{'kernel':48s} {'gpr':>7s} {'simd':>8s} {'gpr':>7s} {'simd':>6s} {'indexed':>8s} {'const':>6s}")
+    print(f"{'kernel':48s} {'gpr':>7s} {'simd':>8s} {'gpr':>7s} {'simd':>6s} {'indexed':>8s} {'const':>6s} {'long':>5s}")
     for name in sorted(counts, key=lambda n: tuple(-counts[n][k] for k in columns) + (n,)):
         c = counts[name]
         print(f"{name[:48]:48s} " + " ".join(f"{c[k]:{w}d}" for k, w in zip(columns, widths)))
     print(f"{'total (' + str(len(counts)) + ' kernels)':48s} " + " ".join(f"{total[k]:{w}d}" for k, w in zip(columns, widths)))
+    print(f"kernels whose hot loops are all clean and unflagged: {len(hot - set(counts))}")
     spilling = sum(total[k] for k in KINDS)
     if limit is not None and spilling > limit:
         print(f"FAIL: {spilling} hot loops touch the stack, over {limit}")

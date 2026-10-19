@@ -268,8 +268,12 @@ From TODO 99 (2026-10-19, dev box, Granite Rapids with AVX-512). Check every one
    `#[target_feature(enable = ...)]` as the fn it came from, or expand it from the variant's macro,
    and confirm the width in the asm (`zmm` for 512).
 3. **Walk a pointer, and address at fixed displacements from it, not through an index.** Write the
-   loop as a pointer and a count: the pointer stepped by the stride, each access at it plus a
-   constant, the expected value carried beside it. One index serving the address and the value
+   loop as a pointer stepped by the stride, running to a bound pointer (`while p < last`), each
+   access at it plus a constant, the expected value carried beside it. Prefer the bound to a count:
+   a count gives LLVM a trip count, and with it the loop vectorizer and runtime unrolling, whose
+   copies and remainders address through an index (round 3: Mem-Stride, MirrorMove, native and
+   legacy SimpleTest's strided walks). A count can come out right (Mem-CacheBust's walks); the asm
+   decides. One index serving the address and the value
    saves an instruction and gives `(%base,%index,8)`, which cost Mem-CacheBust (every access an L1
    miss) about 6%, and a 512-bit verify at L2 speed 16% (`fearless_simd/FINDINGS.md`; a load folded
    into a 3-operand vector op splits in two on Intel when it has an index). It isn't always slower
@@ -282,6 +286,8 @@ From TODO 99 (2026-10-19, dev box, Granite Rapids with AVX-512). Check every one
    interleaved by LLVM itself, eight vector accumulators wide with five constants reloaded from the
    stack each step (Mem-CacheBust's verify, and Mem-Stride's when rewritten that way). When that
    happens, write the vector form with its four accumulators explicitly (`CacheBustChunk::verify`).
+   The loop vectorizer leaves a loop that already holds `std::simd` types alone, so explicit
+   `u64x4` is also how a "scalar" variant keeps the shape you wrote (legacy SimpleTest's).
 6. **No constant read from memory every iteration.** `vpbroadcastq __real@…(%rip)` in a loop is a
    reload like a stack one. Splat it before the loop so it stays in a register.
 7. **Step a pointer past the end with `wrapping_add`.** `ptr.add` to outside the allocation is
@@ -289,6 +295,29 @@ From TODO 99 (2026-10-19, dev box, Granite Rapids with AVX-512). Check every one
 8. **Rewording the source rarely changes LLVM's choices** (loop strength reduction normalises it).
    Change the structure instead (a function boundary, a const generic, explicit vectors, how the
    loop counts) and read the asm after each change.
+9. **Short tails get masked.** A scalar tail with a small known maximum trip count is folded into a
+   masked vector loop (`vpmaskmovq`), which is slow on some AMD cores and addresses through an
+   index. Keep a tail shorter than a vector one word at a time (`read_volatile`), or in a `#[cold]`
+   helper. On chunks of whole 4 KiB pages these tails never run, but they still shape the asm.
+10. **A closure that escapes to a cold path pins what it captures.** Passed by reference (`&dyn
+    Fn`) to a rescan, its captures live in memory, and every use in the hot loop reloads them
+    through a pointer: Mem-MovingInv reloaded its ids and key every word, and the tool saw a clean
+    loop. Give the hot loop values, and the cold path its own closure.
+11. **Neighbouring narrow accesses can merge wider.** At the `x86-64-v3` baseline LLVM merged
+    Spd-Copy-128's pairs of 16 B loads and stores into 32 B `ymm` moves, so the 128-bit test ran at
+    256 bits with correct results. A 128-bit variant compiled without its own narrower
+    `#[target_feature]` needs its accesses kept apart (`read_volatile`/`write_volatile`), and its
+    width read in the asm (`xmm` only).
+12. **Interleave each line's computation with its check; don't compute a group first.** Native
+    SimpleTest's 512-bit verify computed a step's four lines, then checked the four: clean asm,
+    every value in registers, and 2.1× slower for `random` (Bench-Verify-Random) than computing a
+    line and checking it before the next, which also ran `header` 1.57× faster and the default
+    stability test (Mem-SimpleV2-512) 5% faster than round 2 instead of 11% slower (2026-10-19).
+    Clean asm is necessary, not sufficient: measure every restructured hot loop.
+13. **A generic over the pattern is fine; a generic over the width is not.** A walk generic over a
+    line closure, inside the width's `#[target_feature]` fn and carrying it, gets one copy per
+    pattern at the right width (native SimpleTest, round 3). Rule 4 forbids generics that pick the
+    width.
 
 ---
 

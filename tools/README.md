@@ -24,11 +24,21 @@ Run it before and after touching a hot loop, and save both `--detail` outputs: t
 also the place to check the width and the instructions.
 
 **Limits.** It decides "hot" by shape: an innermost loop that makes no call and touches memory off
-the stack. Some cold loops pass that test and count: per-pass setup, an inlined rescan, or an outer
-loop whose blocks the compiler laid out around its inner loops (its listing then shows the
-function's epilogue). Read the loop before acting on it. Functions are left out by name (`COLD`),
-so a new cold helper with a different name shows up until it is added. A clean row says nothing
-about the loop's width or its shape (Rule 6.5).
+the stack. Some cold loops pass that test and count: per-pass or per-chunk setup (a division, the
+shutdown flag), an inlined rescan, a setup fill inlined into the test function. Read the loop
+before acting on it. Functions are left out by name (`COLD`), so a new cold helper with a
+different name shows up until it is added. It can't see:
+- a value reloaded through a pointer register rather than `%rsp` (a closure's captures pinned in
+  memory, Rule 6.10), which reads as a clean loop;
+- a loop whose skip path forms a smaller backward branch: only the skip loop is innermost, so the
+  body isn't classified;
+- the loop's width or shape (Rule 6.5), or the order it walks memory in.
+
+Fixed in round 3 (2026-10-19): stack arrays indexed by a register (`128(%rsp,%r10)`) count as
+stack accesses; loops up to 600 instructions are classified (over 150 flagged `long`, where the
+cap used to hide them); indexed prefetches don't count as indexed; epilogues laid out inside a
+loop's range are skipped; const-generic instances are named (`verify_strided::<16>`); and a line
+counts the kernels whose hot loops are all clean.
 
 ## `bench_ab.py`: A/B speeds, alternating
 
