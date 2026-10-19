@@ -121,28 +121,26 @@ macro_rules! spd_read_hot {
 // COPY — Hot loop macros (4x unrolled load from src + store to dst)
 // ============================================================================
 
-/// One Spd-Copy chunk: `bytes` from `src` to `dst`, the chunk at one offset in each half.
-#[derive(Clone, Copy)]
-struct CopyChunk {
-    src: *const u8,
-    dst: *mut u8,
-    bytes: usize,
-}
-
-/// 4x unrolled SIMD copy loop. Reads from src, writes to dst.
-/// $store_fn is _mm*_store_si* (cached) or _mm*_stream_si* (NT).
+/// One Spd-Copy chunk, `$chunk_fn(src, dst, bytes)`: `bytes` from `src` to `dst`, the chunk at one
+/// offset in each half. 4x unrolled SIMD copy loop. `$store_fn` is `_mm*_store_si*` (cached; the
+/// 128-bit cached copy uses `read_volatile`/`write_volatile`) or `_mm*_stream_si*` (NT).
 ///
 /// It walks both pointers over the chunk's vectors, four a step, then the rest, and runs in a
 /// function of its own (`$chunk_fn`, called once a chunk; TODO 99): inlined in the test function,
 /// where the compiler knows the halves' distance, it kept one pointer and addressed the other half
 /// through an index, `(walked,distance)` for each store (or each load), and the NT copy indexed
-/// both from one offset.
+/// both from one offset. It takes three scalars, which come in registers: as a struct by value
+/// (round 3) they went through the stack, three stores and three store-forwarded loads before the
+/// chunk's first load, twice a cycle, which with the call at L1 size (a 12 KiB chunk, 192 vectors
+/// at 512 bits) cost about 2%.
+///
+/// Safety: `src` and `dst` are valid for `bytes` rounded up to a whole vector, aligned to the
+/// vector, and don't overlap.
 macro_rules! spd_copy_hot {
     ($chunk_fn:ident, $target_feature:literal, $arch_type:ty, $load_fn:path, $store_fn:path) => {
         #[target_feature(enable = $target_feature)]
         #[inline(never)]
-        unsafe fn $chunk_fn(chunk: CopyChunk) {
-            let CopyChunk { src, dst, bytes } = chunk;
+        unsafe fn $chunk_fn(src: *const u8, dst: *mut u8, bytes: usize) {
             let mut sp = src as *const $arch_type;
             let mut dp = dst as *mut $arch_type;
             let vectors = bytes.div_ceil(std::mem::size_of::<$arch_type>());
@@ -369,7 +367,7 @@ macro_rules! spd_copy_impl {
                 for (src, dst) in [(half_a, half_b), (half_b, half_a)] {
                     for k in 0..spread.count() {
                         let offset = spread.start(k);
-                        $chunk_fn(CopyChunk { src: src.add(offset), dst: dst.add(offset), bytes: spread.chunk() });
+                        $chunk_fn(src.add(offset), dst.add(offset), spread.chunk());
                         // Traffic: the chunk read plus the chunk written
                         runner.add_bytes(spread.chunk() * 2);
                     }
@@ -603,10 +601,10 @@ mod tests {
 
     /// TODO 99: each width's copy chunk, cached and NT, copies exactly its chunk, each vector to
     /// its own place, over lengths that take its steps of 4 vectors (and the compiler's unrolling
-    /// of them) and each tail of 1-3, and writes nothing else.
+    /// of them), each tail of 1-3 and L1 size, and writes nothing else.
     #[test]
     fn copy_chunks_copy_every_vector_and_nothing_else() {
-        type Chunk = unsafe fn(CopyChunk);
+        type Chunk = unsafe fn(*const u8, *mut u8, usize);
         let mut widths: Vec<(usize, &str, Chunk)> = vec![(16, "128", spd_copy_128_chunk), (16, "NT 128", spd_copy_nt_128_chunk)];
         if is_x86_feature_detected!("avx2") {
             widths.extend([(32, "256", spd_copy_256_chunk as Chunk), (32, "NT 256", spd_copy_nt_256_chunk)]);
@@ -618,10 +616,12 @@ mod tests {
         // A distinct value at every source word, so a vector copied to the wrong place shows
         let source = |i: usize| (i as u64).wrapping_mul(0x9E37_79B9_7F4A_7C15) ^ 0xA55A_A55A_A55A_A55A;
         // The destination 64 words into its buffer, a guard either side
-        let (guard, words) = (64usize, 1024usize);
+        let guard = 64usize;
         for (vec_bytes, name, chunk) in widths {
-            for vectors in (1..=9).chain([16, 17, 18, 19, 64, 67]) {
+            // ... and L1 size, 12 KiB
+            for vectors in (1..=9).chain([16, 17, 18, 19, 64, 67, (12 << 10) / vec_bytes]) {
                 let bytes = vectors * vec_bytes;
+                let words = (bytes / 8 + 2 * guard).next_multiple_of(8);
                 let mut src = vec![std::simd::u64x8::splat(0); words / 8];
                 let mut dst = vec![std::simd::u64x8::splat(0); words / 8];
                 let (s, d) = (src.as_mut_ptr() as *mut u64, dst.as_mut_ptr() as *mut u64);
@@ -630,7 +630,7 @@ mod tests {
                         *s.add(i) = source(i);
                         *d.add(i) = FILLER;
                     }
-                    chunk(CopyChunk { src: s as *const u8, dst: d.add(guard) as *mut u8, bytes });
+                    chunk(s as *const u8, d.add(guard) as *mut u8, bytes);
                     std::arch::x86_64::_mm_sfence();
                     for i in 0..words {
                         assert_eq!(*s.add(i), source(i), "{name}, {vectors} vectors: source word {i} changed");
