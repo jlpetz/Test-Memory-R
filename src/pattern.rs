@@ -33,7 +33,7 @@ pub const VERSION: u32 = 2;
 pub const LINE_WORDS: usize = 8;
 
 /// The golden-ratio multiplier: odd, so `x * G` is a bijection on u64.
-const G: u64 = 0x9E37_79B9_7F4A_7C15;
+pub(crate) const G: u64 = 0x9E37_79B9_7F4A_7C15;
 
 /// splitmix64's finalizer (TMR mode 13). Each step is invertible, so it is a bijection on u64.
 #[inline(always)]
