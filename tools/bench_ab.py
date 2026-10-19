@@ -9,6 +9,10 @@ speed is also given relative to it in the same run, so the box's state cancels o
 Give the same binary two labels (copy it under a second name) for the noise floor: an A/A run's
 "vs ref" column is how far apart two runs of identical code land on this box.
 Build nothing while it runs, and keep the box idle.
+
+On a test host: add `--host LABEL --scripts DIR`, where DIR holds the host's run-tmr.ps1 and
+fetch.ps1 (kept outside the repo, with the host names); each label's path is then the binary's
+name as deployed there (`r2=tmr-r2.exe`). Each run's output and results file are copied into OUTDIR.
 """
 import json
 import os
@@ -20,15 +24,39 @@ import sys
 APP = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 
 
-def run(exe, args, out_path):
-    proc = subprocess.run([exe] + args.split(), cwd=APP, capture_output=True, text=True, encoding="utf-8", errors="replace")
-    with open(out_path, "w", encoding="utf-8") as f:
-        f.write(proc.stdout)
-        f.write(proc.stderr)
-    m = re.search(r"Results saved: (\S+\.json)", proc.stdout)
+def ps(script, *args):
+    """Runs one of the host's PowerShell scripts; its output, or an exit with it on failure."""
+    proc = subprocess.run(["powershell", "-NoProfile", "-File", script, *args], capture_output=True, text=True,
+                          encoding="utf-8", errors="replace")
+    if proc.returncode != 0:
+        sys.exit(f"{os.path.basename(script)} failed: {proc.stdout[-2000:]}{proc.stderr[-2000:]}")
+    return proc.stdout
+
+
+def run(exe, args, out_path, host=None):
+    if host:
+        label, scripts = host
+        name = os.path.splitext(os.path.basename(out_path))[0]
+        outdir = os.path.dirname(os.path.abspath(out_path))
+        ps(os.path.join(scripts, "run-tmr.ps1"), "-HostLabel", label, "-Name", name, "-Exe", exe,
+           "-ArgLine", args, "-TimeoutMin", "60", "-LocalDir", outdir)
+        stdout = open(out_path, encoding="utf-8", errors="replace").read()
+    else:
+        proc = subprocess.run([exe] + args.split(), cwd=APP, capture_output=True, text=True, encoding="utf-8", errors="replace")
+        stdout = proc.stdout
+        with open(out_path, "w", encoding="utf-8") as f:
+            f.write(proc.stdout)
+            f.write(proc.stderr)
+    m = re.search(r"Results saved: (\S+\.json)", stdout)
     if not m:
-        sys.exit(f"{exe}: no results file (exit {proc.returncode}); see {out_path}")
-    with open(os.path.join(APP, m.group(1)), encoding="utf-8") as f:
+        sys.exit(f"{exe}: no results file; see {out_path}")
+    if host:
+        ps(os.path.join(host[1], "fetch.ps1"), "-HostLabel", host[0], "-Dir", m.group(1).replace("/", "\\"),
+           "-LocalDir", os.path.dirname(os.path.abspath(out_path)))
+        path = os.path.join(os.path.dirname(os.path.abspath(out_path)), os.path.basename(m.group(1)))
+    else:
+        path = os.path.join(APP, m.group(1))
+    with open(path, encoding="utf-8") as f:
         result = json.load(f)
     speeds = {}
     for cycle in result["cycles"]:
@@ -40,8 +68,14 @@ def run(exe, args, out_path):
 
 def main():
     argv = sys.argv[1:]
-    runs = int(argv[argv.index("--runs") + 1]) if "--runs" in argv else 3
-    argv = [a for i, a in enumerate(argv) if a != "--runs" and (i == 0 or argv[i - 1] != "--runs")]
+    opts = {}
+    for flag in ("--runs", "--host", "--scripts"):
+        if flag in argv:
+            i = argv.index(flag)
+            opts[flag] = argv[i + 1]
+            del argv[i:i + 2]
+    runs = int(opts.get("--runs", 3))
+    host = (opts["--host"], opts["--scripts"]) if "--host" in opts else None
     if len(argv) < 4:
         sys.exit(__doc__)
     outdir, reference, args = argv[0], argv[1], argv[2]
@@ -50,7 +84,7 @@ def main():
     seen = {label: [] for label, _ in bins}
     for r in range(runs):
         for label, exe in bins:
-            speeds, path = run(exe, args, os.path.join(outdir, f"{label}_{r + 1}.txt"))
+            speeds, path = run(exe, args, os.path.join(outdir, f"{label}_{r + 1}.txt"), host)
             seen[label].append(speeds)
             print(f"run {r + 1} {label}: {path}", flush=True)
     tests = sorted({t for runs_ in seen.values() for s in runs_ for t in s})
