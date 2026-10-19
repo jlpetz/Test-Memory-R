@@ -5,7 +5,6 @@ use crate::constants::{MB, MB_16, MB_32, MB_64, KB, PAGE_SIZE_4KB};
 use std::simd::*; // Docs here https://doc.rust-lang.org/std/simd/index.html
 use std::simd::cmp::SimdPartialEq;
 use std::simd::num::SimdUint;
-use std::sync::atomic::Ordering;
 use std::sync::OnceLock;
 
 const CACHE_BUSTING_STRIDE: usize = PAGE_SIZE_4KB;
@@ -1306,7 +1305,7 @@ macro_rules! stuck_bit_write_verify {
         for i in $start..$end {
             *$base.add(i) = $pat;
         }
-        std::sync::atomic::fence(Ordering::SeqCst);
+        // No fence (TODO 16): this thread reads its own cached writes in order; the optional flush ends in its own MFENCE
 
         // Optional flush phase (TODO #59): evict this chunk so the verify below round-trips
         // through DRAM instead of reading the cache-resident copy we just wrote. Without it,
@@ -1412,7 +1411,6 @@ pub unsafe fn stuck_bit_test_multi(
                 *base.add(i) = pattern1;
             }
 
-            std::sync::atomic::fence(Ordering::SeqCst);
             flush_chunk_if_enabled!();
 
             cycle_errors += verify_words(base, processed, chunk_end, test_name, |_| pattern1);
@@ -1423,7 +1421,6 @@ pub unsafe fn stuck_bit_test_multi(
                 *base.add(i) = pattern2;
             }
 
-            std::sync::atomic::fence(Ordering::SeqCst);
             flush_chunk_if_enabled!();
 
             cycle_errors += verify_words(base, processed, chunk_end, test_name, |_| pattern2);
@@ -1434,7 +1431,6 @@ pub unsafe fn stuck_bit_test_multi(
                 *base.add(i) = pattern1;
             }
 
-            std::sync::atomic::fence(Ordering::SeqCst);
             flush_chunk_if_enabled!();
 
             cycle_errors += verify_words(base, processed, chunk_end, test_name, |_| pattern1);
@@ -1694,7 +1690,7 @@ macro_rules! refresh_impl {
                         flush_range_to_dram(chunk_ptr, chunk_bytes, config.cache_line_bytes);
                     }
 
-                    std::sync::atomic::fence(Ordering::SeqCst);
+                    // No fence (TODO 16): the flush, when on, ends in its own MFENCE; the sleep is the wait
                     std::thread::sleep(std::time::Duration::from_millis(64));
 
                     // Verify — 4 independent accumulator chains (MLP).
@@ -1804,7 +1800,7 @@ pub unsafe fn refresh_stable_multi(
             let chunk_bytes = (chunk_end - processed) * std::mem::size_of::<u64>();
             flush_range_to_dram(chunk_ptr, chunk_bytes, config.cache_line_bytes);
 
-            std::sync::atomic::fence(Ordering::SeqCst);
+            // No fence (TODO 16): the flush ends in its own MFENCE; the sleep is the wait
             std::thread::sleep(std::time::Duration::from_millis(64)); // DRAM refresh cycle timing
 
             // Verify phase
@@ -2061,7 +2057,6 @@ pub unsafe fn cache_busting_multi(
                         }
                     }
 
-                    std::sync::atomic::fence(Ordering::SeqCst);
 
                     // Verify with same stride pattern within chunk; the walk covers every word
                     let expected = |i: usize| pattern_base.wrapping_add(i as u64);
@@ -2089,7 +2084,6 @@ pub unsafe fn cache_busting_multi(
                         }
                     }
 
-                    std::sync::atomic::fence(Ordering::SeqCst);
 
                     // Verify all offsets with their respective variant patterns; the walk covers
                     // every word, and a word's variant follows from its own index
@@ -2249,7 +2243,6 @@ pub unsafe fn random_torture_multi(
     for i in 0..len {
         *base.add(i) = ids | i as u64;
     }
-    std::sync::atomic::fence(Ordering::SeqCst);
     // Setup, not the test: its time and bytes are left out (TODO 90)
     runner.restart_clock();
 
@@ -2423,7 +2416,6 @@ pub unsafe fn stride_access_multi(
                     }
                 }
 
-                std::sync::atomic::fence(Ordering::SeqCst);
 
                 let expected = |pos: usize| pattern.wrapping_add(pos as u64);
                 let mut acc = [0u64; 4];
@@ -2518,7 +2510,6 @@ pub unsafe fn block_move_multi(
         for i in 0..len {
             *src_base.add(i) = pattern_base.wrapping_add(i as u64);
         }
-        std::sync::atomic::fence(Ordering::SeqCst);
         // Setup, not the test: its time is left out, and its bytes never counted (TODO 90)
         runner.restart_clock();
     }
@@ -2627,7 +2618,6 @@ pub unsafe fn block_move_multi(
                 }
             }
 
-            std::sync::atomic::fence(Ordering::SeqCst);
 
             // Verify copied data (indices from the destination half's start)
             cycle_errors += verify_words(dst_base, processed, chunk_end, test_name, |i| pattern_base.wrapping_add(i as u64));
