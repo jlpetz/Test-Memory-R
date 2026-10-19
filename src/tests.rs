@@ -8975,8 +8975,9 @@ mod random_replay_tests {
     /// exactly a bit flipped in any lane of any accumulator and at each walk's edges: every word of
     /// the first and last four lines visited (a step is two lines at 256 bits, four at 512, each
     /// vector its own accumulator), of each random block's first and last, and of each strided
-    /// pass's. Four families: `ident`'s lines are vector arithmetic, `switch`'s scalar, `quiet`'s at
-    /// 24 bits and `header`'s at 12 the heaviest.
+    /// pass's. `ident`'s lines are vector arithmetic; `switch`, `quiet` and `header` hash a scalar
+    /// word a line, at each beat a 512-bit step can take as one vector of four (16, 32 and 64
+    /// bits), and `quiet` at 24 bits and `header` at 12, the heaviest lines (TODO 99 round 3b).
     #[test]
     fn sequence_walks_see_a_bad_word_in_every_lane() {
         use crate::pattern::{Family, Phase};
@@ -8984,8 +8985,12 @@ mod random_replay_tests {
         use crate::sequence::Order;
         let (pad, lines) = (64usize, 192usize);
         let lid_base = crate::pattern::line_base(5);
-        for (family, beat, mask) in [(Family::Ident, BusBeat::Bits64, 0), (Family::Switch, BusBeat::Bits32, !0),
-                                     (Family::Quiet, BusBeat::Bits24, 0), (Family::Header, BusBeat::Bits12, !0)] {
+        for (family, beat, mask) in [(Family::Ident, BusBeat::Bits64, 0), (Family::Switch, BusBeat::Bits16, 0),
+                                     (Family::Switch, BusBeat::Bits32, !0), (Family::Switch, BusBeat::Bits64, 0),
+                                     (Family::Quiet, BusBeat::Bits16, !0), (Family::Quiet, BusBeat::Bits24, 0),
+                                     (Family::Quiet, BusBeat::Bits32, 0), (Family::Quiet, BusBeat::Bits64, !0),
+                                     (Family::Header, BusBeat::Bits12, !0), (Family::Header, BusBeat::Bits16, 0),
+                                     (Family::Header, BusBeat::Bits32, !0), (Family::Header, BusBeat::Bits64, 0)] {
             let phase = Phase { family, key: 0x7E57_0000_0000_0099, mask, beat };
             for width in sequence_widths() {
                 for (order, stride) in SEQUENCE_ORDERS {
