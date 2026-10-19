@@ -7885,8 +7885,12 @@ impl Mode0Words {
 }
 
 /// Mode 1 (`pattern_gen::pattern_mode1`): the seed less three times the word's index, inverted
-/// on odd cache lines (of `1 << cl_shift` words). Both from one stepped vector of indices: with the
-/// difference stepped too, the step's offsets spilled to the stack.
+/// on odd cache lines (of `1 << cl_shift` words). The fill, on lines of up to 8 words (every x86
+/// CPU's 64 B): the inversion repeats every two lines, which divides a 16-word step, so each of
+/// the step's four vectors keeps its mask from step to step and only its values step, two
+/// operations a vector rather than seven (TODO 99 round 3b). The verify, and the fill on longer
+/// lines: both from one stepped vector of indices; with the difference stepped too, the step's
+/// offsets spilled to the stack.
 #[derive(Clone, Copy)]
 struct Mode1Words {
     seed: u64,
@@ -7897,6 +7901,12 @@ impl Mode1Words {
     #[inline(always)]
     fn word(self, i: usize) -> u64 {
         pattern_gen::pattern_mode1(i as u64, self.seed, self.cl_shift)
+    }
+
+    /// Whether the inversion's period, two lines, divides a step of 16 words.
+    #[inline(always)]
+    fn periodic(self) -> bool {
+        self.cl_shift <= 3
     }
 
     #[inline(always)]
@@ -7912,7 +7922,47 @@ impl Mode1Words {
         }
     }
 
-    word_kernels!(0);
+    /// The values from word `start` on when `periodic`: the step's four vectors' differences, each
+    /// stepped down a step's 48, and their masks, fixed, both rotated through a step's four
+    /// vectors as `Mode0Words`' products are.
+    #[inline(always)]
+    fn periodic_lanes(self, start: usize) -> impl FnMut() -> u64x4 {
+        let idx: [u64x4; 4] = std::array::from_fn(|k| word_lanes(start + 4 * k));
+        let shift = u64x4::splat(u64::from(self.cl_shift));
+        let mut value = idx.map(|i| u64x4::splat(self.seed) - i * u64x4::splat(3));
+        let mut mask = idx.map(|i| u64x4::splat(0) - ((i >> shift) & u64x4::splat(1)));
+        let step = u64x4::splat(3 * 16);
+        move || {
+            let words = value[0] ^ mask[0];
+            value = [value[1], value[2], value[3], value[0] - step];
+            mask = [mask[1], mask[2], mask[3], mask[0]];
+            words
+        }
+    }
+
+    #[inline(never)]
+    unsafe fn fill(self, ptr: *mut u64, start: usize, end: usize) {
+        if self.periodic() {
+            fill_words_by_16(ptr, start, end, self.periodic_lanes(start), |i| self.word(i))
+        } else {
+            fill_words_by_16(ptr, start, end, self.lanes(start), |i| self.word(i))
+        }
+    }
+
+    /// From the indices at any line size: with the masks fixed too, the verify's four accumulators
+    /// left too few registers, so the step went to the stack and the masks were moved each step.
+    #[inline(never)]
+    unsafe fn verify(self, ptr: *const u64, start: usize, end: usize) -> u64 {
+        verify_words_by_16(ptr, start, end, self.lanes(start), |i| self.word(i))
+    }
+
+    #[inline(always)]
+    unsafe fn check(self, ptr: *const u64, start: usize, end: usize, test_name: &str) -> u64 {
+        match self.verify(ptr, start, end) {
+            0 => 0,
+            seen => rescan_words(ptr, start, end, test_name, seen, |i| self.word(i)),
+        }
+    }
 }
 
 /// Modes 10 and 11 (`pattern_gen::pattern_mode10` and `pattern_mode11`, one function): the word's
@@ -8021,19 +8071,164 @@ unsafe fn verify_lines(ptr: *const u64, start: usize, end: usize, mut words: imp
     acc.reduce_or()
 }
 
-/// Mode 20's fill of one chunk (`Mode20::fill`'s lines).
+/// Writes the lines of words `[start, end)` of `ptr` (whole lines) four a step: `lines(addrs)`
+/// gives the four lines at the addresses in `addrs` (a lane a line) as eight 32 B vectors, each
+/// line's two halves in turn, stored at fixed offsets from a walked pointer. Hashing a line a lane
+/// takes a quarter of the instructions of hashing each in scalar registers and moving its words
+/// into vectors (TODO 99 round 3b). The up to three lines past the last whole step, which a chunk
+/// of whole pages never has, come from `line` (`fill_lines`).
+#[inline(always)]
+unsafe fn fill_lines_by_4(ptr: *mut u64, start: usize, end: usize, mut lines: impl FnMut(u64x4) -> [u64x4; 8],
+                          line: impl FnMut(*const u64) -> [u64; LINE_WORDS]) {
+    debug_assert!(start.is_multiple_of(LINE_WORDS) && end.is_multiple_of(LINE_WORDS), "whole lines: {start}..{end}");
+    let rest = start + (end - start) / (4 * LINE_WORDS) * (4 * LINE_WORDS);
+    let mut p = ptr.add(start);
+    let last = ptr.wrapping_add(rest);
+    let mut addrs = u64x4::splat(p as u64) + u64x4::from_array([0, 64, 128, 192]);
+    let step = u64x4::splat(4 * 64);
+    while p < last {
+        for (k, half) in lines(addrs).into_iter().enumerate() {
+            p.add(4 * k).cast::<u64x4>().write_unaligned(half);
+        }
+        addrs += step;
+        p = p.wrapping_add(4 * LINE_WORDS);
+    }
+    if rest < end {
+        fill_lines_tail(ptr, rest, end, line);
+    }
+}
+
+/// `fill_lines` for the last lines of a range, out of the hot function.
+#[cold]
+#[inline(never)]
+unsafe fn fill_lines_tail(ptr: *mut u64, start: usize, end: usize, words: impl FnMut(*const u64) -> [u64; LINE_WORDS]) {
+    fill_lines(ptr, start, end, words)
+}
+
+/// Checks the same lines four a step, from the same `lines` and `line`: the step's eight
+/// differences ORed together, then into one accumulator, whose lanes are `accumulate_line`'s four
+/// (words `k` and `k + 4` of each line into lane `k`), as `verify_lines` has them; ORing the step
+/// first leaves the accumulator one OR a step to wait on. Nonzero when a word differs.
+#[inline(always)]
+unsafe fn verify_lines_by_4(ptr: *const u64, start: usize, end: usize, mut lines: impl FnMut(u64x4) -> [u64x4; 8],
+                            line: impl FnMut(*const u64) -> [u64; LINE_WORDS]) -> u64 {
+    debug_assert!(start.is_multiple_of(LINE_WORDS) && end.is_multiple_of(LINE_WORDS), "whole lines: {start}..{end}");
+    let rest = start + (end - start) / (4 * LINE_WORDS) * (4 * LINE_WORDS);
+    let mut p = ptr.add(start);
+    let last = ptr.wrapping_add(rest);
+    let mut addrs = u64x4::splat(p as u64) + u64x4::from_array([0, 64, 128, 192]);
+    let step = u64x4::splat(4 * 64);
+    let mut acc = u64x4::splat(0);
+    while p < last {
+        let v = lines(addrs);
+        let d: [u64x4; 8] = std::array::from_fn(|k| p.add(4 * k).cast::<u64x4>().read_unaligned() ^ v[k]);
+        acc |= ((d[0] | d[1]) | (d[2] | d[3])) | ((d[4] | d[5]) | (d[6] | d[7]));
+        addrs += step;
+        p = p.wrapping_add(4 * LINE_WORDS);
+    }
+    let tail = if rest < end { verify_lines_tail(ptr, rest, end, line) } else { 0 };
+    acc.reduce_or() | tail
+}
+
+/// `verify_lines` for the last lines of a range, out of the hot function.
+#[cold]
+#[inline(never)]
+unsafe fn verify_lines_tail(ptr: *const u64, start: usize, end: usize, words: impl FnMut(*const u64) -> [u64; LINE_WORDS]) -> u64 {
+    verify_lines(ptr, start, end, words)
+}
+
+/// The splitmix64 finalizer of each lane: `pattern_gen::pattern_mode13` of an index and seed
+/// whose sum the lane holds. The constants are `pattern_mode13`'s; the unit tests hold the two
+/// equal.
+#[inline(always)]
+fn splitmix_lanes(mut h: u64x4) -> u64x4 {
+    h ^= h >> 30;
+    h *= u64x4::splat(0xbf58476d1ce4e5b9);
+    h ^= h >> 27;
+    h *= u64x4::splat(0x94d049bb133111eb);
+    h ^ (h >> 31)
+}
+
+/// Rows to columns: vector `l` of the result holds lane `l` of each row, in row order.
+#[inline(always)]
+fn transpose4(rows: [u64x4; 4]) -> [u64x4; 4] {
+    let [r0, r1, r2, r3] = rows;
+    let (t0, t1) = (simd_swizzle!(r0, r1, [0, 4, 2, 6]), simd_swizzle!(r0, r1, [1, 5, 3, 7]));
+    let (t2, t3) = (simd_swizzle!(r2, r3, [0, 4, 2, 6]), simd_swizzle!(r2, r3, [1, 5, 3, 7]));
+    [simd_swizzle!(t0, t2, [0, 1, 4, 5]), simd_swizzle!(t1, t3, [0, 1, 4, 5]),
+     simd_swizzle!(t0, t2, [2, 3, 6, 7]), simd_swizzle!(t1, t3, [2, 3, 6, 7])]
+}
+
+/// Mode 20's four lines at the addresses in `addrs`, as `fill_lines_by_4` takes them: each lane's
+/// seed and step (`pattern_gen::mode20_line`), its line's words 0-3 (`line_words`) a vector each
+/// across the lanes, turned to a vector per line, and words 4-7 those plus four steps.
+#[inline(always)]
+fn mode20_lines4(addrs: u64x4, key: u64x4) -> [u64x4; 8] {
+    let seed = splitmix_lanes(addrs + key);
+    let x = seed ^ key;
+    let step = (((x << 29) | (x >> 35)) * u64x4::splat(0x9E3779B97F4A7C15)) | u64x4::splat(1);
+    let s2 = step + step;
+    let w1 = seed + step;
+    let [l0, l1, l2, l3] = transpose4([seed, w1, seed + s2, w1 + s2]);
+    let s4 = s2 + s2;
+    [l0, l0 + simd_swizzle!(s4, [0, 0, 0, 0]), l1, l1 + simd_swizzle!(s4, [1, 1, 1, 1]),
+     l2, l2 + simd_swizzle!(s4, [2, 2, 2, 2]), l3, l3 + simd_swizzle!(s4, [3, 3, 3, 3])]
+}
+
+/// Mode 30's value of the lines at the four addresses in `addrs` (`pattern_gen::mode30_line`'s
+/// `balanced_bytes` of the line's hash), a lane a line.
+#[inline(always)]
+fn mode30_values4(addrs: u64x4, key: u64x4) -> u64x4 {
+    let low_nibbles = u64x4::splat(0x0F0F_0F0F_0F0F_0F0F);
+    let mut x = splitmix_lanes(addrs + key) & u64x4::splat(0xFFFF_FFFF);
+    x = (x | (x << 16)) & u64x4::splat(0x0000_FFFF_0000_FFFF);
+    x = (x | (x << 8)) & u64x4::splat(0x00FF_00FF_00FF_00FF);
+    x = (x | (x << 4)) & low_nibbles;
+    x | ((!x & low_nibbles) << 4)
+}
+
+/// Four lines of one word each (`v`'s lane, XOR `inv`'s lane `j % 4` at word `j`), as
+/// `fill_lines_by_4` takes them: mode 30's at 64, 32 and 16 bits (`pattern_gen::bus_flip_line`).
+#[inline(always)]
+fn splat_lines4(v: u64x4, inv: u64x4) -> [u64x4; 8] {
+    let (l0, l1) = (simd_swizzle!(v, [0, 0, 0, 0]) ^ inv, simd_swizzle!(v, [1, 1, 1, 1]) ^ inv);
+    let (l2, l3) = (simd_swizzle!(v, [2, 2, 2, 2]) ^ inv, simd_swizzle!(v, [3, 3, 3, 3]) ^ inv);
+    [l0, l0, l1, l1, l2, l2, l3, l3]
+}
+
+/// Mode 30's four lines at the addresses in `addrs` at a beat of `BITS` bits, 64, 32 or 16, whose
+/// lines are one word and its inverse (`pattern_gen::bus_flip_line`), as `fill_lines_by_4` takes
+/// them.
+#[inline(always)]
+fn mode30_lines4<const BITS: u32>(addrs: u64x4, key: u64x4) -> [u64x4; 8] {
+    let a = mode30_values4(addrs, key);
+    match BITS {
+        64 => splat_lines4(a, u64x4::from_array([0, !0, 0, !0])),
+        32 => splat_lines4((a & u64x4::splat(0xFFFF_FFFF)) | (!a << 32), u64x4::splat(0)),
+        16 => {
+            let half = u64x4::splat(0xFFFF);
+            let pair = (a & half) | ((!a & half) << 16);
+            splat_lines4(pair | (pair << 32), u64x4::splat(0))
+        }
+        _ => unreachable!("mode 30 has no closed form at {BITS} bits"),
+    }
+}
+
+/// Mode 20's fill of one chunk (`Mode20::fill`'s lines), four a step.
 #[inline(never)]
 unsafe fn mode20_fill_chunk(mode: Mode20, ptr: *mut u64, start: usize, end: usize) {
-    fill_lines(ptr, start, end, |line| {
+    let key = u64x4::splat(mode.key);
+    fill_lines_by_4(ptr, start, end, |addrs| mode20_lines4(addrs, key), |line| {
         let (seed, step) = pattern_gen::mode20_line(line as usize, mode.key);
         pattern_gen::line_words(seed, step)
     })
 }
 
-/// Mode 20's check of one chunk: `Mode20::verify`'s, its rescan on a hit.
+/// Mode 20's check of one chunk: `Mode20::verify`'s, four lines a step, its rescan on a hit.
 #[inline(never)]
 unsafe fn mode20_check_chunk(mode: Mode20, ptr: *const u64, start: usize, end: usize, test_name: &str) -> u64 {
-    let seen = verify_lines(ptr, start, end, |line| {
+    let key = u64x4::splat(mode.key);
+    let seen = verify_lines_by_4(ptr, start, end, |addrs| mode20_lines4(addrs, key), |line| {
         let (seed, step) = pattern_gen::mode20_line(line as usize, mode.key);
         pattern_gen::line_words(seed, step)
     });
@@ -8043,20 +8238,41 @@ unsafe fn mode20_check_chunk(mode: Mode20, ptr: *const u64, start: usize, end: u
     mode.rescan(ptr, start, end, test_name, seen)
 }
 
-/// Mode 30's fill of one chunk (`Mode30::fill`'s lines), a loop per beat.
+/// Mode 30's fill of one chunk (`Mode30::fill`'s lines), a loop per beat: four lines a step at 64,
+/// 32 and 16 bits, whose lines are one word and its inverse; a line a step at 12 and 24, the
+/// modelled beats, whose words each take their own shift of the line's value.
 #[inline(never)]
 unsafe fn mode30_fill_chunk(mode: Mode30, ptr: *mut u64, start: usize, end: usize) {
-    with_mode30_line!(mode, |expected| {
-        fill_lines(ptr, start, end, expected)
-    })
+    use pattern_gen::BusBeat;
+    let (key, k) = (u64x4::splat(mode.key), mode.key);
+    match mode.beat {
+        BusBeat::Bits64 => fill_lines_by_4(ptr, start, end, |addrs| mode30_lines4::<64>(addrs, key),
+                                           |line| pattern_gen::mode30_line(line as usize, k, BusBeat::Bits64)),
+        BusBeat::Bits32 => fill_lines_by_4(ptr, start, end, |addrs| mode30_lines4::<32>(addrs, key),
+                                           |line| pattern_gen::mode30_line(line as usize, k, BusBeat::Bits32)),
+        BusBeat::Bits16 => fill_lines_by_4(ptr, start, end, |addrs| mode30_lines4::<16>(addrs, key),
+                                           |line| pattern_gen::mode30_line(line as usize, k, BusBeat::Bits16)),
+        BusBeat::Bits12 => fill_lines(ptr, start, end, |line| pattern_gen::mode30_line(line as usize, k, BusBeat::Bits12)),
+        BusBeat::Bits24 => fill_lines(ptr, start, end, |line| pattern_gen::mode30_line(line as usize, k, BusBeat::Bits24)),
+    }
 }
 
-/// Mode 30's check of one chunk: `Mode30::verify`'s, its rescan on a hit.
+/// Mode 30's check of one chunk: `Mode30::verify`'s, its rescan on a hit; four lines a step where
+/// the fill goes four a step.
 #[inline(never)]
 unsafe fn mode30_check_chunk(mode: Mode30, ptr: *const u64, start: usize, end: usize, test_name: &str) -> u64 {
-    let seen = with_mode30_line!(mode, |expected| {
-        verify_lines(ptr, start, end, expected)
-    });
+    use pattern_gen::BusBeat;
+    let (key, k) = (u64x4::splat(mode.key), mode.key);
+    let seen = match mode.beat {
+        BusBeat::Bits64 => verify_lines_by_4(ptr, start, end, |addrs| mode30_lines4::<64>(addrs, key),
+                                             |line| pattern_gen::mode30_line(line as usize, k, BusBeat::Bits64)),
+        BusBeat::Bits32 => verify_lines_by_4(ptr, start, end, |addrs| mode30_lines4::<32>(addrs, key),
+                                             |line| pattern_gen::mode30_line(line as usize, k, BusBeat::Bits32)),
+        BusBeat::Bits16 => verify_lines_by_4(ptr, start, end, |addrs| mode30_lines4::<16>(addrs, key),
+                                             |line| pattern_gen::mode30_line(line as usize, k, BusBeat::Bits16)),
+        BusBeat::Bits12 => verify_lines(ptr, start, end, |line| pattern_gen::mode30_line(line as usize, k, BusBeat::Bits12)),
+        BusBeat::Bits24 => verify_lines(ptr, start, end, |line| pattern_gen::mode30_line(line as usize, k, BusBeat::Bits24)),
+    };
     if seen == 0 {
         return 0;
     }
@@ -8447,7 +8663,7 @@ mod bench_move_tests {
         }
     }
 
-    /// TODO 99: the per-word Bench kernels (modes 0, 1 at four line sizes, 10, 11 and 13) write each
+    /// TODO 99: the per-word Bench kernels (modes 0, 1 at six line sizes, 10, 11 and 13) write each
     /// word its mode's value, `pattern_gen`'s word by word, and nothing else; read clean; and see a
     /// bad word in each lane of each accumulator, at each page edge and in the tails, which the
     /// check counts once.
@@ -8483,7 +8699,8 @@ mod bench_move_tests {
             }};
         }
         case!(Mode0Words { seed }, |i| pattern_gen::pattern_mode0(i, seed));
-        for cl_shift in [3, 0, 2, 4] {
+        // Lines of 8 words (x86's), 1, 2 and 4, whose inversions repeat every step; 16 and 32, whose don't
+        for cl_shift in [3, 0, 1, 2, 4, 5] {
             case!(Mode1Words { seed, cl_shift }, |i| pattern_gen::pattern_mode1(i, seed, cl_shift));
         }
         let base = 0xDEADBEEFDEADBEEFu64;
@@ -8494,9 +8711,10 @@ mod bench_move_tests {
     }
 
     /// TODO 99: the line Bench kernels (modes 20 and 30 at every beat, and mode 2 out of line)
-    /// write each line its mode's words, `pattern_gen`'s line by line, and nothing else; read
-    /// clean; and see a bad word in each lane of the accumulator, in either half of a line, and in
-    /// the last line, which the check counts once.
+    /// write each line its mode's words, `pattern_gen`'s line by line, and nothing else, in whole
+    /// steps of four lines, with a tail of one to three, and in ranges shorter than a step; read
+    /// clean; and see a bad word in each lane of the accumulator, in either half of each line of a
+    /// step, and in the last line, which the check counts once.
     #[test]
     fn bench_line_kernels_write_their_lines_and_see_every_bad_word() {
         let total = 4 * PAGE_WORDS;
@@ -8512,7 +8730,8 @@ mod bench_move_tests {
                 assert_eq!(*p.add(i), expected, "{name}: word {i} of {start}..{end}");
             }
             assert_eq!(check(p, start, end), 0, "{name}: {start}..{end} clean");
-            let bad = (start..start + LINE_WORDS).chain(end - LINE_WORDS..end).chain((start..end).step_by(61));
+            // Every word of the first four lines (each vector of a four-line step), the last line's, a spread
+            let bad = (start..(start + 4 * LINE_WORDS).min(end)).chain(end - LINE_WORDS..end).chain((start..end).step_by(61));
             for word in bad {
                 *p.add(word) ^= 1 << 40;
                 assert_eq!(check(p, start, end), 1, "{name}: {start}..{end}, word {word} counted once");
@@ -8525,7 +8744,10 @@ mod bench_move_tests {
             let (seed, step) = pattern_gen::mode20_line(line, mode20.key);
             pattern_gen::line_words(seed, step)
         };
-        for (start, end) in [(0, total), (3 * LINE_WORDS, total - 5 * LINE_WORDS)] {
+        // Whole steps (256 and 248 lines); 247 lines, and 5, with a tail; 2 and 3 lines, a tail alone
+        let ranges = [(0, total), (3 * LINE_WORDS, total - 5 * LINE_WORDS), (3 * LINE_WORDS, total - 6 * LINE_WORDS),
+                      (LINE_WORDS, 6 * LINE_WORDS), (9 * LINE_WORDS, 11 * LINE_WORDS), (13 * LINE_WORDS, 16 * LINE_WORDS)];
+        for (start, end) in ranges {
             run("mode 20", start, end, &|p, s, e| unsafe { mode20_fill_chunk(mode20, p, s, e) },
                 &|p, s, e| unsafe { mode20_check_chunk(mode20, p, s, e, "test") }, &lines20);
         }
@@ -8533,7 +8755,7 @@ mod bench_move_tests {
         let key = pattern_gen::mode20_key(3, 0, 0x5DEECE66D, 0xB);
         for beat in [BusBeat::Bits12, BusBeat::Bits16, BusBeat::Bits24, BusBeat::Bits32, BusBeat::Bits64] {
             let mode30 = Mode30 { key, beat };
-            for (start, end) in [(0, total), (3 * LINE_WORDS, total - 5 * LINE_WORDS)] {
+            for (start, end) in ranges {
                 run(&format!("mode 30 at {} bits", beat.bits()), start, end, &|p, s, e| unsafe { mode30_fill_chunk(mode30, p, s, e) },
                     &|p, s, e| unsafe { mode30_check_chunk(mode30, p, s, e, "test") }, &|line| pattern_gen::mode30_line(line, key, beat));
             }
