@@ -1059,7 +1059,7 @@ impl TestMemoryConfig {
             | "Bench-Verify-TMR-30" => 8,
             // The seal kernels take 64 B-aligned ranges at every width (TODO 74)
             s if s.starts_with("Bench-Init-Seal-") || s.starts_with("Bench-Verify-Seal-") => 64,
-            // The native Bench pairs run the widest native SimpleTest (pattern spec v2)
+            // The native Bench pairs run the native SimpleTest at the run's width (pattern spec v2)
             s if native_bench_tests().iter().any(|(init, verify, _, _)| s == *init || s == *verify) => 64,
             "Seal-Check" => 64,
             // Sequential bandwidth tests (all SIMD variants: 128/256/512/Auto)
@@ -1449,7 +1449,7 @@ stuck_bit_impl!(stuck_bit_test_512_impl, "Mem-StuckBit512", u64x8, "avx512f,avx5
 // === STUCK BIT TEST SIMD VARIANTS ===
 
 /// StuckBitTestAuto - MultiBlock dispatcher
-/// Auto-selects best SIMD implementation: AVX-512 > AVX2 > SSE2
+/// The variant at the run's width (`crate::simd::test_width`: `width=`'s, else the widest the CPU has)
 ///
 /// # Safety
 /// Caller must ensure blocks contain valid, aligned memory
@@ -1462,13 +1462,10 @@ pub unsafe fn stuck_bit_test_auto_multi(
     config: &TestMemoryConfig,
     progress: Option<&TestProgress>,
 ) -> TestStats {
-    // Check CPU capabilities and dispatch to the best available MultiBlock implementation
-    if is_x86_feature_detected!("avx512f") {
-        stuck_bit_test_512_multi(blocks, thread_id, error_mode, timing, config, progress)
-    } else if is_x86_feature_detected!("avx2") {
-        stuck_bit_test_256_multi(blocks, thread_id, error_mode, timing, config, progress)
-    } else {
-        stuck_bit_test_128_multi(blocks, thread_id, error_mode, timing, config, progress)
+    match crate::simd::test_width() {
+        crate::simd::Width::W512 => stuck_bit_test_512_multi(blocks, thread_id, error_mode, timing, config, progress),
+        crate::simd::Width::W256 => stuck_bit_test_256_multi(blocks, thread_id, error_mode, timing, config, progress),
+        crate::simd::Width::W128 => stuck_bit_test_128_multi(blocks, thread_id, error_mode, timing, config, progress),
     }
 }
 
@@ -1696,7 +1693,7 @@ pub unsafe fn refresh_stable_512_multi(
 refresh_impl!(refresh_stable_512_impl, "Mem-Refresh512", u64x8, "avx512f,avx512bw,avx512cd,avx512dq,avx512vl,avx2,avx,fma,bmi1,bmi2");
 
 /// RefreshStableAuto - MultiBlock dispatcher
-/// Auto-selects best SIMD implementation: AVX-512 > AVX2 > SSE2
+/// The variant at the run's width (`crate::simd::test_width`: `width=`'s, else the widest the CPU has)
 ///
 /// # Safety
 /// Caller must ensure blocks contain valid, aligned memory
@@ -1709,13 +1706,10 @@ pub unsafe fn refresh_stable_auto_multi(
     config: &TestMemoryConfig,
     progress: Option<&TestProgress>,
 ) -> TestStats {
-    // Check CPU capabilities and dispatch to the best available MultiBlock implementation
-    if is_x86_feature_detected!("avx512f") {
-        refresh_stable_512_multi(blocks, thread_id, error_mode, timing, config, progress)
-    } else if is_x86_feature_detected!("avx2") {
-        refresh_stable_256_multi(blocks, thread_id, error_mode, timing, config, progress)
-    } else {
-        refresh_stable_128_multi(blocks, thread_id, error_mode, timing, config, progress)
+    match crate::simd::test_width() {
+        crate::simd::Width::W512 => refresh_stable_512_multi(blocks, thread_id, error_mode, timing, config, progress),
+        crate::simd::Width::W256 => refresh_stable_256_multi(blocks, thread_id, error_mode, timing, config, progress),
+        crate::simd::Width::W128 => refresh_stable_128_multi(blocks, thread_id, error_mode, timing, config, progress),
     }
 }
 
@@ -4046,7 +4040,7 @@ struct SimplePatternConfig {
 // the compiler leaves in that shape: four words a vector, a line two.
 //
 // Every numbered mode's sequential write and verify is the width's own (`simple_simd_loops!`),
-// and Bench-Init/Verify run the same ones at the widest width (`bench_numbered!`, TODO 99).
+// and Bench-Init/Verify run the same ones at the run's width (`bench_numbered!`, TODO 99).
 
 /// The per-word patterns on words `[start, end)` of `ptr`: word `i` holds `expected(i)`, mode
 /// `MODE` (0, 1 or 13) from `seed` (the chunk's seed for modes 0 and 1, the base for 13) and, for
@@ -5240,7 +5234,7 @@ macro_rules! simple_m30_seq_loops {
 /// lanes `$lane_offsets`, NT stores through `$stream_fn` on `$arch_type`, the sequential mode 20
 /// and 30 loops `$m20` and `$m30` (`simple_m20_seq_loops!`, `simple_m30_seq_loops!`). Every
 /// numbered mode's sequential write and verify is here, one each a width, which SimpleTest runs at
-/// its width and Bench-Init/Verify at the widest (TODO 99). Each verify returns its accumulators
+/// its width and Bench-Init/Verify at the run's (TODO 99). Each verify returns its accumulators
 /// ORed, nonzero when a word differs; the caller rescans.
 macro_rules! simple_simd_loops {
     ($module:ident, $simd_type:ty, $w:expr, $lane_offsets:expr, $arch_type:ty, $stream_fn:path, $m20:ident, $m30:ident, $target_feature:literal) => {
@@ -5950,7 +5944,7 @@ macro_rules! simple_test_v2_impl {
         $target_feature:literal
     ) => {
         /// Modes 0, 1, 2, 13 and 30 sequential, on this width's own loops (`simple_simd_loops!`),
-        /// which Bench-Init/Verify run at the widest width (TODO 99).
+        /// which Bench-Init/Verify run at the run's width (TODO 99).
         #[target_feature(enable = $target_feature)]
         #[inline(never)]
         unsafe fn $num_seq_fn(
@@ -7300,7 +7294,22 @@ sequence_impl!(sequence_256, sequence_write_256, sequence_read_256, sequence_rw_
 sequence_impl!(sequence_512, sequence_write_512, sequence_read_512, sequence_rw_512, u64x8, 8, [0: [0 0], 1: [0 1], 2: [0 2], 3: [0 3]], rotate, steps,
                "avx512f,avx512bw,avx512cd,avx512dq,avx512vl,avx2,avx,fma,bmi1,bmi2");
 
-/// Mem-Sequence at the widest width this CPU has: 512 bits, else 256 (the CPU gate requires AVX2).
+/// The width Mem-Sequence runs at for the run's `width`: that one, but 256 for 128, which it has no
+/// kernel for (`sequence_impl!` is stamped at 256 and 512).
+pub(crate) fn sequence_width(width: crate::simd::Width) -> crate::simd::Width {
+    width.max(crate::simd::Width::W256)
+}
+
+/// Mem-Sequence at `width` (at `sequence_width`'s).
+pub(crate) fn sequence_at(width: crate::simd::Width) -> crate::runner::TestFunctionMultiBlock {
+    match sequence_width(width) {
+        crate::simd::Width::W512 => sequence_512,
+        _ => sequence_256,
+    }
+}
+
+/// Mem-Sequence at the run's width (`crate::simd::test_width`: `width=`'s, else the widest this CPU
+/// has, 512 bits or 256; the CPU gate requires AVX2).
 #[doc = include_str!("test_fn_safety.md")]
 pub unsafe fn sequence_auto_multi(
     blocks: &[crate::runner::AllocationBlock],
@@ -7310,17 +7319,28 @@ pub unsafe fn sequence_auto_multi(
     config: &TestMemoryConfig,
     progress: Option<&TestProgress>,
 ) -> TestStats {
-    if is_x86_feature_detected!("avx512f") {
-        return sequence_512(blocks, thread_id, error_mode, timing, config, progress);
-    }
-    sequence_256(blocks, thread_id, error_mode, timing, config, progress)
+    sequence_at(crate::simd::test_width())(blocks, thread_id, error_mode, timing, config, progress)
 }
 
-/// A native SimpleTest at the widest width this CPU has.
+/// A native SimpleTest at one width (`native_simple_impl!`).
+type SimpleNativeFn = unsafe fn(&[crate::runner::AllocationBlock], usize, ErrorMode, &TestTiming, &TestMemoryConfig,
+                                Option<&TestProgress>, NativeRun) -> TestStats;
+
+/// The native SimpleTest at `width`.
+fn simple_native_at(width: crate::simd::Width) -> SimpleNativeFn {
+    match width {
+        crate::simd::Width::W512 => simple_native_512,
+        crate::simd::Width::W256 => simple_native_256,
+        crate::simd::Width::W128 => simple_native_128,
+    }
+}
+
+/// A native SimpleTest at the run's width (`crate::simd::test_width`: `width=`'s, else the widest
+/// this CPU has).
 ///
 /// # Safety
 /// As every test function: `blocks` hold valid, aligned, writable memory.
-unsafe fn simple_native_widest(
+unsafe fn simple_native_auto(
     blocks: &[crate::runner::AllocationBlock],
     thread_id: usize,
     error_mode: ErrorMode,
@@ -7329,17 +7349,11 @@ unsafe fn simple_native_widest(
     progress: Option<&TestProgress>,
     run: NativeRun,
 ) -> TestStats {
-    if is_x86_feature_detected!("avx512f") {
-        return simple_native_512(blocks, thread_id, error_mode, timing, config, progress, run);
-    }
-    if is_x86_feature_detected!("avx2") {
-        return simple_native_256(blocks, thread_id, error_mode, timing, config, progress, run);
-    }
-    simple_native_128(blocks, thread_id, error_mode, timing, config, progress, run)
+    simple_native_at(crate::simd::test_width())(blocks, thread_id, error_mode, timing, config, progress, run)
 }
 
 /// Bench-Init-<family> and Bench-Verify-<family>: one native family's write or verify alone, at the
-/// widest width, every cycle on its own (`write_read_cycles` 1). Both are pinned to pair 0's P
+/// run's width, every cycle on its own (`write_read_cycles` 1). Both are pinned to pair 0's P
 /// image under a zero epoch, so the Init writes what the Verify expects; the Verify checks its own
 /// fill and doesn't count it in its time or bytes (TODO 90).
 macro_rules! native_bench {
@@ -7356,7 +7370,7 @@ macro_rules! native_bench {
             let mut config = config.clone();
             (config.epoch, config.write_read_cycles) = (crate::pattern::StepEpoch::default(), 1);
             let run = NativeRun { program: crate::pattern::Program::single($family), action: TestAction::Write, test_reps: 1, verify_reps: 0, pinned: true };
-            simple_native_widest(blocks, thread_id, error_mode, timing, &config, progress, run)
+            simple_native_auto(blocks, thread_id, error_mode, timing, &config, progress, run)
         }
 
         #[doc = include_str!("test_fn_safety.md")]
@@ -7371,7 +7385,7 @@ macro_rules! native_bench {
             let mut config = config.clone();
             (config.epoch, config.write_read_cycles) = (crate::pattern::StepEpoch::default(), 1);
             let run = NativeRun { program: crate::pattern::Program::single($family), action: TestAction::Verify, test_reps: 0, verify_reps: 1, pinned: true };
-            simple_native_widest(blocks, thread_id, error_mode, timing, &config, progress, run)
+            simple_native_auto(blocks, thread_id, error_mode, timing, &config, progress, run)
         }
     };
 }
@@ -7826,7 +7840,7 @@ mod simple_loops_tests {
     }
 
     /// TODO 99: the numbered-mode loops at each width the CPU has (`check_numbered_loops!`), which
-    /// SimpleTest runs at each width and Bench-Init/Verify at the widest.
+    /// SimpleTest runs at each width and Bench-Init/Verify at the run's.
     #[test]
     fn numbered_loops_write_their_patterns_and_see_every_bad_word() {
         check_numbered_loops!(simple_test_v2_128_loops, 2);
@@ -7910,11 +7924,15 @@ pub unsafe fn seal_check_multi(
     )
 }
 
-/// The kernel a Bench-*-Seal-* test measures: its pattern at its width or, where the CPU lacks
-/// that one (or the width is `Auto`), the widest it has.
+/// The kernel a Bench-*-Seal-* test measures: its pattern at its width or, for one that names none
+/// (`Auto`), the run's `width=` or else the seal's auto; where the CPU lacks it, the seal's auto.
 fn bench_seal_kernel(pattern: crate::seal::SealPattern, width: crate::seal::SealWidth, test_name: &str) -> crate::seal::SealKernel {
+    let width = match (width, crate::simd::width_given()) {
+        (crate::seal::SealWidth::Auto, Some((given, _))) => given.seal(),
+        _ => width,
+    };
     let width = width.resolve().unwrap_or_else(|e| {
-        log::warn!("{test_name}: {e}; measuring the widest width this CPU has");
+        log::warn!("{test_name}: {e}; measuring the seal's auto width");
         crate::seal::SealKernel::detect().width
     });
     crate::seal::SealKernel::new(pattern, width)
@@ -8018,8 +8036,8 @@ pub fn bench_seal_tests() -> [(&'static str, crate::runner::TestFunction); 16] {
 
 // ─── Bench-Init and Bench-Verify (TODO 99) ──────────────────────────────────────────────────────
 //
-// Each numbered mode's write or verify alone, at the widest width this CPU has (512 bits with
-// AVX-512, else 256), as the native Bench pairs run (`simple_native_widest`): the very kernels
+// Each numbered mode's write or verify alone, at the run's width (`width=`'s, else the widest this
+// CPU has), as the native Bench pairs run (`simple_native_auto`): the very kernels
 // SimpleTest runs at that width (`simple_simd_loops!`), so a Bench number stands for SimpleTest's
 // pattern cost there. Both sides take cycle 0's pattern, so a Bench-Verify checks what a Bench-Init
 // wrote, whatever cycle it ran.
@@ -8151,13 +8169,34 @@ macro_rules! bench_numbered {
     };
 }
 
+bench_numbered!(bench_init_128, Write, false, simple_test_v2_128_loops);
 bench_numbered!(bench_init_256, Write, false, simple_test_v2_256_loops);
 bench_numbered!(bench_init_512, Write, false, simple_test_v2_512_loops);
+bench_numbered!(bench_verify_128, Verify, true, simple_test_v2_128_loops);
 bench_numbered!(bench_verify_256, Verify, true, simple_test_v2_256_loops);
 bench_numbered!(bench_verify_512, Verify, true, simple_test_v2_512_loops);
 
-/// Bench-Init-TM5-* and Bench-Init-TMR-*: a numbered mode's write alone, every cycle, at the widest
-/// width this CPU has. Each test sets its `pattern_mode`, then calls this.
+/// A numbered Bench-Init at `width`.
+pub(crate) fn bench_init_at(width: crate::simd::Width) -> crate::runner::TestFunctionMultiBlock {
+    match width {
+        crate::simd::Width::W512 => bench_init_512,
+        crate::simd::Width::W256 => bench_init_256,
+        crate::simd::Width::W128 => bench_init_128,
+    }
+}
+
+/// A numbered Bench-Verify at `width`.
+pub(crate) fn bench_verify_at(width: crate::simd::Width) -> crate::runner::TestFunctionMultiBlock {
+    match width {
+        crate::simd::Width::W512 => bench_verify_512,
+        crate::simd::Width::W256 => bench_verify_256,
+        crate::simd::Width::W128 => bench_verify_128,
+    }
+}
+
+/// Bench-Init-TM5-* and Bench-Init-TMR-*: a numbered mode's write alone, every cycle, at the run's
+/// width (`crate::simd::test_width`: `width=`'s, else the widest this CPU has). Each test sets its
+/// `pattern_mode`, then calls this.
 #[doc = include_str!("test_fn_safety.md")]
 pub unsafe fn bench_init_multi(
     blocks: &[crate::runner::AllocationBlock],
@@ -8167,14 +8206,10 @@ pub unsafe fn bench_init_multi(
     config: &TestMemoryConfig,
     progress: Option<&TestProgress>,
 ) -> TestStats {
-    if is_x86_feature_detected!("avx512f") {
-        bench_init_512(blocks, thread_id, error_mode, timing, config, progress)
-    } else {
-        bench_init_256(blocks, thread_id, error_mode, timing, config, progress)
-    }
+    bench_init_at(crate::simd::test_width())(blocks, thread_id, error_mode, timing, config, progress)
 }
 
-/// Bench-Verify-TM5-* and Bench-Verify-TMR-*: a numbered mode's verify alone, at the widest width.
+/// Bench-Verify-TM5-* and Bench-Verify-TMR-*: a numbered mode's verify alone, at the run's width.
 /// It fills its extent first, untimed, unless `skip_init` has it follow its Bench-Init-*, which
 /// wrote the same pattern.
 #[doc = include_str!("test_fn_safety.md")]
@@ -8186,10 +8221,55 @@ pub unsafe fn bench_verify_multi(
     config: &TestMemoryConfig,
     progress: Option<&TestProgress>,
 ) -> TestStats {
-    if is_x86_feature_detected!("avx512f") {
-        bench_verify_512(blocks, thread_id, error_mode, timing, config, progress)
-    } else {
-        bench_verify_256(blocks, thread_id, error_mode, timing, config, progress)
+    bench_verify_at(crate::simd::test_width())(blocks, thread_id, error_mode, timing, config, progress)
+}
+
+#[cfg(test)]
+mod width_dispatch_tests {
+    use super::*;
+    use crate::seal::{SealPattern, SealWidth};
+    use crate::simd::{TestWidth, Width};
+    use std::ptr::fn_addr_eq;
+    type Multi = crate::runner::TestFunctionMultiBlock;
+
+    /// TODO 99: the tests that pick their width at run time and aren't resolved by name dispatch to
+    /// that width's function: the native and numbered Bench pairs at each width, Mem-Sequence at
+    /// 256 for 128, which it lacks. The run's width reaches them through `crate::simd::test_width`.
+    #[test]
+    fn the_bench_pairs_and_mem_sequence_dispatch_to_the_widths_function() {
+        assert!(fn_addr_eq(simple_native_at(Width::W128), simple_native_128 as SimpleNativeFn));
+        assert!(fn_addr_eq(simple_native_at(Width::W256), simple_native_256 as SimpleNativeFn));
+        assert!(fn_addr_eq(simple_native_at(Width::W512), simple_native_512 as SimpleNativeFn));
+        assert!(fn_addr_eq(bench_init_at(Width::W128), bench_init_128 as Multi));
+        assert!(fn_addr_eq(bench_init_at(Width::W256), bench_init_256 as Multi));
+        assert!(fn_addr_eq(bench_init_at(Width::W512), bench_init_512 as Multi));
+        assert!(fn_addr_eq(bench_verify_at(Width::W128), bench_verify_128 as Multi));
+        assert!(fn_addr_eq(bench_verify_at(Width::W256), bench_verify_256 as Multi));
+        assert!(fn_addr_eq(bench_verify_at(Width::W512), bench_verify_512 as Multi));
+        assert!(fn_addr_eq(sequence_at(Width::W128), sequence_256 as Multi));
+        assert!(fn_addr_eq(sequence_at(Width::W256), sequence_256 as Multi));
+        assert!(fn_addr_eq(sequence_at(Width::W512), sequence_512 as Multi));
+        // Each width its own function
+        assert!(!fn_addr_eq(simple_native_at(Width::W128), simple_native_at(Width::W256)));
+        assert!(!fn_addr_eq(bench_init_at(Width::W128), bench_init_at(Width::W256)));
+        assert!(!fn_addr_eq(bench_verify_at(Width::W256), bench_verify_at(Width::W512)));
+        assert!(!fn_addr_eq(sequence_at(Width::W256), sequence_at(Width::W512)));
+    }
+
+    /// TODO 99: a Bench-*-Seal-* test that names no width measures the run's `width=`, else the
+    /// seal's auto; one that names a width keeps it.
+    #[test]
+    fn the_seal_bench_pairs_without_a_width_take_the_runs() {
+        let width = |name_width| bench_seal_kernel(SealPattern::Tmr, name_width, "test").width;
+        let auto = SealWidth::Auto.resolve().unwrap();
+        assert_eq!(width(SealWidth::Auto), auto);
+        assert_eq!(width(SealWidth::W128), SealWidth::W128);
+        for w in [Width::W128, Width::W256, Width::W512].into_iter().filter(|w| w.check().is_ok()) {
+            let _width = TestWidth::set(Some(w));
+            assert_eq!(width(SealWidth::Auto), w.seal());
+            assert_eq!(width(SealWidth::W128), SealWidth::W128);
+            assert_eq!(width(SealWidth::W256), SealWidth::W256);
+        }
     }
 }
 

@@ -82,9 +82,15 @@ pub struct SystemConfig {
     /// it. The mirror tests' data is the seal pattern either way.
     #[serde(default)]
     pub seal: Option<String>,
-    /// The seal kernels' SIMD width: `"auto"` (the default, the widest), `"128"`, `"256"`, `"512"`.
+    /// The seal kernels' SIMD width: `"auto"` (the seal's own rule, 256 with AVX2), `"128"`,
+    /// `"256"`, `"512"`; unset, `width`'s when that is set, else `"auto"`.
     #[serde(default)]
     pub seal_width: Option<String>,
+    /// The SIMD width of every test that picks its width at run time, and of the seal unless
+    /// `seal_width` sets its own (TODO 99, `crate::simd::Width`): `"auto"` (the default, the widest
+    /// the CPU has), `"128"`, `"256"`, `"512"`; `width=` overrides it.
+    #[serde(default)]
+    pub width: Option<String>,
     /// The workers' scheduling priority (TODO 77): `"normal"`, `"high"` (the default) or
     /// `"realtime"`; `priority=` overrides it.
     #[serde(default)]
@@ -846,6 +852,7 @@ impl ModernConfig {
             ("cpu-stride", "cpu_pinning.stride_spec", sys.cpu_pinning.stride_spec.as_str()),
             ("seal", "seal", sys.seal.as_deref().unwrap_or("tmr")),
             ("seal-width", "seal_width", sys.seal_width.as_deref().unwrap_or("auto")),
+            ("width", "width", sys.width.as_deref().unwrap_or("auto")),
             ("priority", "thread_priority", sys.thread_priority.as_deref().unwrap_or("high")),
         ];
         for (cli_key, json_key, value) in checks {
@@ -1136,6 +1143,7 @@ pub fn create_demo_config() -> Self {
             channels: 2,
             seal: None,
             seal_width: None,
+            width: None,
             thread_priority: None,
         },
         test_sequence: vec![
@@ -1294,6 +1302,7 @@ pub fn create_demo_config() -> Self {
                 channels: 2,
                 seal: None,
                 seal_width: None,
+                width: None,
                 thread_priority: None,
 	            },
             test_sequence: vec![
@@ -1575,6 +1584,7 @@ impl LegacyConfig {
             channels: self.memory_setup.channels,
             seal: Some(if sealed { "tmr" } else { "off" }.to_string()),
             seal_width: None,
+            width: None,
             thread_priority: None,
         },
         test_sequence,
@@ -2081,10 +2091,14 @@ mod tests {
         let mut bad = config.clone();
         bad.system.thread_priority = Some("turbo".to_string());
         assert!(bad.validate_system().unwrap_err().contains("thread_priority"));
+        let mut bad = config.clone();
+        bad.system.width = Some("1024".to_string());
+        assert!(bad.validate_system().unwrap_err().contains("system.width"));
 
         let mut ok = config;
         ok.system.error_mode = "Halt".to_string();
         ok.system.thread_priority = Some("Realtime".to_string());
+        ok.system.width = Some("128".to_string());
         ok.validate_system().unwrap();
         assert!(matches!(ok.to_error_mode(), ErrorMode::Halt));
         assert_eq!("Realtime".parse::<crate::runner::ThreadPriority>(), Ok(crate::runner::ThreadPriority::Realtime));

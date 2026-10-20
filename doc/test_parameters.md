@@ -131,7 +131,26 @@ passes, and `@stride` with no `parameter` are refused, as is a numbered `pattern
 (`pattern-mode=` with one leaves Mem-Sequence's program). `WR` isn't a step: a read straight after
 a write of the same line is answered by the cache. A sequence that starts with a read reads a fill.
 A write no read checks (`2W R`, or a write last) is allowed, as write stress, with a warning. It runs
-at 512 bits or 256 (the widest the CPU has).
+at 512 bits or 256 (the widest the CPU has, or `width=`'s; it has no 128-bit kernel, so
+`width=128` runs it at 256).
+
+## SIMD width (`width=`, TODO 99)
+
+| Where | Field | Meaning |
+|---|---|---|
+| `system` | `"width": "auto"` | The SIMD width of every test that picks its width at run time: `auto` (the default: the widest the CPU has, 512 bits with AVX-512, else 256), `128`, `256` or `512` |
+| command line | `width=auto\|128\|256\|512` | The same, over the config's |
+
+The tests that pick their width at run time are every `-Auto` test, which resolves to the test
+named for the width (`Mem-StuckBitAuto` under `width=256` runs `Mem-StuckBit256`, shown as
+`Mem-StuckBit256_A` in the plan and the results file), Mem-Sequence (at 256 for 128, above), the
+native and numbered Bench pairs (`Bench-Init-Ident`, `Bench-Verify-TMR-10`, ...) and
+`Bench-{Init,Verify}-Seal-{TMR,TM5}`. The seal takes it too, unless `seal-width=` (or the config's
+`seal_width`) sets its own. A test named for a width (`-128`, `-256`, `-512`) keeps that one. A
+width the CPU lacks is refused before anything runs, with what it needs. The plan says what was
+given and where (`ℹ  Width: 256 bits (width=)`), and the results file records it
+(`execution.simd_width_bits`; null under auto). Auto stays the default: measured on Intel and AMD,
+the widest suits the write-and-check tests; `width=` is there to compare widths or to step down.
 
 ## Parameter Sources
 
@@ -160,7 +179,7 @@ These sit beside the per-test parameters above:
 | top level | `"cycle_order": ["6", "12", "2", "1", "1"]` | One cycle's steps, as ids in order; an id may repeat. A disabled test's id is skipped (the plan marks it); an unknown id is a load error. Unset is every enabled test once, in file order. A TM5 import's `Test Sequence`, read up to a number of 16 or more |
 | test entry | `"seal": false` | This correctness test runs without the seal around its chunks |
 | `system` | `"seal": "tmr"` | The seal (`seal.rs`, `doc/test_harness_tiers.md` §3a): `tmr` (the default), `tm5` (TM5's test 0 pattern, bit for bit) or `off`. A TM5 import takes `tmr` when its Test0 (RefreshStable) is enabled, else `off` |
-| `system` | `"seal_width": "auto"` | The seal kernels' SIMD width: `auto` (the widest), `128`, `256` or `512`; a width the CPU lacks is a load error |
+| `system` | `"seal_width": "auto"` | The seal kernels' SIMD width: `auto` (the seal's own rule, `SealWidth::resolve`: 256 with AVX2), `128`, `256` or `512`; unset, `width`'s when that is set, else `auto`. A width the CPU lacks is a load error |
 
 The command line overrides the last two: `seal=tmr|tm5|off`, `seal-width=auto|128|256|512`. A TM5
 `Cycles = 0` runs until stopped. A dependent step (`skip_init`) must directly follow the step that

@@ -175,7 +175,8 @@ fn run() -> Result<(), Box<dyn std::error::Error>> {
         crate::cpu_topology::set_core_priority(crate::cpu_topology::CorePriority::parse(value)?);
     }
     // The native patterns' run settings, before a config loads: patterns= decides how a .cfg's
-    // SimpleTests import. The last of each wins, as for every parameter.
+    // SimpleTests import. The last of each wins, as for every parameter. width= too, before a
+    // config's can (TODO 99): a width this CPU lacks stops the run here.
     let mut seen_keys = std::collections::HashSet::new();
     for (key, value) in args.iter().rev().filter_map(|a| a.split_once('=')) {
         if !seen_keys.insert(key) {
@@ -190,6 +191,7 @@ fn run() -> Result<(), Box<dyn std::error::Error>> {
                 }
             }
             "patterns" => crate::pattern::set_legacy_import(value.eq_ignore_ascii_case("legacy")),
+            "width" => crate::simd::set_width(crate::simd::Width::parse(value)?, "width=")?,
             _ => {}
         }
     }
@@ -583,6 +585,11 @@ fn run() -> Result<(), Box<dyn std::error::Error>> {
 				build_config_from_validated_params(&validated_params)?;
 			(enhanced_memory_strategy, error_mode, suite_timing, cputype, cpus, pinning_config, alloc_config, None)
 		};
+
+	// A config's SIMD width (TODO 99), unless width= gave one: a width this CPU lacks stops the run
+	if let Some(width) = config_opt.as_ref().and_then(|c| c.system.width.as_deref()) {
+		crate::simd::set_width(crate::simd::Width::parse(width)?, "the config's width")?;
+	}
 
 	// Apply CLI parameter overrides even when using a config file
 	// This allows: tmr.exe config=test.json cycles=1 skip-cores=0 memory=4GiB cpus=50%

@@ -797,10 +797,12 @@ pub fn run_tests_with_layout_and_timing_filtered(
         return RunStatus::NotRun;
     }
 
-    // The run's seal (TODO 74): the command line's, else the config's, else tmr at the widest
+    // The run's seal (TODO 74): the command line's, else the config's, else tmr; at its own width
+    // if one is given, else at the run's width= (TODO 99), else at its auto
     let seal_settings = crate::seal::SealSettings::parse(
         seal_override.or(config.and_then(|c| c.system.seal.as_deref())).unwrap_or("tmr"),
-        seal_width_override.or(config.and_then(|c| c.system.seal_width.as_deref())).unwrap_or("auto"),
+        crate::seal::width_setting(seal_width_override.or(config.and_then(|c| c.system.seal_width.as_deref())),
+                                   crate::simd::width_given().map(|(w, _)| w)),
     ).and_then(|s| match s.kernel() {
         Ok(kernel) => Ok((s, kernel)),
         // Unsealed, the width only matters to a mirror's data: take the widest there is
@@ -854,11 +856,16 @@ pub fn run_tests_with_layout_and_timing_filtered(
         .unwrap_or(2);
 
     let tm5 = config.and_then(|c| c.legacy_metadata.as_ref()).map(|m| (m.tm5_window_mb, m.tm5_lock_mb));
+    let width = crate::simd::width_given();
+    if let Some((w, source)) = width {
+        log::info!("SIMD width {} bits ({source}) for every test that picks its width at run time", w.bits());
+    }
     let plan_sequence = crate::reporting::converters::PlanSequence {
         order: cycle_order.as_deref(),
         seal: seal_settings.on.then_some(seal_kernel),
         seal_off_reason,
         tm5: tm5_run,
+        width,
     };
 
     // --startup-debug: show the plan, then stop before WHEA, allocation or any test.
@@ -1772,8 +1779,19 @@ fn run_seal_stage(ctx: &CycleContext, op: crate::thread_pool::SealOp, kernel: cr
     (bytes, errors, bits, duration)
 }
 
-// Generic auto-dispatch resolver - converts "*-Auto" test names to best SIMD variant
+// Generic auto-dispatch resolver - converts "*-Auto" test names to the SIMD variant at the run's
+// width (`crate::simd::test_width`: `width=`'s, else the widest the CPU has)
 fn resolve_auto_dispatch_test(test_name: &str) -> Option<(&'static str, TestFunction)> {
+    resolve_auto_dispatch_test_at(test_name, crate::simd::test_width())
+}
+
+/// Why an `-Auto` test resolves to the width it does, for the log.
+fn width_reason() -> &'static str {
+    crate::simd::width_given().map_or("the widest this CPU has", |(_, source)| source)
+}
+
+/// `resolve_auto_dispatch_test` at `width`.
+fn resolve_auto_dispatch_test_at(test_name: &str, width: crate::simd::Width) -> Option<(&'static str, TestFunction)> {
     if !test_name.ends_with("Auto") {
         return None;
     }
@@ -1782,13 +1800,7 @@ fn resolve_auto_dispatch_test(test_name: &str) -> Option<(&'static str, TestFunc
     // Test names are "Lat-V2-{tier}-Read-Auto", "Lat-V2P-{tier}-Read-Auto", "Lat-NTW-DRAM-Write-Auto"
     // Resolved names follow the same pattern with -{128,256,512} replacing -Auto
     if test_name.starts_with("Lat-V2-") || test_name.starts_with("Lat-V2P-") || test_name.starts_with("Lat-NTW-") {
-        let width: &str = if is_x86_feature_detected!("avx512f") {
-            "512"
-        } else if is_x86_feature_detected!("avx2") {
-            "256"
-        } else {
-            "128"
-        };
+        let width: &str = width.name();
 
         // Build resolved name: replace trailing "Auto" with width
         let resolved: &'static str = match (test_name, width) {
@@ -2016,8 +2028,8 @@ fn resolve_auto_dispatch_test(test_name: &str) -> Option<(&'static str, TestFunc
         None
     };
 
-    // Determine best SIMD variant based on CPU capabilities
-    let (variant_suffix, test_function): (&str, TestFunction) = if is_x86_feature_detected!("avx512f") {
+    // The SIMD variant at the width
+    let (variant_suffix, test_function): (&str, TestFunction) = if width == crate::simd::Width::W512 {
         ("512", match base_name {
             "Mem-MirrorV2-" => TestFunction::MultiBlock(mirror_move_v2_512_multi),
             "Mem-SimpleV2-" => TestFunction::MultiBlock(simple_test_v2_512_multi),
@@ -2035,7 +2047,7 @@ fn resolve_auto_dispatch_test(test_name: &str) -> Option<(&'static str, TestFunc
                 _ => return None,
             },
         })
-    } else if is_x86_feature_detected!("avx2") {
+    } else if width == crate::simd::Width::W256 {
         ("256", match base_name {
             "Mem-MirrorV2-" => TestFunction::MultiBlock(mirror_move_v2_256_multi),
             "Mem-SimpleV2-" => TestFunction::MultiBlock(simple_test_v2_256_multi),
@@ -2054,7 +2066,8 @@ fn resolve_auto_dispatch_test(test_name: &str) -> Option<(&'static str, TestFunc
             },
         })
     } else {
-        // SSE2 is always available on x86-64 (and the startup gate requires AVX2)
+        // SSE2 is always available on x86-64: auto takes it only without AVX2, which the startup
+        // gate requires, so only width=128 runs it
         ("128", match base_name {
             "Mem-MirrorV2-" => TestFunction::MultiBlock(mirror_move_v2_128_multi),
             "Mem-SimpleV2-" => TestFunction::MultiBlock(simple_test_v2_128_multi),
@@ -4156,7 +4169,7 @@ pub(crate) fn create_test_definitions(cache_info: &CacheInfo) -> Vec<TestDefinit
     let mut resolved_tests = Vec::new();
     for (test_name, test_function, config) in test_definitions {
         if let Some((resolved_name, resolved_function)) = resolve_auto_dispatch_test(test_name) {
-            log::debug!("Auto-dispatch: {} → {} (based on CPU capabilities)", test_name, resolved_name);
+            log::debug!("Auto-dispatch: {} → {} ({})", test_name, resolved_name, width_reason());
             let effect = derive_memory_effect(resolved_name, &config);
             let display_name = format!("{}_A", resolved_name); // Add _A suffix for auto-dispatch
             resolved_tests.push(TestDefinition {
@@ -4216,7 +4229,7 @@ fn create_test_definitions_from_config(config: &crate::config::ModernConfig, cac
 
         // Check for auto-dispatch
         let def = if let Some((resolved_name, resolved_function)) = resolve_auto_dispatch_test(test_name) {
-            log::debug!("Auto-dispatch: {} → {} (based on CPU capabilities)", test_name, resolved_name);
+            log::debug!("Auto-dispatch: {} → {} ({})", test_name, resolved_name, width_reason());
             // Convert to 'static str by leaking (safe for test names, small and finite set)
             let static_original_name: &'static str = Box::leak(test_name.to_string().into_boxed_str());
             let effect = derive_memory_effect(resolved_name, &test.config);
@@ -4962,6 +4975,84 @@ mod tests {
         }
         assert!(ran.len() > 40, "only {} sealed runs", ran.len());
         assert!(ran.iter().any(|n| n.starts_with("Mem-MirrorV2")) && ran.iter().any(|n| n.starts_with("Mem-BlockMove")));
+        assert!(region.guards_intact());
+    }
+
+    /// TODO 99: under `width=` every `-Auto` test resolves to that width's test: named for it
+    /// (`Mem-StuckBit256_A`, as the plan and the results file show it) and running the function
+    /// the test named for that width runs. Under auto, the widest the CPU has.
+    #[test]
+    fn a_forced_width_resolves_every_auto_test_to_that_widths_test() {
+        use crate::simd::{TestWidth, Width};
+        fn same(a: &TestFunction, b: &TestFunction) -> bool {
+            match (a, b) {
+                (TestFunction::MultiBlock(a), TestFunction::MultiBlock(b)) => std::ptr::fn_addr_eq(*a, *b),
+                (TestFunction::Latency(a), TestFunction::Latency(b)) => std::ptr::fn_addr_eq(*a, *b),
+                _ => false,
+            }
+        }
+        let cache_info = crate::tests::get_cache_info();
+        let auto: Vec<&str> = create_test_definitions(cache_info).iter().filter_map(|d| d.original_name).collect();
+        assert!(auto.len() > 50, "only {} -Auto tests: {auto:?}", auto.len());
+        let forced = [Width::W128, Width::W256, Width::W512].into_iter().filter(|w| w.check().is_ok()).map(|w| (w, Some(w)));
+        for (width, given) in forced.chain([(Width::widest(), None)]) {
+            let _width = TestWidth::set(given);
+            let suite = create_test_definitions(cache_info);
+            for &name in &auto {
+                let (resolved, function) = resolve_auto_dispatch_test_at(name, width).unwrap_or_else(|| panic!("{name} doesn't resolve"));
+                assert!(resolved.ends_with(width.name()), "{name} at {width:?} resolved to {resolved}");
+                let named = crate::tests::get_test_function_by_name(resolved)
+                    .or_else(|| suite.iter().find(|d| d.actual_name == resolved && d.original_name.is_none()).map(|d| d.function.clone()))
+                    .unwrap_or_else(|| panic!("{resolved} isn't a test"));
+                assert!(same(&function, &named), "{name} at {width:?} runs another function than {resolved}");
+                let def = suite.iter().find(|d| d.original_name == Some(name)).unwrap();
+                assert_eq!((def.actual_name, def.display_name.as_str()), (resolved, format!("{resolved}_A").as_str()), "{given:?}");
+                assert!(same(&def.function, &function), "{}", def.display_name);
+            }
+        }
+    }
+
+    /// TODO 99: under `width=` the Bench pairs and Mem-Sequence, which pick their width at run time,
+    /// run at each width the CPU has (Mem-Sequence at 256 for 128): each writes the same image at
+    /// every width, and each Bench-Verify finds its Bench-Init's image clean at every width.
+    #[test]
+    fn the_bench_pairs_and_mem_sequence_write_one_image_at_every_width() {
+        use crate::simd::{TestWidth, Width};
+        let mut region = Region::new(&[256 * KIB, 256 * KIB, 128 * KIB]);
+        let widths: Vec<Width> = [Width::W128, Width::W256, Width::W512].into_iter().filter(|w| w.check().is_ok()).collect();
+        let suite: Vec<_> = suite().into_iter().map(|(mut def, f)| {
+            if matches!(def.config.chunk_mode, ChunkMode::Absolute { .. }) {
+                def.config.chunk_mode = ChunkMode::Absolute { size_bytes: 68 * KIB };
+            }
+            (def, f)
+        }).collect();
+        let run = |region: &mut Region, def: &TestDefinition, f: TestFunctionMultiBlock, width: Width| {
+            let _width = TestWidth::set(Some(width));
+            let stats = unsafe { f(&region.blocks, 0, ErrorMode::Log, &def.config.timing, &def.config, None) };
+            assert_eq!(stats.error_count, 0, "{} at {width:?} found errors", def.display_name);
+            assert!(stats.bytes_processed > 0, "{} at {width:?} tested nothing", def.display_name);
+        };
+        let mut compared = 0;
+        for (def, f) in suite.iter().filter(|(d, _)| d.actual_name == "Mem-Sequence" || d.actual_name.starts_with("Bench-Init-")) {
+            let images: Vec<Vec<u64>> = widths.iter().map(|&width| {
+                region.words().fill(UNTOUCHED);
+                run(&mut region, def, *f, width);
+                region.words().to_vec()
+            }).collect();
+            assert!(images.windows(2).all(|w| w[0] == w[1]), "{} wrote another image at another width", def.display_name);
+            if def.actual_name.starts_with("Bench-Init-") {
+                let verify_name = def.display_name.replace("Bench-Init-", "Bench-Verify-");
+                let (verify, verify_fn) = suite.iter().find(|(d, _)| d.display_name == verify_name).unwrap();
+                let mut verify = verify.clone();
+                verify.config.skip_init = true;
+                for &width in &widths {
+                    run(&mut region, &verify, *verify_fn, width);
+                }
+            }
+            compared += 1;
+        }
+        // Mem-Sequence, 7 native pairs, 8 numbered and 8 of the seal's
+        assert!(compared >= 24, "only {compared} compared");
         assert!(region.guards_intact());
     }
 
