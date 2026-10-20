@@ -9426,7 +9426,8 @@ mod random_replay_tests {
 
     /// TODO 99: Mem-ModuloX's passes over a chunk write P over its victim lines and ~P over the
     /// rest (`ident`'s word of each word's id), and nothing outside the chunk; the victims' check
-    /// reads clean and sees a bad word in every victim line, an even count of them and an odd.
+    /// reads clean and sees a bad word in every victim line, an even count of them and an odd. The
+    /// offsets give aggressor runs of 1, 2, 5, 9, 10, 14, 17 and 19 lines, odd and even.
     #[test]
     fn modulo_x_passes_write_their_images_and_see_every_bad_victim_word() {
         use super::{LINE_WORDS, MODULO_X};
@@ -9434,7 +9435,7 @@ mod random_replay_tests {
         let (ids, key) = (crate::pattern::word_base(2), 0x0FED_CBA9_8765_4321u64);
         let p = |i: usize| crate::pattern::ident_word(ids + i as u64, key);
         for (start, end) in [(0usize, 100usize), (7, 93), (7, 113), (40, 41), (19, 21), (5, 5), (0, 3 * MODULO_X)] {
-            for offset in [0, 5, MODULO_X - 1] {
+            for offset in [0, 2, 5, 10, MODULO_X - 1] {
                 let mut mem = vec![UNTOUCHED; (end + 2) * LINE_WORDS];
                 let chunk = super::ModuloChunk { base: mem.as_mut_ptr(), start, end, offset, ids, key };
                 let victim = |i: usize| (i / LINE_WORDS) % MODULO_X == offset;
