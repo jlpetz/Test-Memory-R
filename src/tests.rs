@@ -5201,7 +5201,7 @@ macro_rules! simple_m30_seq_loops {
                 for l in 0..W {
                     let v = V::splat(words[l]) ^ inversion;
                     for j in 0..LINE_WORDS / W {
-                        line.add(l * LINE_WORDS + j * W).cast::<V>().write_volatile(v);
+                        *(line.add(l * LINE_WORDS + j * W) as *mut V) = v;
                     }
                 }
                 at += V::splat((W * 8 * LINE_WORDS) as u64);
@@ -5209,7 +5209,7 @@ macro_rules! simple_m30_seq_loops {
             }
             while line < stop {
                 for (j, v) in m30_line_vectors(pattern_gen::mode30_line(line as usize, mode30.key, m30_beat::<BITS>())).into_iter().enumerate() {
-                    line.add(j * W).cast::<V>().write_volatile(v);
+                    *(line.add(j * W) as *mut V) = v;
                 }
                 line = line.wrapping_add(LINE_WORDS);
             }
@@ -5910,13 +5910,13 @@ enum M1Shape {
 }
 
 simple_simd_loops!(simple_test_v2_128_loops, u64x2, 2, [0, 1],
-    std::arch::x86_64::__m128i, std::arch::x86_64::_mm_stream_si128, by_line, by_lanes,
+    std::arch::x86_64::__m128i, std::arch::x86_64::_mm_stream_si128, by_line, by_line,
     "sse4.2,sse4.1,ssse3,sse3,sse2,popcnt");
 simple_simd_loops!(simple_test_v2_256_loops, u64x4, 4, [0, 1, 2, 3],
     std::arch::x86_64::__m256i, std::arch::x86_64::_mm256_stream_si256, by_4lanes, by_lanes,
     "avx2,avx,fma,bmi1,bmi2");
 simple_simd_loops!(simple_test_v2_512_loops, u64x8, 8, [0, 1, 2, 3, 4, 5, 6, 7],
-    std::arch::x86_64::__m512i, std::arch::x86_64::_mm512_stream_si512, by_lanes, lanes_walk,
+    std::arch::x86_64::__m512i, std::arch::x86_64::_mm512_stream_si512, by_lanes, by_lanes,
     "avx512f,avx512bw,avx512cd,avx512dq,avx512vl,avx2,avx,fma,bmi1,bmi2");
 
 /// A positional verify of a chunk (modes 10 and 11, SimpleNT): the width's `$verify` on the chunk,
