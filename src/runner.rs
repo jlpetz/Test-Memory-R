@@ -5579,6 +5579,27 @@ mod tests {
         }
     }
 
+    /// TODO 99: a Mem-Random cycle reads as many random words as the extent holds, split over its
+    /// sequences, in batches of a chunk's words (68 KiB, so 8704 and 1536 of each eighth of 640
+    /// KiB); its operations and bytes count each read once, 8 bytes each, and the final sweep's
+    /// words on top.
+    #[test]
+    fn a_random_cycle_reads_the_extents_words() {
+        let region = Region::new(&[256 * KIB, 256 * KIB, 128 * KIB]);
+        let words = (640 * KIB / 8) as u64;
+        let (mut def, test_fn) = suite().into_iter().find(|(d, _)| d.display_name == "Mem-Random").unwrap();
+        def.config.chunk_mode = ChunkMode::Absolute { size_bytes: 68 * KIB };
+        for (sequences, cycles) in [(8, 2), (1, 1), (4, 3)] {
+            def.config.parameter_context.as_mut().unwrap().rng_sequences = Some(sequences);
+            def.config.timing = TestTiming::cycles_only(cycles);
+            let stats = unsafe { test_fn(&region.blocks, 0, ErrorMode::Log, &def.config.timing, &def.config, None) };
+            let reads = u64::from(cycles) * words + words;
+            assert_eq!((stats.error_count, stats.cycles_completed), (0, cycles), "{sequences} sequences");
+            assert_eq!(stats.total_operations, reads, "{sequences} sequences, {cycles} cycles: the reads and the sweep");
+            assert_eq!(stats.bytes_processed as u64, reads * 8, "{sequences} sequences, {cycles} cycles: 8 bytes a read");
+        }
+    }
+
     /// After a cycle Mem-MovingInv leaves P everywhere, and Mem-ModuloX P in its victim lines and ~P
     /// in the rest: `ident`'s word of each word's id under the cycle's key (TODO 97).
     #[test]

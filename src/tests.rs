@@ -2045,7 +2045,7 @@ unsafe fn random_sweep(extent: RandomExtent, piece: usize, test_name: &str, mut 
 ///
 /// Pattern per cycle:
 /// - Initializes memory with each word's id (the thread's and its index, `pattern::word_base`)
-/// - Performs random reads using XORshift RNG
+/// - Performs random reads using XORshift RNG, as many a cycle as the extent holds words
 /// - Verifies each random read matches expected value
 /// - Supports multiple RNG sequences with different seeds
 ///
@@ -2071,7 +2071,6 @@ pub unsafe fn random_torture_multi(
     if extent.test_size == 0 {
         return runner.finish_completed(0);
     }
-    let total_test_size = extent.test_size;
 
     // Initialize the extent once, each word with its id: no two threads' words alike (TODO 97)
     let base = extent.ptr as *mut u64;
@@ -2085,21 +2084,20 @@ pub unsafe fn random_torture_multi(
     // Setup, not the test: its own record (TODO 90)
     runner.setup_done(crate::ops::Op::PatternFill, extent.test_size as u64);
 
+    // A cycle reads as many random words as the extent holds, split over the RNG sequences (a
+    // power of two, checked with the plan), each a batch of a chunk's words at a time for
+    // responsive shutdown (TODO 99; it read (len / 1000).clamp(5000, 50000) words a cycle before,
+    // 50,000 at any extent over 400 MB)
+    let rng_sequences = config.parameter_context.as_ref()
+        .and_then(|c| c.rng_sequences)
+        .expect("RandomTorture requires rng_sequences in parameter_context");
+    let iterations_per_seq = (len >> rng_sequences.max(1).trailing_zeros()).max(1);
+    let reads_per_cycle = iterations_per_seq as u64 * u64::from(rng_sequences);
+    let chunk_size_operations = runner.chunk_bytes() / std::mem::size_of::<u64>();
+
     loop {
         let cycle = runner.begin_cycle();
         let mut cycle_errors = 0u64;
-
-        // Reads per batch, for responsive shutdown: the chunk's size in words
-        let chunk_size_operations = runner.chunk_bytes() / std::mem::size_of::<u64>();
-
-        // Random access torture with configurable RNG sequences
-        let rng_sequences = config.parameter_context.as_ref()
-            .and_then(|c| c.rng_sequences)
-            .expect("RandomTorture requires rng_sequences in parameter_context");
-        let base_iterations = (len / 1000).clamp(5000, 50000);
-        let seq_count = rng_sequences.max(1) as usize;
-        let seq_shift = seq_count.trailing_zeros();
-        let iterations_per_seq = (base_iterations >> seq_shift).max(1);
 
         // Process RNG sequences in chunks for responsive shutdown
         for seq in 0..rng_sequences {
@@ -2121,48 +2119,40 @@ pub unsafe fn random_torture_multi(
                 if acc != 0 {
                     cycle_errors += random_replay(reads, chunk_rng, chunk_start..chunk_end, seq, test_name, acc);
                 }
+                // Count the batch when it is done, so a stop below reports what ran: a cycle can
+                // take seconds
+                runner.add_bytes((chunk_end - chunk_start) * std::mem::size_of::<u64>());
 
-                // Handle errors if found
-                if runner.should_halt(cycle_errors) {
-                    let total_operations = cycle as u64 * (chunk_end - chunk_start) as u64;
+                // An error under halt, or a shutdown: the reads done are the cycles completed and
+                // this cycle's so far, the sequences before this one and this one's batches
+                if runner.should_halt(cycle_errors) || runner.shutdown_requested() {
+                    let this_cycle = seq as usize * iterations_per_seq + chunk_end;
+                    let total_operations = u64::from(cycle - 1) * reads_per_cycle + this_cycle as u64;
+                    debug_assert_eq!(total_operations * 8, runner.bytes_processed() as u64, "Mem-Random's reads and bytes");
                     return runner.finish_aborted(cycle_errors, total_operations);
                 }
-
-                // Check for shutdown request
-                if runner.shutdown_requested() {
-                    let total_operations = cycle as u64 * (chunk_end - chunk_start) as u64;
-                    return runner.finish_aborted(cycle_errors, total_operations);
-                }
+                runner.update_progress_in_cycle();
             }
         }
-
-        // Update bytes processed for this block
-        let bytes_this_cycle = iterations_per_seq
-            .saturating_mul(rng_sequences as usize)
-            .saturating_mul(std::mem::size_of::<u64>());
-        runner.add_bytes(bytes_this_cycle);
 
         runner.commit_cycle_errors(cycle_errors);
         runner.update_progress();
 
         // Check if should continue based on timing
         if !runner.should_continue() {
-            // Calculate total operations
-            let base_iterations = (total_test_size / std::mem::size_of::<u64>() / 1000).clamp(5000, 50000);
-            let rng_seq_count = config.parameter_context.as_ref()
-                .and_then(|c| c.rng_sequences)
-                .expect("RandomTorture requires rng_sequences in parameter_context") as usize;
-            let iterations_per_seq_final = (base_iterations >> rng_seq_count.trailing_zeros()).max(1);
-            let total_operations: u64 = cycle as u64 * (iterations_per_seq_final * rng_seq_count) as u64;
+            let total_operations = u64::from(cycle) * reads_per_cycle;
 
-            // The final sweep (TODO 97): the reads sample a few thousand words a cycle, and the
-            // fill has sat since the test began, so every word is read once, in order, a chunk at
-            // a time: a bad word the reads missed shows, and one that decayed over the test
+            // The final sweep (TODO 97): the reads are drawn with replacement, so a cycle's reads
+            // leave about a third of the words unread (1/e), and the fill has sat since the test
+            // began, so every word is read once, in order, a chunk at a time: a bad word the
+            // reads missed shows, and one that decayed over the test
             let piece = (runner.chunk_bytes() / std::mem::size_of::<u64>()).max(1);
             let (sweep_errors, swept) = random_sweep(reads, piece, test_name, |errors| {
                 runner.should_halt(errors) || runner.shutdown_requested()
             });
             if swept < len {
+                // The words it got through count, as a completed sweep's do
+                runner.add_bytes(swept * std::mem::size_of::<u64>());
                 return runner.finish_aborted(sweep_errors, total_operations + swept as u64);
             }
             runner.add_bytes(extent.test_size);
