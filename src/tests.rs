@@ -4017,7 +4017,7 @@ fn strided_period(stride: usize) -> usize {
 /// split at the step where its prefetches go from on in the pass to on into the next, so no step
 /// selects: in one loop with an index, its offset, end, step and the prefetch's two offsets didn't
 /// all fit in registers. Each loop runs to a pointer bound: with a count, the compiler unrolled
-/// them, and the unrolled loops spilled. The pointer goes through `native_opaque_step` at each step
+/// them, and the unrolled loops spilled. The pointer goes through `opaque_ptr` at each step
 /// and the id comes from it, so a step carries one value: seen through, the pointer became an
 /// offset from the pass's first line (every access `(%first,%offset)`), and an id stepped beside it
 /// put each value a pattern takes from the id on its own induction variable.
@@ -4046,7 +4046,7 @@ macro_rules! strided_walk {
             while $p.wrapping_add(ahead) < stop {
                 $prefetch($p.wrapping_add(ahead));
                 $body
-                $p = native_opaque_step($p.wrapping_add(period));
+                $p = opaque_ptr($p.wrapping_add(period));
             }
             // The pass's words to the chunk's end, as `strided_wrap` takes them
             let left = (stop as usize).saturating_sub(first as usize) / std::mem::size_of::<u64>();
@@ -4055,7 +4055,7 @@ macro_rules! strided_walk {
                 // The walk's last steps prefetch off the chunk: a wasted prefetch, not a fault
                 $prefetch($p.wrapping_add(back));
                 $body
-                $p = native_opaque_step($p.wrapping_add(period));
+                $p = opaque_ptr($p.wrapping_add(period));
             }
         }
     }};
@@ -6381,35 +6381,64 @@ struct NativeChunk {
     phase: crate::pattern::Phase,
 }
 
-/// The walked pointer of a native walk's next step, and of every strided kernel's (`strided_walk!`,
-/// native SimpleTest's walk until TODO 99 shared it), hidden from the compiler's loop strength
-/// reduction (TODO 99). In view, it rewrote the strided walk's pointer and line id as four
-/// induction variables (a prefetch pointer, an offset from a base, the line id and the id times
-/// 8), each with its own step in a register, and the lines that hash with 64-bit constants
-/// spilled; and it made the 512-bit `random` verify's pointer and word id one index, every load
-/// `(%base,%index,8)`. An empty `asm!` with the pointer in a register: no instruction, no flags,
-/// and it writes no memory (it says it may read it, as an asm given a pointer must).
+/// `p` as it went in, through an optimisation barrier: TODO 99's one helper for it, with
+/// `opaque_u64` its form for an integer (Rule 6.14 of `doc/simd_codegen_rules.md`; the owner
+/// accepted it, 2026-10-20).
+///
+/// What it does: nothing at run time. It is an empty `asm!` (the template a comment) that takes
+/// the value in a register the compiler picks and gives it back unchanged, so it emits no
+/// instruction and forces no move. But the compiler doesn't look inside an `asm!`, so it knows
+/// nothing of the value that comes out, and loop strength reduction (LLVM rewriting a loop's
+/// values as induction variables, each stepped by a constant of its own) can neither merge it
+/// with another value (a walked pointer turned into a base and an index) nor split it into several
+/// (one id turned into a counter for each value taken from it). Passed through it at each step, a
+/// value stays the one value the source steps.
+///
+/// Why (TODO 99): seen through, native SimpleTest's strided walk had its pointer and line id as
+/// four induction variables (a prefetch pointer, an offset from a base, the id and the id times
+/// 8), each with its step in a register, and the lines that hash with 64-bit constants spilled;
+/// its 512-bit `random` verify loaded every word as `(%base,%index,8)` (round 3). With the pointer
+/// through it, the walks that use it (`strided_walk!`, which every strided kernel runs,
+/// `native_write_seq!` and `native_differs_seq!`) address each access at a fixed displacement
+/// from the one pointer they step (Rule 6.3). With `header`'s line id through `opaque_u64`, its
+/// ident words stayed one value where they had been eight counters at 512 bits:
+/// Bench-Verify-Header +42% (round 3b, measured with the change that also ran the group loop to
+/// a bound, which gave Bench-Verify-Quiet its +78%: quiet's id isn't hidden). It can lose: hiding
+/// every family's id cost `linepair` and the one-line-a-step loops instructions
+/// (`native_differs_seq!`). Use it where the asm shows a value merged into an index or split into
+/// counters, and measure.
+///
+/// The options. `pure`: the output is the input's alone, so the compiler may drop an unused one
+/// or merge two with the same input (a walk's input changes every step). `nostack`: it pushes
+/// nothing. `preserves_flags`: it leaves the flags as they were, so no compare is redone after
+/// it. And `pure` needs one of `nomem` (the asm touches no memory, so any load or store may move
+/// across it) and `readonly` (it may read memory and writes none, so loads may move across it and
+/// stores may not). An asm handed a pointer is taken to use it, and a pointer in a `nomem` block
+/// trips `clippy::pointers_in_nomem_asm_block`, which TMR fixes rather than allows: the pointer
+/// form says `readonly`. An integer gives the asm nothing to read, so the integer form says
+/// `nomem`. Each is the form the gains above were measured with; the other changes the code
+/// (2026-10-20): `nomem` on the pointer reorders four native loops (the same counts and stack
+/// accesses), and `readonly` on the integer takes 11 of 144 instructions off `header`'s 256-bit
+/// verify at the DDR6 model's 24-bit beat (unmeasured).
+///
+/// Its effect is the compiler's, not a promise: a new toolchain may see through it, or schedule
+/// around it differently. On a toolchain update, re-read the release asm of the walks above
+/// (`tools/hot_loop_spills.py`, Rule 6).
 #[inline(always)]
-fn native_opaque_step(mut p: *mut u64) -> *mut u64 {
+fn opaque_ptr(mut p: *mut u64) -> *mut u64 {
     // SAFETY: the template is a comment: the register comes out as it went in
     unsafe { std::arch::asm!("/* {0} */", inout(reg) p, options(pure, readonly, nostack, preserves_flags)) };
     p
 }
 
-/// The line id of a sequential native verify's next step, hidden from loop strength reduction as
-/// the pointer is (`native_opaque_step`; TODO 99 round 3b), for `header` where a step takes more
-/// than one line (256 and 512 bits). In view, it turned each word a `header` line takes from
-/// `ident` (`(lid << 3) * G + key`, words 0 and 4 of each line of a group) into an induction
-/// variable of its own, stepped by a 64-bit constant: eight at 512 bits, four at 256, and with the
-/// hash's constants they spilled. Hidden, each is an add to one product. Elsewhere it loses:
-/// `linepair` recomputed each line's polarity, which in view it knew from the first (the group's
-/// step is even), and a line a step (the writes, the 128-bit verify) two induction variables were
-/// clean and 2-4 instructions shorter than the product.
+/// `x` as it went in, through `opaque_ptr`'s barrier: its form for an integer, `nomem` as an
+/// integer gives the asm nothing to read (see `opaque_ptr`). `header`'s line id at each group step
+/// of the sequential verify (`native_differs_seq!`).
 #[inline(always)]
-fn native_opaque_lid(mut lid: u64) -> u64 {
+fn opaque_u64(mut x: u64) -> u64 {
     // SAFETY: the template is a comment: the register comes out as it went in
-    unsafe { std::arch::asm!("/* {0} */", inout(reg) lid, options(pure, nomem, nostack, preserves_flags)) };
-    lid
+    unsafe { std::arch::asm!("/* {0} */", inout(reg) x, options(pure, nomem, nostack, preserves_flags)) };
+    x
 }
 
 /// The line type of a native walk at a width, `[u64xN, N]`: a line's vectors.
@@ -6439,7 +6468,7 @@ macro_rules! native_write_seq {
                 *(p.add(v * $w) as *mut $simd) = x;
             }
             lid += 1;
-            p = native_opaque_step(p.wrapping_add(LINE_WORDS));
+            p = opaque_ptr(p.wrapping_add(LINE_WORDS));
         }
     }};
 }
@@ -6460,6 +6489,15 @@ macro_rules! native_write_strided {
 /// ORed: 0 when every word holds. Each word's difference goes into 4 accumulators, one branch at
 /// the end. The SIMD walk takes 4 vectors a step (a group of lines), so the 4 accumulators are
 /// independent chains at every width, and the lines past the last whole group one at a time.
+///
+/// With `$hide`, the line id goes through `opaque_u64` at each group step, for `header` where a
+/// step takes more than one line (256 and 512 bits; TODO 99 round 3b). Seen through, each word a
+/// `header` line takes from `ident` (`(lid << 3) * G + key`, words 0 and 4 of each line of a
+/// group) became an induction variable of its own, stepped by a 64-bit constant: eight at 512
+/// bits, four at 256, and with the hash's constants they spilled. Hidden, each is an add to one
+/// product. Elsewhere hiding loses: `linepair` recomputed each line's polarity, which seen through
+/// it knew from the first (the group's step is even), and a line a step (the writes, the 128-bit
+/// verify) two induction variables were clean and 2-4 instructions shorter than the product.
 macro_rules! native_differs_seq {
     ([$simd:ty, $w:tt], $c:expr, $line:expr, $hide:expr) => {{
         // Vectors a line, and lines a group of 4 vectors
@@ -6484,8 +6522,8 @@ macro_rules! native_differs_seq {
                     acc[k] |= *(p.add(k * $w) as *const $simd) ^ words[v];
                 }
             }
-            lid = if $hide && LPG > 1 { native_opaque_lid(lid + LPG as u64) } else { lid + LPG as u64 };
-            p = native_opaque_step(p.wrapping_add(LPG * LINE_WORDS));
+            lid = if $hide && LPG > 1 { opaque_u64(lid + LPG as u64) } else { lid + LPG as u64 };
+            p = opaque_ptr(p.wrapping_add(LPG * LINE_WORDS));
         }
         while p < stop {
             let words = line(lid);
@@ -6493,7 +6531,7 @@ macro_rules! native_differs_seq {
                 acc[v % 4] |= *(p.add(v * $w) as *const $simd) ^ words[v];
             }
             lid += 1;
-            p = native_opaque_step(p.wrapping_add(LINE_WORDS));
+            p = opaque_ptr(p.wrapping_add(LINE_WORDS));
         }
         ((acc[0] | acc[1]) | (acc[2] | acc[3])).reduce_or()
     }};
@@ -6558,7 +6596,7 @@ macro_rules! native_simple_impl {
             #[inline]
             #[target_feature(enable = $tf)]
             pub(super) unsafe fn differs(c: NativeChunk) -> u64 {
-                // `header`'s line id hidden from loop strength reduction (`native_opaque_lid`); the
+                // `header`'s line id hidden from loop strength reduction (`opaque_u64`); the
                 // family is known in each arm, so each arm keeps one of the two
                 let hide = c.phase.family == crate::pattern::Family::Header;
                 native_with_line!([$($kind)*], c.phase, |line| {
@@ -6584,7 +6622,7 @@ macro_rules! native_simple_impl {
                 native_write_strided!([$($kind)*], c, line)
             }
 
-            /// `HIDE_LID`: the line id hidden from loop strength reduction (`native_opaque_lid`)
+            /// `HIDE_LID`: the line id hidden from loop strength reduction (`opaque_u64`)
             #[inline(never)]
             #[target_feature(enable = $tf)]
             unsafe fn differs_seq<L: Fn(u64) -> native_line_ty!([$($kind)*]), const HIDE_LID: bool>(c: NativeChunk, line: L) -> u64 {
@@ -8788,7 +8826,7 @@ mod random_replay_tests {
     /// passes longer than `STRIDED_AHEAD`).
     #[test]
     fn the_pointer_walk_is_tm5s() {
-        use super::native_opaque_step;
+        use super::opaque_ptr;
         let mut mem = [0u64; 1];
         let base = mem.as_mut_ptr();
         // A pointer's word offset from `base`; a prefetch's may be off the chunk, either side

@@ -325,8 +325,11 @@ From TODO 99 (2026-10-19, dev box, Granite Rapids with AVX-512). Check every one
     Native SimpleTest's header turned each ident word into its own induction variable, eight at
     512 bits. Passing the line id each step through an empty `asm!` (no instruction; the compiler
     can't see through it, as round 3 did for the walked pointer) kept them one value:
-    Bench-Verify-Header +42%, Bench-Verify-Quiet +78% (round 3b). The barrier awaits the owner's
-    ruling (TODO 99).
+    Bench-Verify-Header +42% (round 3b; the same change ran the group loop to a bound, which gave
+    Bench-Verify-Quiet +78% without hiding its id). The owner accepted the barrier (2026-10-20):
+    use the one helper, `opaque_ptr` and its integer form `opaque_u64` (`src/tests.rs`), whose
+    doc says what it does, why, its options and why, and where it loses. Re-read the asm of the
+    walks that use it on a toolchain update.
 15. **A counted step can be unrolled out of address order.** Legacy SimpleTest's 4-vector verify
     ran from a count, so LLVM unrolled it twice and loaded each 512 B out of order (lines 1, 2, 0,
     3...): mode 10 at 512 lost 3%. To a bound pointer it loads in order (round 3b).
