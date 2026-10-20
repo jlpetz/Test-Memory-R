@@ -2431,6 +2431,10 @@ pub unsafe fn stride_access_multi(
 /// the dispatch that picks them, so a unit test's goes the way the test's does: the test's
 /// functions are their `Direct` instances.
 ///
+/// A unit test that runs a test function itself, to see what the function's own dispatch gives its
+/// kernels, records `Direct` (`record_direct`): in a unit test build `Direct` reports to the
+/// thread's tape while one runs. The binary has no tape, and its `Direct` reports nothing.
+///
 /// A module of its own because a symbol names an impl by the number of impls before it in its
 /// module: `Direct`'s impl here leaves the symbols of the impls below, and so the asm, as they were.
 mod access {
@@ -2487,11 +2491,20 @@ mod access {
         }
     }
 
-    /// The test's own access: each as written, reported to no one.
+    /// The test's own access: each as written, reported to no one (in a unit test build, to the
+    /// thread's tape while one runs: `record_direct`).
     #[derive(Clone, Copy)]
     pub(super) struct Direct;
 
+    #[cfg(not(test))]
     impl Access for Direct {}
+
+    #[cfg(test)]
+    impl Access for Direct {
+        fn seen(self, write: bool, at: *const u64, values: &[u64]) {
+            TAPE.with_borrow_mut(|tape| if let Some(tape) = tape { tape.seen(write, at, values) });
+        }
+    }
 
     /// One access a kernel made: its first word, from the recorder's base, and the words it read or
     /// wrote.
@@ -2516,6 +2529,66 @@ mod access {
             let (at, values) = ((at.addr() - self.base.addr()) / size_of::<u64>(), values.to_vec());
             self.visits.borrow_mut().push(if write { Visit::Write(at, values) } else { Visit::Read(at, values) });
         }
+    }
+
+    /// A fault a tape makes (`record_direct`): once visit `after` (from 0) is reported, word `word`
+    /// from the tape's base XORed with `flip`. A read is reported once made and a write before it
+    /// is made, so the fault lands after the one and before the other.
+    #[cfg(test)]
+    #[derive(Clone, Copy, Debug)]
+    pub(super) struct Fault {
+        pub(super) after: usize,
+        pub(super) word: usize,
+        pub(super) flip: u64,
+    }
+
+    /// What a unit test build's `Direct` reports to on a thread while a test records it: the
+    /// visits, their first words from `base`, and the faults to make.
+    #[cfg(test)]
+    struct Tape {
+        base: *mut u64,
+        visits: Vec<Visit>,
+        faults: Vec<Fault>,
+    }
+
+    #[cfg(test)]
+    impl Tape {
+        fn seen(&mut self, write: bool, at: *const u64, values: &[u64]) {
+            let (at, values) = ((at.addr() - self.base.addr()) / size_of::<u64>(), values.to_vec());
+            self.visits.push(if write { Visit::Write(at, values) } else { Visit::Read(at, values) });
+            for fault in self.faults.iter().filter(|f| f.after + 1 == self.visits.len()) {
+                // SAFETY: the test that set the fault owns the memory from `base`, the word in it
+                unsafe { *self.base.add(fault.word) ^= fault.flip };
+            }
+        }
+    }
+
+    #[cfg(test)]
+    thread_local! {
+        static TAPE: std::cell::RefCell<Option<Tape>> = const { std::cell::RefCell::new(None) };
+    }
+
+    /// Runs `f`, recording each access this thread's `Direct` makes in it, its first word from
+    /// `base`, and making `faults`: a unit test runs a test function in `f`, and sees what its own
+    /// dispatch did, through the kernels it called (TODO 99). Returns `f`'s value and the visits.
+    #[cfg(test)]
+    pub(super) fn record_direct<R>(base: *mut u64, faults: &[Fault], f: impl FnOnce() -> R) -> (R, Vec<Visit>) {
+        /// Ends the tape however `f` ends, so a failed test leaves none on its thread
+        struct Stop;
+        impl Drop for Stop {
+            fn drop(&mut self) {
+                TAPE.with_borrow_mut(|tape| *tape = None);
+            }
+        }
+        TAPE.with_borrow_mut(|tape| {
+            assert!(tape.is_none(), "one tape a thread at a time");
+            *tape = Some(Tape { base, visits: Vec::new(), faults: faults.to_vec() });
+        });
+        let stop = Stop;
+        let value = f();
+        let visits = TAPE.with_borrow_mut(Option::take).expect("the tape `f` ran with").visits;
+        drop(stop);
+        (value, visits)
     }
 
     /// Fails at the first of `got` that isn't `want`'s, or at a visit missing or extra.
@@ -8193,6 +8266,51 @@ pub unsafe fn bench_verify_multi(
     }
 }
 
+/// Memory for a unit test that runs a test function itself (TODO 99): a heap buffer of whole
+/// lines, 64-byte aligned, as the one block of thread 0's span, as runner.rs's tests run them (over
+/// guarded regions of several blocks there).
+#[cfg(test)]
+mod heap_span {
+    use crate::memory::backend::{AllocError, Backend, BackendAllocation};
+    use std::simd::u64x8;
+
+    /// The block's backend: the buffer is the test's, so nothing to allocate or free.
+    #[derive(Debug)]
+    struct Owned;
+    impl Backend for Owned {
+        fn allocate(&self, _: &crate::memory::allocator::AllocationConfig) -> Result<BackendAllocation, AllocError> {
+            unreachable!("the block is built directly")
+        }
+        fn free(&self, _: BackendAllocation) -> Result<(), String> { Ok(()) }
+        fn name(&self) -> &'static str { "heap" }
+    }
+
+    pub(super) struct HeapSpan {
+        /// The buffer, which the block and `ptr` point into: never touched again but to drop it
+        _lines: Vec<u64x8>,
+        ptr: *mut u64,
+        pub(super) blocks: Vec<crate::runner::AllocationBlock>,
+    }
+
+    impl HeapSpan {
+        /// `bytes` of whole lines, every word `fill`.
+        pub(super) fn new(bytes: usize, fill: u64) -> Self {
+            assert!(bytes.is_multiple_of(64), "whole lines");
+            let mut lines = vec![u64x8::splat(fill); bytes / 64];
+            let ptr = lines.as_mut_ptr().cast::<u64>();
+            let block = crate::runner::AllocationBlock {
+                buffer: crate::memory::MemoryBuffer::new(BackendAllocation { ptr: ptr.cast(), size: bytes }, std::sync::Arc::new(Owned)),
+            };
+            HeapSpan { _lines: lines, ptr, blocks: vec![block] }
+        }
+
+        /// The span's first word.
+        pub(super) fn ptr(&self) -> *mut u64 {
+            self.ptr
+        }
+    }
+}
+
 #[cfg(test)]
 mod bench_move_tests {
     use super::BlockMoveChunk;
@@ -8389,6 +8507,39 @@ mod bench_move_tests {
                 let want = copy_visits(start, start + len, half, dirs, &value);
                 assert_visits(&visits.into_inner(), &want, &format!("{dirs} directions, words {start} + {len}"));
             }
+        }
+    }
+
+    /// TODO 99: Mem-BlockMove's test function copies in the pattern its `copy_directions` asks for.
+    /// Run on a span of its own, its copies, recorded as its own dispatch makes them, are
+    /// `copy_visits`' for that count, half-chunk by half-chunk, each word the value its fill wrote.
+    /// The test above runs `BlockMoveChunk::copy` itself, so it passes whatever count the test
+    /// function gives it (a review's change gave it 1 and every test passed), and the image can't
+    /// tell: each count copies every word. A 192 KiB extent in chunks of 128 KiB: half-chunks of
+    /// 64 KiB over the 96 KiB source half, at 0 and 32 KiB, overlapping.
+    #[test]
+    fn block_move_copies_as_its_directions_ask() {
+        use super::access::{assert_visits, record_direct};
+        use crate::tests::{ChunkMode, ExtentMode, TestMemoryConfig, TestTiming};
+        const KIB: usize = 1024;
+        let span = super::heap_span::HeapSpan::new(192 * KIB, !0);
+        let (half, piece) = (96 * KIB / 8, 64 * KIB / 8);
+        // Thread 0's source words: the test's constant plus each word's id
+        let pattern_base = 0xDEADBEEFCAFEBABEu64.wrapping_add(crate::pattern::word_base(0));
+        let value = |i: usize| pattern_base.wrapping_add(i as u64);
+        for dirs in [1u32, 2, 4, 3, 8] {
+            let context = crate::config::TestParameterContext { copy_directions: Some(dirs), ..Default::default() };
+            let config = TestMemoryConfig::new(ExtentMode::FullAllocation, ChunkMode::Absolute { size_bytes: 128 * KIB })
+                .with_timing(TestTiming::cycles_only(1))
+                .with_parameter_context(context);
+            // SAFETY: the span is live, 64-byte aligned and the test's alone
+            let (stats, visits) = record_direct(span.ptr(), &[], || unsafe {
+                super::block_move_multi(&span.blocks, 0, crate::ErrorMode::Log, &config.timing, &config, None)
+            });
+            let what = format!("{dirs} directions");
+            assert_eq!(stats.error_count, 0, "{what}: a clean copy");
+            let want: Vec<_> = [0, 32 * KIB / 8].into_iter().flat_map(|start| copy_visits(start, start + piece, half, dirs, &value)).collect();
+            assert_visits(&visits, &want, &what);
         }
     }
 }
@@ -9460,6 +9611,192 @@ mod random_replay_tests {
         }
         let counts = crate::tests::rescan_counts();
         assert_eq!((counts.alarms, counts.not_reproduced), (2, 1));
+    }
+
+    /// Mem-Sequence's config for a test on a span of its own: one cycle, one chunk (the extent),
+    /// `sequence` in `order` where a step names none, `wrc` runs of it, and a stride of `stride`
+    /// words (0 is TM5's jump 0: none).
+    fn sequence_config(sequence: &str, order: crate::sequence::Order, wrc: u32, stride: usize) -> crate::tests::TestMemoryConfig {
+        use crate::tests::{ChunkMode, ExtentMode, TestMemoryConfig, TestTiming};
+        let context = crate::config::TestParameterContext { stride_elements: Some(stride), ..Default::default() };
+        TestMemoryConfig::new(ExtentMode::FullAllocation, ChunkMode::Whole)
+            .with_timing(TestTiming::cycles_only(1))
+            .with_parameter_context(context)
+            .with_write_read_cycles(wrc)
+            .with_sequence(crate::sequence::Sequence::parse(sequence, order).unwrap())
+    }
+
+    /// Mem-Sequence's test function at `width` bits, run on `span` under `config`: its stats, and
+    /// its accesses as its own dispatch makes them (`access::record_direct`), `faults` made among
+    /// them.
+    fn sequence_run(width: usize, span: &super::heap_span::HeapSpan, config: &crate::tests::TestMemoryConfig,
+                    faults: &[super::access::Fault]) -> (crate::tests::TestStats, Vec<super::access::Visit>) {
+        super::access::record_direct(span.ptr(), faults, || {
+            // SAFETY: the span is live, 64-byte aligned and the test's alone, and 512 bits run only on
+            // a CPU with AVX-512 (`sequence_widths`)
+            unsafe {
+                if width == 256 {
+                    super::sequence_256(&span.blocks, 0, crate::ErrorMode::Log, &config.timing, config, None)
+                } else {
+                    super::sequence_512(&span.blocks, 0, crate::ErrorMode::Log, &config.timing, config, None)
+                }
+            }
+        })
+    }
+
+    /// The lines one pass of `op` at `width` bits visited, in order, from its `visits` (words from
+    /// the span's first, where the chunk starts). Fails unless each line's vectors are visited in
+    /// turn, each written by a write, read by a read, and read then written with the inverse by a
+    /// read-then-write.
+    fn sequence_pass_lines(visits: &[super::access::Visit], op: crate::sequence::Op, width: usize, what: &str) -> Vec<usize> {
+        use super::access::Visit;
+        use crate::sequence::Op;
+        let lanes = width / 64;
+        let per_vector = if op == Op::ReadWrite { 2 } else { 1 };
+        visits.chunks(LINE_WORDS / lanes * per_vector).map(|line| {
+            let (Visit::Read(first, _) | Visit::Write(first, _)) = line[0];
+            assert!(first.is_multiple_of(LINE_WORDS), "{what}: a line's visits from word {first}");
+            for (v, vector) in line.chunks(per_vector).enumerate() {
+                let at = first + v * lanes;
+                let whole = match (op, vector) {
+                    (Op::Write, [Visit::Write(a, w)]) => *a == at && w.len() == lanes,
+                    (Op::Read, [Visit::Read(a, r)]) => *a == at && r.len() == lanes,
+                    (Op::ReadWrite, [Visit::Read(a, r), Visit::Write(b, w)]) => {
+                        (*a, *b) == (at, at) && r.len() == lanes && w.iter().zip(r).all(|(w, r)| *w == !r)
+                    }
+                    _ => false,
+                };
+                assert!(whole, "{what}: line {} vector {v} is {vector:x?}", first / LINE_WORDS);
+            }
+            first / LINE_WORDS
+        }).collect()
+    }
+
+    /// Checks that a run of Mem-Sequence's test function over a chunk of `lines` lines made
+    /// `passes`, each `(op, order)` in turn, by its `visits`: each pass all of its op
+    /// (`sequence_pass_lines`), over every line in its order (`sequence_visits`, TM5's stride at
+    /// `period_lines`), a random pass each power-of-two block's lines in a scramble of its own: not
+    /// in order, and not another random pass's. Returns where each pass's visits start.
+    fn check_sequence_passes(visits: &[super::access::Visit], passes: &[(crate::sequence::Op, crate::sequence::Order)], width: usize,
+                             lines: usize, period_lines: usize, what: &str) -> Vec<usize> {
+        use crate::sequence::{Op, Order};
+        let vectors = lines * LINE_WORDS / (width / 64);
+        let (mut starts, mut at, mut randoms) = (Vec::new(), 0, Vec::<Vec<usize>>::new());
+        for (n, &(op, order)) in passes.iter().enumerate() {
+            let what = format!("{what}, pass {n} ({op:?}, {order:?})");
+            let len = vectors * if op == Op::ReadWrite { 2 } else { 1 };
+            assert!(at + len <= visits.len(), "{what}: the visits end at {}", visits.len());
+            let got = sequence_pass_lines(&visits[at..at + len], op, width, &what);
+            starts.push(at);
+            at += len;
+            if order == Order::Random {
+                let mut s = 0;
+                while s < lines {
+                    let size = 1 << (lines - s).ilog2();
+                    let mut block = got[s..s + size].to_vec();
+                    block.sort_unstable();
+                    assert!(block.iter().copied().eq(s..s + size), "{what}: block {s}..{} isn't its own lines, once each", s + size);
+                    s += size;
+                }
+                assert!(!got.iter().copied().eq(0..lines), "{what}: in order");
+                assert!(!randoms.contains(&got), "{what}: another random pass's scramble");
+                randoms.push(got);
+            } else {
+                let want = sequence_visits(order, lines, period_lines, 0);
+                if let Some(i) = (0..lines).find(|&i| got[i] != want[i]) {
+                    panic!("{what}: visit {i} is line {}, not {}", got[i], want[i]);
+                }
+            }
+        }
+        assert_eq!(at, visits.len(), "{what}: visits past the last pass");
+        starts
+    }
+
+    /// TODO 99: Mem-Sequence's test function runs each step as its pass. At each width, its passes,
+    /// recorded as its own dispatch makes them, are the steps' in turn: each `count` passes of its
+    /// op in its order, the sequence's where it names none, `write_read_cycles` runs of them, a
+    /// forward fill first when the sequence reads first; with no stride (TM5's jump 0) a stride
+    /// step's passes go forward, with one TM5's strided walk. Each read finds what the last write
+    /// left. The walk tests run the passes themselves, so they pass whatever op and order the test
+    /// function gives them, and runner.rs's `mem_sequence_runs_every_order_and_step` runs the test
+    /// function by its image, which every order leaves the same, always with a stride.
+    #[test]
+    fn sequence_runs_each_step_as_its_pass() {
+        use crate::sequence::Op::{Read as R, ReadWrite as RW, Write as W};
+        use crate::sequence::Order::{Forward as F, Random, Reverse, Stride};
+        // Random blocks of 128 and 64 lines
+        let lines = 192;
+        let span = super::heap_span::HeapSpan::new(lines * 64, 0x5A5A_0F0F_C3C3_9696);
+        // No stride: a stride step forward. It reads first: a fill, then two runs
+        let run = [(R, F), (W, F), (R, Random), (RW, F), (R, Reverse), (R, Reverse), (RW, Random), (W, F), (R, F)];
+        let unstrided: Vec<_> = std::iter::once((W, F)).chain(run.iter().copied().cycle().take(2 * run.len())).collect();
+        // A stride of 15 lines, 120 words: a period of 16 lines
+        let strided = [(W, Stride), (RW, Stride), (R, Stride), (W, F), (R, Stride), (RW, Reverse), (R, Random)];
+        for (sequence, order, wrc, stride, passes) in [
+            ("R@stride W@stride R@random RW@stride 2R RW@random W@stride R@forward", Reverse, 2, 0, &unstrided[..]),
+            ("W@stride RW R@stride W@forward R RW@reverse R@random", Stride, 1, 120, &strided[..]),
+        ] {
+            let config = sequence_config(sequence, order, wrc, stride);
+            let period_lines = if stride == 0 { 0 } else { strided_period(stride) / LINE_WORDS };
+            for width in sequence_widths() {
+                let what = format!("{width} bits, '{sequence}' order {order:?}, stride {stride}");
+                let (stats, visits) = sequence_run(width, &span, &config, &[]);
+                assert_eq!(stats.error_count, 0, "{what}: each read finds what the last write left");
+                check_sequence_passes(&visits, passes, width, lines, period_lines, &what);
+            }
+        }
+    }
+
+    /// TODO 99: after a read-then-write whose check failed, Mem-Sequence's test function writes the
+    /// chunk again, forward, with what the pass wrote, when the rescan wrote back what was read
+    /// (`rescan_read_write`: every word took the write, so the read went wrong); and not when the
+    /// rescan found a word that didn't take it, which the next read then finds too. At each width,
+    /// `W RW R`: a word of the last line flipped once the read-then-write starts, before it reads
+    /// it (one error, not reproduced); then that and a word of the first line flipped once the pass
+    /// has written it (two: the rescan's, and the read's). No test made a read-then-write's check
+    /// fail inside the test function.
+    #[test]
+    fn sequence_rewrites_a_chunk_its_rescan_wrote_back() {
+        use super::access::{Fault, Visit};
+        use crate::sequence::Op::{Read as R, ReadWrite as RW, Write as W};
+        use crate::sequence::Order::Forward as F;
+        let lines = 192;
+        let span = super::heap_span::HeapSpan::new(lines * 64, 0);
+        let config = sequence_config("W RW R", F, 1, 0);
+        for width in sequence_widths() {
+            let line_vectors = LINE_WORDS / (width / 64);
+            // The read-then-write's first visit, after the write's, and its first of the second line
+            let rw = lines * line_vectors;
+            let read_wrong = Fault { after: rw, word: (lines - 1) * LINE_WORDS + 5, flip: 1 << 29 };
+            let not_taken = Fault { after: rw + 2 * line_vectors, word: 3, flip: 1 << 41 };
+            for (faults, errors, passes) in [(&[read_wrong][..], 1, &[(W, F), (RW, F), (W, F), (R, F)][..]),
+                                             (&[read_wrong, not_taken][..], 2, &[(W, F), (RW, F), (R, F)][..])] {
+                let what = format!("{width} bits, {faults:?}");
+                let (stats, mut visits) = sequence_run(width, &span, &config, faults);
+                assert_eq!(stats.error_count, errors, "{what}: the errors");
+                // The read-then-write read the flipped word and wrote the inverse of what it should
+                // have read: its read as it should have been, for the passes' check
+                let lanes = width / 64;
+                let vector = read_wrong.word / lanes * lanes;
+                match visits[rw..].iter_mut().find(|v| matches!(v, Visit::Read(at, _) if *at == vector)) {
+                    Some(Visit::Read(_, words)) => words[read_wrong.word - vector] ^= read_wrong.flip,
+                    _ => panic!("{what}: no read of word {}", read_wrong.word),
+                }
+                let starts = check_sequence_passes(&visits, passes, width, lines, 0, &what);
+                // What the read-then-write wrote, as the rewrite writes it and the read reads it
+                let wrote: Vec<Visit> = visits[starts[1]..starts[2]].iter().filter(|v| matches!(v, Visit::Write(..))).cloned().collect();
+                let mut read: Vec<Visit> = wrote.iter().map(|v| match v {
+                    Visit::Write(at, words) => Visit::Read(*at, words.clone()),
+                    Visit::Read(..) => unreachable!(),
+                }).collect();
+                if faults.len() == 1 {
+                    super::access::assert_visits(&visits[starts[2]..starts[3]], &wrote, &format!("{what}: the rewrite"));
+                } else if let Visit::Read(_, words) = &mut read[0] {
+                    words[3] ^= not_taken.flip;
+                }
+                super::access::assert_visits(&visits[starts[passes.len() - 1]..], &read, &format!("{what}: the read"));
+            }
+        }
     }
 
     /// Mem-Random's final sweep reads every word, finds a bad one the random reads would miss,
