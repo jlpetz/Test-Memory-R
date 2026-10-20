@@ -1156,6 +1156,9 @@ pub fn create_demo_config() -> Self {
                 cycles: Some(1),
                 extent: Some(ExtentSpec::cache_total(2.0)), // 2x cache for refresh testing
                 chunk: Some(ChunkSpec::absolute("1MB")),    // Small 1MB blocks
+                // A 1 MB chunk is written, slept on and verified inside the caches unless it is
+                // flushed first, as the scalar Mem-Refresh this step ran until TODO 99 always was
+                flush_before_verify: Some(true),
                 ..Default::default()
             },
             

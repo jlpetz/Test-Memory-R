@@ -212,9 +212,13 @@ emits the new shape.
 {
   "function": "Mem-RefreshAuto",
   "extent": { "mode": "cache", "target": "L3" },
-  "chunk":  { "mode": "absolute", "size": "1MB" }
+  "chunk":  { "mode": "absolute", "size": "1MB" },
+  "flush_before_verify": true
 }
 ```
+
+A chunk this size sits in the caches through the test's sleep: without the flush the verify reads
+cached copies and the test checks nothing about DRAM retention.
 
 ### Full-memory stuck-bit sweep
 
