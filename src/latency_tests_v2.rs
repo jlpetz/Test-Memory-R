@@ -1027,9 +1027,9 @@ pub unsafe fn lat_v2_read_auto_multi(
     timing: &TestTiming, config: &TestMemoryConfig, progress: Option<&TestProgress>,
 ) -> LatencyTestStats {
     match crate::simd::test_width() {
-        crate::simd::Width::W512 => lat_v2_read_512_multi(blocks, thread_id, error_mode, timing, config, progress),
-        crate::simd::Width::W256 => lat_v2_read_256_multi(blocks, thread_id, error_mode, timing, config, progress),
-        crate::simd::Width::W128 => lat_v2_read_128_multi(blocks, thread_id, error_mode, timing, config, progress),
+        crate::simd::Width::W512 => crate::dispatched!(lat_v2_read_512_multi)(blocks, thread_id, error_mode, timing, config, progress),
+        crate::simd::Width::W256 => crate::dispatched!(lat_v2_read_256_multi)(blocks, thread_id, error_mode, timing, config, progress),
+        crate::simd::Width::W128 => crate::dispatched!(lat_v2_read_128_multi)(blocks, thread_id, error_mode, timing, config, progress),
     }
 }
 
@@ -1067,9 +1067,9 @@ pub unsafe fn lat_v2_write_auto_multi(
     timing: &TestTiming, config: &TestMemoryConfig, progress: Option<&TestProgress>,
 ) -> LatencyTestStats {
     match crate::simd::test_width() {
-        crate::simd::Width::W512 => lat_v2_write_512_multi(blocks, thread_id, error_mode, timing, config, progress),
-        crate::simd::Width::W256 => lat_v2_write_256_multi(blocks, thread_id, error_mode, timing, config, progress),
-        crate::simd::Width::W128 => lat_v2_write_128_multi(blocks, thread_id, error_mode, timing, config, progress),
+        crate::simd::Width::W512 => crate::dispatched!(lat_v2_write_512_multi)(blocks, thread_id, error_mode, timing, config, progress),
+        crate::simd::Width::W256 => crate::dispatched!(lat_v2_write_256_multi)(blocks, thread_id, error_mode, timing, config, progress),
+        crate::simd::Width::W128 => crate::dispatched!(lat_v2_write_128_multi)(blocks, thread_id, error_mode, timing, config, progress),
     }
 }
 
@@ -1113,9 +1113,9 @@ pub unsafe fn lat_v2_copy_auto_multi(
     timing: &TestTiming, config: &TestMemoryConfig, progress: Option<&TestProgress>,
 ) -> LatencyTestStats {
     match crate::simd::test_width() {
-        crate::simd::Width::W512 => lat_v2_copy_512_multi(blocks, thread_id, error_mode, timing, config, progress),
-        crate::simd::Width::W256 => lat_v2_copy_256_multi(blocks, thread_id, error_mode, timing, config, progress),
-        crate::simd::Width::W128 => lat_v2_copy_128_multi(blocks, thread_id, error_mode, timing, config, progress),
+        crate::simd::Width::W512 => crate::dispatched!(lat_v2_copy_512_multi)(blocks, thread_id, error_mode, timing, config, progress),
+        crate::simd::Width::W256 => crate::dispatched!(lat_v2_copy_256_multi)(blocks, thread_id, error_mode, timing, config, progress),
+        crate::simd::Width::W128 => crate::dispatched!(lat_v2_copy_128_multi)(blocks, thread_id, error_mode, timing, config, progress),
     }
 }
 
@@ -1159,9 +1159,9 @@ pub unsafe fn lat_v2p_read_auto_multi(
     timing: &TestTiming, config: &TestMemoryConfig, progress: Option<&TestProgress>,
 ) -> LatencyTestStats {
     match crate::simd::test_width() {
-        crate::simd::Width::W512 => lat_v2p_read_512_multi(blocks, thread_id, error_mode, timing, config, progress),
-        crate::simd::Width::W256 => lat_v2p_read_256_multi(blocks, thread_id, error_mode, timing, config, progress),
-        crate::simd::Width::W128 => lat_v2p_read_128_multi(blocks, thread_id, error_mode, timing, config, progress),
+        crate::simd::Width::W512 => crate::dispatched!(lat_v2p_read_512_multi)(blocks, thread_id, error_mode, timing, config, progress),
+        crate::simd::Width::W256 => crate::dispatched!(lat_v2p_read_256_multi)(blocks, thread_id, error_mode, timing, config, progress),
+        crate::simd::Width::W128 => crate::dispatched!(lat_v2p_read_128_multi)(blocks, thread_id, error_mode, timing, config, progress),
     }
 }
 
@@ -1199,9 +1199,9 @@ pub unsafe fn lat_v2p_write_auto_multi(
     timing: &TestTiming, config: &TestMemoryConfig, progress: Option<&TestProgress>,
 ) -> LatencyTestStats {
     match crate::simd::test_width() {
-        crate::simd::Width::W512 => lat_v2p_write_512_multi(blocks, thread_id, error_mode, timing, config, progress),
-        crate::simd::Width::W256 => lat_v2p_write_256_multi(blocks, thread_id, error_mode, timing, config, progress),
-        crate::simd::Width::W128 => lat_v2p_write_128_multi(blocks, thread_id, error_mode, timing, config, progress),
+        crate::simd::Width::W512 => crate::dispatched!(lat_v2p_write_512_multi)(blocks, thread_id, error_mode, timing, config, progress),
+        crate::simd::Width::W256 => crate::dispatched!(lat_v2p_write_256_multi)(blocks, thread_id, error_mode, timing, config, progress),
+        crate::simd::Width::W128 => crate::dispatched!(lat_v2p_write_128_multi)(blocks, thread_id, error_mode, timing, config, progress),
     }
 }
 
@@ -1245,9 +1245,9 @@ pub unsafe fn lat_v2p_copy_auto_multi(
     timing: &TestTiming, config: &TestMemoryConfig, progress: Option<&TestProgress>,
 ) -> LatencyTestStats {
     match crate::simd::test_width() {
-        crate::simd::Width::W512 => lat_v2p_copy_512_multi(blocks, thread_id, error_mode, timing, config, progress),
-        crate::simd::Width::W256 => lat_v2p_copy_256_multi(blocks, thread_id, error_mode, timing, config, progress),
-        crate::simd::Width::W128 => lat_v2p_copy_128_multi(blocks, thread_id, error_mode, timing, config, progress),
+        crate::simd::Width::W512 => crate::dispatched!(lat_v2p_copy_512_multi)(blocks, thread_id, error_mode, timing, config, progress),
+        crate::simd::Width::W256 => crate::dispatched!(lat_v2p_copy_256_multi)(blocks, thread_id, error_mode, timing, config, progress),
+        crate::simd::Width::W128 => crate::dispatched!(lat_v2p_copy_128_multi)(blocks, thread_id, error_mode, timing, config, progress),
     }
 }
 
@@ -1288,9 +1288,9 @@ pub unsafe fn lat_v2p_write_full_auto_multi(
     timing: &TestTiming, config: &TestMemoryConfig, progress: Option<&TestProgress>,
 ) -> LatencyTestStats {
     match crate::simd::test_width() {
-        crate::simd::Width::W512 => lat_v2p_write_full_512_multi(blocks, thread_id, error_mode, timing, config, progress),
-        crate::simd::Width::W256 => lat_v2p_write_full_256_multi(blocks, thread_id, error_mode, timing, config, progress),
-        crate::simd::Width::W128 => lat_v2p_write_full_128_multi(blocks, thread_id, error_mode, timing, config, progress),
+        crate::simd::Width::W512 => crate::dispatched!(lat_v2p_write_full_512_multi)(blocks, thread_id, error_mode, timing, config, progress),
+        crate::simd::Width::W256 => crate::dispatched!(lat_v2p_write_full_256_multi)(blocks, thread_id, error_mode, timing, config, progress),
+        crate::simd::Width::W128 => crate::dispatched!(lat_v2p_write_full_128_multi)(blocks, thread_id, error_mode, timing, config, progress),
     }
 }
 
@@ -1337,9 +1337,9 @@ pub unsafe fn lat_v2p_copy_full_auto_multi(
     timing: &TestTiming, config: &TestMemoryConfig, progress: Option<&TestProgress>,
 ) -> LatencyTestStats {
     match crate::simd::test_width() {
-        crate::simd::Width::W512 => lat_v2p_copy_full_512_multi(blocks, thread_id, error_mode, timing, config, progress),
-        crate::simd::Width::W256 => lat_v2p_copy_full_256_multi(blocks, thread_id, error_mode, timing, config, progress),
-        crate::simd::Width::W128 => lat_v2p_copy_full_128_multi(blocks, thread_id, error_mode, timing, config, progress),
+        crate::simd::Width::W512 => crate::dispatched!(lat_v2p_copy_full_512_multi)(blocks, thread_id, error_mode, timing, config, progress),
+        crate::simd::Width::W256 => crate::dispatched!(lat_v2p_copy_full_256_multi)(blocks, thread_id, error_mode, timing, config, progress),
+        crate::simd::Width::W128 => crate::dispatched!(lat_v2p_copy_full_128_multi)(blocks, thread_id, error_mode, timing, config, progress),
     }
 }
 
@@ -1561,9 +1561,9 @@ pub unsafe fn lat_ntw_write_auto_multi(
     timing: &TestTiming, config: &TestMemoryConfig, progress: Option<&TestProgress>,
 ) -> LatencyTestStats {
     match crate::simd::test_width() {
-        crate::simd::Width::W512 => lat_ntw_write_512_multi(blocks, thread_id, error_mode, timing, config, progress),
-        crate::simd::Width::W256 => lat_ntw_write_256_multi(blocks, thread_id, error_mode, timing, config, progress),
-        crate::simd::Width::W128 => lat_ntw_write_128_multi(blocks, thread_id, error_mode, timing, config, progress),
+        crate::simd::Width::W512 => crate::dispatched!(lat_ntw_write_512_multi)(blocks, thread_id, error_mode, timing, config, progress),
+        crate::simd::Width::W256 => crate::dispatched!(lat_ntw_write_256_multi)(blocks, thread_id, error_mode, timing, config, progress),
+        crate::simd::Width::W128 => crate::dispatched!(lat_ntw_write_128_multi)(blocks, thread_id, error_mode, timing, config, progress),
     }
 }
 

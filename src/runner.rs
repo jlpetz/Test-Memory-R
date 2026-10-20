@@ -496,6 +496,39 @@ impl TestDefinition {
             (None, _) => self.display_name.clone(),
         }
     }
+
+    /// The SIMD width the test runs at when it takes the run's (TODO 99, `crate::simd::test_width`),
+    /// as the results file records it: an `-Auto` test the width it resolved to (its name says it
+    /// too), Mem-Sequence and the Bench pairs that name no width theirs (`tests::picked_width`).
+    /// `None` for a test that keeps its own: named for a width, or with none.
+    pub fn simd_width(&self) -> Option<crate::simd::Width> {
+        if self.original_name.is_some() {
+            Some(crate::simd::test_width())
+        } else {
+            crate::tests::picked_width(self.actual_name)
+        }
+    }
+}
+
+/// The run's seal (TODO 74): `seal_override` (`seal=`), else the config's, else tmr; at
+/// `seal_width_override` (`seal-width=`), else the config's `seal_width`, else the run's `width=`
+/// (TODO 99), else the seal's auto. Unsealed, a width the CPU lacks only matters to a mirror's
+/// data, which takes the seal's auto.
+fn run_seal(seal_override: Option<&str>, seal_width_override: Option<&str>, config: Option<&crate::config::ModernConfig>)
+            -> Result<(crate::seal::SealSettings, crate::seal::SealKernel), String> {
+    crate::seal::SealSettings::parse(
+        seal_override.or(config.and_then(|c| c.system.seal.as_deref())).unwrap_or("tmr"),
+        crate::seal::width_setting(seal_width_override.or(config.and_then(|c| c.system.seal_width.as_deref())),
+                                   crate::simd::width_given().map(|(w, _)| w)),
+    ).and_then(|s| match s.kernel() {
+        Ok(kernel) => Ok((s, kernel)),
+        // Unsealed, the width only matters to a mirror's data: take the seal's auto
+        Err(e) if !s.on => {
+            log::warn!("{e}; the mirror tests use the seal's auto width");
+            Ok((s, crate::seal::SealKernel::new(s.pattern, crate::seal::SealKernel::detect().width)))
+        }
+        Err(e) => Err(e),
+    })
 }
 
 /// How a test takes the seal (TODO 74, `seal.rs`).
@@ -797,22 +830,7 @@ pub fn run_tests_with_layout_and_timing_filtered(
         return RunStatus::NotRun;
     }
 
-    // The run's seal (TODO 74): the command line's, else the config's, else tmr; at its own width
-    // if one is given, else at the run's width= (TODO 99), else at its auto
-    let seal_settings = crate::seal::SealSettings::parse(
-        seal_override.or(config.and_then(|c| c.system.seal.as_deref())).unwrap_or("tmr"),
-        crate::seal::width_setting(seal_width_override.or(config.and_then(|c| c.system.seal_width.as_deref())),
-                                   crate::simd::width_given().map(|(w, _)| w)),
-    ).and_then(|s| match s.kernel() {
-        Ok(kernel) => Ok((s, kernel)),
-        // Unsealed, the width only matters to a mirror's data: take the widest there is
-        Err(e) if !s.on => {
-            log::warn!("{e}; the mirror tests use the widest width this CPU has");
-            Ok((s, crate::seal::SealKernel::new(s.pattern, crate::seal::SealKernel::detect().width)))
-        }
-        Err(e) => Err(e),
-    });
-    let (mut seal_settings, seal_kernel) = match seal_settings {
+    let (mut seal_settings, seal_kernel) = match run_seal(seal_override, seal_width_override, config) {
         Ok(s) => s,
         Err(e) => {
             println!("❌ Config error: {}", e);
@@ -1791,7 +1809,7 @@ fn width_reason() -> &'static str {
 }
 
 /// `resolve_auto_dispatch_test` at `width`.
-fn resolve_auto_dispatch_test_at(test_name: &str, width: crate::simd::Width) -> Option<(&'static str, TestFunction)> {
+pub(crate) fn resolve_auto_dispatch_test_at(test_name: &str, width: crate::simd::Width) -> Option<(&'static str, TestFunction)> {
     if !test_name.ends_with("Auto") {
         return None;
     }
@@ -2169,7 +2187,9 @@ fn resolve_auto_dispatch_test_at(test_name: &str, width: crate::simd::Width) -> 
     Some((concrete_name, test_function))
 }
 
-pub(crate) fn create_test_definitions(cache_info: &CacheInfo) -> Vec<TestDefinition> {
+/// The built-in suite as registered, before its `-Auto` tests resolve (`create_test_definitions`):
+/// each test's name, function (an `-Auto` test's own dispatcher) and config.
+pub(crate) fn registered_tests(cache_info: &CacheInfo) -> Vec<(&'static str, TestFunction, TestMemoryConfig)> {
     // TSC frequency from the passed cache_info (detected once at startup)
     let tsc_freq = cache_info.tsc_frequency_ghz;
 
@@ -4164,10 +4184,13 @@ pub(crate) fn create_test_definitions(cache_info: &CacheInfo) -> Vec<TestDefinit
         [(init, TestFunction::MultiBlock(fi), config(true)), (verify, TestFunction::MultiBlock(fv), config(false))]
     }).collect::<Vec<_>>();
     test_definitions.splice(bench_at..bench_at, native_benches);
+    test_definitions
+}
 
+pub(crate) fn create_test_definitions(cache_info: &CacheInfo) -> Vec<TestDefinition> {
     // Process test definitions and resolve auto-dispatch tests
     let mut resolved_tests = Vec::new();
-    for (test_name, test_function, config) in test_definitions {
+    for (test_name, test_function, config) in registered_tests(cache_info) {
         if let Some((resolved_name, resolved_function)) = resolve_auto_dispatch_test(test_name) {
             log::debug!("Auto-dispatch: {} → {} ({})", test_name, resolved_name, width_reason());
             let effect = derive_memory_effect(resolved_name, &config);
@@ -5010,6 +5033,33 @@ mod tests {
                 assert!(same(&def.function, &function), "{}", def.display_name);
             }
         }
+    }
+
+    /// TODO 99: the run's seal (`run_seal`, which the run takes its seal from) takes `width=`
+    /// unless `seal-width=` or the config's `seal_width` sets its own, `auto` included, and keeps
+    /// its own auto with neither. `seal::width_setting`'s test checks the precedence alone, which a
+    /// run handing it no `width=` passed.
+    #[test]
+    fn the_runs_seal_takes_width_unless_seal_width_sets_its_own() {
+        use crate::seal::SealWidth;
+        use crate::simd::{TestWidth, Width};
+        let auto = SealWidth::Auto.resolve().unwrap();
+        let mut config = crate::config::ModernConfig::create_demo_config();
+        config.system.seal_width = Some("128".to_string());
+        let seal_width = |seal_width: Option<&str>, config: Option<&crate::config::ModernConfig>| {
+            let (settings, kernel) = run_seal(None, seal_width, config).unwrap();
+            assert!(settings.on, "sealed by default");
+            kernel.width
+        };
+        for width in [Width::W128, Width::W256, Width::W512].into_iter().filter(|w| w.check().is_ok()) {
+            let _width = TestWidth::set(Some(width));
+            assert_eq!(seal_width(None, None), width.seal(), "width={}", width.name());
+            assert_eq!(seal_width(Some("auto"), None), auto, "seal-width=auto over width={}", width.name());
+            assert_eq!(seal_width(None, Some(&config)), SealWidth::W128, "the config's seal_width over width={}", width.name());
+            assert_eq!(seal_width(Some("256"), Some(&config)), SealWidth::W256, "seal-width= over the config's");
+        }
+        let _auto = TestWidth::set(None);
+        assert_eq!(seal_width(None, None), auto, "auto: the seal's own");
     }
 
     /// TODO 99: under `width=` the Bench pairs and Mem-Sequence, which pick their width at run time,
