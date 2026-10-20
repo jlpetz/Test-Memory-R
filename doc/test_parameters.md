@@ -206,7 +206,9 @@ records both (`execution.seal`, `execution.seal_width_source`; null when the run
 One thread (as the latency calibration, so no other thread's traffic biases a width) runs the
 seal's own kernels, `SealKernel::fill` and `check` with the default pattern `tmr`, at every width
 the CPU has, over a buffer 4 times the L3 (at least 512 MiB) allocated as the cache calibration
-allocates, at its page size (`maxpage=` sets it), so each check reads DRAM. Each round fills and
+allocates, so each check reads DRAM. It asks for the page size `maxpage=` gives (2 MiB by default),
+strictly, then for each smaller one in turn where a size is refused; the report and the saved
+calibration name the page size it got. Each round fills and
 checks the whole buffer at every width, in an order rotated each round; the first round is a
 warm-up, then 5 are timed. It reports each width's fill and check speed (MiB/s at the median) and
 its fill + check time (median [min..max]), and picks the fastest by median, or a narrower width

@@ -419,45 +419,66 @@ use std::time::Instant;
 #[cfg(target_arch = "x86_64")]
 use std::arch::x86_64::__rdtscp;
 
-/// A calibration's own memory: `size` bytes at the page size asked for, falling back to smaller
-/// pages where it can't have them (page_size_str: "regular"/"4kb", "large"/"2mb", "huge"/"1gb").
-/// The cache calibration's probes and the seal's calibration both take theirs from here.
-fn allocate_calibration_buffer(size: usize, page_size_str: &str) -> Result<MemoryBuffer, String> {
-    let page_pref = match page_size_str.to_lowercase().as_str() {
-        "regular" | "4kb" => {
-            log::info!("ProbeEngine: Using regular 4KB pages");
-            PageSizePreference::Prefer(PageSizeLevel::Regular)
-        }
-        "huge" | "1gb" => {
-            log::info!("ProbeEngine: Using huge 1GB pages");
-            PageSizePreference::Prefer(PageSizeLevel::Huge)
-        }
-        _ => {
-            log::info!("ProbeEngine: Using large 2MB pages");
-            PageSizePreference::Prefer(PageSizeLevel::Large)
-        }
-    };
+/// The page size a calibration asks for, from its `page_size` (`maxpage=`): "regular"/"4kb",
+/// "huge"/"1gb", else 2 MiB ("large"/"2mb", the default).
+fn calibration_page_size(page_size_str: &str) -> PageSizeLevel {
+    match page_size_str.to_lowercase().as_str() {
+        "regular" | "4kb" => PageSizeLevel::Regular,
+        "huge" | "1gb" => PageSizeLevel::Huge,
+        _ => PageSizeLevel::Large,
+    }
+}
 
-    log::info!("ProbeEngine: Allocating {} bytes for calibration (page_size={})", size, page_size_str);
+/// A page size as a calibration's `page_size` names it (`page_size_name` reads it back).
+fn page_size_str(page: PageSizeLevel) -> &'static str {
+    match page {
+        PageSizeLevel::Regular => "regular",
+        PageSizeLevel::Large => "large",
+        PageSizeLevel::Huge => "huge",
+    }
+}
 
-    // A large-page request gets its page size from its alignment: without it the kernel
-    // silently gives smaller pages (TODO 87). A fallback to smaller pages keeps it, over-aligned.
-    let alignment = match &page_pref {
-        PageSizePreference::Prefer(page @ (PageSizeLevel::Huge | PageSizeLevel::Large)) => Some(page.bytes()),
-        _ => None,
-    };
-    let config = AllocationConfig {
-        size,
-        numa_node: None,
-        page_size: page_pref,
-        memory_type: MemoryType::WriteBack,
-        zero_memory: false,
-        alignment,
-        numa_strict: false,
-    };
-
+/// A calibration's own memory: `size` bytes at `page`, else at the next smaller page size where
+/// it can't have them, down to 4 KiB; with the page size it got. The cache calibration's probes
+/// and the seal's calibration both take theirs from here.
+fn allocate_calibration_buffer(size: usize, page: PageSizeLevel) -> Result<(MemoryBuffer, PageSizeLevel), String> {
     let allocator = MemoryAllocator::new(BackendType::Auto)?;
-    allocator.allocate(&config).map_err(|e| format!("Failed to allocate calibration buffer: {}", e))
+    allocate_stepping_down(size, page, |config| allocator.allocate(config))
+}
+
+/// `allocate_calibration_buffer`'s requests, each made by `allocate`. Each is strict (`Require`),
+/// so the one granted proves its page size: a `Prefer` request falls back inside the backend,
+/// which doesn't say to what, and a page size can't be read back after the fact. Each large-page
+/// request carries its page's alignment, which is how it gets that page size (without it the
+/// kernel silently gives smaller pages, TODO 87); 4 KiB needs none.
+fn allocate_stepping_down<T>(size: usize, page: PageSizeLevel,
+                             mut allocate: impl FnMut(&AllocationConfig) -> Result<T, crate::memory::backend::AllocError>)
+                             -> Result<(T, PageSizeLevel), String> {
+    let mut refused = Vec::new();
+    for level in [PageSizeLevel::Huge, PageSizeLevel::Large, PageSizeLevel::Regular].into_iter().filter(|&l| l <= page) {
+        let config = AllocationConfig {
+            size,
+            numa_node: None,
+            page_size: PageSizePreference::Require(level),
+            memory_type: MemoryType::WriteBack,
+            zero_memory: false,
+            alignment: (level != PageSizeLevel::Regular).then(|| level.bytes()),
+            numa_strict: false,
+        };
+        match allocate(&config) {
+            Ok(buffer) => {
+                if refused.is_empty() {
+                    log::info!("Calibration buffer: {} bytes on {} pages", size, page_size_name(page_size_str(level)));
+                } else {
+                    log::warn!("Calibration buffer: {} bytes on {} pages, after {} refused", size,
+                               page_size_name(page_size_str(level)), refused.join("; "));
+                }
+                return Ok((buffer, level));
+            }
+            Err(e) => refused.push(format!("{} pages ({e})", page_size_name(page_size_str(level)))),
+        }
+    }
+    Err(format!("Failed to allocate calibration buffer: {}", refused.join("; ")))
 }
 
 /// Engine for executing latency probes at specific workload sizes
@@ -495,8 +516,8 @@ impl ProbeEngine {
             return Ok(());
         }
 
-        match allocate_calibration_buffer(max_size, page_size_str) {
-            Ok(buffer) => {
+        match allocate_calibration_buffer(max_size, calibration_page_size(page_size_str)) {
+            Ok((buffer, _)) => {
                 // Setup pointer-chase pattern
                 let base = buffer.as_mut_ptr() as *mut u64;
                 let len = max_size / std::mem::size_of::<u64>();
@@ -1524,7 +1545,8 @@ pub struct SealCalibration {
     /// The pattern measured: the default, `tmr`. A `tm5` run takes the width too.
     pub pattern: String,
     pub buffer_bytes: u64,
-    /// The page size asked for, as the cache calibration's `page_size`
+    /// The page size its buffer got (`allocate_calibration_buffer`): the one asked for (`maxpage=`),
+    /// or a smaller one where that was refused. Named as the cache calibration's `page_size` is.
     pub page_size: String,
     /// Timed runs of each width, after a warm-up run
     pub runs: u32,
@@ -1582,22 +1604,24 @@ fn quantile(values: &[f64], p: f64) -> f64 {
 ///
 /// One thread, this one, as the latency calibration runs, so no other thread's traffic biases a
 /// width (the owner, 2026-10-20). The buffer is `SEAL_L3_MULTIPLE` times the L3 (at least
-/// `SEAL_MIN_BYTES`) from the cache calibration's allocation, at its page size (`page_size`).
+/// `SEAL_MIN_BYTES`) from the cache calibration's allocation, at the page size asked for
+/// (`page_size`) or a smaller one where that is refused; it records the one it got.
 /// Each round fills and then checks the whole buffer at every width in turn, in an order rotated
 /// each round so drift (heat, clocks, other load) falls on every width alike; the first round
 /// warms up (faults in 4 KiB pages, settles clocks) and isn't timed.
 pub fn calibrate_seal(cache_info: &CacheInfo, page_size: &str) -> Result<SealCalibration, String> {
     use crate::seal::{SealKernel, SealPattern, SealWidth};
-    let page = PageSizeLevel::from_config_str(page_size).bytes();
-    let bytes = (cache_info.l3_cache * SEAL_L3_MULTIPLE).max(SEAL_MIN_BYTES).next_multiple_of(page);
+    let page = calibration_page_size(page_size);
+    let bytes = (cache_info.l3_cache * SEAL_L3_MULTIPLE).max(SEAL_MIN_BYTES).next_multiple_of(page.bytes());
     let kernels: Vec<SealKernel> = [SealWidth::W128, SealWidth::W256, SealWidth::W512].into_iter()
         .filter(|w| w.resolve().is_ok())
         .map(|w| SealKernel::new(SealPattern::Tmr, w))
         .collect();
-    log::info!("Seal width calibration: tmr at {:?} bits, {} ({}), {} timed runs each",
-        kernels.iter().map(|k| k.width.bits()).collect::<Vec<_>>(), format_size(bytes), page_size, SEAL_RUNS);
+    log::info!("Seal width calibration: tmr at {:?} bits, {} (asking for {} pages), {} timed runs each",
+        kernels.iter().map(|k| k.width.bits()).collect::<Vec<_>>(), format_size(bytes),
+        page_size_name(page_size_str(page)), SEAL_RUNS);
 
-    let buffer = allocate_calibration_buffer(bytes, page_size)?;
+    let (buffer, obtained) = allocate_calibration_buffer(bytes, page)?;
     let (ptr, words) = (buffer.as_mut_ptr() as *mut u64, bytes / 8);
     // Per kernel, the seconds of each timed fill and each timed check
     let mut times: Vec<(Vec<f64>, Vec<f64>)> = vec![(Vec::new(), Vec::new()); kernels.len()];
@@ -1636,7 +1660,7 @@ pub fn calibrate_seal(cache_info: &CacheInfo, page_size: &str) -> Result<SealCal
         fingerprint: Default::default(),
         pattern: SealPattern::Tmr.name().to_string(),
         buffer_bytes: bytes as u64,
-        page_size: page_size.to_string(),
+        page_size: page_size_str(obtained).to_string(),
         runs: SEAL_RUNS as u32,
         widths,
         width_bits,
@@ -1847,6 +1871,48 @@ mod tests {
         // One width, and none
         assert_eq!(choose(&[steady(256, 40.0)]), Some((256, 256)));
         assert_eq!(choose(&[]), None);
+    }
+
+    /// TODO 99: a calibration's buffer asks for its page size strictly, each large-page request
+    /// with its page's alignment, and at each refusal asks for the next smaller size, down to
+    /// 4 KiB, never a larger one than given; it returns the size it got, which the seal
+    /// calibration records and its report names.
+    #[test]
+    fn a_calibration_buffer_steps_down_and_says_what_it_got() {
+        use crate::memory::backend::AllocError;
+        use PageSizeLevel::{Huge, Large, Regular};
+        const SIZE: usize = 64 << 20;
+        // The page size got, and the requests made: each its page size and alignment
+        let allocate = |page, granted: &[PageSizeLevel]| {
+            let mut asked = Vec::new();
+            let got = allocate_stepping_down(SIZE, page, |config| {
+                let PageSizePreference::Require(level) = config.page_size else { panic!("not strict: {:?}", config.page_size) };
+                assert_eq!((config.size, config.numa_node), (SIZE, None));
+                asked.push((level, config.alignment));
+                if granted.contains(&level) { Ok(()) } else { Err(AllocError::other("refused")) }
+            });
+            (got.map(|((), level)| level), asked)
+        };
+        let (huge, large, regular) = ((Huge, Some(1 << 30)), (Large, Some(2 << 20)), (Regular, None));
+        assert_eq!(allocate(Huge, &[Huge, Large, Regular]), (Ok(Huge), vec![huge]));
+        assert_eq!(allocate(Huge, &[Large, Regular]), (Ok(Large), vec![huge, large]));
+        assert_eq!(allocate(Huge, &[Regular]), (Ok(Regular), vec![huge, large, regular]));
+        assert_eq!(allocate(Large, &[Huge, Large, Regular]), (Ok(Large), vec![large]));
+        assert_eq!(allocate(Large, &[Huge, Regular]), (Ok(Regular), vec![large, regular]));
+        assert_eq!(allocate(Regular, &[Huge, Large, Regular]), (Ok(Regular), vec![regular]));
+        let (refused, asked) = allocate(Huge, &[]);
+        assert_eq!(asked, vec![huge, large, regular]);
+        assert!(refused.unwrap_err().contains("1GB huge pages (refused); 2MB large pages (refused); 4KB regular pages (refused)"));
+
+        // Named as the report names them, and as maxpage= asks for them (2 MiB by default)
+        assert_eq!([Regular, Large, Huge].map(|p| page_size_name(page_size_str(p))), ["4KB regular", "2MB large", "1GB huge"]);
+        for (maxpage, page) in [("regular", Regular), ("4KB", Regular), ("large", Large), ("2mb", Large), ("huge", Huge),
+                                ("1gb", Huge), ("unknown", Large)] {
+            assert_eq!(calibration_page_size(maxpage), page, "{maxpage}");
+        }
+        for page in [Regular, Large, Huge] {
+            assert_eq!(calibration_page_size(page_size_str(page)), page);
+        }
     }
 
     #[test]
