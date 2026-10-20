@@ -87,7 +87,7 @@ pub struct TestResult {
     /// Which of the plan's tests the step ran: steps of one test share it
     pub test_index: usize,
     pub name: String,
-    /// The step's name in reports, e.g. `Mem-SimpleV2_A (Test 12)`
+    /// The step's name in reports, e.g. `Mem-SimpleV2-512_A (Test 12)`
     pub label: String,
     pub duration_ms: u128,
     pub bytes_processed: u64,
@@ -860,7 +860,7 @@ mod tests {
             id: None,
             label: format!("step {step}"),
             seal_errors,
-            name: "Mem-SimpleV2".to_string(),
+            name: "Mem-SimpleV2-Auto".to_string(),
             duration_ms,
             bytes_processed,
             cycles_completed: (1, 1),

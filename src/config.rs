@@ -1142,27 +1142,27 @@ pub fn create_demo_config() -> Self {
             // Critical: Full memory stuck bit test
             TestConfig {
                 enabled: true,
-                function: "Mem-StuckBit".to_string(),
+                function: "Mem-StuckBitAuto".to_string(),
                 cycles: Some(1),                       // 1 cycle is thorough enough
                 extent: Some(ExtentSpec::full_allocation()), // Must test ALL memory
                 chunk: Some(ChunkSpec::absolute("512MiB")),  // Above a desktop L3; capped per block piece
                 ..Default::default()
             },
 
-            // Mem-Refresh - needs small extent for refresh timing
+            // Mem-RefreshAuto - needs small extent for refresh timing
             TestConfig {
                 enabled: true,
-                function: "Mem-Refresh".to_string(),
+                function: "Mem-RefreshAuto".to_string(),
                 cycles: Some(1),
                 extent: Some(ExtentSpec::cache_total(2.0)), // 2x cache for refresh testing
                 chunk: Some(ChunkSpec::absolute("1MB")),    // Small 1MB blocks
                 ..Default::default()
             },
             
-            // Mem-Simple - general pattern test with TM5 compatibility
+            // Mem-SimpleV2-Auto - general pattern test with TM5 compatibility
             TestConfig {
                 enabled: true,
-                function: "Mem-SimpleV2".to_string(),
+                function: "Mem-SimpleV2-Auto".to_string(),
                 cycles: Some(1),
                 extent: Some(ExtentSpec::absolute("880MB")), // a fixed extent
                 chunk: Some(ChunkSpec::absolute("16MB")),    // TM5 typical block size
@@ -1239,7 +1239,7 @@ pub fn create_demo_config() -> Self {
             // Legacy TM5-style test with one large block
             TestConfig {
                 enabled: true,
-                function: "Mem-SimpleV2".to_string(),
+                function: "Mem-SimpleV2-Auto".to_string(),
                 cycles: Some(1),
                 chunk: Some(ChunkSpec::absolute("512MiB")),
                 pattern_mode: Some(0),
@@ -1296,14 +1296,14 @@ pub fn create_demo_config() -> Self {
             test_sequence: vec![
                 TestConfig {
                     enabled: true,
-                    function: "Mem-StuckBit".to_string(),
+                    function: "Mem-StuckBitAuto".to_string(),
                     cycles: Some(1),
                     extent: Some(ExtentSpec::full_allocation()), // Override to test all memory
                     ..Default::default()
                 },
                 TestConfig {
                     enabled: true,
-                    function: "Mem-SimpleV2".to_string(),
+                    function: "Mem-SimpleV2-Auto".to_string(),
                     cycles: Some(1),
                     chunk: Some(ChunkSpec::absolute("16MB")),    // TM5-style block size
                     pattern_mode: Some(1),
@@ -1466,23 +1466,29 @@ impl LegacyConfig {
 
             // A SimpleTest's mode becomes a native program (pattern spec v2): its intent's family
             // and switching, then mixed data and switching (`Program::from_tm5_mode`), or a native
-            // family's number that family alone, at the widest width, every width writing one image. With patterns=legacy it keeps TMR's
-            // numbered mode on the scalar test (spec 1), to compare. No other function reads the
-            // pattern fields, so they get none.
+            // family's number that family alone, at the widest width, every width writing one
+            // image. With patterns=legacy it keeps TMR's numbered mode (spec 1), to compare, on
+            // the same widest width (TODO 99: there is no scalar test). No other function reads
+            // the pattern fields, so they get none.
             let (function, program, pattern) = match function.as_str() {
-                "Mem-SimpleV2" if crate::pattern::legacy_import() => {
+                "Mem-SimpleV2-Auto" if crate::pattern::legacy_import() => {
                     (function, None, Some((test.pattern_mode, test.pattern_param0, test.pattern_param1)))
                 }
-                "Mem-SimpleV2" => match crate::pattern::Program::from_tm5_mode(test.pattern_mode)
+                "Mem-SimpleV2-Auto" => match crate::pattern::Program::from_tm5_mode(test.pattern_mode)
                     .or_else(|| crate::pattern::Family::from_number(test.pattern_mode).map(crate::pattern::Program::single))
                 {
-                    Some(program) => ("Mem-SimpleV2-Auto".to_string(), Some(program.names()), None),
+                    Some(program) => (function, Some(program.names()), None),
                     // Not one of TM5's: kept as the TMR mode it names (build_test refuses one TMR
                     // doesn't have)
                     None => (function, None, Some((test.pattern_mode, test.pattern_param0, test.pattern_param1))),
                 },
                 _ => (function, None, None),
             };
+            // An imported RefreshStable flushes each chunk before its sleep, as the scalar
+            // Mem-Refresh it ran on until TODO 99 did always: a chunk the .cfg sizes inside the
+            // caches would otherwise verify cached copies. The built-in Mem-RefreshAuto doesn't
+            // (its extent is twice the caches)
+            let flush_before_verify = (function == "Mem-RefreshAuto").then_some(true);
             test_sequence.push(TestConfig {
                 id: Some(test.id.to_string()),
                 enabled: test.enabled,
@@ -1507,6 +1513,7 @@ impl LegacyConfig {
                 // A mirror test's Parameter becomes its mode
                 mirror,
                 parameter: if mirror.is_some() { None } else { Some(test.parameter) },
+                flush_before_verify,
                 ..Default::default()
             });
         }
@@ -1665,28 +1672,29 @@ impl LegacyConfig {
 
 fn map_legacy_function(legacy_name: &str) -> Result<String, String> {
     match legacy_name {
-        // TM5 legacy names -> new prefixed names
-        "RefreshStable" => Ok("Mem-Refresh".to_string()),
-        "SimpleTest" => Ok("Mem-SimpleV2".to_string()),
+        // TM5 legacy names -> new prefixed names, at the widest width the CPU has: TMR has no
+        // scalar tests (TODO 99), and its startup gate requires AVX2
+        "RefreshStable" => Ok("Mem-RefreshAuto".to_string()),
+        "SimpleTest" => Ok("Mem-SimpleV2-Auto".to_string()),
         // Both mirrors run the widest SIMD the CPU has; the 128 in MirrorMove128 is its swap
         // size, not a vector width (TODO 85)
         "MirrorMove" | "MirrorMove128" => Ok("Mem-MirrorV2-Auto".to_string()),
         "BlockMove" => Ok("Mem-BlockMove".to_string()),
-        // Also accept new names directly
-        "Mem-Refresh" => Ok("Mem-Refresh".to_string()),
-        "Mem-Simple" => Ok("Mem-SimpleV2".to_string()),
-        "Mem-Mirror" => Ok("Mem-MirrorV2".to_string()),
+        // Also accept new names directly, a name without a width at the widest
+        "Mem-Refresh" => Ok("Mem-RefreshAuto".to_string()),
+        "Mem-Simple" => Ok("Mem-SimpleV2-Auto".to_string()),
+        "Mem-Mirror" => Ok("Mem-MirrorV2-Auto".to_string()),
         "Mem-Mirror128" => Ok("Mem-MirrorV2-128".to_string()),
         "Mem-Mirror256" => Ok("Mem-MirrorV2-256".to_string()),
         "Mem-Mirror512" => Ok("Mem-MirrorV2-512".to_string()),
         "Mem-BlockMove" => Ok("Mem-BlockMove".to_string()),
-        "Mem-StuckBit" => Ok("Mem-StuckBit".to_string()),
+        "Mem-StuckBit" => Ok("Mem-StuckBitAuto".to_string()),
         "Mem-CacheBust" => Ok("Mem-CacheBust".to_string()),
         "Mem-Random" => Ok("Mem-Random".to_string()),
         "Mem-Stride" => Ok("Mem-Stride".to_string()),
         // v2 test names (accepted directly)
-        "Mem-SimpleV2" => Ok("Mem-SimpleV2".to_string()),
-        "Mem-MirrorV2" => Ok("Mem-MirrorV2".to_string()),
+        "Mem-SimpleV2" => Ok("Mem-SimpleV2-Auto".to_string()),
+        "Mem-MirrorV2" => Ok("Mem-MirrorV2-Auto".to_string()),
         "Mem-MirrorV2-128" => Ok("Mem-MirrorV2-128".to_string()),
         "Mem-MirrorV2-256" => Ok("Mem-MirrorV2-256".to_string()),
         "Mem-MirrorV2-512" => Ok("Mem-MirrorV2-512".to_string()),
@@ -1751,7 +1759,7 @@ pub fn create_demo_configs() -> Result<(), String> {
     println!("  Stage 2: Extent - how much of the allocation each test covers");
     println!("  Stage 3: Block/Chunk Size - Auto-optimized per test with alignment");
     println!("  Timing: Per-test cycles/duration limits + global suite limits");
-    println!("  Critical: Mem-StuckBit ensures full memory coverage for bit errors");
+    println!("  Critical: Mem-StuckBitAuto ensures full memory coverage for bit errors");
 
     Ok(())
 }
@@ -1821,15 +1829,30 @@ mod tests {
     }
 
     /// TODO 76: an imported RefreshStable covers the full allocation too, and as TM5's test 0 it
-    /// is the seal check (TODO 74).
+    /// is the seal check (TODO 74). TODO 99: elsewhere it is Mem-RefreshAuto, flushing each chunk
+    /// before its sleep as the scalar Mem-Refresh it used to be did.
     #[test]
     fn imported_refresh_covers_the_full_allocation() {
         let modern = legacy(100, vec![test(0, "RefreshStable", 100, 0), test(4, "RefreshStable", 100, 0)]).to_modern_config().unwrap();
         let configs = modern.get_test_configs().unwrap();
-        assert_eq!(configs.iter().map(|(name, _)| *name).collect::<Vec<_>>(), ["Seal-Check", "Mem-Refresh"]);
+        assert_eq!(configs.iter().map(|(name, _)| *name).collect::<Vec<_>>(), ["Seal-Check", "Mem-RefreshAuto"]);
         for (name, config) in &configs {
             assert_eq!(config.calculate_extent_size(name, 5 * 1024 * MIB), 5 * 1024 * MIB);
         }
+        assert!(configs[1].1.flush_before_verify, "the refresh test doesn't flush");
+        assert!(!configs[0].1.flush_before_verify, "the seal check flushes");
+    }
+
+    /// TODO 99: a .cfg's TMR names without a width (and TM5's own) import at the widest width;
+    /// TMR has no scalar tests. A name with a width keeps it.
+    #[test]
+    fn widthless_names_import_at_the_widest_width() {
+        let tests = ["Mem-Refresh", "Mem-StuckBit", "Mem-Simple", "Mem-SimpleV2", "Mem-Mirror", "Mem-MirrorV2", "Mem-Mirror256", "SimpleTest"]
+            .iter().enumerate().map(|(i, f)| test(i as u32 + 1, f, 100, 0)).collect();
+        let modern = legacy(100, tests).to_modern_config().unwrap();
+        let functions: Vec<&str> = modern.test_sequence.iter().map(|t| t.function.as_str()).collect();
+        assert_eq!(functions, ["Mem-RefreshAuto", "Mem-StuckBitAuto", "Mem-SimpleV2-Auto", "Mem-SimpleV2-Auto", "Mem-MirrorV2-Auto",
+                               "Mem-MirrorV2-Auto", "Mem-MirrorV2-256", "Mem-SimpleV2-Auto"]);
     }
 
     /// An invalid extent or chunk spec stops the run: no fallback to the default, which would
@@ -1947,7 +1970,7 @@ mod tests {
         let quiet = load(TestConfig { pattern_mode: Some(32), ..entry(None, None) }).unwrap();
         assert_eq!(quiet.native_program(), Some(crate::pattern::Program::single(crate::pattern::Family::Quiet)));
         assert!(load(TestConfig { program: Some(vec!["header".into()]), ..entry(None, None) }).is_ok());
-        let not_it = TestConfig { enabled: true, function: "Mem-StuckBit".into(), sequence: Some("W R".into()), ..Default::default() };
+        let not_it = TestConfig { enabled: true, function: "Mem-StuckBitAuto".into(), sequence: Some("W R".into()), ..Default::default() };
         assert!(load(not_it).unwrap_err().contains("only Mem-Sequence reads"));
     }
 
@@ -2005,12 +2028,12 @@ mod tests {
         let t = &modern.test_sequence[0];
         assert_eq!((t.function.as_str(), t.pattern_mode, t.program.as_deref()), ("Mem-SimpleV2-Auto", None, Some(&["quiet".to_string()][..])));
 
-        // A mode TM5 doesn't have but TMR does stays that mode, on the scalar test
+        // A mode TM5 doesn't have but TMR does stays that mode, at the widest width (TODO 99)
         let mut tmr_mode = test(3, "SimpleTest", 100, 16);
         tmr_mode.pattern_mode = 13;
         let modern = legacy(100, vec![tmr_mode]).to_modern_config().unwrap();
         let t = &modern.test_sequence[0];
-        assert_eq!((t.function.as_str(), t.pattern_mode, t.program.as_ref()), ("Mem-SimpleV2", Some(13), None));
+        assert_eq!((t.function.as_str(), t.pattern_mode, t.program.as_ref()), ("Mem-SimpleV2-Auto", Some(13), None));
         assert!(modern.get_test_configs().is_ok());
     }
 
@@ -2096,7 +2119,7 @@ mod tests {
     #[test]
     fn parameter_strides_simple_tests_at_every_width() {
         let mut modern = ModernConfig::create_demo_config();
-        modern.test_sequence = ["Mem-SimpleV2", "Mem-SimpleV2-128", "Mem-SimpleV2-256", "Mem-SimpleV2-512", "Mem-SimpleV2-Auto", "Mem-StuckBit"]
+        modern.test_sequence = ["Mem-SimpleV2-128", "Mem-SimpleV2-256", "Mem-SimpleV2-512", "Mem-SimpleV2-Auto", "Mem-StuckBitAuto"]
             .iter()
             .map(|f| TestConfig { enabled: true, function: f.to_string(), parameter: Some(8), ..Default::default() })
             .collect();
@@ -2204,7 +2227,7 @@ mod tests {
         assert!("subblocks:3".parse::<MirrorMode>().unwrap_err().contains("three subblocks"));
         let json: TestConfig = serde_json::from_str(r#"{"enabled": true, "function": "Mem-MirrorV2-Auto", "mirror": "jump:2"}"#).unwrap();
         assert_eq!(json.mirror, Some(MirrorMode::Jump(2)));
-        assert!(serde_json::from_str::<TestConfig>(r#"{"enabled": true, "function": "Mem-MirrorV2", "mirror": "subblocks:3"}"#).is_err());
+        assert!(serde_json::from_str::<TestConfig>(r#"{"enabled": true, "function": "Mem-MirrorV2-Auto", "mirror": "subblocks:3"}"#).is_err());
     }
 
 }

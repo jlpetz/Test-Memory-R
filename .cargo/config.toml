@@ -13,11 +13,12 @@ rustflags = ["-C", "target-cpu=x86-64-v3"]
 # is a 512-bit op regardless of baseline; an AVX-512 variant still gets 512-bit via its
 # own #[target_feature]. The baseline only caps the autovectorizer on *untyped* loops.
 #
-# CONSEQUENCE — the "scalar" test variants are NOT truly scalar at a v3 baseline: LLVM may
-# autovectorize them up to 256-bit (AVX2). They are correctness/portability fallbacks, not
-# a guaranteed-narrow measurement. A real scalar width (for width-vs-fault benchmarking)
-# needs explicit read_volatile/write_volatile or a serial dependency chain — the baseline
-# never gave it to us (at v2 they were already 128-bit SSE, not scalar).
+# CONSEQUENCE — untyped u64 loops are NOT scalar at a v3 baseline: LLVM may autovectorize
+# them up to 256-bit (AVX2). That is why the "scalar" test variants were removed (TODO 99,
+# 2026-10-20): never scalar-shaped, and with the AVX2 startup gate no fallback either. A
+# real scalar width (for width-vs-fault benchmarking) needs explicit
+# read_volatile/write_volatile or a serial dependency chain — the baseline never gave it
+# to us (at v2 they were already 128-bit SSE, not scalar).
 #
 # CLFLUSHOPT is NOT in ANY psABI level (v1-v4) — it is a standalone CPUID feature flag,
 # so the v3 baseline does not enable it. We DO NOT set "+clflushopt" here: TMR emits it

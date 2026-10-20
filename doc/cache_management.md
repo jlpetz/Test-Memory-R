@@ -451,7 +451,7 @@ is coverage per unit time** — faster cycles find more errors than a marginally
 stricter single pass.
 
 So it is now a flag (`flush_before_verify`), default **off**, with
-`Mem-Refresh-Flush` registered for when you want the DRAM round-trip
+`Mem-Refresh-FlushAuto` registered for when you want the DRAM round-trip
 architecturally guaranteed rather than dependent on replacement policy
 (non-inclusive caches, prefetchers, another VM's L3 pressure).
 

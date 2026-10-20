@@ -4,8 +4,8 @@
 > `pattern_mode` runs a native program instead (pattern spec 2, `doc/pattern_spec.md`): families
 > chosen by what they find (identity, mixed data, switching, TM5 mode 2's and mode 1's intents),
 > as P/~P pairs keyed per cycle and step. A TM5 `.cfg` imports as native programs; `patterns=legacy`
-> keeps these modes, to compare. Under a SIMD width (`Mem-SimpleV2-128/256/512/Auto`), modes 0, 1,
-> 2, 13 and 30 run the scalar build's own image; they used to write mode 10's (TODO 3).
+> keeps these modes, to compare. At every width (`Mem-SimpleV2-128/256/512/Auto`), modes 0, 1,
+> 2, 13 and 30 run the shared loops' own image; they used to write mode 10's (TODO 3).
 
 TMR has 8 numbered modes. TM5's keep its numbers, 0-2. TMR's are grouped by tens, by what the
 pattern is: 1x identities (every position its own value), 2x in-line arithmetic (a line's words
@@ -160,20 +160,26 @@ Use `pattern_mode` field in test config: 0-2, 10, 11, 13, 20 or 30, or a native 
 
 ## SIMD Support
 
-| Mode | Scalar | SSE2 (128) | AVX2 (256) | AVX-512 (512) |
-|------|--------|------------|------------|---------------|
-| 0 | Yes | Positional* | Positional* | Positional* |
-| 1 | Yes | Positional* | Positional* | Positional* |
-| 2 | Yes | Positional* | Positional* | Positional* |
-| 10 | Yes | Yes | Yes | Yes |
-| 11 | Yes | Yes | Yes | Yes |
-| 13 | Yes | Positional* | Positional* | Positional* |
-| 20 | Yes | Yes | Yes | Yes |
-| 30 | Yes | Scalar† | Scalar† | Scalar† |
+| Mode | SSE2 (128) | AVX2 (256) | AVX-512 (512) |
+|------|------------|------------|---------------|
+| 0 | Shared* | Shared* | Shared* |
+| 1 | Shared* | Shared* | Shared* |
+| 2 | Shared* | Shared* | Shared* |
+| 10 | Yes | Yes | Yes |
+| 11 | Yes | Yes | Yes |
+| 13 | Shared* | Shared* | Shared* |
+| 20 | Yes | Yes | Yes |
+| 30 | Shared*† | Shared*† | Shared*† |
 
-*Modes 0/1/2 and 13 use the positional SIMD path (mode 10/11 patterns) as an approximation when running in SIMD test variants. Full TM5-faithful SIMD implementations are planned (TODO 3).
+There is no scalar variant (TODO 99, 2026-10-20): the AVX2 startup gate made it no fallback, and
+the compiler had always vectorized it.
 
-†Mode 30's SIMD variants run the scalar build: a line is one or two values, which it already stores at the baseline's full width (two 32 B stores a line; four lines a loop iteration sequentially).
+*Every width runs modes 0, 1, 2, 13 and 30 on the shared loops (`simple_test_v2_loops`), written
+as explicit `u64x4`, so 256 bits at every width, each mode's own image (they used to write mode
+10's, TODO 3).
+
+†Mode 30's line is one or two values, which the shared loops already store at the baseline's full
+width (two 32 B stores a line; four lines a loop iteration sequentially).
 
 ## DDR5 Context
 
@@ -189,4 +195,4 @@ TM5 SimpleTest stride formula: `JumpStep = BlkSize * (Channels * Parameter - 1)`
 
 In TMR: `stride_cachelines = Channels * Parameter - 1` (default Channels=2 for DDR5 dual-channel).
 
-Strided access moves a whole 64 B line per jump, as TM5 does (TODO 93), so every mode works strided with the sequential image, except that the scalar test's strided mode 2 writes mode 20's lines: mode 2's chain runs a page in order, and the walk visits a page's lines a period apart.
+Strided access moves a whole 64 B line per jump, as TM5 does (TODO 93), so every mode works strided with the sequential image, except that strided mode 2 writes mode 20's lines: mode 2's chain runs a page in order, and the walk visits a page's lines a period apart.

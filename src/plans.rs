@@ -38,14 +38,15 @@ const STABILITY: &[&str] = &[
     "Mem-BlockMove",
 ];
 
-/// The families with width variants, every width side by side: one run, so every width tests
-/// the same memory in the same few seconds of each cycle.
+/// The families with width variants, every width side by side (128, 256, 512 and Auto; there are
+/// no scalar ones since TODO 99): one run, so every width tests the same memory in the same few
+/// seconds of each cycle.
 const WIDTHS: &[&str] = &[
-    "Mem-StuckBit", "Mem-StuckBit128", "Mem-StuckBit256", "Mem-StuckBit512", "Mem-StuckBitAuto",
+    "Mem-StuckBit128", "Mem-StuckBit256", "Mem-StuckBit512", "Mem-StuckBitAuto",
     "Mem-SimpleNT-128", "Mem-SimpleNT-256", "Mem-SimpleNT-512", "Mem-SimpleNT-Auto",
-    "Mem-Refresh", "Mem-Refresh128", "Mem-Refresh256", "Mem-Refresh512", "Mem-RefreshAuto",
-    "Mem-SimpleV2", "Mem-SimpleV2-128", "Mem-SimpleV2-256", "Mem-SimpleV2-512", "Mem-SimpleV2-Auto",
-    "Mem-MirrorV2", "Mem-MirrorV2-128", "Mem-MirrorV2-256", "Mem-MirrorV2-512", "Mem-MirrorV2-Auto",
+    "Mem-Refresh128", "Mem-Refresh256", "Mem-Refresh512", "Mem-RefreshAuto",
+    "Mem-SimpleV2-128", "Mem-SimpleV2-256", "Mem-SimpleV2-512", "Mem-SimpleV2-Auto",
+    "Mem-MirrorV2-128", "Mem-MirrorV2-256", "Mem-MirrorV2-512", "Mem-MirrorV2-Auto",
 ];
 
 /// Unloaded latency (one dependent access at a time, the figure other tools report), bandwidth,

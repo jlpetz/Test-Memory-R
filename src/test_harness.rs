@@ -297,13 +297,14 @@ where
     }
 }
 
-/// Auto-dispatch macro: generates a function that selects the best SIMD variant at runtime.
+/// Auto-dispatch macro: generates a function that selects the best SIMD variant at runtime, the
+/// 128-bit one when the CPU has neither AVX-512 nor AVX2 (the startup gate requires AVX2, so
+/// that is a fallback that never runs).
 ///
 /// Usage:
 /// ```ignore
 /// auto_dispatch!(
 ///     pub mirror_move_v2_auto_multi,
-///     mirror_move_v2_multi,        // scalar fallback
 ///     mirror_move_v2_128_multi,    // SSE2
 ///     mirror_move_v2_256_multi,    // AVX2
 ///     mirror_move_v2_512_multi     // AVX-512
@@ -313,7 +314,6 @@ where
 macro_rules! auto_dispatch {
     (
         pub $name:ident,
-        $scalar:ident,
         $sse:ident,
         $avx2:ident,
         $avx512:ident
@@ -335,11 +335,8 @@ macro_rules! auto_dispatch {
                 if is_x86_feature_detected!("avx2") {
                     return $avx2(blocks, thread_id, error_mode, timing, config, progress);
                 }
-                if is_x86_feature_detected!("sse2") {
-                    return $sse(blocks, thread_id, error_mode, timing, config, progress);
-                }
             }
-            $scalar(blocks, thread_id, error_mode, timing, config, progress)
+            $sse(blocks, thread_id, error_mode, timing, config, progress)
         }
     };
 }

@@ -7,7 +7,7 @@ thread_local! {
     static CONTEXT: RefCell<String> = const { RefCell::new(String::new()) };
 }
 
-/// Set this thread's context, e.g. `step 7 (Test 12, Mem-SimpleV2), cycle 2, thread 3`.
+/// Set this thread's context, e.g. `step 7 (Test 12, Mem-SimpleV2-512_A), cycle 2, thread 3`.
 pub fn set(context: String) {
     CONTEXT.with(|c| *c.borrow_mut() = context);
 }
@@ -17,8 +17,8 @@ pub fn get() -> String {
     CONTEXT.with(|c| c.borrow().clone())
 }
 
-/// The start of an error line from `who`: `Error found by Mem-SimpleV2 in step 7 (Test 12,
-/// Mem-SimpleV2), cycle 2, thread 3`, or without a context, `Error found by Mem-SimpleV2`.
+/// The start of an error line from `who`: `Error found by Mem-SimpleV2-512 in step 7 (Test 12,
+/// Mem-SimpleV2), cycle 2, thread 3`, or without a context, `Error found by Mem-SimpleV2-512`.
 pub fn found_by(who: &str) -> String {
     let context = get();
     if context.is_empty() {
@@ -29,7 +29,7 @@ pub fn found_by(who: &str) -> String {
 }
 
 /// The same for the seal, whose `what` says where it ran: `Error found by the seal check before
-/// step 7 (Test 12, Mem-SimpleV2), cycle 2, thread 3`.
+/// step 7 (Test 12, Mem-SimpleV2-512_A), cycle 2, thread 3`.
 pub fn found_by_the(what: &str) -> String {
     let context = get();
     if context.is_empty() {

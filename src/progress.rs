@@ -79,7 +79,7 @@ pub struct TestSummary {
     pub test_index: usize,
     /// The test's config id (a TM5 import's test number)
     pub id: Option<String>,
-    /// The step's name in reports, e.g. `Mem-SimpleV2_A (Test 12)`
+    /// The step's name in reports, e.g. `Mem-SimpleV2-512_A (Test 12)`
     pub label: String,
     /// What the seal checks before its chunks found (TODO 74): not the test's errors
     pub seal_errors: u64,

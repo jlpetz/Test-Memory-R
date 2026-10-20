@@ -206,7 +206,7 @@ Once a test saturates DRAM (multi-threaded, large working set), **all widths lan
 DRAM is the ceiling, not compute. Width differences only appear single-threaded or
 cache-resident. Corollaries:
 
-- Don't tune width on a bandwidth-bound test (e.g. `Mem-Refresh` multi-threaded).
+- Don't tune width on a bandwidth-bound test (e.g. `Mem-RefreshAuto` multi-threaded).
 - Cached (WB) stores move data one **64-byte cache line** at a time regardless of store width;
   "wider stores = fewer round trips" is a **misconception** — the RFO/line-fill count is
   `bytes / 64`, not `bytes / width`.
@@ -287,7 +287,8 @@ From TODO 99 (2026-10-19, dev box, Granite Rapids with AVX-512). Check every one
    stack each step (Mem-CacheBust's verify, and Mem-Stride's when rewritten that way). When that
    happens, write the vector form with its four accumulators explicitly (`CacheBustChunk::verify`).
    The loop vectorizer leaves a loop that already holds `std::simd` types alone, so explicit
-   `u64x4` is also how a "scalar" variant keeps the shape you wrote (legacy SimpleTest's).
+   `u64x4` is also how a loop over `u64` words keeps the shape you wrote (legacy SimpleTest's shared
+   loops, written for the scalar variant TODO 99 then removed).
 6. **No constant read from memory every iteration.** `vpbroadcastq __real@…(%rip)` in a loop is a
    reload like a stack one. Splat it before the loop so it stays in a register.
 7. **Step a pointer past the end with `wrapping_add`.** `ptr.add` to outside the allocation is

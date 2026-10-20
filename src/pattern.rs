@@ -355,7 +355,9 @@ pub fn linepair_line_v<const N: usize, const V: usize>(lid: u64, key: u64) -> [V
     ident_line_v::<N, V>(lid & !1, key).map(|x| x ^ invert)
 }
 
-/// As `with_phase_line!`, at `$n` lanes: `$line` maps a line id to its `8 / $n` vectors.
+/// Runs `$body` with `$line` the phase's line function at `$n` lanes (a line id to its `8 / $n`
+/// vectors, the polarity applied), matched once outside the body, so a loop in it is compiled per
+/// family and beat with no branch on either.
 macro_rules! with_phase_vectors {
     ($n:tt, $phase:expr, |$line:ident| $body:block) => {{
         const V: usize = $crate::pattern::LINE_WORDS / $n;
@@ -599,7 +601,7 @@ pub struct Phase {
 
 impl Phase {
     /// The 8 words of line `lid`: one match a line, for a cold path or a test. Hot loops match once
-    /// outside the loop with `with_phase_line!`.
+    /// outside the loop with `with_phase_vectors!`.
     pub fn line(&self, lid: u64) -> [u64; LINE_WORDS] {
         let words = match self.family {
             Family::Ident => ident_line(lid, self.key),
@@ -619,101 +621,6 @@ impl Phase {
         format!("{}{}-{}", self.family.name(), beat, if self.mask == 0 { "P" } else { "~P" })
     }
 }
-
-/// Runs `$body` with `$line` the phase's line function (a line id to its 8 words, the polarity
-/// applied), matched once outside the body, so a loop in it is compiled per family and beat with
-/// no branch on either.
-macro_rules! with_phase_line {
-    ($phase:expr, |$line:ident| $body:block) => {{
-        let phase: $crate::pattern::Phase = $phase;
-        let (key, mask) = (phase.key, phase.mask);
-        use $crate::pattern::{Family, LINE_WORDS};
-        use $crate::pattern_gen::BusBeat;
-        #[inline(always)]
-        fn xor(words: [u64; LINE_WORDS], mask: u64) -> [u64; LINE_WORDS] {
-            words.map(|w| w ^ mask)
-        }
-        match (phase.family, phase.beat) {
-            (Family::Ident, _) => {
-                let $line = |lid: u64| xor($crate::pattern::ident_line(lid, key), mask);
-                $body
-            }
-            (Family::Random, _) => {
-                let $line = |lid: u64| xor($crate::pattern::random_line(lid, key), mask);
-                $body
-            }
-            (Family::Lines, _) => {
-                let $line = |lid: u64| xor($crate::pattern::lines_line(lid, key), mask);
-                $body
-            }
-            (Family::Linepair, _) => {
-                let $line = |lid: u64| xor($crate::pattern::linepair_line(lid, key), mask);
-                $body
-            }
-            (Family::Switch, BusBeat::Bits12) => {
-                let $line = |lid: u64| xor($crate::pattern::switch_line(lid, key, BusBeat::Bits12), mask);
-                $body
-            }
-            (Family::Switch, BusBeat::Bits16) => {
-                let $line = |lid: u64| xor($crate::pattern::switch_line(lid, key, BusBeat::Bits16), mask);
-                $body
-            }
-            (Family::Switch, BusBeat::Bits24) => {
-                let $line = |lid: u64| xor($crate::pattern::switch_line(lid, key, BusBeat::Bits24), mask);
-                $body
-            }
-            (Family::Switch, BusBeat::Bits32) => {
-                let $line = |lid: u64| xor($crate::pattern::switch_line(lid, key, BusBeat::Bits32), mask);
-                $body
-            }
-            (Family::Switch, BusBeat::Bits64) => {
-                let $line = |lid: u64| xor($crate::pattern::switch_line(lid, key, BusBeat::Bits64), mask);
-                $body
-            }
-            (Family::Quiet, BusBeat::Bits12) => {
-                let $line = |lid: u64| xor($crate::pattern::quiet_line(lid, key, BusBeat::Bits12), mask);
-                $body
-            }
-            (Family::Quiet, BusBeat::Bits16) => {
-                let $line = |lid: u64| xor($crate::pattern::quiet_line(lid, key, BusBeat::Bits16), mask);
-                $body
-            }
-            (Family::Quiet, BusBeat::Bits24) => {
-                let $line = |lid: u64| xor($crate::pattern::quiet_line(lid, key, BusBeat::Bits24), mask);
-                $body
-            }
-            (Family::Quiet, BusBeat::Bits32) => {
-                let $line = |lid: u64| xor($crate::pattern::quiet_line(lid, key, BusBeat::Bits32), mask);
-                $body
-            }
-            (Family::Quiet, BusBeat::Bits64) => {
-                let $line = |lid: u64| xor($crate::pattern::quiet_line(lid, key, BusBeat::Bits64), mask);
-                $body
-            }
-            (Family::Header, BusBeat::Bits12) => {
-                let $line = |lid: u64| xor($crate::pattern::header_line(lid, key, BusBeat::Bits12), mask);
-                $body
-            }
-            (Family::Header, BusBeat::Bits16) => {
-                let $line = |lid: u64| xor($crate::pattern::header_line(lid, key, BusBeat::Bits16), mask);
-                $body
-            }
-            (Family::Header, BusBeat::Bits24) => {
-                let $line = |lid: u64| xor($crate::pattern::header_line(lid, key, BusBeat::Bits24), mask);
-                $body
-            }
-            (Family::Header, BusBeat::Bits32) => {
-                let $line = |lid: u64| xor($crate::pattern::header_line(lid, key, BusBeat::Bits32), mask);
-                $body
-            }
-            (Family::Header, BusBeat::Bits64) => {
-                let $line = |lid: u64| xor($crate::pattern::header_line(lid, key, BusBeat::Bits64), mask);
-                $body
-            }
-        }
-    }};
-}
-pub(crate) use with_phase_line;
 
 // ─── Run-wide settings ───────────────────────────────────────────────────────────────────────────
 
@@ -1278,15 +1185,6 @@ mod tests {
             if let Some(b) = beat_out {
                 assert_eq!(phase.beat, b, "{what}");
             }
-        }
-    }
-
-    #[test]
-    fn the_macro_matches_phase_line() {
-        for phase in phases() {
-            let got: Vec<[u64; LINE_WORDS]> = with_phase_line!(phase, |line| { (0..64u64).map(line).collect() });
-            let want: Vec<[u64; LINE_WORDS]> = (0..64u64).map(|lid| phase.line(lid)).collect();
-            assert_eq!(got, want, "{}", phase.label());
         }
     }
 

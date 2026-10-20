@@ -220,7 +220,8 @@ family's number (Families) is that family alone.
   `[linepair, switch, random, switch]`, 2 as `[lines, switch, random, switch]`, all on
   `Mem-SimpleV2-Auto`. Switching runs every suite cycle, the mode's intent and mixed data every
   other.
-- **`patterns=legacy`:** the mode stays TMR's numbered mode on the scalar `Mem-SimpleV2`.
+- **`patterns=legacy`:** the mode stays TMR's numbered mode, on `Mem-SimpleV2-Auto` too (TMR has no
+  scalar test since TODO 99).
 
 **Mem-Sequence** takes the program's phases as SimpleTest does, `wrc` being the rounds it writes
 a chunk a cycle (`Sequence::rounds`), from `g = (c - 1) * wrc`. Each pass leaves the chunk holding

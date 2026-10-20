@@ -112,7 +112,7 @@ milliseconds later. The seal checks data that has sat untouched for about one wh
 to minutes) while the step hammered the rest of memory: retention under load, which is sensitive
 to refresh timings, heat and neighbouring-row disturbance. It also catches a test that wrote
 outside its own chunk. TM5 does the same with its test 0 and numbers these errors 0; nothing else
-in TMR waits under load (Mem-Refresh waits 64 ms, idle).
+in TMR waits under load (Mem-Refresh* waits 64 ms, idle).
 
 **How a run uses it** (`seal.rs`, `seal=tmr|tm5|off`, `seal-width=`):
 
@@ -190,9 +190,9 @@ repair (see TODO #13).
 
 | Registration names | Function | Why Tier 1 fits |
 |---|---|---|
-| `Mem-SimpleV2`, `-128/-256/-512/-Auto` | `simple_test_v2_*` | Literally the TM5 shape the harness was modelled on: fill a linear range, read it back `verify_reps` times, repeat `write_read_cycles` times. Strided mode (`simple_test_v2_strided`) still walks a linear chunk — the stride is inside the kernel, not a loop level above it |
+| `Mem-SimpleV2-128/-256/-512/-Auto` | `simple_test_v2_*` | Literally the TM5 shape the harness was modelled on: fill a linear range, read it back `verify_reps` times, repeat `write_read_cycles` times. Strided mode (`simple_test_v2_strided`) still walks a linear chunk — the stride is inside the kernel, not a loop level above it |
 | `Mem-SimpleNT-128/-256/-512/-Auto` | `simple_test_nt_*` | Same shape; only the store primitive changes (NT stores, 4× manual unroll per `doc/nt_stores.md`) |
-| `Mem-MirrorV2`, `-128/-256/-512/-Auto` | `mirror_move_v2_*` | The mirror swap is a perfect `test_fn`: it mutates the chunk in place and leaves it verifiable. Uses `test_reps` to do N round-trips before checking. Pattern-agnostic, so it also runs dependently |
+| `Mem-MirrorV2-128/-256/-512/-Auto` | `mirror_move_v2_*` | The mirror swap is a perfect `test_fn`: it mutates the chunk in place and leaves it verifiable. Uses `test_reps` to do N round-trips before checking. Pattern-agnostic, so it also runs dependently |
 | `Bench-Init-TM5-{0,1,2}`, `Bench-Init-TMR-{10,11,13,20,30}` | `bench_init_multi` | Pure fill throughput — `test_fn` = fill, `verify_fn` = no-op |
 | `Bench-Verify-TM5-{0,1,2}`, `Bench-Verify-TMR-{10,11,13,20,30}` | `bench_verify_multi` | Pure verify throughput. Uses `skip_init` to run dependently on a prior `Bench-Init` |
 
@@ -265,8 +265,8 @@ This is the table to read if you are deciding where a new test goes.
 
 | Registration names | Function / macro | Why the phased harness cannot express it |
 |---|---|---|
-| `Mem-StuckBit{,128,256,512,Auto}`, `Mem-StuckBit-Flush{,Auto,128,256,512}` | `stuck_bit_impl!` (widths), `stuck_bit_test_multi` (scalar) | **Three phases per chunk visit with alternating constants**: write P1→verify, write P2→verify, write P1→verify. `run_phased_test` has one `test_fn`/`verify_fn` pair and one pattern per chunk visit. The third phase (P1 again) specifically catches transition-induced flips, so it is not reducible to two runs of a two-phase test |
-| `Mem-Refresh{,128,256,512,Auto}`, `Mem-Refresh-Flush{,128,256,512,Auto}` | `refresh_impl!` (widths), `refresh_stable_multi` (scalar) | **A 64 ms `sleep` between write and verify, per chunk.** The harness has no delay phase, and the sleep has to be ordered after the fence and after the optional flush — otherwise a cached copy masks the bit-fade the test exists to find (the #26 bug) |
+| `Mem-StuckBit{128,256,512,Auto}`, `Mem-StuckBit-Flush{Auto,128,256,512}` | `stuck_bit_impl!` | **Three phases per chunk visit with alternating constants**: write P1→verify, write P2→verify, write P1→verify. `run_phased_test` has one `test_fn`/`verify_fn` pair and one pattern per chunk visit. The third phase (P1 again) specifically catches transition-induced flips, so it is not reducible to two runs of a two-phase test |
+| `Mem-Refresh{128,256,512,Auto}`, `Mem-Refresh-Flush{128,256,512,Auto}` | `refresh_impl!` | **A 64 ms `sleep` between write and verify, per chunk.** The harness has no delay phase, and the sleep has to be ordered after the fence and after the optional flush — otherwise a cached copy masks the bit-fade the test exists to find (the #26 bug) |
 | `Mem-CacheBust` | `cache_busting_multi` | **Non-linear access order.** Walks the chunk at `CACHE_BUSTING_STRIDE`, and the whole write/verify shape switches on the `stride_patterns` parameter. `ChunkCtx` hands the closure a linear `chunk_start..chunk_end`; the offset-then-stride walk is a loop nest the harness does not have |
 | `Mem-Random` | `random_torture_multi` | **RNG-driven access order** over the piece, indexed by multiply-high (`rng * len >> 64`, any length), iterating `rng_sequences`. Mismatches OR into an accumulator; a nonzero one replays the chunk from its saved RNG state to count and log, each bad word once (TODO 76, 97). Also inits once up front and never re-inits, which does not map onto per-cycle `test_fn`/`verify_fn`, and ends with a sweep of every word in order (TODO 97). (Reads only today — random *writes* are an open item, TODO #19 step 6) |
 | `Mem-Stride` | `stride_access_multi` | **A loop level above the chunk walk.** The nest is cycle → block → *stride* → chunk → subdivision. The harness's nest is cycle → block → chunk, and the stride loop cannot be pushed inside a chunk without changing what is measured |
@@ -280,7 +280,7 @@ performance need. If a proposed test's reason for wanting Tier 2 is "it'll be fa
 a reason — Tier 1 kernels are inlined into the `#[target_feature]` fn and are equally fast.
 
 **Also note**: `Mem-CacheBust`, `Mem-Random`, `Mem-Stride`, `Mem-BlockMove`, `Mem-MovingInv` and
-`Mem-ModuloX` have **no width variants** — one scalar registration each. Their values are each
+`Mem-ModuloX` have **no width variants** — one registration each, with no width in its name. Their values are each
 word's id plus a constant (`pattern::word_base`, TODO 97), so no two threads' words match. At the `x86-64-v3` baseline LLVM may autovectorize
 them to 256-bit, but the width is not chosen or guaranteed.
 

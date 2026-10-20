@@ -73,12 +73,12 @@ mode need to appear.
       "chunk":  { "mode": "absolute", "size": "1MB" }
     },
     {
-      "function": "Mem-StuckBit",
+      "function": "Mem-StuckBitAuto",
       "extent": { "mode": "full_allocation" },
       "chunk":  { "mode": "absolute", "size": "512MiB" }
     },
     {
-      "function": "Mem-SimpleV2",
+      "function": "Mem-SimpleV2-Auto",
       "extent": { "mode": "absolute", "size": "880MB" },
       "chunk":  { "mode": "absolute", "size": "16MB" }
     }
@@ -210,7 +210,7 @@ emits the new shape.
 
 ```json
 {
-  "function": "Mem-Refresh",
+  "function": "Mem-RefreshAuto",
   "extent": { "mode": "cache", "target": "L3" },
   "chunk":  { "mode": "absolute", "size": "1MB" }
 }
@@ -220,7 +220,7 @@ emits the new shape.
 
 ```json
 {
-  "function": "Mem-StuckBit",
+  "function": "Mem-StuckBitAuto",
   "extent": { "mode": "full_allocation" },
   "chunk":  { "mode": "absolute", "size": "512MiB" }
 }
@@ -240,7 +240,7 @@ emits the new shape.
 
 ```json
 {
-  "function": "Mem-SimpleV2",
+  "function": "Mem-SimpleV2-Auto",
   "extent": { "mode": "absolute", "size": "880MB" },
   "chunk":  { "mode": "absolute", "size": "16MB" }
 }

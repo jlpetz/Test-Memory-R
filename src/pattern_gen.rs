@@ -193,7 +193,9 @@ pub fn pattern_mode10(idx: u64, base: u64) -> u64 {
 /// Mode 11 (TMR-native): Simple XOR with pre-combined constant. Substitutes for Mode 1.
 ///
 /// Caller passes `param0 ^ param1` pre-computed as `combined`, each element = `idx ^ combined`.
-/// No step evolution, no complement toggle.
+/// No step evolution, no complement toggle. The tests' definition: the kernels compute it as mode
+/// 10's of the combined key (TODO 99 removed the scalar test, the last that called this).
+#[cfg(test)]
 #[inline(always)]
 pub fn pattern_mode11(idx: u64, combined: u64) -> u64 {
     idx ^ combined

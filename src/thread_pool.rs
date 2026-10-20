@@ -23,7 +23,7 @@ pub enum WorkItem {
         test_config: Box<TestMemoryConfig>,  // Boxed: the variant would otherwise be ~300 bytes against a unit `Shutdown`
         error_mode: ErrorMode,
         barrier: Arc<Barrier>,
-        /// Where the step is in the run, for its error lines: `step 7 (Test 12, Mem-SimpleV2), cycle 2`
+        /// Where the step is in the run, for its error lines: `step 7 (Test 12, Mem-SimpleV2-512_A), cycle 2`
         context: String,
     },
     /// Before a step in a sealed run, the seal work between steps (TODO 74, `seal_before_step`):

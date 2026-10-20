@@ -185,20 +185,20 @@ mod tests {
     fn the_resolved_layout_is_the_tests() {
         use crate::tests::{ChunkMode, ExtentMode, TestMemoryConfig};
         let full = TestMemoryConfig::new(ExtentMode::FullAllocation, ChunkMode::Absolute { size_bytes: 4 * MIB });
-        let (extent, spread) = resolve_layout(&full, "Mem-SimpleV2", 7 * GIB).unwrap();
+        let (extent, spread) = resolve_layout(&full, "Mem-SimpleV2-Auto", 7 * GIB).unwrap();
         assert_eq!((extent, spread.count(), spread.chunk(), spread.overlap()), (7 * GIB, 1792, 4 * MIB, 0));
         let window = TestMemoryConfig::new(ExtentMode::Absolute { size_bytes: 1000 * MIB + 100 }, ChunkMode::Absolute { size_bytes: 16 * MIB });
         let (extent, spread) = resolve_layout(&window, "Mem-BlockMove", 7 * GIB).unwrap();
         assert_eq!((extent, spread.count(), spread.overlap()), (1000 * MIB, 63, 8 * MIB));
-        assert_eq!(resolve_layout(&full, "Mem-SimpleV2", 7 * GIB).map(|(e, s)| (e, s.count())),
+        assert_eq!(resolve_layout(&full, "Mem-SimpleV2-Auto", 7 * GIB).map(|(e, s)| (e, s.count())),
                    Some((extent_of(&full, 7 * GIB), 1792)));
-        assert!(resolve_layout(&full, "Mem-SimpleV2", 0).is_none());
+        assert!(resolve_layout(&full, "Mem-SimpleV2-Auto", 0).is_none());
     }
 
     /// What `TestRunner::new` covers: `test_extent` on a span of `memory` bytes.
     fn extent_of(config: &crate::tests::TestMemoryConfig, memory: usize) -> usize {
         let span = blocks(1 << 40, &[memory]);
-        crate::test_scaffolding::test_extent(&span, config, "Mem-SimpleV2").0.test_size
+        crate::test_scaffolding::test_extent(&span, config, "Mem-SimpleV2-Auto").0.test_size
     }
 
     #[test]

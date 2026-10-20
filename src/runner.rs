@@ -5,9 +5,9 @@ use crate::MemoryAllocationConfig;
 use globset::{Glob, GlobMatcher};
 use crate::tests::{TestStats, TestMemoryConfig, TestTiming, TestProgress};
 use crate::tests::{
-    stuck_bit_test_multi, stuck_bit_test_128_multi, stuck_bit_test_256_multi, stuck_bit_test_512_multi,
+    stuck_bit_test_128_multi, stuck_bit_test_256_multi, stuck_bit_test_512_multi,
     stuck_bit_test_auto_multi,
-    refresh_stable_multi, refresh_stable_128_multi, refresh_stable_256_multi, refresh_stable_512_multi,
+    refresh_stable_128_multi, refresh_stable_256_multi, refresh_stable_512_multi,
     refresh_stable_auto_multi,
     simple_test_nt_128_multi, simple_test_nt_256_multi, simple_test_nt_512_multi,
     simple_test_nt_auto_multi,
@@ -15,10 +15,8 @@ use crate::tests::{
     random_torture_multi,
     stride_access_multi, block_move_multi, moving_inversions_multi, modulo_x_multi, sequence_auto_multi,
     // v2 tests
-    simple_test_v2_multi,
     simple_test_v2_128_multi, simple_test_v2_256_multi, simple_test_v2_512_multi,
     simple_test_v2_auto_multi,
-    mirror_move_v2_multi,
     mirror_move_v2_128_multi, mirror_move_v2_256_multi, mirror_move_v2_512_multi,
     mirror_move_v2_auto_multi,
     bench_init_multi,
@@ -2055,7 +2053,8 @@ fn resolve_auto_dispatch_test(test_name: &str) -> Option<(&'static str, TestFunc
                 _ => return None,
             },
         })
-    } else if is_x86_feature_detected!("sse2") {
+    } else {
+        // SSE2 is always available on x86-64 (and the startup gate requires AVX2)
         ("128", match base_name {
             "Mem-MirrorV2-" => TestFunction::MultiBlock(mirror_move_v2_128_multi),
             "Mem-SimpleV2-" => TestFunction::MultiBlock(simple_test_v2_128_multi),
@@ -2064,25 +2063,6 @@ fn resolve_auto_dispatch_test(test_name: &str) -> Option<(&'static str, TestFunc
             "Mem-StuckBit-Flush" => TestFunction::MultiBlock(stuck_bit_test_128_multi),
             "Mem-Refresh" => TestFunction::MultiBlock(refresh_stable_128_multi),
             "Mem-Refresh-Flush" => TestFunction::MultiBlock(refresh_stable_128_multi),
-            _ => match spd_op {
-                Some("read") => TestFunction::MultiBlock(spd_read_128_multi),
-                Some("write") => TestFunction::MultiBlock(spd_write_128_multi),
-                Some("write_nt") => TestFunction::MultiBlock(spd_write_nt_128_multi),
-                Some("copy") => TestFunction::MultiBlock(spd_copy_128_multi),
-                Some("copy_nt") => TestFunction::MultiBlock(spd_copy_nt_128_multi),
-                _ => return None,
-            },
-        })
-    } else {
-        // Fallback to scalar: no scalar Spd-* variants exist, use 128 (SSE2 always available on x86-64)
-        ("128", match base_name {
-            "Mem-MirrorV2-" => { return Some(("Mem-MirrorV2", TestFunction::MultiBlock(mirror_move_v2_multi))); },
-            "Mem-SimpleV2-" => { return Some(("Mem-SimpleV2", TestFunction::MultiBlock(simple_test_v2_multi))); },
-            "Mem-SimpleNT-" => TestFunction::MultiBlock(simple_test_nt_128_multi),
-            "Mem-StuckBit" => { return Some(("Mem-StuckBit", TestFunction::MultiBlock(stuck_bit_test_multi))); },
-            "Mem-StuckBit-Flush" => { return Some(("Mem-StuckBit-Flush", TestFunction::MultiBlock(stuck_bit_test_multi))); },
-            "Mem-Refresh" => { return Some(("Mem-Refresh", TestFunction::MultiBlock(refresh_stable_multi))); },
-            "Mem-Refresh-Flush" => { return Some(("Mem-Refresh-Flush", TestFunction::MultiBlock(refresh_stable_multi))); },
             _ => match spd_op {
                 Some("read") => TestFunction::MultiBlock(spd_read_128_multi),
                 Some("write") => TestFunction::MultiBlock(spd_write_128_multi),
@@ -2181,18 +2161,7 @@ pub(crate) fn create_test_definitions(cache_info: &CacheInfo) -> Vec<TestDefinit
     let tsc_freq = cache_info.tsc_frequency_ghz;
 
     let test_definitions = vec![
-        // === CRITICAL: Full Memory Stuck Bit Test ===
-        (
-            "Mem-StuckBit",
-            TestFunction::MultiBlock(stuck_bit_test_multi),
-            TestMemoryConfig::new(
-                ExtentMode::FullAllocation,
-                ChunkMode::Absolute { size_bytes: 512 * MB }
-            ).with_timing(TestTiming::cycles_only(1))
-             .with_memory_type(None)
-        ),
-
-        // === StuckBitTest SIMD variants ===
+        // === CRITICAL: Full Memory Stuck Bit Test, at each SIMD width ===
         (
             "Mem-StuckBit128",
             TestFunction::MultiBlock(stuck_bit_test_128_multi),
@@ -2223,7 +2192,7 @@ pub(crate) fn create_test_definitions(cache_info: &CacheInfo) -> Vec<TestDefinit
              .with_memory_type(None)
         ),
 
-        // === StuckBitTest Auto-dispatch (AVX-512 > AVX2 > SSE2 > scalar) ===
+        // === StuckBitTest Auto-dispatch (AVX-512 > AVX2 > SSE2) ===
         // Placed last so results match the actual variant performance
         (
             "Mem-StuckBitAuto",
@@ -2335,16 +2304,6 @@ pub(crate) fn create_test_definitions(cache_info: &CacheInfo) -> Vec<TestDefinit
 
         // === Refresh stability tests (MultiBlock implementations) ===
         (
-            "Mem-Refresh",
-            TestFunction::MultiBlock(refresh_stable_multi),
-            TestMemoryConfig::new(
-                ExtentMode::CacheTotal { fraction: 2.0 },
-                ChunkMode::Absolute { size_bytes: 2048 * MB }
-            ).with_timing(TestTiming::duration_only(15))
-             .with_memory_type(None)
-        ),
-
-        (
             "Mem-Refresh128",
             TestFunction::MultiBlock(refresh_stable_128_multi),
             TestMemoryConfig::new(
@@ -2374,7 +2333,7 @@ pub(crate) fn create_test_definitions(cache_info: &CacheInfo) -> Vec<TestDefinit
              .with_memory_type(None)
         ),
 
-        // === RefreshStable Auto-dispatch (AVX-512 > AVX2 > SSE2 > scalar) ===
+        // === RefreshStable Auto-dispatch (AVX-512 > AVX2 > SSE2) ===
         // Placed after the explicit widths so results match the actual variant performance
         (
             "Mem-RefreshAuto",
@@ -2515,20 +2474,8 @@ pub(crate) fn create_test_definitions(cache_info: &CacheInfo) -> Vec<TestDefinit
 
         // === v2 Tests — fixed PRNG, correct parameter interpretation, u64 MirrorMove ===
 
-        // Mem-SimpleV2: matches v1 Mem-Simple config (FullAllocation, 4MB chunk, 100cycles/30s),
+        // Mem-SimpleV2-*: matches v1 Mem-Simple config (FullAllocation, 4MB chunk, 100cycles/30s),
         // with one pair of rounds a cycle: a native program writes P, then ~P (`pair_native_rounds`)
-        (
-            "Mem-SimpleV2",
-            TestFunction::MultiBlock(simple_test_v2_multi),
-            TestMemoryConfig::new(
-                ExtentMode::FullAllocation,
-                ChunkMode::Absolute { size_bytes: 4 * MB }
-            ).with_timing(TestTiming::hybrid(100, 30))
-             .with_memory_type(None)
-             .with_write_read_cycles(2)
-        ),
-
-        // Mem-SimpleV2 SIMD: matches scalar config for A/B comparison
         (
             "Mem-SimpleV2-128",
             TestFunction::MultiBlock(simple_test_v2_128_multi),
@@ -2573,18 +2520,8 @@ pub(crate) fn create_test_definitions(cache_info: &CacheInfo) -> Vec<TestDefinit
              .with_write_read_cycles(2)
         ),
 
-        // Mem-MirrorV2*: matches v1 Mem-Mirror config (FixedSize 64MB extent, 4MB chunk, 10s)
-        (
-            "Mem-MirrorV2",
-            TestFunction::MultiBlock(mirror_move_v2_multi),
-            TestMemoryConfig::new(
-                ExtentMode::Absolute { size_bytes: 64 * MB },
-                ChunkMode::Absolute { size_bytes: 4 * MB }
-            ).with_timing(TestTiming::duration_only(10))
-             .with_memory_type(None)
-        ),
-
-        // v2 SIMD configs match v1 counterparts for fair A/B comparison
+        // Mem-MirrorV2-*: v1 Mem-Mirror's config (FixedSize 64MB extent, 10s), the wider ones
+        // larger, with subblocks
         (
             "Mem-MirrorV2-128",
             TestFunction::MultiBlock(mirror_move_v2_128_multi),
@@ -4923,7 +4860,7 @@ mod tests {
     #[test]
     fn fills_and_setup_are_left_out_of_a_tests_time_and_bytes() {
         let region = Region::new(&[256 * KIB, 256 * KIB, 128 * KIB]);
-        let (def, test_fn) = suite().into_iter().find(|(d, _)| d.actual_name == "Mem-MirrorV2").expect("Mem-MirrorV2");
+        let (def, test_fn) = suite().into_iter().find(|(d, _)| d.original_name == Some("Mem-MirrorV2-Auto")).expect("Mem-MirrorV2-Auto");
         assert!(!def.config.seal.on, "an unsealed run: the mirror fills up front");
         let bytes = |cycles| {
             let mut config = def.config.clone();
@@ -4936,7 +4873,7 @@ mod tests {
 
         let timing = TestTiming::cycles_only(1);
         let (mut runner, _extent) = crate::test_scaffolding::TestRunner::new(
-            &region.blocks, 0, ErrorMode::Log, &timing, &def.config, None, "Mem-MirrorV2", crate::tests::TestAction::Verify,
+            &region.blocks, 0, ErrorMode::Log, &timing, &def.config, None, "Mem-MirrorV2-Auto", crate::tests::TestAction::Verify,
         );
         runner.untimed(crate::ops::Op::PatternFill, 4096, || std::thread::sleep(std::time::Duration::from_millis(60)));
         let stats = runner.finish_completed(0);
@@ -5029,7 +4966,7 @@ mod tests {
     }
 
     /// TODO 93: the strided SimpleTest, at every width and in every mode, runs clean and leaves the
-    /// image the sequential one leaves (the scalar test's strided mode 2 writes mode 20's lines),
+    /// image the sequential one leaves (strided mode 2 writes mode 20's lines, at every width),
     /// over a 15-line stride (TM5 Parameter 8 on 2 channels) and one longer than a chunk; sealed,
     /// it leaves the span sealed.
     #[test]
@@ -5059,7 +4996,7 @@ mod tests {
                     assert_eq!((stats.error_count, stats.seal_errors), (0, 0), "{} mode {mode} stride {stride_cl}", def.display_name);
                     region.words().to_vec()
                 };
-                // Every width runs mode 2 on the scalar build, whose strided walk writes mode 20's lines
+                // Every width runs mode 2 on the shared loops, whose strided walk writes mode 20's lines
                 let same_as = if mode == 2 { 20 } else { mode };
                 let sequential = {
                     let mut seq = def.clone();
@@ -5081,7 +5018,8 @@ mod tests {
                 }
             }
         }
-        assert!(ran >= 7 * 2 * 4, "only {ran} strided runs");
+        // 128, 256 and Auto (and 512 with AVX-512), each of the 8 modes at 2 strides
+        assert!(ran >= 3 * 8 * 2, "only {ran} strided runs");
         assert!(region.guards_intact());
     }
 
@@ -5094,8 +5032,8 @@ mod tests {
         let words = 640 * KIB / 8;
         let kernel = crate::seal::SealKernel::detect();
         let suite = suite();
-        let find = |name: &str| suite.iter().find(|(d, _)| d.display_name == name).cloned().unwrap();
-        for (name, own, seal) in [("Mem-StuckBit", 0, 1), ("Mem-SimpleV2", 0, 1), ("Mem-MirrorV2", 1, 0)] {
+        let find = |name: &str| suite.iter().find(|(d, _)| d.display_name == name || d.original_name == Some(name)).cloned().unwrap();
+        for (name, own, seal) in [("Mem-StuckBitAuto", 0, 1), ("Mem-SimpleV2-Auto", 0, 1), ("Mem-MirrorV2-Auto", 1, 0)] {
             let (mut def, test_fn) = find(name);
             def.config.chunk_mode = ChunkMode::Absolute { size_bytes: 68 * KIB };
             set_step_seals(std::slice::from_mut(&mut def), kernel, true);
@@ -5118,10 +5056,10 @@ mod tests {
         let words = 640 * KIB / 8;
         let kernel = crate::seal::SealKernel::detect();
         let suite = suite();
-        let find = |name: &str| suite.iter().find(|(d, _)| d.display_name == name).cloned().unwrap();
+        let find = |name: &str| suite.iter().find(|(d, _)| d.display_name == name || d.original_name == Some(name)).cloned().unwrap();
         let progress = crate::tests::TestProgress::new();
         let (mut never, _) = find("Bench-Init-TMR-10");
-        let (mut sealed, _) = find("Mem-StuckBit");
+        let (mut sealed, _) = find("Mem-StuckBitAuto");
         set_step_seals(std::slice::from_mut(&mut never), kernel, true);
         set_step_seals(std::slice::from_mut(&mut sealed), kernel, true);
         assert!(!never.config.seal.expects && sealed.config.seal.expects);
@@ -5201,7 +5139,7 @@ mod tests {
                 ran += 1;
             }
         }
-        assert!(ran >= 4 * 6, "only {ran} mirror runs");
+        assert!(ran >= 3 * 6, "only {ran} mirror runs");
         assert!(region.guards_intact());
     }
 
@@ -5741,8 +5679,8 @@ mod tests {
     #[test]
     fn the_command_lines_sequence_reaches_mem_sequence() {
         let suite = suite();
-        let find = |name: &str| suite.iter().find(|(d, _)| d.display_name == name).map(|(d, _)| d.clone()).unwrap();
-        let mut defs = vec![find("Mem-Sequence"), find("Mem-StuckBit")];
+        let find = |name: &str| suite.iter().find(|(d, _)| d.display_name == name || d.original_name == Some(name)).map(|(d, _)| d.clone()).unwrap();
+        let mut defs = vec![find("Mem-Sequence"), find("Mem-StuckBitAuto")];
         apply_sequence(&mut defs, Some("W,4R,RW@random,R"), None).unwrap();
         let seq = defs[0].config.sequence();
         assert_eq!((seq.name(), seq.order), ("W 4R RW@random R".to_string(), crate::sequence::Order::Forward));
@@ -5814,14 +5752,16 @@ mod tests {
         }
     }
 
-    /// The SIMD widths run the TMR modes they have no kernel for (0, 1, 2, 13, 30) on the scalar
-    /// build, so they write the mode's own image, not mode 10's (TODO 3).
+    /// Every width writes each TMR mode's own image, from the mode's definitions
+    /// (`numbered_mode_image`), not mode 10's (TODO 3): its own kernel for modes 10, 11 and 20, the
+    /// shared loops for the modes it has none for (0, 1, 2, 13, 30). The reference was the scalar
+    /// test's image until TODO 99 removed it.
     #[test]
     fn simd_widths_write_the_tmr_modes_own_image() {
         let mut region = Region::new(&[256 * KIB, 256 * KIB, 128 * KIB]);
         let tests = suite().into_iter().filter(|(d, _)| d.actual_name.starts_with("Mem-SimpleV2")).collect::<Vec<_>>();
+        assert!(tests.len() >= 3, "only {} widths", tests.len());
         for mode in crate::pattern_gen::MODES {
-            let mut images = Vec::new();
             for (def, test_fn) in &tests {
                 let mut def = def.clone();
                 def.config.chunk_mode = ChunkMode::Absolute { size_bytes: 68 * KIB };
@@ -5829,11 +5769,10 @@ mod tests {
                 region.words().fill(UNTOUCHED);
                 let stats = unsafe { test_fn(&region.blocks, 0, ErrorMode::Log, &def.config.timing, &def.config, None) };
                 assert_eq!(stats.error_count, 0, "{} mode {mode}", def.display_name);
-                images.push((def.display_name.clone(), region.words().to_vec()));
-            }
-            for (name, image) in &images[1..] {
-                // Mode 10's SIMD base is param0 whatever the width; the scalar's too
-                assert!(*image == images[0].1, "{name} mode {mode}: not {}'s image", images[0].0);
+                // Thread 0's one cycle, cycle 1, over the whole region
+                let words = region.words();
+                let want = crate::tests::numbered_mode_image(&def.config, words.as_ptr(), words.len(), 0, 1);
+                assert!(*words == want[..], "{} mode {mode}: not the mode's image", def.display_name);
             }
         }
     }

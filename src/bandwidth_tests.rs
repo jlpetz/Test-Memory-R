@@ -428,7 +428,6 @@ spd_write_impl!(
 crate::auto_dispatch!(
     pub spd_write_auto_multi,
     spd_write_128_multi,
-    spd_write_128_multi,
     spd_write_256_multi,
     spd_write_512_multi
 );
@@ -468,7 +467,6 @@ spd_write_impl!(
 crate::auto_dispatch!(
     pub spd_write_nt_auto_multi,
     spd_write_nt_128_multi,
-    spd_write_nt_128_multi,
     spd_write_nt_256_multi,
     spd_write_nt_512_multi
 );
@@ -506,7 +504,6 @@ spd_read_impl!(
 
 crate::auto_dispatch!(
     pub spd_read_auto_multi,
-    spd_read_128_multi,
     spd_read_128_multi,
     spd_read_256_multi,
     spd_read_512_multi
@@ -550,7 +547,6 @@ spd_copy_impl!(
 crate::auto_dispatch!(
     pub spd_copy_auto_multi,
     spd_copy_128_multi,
-    spd_copy_128_multi,
     spd_copy_256_multi,
     spd_copy_512_multi
 );
@@ -589,7 +585,6 @@ spd_copy_impl!(
 
 crate::auto_dispatch!(
     pub spd_copy_nt_auto_multi,
-    spd_copy_nt_128_multi,
     spd_copy_nt_128_multi,
     spd_copy_nt_256_multi,
     spd_copy_nt_512_multi

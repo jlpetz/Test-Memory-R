@@ -8,13 +8,13 @@ All per-test parameters are stored in `TestParameterContext` (`src/config.rs`). 
 The original TM5 parameter value, preserved for debugging and display. Not directly consumed by test logic — it's the input that gets interpreted into the typed fields below.
 
 ### `stride_cachelines: Option<usize>`
-**Used by:** SimpleTest (`Mem-SimpleV2` at every width; `"parameter"` sets it for each)
+**Used by:** SimpleTest (`Mem-SimpleV2-128/-256/-512/-Auto`, every width; `"parameter"` sets it for each)
 
 The jump in cache lines (64-byte units) after each line the test writes or reads, simulating DDR interleave patterns.
 
 - **Formula:** `channels × parameter - 1` (from TM5 `JumpStep = BlkSize × (Channels × Parameter - 1)`)
 - **Example:** channels=2, parameter=8 → stride = 15 cache lines
-- **The walk** (TODO 93, TM5's `mtests0.asm` ~336-394): each step writes or reads one whole 64 B line, then jumps the stride, so the period is `stride + 1` lines (`64 × channels × parameter` bytes). Each line of a period starts an interleave pass, the last line first, and a pass steps a period at a time to the chunk's end, so every line is touched once per pass over the chunk. Reads walk the same way. The image is the sequential test's (the scalar test's strided mode 2 writes mode 20's lines). Each step prefetches the line the walk reaches 128 steps on (TM5 prefetches 8 periods on, which can land outside the chunk), so requests stay queued while every access still opens a new row. Measurements: `doc/todo/93-strided-simpletest-lines.md`
+- **The walk** (TODO 93, TM5's `mtests0.asm` ~336-394): each step writes or reads one whole 64 B line, then jumps the stride, so the period is `stride + 1` lines (`64 × channels × parameter` bytes). Each line of a period starts an interleave pass, the last line first, and a pass steps a period at a time to the chunk's end, so every line is touched once per pass over the chunk. Reads walk the same way. The image is the sequential test's (strided mode 2 writes mode 20's lines, at every width). Each step prefetches the line the walk reaches 128 steps on (TM5 prefetches 8 periods on, which can land outside the chunk), so requests stay queued while every access still opens a new row. Measurements: `doc/todo/93-strided-simpletest-lines.md`
 - **Source:** TM5 `.cfg` parameter field + channels config, or direct value in JSON config
 - **Display:** Shown in Test Configuration table as `Stride(15cl/960B)`
 
@@ -24,7 +24,7 @@ The jump in cache lines (64-byte units) after each line the test writes or reads
 Derived field: stride in u64 elements. Calculated as `stride_cachelines × (cache_line_bytes / 8)`. Typically `stride_cachelines × 8` for 64-byte cache lines. This is the value used directly in the test loop for pointer arithmetic.
 
 ### `mirror: Option<MirrorMode>`
-**Used by:** MirrorMove (`Mem-MirrorV2`, `-128`, `-256`, `-512`, `-Auto`)
+**Used by:** MirrorMove (`Mem-MirrorV2-128`, `-256`, `-512`, `-Auto`)
 
 How each chunk is mirrored (TODO 85). Every mode is one round trip per test op: the two ends walk
 toward each other, swapping, and cross the middle, so each pair is swapped twice and the chunk ends
@@ -94,7 +94,7 @@ Number of copy direction patterns for memory move operations:
 | command line | `seed=0x1234` | The native patterns' run seed (default from the clock); logged, printed and saved, so a run's bytes can be replayed on the same layout |
 | command line | `beat=auto\|12\|16\|24\|32\|64` or a memory type | The transfer width `switch` (and mode 30) flips at; auto takes SMBIOS's memory type, else `switch` alternates 64 and 32 and mode 30 takes 32. A memory type names its width: `ddr3`/`ddr4` 64, `ddr5`/`lpddr3` 32, `lpddr4`/`lpddr5` 16, `ddr6` 24, `lpddr6` 12. The last two are models (`doc/pattern_spec.md`): SMBIOS has no code TMR knows for them, so set `beat=` there |
 | command line | `rescan=on\|off` | Whether a failed check is rescanned to name each bad word (on); off counts one error a failed check |
-| command line | `patterns=native\|legacy` | How a TM5 `.cfg`'s SimpleTests import: native programs on `Mem-SimpleV2-Auto` (the default), or the numbered modes on the scalar test |
+| command line | `patterns=native\|legacy` | How a TM5 `.cfg`'s SimpleTests import: native programs on `Mem-SimpleV2-Auto` (the default), or the numbered modes on the same test |
 
 **Repetition must test something** (checked when the config loads): `verify_reps` 0 on a SimpleTest
 or mirror test, `write_read_cycles` 0 on any `run_phased_test` test, and `test_reps` 0 on a mirror
