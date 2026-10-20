@@ -1478,10 +1478,11 @@ impl LegacyConfig {
 
             // A SimpleTest's mode becomes a native program (pattern spec v2): its intent's family
             // and switching, then mixed data and switching (`Program::from_tm5_mode`), or a native
-            // family's number that family alone, at the widest width, every width writing one
-            // image. With patterns=legacy it keeps TMR's numbered mode (spec 1), to compare, on
-            // the same widest width (TODO 99: there is no scalar test). No other function reads
-            // the pattern fields, so they get none.
+            // family's number that family alone, on Mem-SimpleV2-Auto: at the run's width
+            // (`width=`, else the widest the CPU has, TODO 99), every width writing one image.
+            // With patterns=legacy it keeps TMR's numbered mode (spec 1), to compare, on the same
+            // test (there is no scalar test). No other function reads the pattern fields, so they
+            // get none.
             let (function, program, pattern) = match function.as_str() {
                 "Mem-SimpleV2-Auto" if crate::pattern::legacy_import() => {
                     (function, None, Some((test.pattern_mode, test.pattern_param0, test.pattern_param1)))
@@ -1685,15 +1686,16 @@ impl LegacyConfig {
 
 fn map_legacy_function(legacy_name: &str) -> Result<String, String> {
     match legacy_name {
-        // TM5 legacy names -> new prefixed names, at the widest width the CPU has: TMR has no
-        // scalar tests (TODO 99), and its startup gate requires AVX2
+        // TM5 legacy names -> new prefixed names, the -Auto tests: at the run's width (`width=`,
+        // else the widest the CPU has, TODO 99). TMR has no scalar tests, and its startup gate
+        // requires AVX2
         "RefreshStable" => Ok("Mem-RefreshAuto".to_string()),
         "SimpleTest" => Ok("Mem-SimpleV2-Auto".to_string()),
-        // Both mirrors run the widest SIMD the CPU has; the 128 in MirrorMove128 is its swap
-        // size, not a vector width (TODO 85)
+        // Both mirrors run Mem-MirrorV2-Auto, at the run's width; the 128 in MirrorMove128 is its
+        // swap size, not a vector width (TODO 85)
         "MirrorMove" | "MirrorMove128" => Ok("Mem-MirrorV2-Auto".to_string()),
         "BlockMove" => Ok("Mem-BlockMove".to_string()),
-        // Also accept new names directly, a name without a width at the widest
+        // Also accept new names directly, a name without a width as its -Auto test
         "Mem-Refresh" => Ok("Mem-RefreshAuto".to_string()),
         "Mem-Simple" => Ok("Mem-SimpleV2-Auto".to_string()),
         "Mem-Mirror" => Ok("Mem-MirrorV2-Auto".to_string()),
@@ -1856,10 +1858,10 @@ mod tests {
         assert!(!configs[0].1.flush_before_verify, "the seal check flushes");
     }
 
-    /// TODO 99: a .cfg's TMR names without a width (and TM5's own) import at the widest width;
-    /// TMR has no scalar tests. A name with a width keeps it.
+    /// TODO 99: a .cfg's TMR names without a width (and TM5's own) import as -Auto tests, at the
+    /// run's width; TMR has no scalar tests. A name with a width keeps it.
     #[test]
-    fn widthless_names_import_at_the_widest_width() {
+    fn widthless_names_import_as_auto_tests() {
         let tests = ["Mem-Refresh", "Mem-StuckBit", "Mem-Simple", "Mem-SimpleV2", "Mem-Mirror", "Mem-MirrorV2", "Mem-Mirror256", "SimpleTest"]
             .iter().enumerate().map(|(i, f)| test(i as u32 + 1, f, 100, 0)).collect();
         let modern = legacy(100, tests).to_modern_config().unwrap();
@@ -2024,8 +2026,8 @@ mod tests {
         assert!(LegacyConfig::parse_legacy_format(seq).unwrap_err().contains("'x'"));
     }
 
-    /// patterns=native (the default) imports a SimpleTest's mode as a native program on the
-    /// widest width; no other test gets pattern fields.
+    /// patterns=native (the default) imports a SimpleTest's mode as a native program on
+    /// Mem-SimpleV2-Auto; no other test gets pattern fields.
     #[test]
     fn simpletest_modes_import_as_programs() {
         let modern = legacy(100, vec![test(1, "SimpleTest", 100, 16), test(2, "MirrorMove", 100, 0)]).to_modern_config().unwrap();
@@ -2034,14 +2036,14 @@ mod tests {
         assert_eq!(simple.program.as_deref(), Some(&["ident".to_string(), "switch".into(), "random".into(), "switch".into()][..]));
         assert_eq!((simple.pattern_mode, mirror.pattern_mode, mirror.program.as_ref()), (None, None, None));
 
-        // A native family's number imports as that family alone, at the widest width, as TM5's do
+        // A native family's number imports as that family alone, on Mem-SimpleV2-Auto, as TM5's do
         let mut native = test(3, "SimpleTest", 100, 16);
         native.pattern_mode = 32;
         let modern = legacy(100, vec![native]).to_modern_config().unwrap();
         let t = &modern.test_sequence[0];
         assert_eq!((t.function.as_str(), t.pattern_mode, t.program.as_deref()), ("Mem-SimpleV2-Auto", None, Some(&["quiet".to_string()][..])));
 
-        // A mode TM5 doesn't have but TMR does stays that mode, at the widest width (TODO 99)
+        // A mode TM5 doesn't have but TMR does stays that mode, on Mem-SimpleV2-Auto (TODO 99)
         let mut tmr_mode = test(3, "SimpleTest", 100, 16);
         tmr_mode.pattern_mode = 13;
         let modern = legacy(100, vec![tmr_mode]).to_modern_config().unwrap();
@@ -2202,7 +2204,7 @@ mod tests {
         assert!(legacy(100, tests).to_modern_config().unwrap_err().contains("RefreshStable"));
     }
 
-    /// TODO 85: each TM5 mirror's `Parameter` becomes TMR's one mirror mode, at the widest SIMD.
+    /// TODO 85: each TM5 mirror's `Parameter` becomes TMR's one mirror mode, on Mem-MirrorV2-Auto.
     #[test]
     fn tm5_mirror_parameters_become_mirror_modes() {
         let mirror = |function: &str, parameter: u32| {

@@ -427,11 +427,16 @@ pub struct ExecutionSnapshot {
     /// Whether failed checks were rescanned to name each bad word (`rescan=`).
     #[serde(default)]
     pub rescan: Option<bool>,
-    /// The SIMD width given (`width=`, or a config's `width`, TODO 99), which every test that picks
-    /// its width at run time ran at (Mem-Sequence at 256 for 128, which it lacks; an `-Auto` test's
-    /// name says its width); `None` under auto, each at the widest the CPU has.
+    /// The run's SIMD width (TODO 99, `crate::simd::test_width`), the one given or, under auto, the
+    /// widest the CPU has: what the tests that take the run's width run at. Each records its own
+    /// (`TestConfigSnapshot::simd_width_bits`): Mem-Sequence runs 256 for 128, and a
+    /// Bench-*-Seal-{TMR,TM5} the seal's auto under auto. Absent in results written before it.
     #[serde(default)]
     pub simd_width_bits: Option<u32>,
+    /// Where the run's width came from: `width=`, `the config's width`, or `auto` when none was
+    /// given.
+    #[serde(default)]
+    pub simd_width_source: Option<String>,
 }
 
 /// The calibration that was live during the run. Cache-relative windows are sized from these
@@ -504,6 +509,12 @@ pub struct TestConfigSnapshot {
     pub flush_before_verify: bool,
     /// Whether this test relied on a previous test's pattern instead of writing its own.
     pub skip_init: bool,
+    /// The SIMD width the test ran at, for a test that takes the run's (TODO 99,
+    /// `TestDefinition::simd_width`): an `-Auto` test, Mem-Sequence (256 for 128, which it has no
+    /// kernel for), the Bench pairs that name no width. Absent for a test that keeps its own (named
+    /// for a width) or has none, and in results written before it.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub simd_width_bits: Option<u32>,
 }
 
 // ===========================================================================
@@ -622,20 +633,7 @@ page_mix,
             cpu_pool: runtime_config.cpu_list.clone(),
         };
 
-        let execution = ExecutionSnapshot {
-            cycles_requested: suite_timing.global_cycles,
-            duration_secs_requested: suite_timing.global_duration_secs,
-            error_mode: format!("{:?}", error_mode),
-            test_filter,
-            plan,
-            channels,
-            pattern_version: crate::pattern::VERSION,
-            pattern_seed: Some(format!("{:#018x}", crate::pattern::run_seed())),
-            transfer_bits: crate::pattern::transfer_beat().0.map(|b| b.bits()),
-            transfer_source: Some(crate::pattern::transfer_beat().1.to_string()),
-            rescan: Some(crate::pattern::rescan_enabled()),
-            simd_width_bits: crate::simd::width_given().map(|(w, _)| w.bits()),
-        };
+        let execution = ExecutionSnapshot::capture(suite_timing, error_mode, test_filter, plan, channels);
 
         let calibration = crate::tests::get_calibration_data().map(|cal| {
             let mut tiers: Vec<CalibratedTier> = cal
@@ -656,47 +654,9 @@ page_mix,
             }
         });
 
-        // Extent/chunk modes are rendered with the same formatter the console tables use, so the
-        // recorded string matches what the user saw — including the resolved byte size for cache
-        // specs, which is where the SMT divisor becomes visible.
-        let formatter = crate::reporting::formatters::DefaultFormatter::new();
-        use crate::reporting::formatters::ReportFormatter;
         let tests = tests
             .iter()
-            .map(|def| {
-                let layout = crate::test_memory::resolve_layout(&def.config, def.actual_name, thread_memory_least);
-                let (extent, spread) = layout.map_or((0, None), |(extent, spread)| (extent, Some(spread)));
-                TestConfigSnapshot {
-                name: def.display_name.clone(),
-                function: def.actual_name.to_string(),
-                extent_mode: formatter.format_extent_mode_with_size(
-                    &def.config.extent_mode,
-                    cache_info,
-                    thread_count,
-                ),
-                chunk_mode: formatter.format_chunk_mode_with_size(
-                    &def.config.chunk_mode,
-                    cache_info,
-                    thread_count,
-                ),
-                verify_reps: def.config.verify_reps,
-                test_reps: def.config.test_reps,
-                write_read_cycles: def.config.write_read_cycles,
-                pattern_mode: def.config.pattern_mode,
-                program: (def.actual_name.starts_with("Mem-SimpleV2") || def.actual_name == "Mem-Sequence")
-                    .then(|| def.config.native_program().map(|p| p.names())).flatten(),
-                sequence: (def.actual_name == "Mem-Sequence")
-                    .then(|| def.config.sequence())
-                    .map(|s| format!("{} (order {})", s.name(), s.order.name())),
-                flush_before_verify: def.config.flush_before_verify,
-                skip_init: def.config.skip_init,
-                extent_bytes: extent as u64,
-                chunk_bytes: spread.as_ref().map_or(0, |s| s.chunk() as u64),
-                chunks: spread.as_ref().map_or(0, |s| s.count()),
-                overlap_bytes: spread.as_ref().map_or(0, |s| s.overlap() as u64),
-                cycle_limit: def.config.timing.cycles,
-                time_limit_secs: def.config.timing.duration_secs,
-            }})
+            .map(|def| TestConfigSnapshot::capture(def, cache_info, thread_count, thread_memory_least))
             .collect();
 
         Self {
@@ -707,6 +667,75 @@ page_mix,
             execution,
             calibration,
             tests,
+        }
+    }
+}
+
+impl ExecutionSnapshot {
+    /// The run's suite-level settings (`RunConfigSnapshot::capture`).
+    fn capture(suite_timing: &crate::runner::TestSuiteTiming, error_mode: crate::ErrorMode, test_filter: Option<String>,
+               plan: Option<String>, channels: u32) -> Self {
+        ExecutionSnapshot {
+            cycles_requested: suite_timing.global_cycles,
+            duration_secs_requested: suite_timing.global_duration_secs,
+            error_mode: format!("{:?}", error_mode),
+            test_filter,
+            plan,
+            channels,
+            pattern_version: crate::pattern::VERSION,
+            pattern_seed: Some(format!("{:#018x}", crate::pattern::run_seed())),
+            transfer_bits: crate::pattern::transfer_beat().0.map(|b| b.bits()),
+            transfer_source: Some(crate::pattern::transfer_beat().1.to_string()),
+            rescan: Some(crate::pattern::rescan_enabled()),
+            simd_width_bits: Some(crate::simd::test_width().bits()),
+            simd_width_source: Some(crate::simd::width_source().to_string()),
+        }
+    }
+}
+
+impl TestConfigSnapshot {
+    /// One test as the run resolved it (`RunConfigSnapshot::capture`), its layout on the thread with
+    /// the least memory, `thread_memory_least`.
+    fn capture(def: &crate::runner::TestDefinition, cache_info: &crate::cache::CacheInfo, thread_count: usize,
+               thread_memory_least: usize) -> Self {
+        // Extent/chunk modes are rendered with the same formatter the console tables use, so the
+        // recorded string matches what the user saw — including the resolved byte size for cache
+        // specs, which is where the SMT divisor becomes visible.
+        use crate::reporting::formatters::ReportFormatter;
+        let formatter = crate::reporting::formatters::DefaultFormatter::new();
+        let layout = crate::test_memory::resolve_layout(&def.config, def.actual_name, thread_memory_least);
+        let (extent, spread) = layout.map_or((0, None), |(extent, spread)| (extent, Some(spread)));
+        TestConfigSnapshot {
+            name: def.display_name.clone(),
+            function: def.actual_name.to_string(),
+            extent_mode: formatter.format_extent_mode_with_size(
+                &def.config.extent_mode,
+                cache_info,
+                thread_count,
+            ),
+            chunk_mode: formatter.format_chunk_mode_with_size(
+                &def.config.chunk_mode,
+                cache_info,
+                thread_count,
+            ),
+            verify_reps: def.config.verify_reps,
+            test_reps: def.config.test_reps,
+            write_read_cycles: def.config.write_read_cycles,
+            pattern_mode: def.config.pattern_mode,
+            program: (def.actual_name.starts_with("Mem-SimpleV2") || def.actual_name == "Mem-Sequence")
+                .then(|| def.config.native_program().map(|p| p.names())).flatten(),
+            sequence: (def.actual_name == "Mem-Sequence")
+                .then(|| def.config.sequence())
+                .map(|s| format!("{} (order {})", s.name(), s.order.name())),
+            flush_before_verify: def.config.flush_before_verify,
+            skip_init: def.config.skip_init,
+            extent_bytes: extent as u64,
+            chunk_bytes: spread.as_ref().map_or(0, |s| s.chunk() as u64),
+            chunks: spread.as_ref().map_or(0, |s| s.count()),
+            overlap_bytes: spread.as_ref().map_or(0, |s| s.overlap() as u64),
+            cycle_limit: def.config.timing.cycles,
+            time_limit_secs: def.config.timing.duration_secs,
+            simd_width_bits: def.simd_width().map(crate::simd::Width::bits),
         }
     }
 }
@@ -1107,6 +1136,11 @@ pub fn compare_config(b: &RunConfigSnapshot, c: &RunConfigSnapshot) -> Vec<RunDi
             // different SIMD width because the machine changed.
             note("implementation", base_test.function.clone(), cur_test.function.clone());
         }
+        // A test that takes the run's width under one name, as Mem-Sequence and the Bench pairs do
+        // (TODO 99); results written before the record have none
+        if let (Some(b), Some(c)) = (base_test.simd_width_bits, cur_test.simd_width_bits) && b != c {
+            note("SIMD width", format!("{b} bits"), format!("{c} bits"));
+        }
     }
 
     diffs
@@ -1252,6 +1286,50 @@ mod tests {
         assert_eq!(mix.describe(), "1.00 GiB 1 GiB pages, 54.00 GiB 2 MiB pages");
 
         assert_eq!(PageSizeMix::default().describe(), "none");
+    }
+
+    /// TODO 99: the results file records the run's width and where it came from, under auto too
+    /// (the widest the CPU has), and each test that takes the run's width the width it ran at: an
+    /// `-Auto` test its width, Mem-Sequence 256 for 128, a Bench pair naming none the run's. A test
+    /// named for a width, or with none, records none.
+    #[test]
+    fn the_run_and_each_test_record_their_width() {
+        use crate::simd::{TestWidth, Width};
+        let cache_info = crate::tests::get_cache_info();
+        let forced = [Width::W128, Width::W256, Width::W512].into_iter().filter(|w| w.check().is_ok()).map(|w| (w, Some(w)));
+        for (width, given) in forced.chain([(Width::widest(), None)]) {
+            let _width = TestWidth::set(given);
+            let execution = ExecutionSnapshot::capture(&crate::runner::TestSuiteTiming::cycles_only(1), crate::ErrorMode::Log, None, None, 2);
+            let source = if given.is_some() { "a test's width" } else { "auto" };
+            assert_eq!((execution.simd_width_bits, execution.simd_width_source.as_deref()), (Some(width.bits()), Some(source)));
+            let definitions = crate::runner::create_test_definitions(cache_info);
+            let recorded = |name: &str| {
+                let def = definitions.iter().find(|d| d.display_name == name).unwrap_or_else(|| panic!("no {name}"));
+                TestConfigSnapshot::capture(def, cache_info, 1, 64 << 20).simd_width_bits
+            };
+            let sequence = width.max(Width::W256).bits();
+            for (name, bits) in [(format!("Mem-StuckBit{}_A", width.name()), Some(width.bits())), ("Mem-Sequence".to_string(), Some(sequence)),
+                                 ("Bench-Init-TMR-10".to_string(), Some(width.bits())), ("Bench-Verify-Random".to_string(), Some(width.bits())),
+                                 ("Mem-StuckBit128".to_string(), None), ("Mem-MovingInv".to_string(), None)] {
+                assert_eq!(recorded(&name), bits, "{name} under {given:?}");
+            }
+        }
+    }
+
+    /// TODO 99: a test that ran at another width under the same name (Mem-Sequence, a Bench pair)
+    /// isn't like for like; one from results written before the width was recorded isn't flagged.
+    #[test]
+    fn a_test_at_another_width_invalidates_the_comparison() {
+        let with_test = |width: Option<u32>| {
+            let mut config = config_with(3.0, 8);
+            config.tests.push(TestConfigSnapshot { name: "Mem-Sequence".to_string(), simd_width_bits: width, ..Default::default() });
+            config
+        };
+        let diffs = compare_config(&with_test(Some(512)), &with_test(Some(256)));
+        assert!(diffs.iter().any(|d| d.field == "Mem-Sequence: SIMD width" && d.invalidates
+                                     && d.baseline == "512 bits" && d.current == "256 bits"), "{diffs:?}");
+        assert!(compare_config(&with_test(Some(256)), &with_test(Some(256))).is_empty());
+        assert!(compare_config(&with_test(None), &with_test(Some(512))).is_empty());
     }
 
     #[test]

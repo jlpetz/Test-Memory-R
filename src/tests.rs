@@ -1463,9 +1463,9 @@ pub unsafe fn stuck_bit_test_auto_multi(
     progress: Option<&TestProgress>,
 ) -> TestStats {
     match crate::simd::test_width() {
-        crate::simd::Width::W512 => stuck_bit_test_512_multi(blocks, thread_id, error_mode, timing, config, progress),
-        crate::simd::Width::W256 => stuck_bit_test_256_multi(blocks, thread_id, error_mode, timing, config, progress),
-        crate::simd::Width::W128 => stuck_bit_test_128_multi(blocks, thread_id, error_mode, timing, config, progress),
+        crate::simd::Width::W512 => crate::dispatched!(stuck_bit_test_512_multi)(blocks, thread_id, error_mode, timing, config, progress),
+        crate::simd::Width::W256 => crate::dispatched!(stuck_bit_test_256_multi)(blocks, thread_id, error_mode, timing, config, progress),
+        crate::simd::Width::W128 => crate::dispatched!(stuck_bit_test_128_multi)(blocks, thread_id, error_mode, timing, config, progress),
     }
 }
 
@@ -1707,9 +1707,9 @@ pub unsafe fn refresh_stable_auto_multi(
     progress: Option<&TestProgress>,
 ) -> TestStats {
     match crate::simd::test_width() {
-        crate::simd::Width::W512 => refresh_stable_512_multi(blocks, thread_id, error_mode, timing, config, progress),
-        crate::simd::Width::W256 => refresh_stable_256_multi(blocks, thread_id, error_mode, timing, config, progress),
-        crate::simd::Width::W128 => refresh_stable_128_multi(blocks, thread_id, error_mode, timing, config, progress),
+        crate::simd::Width::W512 => crate::dispatched!(refresh_stable_512_multi)(blocks, thread_id, error_mode, timing, config, progress),
+        crate::simd::Width::W256 => crate::dispatched!(refresh_stable_256_multi)(blocks, thread_id, error_mode, timing, config, progress),
+        crate::simd::Width::W128 => crate::dispatched!(refresh_stable_128_multi)(blocks, thread_id, error_mode, timing, config, progress),
     }
 }
 
@@ -7392,7 +7392,7 @@ pub unsafe fn sequence_auto_multi(
     config: &TestMemoryConfig,
     progress: Option<&TestProgress>,
 ) -> TestStats {
-    sequence_at(crate::simd::test_width())(blocks, thread_id, error_mode, timing, config, progress)
+    crate::dispatched!(sequence_at(crate::simd::test_width()))(blocks, thread_id, error_mode, timing, config, progress)
 }
 
 /// A native SimpleTest at one width (`native_simple_impl!`).
@@ -7422,7 +7422,7 @@ unsafe fn simple_native_auto(
     progress: Option<&TestProgress>,
     run: NativeRun,
 ) -> TestStats {
-    simple_native_at(crate::simd::test_width())(blocks, thread_id, error_mode, timing, config, progress, run)
+    crate::dispatched!(simple_native_at(crate::simd::test_width()))(blocks, thread_id, error_mode, timing, config, progress, run)
 }
 
 /// Bench-Init-<family> and Bench-Verify-<family>: one native family's write or verify alone, at the
@@ -7997,18 +7997,40 @@ pub unsafe fn seal_check_multi(
     )
 }
 
-/// The kernel a Bench-*-Seal-* test measures: its pattern at its width or, for one that names none
-/// (`Auto`), the run's `width=` or else the seal's auto; where the CPU lacks it, the seal's auto.
+/// The kernel a Bench-*-Seal-* test measures: its pattern at its width (`bench_seal_width`).
 fn bench_seal_kernel(pattern: crate::seal::SealPattern, width: crate::seal::SealWidth, test_name: &str) -> crate::seal::SealKernel {
+    crate::seal::SealKernel::new(pattern, bench_seal_width(width, test_name))
+}
+
+/// The width a Bench-*-Seal-* test measures at: the one it names or, for one that names none
+/// (`Auto`), the run's `width=` or else the seal's auto; where the CPU lacks it, the seal's auto.
+fn bench_seal_width(width: crate::seal::SealWidth, test_name: &str) -> crate::seal::SealWidth {
     let width = match (width, crate::simd::width_given()) {
         (crate::seal::SealWidth::Auto, Some((given, _))) => given.seal(),
         _ => width,
     };
-    let width = width.resolve().unwrap_or_else(|e| {
+    width.resolve().unwrap_or_else(|e| {
         log::warn!("{test_name}: {e}; measuring the seal's auto width");
         crate::seal::SealKernel::detect().width
-    });
-    crate::seal::SealKernel::new(pattern, width)
+    })
+}
+
+/// The width a test that picks its own as it runs, rather than by its name, runs at (TODO 99):
+/// Mem-Sequence at the run's (`crate::simd::test_width`), or 256 for 128 (`sequence_width`), the
+/// numbered and native Bench pairs at the run's, Bench-{Init,Verify}-Seal-{TMR,TM5} at theirs
+/// (`bench_seal_width`). `None` for any other test: an `-Auto` test is resolved by name to the test
+/// named for the run's width (`runner::TestDefinition::simd_width`).
+pub(crate) fn picked_width(test_name: &str) -> Option<crate::simd::Width> {
+    let numbered = ["Bench-Init-TM5-", "Bench-Init-TMR-", "Bench-Verify-TM5-", "Bench-Verify-TMR-"];
+    match test_name {
+        "Mem-Sequence" => Some(sequence_width(crate::simd::test_width())),
+        "Bench-Init-Seal-TMR" | "Bench-Verify-Seal-TMR" | "Bench-Init-Seal-TM5" | "Bench-Verify-Seal-TM5" => {
+            crate::simd::Width::of_seal(bench_seal_width(crate::seal::SealWidth::Auto, test_name))
+        }
+        s if numbered.iter().any(|n| s.starts_with(n))
+            || native_bench_tests().iter().any(|(init, verify, _, _)| s == *init || s == *verify) => Some(crate::simd::test_width()),
+        _ => None,
+    }
 }
 
 /// Bench-Init-Seal-*: the seal's fill alone (TODO 74), one non-temporal write pass per chunk per
@@ -8279,7 +8301,7 @@ pub unsafe fn bench_init_multi(
     config: &TestMemoryConfig,
     progress: Option<&TestProgress>,
 ) -> TestStats {
-    bench_init_at(crate::simd::test_width())(blocks, thread_id, error_mode, timing, config, progress)
+    crate::dispatched!(bench_init_at(crate::simd::test_width()))(blocks, thread_id, error_mode, timing, config, progress)
 }
 
 /// Bench-Verify-TM5-* and Bench-Verify-TMR-*: a numbered mode's verify alone, at the run's width.
@@ -8294,7 +8316,7 @@ pub unsafe fn bench_verify_multi(
     config: &TestMemoryConfig,
     progress: Option<&TestProgress>,
 ) -> TestStats {
-    bench_verify_at(crate::simd::test_width())(blocks, thread_id, error_mode, timing, config, progress)
+    crate::dispatched!(bench_verify_at(crate::simd::test_width()))(blocks, thread_id, error_mode, timing, config, progress)
 }
 
 #[cfg(test)]
@@ -8342,6 +8364,91 @@ mod width_dispatch_tests {
             assert_eq!(width(SealWidth::Auto), w.seal());
             assert_eq!(width(SealWidth::W128), SealWidth::W128);
             assert_eq!(width(SealWidth::W256), SealWidth::W256);
+        }
+    }
+
+    /// TODO 99: every test function that picks its width as it runs calls the function of the
+    /// run's width, as its own dispatch calls it (`crate::dispatched!`, recorded by
+    /// `crate::simd::dispatches`), at each width the CPU has and under auto: each `-Auto` test's
+    /// dispatcher the function its name resolves to, which the run runs in its place, Mem-Sequence
+    /// its width's (256 for 128), the numbered and native Bench pairs theirs. And each test says
+    /// so (`TestDefinition::simd_width`, what the results file records). The tests above check the
+    /// mapping functions alone, which a dispatcher reading another width than the run's passed:
+    /// `bench_init_multi` at `Width::widest()`, or `auto_dispatch!`'s 128-bit arm calling the AVX2
+    /// function.
+    #[test]
+    fn every_dispatcher_calls_the_function_of_the_runs_width() {
+        use crate::runner::TestFunction;
+        let span = super::heap_span::HeapSpan::new(256 * 1024, 0);
+        let cache_info = get_cache_info();
+        let address = |f: &TestFunction| match f {
+            TestFunction::MultiBlock(f) => *f as *const (),
+            TestFunction::Latency(f) => *f as *const (),
+        };
+        let forced = [Width::W128, Width::W256, Width::W512].into_iter().filter(|w| w.check().is_ok()).map(|w| (w, Some(w)));
+        for (width, given) in forced.chain([(Width::widest(), None)]) {
+            let _width = TestWidth::set(given);
+            let definitions = crate::runner::create_test_definitions(cache_info);
+            let mut checked = 0;
+            for (name, function, mut config) in crate::runner::registered_tests(cache_info) {
+                let what = format!("{name} at {width:?} (given {given:?})");
+                let is = |f: Multi| matches!(function, TestFunction::MultiBlock(g) if fn_addr_eq(f, g));
+                let (want, ran_at) = match crate::runner::resolve_auto_dispatch_test_at(name, width) {
+                    Some((_, resolved)) => (address(&resolved), width),
+                    None if is(sequence_auto_multi) => (sequence_at(width) as *const (), sequence_width(width)),
+                    None if is(bench_init_multi) => (bench_init_at(width) as *const (), width),
+                    None if is(bench_verify_multi) => (bench_verify_at(width) as *const (), width),
+                    None if native_bench_tests().into_iter().any(|(_, _, init, verify)| is(init) || is(verify)) => {
+                        (simple_native_at(width) as *const (), width)
+                    }
+                    None => continue,
+                };
+                (config.timing, config.thread_count, config.tsc_frequency_ghz) = (TestTiming::cycles_only(1), 1, 1.0);
+                config.cache_line_bytes = cache_info.cache_line_size;
+                if matches!(config.chunk_mode, ChunkMode::Absolute { .. }) {
+                    config.chunk_mode = ChunkMode::Absolute { size_bytes: 64 * 1024 };
+                }
+                // SAFETY: the span is live, 64-byte aligned and the test's alone, and each width runs
+                // on a CPU that has it
+                let ((), called) = crate::simd::dispatches(|| unsafe {
+                    match function {
+                        TestFunction::MultiBlock(f) => { let _ = f(&span.blocks, 0, ErrorMode::Log, &config.timing, &config, None); }
+                        TestFunction::Latency(f) => { let _ = f(&span.blocks, 0, ErrorMode::Log, &config.timing, &config, None); }
+                    }
+                });
+                assert!(called == [want], "{what}: its dispatch called {called:?}, not its width's function {want:?}");
+                let definition = definitions.iter()
+                    .find(|d| d.original_name == Some(name) || (d.original_name.is_none() && d.actual_name == name))
+                    .unwrap_or_else(|| panic!("{what}: no definition"));
+                assert_eq!(definition.simd_width(), Some(ran_at), "{what}: the width recorded");
+                checked += 1;
+            }
+            // 63 -Auto tests, Mem-Sequence, 8 numbered and 7 native Bench pairs
+            assert!(checked >= 94, "only {checked} dispatchers at {width:?}");
+            assert_eq!(sequence_width(Width::W128), Width::W256);
+        }
+    }
+
+    /// TODO 99: the width a test records (`TestDefinition::simd_width`, the results file's) for the
+    /// tests whose width the dispatch test above can't see: a Bench-*-Seal-* naming no width the
+    /// width its kernel measures at, the run's given or else the seal's auto; and none for a test
+    /// that keeps its own (named for a width, a Bench-*-Seal-* among them) or has none.
+    #[test]
+    fn the_seal_pairs_record_their_width_and_the_rest_none() {
+        let cache_info = get_cache_info();
+        let forced = [Width::W128, Width::W256, Width::W512].into_iter().filter(|w| w.check().is_ok()).map(Some);
+        for given in forced.chain([None]) {
+            let _width = TestWidth::set(given);
+            let definitions = crate::runner::create_test_definitions(cache_info);
+            let recorded = |name: &str| definitions.iter().find(|d| d.display_name == name).unwrap_or_else(|| panic!("no {name}")).simd_width();
+            let seal = Width::of_seal(bench_seal_kernel(SealPattern::Tmr, SealWidth::Auto, "test").width);
+            assert_eq!(seal, Some(given.unwrap_or(Width::of_seal(SealWidth::Auto.resolve().unwrap()).unwrap())));
+            for name in ["Bench-Init-Seal-TMR", "Bench-Verify-Seal-TMR", "Bench-Init-Seal-TM5", "Bench-Verify-Seal-TM5"] {
+                assert_eq!(recorded(name), seal, "{name} under {given:?}");
+            }
+            for name in ["Bench-Init-Seal-TMR-128", "Bench-Verify-Seal-TM5-256", "Mem-StuckBit128", "Mem-SimpleV2-256", "Mem-Random", "Mem-MovingInv"] {
+                assert_eq!(recorded(name), None, "{name} under {given:?}");
+            }
         }
     }
 }
@@ -9796,10 +9903,11 @@ mod random_replay_tests {
     /// recorded as its own dispatch makes them, are the steps' in turn: each `count` passes of its
     /// op in its order, the sequence's where it names none, `write_read_cycles` runs of them, a
     /// forward fill first when the sequence reads first; with no stride (TM5's jump 0) a stride
-    /// step's passes go forward, with one TM5's strided walk. Each read finds what the last write
-    /// left. The walk tests run the passes themselves, so they pass whatever op and order the test
-    /// function gives them, and runner.rs's `mem_sequence_runs_every_order_and_step` runs the test
-    /// function by its image, which every order leaves the same, always with a stride.
+    /// step's passes go forward, with one TM5's strided walk. Each op runs in every order. Each read
+    /// finds what the last write left. The walk tests run the passes themselves, so they pass
+    /// whatever op and order the test function gives them, and runner.rs's
+    /// `mem_sequence_runs_every_order_and_step` runs the test function by its image, which every
+    /// order leaves the same, always with a stride.
     #[test]
     fn sequence_runs_each_step_as_its_pass() {
         use crate::sequence::Op::{Read as R, ReadWrite as RW, Write as W};
@@ -9812,9 +9920,12 @@ mod random_replay_tests {
         let unstrided: Vec<_> = std::iter::once((W, F)).chain(run.iter().copied().cycle().take(2 * run.len())).collect();
         // A stride of 15 lines, 120 words: a period of 16 lines
         let strided = [(W, Stride), (RW, Stride), (R, Stride), (W, F), (R, Stride), (RW, Reverse), (R, Random)];
+        // The writes in the other orders, each read back in another
+        let writes = [(W, Random), (R, Reverse), (W, Reverse), (R, Random), (RW, F), (W, Reverse), (R, F)];
         for (sequence, order, wrc, stride, passes) in [
             ("R@stride W@stride R@random RW@stride 2R RW@random W@stride R@forward", Reverse, 2, 0, &unstrided[..]),
             ("W@stride RW R@stride W@forward R RW@reverse R@random", Stride, 1, 120, &strided[..]),
+            ("W@random R W R@random RW@forward W@reverse R@forward", Reverse, 1, 0, &writes[..]),
         ] {
             let config = sequence_config(sequence, order, wrc, stride);
             let period_lines = if stride == 0 { 0 } else { strided_period(stride) / LINE_WORDS };
@@ -9828,51 +9939,62 @@ mod random_replay_tests {
     }
 
     /// TODO 99: after a read-then-write whose check failed, Mem-Sequence's test function writes the
-    /// chunk again, forward, with what the pass wrote, when the rescan wrote back what was read
-    /// (`rescan_read_write`: every word took the write, so the read went wrong); and not when the
-    /// rescan found a word that didn't take it, which the next read then finds too. At each width,
-    /// `W RW R`: a word of the last line flipped once the read-then-write starts, before it reads
-    /// it (one error, not reproduced); then that and a word of the first line flipped once the pass
-    /// has written it (two: the rescan's, and the read's). No test made a read-then-write's check
-    /// fail inside the test function.
+    /// chunk again, forward whatever the pass's order, with what the pass wrote, when the rescan
+    /// wrote back what was read (`rescan_read_write`: every word took the write, so the read went
+    /// wrong); and not when the rescan found a word that didn't take it, which the next read then
+    /// finds too. At each width, `W RW@reverse R`, the read-then-write from the last line: a word of
+    /// the first line flipped once it starts, before it reaches it (one error, from one failed check
+    /// not reproduced); then that and a word of the last line flipped once the pass has written it
+    /// (two errors and two failed checks, the rescan's and the read's, each localised). No test made
+    /// a read-then-write's check fail inside the test function.
     #[test]
     fn sequence_rewrites_a_chunk_its_rescan_wrote_back() {
         use super::access::{Fault, Visit};
         use crate::sequence::Op::{Read as R, ReadWrite as RW, Write as W};
-        use crate::sequence::Order::Forward as F;
+        use crate::sequence::Order::{Forward as F, Reverse};
         let lines = 192;
         let span = super::heap_span::HeapSpan::new(lines * 64, 0);
-        let config = sequence_config("W RW R", F, 1, 0);
+        let config = sequence_config("W RW@reverse R", F, 1, 0);
+        // Where a visit starts
+        let at = |v: &Visit| match v {
+            Visit::Read(at, _) | Visit::Write(at, _) => *at,
+        };
+        /// The first read among `visits` of the vector of `lanes` words a fault's word is in: that
+        /// word of it.
+        fn read_of(visits: &mut [Visit], fault: Fault, lanes: usize) -> &mut u64 {
+            let vector = fault.word / lanes * lanes;
+            match visits.iter_mut().find(|v| matches!(v, Visit::Read(at, _) if *at == vector)) {
+                Some(Visit::Read(_, words)) => &mut words[fault.word - vector],
+                _ => panic!("{} lanes: no read of word {}", lanes, fault.word),
+            }
+        }
         for width in sequence_widths() {
-            let line_vectors = LINE_WORDS / (width / 64);
-            // The read-then-write's first visit, after the write's, and its first of the second line
+            let (lanes, line_vectors) = (width / 64, LINE_WORDS / (width / 64));
+            // The read-then-write's first visit, after the write's, and its first of its second line
             let rw = lines * line_vectors;
-            let read_wrong = Fault { after: rw, word: (lines - 1) * LINE_WORDS + 5, flip: 1 << 29 };
-            let not_taken = Fault { after: rw + 2 * line_vectors, word: 3, flip: 1 << 41 };
-            for (faults, errors, passes) in [(&[read_wrong][..], 1, &[(W, F), (RW, F), (W, F), (R, F)][..]),
-                                             (&[read_wrong, not_taken][..], 2, &[(W, F), (RW, F), (R, F)][..])] {
+            let read_wrong = Fault { after: rw, word: 5, flip: 1 << 29 };
+            let not_taken = Fault { after: rw + 2 * line_vectors, word: (lines - 1) * LINE_WORDS + 3, flip: 1 << 41 };
+            for (faults, counts, passes) in [(&[read_wrong][..], (1, 1, 1), &[(W, F), (RW, Reverse), (W, F), (R, F)][..]),
+                                             (&[read_wrong, not_taken][..], (2, 2, 0), &[(W, F), (RW, Reverse), (R, F)][..])] {
                 let what = format!("{width} bits, {faults:?}");
                 let (stats, mut visits) = sequence_run(width, &span, &config, faults);
-                assert_eq!(stats.error_count, errors, "{what}: the errors");
+                assert_eq!((stats.error_count, stats.alarms, stats.not_reproduced), counts,
+                           "{what}: the errors, the failed checks and those not reproduced");
                 // The read-then-write read the flipped word and wrote the inverse of what it should
                 // have read: its read as it should have been, for the passes' check
-                let lanes = width / 64;
-                let vector = read_wrong.word / lanes * lanes;
-                match visits[rw..].iter_mut().find(|v| matches!(v, Visit::Read(at, _) if *at == vector)) {
-                    Some(Visit::Read(_, words)) => words[read_wrong.word - vector] ^= read_wrong.flip,
-                    _ => panic!("{what}: no read of word {}", read_wrong.word),
-                }
+                *read_of(&mut visits[rw..], read_wrong, lanes) ^= read_wrong.flip;
                 let starts = check_sequence_passes(&visits, passes, width, lines, 0, &what);
-                // What the read-then-write wrote, as the rewrite writes it and the read reads it
-                let wrote: Vec<Visit> = visits[starts[1]..starts[2]].iter().filter(|v| matches!(v, Visit::Write(..))).cloned().collect();
+                // What the read-then-write wrote, forward, as the rewrite writes it and the read reads it
+                let mut wrote: Vec<Visit> = visits[starts[1]..starts[2]].iter().filter(|v| matches!(v, Visit::Write(..))).cloned().collect();
+                wrote.sort_by_key(at);
                 let mut read: Vec<Visit> = wrote.iter().map(|v| match v {
                     Visit::Write(at, words) => Visit::Read(*at, words.clone()),
                     Visit::Read(..) => unreachable!(),
                 }).collect();
                 if faults.len() == 1 {
                     super::access::assert_visits(&visits[starts[2]..starts[3]], &wrote, &format!("{what}: the rewrite"));
-                } else if let Visit::Read(_, words) = &mut read[0] {
-                    words[3] ^= not_taken.flip;
+                } else {
+                    *read_of(&mut read, not_taken, lanes) ^= not_taken.flip;
                 }
                 super::access::assert_visits(&visits[starts[passes.len() - 1]..], &read, &format!("{what}: the read"));
             }

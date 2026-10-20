@@ -101,6 +101,16 @@ impl Width {
             Width::W512 => crate::seal::SealWidth::W512,
         }
     }
+
+    /// The width a seal width is; `None` for `Auto`, which is none until resolved.
+    pub fn of_seal(width: crate::seal::SealWidth) -> Option<Width> {
+        match width {
+            crate::seal::SealWidth::W128 => Some(Width::W128),
+            crate::seal::SealWidth::W256 => Some(Width::W256),
+            crate::seal::SealWidth::W512 => Some(Width::W512),
+            crate::seal::SealWidth::Auto => None,
+        }
+    }
 }
 
 /// The instruction sets a width needs, as a CPU reports them: AVX-512 (its F, which every 512-bit
@@ -134,19 +144,30 @@ impl Isa {
 }
 
 /// The width given and where (`width=`, or a config's `system.width`); `None` is auto.
-static WIDTH: std::sync::OnceLock<(Option<Width>, &'static str)> = std::sync::OnceLock::new();
+type WidthSetting = std::sync::OnceLock<(Option<Width>, &'static str)>;
+
+/// The run's width setting (`set_width`).
+static WIDTH: WidthSetting = std::sync::OnceLock::new();
 
 /// Sets the run's width once, `source` saying where it came from: the command line's `width=`
 /// first, then a config's, which a `width=` given (`auto` too) keeps out. A width this CPU lacks
 /// is refused, before anything runs.
 pub fn set_width(width: Option<Width>, source: &'static str) -> Result<(), String> {
-    if WIDTH.get().is_some() {
+    set_width_on(&WIDTH, Width::check, width, source)
+}
+
+/// `set_width` on `setting`, `check` saying whether the CPU has a width (`Width::check`): the first
+/// width set holds, a later one isn't checked, and a width the CPU lacks is refused, leaving
+/// `setting` unset.
+fn set_width_on(setting: &WidthSetting, check: impl Fn(Width) -> Result<Width, String>, width: Option<Width>,
+                source: &'static str) -> Result<(), String> {
+    if setting.get().is_some() {
         return Ok(());
     }
     if let Some(w) = width {
-        w.check().map_err(|e| format!("{source}: {e}"))?;
+        check(w).map_err(|e| format!("{source}: {e}"))?;
     }
-    let _ = WIDTH.set((width, source));
+    let _ = setting.set((width, source));
     Ok(())
 }
 
@@ -163,6 +184,70 @@ pub fn width_given() -> Option<(Width, &'static str)> {
 /// this CPU has. Read once a test function call, outside its hot loops.
 pub fn test_width() -> Width {
     width_given().map_or_else(Width::widest, |(w, _)| w)
+}
+
+/// Where the run's width came from, as the results file records it: `width=`, the config's, or
+/// `auto` when none was given.
+pub fn width_source() -> &'static str {
+    width_given().map_or("auto", |(_, source)| source)
+}
+
+/// `$f`, the function a run-time dispatcher calls at the run's width (`test_width`), called as the
+/// dispatcher calls it: `crate::dispatched!(f)(args)`. In a unit test build it is noted first, on
+/// the thread's record while a test takes one (`dispatches`), so the test sees which width's
+/// function the dispatch took. The binary's is `$f` alone.
+#[cfg(not(test))]
+#[macro_export]
+macro_rules! dispatched {
+    ($f:expr) => {
+        $f
+    };
+}
+
+#[cfg(test)]
+#[macro_export]
+macro_rules! dispatched {
+    ($f:expr) => {{
+        let f = $f;
+        $crate::simd::note_dispatch(f as *const ());
+        f
+    }};
+}
+
+#[cfg(test)]
+thread_local! {
+    /// The functions this thread's dispatchers called, while a test records them (`dispatches`)
+    static DISPATCHED: std::cell::RefCell<Option<Vec<*const ()>>> = const { std::cell::RefCell::new(None) };
+}
+
+/// Notes `f`, the function a dispatcher is calling (`dispatched!`), on this thread's record if a
+/// test takes one.
+#[cfg(test)]
+pub(crate) fn note_dispatch(f: *const ()) {
+    DISPATCHED.with_borrow_mut(|record| if let Some(record) = record { record.push(f) });
+}
+
+/// Runs `f`, and returns its value and the functions the dispatchers it ran called on this thread,
+/// in order (`dispatched!`): a test runs a test function in `f`, and sees which width's function
+/// its dispatch took (TODO 99).
+#[cfg(test)]
+pub(crate) fn dispatches<R>(f: impl FnOnce() -> R) -> (R, Vec<*const ()>) {
+    /// Ends the record however `f` ends, so a failed test leaves none on its thread
+    struct Stop;
+    impl Drop for Stop {
+        fn drop(&mut self) {
+            DISPATCHED.with_borrow_mut(|record| *record = None);
+        }
+    }
+    DISPATCHED.with_borrow_mut(|record| {
+        assert!(record.is_none(), "one record a thread at a time");
+        *record = Some(Vec::new());
+    });
+    let stop = Stop;
+    let value = f();
+    let called = DISPATCHED.with_borrow_mut(Option::take).expect("the record `f` ran with");
+    drop(stop);
+    (value, called)
 }
 
 #[cfg(test)]
@@ -238,6 +323,28 @@ mod tests {
         }
     }
 
+    /// TODO 99: the run's width is the first one set, `width=`'s over the config's (`auto` too),
+    /// and a width the CPU lacks is refused, with where it came from and what it needs, leaving
+    /// the width unset; a config's that `width=` keeps out isn't checked. `set_width` on a setting
+    /// of the test's own, for a CPU with AVX2 alone.
+    #[test]
+    fn the_first_width_set_holds_and_one_the_cpu_lacks_is_refused() {
+        let check = |w| Isa { avx2: true, avx512: false }.check(w);
+        let setting = WidthSetting::new();
+        let refused = set_width_on(&setting, check, Some(Width::W512), "width=").unwrap_err();
+        assert!(refused.starts_with("width=: ") && refused.contains("AVX-512"), "{refused}");
+        assert_eq!(setting.get(), None, "a refused width isn't the run's");
+        set_width_on(&setting, check, Some(Width::W128), "the config's width").unwrap();
+        assert_eq!(setting.get(), Some(&(Some(Width::W128), "the config's width")));
+
+        for (given, config) in [(Some(Width::W256), Some(Width::W128)), (None, Some(Width::W256)), (Some(Width::W128), Some(Width::W512))] {
+            let setting = WidthSetting::new();
+            set_width_on(&setting, check, given, "width=").unwrap();
+            set_width_on(&setting, check, config, "the config's width").unwrap_or_else(|e| panic!("{config:?} after {given:?}: {e}"));
+            assert_eq!(setting.get(), Some(&(given, "width=")), "{given:?} then the config's {config:?}");
+        }
+    }
+
     #[test]
     fn a_test_width_holds_on_its_thread_while_its_guard_lives() {
         let auto = test_width();
@@ -245,13 +352,23 @@ mod tests {
             let _width = TestWidth::set(Some(Width::W128));
             assert_eq!(test_width(), Width::W128);
             assert_eq!(width_given().map(|(w, _)| w), Some(Width::W128));
+            assert_eq!(width_source(), "a test's width");
             {
                 let _auto = TestWidth::set(None);
                 assert_eq!(test_width(), Width::widest());
                 assert_eq!(width_given(), None);
+                assert_eq!(width_source(), "auto");
             }
             assert_eq!(test_width(), Width::W128);
         }
         assert_eq!(test_width(), auto);
+    }
+
+    #[test]
+    fn a_seal_width_is_its_width_and_auto_none() {
+        for w in [Width::W128, Width::W256, Width::W512] {
+            assert_eq!(Width::of_seal(w.seal()), Some(w));
+        }
+        assert_eq!(Width::of_seal(crate::seal::SealWidth::Auto), None);
     }
 }

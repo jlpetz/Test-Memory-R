@@ -148,8 +148,12 @@ native and numbered Bench pairs (`Bench-Init-Ident`, `Bench-Verify-TMR-10`, ...)
 `Bench-{Init,Verify}-Seal-{TMR,TM5}`. The seal takes it too, unless `seal-width=` (or the config's
 `seal_width`) sets its own. A test named for a width (`-128`, `-256`, `-512`) keeps that one. A
 width the CPU lacks is refused before anything runs, with what it needs. The plan says what was
-given and where (`ℹ  Width: 256 bits (width=)`), and the results file records it
-(`execution.simd_width_bits`; null under auto). Auto stays the default: measured on Intel and AMD,
+given and where (`ℹ  Width: 256 bits (width=)`). The results file records the run's width and
+where it came from (`execution.simd_width_bits`, `execution.simd_width_source`: `width=`, `the
+config's width` or `auto`), and each test that takes it the width it ran at
+(`run_config.tests[].simd_width_bits`): Mem-Sequence 256 under `width=128`, and the Bench pairs,
+whose names carry none. A test named for a width records none. `--compare-results` flags a test
+that ran at another width under the same name. Auto stays the default: measured on Intel and AMD,
 the widest suits the write-and-check tests; `width=` is there to compare widths or to step down.
 
 ## Parameter Sources
