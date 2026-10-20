@@ -5913,7 +5913,7 @@ simple_simd_loops!(simple_test_v2_128_loops, u64x2, 2, [0, 1],
     std::arch::x86_64::__m128i, std::arch::x86_64::_mm_stream_si128, by_line, by_lanes,
     "sse4.2,sse4.1,ssse3,sse3,sse2,popcnt");
 simple_simd_loops!(simple_test_v2_256_loops, u64x4, 4, [0, 1, 2, 3],
-    std::arch::x86_64::__m256i, std::arch::x86_64::_mm256_stream_si256, by_4lanes, lanes_walk,
+    std::arch::x86_64::__m256i, std::arch::x86_64::_mm256_stream_si256, by_4lanes, by_lanes,
     "avx2,avx,fma,bmi1,bmi2");
 simple_simd_loops!(simple_test_v2_512_loops, u64x8, 8, [0, 1, 2, 3, 4, 5, 6, 7],
     std::arch::x86_64::__m512i, std::arch::x86_64::_mm512_stream_si512, by_lanes, lanes_walk,
