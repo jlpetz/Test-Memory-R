@@ -3,7 +3,8 @@
 //! program), so `plan=stability` and `test=Mem-MovingInv` run the same Mem-MovingInv, and
 //! tuning a test in the suite tunes it in every plan. `config=` brings its own tests instead.
 //!
-//! Names are the suite's registration names; an `-Auto` name runs the widest width the CPU has.
+//! Names are the suite's registration names; an `-Auto` name runs the widest width the CPU has,
+//! or `width=`'s (`crate::simd::Width`).
 //! The layout and the reasons for each test: `doc/todo/25-curated-plans.md`.
 
 use crate::runner::TestDefinition;
@@ -67,7 +68,7 @@ const PERF: &[&str] = &[
 
 pub const PLANS: &[Plan] = &[
     Plan { name: "quick", about: "the stability tests once", tests: Some(STABILITY), cycles: Some(1) },
-    Plan { name: "stability", about: "the stability tests at the widest width", tests: Some(STABILITY), cycles: None },
+    Plan { name: "stability", about: "the stability tests at the widest width (or width=)", tests: Some(STABILITY), cycles: None },
     Plan { name: "widths", about: "every width of the tests that have them, side by side", tests: Some(WIDTHS), cycles: None },
     Plan { name: "perf", about: "latency and bandwidth", tests: Some(PERF), cycles: Some(1) },
     Plan { name: "all", about: "every test in the suite", tests: None, cycles: None },

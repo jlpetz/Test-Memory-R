@@ -427,6 +427,11 @@ pub struct ExecutionSnapshot {
     /// Whether failed checks were rescanned to name each bad word (`rescan=`).
     #[serde(default)]
     pub rescan: Option<bool>,
+    /// The SIMD width given (`width=`, or a config's `width`, TODO 99), which every test that picks
+    /// its width at run time ran at (Mem-Sequence at 256 for 128, which it lacks; an `-Auto` test's
+    /// name says its width); `None` under auto, each at the widest the CPU has.
+    #[serde(default)]
+    pub simd_width_bits: Option<u32>,
 }
 
 /// The calibration that was live during the run. Cache-relative windows are sized from these
@@ -629,6 +634,7 @@ page_mix,
             transfer_bits: crate::pattern::transfer_beat().0.map(|b| b.bits()),
             transfer_source: Some(crate::pattern::transfer_beat().1.to_string()),
             rescan: Some(crate::pattern::rescan_enabled()),
+            simd_width_bits: crate::simd::width_given().map(|(w, _)| w.bits()),
         };
 
         let calibration = crate::tests::get_calibration_data().map(|cal| {

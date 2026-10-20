@@ -210,6 +210,13 @@ impl SealKernel {
     }
 }
 
+/// The seal's width setting: `seal_width` when given (`seal-width=`, else a config's
+/// `system.seal_width`), else the run's `width=` (`width`, `crate::simd::width_given`), else
+/// `auto`, the seal's own rule (`SealWidth::resolve`).
+pub fn width_setting(seal_width: Option<&str>, width: Option<crate::simd::Width>) -> &str {
+    seal_width.unwrap_or_else(|| width.map_or("auto", crate::simd::Width::name))
+}
+
 /// The run's seal setting (`seal=` / `system.seal`, `seal-width=` / `system.seal_width`).
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct SealSettings {
@@ -536,6 +543,22 @@ mod tests {
         }
         // The audit's pair: one unit's v met another's !v before the hash kept 63 bits
         assert_ne!(tmr_word(0x6B39_4CE3_7B10, 0), tmr_word(0x6B49_4CE3_7B18, 0));
+    }
+
+    /// TODO 99: the seal takes `width=` unless `seal-width=` (or a config's `seal_width`) sets its
+    /// own, `auto` included; with neither it keeps its own auto rule.
+    #[test]
+    fn seal_width_is_its_own_then_the_runs_then_auto() {
+        use crate::simd::Width;
+        let width = |seal_width, width| SealSettings::parse("tmr", width_setting(seal_width, width)).unwrap().width;
+        assert_eq!(width(None, None), SealWidth::Auto);
+        assert_eq!(width(None, Some(Width::W128)), SealWidth::W128);
+        assert_eq!(width(None, Some(Width::W256)), SealWidth::W256);
+        assert_eq!(width(None, Some(Width::W512)), SealWidth::W512);
+        assert_eq!(width(Some("256"), Some(Width::W128)), SealWidth::W256);
+        assert_eq!(width(Some("128"), Some(Width::W512)), SealWidth::W128);
+        assert_eq!(width(Some("auto"), Some(Width::W512)), SealWidth::Auto);
+        assert_eq!(width(Some("512"), None), SealWidth::W512);
     }
 
 

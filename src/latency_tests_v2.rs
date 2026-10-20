@@ -1018,20 +1018,19 @@ lat_v2_read_impl!(
     |v| reduce_m512i(v)
 );
 
-/// Auto-dispatch wrapper for Layout A — picks the best available SIMD width at runtime.
+/// Auto-dispatch wrapper for Layout A — runs the variant at the run's width (`crate::simd::test_width`:
+/// `width=`'s, else the widest the CPU has), as every `*_auto_multi` here does.
 /// Returns LatencyTestStats (not TestStats) so it works with TestFunction::Latency.
 #[doc = include_str!("test_fn_safety.md")]
 pub unsafe fn lat_v2_read_auto_multi(
     blocks: &[AllocationBlock], thread_id: usize, error_mode: ErrorMode,
     timing: &TestTiming, config: &TestMemoryConfig, progress: Option<&TestProgress>,
 ) -> LatencyTestStats {
-    if is_x86_feature_detected!("avx512f") {
-        return lat_v2_read_512_multi(blocks, thread_id, error_mode, timing, config, progress);
+    match crate::simd::test_width() {
+        crate::simd::Width::W512 => lat_v2_read_512_multi(blocks, thread_id, error_mode, timing, config, progress),
+        crate::simd::Width::W256 => lat_v2_read_256_multi(blocks, thread_id, error_mode, timing, config, progress),
+        crate::simd::Width::W128 => lat_v2_read_128_multi(blocks, thread_id, error_mode, timing, config, progress),
     }
-    if is_x86_feature_detected!("avx2") {
-        return lat_v2_read_256_multi(blocks, thread_id, error_mode, timing, config, progress);
-    }
-    lat_v2_read_128_multi(blocks, thread_id, error_mode, timing, config, progress)
 }
 
 // ============================================================================
@@ -1067,13 +1066,11 @@ pub unsafe fn lat_v2_write_auto_multi(
     blocks: &[AllocationBlock], thread_id: usize, error_mode: ErrorMode,
     timing: &TestTiming, config: &TestMemoryConfig, progress: Option<&TestProgress>,
 ) -> LatencyTestStats {
-    if is_x86_feature_detected!("avx512f") {
-        return lat_v2_write_512_multi(blocks, thread_id, error_mode, timing, config, progress);
+    match crate::simd::test_width() {
+        crate::simd::Width::W512 => lat_v2_write_512_multi(blocks, thread_id, error_mode, timing, config, progress),
+        crate::simd::Width::W256 => lat_v2_write_256_multi(blocks, thread_id, error_mode, timing, config, progress),
+        crate::simd::Width::W128 => lat_v2_write_128_multi(blocks, thread_id, error_mode, timing, config, progress),
     }
-    if is_x86_feature_detected!("avx2") {
-        return lat_v2_write_256_multi(blocks, thread_id, error_mode, timing, config, progress);
-    }
-    lat_v2_write_128_multi(blocks, thread_id, error_mode, timing, config, progress)
 }
 
 // ============================================================================
@@ -1115,13 +1112,11 @@ pub unsafe fn lat_v2_copy_auto_multi(
     blocks: &[AllocationBlock], thread_id: usize, error_mode: ErrorMode,
     timing: &TestTiming, config: &TestMemoryConfig, progress: Option<&TestProgress>,
 ) -> LatencyTestStats {
-    if is_x86_feature_detected!("avx512f") {
-        return lat_v2_copy_512_multi(blocks, thread_id, error_mode, timing, config, progress);
+    match crate::simd::test_width() {
+        crate::simd::Width::W512 => lat_v2_copy_512_multi(blocks, thread_id, error_mode, timing, config, progress),
+        crate::simd::Width::W256 => lat_v2_copy_256_multi(blocks, thread_id, error_mode, timing, config, progress),
+        crate::simd::Width::W128 => lat_v2_copy_128_multi(blocks, thread_id, error_mode, timing, config, progress),
     }
-    if is_x86_feature_detected!("avx2") {
-        return lat_v2_copy_256_multi(blocks, thread_id, error_mode, timing, config, progress);
-    }
-    lat_v2_copy_128_multi(blocks, thread_id, error_mode, timing, config, progress)
 }
 
 // ============================================================================
@@ -1163,13 +1158,11 @@ pub unsafe fn lat_v2p_read_auto_multi(
     blocks: &[AllocationBlock], thread_id: usize, error_mode: ErrorMode,
     timing: &TestTiming, config: &TestMemoryConfig, progress: Option<&TestProgress>,
 ) -> LatencyTestStats {
-    if is_x86_feature_detected!("avx512f") {
-        return lat_v2p_read_512_multi(blocks, thread_id, error_mode, timing, config, progress);
+    match crate::simd::test_width() {
+        crate::simd::Width::W512 => lat_v2p_read_512_multi(blocks, thread_id, error_mode, timing, config, progress),
+        crate::simd::Width::W256 => lat_v2p_read_256_multi(blocks, thread_id, error_mode, timing, config, progress),
+        crate::simd::Width::W128 => lat_v2p_read_128_multi(blocks, thread_id, error_mode, timing, config, progress),
     }
-    if is_x86_feature_detected!("avx2") {
-        return lat_v2p_read_256_multi(blocks, thread_id, error_mode, timing, config, progress);
-    }
-    lat_v2p_read_128_multi(blocks, thread_id, error_mode, timing, config, progress)
 }
 
 // ============================================================================
@@ -1205,13 +1198,11 @@ pub unsafe fn lat_v2p_write_auto_multi(
     blocks: &[AllocationBlock], thread_id: usize, error_mode: ErrorMode,
     timing: &TestTiming, config: &TestMemoryConfig, progress: Option<&TestProgress>,
 ) -> LatencyTestStats {
-    if is_x86_feature_detected!("avx512f") {
-        return lat_v2p_write_512_multi(blocks, thread_id, error_mode, timing, config, progress);
+    match crate::simd::test_width() {
+        crate::simd::Width::W512 => lat_v2p_write_512_multi(blocks, thread_id, error_mode, timing, config, progress),
+        crate::simd::Width::W256 => lat_v2p_write_256_multi(blocks, thread_id, error_mode, timing, config, progress),
+        crate::simd::Width::W128 => lat_v2p_write_128_multi(blocks, thread_id, error_mode, timing, config, progress),
     }
-    if is_x86_feature_detected!("avx2") {
-        return lat_v2p_write_256_multi(blocks, thread_id, error_mode, timing, config, progress);
-    }
-    lat_v2p_write_128_multi(blocks, thread_id, error_mode, timing, config, progress)
 }
 
 // ============================================================================
@@ -1253,13 +1244,11 @@ pub unsafe fn lat_v2p_copy_auto_multi(
     blocks: &[AllocationBlock], thread_id: usize, error_mode: ErrorMode,
     timing: &TestTiming, config: &TestMemoryConfig, progress: Option<&TestProgress>,
 ) -> LatencyTestStats {
-    if is_x86_feature_detected!("avx512f") {
-        return lat_v2p_copy_512_multi(blocks, thread_id, error_mode, timing, config, progress);
+    match crate::simd::test_width() {
+        crate::simd::Width::W512 => lat_v2p_copy_512_multi(blocks, thread_id, error_mode, timing, config, progress),
+        crate::simd::Width::W256 => lat_v2p_copy_256_multi(blocks, thread_id, error_mode, timing, config, progress),
+        crate::simd::Width::W128 => lat_v2p_copy_128_multi(blocks, thread_id, error_mode, timing, config, progress),
     }
-    if is_x86_feature_detected!("avx2") {
-        return lat_v2p_copy_256_multi(blocks, thread_id, error_mode, timing, config, progress);
-    }
-    lat_v2p_copy_128_multi(blocks, thread_id, error_mode, timing, config, progress)
 }
 
 // ============================================================================
@@ -1298,13 +1287,11 @@ pub unsafe fn lat_v2p_write_full_auto_multi(
     blocks: &[AllocationBlock], thread_id: usize, error_mode: ErrorMode,
     timing: &TestTiming, config: &TestMemoryConfig, progress: Option<&TestProgress>,
 ) -> LatencyTestStats {
-    if is_x86_feature_detected!("avx512f") {
-        return lat_v2p_write_full_512_multi(blocks, thread_id, error_mode, timing, config, progress);
+    match crate::simd::test_width() {
+        crate::simd::Width::W512 => lat_v2p_write_full_512_multi(blocks, thread_id, error_mode, timing, config, progress),
+        crate::simd::Width::W256 => lat_v2p_write_full_256_multi(blocks, thread_id, error_mode, timing, config, progress),
+        crate::simd::Width::W128 => lat_v2p_write_full_128_multi(blocks, thread_id, error_mode, timing, config, progress),
     }
-    if is_x86_feature_detected!("avx2") {
-        return lat_v2p_write_full_256_multi(blocks, thread_id, error_mode, timing, config, progress);
-    }
-    lat_v2p_write_full_128_multi(blocks, thread_id, error_mode, timing, config, progress)
 }
 
 // ============================================================================
@@ -1349,13 +1336,11 @@ pub unsafe fn lat_v2p_copy_full_auto_multi(
     blocks: &[AllocationBlock], thread_id: usize, error_mode: ErrorMode,
     timing: &TestTiming, config: &TestMemoryConfig, progress: Option<&TestProgress>,
 ) -> LatencyTestStats {
-    if is_x86_feature_detected!("avx512f") {
-        return lat_v2p_copy_full_512_multi(blocks, thread_id, error_mode, timing, config, progress);
+    match crate::simd::test_width() {
+        crate::simd::Width::W512 => lat_v2p_copy_full_512_multi(blocks, thread_id, error_mode, timing, config, progress),
+        crate::simd::Width::W256 => lat_v2p_copy_full_256_multi(blocks, thread_id, error_mode, timing, config, progress),
+        crate::simd::Width::W128 => lat_v2p_copy_full_128_multi(blocks, thread_id, error_mode, timing, config, progress),
     }
-    if is_x86_feature_detected!("avx2") {
-        return lat_v2p_copy_full_256_multi(blocks, thread_id, error_mode, timing, config, progress);
-    }
-    lat_v2p_copy_full_128_multi(blocks, thread_id, error_mode, timing, config, progress)
 }
 
 // ============================================================================
@@ -1575,13 +1560,11 @@ pub unsafe fn lat_ntw_write_auto_multi(
     blocks: &[AllocationBlock], thread_id: usize, error_mode: ErrorMode,
     timing: &TestTiming, config: &TestMemoryConfig, progress: Option<&TestProgress>,
 ) -> LatencyTestStats {
-    if is_x86_feature_detected!("avx512f") {
-        return lat_ntw_write_512_multi(blocks, thread_id, error_mode, timing, config, progress);
+    match crate::simd::test_width() {
+        crate::simd::Width::W512 => lat_ntw_write_512_multi(blocks, thread_id, error_mode, timing, config, progress),
+        crate::simd::Width::W256 => lat_ntw_write_256_multi(blocks, thread_id, error_mode, timing, config, progress),
+        crate::simd::Width::W128 => lat_ntw_write_128_multi(blocks, thread_id, error_mode, timing, config, progress),
     }
-    if is_x86_feature_detected!("avx2") {
-        return lat_ntw_write_256_multi(blocks, thread_id, error_mode, timing, config, progress);
-    }
-    lat_ntw_write_128_multi(blocks, thread_id, error_mode, timing, config, progress)
 }
 
 // ============================================================================

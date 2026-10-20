@@ -94,6 +94,21 @@ pub struct PlanSequence<'a> {
     pub seal_off_reason: &'a str,
     /// A TM5 import: tests go by the `.cfg`'s numbers
     pub tm5: bool,
+    /// The SIMD width given and where (`width=`, a config's `width`, TODO 99); `None` under auto
+    pub width: Option<(crate::simd::Width, &'a str)>,
+}
+
+/// The plan's note on a width given: what runs at it, and Mem-Sequence's where it lacks it.
+fn width_note(width: crate::simd::Width, source: &str, test_definitions: &[crate::runner::TestDefinition]) -> String {
+    let sequence = crate::tests::sequence_width(width);
+    let lacks = if sequence != width && test_definitions.iter().any(|d| d.actual_name == "Mem-Sequence") {
+        format!(" Mem-Sequence has no {}-bit kernel and runs at {}.", width.bits(), sequence.bits())
+    } else {
+        String::new()
+    };
+    format!("ℹ  Width: {} bits ({source}) for every test that picks its width at run time: the -Auto tests (named \
+             for it), Mem-Sequence and the Bench pairs; the seal too unless seal-width= sets its own. Tests named \
+             for a width keep theirs.{lacks}", width.bits())
 }
 
 /// The plan: one row per test, in the order of its first step, then the cycle's sequence when it
@@ -256,6 +271,9 @@ pub fn create_test_configuration_report_v2(
                                  overwrites is checked first and resealed before the next sealed step.", kernel.name()),
         None => format!("🔓 Seal: off ({})", sequence.seal_off_reason),
     });
+    if let Some((width, source)) = sequence.width {
+        notes.push(width_note(width, source, test_definitions));
+    }
 
     TestConfigurationReport {
         suite_timing: suite_timing_str,
@@ -710,6 +728,32 @@ mod tests {
 
     fn report(spans: Vec<ThreadSpan>, numa_nodes: u32) -> AllocationReport {
         create_allocation_report(spans, std::time::Duration::from_millis(1234), numa_nodes)
+    }
+
+    /// TODO 99: a width given is in the plan, with where it came from, and Mem-Sequence's own
+    /// where it lacks that one; under auto the plan says nothing of it.
+    #[test]
+    fn a_width_given_is_in_the_plan() {
+        use crate::simd::Width;
+        let cache_info = crate::tests::get_cache_info();
+        let suite = crate::runner::create_test_definitions(cache_info);
+        let pick = |names: &[&str]| suite.iter().filter(|d| names.contains(&d.actual_name)).cloned().collect::<Vec<_>>();
+        let (with_sequence, without) = (pick(&["Mem-Sequence", "Mem-Random"]), pick(&["Mem-Random"]));
+        assert_eq!((with_sequence.len(), without.len()), (2, 1));
+        let notes = |defs: &[crate::runner::TestDefinition], width| {
+            let sequence = PlanSequence { order: None, seal: None, seal_off_reason: "seal=off", tm5: false, width };
+            create_test_configuration_report_v2(defs, &Default::default(), cache_info, &[64 * MIB], None, &sequence).notes
+        };
+        let width_notes = |notes: Vec<String>| notes.into_iter().filter(|n| n.contains("Width:")).collect::<Vec<_>>();
+
+        assert!(width_notes(notes(&with_sequence, None)).is_empty(), "auto is the default: no note");
+        let given = width_notes(notes(&with_sequence, Some((Width::W256, "width="))));
+        assert!(given.len() == 1 && given[0].contains("256 bits (width=)") && !given[0].contains("has no"), "{given:?}");
+        let given = width_notes(notes(&with_sequence, Some((Width::W128, "the config's width"))));
+        assert!(given.len() == 1 && given[0].contains("128 bits (the config's width)")
+                && given[0].contains("Mem-Sequence has no 128-bit kernel and runs at 256"), "{given:?}");
+        let given = width_notes(notes(&without, Some((Width::W128, "width="))));
+        assert!(given.len() == 1 && !given[0].contains("has no"), "no Mem-Sequence in the plan: {given:?}");
     }
 
     fn cell<'a>(table: &'a TableData, row: usize, header: &str) -> &'a str {

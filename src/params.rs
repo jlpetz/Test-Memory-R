@@ -247,6 +247,15 @@ impl ParamRegistry {
                 crate::seal::SealWidth::parse(v).map(|w| ParamValue::String(w.name().to_string()))
             },
         });
+        // The tests' SIMD width (TODO 99, `crate::simd::Width`): read early in `cli::run`, before a
+        // config loads; registered so it validates
+        params.insert("width", ParamDef {
+            key: "width",
+            can_override_config: true,
+            parser: |v| {
+                crate::simd::Width::parse(v).map(|w| ParamValue::String(w.map_or("auto", crate::simd::Width::name).to_string()))
+            },
+        });
 
         params.insert("mirror", ParamDef {
             key: "mirror",
@@ -495,7 +504,7 @@ pub fn print_help(program_name: &str) {
     println!("  {} --compare-results baseline.json current.json [output.json]", program_name);
     println!("                                          # Compare two test results from .\\results\\");
     println!("  {} --setup-large-pages              # Configure large pages for optimal performance", program_name);
-    println!("  {} plan=stability                   # The default: the stability tests at the widest width", program_name);
+    println!("  {} plan=stability                   # The default: the stability tests at the widest width (or width=)", program_name);
     println!("  {} plan=quick                       # The stability tests once", program_name);
     println!("  {} plan=widths                      # Every width of the tests that have them, side by side", program_name);
     println!("  {} plan=perf                        # Latency and bandwidth", program_name);
@@ -541,7 +550,12 @@ pub fn print_help(program_name: &str) {
     println!("  blkround=up                         # ...up (default; a smaller step rather than pass available), down, or nearest");
     println!("  errors=halt                         # Error handling (log/halt/panic)");
     println!("  seal=tmr                            # Seal: check and reseal around every chunk (tmr, the default; tm5; off)");
-    println!("  seal-width=auto                     # Seal kernels' SIMD width (auto, 128, 256, 512)");
+    println!("  seal-width=auto                     # Seal kernels' SIMD width (auto, 128, 256, 512); unset, width='s");
+    println!("  width=auto                          # SIMD width of the tests that pick theirs at run time (the -Auto");
+    println!("                                      #   tests, Mem-Sequence, the Bench pairs) and of the seal: auto (the");
+    println!("                                      #   widest the CPU has; the seal 256), 128, 256 or 512 (refused if");
+    println!("                                      #   the CPU lacks it). Mem-Sequence has no 128 and runs at 256;");
+    println!("                                      #   -128/-256/-512 tests keep theirs");
     println!("  mirror=whole                        # Mirror tests: one mirror over each chunk (the default)");
     println!("  mirror=subblocks:4                  #   ...each chunk in 2 or 4 parts, mirrored in lockstep");
     println!("  mirror=jump:510                     #   ...128 B swaps every (N+1) x 128 B (TM5 MirrorMove128)");

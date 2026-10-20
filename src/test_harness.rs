@@ -297,9 +297,9 @@ where
     }
 }
 
-/// Auto-dispatch macro: generates a function that selects the best SIMD variant at runtime, the
-/// 128-bit one when the CPU has neither AVX-512 nor AVX2 (the startup gate requires AVX2, so
-/// that is a fallback that never runs).
+/// Auto-dispatch macro: generates a function that runs the SIMD variant at the run's width
+/// (`crate::simd::test_width`: `width=`'s, else the widest the CPU has, the 128-bit one when it
+/// has neither AVX-512 nor AVX2, a fallback the startup gate's AVX2 never lets run).
 ///
 /// Usage:
 /// ```ignore
@@ -327,16 +327,11 @@ macro_rules! auto_dispatch {
             config: &$crate::tests::TestMemoryConfig,
             progress: Option<&$crate::tests::TestProgress>,
         ) -> $crate::tests::TestStats {
-            #[cfg(target_arch = "x86_64")]
-            {
-                if is_x86_feature_detected!("avx512f") {
-                    return $avx512(blocks, thread_id, error_mode, timing, config, progress);
-                }
-                if is_x86_feature_detected!("avx2") {
-                    return $avx2(blocks, thread_id, error_mode, timing, config, progress);
-                }
+            match $crate::simd::test_width() {
+                $crate::simd::Width::W512 => $avx512(blocks, thread_id, error_mode, timing, config, progress),
+                $crate::simd::Width::W256 => $avx2(blocks, thread_id, error_mode, timing, config, progress),
+                $crate::simd::Width::W128 => $sse(blocks, thread_id, error_mode, timing, config, progress),
             }
-            $sse(blocks, thread_id, error_mode, timing, config, progress)
         }
     };
 }
