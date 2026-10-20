@@ -1457,8 +1457,12 @@ const SEAL_L3_MULTIPLE: usize = 4;
 /// ~20 ms a fill at 25,000 MiB/s).
 const SEAL_MIN_BYTES: usize = 512 * 1024 * 1024;
 
+/// How much slower than the fastest width's median a narrower width's may be, at most, and still
+/// count as the same speed (`choose_seal_width`).
+const SEAL_SAME_SPEED: f64 = 0.01;
+
 /// One width in a seal calibration: its fill and check speeds at their medians, and its fill +
-/// check time over the timed runs, median and spread.
+/// check time over the timed runs: median, fastest, upper quartile and slowest.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct SealWidthTiming {
     /// 128, 256 or 512
@@ -1468,13 +1472,40 @@ pub struct SealWidthTiming {
     pub fill_mib_s: f64,
     #[serde(serialize_with = "serialize_round_2dp", deserialize_with = "deserialize_f64_lenient")]
     pub check_mib_s: f64,
-    /// Fill + check in ms: the runs' median, fastest and slowest
+    /// Fill + check in ms: the runs' median, fastest, upper quartile (the second slowest of 5;
+    /// `same_speed_bound`) and slowest
     #[serde(serialize_with = "serialize_round_3dp", deserialize_with = "deserialize_f64_lenient")]
     pub ms: f64,
     #[serde(serialize_with = "serialize_round_3dp", deserialize_with = "deserialize_f64_lenient")]
     pub ms_min: f64,
+    #[serde(default, serialize_with = "serialize_round_3dp", deserialize_with = "deserialize_f64_lenient")]
+    pub ms_q3: f64,
     #[serde(serialize_with = "serialize_round_3dp", deserialize_with = "deserialize_f64_lenient")]
     pub ms_max: f64,
+}
+
+impl SealWidthTiming {
+    /// The timing of the width of `bits` from its timed runs: each fill's and each check's
+    /// seconds, over `mib` MiB.
+    fn from_runs(bits: u32, mib: f64, fills: &[f64], checks: &[f64]) -> Self {
+        let totals: Vec<f64> = fills.iter().zip(checks).map(|(f, c)| (f + c) * 1e3).collect();
+        SealWidthTiming {
+            bits,
+            fill_mib_s: mib / median(fills),
+            check_mib_s: mib / median(checks),
+            ms: median(&totals),
+            ms_min: quantile(&totals, 0.0),
+            ms_q3: quantile(&totals, 0.75),
+            ms_max: quantile(&totals, 1.0),
+        }
+    }
+
+    /// The slowest median a narrower width may have and run at this one's speed
+    /// (`choose_seal_width`): this one's upper quartile or its median and `SEAL_SAME_SPEED`,
+    /// whichever is less.
+    pub fn same_speed_bound(&self) -> f64 {
+        self.ms_q3.min(self.ms * (1.0 + SEAL_SAME_SPEED))
+    }
 }
 
 /// The seal's width, measured on this machine (`--calibrate-seal`, `--calibrate-all`; TODO 99).
@@ -1500,7 +1531,7 @@ pub struct SealCalibration {
     /// Each width the CPU has, the narrowest first
     pub widths: Vec<SealWidthTiming>,
     /// The width `auto` runs (`choose_seal_width`), and the fastest; they differ when a narrower
-    /// width is within the fastest's spread
+    /// width runs at the fastest's speed
     pub width_bits: u32,
     pub fastest_bits: u32,
 }
@@ -1513,24 +1544,37 @@ impl SealCalibration {
 }
 
 /// The seal's width from each width's timing: the fastest by median fill + check, unless a
-/// narrower width's median is within the fastest's spread (no slower than its slowest run), when
-/// it is the narrowest such: the measurement can't tell them apart, and the narrower draws less
-/// power for the same speed. Returns the chosen width's bits and the fastest's; `None` with none.
+/// narrower width runs at its speed, when it is the narrowest such: the narrower draws less power.
+/// Returns the chosen width's bits and the fastest's; `None` with none.
+///
+/// The same speed is a median no slower than the fastest's `same_speed_bound`: the tighter of its
+/// upper quartile and 1% over its median. The quartile is the fastest's own run-to-run spread
+/// without its slowest run (the second slowest of 5), so one preempted run can't widen it, as it
+/// would the slowest run (40 ms [39.5..55] would pass a width at 50 ms, 25% slower); a median past
+/// it is a difference the runs show. The 1% caps what noise can cost: two disturbed runs of 5
+/// still lift the quartile, and the choice is saved for every later run.
 pub fn choose_seal_width(widths: &[SealWidthTiming]) -> Option<(u32, u32)> {
     let fastest = widths.iter().min_by(|a, b| a.ms.total_cmp(&b.ms).then(a.bits.cmp(&b.bits)))?;
-    let chosen = widths.iter().filter(|w| w.bits <= fastest.bits && w.ms <= fastest.ms_max).min_by_key(|w| w.bits)?;
+    let bound = fastest.same_speed_bound();
+    let chosen = widths.iter().filter(|w| w.bits <= fastest.bits && w.ms <= bound).min_by_key(|w| w.bits)?;
     Some((chosen.bits, fastest.bits))
 }
 
 /// The median of `values` (the mean of the middle two for an even count); 0 for none.
 fn median(values: &[f64]) -> f64 {
+    quantile(values, 0.5)
+}
+
+/// The `p` quantile of `values` (0 the least, 1 the greatest), interpolated between the two
+/// nearest when it falls between them (R's and numpy's default): of 5, 0.75 is the second
+/// greatest. 0 for none.
+fn quantile(values: &[f64], p: f64) -> f64 {
     let mut sorted = values.to_vec();
     sorted.sort_by(f64::total_cmp);
-    match sorted.len() {
-        0 => 0.0,
-        n if n % 2 == 1 => sorted[n / 2],
-        n => (sorted[n / 2 - 1] + sorted[n / 2]) / 2.0,
-    }
+    let Some(last) = sorted.len().checked_sub(1) else { return 0.0 };
+    let at = p.clamp(0.0, 1.0) * last as f64;
+    let (below, above) = (at.floor() as usize, at.ceil() as usize);
+    sorted[below] + (sorted[above] - sorted[below]) * (at - below as f64)
 }
 
 /// Measures the seal's own kernels (`SealKernel::fill` and `check`, the default pattern `tmr`) at
@@ -1583,17 +1627,9 @@ pub fn calibrate_seal(cache_info: &CacheInfo, page_size: &str) -> Result<SealCal
     }
 
     let mib = bytes as f64 / crate::constants::MB_F64;
-    let widths: Vec<SealWidthTiming> = kernels.iter().zip(&times).map(|(kernel, (fills, checks))| {
-        let totals: Vec<f64> = fills.iter().zip(checks).map(|(f, c)| (f + c) * 1e3).collect();
-        SealWidthTiming {
-            bits: kernel.width.bits(),
-            fill_mib_s: mib / median(fills),
-            check_mib_s: mib / median(checks),
-            ms: median(&totals),
-            ms_min: totals.iter().copied().fold(f64::INFINITY, f64::min),
-            ms_max: totals.iter().copied().fold(0.0, f64::max),
-        }
-    }).collect();
+    let widths: Vec<SealWidthTiming> = kernels.iter().zip(&times)
+        .map(|(kernel, (fills, checks))| SealWidthTiming::from_runs(kernel.width.bits(), mib, fills, checks))
+        .collect();
     let (width_bits, fastest_bits) = choose_seal_width(&widths).ok_or("no seal width to measure")?;
     Ok(SealCalibration {
         timestamp: Utc::now(),
@@ -1626,8 +1662,10 @@ pub fn display_seal_calibration(seal: &SealCalibration, cache_info: &CacheInfo) 
     println!("───────────────────────────────────────────────────────────────────────────────");
     match seal.widths.iter().find(|w| w.bits == seal.fastest_bits) {
         Some(fastest) if seal.fastest_bits != seal.width_bits => println!(
-            "Seal width: {}: the fastest is {} ({}), but {}'s median is within its spread, so the narrower (less power, same speed)",
-            seal.width_bits, fastest.bits, seal_time(fastest), seal.width_bits),
+            "Seal width: {}: the fastest is {} ({}), but {}'s median is within {:.1} ms (the tighter of {}'s upper quartile \
+             and its median + {:.0}%), so the narrower (less power, same speed)",
+            seal.width_bits, fastest.bits, seal_time(fastest), seal.width_bits, fastest.same_speed_bound(), fastest.bits,
+            SEAL_SAME_SPEED * 100.0),
         _ => println!("Seal width: {}, the fastest", seal.width_bits),
     }
     println!();
@@ -1739,35 +1777,85 @@ mod tests {
         assert_eq!(stats.spread_ratio, 0.0);
     }
 
-    /// A width's fill + check: its median, fastest and slowest run, in ms.
-    fn timing(bits: u32, ms: f64, ms_min: f64, ms_max: f64) -> SealWidthTiming {
-        SealWidthTiming { bits, fill_mib_s: 0.0, check_mib_s: 0.0, ms, ms_min, ms_max }
+    /// A width's timing from its timed runs' fill + check, in ms (half each).
+    fn runs(bits: u32, ms: &[f64]) -> SealWidthTiming {
+        let halves: Vec<f64> = ms.iter().map(|ms| ms / 2e3).collect();
+        SealWidthTiming::from_runs(bits, 1.0, &halves, &halves)
     }
 
-    /// TODO 99: the seal's width is the fastest by median fill + check, unless a narrower width's
-    /// median is within the fastest's spread, when it is the narrowest such. A wider width within
-    /// a narrower fastest's spread, or a narrower one whose runs only overlap it, changes nothing.
+    /// Five runs about `ms`, 0.5% apart.
+    fn steady(bits: u32, ms: f64) -> SealWidthTiming {
+        runs(bits, &[ms * 0.99, ms * 0.995, ms, ms * 1.005, ms * 1.01])
+    }
+
+    /// TODO 99: a width's timing is its runs' median, fastest, upper quartile (of 5, the second
+    /// slowest) and slowest, and its fill and check speeds at their medians.
     #[test]
-    fn the_seal_width_is_the_fastest_or_the_narrowest_within_its_spread() {
+    fn a_seal_width_timing_is_its_runs_median_quartile_and_range() {
+        let t = SealWidthTiming::from_runs(256, 1000.0, &[0.020, 0.030, 0.025, 0.021, 0.022], &[0.010, 0.010, 0.020, 0.011, 0.012]);
+        let close = |a: f64, b: f64| (a - b).abs() < 1e-9;
+        assert_eq!(t.bits, 256);
+        assert!(close(t.fill_mib_s, 1000.0 / 0.022) && close(t.check_mib_s, 1000.0 / 0.011), "{t:?}");
+        // Fill + check: 30, 40, 45, 32, 34 ms
+        assert!(close(t.ms, 34.0) && close(t.ms_min, 30.0) && close(t.ms_q3, 40.0) && close(t.ms_max, 45.0), "{t:?}");
+    }
+
+    /// TODO 99: the seal's width is the fastest by median fill + check, unless a narrower width
+    /// runs at its speed: a median within the tighter of the fastest's upper quartile and its
+    /// median + 1%, when it is the narrowest such. One preempted run of the fastest's doesn't
+    /// widen that (the reviewer's case); two disturbed runs leave the 1% to bind; a narrower width
+    /// within 1% that the fastest's tight runs show slower isn't the same speed. A wider width at
+    /// a narrower fastest's speed changes nothing.
+    #[test]
+    fn the_seal_width_is_the_fastest_or_the_narrowest_at_its_speed() {
         let choose = |widths: &[SealWidthTiming]| choose_seal_width(widths);
         // Apart: the fastest
-        assert_eq!(choose(&[timing(128, 50.0, 49.0, 51.0), timing(256, 45.0, 44.0, 46.0), timing(512, 40.0, 39.0, 41.0)]), Some((512, 512)));
-        assert_eq!(choose(&[timing(128, 50.0, 49.0, 51.0), timing(256, 40.0, 39.0, 41.0), timing(512, 45.0, 44.0, 46.0)]), Some((256, 256)));
-        // 256's median inside 512's spread: 256
-        assert_eq!(choose(&[timing(128, 50.0, 49.0, 51.0), timing(256, 41.0, 40.0, 43.0), timing(512, 40.0, 39.0, 42.0)]), Some((256, 512)));
-        // 128's too: the narrowest of them
-        assert_eq!(choose(&[timing(128, 41.5, 41.0, 44.0), timing(256, 41.0, 40.0, 43.0), timing(512, 40.0, 39.0, 42.0)]), Some((128, 512)));
-        // Exactly the fastest's slowest run is within
-        assert_eq!(choose(&[timing(256, 42.0, 41.0, 43.0), timing(512, 40.0, 39.0, 42.0)]), Some((256, 512)));
-        // Runs that overlap the fastest's, a median that doesn't: the fastest
-        assert_eq!(choose(&[timing(256, 45.0, 41.0, 47.0), timing(512, 40.0, 39.0, 42.0)]), Some((512, 512)));
-        // A wider width within a narrower fastest's spread: the narrower, the fastest
-        assert_eq!(choose(&[timing(256, 40.0, 39.0, 42.0), timing(512, 40.5, 39.5, 41.0)]), Some((256, 256)));
+        assert_eq!(choose(&[steady(128, 50.0), steady(256, 45.0), steady(512, 40.0)]), Some((512, 512)));
+        assert_eq!(choose(&[steady(128, 50.0), steady(256, 40.0), steady(512, 45.0)]), Some((256, 256)));
+
+        // The reviewer's: 512 at 40 ms [39.5..55], one run preempted, and 256 at 50 ms: 512
+        let preempted = runs(512, &[39.5, 39.8, 40.0, 40.3, 55.0]);
+        assert_eq!(seal_time(&preempted), "40.0 ms [39.5..55.0]");
+        assert!(preempted.ms_max > 50.0, "the slowest run would pass 256");
+        assert_eq!(choose(&[steady(256, 50.0), preempted.clone()]), Some((512, 512)));
+        // ...where a width within its quartile, 40.3 ms, is the same speed
+        assert_eq!(choose(&[steady(256, 40.25), preempted]), Some((256, 512)));
+
+        // Within both: the narrowest of those within
+        let spread = runs(512, &[39.6, 39.8, 40.0, 40.2, 40.4]);
+        assert_eq!(choose(&[steady(128, 41.0), steady(256, 40.1), spread.clone()]), Some((256, 512)));
+        assert_eq!(choose(&[steady(128, 40.15), steady(256, 40.1), spread.clone()]), Some((128, 512)));
+        // Exactly the bound is within
+        assert_eq!(spread.same_speed_bound(), spread.ms_q3);
+        let at_bound = SealWidthTiming { bits: 256, ms: spread.ms_q3, ..steady(256, 40.0) };
+        assert_eq!(choose(&[at_bound, spread]), Some((256, 512)));
+
+        // Two runs disturbed: the quartile is 44 ms, so the 1% binds, at 40.4 ms
+        let disturbed = runs(512, &[39.5, 39.8, 40.0, 44.0, 55.0]);
+        assert_eq!(choose(&[steady(256, 41.0), disturbed.clone()]), Some((512, 512)));
+        assert_eq!(choose(&[steady(256, 40.3), disturbed]), Some((256, 512)));
+
+        // Tight runs: the quartile binds, at 40.1 ms, so 0.75% slower is slower
+        let tight = runs(512, &[40.0, 40.0, 40.0, 40.1, 40.2]);
+        assert_eq!(choose(&[steady(256, 40.3), tight.clone()]), Some((512, 512)));
+        assert_eq!(choose(&[steady(256, 40.05), tight]), Some((256, 512)));
+
+        // A wider width at a narrower fastest's speed: the narrower, the fastest
+        assert_eq!(choose(&[steady(256, 40.0), steady(512, 40.1)]), Some((256, 256)));
         // Equal medians: the narrower is the fastest
-        assert_eq!(choose(&[timing(256, 40.0, 40.0, 40.0), timing(512, 40.0, 40.0, 40.0)]), Some((256, 256)));
+        assert_eq!(choose(&[runs(256, &[40.0; 5]), runs(512, &[40.0; 5])]), Some((256, 256)));
         // One width, and none
-        assert_eq!(choose(&[timing(256, 40.0, 39.0, 41.0)]), Some((256, 256)));
+        assert_eq!(choose(&[steady(256, 40.0)]), Some((256, 256)));
         assert_eq!(choose(&[]), None);
+    }
+
+    #[test]
+    fn quantiles_interpolate_between_the_nearest_two() {
+        let five = [55.0, 39.5, 40.3, 39.8, 40.0];
+        assert_eq!([0.0, 0.5, 0.75, 1.0].map(|p| quantile(&five, p)), [39.5, 40.0, 40.3, 55.0]);
+        assert_eq!(quantile(&[1.0, 2.0, 3.0, 4.0], 0.75), 3.25);
+        assert_eq!(quantile(&[7.0], 0.75), 7.0);
+        assert_eq!(quantile(&[], 0.75), 0.0);
     }
 
     #[test]

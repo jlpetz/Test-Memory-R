@@ -507,7 +507,7 @@ pub fn print_help(program_name: &str) {
     println!("  {} --calibrate-cache                # Measure the cache tiers' sizes; saved to tmr-cfg.json after a prompt", program_name);
     println!("  {} --calibrate-cache-ext            #   ...finer, around each tier's edge (preferred when both are saved)", program_name);
     println!("  {} --calibrate-seal                 # Time the seal's fill and check at each width, one thread; seal-width=auto", program_name);
-    println!("                                          #   then runs the fastest (the narrower if within its spread)");
+    println!("                                          #   then runs the fastest (a narrower one if it is as fast)");
     println!("  {} --calibrate-all                  # --calibrate-cache, then --calibrate-seal (maxpage= sets both's page size)", program_name);
     println!("  {} plan=stability                   # The default: the stability tests at the widest width (or width=)", program_name);
     println!("  {} plan=quick                       # The stability tests once", program_name);

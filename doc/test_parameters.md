@@ -210,8 +210,12 @@ allocates, at its page size (`maxpage=` sets it), so each check reads DRAM. Each
 checks the whole buffer at every width, in an order rotated each round; the first round is a
 warm-up, then 5 are timed. It reports each width's fill and check speed (MiB/s at the median) and
 its fill + check time (median [min..max]), and picks the fastest by median, or a narrower width
-whose median is within the fastest's spread (no slower than its slowest run): the measurement
-can't tell them apart, and the narrower draws less power. A check that finds a bad word fails the
+that runs at the same speed, since the narrower draws less power. The same speed is a median no
+slower than the tighter of the fastest's upper quartile (of 5 runs, the second slowest) and 1%
+over its median (`choose_seal_width`). The quartile is the fastest's own run-to-run spread, which
+one preempted run can't widen (the slowest run, which this used to take, let 40 ms [39.5..55] pass
+a width at 50 ms, 25% slower); the 1% caps what noise can cost, since two disturbed runs still lift
+the quartile and the choice is saved for every later run. A check that finds a bad word fails the
 calibration (memory errors). The result is saved to `tmr-cfg.json` (`seal_calibration`) after a
 prompt comparing it with the one stored, as the cache calibration's is, and is used only on the
 machine it was measured on. It keeps its own fingerprint of that machine, everything the cache

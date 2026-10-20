@@ -498,7 +498,7 @@ mod tests {
     /// stamps the machine).
     fn seal_calibration(width_bits: u32) -> SealCalibration {
         use crate::calibration::SealWidthTiming;
-        let timing = |bits, ms| SealWidthTiming { bits, fill_mib_s: 20000.0, check_mib_s: 30000.0, ms, ms_min: ms - 1.0, ms_max: ms + 1.0 };
+        let timing = |bits, ms| SealWidthTiming { bits, fill_mib_s: 20000.0, check_mib_s: 30000.0, ms, ms_min: ms - 1.0, ms_q3: ms + 0.5, ms_max: ms + 1.0 };
         SealCalibration {
             timestamp: chrono::Utc::now(),
             fingerprint: MachineFingerprint::default(),
