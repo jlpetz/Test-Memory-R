@@ -196,10 +196,11 @@ repair (see TODO #13).
 | `Bench-Init-TM5-{0,1,2}`, `Bench-Init-TMR-{10,11,13,20,30}` | `bench_init_multi` | Pure fill throughput — `test_fn` = fill, `verify_fn` = no-op |
 | `Bench-Verify-TM5-{0,1,2}`, `Bench-Verify-TMR-{10,11,13,20,30}` | `bench_verify_multi` | Pure verify throughput. Uses `skip_init` to run dependently on a prior `Bench-Init` |
 
-**Gap**: none of the `Bench-*` names have `-128/-256/-512` width variants. Only
-`Bench-{Init,Verify}-{TM5,TMR}-N` exist, which run at the widest width this CPU has (512 bits
-with AVX-512, else 256) on the kernels `Mem-SimpleV2` runs at that width (TODO 99). Tracked as a
-known gap in CLAUDE.md.
+**Width**: the numbered pairs have no `-128/-256/-512` names. `Bench-{Init,Verify}-{TM5,TMR}-N`
+run at the run's width (`width=`; auto, the default, is the widest this CPU has: 512 bits with
+AVX-512, else 256) on the kernels `Mem-SimpleV2` runs at that width, and the results file records
+it (TODO 99); `width=128|256|512` compares widths. The `Bench-*-Seal-*` pairs have both: named for
+a width, or naming none and following `width=` (auto: the seal's own auto).
 
 ---
 

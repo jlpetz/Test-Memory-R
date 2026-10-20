@@ -6,7 +6,8 @@
 > as P/~P pairs keyed per cycle and step. A TM5 `.cfg` imports as native programs; `patterns=legacy`
 > keeps these modes, to compare. At every width (`Mem-SimpleV2-128/256/512/Auto`), every mode
 > writes its own image (modes 0, 1, 2 and 13 used to write mode 10's, TODO 3), sequentially on
-> the width's own loops, which Bench-Init/Verify run at the widest width (TODO 99).
+> the width's own loops, which Bench-Init/Verify run at the run's width (`width=`; auto, the
+> default, is the widest the CPU has; TODO 99).
 
 TMR has 8 numbered modes. TM5's keep its numbers, 0-2. TMR's are grouped by tens, by what the
 pattern is: 1x identities (every position its own value), 2x in-line arithmetic (a line's words
@@ -177,8 +178,8 @@ the compiler had always vectorized it.
 
 Every mode's sequential write and verify is one function a width (`simple_simd_loops!` in
 `tests.rs`), which `Mem-SimpleV2-*` runs at its width and `Bench-Init/Verify-TM5-*`/`-TMR-*` at
-the widest this CPU has (512 bits with AVX-512, else 256), so a Bench number stands for the
-SimpleTest kernel (TODO 99). Until then modes 0, 1, 2, 13 and 30 ran shared 256-bit loops at
+the run's (`width=`; auto, the default, is the widest this CPU has: 512 bits with AVX-512, else
+256), so a Bench number stands for the SimpleTest kernel at that width (TODO 99). Until then modes 0, 1, 2, 13 and 30 ran shared 256-bit loops at
 every width, and Bench its own 256-bit kernels.
 
 *Strided, modes 0, 1, 2 (mode 20's lines) and 13 run the shared strided loops
