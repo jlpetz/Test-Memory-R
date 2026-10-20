@@ -7592,14 +7592,7 @@ pub(crate) fn native_bench_tests() -> [(&'static str, &'static str, crate::runne
 /// Generates one #[target_feature] impl function + one public wrapper. The NT write and the verify
 /// are the width's `pos_write_nt` and `pos_verify` (`simple_simd_loops!`, TODO 99).
 macro_rules! simple_test_nt_impl {
-    (
-        $impl_fn:ident,
-        $pub_fn:ident,
-        $test_name:literal,
-        $simd_w:expr,
-        $loops:ident,
-        $target_feature:literal
-    ) => {
+    (@impl $impl_fn:ident, $test_name:literal, $simd_w:expr, $loops:ident, $target_feature:literal) => {
         #[target_feature(enable = $target_feature)]
         unsafe fn $impl_fn(
             blocks: &[crate::runner::AllocationBlock],
@@ -7625,6 +7618,17 @@ macro_rules! simple_test_nt_impl {
             )
         }
 
+    };
+    (
+        $impl_fn:ident,
+        $pub_fn:ident,
+        $test_name:literal,
+        $simd_w:expr,
+        $loops:ident,
+        $target_feature:literal
+    ) => {
+        simple_test_nt_impl!(@impl $impl_fn, $test_name, $simd_w, $loops, $target_feature);
+
         #[doc = include_str!("test_fn_safety.md")]
         pub unsafe fn $pub_fn(
             blocks: &[crate::runner::AllocationBlock],
@@ -7636,7 +7640,36 @@ macro_rules! simple_test_nt_impl {
         ) -> TestStats {
             $impl_fn(blocks, thread_id, error_mode, timing, config, progress)
         }
-    }
+    };
+    // The 512-bit test: at 256 (`$down`) on a CPU without AVX-512, as Mem-SimpleV2-512 is. It
+    // called its AVX-512 impl unchecked before (TODO 99)
+    (
+        $impl_fn:ident,
+        $pub_fn:ident,
+        $test_name:literal,
+        $simd_w:expr,
+        $loops:ident,
+        $target_feature:literal,
+        down $down:ident
+    ) => {
+        simple_test_nt_impl!(@impl $impl_fn, $test_name, $simd_w, $loops, $target_feature);
+
+        #[doc = include_str!("test_fn_safety.md")]
+        pub unsafe fn $pub_fn(
+            blocks: &[crate::runner::AllocationBlock],
+            thread_id: usize,
+            error_mode: ErrorMode,
+            timing: &TestTiming,
+            config: &TestMemoryConfig,
+            progress: Option<&TestProgress>,
+        ) -> TestStats {
+            if has_avx512() {
+                $impl_fn(blocks, thread_id, error_mode, timing, config, progress)
+            } else {
+                $down(blocks, thread_id, error_mode, timing, config, progress)
+            }
+        }
+    };
 }
 
 // Stamp out NT implementations for each SIMD width.
@@ -7655,7 +7688,8 @@ simple_test_nt_impl!(
 simple_test_nt_impl!(
     simple_test_nt_512_impl, simple_test_nt_512_multi,
     "Mem-SimpleNT-512", 8, simple_test_v2_512_loops,
-    "avx512f,avx512bw,avx512cd,avx512dq,avx512vl,avx2,avx,fma,bmi1,bmi2"
+    "avx512f,avx512bw,avx512cd,avx512dq,avx512vl,avx2,avx,fma,bmi1,bmi2",
+    down simple_test_nt_256_multi
 );
 
 // SimpleTestNT auto-dispatch — selects best SIMD variant at runtime.
@@ -8086,7 +8120,7 @@ fn stepped_down_from_512(avx512: bool) -> crate::simd::Width {
 /// (`crate::simd::test_width`), or 256 for 128 (`sequence_width`), the numbered and native Bench
 /// pairs at the run's, Bench-{Init,Verify}-Seal-{TMR,TM5} at theirs (`bench_seal_width`); and a
 /// test named for 512 that runs at another width on a CPU without AVX-512 the width it runs at:
-/// Mem-SimpleV2-512 and Mem-MirrorV2-512 256 (`has_avx512`), a Bench-*-Seal-*-512 the seal's
+/// Mem-SimpleV2-512, Mem-MirrorV2-512 and Mem-SimpleNT-512 256 (`has_avx512`), a Bench-*-Seal-*-512 the seal's
 /// auto. `None` for any other test: its name says its width, or it has none. An `-Auto` test is
 /// resolved by name to the test named for the run's width (`runner::TestDefinition::simd_width`).
 pub(crate) fn picked_width(test_name: &str) -> Option<crate::simd::Width> {
@@ -8099,7 +8133,7 @@ pub(crate) fn picked_width(test_name: &str) -> Option<crate::simd::Width> {
         "Bench-Init-Seal-TMR-512" | "Bench-Verify-Seal-TMR-512" | "Bench-Init-Seal-TM5-512" | "Bench-Verify-Seal-TM5-512" => {
             crate::simd::Width::of_seal(bench_seal_width(crate::seal::SealWidth::W512).0)
         }
-        "Mem-SimpleV2-512" | "Mem-MirrorV2-512" => Some(stepped_down_from_512(has_avx512())),
+        "Mem-SimpleV2-512" | "Mem-MirrorV2-512" | "Mem-SimpleNT-512" => Some(stepped_down_from_512(has_avx512())),
         s if numbered.iter().any(|n| s.starts_with(n))
             || native_bench_tests().iter().any(|(init, verify, _, _)| s == *init || s == *verify) => Some(crate::simd::test_width()),
         _ => None,
@@ -8535,7 +8569,7 @@ mod width_dispatch_tests {
                 assert_eq!(recorded(name), seal, "{name} under {given:?}");
             }
             let avx512 = Width::W512.check().is_ok();
-            for name in ["Mem-SimpleV2-512", "Mem-MirrorV2-512"] {
+            for name in ["Mem-SimpleV2-512", "Mem-MirrorV2-512", "Mem-SimpleNT-512"] {
                 assert_eq!(recorded(name), Some(if avx512 { Width::W512 } else { Width::W256 }), "{name} under {given:?}");
             }
             for name in ["Bench-Init-Seal-TMR-512", "Bench-Verify-Seal-TMR-512", "Bench-Init-Seal-TM5-512", "Bench-Verify-Seal-TM5-512"] {
