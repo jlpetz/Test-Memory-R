@@ -7102,22 +7102,68 @@ macro_rules! sequence_random {
     }};
 }
 
-/// Mem-Sequence's strided walk of `$op` over the chunk of `$walk`: TM5's, `strided_walk!`, a line a
-/// step, each vector of the line `acc[v % 4]`'s as the old walk's (at 512 bits one).
+/// Mem-Sequence's strided walk of `$op` over the chunk of `$walk`: `for_each_strided_line!`'s
+/// lines and prefetches, a line a step, on a walked pointer: each pass from its first line, a
+/// period at a time, each vector of the line `acc[v % 4]`'s as the old walk's (at 512 bits one).
+/// The pointer goes from pass to pass (back `wrap`), so a pass keeps nothing else live: at TM5's
+/// large strides a pass is a line or two. Each pass is two loops, the steps whose prefetch lands in
+/// the pass and those whose lands in the next, so neither picks its target, and each line's id
+/// goes through `opaque_u64`. Not the shared `strided_walk!`: its counted pass, with a division
+/// and setup a pass, ran Parameter 16384 (passes of 2 lines) at 0.645x on AMD Zen 5 (TODO 99,
+/// 2026-10-20).
 macro_rules! sequence_strided {
     ($op:tt, $access:ident, $simd:ty, $w:tt, [$($l:literal: [$($v:literal $a:literal),*]),*], $kind:tt, $walk:ident) => {
         sequence_strided!(@line $op, $access, $simd, $w, $kind, $walk, [$($l: [$($v $a),*]),*])
     };
     (@line $op:tt, $access:ident, $simd:ty, $w:tt, $kind:tt, $walk:ident, [$l0:literal: [$($v:literal $a:literal),*] $(, $l:literal: $rest:tt)*]) => {{
         let SequenceWalk { ptr, start, end, lid0, period, pkey, mask, .. } = $walk;
+        debug_assert!(period.is_multiple_of(LINE_WORDS) && start.is_multiple_of(LINE_WORDS) && end.is_multiple_of(LINE_WORDS),
+                      "the strided walk needs whole lines: {start}..{end} by {period}");
         let mask = <$simd>::splat(mask);
         sequence_acc!(init $op, acc, ones, $simd);
-        strided_walk!(prefetch_line, ptr, start, end, period, lid lid0, |p, lid| {
-            let words = sequence_line!($w, $kind, lid, pkey).map(|x| x ^ mask);
-            $(sequence_visit!($op, $access, p.add($v * $w) as *mut $simd, words[$v], acc[$v % 4], ones);)*
-        });
+        let ahead = strided_lookahead(start, end, period);
+        let (bottom, stop, lid_step) = (ptr.wrapping_add(start), ptr.add(end), (period / LINE_WORDS) as u64);
+        // The first pass's first line: the last of the chunk's first period
+        let mut p = bottom.wrapping_add(period - LINE_WORDS);
+        loop {
+            // `strided_wrap` in bytes, from the pointers: a pass can be a line or two, so its
+            // start keeps no more than the walk does
+            let wrap = sequence_wrap(p, stop, period);
+            let mut lid = lid0 + ((p.addr() - bottom.addr()) / 64) as u64;
+            // `strided_ahead`'s targets, a loop each: the steps whose line `ahead` on is in this
+            // pass, then the rest, whose is in the next
+            let near = stop.wrapping_sub(ahead);
+            while p < near {
+                prefetch_line(p.wrapping_add(ahead));
+                let words = sequence_line!($w, $kind, opaque_u64(lid), pkey).map(|x| x ^ mask);
+                $(sequence_visit!($op, $access, p.add($v * $w) as *mut $simd, words[$v], acc[$v % 4], ones);)*
+                p = p.wrapping_add(period);
+                lid = lid.wrapping_add(lid_step);
+            }
+            while p < stop {
+                // The walk's last steps prefetch off the chunk: a wasted prefetch, not a fault
+                prefetch_line(p.wrapping_add(ahead).wrapping_byte_sub(wrap));
+                let words = sequence_line!($w, $kind, opaque_u64(lid), pkey).map(|x| x ^ mask);
+                $(sequence_visit!($op, $access, p.add($v * $w) as *mut $simd, words[$v], acc[$v % 4], ones);)*
+                p = p.wrapping_add(period);
+                lid = lid.wrapping_add(lid_step);
+            }
+            // Back `wrap` from past the pass's end is the next pass's first line, a line below
+            p = p.wrapping_byte_sub(wrap);
+            if p < bottom {
+                break;
+            }
+        }
         sequence_acc!(result $op, acc)
     }};
+}
+
+/// `strided_wrap` for the pass from `p` in bytes, from the pointers: the pass's lines rounded up to
+/// whole periods, plus a line. Back this from past the pass's end is the next pass's first line.
+#[inline(always)]
+fn sequence_wrap(p: *const u64, stop: *const u64, period: usize) -> usize {
+    let step = period * std::mem::size_of::<u64>();
+    stop.addr().saturating_sub(p.addr()).div_ceil(step) * step + LINE_WORDS * std::mem::size_of::<u64>()
 }
 
 /// One Mem-Sequence pass of `$op` (`write`, `read` or `rw`) over `$walk`'s chunk in `$order`, its
