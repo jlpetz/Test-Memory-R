@@ -495,6 +495,8 @@ pub struct ProbeEngine {
     max_working_set: usize,
     /// Whether the engine has been initialized
     initialized: bool,
+    /// The page size its own buffer got (`None` with a borrowed buffer, or before it has one)
+    page_obtained: Option<PageSizeLevel>,
 }
 
 impl ProbeEngine {
@@ -506,7 +508,13 @@ impl ProbeEngine {
             external_ptr: None,
             max_working_set: 0,
             initialized: false,
+            page_obtained: None,
         }
+    }
+
+    /// The page size its own buffer got, where it allocated one.
+    pub fn page_obtained(&self) -> Option<PageSizeLevel> {
+        self.page_obtained
     }
 
     /// Initialize with a specific page size preference
@@ -517,7 +525,8 @@ impl ProbeEngine {
         }
 
         match allocate_calibration_buffer(max_size, calibration_page_size(page_size_str)) {
-            Ok((buffer, _)) => {
+            Ok((buffer, obtained)) => {
+                self.page_obtained = Some(obtained);
                 // Setup pointer-chase pattern
                 let base = buffer.as_mut_ptr() as *mut u64;
                 let len = max_size / std::mem::size_of::<u64>();
@@ -807,7 +816,8 @@ impl CalibrationTest {
         let sweep_results = self.run_sweep(probe_engine, l1_size, l2_size, l3_size);
         let mut results = self.analyze_sweep(&sweep_results, l1_size, l2_size, l3_size);
 
-        results.page_size = self.config.page_size.clone();
+        // The page size the buffer got, where the engine allocated it, else the one asked for
+        results.page_size = probe_engine.page_obtained().map_or_else(|| self.config.page_size.clone(), |p| page_size_str(p).to_string());
         results.total_time_ms = start_time.elapsed().as_millis() as u64;
 
         log::info!("Calibration complete in {}ms", results.total_time_ms);
@@ -975,7 +985,8 @@ impl CalibrationTest {
             });
         }
         
-        results.page_size = self.config.page_size.clone();
+        // The page size the buffer got, where the engine allocated it, else the one asked for
+        results.page_size = probe_engine.page_obtained().map_or_else(|| self.config.page_size.clone(), |p| page_size_str(p).to_string());
         results.total_time_ms = start_time.elapsed().as_millis() as u64;
         log::info!("Extended calibration complete in {}ms", results.total_time_ms);
         Ok(results)
