@@ -497,10 +497,12 @@ impl TestDefinition {
         }
     }
 
-    /// The SIMD width the test runs at when it takes the run's (TODO 99, `crate::simd::test_width`),
-    /// as the results file records it: an `-Auto` test the width it resolved to (its name says it
-    /// too), Mem-Sequence and the Bench pairs that name no width theirs (`tests::picked_width`).
-    /// `None` for a test that keeps its own: named for a width, or with none.
+    /// The SIMD width the test runs at where its name alone doesn't fix it (TODO 99), as the results
+    /// file records it: an `-Auto` test the run's width, which it resolved to (its name says it
+    /// too, `crate::simd::test_width`), Mem-Sequence and the Bench pairs that name no width theirs,
+    /// and a test named for 512 that steps down without AVX-512 the width it runs at
+    /// (`tests::picked_width`). `None` for a test that always runs at the width it is named for, or
+    /// has none.
     pub fn simd_width(&self) -> Option<crate::simd::Width> {
         if self.original_name.is_some() {
             Some(crate::simd::test_width())

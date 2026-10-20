@@ -517,10 +517,12 @@ pub struct TestConfigSnapshot {
     pub flush_before_verify: bool,
     /// Whether this test relied on a previous test's pattern instead of writing its own.
     pub skip_init: bool,
-    /// The SIMD width the test ran at, for a test that takes the run's (TODO 99,
+    /// The SIMD width the test ran at, where its name alone doesn't fix it (TODO 99,
     /// `TestDefinition::simd_width`): an `-Auto` test, Mem-Sequence (256 for 128, which it has no
-    /// kernel for), the Bench pairs that name no width. Absent for a test that keeps its own (named
-    /// for a width) or has none, and in results written before it.
+    /// kernel for), the Bench pairs that name no width, and a test named for 512 that steps down
+    /// without AVX-512 (Mem-SimpleV2-512, Mem-MirrorV2-512 and the Bench-*-Seal-*-512 pairs). Absent
+    /// for a test that always runs at the width it is named for or has none, and in results written
+    /// before it.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub simd_width_bits: Option<u32>,
 }

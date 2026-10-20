@@ -4737,7 +4737,7 @@ pub unsafe fn mirror_move_v2_512_multi(
     config: &TestMemoryConfig,
     progress: Option<&TestProgress>,
 ) -> TestStats {
-    if is_x86_feature_detected!("avx512f") {
+    if has_avx512() {
         mirror_move_v2_512_impl(blocks, thread_id, error_mode, timing, config, progress)
     } else {
         mirror_move_v2_256_multi(blocks, thread_id, error_mode, timing, config, progress)
@@ -6306,7 +6306,7 @@ pub unsafe fn simple_test_v2_512_multi(
     config: &TestMemoryConfig,
     progress: Option<&TestProgress>,
 ) -> TestStats {
-    if is_x86_feature_detected!("avx512f") {
+    if has_avx512() {
         simple_test_v2_512_impl(blocks, thread_id, error_mode, timing, config, progress)
     } else {
         simple_test_v2_256_multi(blocks, thread_id, error_mode, timing, config, progress)
@@ -8043,36 +8043,63 @@ pub unsafe fn seal_check_multi(
     )
 }
 
-/// The kernel a Bench-*-Seal-* test measures: its pattern at its width (`bench_seal_width`).
+/// The kernel a Bench-*-Seal-* test measures: its pattern at its width (`bench_seal_width`),
+/// saying so where that isn't the width it names.
 fn bench_seal_kernel(pattern: crate::seal::SealPattern, width: crate::seal::SealWidth, test_name: &str) -> crate::seal::SealKernel {
-    crate::seal::SealKernel::new(pattern, bench_seal_width(width, test_name))
+    let (measured, lacks) = bench_seal_width(width);
+    if let Some(e) = lacks {
+        log::warn!("{test_name}: {e}; measuring the seal's auto width");
+    }
+    crate::seal::SealKernel::new(pattern, measured)
 }
 
 /// The width a Bench-*-Seal-* test measures at: the one it names or, for one that names none
-/// (`Auto`), the run's `width=` or else the seal's auto; where the CPU lacks it, the seal's auto.
-fn bench_seal_width(width: crate::seal::SealWidth, test_name: &str) -> crate::seal::SealWidth {
+/// (`Auto`), the run's `width=` or else the seal's auto; where the CPU lacks it, the seal's auto,
+/// and why.
+fn bench_seal_width(width: crate::seal::SealWidth) -> (crate::seal::SealWidth, Option<String>) {
     let width = match (width, crate::simd::width_given()) {
         (crate::seal::SealWidth::Auto, Some((given, _))) => given.seal(),
         _ => width,
     };
-    width.resolve().unwrap_or_else(|e| {
-        log::warn!("{test_name}: {e}; measuring the seal's auto width");
-        crate::seal::SealKernel::detect().width
-    })
+    match width.resolve() {
+        Ok(width) => (width, None),
+        Err(e) => (crate::seal::SealKernel::detect().width, Some(e)),
+    }
 }
 
-/// The width a test that picks its own as it runs, rather than by its name, runs at (TODO 99):
-/// Mem-Sequence at the run's (`crate::simd::test_width`), or 256 for 128 (`sequence_width`), the
-/// numbered and native Bench pairs at the run's, Bench-{Init,Verify}-Seal-{TMR,TM5} at theirs
-/// (`bench_seal_width`). `None` for any other test: an `-Auto` test is resolved by name to the test
-/// named for the run's width (`runner::TestDefinition::simd_width`).
+/// Whether a test named for 512 that steps down to 256 on a CPU without AVX-512
+/// (Mem-SimpleV2-512, Mem-MirrorV2-512) runs at 512: its own dispatch's test
+/// (`simple_test_v2_512_multi`, `mirror_move_v2_512_multi`), and the width it records
+/// (`picked_width`).
+#[inline(always)]
+fn has_avx512() -> bool {
+    is_x86_feature_detected!("avx512f")
+}
+
+/// The width a test named for 512 with a 256-bit step down runs at, where the CPU has AVX-512 or
+/// not (`has_avx512`).
+fn stepped_down_from_512(avx512: bool) -> crate::simd::Width {
+    if avx512 { crate::simd::Width::W512 } else { crate::simd::Width::W256 }
+}
+
+/// The width a test runs at where its name doesn't say it (TODO 99): Mem-Sequence at the run's
+/// (`crate::simd::test_width`), or 256 for 128 (`sequence_width`), the numbered and native Bench
+/// pairs at the run's, Bench-{Init,Verify}-Seal-{TMR,TM5} at theirs (`bench_seal_width`); and a
+/// test named for 512 that runs at another width on a CPU without AVX-512 the width it runs at:
+/// Mem-SimpleV2-512 and Mem-MirrorV2-512 256 (`has_avx512`), a Bench-*-Seal-*-512 the seal's
+/// auto. `None` for any other test: its name says its width, or it has none. An `-Auto` test is
+/// resolved by name to the test named for the run's width (`runner::TestDefinition::simd_width`).
 pub(crate) fn picked_width(test_name: &str) -> Option<crate::simd::Width> {
     let numbered = ["Bench-Init-TM5-", "Bench-Init-TMR-", "Bench-Verify-TM5-", "Bench-Verify-TMR-"];
     match test_name {
         "Mem-Sequence" => Some(sequence_width(crate::simd::test_width())),
         "Bench-Init-Seal-TMR" | "Bench-Verify-Seal-TMR" | "Bench-Init-Seal-TM5" | "Bench-Verify-Seal-TM5" => {
-            crate::simd::Width::of_seal(bench_seal_width(crate::seal::SealWidth::Auto, test_name))
+            crate::simd::Width::of_seal(bench_seal_width(crate::seal::SealWidth::Auto).0)
         }
+        "Bench-Init-Seal-TMR-512" | "Bench-Verify-Seal-TMR-512" | "Bench-Init-Seal-TM5-512" | "Bench-Verify-Seal-TM5-512" => {
+            crate::simd::Width::of_seal(bench_seal_width(crate::seal::SealWidth::W512).0)
+        }
+        "Mem-SimpleV2-512" | "Mem-MirrorV2-512" => Some(stepped_down_from_512(has_avx512())),
         s if numbered.iter().any(|n| s.starts_with(n))
             || native_bench_tests().iter().any(|(init, verify, _, _)| s == *init || s == *verify) => Some(crate::simd::test_width()),
         _ => None,
@@ -8489,30 +8516,45 @@ mod width_dispatch_tests {
 
     /// TODO 99: the width a test records (`TestDefinition::simd_width`, the results file's) for the
     /// tests whose width the dispatch test above can't see: a Bench-*-Seal-* naming no width the
-    /// width its kernel measures at, the run's given or else the seal's auto; and none for a test
-    /// that keeps its own (named for a width, a Bench-*-Seal-* among them) or has none.
+    /// width its kernel measures at, the run's given or else the seal's auto; a test named for 512
+    /// that steps down without AVX-512 the width it runs at, 512 included (Mem-SimpleV2-512 and
+    /// Mem-MirrorV2-512 256, a Bench-*-Seal-*-512 the seal's auto); and none for a test that always
+    /// runs at the width it is named for (a Bench-*-Seal-* at 128 or 256 among them) or has none.
     #[test]
-    fn the_seal_pairs_record_their_width_and_the_rest_none() {
+    fn the_seal_pairs_and_the_512_step_downs_record_their_width_and_the_rest_none() {
         let cache_info = get_cache_info();
         let forced = [Width::W128, Width::W256, Width::W512].into_iter().filter(|w| w.check().is_ok()).map(Some);
+        let auto = Width::of_seal(SealWidth::Auto.resolve().unwrap()).unwrap();
         for given in forced.chain([None]) {
             let _width = TestWidth::set(given);
             let definitions = crate::runner::create_test_definitions(cache_info);
             let recorded = |name: &str| definitions.iter().find(|d| d.display_name == name).unwrap_or_else(|| panic!("no {name}")).simd_width();
             let seal = Width::of_seal(bench_seal_kernel(SealPattern::Tmr, SealWidth::Auto, "test").width);
-            assert_eq!(seal, Some(given.unwrap_or(Width::of_seal(SealWidth::Auto.resolve().unwrap()).unwrap())));
+            assert_eq!(seal, Some(given.unwrap_or(auto)));
             for name in ["Bench-Init-Seal-TMR", "Bench-Verify-Seal-TMR", "Bench-Init-Seal-TM5", "Bench-Verify-Seal-TM5"] {
                 assert_eq!(recorded(name), seal, "{name} under {given:?}");
             }
-            for name in ["Bench-Init-Seal-TMR-128", "Bench-Verify-Seal-TM5-256", "Mem-StuckBit128", "Mem-SimpleV2-256", "Mem-Random", "Mem-MovingInv"] {
+            let avx512 = Width::W512.check().is_ok();
+            for name in ["Mem-SimpleV2-512", "Mem-MirrorV2-512"] {
+                assert_eq!(recorded(name), Some(if avx512 { Width::W512 } else { Width::W256 }), "{name} under {given:?}");
+            }
+            for name in ["Bench-Init-Seal-TMR-512", "Bench-Verify-Seal-TMR-512", "Bench-Init-Seal-TM5-512", "Bench-Verify-Seal-TM5-512"] {
+                assert_eq!(recorded(name), Some(if avx512 { Width::W512 } else { auto }), "{name} under {given:?}");
+            }
+            for name in ["Bench-Init-Seal-TMR-128", "Bench-Verify-Seal-TM5-256", "Mem-StuckBit128", "Mem-StuckBit512", "Mem-SimpleV2-256",
+                         "Mem-MirrorV2-256", "Mem-Random", "Mem-MovingInv"] {
                 assert_eq!(recorded(name), None, "{name} under {given:?}");
             }
         }
+        // Without AVX-512, a test named for 512 that steps down runs at, and records, 256
+        assert_eq!((stepped_down_from_512(true), stepped_down_from_512(false)), (Width::W512, Width::W256));
+        assert_eq!(has_avx512(), is_x86_feature_detected!("avx512f"));
     }
 
     /// TODO 99: each Bench-*-Seal-* test measures with its pattern at the width the results file
-    /// records for it: one naming no width the run's given, else the seal's auto; one naming a
-    /// width that width. Each is run, and the kernel its body took noted (`SEAL_MEASURED`): the
+    /// records for it: one naming no width the run's given, else the seal's auto; one at 512 512,
+    /// or the seal's auto without AVX-512; one at 128 or 256, which records none, that width. Each
+    /// is run, and the kernel its body took noted (`SEAL_MEASURED`): the
     /// record is worked out apart from the kernel (`picked_width` calls `bench_seal_width` itself),
     /// so the test above passed a pair built at another width than it records.
     #[test]
@@ -8542,9 +8584,9 @@ mod width_dispatch_tests {
                     .simd_width();
                 let named = ["128", "256", "512"].into_iter().find(|bits| name.ends_with(&format!("-{bits}")))
                     .map(|bits| SealWidth::parse(bits).unwrap());
-                let width = match (named, recorded) {
-                    (Some(named), _) => named.resolve().unwrap_or_else(|_| SealWidth::Auto.resolve().unwrap()),
-                    (None, Some(recorded)) => recorded.seal(),
+                let width = match (recorded, named) {
+                    (Some(recorded), _) => recorded.seal(),
+                    (None, Some(named)) => named,
                     (None, None) => panic!("{what}: names no width and records none"),
                 };
                 let pattern = if name.contains("-TM5") { SealPattern::Tm5 } else { SealPattern::Tmr };
