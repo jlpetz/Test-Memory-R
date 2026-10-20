@@ -897,8 +897,7 @@ fn run() -> Result<(), Box<dyn std::error::Error>> {
 	if !no_calibration {
 		let cfg_path = crate::app_config::AppConfig::default_path();
 		let app_config = crate::app_config::AppConfig::load(&cfg_path);
-		let identity_valid = app_config.is_calibration_valid(system_info, smbios);
-		if identity_valid {
+		if app_config.is_calibration_valid(system_info, smbios) {
 			if let Some(cal) = app_config.get_best_calibration() {
 				let cal_type = if app_config.calibration_extended.is_some() { "extended" } else { "standard" };
 				let timestamp = cal.timestamp.format("%Y-%m-%d %H:%M");
@@ -916,7 +915,7 @@ fn run() -> Result<(), Box<dyn std::error::Error>> {
 			crate::set_calibration_data(None);
 		}
 		// The seal's width under auto (TODO 99): this machine's seal calibration, else the rule
-		let seal = app_config.valid_seal_calibration(identity_valid).and_then(|s| s.width().map(|w| (s, w)));
+		let seal = app_config.valid_seal_calibration(system_info, smbios).and_then(|s| s.width().map(|w| (s, w)));
 		match (seal, &app_config.seal_calibration) {
 			(Some((seal, width)), _) => {
 				crate::seal::set_calibrated_width(width);

@@ -61,6 +61,91 @@ impl MachineIdentity {
     }
 }
 
+/// The machine a calibration was measured on, as `AppConfig::is_calibration_valid` checks it: its
+/// machine ID (`AppConfig::generate_machine_id`: CPU, cache, BIOS), system UUID, memory
+/// configuration (`AppConfig::generate_memory_id`) and TSC frequency. The config's identity is the
+/// cache calibrations' (`AppConfig::fingerprint`); a seal calibration keeps its own (TODO 99,
+/// `SealCalibration::fingerprint`), so saving one kind never makes the other, measured on other
+/// hardware, pass as this machine's.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize, Default)]
+#[serde(default)]
+pub struct MachineFingerprint {
+    pub machine_id: Option<String>,
+    pub system_uuid: Option<String>,
+    pub memory_id: Option<String>,
+    pub tsc_frequency_ghz: Option<f64>,
+}
+
+impl MachineFingerprint {
+    /// This machine's.
+    pub fn detect(system_info: &SystemInfo, smbios: &SmbiosData) -> Self {
+        MachineFingerprint {
+            machine_id: Some(AppConfig::generate_machine_id(system_info, smbios)),
+            system_uuid: (!smbios.system.uuid.is_empty()).then(|| smbios.system.uuid.clone()),
+            memory_id: Some(AppConfig::generate_memory_id(smbios)),
+            tsc_frequency_ghz: Some(system_info.cache_info.tsc_frequency_ghz),
+        }
+    }
+
+    /// Whether it is this machine's now. Granular: the machine ID must be there and match; the
+    /// system UUID, memory configuration and TSC frequency must match where they were recorded.
+    /// Each mismatch is logged, `what` naming the calibration it is for.
+    pub fn matches(&self, system_info: &SystemInfo, smbios: &SmbiosData, what: &str) -> bool {
+        let mut valid = true;
+
+        // Check machine_id (CPU + cache + BIOS)
+        match &self.machine_id {
+            Some(stored_id) => {
+                let current_id = AppConfig::generate_machine_id(system_info, smbios);
+                if stored_id != &current_id {
+                    log::warn!("{what}: machine ID mismatch (CPU/cache/BIOS changed): stored={}, current={}",
+                        stored_id, current_id);
+                    valid = false;
+                }
+            }
+            None => {
+                log::info!("{what}: no machine ID recorded, so not validated");
+                return false;
+            }
+        }
+
+        // Check system UUID (motherboard/VM instance identity)
+        if let (Some(stored_uuid), Some(current_uuid)) = (&self.system_uuid, &Some(smbios.system.uuid.clone()))
+            && !current_uuid.is_empty() && stored_uuid != current_uuid {
+                log::warn!("{what}: system UUID mismatch (VM migration or motherboard swap): stored={}, current={}",
+                    stored_uuid, current_uuid);
+                valid = false;
+            }
+
+        // Check memory configuration (DIMM swaps, XMP changes)
+        if let Some(stored_mem_id) = &self.memory_id {
+            let current_mem_id = AppConfig::generate_memory_id(smbios);
+            if stored_mem_id != &current_mem_id {
+                log::warn!("{what}: memory configuration changed (DIMM swap, XMP change, or capacity change): stored={}, current={}",
+                    stored_mem_id, current_mem_id);
+                valid = false;
+            }
+        }
+
+        // Check TSC frequency — both values should be snapped to nearest MHz now,
+        // but older configs may have raw floats. Use 0.01% tolerance (100ppm) to
+        // filter measurement noise while catching real frequency changes (e.g. VM migration).
+        if let Some(stored_tsc) = self.tsc_frequency_ghz {
+            let current_tsc = system_info.cache_info.tsc_frequency_ghz;
+            if stored_tsc > 0.0 {
+                let drift_pct = ((current_tsc - stored_tsc) / stored_tsc * 100.0).abs();
+                if drift_pct > 0.01 {
+                    log::warn!("{what}: TSC frequency changed: stored={:.3} GHz, current={:.3} GHz (drift: {:.4}%)",
+                        stored_tsc, current_tsc, drift_pct);
+                    valid = false;
+                }
+            }
+        }
+
+        valid
+    }
+}
+
 /// Application-wide persistent configuration
 #[derive(Debug, Clone, Serialize, Deserialize, Default)]
 pub struct AppConfig {
@@ -102,7 +187,8 @@ pub struct AppConfig {
     pub calibration_extended: Option<CalibrationResults>,
 
     /// The seal's width, measured (from --calibrate-seal or --calibrate-all, TODO 99): what
-    /// `seal-width=auto` runs on the machine it was measured on (`valid_seal_calibration`)
+    /// `seal-width=auto` runs on the machine it was measured on, which it keeps its own fingerprint
+    /// of (`valid_seal_calibration`); the identity above is the cache calibrations'
     #[serde(default)]
     pub seal_calibration: Option<SealCalibration>,
 
@@ -228,81 +314,38 @@ impl AppConfig {
         self.calibration_extended.as_ref().or(self.calibration.as_ref())
     }
 
-    /// Check if stored calibration is valid for the current system.
-    /// Performs granular checks: machine_id, system_uuid, memory_id, TSC frequency.
-    /// Returns false if any critical mismatch is detected.
-    /// Logs specific warnings for each type of mismatch.
+    /// The machine the config's identity names, which the cache calibrations were measured on.
+    pub fn fingerprint(&self) -> MachineFingerprint {
+        MachineFingerprint {
+            machine_id: self.machine_id.clone(),
+            system_uuid: self.system_uuid.clone(),
+            memory_id: self.memory_id.clone(),
+            tsc_frequency_ghz: self.tsc_frequency_ghz,
+        }
+    }
+
+    /// Check if stored calibration is valid for the current system: whether the config's identity
+    /// is this machine's (`MachineFingerprint::matches`: machine_id, system_uuid, memory_id, TSC
+    /// frequency, each mismatch logged). The cache calibrations go by it; a seal calibration by its
+    /// own (`valid_seal_calibration`).
     pub fn is_calibration_valid(&self, system_info: &SystemInfo, smbios: &SmbiosData) -> bool {
-        let mut valid = true;
-
-        // Check machine_id (CPU + cache + BIOS)
-        match &self.machine_id {
-            Some(stored_id) => {
-                let current_id = Self::generate_machine_id(system_info, smbios);
-                if stored_id != &current_id {
-                    log::warn!("Machine ID mismatch (CPU/cache/BIOS changed): stored={}, current={}",
-                        stored_id, current_id);
-                    valid = false;
-                }
-            }
-            None => {
-                log::info!("No machine ID in config — calibration not validated");
-                return false;
-            }
-        }
-
-        // Check system UUID (motherboard/VM instance identity)
-        if let (Some(stored_uuid), Some(current_uuid)) = (&self.system_uuid, &Some(smbios.system.uuid.clone()))
-            && !current_uuid.is_empty() && stored_uuid != current_uuid {
-                log::warn!("System UUID mismatch (VM migration or motherboard swap): stored={}, current={}",
-                    stored_uuid, current_uuid);
-                valid = false;
-            }
-
-        // Check memory configuration (DIMM swaps, XMP changes)
-        if let Some(stored_mem_id) = &self.memory_id {
-            let current_mem_id = Self::generate_memory_id(smbios);
-            if stored_mem_id != &current_mem_id {
-                log::warn!("Memory configuration changed (DIMM swap, XMP change, or capacity change): stored={}, current={}",
-                    stored_mem_id, current_mem_id);
-                valid = false;
-            }
-        }
-
-        // Check TSC frequency — both values should be snapped to nearest MHz now,
-        // but older configs may have raw floats. Use 0.01% tolerance (100ppm) to
-        // filter measurement noise while catching real frequency changes (e.g. VM migration).
-        if let Some(stored_tsc) = self.tsc_frequency_ghz {
-            let current_tsc = system_info.cache_info.tsc_frequency_ghz;
-            if stored_tsc > 0.0 {
-                let drift_pct = ((current_tsc - stored_tsc) / stored_tsc * 100.0).abs();
-                if drift_pct > 0.01 {
-                    log::warn!("TSC frequency changed: stored={:.3} GHz, current={:.3} GHz (drift: {:.4}%)",
-                        stored_tsc, current_tsc, drift_pct);
-                    valid = false;
-                }
-            }
-        }
-
-        valid
+        self.fingerprint().matches(system_info, smbios, "Calibration")
     }
 
     /// Update all identity fields to match the current system
     pub fn update_identity(&mut self, system_info: &SystemInfo, smbios: &SmbiosData) {
-        self.machine_id = Some(Self::generate_machine_id(system_info, smbios));
+        let MachineFingerprint { machine_id, system_uuid, memory_id, tsc_frequency_ghz } =
+            MachineFingerprint::detect(system_info, smbios);
+        self.machine_id = machine_id;
         self.machine_identity = Some(MachineIdentity::detect(system_info, smbios));
-        self.system_uuid = if smbios.system.uuid.is_empty() {
-            None
-        } else {
-            Some(smbios.system.uuid.clone())
-        };
-        self.memory_id = Some(Self::generate_memory_id(smbios));
+        self.system_uuid = system_uuid;
+        self.memory_id = memory_id;
         self.memory_modules = if smbios.memory_modules.is_empty() {
             None
         } else {
             Some(smbios.memory_modules.clone())
         };
-        self.tsc_frequency_ghz = Some(system_info.cache_info.tsc_frequency_ghz);
+        self.tsc_frequency_ghz = tsc_frequency_ghz;
     }
 
     /// Update the machine ID to match the current system (legacy compat — prefer update_identity)
@@ -310,22 +353,20 @@ impl AppConfig {
         self.update_identity(system_info, smbios);
     }
 
-    /// Stores a seal calibration measured on this machine: the config takes this machine's
-    /// identity, as every calibration's save does, and the calibration the fingerprint it was
-    /// measured on (`valid_seal_calibration`).
+    /// Stores a seal calibration measured on this machine, stamped with this machine's fingerprint
+    /// (`valid_seal_calibration`). The config's identity is left alone: it is the cache
+    /// calibrations', and taking this machine's would pass theirs, measured on other hardware, off
+    /// as this machine's (TODO 99).
     pub fn set_seal_calibration(&mut self, mut seal: SealCalibration, system_info: &SystemInfo, smbios: &SmbiosData) {
-        self.update_identity(system_info, smbios);
-        seal.machine_id = self.machine_id.clone().unwrap_or_default();
+        seal.fingerprint = MachineFingerprint::detect(system_info, smbios);
         self.seal_calibration = Some(seal);
     }
 
-    /// The seal calibration a run on this machine takes, if any: `identity_valid` is
-    /// `is_calibration_valid`'s answer (the config's identity is this machine's, the cache
-    /// calibration's test), and the seal's own fingerprint must be the config's too, since a cache
-    /// calibration saved since on other hardware rewrites the config's identity but not the seal.
-    pub fn valid_seal_calibration(&self, identity_valid: bool) -> Option<&SealCalibration> {
+    /// The seal calibration a run on this machine takes, if any: one whose own fingerprint is this
+    /// machine's now, whatever the config's identity (which a cache calibration's save rewrites).
+    pub fn valid_seal_calibration(&self, system_info: &SystemInfo, smbios: &SmbiosData) -> Option<&SealCalibration> {
         self.seal_calibration.as_ref()
-            .filter(|seal| identity_valid && self.machine_id.as_deref() == Some(seal.machine_id.as_str()))
+            .filter(|seal| seal.fingerprint.matches(system_info, smbios, "Seal calibration"))
     }
 
 }
@@ -460,7 +501,7 @@ mod tests {
         let timing = |bits, ms| SealWidthTiming { bits, fill_mib_s: 20000.0, check_mib_s: 30000.0, ms, ms_min: ms - 1.0, ms_max: ms + 1.0 };
         SealCalibration {
             timestamp: chrono::Utc::now(),
-            machine_id: String::new(),
+            fingerprint: MachineFingerprint::default(),
             pattern: "tmr".to_string(),
             buffer_bytes: 512 << 20,
             page_size: "large".to_string(),
@@ -471,21 +512,26 @@ mod tests {
         }
     }
 
-    /// TODO 99: `seal-width=auto` runs the seal calibration measured on this machine, else the
-    /// rule; one from another machine is passed over, whether the config still holds that
-    /// machine's identity or a cache calibration saved here has since rewritten it. A width set
-    /// wins over a calibrated one.
+    fn this_machine() -> (&'static SystemInfo, &'static SmbiosData) {
+        (crate::tests::get_system_info(), crate::smbios::get_smbios())
+    }
+
+    /// The width `auto` resolves to with `config`'s seal calibration, on a CPU with AVX-512 (where
+    /// the rule is 256 and every width runs), and where it came from.
+    fn resolve(config: &AppConfig, width: crate::seal::SealWidth) -> (crate::seal::SealWidth, crate::seal::SealWidthSource) {
+        let (system_info, smbios) = this_machine();
+        let calibrated = config.valid_seal_calibration(system_info, smbios).and_then(SealCalibration::width);
+        width.resolve_on(calibrated, true, true, "seal-width=").unwrap()
+    }
+
+    /// TODO 99: `seal-width=auto` runs the seal calibration measured on this machine, stamped with
+    /// this machine's fingerprint when it is saved, else the rule. A width set wins over a
+    /// calibrated one.
     #[test]
     fn auto_takes_this_machines_seal_calibration_and_a_setting_wins() {
         use crate::seal::SealWidth::{Auto, W128, W256, W512};
         use crate::seal::SealWidthSource::{Calibrated, Rule, Setting};
-        let (system_info, smbios) = (crate::tests::get_system_info(), crate::smbios::get_smbios());
-        let resolve = |config: &AppConfig, width: crate::seal::SealWidth| {
-            let calibrated = config.valid_seal_calibration(config.is_calibration_valid(system_info, smbios))
-                .and_then(SealCalibration::width);
-            // On a CPU with AVX-512, where the rule is 256 and every width runs
-            width.resolve_on(calibrated, true, true, "seal-width=").unwrap()
-        };
+        let (system_info, smbios) = this_machine();
 
         // Absent: the rule, on a config that is this machine's
         let mut config = AppConfig::default();
@@ -495,47 +541,109 @@ mod tests {
 
         // Present, measured here: the calibrated width, which a setting overrides
         config.set_seal_calibration(seal_calibration(128), system_info, smbios);
-        assert_eq!(config.seal_calibration.as_ref().unwrap().machine_id, AppConfig::generate_machine_id(system_info, smbios));
+        assert_eq!(config.seal_calibration.as_ref().unwrap().fingerprint, MachineFingerprint::detect(system_info, smbios));
         assert_eq!(resolve(&config, Auto), (W128, Calibrated));
         assert_eq!(resolve(&config, W256), (W256, Setting("seal-width=")));
         // A cache calibration saved since, on the same machine, keeps it
         config.update_machine_id(system_info, smbios);
         assert_eq!(resolve(&config, Auto), (W128, Calibrated));
+        // ...as does a config whose identity names no machine (no cache calibration saved yet)
+        let fresh = AppConfig { seal_calibration: config.seal_calibration.clone(), ..Default::default() };
+        assert_eq!(resolve(&fresh, Auto), (W128, Calibrated));
+    }
 
-        // From another machine, the config still that machine's: stale, so the rule
-        let mut elsewhere = config.clone();
-        elsewhere.machine_id = Some("another machine".to_string());
-        elsewhere.seal_calibration.as_mut().unwrap().machine_id = "another machine".to_string();
-        assert!(elsewhere.seal_calibration.is_some());
-        assert_eq!(resolve(&elsewhere, Auto), (W256, Rule));
-        // ...and after a cache calibration saved here rewrote the config's identity: still the rule
-        elsewhere.update_machine_id(system_info, smbios);
-        assert!(elsewhere.is_calibration_valid(system_info, smbios));
-        assert_eq!(resolve(&elsewhere, Auto), (W256, Rule));
+    /// TODO 99: saving a seal calibration leaves the config's identity, the cache calibrations',
+    /// alone: one measured on other hardware stays stale when the seal is calibrated here (the
+    /// reviewer's case: a CPU swap, then only `--calibrate-seal`, or `--calibrate-all` with the
+    /// cache save declined).
+    #[test]
+    fn a_seal_save_leaves_a_stale_cache_calibration_stale() {
+        use crate::calibration::{CalibrationResults, CpuSignature};
+        let (system_info, smbios) = this_machine();
+        let mut config = AppConfig { calibration: Some(CalibrationResults::new(CpuSignature::default())), ..Default::default() };
+        config.update_identity(system_info, smbios);
+        config.machine_id = Some("another machine".to_string());
+        assert!(!config.is_calibration_valid(system_info, smbios));
+        let identity = serde_json::to_value(&config).unwrap();
+
+        config.set_seal_calibration(seal_calibration(128), system_info, smbios);
+        assert!(config.valid_seal_calibration(system_info, smbios).is_some(), "the seal's, measured here");
+        assert!(!config.is_calibration_valid(system_info, smbios), "the cache calibration from other hardware revived");
+        let mut after = serde_json::to_value(&config).unwrap();
+        after.as_object_mut().unwrap().insert("seal_calibration".to_string(), serde_json::Value::Null);
+        assert_eq!(after, identity, "the seal's save touched the rest of the config");
+    }
+
+    /// TODO 99: a seal calibration is this machine's only while all of its fingerprint is (each of
+    /// what the cache calibration's check compares: machine ID, memory, system UUID, TSC); a cache
+    /// calibration saved here, which rewrites the config's identity, doesn't revive one measured on
+    /// other hardware, or one saved without a fingerprint.
+    #[test]
+    fn a_cache_save_doesnt_revive_a_seal_calibration_from_other_hardware() {
+        use crate::calibration::{CalibrationResults, CpuSignature};
+        use crate::seal::SealWidth::{Auto, W128, W256};
+        use crate::seal::SealWidthSource::{Calibrated, Rule};
+        let (system_info, smbios) = this_machine();
+        let here = MachineFingerprint::detect(system_info, smbios);
+        let tsc = here.tsc_frequency_ghz.unwrap();
+        let mut elsewhere = vec![
+            ("machine ID", MachineFingerprint { machine_id: Some("another machine".to_string()), ..here.clone() }),
+            ("memory", MachineFingerprint { memory_id: Some("other DIMMs".to_string()), ..here.clone() }),
+            ("TSC", MachineFingerprint { tsc_frequency_ghz: Some(tsc + 0.1), ..here.clone() }),
+            ("none", MachineFingerprint::default()),
+        ];
+        // A system UUID is compared only where this machine reports one
+        if here.system_uuid.is_some() {
+            elsewhere.push(("system UUID", MachineFingerprint { system_uuid: Some("another board".to_string()), ..here.clone() }));
+        }
+        for (what, fingerprint) in elsewhere {
+            let mut config = AppConfig::default();
+            config.set_seal_calibration(seal_calibration(128), system_info, smbios);
+            assert_eq!(resolve(&config, Auto), (W128, Calibrated), "{what}: measured here");
+            config.seal_calibration.as_mut().unwrap().fingerprint = fingerprint;
+            assert_eq!(resolve(&config, Auto), (W256, Rule), "{what}: from other hardware");
+
+            config.update_machine_id(system_info, smbios);
+            config.calibration = Some(CalibrationResults::new(CpuSignature::default()));
+            assert!(config.is_calibration_valid(system_info, smbios));
+            assert_eq!(resolve(&config, Auto), (W256, Rule), "{what}: revived by a cache save");
+        }
     }
 
     /// TODO 99: a config written before seal calibrations loads, with none; one with a seal
-    /// calibration round-trips it.
+    /// calibration round-trips it. A seal calibration saved without a fingerprint (one that kept
+    /// only a machine ID) loads, keeping the rest of the config, and is stale.
     #[test]
     fn a_config_without_a_seal_calibration_loads_and_one_round_trips() {
         use crate::calibration::{CalibrationResults, CpuSignature};
-        let config = AppConfig {
-            machine_id: Some("abc".to_string()),
+        let (system_info, smbios) = this_machine();
+        let mut config = AppConfig {
             calibration: Some(CalibrationResults::new(CpuSignature::default())),
-            seal_calibration: Some(SealCalibration { machine_id: "abc".to_string(), ..seal_calibration(256) }),
             ..Default::default()
         };
+        config.update_identity(system_info, smbios);
+        config.set_seal_calibration(seal_calibration(256), system_info, smbios);
         let mut json: serde_json::Value = serde_json::to_value(&config).unwrap();
         let loaded: AppConfig = serde_json::from_value(json.clone()).unwrap();
         assert_eq!(loaded.seal_calibration, config.seal_calibration);
-        assert_eq!(loaded.valid_seal_calibration(true).and_then(SealCalibration::width), Some(crate::seal::SealWidth::W256));
+        assert_eq!(loaded.valid_seal_calibration(system_info, smbios).and_then(SealCalibration::width),
+                   Some(crate::seal::SealWidth::W256));
+
+        // A seal calibration without a fingerprint
+        let seal = json["seal_calibration"].as_object_mut().unwrap();
+        seal.remove("fingerprint");
+        seal.insert("machine_id".to_string(), serde_json::Value::String(AppConfig::generate_machine_id(system_info, smbios)));
+        let unstamped: AppConfig = serde_json::from_str(&json.to_string()).unwrap();
+        assert_eq!(unstamped.seal_calibration.as_ref().map(|s| &s.fingerprint), Some(&MachineFingerprint::default()));
+        assert!(unstamped.valid_seal_calibration(system_info, smbios).is_none());
+        assert!(unstamped.is_calibration_valid(system_info, smbios) && unstamped.calibration.is_some());
 
         // Before seal calibrations: no such key
         json.as_object_mut().unwrap().remove("seal_calibration");
         let older: AppConfig = serde_json::from_str(&json.to_string()).unwrap();
         assert!(older.seal_calibration.is_none() && older.calibration.is_some());
-        assert_eq!(older.machine_id.as_deref(), Some("abc"));
-        assert!(older.valid_seal_calibration(true).is_none());
+        assert!(older.is_calibration_valid(system_info, smbios));
+        assert!(older.valid_seal_calibration(system_info, smbios).is_none());
     }
 
     #[test]

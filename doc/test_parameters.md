@@ -214,9 +214,13 @@ whose median is within the fastest's spread (no slower than its slowest run): th
 can't tell them apart, and the narrower draws less power. A check that finds a bad word fails the
 calibration (memory errors). The result is saved to `tmr-cfg.json` (`seal_calibration`) after a
 prompt comparing it with the one stored, as the cache calibration's is, and is used only on the
-machine it was measured on: the config's identity must match (`is_calibration_valid`, the cache
-calibration's check), and so must the fingerprint the seal calibration keeps, since a cache
-calibration saved later on other hardware rewrites the config's. `--no-calibration` skips it.
+machine it was measured on. It keeps its own fingerprint of that machine, everything the cache
+calibration's check compares (`is_calibration_valid`: the machine ID, the memory configuration,
+the system UUID and the TSC frequency), and is used only while all of it is this machine's. Its
+save leaves the config's identity, which the cache calibrations are checked against, alone, and a
+cache calibration's save leaves the seal's alone: a CPU swap followed by only `--calibrate-seal`
+keeps the old cache calibration stale, and one followed by only `--calibrate-cache` keeps the old
+seal width stale. `--no-calibration` skips it.
 
 A `tm5` seal takes the same width: only `tmr` is measured. Its kernels hold a page's three vectors
 in registers and only store or load, XOR and OR them, where `tmr`'s compute a hash per vector, so

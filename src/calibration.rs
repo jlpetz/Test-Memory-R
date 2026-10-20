@@ -1483,11 +1483,13 @@ pub struct SealWidthTiming {
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct SealCalibration {
     pub timestamp: DateTime<Utc>,
-    /// The machine fingerprint it was measured on (`AppConfig::generate_machine_id`), set when it
-    /// is saved. A cache calibration saved later on other hardware rewrites the config's identity;
-    /// this keeps that save from passing the seal's off as the new hardware's.
+    /// The machine it was measured on, all of what the cache calibration's check compares
+    /// (`MachineFingerprint`), set when it is saved (`AppConfig::set_seal_calibration`); it is used
+    /// only while that is this machine's. Its own, not the config's identity: each kind of
+    /// calibration's save would otherwise pass the other's, from other hardware, off as this
+    /// machine's. One saved without it (empty) is never this machine's.
     #[serde(default)]
-    pub machine_id: String,
+    pub fingerprint: crate::app_config::MachineFingerprint,
     /// The pattern measured: the default, `tmr`. A `tm5` run takes the width too.
     pub pattern: String,
     pub buffer_bytes: u64,
@@ -1595,7 +1597,7 @@ pub fn calibrate_seal(cache_info: &CacheInfo, page_size: &str) -> Result<SealCal
     let (width_bits, fastest_bits) = choose_seal_width(&widths).ok_or("no seal width to measure")?;
     Ok(SealCalibration {
         timestamp: Utc::now(),
-        machine_id: String::new(),
+        fingerprint: Default::default(),
         pattern: SealPattern::Tmr.name().to_string(),
         buffer_bytes: bytes as u64,
         page_size: page_size.to_string(),
