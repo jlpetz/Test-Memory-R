@@ -57,7 +57,7 @@ Number of interleaved stride pattern variants. Each variant uses a different bas
 ### `rng_sequences: Option<u32>`
 **Used by:** RandomTorture (`Mem-Random`)
 
-Number of independent RNG (xorshift) sequences for random access verification. More sequences = more diverse access patterns within each cycle.
+Number of independent RNG (xorshift) sequences for random access verification. More sequences = more diverse access patterns within each cycle. A cycle reads as many random words as the extent holds, split evenly over the sequences (TODO 99), so a cycle takes about as long as an extent's worth of random 8-byte reads.
 
 - **Default:** 8
 - **Constraint:** Must be >= 1, power-of-2 when > 1
