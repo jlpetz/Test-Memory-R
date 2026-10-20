@@ -24,7 +24,9 @@ review and measurement rather than failure:
 A stack access through an index register (`128(%rsp,%r10)`, an array kept on the stack) counts as a
 stack access; an indexed prefetch doesn't count as indexed (it folds into no other op). A "loop"
 whose range holds a `ret` is an epilogue laid out inside an outer loop's blocks, and is skipped.
-Cold functions (rescans, parsers, setup) are left out by name, below.
+Cold functions (rescans, parsers, setup) are left out by name, below. A kernel generic over the
+access a unit test records it by (`tests::access`) is named without it: `Direct` is the only one
+in the binary.
 
 Build the asm, then run this (with no file, the newest one under target/release/build):
     cargo rustc --release --bin tmr -- --emit asm
@@ -76,11 +78,22 @@ def off_width(name, loop):
     return False
 # A memory operand with an index register, off the stack (an `lea` is arithmetic, not an access)
 INDEXED = re.compile(r"-?\d*\(%r(?!sp\b)\w+,%r\w+(,\d)?\)")
+# A type of `tests::access` as a generic argument (`NtNtB6_6access6Direct`, its length-prefixed name
+# after): the access a kernel's functions take so a unit test can record them. Only `Direct` is in
+# the binary, so the kernel's name leaves it out and stays the function's.
+ACCESS_ARG = re.compile(r"NtNt(?:NtB[0-9A-Za-z]*_5tests|B[0-9A-Za-z]*_)6access(\d+)")
+
+
+def drop_access_args(sym):
+    while m := ACCESS_ARG.search(sym):
+        sym = sym[:m.start()] + sym[m.end() + int(m.group(1)):]
+    return sym
 
 
 def short_name(sym):
     """`module::function` from a v0 symbol: its length-prefixed identifiers after the crate's, and a
     `{closure}` mark where the function is one of a test fn's closures."""
+    sym = drop_access_args(sym)
     at = sym.find("3tmr")
     if at < 0:
         return sym[:60]
