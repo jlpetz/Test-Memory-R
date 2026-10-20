@@ -3937,7 +3937,8 @@ impl std::fmt::Display for Region<'_> {
 /// prefetched, the walk ran 1.2x faster over 1usmus_v3's seven shapes and 1.9x at Test 13's, where
 /// a pass has 57 lines; likely in part by letting the hardware fetch neighbours together, fewer row
 /// openings per line, so its speed was no measure of the stress. See TODO 93's detail file.
-// Test-only since TODO 99 round 3: the reference the kernels' own strided walks are tested against
+// Test-only since TODO 99 round 3: the reference the kernels' strided walk (`strided_walk!`) is
+// tested against
 #[cfg(test)]
 macro_rules! for_each_strided_line {
     ($ptr:expr, $start:expr, $end:expr, $period:expr, |$offset:ident| $body:block) => {{
@@ -4003,64 +4004,82 @@ fn strided_period(stride: usize) -> usize {
     stride.next_multiple_of(LINE_WORDS) + LINE_WORDS
 }
 
-// ─── SimpleTest v2 ───────────────────────────────────────────────────────────
-
-/// `for_each_strided_line!` on a walked pointer, for the numbered-mode SimpleTest's loops (TODO 99):
-/// the same lines in the same order with the same prefetches, `$line` the line's first word
-/// (`*mut u64`), `$offset`, when asked for, its index, and `$target` the line it prefetched (for the
-/// tests). The pointer steps a period a line, so each access is a register and a fixed displacement
-/// rather than a base and an index; every access here is a new row, as in Mem-CacheBust, where the
-/// index cost 6% (TODO 99 round 2).
+/// TM5's strided walk on a walked pointer, the one every strided kernel runs (TODO 99): native
+/// SimpleTest's, the numbered modes' and Mem-Sequence's. It visits `for_each_strided_line!`'s lines
+/// (the reference, which the tests hold it to) in its order, each step prefetching the same line,
+/// by `$prefetch` (`prefetch_line`, or a test's recorder). `$body` runs with `$p` the line's first
+/// word (`*mut u64`) and, when asked for, the line's id: with `lid $lid0` its line id, a `u64`,
+/// `$lid0` at `$start` (native SimpleTest's and Mem-Sequence's patterns); with `offset` its first
+/// word's index from `$base`, a `usize` (the numbered modes').
 ///
-/// The prefetch target (`strided_ahead`) is `steps` lines on in the pass for the pass's first
-/// `lines - steps` lines, and for the rest that less the pass's `wrap`, in the next pass. So each
-/// pass is two loops, the target a fixed distance from the line in each and walked beside it: no
-/// compare and select a line, and the registers they took free for the body.
-macro_rules! for_each_strided_line_at {
-    ($ptr:expr, $start:expr, $end:expr, $period:expr, |$line:ident, $offset:ident, $target:ident| $body:block) => {{
-        let (ptr, start, end, period): (*mut u64, usize, usize, usize) = ($ptr, $start, $end, $period);
+/// Each step is a register and a fixed displacement, not a base and an index: every access opens a
+/// new row, as in Mem-CacheBust, where the index cost 6% (TODO 99 round 2). Each pass is two loops,
+/// split at the step where its prefetches go from on in the pass to on into the next, so no step
+/// selects: in one loop with an index, its offset, end, step and the prefetch's two offsets didn't
+/// all fit in registers. Each loop runs to a pointer bound: with a count, the compiler unrolled
+/// them, and the unrolled loops spilled. The pointer goes through `native_opaque_step` at each step
+/// and the id comes from it, so a step carries one value: seen through, the pointer became an
+/// offset from the pass's first line (every access `(%first,%offset)`), and an id stepped beside it
+/// put each value a pattern takes from the id on its own induction variable.
+///
+/// The three walks this replaced (native SimpleTest's, which this is; Mem-Sequence's, which carried
+/// its pointer from pass to pass and stepped its id; the numbered modes') visited the same lines by
+/// different loops. In the release asm, this one left native's loops as they were, took
+/// Mem-Sequence's from 15 stack accesses to 7 and kept the numbered modes' clean. It spilled more
+/// with Mem-Sequence's id stepped beside the pointer (111), and in two shapes without the pass's
+/// division (the second loop's target from where the first ended): the register allocator spilled
+/// `ahead` in the first loop once the second stopped using it.
+macro_rules! strided_walk {
+    ($prefetch:expr, $base:expr, $start:expr, $end:expr, $period:expr, |$p:ident| $body:block) => {{
+        let (base, start, end, period): (*mut u64, usize, usize, usize) = ($base, $start, $end, $period);
         debug_assert!(period.is_multiple_of(LINE_WORDS) && start.is_multiple_of(LINE_WORDS) && end.is_multiple_of(LINE_WORDS),
                       "the strided walk needs whole lines: {start}..{end} by {period}");
-        // `strided_lookahead` in lines
-        let steps = STRIDED_AHEAD.min((end - start) / period);
-        let ahead = steps * period;
-        let mut first = start + period;
-        while first > start {
-            first -= LINE_WORDS;
-            // `strided_wrap`: the pass's lines, and a line
-            let lines = end.saturating_sub(first).div_ceil(period);
-            let wrap = lines * period + LINE_WORDS;
-            let mut $line = ptr.wrapping_add(first);
-            let mut $offset = first;
-            let mut $target = $line.wrapping_add(ahead);
-            // Each loop runs to a line, not a count: a counted loop the compiler unrolls, and its
-            // copies' lines a run-time period apart take an index register each
-            let (switch, stop) = ($line.wrapping_add(lines.saturating_sub(steps) * period), $line.wrapping_add(lines * period));
-            while $line < switch {
-                prefetch_line($target);
+        let ahead = strided_lookahead(start, end, period);
+        let stop = base.wrapping_add(end);
+        // Each pass's first line, from the last line of the first period down
+        let mut first = base.wrapping_add(start + period);
+        for _ in 0..period / LINE_WORDS {
+            first = first.wrapping_sub(LINE_WORDS);
+            let mut $p = first;
+            // While the line `ahead` words on is in the chunk, `strided_ahead` takes it; from there it
+            // steps back `strided_wrap` words from it, into the next pass
+            while $p.wrapping_add(ahead) < stop {
+                $prefetch($p.wrapping_add(ahead));
                 $body
-                $line = $line.wrapping_add(period);
-                $offset += period;
-                $target = $target.wrapping_add(period);
+                $p = native_opaque_step($p.wrapping_add(period));
             }
-            // The walk's last steps prefetch off the chunk: a wasted prefetch, not a fault
-            $target = $target.wrapping_sub(wrap);
-            while $line < stop {
-                prefetch_line($target);
+            // The pass's words to the chunk's end, as `strided_wrap` takes them
+            let left = (stop as usize).saturating_sub(first as usize) / std::mem::size_of::<u64>();
+            let back = ahead.wrapping_sub(strided_wrap(0, left, period));
+            while $p < stop {
+                // The walk's last steps prefetch off the chunk: a wasted prefetch, not a fault
+                $prefetch($p.wrapping_add(back));
                 $body
-                $line = $line.wrapping_add(period);
-                $offset += period;
-                $target = $target.wrapping_add(period);
+                $p = native_opaque_step($p.wrapping_add(period));
             }
         }
     }};
-    ($ptr:expr, $start:expr, $end:expr, $period:expr, |$line:ident, $offset:ident| $body:block) => {
-        for_each_strided_line_at!($ptr, $start, $end, $period, |$line, $offset, _target| $body)
-    };
-    ($ptr:expr, $start:expr, $end:expr, $period:expr, |$line:ident| $body:block) => {
-        for_each_strided_line_at!($ptr, $start, $end, $period, |$line, _offset, _target| $body)
-    };
+    ($prefetch:expr, $base:expr, $start:expr, $end:expr, $period:expr, offset, |$p:ident, $offset:ident| $body:block) => {{
+        let base: *mut u64 = $base;
+        strided_walk!($prefetch, base, $start, $end, $period, |$p| {
+            let $offset = ($p as usize).wrapping_sub(base as usize) / std::mem::size_of::<u64>();
+            $body
+        })
+    }};
+    ($prefetch:expr, $base:expr, $start:expr, $end:expr, $period:expr, lid $lid0:expr, |$p:ident, $lid:ident| $body:block) => {{
+        let (base, start, end, lid0): (*mut u64, usize, usize, u64) = ($base, $start, $end, $lid0);
+        // A line's id is its address's distance from `at` in lines: `lid0` at `start`, exact while
+        // ids are under 2^58 (thread ids under 2^21, `pattern::line_base`)
+        debug_assert!(lid0 + ((end - start) / LINE_WORDS) as u64 <= 1 << 58, "line ids from {lid0} past 2^58");
+        let at = (base.wrapping_add(start) as u64).wrapping_sub(lid0 << 6);
+        strided_walk!($prefetch, base, start, end, $period, |$p| {
+            let $lid = ($p as u64).wrapping_sub(at) >> 6;
+            $body
+        })
+    }};
 }
+
+// ─── SimpleTest v2 ───────────────────────────────────────────────────────────
 
 /// Pattern-generation parameters for the SimpleTest v2 implementations.
 /// Bundles the mode selector, its two free parameters, the access stride and the test it runs as,
@@ -4243,7 +4262,7 @@ mod simple_test_v2_loops {
     /// The per-word write on TM5's strided walk (TODO 93): each line's words their patterns.
     #[inline(never)]
     pub(super) unsafe fn words_write_str<const MODE: u32>(c: SimpleWords<MODE>, period: usize) {
-        for_each_strided_line_at!(c.ptr, c.start, c.end, period, |line, offset| {
+        strided_walk!(prefetch_line, c.ptr, c.start, c.end, period, offset, |line, offset| {
             store_line(line, (c.expected4(offset), c.expected4(offset + 4)));
         });
     }
@@ -4252,7 +4271,7 @@ mod simple_test_v2_loops {
     #[inline(never)]
     pub(super) unsafe fn words_verify_str<const MODE: u32>(c: SimpleWords<MODE>, period: usize) -> u64 {
         let mut acc = u64x4::splat(0);
-        for_each_strided_line_at!(c.ptr, c.start, c.end, period, |line, offset| {
+        strided_walk!(prefetch_line, c.ptr, c.start, c.end, period, offset, |line, offset| {
             acc |= line_diff(line, (c.expected4(offset), c.expected4(offset + 4)));
         });
         acc.reduce_or()
@@ -4263,7 +4282,7 @@ mod simple_test_v2_loops {
     #[inline(never)]
     pub(super) unsafe fn mode20_write_str(c: SimpleMode20, period: usize) {
         let SimpleMode20 { ptr, start, end, key } = c;
-        for_each_strided_line_at!(ptr, start, end, period, |line| {
+        strided_walk!(prefetch_line, ptr, start, end, period, |line| {
             let (seed, step) = pattern_gen::mode20_line(line as usize, key);
             store_line(line, line_vectors(seed, step));
         });
@@ -4274,7 +4293,7 @@ mod simple_test_v2_loops {
     pub(super) unsafe fn mode20_verify_str(c: SimpleMode20, period: usize) -> u64 {
         let SimpleMode20 { ptr, start, end, key } = c;
         let mut acc = u64x4::splat(0);
-        for_each_strided_line_at!(ptr, start, end, period, |line| {
+        strided_walk!(prefetch_line, ptr, start, end, period, |line| {
             let (seed, step) = pattern_gen::mode20_line(line as usize, key);
             acc |= line_diff(line, line_vectors(seed, step));
         });
@@ -4286,7 +4305,7 @@ mod simple_test_v2_loops {
     pub(super) unsafe fn mode30_write_str(c: SimpleMode30, period: usize) {
         let SimpleMode30 { ptr, start, end, mode30 } = c;
         with_mode30_line!(mode30, |expected| {
-            for_each_strided_line_at!(ptr, start, end, period, |line| {
+            strided_walk!(prefetch_line, ptr, start, end, period, |line| {
                 store_line(line, halves(expected(line)));
             });
         })
@@ -4298,7 +4317,7 @@ mod simple_test_v2_loops {
         let SimpleMode30 { ptr, start, end, mode30 } = c;
         let mut acc = u64x4::splat(0);
         with_mode30_line!(mode30, |expected| {
-            for_each_strided_line_at!(ptr, start, end, period, |line| {
+            strided_walk!(prefetch_line, ptr, start, end, period, |line| {
                 acc |= line_diff(line, halves(expected(line)));
             });
         });
@@ -5469,7 +5488,7 @@ macro_rules! simple_simd_loops {
                 let base = V::splat(base);
                 // Each vector's lanes, from the line's first word
                 let lanes: [V; LINE_WORDS / W] = std::array::from_fn(|j| V::from_array($lane_offsets) + V::splat((j * W) as u64));
-                for_each_strided_line_at!(ptr, start, end, period, |line, offset| {
+                strided_walk!(prefetch_line, ptr, start, end, period, offset, |line, offset| {
                     let at = V::splat(offset as u64);
                     for (j, &lane) in lanes.iter().enumerate() {
                         *(line.add(j * W) as *mut V) = (at + lane) ^ base;
@@ -5488,7 +5507,7 @@ macro_rules! simple_simd_loops {
                 let base = V::splat(base);
                 let lanes: [V; LINE_WORDS / W] = std::array::from_fn(|j| V::from_array($lane_offsets) + V::splat((j * W) as u64));
                 let mut acc = [V::splat(0); 4];
-                for_each_strided_line_at!(ptr, start, end, period, |line, offset| {
+                strided_walk!(prefetch_line, ptr, start, end, period, offset, |line, offset| {
                     let at = V::splat(offset as u64);
                     for (j, &lane) in lanes.iter().enumerate() {
                         acc[j % 4] |= *(line.add(j * W) as *const V) ^ ((at + lane) ^ base);
@@ -5505,7 +5524,7 @@ macro_rules! simple_simd_loops {
             pub(super) unsafe fn m20_write_str(c: SimpleMode20, period: usize) {
                 let SimpleMode20 { ptr, start, end, key } = c;
                 let lanes = V::from_array($lane_offsets);
-                for_each_strided_line_at!(ptr, start, end, period, |line| {
+                strided_walk!(prefetch_line, ptr, start, end, period, |line| {
                     let (seed, step) = pattern_gen::mode20_line(line as usize, key);
                     let advance = V::splat(step.wrapping_mul(W as u64));
                     let mut words = V::splat(seed) + V::splat(step) * lanes;
@@ -5524,7 +5543,7 @@ macro_rules! simple_simd_loops {
                 let SimpleMode20 { ptr, start, end, key } = c;
                 let lanes = V::from_array($lane_offsets);
                 let mut acc = [V::splat(0); 4];
-                for_each_strided_line_at!(ptr, start, end, period, |line| {
+                strided_walk!(prefetch_line, ptr, start, end, period, |line| {
                     let (seed, step) = pattern_gen::mode20_line(line as usize, key);
                     let advance = V::splat(step.wrapping_mul(W as u64));
                     let mut words = V::splat(seed) + V::splat(step) * lanes;
@@ -6347,7 +6366,7 @@ impl NativeRun {
 
 /// One native SimpleTest walk over a chunk: words `[start, end)` of `base`, in whole lines, its
 /// first line line id `lid0`, each line `phase`'s. Sequential, or TM5's strided walk
-/// (`native_strided_walk!`) when `period`, its period in words, isn't 0. Each walk at each width
+/// (`strided_walk!`) when `period`, its period in words, isn't 0. Each walk at each width
 /// is a function of its own (`native_simple_impl!`'s walks module), called once a chunk, so its
 /// loops keep every value in registers (TODO 99): in the per-chunk closures, with both walks of
 /// every family and beat in one function, values spilled to the stack in loops of a dozen
@@ -6362,7 +6381,8 @@ struct NativeChunk {
     phase: crate::pattern::Phase,
 }
 
-/// The walked pointer of a native walk's next step, hidden from the compiler's loop strength
+/// The walked pointer of a native walk's next step, and of every strided kernel's (`strided_walk!`,
+/// native SimpleTest's walk until TODO 99 shared it), hidden from the compiler's loop strength
 /// reduction (TODO 99). In view, it rewrote the strided walk's pointer and line id as four
 /// induction variables (a prefetch pointer, an offset from a base, the line id and the id times
 /// 8), each with its own step in a register, and the lines that hash with 64-bit constants
@@ -6390,52 +6410,6 @@ fn native_opaque_lid(mut lid: u64) -> u64 {
     // SAFETY: the template is a comment: the register comes out as it went in
     unsafe { std::arch::asm!("/* {0} */", inout(reg) lid, options(pure, nomem, nostack, preserves_flags)) };
     lid
-}
-
-/// TM5's strided walk as `for_each_strided_line!` takes it, the same lines in the same order and
-/// the same line prefetched at each step (by `$prefetch`, `prefetch_line` but in a test), on a
-/// walked pointer: `$body` runs with `$p` the line's first word and `$lid` its line id, from
-/// `$lid0` at `$start`. Each pass is two loops, split at the step where its prefetches go from on
-/// in the pass to on into the next, so no step selects: in one loop with an index, its offset,
-/// end, step and the prefetch's two offsets didn't all fit in registers (TODO 99). Each loop runs
-/// to a pointer bound, as the old one ran to its end: with a count, the compiler unrolled them,
-/// and the unrolled loops spilled. The line id comes from the pointer, so a step carries one value.
-macro_rules! native_strided_walk {
-    ($prefetch:expr, $base:expr, $start:expr, $end:expr, $period:expr, $lid0:expr, |$p:ident, $lid:ident| $body:block) => {{
-        let (base, start, end, period, lid0): (*mut u64, usize, usize, usize, u64) = ($base, $start, $end, $period, $lid0);
-        debug_assert!(period.is_multiple_of(LINE_WORDS) && start.is_multiple_of(LINE_WORDS) && end.is_multiple_of(LINE_WORDS),
-                      "the strided walk needs whole lines: {start}..{end} by {period}");
-        // A line's id is its address's distance from `at` in lines: `lid0` at `start`, exact while
-        // ids are under 2^58 (thread ids under 2^21, `pattern::line_base`)
-        debug_assert!(lid0 + ((end - start) / LINE_WORDS) as u64 <= 1 << 58, "line ids from {lid0} past 2^58");
-        let at = (base.wrapping_add(start) as u64).wrapping_sub(lid0 << 6);
-        let ahead = strided_lookahead(start, end, period);
-        let stop = base.wrapping_add(end);
-        // Each pass's first line, from the last line of the first period down
-        let mut first = base.wrapping_add(start + period);
-        for _ in 0..period / LINE_WORDS {
-            first = first.wrapping_sub(LINE_WORDS);
-            let mut $p = first;
-            // While the line `ahead` words on is in the chunk, `strided_ahead` takes it; from there it
-            // steps back `strided_wrap` words from it, into the next pass
-            while $p.wrapping_add(ahead) < stop {
-                $prefetch($p.wrapping_add(ahead));
-                let $lid = ($p as u64).wrapping_sub(at) >> 6;
-                $body
-                $p = native_opaque_step($p.wrapping_add(period));
-            }
-            // The pass's words to the chunk's end, as `strided_wrap` takes them
-            let left = (stop as usize).saturating_sub(first as usize) / std::mem::size_of::<u64>();
-            let back = ahead.wrapping_sub(strided_wrap(0, left, period));
-            while $p < stop {
-                // The walk's last steps prefetch off the chunk: a wasted prefetch, not a fault
-                $prefetch($p.wrapping_add(back));
-                let $lid = ($p as u64).wrapping_sub(at) >> 6;
-                $body
-                $p = native_opaque_step($p.wrapping_add(period));
-            }
-        }
-    }};
 }
 
 /// The line type of a native walk at a width, `[u64xN, N]`: a line's vectors.
@@ -6470,11 +6444,11 @@ macro_rules! native_write_seq {
     }};
 }
 
-/// The strided write of `$c` (see `native_write_seq`): TM5's walk, `native_strided_walk!`.
+/// The strided write of `$c` (see `native_write_seq`): TM5's walk, `strided_walk!`.
 macro_rules! native_write_strided {
     ([$simd:ty, $w:tt], $c:expr, $line:expr) => {{
         let (NativeChunk { base, start, end, lid0, period, .. }, line) = ($c, $line);
-        native_strided_walk!(prefetch_line, base, start, end, period, lid0, |p, lid| {
+        strided_walk!(prefetch_line, base, start, end, period, lid lid0, |p, lid| {
             for (v, x) in line(lid).into_iter().enumerate() {
                 *(p.add(v * $w) as *mut $simd) = x;
             }
@@ -6531,7 +6505,7 @@ macro_rules! native_differs_strided {
         const VPL: usize = LINE_WORDS / $w;
         let (NativeChunk { base, start, end, lid0, period, .. }, line) = ($c, $line);
         let mut acc = [<$simd>::splat(0); 4];
-        native_strided_walk!(prefetch_line, base, start, end, period, lid0, |p, lid| {
+        strided_walk!(prefetch_line, base, start, end, period, lid lid0, |p, lid| {
             let words = line(lid);
             for v in 0..VPL {
                 acc[v % 4] |= *(p.add(v * $w) as *const $simd) ^ words[v];
@@ -7111,79 +7085,22 @@ macro_rules! sequence_random {
     }};
 }
 
-/// Mem-Sequence's strided walk of `$op` over the chunk of `$walk`: `for_each_strided_line!`'s
-/// lines and prefetches, a line a step, on a walked pointer: each pass from its first line, a
-/// period at a time, each vector of the line `acc[v % 4]`'s as the old walk's (at 512 bits one).
-/// The pointer goes from pass to pass (back `wrap`), so a pass keeps nothing else live: at TM5's
-/// large strides a pass is a line or two. Each pass is two loops, the steps whose prefetch lands in
-/// the pass and those whose lands in the next, so neither picks its target, and each line's id
-/// goes through `opaque_line_id`.
+/// Mem-Sequence's strided walk of `$op` over the chunk of `$walk`: TM5's, `strided_walk!`, a line a
+/// step, each vector of the line `acc[v % 4]`'s as the old walk's (at 512 bits one).
 macro_rules! sequence_strided {
     ($op:tt, $visit:ident, $simd:ty, $w:tt, [$($l:literal: [$($v:literal $a:literal),*]),*], $kind:tt, $walk:ident) => {
         sequence_strided!(@line $op, $visit, $simd, $w, $kind, $walk, [$($l: [$($v $a),*]),*])
     };
     (@line $op:tt, $visit:ident, $simd:ty, $w:tt, $kind:tt, $walk:ident, [$l0:literal: [$($v:literal $a:literal),*] $(, $l:literal: $rest:tt)*]) => {{
         let SequenceWalk { ptr, start, end, lid0, period, pkey, mask, .. } = $walk;
-        debug_assert!(period.is_multiple_of(LINE_WORDS) && start.is_multiple_of(LINE_WORDS) && end.is_multiple_of(LINE_WORDS),
-                      "the strided walk needs whole lines: {start}..{end} by {period}");
         let mask = <$simd>::splat(mask);
         sequence_acc!(init $op, acc, ones, $simd);
-        let ahead = strided_lookahead(start, end, period);
-        let (bottom, stop, lid_step) = (ptr.wrapping_add(start), ptr.add(end), (period / LINE_WORDS) as u64);
-        // The first pass's first line: the last of the chunk's first period
-        let mut p = bottom.wrapping_add(period - LINE_WORDS);
-        loop {
-            // `strided_wrap` in bytes, from the pointers: a pass can be a line or two, so its
-            // start keeps no more than the walk does
-            let wrap = sequence_wrap(p, stop, period);
-            let mut lid = lid0 + ((p.addr() - bottom.addr()) / 64) as u64;
-            // `strided_ahead`'s targets, a loop each: the steps whose line `ahead` on is in this
-            // pass, then the rest, whose is in the next
-            let near = stop.wrapping_sub(ahead);
-            while p < near {
-                prefetch_line(p.wrapping_add(ahead));
-                let words = sequence_line!($w, $kind, opaque_line_id(lid), pkey).map(|x| x ^ mask);
-                $($visit!($op, p.add($v * $w) as *mut $simd, words[$v], acc[$v % 4], ones);)*
-                p = p.wrapping_add(period);
-                lid = lid.wrapping_add(lid_step);
-            }
-            while p < stop {
-                // The walk's last steps prefetch off the chunk: a wasted prefetch, not a fault
-                prefetch_line(p.wrapping_add(ahead).wrapping_byte_sub(wrap));
-                let words = sequence_line!($w, $kind, opaque_line_id(lid), pkey).map(|x| x ^ mask);
-                $($visit!($op, p.add($v * $w) as *mut $simd, words[$v], acc[$v % 4], ones);)*
-                p = p.wrapping_add(period);
-                lid = lid.wrapping_add(lid_step);
-            }
-            // Back `wrap` from past the pass's end is the next pass's first line, a line below
-            p = p.wrapping_byte_sub(wrap);
-            if p < bottom {
-                break;
-            }
-        }
+        strided_walk!(prefetch_line, ptr, start, end, period, lid lid0, |p, lid| {
+            let words = sequence_line!($w, $kind, lid, pkey).map(|x| x ^ mask);
+            $($visit!($op, p.add($v * $w) as *mut $simd, words[$v], acc[$v % 4], ones);)*
+        });
         sequence_acc!(result $op, acc)
     }};
-}
-
-/// `lid`, through an empty `asm!` the compiler can't see through: the strided walk computes each
-/// line's values from its id, rather than stepping each beside the id. At a period known only at
-/// run time, each value a family takes from the id (`lid + key`, `ident`'s `(lid << 3) * G + key`,
-/// ...) stepped on its own took two registers, itself and its step, and the walks of `header` and
-/// `quiet` spilled (TODO 99: 25 hot loops reloading from the stack, 13 with this). No instruction:
-/// the block is a comment, its operand the register `lid` is already in.
-#[inline(always)]
-fn opaque_line_id(mut lid: u64) -> u64 {
-    // SAFETY: an empty block that reads and writes one register and touches nothing else
-    unsafe { core::arch::asm!("/* {0} */", inout(reg) lid, options(pure, nomem, nostack, preserves_flags)) };
-    lid
-}
-
-/// `strided_wrap` for the pass from `p` in bytes, from the pointers: the pass's lines rounded up to
-/// whole periods, plus a line. Back this from past the pass's end is the next pass's first line.
-#[inline(always)]
-fn sequence_wrap(p: *const u64, stop: *const u64, period: usize) -> usize {
-    let step = period * std::mem::size_of::<u64>();
-    stop.addr().saturating_sub(p.addr()).div_ceil(step) * step + LINE_WORDS * std::mem::size_of::<u64>()
 }
 
 /// One Mem-Sequence pass of `$op` (`write`, `read` or `rw`) over `$walk`'s chunk in `$order`, its
@@ -7738,40 +7655,6 @@ mod simple_loops_tests {
     /// on 2 channels, its period 16 lines), one longer (two-line periods, 300 of them), and a
     /// period of 64 lines off a page.
     const WALKS: [(usize, usize, usize); 3] = [(0, 4096, 15 * 8), (0, 300 * 16, 8), (64, 64 + 4096 + 40, 63 * 8)];
-
-    /// TODO 99: the walk on a pointer visits `for_each_strided_line!`'s lines in its order, each at
-    /// its offset, and prefetches each step what `strided_ahead` gives, where a pass is shorter
-    /// than the lookahead, longer, and empty (a period longer than the chunk).
-    #[test]
-    fn the_pointer_walk_is_the_strided_walk() {
-        let mem = [0u64; 1];
-        let ptr = mem.as_ptr() as *mut u64;
-        let shapes = WALKS.iter().copied().chain([(512, 4096 + 512, 15 * 8), (0, 512, 4095 * 8), (64, 128, 0), (8, 8 + 200 * 24, 16)]);
-        for (start, end, stride) in shapes {
-            let period = strided_period(stride);
-            let mut old = Vec::new();
-            for_each_strided_line!(ptr, start, end, period, |offset| { old.push(offset); });
-            // The old walk's prefetch targets, from its loops and helpers
-            let ahead = strided_lookahead(start, end, period);
-            let mut targets = Vec::new();
-            let mut first = start + period;
-            while first > start {
-                first -= LINE_WORDS;
-                let wrap = strided_wrap(first, end, period);
-                targets.extend((first..end).step_by(period).map(|offset| strided_ahead(offset, ahead, end, wrap)));
-            }
-            let mut new = Vec::new();
-            for_each_strided_line_at!(ptr, start, end, period, |line, offset, target| {
-                new.push((line as usize, offset, target as usize));
-            });
-            assert_eq!(new.len(), old.len(), "{start}..{end} by {stride}: the lines");
-            for (k, (&(line, offset, target), (&want, &ahead))) in new.iter().zip(old.iter().zip(&targets)).enumerate() {
-                assert_eq!(offset, want, "{start}..{end} by {stride}: line {k}");
-                assert_eq!(line, ptr.wrapping_add(offset) as usize, "{start}..{end} by {stride}: line {k}'s pointer");
-                assert_eq!(target, ptr.wrapping_add(ahead) as usize, "{start}..{end} by {stride}: line {k}'s prefetch");
-            }
-        }
-    }
 
     /// Mode 20's words, from the definition: a line `seed + j * step`, both hashed from its address.
     fn mode20_word(ptr: *mut u64, key: u64, i: usize) -> u64 {
@@ -8896,23 +8779,29 @@ mod random_replay_tests {
         }
     }
 
-    /// TODO 99: the native SimpleTest's strided walk is `for_each_strided_line!`'s: the same lines
-    /// in the same order, each with its line id, and the same line prefetched at each step, in both
-    /// of a pass's loops (on in the pass, then on into the next).
+    /// TODO 99: the strided walk on a pointer, every strided kernel's (`strided_walk!`), is
+    /// `for_each_strided_line!`'s: the same lines in the same order, each with its id as each
+    /// caller takes it (none, a line id, a word offset), and the same line prefetched at each step,
+    /// in both of a pass's loops (on in the pass, then on into the next). The shapes put a pass's
+    /// lines in the first loop only (a period longer than the chunk: a line a pass, or none), in
+    /// the second only (passes as long as the lookahead), and in both (passes a line longer, and
+    /// passes longer than `STRIDED_AHEAD`).
     #[test]
-    fn the_native_strided_walk_is_tm5s() {
+    fn the_pointer_walk_is_tm5s() {
         use super::native_opaque_step;
         let mut mem = [0u64; 1];
         let base = mem.as_mut_ptr();
         // A pointer's word offset from `base`; a prefetch's may be off the chunk, either side
         let at = |q: *const u64| ((q as usize).wrapping_sub(base as usize) as isize) / 8;
         let shapes = [(0, 4096, 15 * 8), (512, 4096 + 512, 15 * 8), (0, 4096 + 40, 15 * 8), (0, 4096, 63 * 8),
-                      (0, 512, 4095 * 8), (64, 128, 0), (0, 6 * LINE_WORDS, 2 * LINE_WORDS), (0, 344, 15 * 8)];
+                      (0, 512, 4095 * 8), (64, 128, 0), (0, 6 * LINE_WORDS, 2 * LINE_WORDS), (0, 344, 15 * 8),
+                      (0, 300 * 16, 8), (64, 64 + 4096 + 40, 63 * 8), (8, 8 + 200 * 24, 16)];
         for (start, end, stride) in shapes {
             let period = strided_period(stride);
+            let what = format!("{start}..{end} by {stride}");
             let mut old = Vec::new();
-            for_each_strided_line!(base as *const u64, start, end, period, |offset| { old.push(offset); });
-            // The old walk's prefetch targets, by its own loops (`the_strided_walk_is_tm5s`)
+            for_each_strided_line!(base as *const u64, start, end, period, |offset| { old.push(offset as isize); });
+            // The reference's prefetch targets, by its own loops (`the_strided_walk_is_tm5s`)
             let ahead = strided_lookahead(start, end, period);
             let mut targets = Vec::new();
             let mut first = start + period;
@@ -8925,18 +8814,28 @@ mod random_replay_tests {
                     offset += period;
                 }
             }
-            let lid0 = (7u64 << 37) + (start / LINE_WORDS) as u64;
             let (mut lines, mut prefetched) = (Vec::new(), Vec::new());
             let mut prefetch = |q: *mut u64| prefetched.push(at(q));
-            native_strided_walk!(prefetch, base, start, end, period, lid0, |p, lid| {
-                lines.push((at(p) as usize, lid));
-            });
-            let what = format!("{start}..{end} by {stride}");
-            assert_eq!(lines.iter().map(|&(offset, _)| offset).collect::<Vec<_>>(), old, "{what}: the lines");
-            for &(offset, lid) in &lines {
-                assert_eq!(lid, lid0 + ((offset - start) / LINE_WORDS) as u64, "{what}: line {offset}'s id");
-            }
+            strided_walk!(prefetch, base, start, end, period, |p| { lines.push(at(p)); });
+            assert_eq!(lines, old, "{what}: the lines");
             assert_eq!(prefetched, targets, "{what}: the prefetches");
+            // With a line id (native SimpleTest's, Mem-Sequence's), from a thread's span
+            let lid0 = crate::pattern::line_base(7) + (start / LINE_WORDS) as u64;
+            let (mut lines, mut prefetched) = (Vec::new(), Vec::new());
+            let mut prefetch = |q: *mut u64| prefetched.push(at(q));
+            strided_walk!(prefetch, base, start, end, period, lid lid0, |p, lid| { lines.push((at(p), lid)); });
+            assert_eq!(lines.iter().map(|&(offset, _)| offset).collect::<Vec<_>>(), old, "{what}: the lines, with ids");
+            for &(offset, lid) in &lines {
+                assert_eq!(lid, lid0 + (offset as usize - start) as u64 / LINE_WORDS as u64, "{what}: line {offset}'s id");
+            }
+            assert_eq!(prefetched, targets, "{what}: the prefetches, with ids");
+            // With a word offset (the numbered modes')
+            let (mut lines, mut prefetched) = (Vec::new(), Vec::new());
+            let mut prefetch = |q: *mut u64| prefetched.push(at(q));
+            strided_walk!(prefetch, base, start, end, period, offset, |p, offset| { lines.push((at(p), offset)); });
+            assert!(lines.iter().all(|&(word, offset)| word as usize == offset), "{what}: the offsets");
+            assert_eq!(lines.iter().map(|&(offset, _)| offset).collect::<Vec<_>>(), old, "{what}: the lines, with offsets");
+            assert_eq!(prefetched, targets, "{what}: the prefetches, with offsets");
         }
     }
 
