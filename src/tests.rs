@@ -3509,17 +3509,6 @@ impl Mode30 {
     }
 }
 
-/// ORs one line's differences into 4 accumulators: words k and k + 4 into accumulator k, so a
-/// vectorised build reads each half-line as one 32 B lane group, with no shuffles (the 256-bit
-/// mode 30 verify, `simple_m30_seq_loops!`'s `lanes_walk`).
-#[inline(always)]
-unsafe fn accumulate_line(acc: &mut [u64; 4], line: *const u64, words: &[u64; LINE_WORDS]) {
-    let actual = *(line as *const [u64; LINE_WORDS]);
-    for k in 0..4 {
-        acc[k] |= (actual[k] ^ words[k]) | (actual[k + 4] ^ words[k + 4]);
-    }
-}
-
 /// Verify for the per-word patterns (modes 0, 1, 10, 11, 13): XOR each word with
 /// `expected(idx)` and OR into 4 accumulators, then count and log in a cold rescan only if one is
 /// set. A per-word branch and `log::error!` kept the log's arguments spilled to the stack on every
@@ -4153,8 +4142,8 @@ impl SimpleMode30 {
 /// The shared strided loops (mode 2's strided walk writes mode 20's lines, from a `SimpleMode20` as
 /// each width's own mode 20 does), and the per-word loops' words outside their steps. Each verify
 /// returns its accumulators ORed, nonzero when a word differs; the caller rescans. A strided verify
-/// takes a line at a time into one accumulator, whose lanes are `accumulate_line`'s four (words `k`
-/// and `k + 4` into the `k`th).
+/// takes a line at a time into one accumulator, whose four lanes take words `k` and
+/// `k + 4` of each line into the `k`th.
 mod simple_test_v2_loops {
     use super::*;
 
@@ -4824,7 +4813,7 @@ macro_rules! simple_m20_seq_loops {
         }
 
         /// The mode 20 verify: the write's four lines a step, their eight differences ORed and
-        /// then into one accumulator, whose lanes are `accumulate_line`'s four. It reloads two
+        /// then into one accumulator, words k and k + 4 of a line into lane k. It reloads two
         /// multiplier halves from the stack each step (AVX2's emulated 64-bit multiply needs more
         /// than its 16 registers), and computes the step's lines before it checks them: 14% faster
         /// in Bench-Verify-TMR-20 than the clean, line-at-a-time check (TODO 99 round 3b).
@@ -4993,10 +4982,10 @@ macro_rules! simple_m20_seq_loops {
 /// lines a step, each into its own accumulator (128 bits). `by_lanes` hashes `W` lines in the
 /// lanes of a vector at the beats with a closed form (64, 32 and 16 bits; 12 and 24 go a line at a
 /// time, as `by_line`), each line built from its lane and stored, or checked before the next is
-/// built, a step's vectors into the accumulators in turn (512 bits, as mode 20's `by_lanes`).
-/// `lanes_walk` writes as `by_lanes` (Bench-Init-TMR-30's four lines a step, TODO 99 round 3b) and
-/// verifies on `Mode30::walk`, which the compiler vectorizes four lines wide itself (round 2's
-/// check, which Bench-Verify-TMR-30 kept: round 3's explicit checks ran 0.91-0.95x it; 256 bits).
+/// built, a step's vectors into the accumulators in turn (256 and 512 bits). Round 2's check on
+/// `Mode30::walk`, which the compiler vectorizes with gathers, was dropped: in lanes, mode 30 ran
+/// 1.06x faster at 256 bits (Intel) and 1.07x at 512 (AMD Zen 5), where the walk lost; Intel at
+/// 512 favoured the walk, but its AVX-512 is server-only (TODO 99, 2026-10-20).
 macro_rules! simple_m30_seq_loops {
     (by_line, $lane_offsets:expr, $target_feature:literal) => {
         simple_m30_seq_loops!(@line_vectors);
@@ -5039,26 +5028,6 @@ macro_rules! simple_m30_seq_loops {
                 BusBeat::Bits12 => m30_verify_lines(m30_at_beat(c, BusBeat::Bits12)),
                 BusBeat::Bits24 => m30_verify_lines(m30_at_beat(c, BusBeat::Bits24)),
             }
-        }
-    };
-    (lanes_walk, $lane_offsets:expr, $target_feature:literal) => {
-        simple_m30_seq_loops!(@line_vectors);
-        simple_m30_seq_loops!(@write_lines);
-        simple_m30_seq_loops!(@lanes, $lane_offsets);
-        simple_m30_seq_loops!(@write_lanes, $target_feature);
-
-        /// The mode 30 verify on `Mode30::walk`: each line's words from `pattern_gen::mode30_line`,
-        /// the beat matched outside the loop, ORed into `accumulate_line`'s four accumulators. The
-        /// compiler vectorizes it four lines wide, the hashes in the lanes of a vector and each
-        /// word gathered from its four lines, with two round trips through the stack: the shape
-        /// is the compiler's, kept because it measured faster (TODO 99 round 3b).
-        #[target_feature(enable = $target_feature)]
-        #[inline(never)]
-        pub(super) unsafe fn m30_verify(c: SimpleMode30) -> u64 {
-            let SimpleMode30 { ptr, start, end, mode30 } = c;
-            let mut acc = [0u64; 4];
-            mode30.walk(ptr, start, end, |offset, words| accumulate_line(&mut acc, ptr.add(offset), &words));
-            (acc[0] | acc[1]) | (acc[2] | acc[3])
         }
     };
     // A line at a time, from `pattern_gen::mode30_line`: `by_line`'s loops, and the modelled beats'
