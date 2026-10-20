@@ -88,8 +88,8 @@ pub fn create_consolidated_memory_report(
 pub struct PlanSequence<'a> {
     /// `cycle_order` as written, each id with whether it runs; `None` without one
     pub order: Option<&'a [(String, bool)]>,
-    /// The seal's kernel, when the run is sealed
-    pub seal: Option<crate::seal::SealKernel>,
+    /// The seal's kernel and where its width came from (TODO 99), when the run is sealed
+    pub seal: Option<(crate::seal::SealKernel, crate::seal::SealWidthSource)>,
     /// Why it isn't, when it isn't
     pub seal_off_reason: &'a str,
     /// A TM5 import: tests go by the `.cfg`'s numbers
@@ -266,9 +266,9 @@ pub fn create_test_configuration_report_v2(
         None => {}
     }
     notes.push(match sequence.seal {
-        Some(kernel) => format!("🔒 Seal ({}): all memory is sealed at each cycle's start and checked at its end. ✓: the seal is checked \
-                                 before every chunk and resealed after. data: the test works on the seal. –: never sealed; what it \
-                                 overwrites is checked first and resealed before the next sealed step.", kernel.name()),
+        Some((kernel, source)) => format!("🔒 Seal ({}, {}): all memory is sealed at each cycle's start and checked at its end. ✓: the seal is \
+                                 checked before every chunk and resealed after. data: the test works on the seal. –: never sealed; what it \
+                                 overwrites is checked first and resealed before the next sealed step.", kernel.name(), source.name()),
         None => format!("🔓 Seal: off ({})", sequence.seal_off_reason),
     });
     if let Some((width, source)) = sequence.width {
@@ -754,6 +754,26 @@ mod tests {
                 && given[0].contains("Mem-Sequence has no 128-bit kernel and runs at 256"), "{given:?}");
         let given = width_notes(notes(&without, Some((Width::W128, "width="))));
         assert!(given.len() == 1 && !given[0].contains("has no"), "no Mem-Sequence in the plan: {given:?}");
+    }
+
+    /// TODO 99: a sealed plan names the seal's kernel and where its width came from: calibrated,
+    /// the rule, or the setting.
+    #[test]
+    fn the_plan_says_where_the_seals_width_came_from() {
+        use crate::seal::{SealKernel, SealPattern, SealWidth, SealWidthSource};
+        let cache_info = crate::tests::get_cache_info();
+        let suite = crate::runner::create_test_definitions(cache_info);
+        let defs: Vec<_> = suite.iter().filter(|d| d.actual_name == "Mem-Random").cloned().collect();
+        let seal_note = |seal| {
+            let sequence = PlanSequence { order: None, seal, seal_off_reason: "seal=off", tm5: false, width: None };
+            let notes = create_test_configuration_report_v2(&defs, &Default::default(), cache_info, &[64 * MIB], None, &sequence).notes;
+            notes.into_iter().find(|n| n.contains("Seal")).unwrap()
+        };
+        let kernel = |width| SealKernel::new(SealPattern::Tmr, width);
+        assert!(seal_note(Some((kernel(SealWidth::W128), SealWidthSource::Calibrated))).starts_with("🔒 Seal (tmr-128, calibrated):"));
+        assert!(seal_note(Some((kernel(SealWidth::W256), SealWidthSource::Rule))).starts_with("🔒 Seal (tmr-256, rule):"));
+        assert!(seal_note(Some((kernel(SealWidth::W512), SealWidthSource::Setting("seal-width=")))).starts_with("🔒 Seal (tmr-512, seal-width=):"));
+        assert_eq!(seal_note(None), "🔓 Seal: off (seal=off)");
     }
 
     fn cell<'a>(table: &'a TableData, row: usize, header: &str) -> &'a str {

@@ -504,6 +504,11 @@ pub fn print_help(program_name: &str) {
     println!("  {} --compare-results baseline.json current.json [output.json]", program_name);
     println!("                                          # Compare two test results from .\\results\\");
     println!("  {} --setup-large-pages              # Configure large pages for optimal performance", program_name);
+    println!("  {} --calibrate-cache                # Measure the cache tiers' sizes; saved to tmr-cfg.json after a prompt", program_name);
+    println!("  {} --calibrate-cache-ext            #   ...finer, around each tier's edge (preferred when both are saved)", program_name);
+    println!("  {} --calibrate-seal                 # Time the seal's fill and check at each width, one thread; seal-width=auto", program_name);
+    println!("                                          #   then runs the fastest (the narrower if within its spread)");
+    println!("  {} --calibrate-all                  # --calibrate-cache, then --calibrate-seal (maxpage= sets both's page size)", program_name);
     println!("  {} plan=stability                   # The default: the stability tests at the widest width (or width=)", program_name);
     println!("  {} plan=quick                       # The stability tests once", program_name);
     println!("  {} plan=widths                      # Every width of the tests that have them, side by side", program_name);
@@ -550,12 +555,13 @@ pub fn print_help(program_name: &str) {
     println!("  blkround=up                         # ...up (default; a smaller step rather than pass available), down, or nearest");
     println!("  errors=halt                         # Error handling (log/halt/panic)");
     println!("  seal=tmr                            # Seal: check and reseal around every chunk (tmr, the default; tm5; off)");
-    println!("  seal-width=auto                     # Seal kernels' SIMD width (auto, 128, 256, 512); unset, width='s");
+    println!("  seal-width=auto                     # Seal kernels' SIMD width (auto, 128, 256, 512); unset, width='s;");
+    println!("                                      #   auto is --calibrate-seal's width on this machine, else 256");
     println!("  width=auto                          # SIMD width of the tests that pick theirs at run time (the -Auto");
     println!("                                      #   tests, Mem-Sequence, the Bench pairs) and of the seal: auto (the");
-    println!("                                      #   widest the CPU has; the seal 256), 128, 256 or 512 (refused if");
-    println!("                                      #   the CPU lacks it). Mem-Sequence has no 128 and runs at 256;");
-    println!("                                      #   -128/-256/-512 tests keep theirs");
+    println!("                                      #   widest the CPU has; the seal its own auto), 128, 256 or 512");
+    println!("                                      #   (refused if the CPU lacks it). Mem-Sequence has no 128 and runs");
+    println!("                                      #   at 256; -128/-256/-512 tests keep theirs");
     println!("  mirror=whole                        # Mirror tests: one mirror over each chunk (the default)");
     println!("  mirror=subblocks:4                  #   ...each chunk in 2 or 4 parts, mirrored in lockstep");
     println!("  mirror=jump:510                     #   ...128 B swaps every (N+1) x 128 B (TM5 MirrorMove128)");
@@ -585,7 +591,7 @@ pub fn print_help(program_name: &str) {
     println!("                                      #   cpuid L3 size per core, amd AMD's CPUID core type");
     println!("  core-priority=hybrid                # Hybrid CPUs that report no core types (e.g. Ryzen 8500G):");
     println!("                                      #   Windows' higher-priority cores are P-cores (default: equal)");
-    println!("  --no-calibration                    # Skip loading calibration data (use CPUID heuristics)");
+    println!("  --no-calibration                    # Skip loading calibration data (use CPUID heuristics; the seal's rule)");
     println!();
     println!("CONFIG FILE OVERRIDES:");
     println!("  All parameters can override config file values:");

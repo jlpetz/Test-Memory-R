@@ -10,7 +10,7 @@ use std::hash::{Hash, Hasher};
 use std::path::PathBuf;
 
 use crate::cache::SystemInfo;
-use crate::calibration::CalibrationResults;
+use crate::calibration::{CalibrationResults, SealCalibration};
 use crate::smbios::{SmbiosData, MemoryModule};
 
 /// Readable CPU + BIOS identity snapshot stored alongside the hash.
@@ -100,6 +100,11 @@ pub struct AppConfig {
     /// Extended calibration results (from --calibrate-cache-ext) — preferred over standard
     #[serde(default)]
     pub calibration_extended: Option<CalibrationResults>,
+
+    /// The seal's width, measured (from --calibrate-seal or --calibrate-all, TODO 99): what
+    /// `seal-width=auto` runs on the machine it was measured on (`valid_seal_calibration`)
+    #[serde(default)]
+    pub seal_calibration: Option<SealCalibration>,
 
     /// Last loaded test config file path (for TM5-style "reload last config" behavior)
     #[serde(default)]
@@ -305,6 +310,24 @@ impl AppConfig {
         self.update_identity(system_info, smbios);
     }
 
+    /// Stores a seal calibration measured on this machine: the config takes this machine's
+    /// identity, as every calibration's save does, and the calibration the fingerprint it was
+    /// measured on (`valid_seal_calibration`).
+    pub fn set_seal_calibration(&mut self, mut seal: SealCalibration, system_info: &SystemInfo, smbios: &SmbiosData) {
+        self.update_identity(system_info, smbios);
+        seal.machine_id = self.machine_id.clone().unwrap_or_default();
+        self.seal_calibration = Some(seal);
+    }
+
+    /// The seal calibration a run on this machine takes, if any: `identity_valid` is
+    /// `is_calibration_valid`'s answer (the config's identity is this machine's, the cache
+    /// calibration's test), and the seal's own fingerprint must be the config's too, since a cache
+    /// calibration saved since on other hardware rewrites the config's identity but not the seal.
+    pub fn valid_seal_calibration(&self, identity_valid: bool) -> Option<&SealCalibration> {
+        self.seal_calibration.as_ref()
+            .filter(|seal| identity_valid && self.machine_id.as_deref() == Some(seal.machine_id.as_str()))
+    }
+
 }
 
 #[cfg(test)]
@@ -428,6 +451,91 @@ mod tests {
         assert_eq!(loaded.memory_modules.as_ref().unwrap().len(), 1);
         assert_eq!(loaded.memory_modules.as_ref().unwrap()[0].locator, "DIMM_A1");
         assert_eq!(loaded.memory_modules.as_ref().unwrap()[0].speed_mts, 4800);
+    }
+
+    /// A seal calibration that chose `width_bits`, measured nowhere yet (`set_seal_calibration`
+    /// stamps the machine).
+    fn seal_calibration(width_bits: u32) -> SealCalibration {
+        use crate::calibration::SealWidthTiming;
+        let timing = |bits, ms| SealWidthTiming { bits, fill_mib_s: 20000.0, check_mib_s: 30000.0, ms, ms_min: ms - 1.0, ms_max: ms + 1.0 };
+        SealCalibration {
+            timestamp: chrono::Utc::now(),
+            machine_id: String::new(),
+            pattern: "tmr".to_string(),
+            buffer_bytes: 512 << 20,
+            page_size: "large".to_string(),
+            runs: 5,
+            widths: vec![timing(128, 40.0), timing(256, 40.5)],
+            width_bits,
+            fastest_bits: 128,
+        }
+    }
+
+    /// TODO 99: `seal-width=auto` runs the seal calibration measured on this machine, else the
+    /// rule; one from another machine is passed over, whether the config still holds that
+    /// machine's identity or a cache calibration saved here has since rewritten it. A width set
+    /// wins over a calibrated one.
+    #[test]
+    fn auto_takes_this_machines_seal_calibration_and_a_setting_wins() {
+        use crate::seal::SealWidth::{Auto, W128, W256, W512};
+        use crate::seal::SealWidthSource::{Calibrated, Rule, Setting};
+        let (system_info, smbios) = (crate::tests::get_system_info(), crate::smbios::get_smbios());
+        let resolve = |config: &AppConfig, width: crate::seal::SealWidth| {
+            let calibrated = config.valid_seal_calibration(config.is_calibration_valid(system_info, smbios))
+                .and_then(SealCalibration::width);
+            // On a CPU with AVX-512, where the rule is 256 and every width runs
+            width.resolve_on(calibrated, true, true, "seal-width=").unwrap()
+        };
+
+        // Absent: the rule, on a config that is this machine's
+        let mut config = AppConfig::default();
+        config.update_identity(system_info, smbios);
+        assert_eq!(resolve(&config, Auto), (W256, Rule));
+        assert_eq!(resolve(&config, W512), (W512, Setting("seal-width=")));
+
+        // Present, measured here: the calibrated width, which a setting overrides
+        config.set_seal_calibration(seal_calibration(128), system_info, smbios);
+        assert_eq!(config.seal_calibration.as_ref().unwrap().machine_id, AppConfig::generate_machine_id(system_info, smbios));
+        assert_eq!(resolve(&config, Auto), (W128, Calibrated));
+        assert_eq!(resolve(&config, W256), (W256, Setting("seal-width=")));
+        // A cache calibration saved since, on the same machine, keeps it
+        config.update_machine_id(system_info, smbios);
+        assert_eq!(resolve(&config, Auto), (W128, Calibrated));
+
+        // From another machine, the config still that machine's: stale, so the rule
+        let mut elsewhere = config.clone();
+        elsewhere.machine_id = Some("another machine".to_string());
+        elsewhere.seal_calibration.as_mut().unwrap().machine_id = "another machine".to_string();
+        assert!(elsewhere.seal_calibration.is_some());
+        assert_eq!(resolve(&elsewhere, Auto), (W256, Rule));
+        // ...and after a cache calibration saved here rewrote the config's identity: still the rule
+        elsewhere.update_machine_id(system_info, smbios);
+        assert!(elsewhere.is_calibration_valid(system_info, smbios));
+        assert_eq!(resolve(&elsewhere, Auto), (W256, Rule));
+    }
+
+    /// TODO 99: a config written before seal calibrations loads, with none; one with a seal
+    /// calibration round-trips it.
+    #[test]
+    fn a_config_without_a_seal_calibration_loads_and_one_round_trips() {
+        use crate::calibration::{CalibrationResults, CpuSignature};
+        let config = AppConfig {
+            machine_id: Some("abc".to_string()),
+            calibration: Some(CalibrationResults::new(CpuSignature::default())),
+            seal_calibration: Some(SealCalibration { machine_id: "abc".to_string(), ..seal_calibration(256) }),
+            ..Default::default()
+        };
+        let mut json: serde_json::Value = serde_json::to_value(&config).unwrap();
+        let loaded: AppConfig = serde_json::from_value(json.clone()).unwrap();
+        assert_eq!(loaded.seal_calibration, config.seal_calibration);
+        assert_eq!(loaded.valid_seal_calibration(true).and_then(SealCalibration::width), Some(crate::seal::SealWidth::W256));
+
+        // Before seal calibrations: no such key
+        json.as_object_mut().unwrap().remove("seal_calibration");
+        let older: AppConfig = serde_json::from_str(&json.to_string()).unwrap();
+        assert!(older.seal_calibration.is_none() && older.calibration.is_some());
+        assert_eq!(older.machine_id.as_deref(), Some("abc"));
+        assert!(older.valid_seal_calibration(true).is_none());
     }
 
     #[test]

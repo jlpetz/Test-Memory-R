@@ -512,20 +512,25 @@ impl TestDefinition {
 
 /// The run's seal (TODO 74): `seal_override` (`seal=`), else the config's, else tmr; at
 /// `seal_width_override` (`seal-width=`), else the config's `seal_width`, else the run's `width=`
-/// (TODO 99), else the seal's auto. Unsealed, a width the CPU lacks only matters to a mirror's
-/// data, which takes the seal's auto.
+/// (TODO 99), else the seal's auto (this machine's calibrated width, else the rule); with where
+/// the width came from. Unsealed, a width the CPU lacks only matters to a mirror's data, which
+/// takes the seal's auto.
 fn run_seal(seal_override: Option<&str>, seal_width_override: Option<&str>, config: Option<&crate::config::ModernConfig>)
-            -> Result<(crate::seal::SealSettings, crate::seal::SealKernel), String> {
+            -> Result<(crate::seal::SealSettings, crate::seal::SealKernel, crate::seal::SealWidthSource), String> {
+    let (seal_width, seal_width_setting) = crate::seal::width_setting(
+        seal_width_override.map(|w| (w, "seal-width="))
+            .or(config.and_then(|c| c.system.seal_width.as_deref()).map(|w| (w, "the config's seal_width"))),
+        crate::simd::width_given());
     crate::seal::SealSettings::parse(
         seal_override.or(config.and_then(|c| c.system.seal.as_deref())).unwrap_or("tmr"),
-        crate::seal::width_setting(seal_width_override.or(config.and_then(|c| c.system.seal_width.as_deref())),
-                                   crate::simd::width_given().map(|(w, _)| w)),
-    ).and_then(|s| match s.kernel() {
-        Ok(kernel) => Ok((s, kernel)),
+        seal_width,
+    ).and_then(|s| match s.kernel(seal_width_setting) {
+        Ok((kernel, source)) => Ok((s, kernel, source)),
         // Unsealed, the width only matters to a mirror's data: take the seal's auto
         Err(e) if !s.on => {
             log::warn!("{e}; the mirror tests use the seal's auto width");
-            Ok((s, crate::seal::SealKernel::new(s.pattern, crate::seal::SealKernel::detect().width)))
+            let (width, source) = crate::seal::SealWidth::Auto.resolve_from(seal_width_setting)?;
+            Ok((s, crate::seal::SealKernel::new(s.pattern, width), source))
         }
         Err(e) => Err(e),
     })
@@ -830,7 +835,7 @@ pub fn run_tests_with_layout_and_timing_filtered(
         return RunStatus::NotRun;
     }
 
-    let (mut seal_settings, seal_kernel) = match run_seal(seal_override, seal_width_override, config) {
+    let (mut seal_settings, seal_kernel, seal_width_source) = match run_seal(seal_override, seal_width_override, config) {
         Ok(s) => s,
         Err(e) => {
             println!("❌ Config error: {}", e);
@@ -880,7 +885,7 @@ pub fn run_tests_with_layout_and_timing_filtered(
     }
     let plan_sequence = crate::reporting::converters::PlanSequence {
         order: cycle_order.as_deref(),
-        seal: seal_settings.on.then_some(seal_kernel),
+        seal: seal_settings.on.then_some((seal_kernel, seal_width_source)),
         seal_off_reason,
         tm5: tm5_run,
         width,
@@ -1040,6 +1045,7 @@ pub fn run_tests_with_layout_and_timing_filtered(
             config_name: config.map(|c| c.metadata.name.clone()),
             tests: &test_definitions,
             cache_info,
+            seal: seal_settings.on.then_some((seal_kernel, seal_width_source)),
         });
         Arc::new(Mutex::new(TestRunResult::new(snapshot)))
     };
@@ -5047,7 +5053,7 @@ mod tests {
         let mut config = crate::config::ModernConfig::create_demo_config();
         config.system.seal_width = Some("128".to_string());
         let seal_width = |seal_width: Option<&str>, config: Option<&crate::config::ModernConfig>| {
-            let (settings, kernel) = run_seal(None, seal_width, config).unwrap();
+            let (settings, kernel, _) = run_seal(None, seal_width, config).unwrap();
             assert!(settings.on, "sealed by default");
             kernel.width
         };

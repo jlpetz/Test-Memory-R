@@ -235,7 +235,7 @@ fn run() -> Result<(), Box<dyn std::error::Error>> {
     // This catches typos and deprecated flags early with helpful error messages
     let known_flags = [
         "--ram-latency", "--cache-latency", "--quick-test", "--calibrate-cache", "--calibrate-cache-ext",
-        "--calibration-file", "--output", "--no-calibration",
+        "--calibrate-seal", "--calibrate-all", "--calibration-file", "--output", "--no-calibration",
         "--create-demo-configs", "--compare-results", "--debug-topology",
         "--show-topology", "--setup-large-pages", "--startup-debug", "--disable-pinning",
         "--help", "-h", "-?", "--version", "-v"
@@ -408,134 +408,10 @@ fn run() -> Result<(), Box<dyn std::error::Error>> {
 				}
 				return Ok(());
 			}
-			"--calibrate-cache" => {
-				println!("🔬 TMR Adaptive Cache Calibration");
-				println!("==================================\n");
-
-				// Detect system info once (includes cache info, TSC, hypervisor)
-				let system_info = crate::SystemInfo::detect();
-				let cache_info = system_info.get_cache_info().clone();
-				cache_info.print_info();
-				let smbios = crate::smbios::get_smbios();
-				println!();
-
-				// Check for maxpage= override in remaining args
-				let mut config = crate::calibration::CalibrationConfig::default();
-				for arg in &args[2..] {
-					if let Some(page_str) = arg.strip_prefix("maxpage=") {
-						config.page_size = page_str.to_lowercase();
-						println!("📄 Page size override: {}\n", config.page_size);
-					}
-				}
-
-				// Run calibration
-				let calibration_test = crate::calibration::CalibrationTest::with_config(cache_info.clone(), config);
-				match calibration_test.run() {
-					Ok(results) => {
-						crate::calibration::CalibrationTest::display_results(&results, &cache_info);
-
-						// Save to tmr-cfg.json — compare with existing if present
-						let cfg_path = crate::app_config::AppConfig::default_path();
-						let mut app_config = crate::app_config::AppConfig::load(&cfg_path);
-						let should_save = prompt_calibration_save(&app_config.calibration, &results, "standard");
-						if should_save {
-							app_config.update_machine_id(&system_info, smbios);
-							app_config.calibration = Some(results.clone());
-							match app_config.save(&cfg_path) {
-								Ok(()) => println!("Calibration saved to {}", cfg_path.display()),
-								Err(e) => println!("Warning: Failed to save calibration: {}", e),
-							}
-						} else {
-							println!("Calibration not saved (kept existing).");
-						}
-
-						// Check for --output flag to save results
-						if let Some(output_idx) = args.iter().position(|a| a == "--output") {
-							if let Some(output_path) = args.get(output_idx + 1) {
-								match serde_json::to_string_pretty(&results) {
-									Ok(json) => {
-										match std::fs::write(output_path, json) {
-											Ok(()) => println!("Results saved to: {}", output_path),
-											Err(e) => println!("Failed to write results: {}", e),
-										}
-									}
-									Err(e) => println!("Failed to serialize results: {}", e),
-								}
-							} else {
-								println!("--output requires a file path");
-							}
-						}
-					}
-					Err(e) => {
-						println!("Calibration failed: {}", e);
-						std::process::exit(RunStatus::NotRun.exit_code());
-					}
-				}
-				return Ok(());
-			}
-			"--calibrate-cache-ext" => {
-				println!("🔬 TMR Adaptive Cache Calibration (Extended - Phase 2)");
-				println!("======================================================\n");
-
-				// Detect system info once (includes cache info, TSC, hypervisor)
-				let system_info = crate::SystemInfo::detect();
-				let cache_info = system_info.get_cache_info().clone();
-				cache_info.print_info();
-				let smbios = crate::smbios::get_smbios();
-				println!();
-
-				// Check for maxpage= override in remaining args
-				let mut config = crate::calibration::CalibrationConfig::default();
-				for arg in &args[2..] {
-					if let Some(page_str) = arg.strip_prefix("maxpage=") {
-						config.page_size = page_str.to_lowercase();
-						println!("📄 Page size override: {}\n", config.page_size);
-					}
-				}
-
-				// Run extended calibration (phase 1 sweep + phase 2 fine-grain)
-				let calibration_test = crate::calibration::CalibrationTest::with_config(cache_info.clone(), config);
-				match calibration_test.run_extended() {
-					Ok(results) => {
-						crate::calibration::CalibrationTest::display_results(&results, &cache_info);
-
-						// Save to tmr-cfg.json — compare with existing if present
-						let cfg_path = crate::app_config::AppConfig::default_path();
-						let mut app_config = crate::app_config::AppConfig::load(&cfg_path);
-						let should_save = prompt_calibration_save(&app_config.calibration_extended, &results, "extended");
-						if should_save {
-							app_config.update_machine_id(&system_info, smbios);
-							app_config.calibration_extended = Some(results.clone());
-							match app_config.save(&cfg_path) {
-								Ok(()) => println!("Extended calibration saved to {}", cfg_path.display()),
-								Err(e) => println!("Warning: Failed to save calibration: {}", e),
-							}
-						} else {
-							println!("Calibration not saved (kept existing).");
-						}
-
-						// Check for --output flag to save results
-						if let Some(output_idx) = args.iter().position(|a| a == "--output") {
-							if let Some(output_path) = args.get(output_idx + 1) {
-								match serde_json::to_string_pretty(&results) {
-									Ok(json) => {
-										match std::fs::write(output_path, json) {
-											Ok(()) => println!("Results saved to: {}", output_path),
-											Err(e) => println!("Failed to write results: {}", e),
-										}
-									}
-									Err(e) => println!("Failed to serialize results: {}", e),
-								}
-							} else {
-								println!("--output requires a file path");
-							}
-						}
-					}
-					Err(e) => {
-						println!("Extended calibration failed: {}", e);
-						std::process::exit(RunStatus::NotRun.exit_code());
-					}
-				}
+			// The calibrations (TODO 99 adds the seal's width): each measures, shows what it found and
+			// saves it to tmr-cfg.json after a prompt
+			"--calibrate-cache" | "--calibrate-cache-ext" | "--calibrate-seal" | "--calibrate-all" => {
+				calibrate_command(&args);
 				return Ok(());
 			}
             "--help" | "-h" | "/?" | "-?" => {
@@ -1021,7 +897,8 @@ fn run() -> Result<(), Box<dyn std::error::Error>> {
 	if !no_calibration {
 		let cfg_path = crate::app_config::AppConfig::default_path();
 		let app_config = crate::app_config::AppConfig::load(&cfg_path);
-		if app_config.is_calibration_valid(system_info, smbios) {
+		let identity_valid = app_config.is_calibration_valid(system_info, smbios);
+		if identity_valid {
 			if let Some(cal) = app_config.get_best_calibration() {
 				let cal_type = if app_config.calibration_extended.is_some() { "extended" } else { "standard" };
 				let timestamp = cal.timestamp.format("%Y-%m-%d %H:%M");
@@ -1037,6 +914,16 @@ fn run() -> Result<(), Box<dyn std::error::Error>> {
 		} else {
 			println!("  Calibration: None (run --calibrate-cache to calibrate)");
 			crate::set_calibration_data(None);
+		}
+		// The seal's width under auto (TODO 99): this machine's seal calibration, else the rule
+		let seal = app_config.valid_seal_calibration(identity_valid).and_then(|s| s.width().map(|w| (s, w)));
+		match (seal, &app_config.seal_calibration) {
+			(Some((seal, width)), _) => {
+				crate::seal::set_calibrated_width(width);
+				println!("  Seal calibration: Loaded ({} bits, {})", seal.width_bits, seal.timestamp.format("%Y-%m-%d %H:%M"));
+			}
+			(None, Some(_)) => println!("  Seal calibration: Stale (hardware changed, re-run --calibrate-seal)"),
+			(None, None) => println!("  Seal calibration: None (run --calibrate-seal to calibrate)"),
 		}
 	} else {
 		println!("  Calibration: Disabled (--no-calibration)");
@@ -1304,8 +1191,12 @@ fn prompt_calibration_save(
     println!("  Existing: {} ({})", existing.timestamp.format("%Y-%m-%d %H:%M"), existing.page_size);
     println!("  New:      {} ({})", new_results.timestamp.format("%Y-%m-%d %H:%M"), new_results.page_size);
 
-    // Prompt
-    print!("\nSave new {} calibration? [Y/n]: ", cal_type);
+    ask_to_save(&format!("Save new {} calibration?", cal_type))
+}
+
+/// Asks `question` [Y/n]: yes for Enter, y or yes, and on a read error.
+fn ask_to_save(question: &str) -> bool {
+    print!("\n{question} [Y/n]: ");
     let _ = stdout().flush();
     let mut input = String::new();
     match stdin().read_line(&mut input) {
@@ -1314,6 +1205,187 @@ fn prompt_calibration_save(
             answer.is_empty() || answer == "y" || answer == "yes"
         }
         Err(_) => true, // On read error, default to saving
+    }
+}
+
+/// The seal calibration's save prompt (TODO 99), as `prompt_calibration_save`'s: with none
+/// stored it saves; otherwise it shows each width's fill + check, old and new, and the width each
+/// chose, and asks.
+fn prompt_seal_calibration_save(
+    existing: &Option<crate::calibration::SealCalibration>,
+    new: &crate::calibration::SealCalibration,
+) -> bool {
+    let Some(existing) = existing else {
+        println!("\nNo existing seal calibration — saving new results.");
+        return true;
+    };
+    println!("\n📊 Seal Calibration Comparison (existing vs new, fill + check)");
+    println!("───────────────────────────────────────────────────────────────────────────");
+    println!("{:<10} {:>12} {:>12} {:>8}", "Width", "Old", "New", "Delta");
+    println!("───────────────────────────────────────────────────────────────────────────");
+    let ms = |seal: &crate::calibration::SealCalibration, bits: u32| seal.widths.iter().find(|w| w.bits == bits).map(|w| w.ms);
+    for bits in [128, 256, 512] {
+        match (ms(existing, bits), ms(new, bits)) {
+            (Some(old), Some(new)) => {
+                let pct = if old > 0.0 { (new / old - 1.0) * 100.0 } else { 0.0 };
+                println!("{:<10} {:>9.1} ms {:>9.1} ms {:>+7.1}%", bits, old, new, pct);
+            }
+            (None, Some(new)) => println!("{:<10} {:>12} {:>9.1} ms {:>8}", bits, "-", new, "new"),
+            (Some(old), None) => println!("{:<10} {:>9.1} ms {:>12} {:>8}", bits, old, "-", "gone"),
+            (None, None) => {}
+        }
+    }
+    println!("───────────────────────────────────────────────────────────────────────────");
+    let line = |seal: &crate::calibration::SealCalibration| format!("{} ({}, {} bits)",
+        seal.timestamp.format("%Y-%m-%d %H:%M"), seal.page_size, seal.width_bits);
+    println!("  Existing: {}", line(existing));
+    println!("  New:      {}", line(new));
+
+    ask_to_save("Save new seal calibration?")
+}
+
+/// The calibration commands: `--calibrate-cache` and `--calibrate-cache-ext` (the cache tiers),
+/// `--calibrate-seal` (the seal's width, TODO 99) and `--calibrate-all` (the cache tiers as
+/// `--calibrate-cache` measures them, then the seal's width). Each part measures, shows what it
+/// found and saves it to tmr-cfg.json after a prompt; a failure exits before any more runs.
+/// `maxpage=` sets the page size both ask for.
+fn calibrate_command(args: &[String]) {
+    let command = args[1].as_str();
+    let (cache, extended, seal) = match command {
+        "--calibrate-cache" => (true, false, false),
+        "--calibrate-cache-ext" => (true, true, false),
+        "--calibrate-seal" => (false, false, true),
+        _ => (true, false, true),
+    };
+    match command {
+        "--calibrate-cache" => {
+            println!("🔬 TMR Adaptive Cache Calibration");
+            println!("==================================\n");
+        }
+        "--calibrate-cache-ext" => {
+            println!("🔬 TMR Adaptive Cache Calibration (Extended - Phase 2)");
+            println!("======================================================\n");
+        }
+        "--calibrate-seal" => {
+            println!("🔬 TMR Seal Width Calibration");
+            println!("==============================\n");
+        }
+        _ => {
+            println!("🔬 TMR Calibration: Cache Tiers and Seal Width");
+            println!("===============================================\n");
+        }
+    }
+
+    // Detect system info once (includes cache info, TSC, hypervisor)
+    let system_info = crate::SystemInfo::detect();
+    let cache_info = system_info.get_cache_info().clone();
+    cache_info.print_info();
+    let smbios = crate::smbios::get_smbios();
+    println!();
+
+    // Check for maxpage= override in remaining args
+    let mut config = crate::calibration::CalibrationConfig::default();
+    for arg in &args[2..] {
+        if let Some(page_str) = arg.strip_prefix("maxpage=") {
+            config.page_size = page_str.to_lowercase();
+            println!("📄 Page size override: {}\n", config.page_size);
+        }
+    }
+    let page_size = config.page_size.clone();
+
+    if cache {
+        calibrate_cache(args, config, &system_info, smbios, extended);
+    }
+    if seal {
+        calibrate_seal(&page_size, &system_info, smbios);
+    }
+}
+
+/// `--calibrate-cache` (`extended`: `--calibrate-cache-ext`): the cache tiers, shown, saved after
+/// a prompt and written to `--output`'s file when given.
+fn calibrate_cache(args: &[String], config: crate::calibration::CalibrationConfig, system_info: &crate::SystemInfo,
+                   smbios: &crate::smbios::SmbiosData, extended: bool) {
+    let cache_info = system_info.get_cache_info();
+    // Run calibration (extended: phase 1 sweep + phase 2 fine-grain)
+    let calibration_test = crate::calibration::CalibrationTest::with_config(cache_info.clone(), config);
+    let measured = if extended { calibration_test.run_extended() } else { calibration_test.run() };
+    let what = if extended { "Extended calibration" } else { "Calibration" };
+    match measured {
+        Ok(results) => {
+            crate::calibration::CalibrationTest::display_results(&results, cache_info);
+
+            // Save to tmr-cfg.json — compare with existing if present
+            let cfg_path = crate::app_config::AppConfig::default_path();
+            let mut app_config = crate::app_config::AppConfig::load(&cfg_path);
+            let (existing, cal_type) = if extended {
+                (&app_config.calibration_extended, "extended")
+            } else {
+                (&app_config.calibration, "standard")
+            };
+            let should_save = prompt_calibration_save(existing, &results, cal_type);
+            if should_save {
+                app_config.update_machine_id(system_info, smbios);
+                if extended {
+                    app_config.calibration_extended = Some(results.clone());
+                } else {
+                    app_config.calibration = Some(results.clone());
+                }
+                match app_config.save(&cfg_path) {
+                    Ok(()) => println!("{} saved to {}", what, cfg_path.display()),
+                    Err(e) => println!("Warning: Failed to save calibration: {}", e),
+                }
+            } else {
+                println!("Calibration not saved (kept existing).");
+            }
+
+            // Check for --output flag to save results
+            if let Some(output_idx) = args.iter().position(|a| a == "--output") {
+                if let Some(output_path) = args.get(output_idx + 1) {
+                    match serde_json::to_string_pretty(&results) {
+                        Ok(json) => {
+                            match std::fs::write(output_path, json) {
+                                Ok(()) => println!("Results saved to: {}", output_path),
+                                Err(e) => println!("Failed to write results: {}", e),
+                            }
+                        }
+                        Err(e) => println!("Failed to serialize results: {}", e),
+                    }
+                } else {
+                    println!("--output requires a file path");
+                }
+            }
+        }
+        Err(e) => {
+            println!("{} failed: {}", what, e);
+            std::process::exit(RunStatus::NotRun.exit_code());
+        }
+    }
+}
+
+/// `--calibrate-seal`, and `--calibrate-all`'s second part (TODO 99): the seal's fill and check at
+/// every width the CPU has, on one thread (`calibration::calibrate_seal`), shown, and saved after
+/// a prompt as what `seal-width=auto` runs on this machine.
+fn calibrate_seal(page_size: &str, system_info: &crate::SystemInfo, smbios: &crate::smbios::SmbiosData) {
+    let cache_info = system_info.get_cache_info();
+    match crate::calibration::calibrate_seal(cache_info, page_size) {
+        Ok(seal) => {
+            crate::calibration::display_seal_calibration(&seal, cache_info);
+            let cfg_path = crate::app_config::AppConfig::default_path();
+            let mut app_config = crate::app_config::AppConfig::load(&cfg_path);
+            if prompt_seal_calibration_save(&app_config.seal_calibration, &seal) {
+                app_config.set_seal_calibration(seal, system_info, smbios);
+                match app_config.save(&cfg_path) {
+                    Ok(()) => println!("Seal calibration saved to {}", cfg_path.display()),
+                    Err(e) => println!("Warning: Failed to save seal calibration: {}", e),
+                }
+            } else {
+                println!("Seal calibration not saved (kept existing).");
+            }
+        }
+        Err(e) => {
+            println!("Seal calibration failed: {}", e);
+            std::process::exit(RunStatus::NotRun.exit_code());
+        }
     }
 }
 

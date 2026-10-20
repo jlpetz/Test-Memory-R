@@ -437,6 +437,14 @@ pub struct ExecutionSnapshot {
     /// given.
     #[serde(default)]
     pub simd_width_source: Option<String>,
+    /// The seal's kernel, its pattern and width as the plan names it (`tmr-256`), and where the
+    /// width came from (TODO 99): `calibrated` (this machine's `--calibrate-seal`), `rule` (auto
+    /// without one: 256 with AVX2), or the setting (`seal-width=`, `width=`, the config's
+    /// `seal_width` or `width`). `None` in an unsealed run.
+    #[serde(default)]
+    pub seal: Option<String>,
+    #[serde(default)]
+    pub seal_width_source: Option<String>,
 }
 
 /// The calibration that was live during the run. Cache-relative windows are sized from these
@@ -552,6 +560,8 @@ pub struct RunConfigInputs<'a> {
     /// The resolved plan — after filtering, overrides, and auto-dispatch.
     pub tests: &'a [crate::runner::TestDefinition],
     pub cache_info: &'a crate::cache::CacheInfo,
+    /// The seal's kernel and where its width came from, in a sealed run.
+    pub seal: Option<(crate::seal::SealKernel, crate::seal::SealWidthSource)>,
 }
 
 impl RunConfigSnapshot {
@@ -580,6 +590,7 @@ impl RunConfigSnapshot {
             config_name,
             tests,
             cache_info,
+            seal,
         } = inputs;
 
         let memory = MemorySnapshot {
@@ -633,7 +644,7 @@ page_mix,
             cpu_pool: runtime_config.cpu_list.clone(),
         };
 
-        let execution = ExecutionSnapshot::capture(suite_timing, error_mode, test_filter, plan, channels);
+        let execution = ExecutionSnapshot::capture(suite_timing, error_mode, test_filter, plan, channels, seal);
 
         let calibration = crate::tests::get_calibration_data().map(|cal| {
             let mut tiers: Vec<CalibratedTier> = cal
@@ -672,9 +683,11 @@ page_mix,
 }
 
 impl ExecutionSnapshot {
-    /// The run's suite-level settings (`RunConfigSnapshot::capture`).
+    /// The run's suite-level settings (`RunConfigSnapshot::capture`); `seal` is the seal's kernel and
+    /// where its width came from, in a sealed run.
     fn capture(suite_timing: &crate::runner::TestSuiteTiming, error_mode: crate::ErrorMode, test_filter: Option<String>,
-               plan: Option<String>, channels: u32) -> Self {
+               plan: Option<String>, channels: u32,
+               seal: Option<(crate::seal::SealKernel, crate::seal::SealWidthSource)>) -> Self {
         ExecutionSnapshot {
             cycles_requested: suite_timing.global_cycles,
             duration_secs_requested: suite_timing.global_duration_secs,
@@ -689,6 +702,8 @@ impl ExecutionSnapshot {
             rescan: Some(crate::pattern::rescan_enabled()),
             simd_width_bits: Some(crate::simd::test_width().bits()),
             simd_width_source: Some(crate::simd::width_source().to_string()),
+            seal: seal.map(|(kernel, _)| kernel.name()),
+            seal_width_source: seal.map(|(_, source)| source.name().to_string()),
         }
     }
 }
@@ -1299,7 +1314,7 @@ mod tests {
         let forced = [Width::W128, Width::W256, Width::W512].into_iter().filter(|w| w.check().is_ok()).map(|w| (w, Some(w)));
         for (width, given) in forced.chain([(Width::widest(), None)]) {
             let _width = TestWidth::set(given);
-            let execution = ExecutionSnapshot::capture(&crate::runner::TestSuiteTiming::cycles_only(1), crate::ErrorMode::Log, None, None, 2);
+            let execution = ExecutionSnapshot::capture(&crate::runner::TestSuiteTiming::cycles_only(1), crate::ErrorMode::Log, None, None, 2, None);
             let source = if given.is_some() { "a test's width" } else { "auto" };
             assert_eq!((execution.simd_width_bits, execution.simd_width_source.as_deref()), (Some(width.bits()), Some(source)));
             let definitions = crate::runner::create_test_definitions(cache_info);

@@ -183,7 +183,7 @@ These sit beside the per-test parameters above:
 | top level | `"cycle_order": ["6", "12", "2", "1", "1"]` | One cycle's steps, as ids in order; an id may repeat. A disabled test's id is skipped (the plan marks it); an unknown id is a load error. Unset is every enabled test once, in file order. A TM5 import's `Test Sequence`, read up to a number of 16 or more |
 | test entry | `"seal": false` | This correctness test runs without the seal around its chunks |
 | `system` | `"seal": "tmr"` | The seal (`seal.rs`, `doc/test_harness_tiers.md` §3a): `tmr` (the default), `tm5` (TM5's test 0 pattern, bit for bit) or `off`. A TM5 import takes `tmr` when its Test0 (RefreshStable) is enabled, else `off` |
-| `system` | `"seal_width": "auto"` | The seal kernels' SIMD width: `auto` (the seal's own rule, `SealWidth::resolve`: 256 with AVX2), `128`, `256` or `512`; unset, `width`'s when that is set, else `auto`. A width the CPU lacks is a load error |
+| `system` | `"seal_width": "auto"` | The seal kernels' SIMD width: `auto` (this machine's seal calibration, else the rule: 256 with AVX2; below), `128`, `256` or `512`; unset, `width`'s when that is set, else `auto`. A width the CPU lacks is a load error |
 
 The command line overrides the last two: `seal=tmr|tm5|off`, `seal-width=auto|128|256|512`. A TM5
 `Cycles = 0` runs until stopped. A dependent step (`skip_init`) must directly follow the step that
@@ -192,3 +192,34 @@ dependent native SimpleTest can't only verify (`test_reps` 0): its image is keye
 step, which no other step writes. One that isn't dependent verifies its own fill.
 `Bench-Init-Seal-{TMR,TM5}[-128|-256|-512]` and their `Bench-Verify-Seal-*` measure the seal's
 fill and check alone.
+
+### The seal's width under `auto` (TODO 99)
+
+`seal-width=auto` runs the width of this machine's seal calibration, else the rule's (256 with
+AVX2, else 128: one Intel measurement, 2026-10-06, `SealWidth::resolve_on`). A width set wins over both:
+`seal-width=` or the config's `seal_width`, else `width=` or the config's `width`. The plan names
+the kernel and where its width came from (`🔒 Seal (tmr-256, calibrated)`; `rule`, or the setting:
+`seal-width=`, `width=`, `the config's seal_width`, `the config's width`), and the results file
+records both (`execution.seal`, `execution.seal_width_source`; null when the run is unsealed).
+
+`tmr.exe --calibrate-seal` measures it; `--calibrate-all` runs `--calibrate-cache` and then it.
+One thread (as the latency calibration, so no other thread's traffic biases a width) runs the
+seal's own kernels, `SealKernel::fill` and `check` with the default pattern `tmr`, at every width
+the CPU has, over a buffer 4 times the L3 (at least 512 MiB) allocated as the cache calibration
+allocates, at its page size (`maxpage=` sets it), so each check reads DRAM. Each round fills and
+checks the whole buffer at every width, in an order rotated each round; the first round is a
+warm-up, then 5 are timed. It reports each width's fill and check speed (MiB/s at the median) and
+its fill + check time (median [min..max]), and picks the fastest by median, or a narrower width
+whose median is within the fastest's spread (no slower than its slowest run): the measurement
+can't tell them apart, and the narrower draws less power. A check that finds a bad word fails the
+calibration (memory errors). The result is saved to `tmr-cfg.json` (`seal_calibration`) after a
+prompt comparing it with the one stored, as the cache calibration's is, and is used only on the
+machine it was measured on: the config's identity must match (`is_calibration_valid`, the cache
+calibration's check), and so must the fingerprint the seal calibration keeps, since a cache
+calibration saved later on other hardware rewrites the config's. `--no-calibration` skips it.
+
+A `tm5` seal takes the same width: only `tmr` is measured. Its kernels hold a page's three vectors
+in registers and only store or load, XOR and OR them, where `tmr`'s compute a hash per vector, so
+`tm5` is the more purely memory-bound of the two and less likely to separate the widths (Rule 3 of
+`doc/simd_codegen_rules.md`); measuring it too would cost a few seconds more. Measure it if a
+`Bench-*-Seal-TM5` comparison shows `tm5` preferring another width than `tmr` on some machine.
