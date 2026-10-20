@@ -341,8 +341,18 @@ From TODO 99 (2026-10-19, dev box, Granite Rapids with AVX-512). Check every one
     loop left to the compiler (an emulated 64-bit multiply per vector, constants from `.rdata`, one
     stack reload), at one line a step and at four. The old loop stays, flagged: the cause is
     unmeasured (store pacing against the DRAM writes is the guess). Measure before cleaning a
-    store loop that is bound by memory.
-18. **A generic over the pattern is fine; a generic over the width is not.** A walk generic over a
+    store loop that is bound by memory. Ruled out on the dev box (2026-10-20): the store shape (a
+    clean loop in round 2's exact two-lines-four-stores step, 0.93), a full-line zmm store per line
+    (0.93, with a multiply or adds), and the carried chain (two chains, 0.94). On AMD Zen 5 every
+    form ran alike, its DRAM saturated: the effect is Intel's.
+18. **Measure on both vendors; for a 512-bit kernel, AMD decides.** Intel's desktop CPUs have no
+    AVX-512, so TMR's 512-bit paths run almost only on AMD Zen 4 and 5 (Intel's are servers, and
+    the dev box). Where they disagree at 512, take AMD's winner: mode 30's check in lanes ran
+    1.03x on Zen 5 and 0.95x on Granite Rapids against round 2's walk, which ran the other way
+    (2026-10-20). At 256 and 128 both run the code; a choice should hold on both. A 16-core host
+    saturates DRAM in most tests, so a kernel difference shows there only in a test the cores
+    can't saturate; the 4-core Intel VM shows more.
+19. **A generic over the pattern is fine; a generic over the width is not.** A walk generic over a
     line closure, inside the width's `#[target_feature]` fn and carrying it, gets one copy per
     pattern at the right width (native SimpleTest, round 3). Rule 4 forbids generics that pick the
     width.
