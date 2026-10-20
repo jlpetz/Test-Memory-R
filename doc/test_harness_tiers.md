@@ -165,8 +165,8 @@ strided SimpleTest steps got 5-20% faster, since they no longer write a strided 
 A Tier-1 test function is a **dispatcher plus three closures**. It picks a pattern mode, then
 makes exactly one `run_phased_test` call per mode with the closures for that mode. Because each
 call site must monomorphize separately, a test with 7 pattern modes has 7 `run_phased_test` calls
-— that is why `bench_init_multi` and `bench_verify_multi` each contain 7, and
-`simple_test_v2_sequential` contains 6. This duplication is deliberate and load-bearing: merging
+— that is why each width's Bench-Init and Bench-Verify (`bench_numbered!`) contain 7, and
+each width's `simple_test_v2_*_num_seq` contains 5. This duplication is deliberate and load-bearing: merging
 them behind a dynamic mode value would put a branch in the hot loop or a boundary around the
 kernel.
 
@@ -197,7 +197,9 @@ repair (see TODO #13).
 | `Bench-Verify-TM5-{0,1,2}`, `Bench-Verify-TMR-{10,11,13,20,30}` | `bench_verify_multi` | Pure verify throughput. Uses `skip_init` to run dependently on a prior `Bench-Init` |
 
 **Gap**: none of the `Bench-*` names have `-128/-256/-512` width variants. Only
-`Bench-{Init,Verify}-{TM5,TMR}-N` exist. Tracked as a known gap in CLAUDE.md.
+`Bench-{Init,Verify}-{TM5,TMR}-N` exist, which run at the widest width this CPU has (512 bits
+with AVX-512, else 256) on the kernels `Mem-SimpleV2` runs at that width (TODO 99). Tracked as a
+known gap in CLAUDE.md.
 
 ---
 

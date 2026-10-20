@@ -4996,7 +4996,7 @@ mod tests {
                     assert_eq!((stats.error_count, stats.seal_errors), (0, 0), "{} mode {mode} stride {stride_cl}", def.display_name);
                     region.words().to_vec()
                 };
-                // Every width runs mode 2 on the shared loops, whose strided walk writes mode 20's lines
+                // Strided, every width runs mode 2 on the shared strided loops, which write mode 20's lines
                 let same_as = if mode == 2 { 20 } else { mode };
                 let sequential = {
                     let mut seq = def.clone();
@@ -5752,10 +5752,31 @@ mod tests {
         }
     }
 
+    /// TODO 99: each numbered Bench-Init writes its mode's image under cycle 0, from the mode's
+    /// definitions (`numbered_mode_image`): the widest width's SimpleTest kernels, seeded as a
+    /// Bench-Verify expects them whatever cycle wrote last.
+    #[test]
+    fn numbered_bench_inits_write_the_modes_image() {
+        let mut region = Region::new(&[256 * KIB, 256 * KIB, 128 * KIB]);
+        let inits = suite().into_iter().filter(|(d, _)| d.display_name.starts_with("Bench-Init-TM")).collect::<Vec<_>>();
+        assert_eq!(inits.len(), crate::pattern_gen::MODES.len(), "a Bench-Init a numbered mode");
+        for (def, test_fn) in &inits {
+            let mut def = def.clone();
+            def.config.chunk_mode = ChunkMode::Absolute { size_bytes: 68 * KIB };
+            def.config.timing = TestTiming::cycles_only(2);
+            region.words().fill(UNTOUCHED);
+            let stats = unsafe { test_fn(&region.blocks, 0, ErrorMode::Log, &def.config.timing, &def.config, None) };
+            assert_eq!(stats.error_count, 0, "{}", def.display_name);
+            let words = region.words();
+            let want = crate::tests::numbered_mode_image(&def.config, words.as_ptr(), words.len(), 0, 0);
+            assert!(*words == want[..], "{}: not the mode's image under cycle 0", def.display_name);
+        }
+    }
+
     /// Every width writes each TMR mode's own image, from the mode's definitions
-    /// (`numbered_mode_image`), not mode 10's (TODO 3): its own kernel for modes 10, 11 and 20, the
-    /// shared loops for the modes it has none for (0, 1, 2, 13, 30). The reference was the scalar
-    /// test's image until TODO 99 removed it.
+    /// (`numbered_mode_image`), not mode 10's (TODO 3): its own loops for every mode, sequential,
+    /// and the shared strided ones. The reference was the scalar test's image until TODO 99 removed
+    /// it.
     #[test]
     fn simd_widths_write_the_tmr_modes_own_image() {
         let mut region = Region::new(&[256 * KIB, 256 * KIB, 128 * KIB]);

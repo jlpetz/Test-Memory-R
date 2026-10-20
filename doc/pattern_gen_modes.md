@@ -4,8 +4,9 @@
 > `pattern_mode` runs a native program instead (pattern spec 2, `doc/pattern_spec.md`): families
 > chosen by what they find (identity, mixed data, switching, TM5 mode 2's and mode 1's intents),
 > as P/~P pairs keyed per cycle and step. A TM5 `.cfg` imports as native programs; `patterns=legacy`
-> keeps these modes, to compare. At every width (`Mem-SimpleV2-128/256/512/Auto`), modes 0, 1,
-> 2, 13 and 30 run the shared loops' own image; they used to write mode 10's (TODO 3).
+> keeps these modes, to compare. At every width (`Mem-SimpleV2-128/256/512/Auto`), every mode
+> writes its own image (modes 0, 1, 2 and 13 used to write mode 10's, TODO 3), sequentially on
+> the width's own loops, which Bench-Init/Verify run at the widest width (TODO 99).
 
 TMR has 8 numbered modes. TM5's keep its numbers, 0-2. TMR's are grouped by tens, by what the
 pattern is: 1x identities (every position its own value), 2x in-line arithmetic (a line's words
@@ -162,24 +163,31 @@ Use `pattern_mode` field in test config: 0-2, 10, 11, 13, 20 or 30, or a native 
 
 | Mode | SSE2 (128) | AVX2 (256) | AVX-512 (512) |
 |------|------------|------------|---------------|
-| 0 | Shared* | Shared* | Shared* |
-| 1 | Shared* | Shared* | Shared* |
-| 2 | Shared* | Shared* | Shared* |
+| 0 | Yes* | Yes* | Yes* |
+| 1 | Yes* | Yes* | Yes* |
+| 2 | Yes* | Yes* | Yes* |
 | 10 | Yes | Yes | Yes |
 | 11 | Yes | Yes | Yes |
-| 13 | Shared* | Shared* | Shared* |
+| 13 | Yes* | Yes* | Yes* |
 | 20 | Yes | Yes | Yes |
-| 30 | Shared*† | Shared*† | Shared*† |
+| 30 | Yes*† | Yes*† | Yes*† |
 
 There is no scalar variant (TODO 99, 2026-10-20): the AVX2 startup gate made it no fallback, and
 the compiler had always vectorized it.
 
-*Every width runs modes 0, 1, 2, 13 and 30 on the shared loops (`simple_test_v2_loops`), written
-as explicit `u64x4`, so 256 bits at every width, each mode's own image (they used to write mode
-10's, TODO 3).
+Every mode's sequential write and verify is one function a width (`simple_simd_loops!` in
+`tests.rs`), which `Mem-SimpleV2-*` runs at its width and `Bench-Init/Verify-TM5-*`/`-TMR-*` at
+the widest this CPU has (512 bits with AVX-512, else 256), so a Bench number stands for the
+SimpleTest kernel (TODO 99). Until then modes 0, 1, 2, 13 and 30 ran shared 256-bit loops at
+every width, and Bench its own 256-bit kernels.
 
-†Mode 30's line is one or two values, which the shared loops already store at the baseline's full
-width (two 32 B stores a line; four lines a loop iteration sequentially).
+*Strided, modes 0, 1, 2 (mode 20's lines) and 13 run the shared strided loops
+(`simple_test_v2_loops`), 256 bits at every width.
+
+†Mode 30's line at 64, 32 and 16 bits is one value and its inverse: the 256- and 512-bit loops
+hash a vector of lines at once and build each line from its lane; 128 bits and the modelled
+12- and 24-bit beats take each line's words from `pattern_gen::mode30_line`. Strided, mode 30
+runs the shared strided loops too.
 
 ## DDR5 Context
 

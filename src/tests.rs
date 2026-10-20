@@ -3404,10 +3404,11 @@ use crate::config::MirrorMode;
 //
 // Both write each 64 B line as `seed + j * step`. Mode 2 takes seed and step from TM5's chain,
 // restarted at every 4 KiB page; mode 20 hashes them from the line's address. Either way a
-// word depends only on its address, so chunks may overlap and start on any page. One writer
-// and one verifier per mode serve SimpleV2 (seeded with the cycle) and Bench-Init/Verify
-// (cycle 0, so a later Bench-Verify can check what Bench-Init wrote). The verifiers OR the
-// differences into 4 accumulators and rescan, counting and logging, only when one is set.
+// word depends only on its address, so chunks may overlap and start on any page. These walks are
+// each mode's definition for its rescan and the tests' reference image (`numbered_mode_image`);
+// the writes and verifies are each width's (`simple_simd_loops!`), which SimpleV2 runs seeded
+// with the cycle and Bench-Init/Verify with cycle 0, so a later Bench-Verify can check what
+// Bench-Init wrote (TODO 99).
 
 /// Mode 2 for one thread and cycle.
 #[derive(Clone, Copy)]
@@ -3433,23 +3434,6 @@ impl Mode2 {
             }
             page += PAGE_WORDS;
         }
-    }
-
-    #[inline(always)]
-    unsafe fn fill(self, ptr: *mut u64, start: usize, end: usize) {
-        self.walk(ptr, start, end, |offset, words| *(ptr.add(offset) as *mut [u64; LINE_WORDS]) = words);
-    }
-
-    /// Errors in words `[start, end)`: 0 if all hold, else counted and logged by a rescan.
-    #[inline(always)]
-    unsafe fn verify(self, ptr: *const u64, start: usize, end: usize, test_name: &str) -> u64 {
-        let mut acc = [0u64; 4];
-        self.walk(ptr, start, end, |offset, words| accumulate_line(&mut acc, ptr.add(offset), &words));
-        let seen = (acc[0] | acc[1]) | (acc[2] | acc[3]);
-        if seen == 0 {
-            return 0;
-        }
-        self.rescan(ptr, start, end, test_name, seen)
     }
 
     #[cold]
@@ -3483,27 +3467,6 @@ impl Mode20 {
             let (seed, step) = pattern_gen::mode20_line(ptr.add(offset) as usize, self.key);
             line(offset, pattern_gen::line_words(seed, step));
         }
-    }
-
-    // Test-only since TODO 99 round 3 (the kernels have their own): the tests' reference
-    #[cfg(test)]
-    #[inline(always)]
-    unsafe fn fill(self, ptr: *mut u64, start: usize, end: usize) {
-        self.walk(ptr, start, end, |offset, words| *(ptr.add(offset) as *mut [u64; LINE_WORDS]) = words);
-    }
-
-    /// Errors in words `[start, end)`: 0 if all hold, else counted and logged by a rescan.
-    // Test-only since TODO 99 round 3 (the kernels have their own): the tests' reference
-    #[cfg(test)]
-    #[inline(always)]
-    unsafe fn verify(self, ptr: *const u64, start: usize, end: usize, test_name: &str) -> u64 {
-        let mut acc = [0u64; 4];
-        self.walk(ptr, start, end, |offset, words| accumulate_line(&mut acc, ptr.add(offset), &words));
-        let seen = (acc[0] | acc[1]) | (acc[2] | acc[3]);
-        if seen == 0 {
-            return 0;
-        }
-        self.rescan(ptr, start, end, test_name, seen)
     }
 
     #[cold]
@@ -3584,25 +3547,6 @@ impl Mode30 {
         })
     }
 
-    // Test-only since TODO 99 round 3 (the kernels have their own): the tests' reference
-    #[cfg(test)]
-    #[inline(always)]
-    unsafe fn fill(self, ptr: *mut u64, start: usize, end: usize) {
-        self.walk(ptr, start, end, |offset, words| *(ptr.add(offset) as *mut [u64; LINE_WORDS]) = words);
-    }
-
-    /// Errors in words `[start, end)`: 0 if all hold, else counted and logged by a rescan.
-    #[inline(always)]
-    unsafe fn verify(self, ptr: *const u64, start: usize, end: usize, test_name: &str) -> u64 {
-        let mut acc = [0u64; 4];
-        self.walk(ptr, start, end, |offset, words| accumulate_line(&mut acc, ptr.add(offset), &words));
-        let seen = (acc[0] | acc[1]) | (acc[2] | acc[3]);
-        if seen == 0 {
-            return 0;
-        }
-        self.rescan(ptr, start, end, test_name, seen)
-    }
-
     #[cold]
     #[inline(never)]
     unsafe fn rescan(self, ptr: *const u64, start: usize, end: usize, test_name: &str, seen: u64) -> u64 {
@@ -3616,7 +3560,8 @@ impl Mode30 {
 }
 
 /// ORs one line's differences into 4 accumulators: words k and k + 4 into accumulator k, so a
-/// vectorised build reads each half-line as one 32 B lane group, with no shuffles.
+/// vectorised build reads each half-line as one 32 B lane group, with no shuffles (the 256-bit
+/// mode 30 verify, `simple_m30_seq_loops!`'s `lanes_walk`).
 #[inline(always)]
 unsafe fn accumulate_line(acc: &mut [u64; 4], line: *const u64, words: &[u64; LINE_WORDS]) {
     let actual = *(line as *const [u64; LINE_WORDS]);
@@ -4131,29 +4076,24 @@ struct SimplePatternConfig {
     test_name: &'static str,
 }
 
-// ─── SimpleTest v2's shared numbered-mode loops (TODO 99) ───────────────────────────────────────
+// ─── SimpleTest v2's shared strided loops (TODO 99) ─────────────────────────────────────────────
 //
-// The numbered modes no width has a kernel of its own for (0, 1, 2, 13 and 30) run here, at every
-// width: each width's dispatch sends them (`simple_test_v2_numbered`). Each pattern's write and
-// verify, sequential and strided, is a function of its own in `simple_test_v2_loops`, taking its
-// chunk as a `Copy` struct by value and called once a chunk: in the test function, with every
-// mode's closures and the harness's chunks, seal and stats live too, the loops reloaded their
-// constants and spilled their accumulators. Each walks a pointer, the expected value computed from
-// the word's index (or a line's address) beside it.
+// The numbered modes' strided walks for modes 0, 1, 2, 13 and 30 run here, at every width: each
+// width's dispatch sends them (`simple_test_v2_strided`). Each pattern's strided write and verify
+// is a function of its own in `simple_test_v2_loops`, taking its chunk as a `Copy` struct by value
+// and called once a chunk: in the test function, with every mode's closures and the harness's
+// chunks, seal and stats live too, the loops reloaded their constants and spilled their
+// accumulators. Each walks a pointer, the expected value computed from the word's index (or a
+// line's address) beside it. Their width is the baseline's, 256 bits, written as `u64x4`, which
+// the compiler leaves in that shape: four words a vector, a line two.
 //
-// Their width is the baseline's, 256 bits, which the compiler reached on its own before: it
-// vectorized the loops over words and lines itself, four iterations wide, the verify's four
-// accumulators transposed into lanes by shuffles and their constants spilled (Rule 6.5). So the
-// loops here are written as `u64x4` vectors, which the compiler leaves in that shape: four words
-// a vector, a line two, the expected words computed per word or per line as before.
-//
-// The shared `Mode2`/`Mode20`/`Mode30` walks stay as they are for Bench-Init/Verify and the
-// rescans; these loops write the same words (`pattern_gen`'s line functions) in the same order.
+// Every numbered mode's sequential write and verify is the width's own (`simple_simd_loops!`),
+// and Bench-Init/Verify run the same ones at the widest width (`bench_numbered!`, TODO 99).
 
-/// SimpleTest's per-word patterns on words `[start, end)` of `ptr`, in the shared loops: word `i`
-/// holds `expected(i)`, mode `MODE` (0, 1 or 13) from `seed` (the chunk's seed for modes 0 and 1,
-/// the base for 13) and, for mode 1, `cl_shift`. The mode is a constant so each mode's loops are
-/// compiled with its pattern inlined.
+/// The per-word patterns on words `[start, end)` of `ptr`: word `i` holds `expected(i)`, mode
+/// `MODE` (0, 1 or 13) from `seed` (the chunk's seed for modes 0 and 1, the base for 13) and, for
+/// mode 1, `cl_shift`. The mode is a constant so each mode's loops are compiled with its pattern
+/// inlined.
 #[derive(Clone, Copy)]
 struct SimpleWords<const MODE: u32> {
     ptr: *mut u64,
@@ -4181,18 +4121,10 @@ impl<const MODE: u32> SimpleWords<MODE> {
         u64x4::from_array([self.expected(idx), self.expected(idx + 1), self.expected(idx + 2), self.expected(idx + 3)])
     }
 
-    /// The patterns of the four words whose indices are `idx`'s lanes. A vector of indices, so a
-    /// loop can carry it beside its pointer: from one scalar index the compiler addressed the words
-    /// through it, as `(%base,%index,8)`.
+    /// The errors of a verify of the words that saw `seen` (its accumulators ORed): none, or each
+    /// bad word counted and logged by the cold rescan.
     #[inline(always)]
-    fn expected_at(self, idx: u64x4) -> u64x4 {
-        u64x4::from_array(idx.to_array().map(|i| self.expected(i as usize)))
-    }
-
-    /// The sequential verify and, on a hit, the cold rescan that counts and logs each bad word.
-    #[inline(always)]
-    unsafe fn check(self, test_name: &str) -> u64 {
-        let seen = simple_test_v2_loops::words_verify(self);
+    unsafe fn errors(self, seen: u64, test_name: &str) -> u64 {
         if seen == 0 {
             return 0;
         }
@@ -4203,16 +4135,12 @@ impl<const MODE: u32> SimpleWords<MODE> {
     /// TODO 89).
     #[inline(always)]
     unsafe fn check_strided(self, period: usize, test_name: &str) -> u64 {
-        let seen = simple_test_v2_loops::words_verify_str(self, period);
-        if seen == 0 {
-            return 0;
-        }
-        rescan_words(self.ptr, self.start, self.end, test_name, seen, |idx| self.expected(idx))
+        self.errors(simple_test_v2_loops::words_verify_str(self, period), test_name)
     }
 }
 
-/// Mode 2 on the whole pages of words `[start, end)` of `ptr`, in the shared loops: TM5's evolving
-/// lines, the chain restarted at each page (`Mode2`).
+/// Mode 2 on the whole pages of words `[start, end)` of `ptr`: TM5's evolving lines, the chain
+/// restarted at each page (`Mode2`).
 #[derive(Clone, Copy)]
 struct SimpleMode2 {
     ptr: *mut u64,
@@ -4221,8 +4149,19 @@ struct SimpleMode2 {
     mode2: Mode2,
 }
 
-/// Mode 30 on the whole lines of words `[start, end)` of `ptr`, in the shared loops: each line the
-/// bus-flip line of its address (`Mode30`).
+impl SimpleMode2 {
+    /// As `SimpleWords::errors`, the rescan the chain's.
+    #[inline(always)]
+    unsafe fn errors(self, seen: u64, test_name: &str) -> u64 {
+        if seen == 0 {
+            return 0;
+        }
+        self.mode2.rescan(self.ptr, self.start, self.end, test_name, seen)
+    }
+}
+
+/// Mode 30 on the whole lines of words `[start, end)` of `ptr`: each line the bus-flip line of its
+/// address (`Mode30`).
 #[derive(Clone, Copy)]
 struct SimpleMode30 {
     ptr: *mut u64,
@@ -4231,11 +4170,22 @@ struct SimpleMode30 {
     mode30: Mode30,
 }
 
-/// The shared loops (mode 2's strided walk writes mode 20's lines, from a `SimpleMode20` as each
-/// width's own mode 20 does). Each verify returns its accumulators ORed, nonzero when a word
-/// differs; the caller rescans. A sequential verify takes four vectors a step, each into its own
-/// accumulator; a strided one a line at a time into one, whose lanes are `accumulate_line`'s four
-/// (words `k` and `k + 4` into the `k`th).
+impl SimpleMode30 {
+    /// As `SimpleWords::errors`.
+    #[inline(always)]
+    unsafe fn errors(self, seen: u64, test_name: &str) -> u64 {
+        if seen == 0 {
+            return 0;
+        }
+        self.mode30.rescan(self.ptr, self.start, self.end, test_name, seen)
+    }
+}
+
+/// The shared strided loops (mode 2's strided walk writes mode 20's lines, from a `SimpleMode20` as
+/// each width's own mode 20 does), and the per-word loops' words outside their steps. Each verify
+/// returns its accumulators ORed, nonzero when a word differs; the caller rescans. A strided verify
+/// takes a line at a time into one accumulator, whose lanes are `accumulate_line`'s four (words `k`
+/// and `k + 4` into the `k`th).
 mod simple_test_v2_loops {
     use super::*;
 
@@ -4265,87 +4215,27 @@ mod simple_test_v2_loops {
         (*(line as *const u64x4) ^ lo) | (*(line.add(4) as *const u64x4) ^ hi)
     }
 
-    /// The per-word write: each word its pattern, in order, four vectors a step, then the rest a
-    /// vector at a time and the last words, under a vector, out of line (no chunk has any: chunks
-    /// and extents are whole 4 KiB pages). The vector of indices steps beside the pointer.
-    #[inline(never)]
-    pub(super) unsafe fn words_write<const MODE: u32>(c: SimpleWords<MODE>) {
-        debug_assert!((c.ptr as usize + 8 * c.start).is_multiple_of(32), "the words start on a vector");
-        let words = c.end - c.start;
-        let four = u64x4::splat(4);
-        let mut idx = u64x4::splat(c.start as u64) + u64x4::from_array([0, 1, 2, 3]);
-        let mut p = c.ptr.add(c.start) as *mut u64x4;
-        for _ in 0..words / 16 {
-            for k in 0..4 {
-                *p.add(k) = c.expected_at(idx);
-                idx += four;
-            }
-            p = p.wrapping_add(4);
-        }
-        // To a pointer, not a count: counted, at most three, the compiler unrolled these into
-        // straight-line code laid out beside the epilogue, which the check then read as a loop
-        let vectors_end = c.ptr.wrapping_add(c.end - words % 4) as *mut u64x4;
-        while p < vectors_end {
-            *p = c.expected_at(idx);
-            idx += four;
-            p = p.wrapping_add(1);
-        }
-        if !words.is_multiple_of(4) {
-            words_write_rest(c);
-        }
-    }
-
-    /// The per-word verify: four vectors a step into four accumulators, then the rest a vector at
-    /// a time into the first, and the last words, under a vector, out of line (`verify_words`'s
-    /// loop, at the width the compiler gave it).
-    #[inline(never)]
-    pub(super) unsafe fn words_verify<const MODE: u32>(c: SimpleWords<MODE>) -> u64 {
-        debug_assert!((c.ptr as usize + 8 * c.start).is_multiple_of(32), "the words start on a vector");
-        let words = c.end - c.start;
-        let four = u64x4::splat(4);
-        let mut idx = u64x4::splat(c.start as u64) + u64x4::from_array([0, 1, 2, 3]);
-        let mut acc = [u64x4::splat(0); 4];
-        let mut p = c.ptr.add(c.start) as *const u64x4;
-        for _ in 0..words / 16 {
-            for (k, a) in acc.iter_mut().enumerate() {
-                *a |= *p.add(k) ^ c.expected_at(idx);
-                idx += four;
-            }
-            p = p.wrapping_add(4);
-        }
-        let vectors_end = c.ptr.wrapping_add(c.end - words % 4) as *const u64x4;
-        while p < vectors_end {
-            acc[0] |= *p ^ c.expected_at(idx);
-            idx += four;
-            p = p.wrapping_add(1);
-        }
-        let seen = ((acc[0] | acc[1]) | (acc[2] | acc[3])).reduce_or();
-        if words.is_multiple_of(4) { seen } else { seen | words_verify_rest(c) }
-    }
-
-    /// The per-word write's last words, under a vector: at most three, each on its own.
+    /// A per-word write's words `[from, to)` outside its steps (each width's `word_steps`): under a
+    /// step at either end, none on chunks of whole pages. A word at a time, volatile, so the
+    /// compiler makes no masked vector loop of them (Rule 6.9).
     #[cold]
     #[inline(never)]
-    unsafe fn words_write_rest<const MODE: u32>(c: SimpleWords<MODE>) {
-        let rest = (c.end - c.start) % 4;
-        for k in 0..3 {
-            if k < rest {
-                let idx = c.end - rest + k;
-                *c.ptr.add(idx) = c.expected(idx);
-            }
+    pub(super) unsafe fn words_write_rest<const MODE: u32>(c: SimpleWords<MODE>, from: usize, to: usize) {
+        let mut p = c.ptr.add(from);
+        for idx in from..to {
+            p.write_volatile(c.expected(idx));
+            p = p.wrapping_add(1);
         }
     }
 
-    /// The per-word verify's last words, under a vector.
+    /// A per-word verify's words `[from, to)` outside its steps: their differences ORed.
     #[cold]
     #[inline(never)]
-    unsafe fn words_verify_rest<const MODE: u32>(c: SimpleWords<MODE>) -> u64 {
-        let (rest, mut seen) = ((c.end - c.start) % 4, 0);
-        for k in 0..3 {
-            if k < rest {
-                let idx = c.end - rest + k;
-                seen |= *c.ptr.add(idx) ^ c.expected(idx);
-            }
+    pub(super) unsafe fn words_verify_rest<const MODE: u32>(c: SimpleWords<MODE>, from: usize, to: usize) -> u64 {
+        let (mut p, mut seen) = (c.ptr.add(from) as *const u64, 0);
+        for idx in from..to {
+            seen |= p.read_volatile() ^ c.expected(idx);
+            p = p.wrapping_add(1);
         }
         seen
     }
@@ -4366,46 +4256,6 @@ mod simple_test_v2_loops {
             acc |= line_diff(line, (c.expected4(offset), c.expected4(offset + 4)));
         });
         acc.reduce_or()
-    }
-
-    /// Mode 2's write: each page's chain from the page's address, a line a link.
-    #[inline(never)]
-    pub(super) unsafe fn mode2_write(c: SimpleMode2) {
-        let SimpleMode2 { ptr, start, end, mode2 } = c;
-        debug_assert!(start.is_multiple_of(PAGE_WORDS) && end.is_multiple_of(PAGE_WORDS), "mode 2 needs whole pages: {start}..{end}");
-        let mut line = ptr.add(start);
-        for _ in 0..(end - start) / PAGE_WORDS {
-            let (mut seed, mut step) = pattern_gen::mode2_page_start(line as usize, mode2.thread_id, mode2.cycle);
-            // To the page's end, not a count: from 64 lines the compiler addressed each from the
-            // page through an offset register
-            let page_end = line.wrapping_add(PAGE_WORDS);
-            while line < page_end {
-                store_line(line, line_vectors(seed, step));
-                (seed, step) = pattern_gen::mode2_evolve(seed, step, mode2.param0, mode2.param1);
-                line = line.wrapping_add(LINE_WORDS);
-            }
-        }
-    }
-
-    /// Mode 2's verify: the write's chain, four lines a step, each into its own accumulator.
-    #[inline(never)]
-    pub(super) unsafe fn mode2_verify(c: SimpleMode2) -> u64 {
-        let SimpleMode2 { ptr, start, end, mode2 } = c;
-        debug_assert!(start.is_multiple_of(PAGE_WORDS) && end.is_multiple_of(PAGE_WORDS), "mode 2 needs whole pages: {start}..{end}");
-        let mut acc = [u64x4::splat(0); 4];
-        let mut line = ptr.add(start) as *const u64;
-        for _ in 0..(end - start) / PAGE_WORDS {
-            let (mut seed, mut step) = pattern_gen::mode2_page_start(line as usize, mode2.thread_id, mode2.cycle);
-            let page_end = line.wrapping_add(PAGE_WORDS);
-            while line < page_end {
-                for (k, a) in acc.iter_mut().enumerate() {
-                    *a |= line_diff(line.add(k * LINE_WORDS), line_vectors(seed, step));
-                    (seed, step) = pattern_gen::mode2_evolve(seed, step, mode2.param0, mode2.param1);
-                }
-                line = line.wrapping_add(4 * LINE_WORDS);
-            }
-        }
-        ((acc[0] | acc[1]) | (acc[2] | acc[3])).reduce_or()
     }
 
     /// Mode 2's strided image (as `simple_test_v2_strided`'s doc says): mode 20's lines, each from
@@ -4429,46 +4279,6 @@ mod simple_test_v2_loops {
             acc |= line_diff(line, line_vectors(seed, step));
         });
         acc.reduce_or()
-    }
-
-    /// Mode 30's write: each line the bus-flip line of its address, the beat matched once outside
-    /// the loop (`with_mode30_line!`).
-    #[inline(never)]
-    pub(super) unsafe fn mode30_write(c: SimpleMode30) {
-        let SimpleMode30 { ptr, start, end, mode30 } = c;
-        debug_assert!(start.is_multiple_of(LINE_WORDS) && end.is_multiple_of(LINE_WORDS), "mode 30 needs whole lines: {start}..{end}");
-        with_mode30_line!(mode30, |expected| {
-            let mut line = ptr.add(start);
-            for _ in 0..(end - start) / LINE_WORDS {
-                store_line(line, halves(expected(line)));
-                line = line.wrapping_add(LINE_WORDS);
-            }
-        })
-    }
-
-    /// Mode 30's verify: four lines a step, each into its own accumulator, then the rest into the
-    /// first.
-    #[inline(never)]
-    pub(super) unsafe fn mode30_verify(c: SimpleMode30) -> u64 {
-        let SimpleMode30 { ptr, start, end, mode30 } = c;
-        debug_assert!(start.is_multiple_of(LINE_WORDS) && end.is_multiple_of(LINE_WORDS), "mode 30 needs whole lines: {start}..{end}");
-        let mut acc = [u64x4::splat(0); 4];
-        let lines = (end - start) / LINE_WORDS;
-        with_mode30_line!(mode30, |expected| {
-            let mut line = ptr.add(start) as *const u64;
-            for _ in 0..lines / 4 {
-                for (k, a) in acc.iter_mut().enumerate() {
-                    let at = line.add(k * LINE_WORDS);
-                    *a |= line_diff(at, halves(expected(at)));
-                }
-                line = line.wrapping_add(4 * LINE_WORDS);
-            }
-            for _ in 0..lines % 4 {
-                acc[0] |= line_diff(line, halves(expected(line)));
-                line = line.wrapping_add(LINE_WORDS);
-            }
-        });
-        ((acc[0] | acc[1]) | (acc[2] | acc[3])).reduce_or()
     }
 
     /// Mode 30's write on TM5's strided walk.
@@ -4496,122 +4306,39 @@ mod simple_test_v2_loops {
     }
 }
 
-/// The numbered modes every width runs on the shared loops (0, 1, 2, 13 and 30), as the width's
-/// test `test_name`: correct Mode 2 LCG + strided access. Its dispatch (`simple_test_v2_impl!`)
-/// sends no other mode, and native programs to the width's own kernel.
-///
-/// # Safety
-/// Caller must ensure all blocks contain valid, aligned, writable memory.
-unsafe fn simple_test_v2_numbered(
-    blocks: &[crate::runner::AllocationBlock],
-    thread_id: usize,
-    error_mode: ErrorMode,
-    timing: &TestTiming,
-    config: &TestMemoryConfig,
-    progress: Option<&TestProgress>,
-    test_name: &'static str,
-) -> TestStats {
-    // Determine stride from parameter_context (v2 correct interpretation)
-    let stride = config.parameter_context.as_ref()
-        .and_then(|ctx| ctx.stride_elements)
-        .unwrap_or(0);
-
-    // Determine pattern mode and params
-    let pattern = SimplePatternConfig {
-        mode: config.pattern_mode.unwrap_or(0),
-        param0: config.pattern_param0.unwrap_or(0xDEADBEEFDEADBEEF),
-        param1: config.pattern_param1.unwrap_or(0xCAFEBABECAFEBABE),
-        stride,
-        test_name,
-    };
-
-    if stride > 0 {
-        simple_test_v2_strided(blocks, thread_id, error_mode, timing, config, progress, pattern)
-    } else {
-        simple_test_v2_sequential(blocks, thread_id, error_mode, timing, config, progress, pattern)
+impl SimplePatternConfig {
+    /// A numbered-mode SimpleTest's pattern from its config, as the width's test `test_name`.
+    fn of(config: &TestMemoryConfig, test_name: &'static str) -> Self {
+        SimplePatternConfig {
+            mode: config.pattern_mode.unwrap_or(0),
+            param0: config.pattern_param0.unwrap_or(0xDEADBEEFDEADBEEF),
+            param1: config.pattern_param1.unwrap_or(0xCAFEBABECAFEBABE),
+            // The stride from parameter_context (v2 correct interpretation)
+            stride: config.parameter_context.as_ref().and_then(|ctx| ctx.stride_elements).unwrap_or(0),
+            test_name,
+        }
     }
 }
 
-/// Sequential SimpleTest v2 — Modes 0/1/2/13/30, Mode 2 with correct LCG.
-#[doc = include_str!("test_fn_safety.md")]
-unsafe fn simple_test_v2_sequential(
-    blocks: &[crate::runner::AllocationBlock],
-    thread_id: usize,
-    error_mode: ErrorMode,
-    timing: &TestTiming,
-    config: &TestMemoryConfig,
-    progress: Option<&TestProgress>,
-    pattern: SimplePatternConfig,
-) -> TestStats {
-    let SimplePatternConfig { mode: pattern_mode, param0, param1, test_name, .. } = pattern;
-    let cl_shift = pattern_gen::cache_line_shift(config.cache_line_bytes);
-    let chunk_seed = |ctx: &ChunkCtx| pattern_gen::block_seed(ctx.ptr as usize, ctx.thread_id, ctx.cycle);
-
-    // A per-word mode `$mode` (`SimpleWords`), its seed per chunk from `$seed`
-    macro_rules! run_words {
-        ($mode:literal, $seed:expr) => {{
-            let seed_of = $seed;
-            let words = |ctx: &ChunkCtx| SimpleWords::<$mode> { ptr: ctx.ptr, start: ctx.chunk_start, end: ctx.chunk_end, seed: seed_of(ctx), cl_shift };
-            run_phased_test(
-                blocks, thread_id, error_mode, timing, config, progress,
-                test_name, TestAction::WriteVerify, 1, false, config.test_reps, config.verify_reps,
-                // Init: first write
-                |ctx: &ChunkCtx| simple_test_v2_loops::words_write(words(ctx)),
-                // Test: write patterns (every cycle)
-                |ctx: &ChunkCtx| simple_test_v2_loops::words_write(words(ctx)),
-                // Verify: four accumulators, then a rescan on a hit
-                |ctx: &ChunkCtx| -> u64 { words(ctx).check(test_name) },
-            )
-        }};
-    }
-
-    match pattern_mode {
-        // Mode 0 (TM5-faithful): bit dispersion + branchless 4KB page complement
-        0 => run_words!(0, chunk_seed),
-        // Mode 1 (TM5-faithful): linear step + cache-line complement
-        1 => run_words!(1, chunk_seed),
-        2 => {
-            // Mode 2 (TM5-faithful): TM5's evolving lines, the chain restarted per 4 KiB page
-            let mode2 = |ctx: &ChunkCtx| Mode2 { thread_id: ctx.thread_id, cycle: ctx.cycle, param0, param1 };
-            let chunk = |ctx: &ChunkCtx| SimpleMode2 { ptr: ctx.ptr, start: ctx.chunk_start, end: ctx.chunk_end, mode2: mode2(ctx) };
-            run_phased_test(
-                blocks, thread_id, error_mode, timing, config, progress,
-                test_name, TestAction::WriteVerify, 1, false, config.test_reps, config.verify_reps,
-                |ctx: &ChunkCtx| simple_test_v2_loops::mode2_write(chunk(ctx)),
-                |ctx: &ChunkCtx| simple_test_v2_loops::mode2_write(chunk(ctx)),
-                |ctx: &ChunkCtx| -> u64 {
-                    let seen = simple_test_v2_loops::mode2_verify(chunk(ctx));
-                    if seen == 0 {
-                        return 0;
-                    }
-                    mode2(ctx).rescan(ctx.ptr, ctx.chunk_start, ctx.chunk_end, test_name, seen)
-                },
-            )
-        }
-        30 => {
-            // Mode 30 (TMR-native): each beat of a line the inverse of the one before
-            let mode30 = |ctx: &ChunkCtx| Mode30::new(ctx.thread_id, ctx.cycle, param0, param1);
-            let chunk = |ctx: &ChunkCtx| SimpleMode30 { ptr: ctx.ptr, start: ctx.chunk_start, end: ctx.chunk_end, mode30: mode30(ctx) };
-            run_phased_test(
-                blocks, thread_id, error_mode, timing, config, progress,
-                test_name, TestAction::WriteVerify, 1, false, config.test_reps, config.verify_reps,
-                |ctx: &ChunkCtx| simple_test_v2_loops::mode30_write(chunk(ctx)),
-                |ctx: &ChunkCtx| simple_test_v2_loops::mode30_write(chunk(ctx)),
-                |ctx: &ChunkCtx| -> u64 {
-                    let c = chunk(ctx);
-                    let seen = simple_test_v2_loops::mode30_verify(c);
-                    if seen == 0 {
-                        return 0;
-                    }
-                    c.mode30.rescan(ctx.ptr, ctx.chunk_start, ctx.chunk_end, test_name, seen)
-                },
-            )
-        }
-        // Mode 13 (TMR-native): a hash per word
-        13 => run_words!(13, |_: &ChunkCtx| param0),
-        // Modes 10, 11 and 20 run each width's own kernel (`simple_test_v2_impl!`)
-        mode => unreachable!("{test_name}: mode {mode} has its own kernel"),
-    }
+/// One numbered mode's sequential SimpleTest, `$args` the test function's six arguments: each
+/// chunk `$chunk(ctx)` (a mode's chunk struct), written by `$write` at the init and every cycle,
+/// checked by `$verify` and, on a hit, the struct's `errors` (the cold rescan). The kernels are a
+/// width's own (`simple_simd_loops!`), out of line, as Bench-Init/Verify's are (`bench_numbered!`).
+macro_rules! simple_numbered_run {
+    ($args:expr, $test_name:expr, $chunk:expr, $write:path, $verify:path) => {{
+        let (blocks, thread_id, error_mode, timing, config, progress) = $args;
+        let (test_name, chunk) = ($test_name, $chunk);
+        run_phased_test(
+            blocks, thread_id, error_mode, timing, config, progress,
+            test_name, TestAction::WriteVerify, 1, false, config.test_reps, config.verify_reps,
+            |ctx: &ChunkCtx| $write(chunk(ctx)),
+            |ctx: &ChunkCtx| $write(chunk(ctx)),
+            |ctx: &ChunkCtx| -> u64 {
+                let c = chunk(ctx);
+                c.errors($verify(c), test_name)
+            },
+        )
+    }};
 }
 
 /// Strided SimpleTest v2 (TODO 93): TM5's strided SimpleTest (`mtests0.asm` ~336-394), the
@@ -5023,9 +4750,19 @@ struct SimplePositional {
     base: u64,
 }
 
-/// Mode 20 on the whole lines of words `[start, end)` of `ptr`, in the SIMD builds and the scalar
-/// one: a line holds `seed + j * step` in word `j`, both hashed from its address and `key`
-/// (`pattern_gen::mode20_line`).
+impl SimplePositional {
+    /// As `SimpleWords::errors`.
+    #[inline(always)]
+    unsafe fn errors(self, seen: u64, test_name: &str) -> u64 {
+        if seen == 0 {
+            return 0;
+        }
+        rescan_words(self.ptr, self.start, self.end, test_name, seen, |idx| pattern_gen::pattern_mode10(idx as u64, self.base))
+    }
+}
+
+/// Mode 20 on the whole lines of words `[start, end)` of `ptr`: a line holds `seed + j * step` in
+/// word `j`, both hashed from its address and `key` (`pattern_gen::mode20_line`).
 #[derive(Clone, Copy)]
 struct SimpleMode20 {
     ptr: *mut u64,
@@ -5034,11 +4771,119 @@ struct SimpleMode20 {
     key: u64,
 }
 
+impl SimpleMode20 {
+    /// As `SimpleWords::errors`.
+    #[inline(always)]
+    unsafe fn errors(self, seen: u64, test_name: &str) -> u64 {
+        if seen == 0 {
+            return 0;
+        }
+        Mode20 { key: self.key }.rescan(self.ptr, self.start, self.end, test_name, seen)
+    }
+}
+
 /// A width's sequential mode 20 loops, `m20_write` and `m20_verify`, inside its
-/// `simple_simd_loops!` module: `by_line` hashes each line in scalar code (128 and 256 bits, which
-/// have no 64-bit vector multiply), `by_lanes` hashes a vector of lines at once (512 bits, a line a
-/// vector).
+/// `simple_simd_loops!` module: `by_line` hashes each line in scalar code (128 bits), `by_4lanes`
+/// four lines in the lanes of a `u64x4` (256 bits, whose 64-bit multiply AVX2 emulates; Bench-
+/// Init/Verify-TMR-20's form since TODO 99 round 3b), `by_lanes` a vector of lines at once (512
+/// bits, a line a vector).
 macro_rules! simple_m20_seq_loops {
+    (by_4lanes, $lane_offsets:expr, $target_feature:literal) => {
+        /// Rows to columns: vector `l` of the result holds lane `l` of each row, in row order.
+        #[inline(always)]
+        fn transpose4(rows: [V; 4]) -> [V; 4] {
+            let [r0, r1, r2, r3] = rows;
+            let (t0, t1) = (simd_swizzle!(r0, r1, [0, 4, 2, 6]), simd_swizzle!(r0, r1, [1, 5, 3, 7]));
+            let (t2, t3) = (simd_swizzle!(r2, r3, [0, 4, 2, 6]), simd_swizzle!(r2, r3, [1, 5, 3, 7]));
+            [simd_swizzle!(t0, t2, [0, 1, 4, 5]), simd_swizzle!(t1, t3, [0, 1, 4, 5]),
+             simd_swizzle!(t0, t2, [2, 3, 6, 7]), simd_swizzle!(t1, t3, [2, 3, 6, 7])]
+        }
+
+        /// Mode 20's four lines at the addresses in `addrs`, a lane a line, as eight vectors, each
+        /// line's two halves in turn: each lane's seed and step (`pattern_gen::mode20_line`, whose
+        /// definition it repeats; the loop tests check it against that), its line's words 0-3
+        /// (`line_words`) a vector each across the lanes, turned to a vector per line, and words 4-7
+        /// those plus four steps.
+        #[inline(always)]
+        fn mode20_lines4(addrs: V, key: V) -> [V; 8] {
+            let seed = splitmix(addrs + key, splitmix_multipliers());
+            let x = seed ^ key;
+            let step = (((x << V::splat(29)) | (x >> V::splat(35))) * V::splat(0x9E3779B97F4A7C15)) | V::splat(1);
+            let s2 = step + step;
+            let w1 = seed + step;
+            let [l0, l1, l2, l3] = transpose4([seed, w1, seed + s2, w1 + s2]);
+            let s4 = s2 + s2;
+            [l0, l0 + simd_swizzle!(s4, [0, 0, 0, 0]), l1, l1 + simd_swizzle!(s4, [1, 1, 1, 1]),
+             l2, l2 + simd_swizzle!(s4, [2, 2, 2, 2]), l3, l3 + simd_swizzle!(s4, [3, 3, 3, 3])]
+        }
+
+        /// The step of four lines `m20_write` and `m20_verify` take in the whole lines `[start,
+        /// end)` of `ptr`: `(steps_end, stop)`, the end of the last whole step and of the lines.
+        #[inline(always)]
+        fn m20_steps(ptr: *mut u64, start: usize, end: usize) -> (*mut u64, *mut u64) {
+            const { assert!(W == 4, "four lines in the lanes of a vector of four") };
+            debug_assert!(start.is_multiple_of(LINE_WORDS) && end.is_multiple_of(LINE_WORDS), "mode 20 needs whole lines: {start}..{end}");
+            (ptr.wrapping_add(start + (end - start) / (4 * LINE_WORDS) * (4 * LINE_WORDS)), ptr.wrapping_add(end))
+        }
+
+        /// The mode 20 write: four lines a step, their hashes in the lanes of one vector
+        /// (`mode20_lines4`) and stored as eight vectors at fixed offsets from a walked pointer;
+        /// the lines past the last step, under four (none on chunks of whole pages), from the
+        /// scalar hash.
+        #[target_feature(enable = $target_feature)]
+        #[inline(never)]
+        pub(super) unsafe fn m20_write(c: SimpleMode20) {
+            let SimpleMode20 { ptr, start, end, key } = c;
+            let (steps_end, stop) = m20_steps(ptr, start, end);
+            let mut line = ptr.add(start);
+            let keys = V::splat(key);
+            let mut addrs = V::splat(line as u64) + V::from_array([0, 64, 128, 192]);
+            while line < steps_end {
+                for (k, half) in mode20_lines4(addrs, keys).into_iter().enumerate() {
+                    *(line.add(4 * k) as *mut V) = half;
+                }
+                addrs += V::splat(4 * 64);
+                line = line.wrapping_add(4 * LINE_WORDS);
+            }
+            while line < stop {
+                let (seed, step) = pattern_gen::mode20_line(line as usize, key);
+                let lo = V::splat(seed) + V::splat(step) * V::from_array($lane_offsets);
+                *(line as *mut V) = lo;
+                *(line.add(W) as *mut V) = lo + V::splat(step.wrapping_mul(W as u64));
+                line = line.wrapping_add(LINE_WORDS);
+            }
+        }
+
+        /// The mode 20 verify: the write's four lines a step, their eight differences ORed and
+        /// then into one accumulator, whose lanes are `accumulate_line`'s four. It reloads two
+        /// multiplier halves from the stack each step (AVX2's emulated 64-bit multiply needs more
+        /// than its 16 registers), and computes the step's lines before it checks them: 14% faster
+        /// in Bench-Verify-TMR-20 than the clean, line-at-a-time check (TODO 99 round 3b).
+        #[target_feature(enable = $target_feature)]
+        #[inline(never)]
+        pub(super) unsafe fn m20_verify(c: SimpleMode20) -> u64 {
+            let SimpleMode20 { ptr, start, end, key } = c;
+            let (steps_end, stop) = m20_steps(ptr, start, end);
+            let (mut line, steps_end, stop) = (ptr.add(start) as *const u64, steps_end as *const u64, stop as *const u64);
+            let keys = V::splat(key);
+            let mut addrs = V::splat(line as u64) + V::from_array([0, 64, 128, 192]);
+            let mut acc = V::splat(0);
+            while line < steps_end {
+                let v = mode20_lines4(addrs, keys);
+                let d: [V; 8] = std::array::from_fn(|k| *(line.add(4 * k) as *const V) ^ v[k]);
+                acc |= ((d[0] | d[1]) | (d[2] | d[3])) | ((d[4] | d[5]) | (d[6] | d[7]));
+                addrs += V::splat(4 * 64);
+                line = line.wrapping_add(4 * LINE_WORDS);
+            }
+            while line < stop {
+                let (seed, step) = pattern_gen::mode20_line(line as usize, key);
+                let lo = V::splat(seed) + V::splat(step) * V::from_array($lane_offsets);
+                acc |= (*(line as *const V) ^ lo) | (*(line.add(W) as *const V) ^ (lo + V::splat(step.wrapping_mul(W as u64))));
+                line = line.wrapping_add(LINE_WORDS);
+            }
+            acc.reduce_or()
+        }
+    };
     (by_line, $lane_offsets:expr, $target_feature:literal) => {
         /// The mode 20 write: each line from its address's hash, in `W`-word stores.
         #[target_feature(enable = $target_feature)]
@@ -5101,12 +4946,7 @@ macro_rules! simple_m20_seq_loops {
         /// `l`'s address plus the key, the hash's first sum; the lines' seeds and steps.
         #[inline(always)]
         fn mode20_lanes(at: V, key: V) -> (V, V) {
-            let mut h = at;
-            h ^= h >> V::splat(30);
-            h *= V::splat(0xbf58476d1ce4e5b9);
-            h ^= h >> V::splat(27);
-            h *= V::splat(0x94d049bb133111eb);
-            h ^= h >> V::splat(31);
+            let h = splitmix(at, splitmix_multipliers());
             let x = h ^ key;
             (h, ((x << V::splat(29)) | (x >> V::splat(35))) * V::splat(0x9E3779B97F4A7C15) | V::splat(1))
         }
@@ -5178,12 +5018,294 @@ macro_rules! simple_m20_seq_loops {
     };
 }
 
+/// A width's sequential mode 30 loops, `m30_write` and `m30_verify`, inside its
+/// `simple_simd_loops!` module. `by_line` takes each line from `pattern_gen::mode30_line`, its hash
+/// in scalar code, the beat matched once outside the loop (`with_mode30_line!`), and verifies four
+/// lines a step, each into its own accumulator (128 bits). `by_lanes` hashes `W` lines in the
+/// lanes of a vector at the beats with a closed form (64, 32 and 16 bits; 12 and 24 go a line at a
+/// time, as `by_line`), each line built from its lane and stored, or checked before the next is
+/// built, a step's vectors into the accumulators in turn (512 bits, as mode 20's `by_lanes`).
+/// `lanes_walk` writes as `by_lanes` (Bench-Init-TMR-30's four lines a step, TODO 99 round 3b) and
+/// verifies on `Mode30::walk`, which the compiler vectorizes four lines wide itself (round 2's
+/// check, which Bench-Verify-TMR-30 kept: round 3's explicit checks ran 0.91-0.95x it; 256 bits).
+macro_rules! simple_m30_seq_loops {
+    (by_line, $lane_offsets:expr, $target_feature:literal) => {
+        simple_m30_seq_loops!(@line_vectors);
+        simple_m30_seq_loops!(@write_lines);
+        simple_m30_seq_loops!(@verify_lines);
+
+        /// The mode 30 write, a line at a time (`m30_write_lines`).
+        #[target_feature(enable = $target_feature)]
+        #[inline(never)]
+        pub(super) unsafe fn m30_write(c: SimpleMode30) {
+            m30_write_lines(c)
+        }
+
+        /// The mode 30 verify, four lines a step (`m30_verify_lines`).
+        #[target_feature(enable = $target_feature)]
+        #[inline(never)]
+        pub(super) unsafe fn m30_verify(c: SimpleMode30) -> u64 {
+            m30_verify_lines(c)
+        }
+    };
+    (by_lanes, $lane_offsets:expr, $target_feature:literal) => {
+        simple_m30_seq_loops!(@line_vectors);
+        simple_m30_seq_loops!(@write_lines);
+        simple_m30_seq_loops!(@verify_lines);
+        simple_m30_seq_loops!(@lanes, $lane_offsets);
+        simple_m30_seq_loops!(@write_lanes, $target_feature);
+        simple_m30_seq_loops!(@verify_lanes);
+
+        /// The mode 30 verify: `W` lines a step at 64, 32 and 16 bits (`m30_verify_lanes`), a line
+        /// at a time at 12 and 24.
+        #[target_feature(enable = $target_feature)]
+        #[inline(never)]
+        pub(super) unsafe fn m30_verify(c: SimpleMode30) -> u64 {
+            use pattern_gen::BusBeat;
+            match c.mode30.beat {
+                BusBeat::Bits64 => m30_verify_lanes::<64>(c),
+                BusBeat::Bits32 => m30_verify_lanes::<32>(c),
+                BusBeat::Bits16 => m30_verify_lanes::<16>(c),
+                // The beat a constant, so each is compiled alone
+                BusBeat::Bits12 => m30_verify_lines(m30_at_beat(c, BusBeat::Bits12)),
+                BusBeat::Bits24 => m30_verify_lines(m30_at_beat(c, BusBeat::Bits24)),
+            }
+        }
+    };
+    (lanes_walk, $lane_offsets:expr, $target_feature:literal) => {
+        simple_m30_seq_loops!(@line_vectors);
+        simple_m30_seq_loops!(@write_lines);
+        simple_m30_seq_loops!(@lanes, $lane_offsets);
+        simple_m30_seq_loops!(@write_lanes, $target_feature);
+
+        /// The mode 30 verify on `Mode30::walk`: each line's words from `pattern_gen::mode30_line`,
+        /// the beat matched outside the loop, ORed into `accumulate_line`'s four accumulators. The
+        /// compiler vectorizes it four lines wide, the hashes in the lanes of a vector and each
+        /// word gathered from its four lines, with two round trips through the stack: the shape
+        /// is the compiler's, kept because it measured faster (TODO 99 round 3b).
+        #[target_feature(enable = $target_feature)]
+        #[inline(never)]
+        pub(super) unsafe fn m30_verify(c: SimpleMode30) -> u64 {
+            let SimpleMode30 { ptr, start, end, mode30 } = c;
+            let mut acc = [0u64; 4];
+            mode30.walk(ptr, start, end, |offset, words| accumulate_line(&mut acc, ptr.add(offset), &words));
+            (acc[0] | acc[1]) | (acc[2] | acc[3])
+        }
+    };
+    // A line at a time, from `pattern_gen::mode30_line`: `by_line`'s loops, and the modelled beats'
+    (@line_vectors) => {
+        /// A mode 30 line's words as its vectors.
+        #[inline(always)]
+        fn m30_line_vectors(w: [u64; LINE_WORDS]) -> [V; LINE_WORDS / W] {
+            std::array::from_fn(|j| V::from_array(std::array::from_fn(|l| w[j * W + l])))
+        }
+    };
+    (@write_lines) => {
+        /// The mode 30 write a line at a time, the beat matched once outside the loop. Each vector
+        /// a volatile store: at 64, 32 and 16 bits a line is one or two values, and the compiler
+        /// merged the 128-bit variant's equal 16 B stores into 32 B ones (Rule 6.11).
+        #[inline(always)]
+        unsafe fn m30_write_lines(c: SimpleMode30) {
+            let SimpleMode30 { ptr, start, end, mode30 } = c;
+            debug_assert!(start.is_multiple_of(LINE_WORDS) && end.is_multiple_of(LINE_WORDS), "mode 30 needs whole lines: {start}..{end}");
+            let stop = ptr.wrapping_add(end);
+            with_mode30_line!(mode30, |expected| {
+                let mut line = ptr.add(start);
+                while line < stop {
+                    for (j, v) in m30_line_vectors(expected(line)).into_iter().enumerate() {
+                        line.add(j * W).cast::<V>().write_volatile(v);
+                    }
+                    line = line.wrapping_add(LINE_WORDS);
+                }
+            })
+        }
+    };
+    (@verify_lines) => {
+        /// The mode 30 verify a line at a time, four lines a step, each into its own accumulator,
+        /// to a bound pointer; the lines past the last step, under four, into the first.
+        #[inline(always)]
+        unsafe fn m30_verify_lines(c: SimpleMode30) -> u64 {
+            let SimpleMode30 { ptr, start, end, mode30 } = c;
+            debug_assert!(start.is_multiple_of(LINE_WORDS) && end.is_multiple_of(LINE_WORDS), "mode 30 needs whole lines: {start}..{end}");
+            let steps_end = ptr.wrapping_add(start + (end - start) / (4 * LINE_WORDS) * (4 * LINE_WORDS)) as *const u64;
+            let stop = ptr.wrapping_add(end) as *const u64;
+            let mut acc = [V::splat(0); 4];
+            with_mode30_line!(mode30, |expected| {
+                let mut line = ptr.add(start) as *const u64;
+                while line < steps_end {
+                    for (k, a) in acc.iter_mut().enumerate() {
+                        let at = line.add(k * LINE_WORDS);
+                        for (j, v) in m30_line_vectors(expected(at)).into_iter().enumerate() {
+                            *a |= *(at.add(j * W) as *const V) ^ v;
+                        }
+                    }
+                    line = line.wrapping_add(4 * LINE_WORDS);
+                }
+                while line < stop {
+                    for (j, v) in m30_line_vectors(expected(line)).into_iter().enumerate() {
+                        acc[0] |= *(line.add(j * W) as *const V) ^ v;
+                    }
+                    line = line.wrapping_add(LINE_WORDS);
+                }
+            });
+            ((acc[0] | acc[1]) | (acc[2] | acc[3])).reduce_or()
+        }
+    };
+    // `W` lines in the lanes of a vector: the beats with a closed form
+    (@lanes, $lane_offsets:expr) => {
+        /// The lines' mode 30 words at `BITS` bits, 64, 32 or 16, a lane a line: the value of the
+        /// line at the lane's address (`pattern_gen::mode30_line`'s `balanced_bytes` of its hash,
+        /// whose definitions this repeats; the loop tests check it against them), `at` the address
+        /// plus the key, the hash's first sum, then its line's first word (`bus_flip_line`'s
+        /// closed forms), which at 32 and 16 bits is every word of the line.
+        #[inline(always)]
+        fn m30_words<const BITS: u32>(at: V, m: (V, V)) -> V {
+            let low_nibbles = V::splat(0x0F0F_0F0F_0F0F_0F0F);
+            let mut x = splitmix(at, m) & V::splat(0xFFFF_FFFF);
+            x = (x | (x << V::splat(16))) & V::splat(0x0000_FFFF_0000_FFFF);
+            x = (x | (x << V::splat(8))) & V::splat(0x00FF_00FF_00FF_00FF);
+            x = (x | (x << V::splat(4))) & low_nibbles;
+            let a = x | ((!x & low_nibbles) << V::splat(4));
+            match BITS {
+                64 => a,
+                32 => (a & V::splat(0xFFFF_FFFF)) | (!a << V::splat(32)),
+                16 => {
+                    let half = V::splat(0xFFFF);
+                    let pair = (a & half) | ((!a & half) << V::splat(16));
+                    pair | (pair << V::splat(32))
+                }
+                _ => unreachable!("mode 30 has no closed form at {BITS} bits"),
+            }
+        }
+
+        /// What a mode 30 line's vector at `BITS` bits holds over its first word in each lane: at 64
+        /// bits the odd words are its inverse, at 32 and 16 bits every word is the first.
+        #[inline(always)]
+        fn m30_inversion<const BITS: u32>() -> V {
+            if BITS == 64 { V::from_array($lane_offsets.map(|l: u64| 0u64.wrapping_sub(l & 1))) } else { V::splat(0) }
+        }
+
+        /// The step of `W` lines the lanes loops take in the whole lines `[start, end)` of `ptr`:
+        /// `(steps_end, stop)`, the end of the last whole step and of the lines.
+        #[inline(always)]
+        fn m30_steps(ptr: *mut u64, start: usize, end: usize) -> (*mut u64, *mut u64) {
+            debug_assert!(start.is_multiple_of(LINE_WORDS) && end.is_multiple_of(LINE_WORDS), "mode 30 needs whole lines: {start}..{end}");
+            (ptr.wrapping_add(start + (end - start) / (W * LINE_WORDS) * (W * LINE_WORDS)), ptr.wrapping_add(end))
+        }
+
+        /// The first sums of the hashes of the `W` lines from `line`, `key` added.
+        #[inline(always)]
+        fn m30_sums(line: *const u64, key: u64) -> V {
+            V::splat((line as u64).wrapping_add(key)) + V::from_array($lane_offsets) * V::splat(8 * LINE_WORDS as u64)
+        }
+
+        /// The beat of `BITS` bits (64, 32 or 16), for the lines past a lanes loop's last step.
+        #[inline(always)]
+        fn m30_beat<const BITS: u32>() -> pattern_gen::BusBeat {
+            match BITS {
+                64 => pattern_gen::BusBeat::Bits64,
+                32 => pattern_gen::BusBeat::Bits32,
+                _ => pattern_gen::BusBeat::Bits16,
+            }
+        }
+
+        /// `c` at the beat `beat`, which its own is: a constant, so the lines loops, which match the
+        /// beat (`with_mode30_line!`), are compiled for it alone.
+        #[inline(always)]
+        fn m30_at_beat(c: SimpleMode30, beat: pattern_gen::BusBeat) -> SimpleMode30 {
+            SimpleMode30 { mode30: Mode30 { beat, ..c.mode30 }, ..c }
+        }
+    };
+    (@write_lanes, $target_feature:literal) => {
+        /// The mode 30 write at `BITS` bits: `W` lines a step, hashed in the lanes of a vector,
+        /// each line its lane's word, the inversion applied, in its vectors, in address order to a
+        /// bound pointer; the lines past the last step from `pattern_gen::mode30_line`.
+        #[inline(always)]
+        unsafe fn m30_write_lanes<const BITS: u32>(c: SimpleMode30) {
+            let SimpleMode30 { ptr, start, end, mode30 } = c;
+            let (steps_end, stop) = m30_steps(ptr, start, end);
+            let (m, inversion) = (splitmix_multipliers(), m30_inversion::<BITS>());
+            let mut line = ptr.add(start);
+            let mut at = m30_sums(line, mode30.key);
+            while line < steps_end {
+                let words = m30_words::<BITS>(at, m);
+                for l in 0..W {
+                    let v = V::splat(words[l]) ^ inversion;
+                    for j in 0..LINE_WORDS / W {
+                        *(line.add(l * LINE_WORDS + j * W) as *mut V) = v;
+                    }
+                }
+                at += V::splat((W * 8 * LINE_WORDS) as u64);
+                line = line.wrapping_add(W * LINE_WORDS);
+            }
+            while line < stop {
+                for (j, v) in m30_line_vectors(pattern_gen::mode30_line(line as usize, mode30.key, m30_beat::<BITS>())).into_iter().enumerate() {
+                    *(line.add(j * W) as *mut V) = v;
+                }
+                line = line.wrapping_add(LINE_WORDS);
+            }
+        }
+
+        /// The mode 30 write: `W` lines a step at 64, 32 and 16 bits (`m30_write_lanes`), a line
+        /// at a time at 12 and 24, the modelled beats, whose words each take their own shift of the
+        /// line's value.
+        #[target_feature(enable = $target_feature)]
+        #[inline(never)]
+        pub(super) unsafe fn m30_write(c: SimpleMode30) {
+            use pattern_gen::BusBeat;
+            match c.mode30.beat {
+                BusBeat::Bits64 => m30_write_lanes::<64>(c),
+                BusBeat::Bits32 => m30_write_lanes::<32>(c),
+                BusBeat::Bits16 => m30_write_lanes::<16>(c),
+                // The beat a constant, so each is compiled alone
+                BusBeat::Bits12 => m30_write_lines(m30_at_beat(c, BusBeat::Bits12)),
+                BusBeat::Bits24 => m30_write_lines(m30_at_beat(c, BusBeat::Bits24)),
+            }
+        }
+    };
+    (@verify_lanes) => {
+        /// The mode 30 verify at `BITS` bits: the write's lines, each built from its lane and
+        /// checked before the next (Rule 6.12), a step's vectors into the four accumulators in
+        /// turn; the lines past the last step into the first.
+        #[inline(always)]
+        unsafe fn m30_verify_lanes<const BITS: u32>(c: SimpleMode30) -> u64 {
+            let SimpleMode30 { ptr, start, end, mode30 } = c;
+            let (steps_end, stop) = m30_steps(ptr, start, end);
+            let (steps_end, stop) = (steps_end as *const u64, stop as *const u64);
+            let (m, inversion) = (splitmix_multipliers(), m30_inversion::<BITS>());
+            let mut line = ptr.add(start) as *const u64;
+            let mut at = m30_sums(line, mode30.key);
+            let mut acc = [V::splat(0); 4];
+            while line < steps_end {
+                let words = m30_words::<BITS>(at, m);
+                for l in 0..W {
+                    let v = V::splat(words[l]) ^ inversion;
+                    for j in 0..LINE_WORDS / W {
+                        acc[(l * (LINE_WORDS / W) + j) % 4] |= *(line.add(l * LINE_WORDS + j * W) as *const V) ^ v;
+                    }
+                }
+                at += V::splat((W * 8 * LINE_WORDS) as u64);
+                line = line.wrapping_add(W * LINE_WORDS);
+            }
+            while line < stop {
+                for (j, v) in m30_line_vectors(pattern_gen::mode30_line(line as usize, mode30.key, m30_beat::<BITS>())).into_iter().enumerate() {
+                    acc[0] |= *(line.add(j * W) as *const V) ^ v;
+                }
+                line = line.wrapping_add(LINE_WORDS);
+            }
+            ((acc[0] | acc[1]) | (acc[2] | acc[3])).reduce_or()
+        }
+    };
+}
+
 /// Stamps a width's SimpleTest loops into module `$module`: `$simd_type` vectors of `$w` words,
 /// lanes `$lane_offsets`, NT stores through `$stream_fn` on `$arch_type`, the sequential mode 20
-/// loops `$m20` (`simple_m20_seq_loops!`). Each verify returns its accumulators ORed, nonzero when
-/// a word differs; the caller rescans.
+/// and 30 loops `$m20` and `$m30` (`simple_m20_seq_loops!`, `simple_m30_seq_loops!`). Every
+/// numbered mode's sequential write and verify is here, one each a width, which SimpleTest runs at
+/// its width and Bench-Init/Verify at the widest (TODO 99). Each verify returns its accumulators
+/// ORed, nonzero when a word differs; the caller rescans.
 macro_rules! simple_simd_loops {
-    ($module:ident, $simd_type:ty, $w:expr, $lane_offsets:expr, $arch_type:ty, $stream_fn:path, $m20:ident, $target_feature:literal) => {
+    ($module:ident, $simd_type:ty, $w:expr, $lane_offsets:expr, $arch_type:ty, $stream_fn:path, $m20:ident, $m30:ident, $target_feature:literal) => {
         mod $module {
             use super::*;
 
@@ -5413,18 +5535,419 @@ macro_rules! simple_simd_loops {
                 });
                 ((acc[0] | acc[1]) | (acc[2] | acc[3])).reduce_or()
             }
+
+            simple_m30_seq_loops!($m30, $lane_offsets, $target_feature);
+
+            // ── The per-word numbered modes (0, 1 and 13) and mode 2 ──────────────────────────
+
+            /// The splitmix64 finalizer of each lane (`pattern_gen::pattern_mode13`, whose
+            /// definition it repeats; the loop tests check it against that): `h` the sum of an index
+            /// and the seed (mode 13) or of a line's address and the key (modes 20 and 30), `m`
+            /// its two multipliers (`splitmix_multipliers`).
+            #[inline(always)]
+            fn splitmix(mut h: V, m: (V, V)) -> V {
+                h ^= h >> V::splat(30);
+                h *= m.0;
+                h ^= h >> V::splat(27);
+                h *= m.1;
+                h ^ (h >> V::splat(31))
+            }
+
+            /// `splitmix`'s multipliers, a vector each.
+            #[inline(always)]
+            fn splitmix_multipliers() -> (V, V) {
+                (V::splat(0xbf58476d1ce4e5b9), V::splat(0x94d049bb133111eb))
+            }
+
+            /// The steps of four vectors a per-word loop takes in words `[start, end)`: `(first,
+            /// last)`, from the first multiple of `4 * W` to the end of the last whole step. The
+            /// words either side, under a step each (none on chunks of whole pages), go a word at a
+            /// time out of line (`simple_test_v2_loops::words_write_rest`).
+            #[inline(always)]
+            fn word_steps(start: usize, end: usize) -> (usize, usize) {
+                let first = start.next_multiple_of(4 * W).min(end);
+                (first, first + (end - first) / (4 * W) * (4 * W))
+            }
+
+            /// The indices of the words of the vector at word `first`.
+            #[inline(always)]
+            fn indices(first: usize) -> V {
+                V::splat(first as u64) + V::from_array($lane_offsets)
+            }
+
+            /// Mode 0 at word `first` (`pattern_gen::pattern_mode0`: the seed XOR the index times
+            /// the golden-ratio constant, inverted on odd 4 KiB pages): `seed` with `first`'s page's
+            /// inversion folded in, the products of its vector, and a vector's product. Both
+            /// constants come from `pattern_mode0` (the multiplier is word 1's value under a zero
+            /// seed, the inversion word `first`'s less its product), so a change to its form fails
+            /// the loop tests rather than going unseen.
+            #[inline(always)]
+            fn m0_start(seed: u64, first: usize) -> (V, V, V) {
+                let golden = pattern_gen::pattern_mode0(1, 0);
+                let inversion = pattern_gen::pattern_mode0(first as u64, 0) ^ (first as u64).wrapping_mul(golden);
+                (V::splat(seed ^ inversion), indices(first) * V::splat(golden), V::splat(golden.wrapping_mul(W as u64)))
+            }
+
+            /// The end of the 4 KiB page word `first` of `ptr` is on.
+            #[inline(always)]
+            fn page_end(ptr: *mut u64, first: usize) -> *mut V {
+                ptr.wrapping_add(first - first % PAGE_WORDS + PAGE_WORDS) as *mut V
+            }
+
+            /// The mode 0 write: a page at a time, the page's inversion folded into the seed, four
+            /// vectors a step in address order, each one XOR of the seed and its product, the
+            /// product stepped by an add a vector (Bench-Init-TM5-0's addition, TODO 99 round 3; a
+            /// multiply a vector before), to bound pointers.
+            #[target_feature(enable = $target_feature)]
+            #[inline(never)]
+            pub(super) unsafe fn m0_write(c: SimpleWords<0>) {
+                let SimpleWords { ptr, start, end, .. } = c;
+                let (first, last) = word_steps(start, end);
+                if start < first {
+                    simple_test_v2_loops::words_write_rest(c, start, first);
+                }
+                let (mut seed, mut product, advance) = m0_start(c.seed, first);
+                let mut p = ptr.add(first) as *mut V;
+                let stop = ptr.add(last) as *mut V;
+                let mut page = page_end(ptr, first);
+                while p < stop {
+                    let to = if page < stop { page } else { stop };
+                    while p < to {
+                        for k in 0..4 {
+                            *p.add(k) = seed ^ product;
+                            product += advance;
+                        }
+                        p = p.wrapping_add(4);
+                    }
+                    // The next page's inversion
+                    seed = !seed;
+                    page = page.wrapping_add(PAGE_WORDS / W);
+                }
+                if last < end {
+                    simple_test_v2_loops::words_write_rest(c, last, end);
+                }
+            }
+
+            /// The mode 0 verify: the write's values, each step's four vectors into four
+            /// accumulators.
+            #[target_feature(enable = $target_feature)]
+            #[inline(never)]
+            pub(super) unsafe fn m0_verify(c: SimpleWords<0>) -> u64 {
+                let SimpleWords { ptr, start, end, .. } = c;
+                let (first, last) = word_steps(start, end);
+                let (mut seed, mut product, advance) = m0_start(c.seed, first);
+                let mut p = ptr.add(first) as *const V;
+                let stop = ptr.add(last) as *const V;
+                let mut page = page_end(ptr, first) as *const V;
+                let mut acc = [V::splat(0); 4];
+                while p < stop {
+                    let to = if page < stop { page } else { stop };
+                    while p < to {
+                        for (k, a) in acc.iter_mut().enumerate() {
+                            *a |= *p.add(k) ^ (seed ^ product);
+                            product += advance;
+                        }
+                        p = p.wrapping_add(4);
+                    }
+                    seed = !seed;
+                    page = page.wrapping_add(PAGE_WORDS / W);
+                }
+                let mut seen = ((acc[0] | acc[1]) | (acc[2] | acc[3])).reduce_or();
+                if start < first {
+                    seen |= simple_test_v2_loops::words_verify_rest(c, start, first);
+                }
+                if last < end {
+                    seen |= simple_test_v2_loops::words_verify_rest(c, last, end);
+                }
+                seen
+            }
+
+            /// Mode 1's inversion of each lane's word (`pattern_gen::pattern_mode1`): all ones on
+            /// the odd lines of `1 << cl_shift` words.
+            #[inline(always)]
+            fn m1_mask(idx: V, cl_shift: u32) -> V {
+                V::splat(0) - ((idx >> V::splat(u64::from(cl_shift))) & V::splat(1))
+            }
+
+            /// Mode 1's value of each lane's word: the seed less three times its index, inverted
+            /// (`m1_mask`).
+            #[inline(always)]
+            fn m1_word(idx: V, seed: V, cl_shift: u32) -> V {
+                (seed - idx * V::splat(3)) ^ m1_mask(idx, cl_shift)
+            }
+
+            /// How the mode 1 loops take the inversion, from the line (`1 << cl_shift` words)
+            /// against a step (`4 * W`): `Fixed` when two lines divide a step, so each of a step's
+            /// vectors keeps its mask and only its value steps (two operations a vector rather than
+            /// seven, Bench-Init-TM5-1's fill, TODO 99 round 3b); `Flip` when a line is a step (128
+            /// bits on 64 B lines), a step's vectors sharing one mask, inverted each step; else
+            /// `Index`, each vector's from its indices.
+            #[inline(always)]
+            fn m1_shape(cl_shift: u32) -> M1Shape {
+                let line = 1usize << cl_shift;
+                if (4 * W).is_multiple_of(2 * line) {
+                    M1Shape::Fixed
+                } else if line == 4 * W {
+                    M1Shape::Flip
+                } else {
+                    M1Shape::Index
+                }
+            }
+
+            /// Mode 1's start at word `first`: the indices of the step's four vectors, the value of
+            /// its first (the seed less three times the index), and a vector's step down.
+            #[inline(always)]
+            fn m1_start(seed: u64, first: usize) -> ([V; 4], V, V) {
+                let idx: [V; 4] = std::array::from_fn(|k| indices(first + k * W));
+                (idx, V::splat(seed) - idx[0] * V::splat(3), V::splat((3 * W) as u64))
+            }
+
+            /// The mode 1 write: four vectors a step, in address order, to bound pointers, the
+            /// value stepped down by a subtraction a vector and the inversion as `m1_shape` gives
+            /// it.
+            #[target_feature(enable = $target_feature)]
+            #[inline(never)]
+            pub(super) unsafe fn m1_write(c: SimpleWords<1>) {
+                let SimpleWords { ptr, start, end, seed, cl_shift } = c;
+                let (first, last) = word_steps(start, end);
+                if start < first {
+                    simple_test_v2_loops::words_write_rest(c, start, first);
+                }
+                let (idx, mut value, down) = m1_start(seed, first);
+                let mut p = ptr.add(first) as *mut V;
+                let stop = ptr.add(last) as *mut V;
+                match m1_shape(cl_shift) {
+                    M1Shape::Fixed => {
+                        let mask = idx.map(|i| m1_mask(i, cl_shift));
+                        while p < stop {
+                            for (k, &mask) in mask.iter().enumerate() {
+                                *p.add(k) = value ^ mask;
+                                value -= down;
+                            }
+                            p = p.wrapping_add(4);
+                        }
+                    }
+                    M1Shape::Flip => {
+                        // A step is a line, so every lane of the step has the first one's mask
+                        let mut mask = m1_mask(idx[0], cl_shift);
+                        while p < stop {
+                            for k in 0..4 {
+                                *p.add(k) = value ^ mask;
+                                value -= down;
+                            }
+                            mask = !mask;
+                            p = p.wrapping_add(4);
+                        }
+                    }
+                    M1Shape::Index => {
+                        let (seed, mut at) = (V::splat(seed), idx[0]);
+                        while p < stop {
+                            for k in 0..4 {
+                                *p.add(k) = m1_word(at, seed, cl_shift);
+                                at += V::splat(W as u64);
+                            }
+                            p = p.wrapping_add(4);
+                        }
+                    }
+                }
+                if last < end {
+                    simple_test_v2_loops::words_write_rest(c, last, end);
+                }
+            }
+
+            /// The mode 1 verify: the write's values, each step's four vectors into four
+            /// accumulators.
+            #[target_feature(enable = $target_feature)]
+            #[inline(never)]
+            pub(super) unsafe fn m1_verify(c: SimpleWords<1>) -> u64 {
+                let SimpleWords { ptr, start, end, seed, cl_shift } = c;
+                let (first, last) = word_steps(start, end);
+                let (idx, mut value, down) = m1_start(seed, first);
+                let mut p = ptr.add(first) as *const V;
+                let stop = ptr.add(last) as *const V;
+                let mut acc = [V::splat(0); 4];
+                match m1_shape(cl_shift) {
+                    M1Shape::Fixed => {
+                        let mask = idx.map(|i| m1_mask(i, cl_shift));
+                        while p < stop {
+                            for (k, a) in acc.iter_mut().enumerate() {
+                                *a |= *p.add(k) ^ (value ^ mask[k]);
+                                value -= down;
+                            }
+                            p = p.wrapping_add(4);
+                        }
+                    }
+                    M1Shape::Flip => {
+                        let mut mask = m1_mask(idx[0], cl_shift);
+                        while p < stop {
+                            for (k, a) in acc.iter_mut().enumerate() {
+                                *a |= *p.add(k) ^ (value ^ mask);
+                                value -= down;
+                            }
+                            mask = !mask;
+                            p = p.wrapping_add(4);
+                        }
+                    }
+                    M1Shape::Index => {
+                        let (seed, mut at) = (V::splat(seed), idx[0]);
+                        while p < stop {
+                            for (k, a) in acc.iter_mut().enumerate() {
+                                *a |= *p.add(k) ^ m1_word(at, seed, cl_shift);
+                                at += V::splat(W as u64);
+                            }
+                            p = p.wrapping_add(4);
+                        }
+                    }
+                }
+                let mut seen = ((acc[0] | acc[1]) | (acc[2] | acc[3])).reduce_or();
+                if start < first {
+                    seen |= simple_test_v2_loops::words_verify_rest(c, start, first);
+                }
+                if last < end {
+                    seen |= simple_test_v2_loops::words_verify_rest(c, last, end);
+                }
+                seen
+            }
+
+            /// The mode 13 write (`pattern_gen::pattern_mode13`): four vectors a step, in address
+            /// order, each the hash of its sums of index and seed, the sum stepped by an add a
+            /// vector (Bench-Init-TMR-13's one running sum, which leaves the 256-bit verify's
+            /// emulated multiplies their registers).
+            #[target_feature(enable = $target_feature)]
+            #[inline(never)]
+            pub(super) unsafe fn m13_write(c: SimpleWords<13>) {
+                let SimpleWords { ptr, start, end, seed, .. } = c;
+                let (first, last) = word_steps(start, end);
+                if start < first {
+                    simple_test_v2_loops::words_write_rest(c, start, first);
+                }
+                let (m, advance) = (splitmix_multipliers(), V::splat(W as u64));
+                let mut sum = indices(first) + V::splat(seed);
+                let mut p = ptr.add(first) as *mut V;
+                let stop = ptr.add(last) as *mut V;
+                while p < stop {
+                    for k in 0..4 {
+                        *p.add(k) = splitmix(sum, m);
+                        sum += advance;
+                    }
+                    p = p.wrapping_add(4);
+                }
+                if last < end {
+                    simple_test_v2_loops::words_write_rest(c, last, end);
+                }
+            }
+
+            /// The mode 13 verify: each vector's hash checked as it is computed, into its own of
+            /// four accumulators.
+            #[target_feature(enable = $target_feature)]
+            #[inline(never)]
+            pub(super) unsafe fn m13_verify(c: SimpleWords<13>) -> u64 {
+                let SimpleWords { ptr, start, end, seed, .. } = c;
+                let (first, last) = word_steps(start, end);
+                let (m, advance) = (splitmix_multipliers(), V::splat(W as u64));
+                let mut sum = indices(first) + V::splat(seed);
+                let mut p = ptr.add(first) as *const V;
+                let stop = ptr.add(last) as *const V;
+                let mut acc = [V::splat(0); 4];
+                while p < stop {
+                    for (k, a) in acc.iter_mut().enumerate() {
+                        *a |= *p.add(k) ^ splitmix(sum, m);
+                        sum += advance;
+                    }
+                    p = p.wrapping_add(4);
+                }
+                let mut seen = ((acc[0] | acc[1]) | (acc[2] | acc[3])).reduce_or();
+                if start < first {
+                    seen |= simple_test_v2_loops::words_verify_rest(c, start, first);
+                }
+                if last < end {
+                    seen |= simple_test_v2_loops::words_verify_rest(c, last, end);
+                }
+                seen
+            }
+
+            /// A mode 2 line, `seed + j * step` (`pattern_gen::line_words`), as its vectors.
+            #[inline(always)]
+            fn m2_line(seed: u64, step: u64) -> [V; LINE_WORDS / W] {
+                let advance = V::splat(step.wrapping_mul(W as u64));
+                let mut words = V::splat(seed) + V::splat(step) * V::from_array($lane_offsets);
+                std::array::from_fn(|_| {
+                    let line = words;
+                    words += advance;
+                    line
+                })
+            }
+
+            /// The mode 2 write: each page's chain from the page's address, a line a link, its
+            /// vectors stored at fixed offsets from a walked pointer, each page and line to a bound
+            /// pointer (from 64 lines a page the compiler addressed each line through an offset
+            /// register).
+            #[target_feature(enable = $target_feature)]
+            #[inline(never)]
+            pub(super) unsafe fn m2_write(c: SimpleMode2) {
+                let SimpleMode2 { ptr, start, end, mode2 } = c;
+                debug_assert!(start.is_multiple_of(PAGE_WORDS) && end.is_multiple_of(PAGE_WORDS), "mode 2 needs whole pages: {start}..{end}");
+                let mut line = ptr.add(start);
+                let stop = ptr.add(end);
+                while line < stop {
+                    let (mut seed, mut step) = pattern_gen::mode2_page_start(line as usize, mode2.thread_id, mode2.cycle);
+                    let page_end = line.wrapping_add(PAGE_WORDS);
+                    while line < page_end {
+                        for (j, v) in m2_line(seed, step).into_iter().enumerate() {
+                            *(line.add(j * W) as *mut V) = v;
+                        }
+                        (seed, step) = pattern_gen::mode2_evolve(seed, step, mode2.param0, mode2.param1);
+                        line = line.wrapping_add(LINE_WORDS);
+                    }
+                }
+            }
+
+            /// The mode 2 verify: the write's chain, four lines a step, each into its own
+            /// accumulator (SimpleTest's since TODO 99 round 3; Bench-Verify-TM5-2's had one).
+            #[target_feature(enable = $target_feature)]
+            #[inline(never)]
+            pub(super) unsafe fn m2_verify(c: SimpleMode2) -> u64 {
+                let SimpleMode2 { ptr, start, end, mode2 } = c;
+                debug_assert!(start.is_multiple_of(PAGE_WORDS) && end.is_multiple_of(PAGE_WORDS), "mode 2 needs whole pages: {start}..{end}");
+                let mut acc = [V::splat(0); 4];
+                let mut line = ptr.add(start) as *const u64;
+                let stop = ptr.add(end) as *const u64;
+                while line < stop {
+                    let (mut seed, mut step) = pattern_gen::mode2_page_start(line as usize, mode2.thread_id, mode2.cycle);
+                    let page_end = line.wrapping_add(PAGE_WORDS);
+                    while line < page_end {
+                        for (k, a) in acc.iter_mut().enumerate() {
+                            let at = line.add(k * LINE_WORDS);
+                            for (j, v) in m2_line(seed, step).into_iter().enumerate() {
+                                *a |= *(at.add(j * W) as *const V) ^ v;
+                            }
+                            (seed, step) = pattern_gen::mode2_evolve(seed, step, mode2.param0, mode2.param1);
+                        }
+                        line = line.wrapping_add(4 * LINE_WORDS);
+                    }
+                }
+                ((acc[0] | acc[1]) | (acc[2] | acc[3])).reduce_or()
+            }
         }
     };
 }
 
+/// How a width's mode 1 loops take the line inversion (`m1_shape`).
+#[derive(Clone, Copy)]
+enum M1Shape {
+    Fixed,
+    Flip,
+    Index,
+}
+
 simple_simd_loops!(simple_test_v2_128_loops, u64x2, 2, [0, 1],
-    std::arch::x86_64::__m128i, std::arch::x86_64::_mm_stream_si128, by_line,
+    std::arch::x86_64::__m128i, std::arch::x86_64::_mm_stream_si128, by_line, by_line,
     "sse4.2,sse4.1,ssse3,sse3,sse2,popcnt");
 simple_simd_loops!(simple_test_v2_256_loops, u64x4, 4, [0, 1, 2, 3],
-    std::arch::x86_64::__m256i, std::arch::x86_64::_mm256_stream_si256, by_line,
+    std::arch::x86_64::__m256i, std::arch::x86_64::_mm256_stream_si256, by_4lanes, lanes_walk,
     "avx2,avx,fma,bmi1,bmi2");
 simple_simd_loops!(simple_test_v2_512_loops, u64x8, 8, [0, 1, 2, 3, 4, 5, 6, 7],
-    std::arch::x86_64::__m512i, std::arch::x86_64::_mm512_stream_si512, by_lanes,
+    std::arch::x86_64::__m512i, std::arch::x86_64::_mm512_stream_si512, by_lanes, by_lanes,
     "avx512f,avx512bw,avx512cd,avx512dq,avx512vl,avx2,avx,fma,bmi1,bmi2");
 
 /// A positional verify of a chunk (modes 10 and 11, SimpleNT): the width's `$verify` on the chunk,
@@ -5461,15 +5984,17 @@ macro_rules! simple_verify_positional {
 }
 
 /// Master macro: stamps out a complete SIMD SimpleTest v2 function for a given width.
-/// Two pattern paths: positional (idx^base, or idx^combined for modes 1/11) and mode 20.
-/// Generates 4 specialized `#[target_feature]` functions (one per pattern/stride combo)
-/// plus a lightweight dispatch function. This prevents LLVM from inlining all 4 code paths
-/// into one mega-function, which caused 9K+ lines of assembly, 46 `vzeroupper` calls,
+/// Three pattern paths: positional (idx^base, or idx^combined for mode 11), mode 20, and the
+/// other numbered modes (0, 1, 2, 13 and 30) sequential, on the width's loops; strided, those run
+/// the shared loops (`simple_test_v2_strided`). Generates 5 specialized `#[target_feature]`
+/// functions plus a lightweight dispatch function. This prevents LLVM from inlining all the code
+/// paths into one mega-function, which caused 9K+ lines of assembly, 46 `vzeroupper` calls,
 /// and instruction cache pressure that made wider SIMD slower than narrower.
 ///
-/// Each specialized function contains exactly ONE run_phased_test call with its closures,
-/// producing tight, focused assembly, and is `#[inline(never)]`: the 128-bit ones' features are
-/// the baseline's, so the compiler inlined all four into the dispatch's caller. The dispatch
+/// Each specialized function contains one run_phased_test call with its closures (the numbered
+/// one a call a mode, its hot loops out of line in the width's loops module), producing tight,
+/// focused assembly, and is `#[inline(never)]`: the 128-bit ones' features are the baseline's, so
+/// the compiler inlined them all into the dispatch's caller. The dispatch
 /// function has NO `#[target_feature]` so it compiles to a simple branch without pulling in SIMD
 /// register state.
 macro_rules! simple_test_v2_impl {
@@ -5479,12 +6004,58 @@ macro_rules! simple_test_v2_impl {
         $pos_str_fn:ident,
         $m20_seq_fn:ident,
         $m20_str_fn:ident,
+        $num_seq_fn:ident,
         $native_fn:ident,
         $test_name:literal,
         $simd_w:expr,
         $loops:ident,
         $target_feature:literal
     ) => {
+        /// Modes 0, 1, 2, 13 and 30 sequential, on this width's own loops (`simple_simd_loops!`),
+        /// which Bench-Init/Verify run at the widest width (TODO 99).
+        #[target_feature(enable = $target_feature)]
+        #[inline(never)]
+        unsafe fn $num_seq_fn(
+            blocks: &[crate::runner::AllocationBlock],
+            thread_id: usize,
+            error_mode: ErrorMode,
+            timing: &TestTiming,
+            config: &TestMemoryConfig,
+            progress: Option<&TestProgress>,
+            pattern: SimplePatternConfig,
+        ) -> TestStats {
+            let SimplePatternConfig { mode, param0, param1, test_name, .. } = pattern;
+            let args = (blocks, thread_id, error_mode, timing, config, progress);
+            let cl_shift = pattern_gen::cache_line_shift(config.cache_line_bytes);
+            let seed = |ctx: &ChunkCtx| pattern_gen::block_seed(ctx.ptr as usize, ctx.thread_id, ctx.cycle);
+            match mode {
+                // Mode 0 (TM5-faithful): bit dispersion + branchless 4KB page complement
+                0 => simple_numbered_run!(args, test_name,
+                    |ctx: &ChunkCtx| SimpleWords::<0> { ptr: ctx.ptr, start: ctx.chunk_start, end: ctx.chunk_end, seed: seed(ctx), cl_shift },
+                    $loops::m0_write, $loops::m0_verify),
+                // Mode 1 (TM5-faithful): linear step + cache-line complement
+                1 => simple_numbered_run!(args, test_name,
+                    |ctx: &ChunkCtx| SimpleWords::<1> { ptr: ctx.ptr, start: ctx.chunk_start, end: ctx.chunk_end, seed: seed(ctx), cl_shift },
+                    $loops::m1_write, $loops::m1_verify),
+                // Mode 2 (TM5-faithful): TM5's evolving lines, the chain restarted per 4 KiB page
+                2 => simple_numbered_run!(args, test_name,
+                    |ctx: &ChunkCtx| SimpleMode2 { ptr: ctx.ptr, start: ctx.chunk_start, end: ctx.chunk_end,
+                                                   mode2: Mode2 { thread_id: ctx.thread_id, cycle: ctx.cycle, param0, param1 } },
+                    $loops::m2_write, $loops::m2_verify),
+                // Mode 13 (TMR-native): a hash per word
+                13 => simple_numbered_run!(args, test_name,
+                    |ctx: &ChunkCtx| SimpleWords::<13> { ptr: ctx.ptr, start: ctx.chunk_start, end: ctx.chunk_end, seed: param0, cl_shift },
+                    $loops::m13_write, $loops::m13_verify),
+                // Mode 30 (TMR-native): each beat of a line the inverse of the one before
+                30 => simple_numbered_run!(args, test_name,
+                    |ctx: &ChunkCtx| SimpleMode30 { ptr: ctx.ptr, start: ctx.chunk_start, end: ctx.chunk_end,
+                                                    mode30: Mode30::new(ctx.thread_id, ctx.cycle, param0, param1) },
+                    $loops::m30_write, $loops::m30_verify),
+                // Modes 10, 11 and 20 have functions of their own
+                mode => unreachable!("{test_name}: mode {mode} has its own function"),
+            }
+        }
+
         /// Positional sequential — contiguous access with idx^base pattern.
         #[target_feature(enable = $target_feature)]
         #[inline(never)]
@@ -5636,13 +6207,15 @@ macro_rules! simple_test_v2_impl {
             if let Some(program) = config.native_program() {
                 return $native_fn(blocks, thread_id, error_mode, timing, config, progress, NativeRun::simple(program, config));
             }
-            // The SIMD paths here are positional (modes 10 and 11) and mode 20. Modes 0, 1, 2, 13
-            // and 30 run the shared loops, which write that mode's own image: modes 0, 1, 2 and 13
-            // used to write mode 10's here (TODO 3), and mode 30's lines are a few values (one and
-            // its inverse at 16, 32 and 64 bits, three at 12 and 24), which the shared loops
-            // already store at the baseline's full width.
+            // Modes 0, 1, 2, 13 and 30, each its own image (modes 0, 1, 2 and 13 used to write mode
+            // 10's here, TODO 3): sequential on this width's loops, strided on the shared ones
             if matches!(config.pattern_mode, Some(0 | 1 | 2 | 13 | 30)) {
-                return simple_test_v2_numbered(blocks, thread_id, error_mode, timing, config, progress, $test_name);
+                let pattern = SimplePatternConfig::of(config, $test_name);
+                return if pattern.stride > 0 {
+                    simple_test_v2_strided(blocks, thread_id, error_mode, timing, config, progress, pattern)
+                } else {
+                    $num_seq_fn(blocks, thread_id, error_mode, timing, config, progress, pattern)
+                };
             }
             let is_mode20 = config.pattern_mode.unwrap_or(0) == 20;
             let has_stride = config.parameter_context.as_ref()
@@ -5663,17 +6236,17 @@ macro_rules! simple_test_v2_impl {
 // Each invocation generates 4 specialized #[target_feature] functions + 1 dispatch.
 simple_test_v2_impl!(simple_test_v2_128_impl,
     simple_test_v2_128_pos_seq, simple_test_v2_128_pos_str,
-    simple_test_v2_128_m20_seq, simple_test_v2_128_m20_str, simple_native_128,
+    simple_test_v2_128_m20_seq, simple_test_v2_128_m20_str, simple_test_v2_128_num_seq, simple_native_128,
     "Mem-SimpleV2-128", 2, simple_test_v2_128_loops,
     "sse4.2,sse4.1,ssse3,sse3,sse2,popcnt");
 simple_test_v2_impl!(simple_test_v2_256_impl,
     simple_test_v2_256_pos_seq, simple_test_v2_256_pos_str,
-    simple_test_v2_256_m20_seq, simple_test_v2_256_m20_str, simple_native_256,
+    simple_test_v2_256_m20_seq, simple_test_v2_256_m20_str, simple_test_v2_256_num_seq, simple_native_256,
     "Mem-SimpleV2-256", 4, simple_test_v2_256_loops,
     "avx2,avx,fma,bmi1,bmi2");
 simple_test_v2_impl!(simple_test_v2_512_impl,
     simple_test_v2_512_pos_seq, simple_test_v2_512_pos_str,
-    simple_test_v2_512_m20_seq, simple_test_v2_512_m20_str, simple_native_512,
+    simple_test_v2_512_m20_seq, simple_test_v2_512_m20_str, simple_test_v2_512_num_seq, simple_native_512,
     "Mem-SimpleV2-512", 8, simple_test_v2_512_loops,
     "avx512f,avx512bw,avx512cd,avx512dq,avx512vl,avx2,avx,fma,bmi1,bmi2");
 
@@ -7287,9 +7860,8 @@ mod simple_loops_tests {
         }
     }
 
-    /// One per-word mode's shared loops (`SimpleWords`): the image, sequential and strided, at
-    /// lengths that end on a step, a vector and each word under a vector; the verifies see a bad
-    /// word in every lane of every accumulator and in the tails.
+    /// One per-word mode's shared strided loops (`SimpleWords`): the image; the verify sees a bad
+    /// word in every lane of every line it reads.
     macro_rules! check_words {
         ($mode:literal, $definition:expr) => {{
             let definition = $definition;
@@ -7297,15 +7869,6 @@ mod simple_loops_tests {
             let seed = 0x0123_4567_89AB_CDEFu64;
             let mut mem = Mem::new(8192);
             let ptr = mem.ptr();
-            for rest in 0..4 {
-                // Five steps of four vectors, three vectors and `rest` words
-                let (start, end) = (64, 64 + 5 * 16 + 3 * 4 + rest);
-                let c = SimpleWords::<$mode> { ptr, start, end, seed, cl_shift: 3 };
-                mem.reset();
-                unsafe { simple_test_v2_loops::words_write(c) };
-                mem.assert_image(start, end, |i| definition(i as u64, seed), what);
-                mem.assert_sees(flips(start, end, 16, 12 + rest), || unsafe { simple_test_v2_loops::words_verify(c) }, what);
-            }
             for (start, end, stride) in WALKS {
                 let period = strided_period(stride);
                 let c = SimpleWords::<$mode> { ptr, start, end, seed, cl_shift: 3 };
@@ -7317,8 +7880,8 @@ mod simple_loops_tests {
         }};
     }
 
-    /// TODO 99: the shared loops' per-word modes, each from its `pattern_gen` definition (mode 1's
-    /// lines are 64 B, `cl_shift` 3).
+    /// TODO 99: the shared strided loops' per-word modes, each from its `pattern_gen` definition
+    /// (mode 1's lines are 64 B, `cl_shift` 3).
     #[test]
     fn shared_word_loops_write_their_patterns_and_see_every_bad_word() {
         check_words!(0, pattern_gen::pattern_mode0);
@@ -7326,17 +7889,10 @@ mod simple_loops_tests {
         check_words!(13, pattern_gen::pattern_mode13);
     }
 
-    /// TODO 99: the shared loops' line modes write what the shared walks (`Mode2`, `Mode30`) write
-    /// and what the definitions give, sequential and strided (mode 2's strided image mode 20's
-    /// lines), mode 30 at every beat; the verifies see a bad word in every lane of every accumulator
-    /// and in the tails.
-    #[test]
-    fn shared_line_loops_write_their_patterns_and_see_every_bad_word() {
-        let mut mem = Mem::new(8192);
-        let ptr = mem.ptr();
-        // Mode 2: three pages, each chain from its address
-        let (start, end) = (512, 512 + 3 * PAGE_WORDS);
-        let mode2 = Mode2 { thread_id: 3, cycle: 1, param0: 0x5DEECE66D, param1: 0xB };
+    /// Mode 2's chain from the definitions (`pattern_gen`): each page of `[start, end)` of `ptr`
+    /// from its address, a line a link, as `Mode2 { thread_id: 3, cycle: 1, param0: 0x5DEECE66D,
+    /// param1: 0xB }` writes it; the words outside the range 0.
+    fn mode2_chain(ptr: *mut u64, start: usize, end: usize) -> Vec<u64> {
         let mut chain = vec![0u64; end];
         for page in (start..end).step_by(PAGE_WORDS) {
             let (mut seed, mut step) = pattern_gen::mode2_page_start(ptr.wrapping_add(page) as usize, 3, 1);
@@ -7345,15 +7901,131 @@ mod simple_loops_tests {
                 (seed, step) = pattern_gen::mode2_evolve(seed, step, 0x5DEECE66D, 0xB);
             }
         }
-        unsafe { mode2.fill(ptr, start, end) };
-        let old = mem.words().to_vec();
-        mem.reset();
-        let c = SimpleMode2 { ptr, start, end, mode2 };
-        unsafe { simple_test_v2_loops::mode2_write(c) };
-        assert!(mem.words() == old.as_slice(), "mode 2: not the shared walk's image");
-        mem.assert_image(start, end, |i| chain[i], "mode 2");
-        mem.assert_sees(flips(start, end, 4 * LINE_WORDS, 4 * LINE_WORDS), || unsafe { simple_test_v2_loops::mode2_verify(c) }, "mode 2");
+        chain
+    }
 
+    /// Mode 30's word `i` of `ptr` from the definition, at `mode30`'s key and beat.
+    fn mode30_word(ptr: *mut u64, mode30: Mode30, i: usize) -> u64 {
+        pattern_gen::mode30_line(ptr.wrapping_add(i - i % LINE_WORDS) as usize, mode30.key, mode30.beat)[i % LINE_WORDS]
+    }
+
+    /// The words of `[start, end)` a verify test flips: every word of the first and last `edge`
+    /// (heads and tails, and every lane of every accumulator of the steps there), every 4 KiB
+    /// page's first and last words, and every 13th between.
+    fn flips_and_pages(start: usize, end: usize, edge: usize) -> Vec<usize> {
+        let edge = edge.min(end - start);
+        let pages = (start..end).filter(|i| i % PAGE_WORDS == 0 || i % PAGE_WORDS == PAGE_WORDS - 1);
+        flips(start, end, edge, edge).into_iter().chain(pages).collect()
+    }
+
+    /// The ranges the per-word loops are tested on at width `w`: whole pages; a head and a tail of
+    /// every length under a step, across two page edges; inside a page; shorter than a step.
+    fn word_ranges(w: usize) -> Vec<(usize, usize)> {
+        let mut ranges = vec![(512, 512 + 3 * PAGE_WORDS)];
+        ranges.extend((0..4 * w).map(|k| (1024 - k, 2048 + 3 * k + 1)));
+        ranges.extend([(1024 + 3, 1024 + 9 * w + 2), (1536 + 1, 1536 + 4 * w - 1), (1536, 1536 + w)]);
+        ranges
+    }
+
+    /// One per-word mode's loops at a width of `$w` words, mode `$mode` at line shift `$cl_shift`,
+    /// against `$definition` (word index to value), on `$mem`, as `check_numbered_loops!` says.
+    macro_rules! check_word_loops {
+        ($mem:ident, $w:expr, $mode:literal, $cl_shift:expr, $write:path, $verify:path, $definition:expr) => {{
+            let (w, definition, seed) = ($w, $definition, 0x0123_4567_89AB_CDEFu64);
+            let ptr = $mem.ptr();
+            for (start, end) in word_ranges(w) {
+                let c = SimpleWords::<$mode> { ptr, start, end, seed, cl_shift: $cl_shift };
+                let what = format!("{}: mode {} at line shift {}, {start}..{end}", stringify!($write), $mode, $cl_shift);
+                $mem.reset();
+                unsafe { $write(c) };
+                $mem.assert_image(start, end, |i| definition(i as u64, seed), &what);
+                $mem.assert_sees(flips_and_pages(start, end, 12 * w), || unsafe { $verify(c) }, &what);
+            }
+            let c = SimpleWords::<$mode> { ptr, start: 512, end: 2048, seed, cl_shift: $cl_shift };
+            unsafe { $write(c) };
+            $mem.words()[1300] ^= BIT;
+            assert_eq!(unsafe { c.errors($verify(c), "test") }, 1, "{}: one bad word counted once", stringify!($verify));
+        }};
+    }
+
+    /// One width's numbered-mode loops (`simple_simd_loops!`): modes 0, 1 (at every inversion
+    /// shape, `m1_shape`), 2, 13 and 30 (at every beat) each write their definition's image
+    /// (`pattern_gen`) on their words and no other, in whole pages, in ranges with a head and a tail
+    /// of each length under a step, inside a page, and shorter than a step; each verify reads clean
+    /// and sees a bad word in every lane of every accumulator, at the page edges and in the heads
+    /// and tails; and the chunk's `errors` counts one bad word once (the rescan's wiring). Modes 10,
+    /// 11 and 20 are `check_simd_loops!`'s.
+    macro_rules! check_numbered_loops {
+        ($loops:ident, $w:expr) => {{
+            const W: usize = $w;
+            let what = stringify!($loops);
+            let mut mem = Mem::new(8192);
+            let ptr = mem.ptr();
+            check_word_loops!(mem, W, 0, 3, $loops::m0_write, $loops::m0_verify, pattern_gen::pattern_mode0);
+            // Lines of 1 to 64 words: every shape at every width
+            check_word_loops!(mem, W, 1, 0, $loops::m1_write, $loops::m1_verify, |i, seed| pattern_gen::pattern_mode1(i, seed, 0));
+            check_word_loops!(mem, W, 1, 1, $loops::m1_write, $loops::m1_verify, |i, seed| pattern_gen::pattern_mode1(i, seed, 1));
+            check_word_loops!(mem, W, 1, 2, $loops::m1_write, $loops::m1_verify, |i, seed| pattern_gen::pattern_mode1(i, seed, 2));
+            check_word_loops!(mem, W, 1, 3, $loops::m1_write, $loops::m1_verify, |i, seed| pattern_gen::pattern_mode1(i, seed, 3));
+            check_word_loops!(mem, W, 1, 4, $loops::m1_write, $loops::m1_verify, |i, seed| pattern_gen::pattern_mode1(i, seed, 4));
+            check_word_loops!(mem, W, 1, 5, $loops::m1_write, $loops::m1_verify, |i, seed| pattern_gen::pattern_mode1(i, seed, 5));
+            check_word_loops!(mem, W, 1, 6, $loops::m1_write, $loops::m1_verify, |i, seed| pattern_gen::pattern_mode1(i, seed, 6));
+            check_word_loops!(mem, W, 13, 3, $loops::m13_write, $loops::m13_verify, pattern_gen::pattern_mode13);
+
+            // Mode 2: three pages, each chain from its address
+            let (start, end) = (512, 512 + 3 * PAGE_WORDS);
+            let chain = mode2_chain(ptr, start, end);
+            let c = SimpleMode2 { ptr, start, end, mode2: Mode2 { thread_id: 3, cycle: 1, param0: 0x5DEECE66D, param1: 0xB } };
+            mem.reset();
+            unsafe { $loops::m2_write(c) };
+            mem.assert_image(start, end, |i| chain[i], &format!("{what}: mode 2"));
+            mem.assert_sees(flips_and_pages(start, end, 8 * LINE_WORDS), || unsafe { $loops::m2_verify(c) }, &format!("{what}: mode 2"));
+            mem.words()[1300] ^= BIT;
+            assert_eq!(unsafe { c.errors($loops::m2_verify(c), "test") }, 1, "{what}: mode 2: one bad word counted once");
+
+            // Mode 30 at each beat: steps of four lines (by line) or `W` (by lanes), with a tail of
+            // every length under eight, steps and no tail, one line, and under a step
+            use pattern_gen::BusBeat;
+            let key = Mode20::new(3, 1, 0xDEADBEEFDEADBEEF, 0xCAFEBABECAFEBABE).key;
+            for beat in [BusBeat::Bits12, BusBeat::Bits16, BusBeat::Bits24, BusBeat::Bits32, BusBeat::Bits64] {
+                let mode30 = Mode30 { key, beat };
+                for lines in [64, 15, 17, 18, 19, 20, 21, 22, 23, 16, 1, 3, 7] {
+                    let (start, end) = (512, 512 + lines * LINE_WORDS);
+                    let c = SimpleMode30 { ptr, start, end, mode30 };
+                    let what = format!("{what}: mode 30 at {} bits, {lines} lines", beat.bits());
+                    mem.reset();
+                    unsafe { $loops::m30_write(c) };
+                    mem.assert_image(start, end, |i| mode30_word(ptr, mode30, i), &what);
+                    mem.assert_sees(flips(start, end, (8 * LINE_WORDS).min(end - start), (8 * LINE_WORDS).min(end - start)),
+                                    || unsafe { $loops::m30_verify(c) }, &what);
+                }
+                let c = SimpleMode30 { ptr, start: 512, end: 512 + 64 * LINE_WORDS, mode30 };
+                unsafe { $loops::m30_write(c) };
+                mem.words()[700] ^= BIT;
+                assert_eq!(unsafe { c.errors($loops::m30_verify(c), "test") }, 1, "{what}: mode 30: one bad word counted once");
+            }
+        }};
+    }
+
+    /// TODO 99: the numbered-mode loops at each width the CPU has (`check_numbered_loops!`), which
+    /// SimpleTest runs at each width and Bench-Init/Verify at the widest.
+    #[test]
+    fn numbered_loops_write_their_patterns_and_see_every_bad_word() {
+        check_numbered_loops!(simple_test_v2_128_loops, 2);
+        check_numbered_loops!(simple_test_v2_256_loops, 4);
+        if is_x86_feature_detected!("avx512f") && is_x86_feature_detected!("avx512bw") && is_x86_feature_detected!("avx512cd")
+            && is_x86_feature_detected!("avx512dq") && is_x86_feature_detected!("avx512vl") {
+            check_numbered_loops!(simple_test_v2_512_loops, 8);
+        }
+    }
+
+    /// TODO 99: the shared strided loops' line modes write what the definitions give (mode 2's
+    /// strided image mode 20's lines), mode 30 at every beat; the verifies see a bad word in every
+    /// lane of every line they read.
+    #[test]
+    fn shared_line_loops_write_their_patterns_and_see_every_bad_word() {
+        let mut mem = Mem::new(8192);
+        let ptr = mem.ptr();
         // Mode 2's strided walk: mode 20's lines
         let mode20 = Mode20::new(3, 1, 0xDEADBEEFDEADBEEF, 0xCAFEBABECAFEBABE);
         for (start, end, stride) in WALKS {
@@ -7369,24 +8041,13 @@ mod simple_loops_tests {
         use pattern_gen::BusBeat;
         for beat in [BusBeat::Bits12, BusBeat::Bits16, BusBeat::Bits24, BusBeat::Bits32, BusBeat::Bits64] {
             let mode30 = Mode30 { key: mode20.key, beat };
-            let word = |i: usize| pattern_gen::mode30_line(ptr.wrapping_add(i - i % LINE_WORDS) as usize, mode30.key, beat)[i % LINE_WORDS];
             let what = format!("mode 30 at {} bits", beat.bits());
-            let (start, end) = (64, 64 + 15 * LINE_WORDS);
-            mem.reset();
-            unsafe { mode30.fill(ptr, start, end) };
-            let old = mem.words().to_vec();
-            mem.reset();
-            let c = SimpleMode30 { ptr, start, end, mode30 };
-            unsafe { simple_test_v2_loops::mode30_write(c) };
-            assert!(mem.words() == old.as_slice(), "{what}: not the shared walk's image");
-            mem.assert_image(start, end, word, &what);
-            mem.assert_sees(flips(start, end, 4 * LINE_WORDS, 3 * LINE_WORDS), || unsafe { simple_test_v2_loops::mode30_verify(c) }, &what);
             for (start, end, stride) in WALKS {
                 let period = strided_period(stride);
                 let c = SimpleMode30 { ptr, start, end, mode30 };
                 mem.reset();
                 unsafe { simple_test_v2_loops::mode30_write_str(c, period) };
-                mem.assert_image(start, end, word, &what);
+                mem.assert_image(start, end, |i| mode30_word(ptr, mode30, i), &what);
                 mem.assert_sees(flips(start, end, 2 * LINE_WORDS, 2 * LINE_WORDS), || unsafe { simple_test_v2_loops::mode30_verify_str(c, period) }, &what);
             }
         }
@@ -7537,529 +8198,148 @@ pub fn bench_seal_tests() -> [(&'static str, crate::runner::TestFunction); 16] {
     ]
 }
 
-// ─── Bench-Init and Bench-Verify kernels (TODO 99) ──────────────────────────────────────────────
+// ─── Bench-Init and Bench-Verify (TODO 99) ──────────────────────────────────────────────────────
 //
-// Each mode's write and check of one chunk is a function of its own, called once a chunk, so its
-// loop keeps its values in registers: inlined into the dispatchers, with every mode's loops and the
-// harness live, the checks reloaded constants from the stack every iteration and the line modes
-// were vectorized across lines. The per-word modes (0, 1, 10, 11, 13) walk a pointer, 16 words a
-// step as four 32 B vectors at fixed displacements (the width the compiler gave the inlined loops
-// at the `x86-64-v3` baseline), the expected values a vector stepped beside it, the checks into
-// four vector accumulators. Bench-Init's write and Bench-Verify's fill are one function, so the
-// verify checks what the init wrote.
+// Each numbered mode's write or verify alone, at the widest width this CPU has (512 bits with
+// AVX-512, else 256), as the native Bench pairs run (`simple_native_widest`): the very kernels
+// SimpleTest runs at that width (`simple_simd_loops!`), so a Bench number stands for SimpleTest's
+// pattern cost there. Both sides take cycle 0's pattern, so a Bench-Verify checks what a Bench-Init
+// wrote, whatever cycle it ran.
 
-/// Writes words `[start, end)` of `ptr`: 16 a step as four vectors, each call of `next` the next
-/// four words' values, then the words past the last whole step from `word`.
-#[inline(always)]
-unsafe fn fill_words_by_16(ptr: *mut u64, start: usize, end: usize, mut next: impl FnMut() -> u64x4,
-                           word: impl Fn(usize) -> u64) {
-    let len = end - start;
-    let mut p = ptr.add(start);
-    for _ in 0..len / 16 {
-        for k in 0..4 {
-            p.add(4 * k).cast::<u64x4>().write_unaligned(next());
-        }
-        p = p.wrapping_add(16);
-    }
-    let rest = start + len / 16 * 16;
-    for j in 0..len % 16 {
-        *p = word(rest + j);
-        p = p.wrapping_add(1);
+/// A Bench-Init-* (`Write`) or Bench-Verify-* (`Verify`) of one numbered mode, `$args` the test
+/// function's six arguments: each chunk `$chunk(ctx)` (a mode's chunk struct), written by `$write`
+/// and, for a Bench-Verify, checked by `$verify` and, on a hit, the struct's `errors` (the cold
+/// rescan). A Bench-Verify's fill is setup: its verifies alone are timed and counted (TODO 90, the
+/// harness). `skip_init` skips the fill, when the Bench-Init before it wrote the chunks.
+macro_rules! bench_numbered_run {
+    (Write, $args:expr, $test_name:expr, $chunk:expr, $write:path, $verify:path) => {{
+        let (blocks, thread_id, error_mode, timing, config, progress) = $args;
+        let chunk = $chunk;
+        run_phased_test(
+            blocks, thread_id, error_mode, timing, config, progress,
+            $test_name, TestAction::Write, 1, config.skip_init, 1, 0,
+            |ctx: &ChunkCtx| $write(chunk(ctx)),
+            |ctx: &ChunkCtx| $write(chunk(ctx)),
+            |_ctx: &ChunkCtx| -> u64 { 0 },
+        )
+    }};
+    (Verify, $args:expr, $test_name:expr, $chunk:expr, $write:path, $verify:path) => {{
+        let (blocks, thread_id, error_mode, timing, config, progress) = $args;
+        let (test_name, chunk) = ($test_name, $chunk);
+        run_phased_test(
+            blocks, thread_id, error_mode, timing, config, progress,
+            test_name, TestAction::Verify, 1, config.skip_init, 0, 1,
+            |ctx: &ChunkCtx| $write(chunk(ctx)),
+            |_ctx: &ChunkCtx| {},
+            |ctx: &ChunkCtx| -> u64 {
+                let c = chunk(ctx);
+                c.errors($verify(c), test_name)
+            },
+        )
+    }};
+}
+
+/// The Bench pair's name of numbered mode `mode`: its Bench-Init's, or with `verify` its
+/// Bench-Verify's.
+fn bench_numbered_name(mode: u32, verify: bool) -> &'static str {
+    match (mode, verify) {
+        (0, false) => "Bench-Init-TM5-0",
+        (1, false) => "Bench-Init-TM5-1",
+        (2, false) => "Bench-Init-TM5-2",
+        (10, false) => "Bench-Init-TMR-10",
+        (11, false) => "Bench-Init-TMR-11",
+        (13, false) => "Bench-Init-TMR-13",
+        (20, false) => "Bench-Init-TMR-20",
+        (30, false) => "Bench-Init-TMR-30",
+        (_, false) => "Bench-Init-Unknown",
+        (0, true) => "Bench-Verify-TM5-0",
+        (1, true) => "Bench-Verify-TM5-1",
+        (2, true) => "Bench-Verify-TM5-2",
+        (10, true) => "Bench-Verify-TMR-10",
+        (11, true) => "Bench-Verify-TMR-11",
+        (13, true) => "Bench-Verify-TMR-13",
+        (20, true) => "Bench-Verify-TMR-20",
+        (30, true) => "Bench-Verify-TMR-30",
+        (_, true) => "Bench-Verify-Unknown",
     }
 }
 
-/// Checks words `[start, end)` of `ptr` against the same values: each step's four vectors into
-/// four vector accumulators, the words past the last whole step into a scalar one. The
-/// accumulators ORed: nonzero when a word differs.
-#[inline(always)]
-unsafe fn verify_words_by_16(ptr: *const u64, start: usize, end: usize, mut next: impl FnMut() -> u64x4,
-                             word: impl Fn(usize) -> u64) -> u64 {
-    let len = end - start;
-    let mut acc = [u64x4::splat(0); 4];
-    let mut p = ptr.add(start);
-    for _ in 0..len / 16 {
-        for (k, a) in acc.iter_mut().enumerate() {
-            *a |= p.add(4 * k).cast::<u64x4>().read_unaligned() ^ next();
-        }
-        p = p.wrapping_add(16);
-    }
-    let (rest, mut tail) = (start + len / 16 * 16, 0u64);
-    for j in 0..len % 16 {
-        tail |= *p ^ word(rest + j);
-        p = p.wrapping_add(1);
-    }
-    ((acc[0] | acc[1]) | (acc[2] | acc[3])).reduce_or() | tail
-}
-
-/// Calls `body(from, to)` for the pieces of `[start, end)` split at the multiples of `segment`
-/// words, or once for the whole range when `segment` is 0.
-#[inline(always)]
-fn for_segments(start: usize, end: usize, segment: usize, mut body: impl FnMut(usize, usize)) {
-    if segment == 0 {
-        return body(start, end);
-    }
-    let mut from = start;
-    while from < end {
-        let to = (from - from % segment + segment).min(end);
-        body(from, to);
-        from = to;
-    }
-}
-
-/// A per-word pattern's chunk kernels, from its `word(i)` and `lanes(start)` (the generator of the
-/// values of each next four words from word `start` on, within a piece of `$segment` words, 0 for
-/// no pieces): `fill`, `verify` (the accumulators ORed) and `check` (the errors, counted and
-/// logged by a rescan when the verify sees one).
-macro_rules! word_kernels {
-    ($segment:expr) => {
-        #[inline(never)]
-        unsafe fn fill(self, ptr: *mut u64, start: usize, end: usize) {
-            for_segments(start, end, $segment, |from, to| fill_words_by_16(ptr, from, to, self.lanes(from), |i| self.word(i)));
-        }
-
-        #[inline(never)]
-        unsafe fn verify(self, ptr: *const u64, start: usize, end: usize) -> u64 {
-            let mut seen = 0;
-            for_segments(start, end, $segment, |from, to| seen |= verify_words_by_16(ptr, from, to, self.lanes(from), |i| self.word(i)));
-            seen
-        }
-
-        #[inline(always)]
-        unsafe fn check(self, ptr: *const u64, start: usize, end: usize, test_name: &str) -> u64 {
-            match self.verify(ptr, start, end) {
-                0 => 0,
-                seen => rescan_words(ptr, start, end, test_name, seen, |i| self.word(i)),
+/// A Bench-Init-* (`$action` `Write`) or Bench-Verify-* (`Verify`, `$verify` true) at one width,
+/// `$fn`, on width `$loops`'s kernels, the mode its config's (`config::bench_mode`, from the name).
+macro_rules! bench_numbered {
+    ($fn:ident, $action:ident, $verify:literal, $loops:ident) => {
+        #[doc = include_str!("test_fn_safety.md")]
+        unsafe fn $fn(
+            blocks: &[crate::runner::AllocationBlock],
+            thread_id: usize,
+            error_mode: ErrorMode,
+            timing: &TestTiming,
+            config: &TestMemoryConfig,
+            progress: Option<&TestProgress>,
+        ) -> TestStats {
+            let mode = config.pattern_mode.unwrap_or(10);
+            let param0 = config.pattern_param0.unwrap_or(0xDEADBEEFDEADBEEF);
+            let param1 = config.pattern_param1.unwrap_or(0xCAFEBABECAFEBABE);
+            let cl_shift = pattern_gen::cache_line_shift(config.cache_line_bytes);
+            let args = (blocks, thread_id, error_mode, timing, config, progress);
+            let test_name = bench_numbered_name(mode, $verify);
+            // Cycle 0, not ctx.cycle: the pattern stays the same every cycle, so a Bench-Verify
+            // knows what a Bench-Init wrote last
+            let seed = |ctx: &ChunkCtx| pattern_gen::block_seed(ctx.ptr as usize, ctx.thread_id, 0);
+            match mode {
+                // Mode 0: bit dispersion + branchless 4KB page complement
+                0 => bench_numbered_run!($action, args, test_name,
+                    |ctx: &ChunkCtx| SimpleWords::<0> { ptr: ctx.ptr, start: ctx.chunk_start, end: ctx.chunk_end, seed: seed(ctx), cl_shift },
+                    $loops::m0_write, $loops::m0_verify),
+                // Mode 1: linear step + cache-line complement
+                1 => bench_numbered_run!($action, args, test_name,
+                    |ctx: &ChunkCtx| SimpleWords::<1> { ptr: ctx.ptr, start: ctx.chunk_start, end: ctx.chunk_end, seed: seed(ctx), cl_shift },
+                    $loops::m1_write, $loops::m1_verify),
+                // Mode 2: TM5's evolving lines, the chain restarted per 4 KiB page
+                2 => {
+                    let mode2 = Mode2 { thread_id, cycle: 0, param0, param1 };
+                    bench_numbered_run!($action, args, test_name,
+                        |ctx: &ChunkCtx| SimpleMode2 { ptr: ctx.ptr, start: ctx.chunk_start, end: ctx.chunk_end, mode2 },
+                        $loops::m2_write, $loops::m2_verify)
+                }
+                // Modes 10 and 11: the index XOR a base, mode 10's fixed, mode 11's the two
+                // parameters XORed
+                10 | 11 => {
+                    let base = if mode == 10 { 0xDEADBEEFDEADBEEF_u64 } else { param0 ^ param1 };
+                    bench_numbered_run!($action, args, test_name,
+                        |ctx: &ChunkCtx| SimplePositional { ptr: ctx.ptr, start: ctx.chunk_start, end: ctx.chunk_end, base },
+                        $loops::pos_write, $loops::pos_verify)
+                }
+                // Mode 13: a hash per word (splitmix64), each from its index and the seed alone
+                13 => bench_numbered_run!($action, args, test_name,
+                    |ctx: &ChunkCtx| SimpleWords::<13> { ptr: ctx.ptr, start: ctx.chunk_start, end: ctx.chunk_end, seed: param0, cl_shift },
+                    $loops::m13_write, $loops::m13_verify),
+                // Mode 30: the bus-flip lines
+                30 => {
+                    let mode30 = Mode30::new(thread_id, 0, param0, param1);
+                    bench_numbered_run!($action, args, test_name,
+                        |ctx: &ChunkCtx| SimpleMode30 { ptr: ctx.ptr, start: ctx.chunk_start, end: ctx.chunk_end, mode30 },
+                        $loops::m30_write, $loops::m30_verify)
+                }
+                // Mode 20 (and any unknown mode): mode 2's lines, hashed from each line's address
+                _ => {
+                    let key = Mode20::new(thread_id, 0, param0, param1).key;
+                    bench_numbered_run!($action, args, test_name,
+                        |ctx: &ChunkCtx| SimpleMode20 { ptr: ctx.ptr, start: ctx.chunk_start, end: ctx.chunk_end, key },
+                        $loops::m20_write, $loops::m20_verify)
+                }
             }
         }
     };
 }
 
-/// The indices of four words from `start`, a vector.
-#[inline(always)]
-fn word_lanes(start: usize) -> u64x4 {
-    u64x4::splat(start as u64) + u64x4::from_array([0, 1, 2, 3])
-}
+bench_numbered!(bench_init_256, Write, false, simple_test_v2_256_loops);
+bench_numbered!(bench_init_512, Write, false, simple_test_v2_512_loops);
+bench_numbered!(bench_verify_256, Verify, true, simple_test_v2_256_loops);
+bench_numbered!(bench_verify_512, Verify, true, simple_test_v2_512_loops);
 
-/// Mode 0 (`pattern_gen::pattern_mode0`): the seed XOR the word's index times the golden-ratio
-/// constant, inverted on odd 4 KiB pages. The kernels go a page at a time, the page's inversion
-/// folded into the seed, and step each vector's product, an add a vector: with the index stepped
-/// too for the inversion, the step's offsets spilled to the stack.
-#[derive(Clone, Copy)]
-struct Mode0Words {
-    seed: u64,
-}
-
-impl Mode0Words {
-    #[inline(always)]
-    fn word(self, i: usize) -> u64 {
-        pattern_gen::pattern_mode0(i as u64, self.seed)
-    }
-
-    /// The values from word `start` on, to the end of its page.
-    #[inline(always)]
-    fn lanes(self, start: usize) -> impl FnMut() -> u64x4 {
-        // The multiplier: word 1's value under a zero seed (an even page)
-        let golden = pattern_gen::pattern_mode0(1, 0);
-        // The page's inversion: word `start`'s value under a zero seed, less its product
-        let inversion = pattern_gen::pattern_mode0(start as u64, 0) ^ (start as u64).wrapping_mul(golden);
-        let seed = u64x4::splat(self.seed ^ inversion);
-        // A product per vector of the step, each stepped a whole step on: one product and an
-        // offset per vector became a constant per vector once the loop was unrolled, and those
-        // were reloaded from memory every iteration
-        let mut product: [u64x4; 4] = std::array::from_fn(|k| word_lanes(start + 4 * k) * u64x4::splat(golden));
-        let step = u64x4::splat(golden.wrapping_mul(16));
-        move || {
-            let words = seed ^ product[0];
-            product = [product[1], product[2], product[3], product[0] + step];
-            words
-        }
-    }
-
-    word_kernels!(PAGE_WORDS);
-}
-
-/// Mode 1 (`pattern_gen::pattern_mode1`): the seed less three times the word's index, inverted
-/// on odd cache lines (of `1 << cl_shift` words). The fill, on lines of up to 8 words (every x86
-/// CPU's 64 B): the inversion repeats every two lines, which divides a 16-word step, so each of
-/// the step's four vectors keeps its mask from step to step and only its values step, two
-/// operations a vector rather than seven (TODO 99 round 3b). The verify, and the fill on longer
-/// lines: both from one stepped vector of indices; with the difference stepped too, the step's
-/// offsets spilled to the stack.
-#[derive(Clone, Copy)]
-struct Mode1Words {
-    seed: u64,
-    cl_shift: u32,
-}
-
-impl Mode1Words {
-    #[inline(always)]
-    fn word(self, i: usize) -> u64 {
-        pattern_gen::pattern_mode1(i as u64, self.seed, self.cl_shift)
-    }
-
-    /// Whether the inversion's period, two lines, divides a step of 16 words.
-    #[inline(always)]
-    fn periodic(self) -> bool {
-        self.cl_shift <= 3
-    }
-
-    #[inline(always)]
-    fn lanes(self, start: usize) -> impl FnMut() -> u64x4 {
-        let mut idx = word_lanes(start);
-        let (seed, three, four) = (u64x4::splat(self.seed), u64x4::splat(3), u64x4::splat(4));
-        let (shift, zero, one) = (u64x4::splat(u64::from(self.cl_shift)), u64x4::splat(0), u64x4::splat(1));
-        move || {
-            let line_mask = zero - ((idx >> shift) & one);
-            let words = (seed - idx * three) ^ line_mask;
-            idx += four;
-            words
-        }
-    }
-
-    /// The values from word `start` on when `periodic`: the step's four vectors' differences, each
-    /// stepped down a step's 48, and their masks, fixed, both rotated through a step's four
-    /// vectors as `Mode0Words`' products are.
-    #[inline(always)]
-    fn periodic_lanes(self, start: usize) -> impl FnMut() -> u64x4 {
-        let idx: [u64x4; 4] = std::array::from_fn(|k| word_lanes(start + 4 * k));
-        let shift = u64x4::splat(u64::from(self.cl_shift));
-        let mut value = idx.map(|i| u64x4::splat(self.seed) - i * u64x4::splat(3));
-        let mut mask = idx.map(|i| u64x4::splat(0) - ((i >> shift) & u64x4::splat(1)));
-        let step = u64x4::splat(3 * 16);
-        move || {
-            let words = value[0] ^ mask[0];
-            value = [value[1], value[2], value[3], value[0] - step];
-            mask = [mask[1], mask[2], mask[3], mask[0]];
-            words
-        }
-    }
-
-    #[inline(never)]
-    unsafe fn fill(self, ptr: *mut u64, start: usize, end: usize) {
-        if self.periodic() {
-            fill_words_by_16(ptr, start, end, self.periodic_lanes(start), |i| self.word(i))
-        } else {
-            fill_words_by_16(ptr, start, end, self.lanes(start), |i| self.word(i))
-        }
-    }
-
-    /// From the indices at any line size: with the masks fixed too, the verify's four accumulators
-    /// left too few registers, so the step went to the stack and the masks were moved each step.
-    #[inline(never)]
-    unsafe fn verify(self, ptr: *const u64, start: usize, end: usize) -> u64 {
-        verify_words_by_16(ptr, start, end, self.lanes(start), |i| self.word(i))
-    }
-
-    #[inline(always)]
-    unsafe fn check(self, ptr: *const u64, start: usize, end: usize, test_name: &str) -> u64 {
-        match self.verify(ptr, start, end) {
-            0 => 0,
-            seen => rescan_words(ptr, start, end, test_name, seen, |i| self.word(i)),
-        }
-    }
-}
-
-/// Modes 10 and 11 (`pattern_gen::pattern_mode10` and `pattern_mode11`, one function): the word's
-/// index XOR a key, mode 10's base or mode 11's two parameters XORed.
-#[derive(Clone, Copy)]
-struct XorWords {
-    key: u64,
-}
-
-impl XorWords {
-    #[inline(always)]
-    fn word(self, i: usize) -> u64 {
-        pattern_gen::pattern_mode10(i as u64, self.key)
-    }
-
-    #[inline(always)]
-    fn lanes(self, start: usize) -> impl FnMut() -> u64x4 {
-        let mut idx = word_lanes(start);
-        let (key, four) = (u64x4::splat(self.key), u64x4::splat(4));
-        move || {
-            let words = idx ^ key;
-            idx += four;
-            words
-        }
-    }
-
-    word_kernels!(0);
-}
-
-/// Mode 13 (`pattern_gen::pattern_mode13`): the splitmix64 finalizer of the word's index plus the
-/// seed, four lanes at once. The constants are `pattern_mode13`'s; the unit test holds the two
-/// equal.
-#[derive(Clone, Copy)]
-struct Mode13Words {
-    seed: u64,
-}
-
-impl Mode13Words {
-    #[inline(always)]
-    fn word(self, i: usize) -> u64 {
-        pattern_gen::pattern_mode13(i as u64, self.seed)
-    }
-
-    #[inline(always)]
-    fn lanes(self, start: usize) -> impl FnMut() -> u64x4 {
-        let mut sum = word_lanes(start) + u64x4::splat(self.seed);
-        let (m1, m2, four) = (u64x4::splat(0xbf58476d1ce4e5b9), u64x4::splat(0x94d049bb133111eb), u64x4::splat(4));
-        move || {
-            let mut h = sum;
-            h ^= h >> 30;
-            h *= m1;
-            h ^= h >> 27;
-            h *= m2;
-            h ^= h >> 31;
-            sum += four;
-            h
-        }
-    }
-
-    word_kernels!(0);
-}
-
-/// Mode 2's fill and check of one chunk as functions of their own, for the same reason. `Mode2`
-/// holds the loop, which SimpleV2 shares: its chain keeps the compiler a line at a time.
-#[inline(never)]
-unsafe fn mode2_fill_chunk(mode: Mode2, ptr: *mut u64, start: usize, end: usize) {
-    mode.fill(ptr, start, end)
-}
-
-#[inline(never)]
-unsafe fn mode2_check_chunk(mode: Mode2, ptr: *const u64, start: usize, end: usize, test_name: &str) -> u64 {
-    mode.verify(ptr, start, end, test_name)
-}
-
-/// Writes the lines of words `[start, end)` of `ptr` (whole lines), each the words `words(line)`
-/// gives it, as two 32 B vectors from a walked pointer. Explicit vectors keep the walk a line at a
-/// time: from the 8-word arrays the compiler vectorized the walk across four lines, transposing
-/// them, and spilled (modes 20 and 30).
-#[inline(always)]
-unsafe fn fill_lines(ptr: *mut u64, start: usize, end: usize, mut words: impl FnMut(*const u64) -> [u64; LINE_WORDS]) {
-    debug_assert!(start.is_multiple_of(LINE_WORDS) && end.is_multiple_of(LINE_WORDS), "whole lines: {start}..{end}");
-    let mut p = ptr.add(start);
-    for _ in 0..(end - start) / LINE_WORDS {
-        let w = words(p);
-        p.cast::<u64x4>().write_unaligned(u64x4::from_slice(&w[..4]));
-        p.add(4).cast::<u64x4>().write_unaligned(u64x4::from_slice(&w[4..]));
-        p = p.wrapping_add(LINE_WORDS);
-    }
-}
-
-/// Checks the same lines: the differences ORed into the four accumulators `accumulate_line` keeps,
-/// words `k` and `k + 4` into accumulator `k`, here the lanes of one vector. Nonzero when a word
-/// differs.
-#[inline(always)]
-unsafe fn verify_lines(ptr: *const u64, start: usize, end: usize, mut words: impl FnMut(*const u64) -> [u64; LINE_WORDS]) -> u64 {
-    debug_assert!(start.is_multiple_of(LINE_WORDS) && end.is_multiple_of(LINE_WORDS), "whole lines: {start}..{end}");
-    let mut acc = u64x4::splat(0);
-    let mut p = ptr.add(start);
-    for _ in 0..(end - start) / LINE_WORDS {
-        let w = words(p);
-        let low = p.cast::<u64x4>().read_unaligned() ^ u64x4::from_slice(&w[..4]);
-        let high = p.add(4).cast::<u64x4>().read_unaligned() ^ u64x4::from_slice(&w[4..]);
-        acc |= low | high;
-        p = p.wrapping_add(LINE_WORDS);
-    }
-    acc.reduce_or()
-}
-
-/// Writes the lines of words `[start, end)` of `ptr` (whole lines) four a step: `lines(addrs)`
-/// gives the four lines at the addresses in `addrs` (a lane a line) as eight 32 B vectors, each
-/// line's two halves in turn, stored at fixed offsets from a walked pointer. Hashing a line a lane
-/// takes a quarter of the instructions of hashing each in scalar registers and moving its words
-/// into vectors (TODO 99 round 3b). The up to three lines past the last whole step, which a chunk
-/// of whole pages never has, come from `line` (`fill_lines`).
-#[inline(always)]
-unsafe fn fill_lines_by_4(ptr: *mut u64, start: usize, end: usize, mut lines: impl FnMut(u64x4) -> [u64x4; 8],
-                          line: impl FnMut(*const u64) -> [u64; LINE_WORDS]) {
-    debug_assert!(start.is_multiple_of(LINE_WORDS) && end.is_multiple_of(LINE_WORDS), "whole lines: {start}..{end}");
-    let rest = start + (end - start) / (4 * LINE_WORDS) * (4 * LINE_WORDS);
-    let mut p = ptr.add(start);
-    let last = ptr.wrapping_add(rest);
-    let mut addrs = u64x4::splat(p as u64) + u64x4::from_array([0, 64, 128, 192]);
-    let step = u64x4::splat(4 * 64);
-    while p < last {
-        for (k, half) in lines(addrs).into_iter().enumerate() {
-            p.add(4 * k).cast::<u64x4>().write_unaligned(half);
-        }
-        addrs += step;
-        p = p.wrapping_add(4 * LINE_WORDS);
-    }
-    if rest < end {
-        fill_lines_tail(ptr, rest, end, line);
-    }
-}
-
-/// `fill_lines` for the last lines of a range, out of the hot function.
-#[cold]
-#[inline(never)]
-unsafe fn fill_lines_tail(ptr: *mut u64, start: usize, end: usize, words: impl FnMut(*const u64) -> [u64; LINE_WORDS]) {
-    fill_lines(ptr, start, end, words)
-}
-
-/// Checks the same lines four a step, from the same `lines` and `line`: the step's eight
-/// differences ORed together, then into one accumulator, whose lanes are `accumulate_line`'s four
-/// (words `k` and `k + 4` of each line into lane `k`), as `verify_lines` has them; ORing the step
-/// first leaves the accumulator one OR a step to wait on. Nonzero when a word differs.
-#[inline(always)]
-unsafe fn verify_lines_by_4(ptr: *const u64, start: usize, end: usize, mut lines: impl FnMut(u64x4) -> [u64x4; 8],
-                            line: impl FnMut(*const u64) -> [u64; LINE_WORDS]) -> u64 {
-    debug_assert!(start.is_multiple_of(LINE_WORDS) && end.is_multiple_of(LINE_WORDS), "whole lines: {start}..{end}");
-    let rest = start + (end - start) / (4 * LINE_WORDS) * (4 * LINE_WORDS);
-    let mut p = ptr.add(start);
-    let last = ptr.wrapping_add(rest);
-    let mut addrs = u64x4::splat(p as u64) + u64x4::from_array([0, 64, 128, 192]);
-    let step = u64x4::splat(4 * 64);
-    let mut acc = u64x4::splat(0);
-    while p < last {
-        let v = lines(addrs);
-        let d: [u64x4; 8] = std::array::from_fn(|k| p.add(4 * k).cast::<u64x4>().read_unaligned() ^ v[k]);
-        acc |= ((d[0] | d[1]) | (d[2] | d[3])) | ((d[4] | d[5]) | (d[6] | d[7]));
-        addrs += step;
-        p = p.wrapping_add(4 * LINE_WORDS);
-    }
-    let tail = if rest < end { verify_lines_tail(ptr, rest, end, line) } else { 0 };
-    acc.reduce_or() | tail
-}
-
-/// `verify_lines` for the last lines of a range, out of the hot function.
-#[cold]
-#[inline(never)]
-unsafe fn verify_lines_tail(ptr: *const u64, start: usize, end: usize, words: impl FnMut(*const u64) -> [u64; LINE_WORDS]) -> u64 {
-    verify_lines(ptr, start, end, words)
-}
-
-/// The splitmix64 finalizer of each lane: `pattern_gen::pattern_mode13` of an index and seed
-/// whose sum the lane holds. The constants are `pattern_mode13`'s; the unit tests hold the two
-/// equal.
-#[inline(always)]
-fn splitmix_lanes(mut h: u64x4) -> u64x4 {
-    h ^= h >> 30;
-    h *= u64x4::splat(0xbf58476d1ce4e5b9);
-    h ^= h >> 27;
-    h *= u64x4::splat(0x94d049bb133111eb);
-    h ^ (h >> 31)
-}
-
-/// Rows to columns: vector `l` of the result holds lane `l` of each row, in row order.
-#[inline(always)]
-fn transpose4(rows: [u64x4; 4]) -> [u64x4; 4] {
-    let [r0, r1, r2, r3] = rows;
-    let (t0, t1) = (simd_swizzle!(r0, r1, [0, 4, 2, 6]), simd_swizzle!(r0, r1, [1, 5, 3, 7]));
-    let (t2, t3) = (simd_swizzle!(r2, r3, [0, 4, 2, 6]), simd_swizzle!(r2, r3, [1, 5, 3, 7]));
-    [simd_swizzle!(t0, t2, [0, 1, 4, 5]), simd_swizzle!(t1, t3, [0, 1, 4, 5]),
-     simd_swizzle!(t0, t2, [2, 3, 6, 7]), simd_swizzle!(t1, t3, [2, 3, 6, 7])]
-}
-
-/// Mode 20's four lines at the addresses in `addrs`, as `fill_lines_by_4` takes them: each lane's
-/// seed and step (`pattern_gen::mode20_line`), its line's words 0-3 (`line_words`) a vector each
-/// across the lanes, turned to a vector per line, and words 4-7 those plus four steps.
-#[inline(always)]
-fn mode20_lines4(addrs: u64x4, key: u64x4) -> [u64x4; 8] {
-    let seed = splitmix_lanes(addrs + key);
-    let x = seed ^ key;
-    let step = (((x << 29) | (x >> 35)) * u64x4::splat(0x9E3779B97F4A7C15)) | u64x4::splat(1);
-    let s2 = step + step;
-    let w1 = seed + step;
-    let [l0, l1, l2, l3] = transpose4([seed, w1, seed + s2, w1 + s2]);
-    let s4 = s2 + s2;
-    [l0, l0 + simd_swizzle!(s4, [0, 0, 0, 0]), l1, l1 + simd_swizzle!(s4, [1, 1, 1, 1]),
-     l2, l2 + simd_swizzle!(s4, [2, 2, 2, 2]), l3, l3 + simd_swizzle!(s4, [3, 3, 3, 3])]
-}
-
-/// Mode 30's value of the lines at the four addresses in `addrs` (`pattern_gen::mode30_line`'s
-/// `balanced_bytes` of the line's hash), a lane a line.
-#[inline(always)]
-fn mode30_values4(addrs: u64x4, key: u64x4) -> u64x4 {
-    let low_nibbles = u64x4::splat(0x0F0F_0F0F_0F0F_0F0F);
-    let mut x = splitmix_lanes(addrs + key) & u64x4::splat(0xFFFF_FFFF);
-    x = (x | (x << 16)) & u64x4::splat(0x0000_FFFF_0000_FFFF);
-    x = (x | (x << 8)) & u64x4::splat(0x00FF_00FF_00FF_00FF);
-    x = (x | (x << 4)) & low_nibbles;
-    x | ((!x & low_nibbles) << 4)
-}
-
-/// Four lines of one word each (`v`'s lane, XOR `inv`'s lane `j % 4` at word `j`), as
-/// `fill_lines_by_4` takes them: mode 30's at 64, 32 and 16 bits (`pattern_gen::bus_flip_line`).
-#[inline(always)]
-fn splat_lines4(v: u64x4, inv: u64x4) -> [u64x4; 8] {
-    let (l0, l1) = (simd_swizzle!(v, [0, 0, 0, 0]) ^ inv, simd_swizzle!(v, [1, 1, 1, 1]) ^ inv);
-    let (l2, l3) = (simd_swizzle!(v, [2, 2, 2, 2]) ^ inv, simd_swizzle!(v, [3, 3, 3, 3]) ^ inv);
-    [l0, l0, l1, l1, l2, l2, l3, l3]
-}
-
-/// Mode 30's four lines at the addresses in `addrs` at a beat of `BITS` bits, 64, 32 or 16, whose
-/// lines are one word and its inverse (`pattern_gen::bus_flip_line`), as `fill_lines_by_4` takes
-/// them.
-#[inline(always)]
-fn mode30_lines4<const BITS: u32>(addrs: u64x4, key: u64x4) -> [u64x4; 8] {
-    let a = mode30_values4(addrs, key);
-    match BITS {
-        64 => splat_lines4(a, u64x4::from_array([0, !0, 0, !0])),
-        32 => splat_lines4((a & u64x4::splat(0xFFFF_FFFF)) | (!a << 32), u64x4::splat(0)),
-        16 => {
-            let half = u64x4::splat(0xFFFF);
-            let pair = (a & half) | ((!a & half) << 16);
-            splat_lines4(pair | (pair << 32), u64x4::splat(0))
-        }
-        _ => unreachable!("mode 30 has no closed form at {BITS} bits"),
-    }
-}
-
-/// Mode 20's fill of one chunk (`Mode20::fill`'s lines), four a step.
-#[inline(never)]
-unsafe fn mode20_fill_chunk(mode: Mode20, ptr: *mut u64, start: usize, end: usize) {
-    let key = u64x4::splat(mode.key);
-    fill_lines_by_4(ptr, start, end, |addrs| mode20_lines4(addrs, key), |line| {
-        let (seed, step) = pattern_gen::mode20_line(line as usize, mode.key);
-        pattern_gen::line_words(seed, step)
-    })
-}
-
-/// Mode 20's check of one chunk: `Mode20::verify`'s, four lines a step, its rescan on a hit.
-#[inline(never)]
-unsafe fn mode20_check_chunk(mode: Mode20, ptr: *const u64, start: usize, end: usize, test_name: &str) -> u64 {
-    let key = u64x4::splat(mode.key);
-    let seen = verify_lines_by_4(ptr, start, end, |addrs| mode20_lines4(addrs, key), |line| {
-        let (seed, step) = pattern_gen::mode20_line(line as usize, mode.key);
-        pattern_gen::line_words(seed, step)
-    });
-    if seen == 0 {
-        return 0;
-    }
-    mode.rescan(ptr, start, end, test_name, seen)
-}
-
-/// Mode 30's fill of one chunk (`Mode30::fill`'s lines), a loop per beat: four lines a step at 64,
-/// 32 and 16 bits, whose lines are one word and its inverse; a line a step at 12 and 24, the
-/// modelled beats, whose words each take their own shift of the line's value.
-#[inline(never)]
-unsafe fn mode30_fill_chunk(mode: Mode30, ptr: *mut u64, start: usize, end: usize) {
-    use pattern_gen::BusBeat;
-    let (key, k) = (u64x4::splat(mode.key), mode.key);
-    match mode.beat {
-        BusBeat::Bits64 => fill_lines_by_4(ptr, start, end, |addrs| mode30_lines4::<64>(addrs, key),
-                                           |line| pattern_gen::mode30_line(line as usize, k, BusBeat::Bits64)),
-        BusBeat::Bits32 => fill_lines_by_4(ptr, start, end, |addrs| mode30_lines4::<32>(addrs, key),
-                                           |line| pattern_gen::mode30_line(line as usize, k, BusBeat::Bits32)),
-        BusBeat::Bits16 => fill_lines_by_4(ptr, start, end, |addrs| mode30_lines4::<16>(addrs, key),
-                                           |line| pattern_gen::mode30_line(line as usize, k, BusBeat::Bits16)),
-        BusBeat::Bits12 => fill_lines(ptr, start, end, |line| pattern_gen::mode30_line(line as usize, k, BusBeat::Bits12)),
-        BusBeat::Bits24 => fill_lines(ptr, start, end, |line| pattern_gen::mode30_line(line as usize, k, BusBeat::Bits24)),
-    }
-}
-
-/// Mode 30's check of one chunk: `Mode30::verify`'s, its rescan on a hit; four lines a step where
-/// the fill goes four a step.
-#[inline(never)]
-unsafe fn mode30_check_chunk(mode: Mode30, ptr: *const u64, start: usize, end: usize, test_name: &str) -> u64 {
-    mode.verify(ptr, start, end, test_name)
-}
-
-/// Bench-Init dispatcher: routes to the correct pattern mode based on config.pattern_mode.
-/// Each Bench-Init-* test sets pattern_mode in its config, then calls this.
+/// Bench-Init-TM5-* and Bench-Init-TMR-*: a numbered mode's write alone, every cycle, at the widest
+/// width this CPU has. Each test sets its `pattern_mode`, then calls this.
 #[doc = include_str!("test_fn_safety.md")]
 pub unsafe fn bench_init_multi(
     blocks: &[crate::runner::AllocationBlock],
@@ -8069,136 +8349,16 @@ pub unsafe fn bench_init_multi(
     config: &TestMemoryConfig,
     progress: Option<&TestProgress>,
 ) -> TestStats {
-    let mode = config.pattern_mode.unwrap_or(10);
-    let param0 = config.pattern_param0.unwrap_or(0xDEADBEEFDEADBEEF);
-    let param1 = config.pattern_param1.unwrap_or(0xCAFEBABECAFEBABE);
-    let cl_shift = pattern_gen::cache_line_shift(config.cache_line_bytes);
-
-    let skip_init = config.skip_init;
-    let mode0 = |ctx: &ChunkCtx| Mode0Words { seed: pattern_gen::block_seed(ctx.ptr as usize, ctx.thread_id, 0) };
-    let mode1 = |ctx: &ChunkCtx| Mode1Words { seed: pattern_gen::block_seed(ctx.ptr as usize, ctx.thread_id, 0), cl_shift };
-
-    let test_name = match mode {
-        0 => "Bench-Init-TM5-0",
-        1 => "Bench-Init-TM5-1",
-        2 => "Bench-Init-TM5-2",
-        10 => "Bench-Init-TMR-10",
-        11 => "Bench-Init-TMR-11",
-        13 => "Bench-Init-TMR-13",
-        20 => "Bench-Init-TMR-20",
-        30 => "Bench-Init-TMR-30",
-        _ => "Bench-Init-Unknown",
-    };
-
-    match mode {
-        // --- TM5-faithful modes ---
-        // NOTE: block_seed uses cycle=0 (not ctx.cycle) so that the pattern written
-        // here is stable across cycles. Bench-Verify depends on matching the exact
-        // same seed — if we varied by cycle, the last-written cycle would be unknown
-        // to Bench-Verify, causing massive false-positive errors.
-        0 => {
-            // Mode 0: bit dispersion + branchless 4KB page complement
-            run_phased_test(
-                blocks, thread_id, error_mode, timing, config, progress,
-                test_name, TestAction::Write, 1, skip_init, 1, 0,
-                |ctx: &ChunkCtx| mode0(ctx).fill(ctx.ptr, ctx.chunk_start, ctx.chunk_end),
-                |ctx: &ChunkCtx| mode0(ctx).fill(ctx.ptr, ctx.chunk_start, ctx.chunk_end),
-                |_ctx: &ChunkCtx| -> u64 { 0 },
-            )
-        }
-        1 => {
-            // Mode 1: linear step + cache-line complement
-            run_phased_test(
-                blocks, thread_id, error_mode, timing, config, progress,
-                test_name, TestAction::Write, 1, skip_init, 1, 0,
-                |ctx: &ChunkCtx| mode1(ctx).fill(ctx.ptr, ctx.chunk_start, ctx.chunk_end),
-                |ctx: &ChunkCtx| mode1(ctx).fill(ctx.ptr, ctx.chunk_start, ctx.chunk_end),
-                |_ctx: &ChunkCtx| -> u64 { 0 },
-            )
-        }
-        2 => {
-            // Mode 2: TM5's evolving lines, the chain restarted per 4 KiB page
-            let mode2 = Mode2 { thread_id, cycle: 0, param0, param1 };
-            run_phased_test(
-                blocks, thread_id, error_mode, timing, config, progress,
-                test_name, TestAction::Write, 1, skip_init, 1, 0,
-                |ctx: &ChunkCtx| mode2_fill_chunk(mode2, ctx.ptr, ctx.chunk_start, ctx.chunk_end),
-                |ctx: &ChunkCtx| mode2_fill_chunk(mode2, ctx.ptr, ctx.chunk_start, ctx.chunk_end),
-                |_ctx: &ChunkCtx| -> u64 { 0 },
-            )
-        }
-        // --- TMR-native modes ---
-        10 => {
-            // Mode 10: idx ^ base (address-derived unique)
-            let base = 0xDEADBEEFDEADBEEF_u64;
-            run_phased_test(
-                blocks, thread_id, error_mode, timing, config, progress,
-                test_name, TestAction::Write, 1, skip_init, 1, 0,
-                |ctx: &ChunkCtx| XorWords { key: base }.fill(ctx.ptr, ctx.chunk_start, ctx.chunk_end),
-                |ctx: &ChunkCtx| XorWords { key: base }.fill(ctx.ptr, ctx.chunk_start, ctx.chunk_end),
-                |_ctx: &ChunkCtx| -> u64 { 0 },
-            )
-        }
-        11 => {
-            // Mode 11: idx ^ combined (param0 ^ param1)
-            let combined = param0 ^ param1;
-            run_phased_test(
-                blocks, thread_id, error_mode, timing, config, progress,
-                test_name, TestAction::Write, 1, skip_init, 1, 0,
-                |ctx: &ChunkCtx| XorWords { key: combined }.fill(ctx.ptr, ctx.chunk_start, ctx.chunk_end),
-                |ctx: &ChunkCtx| XorWords { key: combined }.fill(ctx.ptr, ctx.chunk_start, ctx.chunk_end),
-                |_ctx: &ChunkCtx| -> u64 { 0 },
-            )
-        }
-        13 => {
-            // Mode 13: Positional pseudo-random hash (splitmix64).
-            // High entropy like LCG but each element computed independently from (idx, seed).
-            // No sequential dependency, no carry-state, chunk-agnostic.
-            let seed = param0;
-            run_phased_test(
-                blocks, thread_id, error_mode, timing, config, progress,
-                test_name, TestAction::Write, 1, skip_init, 1, 0,
-                |ctx: &ChunkCtx| Mode13Words { seed }.fill(ctx.ptr, ctx.chunk_start, ctx.chunk_end),
-                |ctx: &ChunkCtx| Mode13Words { seed }.fill(ctx.ptr, ctx.chunk_start, ctx.chunk_end),
-                |_ctx: &ChunkCtx| -> u64 { 0 },
-            )
-        }
-        30 => {
-            // Mode 30: the bus-flip lines
-            let mode30 = Mode30::new(thread_id, 0, param0, param1);
-            run_phased_test(
-                blocks, thread_id, error_mode, timing, config, progress,
-                test_name, TestAction::Write, 1, skip_init, 1, 0,
-                |ctx: &ChunkCtx| mode30_fill_chunk(mode30, ctx.ptr, ctx.chunk_start, ctx.chunk_end),
-                |ctx: &ChunkCtx| mode30_fill_chunk(mode30, ctx.ptr, ctx.chunk_start, ctx.chunk_end),
-                |_ctx: &ChunkCtx| -> u64 { 0 },
-            )
-        }
-        _ => {
-            // Mode 20 (and any unknown mode): mode 2's lines, hashed from each line's address
-            let mode20 = Mode20::new(thread_id, 0, param0, param1);
-            run_phased_test(
-                blocks, thread_id, error_mode, timing, config, progress,
-                test_name, TestAction::Write, 1, skip_init, 1, 0,
-                |ctx: &ChunkCtx| mode20_fill_chunk(mode20, ctx.ptr, ctx.chunk_start, ctx.chunk_end),
-                |ctx: &ChunkCtx| mode20_fill_chunk(mode20, ctx.ptr, ctx.chunk_start, ctx.chunk_end),
-                |_ctx: &ChunkCtx| -> u64 { 0 },
-            )
-        }
+    if is_x86_feature_detected!("avx512f") {
+        bench_init_512(blocks, thread_id, error_mode, timing, config, progress)
+    } else {
+        bench_init_256(blocks, thread_id, error_mode, timing, config, progress)
     }
 }
 
-// ============================================================================
-// Bench-Verify: Standalone pattern verification benchmarks
-// Measures raw VERIFY/read throughput per pattern mode with no-op test.
-// Can run independently (writes patterns first) or dependently (skip_init=true,
-// relies on a prior Bench-Init-* having written the matching patterns).
-// ============================================================================
-
-/// Bench-Verify dispatcher: routes to the correct pattern mode based on config.pattern_mode.
-/// In dependent mode (config.skip_init=true), skips the init write — assumes a matching
-/// Bench-Init-* test already wrote the patterns. The init closure is still provided so
-/// the harness has pattern knowledge for error repair if needed.
+/// Bench-Verify-TM5-* and Bench-Verify-TMR-*: a numbered mode's verify alone, at the widest width.
+/// It fills its extent first, untimed, unless `skip_init` has it follow its Bench-Init-*, which
+/// wrote the same pattern.
 #[doc = include_str!("test_fn_safety.md")]
 pub unsafe fn bench_verify_multi(
     blocks: &[crate::runner::AllocationBlock],
@@ -8208,128 +8368,16 @@ pub unsafe fn bench_verify_multi(
     config: &TestMemoryConfig,
     progress: Option<&TestProgress>,
 ) -> TestStats {
-    // The fill is setup: the verifies alone are timed and counted (TODO 90, the harness)
-    let mode = config.pattern_mode.unwrap_or(10);
-    let param0 = config.pattern_param0.unwrap_or(0xDEADBEEFDEADBEEF);
-    let param1 = config.pattern_param1.unwrap_or(0xCAFEBABECAFEBABE);
-    let cl_shift = pattern_gen::cache_line_shift(config.cache_line_bytes);
-    let skip_init = config.skip_init;
-    let mode0 = |ctx: &ChunkCtx| Mode0Words { seed: pattern_gen::block_seed(ctx.ptr as usize, ctx.thread_id, 0) };
-    let mode1 = |ctx: &ChunkCtx| Mode1Words { seed: pattern_gen::block_seed(ctx.ptr as usize, ctx.thread_id, 0), cl_shift };
-
-    let test_name = match mode {
-        0 => "Bench-Verify-TM5-0",
-        1 => "Bench-Verify-TM5-1",
-        2 => "Bench-Verify-TM5-2",
-        10 => "Bench-Verify-TMR-10",
-        11 => "Bench-Verify-TMR-11",
-        13 => "Bench-Verify-TMR-13",
-        20 => "Bench-Verify-TMR-20",
-        30 => "Bench-Verify-TMR-30",
-        _ => "Bench-Verify-Unknown",
-    };
-
-    match mode {
-        // --- TM5-faithful modes ---
-        // NOTE: block_seed uses cycle=0 (not ctx.cycle) to match Bench-Init's stable seed.
-        // Both init and verify must produce identical seeds regardless of cycle number.
-        0 => {
-            // Mode 0: bit dispersion + branchless 4KB page complement
-            run_phased_test(
-                blocks, thread_id, error_mode, timing, config, progress,
-                test_name, TestAction::Verify, 1, skip_init, 0, 1,
-                |ctx: &ChunkCtx| mode0(ctx).fill(ctx.ptr, ctx.chunk_start, ctx.chunk_end),
-                |_ctx: &ChunkCtx| {},
-                |ctx: &ChunkCtx| -> u64 { mode0(ctx).check(ctx.ptr, ctx.chunk_start, ctx.chunk_end, test_name) },
-            )
-        }
-        1 => {
-            // Mode 1: linear step + cache-line complement
-            run_phased_test(
-                blocks, thread_id, error_mode, timing, config, progress,
-                test_name, TestAction::Verify, 1, skip_init, 0, 1,
-                |ctx: &ChunkCtx| mode1(ctx).fill(ctx.ptr, ctx.chunk_start, ctx.chunk_end),
-                |_ctx: &ChunkCtx| {},
-                |ctx: &ChunkCtx| -> u64 { mode1(ctx).check(ctx.ptr, ctx.chunk_start, ctx.chunk_end, test_name) },
-            )
-        }
-        2 => {
-            // Mode 2: TM5's evolving lines, the chain restarted per 4 KiB page
-            let mode2 = Mode2 { thread_id, cycle: 0, param0, param1 };
-            run_phased_test(
-                blocks, thread_id, error_mode, timing, config, progress,
-                test_name, TestAction::Verify, 1, skip_init, 0, 1,
-                |ctx: &ChunkCtx| mode2_fill_chunk(mode2, ctx.ptr, ctx.chunk_start, ctx.chunk_end),
-                |_ctx: &ChunkCtx| {},
-                |ctx: &ChunkCtx| -> u64 { mode2_check_chunk(mode2, ctx.ptr, ctx.chunk_start, ctx.chunk_end, test_name) },
-            )
-        }
-        // --- TMR-native modes ---
-        10 => {
-            // Mode 10: idx ^ base (address-derived unique)
-            let base = 0xDEADBEEFDEADBEEF_u64;
-            run_phased_test(
-                blocks, thread_id, error_mode, timing, config, progress,
-                test_name, TestAction::Verify, 1, skip_init, 0, 1,
-                |ctx: &ChunkCtx| XorWords { key: base }.fill(ctx.ptr, ctx.chunk_start, ctx.chunk_end),
-                |_ctx: &ChunkCtx| {},
-                |ctx: &ChunkCtx| -> u64 { XorWords { key: base }.check(ctx.ptr, ctx.chunk_start, ctx.chunk_end, test_name) },
-            )
-        }
-        11 => {
-            // Mode 11: idx ^ combined (param0 ^ param1)
-            let combined = param0 ^ param1;
-            run_phased_test(
-                blocks, thread_id, error_mode, timing, config, progress,
-                test_name, TestAction::Verify, 1, skip_init, 0, 1,
-                |ctx: &ChunkCtx| XorWords { key: combined }.fill(ctx.ptr, ctx.chunk_start, ctx.chunk_end),
-                |_ctx: &ChunkCtx| {},
-                |ctx: &ChunkCtx| -> u64 { XorWords { key: combined }.check(ctx.ptr, ctx.chunk_start, ctx.chunk_end, test_name) },
-            )
-        }
-        13 => {
-            // Mode 13: Positional pseudo-random hash (splitmix64).
-            // High entropy like LCG but each element computed independently from (idx, seed).
-            // No sequential dependency, no carry-state, chunk-agnostic.
-            let seed = param0;
-            run_phased_test(
-                blocks, thread_id, error_mode, timing, config, progress,
-                test_name, TestAction::Verify, 1, skip_init, 0, 1,
-                |ctx: &ChunkCtx| Mode13Words { seed }.fill(ctx.ptr, ctx.chunk_start, ctx.chunk_end),
-                |_ctx: &ChunkCtx| {},
-                |ctx: &ChunkCtx| -> u64 { Mode13Words { seed }.check(ctx.ptr, ctx.chunk_start, ctx.chunk_end, test_name) },
-            )
-        }
-        30 => {
-            // Mode 30: the bus-flip lines
-            let mode30 = Mode30::new(thread_id, 0, param0, param1);
-            run_phased_test(
-                blocks, thread_id, error_mode, timing, config, progress,
-                test_name, TestAction::Verify, 1, skip_init, 0, 1,
-                |ctx: &ChunkCtx| mode30_fill_chunk(mode30, ctx.ptr, ctx.chunk_start, ctx.chunk_end),
-                |_ctx: &ChunkCtx| {},
-                |ctx: &ChunkCtx| -> u64 { mode30_check_chunk(mode30, ctx.ptr, ctx.chunk_start, ctx.chunk_end, test_name) },
-            )
-        }
-        _ => {
-            // Mode 20 (and any unknown mode): mode 2's lines, hashed from each line's address
-            let mode20 = Mode20::new(thread_id, 0, param0, param1);
-            run_phased_test(
-                blocks, thread_id, error_mode, timing, config, progress,
-                test_name, TestAction::Verify, 1, skip_init, 0, 1,
-                |ctx: &ChunkCtx| mode20_fill_chunk(mode20, ctx.ptr, ctx.chunk_start, ctx.chunk_end),
-                |_ctx: &ChunkCtx| {},
-                |ctx: &ChunkCtx| -> u64 { mode20_check_chunk(mode20, ctx.ptr, ctx.chunk_start, ctx.chunk_end, test_name) },
-            )
-        }
+    if is_x86_feature_detected!("avx512f") {
+        bench_verify_512(blocks, thread_id, error_mode, timing, config, progress)
+    } else {
+        bench_verify_256(blocks, thread_id, error_mode, timing, config, progress)
     }
 }
 
 #[cfg(test)]
 mod bench_move_tests {
-    use super::{BlockMoveChunk, Mode0Words, Mode1Words, Mode13Words, Mode2, Mode20, Mode30, XorWords, mode2_check_chunk,
-                mode2_fill_chunk, mode20_check_chunk, mode20_fill_chunk, mode30_check_chunk, mode30_fill_chunk};
-    use crate::pattern_gen::{self, BusBeat, LINE_WORDS, PAGE_WORDS};
+    use super::BlockMoveChunk;
 
     /// Mem-BlockMove's copy loops before TODO 99, as they were: the image the new copies must leave.
     unsafe fn old_copy(src_base: *const u64, dst_base: *mut u64, processed: usize, chunk_end: usize, copy_dirs: u32) {
@@ -8524,120 +8572,6 @@ mod bench_move_tests {
                 assert_visits(&visits.into_inner(), &want, &format!("{dirs} directions, words {start} + {len}"));
             }
         }
-    }
-
-    /// TODO 99: the per-word Bench kernels (modes 0, 1 at six line sizes, 10, 11 and 13) write each
-    /// word its mode's value, `pattern_gen`'s word by word, and nothing else; read clean; and see a
-    /// bad word in each lane of each accumulator, at each page edge and in the tails, which the
-    /// check counts once.
-    #[test]
-    fn bench_word_kernels_write_their_pattern_and_see_every_bad_word() {
-        let seed = 0x0123_4567_89AB_CDEFu64;
-        // Whole pages; a start off the step, across pages, with a tail; pieces shorter than a step
-        // either side of a page edge
-        let ranges = [(0usize, 2 * PAGE_WORDS), (300, 300 + 16 * 45 + 11), (3 * PAGE_WORDS - 5, 3 * PAGE_WORDS + 40)];
-        macro_rules! case {
-            ($words:expr, $want:expr) => {{
-                let (words, want) = ($words, $want);
-                for (start, end) in ranges {
-                    let mut mem = vec![!0u64; end + 64];
-                    let p = mem.as_mut_ptr();
-                    unsafe { words.fill(p, start, end) };
-                    for (i, &word) in mem.iter().enumerate() {
-                        let expected = if (start..end).contains(&i) { want(i as u64) } else { !0 };
-                        assert_eq!(word, expected, "{}: word {i} of {start}..{end}", stringify!($words));
-                    }
-                    assert_eq!(unsafe { words.verify(p, start, end) }, 0, "{}: {start}..{end} clean", stringify!($words));
-                    assert_eq!(unsafe { words.check(p, start, end, "test") }, 0);
-                    let len = end - start;
-                    let page_edges = (start..end).filter(|i| i % PAGE_WORDS == 0 || i % PAGE_WORDS == PAGE_WORDS - 1);
-                    let bad = (start..start + 16).chain(end - len % 16..end).chain(page_edges).chain((start..end).step_by(97));
-                    for word in bad {
-                        mem[word] ^= 1 << 40;
-                        assert_ne!(unsafe { words.verify(p, start, end) }, 0, "{}: {start}..{end} missed word {word}", stringify!($words));
-                        assert_eq!(unsafe { words.check(p, start, end, "test") }, 1, "{}: word {word} counted once", stringify!($words));
-                        mem[word] ^= 1 << 40;
-                    }
-                }
-            }};
-        }
-        case!(Mode0Words { seed }, |i| pattern_gen::pattern_mode0(i, seed));
-        // Lines of 8 words (x86's), 1, 2 and 4, whose inversions repeat every step; 16 and 32, whose don't
-        for cl_shift in [3, 0, 1, 2, 4, 5] {
-            case!(Mode1Words { seed, cl_shift }, |i| pattern_gen::pattern_mode1(i, seed, cl_shift));
-        }
-        let base = 0xDEADBEEFDEADBEEFu64;
-        case!(XorWords { key: base }, |i| pattern_gen::pattern_mode10(i, base));
-        let combined = base ^ 0xCAFEBABECAFEBABE;
-        case!(XorWords { key: combined }, |i| pattern_gen::pattern_mode11(i, combined));
-        case!(Mode13Words { seed }, |i| pattern_gen::pattern_mode13(i, seed));
-    }
-
-    /// TODO 99: the line Bench kernels (modes 20 and 30 at every beat, and mode 2 out of line)
-    /// write each line its mode's words, `pattern_gen`'s line by line, and nothing else, in whole
-    /// steps of four lines, with a tail of one to three, and in ranges shorter than a step; read
-    /// clean; and see a bad word in each lane of the accumulator, in either half of each line of a
-    /// step, and in the last line, which the check counts once.
-    #[test]
-    fn bench_line_kernels_write_their_lines_and_see_every_bad_word() {
-        let total = 4 * PAGE_WORDS;
-        // 64-byte aligned, so each line is a cache line, as in a test's memory
-        let mut buf = vec![std::simd::u64x8::splat(0); total / LINE_WORDS];
-        let p = buf.as_mut_ptr() as *mut u64;
-        let run = |name: &str, start: usize, end: usize, fill: &dyn Fn(*mut u64, usize, usize),
-                   check: &dyn Fn(*const u64, usize, usize) -> u64, want: &dyn Fn(usize) -> [u64; LINE_WORDS]| unsafe {
-            std::slice::from_raw_parts_mut(p, total).fill(!0);
-            fill(p, start, end);
-            for i in 0..total {
-                let expected = if (start..end).contains(&i) { want(p.add(i - i % LINE_WORDS) as usize)[i % LINE_WORDS] } else { !0 };
-                assert_eq!(*p.add(i), expected, "{name}: word {i} of {start}..{end}");
-            }
-            assert_eq!(check(p, start, end), 0, "{name}: {start}..{end} clean");
-            // Every word of the first four lines (each vector of a four-line step), the last line's, a spread
-            let bad = (start..(start + 4 * LINE_WORDS).min(end)).chain(end - LINE_WORDS..end).chain((start..end).step_by(61));
-            for word in bad {
-                *p.add(word) ^= 1 << 40;
-                assert_eq!(check(p, start, end), 1, "{name}: {start}..{end}, word {word} counted once");
-                *p.add(word) ^= 1 << 40;
-            }
-        };
-
-        let mode20 = Mode20::new(3, 0, 0x5DEECE66D, 0xB);
-        let lines20 = |line: usize| {
-            let (seed, step) = pattern_gen::mode20_line(line, mode20.key);
-            pattern_gen::line_words(seed, step)
-        };
-        // Whole steps (256 and 248 lines); 247 lines, and 5, with a tail; 2 and 3 lines, a tail alone
-        let ranges = [(0, total), (3 * LINE_WORDS, total - 5 * LINE_WORDS), (3 * LINE_WORDS, total - 6 * LINE_WORDS),
-                      (LINE_WORDS, 6 * LINE_WORDS), (9 * LINE_WORDS, 11 * LINE_WORDS), (13 * LINE_WORDS, 16 * LINE_WORDS)];
-        for (start, end) in ranges {
-            run("mode 20", start, end, &|p, s, e| unsafe { mode20_fill_chunk(mode20, p, s, e) },
-                &|p, s, e| unsafe { mode20_check_chunk(mode20, p, s, e, "test") }, &lines20);
-        }
-
-        let key = pattern_gen::mode20_key(3, 0, 0x5DEECE66D, 0xB);
-        for beat in [BusBeat::Bits12, BusBeat::Bits16, BusBeat::Bits24, BusBeat::Bits32, BusBeat::Bits64] {
-            let mode30 = Mode30 { key, beat };
-            for (start, end) in ranges {
-                run(&format!("mode 30 at {} bits", beat.bits()), start, end, &|p, s, e| unsafe { mode30_fill_chunk(mode30, p, s, e) },
-                    &|p, s, e| unsafe { mode30_check_chunk(mode30, p, s, e, "test") }, &|line| pattern_gen::mode30_line(line, key, beat));
-            }
-        }
-
-        // Mode 2's chain, from the start of each page of the range (pages count from the pointer)
-        let mode2 = Mode2 { thread_id: 3, cycle: 0, param0: 0x5DEECE66D, param1: 0xB };
-        let base = p as usize;
-        let lines2 = |line: usize| {
-            let word = (line - base) / 8;
-            let page = word - word % PAGE_WORDS;
-            let (mut seed, mut step) = pattern_gen::mode2_page_start(base + page * 8, 3, 0);
-            for _ in 0..(word - page) / LINE_WORDS {
-                (seed, step) = pattern_gen::mode2_evolve(seed, step, 0x5DEECE66D, 0xB);
-            }
-            pattern_gen::line_words(seed, step)
-        };
-        run("mode 2", PAGE_WORDS, total, &|p, s, e| unsafe { mode2_fill_chunk(mode2, p, s, e) },
-            &|p, s, e| unsafe { mode2_check_chunk(mode2, p, s, e, "test") }, &lines2);
     }
 }
 
@@ -9117,40 +9051,48 @@ mod random_replay_tests {
 
     /// TODO 76: modes 2 and 20 depend only on the address, so writing a range in overlapping
     /// pieces, in any order, gives the image one pass gives. The verify finds nothing on it and
-    /// counts each bad word exactly.
+    /// counts each bad word exactly (the 256-bit loops, which every CPU TMR runs on has, TODO 99).
     #[test]
     fn line_patterns_are_position_pure_and_count_exactly() {
+        use super::{simple_test_v2_256_loops as loops, SimpleMode2, SimpleMode20};
         let words = 6 * PAGE_WORDS;
         let mut buf = vec![std::simd::u64x8::splat(0); words / 8];
         let p = buf.as_mut_ptr() as *mut u64;
-        let mode2 = Mode2 { thread_id: 3, cycle: 1, param0: 0x5DEECE66D, param1: 0xB };
-        let mode20 = Mode20::new(3, 1, 0x5DEECE66D, 0xB);
+        let mode2 = SimpleMode2 { ptr: p, start: 0, end: words, mode2: Mode2 { thread_id: 3, cycle: 1, param0: 0x5DEECE66D, param1: 0xB } };
+        let mode20 = SimpleMode20 { ptr: p, start: 0, end: words, key: Mode20::new(3, 1, 0x5DEECE66D, 0xB).key };
+        let fill2 = |start: usize, end: usize| unsafe { loops::m2_write(SimpleMode2 { start, end, ..mode2 }) };
+        let fill20 = |start: usize, end: usize| unsafe { loops::m20_write(SimpleMode20 { start, end, ..mode20 }) };
+        let check2 = |start: usize| unsafe {
+            let c = SimpleMode2 { start, ..mode2 };
+            c.errors(loops::m2_verify(c), "test")
+        };
+        let check20 = || unsafe { mode20.errors(loops::m20_verify(mode20), "test") };
         let image = |p: *mut u64| unsafe { std::slice::from_raw_parts(p, words).to_vec() };
         unsafe {
-            mode2.fill(p, 0, words);
+            fill2(0, words);
             let one_pass = image(p);
-            mode20.fill(p, 0, words);
+            fill20(0, words);
             for (s, e) in [(4, 6), (0, 3), (2, 5)] {
-                mode2.fill(p, s * PAGE_WORDS, e * PAGE_WORDS);
+                fill2(s * PAGE_WORDS, e * PAGE_WORDS);
             }
             assert_eq!(image(p), one_pass);
-            assert_eq!(mode2.verify(p, 0, words, "test"), 0);
+            assert_eq!(check2(0), 0);
             *p.add(700) ^= 1;
             *p.add(2 * PAGE_WORDS + 9) ^= 1 << 63;
-            assert_eq!(mode2.verify(p, 0, words, "test"), 2);
-            assert_eq!(mode2.verify(p, 3 * PAGE_WORDS, words, "test"), 0);
-            assert!(mode20.verify(p, 0, words, "test") > 0);
+            assert_eq!(check2(0), 2);
+            assert_eq!(check2(3 * PAGE_WORDS), 0);
+            assert!(check20() > 0);
 
-            mode20.fill(p, 0, words);
+            fill20(0, words);
             let one_pass = image(p);
-            mode2.fill(p, 0, words);
+            fill2(0, words);
             for (s, e) in [(5 * PAGE_WORDS, words), (8, 3 * PAGE_WORDS + 64), (0, 5 * PAGE_WORDS + 8)] {
-                mode20.fill(p, s, e);
+                fill20(s, e);
             }
             assert_eq!(image(p), one_pass);
-            assert_eq!(mode20.verify(p, 0, words, "test"), 0);
+            assert_eq!(check20(), 0);
             *p.add(5 * PAGE_WORDS + 511) = 0;
-            assert_eq!(mode20.verify(p, 0, words, "test"), 1);
+            assert_eq!(check20(), 1);
         }
     }
 
