@@ -2716,12 +2716,15 @@ pub unsafe fn stride_access_multi(
     }
 }
 
-/// How Mem-BlockMove's and Mem-MovingInv's kernels read and write test memory, so a unit test can
-/// see their accesses in order (TODO 99): the image a kernel leaves doesn't show which way it went.
-/// Each access goes through an `Access`, which makes it and reports it to `seen`. A kernel's
-/// out-of-line function is its loop by `Direct`, whose `seen` is nothing: the accesses as written,
-/// which inline to the loop they were (the release asm is the same, instruction for instruction).
-/// A unit test runs the same loop by `Recorded`.
+/// How Mem-BlockMove's, Mem-MovingInv's and Mem-Sequence's kernels read and write test memory, so
+/// a unit test can see their accesses in order (TODO 99): the image a kernel leaves doesn't show
+/// which way it went. Each access goes through an `Access`, which makes it and reports it to
+/// `seen`. The test's is `Direct`, whose `seen` is nothing: the accesses as written, which inline
+/// to the loop they were (the release asm is the same, instruction for instruction). A unit test
+/// runs the same code by `Recorded`. Mem-MovingInv's out-of-line functions are its loops by
+/// `Direct`. Mem-BlockMove's copies and Mem-Sequence's passes take the access themselves, through
+/// the dispatch that picks them, so a unit test's goes the way the test's does: the test's
+/// functions are their `Direct` instances.
 ///
 /// A module of its own because a symbol names an impl by the number of impls before it in its
 /// module: `Direct`'s impl here leaves the symbols of the impls below, and so the asm, as they were.
@@ -2729,9 +2732,6 @@ mod access {
     use std::simd::u64x4;
 
     pub(super) trait Access: Copy {
-        /// Whether this is `Direct`: a kernel's dispatch then calls its out-of-line functions.
-        const DIRECT: bool = false;
-
         /// An access made: a write or a read, at `at`, of `values`.
         #[inline(always)]
         fn seen(self, _write: bool, _at: *const u64, _values: &[u64]) {}
@@ -2786,9 +2786,7 @@ mod access {
     #[derive(Clone, Copy)]
     pub(super) struct Direct;
 
-    impl Access for Direct {
-        const DIRECT: bool = true;
-    }
+    impl Access for Direct {}
 
     /// One access a kernel made: its first word, from the recorder's base, and the words it read or
     /// wrote.
@@ -2853,23 +2851,17 @@ impl BlockMoveChunk {
 
     /// The copy of `[start, end)` for `dirs` directions: 1 up; 2 the first half up and the second
     /// down; 4 four quarters, up, down, even words then odd, up; any other count `dirs`
-    /// interleaved strided passes, each up.
+    /// interleaved strided passes, each up. Each access by `access`: the test's `Direct`, or a
+    /// unit test's recorder through the same dispatch and the same functions (TODO 99).
     #[inline(always)]
-    unsafe fn copy(self, dirs: u32) {
-        self.copy_by(dirs, Direct)
-    }
-
-    /// `copy`, each access by `access` (TODO 99): by `Direct` through the out-of-line copies, which
-    /// is `copy`; by a unit test's recorder through the same loops.
-    #[inline(always)]
-    unsafe fn copy_by<A: Access>(self, dirs: u32, access: A) {
+    unsafe fn copy<A: Access>(self, dirs: u32, access: A) {
         let (start, end) = (self.start, self.end);
         match dirs {
-            1 => self.up(start, end, access),
+            1 => self.copy_up(start, end, access),
             2 => {
                 let mid = start + (end - start) / 2;
-                self.up(start, mid, access);
-                self.down(mid, end, access);
+                self.copy_up(start, mid, access);
+                self.copy_down(mid, end, access);
             }
             4 => {
                 let block = (end - start) / 4;
@@ -2878,42 +2870,20 @@ impl BlockMoveChunk {
                     let to = (start + (stream + 1) * block).min(end);
                     if from < to {
                         match stream {
-                            1 => self.down(from, to, access),
-                            2 => self.strided::<2, A>(from, to, 2, access),
-                            _ => self.up(from, to, access),
+                            1 => self.copy_down(from, to, access),
+                            2 => self.copy_strided::<2, A>(from, to, 2, access),
+                            _ => self.copy_up(from, to, access),
                         }
                     }
                 }
             }
-            dirs => self.strided::<0, A>(start, end, dirs as usize, access),
+            dirs => self.copy_strided::<0, A>(start, end, dirs as usize, access),
         }
-    }
-
-    /// `copy_up` by `Direct`, else its loop by `access`: so `copy` calls the function, and a unit
-    /// test the loop, recorded. `down` and `strided` the same.
-    #[inline(always)]
-    unsafe fn up<A: Access>(self, from: usize, to: usize, access: A) {
-        if A::DIRECT { self.copy_up(from, to) } else { self.copy_up_by(from, to, access) }
-    }
-
-    #[inline(always)]
-    unsafe fn down<A: Access>(self, from: usize, to: usize, access: A) {
-        if A::DIRECT { self.copy_down(from, to) } else { self.copy_down_by(from, to, access) }
-    }
-
-    #[inline(always)]
-    unsafe fn strided<const S: usize, A: Access>(self, from: usize, to: usize, stride: usize, access: A) {
-        if A::DIRECT { self.copy_strided::<S>(from, to, stride) } else { self.copy_strided_by::<S, A>(from, to, stride, access) }
     }
 
     /// Words `[from, to)` copied up, 16 a step: four vectors read, then the four written.
     #[inline(never)]
-    unsafe fn copy_up(self, from: usize, to: usize) {
-        self.copy_up_by(from, to, Direct)
-    }
-
-    #[inline(always)]
-    unsafe fn copy_up_by<A: Access>(self, from: usize, to: usize, access: A) {
+    unsafe fn copy_up<A: Access>(self, from: usize, to: usize, access: A) {
         let (mut s, mut d) = (self.src.add(from) as *const u64, self.dst.add(from));
         for _ in 0..(to - from) / 16 {
             let v0 = access.read(s.cast());
@@ -2937,12 +2907,7 @@ impl BlockMoveChunk {
     /// Words `[from, to)` copied down from the top, 16 a step, the step's four vectors from its
     /// top too; the words below the last whole step one at a time, down.
     #[inline(never)]
-    unsafe fn copy_down(self, from: usize, to: usize) {
-        self.copy_down_by(from, to, Direct)
-    }
-
-    #[inline(always)]
-    unsafe fn copy_down_by<A: Access>(self, from: usize, to: usize, access: A) {
+    unsafe fn copy_down<A: Access>(self, from: usize, to: usize, access: A) {
         let (mut s, mut d) = (self.src.add(to) as *const u64, self.dst.add(to));
         for _ in 0..(to - from) / 16 {
             s = s.wrapping_sub(16);
@@ -2967,12 +2932,7 @@ impl BlockMoveChunk {
     /// stride`, ..., each pass up. The stride is `S`, or `stride` when `S` is 0: the 4-way copy's
     /// even-then-odd quarter is a constant 2, so its accesses are fixed displacements.
     #[inline(never)]
-    unsafe fn copy_strided<const S: usize>(self, from: usize, to: usize, stride: usize) {
-        self.copy_strided_by::<S, Direct>(from, to, stride, Direct)
-    }
-
-    #[inline(always)]
-    unsafe fn copy_strided_by<const S: usize, A: Access>(self, from: usize, to: usize, stride: usize, access: A) {
+    unsafe fn copy_strided<const S: usize, A: Access>(self, from: usize, to: usize, stride: usize, access: A) {
         let stride = if S == 0 { stride } else { S };
         debug_assert!(stride > 0, "copy_directions is at least 1");
         for first in from..(from + stride).min(to) {
@@ -3102,7 +3062,7 @@ pub unsafe fn block_move_multi(
 
             // Copy from source to destination in the direction pattern, then verify the copy
             // (indices from the destination half's start)
-            chunk.copy(copy_dirs);
+            chunk.copy(copy_dirs, Direct);
             let seen = chunk.verify();
             if seen != 0 {
                 cycle_errors += rescan_words(dst_base, processed, chunk_end, test_name, seen, |i| chunk.expected(i));
@@ -6501,39 +6461,32 @@ native_simple_impl!(simple_native_512, simple_native_512_walks, "Mem-SimpleV2-51
 // order matched once outside it. A separate test from SimpleTest, to bench against it before it
 // replaces anything (the owner's call, 2026-10-16).
 
-/// One vector of a Mem-Sequence visit at `$at`: `write` stores `$want`, `read` ORs its difference
-/// into `$acc`, `rw` does both and stores the inverse.
+/// One vector of a Mem-Sequence visit at `$at`, each access by `$access` (`access::Access`):
+/// `write` stores `$want`, `read` ORs its difference into `$acc`, `rw` does both and stores the
+/// inverse. Each evaluates its operands in the order the plain visit did (`*$at = $want`: the value
+/// first), and `Direct`'s `seen` is nothing, so the test's passes compile as they did.
 macro_rules! sequence_visit {
-    (write, $at:expr, $want:expr, $acc:expr, $ones:expr) => {{
-        *$at = $want;
+    (write, $access:ident, $at:expr, $want:expr, $acc:expr, $ones:expr) => {{
+        let want = $want;
+        let at = $at;
+        $access.seen(true, at.cast_const().cast(), want.as_array());
+        *at = want;
     }};
-    (read, $at:expr, $want:expr, $acc:expr, $ones:expr) => {{
-        $acc |= *$at ^ $want;
+    (read, $access:ident, $at:expr, $want:expr, $acc:expr, $ones:expr) => {{
+        let at = $at;
+        let got = *at;
+        $access.seen(false, at.cast_const().cast(), got.as_array());
+        $acc |= got ^ $want;
     }};
-    (rw, $at:expr, $want:expr, $acc:expr, $ones:expr) => {{
+    (rw, $access:ident, $at:expr, $want:expr, $acc:expr, $ones:expr) => {{
         let (at, want) = ($at, $want);
-        $acc |= *at ^ want;
-        *at = want ^ $ones;
+        let got = *at;
+        $access.seen(false, at.cast_const().cast(), got.as_array());
+        $acc |= got ^ want;
+        let inverse = want ^ $ones;
+        $access.seen(true, at.cast_const().cast(), inverse.as_array());
+        *at = inverse;
     }};
-}
-
-/// The tests' `sequence_visit!` (TODO 99): each vector's visit pushed to `SEQUENCE_VISITS`, its
-/// address and the words it wants, then made. Every walk takes its visit as a macro (`$visit`), so
-/// the recording walks (`sequence_impl!`'s `$record`) are the passes' own, and the passes, which
-/// take `sequence_visit`, compile as before.
-#[cfg(test)]
-macro_rules! sequence_record {
-    ($op:tt, $at:expr, $want:expr, $acc:expr, $ones:expr) => {{
-        let (at, want) = ($at, $want);
-        SEQUENCE_VISITS.with_borrow_mut(|visits| visits.push((at.addr(), want.to_array().to_vec())));
-        sequence_visit!($op, at, want, $acc, $ones);
-    }};
-}
-
-#[cfg(test)]
-thread_local! {
-    /// The vectors a recording Mem-Sequence pass visited (`sequence_record!`), in order
-    static SEQUENCE_VISITS: std::cell::RefCell<Vec<(usize, Vec<u64>)>> = const { std::cell::RefCell::new(Vec::new()) };
 }
 
 /// A Mem-Sequence line `$lid` under `$key` as vectors of `$n` lanes, before the phase's polarity:
@@ -6638,14 +6591,14 @@ macro_rules! sequence_step_check {
 /// is computed and visited before the next, as `sequence_line!` gives it; but at 512 bits a line
 /// whose words come from one scalar hash (`switch`, `quiet` and `header` at 16, 32 and 64 bits)
 /// takes `sequence_hashed_step!`, the step's four hashes as one vector. Each vector's visit is
-/// `$visit!` (`sequence_visit`, or the tests' `sequence_record`).
+/// `sequence_visit!`, by the pass's `$access`.
 macro_rules! sequence_step {
-    (@lines $op:tt, $simd:ty, $w:tt, $kind:tt, $pkey:ident, $mask:ident, $acc:ident, $ones:ident, $visit:ident,
+    (@lines $op:tt, $simd:ty, $w:tt, $kind:tt, $pkey:ident, $mask:ident, $acc:ident, $ones:ident, $access:ident,
      [$($l:literal: [$($v:literal $a:literal),*] => $line:expr),*]) => {
         $({
             let (at, id): (*mut u64, u64) = $line;
             let words = sequence_line!($w, $kind, id, $pkey).map(|x| x ^ $mask);
-            $($visit!($op, at.add($v * $w) as *mut $simd, words[$v], $acc[$a], $ones);)*
+            $(sequence_visit!($op, $access, at.add($v * $w) as *mut $simd, words[$v], $acc[$a], $ones);)*
         })*
     };
     ($op:tt, $simd:ty, 8, [$family:ident $beat:ident], $($rest:tt)*) => {
@@ -6673,12 +6626,12 @@ macro_rules! sequence_hashed_step {
     ($op:tt, $simd:ty, [header Bits16], $($rest:tt)*) => { sequence_hashed_step!(@step $op, header, header_word, Bits16, $($rest)*) };
     ($op:tt, $simd:ty, [header Bits32], $($rest:tt)*) => { sequence_hashed_step!(@step $op, header, header_word, Bits32, $($rest)*) };
     ($op:tt, $simd:ty, [header Bits64], $($rest:tt)*) => { sequence_hashed_step!(@step $op, header64, header_alt, Bits64, $($rest)*) };
-    (@step $op:tt, $shape:ident, $parts:ident, $beat:ident, $pkey:ident, $mask:ident, $acc:ident, $ones:ident, $visit:ident,
+    (@step $op:tt, $shape:ident, $parts:ident, $beat:ident, $pkey:ident, $mask:ident, $acc:ident, $ones:ident, $access:ident,
      [$($l:literal: [$v:literal $a:literal] => $line:expr),*]) => {{
         let lines: [(*mut u64, u64); 4] = [$($line),*];
         let ids = u64x4::from_array([lines[0].1, lines[1].1, lines[2].1, lines[3].1]);
         let parts = sequence_hashed::$parts(ids, $pkey, crate::pattern_gen::BusBeat::$beat);
-        $($visit!($op, lines[$l].0.add($v * 8) as *mut u64x8, sequence_hashed_step!(@line $shape, parts, $l) ^ $mask, $acc[$a], $ones);)*
+        $(sequence_visit!($op, $access, lines[$l].0.add($v * 8) as *mut u64x8, sequence_hashed_step!(@line $shape, parts, $l) ^ $mask, $acc[$a], $ones);)*
     }};
     // Line `l` of the four: `splat` its word in every lane; `alt` its word and the word's inverse
     // in turn (64 bits); `header` its ident words 0 and 4 and its word in the rest, `header64` its
@@ -6811,7 +6764,7 @@ mod sequence_hashed {
 /// `header`'s step stored up to 25 of its values to the stack and reloaded them, with the four
 /// lines' scalar hashes first and their checks after (Rule 6.12; TODO 99 round 3b).
 macro_rules! sequence_linear {
-    (rotate, $op:tt, $visit:ident, $simd:ty, $w:tt, [$l0:literal: [$($v:literal $a:literal),*] $(, $l:literal: $rest:tt)*], $kind:tt, $walk:ident, $rev:literal) => {{
+    (rotate, $op:tt, $access:ident, $simd:ty, $w:tt, [$l0:literal: [$($v:literal $a:literal),*] $(, $l:literal: $rest:tt)*], $kind:tt, $walk:ident, $rev:literal) => {{
         sequence_step_check!($w, [$l0: [$($v $a),*] $(, $l: $rest)*]);
         let SequenceWalk { ptr, start, end, lid0, pkey, mask, .. } = $walk;
         let mask = <$simd>::splat(mask);
@@ -6822,7 +6775,7 @@ macro_rules! sequence_linear {
         let mut lid = lid0 + first as u64;
         for _ in 0..lines {
             let words = sequence_line!($w, $kind, lid, pkey).map(|x| x ^ mask);
-            $($visit!($op, p.add($v * $w) as *mut $simd, words[$v], acc[$a], ones);)*
+            $(sequence_visit!($op, $access, p.add($v * $w) as *mut $simd, words[$v], acc[$a], ones);)*
             sequence_acc!(rotate $op, acc, LINE_WORDS / $w);
             // The last step lands off the chunk
             p = if $rev { p.wrapping_sub(LINE_WORDS) } else { p.wrapping_add(LINE_WORDS) };
@@ -6830,7 +6783,7 @@ macro_rules! sequence_linear {
         }
         sequence_acc!(result $op, acc)
     }};
-    (steps, $op:tt, $visit:ident, $simd:ty, $w:tt, [$($l:literal: [$($v:literal $a:literal),*]),*], $kind:tt, $walk:ident, $rev:literal) => {{
+    (steps, $op:tt, $access:ident, $simd:ty, $w:tt, [$($l:literal: [$($v:literal $a:literal),*]),*], $kind:tt, $walk:ident, $rev:literal) => {{
         sequence_step_check!($w, [$($l: [$($v $a),*]),*]);
         const LPG: usize = [$($l),*].len();
         let SequenceWalk { ptr, start, end, lid0, pkey, mask, .. } = $walk;
@@ -6843,7 +6796,7 @@ macro_rules! sequence_linear {
         let mut p = ptr.add(start + first * LINE_WORDS);
         let mut lid = lid0 + first as u64;
         for _ in 0..lines / LPG {
-            sequence_step!($op, $simd, $w, $kind, pkey, mask, acc, ones, $visit, [$($l: [$($v $a),*] => if $rev {
+            sequence_step!($op, $simd, $w, $kind, pkey, mask, acc, ones, $access, [$($l: [$($v $a),*] => if $rev {
                 (p.sub($l * LINE_WORDS), lid.wrapping_sub($l))
             } else {
                 (p.add($l * LINE_WORDS), lid.wrapping_add($l))
@@ -6868,7 +6821,7 @@ macro_rules! sequence_linear {
 /// would in a step: at 256 bits the scrambles are scalar, and two lines' at once (and their hashes)
 /// didn't fit in the registers.
 macro_rules! sequence_random {
-    (steps, $op:tt, $visit:ident, $simd:ty, $w:tt, [$($l:literal: [$($v:literal $a:literal),*]),*], $kind:tt, $walk:ident) => {{
+    (steps, $op:tt, $access:ident, $simd:ty, $w:tt, [$($l:literal: [$($v:literal $a:literal),*]),*], $kind:tt, $walk:ident) => {{
         sequence_step_check!($w, [$($l: [$($v $a),*]),*]);
         const LPG: usize = [$($l),*].len();
         let SequenceWalk { ptr, start, end, lid0, key, pkey, mask, .. } = $walk;
@@ -6884,7 +6837,7 @@ macro_rules! sequence_random {
             let (block, block_lid) = (ptr.add(start + s * LINE_WORDS), lid0 + s as u64);
             let mut j = n.wrapping_neg();
             while j != 0 {
-                sequence_step!($op, $simd, $w, $kind, pkey, mask, acc, ones, $visit, [$($l: [$($v $a),*] => {
+                sequence_step!($op, $simd, $w, $kind, pkey, mask, acc, ones, $access, [$($l: [$($v $a),*] => {
                     let i = crate::sequence::random_line(j.wrapping_add($l) as u64, bits, key) as usize;
                     (block.add(i * LINE_WORDS), block_lid + i as u64)
                 }),*]);
@@ -6894,7 +6847,7 @@ macro_rules! sequence_random {
         }
         sequence_acc!(result $op, acc)
     }};
-    (rotate, $op:tt, $visit:ident, $simd:ty, $w:tt, [$l0:literal: [$($v:literal $a:literal),*] $(, $l:literal: $rest:tt)*], $kind:tt, $walk:ident) => {{
+    (rotate, $op:tt, $access:ident, $simd:ty, $w:tt, [$l0:literal: [$($v:literal $a:literal),*] $(, $l:literal: $rest:tt)*], $kind:tt, $walk:ident) => {{
         sequence_step_check!($w, [$l0: [$($v $a),*] $(, $l: $rest)*]);
         let SequenceWalk { ptr, start, end, lid0, key, pkey, mask, .. } = $walk;
         let mask = <$simd>::splat(mask);
@@ -6910,7 +6863,7 @@ macro_rules! sequence_random {
                 let i = crate::sequence::random_line(j as u64, bits, key) as usize;
                 let words = sequence_line!($w, $kind, block_lid + i as u64, pkey).map(|x| x ^ mask);
                 let at = block.add(i * LINE_WORDS);
-                $($visit!($op, at.add($v * $w) as *mut $simd, words[$v], acc[$a], ones);)*
+                $(sequence_visit!($op, $access, at.add($v * $w) as *mut $simd, words[$v], acc[$a], ones);)*
                 sequence_acc!(rotate $op, acc, LINE_WORDS / $w);
                 j = j.wrapping_add(1);
             }
@@ -6928,10 +6881,10 @@ macro_rules! sequence_random {
 /// the pass and those whose lands in the next, so neither picks its target, and each line's id
 /// goes through `opaque_line_id`.
 macro_rules! sequence_strided {
-    ($op:tt, $visit:ident, $simd:ty, $w:tt, [$($l:literal: [$($v:literal $a:literal),*]),*], $kind:tt, $walk:ident) => {
-        sequence_strided!(@line $op, $visit, $simd, $w, $kind, $walk, [$($l: [$($v $a),*]),*])
+    ($op:tt, $access:ident, $simd:ty, $w:tt, [$($l:literal: [$($v:literal $a:literal),*]),*], $kind:tt, $walk:ident) => {
+        sequence_strided!(@line $op, $access, $simd, $w, $kind, $walk, [$($l: [$($v $a),*]),*])
     };
-    (@line $op:tt, $visit:ident, $simd:ty, $w:tt, $kind:tt, $walk:ident, [$l0:literal: [$($v:literal $a:literal),*] $(, $l:literal: $rest:tt)*]) => {{
+    (@line $op:tt, $access:ident, $simd:ty, $w:tt, $kind:tt, $walk:ident, [$l0:literal: [$($v:literal $a:literal),*] $(, $l:literal: $rest:tt)*]) => {{
         let SequenceWalk { ptr, start, end, lid0, period, pkey, mask, .. } = $walk;
         debug_assert!(period.is_multiple_of(LINE_WORDS) && start.is_multiple_of(LINE_WORDS) && end.is_multiple_of(LINE_WORDS),
                       "the strided walk needs whole lines: {start}..{end} by {period}");
@@ -6952,7 +6905,7 @@ macro_rules! sequence_strided {
             while p < near {
                 prefetch_line(p.wrapping_add(ahead));
                 let words = sequence_line!($w, $kind, opaque_line_id(lid), pkey).map(|x| x ^ mask);
-                $($visit!($op, p.add($v * $w) as *mut $simd, words[$v], acc[$v % 4], ones);)*
+                $(sequence_visit!($op, $access, p.add($v * $w) as *mut $simd, words[$v], acc[$v % 4], ones);)*
                 p = p.wrapping_add(period);
                 lid = lid.wrapping_add(lid_step);
             }
@@ -6960,7 +6913,7 @@ macro_rules! sequence_strided {
                 // The walk's last steps prefetch off the chunk: a wasted prefetch, not a fault
                 prefetch_line(p.wrapping_add(ahead).wrapping_byte_sub(wrap));
                 let words = sequence_line!($w, $kind, opaque_line_id(lid), pkey).map(|x| x ^ mask);
-                $($visit!($op, p.add($v * $w) as *mut $simd, words[$v], acc[$v % 4], ones);)*
+                $(sequence_visit!($op, $access, p.add($v * $w) as *mut $simd, words[$v], acc[$v % 4], ones);)*
                 p = p.wrapping_add(period);
                 lid = lid.wrapping_add(lid_step);
             }
@@ -6996,45 +6949,45 @@ fn sequence_wrap(p: *const u64, stop: *const u64, period: usize) -> usize {
 }
 
 /// One Mem-Sequence pass of `$op` (`write`, `read` or `rw`) over `$walk`'s chunk in `$order`, its
-/// family's line `[$kind]`; returns the differences the reads found, ORed (0 for a write). Each
-/// order's loop is a function of its own, with the width's features, taking the walk by value
-/// (TODO 99): in one function for every family and order, the loops kept their bounds, keys and
-/// at 512 bits their accumulators on the stack. Each vector's visit is `$visit!`: `sequence_visit`,
-/// or the tests' `sequence_record`.
+/// family's line `[$kind]`, each access by `$access`; returns the differences the reads found,
+/// ORed (0 for a write). Each order's loop is a function of its own, with the width's features,
+/// taking the walk by value (TODO 99): in one function for every family and order, the loops kept
+/// their bounds, keys and at 512 bits their accumulators on the stack. Each takes the access too,
+/// so a unit test's recorder runs the pass the test does (`access`).
 macro_rules! sequence_orders {
-    ($op:tt, $visit:ident, $simd:ty, $w:tt, $tf:literal, $step:tt, $lform:ident, $rform:ident, $walk:ident, $order:expr, $kind:tt) => {
+    ($op:tt, $access:ident, $simd:ty, $w:tt, $tf:literal, $step:tt, $lform:ident, $rform:ident, $walk:ident, $order:expr, $kind:tt) => {
         match $order {
             crate::sequence::Order::Forward => {
                 #[target_feature(enable = $tf)]
                 #[inline(never)]
-                unsafe fn forward(walk: SequenceWalk) -> u64 {
-                    sequence_linear!($lform, $op, $visit, $simd, $w, $step, $kind, walk, false)
+                unsafe fn forward<A: Access>(walk: SequenceWalk, access: A) -> u64 {
+                    sequence_linear!($lform, $op, access, $simd, $w, $step, $kind, walk, false)
                 }
-                forward($walk)
+                forward($walk, $access)
             }
             crate::sequence::Order::Reverse => {
                 #[target_feature(enable = $tf)]
                 #[inline(never)]
-                unsafe fn reverse(walk: SequenceWalk) -> u64 {
-                    sequence_linear!($lform, $op, $visit, $simd, $w, $step, $kind, walk, true)
+                unsafe fn reverse<A: Access>(walk: SequenceWalk, access: A) -> u64 {
+                    sequence_linear!($lform, $op, access, $simd, $w, $step, $kind, walk, true)
                 }
-                reverse($walk)
+                reverse($walk, $access)
             }
             crate::sequence::Order::Random => {
                 #[target_feature(enable = $tf)]
                 #[inline(never)]
-                unsafe fn random(walk: SequenceWalk) -> u64 {
-                    sequence_random!($rform, $op, $visit, $simd, $w, $step, $kind, walk)
+                unsafe fn random<A: Access>(walk: SequenceWalk, access: A) -> u64 {
+                    sequence_random!($rform, $op, access, $simd, $w, $step, $kind, walk)
                 }
-                random($walk)
+                random($walk, $access)
             }
             crate::sequence::Order::Stride => {
                 #[target_feature(enable = $tf)]
                 #[inline(never)]
-                unsafe fn stride(walk: SequenceWalk) -> u64 {
-                    sequence_strided!($op, $visit, $simd, $w, $step, $kind, walk)
+                unsafe fn stride<A: Access>(walk: SequenceWalk, access: A) -> u64 {
+                    sequence_strided!($op, access, $simd, $w, $step, $kind, walk)
                 }
-                stride($walk)
+                stride($walk, $access)
             }
         }
     };
@@ -7093,46 +7046,31 @@ impl SequenceWalk {
 }
 
 /// Mem-Sequence at one width: the test, and a function per operation for its passes, each
-/// picking its family's walk in its order (`sequence_orders!`). `$step` is the width's step
+/// picking its family's walk in its order (`sequence_orders!`), each access by `access`: the
+/// test's `Direct`, or a unit test's recorder (TODO 99). `$step` is the width's step
 /// (`sequence_step_check!`), `$lform` its forward and reverse walks' form (`sequence_linear!`) and
-/// `$rform` its random walk's (`sequence_random!`). `$record`, in the tests only, is the three
-/// passes' walks with each visit recorded (`sequence_record!`).
+/// `$rform` its random walk's (`sequence_random!`).
 macro_rules! sequence_impl {
-    ($fn_name:ident, $write:ident, $read:ident, $rw:ident, $record:ident, $simd:ty, $w:tt, $step:tt, $lform:ident, $rform:ident, $tf:literal) => {
+    ($fn_name:ident, $write:ident, $read:ident, $rw:ident, $simd:ty, $w:tt, $step:tt, $lform:ident, $rform:ident, $tf:literal) => {
         #[target_feature(enable = $tf)]
         #[inline(never)]
-        unsafe fn $write(c: SequenceChunk, order: crate::sequence::Order, key: u64, phase: crate::pattern::Phase) -> u64 {
+        unsafe fn $write<A: Access>(c: SequenceChunk, order: crate::sequence::Order, key: u64, phase: crate::pattern::Phase, access: A) -> u64 {
             let walk = SequenceWalk::new(c, key, phase);
-            sequence_families!(phase, sequence_orders!(write, sequence_visit, $simd, $w, $tf, $step, $lform, $rform, walk, order,))
+            sequence_families!(phase, sequence_orders!(write, access, $simd, $w, $tf, $step, $lform, $rform, walk, order,))
         }
 
         #[target_feature(enable = $tf)]
         #[inline(never)]
-        unsafe fn $read(c: SequenceChunk, order: crate::sequence::Order, key: u64, phase: crate::pattern::Phase) -> u64 {
+        unsafe fn $read<A: Access>(c: SequenceChunk, order: crate::sequence::Order, key: u64, phase: crate::pattern::Phase, access: A) -> u64 {
             let walk = SequenceWalk::new(c, key, phase);
-            sequence_families!(phase, sequence_orders!(read, sequence_visit, $simd, $w, $tf, $step, $lform, $rform, walk, order,))
+            sequence_families!(phase, sequence_orders!(read, access, $simd, $w, $tf, $step, $lform, $rform, walk, order,))
         }
 
         #[target_feature(enable = $tf)]
         #[inline(never)]
-        unsafe fn $rw(c: SequenceChunk, order: crate::sequence::Order, key: u64, phase: crate::pattern::Phase) -> u64 {
+        unsafe fn $rw<A: Access>(c: SequenceChunk, order: crate::sequence::Order, key: u64, phase: crate::pattern::Phase, access: A) -> u64 {
             let walk = SequenceWalk::new(c, key, phase);
-            sequence_families!(phase, sequence_orders!(rw, sequence_visit, $simd, $w, $tf, $step, $lform, $rform, walk, order,))
-        }
-
-        /// A pass of `op` as `$write`, `$read` or `$rw` makes it, from the same walks, each
-        /// vector's visit recorded in `SEQUENCE_VISITS` (TODO 99)
-        #[cfg(test)]
-        #[target_feature(enable = $tf)]
-        unsafe fn $record(op: crate::sequence::Op, c: SequenceChunk, order: crate::sequence::Order, key: u64,
-                          phase: crate::pattern::Phase) -> u64 {
-            use crate::sequence::Op;
-            let walk = SequenceWalk::new(c, key, phase);
-            match op {
-                Op::Write => sequence_families!(phase, sequence_orders!(write, sequence_record, $simd, $w, $tf, $step, $lform, $rform, walk, order,)),
-                Op::Read => sequence_families!(phase, sequence_orders!(read, sequence_record, $simd, $w, $tf, $step, $lform, $rform, walk, order,)),
-                Op::ReadWrite => sequence_families!(phase, sequence_orders!(rw, sequence_record, $simd, $w, $tf, $step, $lform, $rform, walk, order,)),
-            }
+            sequence_families!(phase, sequence_orders!(rw, access, $simd, $w, $tf, $step, $lform, $rform, walk, order,))
         }
 
         /// Mem-Sequence at this width; see the section comment.
@@ -7206,12 +7144,12 @@ macro_rules! sequence_impl {
                                 (current, next) = crate::sequence::round_after(step.op, current, next);
                                 phase = program.phase(&epoch, writes, current, schedule, beat);
                                 let (seen, name) = match step.op {
-                                    Op::Write => ($write(chunk, order, key, phase), "W"),
-                                    Op::Read => ($read(chunk, order, key, phase), "R"),
+                                    Op::Write => ($write(chunk, order, key, phase, Direct), "W"),
+                                    Op::Read => ($read(chunk, order, key, phase, Direct), "R"),
                                     Op::ReadWrite => {
                                         // It writes the inverse of what it read, round `current`
                                         debug_assert_eq!(phase, crate::pattern::Phase { mask: !read.mask, ..read });
-                                        ($rw(chunk, order, key, read), "RW")
+                                        ($rw(chunk, order, key, read, Direct), "RW")
                                     }
                                 };
                                 if seen != 0 {
@@ -7222,7 +7160,7 @@ macro_rules! sequence_impl {
                                         cycle_errors += errors;
                                         halt_here!(runner, cycle_errors, ops(&runner));
                                         if rewrote {
-                                            $write(chunk, crate::sequence::Order::Forward, key, phase);
+                                            $write(chunk, crate::sequence::Order::Forward, key, phase, Direct);
                                         }
                                     } else {
                                         cycle_errors += sequence_rescan(base, start..end, lid0, phase, &what, test_name, seen);
@@ -7252,9 +7190,9 @@ macro_rules! sequence_impl {
     };
 }
 
-sequence_impl!(sequence_256, sequence_write_256, sequence_read_256, sequence_rw_256, sequence_record_256, u64x4, 4, [0: [0 0, 1 1], 1: [0 2, 1 3]], rotate, rotate,
+sequence_impl!(sequence_256, sequence_write_256, sequence_read_256, sequence_rw_256, u64x4, 4, [0: [0 0, 1 1], 1: [0 2, 1 3]], rotate, rotate,
                "avx2,avx,fma,bmi1,bmi2");
-sequence_impl!(sequence_512, sequence_write_512, sequence_read_512, sequence_rw_512, sequence_record_512, u64x8, 8, [0: [0 0], 1: [0 1], 2: [0 2], 3: [0 3]], rotate, steps,
+sequence_impl!(sequence_512, sequence_write_512, sequence_read_512, sequence_rw_512, u64x8, 8, [0: [0 0], 1: [0 1], 2: [0 2], 3: [0 3]], rotate, steps,
                "avx512f,avx512bw,avx512cd,avx512dq,avx512vl,avx2,avx,fma,bmi1,bmi2");
 
 /// Mem-Sequence at the widest width this CPU has: 512 bits, else 256 (the CPU gate requires AVX2).
@@ -8808,7 +8746,7 @@ mod bench_move_tests {
                 let old_base = old.as_mut_ptr();
                 unsafe {
                     old_copy(old_base, old_base.add(half), start, start + len, dirs);
-                    chunk.copy(dirs);
+                    chunk.copy(dirs, super::Direct);
                 }
                 assert_eq!(mem, old, "{dirs} directions, words {start} + {len}: the copy's image");
                 let whole = (start..start + len).all(|i| mem[half + i] == pattern_base.wrapping_add(i as u64));
@@ -8823,7 +8761,7 @@ mod bench_move_tests {
             let chunk = BlockMoveChunk { src: base, dst: base.wrapping_add(half), start, end: start + len, pattern_base };
             unsafe {
                 chunk.fill();
-                chunk.copy(1);
+                chunk.copy(1, super::Direct);
             }
             assert_eq!(unsafe { chunk.verify() }, 0, "words {start} + {len}: clean");
             let end = start + len;
@@ -8912,7 +8850,7 @@ mod bench_move_tests {
                 let visits = std::cell::RefCell::new(Vec::new());
                 unsafe {
                     chunk.fill();
-                    chunk.copy_by(dirs, Recorded { base: base.cast_const(), visits: &visits });
+                    chunk.copy(dirs, Recorded { base: base.cast_const(), visits: &visits });
                 }
                 let want = copy_visits(start, start + len, half, dirs, &value);
                 assert_visits(&visits.into_inner(), &want, &format!("{dirs} directions, words {start} + {len}"));
@@ -9754,9 +9692,9 @@ mod random_replay_tests {
         unsafe fn pass(op: u8, ptr: *mut u64, words: usize, order: Order, key: u64, phase: crate::pattern::Phase) -> u64 {
             let chunk = super::SequenceChunk { ptr, start: 0, end: words, lid0: 0, period: super::strided_period(15 * 8) };
             match op {
-                0 => super::sequence_write_256(chunk, order, key, phase),
-                1 => super::sequence_read_256(chunk, order, key, phase),
-                _ => super::sequence_rw_256(chunk, order, key, phase),
+                0 => super::sequence_write_256(chunk, order, key, phase, super::Direct),
+                1 => super::sequence_read_256(chunk, order, key, phase, super::Direct),
+                _ => super::sequence_rw_256(chunk, order, key, phase, super::Direct),
             }
         }
         let words = 768 * LINE_WORDS;  // 768 lines: blocks of 512 and 256 in random order
@@ -9796,16 +9734,22 @@ mod random_replay_tests {
     /// One Mem-Sequence pass at `width` bits: `op` 0 a write, 1 a read, 2 a read-then-write.
     fn sequence_walk(width: usize, op: u8, chunk: super::SequenceChunk, order: crate::sequence::Order, key: u64,
                      phase: crate::pattern::Phase) -> u64 {
+        sequence_walk_by(width, op, chunk, order, key, phase, super::Direct)
+    }
+
+    /// `sequence_walk`, each access by `access`: the test's own functions, by a recorder.
+    fn sequence_walk_by<A: super::Access>(width: usize, op: u8, chunk: super::SequenceChunk, order: crate::sequence::Order,
+                                          key: u64, phase: crate::pattern::Phase, access: A) -> u64 {
         // SAFETY: the chunk is in a live, 64-byte aligned buffer, and 512 bits run only on a CPU
         // with AVX-512 (`sequence_widths`)
         unsafe {
             match (width, op) {
-                (256, 0) => super::sequence_write_256(chunk, order, key, phase),
-                (256, 1) => super::sequence_read_256(chunk, order, key, phase),
-                (256, _) => super::sequence_rw_256(chunk, order, key, phase),
-                (_, 0) => super::sequence_write_512(chunk, order, key, phase),
-                (_, 1) => super::sequence_read_512(chunk, order, key, phase),
-                _ => super::sequence_rw_512(chunk, order, key, phase),
+                (256, 0) => super::sequence_write_256(chunk, order, key, phase, access),
+                (256, 1) => super::sequence_read_256(chunk, order, key, phase, access),
+                (256, _) => super::sequence_rw_256(chunk, order, key, phase, access),
+                (_, 0) => super::sequence_write_512(chunk, order, key, phase, access),
+                (_, 1) => super::sequence_read_512(chunk, order, key, phase, access),
+                _ => super::sequence_rw_512(chunk, order, key, phase, access),
             }
         }
     }
@@ -9973,33 +9917,30 @@ mod random_replay_tests {
         kinds
     }
 
-    /// One pass of `op` at `width` bits through `sequence_impl!`'s recording walks (the passes' own,
-    /// each vector's visit recorded): what it returned, and each vector it visited, in order, as its
-    /// line of the chunk, its first word in the line and the words it wanted.
+    /// One pass of `op` at `width` bits through the test's own functions, by a recorder: what it
+    /// returned, and each access it made, in order, its first word from the chunk's.
     fn sequence_recorded(width: usize, op: crate::sequence::Op, chunk: super::SequenceChunk, order: crate::sequence::Order,
-                         key: u64, phase: crate::pattern::Phase) -> (u64, Vec<(isize, isize, Vec<u64>)>) {
-        // SAFETY: as `sequence_walk`'s
-        let seen = unsafe {
-            if width == 256 {
-                super::sequence_record_256(op, chunk, order, key, phase)
-            } else {
-                super::sequence_record_512(op, chunk, order, key, phase)
-            }
+                         key: u64, phase: crate::pattern::Phase) -> (u64, Vec<super::access::Visit>) {
+        use crate::sequence::Op;
+        let visits = std::cell::RefCell::new(Vec::new());
+        let by = super::access::Recorded { base: chunk.ptr.wrapping_add(chunk.start).cast_const(), visits: &visits };
+        let op = match op {
+            Op::Write => 0,
+            Op::Read => 1,
+            Op::ReadWrite => 2,
         };
-        let first = chunk.ptr.wrapping_add(chunk.start).addr() as isize;
-        let visits = super::SEQUENCE_VISITS.take().into_iter().map(|(at, want)| {
-            let word = (at as isize - first) / 8;
-            (word.div_euclid(LINE_WORDS as isize), word.rem_euclid(LINE_WORDS as isize), want)
-        });
-        (seen, visits.collect())
+        let seen = sequence_walk_by(width, op, chunk, order, key, phase, by);
+        (seen, visits.into_inner())
     }
 
     /// A write, a read and a read-then-write of `phase` over `chunk` at `width` bits, each through
-    /// the recording walks, visit the lines `lines(key)` gives for the pass's key (the chunk's, from
-    /// its first), in that order: each line's vectors in turn, each wanting its own line's words. The
-    /// reads read clean.
+    /// the test's own functions, by a recorder, visit the lines `lines(key)` gives for the pass's key
+    /// (the chunk's, from its first), in that order: each line's vectors in turn, the write writing
+    /// its line's words, the read reading them, the read-then-write reading them and writing their
+    /// inverse. The reads read clean.
     fn check_sequence_visits(width: usize, chunk: super::SequenceChunk, order: crate::sequence::Order, phase: crate::pattern::Phase,
                              lines: impl Fn(u64) -> Vec<usize>, what: &str) {
+        use super::access::{assert_visits, Visit};
         use crate::sequence::Op;
         let lanes = width / 64;
         let image: Vec<_> = (0..(chunk.end - chunk.start) / LINE_WORDS).map(|line| phase.line(chunk.lid0 + line as u64)).collect();
@@ -10009,17 +9950,21 @@ mod random_replay_tests {
             let (seen, visits) = sequence_recorded(width, op, chunk, order, key, phase);
             let what = format!("{what}, {op:?}");
             assert_eq!(seen, 0, "{what}: a clean pass");
-            let want: Vec<(isize, isize)> = lines(key).into_iter()
-                .flat_map(|line| (0..LINE_WORDS).step_by(lanes).map(move |word| (line as isize, word as isize)))
-                .collect();
-            let got: Vec<(isize, isize)> = visits.iter().map(|&(line, word, _)| (line, word)).collect();
-            if let Some(k) = (0..got.len().max(want.len())).find(|&k| got.get(k) != want.get(k)) {
-                panic!("{what}: visit {k} of {} is (line, word) {:?}, not {:?} of {}", got.len(), got.get(k), want.get(k), want.len());
+            let mut want = Vec::new();
+            for line in lines(key) {
+                for word in (0..LINE_WORDS).step_by(lanes) {
+                    let (at, words) = (line * LINE_WORDS + word, image[line][word..word + lanes].to_vec());
+                    match op {
+                        Op::Write => want.push(Visit::Write(at, words)),
+                        Op::Read => want.push(Visit::Read(at, words)),
+                        Op::ReadWrite => {
+                            let inverse = words.iter().map(|w| !w).collect();
+                            want.extend([Visit::Read(at, words), Visit::Write(at, inverse)]);
+                        }
+                    }
+                }
             }
-            for (k, (line, word, words)) in visits.iter().enumerate() {
-                let (line, word) = (*line as usize, *word as usize);
-                assert_eq!(words[..], image[line][word..word + lanes], "{what}: visit {k}, line {line} word {word}: not its line's words");
-            }
+            assert_visits(&visits, &want, &what);
         }
     }
 

@@ -40,7 +40,9 @@ Fixed in round 3 (2026-10-19): stack arrays indexed by a register (`128(%rsp,%r1
 stack accesses; loops up to 600 instructions are classified (over 150 flagged `long`, where the
 cap used to hide them); indexed prefetches don't count as indexed; epilogues laid out inside a
 loop's range are skipped; const-generic instances are named (`verify_strided::<16>`); and a line
-counts the kernels whose hot loops are all clean.
+counts the kernels whose hot loops are all clean. A kernel generic over the access a unit test
+records it by (`tests::access`; only `Direct` is in the binary) is named without it, as it was
+before it took one (2026-10-20).
 
 ## `bench_ab.py`: A/B speeds, alternating
 
