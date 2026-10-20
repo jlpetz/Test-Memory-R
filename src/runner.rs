@@ -510,13 +510,15 @@ impl TestDefinition {
     }
 }
 
-/// The run's seal (TODO 74): `seal_override` (`seal=`), else the config's, else tmr; at
-/// `seal_width_override` (`seal-width=`), else the config's `seal_width`, else the run's `width=`
-/// (TODO 99), else the seal's auto (this machine's calibrated width, else the rule); with where
-/// the width came from. Unsealed, a width the CPU lacks only matters to a mirror's data, which
-/// takes the seal's auto.
-fn run_seal(seal_override: Option<&str>, seal_width_override: Option<&str>, config: Option<&crate::config::ModernConfig>)
+/// The run's seal (TODO 74): the command line's (`overrides.seal_override`, `seal=`), else the
+/// config's, else tmr; at the command line's width (`seal_width_override`, `seal-width=`), else
+/// the config's `seal_width`, else the run's `width=` (TODO 99), else the seal's auto (this
+/// machine's calibrated width, else the rule); with where the width came from. Unsealed, a width
+/// the CPU lacks only matters to a mirror's data, which takes the seal's auto. It takes the
+/// overrides whole, so the run can't hand it one and drop the other.
+fn run_seal(overrides: &TestRunOverrides, config: Option<&crate::config::ModernConfig>)
             -> Result<(crate::seal::SealSettings, crate::seal::SealKernel, crate::seal::SealWidthSource), String> {
+    let TestRunOverrides { seal_override, seal_width_override, .. } = *overrides;
     let (seal_width, seal_width_setting) = crate::seal::width_setting(
         seal_width_override.map(|w| (w, "seal-width="))
             .or(config.and_then(|c| c.system.seal_width.as_deref()).map(|w| (w, "the config's seal_width"))),
@@ -653,8 +655,9 @@ pub fn run_tests_with_layout_and_timing_filtered(
     let TestRunOverrides {
         single_test_filter,
         plan,
-        seal_override,
-        seal_width_override,
+        // `run_seal` reads them from `overrides`
+        seal_override: _,
+        seal_width_override: _,
         mirror_override,
         pattern_mode_override,
         sequence_override,
@@ -835,7 +838,7 @@ pub fn run_tests_with_layout_and_timing_filtered(
         return RunStatus::NotRun;
     }
 
-    let (mut seal_settings, seal_kernel, seal_width_source) = match run_seal(seal_override, seal_width_override, config) {
+    let (mut seal_settings, seal_kernel, seal_width_source) = match run_seal(&overrides, config) {
         Ok(s) => s,
         Err(e) => {
             println!("❌ Config error: {}", e);
@@ -5041,31 +5044,50 @@ mod tests {
         }
     }
 
-    /// TODO 99: the run's seal (`run_seal`, which the run takes its seal from) takes `width=`
-    /// unless `seal-width=` or the config's `seal_width` sets its own, `auto` included, and keeps
-    /// its own auto with neither. `seal::width_setting`'s test checks the precedence alone, which a
-    /// run handing it no `width=` passed.
+    /// TODO 99: the run's seal (`run_seal`, which the run takes its seal from, handing it its
+    /// overrides whole) takes `width=` unless `seal-width=` or the config's `seal_width` sets its
+    /// own, `auto` included, and keeps its own auto with neither: the calibrated width, else the
+    /// rule. Each says where the width came from, as the plan and the results file give it. Its
+    /// pattern is `seal=`'s, else the config's, else tmr. `seal::width_setting`'s test checks the
+    /// precedence alone, which a run handing it no `width=` passed.
     #[test]
     fn the_runs_seal_takes_width_unless_seal_width_sets_its_own() {
-        use crate::seal::SealWidth;
+        use crate::seal::{SealPattern, SealWidth, SealWidthSource, TestCalibratedWidth};
         use crate::simd::{TestWidth, Width};
-        let auto = SealWidth::Auto.resolve().unwrap();
+        use SealWidthSource::{Calibrated, Rule, Setting};
         let mut config = crate::config::ModernConfig::create_demo_config();
         config.system.seal_width = Some("128".to_string());
-        let seal_width = |seal_width: Option<&str>, config: Option<&crate::config::ModernConfig>| {
-            let (settings, kernel, _) = run_seal(None, seal_width, config).unwrap();
-            assert!(settings.on, "sealed by default");
-            kernel.width
+        let seal = |seal: Option<&str>, seal_width: Option<&str>, config: Option<&crate::config::ModernConfig>| {
+            let overrides = TestRunOverrides { seal_override: seal, seal_width_override: seal_width, ..Default::default() };
+            let (settings, kernel, source) = run_seal(&overrides, config).unwrap();
+            (settings.on, kernel.pattern, kernel.width, source)
         };
-        for width in [Width::W128, Width::W256, Width::W512].into_iter().filter(|w| w.check().is_ok()) {
-            let _width = TestWidth::set(Some(width));
-            assert_eq!(seal_width(None, None), width.seal(), "width={}", width.name());
-            assert_eq!(seal_width(Some("auto"), None), auto, "seal-width=auto over width={}", width.name());
-            assert_eq!(seal_width(None, Some(&config)), SealWidth::W128, "the config's seal_width over width={}", width.name());
-            assert_eq!(seal_width(Some("256"), Some(&config)), SealWidth::W256, "seal-width= over the config's");
+        let seal_width = |seal_width: Option<&str>, config: Option<&crate::config::ModernConfig>| {
+            let (on, pattern, width, source) = seal(None, seal_width, config);
+            assert!(on && pattern == SealPattern::Tmr, "sealed, with tmr, by default");
+            (width, source)
+        };
+        for calibrated in [None, Some(SealWidth::W128)] {
+            let _calibrated = TestCalibratedWidth::set(calibrated);
+            let auto = SealWidth::Auto.resolve_from("").unwrap();
+            assert_eq!(auto.1, if calibrated.is_some() { Calibrated } else { Rule });
+            for width in [Width::W128, Width::W256, Width::W512].into_iter().filter(|w| w.check().is_ok()) {
+                let _width = TestWidth::set(Some(width));
+                let what = format!("width={} calibrated {calibrated:?}", width.name());
+                assert_eq!(seal_width(None, None), (width.seal(), Setting("a test's width")), "{what}");
+                assert_eq!(seal_width(Some("auto"), None), auto, "seal-width=auto over {what}");
+                assert_eq!(seal_width(None, Some(&config)), (SealWidth::W128, Setting("the config's seal_width")), "the config's over {what}");
+                assert_eq!(seal_width(Some("256"), Some(&config)), (SealWidth::W256, Setting("seal-width=")), "seal-width= over the config's");
+                assert_eq!(seal_width(Some("auto"), Some(&config)), auto, "seal-width=auto over the config's");
+            }
+            let _auto = TestWidth::set(None);
+            assert_eq!(seal_width(None, None), auto, "auto: the seal's own, calibrated {calibrated:?}");
         }
-        let _auto = TestWidth::set(None);
-        assert_eq!(seal_width(None, None), auto, "auto: the seal's own");
+        // seal=, over the config's
+        config.system.seal = Some("off".to_string());
+        assert!(!seal(None, None, Some(&config)).0, "the config's seal=off");
+        let (on, pattern, ..) = seal(Some("tm5"), None, Some(&config));
+        assert!(on && pattern == SealPattern::Tm5, "seal=tm5 over the config's off");
     }
 
     /// TODO 99: under `width=` the Bench pairs and Mem-Sequence, which pick their width at run time,

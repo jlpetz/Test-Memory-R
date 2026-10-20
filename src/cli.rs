@@ -914,16 +914,7 @@ fn run() -> Result<(), Box<dyn std::error::Error>> {
 			println!("  Calibration: None (run --calibrate-cache to calibrate)");
 			crate::set_calibration_data(None);
 		}
-		// The seal's width under auto (TODO 99): this machine's seal calibration, else the rule
-		let seal = app_config.valid_seal_calibration(system_info, smbios).and_then(|s| s.width().map(|w| (s, w)));
-		match (seal, &app_config.seal_calibration) {
-			(Some((seal, width)), _) => {
-				crate::seal::set_calibrated_width(width);
-				println!("  Seal calibration: Loaded ({} bits, {})", seal.width_bits, seal.timestamp.format("%Y-%m-%d %H:%M"));
-			}
-			(None, Some(_)) => println!("  Seal calibration: Stale (hardware changed, re-run --calibrate-seal)"),
-			(None, None) => println!("  Seal calibration: None (run --calibrate-seal to calibrate)"),
-		}
+		println!("{}", load_seal_calibration(&app_config, system_info, smbios, crate::seal::set_calibrated_width));
 	} else {
 		println!("  Calibration: Disabled (--no-calibration)");
 		crate::set_calibration_data(None);
@@ -1204,6 +1195,22 @@ fn ask_to_save(question: &str) -> bool {
             answer.is_empty() || answer == "y" || answer == "yes"
         }
         Err(_) => true, // On read error, default to saving
+    }
+}
+
+/// The seal's width under `auto`, at startup (TODO 99): this machine's seal calibration
+/// (`AppConfig::valid_seal_calibration`), whose width `set` makes the one `auto` resolves to
+/// (`seal::set_calibrated_width` in a run), else none, so the rule; and the line that says which.
+fn load_seal_calibration(app_config: &crate::app_config::AppConfig, system_info: &crate::SystemInfo,
+                         smbios: &crate::smbios::SmbiosData, set: impl FnOnce(crate::seal::SealWidth)) -> String {
+    let seal = app_config.valid_seal_calibration(system_info, smbios).and_then(|s| s.width().map(|w| (s, w)));
+    match (seal, &app_config.seal_calibration) {
+        (Some((seal, width)), _) => {
+            set(width);
+            format!("  Seal calibration: Loaded ({} bits, {})", seal.width_bits, seal.timestamp.format("%Y-%m-%d %H:%M"))
+        }
+        (None, Some(_)) => "  Seal calibration: Stale (hardware changed, re-run --calibrate-seal)".to_string(),
+        (None, None) => "  Seal calibration: None (run --calibrate-seal to calibrate)".to_string(),
     }
 }
 
@@ -1619,4 +1626,35 @@ fn parse_enhanced_memory_parameter(param: &str) -> Result<crate::memory::allocat
     Ok(EnhancedMemoryStrategy {
         allocation_mode: AllocationMode::parse(param)?,
     })
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// TODO 99: at startup, a seal calibration measured on this machine gives `auto` its width
+    /// (`set`, `seal::set_calibrated_width` in a run), which the run's seal then resolves to, and
+    /// says Loaded; one from other hardware gives it none and says Stale; with none, None.
+    #[test]
+    fn startup_gives_auto_this_machines_seal_calibration() {
+        use crate::seal::{SealWidth, SealWidthSource, TestCalibratedWidth};
+        let (system_info, smbios) = (crate::tests::get_system_info(), crate::smbios::get_smbios());
+        let load = |config: &crate::app_config::AppConfig| {
+            let mut set = Vec::new();
+            let line = load_seal_calibration(config, system_info, smbios, |width| set.push(width));
+            (line, set)
+        };
+        let mut config = crate::app_config::AppConfig::default();
+        config.set_seal_calibration(crate::calibration::test_seal_calibration(128), system_info, smbios);
+        let (line, set) = load(&config);
+        assert!(line.starts_with("  Seal calibration: Loaded (128 bits, "), "{line}");
+        assert_eq!(set, [SealWidth::W128]);
+        let _calibrated = TestCalibratedWidth::set(set.first().copied());
+        assert_eq!(SealWidth::Auto.resolve_from("seal-width="), Ok((SealWidth::W128, SealWidthSource::Calibrated)));
+
+        config.seal_calibration.as_mut().unwrap().fingerprint.machine_id = Some("another machine".to_string());
+        assert_eq!(load(&config), ("  Seal calibration: Stale (hardware changed, re-run --calibrate-seal)".to_string(), vec![]));
+        config.seal_calibration = None;
+        assert_eq!(load(&config), ("  Seal calibration: None (run --calibrate-seal to calibrate)".to_string(), vec![]));
+    }
 }

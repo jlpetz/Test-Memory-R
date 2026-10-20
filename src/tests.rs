@@ -8079,6 +8079,14 @@ pub(crate) fn picked_width(test_name: &str) -> Option<crate::simd::Width> {
     }
 }
 
+#[cfg(test)]
+thread_local! {
+    /// The kernel the last Bench-*-Seal-* test on this thread measured with, as its body took it
+    /// (`bench_init_seal`, `bench_verify_seal`): a unit test sees the width the test ran at. The
+    /// binary keeps no record.
+    static SEAL_MEASURED: std::cell::Cell<Option<crate::seal::SealKernel>> = const { std::cell::Cell::new(None) };
+}
+
 /// Bench-Init-Seal-*: the seal's fill alone (TODO 74), one non-temporal write pass per chunk per
 /// cycle.
 #[allow(clippy::too_many_arguments)]
@@ -8092,6 +8100,8 @@ unsafe fn bench_init_seal(
     test_name: &'static str,
     kernel: crate::seal::SealKernel,
 ) -> TestStats {
+    #[cfg(test)]
+    SEAL_MEASURED.set(Some(kernel));
     run_phased_test(
         blocks, thread_id, error_mode, timing, config, progress,
         test_name, TestAction::Write, 1, config.skip_init, 1, 0,
@@ -8114,6 +8124,8 @@ unsafe fn bench_verify_seal(
     test_name: &'static str,
     kernel: crate::seal::SealKernel,
 ) -> TestStats {
+    #[cfg(test)]
+    SEAL_MEASURED.set(Some(kernel));
     // The fill is setup: the checks alone are timed and counted (TODO 90, the harness)
     run_phased_test(
         blocks, thread_id, error_mode, timing, config, progress,
@@ -8494,6 +8506,49 @@ mod width_dispatch_tests {
             }
             for name in ["Bench-Init-Seal-TMR-128", "Bench-Verify-Seal-TM5-256", "Mem-StuckBit128", "Mem-SimpleV2-256", "Mem-Random", "Mem-MovingInv"] {
                 assert_eq!(recorded(name), None, "{name} under {given:?}");
+            }
+        }
+    }
+
+    /// TODO 99: each Bench-*-Seal-* test measures with its pattern at the width the results file
+    /// records for it: one naming no width the run's given, else the seal's auto; one naming a
+    /// width that width. Each is run, and the kernel its body took noted (`SEAL_MEASURED`): the
+    /// record is worked out apart from the kernel (`picked_width` calls `bench_seal_width` itself),
+    /// so the test above passed a pair built at another width than it records.
+    #[test]
+    fn the_seal_pairs_measure_at_the_width_they_record() {
+        use crate::runner::TestFunction;
+        let span = super::heap_span::HeapSpan::new(256 * 1024, 0);
+        let cache_info = get_cache_info();
+        let registered = crate::runner::registered_tests(cache_info);
+        let forced = [Width::W128, Width::W256, Width::W512].into_iter().filter(|w| w.check().is_ok()).map(Some);
+        for given in forced.chain([None]) {
+            let _width = TestWidth::set(given);
+            let definitions = crate::runner::create_test_definitions(cache_info);
+            for (name, function) in bench_seal_tests() {
+                let what = format!("{name} under {given:?}");
+                let (_, _, config) = registered.iter().find(|(n, ..)| *n == name).unwrap_or_else(|| panic!("{what}: not registered"));
+                let mut config = config.clone();
+                (config.timing, config.thread_count, config.tsc_frequency_ghz) = (TestTiming::cycles_only(1), 1, 1.0);
+                (config.cache_line_bytes, config.chunk_mode) = (cache_info.cache_line_size, ChunkMode::Absolute { size_bytes: 64 * 1024 });
+                let TestFunction::MultiBlock(f) = function else { panic!("{what}: not a block test") };
+                SEAL_MEASURED.set(None);
+                // SAFETY: the span is live, 64-byte aligned and the test's alone, and each width is
+                // one the CPU has (`bench_seal_width`)
+                let _ = unsafe { f(&span.blocks, 0, ErrorMode::Log, &config.timing, &config, None) };
+                let measured = SEAL_MEASURED.take().unwrap_or_else(|| panic!("{what}: measured with no kernel"));
+
+                let recorded = definitions.iter().find(|d| d.display_name == name).unwrap_or_else(|| panic!("{what}: no definition"))
+                    .simd_width();
+                let named = ["128", "256", "512"].into_iter().find(|bits| name.ends_with(&format!("-{bits}")))
+                    .map(|bits| SealWidth::parse(bits).unwrap());
+                let width = match (named, recorded) {
+                    (Some(named), _) => named.resolve().unwrap_or_else(|_| SealWidth::Auto.resolve().unwrap()),
+                    (None, Some(recorded)) => recorded.seal(),
+                    (None, None) => panic!("{what}: names no width and records none"),
+                };
+                let pattern = if name.contains("-TM5") { SealPattern::Tm5 } else { SealPattern::Tmr };
+                assert_eq!((measured.pattern, measured.width), (pattern, width), "{what}: measured with, not its record's");
             }
         }
     }

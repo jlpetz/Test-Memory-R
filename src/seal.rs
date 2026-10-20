@@ -89,6 +89,45 @@ pub fn set_calibrated_width(width: SealWidth) {
     let _ = CALIBRATED_WIDTH.set(width);
 }
 
+/// The calibrated width `auto` resolves to: this machine's (`set_calibrated_width`), or in a unit
+/// test a test's on its own thread (`TestCalibratedWidth`), since the process's is set once.
+fn calibrated_width() -> Option<SealWidth> {
+    #[cfg(test)]
+    if let Some(width) = TEST_CALIBRATED_WIDTH.with(|w| w.get()) {
+        return width;
+    }
+    CALIBRATED_WIDTH.get().copied()
+}
+
+#[cfg(test)]
+thread_local! {
+    /// A test's calibrated width on its own thread, in place of the process's (`TestCalibratedWidth`)
+    static TEST_CALIBRATED_WIDTH: std::cell::Cell<Option<Option<SealWidth>>> = const { std::cell::Cell::new(None) };
+}
+
+/// While it lives, `auto` on this thread resolves to `width` as this machine's calibrated width
+/// (`None`: none, so the rule), as `crate::simd::TestWidth` stands in for the run's width.
+#[cfg(test)]
+pub(crate) struct TestCalibratedWidth {
+    before: Option<Option<SealWidth>>,
+}
+
+#[cfg(test)]
+impl TestCalibratedWidth {
+    #[must_use = "the width holds only while the guard lives"]
+    pub(crate) fn set(width: Option<SealWidth>) -> Self {
+        TestCalibratedWidth { before: TEST_CALIBRATED_WIDTH.with(|w| w.replace(Some(width))) }
+    }
+}
+
+#[cfg(test)]
+impl Drop for TestCalibratedWidth {
+    fn drop(&mut self) {
+        let before = self.before;
+        TEST_CALIBRATED_WIDTH.with(|w| w.set(before));
+    }
+}
+
 impl SealWidth {
     pub fn parse(s: &str) -> Result<Self, String> {
         match s.trim().to_lowercase().as_str() {
@@ -109,8 +148,7 @@ impl SealWidth {
     /// `resolve`, and where the width came from: for a width given, `setting` (where it was set);
     /// for `Auto`, this machine's calibrated width (`set_calibrated_width`), else the rule.
     pub fn resolve_from(self, setting: &'static str) -> Result<(Self, SealWidthSource), String> {
-        self.resolve_on(CALIBRATED_WIDTH.get().copied(), is_x86_feature_detected!("avx2"),
-                        is_x86_feature_detected!("avx512f"), setting)
+        self.resolve_on(calibrated_width(), is_x86_feature_detected!("avx2"), is_x86_feature_detected!("avx512f"), setting)
     }
 
     /// `resolve_from` with the calibrated width and the CPU's AVX2 and AVX-512 given, as tests
@@ -681,6 +719,29 @@ mod tests {
             assert_eq!(w.name(), w.bits().to_string());
         }
         assert_eq!(SealWidth::from_bits(64), None);
+    }
+
+    /// TODO 99: `auto` resolves to the calibrated width startup set (a test's here,
+    /// `TestCalibratedWidth`) by every path a run takes it: `resolve_from` (the run's seal, with
+    /// where it came from), `resolve` and `SealKernel::detect` (the Bench-*-Seal-* pairs, an
+    /// unsealed run's mirror tests). A width given still wins, and with none set `auto` is the
+    /// rule. `resolve_on`'s test above gives the calibrated width itself, so a `resolve_from` that
+    /// never passed it on passed there.
+    #[test]
+    fn auto_takes_the_calibrated_width_startup_set() {
+        use SealWidth::{Auto, W128, W256, W512};
+        use SealWidthSource::{Calibrated, Rule, Setting};
+        let rule = Auto.resolve_on(None, is_x86_feature_detected!("avx2"), is_x86_feature_detected!("avx512f"), "").unwrap().0;
+        for width in [W128, W256, W512].into_iter().filter(|w| w.resolve().is_ok()) {
+            let _calibrated = TestCalibratedWidth::set(Some(width));
+            assert_eq!(Auto.resolve_from("seal-width="), Ok((width, Calibrated)), "calibrated {width:?}");
+            assert_eq!(Auto.resolve(), Ok(width));
+            assert_eq!(SealKernel::detect().width, width);
+            assert_eq!(W128.resolve_from("seal-width="), Ok((W128, Setting("seal-width="))));
+        }
+        let _none = TestCalibratedWidth::set(None);
+        assert_eq!(Auto.resolve_from("seal-width="), Ok((rule, Rule)));
+        assert_eq!(SealKernel::detect().width, rule);
     }
 
 

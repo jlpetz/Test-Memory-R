@@ -1565,6 +1565,26 @@ impl SealCalibration {
     }
 }
 
+/// A seal calibration that chose `width_bits`, for a unit test: measured nowhere yet
+/// (`AppConfig::set_seal_calibration` stamps the machine).
+#[cfg(test)]
+pub(crate) fn test_seal_calibration(width_bits: u32) -> SealCalibration {
+    let timing = |bits, ms: f64| SealWidthTiming {
+        bits, fill_mib_s: 20000.0, check_mib_s: 30000.0, ms, ms_min: ms - 1.0, ms_q3: ms + 0.5, ms_max: ms + 1.0,
+    };
+    SealCalibration {
+        timestamp: Utc::now(),
+        fingerprint: Default::default(),
+        pattern: "tmr".to_string(),
+        buffer_bytes: 512 << 20,
+        page_size: "large".to_string(),
+        runs: 5,
+        widths: vec![timing(128, 40.0), timing(256, 40.5)],
+        width_bits,
+        fastest_bits: 128,
+    }
+}
+
 /// The seal's width from each width's timing: the fastest by median fill + check, unless a
 /// narrower width runs at its speed, when it is the narrowest such: the narrower draws less power.
 /// Returns the chosen width's bits and the fastest's; `None` with none.

@@ -1303,6 +1303,33 @@ mod tests {
         assert_eq!(PageSizeMix::default().describe(), "none");
     }
 
+    /// TODO 99: the results file records the seal's kernel, as the plan names it, and where its
+    /// width came from, in a sealed run; neither in an unsealed one, or in results written before
+    /// they were recorded.
+    #[test]
+    fn the_run_records_its_seal_and_where_its_width_came_from() {
+        use crate::seal::{SealKernel, SealPattern, SealWidth, SealWidthSource};
+        let capture = |seal| ExecutionSnapshot::capture(&crate::runner::TestSuiteTiming::cycles_only(1), crate::ErrorMode::Log,
+                                                        None, None, 2, seal);
+        for (pattern, width, source, recorded) in [
+            (SealPattern::Tmr, SealWidth::W128, SealWidthSource::Calibrated, ("tmr-128", "calibrated")),
+            (SealPattern::Tm5, SealWidth::W256, SealWidthSource::Rule, ("tm5-256", "rule")),
+            (SealPattern::Tmr, SealWidth::W512, SealWidthSource::Setting("the config's seal_width"), ("tmr-512", "the config's seal_width")),
+        ] {
+            let execution = capture(Some((SealKernel::new(pattern, width), source)));
+            assert_eq!((execution.seal.as_deref(), execution.seal_width_source.as_deref()), (Some(recorded.0), Some(recorded.1)));
+        }
+        let unsealed = capture(None);
+        assert_eq!((unsealed.seal.as_deref(), unsealed.seal_width_source.as_deref()), (None, None));
+
+        let mut json = serde_json::to_value(capture(Some((SealKernel::new(SealPattern::Tmr, SealWidth::W256), SealWidthSource::Rule)))).unwrap();
+        for key in ["seal", "seal_width_source"] {
+            json.as_object_mut().unwrap().remove(key);
+        }
+        let older: ExecutionSnapshot = serde_json::from_value(json).unwrap();
+        assert_eq!((older.seal, older.seal_width_source), (None, None));
+    }
+
     /// TODO 99: the results file records the run's width and where it came from, under auto too
     /// (the widest the CPU has), and each test that takes the run's width the width it ran at: an
     /// `-Auto` test its width, Mem-Sequence 256 for 128, a Bench pair naming none the run's. A test

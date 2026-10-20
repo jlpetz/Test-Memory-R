@@ -494,23 +494,7 @@ mod tests {
         assert_eq!(loaded.memory_modules.as_ref().unwrap()[0].speed_mts, 4800);
     }
 
-    /// A seal calibration that chose `width_bits`, measured nowhere yet (`set_seal_calibration`
-    /// stamps the machine).
-    fn seal_calibration(width_bits: u32) -> SealCalibration {
-        use crate::calibration::SealWidthTiming;
-        let timing = |bits, ms| SealWidthTiming { bits, fill_mib_s: 20000.0, check_mib_s: 30000.0, ms, ms_min: ms - 1.0, ms_q3: ms + 0.5, ms_max: ms + 1.0 };
-        SealCalibration {
-            timestamp: chrono::Utc::now(),
-            fingerprint: MachineFingerprint::default(),
-            pattern: "tmr".to_string(),
-            buffer_bytes: 512 << 20,
-            page_size: "large".to_string(),
-            runs: 5,
-            widths: vec![timing(128, 40.0), timing(256, 40.5)],
-            width_bits,
-            fastest_bits: 128,
-        }
-    }
+    use crate::calibration::test_seal_calibration;
 
     fn this_machine() -> (&'static SystemInfo, &'static SmbiosData) {
         (crate::tests::get_system_info(), crate::smbios::get_smbios())
@@ -540,7 +524,7 @@ mod tests {
         assert_eq!(resolve(&config, W512), (W512, Setting("seal-width=")));
 
         // Present, measured here: the calibrated width, which a setting overrides
-        config.set_seal_calibration(seal_calibration(128), system_info, smbios);
+        config.set_seal_calibration(test_seal_calibration(128), system_info, smbios);
         assert_eq!(config.seal_calibration.as_ref().unwrap().fingerprint, MachineFingerprint::detect(system_info, smbios));
         assert_eq!(resolve(&config, Auto), (W128, Calibrated));
         assert_eq!(resolve(&config, W256), (W256, Setting("seal-width=")));
@@ -566,7 +550,7 @@ mod tests {
         assert!(!config.is_calibration_valid(system_info, smbios));
         let identity = serde_json::to_value(&config).unwrap();
 
-        config.set_seal_calibration(seal_calibration(128), system_info, smbios);
+        config.set_seal_calibration(test_seal_calibration(128), system_info, smbios);
         assert!(config.valid_seal_calibration(system_info, smbios).is_some(), "the seal's, measured here");
         assert!(!config.is_calibration_valid(system_info, smbios), "the cache calibration from other hardware revived");
         let mut after = serde_json::to_value(&config).unwrap();
@@ -598,7 +582,7 @@ mod tests {
         }
         for (what, fingerprint) in elsewhere {
             let mut config = AppConfig::default();
-            config.set_seal_calibration(seal_calibration(128), system_info, smbios);
+            config.set_seal_calibration(test_seal_calibration(128), system_info, smbios);
             assert_eq!(resolve(&config, Auto), (W128, Calibrated), "{what}: measured here");
             config.seal_calibration.as_mut().unwrap().fingerprint = fingerprint;
             assert_eq!(resolve(&config, Auto), (W256, Rule), "{what}: from other hardware");
@@ -622,7 +606,7 @@ mod tests {
             ..Default::default()
         };
         config.update_identity(system_info, smbios);
-        config.set_seal_calibration(seal_calibration(256), system_info, smbios);
+        config.set_seal_calibration(test_seal_calibration(256), system_info, smbios);
         let mut json: serde_json::Value = serde_json::to_value(&config).unwrap();
         let loaded: AppConfig = serde_json::from_value(json.clone()).unwrap();
         assert_eq!(loaded.seal_calibration, config.seal_calibration);
