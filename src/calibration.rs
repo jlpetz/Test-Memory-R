@@ -419,6 +419,47 @@ use std::time::Instant;
 #[cfg(target_arch = "x86_64")]
 use std::arch::x86_64::__rdtscp;
 
+/// A calibration's own memory: `size` bytes at the page size asked for, falling back to smaller
+/// pages where it can't have them (page_size_str: "regular"/"4kb", "large"/"2mb", "huge"/"1gb").
+/// The cache calibration's probes and the seal's calibration both take theirs from here.
+fn allocate_calibration_buffer(size: usize, page_size_str: &str) -> Result<MemoryBuffer, String> {
+    let page_pref = match page_size_str.to_lowercase().as_str() {
+        "regular" | "4kb" => {
+            log::info!("ProbeEngine: Using regular 4KB pages");
+            PageSizePreference::Prefer(PageSizeLevel::Regular)
+        }
+        "huge" | "1gb" => {
+            log::info!("ProbeEngine: Using huge 1GB pages");
+            PageSizePreference::Prefer(PageSizeLevel::Huge)
+        }
+        _ => {
+            log::info!("ProbeEngine: Using large 2MB pages");
+            PageSizePreference::Prefer(PageSizeLevel::Large)
+        }
+    };
+
+    log::info!("ProbeEngine: Allocating {} bytes for calibration (page_size={})", size, page_size_str);
+
+    // A large-page request gets its page size from its alignment: without it the kernel
+    // silently gives smaller pages (TODO 87). A fallback to smaller pages keeps it, over-aligned.
+    let alignment = match &page_pref {
+        PageSizePreference::Prefer(page @ (PageSizeLevel::Huge | PageSizeLevel::Large)) => Some(page.bytes()),
+        _ => None,
+    };
+    let config = AllocationConfig {
+        size,
+        numa_node: None,
+        page_size: page_pref,
+        memory_type: MemoryType::WriteBack,
+        zero_memory: false,
+        alignment,
+        numa_strict: false,
+    };
+
+    let allocator = MemoryAllocator::new(BackendType::Auto)?;
+    allocator.allocate(&config).map_err(|e| format!("Failed to allocate calibration buffer: {}", e))
+}
+
 /// Engine for executing latency probes at specific workload sizes
 pub struct ProbeEngine {
     /// TSC frequency in GHz (cycles per nanosecond)
@@ -454,41 +495,7 @@ impl ProbeEngine {
             return Ok(());
         }
 
-        let page_pref = match page_size_str.to_lowercase().as_str() {
-            "regular" | "4kb" => {
-                log::info!("ProbeEngine: Using regular 4KB pages");
-                PageSizePreference::Prefer(PageSizeLevel::Regular)
-            }
-            "huge" | "1gb" => {
-                log::info!("ProbeEngine: Using huge 1GB pages");
-                PageSizePreference::Prefer(PageSizeLevel::Huge)
-            }
-            _ => {
-                log::info!("ProbeEngine: Using large 2MB pages");
-                PageSizePreference::Prefer(PageSizeLevel::Large)
-            }
-        };
-
-        log::info!("ProbeEngine: Allocating {} bytes for calibration (page_size={})", max_size, page_size_str);
-
-        // A large-page request gets its page size from its alignment: without it the kernel
-        // silently gives smaller pages (TODO 87). A fallback to smaller pages keeps it, over-aligned.
-        let alignment = match &page_pref {
-            PageSizePreference::Prefer(page @ (PageSizeLevel::Huge | PageSizeLevel::Large)) => Some(page.bytes()),
-            _ => None,
-        };
-        let config = AllocationConfig {
-            size: max_size,
-            numa_node: None,
-            page_size: page_pref,
-            memory_type: MemoryType::WriteBack,
-            zero_memory: false,
-            alignment,
-            numa_strict: false,
-        };
-
-        let allocator = MemoryAllocator::new(BackendType::Auto)?;
-        match allocator.allocate(&config) {
+        match allocate_calibration_buffer(max_size, page_size_str) {
             Ok(buffer) => {
                 // Setup pointer-chase pattern
                 let base = buffer.as_mut_ptr() as *mut u64;
@@ -506,9 +513,7 @@ impl ProbeEngine {
                     max_size, len);
                 Ok(())
             }
-            Err(e) => {
-                Err(format!("Failed to allocate calibration buffer: {}", e))
-            }
+            Err(e) => Err(e),
         }
     }
 
@@ -1422,16 +1427,213 @@ window_stddev,
                 }
             }
         }
-        println!("ℹ️  Calibration used {} pages.", match results.page_size.as_str() {
-            "regular" | "4kb" => "4KB regular",
-            "huge" | "1gb" => "1GB huge",
-            _ => "2MB large",
-        });
+        println!("ℹ️  Calibration used {} pages.", page_size_name(&results.page_size));
         if results.page_size != "regular" && results.page_size != "4kb" {
             println!("    Use maxpage=regular with --calibrate-cache to test with 4KB pages for TLB comparison.");
         }
         println!();
     }
+}
+
+/// A calibration's `page_size` as its report names it.
+fn page_size_name(page_size: &str) -> &'static str {
+    match page_size {
+        "regular" | "4kb" => "4KB regular",
+        "huge" | "1gb" => "1GB huge",
+        _ => "2MB large",
+    }
+}
+
+// ============================================================================
+// Seal Width Calibration (TODO 99)
+// ============================================================================
+
+/// The seal calibration's timed runs of each width, after one warm-up run of each.
+const SEAL_RUNS: usize = 5;
+/// Its buffer is this many times the L3, so each check reads DRAM, as the seal's checks in a run
+/// do (the cache calibration's FullDRAM tier, `CacheTier::FullDram`)...
+const SEAL_L3_MULTIPLE: usize = 4;
+/// ...and at least this, so a run on a part with a small L3 lasts long enough to time (512 MiB:
+/// ~20 ms a fill at 25,000 MiB/s).
+const SEAL_MIN_BYTES: usize = 512 * 1024 * 1024;
+
+/// One width in a seal calibration: its fill and check speeds at their medians, and its fill +
+/// check time over the timed runs, median and spread.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct SealWidthTiming {
+    /// 128, 256 or 512
+    pub bits: u32,
+    /// MiB/s, at the median fill and the median check
+    #[serde(serialize_with = "serialize_round_2dp", deserialize_with = "deserialize_f64_lenient")]
+    pub fill_mib_s: f64,
+    #[serde(serialize_with = "serialize_round_2dp", deserialize_with = "deserialize_f64_lenient")]
+    pub check_mib_s: f64,
+    /// Fill + check in ms: the runs' median, fastest and slowest
+    #[serde(serialize_with = "serialize_round_3dp", deserialize_with = "deserialize_f64_lenient")]
+    pub ms: f64,
+    #[serde(serialize_with = "serialize_round_3dp", deserialize_with = "deserialize_f64_lenient")]
+    pub ms_min: f64,
+    #[serde(serialize_with = "serialize_round_3dp", deserialize_with = "deserialize_f64_lenient")]
+    pub ms_max: f64,
+}
+
+/// The seal's width, measured on this machine (`--calibrate-seal`, `--calibrate-all`; TODO 99).
+/// `seal-width=auto` runs `width_bits` on the machine it was measured on
+/// (`AppConfig::valid_seal_calibration`); a width set still wins.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct SealCalibration {
+    pub timestamp: DateTime<Utc>,
+    /// The machine fingerprint it was measured on (`AppConfig::generate_machine_id`), set when it
+    /// is saved. A cache calibration saved later on other hardware rewrites the config's identity;
+    /// this keeps that save from passing the seal's off as the new hardware's.
+    #[serde(default)]
+    pub machine_id: String,
+    /// The pattern measured: the default, `tmr`. A `tm5` run takes the width too.
+    pub pattern: String,
+    pub buffer_bytes: u64,
+    /// The page size asked for, as the cache calibration's `page_size`
+    pub page_size: String,
+    /// Timed runs of each width, after a warm-up run
+    pub runs: u32,
+    /// Each width the CPU has, the narrowest first
+    pub widths: Vec<SealWidthTiming>,
+    /// The width `auto` runs (`choose_seal_width`), and the fastest; they differ when a narrower
+    /// width is within the fastest's spread
+    pub width_bits: u32,
+    pub fastest_bits: u32,
+}
+
+impl SealCalibration {
+    /// The width `auto` runs.
+    pub fn width(&self) -> Option<crate::seal::SealWidth> {
+        crate::seal::SealWidth::from_bits(self.width_bits)
+    }
+}
+
+/// The seal's width from each width's timing: the fastest by median fill + check, unless a
+/// narrower width's median is within the fastest's spread (no slower than its slowest run), when
+/// it is the narrowest such: the measurement can't tell them apart, and the narrower draws less
+/// power for the same speed. Returns the chosen width's bits and the fastest's; `None` with none.
+pub fn choose_seal_width(widths: &[SealWidthTiming]) -> Option<(u32, u32)> {
+    let fastest = widths.iter().min_by(|a, b| a.ms.total_cmp(&b.ms).then(a.bits.cmp(&b.bits)))?;
+    let chosen = widths.iter().filter(|w| w.bits <= fastest.bits && w.ms <= fastest.ms_max).min_by_key(|w| w.bits)?;
+    Some((chosen.bits, fastest.bits))
+}
+
+/// The median of `values` (the mean of the middle two for an even count); 0 for none.
+fn median(values: &[f64]) -> f64 {
+    let mut sorted = values.to_vec();
+    sorted.sort_by(f64::total_cmp);
+    match sorted.len() {
+        0 => 0.0,
+        n if n % 2 == 1 => sorted[n / 2],
+        n => (sorted[n / 2 - 1] + sorted[n / 2]) / 2.0,
+    }
+}
+
+/// Measures the seal's own kernels (`SealKernel::fill` and `check`, the default pattern `tmr`) at
+/// every width this CPU has, and chooses one (`choose_seal_width`).
+///
+/// One thread, this one, as the latency calibration runs, so no other thread's traffic biases a
+/// width (the owner, 2026-10-20). The buffer is `SEAL_L3_MULTIPLE` times the L3 (at least
+/// `SEAL_MIN_BYTES`) from the cache calibration's allocation, at its page size (`page_size`).
+/// Each round fills and then checks the whole buffer at every width in turn, in an order rotated
+/// each round so drift (heat, clocks, other load) falls on every width alike; the first round
+/// warms up (faults in 4 KiB pages, settles clocks) and isn't timed.
+pub fn calibrate_seal(cache_info: &CacheInfo, page_size: &str) -> Result<SealCalibration, String> {
+    use crate::seal::{SealKernel, SealPattern, SealWidth};
+    let page = PageSizeLevel::from_config_str(page_size).bytes();
+    let bytes = (cache_info.l3_cache * SEAL_L3_MULTIPLE).max(SEAL_MIN_BYTES).next_multiple_of(page);
+    let kernels: Vec<SealKernel> = [SealWidth::W128, SealWidth::W256, SealWidth::W512].into_iter()
+        .filter(|w| w.resolve().is_ok())
+        .map(|w| SealKernel::new(SealPattern::Tmr, w))
+        .collect();
+    log::info!("Seal width calibration: tmr at {:?} bits, {} ({}), {} timed runs each",
+        kernels.iter().map(|k| k.width.bits()).collect::<Vec<_>>(), format_size(bytes), page_size, SEAL_RUNS);
+
+    let buffer = allocate_calibration_buffer(bytes, page_size)?;
+    let (ptr, words) = (buffer.as_mut_ptr() as *mut u64, bytes / 8);
+    // Per kernel, the seconds of each timed fill and each timed check
+    let mut times: Vec<(Vec<f64>, Vec<f64>)> = vec![(Vec::new(), Vec::new()); kernels.len()];
+    let mut bad = 0;
+    for round in 0..=SEAL_RUNS {
+        for k in 0..kernels.len() {
+            let i = (round + k) % kernels.len();
+            // SAFETY: the buffer is `words` long and page aligned, and each kernel's width is one
+            // this CPU has (`resolve` above)
+            let (fill, check) = unsafe {
+                let start = Instant::now();
+                kernels[i].fill(ptr, 0, words);
+                let filled = Instant::now();
+                bad += kernels[i].check(ptr, 0, words, "seal calibration's check");
+                (filled - start, filled.elapsed())
+            };
+            if round > 0 {
+                times[i].0.push(fill.as_secs_f64());
+                times[i].1.push(check.as_secs_f64());
+            }
+        }
+    }
+    drop(buffer);
+    if bad > 0 {
+        return Err(format!("the seal's check found {bad} bad words in memory it had just written: memory errors, so \
+                            the timings aren't the seal's own; stabilize the memory, then calibrate"));
+    }
+
+    let mib = bytes as f64 / crate::constants::MB_F64;
+    let widths: Vec<SealWidthTiming> = kernels.iter().zip(&times).map(|(kernel, (fills, checks))| {
+        let totals: Vec<f64> = fills.iter().zip(checks).map(|(f, c)| (f + c) * 1e3).collect();
+        SealWidthTiming {
+            bits: kernel.width.bits(),
+            fill_mib_s: mib / median(fills),
+            check_mib_s: mib / median(checks),
+            ms: median(&totals),
+            ms_min: totals.iter().copied().fold(f64::INFINITY, f64::min),
+            ms_max: totals.iter().copied().fold(0.0, f64::max),
+        }
+    }).collect();
+    let (width_bits, fastest_bits) = choose_seal_width(&widths).ok_or("no seal width to measure")?;
+    Ok(SealCalibration {
+        timestamp: Utc::now(),
+        machine_id: String::new(),
+        pattern: SealPattern::Tmr.name().to_string(),
+        buffer_bytes: bytes as u64,
+        page_size: page_size.to_string(),
+        runs: SEAL_RUNS as u32,
+        widths,
+        width_bits,
+        fastest_bits,
+    })
+}
+
+/// Prints a seal calibration: each width's fill and check speed and fill + check time, and the
+/// width chosen, saying why when it isn't the fastest.
+pub fn display_seal_calibration(seal: &SealCalibration, cache_info: &CacheInfo) {
+    let l3 = match cache_info.l3_cache {
+        0 => String::new(),
+        l3 => format!(", {:.0} × L3", seal.buffer_bytes as f64 / l3 as f64),
+    };
+    println!("\n📊 Seal Width Calibration ({}, 1 thread, {}{l3}, {} pages; median of {} runs after a warm-up)",
+        seal.pattern, format_size(seal.buffer_bytes as usize), page_size_name(&seal.page_size), seal.runs);
+    println!("═══════════════════════════════════════════════════════════════════════════════");
+    println!("{:<8} {:>13} {:>13} {:>28}", "Width", "Fill", "Check", "Fill + check");
+    println!("───────────────────────────────────────────────────────────────────────────────");
+    for w in &seal.widths {
+        println!("{:<8} {:>7.0} MiB/s {:>7.0} MiB/s {:>28}", w.bits, w.fill_mib_s, w.check_mib_s, seal_time(w));
+    }
+    println!("───────────────────────────────────────────────────────────────────────────────");
+    match seal.widths.iter().find(|w| w.bits == seal.fastest_bits) {
+        Some(fastest) if seal.fastest_bits != seal.width_bits => println!(
+            "Seal width: {}: the fastest is {} ({}), but {}'s median is within its spread, so the narrower (less power, same speed)",
+            seal.width_bits, fastest.bits, seal_time(fastest), seal.width_bits),
+        _ => println!("Seal width: {}, the fastest", seal.width_bits),
+    }
+    println!();
+}
+
+/// A width's fill + check time as the seal calibration's report gives it: median [min..max].
+fn seal_time(w: &SealWidthTiming) -> String {
+    format!("{:.1} ms [{:.1}..{:.1}]", w.ms, w.ms_min, w.ms_max)
 }
 
 // ============================================================================
@@ -1533,5 +1735,44 @@ mod tests {
         
         assert_eq!(stats.median_ns, 0.0);
         assert_eq!(stats.spread_ratio, 0.0);
+    }
+
+    /// A width's fill + check: its median, fastest and slowest run, in ms.
+    fn timing(bits: u32, ms: f64, ms_min: f64, ms_max: f64) -> SealWidthTiming {
+        SealWidthTiming { bits, fill_mib_s: 0.0, check_mib_s: 0.0, ms, ms_min, ms_max }
+    }
+
+    /// TODO 99: the seal's width is the fastest by median fill + check, unless a narrower width's
+    /// median is within the fastest's spread, when it is the narrowest such. A wider width within
+    /// a narrower fastest's spread, or a narrower one whose runs only overlap it, changes nothing.
+    #[test]
+    fn the_seal_width_is_the_fastest_or_the_narrowest_within_its_spread() {
+        let choose = |widths: &[SealWidthTiming]| choose_seal_width(widths);
+        // Apart: the fastest
+        assert_eq!(choose(&[timing(128, 50.0, 49.0, 51.0), timing(256, 45.0, 44.0, 46.0), timing(512, 40.0, 39.0, 41.0)]), Some((512, 512)));
+        assert_eq!(choose(&[timing(128, 50.0, 49.0, 51.0), timing(256, 40.0, 39.0, 41.0), timing(512, 45.0, 44.0, 46.0)]), Some((256, 256)));
+        // 256's median inside 512's spread: 256
+        assert_eq!(choose(&[timing(128, 50.0, 49.0, 51.0), timing(256, 41.0, 40.0, 43.0), timing(512, 40.0, 39.0, 42.0)]), Some((256, 512)));
+        // 128's too: the narrowest of them
+        assert_eq!(choose(&[timing(128, 41.5, 41.0, 44.0), timing(256, 41.0, 40.0, 43.0), timing(512, 40.0, 39.0, 42.0)]), Some((128, 512)));
+        // Exactly the fastest's slowest run is within
+        assert_eq!(choose(&[timing(256, 42.0, 41.0, 43.0), timing(512, 40.0, 39.0, 42.0)]), Some((256, 512)));
+        // Runs that overlap the fastest's, a median that doesn't: the fastest
+        assert_eq!(choose(&[timing(256, 45.0, 41.0, 47.0), timing(512, 40.0, 39.0, 42.0)]), Some((512, 512)));
+        // A wider width within a narrower fastest's spread: the narrower, the fastest
+        assert_eq!(choose(&[timing(256, 40.0, 39.0, 42.0), timing(512, 40.5, 39.5, 41.0)]), Some((256, 256)));
+        // Equal medians: the narrower is the fastest
+        assert_eq!(choose(&[timing(256, 40.0, 40.0, 40.0), timing(512, 40.0, 40.0, 40.0)]), Some((256, 256)));
+        // One width, and none
+        assert_eq!(choose(&[timing(256, 40.0, 39.0, 41.0)]), Some((256, 256)));
+        assert_eq!(choose(&[]), None);
+    }
+
+    #[test]
+    fn median_is_the_middle_or_the_mean_of_the_middle_two() {
+        assert_eq!(median(&[3.0, 1.0, 2.0]), 2.0);
+        assert_eq!(median(&[4.0, 1.0, 3.0, 2.0]), 2.5);
+        assert_eq!(median(&[7.0]), 7.0);
+        assert_eq!(median(&[]), 0.0);
     }
 }

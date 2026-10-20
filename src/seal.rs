@@ -47,7 +47,8 @@ pub enum SealPattern {
     Tm5,
 }
 
-/// The seal kernels' SIMD width; `Auto` is the widest the CPU has.
+/// The seal kernels' SIMD width; `Auto` is this machine's calibrated width, else the rule
+/// (`SealWidth::resolve_from`).
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
 pub enum SealWidth {
     #[default]
@@ -55,6 +56,37 @@ pub enum SealWidth {
     W128,
     W256,
     W512,
+}
+
+/// Where the seal's width came from (TODO 99), which the plan and the results file give with it.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum SealWidthSource {
+    /// `auto`, at this machine's seal calibration (`--calibrate-seal`, `--calibrate-all`)
+    Calibrated,
+    /// `auto` with no seal calibration for this machine: 256 where AVX2 is, else 128
+    Rule,
+    /// A width set, and where: `seal-width=`, a config's `seal_width`, `width=` or a config's
+    /// `width` (`width_setting`)
+    Setting(&'static str),
+}
+
+impl SealWidthSource {
+    pub fn name(self) -> &'static str {
+        match self {
+            SealWidthSource::Calibrated => "calibrated",
+            SealWidthSource::Rule => "rule",
+            SealWidthSource::Setting(setting) => setting,
+        }
+    }
+}
+
+/// This machine's calibrated seal width, set once at startup from a seal calibration measured on
+/// this machine (`AppConfig::valid_seal_calibration`); unset, `auto` takes the rule.
+static CALIBRATED_WIDTH: std::sync::OnceLock<SealWidth> = std::sync::OnceLock::new();
+
+/// Sets the width `auto` resolves to for the rest of the process (the first call wins).
+pub fn set_calibrated_width(width: SealWidth) {
+    let _ = CALIBRATED_WIDTH.set(width);
 }
 
 impl SealWidth {
@@ -68,20 +100,67 @@ impl SealWidth {
         }
     }
 
-    /// The width this CPU runs: `Auto` resolved, or an error if the CPU lacks the asked-for one.
-    ///
-    /// `Auto` is 256, not 512, where AVX2 is there: on the dev box (Xeon 6975P, 2026-10-06, 28 GiB,
-    /// 4 threads) every width fills at ~90 GiB/s (the non-temporal store ceiling), but the 512-bit
-    /// check ran at 52-55 GiB/s against 58-63 for 128 and 256. The Bench-*-Seal-* pairs measure it.
+    /// The width this CPU runs: `Auto` resolved (`resolve_from`), or an error if the CPU lacks the
+    /// asked-for one.
     pub fn resolve(self) -> Result<Self, String> {
-        let avx512 = is_x86_feature_detected!("avx512f");
-        let avx2 = is_x86_feature_detected!("avx2");
+        self.resolve_from("a width given").map(|(width, _)| width)
+    }
+
+    /// `resolve`, and where the width came from: for a width given, `setting` (where it was set);
+    /// for `Auto`, this machine's calibrated width (`set_calibrated_width`), else the rule.
+    pub fn resolve_from(self, setting: &'static str) -> Result<(Self, SealWidthSource), String> {
+        self.resolve_on(CALIBRATED_WIDTH.get().copied(), is_x86_feature_detected!("avx2"),
+                        is_x86_feature_detected!("avx512f"), setting)
+    }
+
+    /// `resolve_from` with the calibrated width and the CPU's AVX2 and AVX-512 given, as tests
+    /// give them.
+    ///
+    /// A width given wins, and is refused where the CPU lacks it. `Auto` is the calibrated width
+    /// where there is one the CPU has; a calibrated width it lacks (AVX-512 hidden under the same
+    /// fingerprint, as a hypervisor can) falls to the rule. The rule is 256, not 512, where AVX2
+    /// is: on the dev box (Xeon 6975P, 2026-10-06, 28 GiB, 4 threads) every width filled at
+    /// ~90 GiB/s (the non-temporal store ceiling), but the 512-bit check ran at 52-55 GiB/s against
+    /// 58-63 for 128 and 256. The Bench-*-Seal-* pairs measure it; `--calibrate-seal` measures it
+    /// on the machine (`calibration::calibrate_seal`).
+    pub(crate) fn resolve_on(self, calibrated: Option<SealWidth>, avx2: bool, avx512: bool, setting: &'static str)
+        -> Result<(Self, SealWidthSource), String>
+    {
+        let lacks = |width: SealWidth| match width {
+            SealWidth::W512 if !avx512 => Some("seal width 512 needs AVX-512, which this CPU lacks"),
+            SealWidth::W256 if !avx2 => Some("seal width 256 needs AVX2, which this CPU lacks"),
+            _ => None,
+        };
         match self {
-            SealWidth::Auto if avx2 => Ok(SealWidth::W256),
-            SealWidth::Auto => Ok(SealWidth::W128),
-            SealWidth::W512 if !avx512 => Err("seal width 512 needs AVX-512, which this CPU lacks".to_string()),
-            SealWidth::W256 if !avx2 => Err("seal width 256 needs AVX2, which this CPU lacks".to_string()),
-            w => Ok(w),
+            SealWidth::Auto => match calibrated.filter(|&w| w != SealWidth::Auto && lacks(w).is_none()) {
+                Some(width) => Ok((width, SealWidthSource::Calibrated)),
+                None if avx2 => Ok((SealWidth::W256, SealWidthSource::Rule)),
+                None => Ok((SealWidth::W128, SealWidthSource::Rule)),
+            },
+            width => match lacks(width) {
+                Some(e) => Err(e.to_string()),
+                None => Ok((width, SealWidthSource::Setting(setting))),
+            },
+        }
+    }
+
+    /// The width of `bits` (128, 256 or 512).
+    pub fn from_bits(bits: u32) -> Option<Self> {
+        match bits {
+            128 => Some(SealWidth::W128),
+            256 => Some(SealWidth::W256),
+            512 => Some(SealWidth::W512),
+            _ => None,
+        }
+    }
+
+    /// 128, 256 or 512; 0 for `Auto`.
+    pub fn bits(self) -> u32 {
+        match self {
+            SealWidth::Auto => 0,
+            SealWidth::W128 => 128,
+            SealWidth::W256 => 256,
+            SealWidth::W512 => 512,
         }
     }
 
@@ -117,7 +196,8 @@ pub struct SealKernel {
 }
 
 impl SealKernel {
-    /// The default kernel on this CPU: `tmr` at the widest width, key 0, not inverted.
+    /// The default kernel on this CPU: `tmr` at the seal's auto width (`SealWidth::resolve_from`:
+    /// calibrated, else the rule), key 0, not inverted.
     pub fn detect() -> Self {
         SealKernel::new(SealPattern::Tmr, SealWidth::Auto.resolve().unwrap_or(SealWidth::W128))
     }
@@ -210,11 +290,14 @@ impl SealKernel {
     }
 }
 
-/// The seal's width setting: `seal_width` when given (`seal-width=`, else a config's
-/// `system.seal_width`), else the run's `width=` (`width`, `crate::simd::width_given`), else
-/// `auto`, the seal's own rule (`SealWidth::resolve`).
-pub fn width_setting(seal_width: Option<&str>, width: Option<crate::simd::Width>) -> &str {
-    seal_width.unwrap_or_else(|| width.map_or("auto", crate::simd::Width::name))
+/// The seal's width setting and where it was set: `seal_width` when given (`seal-width=`, else a
+/// config's `system.seal_width`), else the run's `width=` (`width`, `crate::simd::width_given`),
+/// else `auto`, which resolves to this machine's calibrated width or the rule
+/// (`SealWidth::resolve_from`).
+pub fn width_setting<'a>(seal_width: Option<(&'a str, &'static str)>, width: Option<(crate::simd::Width, &'static str)>)
+    -> (&'a str, &'static str)
+{
+    seal_width.or(width.map(|(w, source)| (w.name(), source))).unwrap_or(("auto", "auto"))
 }
 
 /// The run's seal setting (`seal=` / `system.seal`, `seal-width=` / `system.seal_width`).
@@ -239,9 +322,11 @@ impl SealSettings {
         Ok(SealSettings { on, pattern, width: SealWidth::parse(width)? })
     }
 
-    /// The kernel this CPU runs, or why the asked-for width can't run.
-    pub fn kernel(&self) -> Result<SealKernel, String> {
-        Ok(SealKernel::new(self.pattern, self.width.resolve()?))
+    /// The kernel this CPU runs and where its width came from, `setting` saying where a width
+    /// given was set (`width_setting`); or why the asked-for width can't run.
+    pub fn kernel(&self, setting: &'static str) -> Result<(SealKernel, SealWidthSource), String> {
+        let (width, source) = self.width.resolve_from(setting)?;
+        Ok((SealKernel::new(self.pattern, width), source))
     }
 }
 
@@ -550,18 +635,53 @@ mod tests {
     #[test]
     fn seal_width_is_its_own_then_the_runs_then_auto() {
         use crate::simd::Width;
-        let width = |seal_width, width| SealSettings::parse("tmr", width_setting(seal_width, width)).unwrap().width;
-        assert_eq!(width(None, None), SealWidth::Auto);
-        assert_eq!(width(None, Some(Width::W128)), SealWidth::W128);
-        assert_eq!(width(None, Some(Width::W256)), SealWidth::W256);
-        assert_eq!(width(None, Some(Width::W512)), SealWidth::W512);
-        assert_eq!(width(Some("256"), Some(Width::W128)), SealWidth::W256);
-        assert_eq!(width(Some("128"), Some(Width::W512)), SealWidth::W128);
-        assert_eq!(width(Some("auto"), Some(Width::W512)), SealWidth::Auto);
-        assert_eq!(width(Some("512"), None), SealWidth::W512);
+        let width = |seal_width: Option<&'static str>, width: Option<Width>| {
+            let (setting, source) = width_setting(seal_width.map(|w| (w, "seal-width=")), width.map(|w| (w, "width=")));
+            (SealSettings::parse("tmr", setting).unwrap().width, source)
+        };
+        assert_eq!(width(None, None).0, SealWidth::Auto);
+        assert_eq!(width(None, Some(Width::W128)), (SealWidth::W128, "width="));
+        assert_eq!(width(None, Some(Width::W256)), (SealWidth::W256, "width="));
+        assert_eq!(width(None, Some(Width::W512)), (SealWidth::W512, "width="));
+        assert_eq!(width(Some("256"), Some(Width::W128)), (SealWidth::W256, "seal-width="));
+        assert_eq!(width(Some("128"), Some(Width::W512)), (SealWidth::W128, "seal-width="));
+        assert_eq!(width(Some("auto"), Some(Width::W512)).0, SealWidth::Auto);
+        assert_eq!(width(Some("512"), None), (SealWidth::W512, "seal-width="));
     }
 
-
+    /// TODO 99: a width given wins over a calibrated one, and says where it was set; `auto` takes
+    /// the calibrated width, else the rule (256 with AVX2, else 128); a calibrated width the CPU
+    /// lacks falls to the rule, and a width given that it lacks is refused.
+    #[test]
+    fn auto_is_the_calibrated_width_else_the_rule_and_a_setting_wins() {
+        use SealWidth::{Auto, W128, W256, W512};
+        use SealWidthSource::{Calibrated, Rule, Setting};
+        let (avx512, avx2, neither) = ((true, true), (true, false), (false, false));
+        let resolve = |width: SealWidth, calibrated, (avx2, avx512): (bool, bool)| width.resolve_on(calibrated, avx2, avx512, "seal-width=");
+        for calibrated in [W128, W256, W512] {
+            assert_eq!(resolve(Auto, Some(calibrated), avx512), Ok((calibrated, Calibrated)), "calibrated {calibrated:?}");
+            for given in [W128, W256, W512] {
+                assert_eq!(resolve(given, Some(calibrated), avx512), Ok((given, Setting("seal-width="))), "{given:?} over {calibrated:?}");
+            }
+        }
+        assert_eq!(resolve(Auto, None, avx512), Ok((W256, Rule)));
+        assert_eq!(resolve(Auto, None, avx2), Ok((W256, Rule)));
+        assert_eq!(resolve(Auto, None, neither), Ok((W128, Rule)));
+        // A calibrated width this CPU lacks: the rule
+        assert_eq!(resolve(Auto, Some(W512), avx2), Ok((W256, Rule)));
+        assert_eq!(resolve(Auto, Some(W256), neither), Ok((W128, Rule)));
+        assert_eq!(resolve(Auto, Some(W128), avx2), Ok((W128, Calibrated)));
+        // A width given that this CPU lacks: refused, calibrated or not
+        assert!(resolve(W512, Some(W256), avx2).unwrap_err().contains("AVX-512"));
+        assert!(resolve(W256, None, neither).unwrap_err().contains("AVX2"));
+        assert_eq!(SealWidthSource::Calibrated.name(), "calibrated");
+        assert_eq!(SealWidthSource::Rule.name(), "rule");
+        for w in [W128, W256, W512] {
+            assert_eq!(SealWidth::from_bits(w.bits()), Some(w));
+            assert_eq!(w.name(), w.bits().to_string());
+        }
+        assert_eq!(SealWidth::from_bits(64), None);
+    }
 
 
     /// Known answers from an independent implementation of `doc/pattern_spec.md`'s seal section

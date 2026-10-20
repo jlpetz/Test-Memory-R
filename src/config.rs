@@ -82,8 +82,9 @@ pub struct SystemConfig {
     /// it. The mirror tests' data is the seal pattern either way.
     #[serde(default)]
     pub seal: Option<String>,
-    /// The seal kernels' SIMD width: `"auto"` (the seal's own rule, 256 with AVX2), `"128"`,
-    /// `"256"`, `"512"`; unset, `width`'s when that is set, else `"auto"`.
+    /// The seal kernels' SIMD width: `"auto"` (this machine's `--calibrate-seal` width, else the
+    /// seal's rule, 256 with AVX2), `"128"`, `"256"`, `"512"`; unset, `width`'s when that is set,
+    /// else `"auto"`.
     #[serde(default)]
     pub seal_width: Option<String>,
     /// The SIMD width of every test that picks its width at run time, and of the seal unless

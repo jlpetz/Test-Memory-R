@@ -798,21 +798,26 @@ pub fn run_tests_with_layout_and_timing_filtered(
     }
 
     // The run's seal (TODO 74): the command line's, else the config's, else tmr; at its own width
-    // if one is given, else at the run's width= (TODO 99), else at its auto
+    // if one is given, else at the run's width= (TODO 99), else at its auto (this machine's
+    // calibrated width, else the rule)
+    let (seal_width, seal_width_setting) = crate::seal::width_setting(
+        seal_width_override.map(|w| (w, "seal-width="))
+            .or(config.and_then(|c| c.system.seal_width.as_deref()).map(|w| (w, "the config's seal_width"))),
+        crate::simd::width_given());
     let seal_settings = crate::seal::SealSettings::parse(
         seal_override.or(config.and_then(|c| c.system.seal.as_deref())).unwrap_or("tmr"),
-        crate::seal::width_setting(seal_width_override.or(config.and_then(|c| c.system.seal_width.as_deref())),
-                                   crate::simd::width_given().map(|(w, _)| w)),
-    ).and_then(|s| match s.kernel() {
-        Ok(kernel) => Ok((s, kernel)),
-        // Unsealed, the width only matters to a mirror's data: take the widest there is
+        seal_width,
+    ).and_then(|s| match s.kernel(seal_width_setting) {
+        Ok((kernel, source)) => Ok((s, kernel, source)),
+        // Unsealed, the width only matters to a mirror's data: take the seal's auto
         Err(e) if !s.on => {
-            log::warn!("{e}; the mirror tests use the widest width this CPU has");
-            Ok((s, crate::seal::SealKernel::new(s.pattern, crate::seal::SealKernel::detect().width)))
+            log::warn!("{e}; the mirror tests use the seal's auto width");
+            let (width, source) = crate::seal::SealWidth::Auto.resolve_from(seal_width_setting)?;
+            Ok((s, crate::seal::SealKernel::new(s.pattern, width), source))
         }
         Err(e) => Err(e),
     });
-    let (mut seal_settings, seal_kernel) = match seal_settings {
+    let (mut seal_settings, seal_kernel, seal_width_source) = match seal_settings {
         Ok(s) => s,
         Err(e) => {
             println!("❌ Config error: {}", e);
@@ -862,7 +867,7 @@ pub fn run_tests_with_layout_and_timing_filtered(
     }
     let plan_sequence = crate::reporting::converters::PlanSequence {
         order: cycle_order.as_deref(),
-        seal: seal_settings.on.then_some(seal_kernel),
+        seal: seal_settings.on.then_some((seal_kernel, seal_width_source)),
         seal_off_reason,
         tm5: tm5_run,
         width,
@@ -1022,6 +1027,7 @@ pub fn run_tests_with_layout_and_timing_filtered(
             config_name: config.map(|c| c.metadata.name.clone()),
             tests: &test_definitions,
             cache_info,
+            seal: seal_settings.on.then_some((seal_kernel, seal_width_source)),
         });
         Arc::new(Mutex::new(TestRunResult::new(snapshot)))
     };

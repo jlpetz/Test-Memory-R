@@ -432,6 +432,14 @@ pub struct ExecutionSnapshot {
     /// name says its width); `None` under auto, each at the widest the CPU has.
     #[serde(default)]
     pub simd_width_bits: Option<u32>,
+    /// The seal's kernel, its pattern and width as the plan names it (`tmr-256`), and where the
+    /// width came from (TODO 99): `calibrated` (this machine's `--calibrate-seal`), `rule` (auto
+    /// without one: 256 with AVX2), or the setting (`seal-width=`, `width=`, the config's
+    /// `seal_width` or `width`). `None` in an unsealed run.
+    #[serde(default)]
+    pub seal: Option<String>,
+    #[serde(default)]
+    pub seal_width_source: Option<String>,
 }
 
 /// The calibration that was live during the run. Cache-relative windows are sized from these
@@ -541,6 +549,8 @@ pub struct RunConfigInputs<'a> {
     /// The resolved plan — after filtering, overrides, and auto-dispatch.
     pub tests: &'a [crate::runner::TestDefinition],
     pub cache_info: &'a crate::cache::CacheInfo,
+    /// The seal's kernel and where its width came from, in a sealed run.
+    pub seal: Option<(crate::seal::SealKernel, crate::seal::SealWidthSource)>,
 }
 
 impl RunConfigSnapshot {
@@ -569,6 +579,7 @@ impl RunConfigSnapshot {
             config_name,
             tests,
             cache_info,
+            seal,
         } = inputs;
 
         let memory = MemorySnapshot {
@@ -635,6 +646,8 @@ page_mix,
             transfer_source: Some(crate::pattern::transfer_beat().1.to_string()),
             rescan: Some(crate::pattern::rescan_enabled()),
             simd_width_bits: crate::simd::width_given().map(|(w, _)| w.bits()),
+            seal: seal.map(|(kernel, _)| kernel.name()),
+            seal_width_source: seal.map(|(_, source)| source.name().to_string()),
         };
 
         let calibration = crate::tests::get_calibration_data().map(|cal| {
