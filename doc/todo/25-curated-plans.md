@@ -48,9 +48,9 @@ available memory reserved, as before. A shorter subset would need data on which 
 first; TODO 97 has that for patterns only.
 
 **`widths`** (3 cycles): the families with width variants, every width side by side, so each tests
-the same memory in the same seconds of every cycle (separate runs drift; petz007 went 38, 24, 0, 0
-errors over four 10-minute blocks on 2026-10-11):
-StuckBit, Refresh, SimpleV2, MirrorV2 at scalar, 128, 256, 512 and Auto; SimpleNT at 128, 256, 512
+the same memory in the same seconds of every cycle (separate runs drift; the 8600G desktop went 38,
+24, 0, 0 errors over four 10-minute blocks on 2026-10-11):
+StuckBit, Refresh, SimpleV2, MirrorV2 at 128, 256, 512 and Auto (scalar too until TODO 99); SimpleNT at 128, 256, 512
 and Auto. 24 tests, about 7 min a cycle. A CPU without AVX-512 drops the four fixed 512-bit ones
 (they'd return empty results), logged; Auto is then 256.
 
