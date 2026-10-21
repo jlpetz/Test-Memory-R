@@ -93,13 +93,9 @@ pub fn resolve(named: Option<&'static Plan>, has_config: bool, has_filter: bool)
     }
 }
 
-/// A 512-bit variant on a CPU without AVX-512: it would only return empty results.
-fn unsupported(name: &str) -> bool {
-    name.contains("512") && !name.ends_with("Auto") && !is_x86_feature_detected!("avx512f")
-}
-
-/// The plan's tests from the built-in `suite`, in the plan's order, numbered as its tests.
-/// A 512-bit variant the CPU can't run is left out (logged); any other name must be in the suite.
+/// The plan's tests from the built-in `suite`, in the plan's order, numbered as its tests. Every
+/// name must be in the suite. A test the CPU can't run is the run's to leave out, as it is from a
+/// config or a filter (`runner::leave_out_what_the_cpu_lacks`).
 pub fn select(plan: &Plan, suite: Vec<TestDefinition>) -> Result<Vec<TestDefinition>, String> {
     let Some(names) = plan.tests else {
         return Ok(suite);
@@ -107,10 +103,6 @@ pub fn select(plan: &Plan, suite: Vec<TestDefinition>) -> Result<Vec<TestDefinit
     let mut suite: Vec<Option<TestDefinition>> = suite.into_iter().map(Some).collect();
     let mut tests = Vec::with_capacity(names.len());
     for &name in names {
-        if unsupported(name) {
-            log::info!("plan {}: {name} left out, the CPU has no AVX-512", plan.name);
-            continue;
-        }
         let at = suite
             .iter()
             .position(|d| d.as_ref().is_some_and(|d| d.actual_name == name || d.original_name == Some(name)))
@@ -135,7 +127,7 @@ mod tests {
     fn every_plan_names_suite_tests() {
         for plan in PLANS {
             let tests = select(plan, suite()).unwrap_or_else(|e| panic!("{e}"));
-            let expected = plan.tests.map_or(suite().len(), |names| names.iter().filter(|n| !unsupported(n)).count());
+            let expected = plan.tests.map_or(suite().len(), <[&str]>::len);
             assert_eq!(tests.len(), expected, "plan {}", plan.name);
             assert!(tests.iter().enumerate().all(|(i, t)| plan.tests.is_none() || t.test_index == i));
         }

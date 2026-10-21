@@ -147,17 +147,19 @@ named for the width (`Mem-StuckBitAuto` under `width=256` runs `Mem-StuckBit256`
 native and numbered Bench pairs (`Bench-Init-Ident`, `Bench-Verify-TMR-10`, ...) and
 `Bench-{Init,Verify}-Seal-{TMR,TM5}`. The seal takes it too, unless `seal-width=` (or the config's
 `seal_width`) sets its own. A test named for a width (`-128`, `-256`, `-512`) keeps that one. A
-width the CPU lacks is refused before anything runs, with what it needs. The plan says what was
-given and where (`ℹ  Width: 256 bits (width=)`). The results file records the run's width and
-where it came from (`execution.simd_width_bits`, `execution.simd_width_source`: `width=`, `the
-config's width` or `auto`), and each test that takes it the width it ran at
+width the CPU lacks is refused before anything runs, with what it needs (`width=`, `seal-width=`,
+the seal off too). A test the CPU can't run, a 512-bit one without AVX-512 (F, BW, CD, DQ and
+VL), is left out of the run however it was picked (a plan, `test=`, a config), and the run says
+so (`ℹ  Left out N test(s) this CPU can't run ...`); it never runs at another width in its
+place. The kernels don't check: one that got past would stop the run (a `bug:` panic). The plan
+says what was given and where (`ℹ  Width: 256 bits (width=)`). The results file records the run's
+width and where it came from (`execution.simd_width_bits`, `execution.simd_width_source`:
+`width=`, `the config's width` or `auto`), and each test that takes it the width it ran at
 (`run_config.tests[].simd_width_bits`): Mem-Sequence 256 under `width=128`, and the Bench pairs,
-whose names carry none. A test named for a width records none, unless it can run at another:
-Mem-SimpleV2-512 and Mem-MirrorV2-512 step down to 256 on a CPU without AVX-512, and the
-`Bench-*-Seal-*-512` pairs to the seal's auto, so each records the width it ran at, 512
-included. `--compare-results` flags a test
-that ran at another width under the same name. Auto stays the default: measured on Intel and AMD,
-the widest suits the write-and-check tests; `width=` is there to compare widths or to step down.
+whose names carry none. A test named for a width runs at that one and records none.
+`--compare-results` flags a test that ran at another width under the same name. Auto stays the
+default: measured on Intel and AMD, the widest suits the write-and-check tests; `width=` is there
+to compare widths or to step down.
 
 ## Parameter Sources
 

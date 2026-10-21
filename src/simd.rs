@@ -93,6 +93,12 @@ impl Width {
         Isa::detect().check(self)
     }
 
+    /// The width a test's name says: one ending in 128, 256 or 512 (`Mem-StuckBit512`,
+    /// `Spd-L1-Read-256`, `Bench-Init-Seal-TMR-512`). `None` for a name with no width.
+    pub fn of_name(name: &str) -> Option<Width> {
+        [Width::W128, Width::W256, Width::W512].into_iter().find(|w| name.ends_with(w.name()))
+    }
+
     /// The seal's width at this one.
     pub fn seal(self) -> crate::seal::SealWidth {
         match self {
@@ -113,8 +119,15 @@ impl Width {
     }
 }
 
-/// The instruction sets a width needs, as a CPU reports them: AVX-512 (its F, which every 512-bit
-/// dispatcher has checked) and AVX2.
+/// Whether this CPU has AVX-512 as every 512-bit kernel is compiled for it: F, BW, CD, DQ and VL,
+/// their `#[target_feature]` set. The one test for it, behind `Width::check` (and so the run's
+/// choice of tests, `runner::leave_out_what_the_cpu_lacks`) and the seal's widths.
+pub fn has_avx512() -> bool {
+    is_x86_feature_detected!("avx512f") && is_x86_feature_detected!("avx512bw") && is_x86_feature_detected!("avx512cd")
+        && is_x86_feature_detected!("avx512dq") && is_x86_feature_detected!("avx512vl")
+}
+
+/// The instruction sets a width needs, as a CPU reports them: AVX-512 (`has_avx512`) and AVX2.
 #[derive(Debug, Clone, Copy)]
 struct Isa {
     avx2: bool,
@@ -123,7 +136,7 @@ struct Isa {
 
 impl Isa {
     fn detect() -> Isa {
-        Isa { avx2: is_x86_feature_detected!("avx2"), avx512: is_x86_feature_detected!("avx512f") }
+        Isa { avx2: is_x86_feature_detected!("avx2"), avx512: has_avx512() }
     }
 
     fn widest(self) -> Width {

@@ -1373,7 +1373,7 @@ macro_rules! stuck_bit_write_verify {
 /// StuckBitTest128 MultiBlock implementation (SSE2) - tests for stuck bits using alternating patterns.
 /// Preserves EXACT SSE2 algorithm from old version.
 /// StuckBitTest128 - SSE2 optimized - MultiBlock pattern
-/// Runtime-checked wrapper for SSE2 availability
+/// The CPU has SSE2: the run leaves out a test it can't run (`runner::leave_out_what_the_cpu_lacks`)
 pub unsafe fn stuck_bit_test_128_multi(
     blocks: &[crate::runner::AllocationBlock],
     thread_id: usize,
@@ -1382,22 +1382,13 @@ pub unsafe fn stuck_bit_test_128_multi(
     config: &TestMemoryConfig,
     progress: Option<&TestProgress>,
 ) -> TestStats {
-    let test_name = "Mem-StuckBit128";
-
-    // Runtime CPU feature check
-    if !is_x86_feature_detected!("sse2") {
-        log::warn!("{}: SSE2 not available, returning zero stats", test_name);
-        return TestStats::not_run(test_name, TestAction::StuckBitTest, thread_id, timing.cycles);
-    }
-
-    // Call the SSE2 optimized implementation
     stuck_bit_test_128_impl(blocks, thread_id, error_mode, timing, config, progress)
 }
 
 stuck_bit_impl!(stuck_bit_test_128_impl, "Mem-StuckBit128", u64x2, "sse4.2,sse4.1,ssse3,sse3,sse2,popcnt");
 
 /// StuckBitTest256 - AVX2 optimized - MultiBlock pattern
-/// Runtime-checked wrapper for AVX2 availability
+/// The CPU has AVX2: the run leaves out a test it can't run (`runner::leave_out_what_the_cpu_lacks`)
 #[allow(clippy::missing_safety_doc)]
 pub unsafe fn stuck_bit_test_256_multi(
     blocks: &[crate::runner::AllocationBlock],
@@ -1407,22 +1398,13 @@ pub unsafe fn stuck_bit_test_256_multi(
     config: &TestMemoryConfig,
     progress: Option<&TestProgress>,
 ) -> TestStats {
-    let test_name = "Mem-StuckBit256";
-
-    // Runtime CPU feature check
-    if !is_x86_feature_detected!("avx2") {
-        log::warn!("{}: AVX2 not available, returning zero stats", test_name);
-        return TestStats::not_run(test_name, TestAction::StuckBitTest, thread_id, timing.cycles);
-    }
-
-    // Call the AVX2 optimized implementation
     stuck_bit_test_256_impl(blocks, thread_id, error_mode, timing, config, progress)
 }
 
 stuck_bit_impl!(stuck_bit_test_256_impl, "Mem-StuckBit256", u64x4, "avx2,avx,fma,bmi1,bmi2");
 
 /// StuckBitTest512 - AVX-512 optimized - MultiBlock pattern
-/// Runtime-checked wrapper for AVX-512 availability
+/// The CPU has AVX-512: the run leaves out a test it can't run (`runner::leave_out_what_the_cpu_lacks`)
 #[allow(clippy::missing_safety_doc)]
 pub unsafe fn stuck_bit_test_512_multi(
     blocks: &[crate::runner::AllocationBlock],
@@ -1432,15 +1414,6 @@ pub unsafe fn stuck_bit_test_512_multi(
     config: &TestMemoryConfig,
     progress: Option<&TestProgress>,
 ) -> TestStats {
-    let test_name = "Mem-StuckBit512";
-
-    // Runtime CPU feature check
-    if !is_x86_feature_detected!("avx512f") {
-        log::warn!("{}: AVX-512 not available, returning zero stats", test_name);
-        return TestStats::not_run(test_name, TestAction::StuckBitTest, thread_id, timing.cycles);
-    }
-
-    // Call the AVX-512 optimized implementation
     stuck_bit_test_512_impl(blocks, thread_id, error_mode, timing, config, progress)
 }
 
@@ -1613,7 +1586,7 @@ macro_rules! refresh_impl {
 /// Caller must ensure blocks contain valid, aligned memory
 #[allow(clippy::missing_safety_doc)]
 /// RefreshStable128 - SSE2 optimized - MultiBlock pattern
-/// Runtime-checked wrapper for SSE2 availability
+/// The CPU has SSE2: the run leaves out a test it can't run (`runner::leave_out_what_the_cpu_lacks`)
 pub unsafe fn refresh_stable_128_multi(
     blocks: &[crate::runner::AllocationBlock],
     thread_id: usize,
@@ -1622,22 +1595,13 @@ pub unsafe fn refresh_stable_128_multi(
     config: &TestMemoryConfig,
     progress: Option<&TestProgress>,
 ) -> TestStats {
-    let test_name = "Mem-Refresh128";
-
-    // Runtime CPU feature check
-    if !is_x86_feature_detected!("sse2") {
-        log::warn!("{}: SSE2 not available, returning zero stats", test_name);
-        return TestStats::not_run(test_name, TestAction::WriteWaitVerify, thread_id, timing.cycles);
-    }
-
-    // Call the SSE2 optimized implementation
     refresh_stable_128_impl(blocks, thread_id, error_mode, timing, config, progress)
 }
 
 refresh_impl!(refresh_stable_128_impl, "Mem-Refresh128", u64x2, "sse4.2,sse4.1,ssse3,sse3,sse2,popcnt");
 
 /// RefreshStable256 - AVX2 optimized - MultiBlock pattern
-/// Runtime-checked wrapper for AVX2 availability
+/// The CPU has AVX2: the run leaves out a test it can't run (`runner::leave_out_what_the_cpu_lacks`)
 ///
 /// # Safety
 /// Caller must ensure blocks contain valid, aligned memory
@@ -1650,22 +1614,13 @@ pub unsafe fn refresh_stable_256_multi(
     config: &TestMemoryConfig,
     progress: Option<&TestProgress>,
 ) -> TestStats {
-    let test_name = "Mem-Refresh256";
-
-    // Runtime CPU feature check
-    if !is_x86_feature_detected!("avx2") {
-        log::warn!("{}: AVX2 not available, returning zero stats", test_name);
-        return TestStats::not_run(test_name, TestAction::WriteWaitVerify, thread_id, timing.cycles);
-    }
-
-    // Call the AVX2 optimized implementation
     refresh_stable_256_impl(blocks, thread_id, error_mode, timing, config, progress)
 }
 
 refresh_impl!(refresh_stable_256_impl, "Mem-Refresh256", u64x4, "avx2,avx,fma,bmi1,bmi2");
 
 /// RefreshStable512 - AVX-512 optimized - MultiBlock pattern
-/// Runtime-checked wrapper for AVX-512 availability
+/// The CPU has AVX-512: the run leaves out a test it can't run (`runner::leave_out_what_the_cpu_lacks`)
 ///
 /// # Safety
 /// Caller must ensure blocks contain valid, aligned memory
@@ -1678,15 +1633,6 @@ pub unsafe fn refresh_stable_512_multi(
     config: &TestMemoryConfig,
     progress: Option<&TestProgress>,
 ) -> TestStats {
-    let test_name = "Mem-Refresh512";
-
-    // Runtime CPU feature check
-    if !is_x86_feature_detected!("avx512f") {
-        log::warn!("{}: AVX-512 not available, returning zero stats", test_name);
-        return TestStats::not_run(test_name, TestAction::WriteWaitVerify, thread_id, timing.cycles);
-    }
-
-    // Call the AVX-512 optimized implementation
     refresh_stable_512_impl(blocks, thread_id, error_mode, timing, config, progress)
 }
 
@@ -4685,7 +4631,8 @@ unsafe fn mirror_seal_check(kernel: crate::seal::SealKernel, ctx: &ChunkCtx, err
 /// MirrorMove v2 SSE2 (u64x2) — 128-bit SIMD with u64 lanes.
 ///
 /// # Safety
-/// Caller must ensure all blocks contain valid, aligned, writable memory.
+/// Caller must ensure all blocks contain valid, aligned, writable memory, and that the CPU has the
+/// width's instructions (the run leaves out a test it can't run, `runner::leave_out_what_the_cpu_lacks`).
 pub unsafe fn mirror_move_v2_128_multi(
     blocks: &[crate::runner::AllocationBlock],
     thread_id: usize,
@@ -4694,12 +4641,7 @@ pub unsafe fn mirror_move_v2_128_multi(
     config: &TestMemoryConfig,
     progress: Option<&TestProgress>,
 ) -> TestStats {
-    if is_x86_feature_detected!("sse2") {
-        mirror_move_v2_128_impl(blocks, thread_id, error_mode, timing, config, progress)
-    } else {
-        log::warn!("Mem-MirrorV2-128: SSE2 not available, returning zero stats");
-        TestStats::not_run("Mem-MirrorV2-128", TestAction::WriteWaitVerify, thread_id, timing.cycles)
-    }
+    mirror_move_v2_128_impl(blocks, thread_id, error_mode, timing, config, progress)
 }
 
 mirror_move_v2_impl!(mirror_move_v2_128_impl, "Mem-MirrorV2-128", u64x2, 2, "sse4.2,sse4.1,ssse3,sse3,sse2,popcnt");
@@ -4707,7 +4649,8 @@ mirror_move_v2_impl!(mirror_move_v2_128_impl, "Mem-MirrorV2-128", u64x2, 2, "sse
 /// MirrorMove v2 AVX2 (u64x4) — 256-bit SIMD with u64 lanes.
 ///
 /// # Safety
-/// Caller must ensure all blocks contain valid, aligned, writable memory.
+/// Caller must ensure all blocks contain valid, aligned, writable memory, and that the CPU has the
+/// width's instructions (the run leaves out a test it can't run, `runner::leave_out_what_the_cpu_lacks`).
 pub unsafe fn mirror_move_v2_256_multi(
     blocks: &[crate::runner::AllocationBlock],
     thread_id: usize,
@@ -4716,11 +4659,7 @@ pub unsafe fn mirror_move_v2_256_multi(
     config: &TestMemoryConfig,
     progress: Option<&TestProgress>,
 ) -> TestStats {
-    if is_x86_feature_detected!("avx2") {
-        mirror_move_v2_256_impl(blocks, thread_id, error_mode, timing, config, progress)
-    } else {
-        mirror_move_v2_128_multi(blocks, thread_id, error_mode, timing, config, progress)
-    }
+    mirror_move_v2_256_impl(blocks, thread_id, error_mode, timing, config, progress)
 }
 
 mirror_move_v2_impl!(mirror_move_v2_256_impl, "Mem-MirrorV2-256", u64x4, 4, "avx2,avx,fma,bmi1,bmi2");
@@ -4728,7 +4667,8 @@ mirror_move_v2_impl!(mirror_move_v2_256_impl, "Mem-MirrorV2-256", u64x4, 4, "avx
 /// MirrorMove v2 AVX-512 (u64x8) — 512-bit SIMD with u64 lanes.
 ///
 /// # Safety
-/// Caller must ensure all blocks contain valid, aligned, writable memory.
+/// Caller must ensure all blocks contain valid, aligned, writable memory, and that the CPU has the
+/// width's instructions (the run leaves out a test it can't run, `runner::leave_out_what_the_cpu_lacks`).
 pub unsafe fn mirror_move_v2_512_multi(
     blocks: &[crate::runner::AllocationBlock],
     thread_id: usize,
@@ -4737,11 +4677,7 @@ pub unsafe fn mirror_move_v2_512_multi(
     config: &TestMemoryConfig,
     progress: Option<&TestProgress>,
 ) -> TestStats {
-    if has_avx512() {
-        mirror_move_v2_512_impl(blocks, thread_id, error_mode, timing, config, progress)
-    } else {
-        mirror_move_v2_256_multi(blocks, thread_id, error_mode, timing, config, progress)
-    }
+    mirror_move_v2_512_impl(blocks, thread_id, error_mode, timing, config, progress)
 }
 
 mirror_move_v2_impl!(mirror_move_v2_512_impl, "Mem-MirrorV2-512", u64x8, 8, "avx512f,avx512bw,avx512cd,avx512dq,avx512vl,avx2,avx,fma,bmi1,bmi2");
@@ -6258,7 +6194,8 @@ simple_test_v2_impl!(simple_test_v2_512_impl,
 /// SimpleTest v2 SSE2 (u64x2) — 128-bit SIMD.
 ///
 /// # Safety
-/// Caller must ensure all blocks contain valid, aligned, writable memory.
+/// Caller must ensure all blocks contain valid, aligned, writable memory, and that the CPU has the
+/// width's instructions (the run leaves out a test it can't run, `runner::leave_out_what_the_cpu_lacks`).
 pub unsafe fn simple_test_v2_128_multi(
     blocks: &[crate::runner::AllocationBlock],
     thread_id: usize,
@@ -6267,18 +6204,14 @@ pub unsafe fn simple_test_v2_128_multi(
     config: &TestMemoryConfig,
     progress: Option<&TestProgress>,
 ) -> TestStats {
-    if is_x86_feature_detected!("sse2") {
-        simple_test_v2_128_impl(blocks, thread_id, error_mode, timing, config, progress)
-    } else {
-        log::warn!("Mem-SimpleV2-128: SSE2 not available, returning zero stats");
-        TestStats::not_run("Mem-SimpleV2-128", TestAction::WriteVerify, thread_id, timing.cycles)
-    }
+    simple_test_v2_128_impl(blocks, thread_id, error_mode, timing, config, progress)
 }
 
 /// SimpleTest v2 AVX2 (u64x4) — 256-bit SIMD.
 ///
 /// # Safety
-/// Caller must ensure all blocks contain valid, aligned, writable memory.
+/// Caller must ensure all blocks contain valid, aligned, writable memory, and that the CPU has the
+/// width's instructions (the run leaves out a test it can't run, `runner::leave_out_what_the_cpu_lacks`).
 pub unsafe fn simple_test_v2_256_multi(
     blocks: &[crate::runner::AllocationBlock],
     thread_id: usize,
@@ -6287,17 +6220,14 @@ pub unsafe fn simple_test_v2_256_multi(
     config: &TestMemoryConfig,
     progress: Option<&TestProgress>,
 ) -> TestStats {
-    if is_x86_feature_detected!("avx2") {
-        simple_test_v2_256_impl(blocks, thread_id, error_mode, timing, config, progress)
-    } else {
-        simple_test_v2_128_multi(blocks, thread_id, error_mode, timing, config, progress)
-    }
+    simple_test_v2_256_impl(blocks, thread_id, error_mode, timing, config, progress)
 }
 
 /// SimpleTest v2 AVX-512 (u64x8) — 512-bit SIMD.
 ///
 /// # Safety
-/// Caller must ensure all blocks contain valid, aligned, writable memory.
+/// Caller must ensure all blocks contain valid, aligned, writable memory, and that the CPU has the
+/// width's instructions (the run leaves out a test it can't run, `runner::leave_out_what_the_cpu_lacks`).
 pub unsafe fn simple_test_v2_512_multi(
     blocks: &[crate::runner::AllocationBlock],
     thread_id: usize,
@@ -6306,11 +6236,7 @@ pub unsafe fn simple_test_v2_512_multi(
     config: &TestMemoryConfig,
     progress: Option<&TestProgress>,
 ) -> TestStats {
-    if has_avx512() {
-        simple_test_v2_512_impl(blocks, thread_id, error_mode, timing, config, progress)
-    } else {
-        simple_test_v2_256_multi(blocks, thread_id, error_mode, timing, config, progress)
-    }
+    simple_test_v2_512_impl(blocks, thread_id, error_mode, timing, config, progress)
 }
 
 // SimpleTest v2 auto-dispatch — selects best SIMD variant at runtime.
@@ -7592,7 +7518,14 @@ pub(crate) fn native_bench_tests() -> [(&'static str, &'static str, crate::runne
 /// Generates one #[target_feature] impl function + one public wrapper. The NT write and the verify
 /// are the width's `pos_write_nt` and `pos_verify` (`simple_simd_loops!`, TODO 99).
 macro_rules! simple_test_nt_impl {
-    (@impl $impl_fn:ident, $test_name:literal, $simd_w:expr, $loops:ident, $target_feature:literal) => {
+    (
+        $impl_fn:ident,
+        $pub_fn:ident,
+        $test_name:literal,
+        $simd_w:expr,
+        $loops:ident,
+        $target_feature:literal
+    ) => {
         #[target_feature(enable = $target_feature)]
         unsafe fn $impl_fn(
             blocks: &[crate::runner::AllocationBlock],
@@ -7618,17 +7551,6 @@ macro_rules! simple_test_nt_impl {
             )
         }
 
-    };
-    (
-        $impl_fn:ident,
-        $pub_fn:ident,
-        $test_name:literal,
-        $simd_w:expr,
-        $loops:ident,
-        $target_feature:literal
-    ) => {
-        simple_test_nt_impl!(@impl $impl_fn, $test_name, $simd_w, $loops, $target_feature);
-
         #[doc = include_str!("test_fn_safety.md")]
         pub unsafe fn $pub_fn(
             blocks: &[crate::runner::AllocationBlock],
@@ -7639,35 +7561,6 @@ macro_rules! simple_test_nt_impl {
             progress: Option<&TestProgress>,
         ) -> TestStats {
             $impl_fn(blocks, thread_id, error_mode, timing, config, progress)
-        }
-    };
-    // The 512-bit test: at 256 (`$down`) on a CPU without AVX-512, as Mem-SimpleV2-512 is. It
-    // called its AVX-512 impl unchecked before (TODO 99)
-    (
-        $impl_fn:ident,
-        $pub_fn:ident,
-        $test_name:literal,
-        $simd_w:expr,
-        $loops:ident,
-        $target_feature:literal,
-        down $down:ident
-    ) => {
-        simple_test_nt_impl!(@impl $impl_fn, $test_name, $simd_w, $loops, $target_feature);
-
-        #[doc = include_str!("test_fn_safety.md")]
-        pub unsafe fn $pub_fn(
-            blocks: &[crate::runner::AllocationBlock],
-            thread_id: usize,
-            error_mode: ErrorMode,
-            timing: &TestTiming,
-            config: &TestMemoryConfig,
-            progress: Option<&TestProgress>,
-        ) -> TestStats {
-            if has_avx512() {
-                $impl_fn(blocks, thread_id, error_mode, timing, config, progress)
-            } else {
-                $down(blocks, thread_id, error_mode, timing, config, progress)
-            }
         }
     };
 }
@@ -7688,8 +7581,7 @@ simple_test_nt_impl!(
 simple_test_nt_impl!(
     simple_test_nt_512_impl, simple_test_nt_512_multi,
     "Mem-SimpleNT-512", 8, simple_test_v2_512_loops,
-    "avx512f,avx512bw,avx512cd,avx512dq,avx512vl,avx2,avx,fma,bmi1,bmi2",
-    down simple_test_nt_256_multi
+    "avx512f,avx512bw,avx512cd,avx512dq,avx512vl,avx2,avx,fma,bmi1,bmi2"
 );
 
 // SimpleTestNT auto-dispatch — selects best SIMD variant at runtime.
@@ -8077,63 +7969,37 @@ pub unsafe fn seal_check_multi(
     )
 }
 
-/// The kernel a Bench-*-Seal-* test measures: its pattern at its width (`bench_seal_width`),
-/// saying so where that isn't the width it names.
+/// The kernel a Bench-*-Seal-* test measures: its pattern at its width (`bench_seal_width`).
 fn bench_seal_kernel(pattern: crate::seal::SealPattern, width: crate::seal::SealWidth, test_name: &str) -> crate::seal::SealKernel {
-    let (measured, lacks) = bench_seal_width(width);
-    if let Some(e) = lacks {
-        log::warn!("{test_name}: {e}; measuring the seal's auto width");
-    }
+    let measured = bench_seal_width(width)
+        .unwrap_or_else(|e| panic!("bug: {test_name} reached the run, but {e}: the choice of tests should have left it out"));
     crate::seal::SealKernel::new(pattern, measured)
 }
 
 /// The width a Bench-*-Seal-* test measures at: the one it names or, for one that names none
-/// (`Auto`), the run's `width=` or else the seal's auto; where the CPU lacks it, the seal's auto,
-/// and why.
-fn bench_seal_width(width: crate::seal::SealWidth) -> (crate::seal::SealWidth, Option<String>) {
+/// (`Auto`), the run's `width=` or else the seal's auto; or why the CPU can't. It measures no other
+/// width in place of one the CPU lacks: the run leaves that test out
+/// (`runner::leave_out_what_the_cpu_lacks`, TODO 99).
+fn bench_seal_width(width: crate::seal::SealWidth) -> Result<crate::seal::SealWidth, String> {
     let width = match (width, crate::simd::width_given()) {
         (crate::seal::SealWidth::Auto, Some((given, _))) => given.seal(),
         _ => width,
     };
-    match width.resolve() {
-        Ok(width) => (width, None),
-        Err(e) => (crate::seal::SealKernel::detect().width, Some(e)),
-    }
-}
-
-/// Whether a test named for 512 that steps down to 256 on a CPU without AVX-512
-/// (Mem-SimpleV2-512, Mem-MirrorV2-512) runs at 512: its own dispatch's test
-/// (`simple_test_v2_512_multi`, `mirror_move_v2_512_multi`), and the width it records
-/// (`picked_width`).
-#[inline(always)]
-fn has_avx512() -> bool {
-    is_x86_feature_detected!("avx512f")
-}
-
-/// The width a test named for 512 with a 256-bit step down runs at, where the CPU has AVX-512 or
-/// not (`has_avx512`).
-fn stepped_down_from_512(avx512: bool) -> crate::simd::Width {
-    if avx512 { crate::simd::Width::W512 } else { crate::simd::Width::W256 }
+    width.resolve()
 }
 
 /// The width a test runs at where its name doesn't say it (TODO 99): Mem-Sequence at the run's
 /// (`crate::simd::test_width`), or 256 for 128 (`sequence_width`), the numbered and native Bench
-/// pairs at the run's, Bench-{Init,Verify}-Seal-{TMR,TM5} at theirs (`bench_seal_width`); and a
-/// test named for 512 that runs at another width on a CPU without AVX-512 the width it runs at:
-/// Mem-SimpleV2-512, Mem-MirrorV2-512 and Mem-SimpleNT-512 256 (`has_avx512`), a Bench-*-Seal-*-512 the seal's
-/// auto. `None` for any other test: its name says its width, or it has none. An `-Auto` test is
-/// resolved by name to the test named for the run's width (`runner::TestDefinition::simd_width`).
+/// pairs at the run's, Bench-{Init,Verify}-Seal-{TMR,TM5} at theirs (`bench_seal_width`). `None`
+/// for any other test: its name says its width, or it has none. An `-Auto` test is resolved by
+/// name to the test named for the run's width (`runner::TestDefinition::simd_width`).
 pub(crate) fn picked_width(test_name: &str) -> Option<crate::simd::Width> {
     let numbered = ["Bench-Init-TM5-", "Bench-Init-TMR-", "Bench-Verify-TM5-", "Bench-Verify-TMR-"];
     match test_name {
         "Mem-Sequence" => Some(sequence_width(crate::simd::test_width())),
         "Bench-Init-Seal-TMR" | "Bench-Verify-Seal-TMR" | "Bench-Init-Seal-TM5" | "Bench-Verify-Seal-TM5" => {
-            crate::simd::Width::of_seal(bench_seal_width(crate::seal::SealWidth::Auto).0)
+            bench_seal_width(crate::seal::SealWidth::Auto).ok().and_then(crate::simd::Width::of_seal)
         }
-        "Bench-Init-Seal-TMR-512" | "Bench-Verify-Seal-TMR-512" | "Bench-Init-Seal-TM5-512" | "Bench-Verify-Seal-TM5-512" => {
-            crate::simd::Width::of_seal(bench_seal_width(crate::seal::SealWidth::W512).0)
-        }
-        "Mem-SimpleV2-512" | "Mem-MirrorV2-512" | "Mem-SimpleNT-512" => Some(stepped_down_from_512(has_avx512())),
         s if numbered.iter().any(|n| s.starts_with(n))
             || native_bench_tests().iter().any(|(init, verify, _, _)| s == *init || s == *verify) => Some(crate::simd::test_width()),
         _ => None,
@@ -8550,12 +8416,11 @@ mod width_dispatch_tests {
 
     /// TODO 99: the width a test records (`TestDefinition::simd_width`, the results file's) for the
     /// tests whose width the dispatch test above can't see: a Bench-*-Seal-* naming no width the
-    /// width its kernel measures at, the run's given or else the seal's auto; a test named for 512
-    /// that steps down without AVX-512 the width it runs at, 512 included (Mem-SimpleV2-512 and
-    /// Mem-MirrorV2-512 256, a Bench-*-Seal-*-512 the seal's auto); and none for a test that always
-    /// runs at the width it is named for (a Bench-*-Seal-* at 128 or 256 among them) or has none.
+    /// width its kernel measures at, the run's given or else the seal's auto; and none for a test
+    /// that runs at the width it is named for (a Bench-*-Seal-* at 128, 256 or 512 among them, and
+    /// the 512-bit tests, which no longer step down) or has none.
     #[test]
-    fn the_seal_pairs_and_the_512_step_downs_record_their_width_and_the_rest_none() {
+    fn the_seal_pairs_record_their_width_and_the_rest_none() {
         let cache_info = get_cache_info();
         let forced = [Width::W128, Width::W256, Width::W512].into_iter().filter(|w| w.check().is_ok()).map(Some);
         let auto = Width::of_seal(SealWidth::Auto.resolve().unwrap()).unwrap();
@@ -8568,27 +8433,19 @@ mod width_dispatch_tests {
             for name in ["Bench-Init-Seal-TMR", "Bench-Verify-Seal-TMR", "Bench-Init-Seal-TM5", "Bench-Verify-Seal-TM5"] {
                 assert_eq!(recorded(name), seal, "{name} under {given:?}");
             }
-            let avx512 = Width::W512.check().is_ok();
-            for name in ["Mem-SimpleV2-512", "Mem-MirrorV2-512", "Mem-SimpleNT-512"] {
-                assert_eq!(recorded(name), Some(if avx512 { Width::W512 } else { Width::W256 }), "{name} under {given:?}");
-            }
-            for name in ["Bench-Init-Seal-TMR-512", "Bench-Verify-Seal-TMR-512", "Bench-Init-Seal-TM5-512", "Bench-Verify-Seal-TM5-512"] {
-                assert_eq!(recorded(name), Some(if avx512 { Width::W512 } else { auto }), "{name} under {given:?}");
-            }
-            for name in ["Bench-Init-Seal-TMR-128", "Bench-Verify-Seal-TM5-256", "Mem-StuckBit128", "Mem-StuckBit512", "Mem-SimpleV2-256",
-                         "Mem-MirrorV2-256", "Mem-Random", "Mem-MovingInv"] {
+            for name in ["Bench-Init-Seal-TMR-128", "Bench-Verify-Seal-TM5-256", "Bench-Init-Seal-TMR-512", "Bench-Verify-Seal-TM5-512",
+                         "Mem-StuckBit128", "Mem-StuckBit512", "Mem-SimpleV2-256", "Mem-SimpleV2-512", "Mem-MirrorV2-256",
+                         "Mem-MirrorV2-512", "Mem-SimpleNT-512", "Mem-Random", "Mem-MovingInv"] {
                 assert_eq!(recorded(name), None, "{name} under {given:?}");
             }
         }
-        // Without AVX-512, a test named for 512 that steps down runs at, and records, 256
-        assert_eq!((stepped_down_from_512(true), stepped_down_from_512(false)), (Width::W512, Width::W256));
-        assert_eq!(has_avx512(), is_x86_feature_detected!("avx512f"));
     }
 
     /// TODO 99: each Bench-*-Seal-* test measures with its pattern at the width the results file
-    /// records for it: one naming no width the run's given, else the seal's auto; one at 512 512,
-    /// or the seal's auto without AVX-512; one at 128 or 256, which records none, that width. Each
-    /// is run, and the kernel its body took noted (`SEAL_MEASURED`): the
+    /// records for it: one naming no width the run's given, else the seal's auto; one at 128, 256
+    /// or 512, which records none, that width (one the CPU lacks isn't run: a run leaves it out,
+    /// `runner::leave_out_what_the_cpu_lacks`). Each is run, and the kernel its body took noted
+    /// (`SEAL_MEASURED`): the
     /// record is worked out apart from the kernel (`picked_width` calls `bench_seal_width` itself),
     /// so the test above passed a pair built at another width than it records.
     #[test]
@@ -8603,19 +8460,22 @@ mod width_dispatch_tests {
             let definitions = crate::runner::create_test_definitions(cache_info);
             for (name, function) in bench_seal_tests() {
                 let what = format!("{name} under {given:?}");
+                let definition = definitions.iter().find(|d| d.display_name == name).unwrap_or_else(|| panic!("{what}: no definition"));
+                if definition.width().is_some_and(|w| w.check().is_err()) {
+                    continue;
+                }
                 let (_, _, config) = registered.iter().find(|(n, ..)| *n == name).unwrap_or_else(|| panic!("{what}: not registered"));
                 let mut config = config.clone();
                 (config.timing, config.thread_count, config.tsc_frequency_ghz) = (TestTiming::cycles_only(1), 1, 1.0);
                 (config.cache_line_bytes, config.chunk_mode) = (cache_info.cache_line_size, ChunkMode::Absolute { size_bytes: 64 * 1024 });
                 let TestFunction::MultiBlock(f) = function else { panic!("{what}: not a block test") };
                 SEAL_MEASURED.set(None);
-                // SAFETY: the span is live, 64-byte aligned and the test's alone, and each width is
-                // one the CPU has (`bench_seal_width`)
+                // SAFETY: the span is live, 64-byte aligned and the test's alone, and its width is
+                // one the CPU has (above)
                 let _ = unsafe { f(&span.blocks, 0, ErrorMode::Log, &config.timing, &config, None) };
                 let measured = SEAL_MEASURED.take().unwrap_or_else(|| panic!("{what}: measured with no kernel"));
 
-                let recorded = definitions.iter().find(|d| d.display_name == name).unwrap_or_else(|| panic!("{what}: no definition"))
-                    .simd_width();
+                let recorded = definition.simd_width();
                 let named = ["128", "256", "512"].into_iter().find(|bits| name.ends_with(&format!("-{bits}")))
                     .map(|bits| SealWidth::parse(bits).unwrap());
                 let width = match (recorded, named) {

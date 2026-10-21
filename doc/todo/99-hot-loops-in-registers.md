@@ -92,7 +92,8 @@ any Intel desktop without AVX-512); cache-resident sizes (the kernel-efficiency 
   the store width or the dependency).
 - **The 256-bit mode 20 check** (Bench-Verify-TMR-20 and SimpleTest mode 20 at 256) reloads two
   multiplier halves from the stack: AVX2's 64-bit multiply is emulated and needs more than 16 ymm.
-  It hashes four lines at once, 14% faster than the clean one-line form.
+  It hashes four lines at once, 14% faster than the clean one-line form: 74 instructions per four
+  lines against 39 a line (round 3b's asm), the stack reloads two L1 loads a step.
 - **The heavy pattern families' lines** (quiet, header, switch at 12/24 bits, in native SimpleTest
   and Mem-Sequence 256): their scalar line code in the shared generators (fmix, balanced_bytes'
   masks, pin_mask) needs more values than 15 gprs alongside the walk.
@@ -128,12 +129,21 @@ any Intel desktop without AVX-512); cache-resident sizes (the kernel-efficiency 
     run to the cycle's end (accepted).
   - The strided checks keep their chains; Mem-Sequence keeps its own strided walk.
   - AMD decides 512-bit kernels (Rule 6.18): mode 30 checks in lanes at 256 and 512.
+- 2026-10-21 (the owner): no fallbacks. A test the CPU can't run (a 512-bit one without AVX-512)
+  is left out of the run however it was picked, a plan, `test=` or a config
+  (`runner::leave_out_what_the_cpu_lacks`); none steps down to 256 or returns empty results any
+  more, and a seal width the CPU lacks is refused with the seal off too. The kernels don't check:
+  the run stops with a `bug:` panic at a test that got past (`runner::assert_cpu_runs`). Before,
+  only plans that list their tests left them out, so `plan=all`, `test=` and configs reached the
+  41 latency tests at 512 unchecked (an illegal instruction on an AVX2 CPU). AVX-512 is F, BW,
+  CD, DQ and VL, the kernels' `#[target_feature]` set (`simd::has_avx512`), not F alone.
 
 ## Follow-ups (not TODO 99)
 
-1. A kernel-efficiency plan: every kernel at L1/L2-resident sizes, so a kernel's own speed shows on
-   a box whose DRAM saturates (the owner's idea). Mind 6.17: decide stress kernels at DRAM.
-2. The desktops, when free: the 8600G (Zen 4's AVX-512) and the 5700X (AVX2, the 256 paths).
-3. Mem-SimpleV2-128 mode 10 (0.98) and SimpleNT-128 (0.986): small, not chased.
-4. The tm5 seal's per-page setup (gathers from a stack copy, ~40% of its instructions at 512);
+1. TODO 100, a new kernel baseline on all hardware: every kernel at DRAM and at L1/L2-resident
+   sizes, so a kernel's own speed shows on a box whose DRAM saturates (the owner's idea), on both
+   VMs and the desktops (the 8600G and 8500G for Zen 4's AVX-512, the 5700X for AVX2's 256 paths).
+   Mind 6.17: decide stress kernels at DRAM.
+2. Mem-SimpleV2-128 mode 10 (0.98) and SimpleNT-128 (0.986): small, not chased.
+3. The tm5 seal's per-page setup (gathers from a stack copy, ~40% of its instructions at 512);
    Lat-Write's offset arithmetic; the NT stores' `lea` per store (the intrinsics' register address).

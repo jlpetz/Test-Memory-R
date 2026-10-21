@@ -148,7 +148,7 @@ impl SealWidth {
     /// `resolve`, and where the width came from: for a width given, `setting` (where it was set);
     /// for `Auto`, this machine's calibrated width (`set_calibrated_width`), else the rule.
     pub fn resolve_from(self, setting: &'static str) -> Result<(Self, SealWidthSource), String> {
-        self.resolve_on(calibrated_width(), is_x86_feature_detected!("avx2"), is_x86_feature_detected!("avx512f"), setting)
+        self.resolve_on(calibrated_width(), is_x86_feature_detected!("avx2"), crate::simd::has_avx512(), setting)
     }
 
     /// `resolve_from` with the calibrated width and the CPU's AVX2 and AVX-512 given, as tests
@@ -639,7 +639,7 @@ mod tests {
     fn kernels() -> Vec<SealKernel> {
         let mut widths = vec![SealWidth::W128];
         if is_x86_feature_detected!("avx2") { widths.push(SealWidth::W256); }
-        if is_x86_feature_detected!("avx512f") { widths.push(SealWidth::W512); }
+        if crate::simd::has_avx512() { widths.push(SealWidth::W512); }
         // Each pattern and width at the plan-time kernel and two cycles' (inverted, and a key)
         widths.iter().flat_map(|&width| [SealPattern::Tmr, SealPattern::Tm5].map(|pattern| SealKernel::new(pattern, width)))
             .flat_map(|k| [k, k.for_cycle(7, 2), k.for_cycle(7, 3)]).collect()
@@ -731,7 +731,7 @@ mod tests {
     fn auto_takes_the_calibrated_width_startup_set() {
         use SealWidth::{Auto, W128, W256, W512};
         use SealWidthSource::{Calibrated, Rule, Setting};
-        let rule = Auto.resolve_on(None, is_x86_feature_detected!("avx2"), is_x86_feature_detected!("avx512f"), "").unwrap().0;
+        let rule = Auto.resolve_on(None, is_x86_feature_detected!("avx2"), crate::simd::has_avx512(), "").unwrap().0;
         for width in [W128, W256, W512].into_iter().filter(|w| w.resolve().is_ok()) {
             let _calibrated = TestCalibratedWidth::set(Some(width));
             assert_eq!(Auto.resolve_from("seal-width="), Ok((width, Calibrated)), "calibrated {width:?}");

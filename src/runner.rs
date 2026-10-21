@@ -499,10 +499,9 @@ impl TestDefinition {
 
     /// The SIMD width the test runs at where its name alone doesn't fix it (TODO 99), as the results
     /// file records it: an `-Auto` test the run's width, which it resolved to (its name says it
-    /// too, `crate::simd::test_width`), Mem-Sequence and the Bench pairs that name no width theirs,
-    /// and a test named for 512 that steps down without AVX-512 the width it runs at
-    /// (`tests::picked_width`). `None` for a test that always runs at the width it is named for, or
-    /// has none.
+    /// too, `crate::simd::test_width`), Mem-Sequence and the Bench pairs that name no width theirs
+    /// (`tests::picked_width`). `None` for a test that runs at the width it is named for, or has
+    /// none.
     pub fn simd_width(&self) -> Option<crate::simd::Width> {
         if self.original_name.is_some() {
             Some(crate::simd::test_width())
@@ -510,14 +509,55 @@ impl TestDefinition {
             crate::tests::picked_width(self.actual_name)
         }
     }
+
+    /// The SIMD width the test runs at: the one it picks at run time (`simd_width`), else the one
+    /// its name says (`Width::of_name`). `None` for a test with no SIMD width.
+    pub fn width(&self) -> Option<crate::simd::Width> {
+        self.simd_width().or_else(|| crate::simd::Width::of_name(self.actual_name))
+    }
+
+    /// Why a CPU can't run the test, if it can't: `check` (the CPU's, `Width::check`) refuses the
+    /// width it runs at (TODO 99).
+    fn cpu_lacks(&self, check: impl Fn(crate::simd::Width) -> Result<crate::simd::Width, String>) -> Option<String> {
+        self.width().and_then(|w| check(w).err())
+    }
+}
+
+/// Leaves out of the run each test the CPU can't run (`TestDefinition::cpu_lacks`, `check` the
+/// CPU's): a test named for 512 on a CPU without AVX-512, picked by a plan, a filter or a config
+/// (TODO 99). The kernels don't check: a test that got past this would run instructions the CPU
+/// lacks, and `assert_cpu_runs` stops the run at it instead. Marks a left-out step's id not run in
+/// `cycle_order`. Returns each test left out, once, and why.
+fn leave_out_what_the_cpu_lacks(tests: &mut Vec<TestDefinition>, cycle_order: &mut Option<CycleOrder>,
+                                check: impl Fn(crate::simd::Width) -> Result<crate::simd::Width, String>) -> Vec<(String, String)> {
+    let mut left_out: Vec<(String, String)> = Vec::new();
+    tests.retain(|def| {
+        let Some(lacks) = def.cpu_lacks(&check) else { return true };
+        if let (Some(order), Some(id)) = (cycle_order.as_mut(), &def.id) {
+            order.iter_mut().filter(|(step, _)| step == id).for_each(|(_, runs)| *runs = false);
+        }
+        if !left_out.iter().any(|(name, _)| *name == def.display_name) {
+            left_out.push((def.display_name.clone(), lacks));
+        }
+        false
+    });
+    left_out
+}
+
+/// Stops the run at a test the CPU can't run (`check` the CPU's): `leave_out_what_the_cpu_lacks`
+/// should have left it out, and its kernel would fault or worse (TODO 99).
+fn assert_cpu_runs(def: &TestDefinition, check: impl Fn(crate::simd::Width) -> Result<crate::simd::Width, String>) {
+    if let Some(lacks) = def.cpu_lacks(check) {
+        panic!("bug: {} reached the run, but {lacks}: the choice of tests should have left it out", def.display_name);
+    }
 }
 
 /// The run's seal (TODO 74): the command line's (`overrides.seal_override`, `seal=`), else the
 /// config's, else tmr; at the command line's width (`seal_width_override`, `seal-width=`), else
 /// the config's `seal_width`, else the run's `width=` (TODO 99), else the seal's auto (this
-/// machine's calibrated width, else the rule); with where the width came from. Unsealed, a width
-/// the CPU lacks only matters to a mirror's data, which takes the seal's auto. It takes the
-/// overrides whole, so the run can't hand it one and drop the other.
+/// machine's calibrated width, else the rule); with where the width came from. A width the CPU
+/// lacks is refused, unsealed too, where it would set a mirror's data (TODO 99: refused, not
+/// stepped down). It takes the overrides whole, so the run can't hand it one and drop the other.
 fn run_seal(overrides: &TestRunOverrides, config: Option<&crate::config::ModernConfig>)
             -> Result<(crate::seal::SealSettings, crate::seal::SealKernel, crate::seal::SealWidthSource), String> {
     let TestRunOverrides { seal_override, seal_width_override, .. } = *overrides;
@@ -528,16 +568,7 @@ fn run_seal(overrides: &TestRunOverrides, config: Option<&crate::config::ModernC
     crate::seal::SealSettings::parse(
         seal_override.or(config.and_then(|c| c.system.seal.as_deref())).unwrap_or("tmr"),
         seal_width,
-    ).and_then(|s| match s.kernel(seal_width_setting) {
-        Ok((kernel, source)) => Ok((s, kernel, source)),
-        // Unsealed, the width only matters to a mirror's data: take the seal's auto
-        Err(e) if !s.on => {
-            log::warn!("{e}; the mirror tests use the seal's auto width");
-            let (width, source) = crate::seal::SealWidth::Auto.resolve_from(seal_width_setting)?;
-            Ok((s, crate::seal::SealKernel::new(s.pattern, width), source))
-        }
-        Err(e) => Err(e),
-    })
+    ).and_then(|s| s.kernel(seal_width_setting).map(|(kernel, source)| (s, kernel, source)))
 }
 
 /// How a test takes the seal (TODO 74, `seal.rs`).
@@ -732,6 +763,23 @@ pub fn run_tests_with_layout_and_timing_filtered(
             for def in &test_definitions {
                 log::debug!("  - {}", def.display_name);
             }
+        }
+    }
+
+    // The one check of the CPU against the tests, however they were picked
+    let left_out = leave_out_what_the_cpu_lacks(&mut test_definitions, &mut cycle_order, crate::simd::Width::check);
+    if !left_out.is_empty() {
+        const SHOWN: usize = 5;
+        let names: Vec<&str> = left_out.iter().take(SHOWN).map(|(name, _)| name.as_str()).collect();
+        let more = left_out.len().saturating_sub(SHOWN);
+        let more = if more > 0 { format!(" and {more} more (the log lists them)") } else { String::new() };
+        println!("ℹ  Left out {} test(s) this CPU can't run ({}): {}{more}", left_out.len(), left_out[0].1, names.join(", "));
+        for (name, lacks) in &left_out {
+            log::info!("Left out {name}: {lacks}");
+        }
+        if test_definitions.is_empty() {
+            println!("❌ Nothing left to run");
+            return RunStatus::NotRun;
         }
     }
 
@@ -1258,6 +1306,7 @@ fn execute_test_cycle(ctx: &CycleContext, cycle: u64) -> Option<RunOutcome> {
         let test_name = test_def.actual_name; // Use actual_name for thread pool (requires 'static)
         let test_display_name = &test_def.display_name; // Use display_name for results to preserve _A suffix
         let test_func = &test_def.function;
+        assert_cpu_runs(test_def, crate::simd::Width::check);
         // The step as this cycle runs it: the cycle's seal kernel, and where the step is in the
         // suite, which keys its native patterns (crate::pattern), so they change every cycle
         let mut step_config = test_def.config.clone();
@@ -5044,6 +5093,65 @@ mod tests {
                 assert!(same(&def.function, &function), "{}", def.display_name);
             }
         }
+    }
+
+    /// `Width::check` on a CPU without AVX-512
+    fn without_avx512(width: crate::simd::Width) -> Result<crate::simd::Width, String> {
+        match width {
+            crate::simd::Width::W512 => Err("width 512 needs AVX-512, which this CPU lacks".to_string()),
+            w => Ok(w),
+        }
+    }
+
+    /// TODO 99: on a CPU without AVX-512 (`without_avx512`, the -Auto tests resolved at 256 as
+    /// they are there), the run leaves out every test that would run at 512, the latency tests
+    /// (which had no check of their own) and the Bench-*-Seal-*-512 pairs among them, each once and
+    /// why, and keeps the rest. A left-out step's id is marked not run in `cycle_order`; another id
+    /// keeps its mark.
+    #[test]
+    fn a_cpu_without_avx512_runs_no_512_bit_test() {
+        use crate::simd::{TestWidth, Width};
+        let _width = TestWidth::set(Some(Width::W256));
+        let suite = create_test_definitions(crate::tests::get_cache_info());
+        let with_id = |name: &str, id: &str| {
+            let mut def = suite.iter().find(|d| d.display_name == name).unwrap_or_else(|| panic!("no {name}")).clone();
+            def.id = Some(id.to_string());
+            def
+        };
+        // A config's steps by id: a 512-bit test twice and another once
+        let mut tests = suite.clone();
+        tests.extend([with_id("Mem-SimpleNT-512", "nt"), with_id("Mem-StuckBit256", "sb"), with_id("Mem-SimpleNT-512", "nt")]);
+        let step = |id: &str, runs| (id.to_string(), runs);
+        let mut order = Some(vec![step("nt", true), step("sb", true), step("nt", true)]);
+        let left_out = leave_out_what_the_cpu_lacks(&mut tests, &mut order, without_avx512);
+
+        let at_512: Vec<&str> = suite.iter().filter(|d| d.width() == Some(Width::W512)).map(|d| d.display_name.as_str()).collect();
+        assert!(at_512.len() > 40, "only {} tests at 512", at_512.len());
+        for name in ["Mem-SimpleNT-512", "Mem-SimpleV2-512", "Mem-MirrorV2-512", "Mem-StuckBit512", "Mem-Refresh512",
+                     "Lat-V2-L1-Read-512", "Lat-V2P-DRAMFull-CopyFull-512", "Lat-NTW-DRAM-Write-512", "Bench-Init-Seal-TMR-512"] {
+            assert!(at_512.contains(&name), "{name} doesn't run at 512: {at_512:?}");
+        }
+        assert_eq!(left_out.iter().map(|(name, _)| name.as_str()).collect::<Vec<_>>(), at_512);
+        assert!(left_out.iter().all(|(_, why)| why.contains("AVX-512")), "{left_out:?}");
+        assert!(tests.iter().all(|d| d.width() != Some(Width::W512)));
+        assert_eq!(tests.len(), suite.len() - at_512.len() + 1);
+        assert_eq!(order, Some(vec![step("nt", false), step("sb", true), step("nt", false)]));
+        // With AVX-512 nothing is left out
+        let mut all = suite.clone();
+        assert!(leave_out_what_the_cpu_lacks(&mut all, &mut None, Ok).is_empty());
+        assert_eq!(all.len(), suite.len());
+    }
+
+    /// TODO 99: a test the CPU can't run that got past the choice of tests stops the run before its
+    /// kernel runs, since the kernels don't check; one it can run, or with no width, goes on.
+    #[test]
+    #[should_panic(expected = "bug: Mem-SimpleNT-512 reached the run, but width 512 needs AVX-512")]
+    fn a_512_bit_test_reaching_a_cpu_without_avx512_stops_the_run() {
+        let suite = create_test_definitions(crate::tests::get_cache_info());
+        let def = |name: &str| suite.iter().find(|d| d.display_name == name).unwrap_or_else(|| panic!("no {name}"));
+        assert_cpu_runs(def("Mem-SimpleNT-256"), without_avx512);
+        assert_cpu_runs(def("Mem-Random"), without_avx512);
+        assert_cpu_runs(def("Mem-SimpleNT-512"), without_avx512);
     }
 
     /// TODO 99: the run's seal (`run_seal`, which the run takes its seal from, handing it its
