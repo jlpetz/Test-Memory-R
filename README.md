@@ -7,7 +7,7 @@
 - Windows-native memory stress testing
 - Multithreaded CPU core usage
 - Extensible test patterns (MirrorMove, SimpleTest, etc.)
-- Planned GUI using `egui` + `eframe`
+- Planned GUI using WinUI 3 (`windows-reactor`), Windows 11 and Server 2025; the CLI runs everywhere
 
 ## License
 
