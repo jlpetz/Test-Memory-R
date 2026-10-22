@@ -551,6 +551,17 @@ A timeout also returns, which is the window's 2 Hz clock (Reactor 0.100.0 has no
 - logfile.rs.
 - The GUI moves to session::run and shows the Setup facts.
 - The matching `#[expect]`s come off.
+- As built (2026-10-23), against the plan above:
+  - `SessionEnd::Command` carries the command (`commands::Command`, parsed where the old `match` on `args[1]` was, after the parameters every session reads first), and its caller runs it: `commands::run(command, out, confirm)`, returning `Passed` or `NotRun` (exit 0 or 2). The window doesn't run one: it says a command is the console's, and exits 2.
+  - The banner and `setup_logging` stay the CLI's: `cli::main` logs the two `tmr::cli` records and prints the banner before `session::run`, as before. The window calls `cli::setup_logging` on its engine thread until S6 gives it a logger, and `cli::report_error` on a session's error, as in S3; S5 has to cut both (its work list).
+  - `Setup::Selection` boxes a `frontend::Selection`; `ErrorMode` is `pub`, as its payload. `StartupHeader` carries `release`. `ParamNotes` comes only with a note. `cpu_topology::startup_topology` builds `CpuTopology`'s three fields, `runner::memory_status` the `MemoryStatus`. `Setup::SystemInfo` replaces S3's `frontend::machine()`: the window builds its `Machine` from the report.
+  - Ctrl+C is `cli::take_ctrl_c`, which `CliFrontend` passes to `setup::show`, which calls it when it shows `Starting`; the golden shows `Starting` with a Ctrl+C of the test's own, and checks it is taken once. The window installs none, so Ctrl+C in its shell ends the process as Windows does; its Stop is the graceful one.
+  - `GuiFrontend::large_page_restart` can't ask until S6's dialog, so it answers `Continue4K` at once and says so in the errors list; it never reads the console.
+  - The prompts (`prompts.rs`): the restart takes an input that can't be read (not UTF-8) as no answer, where `read_line(..).unwrap()` panicked; the calibration save says no at the input's end and on a read error, the silent yes of cli.rs:1195-1197, and Enter is still yes. The texts are unchanged.
+  - Of the help, demo configs and compare, the code moved to commands.rs; the topology commands and the calibration's two tables stay in their modules, taking `out`.
+  - buffer.rs's record is logged from a `#[cold]` `#[inline(never)]` helper: built in place, it changed `ThreadPool::new`'s and `shutdown`'s code, which inline the buffers' drop (S3 called the drop glue).
+  - Intended console changes: the 'TMR v… starting' record is `tmr::session`'s, and so are the debug records 'CLI override: …' (a `config=` run under RUST_LOG=debug), all `tmr::cli`'s before; a buffer that fails to free is an ERROR record of `tmr::memory::buffer`, 'Failed to free memory buffer: …', where it was stderr's 'Warning: Failed to free memory buffer: …'. A failed render (a String can't fail) would log as `tmr::cli_render::setup` for the topology table (was `tmr::cpu_topology`) and as `tmr::cli_render` for the system table (was `tmr::cli`).
+  - asm_fingerprint.py reads 16 functions as changed against S3 (both builds), none with an instruction changed: the 15 128-bit SimpleTest kernels' shared constant `__xmm@0000000000000001…` spelled `.zero 8`, `.quad 1` where it was `.long 0`, `.zero 4`, `.long 1`, `.long 0`, the same bytes, and the spawn shim's callee, named after `cli::take_ctrl_c` (tools/README has both). The spill table is identical. S5 compares against S4's own fingerprints, saved from this build, which compare clean: `29-baselines/asm_fingerprint_s4_cli.json` and `asm_fingerprint_s4_gui.json`.
 
 **Gate.**
 - Per-event goldens for every Setup event and SessionEnd text.
@@ -564,6 +575,7 @@ A timeout also returns, which is the window's 2 Hz clock (Reactor 0.100.0 has no
 **Work.**
 - git mv into crates/tmr-cli: console.rs, table.rs, renderers/console.rs, cli_render/, prompts.rs and the small cli.rs. env_logger and ctrlc move there.
 - The engine drops `pub mod cli`; no `#[expect]`s remain.
+- The window's two uses of the CLI (S4): `tmr::cli::setup_logging` at Start, on its engine thread (the log file opens then, so its name pairs with the run's results), and `tmr::cli::report_error` on a session's error. Both leave the engine with cli.rs, and tmr-gui doesn't name tmr-cli. Either tmr-app, which names both, passes the two to `tmr_gui::main` until S6's GUI logger replaces them, or that logger, over `tmr::logfile`, comes forward into S5.
 - The Reporter goldens move to tmr-cli; the set_output_capture bridge is removed, replaced by writer goldens.
 - tools/README updated.
 

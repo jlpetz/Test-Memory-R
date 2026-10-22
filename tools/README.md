@@ -101,7 +101,8 @@ Save the old code's fingerprint before building the new, and keep a copy of its 
 replaces the file. Compare builds of one toolchain: a nightly bump changes the code itself. The
 saved file records the compiler the asm names, and `--compare` warns when the asm is another's
 and then exits 2 rather than 1 on a change. TODO 29's baselines, at 25ff780, are in
-`doc/todo/29-baselines/` with the spill table of the same build.
+`doc/todo/29-baselines/` with the spill table of the same build, and from S3 on each stage's own
+fingerprints, CLI and GUI (`asm_fingerprint_s4_cli.json`), which the next stage compares against.
 
 Checked on 2026-10-22: a rebuild with every crate hash changed (`RUSTFLAGS` with a
 `-C metadata=`) compares clean, its spill table too, and so does a build of 25ff780's own tree,
@@ -131,8 +132,12 @@ a panic's location is in the function's data, as bytes of a string, and isn't ma
 above an `unwrap` inlined into a kernel shows as a change. A call to a function LLVM merged with an
 identical one names the one it kept, so a change far away shows: since S3 the thread pool's spawn
 shim calls the backtrace frame of the Ctrl+C handler's thread, named after the function that sets
-the handler (`cli::run_session`, `cli::run` before), and in a build with the GUI three callers of
-`RandomState::hash_one::<&u64>` call Reactor's identical `hash_one::<&RealizedContainer>`.
+the handler (`cli::take_ctrl_c` since S4, `cli::run_session` in S3, `cli::run` before), and in a
+build with the GUI three callers of `RandomState::hash_one::<&u64>` call Reactor's identical
+`hash_one::<&RealizedContainer>`. A constant pool's bytes are written in the type of its first
+user in the module, so code added elsewhere can respell a kernel's: in S4 the 128-bit SimpleTest
+kernels' `__xmm@00000000000000010000000000000000` became `.zero 8`, `.quad 1` where it was
+`.long 0`, `.zero 4`, `.long 1`, `.long 0`, the same 16 bytes, and 15 functions read as changed.
 
 ## `console_diff.py`: whether the console's text changed
 

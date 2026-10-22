@@ -1,13 +1,16 @@
-//! The CLI's frontend (TODO 29): a run's events as the console has always shown them. Each event's
-//! text is the print group it replaced, with the same format strings, rendered into a String and
-//! written with that group's primitive before `event` returns, on the engine's thread: plain
-//! `print!` before the suite and after it, `console::print_above` for a line while the ticker can
-//! be up, `console::print_block` for a step's report. So the console keeps its bytes, and its order
-//! against the log records (`frontend.rs`). It moves to tmr-cli in S5.
+//! The CLI's frontend (TODO 29): a session's events as the console has always shown them, its
+//! setup's (`setup.rs`) and its run's (`run.rs`). Each event's text is the print group it replaced,
+//! with the same format strings, rendered into a String and written with that group's primitive
+//! before `event` returns, on the engine's thread: plain `print!` before the suite and after it,
+//! `console::print_above` for a line while the ticker can be up, `console::print_block` for a
+//! step's report. So the console keeps its bytes, and its order against the log records
+//! (`frontend.rs`). The large-page restart is asked on the console (`prompts.rs`). It moves to
+//! tmr-cli in S5.
 
-#![expect(clippy::print_stdout, reason = "TODO 29 S5: the CLI's own output, until it moves to the tmr-cli crate")]
+#![expect(clippy::print_stdout, clippy::print_stderr, reason = "TODO 29 S5: the CLI's own output, until it moves to the tmr-cli crate")]
 
 mod run;
+mod setup;
 mod ticker;
 #[cfg(test)]
 mod tests;
@@ -15,7 +18,9 @@ mod tests;
 use std::sync::Mutex;
 use std::time::{Duration, Instant};
 
-use crate::frontend::{Event, Frontend};
+pub(crate) use setup::show_end;
+
+use crate::frontend::{Event, Frontend, RestartChoice};
 use crate::progress::ProgressTracker;
 use crate::reporting::renderers::ConsoleRenderer;
 use crate::reporting::{create_console_reporter, Reporter};
@@ -37,8 +42,14 @@ impl Frontend for CliFrontend {
     fn event(&self, event: Event) {
         // No wildcard arm: an event the CLI doesn't show fails to compile
         match event {
+            Event::Setup(setup) => setup::show(setup, crate::cli::take_ctrl_c),
             Event::Run(run) => run::show(run),
         }
+    }
+
+    /// Asks on the console. A console that can't be written to is no answer, as the input's end is.
+    fn large_page_restart(&self) -> RestartChoice {
+        crate::prompts::large_page_restart(&mut std::io::stdin().lock(), &mut std::io::stdout()).unwrap_or(RestartChoice::Continue4K)
     }
 
     /// The ticker, redrawn every 2 seconds. Anything WHEA reported since the last draw is printed

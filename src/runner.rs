@@ -744,7 +744,7 @@ pub fn run_tests_with_layout_and_timing_filtered(setup: RunSetup, fe: &Arc<dyn F
             Err(e) => {
                 // Stop rather than run a different plan than the config asked for
                 fe.event(Run::NotRun(NotRun::Config(e.clone())).into());
-                log::error!(target: crate::console::FILE_ONLY_TARGET, "Config error: {}", e);
+                log::error!(target: crate::logfile::FILE_ONLY_TARGET, "Config error: {}", e);
                 return RunStatus::NotRun;
             }
         }
@@ -819,7 +819,7 @@ pub fn run_tests_with_layout_and_timing_filtered(setup: RunSetup, fe: &Arc<dyn F
         && let Err(e) = apply_sequence(&mut test_definitions, sequence_override, order_override)
     {
         fe.event(Run::NotRun(NotRun::Config(e.clone())).into());
-        log::error!(target: crate::console::FILE_ONLY_TARGET, "Config error: {e}");
+        log::error!(target: crate::logfile::FILE_ONLY_TARGET, "Config error: {e}");
         return RunStatus::NotRun;
     }
 
@@ -902,7 +902,7 @@ pub fn run_tests_with_layout_and_timing_filtered(setup: RunSetup, fe: &Arc<dyn F
     if !param_errors.is_empty() {
         for e in &param_errors {
             fe.event(Run::NotRun(NotRun::Config(e.clone())).into());
-            log::error!(target: crate::console::FILE_ONLY_TARGET, "Config error: {}", e);
+            log::error!(target: crate::logfile::FILE_ONLY_TARGET, "Config error: {}", e);
         }
         return RunStatus::NotRun;
     }
@@ -911,7 +911,7 @@ pub fn run_tests_with_layout_and_timing_filtered(setup: RunSetup, fe: &Arc<dyn F
         Ok(s) => s,
         Err(e) => {
             fe.event(Run::NotRun(NotRun::Config(e.clone())).into());
-            log::error!(target: crate::console::FILE_ONLY_TARGET, "Config error: {}", e);
+            log::error!(target: crate::logfile::FILE_ONLY_TARGET, "Config error: {}", e);
             return RunStatus::NotRun;
         }
     };
@@ -936,7 +936,7 @@ pub fn run_tests_with_layout_and_timing_filtered(setup: RunSetup, fe: &Arc<dyn F
     if !plan_errors.is_empty() {
         for (idx, msg) in &plan_errors {
             fe.event(Run::NotRun(NotRun::Config(format!("step {}: {}", idx + 1, msg))).into());
-            log::error!(target: crate::console::FILE_ONLY_TARGET, "Config error: step {}: {}", idx + 1, msg);
+            log::error!(target: crate::logfile::FILE_ONLY_TARGET, "Config error: step {}: {}", idx + 1, msg);
         }
         return RunStatus::NotRun;
     }
@@ -4701,53 +4701,23 @@ fn save_after_cycle(test_run_result: &Mutex<TestRunResult>, cycle: u32, elapsed:
     }
 }
 
-#[expect(clippy::print_stdout, clippy::print_stderr, reason = "TODO 29 S4: the memory status at startup becomes an event")]
-pub fn print_current_memory_status() {
+/// The system's memory now (`GlobalMemoryStatusEx`), as setup shows it (TODO 29:
+/// `Setup::MemoryStatus`); `None` when Windows doesn't say.
+pub fn memory_status() -> Option<crate::frontend::MemoryStatus> {
     use windows::Win32::System::SystemInformation::{GlobalMemoryStatusEx, MEMORYSTATUSEX};
-    use crate::table::{TableBuilder, Alignment};
-    
-    unsafe {
-        let mut mem_status = MEMORYSTATUSEX {
-            dwLength: std::mem::size_of::<MEMORYSTATUSEX>() as u32,
-            ..Default::default()
-        };
-        
-        if GlobalMemoryStatusEx(&mut mem_status).is_ok() {
-            println!("📊 Current System Memory Status:");
-            
-            let total_phys_gib = mem_status.ullTotalPhys as f64 / (1024.0 * 1024.0 * 1024.0);
-            let avail_phys_gib = mem_status.ullAvailPhys as f64 / (1024.0 * 1024.0 * 1024.0);
-            let total_page_gib = mem_status.ullTotalPageFile as f64 / (1024.0 * 1024.0 * 1024.0);
-            let avail_page_gib = mem_status.ullAvailPageFile as f64 / (1024.0 * 1024.0 * 1024.0);
-            let phys_percent = (mem_status.ullAvailPhys as f64 / mem_status.ullTotalPhys as f64) * 100.0;
-            
-            let table = TableBuilder::new()
-                .add_header("Memory Type", Alignment::Left)
-                .add_header("Total", Alignment::Right)
-                .add_header("Available", Alignment::Right)
-                .add_header("Used", Alignment::Right)
-                .add_header("% Available", Alignment::Right)
-                .add_row(vec![
-                    "Physical".to_string(),
-                    format!("{:.2} GiB", total_phys_gib),
-                    format!("{:.2} GiB", avail_phys_gib),
-                    format!("{:.2} GiB", total_phys_gib - avail_phys_gib),
-                    format!("{:.1}%", phys_percent),
-                ])
-                .add_row(vec![
-                    "Page File".to_string(),
-                    format!("{:.2} GiB", total_page_gib),
-                    format!("{:.2} GiB", avail_page_gib),
-                    format!("{:.2} GiB", total_page_gib - avail_page_gib),
-                    format!("{:.1}%", (avail_page_gib / total_page_gib) * 100.0),
-                ]);
-            
-            table.print();
-            println!();
-        } else {
-            eprintln!("⚠️ Failed to retrieve system memory status");
-        }
-    }
+
+    let mut mem_status = MEMORYSTATUSEX {
+        dwLength: std::mem::size_of::<MEMORYSTATUSEX>() as u32,
+        ..Default::default()
+    };
+    // SAFETY: `mem_status` is a local with its length set, passed directly as the out-parameter
+    unsafe { GlobalMemoryStatusEx(&mut mem_status) }.ok()?;
+    Some(crate::frontend::MemoryStatus {
+        total_phys: mem_status.ullTotalPhys,
+        avail_phys: mem_status.ullAvailPhys,
+        total_page_file: mem_status.ullTotalPageFile,
+        avail_page_file: mem_status.ullAvailPageFile,
+    })
 }
 #[cfg(test)]
 mod tests {
@@ -5075,7 +5045,7 @@ mod tests {
     /// does; one that left none out has no such field. The command line is the one passed in, its
     /// executable cut to its file name. This is `RunConfigSnapshot::capture`'s part: the runner
     /// passes `leave_out_what_the_cpu_lacks`'s list in after allocation, and the session its argv
-    /// from tmr.exe's `main`, less `--gui`/`--cli` (`cli::run_session`), where no test reaches; a
+    /// from tmr.exe's `main`, less `--gui`/`--cli` (`session::run`), where no test reaches; a
     /// live run shows those.
     #[test]
     fn the_snapshot_records_the_tests_left_out() {
@@ -5378,8 +5348,8 @@ mod tests {
             names.sort();
             names
         };
-        assert_eq!(selected(crate::cli::RAM_LATENCY_FILTER), tests(&["DRAM", "DRAMFull"]));
-        assert_eq!(selected(crate::cli::CACHE_LATENCY_FILTER), tests(&["DRAM", "L1", "L2", "L3"]));
+        assert_eq!(selected(crate::session::RAM_LATENCY_FILTER), tests(&["DRAM", "DRAMFull"]));
+        assert_eq!(selected(crate::session::CACHE_LATENCY_FILTER), tests(&["DRAM", "L1", "L2", "L3"]));
     }
 
     /// TODO 85: every mirror test runs clean in every mode, twice per chunk, on joined blocks
@@ -6268,6 +6238,9 @@ mod tests {
                     self.ends.lock().unwrap().push((cycle, partial, std::path::Path::new(&self.path).exists()));
                 }
             }
+            fn large_page_restart(&self) -> crate::frontend::RestartChoice {
+                unreachable!("a run asks nothing: the restart is setup's question")
+            }
         }
         let dir = crate::results::TempDir::new("cycle-ends");
         result.metadata.filename = dir.file("run.json");
@@ -6344,7 +6317,9 @@ mod tests {
 
     impl Frontend for Recording {
         fn event(&self, event: crate::frontend::Event) {
-            let crate::frontend::Event::Run(run) = event;
+            let crate::frontend::Event::Run(run) = event else {
+                unreachable!("a run sends only its own events");
+            };
             let line = match run {
                 Run::MemoryPlan(_) => "MemoryPlan".to_string(),
                 Run::NotRun(_) => "NotRun".to_string(),
@@ -6367,6 +6342,10 @@ mod tests {
                 Run::ResultsSaved { .. } => "ResultsSaved".to_string(),
             };
             crate::console::print_above(&format!("<{line}>"));
+        }
+
+        fn large_page_restart(&self) -> crate::frontend::RestartChoice {
+            unreachable!("a run asks nothing: the restart is setup's question")
         }
     }
 

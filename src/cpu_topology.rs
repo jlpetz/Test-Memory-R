@@ -646,8 +646,12 @@ pub fn detect_cpu_topology() -> Vec<CpuTopologyInfo> {
 }
 
 
-#[expect(clippy::print_stdout, reason = "TODO 29 S4: the topology at startup becomes an event")]
-pub fn display_cpu_topology(cpu_list: &[usize], cpus_to_skip: usize, avoid_smt: bool, pinned: bool) {
+/// The CPUs at startup (TODO 29: `Setup::CpuTopology`): each CPU's core, type and NUMA node, and
+/// what the run does with it (skips it, assigns it a thread, leaves it out as an assigned core's SMT
+/// sibling, or leaves it free), `cpu_list` being the threads' CPUs. On a hybrid CPU, also how many
+/// of its P-cores have SMT (`None` on one that isn't), and whether skipping took E-cores first.
+pub fn startup_topology(cpu_list: &[usize], cpus_to_skip: usize, avoid_smt: bool, pinned: bool)
+                        -> (crate::reporting::models::CpuTopologyReport, Option<usize>, bool) {
     use crate::reporting::models::{CpuTopologyReport, CpuTopologyEntry, TopologySummary};
 
     let topology = get_cpu_topology();
@@ -795,29 +799,16 @@ pub fn display_cpu_topology(cpu_list: &[usize], cpus_to_skip: usize, avoid_smt: 
         pinned,
     };
     
-    let (result, text) = crate::cli_render::rendered(|reporter| reporter.report_cpu_topology(&report));
-    print!("{text}");
-    if let Err(e) = result {
-        log::error!("Failed to display CPU topology table: {}", e);
-        return;
-    }
-    
     // Additional SMT usage information for hybrid CPUs
-    if is_hybrid {
-        let p_cores_with_smt = topology.iter()
+    let p_cores_with_smt = is_hybrid.then(|| {
+        topology.iter()
             .filter(|t| matches!(t.core_type, CoreType::Performance(_)) && t.is_hyperthreaded)
             .map(|t| t.physical_core_id)
             .collect::<std::collections::HashSet<_>>()
-            .len();
-        
-        if p_cores_with_smt > 0 {
-            println!("  SMT/Hyperthreading: Enabled on {} P-cores", p_cores_with_smt);
-        }
-        
-        if cpus_to_skip > 0 {
-            println!("    Note: E-cores were prioritized for skipping");
-        }
-    }
+            .len()
+    });
+
+    (report, p_cores_with_smt, is_hybrid && cpus_to_skip > 0)
 }
 
 pub fn get_system_cpu_set_information() -> Result<Vec<EnhancedCpuInfo>, String> {
@@ -949,9 +940,8 @@ pub fn discover_numa_topology() -> Result<NumaTopology, String> {
 
 /// `--debug-topology`: every detector alone, then Auto's cascade, each core's type under each,
 /// and the signals they read, so a platform's detectors can be checked one by one.
-#[expect(clippy::print_stdout, reason = "TODO 29 S4: a one-shot command, writing to its caller's writer")]
-pub fn debug_topology_detection() {
-    println!("\n=== CPU Topology Detection Debug ===");
+pub fn debug_topology_detection(out: &mut dyn std::io::Write) -> std::io::Result<()> {
+    writeln!(out, "\n=== CPU Topology Detection Debug ===")?;
     let mut cores: Vec<usize> = Vec::new();
     for method in TopologyDetectionMethod::ALL {
         let topology = detect_cpu_topology_with(method);
@@ -960,15 +950,15 @@ pub fn debug_topology_detection() {
             by_core.entry(cpu.physical_core_id).or_insert((cpu.core_type, Vec::new())).1.push(cpu.logical_id);
         }
         let count = |pred: fn(&CoreType) -> bool| by_core.values().filter(|(t, _)| pred(t)).count();
-        println!("\n--- topology={} ---", method.name());
-        println!("  {} logical CPUs, {} cores: P={}, E={}, Unknown={}", topology.len(), by_core.len(),
+        writeln!(out, "\n--- topology={} ---", method.name())?;
+        writeln!(out, "  {} logical CPUs, {} cores: P={}, E={}, Unknown={}", topology.len(), by_core.len(),
                  count(|t| matches!(t, CoreType::Performance(_))), count(|t| matches!(t, CoreType::Efficiency(_))),
-                 count(|t| matches!(t, CoreType::Unknown)));
+                 count(|t| matches!(t, CoreType::Unknown)))?;
         cores = by_core.keys().copied().collect();
         cores.sort_unstable();
         for core in &cores {
             let (core_type, cpus) = &by_core[core];
-            println!("    Core {core}: {} -> CPUs {cpus:?}", core_type.display_name());
+            writeln!(out, "    Core {core}: {} -> CPUs {cpus:?}", core_type.display_name())?;
         }
     }
 
@@ -976,24 +966,24 @@ pub fn debug_topology_detection() {
     let topology = detect_cpu_topology();
     let (efficiency, priority) = (efficiency_classes(&topology), core_priorities(&topology));
     let l3 = l3_sizes(&topology).unwrap_or_default();
-    println!("\n--- Signals per core ---");
-    println!("  {:>5} {:>17} {:>14} {:>9}", "Core", "Efficiency class", "Core priority", "L3 MiB");
+    writeln!(out, "\n--- Signals per core ---")?;
+    writeln!(out, "  {:>5} {:>17} {:>14} {:>9}", "Core", "Efficiency class", "Core priority", "L3 MiB")?;
     for core in &cores {
         let l3 = l3.get(core).copied().flatten().map_or("-".to_string(), |b| format!("{:.1}", b as f64 / (1 << 20) as f64));
-        println!("  {:>5} {:>17} {:>14} {:>9}", core, efficiency.get(core).map_or("-".to_string(), |c| c.to_string()),
-                 priority.get(core).map_or("-".to_string(), |c| c.to_string()), l3);
+        writeln!(out, "  {:>5} {:>17} {:>14} {:>9}", core, efficiency.get(core).map_or("-".to_string(), |c| c.to_string()),
+                 priority.get(core).map_or("-".to_string(), |c| c.to_string()), l3)?;
     }
-    println!("\n=== End Debug ===");
+    writeln!(out, "\n=== End Debug ===")?;
+    Ok(())
 }
 
-
-#[expect(clippy::print_stdout, reason = "TODO 29 S4: a one-shot command, writing to its caller's writer")]
-pub fn show_complete_topology_mapping() {
+/// `--show-topology`: each physical core's type, scheduling class, NUMA node and logical CPUs.
+pub fn show_complete_topology_mapping(out: &mut dyn std::io::Write) -> std::io::Result<()> {
     let topology = get_cpu_topology();
     
-    println!("\n=== Complete CPU Topology Mapping ===");
-    println!("Physical → Type      → Sched → NUMA → Logical CPUs");
-    println!("-------------------------------------------------------");
+    writeln!(out, "\n=== Complete CPU Topology Mapping ===")?;
+    writeln!(out, "Physical → Type      → Sched → NUMA → Logical CPUs")?;
+    writeln!(out, "-------------------------------------------------------")?;
     
     // Group by physical core
     let mut cores_map: HashMap<usize, (CoreType, Vec<usize>)> = HashMap::new();
@@ -1028,18 +1018,20 @@ pub fn show_complete_topology_mapping() {
         
         let numa_node = get_numa_node_for_cpu(logicals[0]);
         
-        println!("Core {} → {:9} →   {}   →  {}  → [{}]", 
+        writeln!(out, "Core {} → {:9} →   {}   →  {}  → [{}]", 
                 phys_core, 
                 core_type.display_name(),
                 sched_class,
                 numa_node,
-                logical_str);
+                logical_str)?;
     }
     
-    println!("\nLegend:");
-    println!("  Sched: Scheduling class (higher = performance priority)");
-    println!("  NUMA: Non-Uniform Memory Access node");
+    writeln!(out, "\nLegend:")?;
+    writeln!(out, "  Sched: Scheduling class (higher = performance priority)")?;
+    writeln!(out, "  NUMA: Non-Uniform Memory Access node")?;
+    Ok(())
 }
+
 #[cfg(test)]
 mod tests {
     use super::{classify_core_types, core_list, detect_cpu_topology, detect_cpu_topology_with, l3_sizes, ranked_only, types_by_l3,

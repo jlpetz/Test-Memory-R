@@ -60,7 +60,6 @@ impl MemoryBuffer {
 }
 
 impl Drop for MemoryBuffer {
-    #[expect(clippy::print_stderr, reason = "TODO 29 S4: becomes a log::error")]
     fn drop(&mut self) {
         let allocation = BackendAllocation {
             ptr: self.ptr,
@@ -68,9 +67,18 @@ impl Drop for MemoryBuffer {
         };
         
         if let Err(e) = self.backend.free(allocation) {
-            eprintln!("Warning: Failed to free memory buffer: {}", e);
+            free_failed(&e);
         }
     }
+}
+
+/// Logs a buffer the backend couldn't free. Out of line and cold, as the `eprintln!` it replaced
+/// was one call (TODO 29 S4): the worker pool's setup and shutdown inline the drop of their
+/// buffers, and a log record built in place changed their code.
+#[cold]
+#[inline(never)]
+fn free_failed(e: &str) {
+    log::error!("Failed to free memory buffer: {}", e);
 }
 
 // SAFETY: `MemoryBuffer` owns its allocation — `ptr` is produced by the backend and

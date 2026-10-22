@@ -988,21 +988,6 @@ impl TestComparison {
     }
 }
 
-// CLI command for comparing results
-#[expect(clippy::print_stdout, reason = "TODO 29 S4: a one-shot command, writing to its caller's writer")]
-pub fn compare_results_command(baseline_path: &str, current_path: &str, output_path: Option<&str>) -> Result<(), String> {
-    let comparison = compare_test_results(baseline_path, current_path)?;
-    
-    println!("{}", comparison.to_text_report());
-    
-    if let Some(output) = output_path {
-        comparison.save_to_file(output)?;
-        println!("\nComparison saved to: {}", output);
-    }
-    
-    Ok(())
-}
-
 /// A directory of a test's own in the system's temp directory, for the results files it writes,
 /// removed with what it holds when it drops, a failed test's too.
 #[cfg(test)]

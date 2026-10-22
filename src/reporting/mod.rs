@@ -10,7 +10,7 @@ pub mod renderers;
 pub mod converters;
 pub mod system_info_builder;
 #[cfg(test)]
-mod tests;
+pub(crate) mod tests; // the Reporter's goldens, and the fixtures setup's goldens share
 
 use crate::Result;
 use self::models::*;

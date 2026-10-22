@@ -38,14 +38,6 @@ impl TableBuilder {
         self
     }
     
-    /// Prints the table: `write_to`, to stdout.
-    #[expect(clippy::print_stdout, reason = "TODO 29 S4: its last caller, the memory status at startup, becomes an event")]
-    pub fn print(&self) {
-        let mut text = String::new();
-        let _ = self.write_to(&mut text);
-        print!("{text}");
-    }
-
     /// Writes the table as the console shows it: a rule, the headers, a rule, the rows, a rule.
     /// Nothing when it has no headers.
     pub fn write_to(&self, out: &mut impl std::fmt::Write) -> std::fmt::Result {

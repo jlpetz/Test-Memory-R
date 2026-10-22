@@ -483,9 +483,9 @@ impl WheaMonitor {
         // diagnosable from ./logs. File only: the logger also prints to the console, and the queue
         // is the console path, the one that waits while a report holds the screen.
         if record.corrected {
-            log::warn!(target: crate::console::FILE_ONLY_TARGET, "{}", description);
+            log::warn!(target: crate::logfile::FILE_ONLY_TARGET, "{}", description);
         } else {
-            log::error!(target: crate::console::FILE_ONLY_TARGET, "{}", description);
+            log::error!(target: crate::logfile::FILE_ONLY_TARGET, "{}", description);
         }
 
         if let Ok(mut pending) = self.pending.lock() {

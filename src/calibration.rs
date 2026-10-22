@@ -1393,14 +1393,13 @@ window_stddev,
             .cloned()
     }
 
-    /// Display calibration results in a formatted table
-    #[expect(clippy::print_stdout, reason = "TODO 29 S4: calibration becomes a one-shot command, writing to its caller's writer")]
-    pub fn display_results(results: &CalibrationResults, cache_info: &CacheInfo) {
-        println!("\n📊 Cache Calibration Results");
-        println!("═══════════════════════════════════════════════════════════════════════════════");
-        println!("{:<10} {:>12} {:>12} {:>8} {:>12} {:>10} {:>12}",
-            "Tier", "CPU Size", "Calibrated", "%", "Latency", "Spread", "Status");
-        println!("───────────────────────────────────────────────────────────────────────────────");
+    /// Writes calibration results to `out` in a formatted table
+    pub fn display_results(results: &CalibrationResults, cache_info: &CacheInfo, out: &mut dyn std::io::Write) -> std::io::Result<()> {
+        writeln!(out, "\n📊 Cache Calibration Results")?;
+        writeln!(out, "═══════════════════════════════════════════════════════════════════════════════")?;
+        writeln!(out, "{:<10} {:>12} {:>12} {:>8} {:>12} {:>10} {:>12}",
+            "Tier", "CPU Size", "Calibrated", "%", "Latency", "Spread", "Status")?;
+        writeln!(out, "───────────────────────────────────────────────────────────────────────────────")?;
 
         for tier in CacheTier::all_tiers() {
             if let Some(result) = results.tiers.get(tier) {
@@ -1429,19 +1428,19 @@ window_stddev,
                     "⚡ OK"
                 };
 
-                println!("{:<10} {:>12} {:>12} {:>7.0}% {:>10.1}ns {:>10.2}x {:>12}",
+                writeln!(out, "{:<10} {:>12} {:>12} {:>7.0}% {:>10.1}ns {:>10.2}x {:>12}",
                     tier.name(),
                     cpu_size_str,
                     calibrated_str,
                     percentage,
                     result.median_latency_ns,
                     result.spread_ratio,
-                    status);
+                    status)?;
             }
         }
 
-        println!("───────────────────────────────────────────────────────────────────────────────");
-        println!("Total calibration time: {}ms", results.total_time_ms);
+        writeln!(out, "───────────────────────────────────────────────────────────────────────────────")?;
+        writeln!(out, "Total calibration time: {}ms", results.total_time_ms)?;
         
         // Check if DRAM and FullDRAM have similar latencies
         let dram_lat = results.tiers.get(&CacheTier::Dram).map(|r| r.median_latency_ns);
@@ -1451,20 +1450,21 @@ window_stddev,
             let ratio = if d > 0.0 { (f - d).abs() / d } else { 0.0 };
             if ratio < 0.10 {
                 if is_large_pages {
-                    println!("ℹ️  DRAM and FullDRAM show similar latency ({:.1}ns vs {:.1}ns).", d, f);
-                    println!("    This is expected with large pages (2MB+) which minimize TLB pressure.");
-                    println!("    Use maxpage=regular to test with 4KB pages for TLB comparison.");
+                    writeln!(out, "ℹ️  DRAM and FullDRAM show similar latency ({:.1}ns vs {:.1}ns).", d, f)?;
+                    writeln!(out, "    This is expected with large pages (2MB+) which minimize TLB pressure.")?;
+                    writeln!(out, "    Use maxpage=regular to test with 4KB pages for TLB comparison.")?;
                 } else {
-                    println!("ℹ️  DRAM and FullDRAM show similar latency ({:.1}ns vs {:.1}ns) even with 4KB pages.", d, f);
-                    println!("    This may indicate the working set sizes are too similar to differentiate.");
+                    writeln!(out, "ℹ️  DRAM and FullDRAM show similar latency ({:.1}ns vs {:.1}ns) even with 4KB pages.", d, f)?;
+                    writeln!(out, "    This may indicate the working set sizes are too similar to differentiate.")?;
                 }
             }
         }
-        println!("ℹ️  Calibration used {} pages.", page_size_name(&results.page_size));
+        writeln!(out, "ℹ️  Calibration used {} pages.", page_size_name(&results.page_size))?;
         if results.page_size != "regular" && results.page_size != "4kb" {
-            println!("    Use maxpage=regular with --calibrate-cache to test with 4KB pages for TLB comparison.");
+            writeln!(out, "    Use maxpage=regular with --calibrate-cache to test with 4KB pages for TLB comparison.")?;
         }
-        println!();
+        writeln!(out)?;
+        Ok(())
     }
 }
 
@@ -1700,32 +1700,32 @@ pub fn calibrate_seal(cache_info: &CacheInfo, page_size: &str) -> Result<SealCal
     })
 }
 
-/// Prints a seal calibration: each width's fill and check speed and fill + check time, and the
-/// width chosen, saying why when it isn't the fastest.
-#[expect(clippy::print_stdout, reason = "TODO 29 S4: calibration becomes a one-shot command, writing to its caller's writer")]
-pub fn display_seal_calibration(seal: &SealCalibration, cache_info: &CacheInfo) {
+/// Writes a seal calibration to `out`: each width's fill and check speed and fill + check time,
+/// and the width chosen, saying why when it isn't the fastest.
+pub fn display_seal_calibration(seal: &SealCalibration, cache_info: &CacheInfo, out: &mut dyn std::io::Write) -> std::io::Result<()> {
     let l3 = match cache_info.l3_cache {
         0 => String::new(),
         l3 => format!(", {:.0} × L3", seal.buffer_bytes as f64 / l3 as f64),
     };
-    println!("\n📊 Seal Width Calibration ({}, 1 thread, {}{l3}, {} pages; median of {} runs after a warm-up)",
-        seal.pattern, format_size(seal.buffer_bytes as usize), page_size_name(&seal.page_size), seal.runs);
-    println!("═══════════════════════════════════════════════════════════════════════════════");
-    println!("{:<8} {:>13} {:>13} {:>28}", "Width", "Fill", "Check", "Fill + check");
-    println!("───────────────────────────────────────────────────────────────────────────────");
+    writeln!(out, "\n📊 Seal Width Calibration ({}, 1 thread, {}{l3}, {} pages; median of {} runs after a warm-up)",
+        seal.pattern, format_size(seal.buffer_bytes as usize), page_size_name(&seal.page_size), seal.runs)?;
+    writeln!(out, "═══════════════════════════════════════════════════════════════════════════════")?;
+    writeln!(out, "{:<8} {:>13} {:>13} {:>28}", "Width", "Fill", "Check", "Fill + check")?;
+    writeln!(out, "───────────────────────────────────────────────────────────────────────────────")?;
     for w in &seal.widths {
-        println!("{:<8} {:>7.0} MiB/s {:>7.0} MiB/s {:>28}", w.bits, w.fill_mib_s, w.check_mib_s, seal_time(w));
+        writeln!(out, "{:<8} {:>7.0} MiB/s {:>7.0} MiB/s {:>28}", w.bits, w.fill_mib_s, w.check_mib_s, seal_time(w))?;
     }
-    println!("───────────────────────────────────────────────────────────────────────────────");
+    writeln!(out, "───────────────────────────────────────────────────────────────────────────────")?;
     match seal.widths.iter().find(|w| w.bits == seal.fastest_bits) {
-        Some(fastest) if seal.fastest_bits != seal.width_bits => println!(
+        Some(fastest) if seal.fastest_bits != seal.width_bits => writeln!(out,
             "Seal width: {}: the fastest is {} ({}), but {}'s median is within {:.1} ms (the tighter of {}'s upper quartile \
              and its median + {:.0}%), so the narrower (less power, same speed)",
             seal.width_bits, fastest.bits, seal_time(fastest), seal.width_bits, fastest.same_speed_bound(), fastest.bits,
-            SEAL_SAME_SPEED * 100.0),
-        _ => println!("Seal width: {}, the fastest", seal.width_bits),
+            SEAL_SAME_SPEED * 100.0)?,
+        _ => writeln!(out, "Seal width: {}, the fastest", seal.width_bits)?,
     }
-    println!();
+    writeln!(out)?;
+    Ok(())
 }
 
 /// A width's fill + check time as the seal calibration's report gives it: median [min..max].

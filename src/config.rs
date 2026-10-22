@@ -1764,37 +1764,6 @@ pub fn load_config(path: &str) -> Result<ModernConfig, String> {
     Ok(config)
 }
 
-// Generate demo configs
-#[expect(clippy::print_stdout, reason = "TODO 29 S4: a one-shot command, writing to its caller's writer")]
-pub fn create_demo_configs() -> Result<(), String> {
-    // Create modern comprehensive config
-    let modern_config = ModernConfig::create_demo_config();
-    modern_config.save_to_file("demo_comprehensive_test.json")?;
-
-    // Create TM5-compatible config
-    let tm5_config = ModernConfig::create_tm5_compatible_config();
-    tm5_config.save_to_file("demo_tm5_compatible.json")?;
-
-    println!("✅ Created demo_comprehensive_test.json - Modern comprehensive memory testing");
-    println!("   Features: Full memory stuck bit test + timed stress tests");
-    println!("   Timing: 3 cycles, ~2-3 minutes per cycle with comprehensive coverage");
-    println!("   Memory: Uses full allocation for critical tests, optimized windows for others");
-    println!();
-    println!("✅ Created demo_tm5_compatible.json - TM5-compatible configuration");
-    println!("   Features: TM5-style allocation with modern stuck bit test added");
-    println!("   Timing: 3 cycles, faster execution for compatibility");
-    println!("   Memory: Maximum allocation minus 128MB reserve, every test over all of it");
-    println!();
-    println!("Configuration Architecture Summary:");
-    println!("  Stage 1: Memory Allocation - Maximum available memory per thread");
-    println!("  Stage 2: Extent - how much of the allocation each test covers");
-    println!("  Stage 3: Block/Chunk Size - Auto-optimized per test with alignment");
-    println!("  Timing: Per-test cycles/duration limits + global suite limits");
-    println!("  Critical: Mem-StuckBitAuto ensures full memory coverage for bit errors");
-
-    Ok(())
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;

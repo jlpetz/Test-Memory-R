@@ -2,14 +2,21 @@
 //! a run don't show (`testdata/console/{cycle,plan_only,not_run}.txt`), through `CliFrontend::event`
 //! as a run sends it, and the ticker; and the ticker's clock. `Run::Allocated` and
 //! `Run::FinalSummary` have none of their own: each shows one report, whose golden is the
-//! Reporter's (`report_allocation_*`, `report_final_summary`).
+//! Reporter's (`report_allocation_*`, `report_final_summary`). And a session's: every setup event,
+//! as a session sends it, and each way a session ends. A session itself can't run in a test: its
+//! setup checks and grants the large-page privilege, and runs secedit.
 
 use std::sync::Arc;
 use std::time::{Duration, Instant};
 
-use super::{draw_when_due, ticker, CliFrontend};
+use chrono::TimeZone;
+
+use super::{draw_when_due, setup, ticker, CliFrontend};
 use crate::failing_bits::FailingBits;
-use crate::frontend::{CpuPerformanceSummary, Frontend, NotRun, Run, StepConfigLine, StepReport};
+use crate::frontend::{
+    CacheCalibrationState, CpuPerformanceSummary, Frontend, MemoryStatus, NotRun, ParamNote, Run, SealCalibrationState, Selection,
+    Setup, StepConfigLine, StepReport,
+};
 use crate::golden::{capture, check};
 use crate::memory::allocator::PageSizeLevel;
 use crate::progress::{LiveFigures, ProgressSnapshot, ProgressTracker, RunOutcome, TestSnapshot, TestSummary};
@@ -18,8 +25,10 @@ use crate::reporting::models::{
     PhysicalCorePerformance, ThreadPerformance,
 };
 use crate::runner::RunStatus;
+use crate::session::{SessionEnd, Stopped};
 use crate::thread_pool::SealOp;
 use crate::whea::WheaCounts;
+use crate::ErrorMode;
 
 const GIB: u64 = 1 << 30;
 
@@ -291,4 +300,137 @@ fn cpu_performance() -> CpuPerformanceSummary {
         by_cpu: PerformanceByCpuReport { cpus, whea },
         by_core: PerformanceByPhysicalCoreReport { cores, whea },
     }
+}
+
+/// A session's setup events, each after a `## case` line, through `CliFrontend::event` as a session
+/// sends them, all their forms. `Setup::Starting` is shown apart, with a Ctrl+C of the test's own:
+/// the CLI's (`cli::take_ctrl_c`) would take it from the test process.
+#[test]
+fn setup_events_print_as_their_golden() {
+    let fe = CliFrontend::new();
+    let at = |day| chrono::Utc.with_ymd_and_hms(2026, 10, day, 9, 5, 0).unwrap();
+    let args = |args: &[&str]| args.iter().map(|a| a.to_string()).collect::<Vec<_>>();
+    let selection = |error_mode, pinned, cpus_to_skip, avoid_smt_doubling, cycles, duration_secs| {
+        Setup::Selection(Box::new(Selection {
+            error_mode, threads: 3, available: 6, cputype: "cores".to_string(), cpu_list: vec![2, 4, 6], pinned, cpus_to_skip,
+            avoid_smt_doubling, cycles, duration_secs, simd: "SSE, SSE2, SSE3, SSE4.1, SSE4.2, AVX, AVX2".to_string(),
+        }))
+    };
+    let large_pages = |usable, min_page: &str, min_needs_large| Setup::LargePageStatus { usable, min_page: min_page.to_string(), min_needs_large };
+    let topology = |smt_p_cores, e_cores_skipped_first| Setup::CpuTopology {
+        report: Box::new(crate::reporting::tests::cpu_topology_report()), smt_p_cores, e_cores_skipped_first,
+    };
+    let cases = vec![
+        ("a test filter", Setup::TestFilter { pattern: "Mem-Mirror*,Lat-L3-*".to_string() }),
+        ("the quick test", Setup::QuickTest),
+        ("every parameter note", Setup::ParamNotes(vec![
+            ParamNote::MinPage("regular".to_string()), ParamNote::MaxPage("large".to_string()),
+            ParamNote::Block("hugechunk", "2GiB".to_string()), ParamNote::Block("blkround", "down".to_string()),
+            ParamNote::Topology("windowsv2"), ParamNote::SkipCores(1), ParamNote::PinningOff,
+        ])),
+        ("the header of a release build", Setup::StartupHeader {
+            command_line: args(&["tmr.exe", "memory=50%", "cputype=cores", "cpus=100%", "skip-cores=0", "cycles=1"]), release: true,
+        }),
+        ("the header of a debug build", Setup::StartupHeader { command_line: args(&["tmr.exe"]), release: false }),
+        ("the parameters, given and defaults", Setup::StartupParams {
+            rust_log: "info".to_string(), rust_backtrace: None, explicit: args(&["memory=50%", "--startup-debug"]),
+            defaults: args(&["cputype=threads (default)", "errors=log (default)"]),
+        }),
+        ("the parameters, a backtrace set and none given", Setup::StartupParams {
+            rust_log: "debug".to_string(), rust_backtrace: Some("1".to_string()), explicit: Vec::new(), defaults: Vec::new(),
+        }),
+        ("cores", Setup::CpuType { cputype: "cores".to_string(), avoid_smt: true }),
+        ("threads", Setup::CpuType { cputype: "threads".to_string(), avoid_smt: false }),
+        ("a core range left out", Setup::CpuFilter { lo: 0, hi: 7 }),
+        ("a share of the CPUs", Setup::CpuCount { percent: 50, available: 6, threads: 3 }),
+        ("pinned, a CPU skipped, SMT doubling avoided, both limits",
+         selection(ErrorMode::Log, true, 1, true, Some(3), Some(600))),
+        ("unpinned, halting, cycles only", selection(ErrorMode::Halt, false, 0, false, Some(1), None)),
+        ("panicking, time only", selection(ErrorMode::Panic, true, 0, false, None, Some(60))),
+        ("no limits", selection(ErrorMode::Log, true, 0, false, None, None)),
+        ("large pages are checked", Setup::LargePageCheck),
+        ("what the check did", Setup::LargePageDiagnostic {
+            report: "🔍 Large Page Diagnostic\n  Privilege: assigned and enabled\n  Test allocation: 2 MiB, succeeded".to_string(),
+        }),
+        ("large pages usable", large_pages(true, "large", true)),
+        ("large pages not usable, and minpage needs them", large_pages(false, "large", true)),
+        ("large pages not usable, and minpage doesn't need them", large_pages(false, "regular", false)),
+        ("the extended cache calibration", Setup::CacheCalibration(CacheCalibrationState::Loaded { extended: true, at: at(20) })),
+        ("the standard cache calibration", Setup::CacheCalibration(CacheCalibrationState::Loaded { extended: false, at: at(2) })),
+        ("no cache calibration", Setup::CacheCalibration(CacheCalibrationState::None)),
+        ("another machine's cache calibration", Setup::CacheCalibration(CacheCalibrationState::Stale)),
+        ("the cache calibration off", Setup::CacheCalibration(CacheCalibrationState::Disabled)),
+        ("the seal calibration", Setup::SealCalibration(SealCalibrationState::Loaded { bits: 256, at: at(21) })),
+        ("another machine's seal calibration", Setup::SealCalibration(SealCalibrationState::Stale)),
+        ("no seal calibration", Setup::SealCalibration(SealCalibrationState::None)),
+        ("a hybrid's topology, E-cores skipped first", topology(Some(2), true)),
+        ("a hybrid's topology, no P-core with SMT", topology(Some(0), false)),
+        ("a topology with no hybrid notes", topology(None, false)),
+        ("the memory status", Setup::MemoryStatus(Some(MemoryStatus {
+            total_phys: 64 * GIB - 600 * (1 << 20), avail_phys: 51 * GIB, total_page_file: 72 * GIB, avail_page_file: 58 * GIB,
+        }))),
+        ("no memory status, on stderr", Setup::MemoryStatus(None)),
+        ("the system", Setup::SystemInfo {
+            report: Box::new(crate::reporting::tests::system_info_report()),
+            memory_modules: vec![crate::smbios::MemoryModule { locator: "DIMM_A2".to_string(), ..Default::default() }],
+        }),
+        ("realtime on every CPU", Setup::RealtimeOnEveryCpu),
+        ("the default plan", Setup::Plan { name: "stability", about: "the stability tests at the widest width", is_default: true }),
+        ("a plan named", Setup::Plan { name: "quick", about: "the stability tests once", is_default: false }),
+    ];
+    let mut text = String::new();
+    for (case, setup) in cases {
+        let ((), printed) = capture(|| fe.event(setup.into()));
+        text += &format!("## {case}\n{printed}");
+    }
+    let mut ctrl_c_taken = 0;
+    let ((), printed) = capture(|| setup::show(Setup::Starting, || ctrl_c_taken += 1));
+    assert_eq!(ctrl_c_taken, 1, "the tests' start takes Ctrl+C, once");
+    text += &format!("## the tests start\n{printed}");
+    check("setup", &text);
+}
+
+/// TODO 99: the line each seal calibration shows at startup, as the CLI's test of it said before
+/// the split: Loaded, with its width and when; Stale; None. Which one a stored calibration is, is
+/// the session's to say (`session::load_seal_calibration`'s test).
+#[test]
+fn the_seal_calibration_says_which_width_auto_takes() {
+    let at = chrono::Utc.with_ymd_and_hms(2026, 10, 21, 9, 5, 0).unwrap();
+    let line = |state| setup::text(&Setup::SealCalibration(state));
+    assert_eq!(line(SealCalibrationState::Loaded { bits: 128, at }), "  Seal calibration: Loaded (128 bits, 2026-10-21 09:05)\n");
+    assert_eq!(line(SealCalibrationState::Stale), "  Seal calibration: Stale (hardware changed, re-run --calibrate-seal)\n");
+    assert_eq!(line(SealCalibrationState::None), "  Seal calibration: None (run --calibrate-seal to calibrate)\n");
+}
+
+/// How a session ends on the console, each after a `## case` line: a run's verdict,
+/// `--startup-debug`'s, and why setup stopped one (an unknown flag shows the help, with tmr.exe's
+/// name). The restart chosen and a command show nothing here: the prompt said its piece, and a
+/// command writes its own (`commands::run`).
+#[test]
+fn session_ends_print_as_their_golden() {
+    let ran = |status, secs, plan_only| SessionEnd::Ran { status, elapsed: Duration::from_secs(secs), plan_only };
+    let cases = vec![
+        ("the plan shown", ran(RunStatus::Passed, 0, true)),
+        ("the plan not shown", ran(RunStatus::NotRun, 0, true)),
+        ("passed", ran(RunStatus::Passed, 3723, false)),
+        ("failed", ran(RunStatus::Failed, 59, false)),
+        ("stopped before testing", ran(RunStatus::NotRun, 1, false)),
+        ("interrupted", ran(RunStatus::Interrupted, 90061, false)),
+        ("the restart chosen", SessionEnd::RestartChosen),
+        ("a command", SessionEnd::Command(crate::commands::Command::Version)),
+        ("unknown flags", SessionEnd::Stopped(Stopped::UnknownFlags(vec!["--latency-test".to_string(), "-x".to_string()]))),
+        ("an invalid parameter, on stderr", SessionEnd::Stopped(Stopped::Invalid(
+            "❌ Unknown parameter: colour\n💡 Run with --help to see all valid parameters".to_string()))),
+        ("an invalid memory override", SessionEnd::Stopped(Stopped::MemoryOverride {
+            spec: "lots".to_string(), error: "Invalid memory format: lots".to_string(),
+        })),
+        ("CPUs that can't be selected, on stderr", SessionEnd::Stopped(Stopped::CpuSelection(
+            "cpus=8 asks for 8 threads, but only 6 CPUs are available".to_string()))),
+    ];
+    let mut text = String::new();
+    for (case, end) in cases {
+        let ((), printed) = capture(|| super::show_end(&end, "tmr.exe"));
+        text += &format!("## {case}\n{printed}");
+    }
+    check("session_end", &text);
 }

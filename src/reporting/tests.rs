@@ -15,7 +15,14 @@ const GIB: u64 = 1 << 30;
 /// A 6-core box with SMT, as `build_system_info_report` makes it.
 #[test]
 fn system_info() {
-    let report = SystemInfoReport {
+    let (result, text) = rendered(|reporter| reporter.report_system_info(&system_info_report()));
+    result.unwrap();
+    check("report_system_info", &text);
+}
+
+/// `system_info`'s: a 6-core box with SMT. Setup's event has it too (`cli_render`'s goldens).
+pub(crate) fn system_info_report() -> SystemInfoReport {
+    SystemInfoReport {
         cpu_info: CpuInfo {
             brand: "AMD Ryzen 5 8600G w/ Radeon 760M Graphics".to_string(),
             vendor: "AuthenticAMD".to_string(),
@@ -48,10 +55,7 @@ fn system_info() {
             std_dev_ghz: 0.000_012,
             converged: true,
         },
-    };
-    let (result, text) = rendered(|reporter| reporter.report_system_info(&report));
-    result.unwrap();
-    check("report_system_info", &text);
+    }
 }
 
 /// A step's threads, one slower and one with errors, and a WHEA event during the step: the WHEA
@@ -145,6 +149,14 @@ fn performance_by_physical_core() {
 /// one E-core free.
 #[test]
 fn cpu_topology() {
+    let (result, text) = rendered(|reporter| reporter.report_cpu_topology(&cpu_topology_report()));
+    result.unwrap();
+    check("report_cpu_topology", &text);
+}
+
+/// `cpu_topology`'s: a hybrid box under `cputype=cores` and `skip-cores=1`. Setup's event has it too
+/// (`cli_render`'s goldens).
+pub(crate) fn cpu_topology_report() -> CpuTopologyReport {
     let cpu = |logical_cpu: usize, core_type: &str, status: &str, thread_id| CpuTopologyEntry {
         logical_cpu,
         physical_core: logical_cpu / 2,
@@ -155,7 +167,7 @@ fn cpu_topology() {
         status: status.to_string(),
         thread_id,
     };
-    let report = CpuTopologyReport {
+    CpuTopologyReport {
         cpus: vec![
             cpu(0, "P-core", "Skipped", None),
             cpu(1, "P-core", "Skipped", None),
@@ -180,10 +192,7 @@ fn cpu_topology() {
             smt_excluded_count: 3,
         },
         pinned: true,
-    };
-    let (result, text) = rendered(|reporter| reporter.report_cpu_topology(&report));
-    result.unwrap();
-    check("report_cpu_topology", &text);
+    }
 }
 
 /// `memory=50%` on a 32 GiB box, six threads, each share rounded up to whole GiB.

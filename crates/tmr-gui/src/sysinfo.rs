@@ -1,10 +1,43 @@
-//! What the header's system panel shows (TODO 7): the engine's own detection of the machine
-//! (`tmr::frontend::machine`), the CPU from CPUID, the caches as the run uses them, and the memory
-//! modules SMBIOS lists. Read once the session is past its setup, which detected them (TODO 29), so
-//! their detection's log records land in the run's log as before. Plain Rust: the window lays it
-//! out.
+//! What the header's system panel shows (TODO 7): the engine's own detection of the machine, as
+//! the session's setup reports it (`Setup::SystemInfo`, TODO 29): the CPU from CPUID, the caches as
+//! the run uses them, and the memory modules SMBIOS lists. Plain Rust: the window lays it out.
 
-use tmr::frontend::{Machine, MemoryModule};
+use tmr::frontend::{MemoryModule, SystemInfoReport};
+
+/// The machine under test, as the system panel takes it.
+pub struct Machine {
+    pub cpu: String,
+    pub physical_cores: usize,
+    pub logical_cpus: usize,
+    /// Per core: L1 data, L1 instruction and L2; the L3, one instance's (shared by the cores of a
+    /// CCD, or of the whole CPU); and the cache line. What `detection` found, or its fallbacks.
+    pub l1_data: usize,
+    pub l1_instruction: usize,
+    pub l2: usize,
+    pub l3: usize,
+    pub cache_line: usize,
+    pub detection: String,
+    pub memory_modules: Vec<MemoryModule>,
+}
+
+impl Machine {
+    /// From setup's report of the system, and its memory modules
+    pub fn of(report: &SystemInfoReport, memory_modules: Vec<MemoryModule>) -> Self {
+        let (cpu, cache) = (&report.cpu_info, &report.cache_info);
+        Machine {
+            cpu: cpu.brand.clone(),
+            physical_cores: cpu.physical_cores,
+            logical_cpus: cpu.logical_cores,
+            l1_data: cache.per_core_l1d as usize,
+            l1_instruction: cache.per_core_l1i as usize,
+            l2: cache.per_core_l2 as usize,
+            l3: cache.l3_total as usize,
+            cache_line: cache.cache_line_size as usize,
+            detection: cache.detection_method.clone(),
+            memory_modules,
+        }
+    }
+}
 
 /// A memory module's line in the DIMM list: its locator, its maker and part number, its capacity
 /// and its speed. A field SMBIOS left empty (a VM's often are) shows as `–`.

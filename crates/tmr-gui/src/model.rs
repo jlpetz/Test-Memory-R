@@ -1,19 +1,23 @@
-//! The window's state (TODO 7): what the run's events and the progress snapshots say, in the form
-//! the window draws it. Plain Rust with no Reactor type, so the translation is tested apart from
-//! the window, which `window.rs` builds from it.
+//! The window's state (TODO 7): what the session's events and the progress snapshots say, in the
+//! form the window draws it. Plain Rust with no Reactor type, so the translation is tested apart
+//! from the window, which `window.rs` builds from it.
 //!
 //! The events come as the engine sends them, at most a batch every 500 ms; a snapshot comes with
 //! each batch, and with each 500 ms that brought none (`tick`). The fast figures, the runtime, the
-//! position, the progress and the chart's speed, are the snapshot's; the events give the rest.
+//! position, the progress and the chart's speed, are the snapshot's; the events give the rest: the
+//! setup's the system panel and the first facts, the run's the rest.
 
 use std::collections::VecDeque;
 use std::sync::Arc;
 use std::time::Duration;
 
 use tmr::frontend::{
-    AllocationReport, Event, NotRun, ProgressSnapshot, ProgressTracker, Run, RunOutcome, RunStatus, SealOp, StepReport,
+    AllocationReport, Event, NotRun, ProgressSnapshot, ProgressTracker, Run, RunOutcome, RunStatus, SealOp, Setup, StepReport,
     TestConfigurationReport, WheaCounts,
 };
+use tmr::session::{SessionEnd, Stopped};
+
+use crate::sysinfo::{Machine, SystemPanel};
 
 const MIB: f64 = 1024.0 * 1024.0;
 const GIB: f64 = 1024.0 * 1024.0 * 1024.0;
@@ -30,7 +34,7 @@ pub enum Status {
     Failed,
     Interrupted,
     /// The session ended with no suite run: setup or a config stopped it, `--startup-debug` showed
-    /// only the plan, or a one-shot command (`--help`) ran instead
+    /// only the plan, or it named a one-shot command (`--help`), which the window doesn't run
     NotRun,
 }
 
@@ -181,13 +185,17 @@ pub fn axis_label(value: f64) -> String {
     format!("{}{unit}", text.trim_end_matches('0').trim_end_matches('.'))
 }
 
-/// The run's facts, for the info line under the title.
+/// The session's facts, for the info line under the title.
 #[derive(Debug, Default)]
 struct Facts {
-    /// `8 threads · 28.0 GiB · 1 GiB pages`
+    /// `8 threads · 28.0 GiB · 1 GiB pages`, and before allocation the threads alone
     allocation: Option<String>,
-    /// `16 steps a cycle · sealed`
+    /// `plan stability · 16 steps a cycle · sealed`, and before the test plan the plan's name alone
     plan: Option<String>,
+    /// The built-in plan the run takes, from setup
+    plan_name: Option<&'static str>,
+    /// Large pages can't be had: the run takes 4 KiB pages, or stops when its minpage= needs them
+    no_large_pages: bool,
     /// `2 tests left out (no AVX-512F)`
     left_out: Option<String>,
     whea_unmonitored: bool,
@@ -204,16 +212,16 @@ pub struct Model {
     pub position: String,
     /// How far the run is, 0 to 1: its cycles, or its time when that ends it sooner
     pub fraction: f64,
-    /// The physical memory Windows reports, from the memory plan
+    /// The physical memory Windows reports, from setup's memory status and the memory plan
     pub ram_bytes: Option<u64>,
+    /// The system panel, once setup has detected the machine
+    pub system: Option<SystemPanel>,
     pub rows: Vec<StepRow>,
     /// Steps with errors, final seal checks that found some, WHEA reports, and why a run stopped,
     /// oldest first
     pub errors: Vec<String>,
     pub series: Series,
-    /// A run event came, so the session is past its setup, which detected the machine
-    pub past_setup: bool,
-    /// What Start runs, as the info line gives it until the run's facts replace it
+    /// What Start runs, as the info line gives it until the session's facts replace it
     command: String,
     facts: Facts,
     /// The suite's progress, from its start on
@@ -237,10 +245,10 @@ impl Model {
             position: "Ready".to_string(),
             fraction: 0.0,
             ram_bytes: None,
+            system: None,
             rows: Vec::new(),
             errors: Vec::new(),
             series: Series::default(),
-            past_setup: false,
             command: std::iter::once("tmr").chain(args.iter().skip(1).map(String::as_str)).collect::<Vec<_>>().join(" "),
             facts: Facts::default(),
             progress: None,
@@ -255,8 +263,7 @@ impl Model {
     /// The session was started
     pub fn start(&mut self) {
         self.status = Status::Running;
-        // The preview's setup prints to the shell it was started from (TODO 29 S3)
-        self.position = "Setting up: the console shows it".to_string();
+        self.position = "Setting up".to_string();
     }
 
     /// Stop was pressed
@@ -271,11 +278,11 @@ impl Model {
         self.progress.as_ref()
     }
 
-    /// The info line: the run's facts, or until there are any, the command Start runs
+    /// The info line: the session's facts, or until there are any, the command Start runs
     pub fn info_line(&self) -> String {
         let f = &self.facts;
-        let facts: Vec<&str> = [f.allocation.as_deref(), f.plan.as_deref(), f.left_out.as_deref(),
-                                f.whea_unmonitored.then_some("WHEA not monitored"), f.results.as_deref()]
+        let facts: Vec<&str> = [f.allocation.as_deref(), f.plan.as_deref(), f.no_large_pages.then_some("no large pages"),
+                                f.left_out.as_deref(), f.whea_unmonitored.then_some("WHEA not monitored"), f.results.as_deref()]
             .into_iter()
             .flatten()
             .collect();
@@ -285,12 +292,48 @@ impl Model {
     pub fn apply(&mut self, event: Event) {
         // No wildcard arm, as the CLI's: an event the window doesn't know fails to compile
         match event {
+            Event::Setup(setup) => self.setup(setup),
             Event::Run(run) => self.run(run),
         }
     }
 
+    fn setup(&mut self, setup: Setup) {
+        match setup {
+            // The console's alone: the parameters as given, and the detail behind the facts below
+            Setup::TestFilter { .. } | Setup::QuickTest | Setup::ParamNotes(_) | Setup::StartupHeader { .. }
+            | Setup::StartupParams { .. } | Setup::CpuType { .. } | Setup::CpuFilter { .. } | Setup::CpuCount { .. }
+            | Setup::LargePageDiagnostic { .. } | Setup::CacheCalibration(_) | Setup::SealCalibration(_)
+            | Setup::CpuTopology { .. } => {}
+            Setup::Selection(selection) => {
+                self.facts.allocation = Some(format!("{} thread{}", selection.threads, plural(selection.threads)));
+            }
+            Setup::LargePageCheck => self.position = "Checking large pages".to_string(),
+            Setup::LargePageStatus { usable, .. } => self.facts.no_large_pages = !usable,
+            Setup::MemoryStatus(status) => {
+                if let Some(status) = status {
+                    self.ram_bytes = Some(status.total_phys);
+                }
+            }
+            Setup::SystemInfo { report, memory_modules } => {
+                self.system = Some(SystemPanel::of(&Machine::of(&report, memory_modules)));
+            }
+            Setup::Starting => self.position = "Starting".to_string(),
+            Setup::RealtimeOnEveryCpu => self.errors.push(
+                "priority=realtime with a worker on every logical CPU: the window can freeze until the run ends".to_string()),
+            Setup::Plan { name, .. } => {
+                self.facts.plan_name = Some(name);
+                self.facts.plan = Some(format!("plan {name}"));
+            }
+        }
+    }
+
+    /// Large pages need Windows restarted, and the window, which can't ask, runs on 4 KiB pages
+    pub fn restart_needed(&mut self) {
+        self.errors.push("Large pages are set up but take effect after Windows restarts: this run takes 4 KiB pages \
+                          (minpage=regular)".to_string());
+    }
+
     fn run(&mut self, run: Run) {
-        self.past_setup = true;
         match run {
             Run::MemoryPlan(plan) => self.ram_bytes = Some(plan.total_physical_bytes),
             Run::NotRun(why) => self.errors.push(not_run(&why)),
@@ -300,7 +343,7 @@ impl Model {
                 self.facts.left_out = Some(format!("{} test{} left out ({lacks})", tests.len(), plural(tests.len())));
             }
             Run::Channels { .. } => {}
-            Run::TestPlan(plan) => self.facts.plan = Some(plan_fact(&plan)),
+            Run::TestPlan(plan) => self.facts.plan = Some(plan_fact(&plan, self.facts.plan_name)),
             Run::WheaMonitoring(monitored) => self.facts.whea_unmonitored = monitored.is_err(),
             Run::AllocationStarting { .. } => self.position = "Allocating memory".to_string(),
             Run::Allocated(report) => {
@@ -357,15 +400,27 @@ impl Model {
         }
     }
 
-    /// The session's thread ended: its run's status, or the error that stopped it
-    pub fn ended(&mut self, result: Result<RunStatus, String>) {
-        if let Err(e) = &result {
-            self.errors.push(format!("Error: {e}"));
+    /// The session's thread ended: how the session did, or the error that stopped it
+    pub fn ended(&mut self, result: Result<SessionEnd, String>) {
+        let mut position = "Stopped before testing";
+        match &result {
+            Err(e) => self.errors.push(format!("Error: {e}")),
+            Ok(SessionEnd::Stopped(why)) => self.errors.push(stopped(why)),
+            Ok(SessionEnd::Command(_)) => {
+                self.errors.push("A one-shot command (--help, --calibrate-cache, ...) runs on the console: tmr.exe without --gui"
+                                 .to_string());
+            }
+            Ok(SessionEnd::RestartChosen) => position = "Restart Windows for large pages, then run again",
+            // As the console has it, only a plan that was shown; one stopped before it is Stopped before testing
+            Ok(SessionEnd::Ran { plan_only: true, status: RunStatus::Passed, .. }) => {
+                position = "The plan only (--startup-debug): nothing allocated, no test run";
+            }
+            Ok(SessionEnd::Ran { .. }) => {}
         }
         // Without a suite: stopped in setup, or a plan or a command was all it was to show
         if !self.over {
             self.status = Status::NotRun;
-            self.position = "Stopped before testing".to_string();
+            self.position = position.to_string();
             self.over = true;
         }
     }
@@ -382,6 +437,17 @@ impl Model {
         let last = if self.last_partial { ", the last stopped early" } else { "" };
         format!("{how} · {cycles} cycle{}{last}, {} steps · {memory_errors} errors + {} WHEA{}",
                 plural(cycles), self.rows.len(), whea.total, whea.split_suffix())
+    }
+}
+
+/// Why setup stopped the session, as the console words it
+fn stopped(why: &Stopped) -> String {
+    match why {
+        Stopped::UnknownFlags(flags) => format!("Unknown parameter(s): {}", flags.join(" ")),
+        // The parser's, its first line without the console's glyph: the second is `--help`'s hint
+        Stopped::Invalid(e) => e.trim_start_matches("❌ ").lines().next().unwrap_or_default().to_string(),
+        Stopped::MemoryOverride { spec, error } => format!("Invalid memory override '{spec}': {error}"),
+        Stopped::CpuSelection(e) => format!("CPU selection error: {e}"),
     }
 }
 
@@ -432,10 +498,12 @@ fn allocation_fact(report: &AllocationReport) -> String {
     format!("{threads} thread{} · {:.1} GiB{pages}", plural(threads), bytes as f64 / GIB)
 }
 
-/// The plan: `16 steps a cycle · sealed`
-fn plan_fact(plan: &TestConfigurationReport) -> String {
+/// The plan: `plan stability · 16 steps a cycle · sealed`, without the name when the tests aren't a
+/// built-in plan's (a config's)
+fn plan_fact(plan: &TestConfigurationReport, name: Option<&str>) -> String {
+    let name = name.map_or(String::new(), |name| format!("plan {name} · "));
     let sealed = if plan.sealed { " · sealed" } else { "" };
-    format!("{} step{} a cycle{sealed}", plan.step_count, plural(plan.step_count))
+    format!("{name}{} step{} a cycle{sealed}", plan.step_count, plural(plan.step_count))
 }
 
 /// `Cycle 2 of 3 · Test 4 of 16 · Mem-StuckBit256 · Checking seal`, as the ticker counts them
@@ -496,7 +564,10 @@ fn plural(n: usize) -> &'static str {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use tmr::frontend::{AllocationThread, LiveFigures, StepConfigLine, TestSnapshot, TestSummary, ThreadTimingReport};
+    use tmr::frontend::{
+        AllocationThread, CacheInfo, CpuInfo, ErrorMode, LiveFigures, MemoryModule, MemoryStatus, Selection, StepConfigLine,
+        SystemInfoReport, TestSnapshot, TestSummary, ThreadTimingReport, TscCalibrationInfo,
+    };
 
     /// A step of `cycle` that found `errors`, and `seal` errors in a sealed run (`None` unsealed),
     /// while WHEA saw `whea`. Every count is its own, so a row or a line that read the wrong one
@@ -590,13 +661,47 @@ mod tests {
         Model::new(&args)
     }
 
+    /// A session that ran, ending `status`
+    fn ran(status: RunStatus) -> SessionEnd {
+        SessionEnd::Ran { status, elapsed: Duration::from_secs(60), plan_only: false }
+    }
+
+    /// Setup's choice of 6 threads of 6 available cores
+    fn selection() -> Selection {
+        Selection {
+            error_mode: ErrorMode::Log, threads: 6, available: 6, cputype: "cores".to_string(), cpu_list: vec![0, 2, 4, 6, 8, 10],
+            pinned: true, cpus_to_skip: 0, avoid_smt_doubling: false, cycles: Some(2), duration_secs: None,
+            simd: "SSE, AVX2".to_string(),
+        }
+    }
+
+    /// A Ryzen 5 8600G's, as setup reports it
+    fn system_info() -> SystemInfoReport {
+        SystemInfoReport {
+            cpu_info: CpuInfo {
+                brand: "AMD Ryzen 5 8600G w/ Radeon 760M Graphics".to_string(), vendor: "AuthenticAMD".to_string(), family: 25,
+                model: 117, stepping: 2, physical_cores: 6, logical_cores: 12, has_hyperthreading: true,
+                simd_capabilities: vec!["AVX2".to_string()],
+            },
+            cache_info: CacheInfo {
+                l1_data_total: 6 * (32 << 10), l1_instruction_total: 6 * (32 << 10), l2_total: 6 << 20, l3_total: 16 << 20,
+                per_core_l1d: 32 << 10, per_core_l1i: 32 << 10, per_core_l2: 1 << 20, cache_line_size: 64,
+                detection_method: "raw_cpuid leaf 4".to_string(),
+            },
+            tsc_info: TscCalibrationInfo {
+                frequency_ghz: 4.3, detection_method: "cpuid".to_string(), is_invariant: true, confidence_percent: 99.0, samples: 5,
+                calibration_time_ms: 50, std_dev_ghz: 0.001, converged: true,
+            },
+        }
+    }
+
     /// A run as the window takes it (TODO 29): Ready, Running once started, a row per step and an
     /// error entry for the one that found errors, the facts on the info line, and the verdict with
     /// the cycles the run finished
     #[test]
     fn a_run_fills_the_rows_errors_and_verdict() {
         let mut m = model();
-        assert_eq!((m.status, m.info_line().as_str(), m.past_setup), (Status::Ready, "tmr memory=50% cycles=2", false));
+        assert_eq!((m.status, m.info_line().as_str()), (Status::Ready, "tmr memory=50% cycles=2"));
         m.start();
         assert_eq!(m.status, Status::Running);
 
@@ -619,7 +724,7 @@ mod tests {
                     Run::ResultsSaved { path: "results/run.json".to_string() }] {
             m.apply(run.into());
         }
-        assert!(m.past_setup && m.progress().is_some());
+        assert!(m.progress().is_some());
         assert_eq!(m.info_line(), "2 threads · 9.0 GiB · pages 1 GiB 89%, 2 MiB 11% · 3 steps a cycle · sealed · results/run.json");
         let cells: Vec<[String; 6]> = m.rows.iter().map(StepRow::cells).collect();
         let row = |id: &str, test: usize, errors: &str, seal: &str, whea: &str| {
@@ -632,8 +737,69 @@ mod tests {
         assert_eq!(m.position, "Stopped · 2 cycles, the last stopped early, 3 steps · 7 errors + 2 WHEA (1C/1UC)");
 
         // The thread's end agrees, and changes nothing
-        m.ended(Ok(RunStatus::Failed));
+        m.ended(Ok(ran(RunStatus::Failed)));
         assert_eq!((m.status, m.errors.len()), (Status::Failed, 2));
+    }
+
+    /// Setup's facts (TODO 29): the threads and the plan on the info line until the run's replace
+    /// them, no large pages, the RAM and the system panel, and its warnings in the errors
+    #[test]
+    fn setup_fills_the_info_line_and_the_system_panel() {
+        let mut m = model();
+        m.start();
+        assert_eq!(m.position, "Setting up");
+        let module = MemoryModule { locator: "DIMM_A2".to_string(), capacity_bytes: 32 << 30, memory_type: 0x22, ..Default::default() };
+        let status = MemoryStatus { total_phys: 62 << 30, avail_phys: 50 << 30, total_page_file: 70 << 30, avail_page_file: 60 << 30 };
+        for setup in [Setup::Selection(Box::new(selection())), Setup::LargePageCheck] {
+            m.apply(setup.into());
+        }
+        assert_eq!(m.position, "Checking large pages");
+        m.restart_needed();
+        for setup in [Setup::LargePageStatus { usable: false, min_page: "regular".to_string(), min_needs_large: false },
+                      Setup::MemoryStatus(Some(status)), Setup::MemoryStatus(None),
+                      Setup::SystemInfo { report: Box::new(system_info()), memory_modules: vec![module] },
+                      Setup::Starting, Setup::RealtimeOnEveryCpu,
+                      Setup::Plan { name: "stability", about: "the stability tests", is_default: true }] {
+            m.apply(setup.into());
+        }
+        assert_eq!((m.position.as_str(), m.ram_bytes), ("Starting", Some(62 << 30)));
+        assert_eq!(m.info_line(), "6 threads · plan stability · no large pages");
+        let system = m.system.as_ref().expect("the system panel");
+        assert_eq!((system.cpu.as_str(), system.cache_line.as_str()), ("AMD Ryzen 5 8600G w/ Radeon 760M Graphics",
+                                                                        "L1 32 KiB · L2 1 MiB per core · L3 16 MiB"));
+        assert_eq!(system.dimm_title, "1 × DDR5 · 32 GiB total");
+        assert_eq!(m.errors, ["Large pages are set up but take effect after Windows restarts: this run takes 4 KiB pages (minpage=regular)",
+                              "priority=realtime with a worker on every logical CPU: the window can freeze until the run ends"]);
+
+        let plan = TestConfigurationReport { suite_timing: String::new(), test_count: 2, step_count: 3, sealed: false, tests: Vec::new(), notes: Vec::new() };
+        m.apply(Run::TestPlan(Box::new(plan)).into());
+        assert_eq!(m.info_line(), "6 threads · plan stability · 3 steps a cycle · no large pages");
+    }
+
+    /// A session setup stopped, or that named a command, is Not run, saying why as the console does;
+    /// the restart chosen says what to do
+    #[test]
+    fn a_session_setup_stopped_says_why() {
+        let end = |end: Result<SessionEnd, String>| {
+            let mut m = model();
+            m.start();
+            m.ended(end);
+            assert_eq!(m.status, Status::NotRun);
+            (m.position, m.errors.join(" | "))
+        };
+        let stopped = "Stopped before testing".to_string();
+        assert_eq!(end(Ok(SessionEnd::Stopped(Stopped::UnknownFlags(vec!["--latency-test".to_string(), "--fast".to_string()])))),
+                   (stopped.clone(), "Unknown parameter(s): --latency-test --fast".to_string()));
+        let invalid = "❌ Invalid value for cycles: 'x' (must be a number)\n💡 Run with --help to see all valid parameters".to_string();
+        assert_eq!(end(Ok(SessionEnd::Stopped(Stopped::Invalid(invalid)))),
+                   (stopped.clone(), "Invalid value for cycles: 'x' (must be a number)".to_string()));
+        let memory = Stopped::MemoryOverride { spec: "lots".to_string(), error: "not a size".to_string() };
+        assert_eq!(end(Ok(SessionEnd::Stopped(memory))), (stopped.clone(), "Invalid memory override 'lots': not a size".to_string()));
+        assert_eq!(end(Ok(SessionEnd::Stopped(Stopped::CpuSelection("8 threads asked, 6 available".to_string())))),
+                   (stopped.clone(), "CPU selection error: 8 threads asked, 6 available".to_string()));
+        assert_eq!(end(Ok(SessionEnd::Command(tmr::commands::Command::Version))),
+                   (stopped, "A one-shot command (--help, --calibrate-cache, ...) runs on the console: tmr.exe without --gui".to_string()));
+        assert_eq!(end(Ok(SessionEnd::RestartChosen)), ("Restart Windows for large pages, then run again".to_string(), String::new()));
     }
 
     /// A session that ends with no suite run is Not run, its reason in the errors: an unsealed
@@ -644,7 +810,7 @@ mod tests {
         m.start();
         m.apply(Run::NotRun(NotRun::NoTestMatches { filter: "Mem-Nope".to_string(), plan: None }).into());
         m.apply(Run::Matchable { tests: vec!["Mem-StuckBit256".to_string(), "Mem-Refresh128".to_string()] }.into());
-        m.ended(Ok(RunStatus::NotRun));
+        m.ended(Ok(ran(RunStatus::NotRun)));
         assert_eq!((m.status, m.position.as_str()), (Status::NotRun, "Stopped before testing"));
         assert_eq!(m.errors, ["No tests match filter 'Mem-Nope'", "It could match: Mem-StuckBit256, Mem-Refresh128"]);
 
@@ -652,11 +818,18 @@ mod tests {
         let mut m = model();
         m.start();
         m.ended(Err("bad value".to_string()));
-        assert_eq!((m.status, m.errors.as_slice(), m.past_setup), (Status::NotRun, &["Error: bad value".to_string()][..], false));
+        assert_eq!((m.status, m.errors.as_slice()), (Status::NotRun, &["Error: bad value".to_string()][..]));
         let mut m = model();
         m.start();
-        m.ended(Ok(RunStatus::Passed));
-        assert_eq!(m.status, Status::NotRun, "no suite ran");
+        m.ended(Ok(SessionEnd::Ran { status: RunStatus::Passed, elapsed: Duration::ZERO, plan_only: true }));
+        assert_eq!((m.status, m.position.as_str()), (Status::NotRun, "The plan only (--startup-debug): nothing allocated, no test run"),
+                   "no suite ran");
+        // `--startup-debug` stopped before its plan: its reason is in the errors
+        let mut m = model();
+        m.start();
+        m.apply(Run::NotRun(NotRun::NoTestMatches { filter: "Mem-Nope".to_string(), plan: None }).into());
+        m.ended(Ok(SessionEnd::Ran { status: RunStatus::NotRun, elapsed: Duration::ZERO, plan_only: true }));
+        assert_eq!((m.status, m.position.as_str()), (Status::NotRun, "Stopped before testing"), "no plan shown");
 
         let mut m = model();
         m.apply(step(1, 1, 0, None, WheaCounts::default()).into());

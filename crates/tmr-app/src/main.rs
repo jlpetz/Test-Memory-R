@@ -171,8 +171,8 @@ fn main() {
     let mut args: Vec<String> = std::env::args().collect();
     let gui = take_mode(&mut args);
 
-    // The S3 preview (TODO 29): launched from a shell, the window shows the run, and the session's
-    // setup still prints to this console and asks its question there
+    // The preview (TODO 29 S3, S4): launched from a shell, the window shows the session, and its
+    // log records still print to this console
     #[cfg(feature = "gui")]
     if gui {
         match windows_build() {

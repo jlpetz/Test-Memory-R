@@ -1,0 +1,90 @@
+## A
+⚠️  LARGE PAGE SETUP REQUIRES RESTART
+=====================================
+The Large Page privilege has been configured but requires a restart to take effect.
+
+Choose your preferred action:
+  A) Exit TMR and restart system (RECOMMENDED for optimal performance)
+  B) Continue with standard 4KB pages (~5-10% slower, so less memory stress)
+
+Enter your choice (A/B): 
+✅ Restart recommended for optimal performance.
+After restart, TMR will automatically use large pages.
+
+To restart:
+  • Windows: shutdown /r /t 0
+  • Or use Start Menu → Power → Restart
+
+TMR will exit now.
+
+## B
+⚠️  LARGE PAGE SETUP REQUIRES RESTART
+=====================================
+The Large Page privilege has been configured but requires a restart to take effect.
+
+Choose your preferred action:
+  A) Exit TMR and restart system (RECOMMENDED for optimal performance)
+  B) Continue with standard 4KB pages (~5-10% slower, so less memory stress)
+
+Enter your choice (A/B): 
+⚠️  Continuing with standard 4KB pages (minpage=regular for this run).
+   Performance impact: ~5-10% slower than large pages
+   Every test still runs and every pattern is still checked, but slower
+   memory traffic is less stress, so marginal errors that only appear at
+   full bandwidth may go undetected
+
+💡 TIP: Restart TMR after rebooting for optimal performance
+
+
+## an empty answer
+⚠️  LARGE PAGE SETUP REQUIRES RESTART
+=====================================
+The Large Page privilege has been configured but requires a restart to take effect.
+
+Choose your preferred action:
+  A) Exit TMR and restart system (RECOMMENDED for optimal performance)
+  B) Continue with standard 4KB pages (~5-10% slower, so less memory stress)
+
+Enter your choice (A/B): 
+❌ Invalid choice. Defaulting to continue with 4KB pages (minpage=regular for this run).
+
+
+## the input's end
+⚠️  LARGE PAGE SETUP REQUIRES RESTART
+=====================================
+The Large Page privilege has been configured but requires a restart to take effect.
+
+Choose your preferred action:
+  A) Exit TMR and restart system (RECOMMENDED for optimal performance)
+  B) Continue with standard 4KB pages (~5-10% slower, so less memory stress)
+
+Enter your choice (A/B): 
+❌ Invalid choice. Defaulting to continue with 4KB pages (minpage=regular for this run).
+
+
+## junk
+⚠️  LARGE PAGE SETUP REQUIRES RESTART
+=====================================
+The Large Page privilege has been configured but requires a restart to take effect.
+
+Choose your preferred action:
+  A) Exit TMR and restart system (RECOMMENDED for optimal performance)
+  B) Continue with standard 4KB pages (~5-10% slower, so less memory stress)
+
+Enter your choice (A/B): 
+❌ Invalid choice. Defaulting to continue with 4KB pages (minpage=regular for this run).
+
+
+## an input that isn't text
+⚠️  LARGE PAGE SETUP REQUIRES RESTART
+=====================================
+The Large Page privilege has been configured but requires a restart to take effect.
+
+Choose your preferred action:
+  A) Exit TMR and restart system (RECOMMENDED for optimal performance)
+  B) Continue with standard 4KB pages (~5-10% slower, so less memory stress)
+
+Enter your choice (A/B): 
+❌ Invalid choice. Defaulting to continue with 4KB pages (minpage=regular for this run).
+
+

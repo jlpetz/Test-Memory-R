@@ -169,7 +169,7 @@ pub(crate) fn mask_run(text: &str) -> String {
     let mut out = Vec::new();
     let mut i = 0;
     while i < lines.len() {
-        // `TableBuilder::print`: a rule, the headers, a rule, the rows, a rule
+        // `TableBuilder::write_to`: a rule, the headers, a rule, the rows, a rule
         if rule(&lines[i]) && lines.get(i + 2).is_some_and(|l| rule(l)) {
             let end = (i + 3..lines.len()).find(|&j| rule(&lines[j])).unwrap_or(lines.len());
             let headers = cells(&lines[i + 1]);
@@ -288,7 +288,7 @@ impl log::Log for Logger {
     }
 
     fn log(&self, record: &log::Record) {
-        if !self.enabled(record.metadata()) || record.target() == crate::console::FILE_ONLY_TARGET {
+        if !self.enabled(record.metadata()) || record.target() == crate::logfile::FILE_ONLY_TARGET {
             return;
         }
         let colour = match record.level() {
@@ -329,7 +329,7 @@ mod tests {
             crate::console::print_above("above");
             log::info!("a record");
             log::debug!("below the level");
-            log::info!(target: crate::console::FILE_ONLY_TARGET, "the log file's alone");
+            log::info!(target: crate::logfile::FILE_ONLY_TARGET, "the log file's alone");
             std::thread::spawn(|| log::warn!("from a thread")).join().unwrap();
         });
         let text = mask_stamps(&text);

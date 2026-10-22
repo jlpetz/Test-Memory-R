@@ -87,7 +87,7 @@ def erase(text):
 
 
 def tables(lines):
-    """The lines with each table (`TableBuilder::print`: a rule, the headers, a rule, the rows, a
+    """The lines with each table (`TableBuilder::write_to`: a rule, the headers, a rule, the rows, a
     rule) as its cells, a table of threads' rows sorted."""
     def rule(line):
         return len(line) >= 10 and set(line) == {"-"}

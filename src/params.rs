@@ -150,7 +150,7 @@ impl ParamRegistry {
         });
 
         // The native patterns' run settings (pattern spec v2, `crate::pattern`): read early in
-        // `cli::run_session`, before a config loads; registered so they validate
+        // `session::run`, before a config loads; registered so they validate
         params.insert("seed", ParamDef {
             key: "seed",
             can_override_config: true,
@@ -178,7 +178,7 @@ impl ParamRegistry {
             },
         });
 
-        // Read early in `cli::run_session`, before any topology is detected; registered so it validates
+        // Read early in `session::run`, before any topology is detected; registered so it validates
         params.insert("core-priority", ParamDef {
             key: "core-priority",
             can_override_config: true,
@@ -247,7 +247,7 @@ impl ParamRegistry {
                 crate::seal::SealWidth::parse(v).map(|w| ParamValue::String(w.name().to_string()))
             },
         });
-        // The tests' SIMD width (TODO 99, `crate::simd::Width`): read early in `cli::run_session`,
+        // The tests' SIMD width (TODO 99, `crate::simd::Width`): read early in `session::run`,
         // before a config loads; registered so it validates
         params.insert("width", ParamDef {
             key: "width",
@@ -491,127 +491,6 @@ pub fn parse_and_validate_args(args: &[String]) -> Result<HashMap<String, ParamV
     Ok(validated)
 }
 
-/// Print complete help text
-#[expect(clippy::print_stdout, reason = "TODO 29 S4: the help becomes a one-shot command, writing to its caller's writer")]
-pub fn print_help(program_name: &str) {
-    println!("🚀 Test Memory R (TMR) v{} - High-Performance Memory Testing Tool", crate::BUILD.version);
-    println!("===================================================================================");
-    println!();
-    println!("USAGE:");
-    println!("  {}                                    # Run with defaults", program_name);
-    println!("  {} config=test.json                  # Load modern JSON config (v2.0)", program_name);
-    println!("  {} config=legacy.cfg                 # Load legacy TestMem5 config (v1.0)", program_name);
-    println!("  {} --create-demo-configs              # Create demo configuration files", program_name);
-    println!("  {} --compare-results baseline.json current.json [output.json]", program_name);
-    println!("                                          # Compare two test results from .\\results\\");
-    println!("  {} --setup-large-pages              # Configure large pages for optimal performance", program_name);
-    println!("  {} --calibrate-cache                # Measure the cache tiers' sizes; saved to tmr-cfg.json after a prompt", program_name);
-    println!("  {} --calibrate-cache-ext            #   ...finer, around each tier's edge (preferred when both are saved)", program_name);
-    println!("  {} --calibrate-seal                 # Time the seal's fill and check at each width, one thread; seal-width=auto", program_name);
-    println!("                                          #   then runs the fastest (a narrower one if it is as fast)");
-    println!("  {} --calibrate-all                  # --calibrate-cache, then --calibrate-seal (maxpage= sets both's page size)", program_name);
-    println!("  {} plan=stability                   # The default: the stability tests at the widest width (or width=)", program_name);
-    println!("  {} plan=quick                       # The stability tests once", program_name);
-    println!("  {} plan=widths                      # Every width of the tests that have them, side by side", program_name);
-    println!("  {} plan=perf                        # Latency and bandwidth", program_name);
-    println!("  {} plan=all                         # Every test in the suite; test= alone picks from it", program_name);
-    println!("  {} --quick-test                     # plan=quick, reserving 60% of available memory", program_name);
-    println!("  {} --ram-latency                    # Run DRAM latency tests (6 tests)", program_name);
-    println!("  {} --cache-latency                  # Run full cache hierarchy latency tests (12 tests)", program_name);
-    println!("  {} test=Spd-*                       # Run tests matching pattern (glob wildcards)", program_name);
-    println!("  {} test=Mem-Mirror*,Lat-L3-*        # Run multiple patterns (comma-separated)", program_name);
-    println!("  {} config=x.cfg --startup-debug     # Print the memory and test plan; allocate no test memory, run nothing", program_name);
-    println!("  {} --version                         # Show version information", program_name);
-    println!("  {} --show-topology                   # Show CPU Topology Mapping for debugging", program_name);
-    println!("  {} --debug-topology                  # Runs multiple CPU Topology checks to debug if one works better", program_name);
-    println!();
-    println!("EXIT STATUS: 0 passed, 1 tests failed or found errors, 2 stopped before or instead of testing");
-    println!("             (bad config, failed command), 3 interrupted (Ctrl+C); other codes: crashed or killed");
-    println!("             (errors=panic aborts on the first error)");
-    println!();
-    println!("COMMAND LINE PARAMETERS:");
-    println!("  memory=20%                           # Reserve 20% of system memory");
-    println!("  memory=2GiB                         # Reserve 2 GiB");
-    println!("  memory=2048MB                       # TM5-compatible allocation (2048MB from available)");
-    println!("  memory=10%-from-available           # Reserve 10% from currently available memory");
-    println!("  memory=8GiB-from-total              # Reserve 8 GiB from total system memory");
-    println!("  memory=64GiB-target                 # Target 64 GiB allocation (may fail if unavailable)");
-    println!("  cycles=5                            # Run 5 complete test cycles");
-    println!("  duration=600                        # Maximum 10 minutes runtime");
-    println!("  cpus=50%                            # Use 50% of available CPUs");
-    println!("  cputype=cores                       # Use physical cores (vs threads/SMT)");
-    println!("  skip-cores=1                        # Stage 1 FILTER: skip first N CPUs (default: 1 to preserve OS)");
-    println!("  skip-cores=25%                      #   ...or skip the leading N% (portable across core counts)");
-    println!("  skip-cores=0-7                      #   ...or exclude a core-id range (isolate a memory domain/CCD)");
-    println!("  cpu-stride=2                        # Stage 2 SPACING: use every Nth available CPU");
-    println!("  cpu-stride=even                     #   ...or spread the requested count evenly across the pool");
-    println!("  --disable-pinning                   # Disable CPU thread pinning");
-    println!("  priority=high                       # Worker priority: normal, high (default), realtime");
-    println!("                                      #   realtime is THREAD_PRIORITY_TIME_CRITICAL, the top of the");
-    println!("                                      #   normal range (not the realtime class); leave a core free with it");
-    println!("  hugechunk=1GiB                      # First 1GB-page request size, halved on refusal (power of two, >= 1GiB)");
-    println!("  largechunk=128MiB                   # First 2MB-page request size, halved on refusal (default 128MiB)");
-    println!("  largefloor=16MiB                    # Smallest 2MB-page request (16MiB-1GiB)");
-    println!("  blkroundtarget=1GiB                 # Round each thread's share to a multiple of this (of largefloor)");
-    println!("  blkround=up                         # ...up (default; a smaller step rather than pass available), down, or nearest");
-    println!("  errors=halt                         # Error handling (log/halt/panic)");
-    println!("  seal=tmr                            # Seal: check and reseal around every chunk (tmr, the default; tm5; off)");
-    println!("  seal-width=auto                     # Seal kernels' SIMD width (auto, 128, 256, 512); unset, width='s;");
-    println!("                                      #   auto is --calibrate-seal's width on this machine, else 256");
-    println!("  width=auto                          # SIMD width of the tests that pick theirs at run time (the -Auto");
-    println!("                                      #   tests, Mem-Sequence, the Bench pairs) and of the seal: auto (the");
-    println!("                                      #   widest the CPU has; the seal its own auto), 128, 256 or 512");
-    println!("                                      #   (refused if the CPU lacks it). Mem-Sequence has no 128 and runs");
-    println!("                                      #   at 256; -128/-256/-512 tests keep theirs");
-    println!("  mirror=whole                        # Mirror tests: one mirror over each chunk (the default)");
-    println!("  mirror=subblocks:4                  #   ...each chunk in 2 or 4 parts, mirrored in lockstep");
-    println!("  mirror=jump:510                     #   ...128 B swaps every (N+1) x 128 B (TM5 MirrorMove128)");
-    println!("  pattern-mode=0                      # Pattern mode: 0-2 (TM5's), 10, 11, 13, 20, 30 (TMR's), or a native");
-    println!("                                      #   family alone on SimpleTest: 15 ident, 16 random, 17 linepair,");
-    println!("                                      #   21 lines, 31 switch, 32 quiet, 33 header; unset, SimpleTest runs");
-    println!("                                      #   native programs (doc/pattern_spec.md)");
-    println!("  sequence=W,2R,RW,2R@random          # Mem-Sequence's passes: W writes, R reads, RW reads and writes each line;");
-    println!("                                      #   a count before, an @order after (spaces or commas between)");
-    println!("  order=random                        # Mem-Sequence's order where a step names none: forward, reverse, random,");
-    println!("                                      #   stride (TM5's, from a config entry's parameter)");
-    println!("  patterns=legacy                     # A TM5 .cfg's SimpleTest modes as TMR's numbered modes, not native");
-    println!("                                      #   programs (default native), to compare the two");
-    println!("  seed=0x1234                         # The native patterns' run seed (default: from the clock, logged and");
-    println!("                                      #   saved in the results), to replay a run's bytes");
-    println!("  beat=32                             # Transfer width the switch pattern flips at: auto (SMBIOS, the");
-    println!("                                      #   default), 16 (LPDDR4/5), 32 (DDR5), 64 (DDR4), or a memory");
-    println!("                                      #   type (ddr4, ddr5, lpddr5, ...); 12 (lpddr6) and 24 (ddr6) are");
-    println!("                                      #   models: TMR hasn't verified their packet maps");
-    println!("  rescan=off                          # A failed check isn't rescanned to name each bad word (default on;");
-    println!("                                      #   off counts one error a failed check, for runs with many errors)");
-    println!("  verify-reps=5                       # Verify passes per write (TM5 retention stress: 5)");
-    println!("  test-reps=3                         # Test op repetitions per write (MirrorMove round-trips)");
-    println!("  write-read-cycles=4                 # Write+verify cycles per chunk (TM5 SimpleTest: 4)");
-    println!("  topology=windowsv2                  # Core types from one detector alone (default auto, the cascade):");
-    println!("                                      #   windows efficiency class, windowsv2 Windows' core priority,");
-    println!("                                      #   cpuid L3 size per core, amd AMD's CPUID core type");
-    println!("  core-priority=hybrid                # Hybrid CPUs that report no core types (e.g. Ryzen 8500G):");
-    println!("                                      #   Windows' higher-priority cores are P-cores (default: equal)");
-    println!("  --no-calibration                    # Skip loading calibration data (use CPUID heuristics; the seal's rule)");
-    println!();
-    println!("CONFIG FILE OVERRIDES:");
-    println!("  All parameters can override config file values:");
-    println!("    {} config=test.json cycles=1 skip-cores=0 memory=4GiB", program_name);
-    println!();
-    println!("LOGGING:");
-    println!("  RUST_LOG=info                       # Set log level (error/warn/info/debug/trace)");
-    println!("                                        # Use debug for detailed per-thread logs");
-    println!("  Logs saved to: .\\logs\\TMR_YYYY-MM-DD_HH-MM-SS.log      (local time)");
-    println!("  Results saved to: .\\results\\TMR_YYYY-MM-DD_HH-MM-SS.json (same name as the log)");
-    println!();
-    println!("RESULT COMPARISON:");
-    println!("  Test results are automatically saved as JSON files to .\\results\\");
-    println!("  Use --compare-results to analyze performance differences");
-    println!("  Useful for memory overclocking and timing optimization");
-    println!();
-    print_usage(program_name);
-}
-
 /// Extract a string value from validated params, or use default
 pub fn get_string(validated: &HashMap<String, ParamValue>, key: &str, default: &str) -> String {
     match validated.get(key) {
@@ -647,27 +526,6 @@ pub fn get_bool(validated: &HashMap<String, ParamValue>, key: &str, default: boo
 /// Check if a parameter was explicitly provided
 pub fn has_param(validated: &HashMap<String, ParamValue>, key: &str) -> bool {
     validated.contains_key(key)
-}
-
-/// Print quick usage examples (the end of `--help`)
-#[expect(clippy::print_stdout, reason = "TODO 29 S4: the help becomes a one-shot command, writing to its caller's writer")]
-fn print_usage(program_name: &str) {
-    println!("Quick Usage Examples:");
-    println!("  {} memory=10%-from-available     # Standard: Reserve 10% from currently available memory", program_name);
-    println!("  {} memory=2048MB                 # TM5 compatible: Reserve 2048MB from available memory", program_name);
-    println!("  {} memory=8GiB-from-total        # Failure test: Reserve 8 GiB from total (unrealistic)", program_name);
-    println!("  {} memory=64GiB-target           # Failure test: Target 64 GiB allocation (may fail)", program_name);
-    println!("  {} cycles=5 duration=600        # 5 cycles OR 10 minutes max", program_name);
-    println!("  {} cpus=50% cputype=cores       # Use 50% of CPU cores (cores=avoid SMT)", program_name);
-    println!("  {} skip-cores=0                 # Don't skip any CPUs (default: skip first CPU)", program_name);
-    println!("  {} skip-cores=0-7 cpus=100%     # Test ONLY cores 8+ (isolate a memory domain on multi-CCD parts)", program_name);
-    println!("  {} cpus=50% cpu-stride=even     # Spread half the cores evenly (loads all memory domains equally)", program_name);
-    println!("  {} --disable-pinning            # Disable CPU pinning (default: enabled)", program_name);
-    println!("  {} errors=halt                  # Stop on first error", program_name);
-    println!("  {} config=test.json             # Load comprehensive JSON config", program_name);
-    println!("  {} config=legacy.cfg            # Auto-convert TM5 config + add stuck bit test", program_name);
-    println!("  {} --create-demo-configs        # Create demo configurations", program_name);
-    println!("  {} --compare-results old.json new.json # Compare results from .\\results\\", program_name);
 }
 
 #[cfg(test)]

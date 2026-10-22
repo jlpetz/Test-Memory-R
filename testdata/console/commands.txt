@@ -1,0 +1,162 @@
+## --version: Passed
+Test Memory R (TMR) version 1.0.0
+High-Performance Memory Testing Tool with TM5 Compatibility
+Three-Stage Memory Architecture with Comprehensive Testing
+## --help: Passed
+🚀 Test Memory R (TMR) v1.0.0 - High-Performance Memory Testing Tool
+===================================================================================
+
+USAGE:
+  tmr.exe                                    # Run with defaults
+  tmr.exe config=test.json                  # Load modern JSON config (v2.0)
+  tmr.exe config=legacy.cfg                 # Load legacy TestMem5 config (v1.0)
+  tmr.exe --create-demo-configs              # Create demo configuration files
+  tmr.exe --compare-results baseline.json current.json [output.json]
+                                          # Compare two test results from .\results\
+  tmr.exe --setup-large-pages              # Configure large pages for optimal performance
+  tmr.exe --calibrate-cache                # Measure the cache tiers' sizes; saved to tmr-cfg.json after a prompt
+  tmr.exe --calibrate-cache-ext            #   ...finer, around each tier's edge (preferred when both are saved)
+  tmr.exe --calibrate-seal                 # Time the seal's fill and check at each width, one thread; seal-width=auto
+                                          #   then runs the fastest (a narrower one if it is as fast)
+  tmr.exe --calibrate-all                  # --calibrate-cache, then --calibrate-seal (maxpage= sets both's page size)
+  tmr.exe plan=stability                   # The default: the stability tests at the widest width (or width=)
+  tmr.exe plan=quick                       # The stability tests once
+  tmr.exe plan=widths                      # Every width of the tests that have them, side by side
+  tmr.exe plan=perf                        # Latency and bandwidth
+  tmr.exe plan=all                         # Every test in the suite; test= alone picks from it
+  tmr.exe --quick-test                     # plan=quick, reserving 60% of available memory
+  tmr.exe --ram-latency                    # Run DRAM latency tests (6 tests)
+  tmr.exe --cache-latency                  # Run full cache hierarchy latency tests (12 tests)
+  tmr.exe test=Spd-*                       # Run tests matching pattern (glob wildcards)
+  tmr.exe test=Mem-Mirror*,Lat-L3-*        # Run multiple patterns (comma-separated)
+  tmr.exe config=x.cfg --startup-debug     # Print the memory and test plan; allocate no test memory, run nothing
+  tmr.exe --version                         # Show version information
+  tmr.exe --show-topology                   # Show CPU Topology Mapping for debugging
+  tmr.exe --debug-topology                  # Runs multiple CPU Topology checks to debug if one works better
+
+EXIT STATUS: 0 passed, 1 tests failed or found errors, 2 stopped before or instead of testing
+             (bad config, failed command), 3 interrupted (Ctrl+C); other codes: crashed or killed
+             (errors=panic aborts on the first error)
+
+COMMAND LINE PARAMETERS:
+  memory=20%                           # Reserve 20% of system memory
+  memory=2GiB                         # Reserve 2 GiB
+  memory=2048MB                       # TM5-compatible allocation (2048MB from available)
+  memory=10%-from-available           # Reserve 10% from currently available memory
+  memory=8GiB-from-total              # Reserve 8 GiB from total system memory
+  memory=64GiB-target                 # Target 64 GiB allocation (may fail if unavailable)
+  cycles=5                            # Run 5 complete test cycles
+  duration=600                        # Maximum 10 minutes runtime
+  cpus=50%                            # Use 50% of available CPUs
+  cputype=cores                       # Use physical cores (vs threads/SMT)
+  skip-cores=1                        # Stage 1 FILTER: skip first N CPUs (default: 1 to preserve OS)
+  skip-cores=25%                      #   ...or skip the leading N% (portable across core counts)
+  skip-cores=0-7                      #   ...or exclude a core-id range (isolate a memory domain/CCD)
+  cpu-stride=2                        # Stage 2 SPACING: use every Nth available CPU
+  cpu-stride=even                     #   ...or spread the requested count evenly across the pool
+  --disable-pinning                   # Disable CPU thread pinning
+  priority=high                       # Worker priority: normal, high (default), realtime
+                                      #   realtime is THREAD_PRIORITY_TIME_CRITICAL, the top of the
+                                      #   normal range (not the realtime class); leave a core free with it
+  hugechunk=1GiB                      # First 1GB-page request size, halved on refusal (power of two, >= 1GiB)
+  largechunk=128MiB                   # First 2MB-page request size, halved on refusal (default 128MiB)
+  largefloor=16MiB                    # Smallest 2MB-page request (16MiB-1GiB)
+  blkroundtarget=1GiB                 # Round each thread's share to a multiple of this (of largefloor)
+  blkround=up                         # ...up (default; a smaller step rather than pass available), down, or nearest
+  errors=halt                         # Error handling (log/halt/panic)
+  seal=tmr                            # Seal: check and reseal around every chunk (tmr, the default; tm5; off)
+  seal-width=auto                     # Seal kernels' SIMD width (auto, 128, 256, 512); unset, width='s;
+                                      #   auto is --calibrate-seal's width on this machine, else 256
+  width=auto                          # SIMD width of the tests that pick theirs at run time (the -Auto
+                                      #   tests, Mem-Sequence, the Bench pairs) and of the seal: auto (the
+                                      #   widest the CPU has; the seal its own auto), 128, 256 or 512
+                                      #   (refused if the CPU lacks it). Mem-Sequence has no 128 and runs
+                                      #   at 256; -128/-256/-512 tests keep theirs
+  mirror=whole                        # Mirror tests: one mirror over each chunk (the default)
+  mirror=subblocks:4                  #   ...each chunk in 2 or 4 parts, mirrored in lockstep
+  mirror=jump:510                     #   ...128 B swaps every (N+1) x 128 B (TM5 MirrorMove128)
+  pattern-mode=0                      # Pattern mode: 0-2 (TM5's), 10, 11, 13, 20, 30 (TMR's), or a native
+                                      #   family alone on SimpleTest: 15 ident, 16 random, 17 linepair,
+                                      #   21 lines, 31 switch, 32 quiet, 33 header; unset, SimpleTest runs
+                                      #   native programs (doc/pattern_spec.md)
+  sequence=W,2R,RW,2R@random          # Mem-Sequence's passes: W writes, R reads, RW reads and writes each line;
+                                      #   a count before, an @order after (spaces or commas between)
+  order=random                        # Mem-Sequence's order where a step names none: forward, reverse, random,
+                                      #   stride (TM5's, from a config entry's parameter)
+  patterns=legacy                     # A TM5 .cfg's SimpleTest modes as TMR's numbered modes, not native
+                                      #   programs (default native), to compare the two
+  seed=0x1234                         # The native patterns' run seed (default: from the clock, logged and
+                                      #   saved in the results), to replay a run's bytes
+  beat=32                             # Transfer width the switch pattern flips at: auto (SMBIOS, the
+                                      #   default), 16 (LPDDR4/5), 32 (DDR5), 64 (DDR4), or a memory
+                                      #   type (ddr4, ddr5, lpddr5, ...); 12 (lpddr6) and 24 (ddr6) are
+                                      #   models: TMR hasn't verified their packet maps
+  rescan=off                          # A failed check isn't rescanned to name each bad word (default on;
+                                      #   off counts one error a failed check, for runs with many errors)
+  verify-reps=5                       # Verify passes per write (TM5 retention stress: 5)
+  test-reps=3                         # Test op repetitions per write (MirrorMove round-trips)
+  write-read-cycles=4                 # Write+verify cycles per chunk (TM5 SimpleTest: 4)
+  topology=windowsv2                  # Core types from one detector alone (default auto, the cascade):
+                                      #   windows efficiency class, windowsv2 Windows' core priority,
+                                      #   cpuid L3 size per core, amd AMD's CPUID core type
+  core-priority=hybrid                # Hybrid CPUs that report no core types (e.g. Ryzen 8500G):
+                                      #   Windows' higher-priority cores are P-cores (default: equal)
+  --no-calibration                    # Skip loading calibration data (use CPUID heuristics; the seal's rule)
+
+CONFIG FILE OVERRIDES:
+  All parameters can override config file values:
+    tmr.exe config=test.json cycles=1 skip-cores=0 memory=4GiB
+
+LOGGING:
+  RUST_LOG=info                       # Set log level (error/warn/info/debug/trace)
+                                        # Use debug for detailed per-thread logs
+  Logs saved to: .\logs\TMR_YYYY-MM-DD_HH-MM-SS.log      (local time)
+  Results saved to: .\results\TMR_YYYY-MM-DD_HH-MM-SS.json (same name as the log)
+
+RESULT COMPARISON:
+  Test results are automatically saved as JSON files to .\results\
+  Use --compare-results to analyze performance differences
+  Useful for memory overclocking and timing optimization
+
+Quick Usage Examples:
+  tmr.exe memory=10%-from-available     # Standard: Reserve 10% from currently available memory
+  tmr.exe memory=2048MB                 # TM5 compatible: Reserve 2048MB from available memory
+  tmr.exe memory=8GiB-from-total        # Failure test: Reserve 8 GiB from total (unrealistic)
+  tmr.exe memory=64GiB-target           # Failure test: Target 64 GiB allocation (may fail)
+  tmr.exe cycles=5 duration=600        # 5 cycles OR 10 minutes max
+  tmr.exe cpus=50% cputype=cores       # Use 50% of CPU cores (cores=avoid SMT)
+  tmr.exe skip-cores=0                 # Don't skip any CPUs (default: skip first CPU)
+  tmr.exe skip-cores=0-7 cpus=100%     # Test ONLY cores 8+ (isolate a memory domain on multi-CCD parts)
+  tmr.exe cpus=50% cpu-stride=even     # Spread half the cores evenly (loads all memory domains equally)
+  tmr.exe --disable-pinning            # Disable CPU pinning (default: enabled)
+  tmr.exe errors=halt                  # Stop on first error
+  tmr.exe config=test.json             # Load comprehensive JSON config
+  tmr.exe config=legacy.cfg            # Auto-convert TM5 config + add stuck bit test
+  tmr.exe --create-demo-configs        # Create demo configurations
+  tmr.exe --compare-results old.json new.json # Compare results from .\results\
+## --compare-results without its files: NotRun
+❌ Usage: tmr.exe --compare-results <baseline.json> <current.json> [output.json]
+## --compare-results of a file that isn't there: NotRun
+❌ Comparison failed: Test result file does not exist: nowhere.json
+## --compare-results of a run with itself: Passed
+=== TMR Test Result Comparison ===
+Comparison Time: <time>
+Baseline: 2026-10-21 23:30:00 UTC (results/TMR_2026-10-22_10-30-00.json)
+Current:  2026-10-21 23:30:00 UTC (results/TMR_2026-10-22_10-30-00.json)
+
+⚠️  Run differences worth knowing about (none invalidate the comparison):
+
+  ⚠️  Memory spec reproducibility  depends on free memory  ->  depends on free memory
+
+Overall Performance Changes:
+  Runtime: +0 seconds (+0.0%)
+  Throughput: +0.0 MiB/s (+0.0%)
+  Data Processed: +0.00 GiB
+  Errors: No change
+
+Per-Test Performance Changes:
+  Step 1. Mem-StuckBit256_A - Duration: +0.0ms (+0.0%) =, Throughput: +0.0 MiB/s (+0.0%) =
+  Step 2. Lat-L1-Read - Duration: +0.0ms (+0.0%) =, Throughput: +0.0 MiB/s (+0.0%) =
+  Step 3. Mem-StuckBit256_A - Duration: +0.0ms (+0.0%) =, Throughput: +0.0 MiB/s (+0.0%) =
+
+✅ Comparison completed successfully

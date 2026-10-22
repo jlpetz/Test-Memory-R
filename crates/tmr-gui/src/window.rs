@@ -62,8 +62,6 @@ pub(crate) struct Window {
     /// The command line Start runs (the exe's name first)
     args: Vec<String>,
     model: Model,
-    /// Once the session is past its setup
-    system: Option<SystemPanel>,
     dark: bool,
     width: f64,
     palettes: Palettes,
@@ -104,7 +102,10 @@ impl Window {
         let fe = Arc::new(GuiFrontend { feed: tx.clone() });
         let args = self.args.clone();
         let session = std::thread::Builder::new().name("tmr-engine".to_string()).spawn(move || {
-            let result = tmr::cli::run_session(args, fe).map_err(|e| {
+            // The log records on the console and in the log file, as the CLI has them, until S6 of
+            // TODO 29 gives the window a logger of its own
+            tmr::cli::setup_logging();
+            let result = tmr::session::run(args, fe).map_err(|e| {
                 // On the console and in the log, as the CLI has it
                 tmr::cli::report_error(e.as_ref());
                 e.to_string()
@@ -129,6 +130,7 @@ impl Window {
         for item in feed {
             match item {
                 Feed::Event(event) => self.model.apply(event),
+                Feed::RestartNeeded => self.model.restart_needed(),
                 Feed::Ended(result) => {
                     self.model.ended(result);
                     ended = true;
@@ -140,11 +142,6 @@ impl Window {
             // A panic ends the thread before it says how the session went (a release build aborts)
             self.model.ended(Err("the session's thread ended without a result: the console has why".to_string()));
             ended = true;
-        }
-        // The machine, once the session's setup has detected it, so its records land in the run's
-        // log as they did (TODO 29)
-        if self.system.is_none() && self.model.past_setup {
-            self.system = Some(SystemPanel::of(&tmr::frontend::machine()));
         }
         if !ended {
             listen(rx, self.model.progress().cloned(), context);
@@ -160,7 +157,6 @@ impl Component for Window {
         Self {
             args: args.clone(),
             model: Model::new(args),
-            system: None,
             dark: false,
             width: 860.0,
             palettes: Palettes::load(),
@@ -319,7 +315,7 @@ impl Window {
     /// setup has detected them.
     fn system_info(&self) -> View {
         let p = self.palette();
-        let Some(s) = &self.system else {
+        let Some(s) = &self.model.system else {
             return TextBlock::new()
                 .text("System info: at Start")
                 .foreground(brush(p.text_secondary))

@@ -1,0 +1,228 @@
+## a test filter
+🎯 Test Filter: Mem-Mirror*,Lat-L3-*
+  Running tests matching pattern
+  Default: cycles=1 for quick targeted runs
+  CLI overrides supported (e.g. duration=60 cycles=5)
+
+## the quick test
+🚀 TMR Quick Test Mode: plan=quick, the stability tests once
+  Quick test uses reduced memory (60% reserve) for faster validation
+  CLI overrides supported
+
+## every parameter note
+  Minimum Page Size: regular
+  Maximum Page Size: large
+  hugechunk: 2GiB
+  blkround: down
+  Topology Detection: windowsv2
+  CPU Pinning: Skipping first 1 CPU(s)
+  CPU Pinning: Disabled
+## the header of a release build
+Startup Mode & Parameters:
+  Command Line: tmr.exe memory=50% cputype=cores cpus=100% skip-cores=0 cycles=1
+  Build Type: ✅ Release (optimized)
+## the header of a debug build
+Startup Mode & Parameters:
+  Command Line: tmr.exe
+  Build Type: ❌ Debug (unoptimized)
+## the parameters, given and defaults
+  RUST_LOG: info (logs to .\logs\TMR_YYYY-MM-DD_HH-MM-SS.log)
+  Explicit Parameters: memory=50%, --startup-debug
+  Default Parameters: cputype=threads (default), errors=log (default)
+## the parameters, a backtrace set and none given
+  RUST_LOG: debug (logs to .\logs\TMR_YYYY-MM-DD_HH-MM-SS.log)
+  RUST_BACKTRACE: 1
+## cores
+  CPU Type: cores (avoiding SMT/Hyperthreading)
+## threads
+  CPU Type: threads
+## a core range left out
+  CPU Filter: excluding core id range 0-7 (Stage 1)
+## a share of the CPUs
+  CPU Count: 50% of 6 available = 3 thread(s)
+## pinned, a CPU skipped, SMT doubling avoided, both limits
+  Error Mode: Log and continue
+  Using 3/6 cores for testing
+  CPU Assignment: [2, 4, 6]
+  Skipping first 1 CPU(s) for system responsiveness
+  Avoiding SMT doubling (using physical cores only)
+  Test Suite Timing: 3 cycles or 600s max (whichever first)
+  SIMD Support: SSE, SSE2, SSE3, SSE4.1, SSE4.2, AVX, AVX2
+
+## unpinned, halting, cycles only
+  Error Mode: Halt on first error
+  Using 3/6 cores for testing
+  CPU Assignment: [2, 4, 6] ⚠️ NUMA placement only, pinning is off
+  Test Suite Timing: 1 cycles (no time limit)
+  SIMD Support: SSE, SSE2, SSE3, SSE4.1, SSE4.2, AVX, AVX2
+
+## panicking, time only
+  Error Mode: Panic on error (debug mode)
+  Using 3/6 cores for testing
+  CPU Assignment: [2, 4, 6]
+  Test Suite Timing: 60s duration (unlimited cycles)
+  SIMD Support: SSE, SSE2, SSE3, SSE4.1, SSE4.2, AVX, AVX2
+
+## no limits
+  Error Mode: Log and continue
+  Using 3/6 cores for testing
+  CPU Assignment: [2, 4, 6]
+  Test Suite Timing: Unlimited cycles and duration
+  SIMD Support: SSE, SSE2, SSE3, SSE4.1, SSE4.2, AVX, AVX2
+
+## large pages are checked
+Checking Large Page access
+## what the check did
+🔍 Large Page Diagnostic
+  Privilege: assigned and enabled
+  Test allocation: 2 MiB, succeeded
+## large pages usable
+🎉 Large Pages: ✅ ENABLED and tested successfully!
+   TMR will use 2MB large pages for optimal performance
+
+## large pages not usable, and minpage needs them
+⚠️  Large Pages: Not available, and minpage=large needs them, so the run will stop
+   before allocating. Set them up (tmr.exe --setup-large-pages, elevated), or rerun
+   with minpage=regular to test on standard 4KB pages: every test still runs, but
+   slower memory traffic is less stress, so marginal errors that only appear at
+   full bandwidth may go undetected
+
+## large pages not usable, and minpage doesn't need them
+⚠️  Large Pages: Not available - TMR will use standard 4KB pages
+   Performance impact: ~5-10% slower memory allocation
+   Every test still runs and every pattern is still checked, but slower
+   memory traffic is less stress, so marginal errors that only appear at
+   full bandwidth may go undetected
+
+## the extended cache calibration
+  Calibration: Loaded (extended, 2026-10-20 09:05)
+## the standard cache calibration
+  Calibration: Loaded (standard, 2026-10-02 09:05)
+## no cache calibration
+  Calibration: None (run --calibrate-cache to calibrate)
+## another machine's cache calibration
+  Calibration: Stale (hardware changed, re-run --calibrate-cache)
+## the cache calibration off
+  Calibration: Disabled (--no-calibration)
+## the seal calibration
+  Seal calibration: Loaded (256 bits, 2026-10-21 09:05)
+## another machine's seal calibration
+  Seal calibration: Stale (hardware changed, re-run --calibrate-seal)
+## no seal calibration
+  Seal calibration: None (run --calibrate-seal to calibrate)
+## a hybrid's topology, E-cores skipped first
+[1m📊 CPU Topology and Thread Assignment[0m
+------------------------------------------------------------------------------------------------------
+Logical CPU  Physical Core     Type      Threads     NUMA Node     SMT         Status      Thread ID  
+------------------------------------------------------------------------------------------------------
+          0              0    P-core        2                0     Yes        Skipped              -  
+          1              0    P-core        2                0     Yes        Skipped              -  
+          2              1    P-core        2                0     Yes        Assigned             0  
+          3              1    P-core        2                0     Yes      SMT Excluded           -  
+          4              2    E-core        2                0     Yes        Assigned             1  
+          5              2    E-core        2                0     Yes      SMT Excluded           -  
+          6              3    E-core        2                0     Yes       Available             -  
+          7              3    E-core        2                0     Yes      SMT Excluded           -  
+------------------------------------------------------------------------------------------------------
+Total: 8 logical CPUs, 4 physical cores
+Hybrid CPU Architecture Detected!
+P-cores: 2 (4 logical), E-cores: 2 (4 logical)
+Assigned: 2, Available: 1, SMT Excluded: 3, Skipped: 2
+  SMT/Hyperthreading: Enabled on 2 P-cores
+    Note: E-cores were prioritized for skipping
+
+## a hybrid's topology, no P-core with SMT
+[1m📊 CPU Topology and Thread Assignment[0m
+------------------------------------------------------------------------------------------------------
+Logical CPU  Physical Core     Type      Threads     NUMA Node     SMT         Status      Thread ID  
+------------------------------------------------------------------------------------------------------
+          0              0    P-core        2                0     Yes        Skipped              -  
+          1              0    P-core        2                0     Yes        Skipped              -  
+          2              1    P-core        2                0     Yes        Assigned             0  
+          3              1    P-core        2                0     Yes      SMT Excluded           -  
+          4              2    E-core        2                0     Yes        Assigned             1  
+          5              2    E-core        2                0     Yes      SMT Excluded           -  
+          6              3    E-core        2                0     Yes       Available             -  
+          7              3    E-core        2                0     Yes      SMT Excluded           -  
+------------------------------------------------------------------------------------------------------
+Total: 8 logical CPUs, 4 physical cores
+Hybrid CPU Architecture Detected!
+P-cores: 2 (4 logical), E-cores: 2 (4 logical)
+Assigned: 2, Available: 1, SMT Excluded: 3, Skipped: 2
+
+## a topology with no hybrid notes
+[1m📊 CPU Topology and Thread Assignment[0m
+------------------------------------------------------------------------------------------------------
+Logical CPU  Physical Core     Type      Threads     NUMA Node     SMT         Status      Thread ID  
+------------------------------------------------------------------------------------------------------
+          0              0    P-core        2                0     Yes        Skipped              -  
+          1              0    P-core        2                0     Yes        Skipped              -  
+          2              1    P-core        2                0     Yes        Assigned             0  
+          3              1    P-core        2                0     Yes      SMT Excluded           -  
+          4              2    E-core        2                0     Yes        Assigned             1  
+          5              2    E-core        2                0     Yes      SMT Excluded           -  
+          6              3    E-core        2                0     Yes       Available             -  
+          7              3    E-core        2                0     Yes      SMT Excluded           -  
+------------------------------------------------------------------------------------------------------
+Total: 8 logical CPUs, 4 physical cores
+Hybrid CPU Architecture Detected!
+P-cores: 2 (4 logical), E-cores: 2 (4 logical)
+Assigned: 2, Available: 1, SMT Excluded: 3, Skipped: 2
+
+## the memory status
+📊 Current System Memory Status:
+--------------------------------------------------------------
+Memory Type       Total   Available        Used  % Available  
+--------------------------------------------------------------
+Physical      63.41 GiB   51.00 GiB   12.41 GiB        80.4%  
+Page File     72.00 GiB   58.00 GiB   14.00 GiB        80.6%  
+--------------------------------------------------------------
+
+## no memory status, on stderr
+⚠️ Failed to retrieve system memory status
+## the system
+
+[1m🔍 System Information[0m
+════════════════════════════════════════════════════════════════════════════════
+[1m📊 CPU Information[0m
+------------------------------------------------------------------------
+Property      Value                                                     
+------------------------------------------------------------------------
+CPU           AMD Ryzen 5 8600G w/ Radeon 760M Graphics (AuthenticAMD)  
+Architecture  Family 25, Model 117, Stepping 2                          
+Cores         6 physical, 12 logical (HT enabled)                       
+SIMD Support  SSE2, AVX, AVX2, AVX-512F, AVX-512BW                      
+------------------------------------------------------------------------
+[1m📊 Cache Architecture (CPUID leaf 0x8000001D)[0m
+-----------------------------------------
+Cache Level      Total Size    Per Core  
+-----------------------------------------
+L1 Data          192.00 KiB   32.00 KiB  
+L1 Instruction   192.00 KiB   32.00 KiB  
+L2                 6.00 MiB    1.00 MiB  
+L3 (Shared)       16.00 MiB           -  
+Cache Line Size    64 bytes           -  
+-----------------------------------------
+[1m📊 TSC Calibration[0m
+-------------------------------------------------------
+Property                                        Value  
+-------------------------------------------------------
+Measured Freq                            4.299874 GHz  
+Likely Freq                      4300 MHz (4.300 GHz)  
+Detection Method                           CPUID 0x15  
+TSC Type                  ✅ Invariant (constant rate)  
+Confidence                                        99%  
+Calibration         12 samples in 240ms (✅ Converged)  
+Std Deviation                            0.000012 GHz  
+-------------------------------------------------------
+
+## realtime on every CPU
+⚠️  priority=realtime with a worker on every logical CPU: the console and input can freeze until the run ends. Leave a core free (skip-cores=1) or use priority=high.
+## the default plan
+📋 Plan: stability (the default): the stability tests at the widest width
+## a plan named
+📋 Plan: quick: the stability tests once
+## the tests start
+Starting comprehensive memory tests... Use CTRL+C for graceful shutdown with final report
+(detailed logs available with RUST_LOG=debug)
+

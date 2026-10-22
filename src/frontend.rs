@@ -10,7 +10,11 @@
 //! renders that way and must not become asynchronous: the 'Halting test suite' record logged right
 //! after a step's report (`execute_test_cycle`) would then overtake the report.
 //!
-//! The run's events are here; the setup's join them in S4 (`doc/todo/29-split-design.md`).
+//! A session has two kinds: its setup's (`Setup`, from `session::run`: the parameters, the CPUs
+//! chosen, large pages, the machine) and its run's (`Run`, from the memory plan to the results
+//! file). It asks one question, during setup, when large pages need a restart
+//! (`Frontend::large_page_restart`); the one-shot commands' question, whether to save a
+//! calibration, is the CLI's alone (the `confirm` that `commands::run` takes).
 //!
 //! The types the events carry that a frontend outside the engine names are re-exported here, and
 //! only those: the GUI's (`crates/tmr-gui`), its tests' included. The rest of the engine stays
@@ -26,15 +30,21 @@
 use std::sync::Arc;
 use std::time::Duration;
 
+use chrono::{DateTime, Utc};
+
 use crate::failing_bits::FailingBits;
 use crate::memory::allocator::PageSizeLevel;
 use crate::reporting::models::{
-    ConsolidatedMemoryReport, FinalTestSummaryReport, LatencyTestSummaryReport, PerformanceByCpuReport,
+    ConsolidatedMemoryReport, CpuTopologyReport, FinalTestSummaryReport, LatencyTestSummaryReport, PerformanceByCpuReport,
     PerformanceByPhysicalCoreReport, PerformanceByThreadReport,
 };
 
+pub use crate::ErrorMode;
 pub use crate::progress::{LiveFigures, ProgressSnapshot, ProgressTracker, RunOutcome, TestSnapshot, TestSummary};
-pub use crate::reporting::models::{AllocationReport, AllocationThread, TestConfigurationReport, ThreadTimingReport};
+pub use crate::reporting::models::{
+    AllocationReport, AllocationThread, CacheInfo, CpuInfo, SystemInfoReport, TestConfigurationReport, ThreadTimingReport,
+    TscCalibrationInfo,
+};
 pub use crate::runner::RunStatus;
 pub use crate::smbios::MemoryModule;
 pub use crate::thread_pool::SealOp;
@@ -50,18 +60,158 @@ pub trait Frontend: Send + Sync {
     fn tick(&self, _progress: &ProgressTracker) {}
     /// The suite is over: the monitor thread's last call.
     fn ticks_done(&self, _progress: &ProgressTracker) {}
+    /// Large pages are set up, but take effect only after Windows restarts (`Setup::LargePageCheck`
+    /// came first): exit to restart, or run on 4 KiB pages. Blocks the session's thread, idle then,
+    /// until answered. A frontend that can't ask answers `Continue4K`, as an empty answer does.
+    fn large_page_restart(&self) -> RestartChoice;
+}
+
+/// The answer to `Frontend::large_page_restart`.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum RestartChoice {
+    /// End the session, to restart Windows (`session::SessionEnd::RestartChosen`)
+    Exit,
+    /// Run on 4 KiB pages: the session sets `minpage=regular`
+    Continue4K,
 }
 
 /// What the engine tells a frontend.
 pub enum Event {
+    /// A session's setup facts, before its run
+    Setup(Setup),
     /// A run's facts, from its memory plan to its results file
     Run(Run),
+}
+
+impl From<Setup> for Event {
+    fn from(setup: Setup) -> Self {
+        Event::Setup(setup)
+    }
 }
 
 impl From<Run> for Event {
     fn from(run: Run) -> Self {
         Event::Run(run)
     }
+}
+
+/// A session's setup facts, in the order a session has them (`session::run`). The large ones are
+/// boxed, so the enum stays small.
+pub enum Setup {
+    /// `test=` picks the tests `pattern` matches, once each unless `cycles=` says otherwise. One for
+    /// each `test=` given.
+    TestFilter { pattern: String },
+    /// `--quick-test`: plan=quick, with its defaults
+    QuickTest,
+    /// What the allocation and pinning parameters set, without a config. Never empty.
+    ParamNotes(Vec<ParamNote>),
+    /// The command line, with the defaults the modes added, and whether this is a release build.
+    /// Its own event, because the build's record is logged between it and `StartupParams`.
+    StartupHeader { command_line: Vec<String>, release: bool },
+    /// The logging environment (`RUST_LOG`, and `RUST_BACKTRACE` when set), and which parameters
+    /// were given and which defaults stand (none with a config)
+    StartupParams { rust_log: String, rust_backtrace: Option<String>, explicit: Vec<String>, defaults: Vec<String> },
+    /// Whether the run counts logical CPUs or physical cores (`cputype=`), avoiding SMT for cores
+    CpuType { cputype: String, avoid_smt: bool },
+    /// `skip-cores=` as a range: the core ids left out
+    CpuFilter { lo: usize, hi: usize },
+    /// `cpus=` as a share: of how many available, and the threads it gives
+    CpuCount { percent: u32, available: usize, threads: usize },
+    /// The CPUs chosen, and the run's error mode, limits and SIMD
+    Selection(Box<Selection>),
+    /// Large pages are checked next: `Frontend::large_page_restart` follows when they need a
+    /// restart, `LargePageDiagnostic` otherwise
+    LargePageCheck,
+    /// What the large-page check found and did (`memory::diagnose_and_setup_large_pages`)
+    LargePageDiagnostic { report: String },
+    /// Whether this run can take large pages, and its `minpage=`, which stops the run before it
+    /// allocates when it needs them (`min_needs_large`) and they aren't usable
+    LargePageStatus { usable: bool, min_page: String, min_needs_large: bool },
+    /// The cache calibration the tests' sizes take, from tmr-cfg.json
+    CacheCalibration(CacheCalibrationState),
+    /// The seal calibration `seal-width=auto` takes. Its own event, because checking it against
+    /// this machine logs (`AppConfig::valid_seal_calibration`).
+    SealCalibration(SealCalibrationState),
+    /// The CPUs and the threads assigned them; on a hybrid CPU, how many of its P-cores have SMT
+    /// (`None` on one that isn't), and whether skip-cores= skipped E-cores first
+    CpuTopology { report: Box<CpuTopologyReport>, smt_p_cores: Option<usize>, e_cores_skipped_first: bool },
+    /// The system's memory now, `None` when Windows doesn't say
+    MemoryStatus(Option<MemoryStatus>),
+    /// The CPU, its caches and TSC, and the memory modules SMBIOS lists
+    SystemInfo { report: Box<SystemInfoReport>, memory_modules: Vec<MemoryModule> },
+    /// The tests are about to start (the CLI takes Ctrl+C from here)
+    Starting,
+    /// `priority=realtime` with a worker on every logical CPU, which can freeze the console and input
+    RealtimeOnEveryCpu,
+    /// The built-in plan the run takes; `is_default` when none was named
+    Plan { name: &'static str, about: &'static str, is_default: bool },
+}
+
+/// What a parameter set, as `Setup::ParamNotes` lists it.
+pub enum ParamNote {
+    /// `minpage=`, `maxpage=`
+    MinPage(String),
+    MaxPage(String),
+    /// A block-sizing parameter (`hugechunk=`, `blkround=`, ...) and its value
+    Block(&'static str, String),
+    /// `topology=`: the detector it names
+    Topology(&'static str),
+    /// `skip-cores=` was given: the skip count as it stands before the spec is resolved against the
+    /// cores (later, in setup), so the default's
+    SkipCores(usize),
+    /// `--disable-pinning`
+    PinningOff,
+}
+
+/// The CPUs a run takes and how it runs, as setup chose them.
+pub struct Selection {
+    pub error_mode: ErrorMode,
+    /// Threads, of the CPUs (or cores, `cputype`) available after skip-cores=
+    pub threads: usize,
+    pub available: usize,
+    pub cputype: String,
+    /// Each thread's CPU, in thread order
+    pub cpu_list: Vec<usize>,
+    /// Pinned to them; otherwise the list only places each thread's memory (its NUMA node)
+    pub pinned: bool,
+    pub cpus_to_skip: usize,
+    pub avoid_smt_doubling: bool,
+    /// The suite's limits: cycles, seconds
+    pub cycles: Option<u32>,
+    pub duration_secs: Option<u32>,
+    /// The SIMD extensions the CPU has (`simd::detect_simd_capabilities`)
+    pub simd: String,
+}
+
+/// The cache calibration at startup (`Setup::CacheCalibration`).
+pub enum CacheCalibrationState {
+    /// This machine's, measured `at`: the extended one when there is one (`--calibrate-cache-ext`)
+    Loaded { extended: bool, at: DateTime<Utc> },
+    /// None stored
+    None,
+    /// One measured on other hardware: not used
+    Stale,
+    /// `--no-calibration`
+    Disabled,
+}
+
+/// The seal calibration at startup (`Setup::SealCalibration`).
+#[derive(Debug, PartialEq)]
+pub enum SealCalibrationState {
+    /// This machine's, measured `at`: `seal-width=auto` takes its width, `bits`
+    Loaded { bits: u32, at: DateTime<Utc> },
+    /// One measured on other hardware: `auto` takes the rule's width
+    Stale,
+    /// None stored
+    None,
+}
+
+/// The system's memory, in bytes (`GlobalMemoryStatusEx`).
+pub struct MemoryStatus {
+    pub total_phys: u64,
+    pub avail_phys: u64,
+    pub total_page_file: u64,
+    pub avail_page_file: u64,
 }
 
 /// A run's facts, in the order a run has them (`run_tests_with_layout_and_timing_filtered`).
@@ -178,41 +328,4 @@ pub struct CpuPerformanceSummary {
     pub by_thread: PerformanceByThreadReport,
     pub by_cpu: PerformanceByCpuReport,
     pub by_core: PerformanceByPhysicalCoreReport,
-}
-
-/// The machine under test, as a frontend's system panel shows it (TODO 7): the CPU, its caches and
-/// the memory modules SMBIOS lists.
-pub struct Machine {
-    pub cpu: String,
-    pub physical_cores: usize,
-    pub logical_cpus: usize,
-    /// Per core: L1 data, L1 instruction and L2; the L3, one instance's (shared by the cores of a
-    /// CCD, or of the whole CPU); and the cache line. What `detection` found, or its fallbacks.
-    pub l1_data: usize,
-    pub l1_instruction: usize,
-    pub l2: usize,
-    pub l3: usize,
-    pub cache_line: usize,
-    pub detection: String,
-    pub memory_modules: Vec<MemoryModule>,
-}
-
-/// The machine under test. The session detects it during setup, before the run's first event, and
-/// logs what it found as it does; read after that event, this is that detection and logs nothing.
-/// Until S4 hands the setup's facts over as events, it is how the GUI gets them.
-pub fn machine() -> Machine {
-    let system = crate::tests::get_system_info();
-    let cache = system.get_cache_info();
-    Machine {
-        cpu: system.cpu_brand.clone(),
-        physical_cores: system.physical_cores,
-        logical_cpus: system.logical_cores,
-        l1_data: cache.per_core_l1d,
-        l1_instruction: cache.per_core_l1i,
-        l2: cache.per_core_l2,
-        l3: cache.l3_cache,
-        cache_line: cache.cache_line_size,
-        detection: cache.detection_method.clone(),
-        memory_modules: crate::smbios::get_smbios().memory_modules.clone(),
-    }
 }
