@@ -7,7 +7,7 @@
 **Status**: Closed 2026-10-22 (`TODO_ARCHIVE.md`). The last of it, the owner's calls that day:
 - Extended bit fade: Mem-Refresh's wait is a test setting, `wait_ms` (64 ms unset; 6187345). A
   bit fade is one chunk the extent's size and minutes of wait (`doc/test_parameters.md`).
-- Cross-thread page exchange: moved to TODO 28, as a candidate for its coherence test.
+- Cross-thread page exchange: moved to TODO 28, where it is the first test (the owner).
 - Dropped: invert thread (Mem-MovingInv reads P and writes ~P up, then ~P and P down), walking
   bit (the `quiet` family holds one data pin a line, every pin in turn, among switching ones,
   which stresses the bus more than a walking bit on a quiet one), AVX-512 scatter/gather

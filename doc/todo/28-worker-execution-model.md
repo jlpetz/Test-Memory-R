@@ -45,11 +45,16 @@ on its own blocks, sequentially, with a phase barrier between tests. This model
 (b) one **coherence-storm** test where threads share lines. The exotic rotations
 (cross-CCD ring, random shuffle, producer/consumer) are diminishing returns — defer them.
 
-**From TODO 19 (2026-10-22): cross-thread page exchange** (stressapptest's) is the other
-candidate for (b): a thread writes a page and queues it; another dequeues it, checks the first
-thread's pattern, writes its own and queues it on. It stresses the coherence fabric and the
-inter-CCD/NUMA links, which nothing in TMR touches. It is a producer/consumer handoff, which the
-paragraph above defers, so stage 4 decides between it and the line-sharing storm.
+**From TODO 19 (2026-10-22): the GSAT-style page exchange comes first** (the owner, correcting
+a "candidate" wording of the same day). A thread claims a page, checks the pattern its last writer
+left, writes its own and releases it; pages cross threads, CCDs and NUMA nodes on purpose. It
+stresses the coherence fabric and the inter-CCD/NUMA links, which nothing in TMR touches. This is
+the producer/consumer handoff the paragraph above deferred: the owner's call overrides that for
+the exchange. Its memory is an exclusive tile grid (`doc/memory_system_design.md` §4.7, tile
+mode), apart from the overlapping chunks of the per-thread tests (`76-span-tests.md`). The
+different-tests-at-once mode (a) and the line-sharing storm come after it. Stages 1-3 below are in
+the code already (the per-step barrier, the result channel, per-worker inboxes; each step's config
+travels in its work item).
 
 **Primitives**: `AtomicBool` shutdown (keep, Relaxed, checked at job granularity — never
 in SIMD loop), `std::sync::Barrier`, `crossbeam::channel` (bounded inboxes cap 4-16 for
