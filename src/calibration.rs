@@ -1394,6 +1394,7 @@ window_stddev,
     }
 
     /// Display calibration results in a formatted table
+    #[expect(clippy::print_stdout, reason = "TODO 29 S4: calibration becomes a one-shot command, writing to its caller's writer")]
     pub fn display_results(results: &CalibrationResults, cache_info: &CacheInfo) {
         println!("\n📊 Cache Calibration Results");
         println!("═══════════════════════════════════════════════════════════════════════════════");
@@ -1701,6 +1702,7 @@ pub fn calibrate_seal(cache_info: &CacheInfo, page_size: &str) -> Result<SealCal
 
 /// Prints a seal calibration: each width's fill and check speed and fill + check time, and the
 /// width chosen, saying why when it isn't the fastest.
+#[expect(clippy::print_stdout, reason = "TODO 29 S4: calibration becomes a one-shot command, writing to its caller's writer")]
 pub fn display_seal_calibration(seal: &SealCalibration, cache_info: &CacheInfo) {
     let l3 = match cache_info.l3_cache {
         0 => String::new(),

@@ -27,28 +27,13 @@ pub struct EnhancedMemoryLayout {
 }
 
 impl EnhancedMemoryLayout {
-    /// Print comprehensive layout information
-    pub fn print_layout(&self) {
-        // Note: System memory analysis is now shown in consolidated memory report
-		
-        // Print allocation plan TURNED OFF
-        // self.allocation_result.print_summary(&self.system_memory_info);
-		
-        use crate::reporting::{create_console_reporter, converters::create_consolidated_memory_report};
-        
-        // Show consolidated memory status and allocation plan
-        let consolidated_report = create_consolidated_memory_report(&self.system_memory_info, &self.allocation_result);
-        let mut reporter = create_console_reporter();
-        
-        if let Err(e) = reporter.report_consolidated_memory(&consolidated_report) {
-            log::error!("Failed to display consolidated memory report: {}", e);
-            // Fallback to basic allocation summary
-            self.allocation_result.print_summary(&self.system_memory_info);
-        }
-        
-        println!();
-        
-        // Print thread layout
+    /// The memory status and the allocation plan, the run's first event (TODO 29)
+    pub fn memory_plan(&self) -> crate::reporting::models::ConsolidatedMemoryReport {
+        crate::reporting::converters::create_consolidated_memory_report(&self.system_memory_info, &self.allocation_result)
+    }
+
+    /// The thread layout, to the log, after the plan is shown
+    pub fn log_thread_layout(&self) {
         log::info!("🧵 Thread Memory Layout:");
         log::info!("  Total threads: {}", self.blocks.len());
         

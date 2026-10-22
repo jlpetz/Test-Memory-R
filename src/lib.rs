@@ -5,6 +5,10 @@
 // The console goldens capture what a test prints as libtest does, and hand the capture on to the
 // threads a test spawns as it does (`golden.rs`, TODO 29)
 #![cfg_attr(test, feature(internal_output_capture, thread_spawn_hook))]
+// The engine prints nothing and exits nowhere: it hands its frontend events (`frontend.rs`, TODO
+// 29). A module still printing says so with an `expect` (the setup path, until S4; the CLI's own
+// modules, until S5 moves them out). Test code prints freely.
+#![cfg_attr(not(test), deny(clippy::print_stdout, clippy::print_stderr, clippy::exit))]
 
 // The whole program, the command line included, is in this crate, and `cli` is its only public
 // item. Everything else is private, so `dead_code` checks all of it. While `main.rs` held the CLI
@@ -52,6 +56,8 @@ mod sequence; // Mem-Sequence's passes: writes, reads and read-then-writes in an
 mod plans; // built-in test plans: which of the suite's tests a run takes (TODO 25)
 mod ops; // the work around a test, by operation: seal fills and checks, fills (TODO 90)
 mod build_info; // which build this binary is: version, commit, compiler (TODO 72)
+mod frontend; // the engine's interface to whoever shows a run: its events (TODO 29; public in S3)
+mod cli_render; // the CLI's frontend: the run's events as the console shows them (TODO 29)
 #[cfg(test)]
 mod golden; // the console's output against goldens, for the engine/presentation split (TODO 29)
 

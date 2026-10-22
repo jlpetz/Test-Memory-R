@@ -3,12 +3,13 @@
 //! The ticker sits under the last line of output and is redrawn in place, which means moving the
 //! cursor back up over every row it covers. Anything another thread printed in the meantime would be
 //! overwritten by that, or stranded between two ticker rows. So everything that can print while the
-//! ticker is up — the logger, WHEA events, the Ctrl+C handler, the runner — goes through here: each
-//! print takes the ticker down, writes, and puts it back under one lock, so the ticker is always the
-//! last thing on screen and is never torn.
+//! ticker is up — the logger, WHEA events, the Ctrl+C handler, the run's events (`cli_render`) —
+//! goes through here: each print takes the ticker down, writes, and puts it back under one lock, so
+//! the ticker is always the last thing on screen and is never torn.
 //!
-//! Plain `println!` is still fine wherever no ticker can be drawn: before the suite starts, after it
-//! finishes, and between `hold` and `release`.
+//! Plain `println!` is still fine wherever no ticker can be drawn: before the suite starts, and after
+//! it finishes (`hold`). A test's report, many lines long, prints in one piece through
+//! `print_block`.
 
 // Every `unsafe` block in this file is a Win32 console call. See memory/backend.rs for why this
 // lint is scoped per file rather than crate-wide.
@@ -28,7 +29,7 @@ struct Ticker {
     text: String,
     /// Screen rows the ticker covers now, wrapped rows included. 0 = not on screen.
     rows: usize,
-    /// A report is printing with plain `println!`: draw nothing until `release`.
+    /// The suite is over (`hold`): draw nothing more.
     held: bool,
 }
 
@@ -78,7 +79,7 @@ pub fn print_above(text: &str) {
 }
 
 /// Replace the ticker with `text`, printing the lines from `above` first. Draws nothing, and does
-/// not call `above`, while a report holds the console. Returns whether it drew.
+/// not call `above`, once the console is held. Returns whether it drew.
 pub fn draw_ticker(text: String, above: impl FnOnce() -> Vec<String>) -> bool {
     let (mut ticker, mut out) = lock();
     if ticker.held {
@@ -93,9 +94,8 @@ pub fn draw_ticker(text: String, above: impl FnOnce() -> Vec<String>) -> bool {
     true
 }
 
-/// Take the ticker down and keep it down, so a multi-line report can print with plain `println!`.
-/// Other writers can still print through `print_above` meanwhile; they just don't redraw it. At
-/// the end of the suite it is never released.
+/// Take the ticker down for good, at the end of the suite, so what follows can print with plain
+/// `println!`. Other writers can still print through `print_above`; they just don't redraw it.
 pub fn hold() {
     let (mut ticker, mut out) = lock();
     ticker.erase(&mut out);
@@ -104,10 +104,15 @@ pub fn hold() {
     let _ = out.flush();
 }
 
-/// End a `hold`. The ticker comes back at its next scheduled draw, with fresh figures rather than
-/// the ones from before the report.
-pub fn release() {
-    lock().0.held = false;
+/// Print a multi-line report in place of the ticker (TODO 29): the ticker comes down and the
+/// report is written under one lock, so no other line can land inside it. The ticker comes back at
+/// its next scheduled draw, with fresh figures rather than the ones from before the report.
+pub fn print_block(text: &str) {
+    let (mut ticker, mut out) = lock();
+    ticker.erase(&mut out);
+    ticker.text.clear();
+    let _ = out.write_all(text.as_bytes());
+    let _ = out.flush();
 }
 
 /// Log target for a record that goes to the log file only. The logger (`cli.rs`) prints every other

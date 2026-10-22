@@ -646,8 +646,9 @@ pub fn detect_cpu_topology() -> Vec<CpuTopologyInfo> {
 }
 
 
+#[expect(clippy::print_stdout, reason = "TODO 29 S4: the topology at startup becomes an event")]
 pub fn display_cpu_topology(cpu_list: &[usize], cpus_to_skip: usize, avoid_smt: bool, pinned: bool) {
-    use crate::reporting::{create_console_reporter, models::{CpuTopologyReport, CpuTopologyEntry, TopologySummary}};
+    use crate::reporting::models::{CpuTopologyReport, CpuTopologyEntry, TopologySummary};
 
     let topology = get_cpu_topology();
     let is_hybrid = is_hybrid_cpu(topology);
@@ -794,8 +795,9 @@ pub fn display_cpu_topology(cpu_list: &[usize], cpus_to_skip: usize, avoid_smt: 
         pinned,
     };
     
-    let mut reporter = create_console_reporter();
-    if let Err(e) = reporter.report_cpu_topology(&report) {
+    let (result, text) = crate::cli_render::rendered(|reporter| reporter.report_cpu_topology(&report));
+    print!("{text}");
+    if let Err(e) = result {
         log::error!("Failed to display CPU topology table: {}", e);
         return;
     }
@@ -947,6 +949,7 @@ pub fn discover_numa_topology() -> Result<NumaTopology, String> {
 
 /// `--debug-topology`: every detector alone, then Auto's cascade, each core's type under each,
 /// and the signals they read, so a platform's detectors can be checked one by one.
+#[expect(clippy::print_stdout, reason = "TODO 29 S4: a one-shot command, writing to its caller's writer")]
 pub fn debug_topology_detection() {
     println!("\n=== CPU Topology Detection Debug ===");
     let mut cores: Vec<usize> = Vec::new();
@@ -984,6 +987,7 @@ pub fn debug_topology_detection() {
 }
 
 
+#[expect(clippy::print_stdout, reason = "TODO 29 S4: a one-shot command, writing to its caller's writer")]
 pub fn show_complete_topology_mapping() {
     let topology = get_cpu_topology();
     

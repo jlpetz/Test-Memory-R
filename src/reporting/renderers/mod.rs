@@ -13,6 +13,9 @@ pub trait Renderer: Send {
     
     /// Render a heading
     fn render_heading(&mut self, text: &str) -> Result<()>;
+
+    /// Render a line of text as it is: a report's notes, a label, an empty line between tables
+    fn render_text(&mut self, text: &str) -> Result<()>;
     
     /// Render an info message
     #[expect(dead_code, reason = "TODO #29: kept as severity levels for the event-stream renderers")]

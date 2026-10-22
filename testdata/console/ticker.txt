@@ -1,0 +1,19 @@
+## limits, a test on its own time limit, its figures in
+
+Runtime: 00:41:10 (remaining 00:18:50) | Cycle 4/8 (00:12:34, 39%) | 0 errors + 0 WHEA
+Test 2/6 Mem-Refresh128 (00:05:12, 52%) | 285.00 GiB @ 19108.7 MiB/s (18.66 GiB/s)
+## the stamp it ends with
+Runtime: 00:41:10 (remaining 00:18:50) | Cycle 4/8 (00:12:34, 39%) | 0 errors + 0 WHEA | Test 2/6 Mem-Refresh128 (00:00:15)
+## no limits, errors and WHEA, a stage, no figures yet
+
+Runtime: 00:41:10 | Cycle 12 (00:12:34) | ⚠️ 3 errors + 3 WHEA (1C/2UC)
+Test 2/6 Mem-Refresh128 (00:05:12) | Checking seal | pending
+## its stamp: the finished tests' errors only
+Runtime: 00:41:10 | Cycle 12 (00:12:34) | ⚠️ 2 errors + 3 WHEA (1C/2UC) | Test 2/6 Mem-Refresh128 (00:00:15)
+## the time limit reached, a test with no live figures
+
+Runtime: 01:00:00 (limit reached, finishing cycle) | Cycle 4/8 (00:12:34, 39%) | 0 errors + 0 WHEA
+Test 2/6 Mem-Refresh128 (00:05:12, 52%) | no live data
+## before the first test
+
+Runtime: 00:41:10 (remaining 00:18:50) | Cycle 1/8 (00:00:00, 0%) | 0 errors + 0 WHEA

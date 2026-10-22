@@ -989,6 +989,7 @@ impl TestComparison {
 }
 
 // CLI command for comparing results
+#[expect(clippy::print_stdout, reason = "TODO 29 S4: a one-shot command, writing to its caller's writer")]
 pub fn compare_results_command(baseline_path: &str, current_path: &str, output_path: Option<&str>) -> Result<(), String> {
     let comparison = compare_test_results(baseline_path, current_path)?;
     
@@ -1195,7 +1196,7 @@ mod tests {
         result.finalize(Duration::from_secs(3725));
         result.set_whea_totals(crate::whea::WheaCounts { total: 1, corrected: 1 }, true);
         let report = crate::reporting::converters::create_overall_stats_summary_report(&result);
-        let (printed, text) = crate::golden::capture(|| crate::reporting::create_console_reporter().report_final_summary(&report));
+        let (printed, text) = crate::cli_render::rendered(|reporter| reporter.report_final_summary(&report));
         printed.unwrap();
         crate::golden::check("report_final_summary", &text);
     }

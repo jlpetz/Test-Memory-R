@@ -1765,6 +1765,7 @@ pub fn load_config(path: &str) -> Result<ModernConfig, String> {
 }
 
 // Generate demo configs
+#[expect(clippy::print_stdout, reason = "TODO 29 S4: a one-shot command, writing to its caller's writer")]
 pub fn create_demo_configs() -> Result<(), String> {
     // Create modern comprehensive config
     let modern_config = ModernConfig::create_demo_config();

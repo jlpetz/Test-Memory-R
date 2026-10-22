@@ -1,12 +1,17 @@
 /// Console renderer implementation using existing table.rs and terminal output
+use std::fmt::Write as _;
+
 use super::Renderer;
 use crate::Result;
 use crate::table::{TableBuilder, Alignment};
 use crate::reporting::models::{TableData, ColumnAlignment};
 
-/// Console renderer for terminal output
+/// Console renderer for terminal output. It renders into its text, which whoever asked for the
+/// report prints (TODO 29): the CLI writes a report in one piece with the lines around it, so no
+/// log line lands inside it.
 pub struct ConsoleRenderer {
     use_colors: bool,
+    text: String,
 }
 
 impl Default for ConsoleRenderer {
@@ -19,7 +24,13 @@ impl ConsoleRenderer {
     pub fn new() -> Self {
         Self {
             use_colors: true,
+            text: String::new(),
         }
+    }
+
+    /// What it rendered, as the console shows it
+    pub fn into_text(self) -> String {
+        self.text
     }
 
     /// Convert our alignment to table.rs alignment
@@ -63,7 +74,7 @@ impl Renderer for ConsoleRenderer {
     fn render_table(&mut self, table: &TableData) -> Result<()> {
         // Print title if present (with newline separation)
         if let Some(title) = &table.title {
-            println!("{}📊 {}{}", self.get_color_code(MessageType::Heading), title, self.reset_color());
+            writeln!(self.text, "{}📊 {}{}", self.get_color_code(MessageType::Heading), title, self.reset_color())?;
         }
 
         // Build table using existing TableBuilder
@@ -80,11 +91,11 @@ impl Renderer for ConsoleRenderer {
         }
 
         // Print the table
-        builder.print();
+        builder.write_to(&mut self.text)?;
 
         // Print footer if present (directly connected to table)
         if let Some(footer) = &table.footer {
-            println!("{}", footer);
+            writeln!(self.text, "{}", footer)?;
         }
         // No automatic blank line - caller controls spacing
 
@@ -92,33 +103,38 @@ impl Renderer for ConsoleRenderer {
     }
 
     fn render_heading(&mut self, text: &str) -> Result<()> {
-        println!("\n{}🔍 {}{}", self.get_color_code(MessageType::Heading), text, self.reset_color());
-        println!("{}", "═".repeat(80));
+        writeln!(self.text, "\n{}🔍 {}{}", self.get_color_code(MessageType::Heading), text, self.reset_color())?;
+        writeln!(self.text, "{}", "═".repeat(80))?;
+        Ok(())
+    }
+
+    fn render_text(&mut self, text: &str) -> Result<()> {
+        writeln!(self.text, "{}", text)?;
         Ok(())
     }
 
     fn render_info(&mut self, text: &str) -> Result<()> {
-        println!("{}ℹ️  {}{}", self.get_color_code(MessageType::Info), text, self.reset_color());
+        writeln!(self.text, "{}ℹ️  {}{}", self.get_color_code(MessageType::Info), text, self.reset_color())?;
         Ok(())
     }
 
     fn render_warning(&mut self, text: &str) -> Result<()> {
-        println!("{}⚠️  {}{}", self.get_color_code(MessageType::Warning), text, self.reset_color());
+        writeln!(self.text, "{}⚠️  {}{}", self.get_color_code(MessageType::Warning), text, self.reset_color())?;
         Ok(())
     }
 
     fn render_error(&mut self, text: &str) -> Result<()> {
-        println!("{}❌ {}{}", self.get_color_code(MessageType::Error), text, self.reset_color());
+        writeln!(self.text, "{}❌ {}{}", self.get_color_code(MessageType::Error), text, self.reset_color())?;
         Ok(())
     }
 
     fn render_success(&mut self, text: &str) -> Result<()> {
-        println!("{}✅ {}{}", self.get_color_code(MessageType::Success), text, self.reset_color());
+        writeln!(self.text, "{}✅ {}{}", self.get_color_code(MessageType::Success), text, self.reset_color())?;
         Ok(())
     }
 
     fn render_separator(&mut self) -> Result<()> {
-        println!("\n{}", "=".repeat(80));
+        writeln!(self.text, "\n{}", "=".repeat(80))?;
         Ok(())
     }
 }

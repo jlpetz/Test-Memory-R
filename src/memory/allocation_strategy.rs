@@ -548,51 +548,6 @@ pub struct AllocationResult {
     pub allocation_type: String,
 }
 
-impl AllocationResult {
-    /// Plain-text stand-in for the consolidated memory report, printed only when that table fails
-    /// to render (`layout.rs`): the allocation in one line, then its warnings.
-    pub fn print_summary(&self, mem_info: &SystemMemoryInfo) {
-        // Gather warnings
-        let allocation_percent = (self.allocation_bytes as f64 / self.reference_bytes as f64) * 100.0;
-        let mut warnings = Vec::new();
-        
-        if allocation_percent > 90.0 {
-            warnings.push(format!("High memory allocation (>{:.1}%) may cause system instability", allocation_percent));
-        }
-        
-        if self.allocation_bytes > mem_info.available_physical_bytes {
-            let allocation_gib = bytes_to_gib_f64(self.allocation_bytes);
-            warnings.push(format!(
-                "Requested allocation exceeds currently available memory (Requested: {:.2} GiB, Available: {:.2} GiB)",
-                allocation_gib,
-                bytes_to_gib_f64(mem_info.available_physical_bytes)
-            ));
-        }
-        
-// Failure mode testing warnings
-        if self.allocation_type.contains("from Total") || self.allocation_type.contains("Target") {
-            warnings.push("🧪 FAILURE MODE TESTING DETECTED - This configuration may intentionally cause allocation failures".to_string());
-            warnings.push("Use only for development/testing purposes!".to_string());
-            
-            if self.allocation_bytes > mem_info.available_physical_bytes * 2 {
-                warnings.push("🚨 EXTREME: Allocation >2x available memory - will likely fail".to_string());
-            }
-        }
-
-        println!(
-            "Memory: {:.2} GiB to test ({} threads × {:.3} GiB), {:.2} GiB reserve left ({})",
-            bytes_to_gib_f64(self.allocation_bytes),
-            self.thread_count,
-            bytes_to_gib_f64(self.per_thread_bytes),
-            bytes_to_gib_f64(self.reserve_bytes),
-            self.allocation_type
-        );
-        for warning in &warnings {
-            println!("⚠️ {}", warning);
-        }
-    }
-}
-
 /// Enhanced memory strategy with new allocation modes
 #[derive(Debug, Clone)]
 pub struct EnhancedMemoryStrategy {

@@ -61,7 +61,8 @@ use crate::cache::CacheInfo;
 use crate::reporting::models::{
     LatencyTestSummaryReport, LatencyLevelSummary, LatencyThreadResult, LatencyPercentiles,
 };
-use crate::progress::{progress_reporter, RunOutcome};
+use crate::progress::{monitor, RunOutcome};
+use crate::frontend::{CpuPerformanceSummary, Frontend, NotRun, Run, StepConfigLine, StepReport};
 use crate::results::TestRunResult;
 use crate::memory::MemoryBuffer;
 use crate::{MemoryBackend, RuntimeConfig};
@@ -100,6 +101,8 @@ struct CycleContext<'a> {
     seal: Option<crate::seal::SealKernel>,
     /// A TM5 import: steps are named by the `.cfg`'s test numbers
     tm5: bool,
+    /// Who shows the run (TODO 29)
+    fe: &'a dyn Frontend,
 }
 
 /// Keeps the tests whose display, actual or original name matches one of the filter's
@@ -660,20 +663,15 @@ impl TestSuiteTiming {
     }
 }
 
-/// The channels line and the test configuration table, shown before a run and by `--startup-debug`.
-/// `thread_memory` is each thread's bytes, planned or allocated, so the table shows the extents
-/// and chunks the tests will resolve; `tm5` a TM5 import's `.cfg` window and lock granularity.
-#[allow(clippy::too_many_arguments)]
-fn print_test_plan(test_definitions: &[TestDefinition], suite_timing: &TestSuiteTiming, cache_info: &CacheInfo, channels: u32,
-                   thread_memory: &[usize], tm5: Option<(u32, u32)>, sequence: &crate::reporting::converters::PlanSequence) {
-    use crate::reporting::{create_console_reporter, converters};
-    println!("⚙  Memory Channels: {} (affects SimpleTest stride: [channels × param - 1] × {}B cache line)",
-        channels, cache_info.cache_line_size);
-    let report = converters::create_test_configuration_report_v2(test_definitions, suite_timing, cache_info, thread_memory, tm5, sequence);
-    let mut reporter = create_console_reporter();
-    if let Err(e) = reporter.report_test_configuration(&report) {
-        log::error!("Failed to display test configuration report: {}", e);
-    }
+/// The test configuration, shown before a run and by `--startup-debug`, after the channels
+/// (`Run::Channels`): built once that event is sent, because building it logs. `thread_memory` is
+/// each thread's bytes, planned or allocated, so the table shows the extents and chunks the tests
+/// will resolve; `tm5` a TM5 import's `.cfg` window and lock granularity.
+fn test_plan(test_definitions: &[TestDefinition], suite_timing: &TestSuiteTiming, cache_info: &CacheInfo,
+             thread_memory: &[usize], tm5: Option<(u32, u32)>, sequence: &crate::reporting::converters::PlanSequence) -> Run {
+    let report = crate::reporting::converters::create_test_configuration_report_v2(test_definitions, suite_timing, cache_info,
+                                                                                   thread_memory, tm5, sequence);
+    Run::TestPlan(Box::new(report))
 }
 
 // Test function signatures
@@ -688,15 +686,23 @@ pub enum TestFunction {
     Latency(TestFunctionLatency),
 }
 
-pub fn run_tests_with_layout_and_timing_filtered(
-    layout: EnhancedMemoryLayout,
-    error_mode: ErrorMode,
-    suite_timing: TestSuiteTiming,
-    runtime_config: RuntimeConfig,
-    config: Option<&crate::config::ModernConfig>,
-    overrides: TestRunOverrides,
-    cache_info: &CacheInfo,
-) -> RunStatus {
+/// What the setup hands a run: the memory layout and the machine's settings for it, how errors
+/// are handled and how long the suite runs, the config and the command line's overrides, and the
+/// caches the tests' sizes come from. Bundled so the run's entry point keeps a manageable
+/// signature (TODO 29 added its frontend).
+pub struct RunSetup<'a> {
+    pub layout: EnhancedMemoryLayout,
+    pub error_mode: ErrorMode,
+    pub suite_timing: TestSuiteTiming,
+    pub runtime_config: RuntimeConfig,
+    pub config: Option<&'a crate::config::ModernConfig>,
+    pub overrides: TestRunOverrides<'a>,
+    pub cache_info: &'a CacheInfo,
+}
+
+/// Runs the suite `setup` describes, `fe` showing it (TODO 29), and says how the run ended.
+pub fn run_tests_with_layout_and_timing_filtered(setup: RunSetup, fe: &Arc<dyn Frontend>) -> RunStatus {
+    let RunSetup { layout, error_mode, suite_timing, runtime_config, config, overrides, cache_info } = setup;
     let TestRunOverrides {
         single_test_filter,
         plan,
@@ -715,7 +721,8 @@ pub fn run_tests_with_layout_and_timing_filtered(
         command_line,
     } = overrides;
 
-    layout.print_layout();
+    fe.event(Run::MemoryPlan(Box::new(layout.memory_plan())).into());
+    layout.log_thread_layout();
 
     // Calculate progress tracking information and resolve auto-dispatch tests
     // Use config-driven tests if config is provided, otherwise use hard-coded defaults
@@ -729,7 +736,7 @@ pub fn run_tests_with_layout_and_timing_filtered(
             }
             Err(e) => {
                 // Stop rather than run a different plan than the config asked for
-                println!("❌ Config error: {}", e);
+                fe.event(Run::NotRun(NotRun::Config(e.clone())).into());
                 log::error!(target: crate::console::FILE_ONLY_TARGET, "Config error: {}", e);
                 return RunStatus::NotRun;
             }
@@ -740,7 +747,7 @@ pub fn run_tests_with_layout_and_timing_filtered(
         match crate::plans::select(plan, create_test_definitions(cache_info)) {
             Ok(tests) => tests,
             Err(e) => {
-                println!("❌ {e}");
+                fe.event(Run::NotRun(NotRun::Plan(e)).into());
                 return RunStatus::NotRun;
             }
         }
@@ -751,21 +758,17 @@ pub fn run_tests_with_layout_and_timing_filtered(
         retain_matching(&mut test_definitions, test_name_filter);
 
         if test_definitions.is_empty() {
-            match plan.filter(|p| p.tests.is_some()) {
+            // The stop, then what the filter could have matched: collecting that logs, so it is an
+            // event of its own
+            let plan = plan.filter(|p| p.tests.is_some());
+            fe.event(Run::NotRun(NotRun::NoTestMatches { filter: test_name_filter.to_string(), plan: plan.map(|p| p.name) }).into());
+            let tests = match plan {
                 // A filter narrows a named plan: list what it could have picked from
-                Some(plan) => {
-                    println!("❌ No test of plan {} matches filter '{}'. Its tests (plan=all for every test):", plan.name, test_name_filter);
-                    for def in crate::plans::select(plan, create_test_definitions(cache_info)).unwrap_or_default() {
-                        println!("  - {}", def.original_name.unwrap_or(def.actual_name));
-                    }
-                }
-                None => {
-                    println!("❌ No tests match filter '{}'. Available tests:", test_name_filter);
-                    for def in create_test_definitions(cache_info) {
-                        println!("  - {}", def.actual_name);
-                    }
-                }
-            }
+                Some(plan) => crate::plans::select(plan, create_test_definitions(cache_info)).unwrap_or_default()
+                    .into_iter().map(|def| def.original_name.unwrap_or(def.actual_name).to_string()).collect(),
+                None => create_test_definitions(cache_info).into_iter().map(|def| def.actual_name.to_string()).collect(),
+            };
+            fe.event(Run::Matchable { tests }.into());
             return RunStatus::NotRun;
         }
 
@@ -782,16 +785,12 @@ pub fn run_tests_with_layout_and_timing_filtered(
     // The one check of the CPU against the tests, however they were picked
     let left_out = leave_out_what_the_cpu_lacks(&mut test_definitions, &mut cycle_order, crate::simd::Width::check);
     if !left_out.is_empty() {
-        const SHOWN: usize = 5;
-        let names: Vec<&str> = left_out.iter().take(SHOWN).map(|(name, _)| name.as_str()).collect();
-        let more = left_out.len().saturating_sub(SHOWN);
-        let more = if more > 0 { format!(" and {more} more (the log lists them)") } else { String::new() };
-        println!("ℹ  Left out {} test(s) this CPU can't run ({}): {}{more}", left_out.len(), left_out[0].1, names.join(", "));
+        fe.event(Run::LeftOut { tests: left_out.clone() }.into());
         for (name, lacks) in &left_out {
             log::info!("Left out {name}: {lacks}");
         }
         if test_definitions.is_empty() {
-            println!("❌ Nothing left to run");
+            fe.event(Run::NotRun(NotRun::NothingLeftToRun).into());
             return RunStatus::NotRun;
         }
     }
@@ -812,7 +811,7 @@ pub fn run_tests_with_layout_and_timing_filtered(
     if (sequence_override.is_some() || order_override.is_some())
         && let Err(e) = apply_sequence(&mut test_definitions, sequence_override, order_override)
     {
-        println!("❌ Config error: {e}");
+        fe.event(Run::NotRun(NotRun::Config(e.clone())).into());
         log::error!(target: crate::console::FILE_ONLY_TARGET, "Config error: {e}");
         return RunStatus::NotRun;
     }
@@ -895,7 +894,7 @@ pub fn run_tests_with_layout_and_timing_filtered(
     }
     if !param_errors.is_empty() {
         for e in &param_errors {
-            println!("❌ Config error: {}", e);
+            fe.event(Run::NotRun(NotRun::Config(e.clone())).into());
             log::error!(target: crate::console::FILE_ONLY_TARGET, "Config error: {}", e);
         }
         return RunStatus::NotRun;
@@ -904,7 +903,7 @@ pub fn run_tests_with_layout_and_timing_filtered(
     let (mut seal_settings, seal_kernel, seal_width_source) = match run_seal(&overrides, config) {
         Ok(s) => s,
         Err(e) => {
-            println!("❌ Config error: {}", e);
+            fe.event(Run::NotRun(NotRun::Config(e.clone())).into());
             log::error!(target: crate::console::FILE_ONLY_TARGET, "Config error: {}", e);
             return RunStatus::NotRun;
         }
@@ -929,7 +928,7 @@ pub fn run_tests_with_layout_and_timing_filtered(
     let plan_errors = validate_test_plan(&test_definitions);
     if !plan_errors.is_empty() {
         for (idx, msg) in &plan_errors {
-            println!("❌ Config error: step {}: {}", idx + 1, msg);
+            fe.event(Run::NotRun(NotRun::Config(format!("step {}: {}", idx + 1, msg))).into());
             log::error!(target: crate::console::FILE_ONLY_TARGET, "Config error: step {}: {}", idx + 1, msg);
         }
         return RunStatus::NotRun;
@@ -960,7 +959,8 @@ pub fn run_tests_with_layout_and_timing_filtered(
     // --startup-debug: show the plan, then stop before WHEA, allocation or any test.
     if plan_only {
         let planned: Vec<usize> = thread_blocks.values().map(|blocks| blocks.iter().map(|b| b.size_bytes).sum()).collect();
-        print_test_plan(&test_definitions, &suite_timing, cache_info, effective_channels, &planned, tm5, &plan_sequence);
+        fe.event(Run::Channels { channels: effective_channels, cache_line: cache_info.cache_line_size }.into());
+        fe.event(test_plan(&test_definitions, &suite_timing, cache_info, &planned, tm5, &plan_sequence).into());
         return RunStatus::Passed;
     }
 
@@ -970,48 +970,24 @@ pub fn run_tests_with_layout_and_timing_filtered(
     // caught too. Failure is non-fatal — WHEA adds visibility that our verify reads cannot have
     // (DDR5 on-die ECC corrections, faults during non-verifying tests), but testing works without
     // it. See whea.rs for the transport choice.
-    match progress.whea.start() {
-        Ok(()) => println!("🔎 WHEA hardware-error monitoring: active"),
-        Err(reason) => println!("🔎 WHEA hardware-error monitoring: unavailable ({})", reason),
-    }
+    fe.event(Run::WheaMonitoring(progress.whea.start()).into());
 
 	let all_test_cpu_stats: Arc<Mutex<TestCpuStats>> = Arc::new(Mutex::new(HashMap::new()));
 
-    // Stage 1: Pre-allocate all memory blocks
-    println!("Stage 1: Pre-allocating memory blocks...");
-
-    // Display page size constraints before allocation begins
+    // Stage 1: Pre-allocate all memory blocks, between the page sizes allowed, which are shown
+    // first: parsed the way the allocator parses them, so "2mb" or "Large" show as what they mean
     {
-        // Parsed the way the allocator parses them, so "2mb" or "Large" show as what they mean
         use crate::memory::allocator::PageSizeLevel;
         let min = PageSizeLevel::from_config_str(&runtime_config.memory_allocation.min_page_size);
         let max = PageSizeLevel::from_config_str(&runtime_config.memory_allocation.max_page_size);
-
-        let format_size = |s: PageSizeLevel| -> &'static str {
-            match s {
-                PageSizeLevel::Regular => "Regular (4KB)",
-                PageSizeLevel::Large => "Large (2MB)",
-                PageSizeLevel::Huge => "Huge (1GB)",
-            }
-        };
-
-        if min == max {
-            // Restrictive: only one page size allowed
-            println!("⚠️  Page Size Restricted: {} only - may limit available memory", format_size(min));
-        } else if min == PageSizeLevel::Large && max == PageSizeLevel::Huge {
-            // Default constraints
-            println!("⚙️  Page Size Constraints: {} to {} (default)", format_size(min), format_size(max));
-        } else {
-            // Custom constraints
-            println!("⚙️  Page Size Constraints: {} to {}", format_size(min), format_size(max));
-        }
+        fe.event(Run::AllocationStarting { min, max }.into());
     }
 
     let crate::memory::stitched::StitchedAllocation { blocks: allocated_blocks, spans, elapsed, numa_nodes } =
         match allocate_all_blocks_new(&thread_blocks, &runtime_config) {
             Ok(allocation) => allocation,
             Err(e) => {
-                println!("❌ Failed to allocate memory blocks: {}\n", e);
+                fe.event(Run::NotRun(NotRun::Allocation(e)).into());
                 return RunStatus::NotRun;
             }
         };
@@ -1023,14 +999,8 @@ pub fn run_tests_with_layout_and_timing_filtered(
     let refused = spans.iter().flat_map(|s| &s.commits).filter(|c| c.refused).count();
 
     // The allocation report (TODO 81). The request record goes with it.
-    {
-        use crate::reporting::{create_console_reporter, converters};
-
-        let report = converters::create_allocation_report(spans, elapsed, numa_nodes);
-        if let Err(e) = create_console_reporter().report_allocation(&report) {
-            log::error!("Failed to display the allocation report: {}", e);
-        }
-    }
+    let report = crate::reporting::converters::create_allocation_report(spans, elapsed, numa_nodes);
+    fe.event(Run::Allocated(Box::new(report)).into());
 
     let tests_per_cycle = test_definitions.len() as u64;
 
@@ -1038,12 +1008,13 @@ pub fn run_tests_with_layout_and_timing_filtered(
     // Used for calculating extent sizes in CacheLevel mode during display and test execution
 
     let allocated: Vec<usize> = allocated_blocks.values().map(|blocks| blocks.iter().map(|b| b.buffer.size()).sum()).collect();
-    print_test_plan(&test_definitions, &suite_timing, cache_info, effective_channels, &allocated, tm5, &plan_sequence);
+    fe.event(Run::Channels { channels: effective_channels, cache_line: cache_info.cache_line_size }.into());
+    fe.event(test_plan(&test_definitions, &suite_timing, cache_info, &allocated, tm5, &plan_sequence).into());
 
-    // Start progress reporter thread
-    let progress_clone = Arc::clone(&progress);
-    let progress_handle = thread::spawn(move || {
-        progress_reporter(progress_clone);
+    // Start the monitor thread: the WHEA poll, and the frontend's ticks
+    let (progress_clone, fe_clone) = (Arc::clone(&progress), Arc::clone(fe));
+    let monitor_handle = thread::spawn(move || {
+        monitor(progress_clone, fe_clone);
     });
 
     // Create thread pool with pre-allocated blocks
@@ -1130,6 +1101,7 @@ pub fn run_tests_with_layout_and_timing_filtered(
         cache_info,
         seal: seal_settings.on.then_some(seal_kernel),
         tm5: tm5_run,
+        fe: fe.as_ref(),
     };
     // Run cycles until a suite limit is reached. Both limits are checked *between* cycles, so a
     // cycle is never cut short by the clock; with neither limit set the suite runs until Ctrl+C or
@@ -1146,8 +1118,7 @@ pub fn run_tests_with_layout_and_timing_filtered(
                if crate::pattern::seed_given() { "seed=" } else { "from the clock" },
                beat.map_or("unknown".to_string(), |b| format!("{} bits", b.bits())),
                if crate::pattern::rescan_enabled() { "on" } else { "off" });
-    crate::console::print_above(&format!("🎲 Pattern seed {seed:#018x} (seed= replays it), transfer width {}",
-        beat.map_or("unknown: switch alternates 64 and 32 bits".to_string(), |b| format!("{} bits ({beat_source})", b.bits()))));
+    fe.event(Run::SuiteStarted { seed, transfer_bits: beat.map(|b| b.bits()), transfer_source: beat_source }.into());
 
     let mut cycles_done = 0u32;
     // When the results were last saved between cycles (TODO 72)
@@ -1165,10 +1136,7 @@ pub fn run_tests_with_layout_and_timing_filtered(
 
         let cycle = cycles_done + 1;
         progress.start_new_cycle(cycle);
-        crate::console::print_above(&match cycle_limit {
-            Some(limit) => format!("\n🔄 Starting test cycle {} of {}", cycle, limit),
-            None => format!("\n🔄 Starting test cycle {}", cycle),
-        });
+        fe.event(Run::CycleStarted { cycle, limit: cycle_limit }.into());
 
         // Execute all tests in sequence for this cycle
         let stop = execute_test_cycle(&cycle_ctx, cycle as u64);
@@ -1186,11 +1154,11 @@ pub fn run_tests_with_layout_and_timing_filtered(
 
     let suite_duration = suite_start.elapsed();
 
-    // Signal completion to progress reporter
+    // Signal completion to the monitor thread
     progress.finish();
 
-    // Wait for progress reporter to finish
-    if let Err(e) = progress_handle.join() {
+    // Wait for the monitor thread to finish
+    if let Err(e) = monitor_handle.join() {
         log::warn!("Progress reporter thread panicked: {:?}", e);
     }
 
@@ -1230,22 +1198,18 @@ pub fn run_tests_with_layout_and_timing_filtered(
     progress.whea.stop();
     let whea_totals = progress.whea.counts();
 
-    // The reporter thread printed everything it had seen before it exited, so anything that last
+    // The monitor thread handed on everything it had seen before it exited, so anything that last
     // drain turned up would otherwise be counted but never described. Flush it here.
-    for event in progress.whea.take_pending() {
-        println!("{}", event);
+    let late = progress.take_whea_descriptions();
+    if !late.is_empty() {
+        fe.event(Run::LateWhea(late).into());
     }
 
     // Create final performance summary with detailed per-CPU stats
     let final_stats = all_test_cpu_stats.lock().unwrap();
     if !final_stats.is_empty() {
-        print_detailed_cpu_performance_summary(
-            &final_stats,
-            &cpu_assignments,
-            suite_duration,
-            whea_totals,
-            runtime_config.pin_threads,
-        );
+        let summary = cpu_performance_summary(&final_stats, &cpu_assignments, whea_totals, runtime_config.pin_threads);
+        fe.event(Run::CpuPerformance(Box::new(summary)).into());
     }
 
     // `progress.total_errors()` is the accurate aggregate (summed from every thread's result in
@@ -1265,26 +1229,11 @@ pub fn run_tests_with_layout_and_timing_filtered(
         RunStatus::Passed
     };
 
-    // Display completion status
-    if outcome == RunOutcome::Interrupted {
-        println!("\n⚠️  Test suite interrupted by user (CTRL+C)");
-    } else if status == RunStatus::NotRun {
-        println!("\n⚠️  No test ran: the cycle or time limit is 0");
-    } else if status == RunStatus::Passed {
-        println!("\n✅ All test cycles completed successfully!");
-    }
-    if failed {
-        // Same form as the per-test topline. Either count alone fails the run: a WHEA event with
-        // `0 errors` is a fault that ECC corrected, or one raised during a test phase that does not
-        // verify — still not a stable configuration.
-        println!(
-            "\n❌ Test suite failed: {} errors + {} WHEA{}",
-            memory_errors, whea_totals.total, whea_totals.split_suffix()
-        );
-    }
+    // The verdict
+    fe.event(Run::SuiteEnded { outcome, status, memory_errors, whea: whea_totals }.into());
 
     // Always display and save results (even for partial/interrupted runs)
-    display_and_save_results(&test_run_result, suite_duration, whea_totals, whea_monitored, outcome, status);
+    display_and_save_results(&test_run_result, suite_duration, whea_totals, whea_monitored, outcome, status, fe.as_ref());
 
     status
 }
@@ -1305,6 +1254,7 @@ fn execute_test_cycle(ctx: &CycleContext, cycle: u64) -> Option<RunOutcome> {
         cache_info,
         seal,
         tm5,
+        fe,
     } = ctx;
 
     use crate::progress::TestSummary;
@@ -1560,193 +1510,7 @@ fn execute_test_cycle(ctx: &CycleContext, cycle: u64) -> Option<RunOutcome> {
             0.0
         };
 
-        // Format cycle info for logging
-        let cycles_info = if cycles_completed > 0 || cycle_limit.is_some() {
-            let limit_str = cycle_limit.map_or("∞".to_string(), |l| l.to_string());
-
-            // Cycle limit indicator: RED if cycle limit caused stop, GREEN if didn't reach it
-            let stop_indicator_cycles = if let Some(limit) = cycle_limit {
-                if cycles_completed >= limit { "🔴" } else { "🟢" }  // RED when hit, GREEN when not
-            } else {
-                "🟢"  // No limit = always green (can't hit what doesn't exist)
-            };
-
-            // Time limit indicator: red if time limit stopped us, green otherwise
-            let stop_indicator_time = if stopped_by_time_limit { "🔴" } else { "🟢" };
-
-            format!(", Cycles {} {}/{}, Time Limit {}",
-                    stop_indicator_cycles, cycles_completed, limit_str, stop_indicator_time)
-        } else {
-            String::new()
-        };
-
-        // Take the ticker down and keep it down while the report below prints.
-        crate::console::hold();
-
-        // Format operations in human-readable form (B/M/K notation)
-        let format_ops = |ops: u64| -> String {
-            if ops >= 1_000_000_000 {
-                format!("{:.2}B", ops as f64 / 1_000_000_000.0)
-            } else if ops >= 1_000_000 {
-                format!("{:.2}M", ops as f64 / 1_000_000.0)
-            } else if ops >= 1_000 {
-                format!("{:.2}K", ops as f64 / 1_000.0)
-            } else {
-                format!("{}", ops)
-            }
-        };
-
-        // Calculate operations per second
-        let ops_per_sec = if timed_secs > 0.0 {
-            total_operations_for_test as f64 / timed_secs
-        } else {
-            0.0
-        };
-
-        // Calculate consolidated P50 and spread for latency tests
-        let latency_info = if !latency_results.is_empty() {
-            // Collect all latencies from all threads
-            let all_latencies: Vec<f64> = latency_results.iter()
-                .flat_map(|(_, _, stats)| stats.latencies_ns.clone())
-                .collect();
-
-            if !all_latencies.is_empty() {
-                let mut sorted = all_latencies;
-                sorted.sort_by(|a, b| a.partial_cmp(b).unwrap());
-                let len = sorted.len();
-                let percentile = |p: f64| sorted[((len as f64 - 1.0) * p / 100.0) as usize];
-                let p50 = percentile(50.0);
-                let p5 = percentile(5.0);
-                let p95 = percentile(95.0);
-                let spread = if p5 > 0.0 { p95 / p5 } else { 0.0 };
-                format!(", P50: {:.1}ns, Spread: {:.2}x", p50, spread)
-            } else {
-                String::new()
-            }
-        } else {
-            String::new()
-        };
-
-        // Pass/fail for this test. Both error sources count: a WHEA event during the test means the
-        // hardware reported a fault whether or not a verify read caught it, and either way the
-        // system is not stable. This is the only per-test verdict in the output — `success` above is
-        // the ErrorMode::Halt trigger, not a report.
-        //
-        // The ✅/❌ here is a verdict; the 🔴/🟢 in `cycles_info` is not — those mark *which limit
-        // ended the test*, so the two glyph pairs are deliberately different.
-        let test_passed = total_errors_for_test == 0 && seal_errors_for_test == 0 && whea_for_test.total == 0;
-        let pass_indicator = if test_passed { "✅" } else { "❌" };
-        // The seal's errors, in a sealed run: what the checks before this step's chunks found
-        let seal_info = if seal.is_some() { format!(" + {} seal{}", seal_errors_for_test, seal_bits_for_test.brief()) } else { String::new() };
-
-        // WHEA is always shown, even at zero, so a clean line still states that we were watching;
-        // the C/UC split only appears when there is something to split. "errors" is the word every
-        // table uses for these (the `Errors` column) — "data" would collide with the `Data` column,
-        // which is bytes processed.
-        // The bits that failed follow each count: ` (bit 31)`
-        // The step's verdict and wall time, then its test's own figures, the work around it by
-        // operation (TODO 90, `n/a` where it did none), and its config
-        println!("📊 Test report - Cycle {} - Step {} {}: {} {:.1}s, {} errors{}{} + {} WHEA{}{}",
-                 cycle,
-                 test_idx + 1,
-                 step_label,
-                 pass_indicator,
-                 test_duration.as_secs_f64(),
-                 total_errors_for_test,
-                 bits_for_test.brief(),
-                 seal_info,
-                 whea_for_test.total,
-                 whea_for_test.split_suffix(),
-                 cycles_info);
-        println!("   Test: {:.1}s, {:.2} GiB @ {:.0} MiB/s, {} ops @ {} ops/s{}",
-                 timed_secs,
-                 total_bytes_for_test as f64 / (1024.0 * 1024.0 * 1024.0),
-                 throughput_mib_s,
-                 format_ops(total_operations_for_test),
-                 format_ops(ops_per_sec as u64),
-                 latency_info);
-        println!("   Intermediate: {}", step_ops.line());
-
-        // Add config line with calculated extent size (uses passed cache_info to avoid re-detection)
-        {
-            use crate::reporting::formatters::{ReportFormatter, DefaultFormatter};
-            let formatter = DefaultFormatter::new();
-            let extent_str = formatter.format_extent_mode_with_size(&test_def.config.extent_mode, cache_info, thread_count);
-            let chunk_str = formatter.format_chunk_mode_with_size(&test_def.config.chunk_mode, cache_info, thread_count);
-            let param_str = crate::reporting::converters::format_parameter_context(&test_def.config.parameter_context);
-            let mode_str = match test_def.config.pattern_mode {
-                Some(m @ 0..=2) => format!("TM5-{m}"),
-                Some(m) => format!("TMR-{m}"),
-                // A native program (pattern spec v2), and Mem-Sequence's passes
-                None if test_def.actual_name.starts_with("Mem-SimpleV2") => {
-                    test_def.config.native_program().map_or("-".to_string(), |p| p.name())
-                }
-                None if test_def.actual_name == "Mem-Sequence" => {
-                    let seq = test_def.config.sequence();
-                    format!("{}, sequence={} (order={})", test_def.config.native_program().map_or("-".to_string(), |p| p.name()),
-                            seq.name(), seq.order.name())
-                }
-                None => "-".to_string(),
-            };
-            let reps_str = if test_def.config.test_reps != 1 || test_def.config.verify_reps != 1 || test_def.config.write_read_cycles != 1 {
-                format!(", test_reps={}, verify_reps={}, wrc={}", test_def.config.test_reps, test_def.config.verify_reps, test_def.config.write_read_cycles)
-            } else {
-                String::new()
-            };
-            println!("   Config: parameter={}, mode={}, extent={}, chunk={}{}",
-                     param_str,
-                     mode_str,
-                     extent_str,
-                     chunk_str,
-                     reps_str);
-        }
-
-        // Update progress tracker with test completion
-        progress.complete_test(total_errors_for_test + seal_errors_for_test);
-
-        // Generate thread timing deviation report
-        {
-            use crate::reporting::{create_console_reporter, converters};
-            let report =
-                converters::create_thread_timing_report(&test_stats, whea_for_test);
-            let mut reporter = create_console_reporter();
-            if let Err(e) = reporter.report_thread_timing(&report) {
-                log::error!("Failed to display thread timing report: {}", e);
-            }
-        }
-
-        // Display latency-specific report if this was a latency test
-        if !latency_results.is_empty() {
-            use crate::reporting::create_console_reporter;
-
-            let level_summary = convert_to_latency_level_summary(&latency_results);
-            let summary_report = LatencyTestSummaryReport { levels_tested: vec![level_summary] };
-
-            // Use existing reporting infrastructure - just display the single level
-            let mut reporter = create_console_reporter();
-            if let Err(e) = reporter.report_latency_summary(&summary_report) {
-                log::error!("Failed to display latency report: {}", e);
-            }
-        }
-
-        // Where the suite stood as this test ended. The ticker is down during every report and
-        // gone after the run, so this is what stays on screen: one line per test.
-        if let Some(stamp) = progress.test_stamp(test_duration) {
-            println!("{}", stamp);
-        }
-        // Blank line to separate from the next test
-        println!();
-
-        // Report done: let the ticker back.
-        crate::console::release();
-
-		// Store aggregated stats for this test
-		{
-			let mut stats_map = all_test_cpu_stats.lock().unwrap();
-			stats_map.entry(test_name.to_string()).or_default().extend(test_stats);
-		}
-
-        // Create TestSummary for this test and add to cycle collection
+        // Create TestSummary for this test, the report's figures too
         // Include latency data if this was a latency test
         let (latency_samples, latency_p5, latency_p10, latency_p25, latency_p50,
              latency_p75, latency_p90, latency_p95, latency_p99, latency_p99_9, latency_spread) =
@@ -1777,7 +1541,7 @@ fn execute_test_cycle(ctx: &CycleContext, cycle: u64) -> Option<RunOutcome> {
                 (None, None, None, None, None, None, None, None, None, None, None)
             };
 
-        cycle_test_summaries.push(TestSummary {
+        let summary = TestSummary {
             step: test_idx + 1,
             test_index: test_def.test_index,
             id: test_def.id.clone(),
@@ -1811,7 +1575,37 @@ fn execute_test_cycle(ctx: &CycleContext, cycle: u64) -> Option<RunOutcome> {
             latency_p99_9_ns: latency_p99_9,
             latency_spread,
             threads: thread_records,
+        };
+
+        // Update progress tracker with test completion
+        progress.complete_test(total_errors_for_test + seal_errors_for_test);
+
+        // The step's report (TODO 29): its thread timing deviations, a latency step's latencies,
+        // and where the suite stood as it ended, its results in
+        let latency = (!latency_results.is_empty()).then(|| LatencyTestSummaryReport {
+            levels_tested: vec![convert_to_latency_level_summary(&latency_results)],
         });
+        fe.event(Run::StepFinished(Box::new(StepReport {
+            cycle,
+            summary: summary.clone(),
+            wall: test_duration,
+            timed_secs,
+            cycle_limit,
+            stopped_by_time: stopped_by_time_limit,
+            sealed: seal.is_some(),
+            config: step_config_line(test_def, cache_info, thread_count),
+            threads: crate::reporting::converters::create_thread_timing_report(&test_stats, whea_for_test),
+            latency,
+            stamp: progress.snapshot(),
+        })).into());
+
+		// Store aggregated stats for this test
+		{
+			let mut stats_map = all_test_cpu_stats.lock().unwrap();
+			stats_map.entry(test_name.to_string()).or_default().extend(test_stats);
+		}
+
+        cycle_test_summaries.push(summary);
 
         // Early exit on errors if required. This is reported as a halt, not routed through
         // SHUTDOWN_REQUESTED — that flag means Ctrl+C, and the verdict would report it as one.
@@ -1859,6 +1653,39 @@ fn execute_test_cycle(ctx: &CycleContext, cycle: u64) -> Option<RunOutcome> {
     stopped
 }
 
+/// A step's Config line in its report: its parameter, its pattern mode, its extent and chunk with
+/// their sizes (from `cache_info` and the thread count, as the step resolves them), its repetitions.
+fn step_config_line(def: &TestDefinition, cache_info: &CacheInfo, thread_count: usize) -> StepConfigLine {
+    use crate::reporting::formatters::{ReportFormatter, DefaultFormatter};
+    let formatter = DefaultFormatter::new();
+    let extent = formatter.format_extent_mode_with_size(&def.config.extent_mode, cache_info, thread_count);
+    let chunk = formatter.format_chunk_mode_with_size(&def.config.chunk_mode, cache_info, thread_count);
+    let parameter = crate::reporting::converters::format_parameter_context(&def.config.parameter_context);
+    let mode = match def.config.pattern_mode {
+        Some(m @ 0..=2) => format!("TM5-{m}"),
+        Some(m) => format!("TMR-{m}"),
+        // A native program (pattern spec v2), and Mem-Sequence's passes
+        None if def.actual_name.starts_with("Mem-SimpleV2") => {
+            def.config.native_program().map_or("-".to_string(), |p| p.name())
+        }
+        None if def.actual_name == "Mem-Sequence" => {
+            let seq = def.config.sequence();
+            format!("{}, sequence={} (order={})", def.config.native_program().map_or("-".to_string(), |p| p.name()),
+                    seq.name(), seq.order.name())
+        }
+        None => "-".to_string(),
+    };
+    StepConfigLine {
+        parameter,
+        mode,
+        extent,
+        chunk,
+        test_reps: def.config.test_reps,
+        verify_reps: def.config.verify_reps,
+        write_read_cycles: def.config.write_read_cycles,
+    }
+}
+
 /// A worker's part of a step, for the results file (TODO 72): where it ran, from `assignment` (the
 /// pool's `(thread, cpu, node)`, `None` when it has none for the thread) and the CPU's physical
 /// core, and what it did, as the step's thread and latency tables show it.
@@ -1892,9 +1719,9 @@ fn thread_step_record(result: &WorkResult, assignment: Option<CpuAssignment>) ->
 fn run_seal_stage(ctx: &CycleContext, op: crate::thread_pool::SealOp, kernel: crate::seal::SealKernel,
                   cycle: u64) -> (u64, u64, crate::failing_bits::FailingBits, Duration) {
     use crate::thread_pool::SealOp;
-    let (name, lead) = match op {
-        SealOp::SealAll => ("Sealing memory", "🔒 Sealing memory"),
-        SealOp::FinalCheck => ("Final seal check", "🔒 Final seal check"),
+    let name = match op {
+        SealOp::SealAll => "Sealing memory",
+        SealOp::FinalCheck => "Final seal check",
     };
     let start = Instant::now();
     ctx.progress.start_test(0, name, start, None, true);
@@ -1912,11 +1739,7 @@ fn run_seal_stage(ctx: &CycleContext, op: crate::thread_pool::SealOp, kernel: cr
         }
     }
     let duration = start.elapsed();
-    let gib = bytes as f64 / (1024.0 * 1024.0 * 1024.0);
-    let errors_info = if op == SealOp::FinalCheck { format!("{errors} errors{}, ", bits.brief()) } else { String::new() };
-    // The step report's form for an operation (TODO 90): time, data @ speed
-    crate::console::print_above(&format!("{lead} ({}): {errors_info}{:.1}s, {gib:.2} GiB @ {:.0} MiB/s",
-        kernel.name(), duration.as_secs_f64(), gib * 1024.0 / duration.as_secs_f64().max(1e-9)));
+    ctx.fe.event(Run::SealStage { op, kernel: kernel.name(), bytes, errors, bits: bits.clone(), duration }.into());
     if errors > 0 {
         log::error!("The final seal check of cycle {cycle} found {errors} errors");
     }
@@ -4661,18 +4484,17 @@ fn allocate_all_blocks_new(thread_blocks: &HashMap<usize, Vec<BlockInfo>>, runti
     }
 }
 
-fn print_detailed_cpu_performance_summary(
+/// The run's work by thread, by logical CPU and by physical core, over every test (`final_stats`)
+/// and placed by `cpu_assignments`, each with the run's WHEA total on its aggregate row.
+fn cpu_performance_summary(
     final_stats: &TestCpuStats,
     cpu_assignments: &[CpuAssignment],  // (thread_id, logical_cpu, numa_node)
-    _suite_duration: std::time::Duration,
     whea: crate::whea::WheaCounts,
     pinned: bool,
-) {
-    use crate::reporting::{Reporter, models::*, formatters::DefaultFormatter, renderers::ConsoleRenderer};
+) -> CpuPerformanceSummary {
+    use crate::reporting::models::*;
     use crate::cpu_topology::get_cpu_topology;
     use std::collections::HashMap;
-
-    println!("\n=== CPU Performance Summary ===");
 
     // Get CPU topology for physical core ID lookup
     let topology = get_cpu_topology();
@@ -4777,35 +4599,13 @@ fn print_detailed_cpu_performance_summary(
     }).collect();
     cores.sort_by_key(|c| c.core_id);
 
-    // Display all reports using the reporting system (with variance columns built-in)
-    let mut reporter = Reporter::new(Box::new(DefaultFormatter::new()), ConsoleRenderer::new());
-
     // All three breakdowns carry the same run-wide WHEA figure: the events cannot be attributed to a
     // thread, CPU or core, so each view reports the run total on its aggregate row rather than
     // dividing something indivisible.
-    if !threads.is_empty() {
-        let report = PerformanceByThreadReport {
-            threads,
-            whea,
-            pinned,
-        };
-        let _ = reporter.report_performance_by_thread(&report);
-    }
-
-    if !cpus.is_empty() {
-        let report = PerformanceByCpuReport {
-            cpus,
-            whea,
-        };
-        let _ = reporter.report_performance_by_cpu(&report);
-    }
-
-    if !cores.is_empty() {
-        let report = PerformanceByPhysicalCoreReport {
-            cores,
-            whea,
-        };
-        let _ = reporter.report_performance_by_physical_core(&report);
+    CpuPerformanceSummary {
+        by_thread: PerformanceByThreadReport { threads, whea, pinned },
+        by_cpu: PerformanceByCpuReport { cpus, whea },
+        by_core: PerformanceByPhysicalCoreReport { cores, whea },
     }
 }
 
@@ -4816,6 +4616,7 @@ fn display_and_save_results(
     whea_monitored: bool,
     outcome: RunOutcome,
     status: RunStatus,
+    fe: &dyn Frontend,
 ) {
     let mut result = test_run_result.lock().unwrap();
     result.finalize(suite_duration);
@@ -4828,20 +4629,14 @@ fn display_and_save_results(
     result.overall_stats.outcome = Some(outcome.key().to_string());
     result.overall_stats.status = Some(status.key().to_string());
 
-    // Display final summary using reporting layer
-    {
-        use crate::reporting::{create_console_reporter, converters};
-        let report = converters::create_overall_stats_summary_report(&result);
-        let mut reporter = create_console_reporter();
-        if let Err(e) = reporter.report_final_summary(&report) {
-            log::error!("Failed to display final summary: {}", e);
-        }
-    }
+    // The final summary, from the results
+    let report = crate::reporting::converters::create_overall_stats_summary_report(&result);
+    fe.event(Run::FinalSummary(Box::new(report)).into());
 
     // Save results to file
     let filename = result.get_filename();
     match result.save_atomic(filename) {
-        Ok(_) => println!("💾 Results saved: {}", filename),
+        Ok(_) => fe.event(Run::ResultsSaved { path: filename.to_string() }.into()),
         Err(e) => log::error!("Failed to save results: {}", e),
     }
 }
@@ -4878,6 +4673,7 @@ fn save_after_cycle(test_run_result: &Mutex<TestRunResult>, cycle: u32, elapsed:
     }
 }
 
+#[expect(clippy::print_stdout, clippy::print_stderr, reason = "TODO 29 S4: the memory status at startup becomes an event")]
 pub fn print_current_memory_status() {
     use windows::Win32::System::SystemInformation::{GlobalMemoryStatusEx, MEMORYSTATUSEX};
     use crate::table::{TableBuilder, Alignment};
@@ -6256,7 +6052,7 @@ mod tests {
 
     // ─── Console goldens (TODO 29) ─────────────────────────────────────────────────────────────
 
-    /// The word of thread 0's span `flip_then_verify` flips a bit in
+    /// The word of thread 0's span `flip_then_verify` and `stuck_bit_then_flip` flip a bit in
     const FLIPPED_WORD: usize = 1000;
 
     /// Bench-Verify-TMR-10 at 256 bits, with bit 17 of one word of thread 0's span flipped first:
@@ -6270,13 +6066,26 @@ mod tests {
         crate::tests::bench_verify_at(crate::simd::Width::W256)(blocks, thread_id, error_mode, timing, config, progress)
     }
 
+    /// Mem-StuckBit256, with bit 17 of one word of thread 0's span flipped after it, once it has
+    /// resealed its chunks: a fault in sealed memory that only the final seal check can find.
+    #[doc = include_str!("test_fn_safety.md")]
+    unsafe fn stuck_bit_then_flip(blocks: &[AllocationBlock], thread_id: usize, error_mode: ErrorMode, timing: &TestTiming,
+                                  config: &TestMemoryConfig, progress: Option<&TestProgress>) -> TestStats {
+        let stats = crate::tests::stuck_bit_test_256_multi(blocks, thread_id, error_mode, timing, config, progress);
+        if thread_id == 0 {
+            *(blocks[0].buffer.as_mut_ptr() as *mut u64).add(FLIPPED_WORD) ^= 1 << 17;
+        }
+        stats
+    }
+
     /// The fake cycle (TODO 29): `execute_test_cycle` on two workers over heap regions, sealed, under
     /// `error_mode`. Its steps: a Bench-Init/Verify pair with a bit flipped between them, a latency
     /// step and a step that takes the seal, which reseals what the others left first; then the final
-    /// seal check. Every step's width is fixed at 256 bits, and both workers are numbered CPU 0, so
-    /// no figure depends on this machine's caches or topology. What `execute_test_cycle` returned,
-    /// what the cycle printed, and the results it added.
-    fn fake_cycle(error_mode: ErrorMode) -> (Option<RunOutcome>, String, TestRunResult) {
+    /// seal check, which with `sealed_flip` finds a bit flipped after the last step, and otherwise
+    /// nothing. Every step's width is fixed at 256 bits, and both workers are numbered CPU 0, so no
+    /// figure depends on this machine's caches or topology. `fe` shows it. What
+    /// `execute_test_cycle` returned, what the cycle printed, and the results it added.
+    fn fake_cycle(error_mode: ErrorMode, sealed_flip: bool, fe: &dyn Frontend) -> (Option<RunOutcome>, String, TestRunResult) {
         let cache_info = CacheInfo::default();
         let kernel = crate::seal::SealKernel::new(crate::seal::SealPattern::Tmr, crate::seal::SealWidth::W256);
         let suite = create_test_definitions(&cache_info);
@@ -6289,7 +6098,11 @@ mod tests {
         (init.config.timing, verify.config.timing) = (TestTiming::cycles_only(1), TestTiming::cycles_only(1));
         latency.config.extent_mode = ExtentMode::Absolute { size_bytes: 64 * KIB };
         latency.config.timing = TestTiming::cycles_only(1);
-        let mut steps = vec![init, verify, latency, find("Mem-StuckBit256")];
+        let mut stuck_bit = find("Mem-StuckBit256");
+        if sealed_flip {
+            stuck_bit.function = TestFunction::MultiBlock(stuck_bit_then_flip);
+        }
+        let mut steps = vec![init, verify, latency, stuck_bit];
         set_step_seals(&mut steps, kernel, true);
         for (i, def) in steps.iter_mut().enumerate() {
             def.test_index = i;
@@ -6322,6 +6135,7 @@ mod tests {
                 cache_info: &cache_info,
                 seal: Some(kernel),
                 tm5: false,
+                fe,
             };
             let stopped = execute_test_cycle(&ctx, 1);
             // The workers' blocks, freed before the regions they are in
@@ -6341,7 +6155,7 @@ mod tests {
     /// first.
     #[test]
     fn a_cycle_prints_as_its_golden() {
-        let (stopped, text, result) = fake_cycle(ErrorMode::Log);
+        let (stopped, text, result) = fake_cycle(ErrorMode::Log, false, &crate::cli_render::CliFrontend::new());
         assert_eq!(stopped, None, "the cycle ran to its end");
         let errors: Vec<u64> = result.cycles[0].tests.iter().map(|t| t.errors).collect();
         assert_eq!(errors, [0, 1, 0, 0], "the flipped bit is the verify's one error");
@@ -6377,7 +6191,7 @@ mod tests {
     /// the steps that ran, and no final seal check.
     #[test]
     fn a_halted_cycle_is_partial() {
-        let (stopped, _, result) = fake_cycle(ErrorMode::Halt);
+        let (stopped, _, result) = fake_cycle(ErrorMode::Halt, false, &crate::cli_render::CliFrontend::new());
         assert_eq!(stopped, Some(RunOutcome::Halted));
         let cycle = &result.cycles[0];
         assert!(cycle.partial);
@@ -6413,7 +6227,8 @@ mod tests {
         assert_eq!((stats.whea_total, stats.whea_monitored), (0, false), "the monitor's totals");
 
         let ((), printed) = crate::golden::capture(|| display_and_save_results(&test_run_result, Duration::from_secs(70),
-            crate::whea::WheaCounts { total: 1, corrected: 1 }, true, RunOutcome::Interrupted, RunStatus::Interrupted));
+            crate::whea::WheaCounts { total: 1, corrected: 1 }, true, RunOutcome::Interrupted, RunStatus::Interrupted,
+            &crate::cli_render::CliFrontend::new()));
         assert_eq!(printed.matches("Results saved").count(), 1, "{printed}");
         assert!(printed.contains(&format!("💾 Results saved: {path}\n")), "{printed}");
         let stats = TestRunResult::load_from_file(&path).unwrap().overall_stats;
@@ -6431,6 +6246,111 @@ mod tests {
         assert!(results_save_due(7, true, soon), "a cycle that stopped early");
         assert!(!results_save_due(7, false, soon));
         assert!(results_save_due(7, false, RESULTS_SAVE_INTERVAL));
+    }
+
+    /// The console's frontend, as the CLI hands it to the run
+    fn cli() -> Arc<dyn Frontend> {
+        Arc::new(crate::cli_render::CliFrontend::new())
+    }
+
+    /// A frontend that shows each event as one line, `<Event ...>`, above the ticker as the log
+    /// records are, so a capture has the events in their order against the records.
+    struct Recording;
+
+    impl Frontend for Recording {
+        fn event(&self, event: crate::frontend::Event) {
+            let crate::frontend::Event::Run(run) = event;
+            let line = match run {
+                Run::MemoryPlan(_) => "MemoryPlan".to_string(),
+                Run::NotRun(_) => "NotRun".to_string(),
+                Run::Matchable { .. } => "Matchable".to_string(),
+                Run::LeftOut { .. } => "LeftOut".to_string(),
+                Run::Channels { .. } => "Channels".to_string(),
+                Run::TestPlan(_) => "TestPlan".to_string(),
+                Run::WheaMonitoring(_) => "WheaMonitoring".to_string(),
+                Run::AllocationStarting { .. } => "AllocationStarting".to_string(),
+                Run::Allocated(_) => "Allocated".to_string(),
+                Run::SuiteStarted { .. } => "SuiteStarted".to_string(),
+                Run::CycleStarted { cycle, .. } => format!("CycleStarted {cycle}"),
+                Run::SealStage { op, .. } => format!("SealStage {op:?}"),
+                Run::StepFinished(report) => format!("StepFinished {}, {} errors", report.summary.step, report.summary.errors),
+                Run::LateWhea(_) => "LateWhea".to_string(),
+                Run::CpuPerformance(_) => "CpuPerformance".to_string(),
+                Run::SuiteEnded { .. } => "SuiteEnded".to_string(),
+                Run::FinalSummary(_) => "FinalSummary".to_string(),
+                Run::ResultsSaved { .. } => "ResultsSaved".to_string(),
+            };
+            crate::console::print_above(&format!("<{line}>"));
+        }
+    }
+
+    /// TODO 29: each event comes where its prints were, against the log records around it, so a
+    /// frontend that renders as it is called keeps the console's order. A cycle's: the records of a
+    /// step's results come before its report, the halt's after it, and the final seal check's
+    /// errors after its line; and a run's start: the memory plan before the layout's records, the
+    /// config error that stops it after the plan's. Where a list's build logs (at debug level),
+    /// its records come between the line before the list and the list: the channels and the test
+    /// plan, a filter that matched nothing and what it could have matched.
+    #[test]
+    fn events_come_in_order_with_the_log_records() {
+        // The events and the run's own records: the workers' order among themselves is the
+        // scheduler's
+        let order = |text: &str| -> Vec<String> {
+            crate::golden::mask_stamps(text).lines()
+                .filter(|line| line.starts_with('<') || line.contains(" tmr::runner]") || line.contains(" tmr::layout]"))
+                .map(|line| line.split_once("\x1b[0m ").map_or(line, |(_, message)| message).to_string())
+                .collect()
+        };
+        let (_, text, _) = fake_cycle(ErrorMode::Log, false, &Recording);
+        let verify_errors = "Thread 0 reported 1 memory errors in test 'Bench-Verify-TMR-10' (1 failed checks, 0 not reproduced on rescan)";
+        assert_eq!(order(&text), ["<SealStage SealAll>", "<StepFinished 1, 0 errors>", verify_errors, "<StepFinished 2, 1 errors>",
+                                  "<StepFinished 3, 0 errors>", "<StepFinished 4, 0 errors>", "<SealStage FinalCheck>"]);
+        let (_, text, _) = fake_cycle(ErrorMode::Halt, false, &Recording);
+        assert_eq!(order(&text), ["<SealStage SealAll>", "<StepFinished 1, 0 errors>", verify_errors, "<StepFinished 2, 1 errors>",
+                                  "Halting test suite due to memory errors"]);
+        let (_, text, _) = fake_cycle(ErrorMode::Log, true, &Recording);
+        assert_eq!(order(&text), ["<SealStage SealAll>", "<StepFinished 1, 0 errors>", verify_errors, "<StepFinished 2, 1 errors>",
+                                  "<StepFinished 3, 0 errors>", "<StepFinished 4, 0 errors>", "<SealStage FinalCheck>",
+                                  "The final seal check of cycle 1 found 1 errors"]);
+
+        let _width = crate::simd::TestWidth::set(Some(crate::simd::Width::W256));
+        let overrides = TestRunOverrides { plan: Some(crate::plans::find(crate::plans::DEFAULT).unwrap()), sequence_override: Some("W 2Q"),
+                                           ..Default::default() };
+        let (setup, fe): (_, Arc<dyn Frontend>) = (golden_setup(overrides), Arc::new(Recording));
+        let (status, text) = crate::golden::capture(|| run_tests_with_layout_and_timing_filtered(setup, &fe));
+        assert_eq!(status, RunStatus::NotRun);
+        assert_eq!(order(&text), ["<MemoryPlan>", "🧵 Thread Memory Layout:", "  Total threads: 4", "  Allocation per thread: 0.00 GiB",
+                                  "  Total planned allocation: 0.02 GiB", "Using the built-in suite, plan stability", "<NotRun>"]);
+
+        // How many Debug records came between two events
+        let debug_between = |text: &str, first: &str, second: &str| -> usize {
+            let lines: Vec<&str> = text.lines().collect();
+            let at = |event: &str| lines.iter().position(|line| *line == event).unwrap_or_else(|| panic!("{event}:\n{text}"));
+            lines[at(first)..at(second)].iter().filter(|line| line.contains(" DEBUG ")).count()
+        };
+        let stability = Some(crate::plans::find(crate::plans::DEFAULT).unwrap());
+        let plan_only = TestRunOverrides { plan: stability, plan_only: true, ..Default::default() };
+        let (setup, fe): (_, Arc<dyn Frontend>) = (golden_setup(plan_only), Arc::new(Recording));
+        let (status, text) = crate::golden::capture_with_debug(|| run_tests_with_layout_and_timing_filtered(setup, &fe));
+        assert_eq!(status, RunStatus::Passed);
+        assert!(debug_between(&text, "<Channels>", "<TestPlan>") > 0, "the plan's build logs after the channels:\n{text}");
+        for plan in [stability, None] {
+            let no_match = TestRunOverrides { plan, single_test_filter: Some("Nope-*"), ..Default::default() };
+            let (setup, fe): (_, Arc<dyn Frontend>) = (golden_setup(no_match), Arc::new(Recording));
+            let (status, text) = crate::golden::capture_with_debug(|| run_tests_with_layout_and_timing_filtered(setup, &fe));
+            assert_eq!(status, RunStatus::NotRun);
+            assert!(debug_between(&text, "<NotRun>", "<Matchable>") > 0, "the list's build logs after the stop:\n{text}");
+        }
+    }
+
+    /// The console goldens' run: `golden_layout`, logging errors, default timing, no config,
+    /// `overrides`, and no caches (`CacheInfo::default()`), so no size depends on this machine's.
+    /// Made before a capture: the layout's sizing logs.
+    fn golden_setup(overrides: TestRunOverrides<'static>) -> RunSetup<'static> {
+        static NO_CACHES: std::sync::LazyLock<CacheInfo> = std::sync::LazyLock::new(CacheInfo::default);
+        let (layout, runtime_config) = golden_layout();
+        RunSetup { layout, error_mode: ErrorMode::Log, suite_timing: TestSuiteTiming::default(), runtime_config, config: None,
+                   overrides, cache_info: &NO_CACHES }
     }
 
     /// The console goldens' layout: 16 MiB over four threads on a 32 GiB box, with its runtime. A
@@ -6474,10 +6394,9 @@ mod tests {
     #[test]
     fn the_plan_prints_as_its_golden() {
         let _width = crate::simd::TestWidth::set(Some(crate::simd::Width::W256));
-        let (layout, runtime_config) = golden_layout();
         let overrides = TestRunOverrides { plan: Some(crate::plans::find(crate::plans::DEFAULT).unwrap()), plan_only: true, ..Default::default() };
-        let (status, text) = crate::golden::capture(|| run_tests_with_layout_and_timing_filtered(
-            layout, ErrorMode::Log, TestSuiteTiming::default(), runtime_config, None, overrides, &CacheInfo::default()));
+        let setup = golden_setup(overrides);
+        let (status, text) = crate::golden::capture(|| run_tests_with_layout_and_timing_filtered(setup, &cli()));
         assert_eq!(status, RunStatus::Passed);
         crate::golden::check("plan_only", &crate::golden::mask_plan(&text));
     }
@@ -6501,9 +6420,8 @@ mod tests {
         ];
         let mut text = String::new();
         for (case, overrides) in cases {
-            let (layout, runtime_config) = golden_layout();
-            let (status, printed) = crate::golden::capture(|| run_tests_with_layout_and_timing_filtered(
-                layout, ErrorMode::Log, TestSuiteTiming::default(), runtime_config, None, overrides, &CacheInfo::default()));
+            let setup = golden_setup(overrides);
+            let (status, printed) = crate::golden::capture(|| run_tests_with_layout_and_timing_filtered(setup, &cli()));
             assert_eq!(status, RunStatus::NotRun, "{case}");
             text += &format!("## {case}\n{printed}");
         }

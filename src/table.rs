@@ -38,9 +38,19 @@ impl TableBuilder {
         self
     }
     
+    /// Prints the table: `write_to`, to stdout.
+    #[expect(clippy::print_stdout, reason = "TODO 29 S4: its last caller, the memory status at startup, becomes an event")]
     pub fn print(&self) {
+        let mut text = String::new();
+        let _ = self.write_to(&mut text);
+        print!("{text}");
+    }
+
+    /// Writes the table as the console shows it: a rule, the headers, a rule, the rows, a rule.
+    /// Nothing when it has no headers.
+    pub fn write_to(&self, out: &mut impl std::fmt::Write) -> std::fmt::Result {
         if self.headers.is_empty() {
-            return;
+            return Ok(());
         }
         
         // Calculate column widths
@@ -68,7 +78,7 @@ impl TableBuilder {
         
         // Print separator
         let total_width: usize = widths.iter().sum();
-        println!("{}", self.separator_char.to_string().repeat(total_width));
+        writeln!(out, "{}", self.separator_char.to_string().repeat(total_width))?;
         
         // Print headers with proper spacing
         for (i, (header, alignment)) in self.headers.iter().enumerate() {
@@ -78,12 +88,12 @@ impl TableBuilder {
                 Alignment::Right => format!("{:>width$}", header, width = content_width),
                 Alignment::Center => format!("{:^width$}", header, width = content_width),
             };
-            print!("{}  ", formatted); // Add 2 spaces between columns
+            write!(out, "{}  ", formatted)?; // Add 2 spaces between columns
         }
-        println!();
+        writeln!(out)?;
         
         // Print separator
-        println!("{}", self.separator_char.to_string().repeat(total_width));
+        writeln!(out, "{}", self.separator_char.to_string().repeat(total_width))?;
         
         // Print rows with proper spacing
         for row in &self.rows {
@@ -96,14 +106,14 @@ impl TableBuilder {
                         Alignment::Right => format!("{:>width$}", cell, width = content_width),
                         Alignment::Center => format!("{:^width$}", cell, width = content_width),
                     };
-                    print!("{}  ", formatted); // Add 2 spaces between columns
+                    write!(out, "{}  ", formatted)?; // Add 2 spaces between columns
                 }
             }
-            println!();
+            writeln!(out)?;
         }
         
         // Print final separator
-        println!("{}", self.separator_char.to_string().repeat(total_width));
+        writeln!(out, "{}", self.separator_char.to_string().repeat(total_width))
     }
     
     // Alternative: return as string for logging - use format!("{}", table) via Display trait

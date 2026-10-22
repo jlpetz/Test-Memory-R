@@ -60,6 +60,7 @@ impl MemoryBuffer {
 }
 
 impl Drop for MemoryBuffer {
+    #[expect(clippy::print_stderr, reason = "TODO 29 S4: becomes a log::error")]
     fn drop(&mut self) {
         let allocation = BackendAllocation {
             ptr: self.ptr,

@@ -40,6 +40,23 @@ pub(crate) fn capture<R>(f: impl FnOnce() -> R) -> (R, String) {
     (value, String::from_utf8(bytes).expect("the console writes UTF-8"))
 }
 
+thread_local!(static DEBUG_RECORDS: Cell<bool> = const { Cell::new(false) });
+
+/// `capture`, with this thread's Debug records too, as `RUST_LOG=debug` shows them: where an event
+/// lands against the records only that level has. Other threads' records stay from Info up.
+pub(crate) fn capture_with_debug<R>(f: impl FnOnce() -> R) -> (R, String) {
+    /// Ends the Debug records however `f` ends
+    struct Stop;
+    impl Drop for Stop {
+        fn drop(&mut self) {
+            DEBUG_RECORDS.set(false);
+        }
+    }
+    DEBUG_RECORDS.set(true);
+    let _stop = Stop;
+    capture(f)
+}
+
 /// Under `--nocapture`, as cargo-nextest runs each test, libtest captures nothing and so hands no
 /// capture on to the threads a test spawns: this thread then hands on its own, as libtest's spawn
 /// hook does, once (a hook can't be taken back, and one is enough).
@@ -260,13 +277,14 @@ fn mask_figures(line: &str) -> String {
     out
 }
 
-/// Prints each record from Info up as `cli.rs`'s logger prints it on a console, colour and all,
-/// through `print_above` as its `LogSink` does. File-only records print nothing, as there.
+/// Prints each record from Info up, and Debug on a thread under `capture_with_debug`, as `cli.rs`'s
+/// logger prints it on a console, colour and all, through `print_above` as its `LogSink` does.
+/// File-only records print nothing, as there.
 struct Logger;
 
 impl log::Log for Logger {
     fn enabled(&self, metadata: &log::Metadata) -> bool {
-        metadata.level() <= log::Level::Info
+        metadata.level() <= log::Level::Info || (metadata.level() == log::Level::Debug && DEBUG_RECORDS.get())
     }
 
     fn log(&self, record: &log::Record) {
@@ -295,7 +313,7 @@ fn install_logger() {
     static ONCE: std::sync::Once = std::sync::Once::new();
     ONCE.call_once(|| {
         log::set_logger(&LOGGER).expect("no other logger in a test build");
-        log::set_max_level(log::LevelFilter::Info);
+        log::set_max_level(log::LevelFilter::Debug);
     });
 }
 

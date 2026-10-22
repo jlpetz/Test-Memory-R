@@ -1,5 +1,8 @@
 //! The command-line front end: argument handling, logging setup and the top-level run modes.
 
+// The setup path still prints and exits here; S4 of TODO 29 moves it behind the frontend
+#![expect(clippy::print_stdout, clippy::print_stderr, clippy::exit, reason = "TODO 29 S4")]
+
 use std::env;
 use std::collections::HashMap;
 use std::io::{stdin, stdout};
@@ -932,12 +935,13 @@ fn run() -> Result<(), Box<dyn std::error::Error>> {
 	print_current_memory_status();
 	
 	{
-		use crate::reporting::{create_console_reporter, system_info_builder::build_system_info_report};
+		use crate::reporting::system_info_builder::build_system_info_report;
 
 		let report = build_system_info_report(system_info, &simd_caps);
 
-		let mut reporter = create_console_reporter();
-		if let Err(e) = reporter.report_system_info(&report) {
+		let (result, text) = crate::cli_render::rendered(|reporter| reporter.report_system_info(&report));
+		print!("{text}");
+		if let Err(e) = result {
 			log::error!("Failed to display system info report: {}", e);
 			// Manual system info already displayed above as fallback
 		}
@@ -1072,13 +1076,15 @@ fn run() -> Result<(), Box<dyn std::error::Error>> {
         println!("📋 Plan: {}{default}: {}", plan.name, plan.about);
     }
 
-    let status = run_tests_with_layout_and_timing_filtered(
-        enhanced_layout,
+    // The run's events, as the console shows them (TODO 29)
+    let frontend: Arc<dyn crate::frontend::Frontend> = Arc::new(crate::cli_render::CliFrontend::new());
+    let status = run_tests_with_layout_and_timing_filtered(crate::runner::RunSetup {
+        layout: enhanced_layout,
         error_mode,
         suite_timing,
         runtime_config,
-        config_opt.as_ref(),
-        crate::runner::TestRunOverrides {
+        config: config_opt.as_ref(),
+        overrides: crate::runner::TestRunOverrides {
             single_test_filter: final_test_filter,
             plan,
             seal_override: seal_override.as_deref(),
@@ -1095,7 +1101,7 @@ fn run() -> Result<(), Box<dyn std::error::Error>> {
             command_line: &command_line,
         },
         cache_info,
-    );
+    }, &frontend);
 
     if plan_only {
         if status == RunStatus::Passed {

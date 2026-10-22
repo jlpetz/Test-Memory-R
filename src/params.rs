@@ -492,6 +492,7 @@ pub fn parse_and_validate_args(args: &[String]) -> Result<HashMap<String, ParamV
 }
 
 /// Print complete help text
+#[expect(clippy::print_stdout, reason = "TODO 29 S4: the help becomes a one-shot command, writing to its caller's writer")]
 pub fn print_help(program_name: &str) {
     println!("🚀 Test Memory R (TMR) v{} - High-Performance Memory Testing Tool", crate::BUILD.version);
     println!("===================================================================================");
@@ -649,6 +650,7 @@ pub fn has_param(validated: &HashMap<String, ParamValue>, key: &str) -> bool {
 }
 
 /// Print quick usage examples (the end of `--help`)
+#[expect(clippy::print_stdout, reason = "TODO 29 S4: the help becomes a one-shot command, writing to its caller's writer")]
 fn print_usage(program_name: &str) {
     println!("Quick Usage Examples:");
     println!("  {} memory=10%-from-available     # Standard: Reserve 10% from currently available memory", program_name);

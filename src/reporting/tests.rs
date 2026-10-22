@@ -1,11 +1,11 @@
 //! Goldens of the Reporter's methods, each from a fixed model (TODO 29): the bytes the console
-//! gets today, so the split's move of the renderer can be shown to keep them. The allocation
-//! report's are with its fixtures in `converters.rs`, the final summary's in `results.rs`.
-//! `report_cycle` has none: nothing calls it (TODO 29 revives it).
+//! gets, the console renderer's text, so the split's move of the renderer can be shown to keep
+//! them. The allocation report's are with its fixtures in `converters.rs`, the final summary's in
+//! `results.rs`. `report_cycle` has none: nothing calls it (TODO 29 revives it).
 
-use super::create_console_reporter;
 use super::models::*;
-use crate::golden::{capture, check};
+use crate::cli_render::rendered;
+use crate::golden::check;
 use crate::whea::WheaCounts;
 
 const KIB: u64 = 1 << 10;
@@ -49,7 +49,7 @@ fn system_info() {
             converged: true,
         },
     };
-    let (result, text) = capture(|| create_console_reporter().report_system_info(&report));
+    let (result, text) = rendered(|reporter| reporter.report_system_info(&report));
     result.unwrap();
     check("report_system_info", &text);
 }
@@ -77,7 +77,7 @@ fn thread_timing() {
         thread_timings: vec![timing(1, 2, 1400, 150, 0), timing(0, 0, 1100, -150, 3)],
         whea: WheaCounts { total: 1, corrected: 1 },
     };
-    let (result, text) = capture(|| create_console_reporter().report_thread_timing(&report));
+    let (result, text) = rendered(|reporter| reporter.report_thread_timing(&report));
     result.unwrap();
     check("report_thread_timing", &text);
 }
@@ -100,7 +100,7 @@ fn performance_by_thread() {
         pinned: false,
         whea: WheaCounts::default(),
     };
-    let (result, text) = capture(|| create_console_reporter().report_performance_by_thread(&report));
+    let (result, text) = rendered(|reporter| reporter.report_performance_by_thread(&report));
     result.unwrap();
     check("report_performance_by_thread", &text);
 }
@@ -117,7 +117,7 @@ fn performance_by_cpu() {
         total_errors: 0,
     };
     let report = PerformanceByCpuReport { cpus: vec![cpu(0, 61_500), cpu(2, 3_725_000)], whea: WheaCounts { total: 2, corrected: 1 } };
-    let (result, text) = capture(|| create_console_reporter().report_performance_by_cpu(&report));
+    let (result, text) = rendered(|reporter| reporter.report_performance_by_cpu(&report));
     result.unwrap();
     check("report_performance_by_cpu", &text);
 }
@@ -136,7 +136,7 @@ fn performance_by_physical_core() {
         cores: vec![core(0, &[0, 1], 123_000, 0), core(1, &[2, 3], 126_500, 1)],
         whea: WheaCounts::default(),
     };
-    let (result, text) = capture(|| create_console_reporter().report_performance_by_physical_core(&report));
+    let (result, text) = rendered(|reporter| reporter.report_performance_by_physical_core(&report));
     result.unwrap();
     check("report_performance_by_physical_core", &text);
 }
@@ -181,7 +181,7 @@ fn cpu_topology() {
         },
         pinned: true,
     };
-    let (result, text) = capture(|| create_console_reporter().report_cpu_topology(&report));
+    let (result, text) = rendered(|reporter| reporter.report_cpu_topology(&report));
     result.unwrap();
     check("report_cpu_topology", &text);
 }
@@ -201,7 +201,7 @@ fn consolidated_memory() {
     let mode = AllocationMode::ReserveFromAvailable { reserve: ReserveAmount::Percentage(50.0) };
     let allocation = mode.calculate_allocation_with_threads(&mem_info, 6, ShareRounding::default());
     let report = super::converters::create_consolidated_memory_report(&mem_info, &allocation);
-    let (result, text) = capture(|| create_console_reporter().report_consolidated_memory(&report));
+    let (result, text) = rendered(|reporter| reporter.report_consolidated_memory(&report));
     result.unwrap();
     check("report_consolidated_memory", &text);
 }
@@ -228,7 +228,7 @@ fn test_configuration() {
     let sequence = PlanSequence { order: None, seal: None, seal_off_reason: "seal=off", tm5: false, width: crate::simd::width_given() };
     let timing = crate::runner::TestSuiteTiming::cycles_only(3);
     let report = create_test_configuration_report_v2(&tests, &timing, &cache_info, &[(4 * GIB) as usize; 4], None, &sequence);
-    let (result, text) = capture(|| create_console_reporter().report_test_configuration(&report));
+    let (result, text) = rendered(|reporter| reporter.report_test_configuration(&report));
     result.unwrap();
     check("report_test_configuration", &text);
 }
@@ -257,7 +257,7 @@ fn latency_summary() {
             consolidated: percentiles(73.25),
         }],
     };
-    let (result, text) = capture(|| create_console_reporter().report_latency_summary(&report));
+    let (result, text) = rendered(|reporter| reporter.report_latency_summary(&report));
     result.unwrap();
     check("report_latency_summary", &text);
 }

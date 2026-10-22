@@ -28,6 +28,10 @@ impl<R: Renderer> Reporter<R> {
         Self { formatter, renderer }
     }
 
+    /// The renderer, with what it rendered: `ConsoleRenderer`'s text (TODO 29)
+    pub fn into_renderer(self) -> R {
+        self.renderer
+    }
 
     /// Report system information
     pub fn report_system_info(&mut self, report: &SystemInfoReport) -> Result<()> {
@@ -102,7 +106,7 @@ impl<R: Renderer> Reporter<R> {
         let table = self.formatter.prepare_test_configuration_table(report);
         self.renderer.render_table(&table)?;
         for note in &report.notes {
-            println!("{note}");
+            self.renderer.render_text(note)?;
         }
         Ok(())
     }
@@ -154,7 +158,7 @@ impl<R: Renderer> Reporter<R> {
     /// Report latency test summary results (multi-threaded)
     pub fn report_latency_summary(&mut self, report: &LatencyTestSummaryReport) -> Result<()> {
         // Simple label - test name and extent are already shown in the main test header and config line
-        println!("🔍 Latency");
+        self.renderer.render_text("🔍 Latency")?;
 
         // Per-level detailed tables (per-thread breakdown with ALL row)
         for level in &report.levels_tested {
@@ -179,7 +183,7 @@ impl<R: Renderer> Reporter<R> {
             tables.push(self.formatter.prepare_fairness_summary_table(report));
         }
         for table in &tables {
-            println!();
+            self.renderer.render_text("")?;
             self.renderer.render_table(table)?;
         }
         Ok(())

@@ -1,0 +1,117 @@
+## a plan the suite can't give
+❌ plan stability: bug: no test Mem-Nope in the suite
+## every test left out
+❌ Nothing left to run
+## allocation failed
+❌ Failed to allocate memory blocks: thread 2: no memory left for its span
+
+## two tests left out
+ℹ  Left out 2 test(s) this CPU can't run (no AVX-512F): Mem-SimpleV2-512, Mem-MirrorV2-512
+## seven tests left out
+ℹ  Left out 7 test(s) this CPU can't run (no AVX-512F): Lat-L1-Read-512, Lat-L1-Write-512, Lat-L1-Copy-512, Lat-L2-Read-512, Lat-L2-Write-512 and 2 more (the log lists them)
+## WHEA monitored
+🔎 WHEA hardware-error monitoring: active
+## WHEA not monitored
+🔎 WHEA hardware-error monitoring: unavailable (the System event log can't be read)
+## allocation between the default page sizes
+Stage 1: Pre-allocating memory blocks...
+⚙️  Page Size Constraints: Large (2MB) to Huge (1GB) (default)
+## allocation of one page size
+Stage 1: Pre-allocating memory blocks...
+⚠️  Page Size Restricted: Regular (4KB) only - may limit available memory
+## allocation between other page sizes
+Stage 1: Pre-allocating memory blocks...
+⚙️  Page Size Constraints: Regular (4KB) to Huge (1GB)
+## the suite starts
+🎲 Pattern seed 0x0123456789abcdef (seed= replays it), transfer width 64 bits (SMBIOS)
+## the suite starts, its transfer width unknown
+🎲 Pattern seed 0x0000000000000007 (seed= replays it), transfer width unknown: switch alternates 64 and 32 bits
+## a cycle of a limit
+
+🔄 Starting test cycle 2 of 3
+## a cycle with no limit
+
+🔄 Starting test cycle 41
+## memory sealed
+🔒 Sealing memory (tm5-512): 1.2s, 24.00 GiB @ 19661 MiB/s
+## a final check that found errors
+🔒 Final seal check (tmr-256): 2 errors (bit 5), 1.2s, 24.00 GiB @ 20827 MiB/s
+## a step unsealed, ended by its time limit, with a WHEA event and repetitions
+📊 Test report - Cycle 3 - Step 5 Mem-Refresh256 (Test 7): ❌ 61.2s, 0 errors + 1 WHEA (1C/0UC), Cycles 🟢 5/∞, Time Limit 🔴
+   Test: 60.0s, 120.00 GiB @ 2048 MiB/s, 2.50B ops @ 41.67M ops/s
+   Intermediate: seal fill n/a; seal check n/a; pattern fill n/a; chain build n/a
+   Config: parameter=-, mode=TMR-10, extent=FullAllocation, chunk=Absolute (4.00 MiB), test_reps=2, verify_reps=3, wrc=1
+--------------------------------------------------------------------------------------------------------------------------------------------------------------------------
+    Thread       L CPU      P Core     NUMA           Time       Dev T        Data       Dev D         Speed       Dev S      Cycles      Errors        WHEA     Pass     
+--------------------------------------------------------------------------------------------------------------------------------------------------------------------------
+         0           0           0      0            60.0s       +0.2s   60.00 GiB     +0.00 B  1024.0 MiB/s        -4.3           5           0                  ✅       
+         1           0           0      0            59.5s       -0.2s   60.00 GiB     +0.00 B  1032.6 MiB/s        +4.3           4           0                  ✅       
+       Avg                                           59.8s               60.00 GiB              1028.3 MiB/s                     4.5           0  1 (1C/0UC)      ❌       
+--------------------------------------------------------------------------------------------------------------------------------------------------------------------------
+Runtime: 00:41:10 (remaining 00:18:50) | Cycle 3/8 (00:12:34, 35%) | ⚠️ 0 errors + 1 WHEA (1C/0UC) | Test 5/6 Mem-Refresh256 (Test 7) (00:01:01)
+
+## WHEA after the monitor's last tick
+⚠️  WHEA: corrected Memory error on DIMM_A1 (Event 47)
+⚠️  WHEA: corrected Memory error on DIMM_A1 (Event 47)
+## the CPU performance summary
+
+=== CPU Performance Summary ===
+[1m📊 Performance by Thread[0m
+--------------------------------------------------------------------------------------------------------------------------------------------------------------
+    Thread       L CPU      P Core     NUMA           Time       Dev T        Data       Dev D         Speed       Dev S      Errors        WHEA     Pass     
+--------------------------------------------------------------------------------------------------------------------------------------------------------------
+         0           0           0      0        01:00.000       -0.8s   60.00 GiB     +0.00 B  1024.0 MiB/s       +12.6           0                  ✅       
+         1           1           0      0        01:00.500       -0.2s   60.00 GiB     +0.00 B  1015.5 MiB/s        +4.1           0                  ✅       
+         2           2           1      0        01:01.000       +0.2s   60.00 GiB     +0.00 B  1007.2 MiB/s        -4.2           0                  ✅       
+         3           3           1      0        01:01.500       +0.8s   60.00 GiB     +0.00 B   999.0 MiB/s       -12.4           1                  ❌       
+       Avg                                       01:00.750               60.00 GiB              1011.4 MiB/s                       1  1 (1C/0UC)      ❌       
+--------------------------------------------------------------------------------------------------------------------------------------------------------------
+[1m📊 Performance by CPU[0m
+--------------------------------------------------------------------------------------------------------------------------------------------------
+     L CPU      P Core     NUMA           Time       Dev T        Data       Dev D         Speed       Dev S      Errors        WHEA     Pass     
+--------------------------------------------------------------------------------------------------------------------------------------------------
+         0           0      0        01:00.000       -0.8s   60.00 GiB     +0.00 B  1024.0 MiB/s       +12.6           0                  ✅       
+         1           0      0        01:00.500       -0.2s   60.00 GiB     +0.00 B  1015.5 MiB/s        +4.1           0                  ✅       
+         2           1      0        01:01.000       +0.2s   60.00 GiB     +0.00 B  1007.2 MiB/s        -4.2           0                  ✅       
+         3           1      0        01:01.500       +0.8s   60.00 GiB     +0.00 B   999.0 MiB/s       -12.4           1                  ❌       
+       Avg                           01:00.750               60.00 GiB              1011.4 MiB/s                       1  1 (1C/0UC)      ❌       
+--------------------------------------------------------------------------------------------------------------------------------------------------
+[1m📊 Performance by Physical Core[0m
+--------------------------------------------------------------------------------------------------------------------------------------
+  P Core      L CPUs          Time       Dev T        Data       Dev D         Speed       Dev S      Errors        WHEA     Pass     
+--------------------------------------------------------------------------------------------------------------------------------------
+    0          0,1       02:00.000       -0.5s  120.00 GiB     +0.00 B  1024.0 MiB/s        +4.2           0                  ✅       
+    1          2,3       02:01.000       +0.5s  120.00 GiB     +0.00 B  1015.5 MiB/s        -4.2           1                  ❌       
+   Avg                   02:00.500              120.00 GiB              1019.8 MiB/s                       1  1 (1C/0UC)      ❌       
+--------------------------------------------------------------------------------------------------------------------------------------
+## the CPU performance summary, no rows
+
+=== CPU Performance Summary ===
+## passed
+
+✅ All test cycles completed successfully!
+## passed on the time limit
+
+✅ All test cycles completed successfully!
+## errors
+
+❌ Test suite failed: 3 errors + 0 WHEA
+## halted on a WHEA event
+
+❌ Test suite failed: 0 errors + 1 WHEA (0C/1UC)
+## interrupted
+
+⚠️  Test suite interrupted by user (CTRL+C)
+## interrupted with errors
+
+⚠️  Test suite interrupted by user (CTRL+C)
+
+❌ Test suite failed: 1 errors + 2 WHEA (2C/0UC)
+## interrupted before any test
+
+⚠️  Test suite interrupted by user (CTRL+C)
+## no test ran
+
+⚠️  No test ran: the cycle or time limit is 0
+## the results saved
+💾 Results saved: results/tmr_2026-10-22_19-30-01.json

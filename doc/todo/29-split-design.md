@@ -188,7 +188,7 @@ pub fn commands::calibrate(.., out: &mut dyn io::Write, confirm: &mut dyn FnMut(
 
 1. **Synchronous at the same spot.** `CliFrontend` writes inside `event()`, on the emitting thread, where today's println group ran. Log records still go through the unchanged env_logger and LogSink path, also synchronously, so their interleaving is today's.
    - **Conversion rule:** one event per run of consecutive prints with no engine call between them, emitted where that run printed; an event never spans a log call.
-   - Hence the splits: StartupHeader/StartupParams around cli.rs:581, Cache/SealCalibration around `valid_seal_calibration`'s logs, and LeftOut before runner.rs:778.
+   - Hence the splits: StartupHeader/StartupParams around cli.rs:581, Cache/SealCalibration around `valid_seal_calibration`'s logs, and LeftOut before runner.rs:778. Two more, found in S2's review: Channels/TestPlan, because building the plan logs (its extents and chunks, at debug level), and NoTestMatches/Matchable, because collecting the list builds the suite (each auto-dispatch test's width, at debug level).
    - frontend.rs documents that the CLI must not become asynchronous: runner.rs:1783's 'Halting test suite' would then overtake its step report.
 2. **Verbatim moves.** Each CLI arm is the old print group cut and pasted with the same format strings, written into a String.
    - `TableBuilder::print` (table.rs:41-107) becomes `write_to(&mut impl fmt::Write)`, which `print()` calls.
@@ -384,9 +384,9 @@ A timeout also returns, which is the window's 2 Hz clock (Reactor 0.100.0 has no
 - **Emitted at:** S4, cli.rs:950-952, 995-1000, 1066-1070. The CLI installs its Ctrl+C handler (cli.rs:958-979, moved verbatim, once per process) when it renders Starting, which is today's place
 - **Replaces:** println at cli.rs:950-952, 998, 1069
 
-### Run::MemoryPlan / Run::NotRun / Run::LeftOut / Run::TestPlan
-- **Fields:** MemoryPlan(ConsolidatedMemoryReport). NotRun: Config(String) | Plan(String) | NoTestMatches{filter, plan, tests} | NothingLeftToRun | Allocation(String). LeftOut{tests: Vec<(String, String)>}. TestPlan{channels, cache_line, report: TestConfigurationReport}
-- **Emitted at:** S2. runner.rs:705 (layout.rs:31-50; its log::info at 52-59 stays after the event). The NotRun sites at 719, 730, 744-752, 781, 802, 885, 894, 919 and 1001, each before its existing return. 770-777 before the per-test log::info at 778. 950 and 1028 (print_test_plan 655-667)
+### Run::MemoryPlan / Run::NotRun / Run::Matchable / Run::LeftOut / Run::Channels / Run::TestPlan
+- **Fields:** MemoryPlan(ConsolidatedMemoryReport). NotRun: Config(String) | Plan(String) | NoTestMatches{filter, plan} | NothingLeftToRun | Allocation(String). Matchable{tests: Vec<String>}. LeftOut{tests: Vec<(String, String)>}. Channels{channels, cache_line}. TestPlan(TestConfigurationReport)
+- **Emitted at:** S2. runner.rs:705 (layout.rs:31-50; its log::info at 52-59 stays after the event). The NotRun sites at 719, 730, 744-752, 781, 802, 885, 894, 919 and 1001, each before its existing return; NoTestMatches before the list is collected, then Matchable with it (collecting it logs). 770-777 before the per-test log::info at 778. 950 and 1028 (print_test_plan 655-667): Channels before the plan is built, then TestPlan (building it logs)
 - **Replaces:** the Reporter render and println at layout.rs:49; the '❌' println at those sites (their FILE_ONLY log records stay); println at runner.rs:776; println at 659 and reporting/mod.rs:103
 
 ### Run::WheaMonitoring / Run::AllocationStarting / Run::Allocated
@@ -395,7 +395,7 @@ A timeout also returns, which is the window's 2 Hz clock (Reactor 0.100.0 has no
 - **Replaces:** println at 961-962, 968, 987-993; report_allocation with its blank lines (reporting/mod.rs:180)
 
 ### Run::SuiteStarted
-- **Fields:** progress: Arc<ProgressTracker>, seed: u64, transfer_bits: Option<u32>, transfer_source: String
+- **Fields:** progress: Arc<ProgressTracker> (from S3, with its first reader), seed: u64, transfer_bits: Option<u32>, transfer_source: &'static str
 - **Emitted at:** S2, runner.rs:1125-1135, after begin_suite and the log::info at 1130
 - **Replaces:** print_above at runner.rs:1134. The GUI keeps the Arc for its timer; the CLI ignores it
 
@@ -411,7 +411,7 @@ A timeout also returns, which is the window's 2 Hz clock (Reactor 0.100.0 has no
 
 ### Run::CycleFinished
 - **Fields:** cycle: u32, partial: bool
-- **Emitted at:** S2, in the cycle loop after execute_test_cycle (runner.rs:1157) and S1's per-cycle save, partial cycles too
+- **Emitted at:** S3 (planned for S2; it waits for its first reader), in the cycle loop after execute_test_cycle (runner.rs:1157) and S1's per-cycle save, partial cycles too
 - **Replaces:** nothing on the console (there's none today); it is for the GUI
 
 ### Frontend::tick / Frontend::ticks_done (not events)
@@ -491,11 +491,20 @@ A timeout also returns, which is the window's 2 Hz clock (Reactor 0.100.0 has no
 - print_layout becomes MemoryPlan; the CPU summary becomes an engine fn returning the three reports.
 - run_tests_with_layout_and_timing_filtered and CycleContext take `&dyn Frontend`; cli.rs builds `Arc<CliFrontend>`.
 - Crate-level deny on, with `#![expect(clippy::print_stdout, reason = "TODO 29 S4")]` on each module that still prints.
+- As built (2026-10-23), against the plan above:
+  - `Run::CycleFinished` and `SuiteStarted`'s `Arc<ProgressTracker>` wait for S3: with no reader before the GUI, `dead_code` flags them. `large_page_restart` waits for S4, with its caller and prompts.rs.
+  - The expects sit on the printing functions where a module also holds run-path code (runner.rs's `print_current_memory_status`, results.rs's compare, table.rs's `print`, cpu_topology.rs, calibration.rs, config.rs, params.rs, buffer.rs's drop), so the run path around them stays denied; module-level only on cli.rs, and on cli_render (reason S5: it moves to tmr-cli).
+  - The run's inputs are one `runner::RunSetup`, the frontend apart: a `Frontend` parameter would be an eighth (clippy's `too_many_arguments`).
+  - `StepReport` carries the cycle limit and whether a time limit stopped a thread, and the three repetition counts; the passes and the ops/s come from its `TestSummary`, as the report computed them. `SealStage`'s kernel is a `String`, as `SealKernel::name` returns it.
+  - `AllocationResult::print_summary`, the plan's fallback when its table failed to render, is gone: a render into a String can't fail.
+  - Two events split in review, by the conversion rule: Channels/TestPlan and NoTestMatches/Matchable (see above). Under `RUST_LOG=debug` the records their builds log land where they did; the order test sees them through `golden::capture_with_debug`.
+  - `ProgressSnapshot`'s test has `finished`, which its `live_errors` is derived from. The ticker's 2 s clock is `cli_render::draw_when_due`, unit-tested; a draw now stamps the tick's time, not the time after the draw.
 
 **Gate.**
 - S0 goldens byte-identical through CliFrontend; per-event goldens; the order test; capture bridge kept until S5.
-- clippy 0; fingerprint and spill table identical.
-- The owner's console_diff A/B of one short run is clean, and bench_ab.py against S1 is inside noise.
+- In S2 the order test covers the seal's errors after its line (a fake cycle with a bit flipped after its last step), but not LeftOut before its records: the CPU check is fixed to this machine's, which lacks nothing here. Two things only run live: LeftOut's order (seen on a CPU without AVX-512, daddy-petz), and `ticks_done`'s take-down of the ticker, without which a stray ticker frame would sit above the verdict.
+- clippy 0; fingerprint and spill table identical. In S2 one cold function read as changed: `Option<BusBeat>::map_or` instantiated for the run's closures had two instances (the seed line's and the log record's), and has one, the log record's, its hash one of the baseline's two; the seed line's formatting moved to the CLI.
+- The owner's console_diff A/B of one short run is clean, with no ticker frame above the verdict, and bench_ab.py against S1 is inside noise.
 
 ### S3 Workspace and the GUI preview over run events (L (~1,300 lines, about 1,000 adapted from the demo))
 
@@ -504,6 +513,7 @@ A timeout also returns, which is the window's 2 Hz clock (Reactor 0.100.0 has no
 - `git mv src/main.rs` to `crates/tmr-app/src/main.rs`, with the hooks and CPU gate moved there (the panic record keeps `tmr::cli` through the helper) and `--gui`/`--cli` stripping.
 - `cli::main(args)`; `pub fn cli::run_session(args, fe) -> Result<RunStatus>` (no exit at 1116).
 - `pub mod frontend` and the payload re-exports.
+- From S2, with their first reader: `Run::CycleFinished{cycle, partial}` after the per-cycle save, partial cycles too, and `SuiteStarted`'s `progress: Arc<ProgressTracker>`.
 - `crates/tmr-gui`: GuiFrontend, the waiter, window v1, Start/Stop.
 - tmr-app's build.rs: delay-load only with the feature, plus the RtlGetVersion gate.
 - hot_loop_spills.py: `-p tmr-app` (docstring at lines 31-32 and the message at 215) and the zero-hot-loops guard.

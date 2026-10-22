@@ -1,15 +1,14 @@
-use std::fmt::Write as _;
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, Mutex, MutexGuard, OnceLock};
 use std::time::{Duration, Instant};
 use std::thread;
 
-use crate::constants::{BYTES_PER_GIB_F64, BYTES_PER_MIB_F64};
+use crate::frontend::Frontend;
 use crate::tests::TestProgress;
 
 // Live suite position for the progress ticker, plus the run's error tallies. Per-cycle and per-test
 // results are not kept here: `TestRunResult` (results.rs) owns those, and the final summary and
-// the JSON file are both built from it.
+// the JSON file are both built from it. A frontend reads it with `snapshot` (TODO 29).
 pub struct ProgressTracker {
     // What the suite was asked to do, fixed by `begin_suite`.
     suite: OnceLock<SuitePlan>,
@@ -142,14 +141,55 @@ pub struct TestSummary {
 }
 
 /// The running test's figures, summed over the workers that have published.
-#[derive(Default)]
-struct LiveFigures {
-    published: bool,
-    bytes: u64,
-    errors: u64,
-    bytes_per_sec: f64,
+#[derive(Debug, Clone, Default)]
+pub struct LiveFigures {
+    pub published: bool,
+    pub bytes: u64,
+    /// The running test's errors so far, also `ProgressSnapshot::live_errors` until it finishes
+    pub errors: u64,
+    pub bytes_per_sec: f64,
     /// What the first worker not just testing is doing (TODO 74), e.g. "Checking seal"
-    stage: Option<crate::tests::Stage>,
+    pub stage: Option<crate::tests::Stage>,
+}
+
+/// Where the suite is, read at once (TODO 29): what the ticker shows, and what a test's report
+/// ends with. `ProgressTracker::snapshot` takes it.
+#[derive(Debug, Clone)]
+pub struct ProgressSnapshot {
+    /// Since the suite began (`begin_suite`), and its time limit
+    pub runtime: Duration,
+    pub time_limit: Option<Duration>,
+    /// The cycle, 1-based (0 before the first), its limit and how long it has run
+    pub cycle: u32,
+    pub cycle_limit: Option<u32>,
+    pub cycle_elapsed: Duration,
+    /// Tests finished in this cycle, of the cycle's
+    pub tests_done: u64,
+    pub tests_per_cycle: u64,
+    /// The errors of the tests finished, the whole run's, and what the running test has found so
+    /// far, not yet in them (0 once it has finished)
+    pub finished_errors: u64,
+    pub live_errors: u64,
+    pub whea: crate::whea::WheaCounts,
+    /// The test running, or the one that just finished
+    pub test: Option<TestSnapshot>,
+}
+
+/// The running test, or the one that just finished, in a `ProgressSnapshot`.
+#[derive(Debug, Clone)]
+pub struct TestSnapshot {
+    /// Its 1-based position in the cycle, and its name as the reports give it
+    pub number: u64,
+    pub name: String,
+    pub elapsed: Duration,
+    /// Its own time limit, when it has one
+    pub time_limit: Option<Duration>,
+    /// Its results are in (`complete_test`): its errors are then in `finished_errors`
+    pub finished: bool,
+    /// Whether it publishes live figures (`RunningTest::publishes`)
+    pub publishes: bool,
+    /// Its workers' last published figures
+    pub live: LiveFigures,
 }
 
 impl Default for ProgressTracker {
@@ -260,116 +300,51 @@ impl ProgressTracker {
         self.position().errors
     }
 
-    /// The suite is over: the reporter thread takes the ticker down and exits. There is no final
-    /// ticker line, because the final summary reports the same figures.
+    /// The suite is over: the monitor thread makes its frontend's last call (`ticks_done`) and
+    /// exits. There is no final ticker line, because the final summary reports the same figures.
     pub fn finish(&self) {
         self.finished.store(true, Ordering::Relaxed);
     }
 
-    /// The ticker, or `None` before the suite has begun. It starts with a blank line, which sets
-    /// it off from the output above, and has two lines under that:
-    ///
-    /// ```text
-    ///
-    /// Runtime: 00:41:10 (remaining 00:18:50) | Cycle 4/8 (00:12:34, 40%) | 0 errors + 0 WHEA
-    /// Test 2/6 Mem-Refresh128 (00:05:12, 53%) | 285.00 GiB @ 19108.7 MiB/s (18.66 GiB/s)
-    /// ```
-    ///
-    /// Each bracketed part appears only when the matching limit exists. Errors are always shown,
-    /// the running test's live ones included; the WHEA C/UC split only when there is one.
-    fn render(&self) -> Option<String> {
+    /// Where the suite is now, or `None` before it has begun: one read of the position, under its
+    /// lock, and of the workers' live figures. The running test's live errors are 0 once its
+    /// results are in, as they are then in `finished_errors`.
+    pub fn snapshot(&self) -> Option<ProgressSnapshot> {
         let plan = self.suite.get()?;
         let position = self.position();
 
         // The running test's figures, while there is one. After it finishes they stay readable
         // until the next test starts, but its errors are then in `position.errors` instead.
-        let live = position.test.as_ref().map(|_| live_figures(&plan.workers));
-        let live_errors = match (&position.test, &live) {
-            (Some(test), Some(live)) if !test.finished => live.errors,
-            _ => 0,
-        };
-        let mut line = format!("\n{}", self.suite_line(plan, &position, live_errors));
-
-        if let (Some(test), Some(live)) = (&position.test, live) {
-            let _ = write!(line, "\nTest {}/{} {} ({}", test.number, plan.tests_per_cycle, test.name, hms(test.start.elapsed()));
-            if let Some(limit) = test.time_limit {
-                let _ = write!(line, ", {}%", percent(test.start.elapsed().as_millis(), limit.as_millis()));
-            }
-            line.push(')');
-            if let Some(stage) = live.stage {
-                let _ = write!(line, " | {}", stage.label());
-            }
-            if live.published {
-                let _ = write!(
-                    line,
-                    " | {:.2} GiB @ {:.1} MiB/s ({:.2} GiB/s)",
-                    live.bytes as f64 / BYTES_PER_GIB_F64,
-                    live.bytes_per_sec / BYTES_PER_MIB_F64,
-                    live.bytes_per_sec / BYTES_PER_GIB_F64,
-                );
-            } else if test.publishes {
-                line.push_str(" | pending");
-            } else {
-                line.push_str(" | no live data");
-            }
-        }
-        Some(line)
+        let test = position.test.as_ref().map(|test| TestSnapshot {
+            number: test.number,
+            name: test.name.clone(),
+            elapsed: test.start.elapsed(),
+            time_limit: test.time_limit,
+            finished: test.finished,
+            publishes: test.publishes,
+            live: live_figures(&plan.workers),
+        });
+        let live_errors = test.as_ref().filter(|test| !test.finished).map_or(0, |test| test.live.errors);
+        Some(ProgressSnapshot {
+            runtime: plan.start.elapsed(),
+            time_limit: plan.time_limit,
+            cycle: position.cycle,
+            cycle_limit: plan.cycle_limit,
+            cycle_elapsed: position.cycle_start.elapsed(),
+            tests_done: position.tests_done,
+            tests_per_cycle: plan.tests_per_cycle,
+            finished_errors: position.errors,
+            live_errors,
+            whea: self.whea.counts(),
+            test,
+        })
     }
 
-    /// The ticker's first line, then the test that just ended. It is the last line of that test's
-    /// report, so a record of the suite's progress stays on screen after the ticker is gone:
-    ///
-    /// ```text
-    /// Runtime: 00:03:03 | Cycle 2/2 (00:01:31, 100%) | 0 errors + 0 WHEA | Test 6/6 Mem-Refresh512 (00:00:15)
-    /// ```
-    ///
-    /// Call after `complete_test`, so the error total includes this test. `duration` is the test's
-    /// own measured time, the one its report shows. `None` before the first test.
-    pub fn test_stamp(&self, duration: Duration) -> Option<String> {
-        let plan = self.suite.get()?;
-        let position = self.position();
-        let test = position.test.as_ref()?;
-        let mut line = self.suite_line(plan, &position, 0);
-        let _ = write!(line, " | Test {}/{} {} ({})", test.number, plan.tests_per_cycle, test.name, hms(duration));
-        Some(line)
-    }
-
-    /// `Runtime | Cycle | errors`: the ticker's first line, and the start of each test's stamp.
-    /// `live_errors` is what the running test has found so far, not yet in `position.errors`.
-    fn suite_line(&self, plan: &SuitePlan, position: &Position, live_errors: u64) -> String {
-        let tests = plan.tests_per_cycle;
-        let cycle = u64::from(position.cycle);
-
-        let runtime = plan.start.elapsed();
-        let mut line = format!("Runtime: {}", hms(runtime));
-        if let Some(limit) = plan.time_limit {
-            match limit.checked_sub(runtime) {
-                Some(left) if !left.is_zero() => {
-                    let _ = write!(line, " (remaining {})", hms(left));
-                }
-                _ => line.push_str(" (limit reached, finishing cycle)"),
-            }
-        }
-
-        match plan.cycle_limit {
-            Some(limit) => {
-                let _ = write!(line, " | Cycle {}/{} ({}", cycle, limit, hms(position.cycle_start.elapsed()));
-                // Whole-run completion, counting finished tests only: Cycle 4/8 with 1 of 6 tests
-                // done is (3*6 + 1) / (8*6) = 40%.
-                let done = cycle.saturating_sub(1) * tests + position.tests_done;
-                let _ = write!(line, ", {}%)", percent(done as u128, u128::from(limit) * tests as u128));
-            }
-            None => {
-                let _ = write!(line, " | Cycle {} ({})", cycle, hms(position.cycle_start.elapsed()));
-            }
-        }
-
-        // Same form as the per-test topline: always shown, the C/UC split only when non-zero.
-        let errors = position.errors + live_errors;
-        let whea = self.whea.counts();
-        let flag = if errors > 0 || whea.total > 0 { "⚠️ " } else { "" };
-        let _ = write!(line, " | {}{} errors + {} WHEA{}", flag, errors, whea.total, whea.split_suffix());
-        line
+    /// What WHEA reported since the last call, one line each: they name the failing component,
+    /// which is what tells a marginal DIMM from a marginal NIC. The monitor thread's poll queues
+    /// them (`whea.rs`).
+    pub fn take_whea_descriptions(&self) -> Vec<String> {
+        self.whea.take_pending()
     }
 }
 
@@ -399,57 +374,69 @@ fn live_figures(workers: &[TestProgress]) -> LiveFigures {
     live
 }
 
-/// `part` as a whole percentage of `whole`, capped at 100; 0 when `whole` is 0.
-fn percent(part: u128, whole: u128) -> u128 {
-    (part * 100).checked_div(whole).map_or(0, |p| p.min(100))
-}
-
-fn hms(d: Duration) -> String {
-    let secs = d.as_secs();
-    format!("{:02}:{:02}:{:02}", secs / 3600, (secs % 3600) / 60, secs % 60)
-}
-
-pub fn progress_reporter(progress: Arc<ProgressTracker>) {
-    let mut last_draw = Instant::now();
-
+/// The engine's monitor thread while a suite runs (TODO 29): every 500 ms it drains what WHEA
+/// queued, then hands `fe` its tick, which the CLI draws its ticker on; when the suite is over,
+/// `fe`'s last call. The WHEA drain is the engine's, whatever the frontend draws.
+pub fn monitor(progress: Arc<ProgressTracker>, fe: Arc<dyn Frontend>) {
     loop {
         thread::sleep(Duration::from_millis(500));
 
         // Drain any WHEA events the OS queued for us. Costs a single zero-timeout wait on a local
         // event handle when nothing has happened, so it is safe to do on every 500ms tick — the
-        // descriptions are cached and only printed at the display interval below (TODO #63).
+        // descriptions are cached and only printed when the frontend draws (TODO 63).
         progress.whea.poll();
 
         if progress.finished.load(Ordering::Relaxed) {
             break;
         }
-
-        // Redraw every 2 seconds.
-        if last_draw.elapsed() < Duration::from_secs(2) {
-            continue;
-        }
-        // `None` until the suite has begun.
-        let Some(ticker) = progress.render() else {
-            continue;
-        };
-
-        // Anything WHEA reported since the last draw is printed above the ticker. These name the
-        // failing component, which is what tells a marginal DIMM from a marginal NIC. While a test
-        // report holds the console this draws nothing and leaves the WHEA events queued, so try
-        // again at the next tick.
-        if crate::console::draw_ticker(ticker, || progress.whea.take_pending()) {
-            last_draw = Instant::now();
-        }
+        fe.tick(&progress);
     }
+    // The poll above ran on this tick, so the frontend gets everything the OS queued until now
+    fe.ticks_done(&progress);
+}
 
-    // Take the ticker down for good. Everything from here on prints with plain `println!`.
-    crate::console::hold();
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::tests::Stage;
 
-    // Events the OS queued since the last draw (the poll above ran on this tick), not printed yet.
-    // Events already shown live are not reprinted: they are in the log file. No run tally here
-    // either: the final summary's `Total WHEA` row prints it a screen later, and saying it twice is
-    // noise. The runner flushes anything later still, once monitoring stops.
-    for event in progress.whea.take_pending() {
-        println!("{}", event);
+    /// A snapshot as a frontend reads it (TODO 29): nothing before the suite begins; while a test
+    /// runs, the figures and errors of its workers that have published, live, apart from the
+    /// finished tests' errors; once its results are in, its errors with the finished tests' and
+    /// none live, its figures still readable until the next test starts.
+    #[test]
+    fn a_snapshot_has_a_tests_errors_live_until_its_results_are_in() {
+        let ago = |secs: u64| Instant::now().checked_sub(Duration::from_secs(secs)).expect("a clock that has run a minute");
+        let progress = ProgressTracker::new();
+        assert!(progress.snapshot().is_none(), "before the suite begins");
+        let workers: Arc<[TestProgress]> = Arc::from([TestProgress::new(), TestProgress::new()]);
+        progress.begin_suite(ago(60), Some(2), Some(Duration::from_secs(600)), 4, Arc::clone(&workers));
+        progress.start_new_cycle(1);
+        progress.start_test(3, "Mem-StuckBit256", ago(5), Some(Duration::from_secs(60)), true);
+        // The first worker has published 3 errors in 1 MiB half a second in; the second, checking
+        // the seal, nothing yet, so its errors aren't read
+        workers[0].bytes_processed.store(1 << 20, Ordering::Relaxed);
+        workers[0].errors_found.store(3, Ordering::Relaxed);
+        workers[0].last_update_ms.store(500, Ordering::Relaxed);
+        workers[1].errors_found.store(5, Ordering::Relaxed);
+        workers[1].set_stage(Stage::CheckingSeal);
+
+        let running = progress.snapshot().expect("the suite has begun");
+        assert_eq!((running.cycle, running.cycle_limit, running.time_limit, running.tests_done, running.tests_per_cycle),
+                   (1, Some(2), Some(Duration::from_secs(600)), 0, 4));
+        assert_eq!((running.finished_errors, running.live_errors, running.whea.total), (0, 3, 0));
+        let test = running.test.as_ref().expect("a test is running");
+        assert_eq!((test.number, test.name.as_str(), test.time_limit, test.finished, test.publishes),
+                   (3, "Mem-StuckBit256", Some(Duration::from_secs(60)), false, true));
+        assert!(running.runtime >= Duration::from_secs(60) && (Duration::from_secs(5)..running.runtime).contains(&test.elapsed),
+                "the suite's time and the test's own: {:?}, {:?}", running.runtime, test.elapsed);
+        assert_eq!((test.live.published, test.live.bytes, test.live.errors, test.live.stage), (true, 1 << 20, 3, Some(Stage::CheckingSeal)));
+        assert_eq!(test.live.bytes_per_sec, 2.0 * (1 << 20) as f64, "1 MiB in half a second");
+
+        progress.complete_test(3);
+        let finished = progress.snapshot().expect("the suite has begun");
+        assert_eq!((finished.tests_done, finished.finished_errors, finished.live_errors), (1, 3, 0));
+        let test = finished.test.as_ref().expect("the test that finished");
+        assert_eq!((test.finished, test.live.errors), (true, 3));
     }
 }
