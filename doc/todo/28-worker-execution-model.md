@@ -45,6 +45,12 @@ on its own blocks, sequentially, with a phase barrier between tests. This model
 (b) one **coherence-storm** test where threads share lines. The exotic rotations
 (cross-CCD ring, random shuffle, producer/consumer) are diminishing returns — defer them.
 
+**From TODO 19 (2026-10-22): cross-thread page exchange** (stressapptest's) is the other
+candidate for (b): a thread writes a page and queues it; another dequeues it, checks the first
+thread's pattern, writes its own and queues it on. It stresses the coherence fabric and the
+inter-CCD/NUMA links, which nothing in TMR touches. It is a producer/consumer handoff, which the
+paragraph above defers, so stage 4 decides between it and the line-sharing storm.
+
 **Primitives**: `AtomicBool` shutdown (keep, Relaxed, checked at job granularity — never
 in SIMD loop), `std::sync::Barrier`, `crossbeam::channel` (bounded inboxes cap 4-16 for
 backpressure). NOT async/tokio (wrong tool for core-pinned tight loops).
