@@ -2,41 +2,38 @@
 #![feature(portable_simd)]
 #![feature(clflushopt_target_feature)]
 #![feature(simd_x86_clflushopt)]
-// The console goldens capture what a test prints as libtest does, and hand the capture on to the
-// threads a test spawns as it does (`golden.rs`, TODO 29)
-#![cfg_attr(test, feature(internal_output_capture, thread_spawn_hook))]
 // The engine prints nothing and exits nowhere: it hands its frontend events (`frontend.rs`, TODO
-// 29), and the one-shot commands write to their caller's writer (`commands.rs`). The CLI's own
-// modules still print, each saying so with an `expect`, until S5 moves them out. Test code prints
-// freely.
+// 29), and the one-shot commands write to their caller's writer (`commands.rs`). The CLI, which
+// prints, is its own crate (`crates/tmr-cli`). Test code prints freely.
 #![cfg_attr(not(test), deny(clippy::print_stdout, clippy::print_stderr, clippy::exit))]
 
-// The engine and, until S5 of TODO 29 cuts its crate, the command line. Its public items are what
-// tmr.exe (`crates/tmr-app`) and the window (`crates/tmr-gui`) call: `cli`, `session` (a command
-// line's setup and run), `frontend` (the interface a session is shown through, with the types its
-// events carry), `commands` (the one-shot commands), `logfile` and `request_stop`. Everything else
-// is private, so `dead_code` checks it. While `main.rs` held the CLI and every module here was
-// `pub`, all of them counted as public API, and an uncalled `pub fn` was never reported (TODO 69 E).
-pub mod cli;
+// The engine. Its public items are what tmr.exe (`crates/tmr-app`), the CLI (`crates/tmr-cli`) and
+// the window (`crates/tmr-gui`) call: `session` (a command line's setup and run), `frontend` (the
+// interface a session is shown through, with the types its events carry), `commands` (the one-shot
+// commands), `logfile`, `BUILD` and `request_stop`. Everything else is private, so `dead_code`
+// checks it. While `main.rs` held the CLI and every module here was `pub`, all of them counted as
+// public API, and an uncalled `pub fn` was never reported (TODO 69 E).
 pub mod session; // a command line's setup, then its run, through a frontend (TODO 29)
 pub mod frontend; // the engine's interface to whoever shows a session: its events (TODO 29)
 pub mod commands; // the one-shot commands, writing to their caller's writer (TODO 29)
 pub mod logfile; // the log file, which every frontend's logger writes (TODO 29)
 pub use runner::request_stop;
+pub use build_info::BUILD;
+// What the CLI's tests drive the engine with, under the `test-support` feature (TODO 29)
+#[cfg(any(test, feature = "test-support"))]
+pub mod test_support;
 
 mod config;
 mod constants;
 mod memory;
 mod tests;
 mod progress;
-mod console; // single writer path while the progress ticker is on screen
 mod layout;
 mod runner;
 mod simd;
 mod cache;
 mod tsc; // TSC frequency detection (x86_64)
 mod results; // New results module
-mod table;
 mod formatting;
 mod thread_pool;
 mod cpu_topology;
@@ -64,10 +61,6 @@ mod sequence; // Mem-Sequence's passes: writes, reads and read-then-writes in an
 mod plans; // built-in test plans: which of the suite's tests a run takes (TODO 25)
 mod ops; // the work around a test, by operation: seal fills and checks, fills (TODO 90)
 mod build_info; // which build this binary is: version, commit, compiler (TODO 72)
-mod cli_render; // the CLI's frontend: a session's events as the console shows them (TODO 29)
-mod prompts; // the CLI's questions, over any reader and writer (TODO 29)
-#[cfg(test)]
-mod golden; // the console's output against goldens, for the engine/presentation split (TODO 29)
 
 // Common result type for the crate
 pub(crate) type Result<T> = std::result::Result<T, Box<dyn std::error::Error>>;
@@ -81,7 +74,6 @@ use layout::{EnhancedMemoryLayout, BlockInfo};
 use runner::AllocationBlock;
 use simd::detect_simd_capabilities;
 use cache::SystemInfo;
-use build_info::BUILD;
 
 /// What a run does on an error. Public as a setup event's payload (`frontend::Selection`).
 #[derive(Debug, Clone, Copy, PartialEq)]

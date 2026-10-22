@@ -4,8 +4,11 @@
 use std::fmt::Write as _;
 use std::time::Duration;
 
-use crate::constants::{BYTES_PER_GIB_F64, BYTES_PER_MIB_F64};
-use crate::progress::ProgressSnapshot;
+use tmr::frontend::ProgressSnapshot;
+
+/// Bytes in a MiB and a GiB, for the ticker's figures (the engine's `constants` has the GiB's too)
+const BYTES_PER_MIB_F64: f64 = 1024.0 * 1024.0;
+const BYTES_PER_GIB_F64: f64 = 1024.0 * 1024.0 * 1024.0;
 
 /// The ticker. It starts with a blank line, which sets it off from the output above, and has two
 /// lines under that:

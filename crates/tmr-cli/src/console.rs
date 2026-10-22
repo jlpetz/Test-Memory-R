@@ -3,7 +3,7 @@
 //! The ticker sits under the last line of output and is redrawn in place, which means moving the
 //! cursor back up over every row it covers. Anything another thread printed in the meantime would be
 //! overwritten by that, or stranded between two ticker rows. So everything that can print while the
-//! ticker is up — the logger, WHEA events, the Ctrl+C handler, the run's events (`cli_render`) —
+//! ticker is up — the logger, WHEA events, the Ctrl+C handler, the run's events (`render`) —
 //! goes through here: each print takes the ticker down, writes, and puts it back under one lock, so
 //! the ticker is always the last thing on screen and is never torn.
 //!
@@ -11,8 +11,8 @@
 //! it finishes (`hold`). A test's report, many lines long, prints in one piece through
 //! `print_block`.
 
-// Every `unsafe` block in this file is a Win32 console call. See memory/backend.rs for why this
-// lint is scoped per file rather than crate-wide.
+// Every `unsafe` block in this file is a Win32 console call. See the engine's
+// src/memory/backend.rs for why this lint is scoped per file rather than crate-wide.
 #![warn(clippy::undocumented_unsafe_blocks)]
 
 use std::io::{self, Write};

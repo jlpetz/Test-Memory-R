@@ -1,9 +1,20 @@
 //! The command-line front end (TODO 29): the console's logging, a session shown through the CLI's
-//! frontend (`cli_render`), and how it ended: the verdict, why setup stopped it, or the one-shot
-//! command it named, run on the console. The session itself is the engine's (`session::run`).
+//! frontend (`render`), and how it ended: the verdict, why setup stopped it, or the one-shot command
+//! it named, run on the console. The session itself is the engine's (`tmr::session::run`). Its own
+//! crate since S5 of TODO 29, so the engine prints nothing, and the window (`crates/tmr-gui`)
+//! doesn't name it: tmr.exe hands the window this crate's logging until the window has its own.
 
-// The CLI's own output and its Ctrl+C exit, until S5 of TODO 29 moves them to the tmr-cli crate
-#![expect(clippy::print_stdout, clippy::print_stderr, clippy::exit, reason = "TODO 29 S5: the CLI's own output, until it moves to the tmr-cli crate")]
+// The console goldens capture what a test prints as libtest does, and hand the capture on to the
+// threads a test spawns as it does (`golden.rs`, TODO 29)
+#![cfg_attr(test, feature(internal_output_capture, thread_spawn_hook))]
+
+mod console; // single writer path while the progress ticker is on screen
+mod table;
+mod renderer; // the engine's reports as the console shows them
+mod render; // the CLI's frontend: a session's events as the console shows them (TODO 29)
+mod prompts; // the CLI's questions, over any reader and writer (TODO 29)
+#[cfg(test)]
+mod golden; // the console's output against goldens, for the engine/presentation split (TODO 29)
 
 use std::env;
 use std::io::{stdin, stdout, Write};
@@ -11,8 +22,11 @@ use std::sync::Arc;
 use log::LevelFilter;
 use env_logger::Builder;
 
-use crate::runner::RunStatus;
-use crate::session::SessionEnd;
+use tmr::frontend::RunStatus;
+use tmr::session::SessionEnd;
+
+/// What the engine's reports and the CLI's renders return: the engine's `Result`
+type Result<T> = std::result::Result<T, Box<dyn std::error::Error>>;
 
 /// The CLI: a session on the console, `args` the command line (the exe's name first) less tmr.exe's
 /// own `--cli`/`--gui`. Returns the exit status for scripts: 0 passed, 1 failed or found errors, 2
@@ -23,11 +37,11 @@ pub fn main(args: Vec<String>) -> i32 {
     // Initialize enhanced logging with file output
     setup_logging();
 
-    println!("🚀 Test Memory R (TMR) v{} - High-Performance Memory Testing Tool", crate::BUILD.version);
+    println!("🚀 Test Memory R (TMR) v{} - High-Performance Memory Testing Tool", tmr::BUILD.version);
     println!("================================================================================");
 
     let program = args.first().cloned().unwrap_or_default();
-    match crate::session::run(args, Arc::new(crate::cli_render::CliFrontend::new())) {
+    match tmr::session::run(args, Arc::new(crate::render::CliFrontend::new())) {
         Ok(end) => finish(&end, &program),
         Err(e) => {
             report_error(e.as_ref());
@@ -36,10 +50,10 @@ pub fn main(args: Vec<String>) -> i32 {
     }
 }
 
-/// The error that stopped a session, as the CLI reports it, the window's preview too (TODO 29 S3):
-/// `Error: ...` on the console once, and the error in the log file.
+/// The error that stopped a session, as the CLI reports it, the window's preview too (TODO 29 S3;
+/// tmr.exe hands it over): `Error: ...` on the console once, and the error in the log file.
 pub fn report_error(e: &dyn std::error::Error) {
-    log::error!(target: crate::logfile::FILE_ONLY_TARGET, "{e}");
+    log::error!(target: tmr::logfile::FILE_ONLY_TARGET, "{e}");
     eprintln!("Error: {e}");
 }
 
@@ -53,15 +67,15 @@ fn finish(end: &SessionEnd, program: &str) -> i32 {
         SessionEnd::RestartChosen => RunStatus::Passed,
         SessionEnd::Stopped(_) => RunStatus::NotRun,
     };
-    crate::cli_render::show_end(end, program);
+    crate::render::show_end(end, program);
     status.exit_code()
 }
 
 /// A one-shot command on the console, which a calibration asks whether to save what it measured.
 /// Its exit status: 0 done, 2 failed.
-fn run_command(command: &crate::commands::Command) -> i32 {
+fn run_command(command: &tmr::commands::Command) -> i32 {
     let mut confirm = |question: &str| crate::prompts::confirm(&mut stdin().lock(), &mut stdout(), question);
-    match crate::commands::run(command, &mut stdout(), &mut confirm) {
+    match tmr::commands::run(command, &mut stdout(), &mut confirm) {
         Ok(status) => status.exit_code(),
         // The console can't be written to
         Err(e) => {
@@ -76,11 +90,10 @@ fn run_command(command: &crate::commands::Command) -> i32 {
 pub(crate) fn take_ctrl_c() {
 	// Register CTRL+C handler for graceful shutdown
 	// This allows tests to stop at next checkpoint and print final reports
-	// A flag of the handler's own, not SHUTDOWN_REQUESTED: a halt sets that too, and the first
-	// CTRL+C after a halt must still be the graceful one.
+	// A flag of the handler's own, not the engine's SHUTDOWN_REQUESTED: a halt sets that too, and
+	// the first CTRL+C after a halt must still be the graceful one.
 	let mut pressed = false;
 	ctrlc::set_handler(move || {
-		use std::sync::atomic::Ordering;
 		if pressed {
 			// Second press: the graceful stop is stuck or too slow. Windows frees every page the
 			// process holds, large pages included, when it exits. stderr rather than print_above,
@@ -98,24 +111,24 @@ pub(crate) fn take_ctrl_c() {
 			 \x20  Tests will stop at next checkpoint and print final report\n\
 			 \x20  (Press CTRL+C again to exit immediately, without the report; the results file keeps only the cycles saved so far)\n\n",
 		);
-		crate::runner::SHUTDOWN_REQUESTED.store(true, Ordering::Relaxed);
+		tmr::request_stop();
 	}).expect("Error setting CTRL+C handler");
 }
 
 /// The console's logging: VT escape processing, then env_logger, each record on the console in
-/// colour above the ticker and in the log file (`logfile`). The window's preview logs this way too
-/// until S6 of TODO 29 gives it a logger of its own.
+/// colour above the ticker and in the log file (`tmr::logfile`). The window's preview logs this way
+/// too (tmr.exe hands it over) until S6 of TODO 29 gives it a logger of its own.
 pub fn setup_logging() {
     // VT escape processing, for the log colours and the progress ticker (see console.rs).
     crate::console::init();
 
     // Create logs directory if it doesn't exist
-    if let Err(e) = crate::logfile::create_dir() {
+    if let Err(e) = tmr::logfile::create_dir() {
         eprintln!("Warning: Failed to create logs directory: {}", e);
     }
 
     // Shared with the result filename so a run's log and result can be paired by name
-    let log_filename = crate::logfile::path();
+    let log_filename = tmr::logfile::path();
 
     let log_level = env::var("RUST_LOG").unwrap_or_else(|_| "info".to_string());
     let level_filter = match log_level.to_lowercase().as_str() {
@@ -128,7 +141,7 @@ pub fn setup_logging() {
     };
 
     // Initialize file logger for dual logging
-    crate::logfile::open(&log_filename);
+    tmr::logfile::open(&log_filename);
 
     // Set up env_logger for console with original nice formatting (colors + module info)
     Builder::new()
@@ -137,7 +150,7 @@ pub fn setup_logging() {
             // Write to console with original env_logger format. `LogSink` below prints it above
             // the progress ticker, so the two never merge. A file-only record writes nothing here,
             // and `LogSink` drops an empty write.
-            let console_result = if record.target() == crate::logfile::FILE_ONLY_TARGET {
+            let console_result = if record.target() == tmr::logfile::FILE_ONLY_TARGET {
                 Ok(())
             } else {
                 writeln!(
@@ -162,7 +175,7 @@ pub fn setup_logging() {
             };
 
             // Also write to file without colors
-            crate::logfile::write(record);
+            tmr::logfile::write(record);
 
             console_result
         })
@@ -179,6 +192,6 @@ pub fn setup_logging() {
         .init();
 
     // Log startup info
-    log::info!("TMR v{} started - console logging with colors and module info restored", crate::BUILD.version);
+    log::info!("TMR v{} started - console logging with colors and module info restored", tmr::BUILD.version);
     log::info!("Log level: {} - detailed logs also saved to {}", log_level, log_filename);
 }

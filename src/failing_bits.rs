@@ -54,8 +54,9 @@ impl FailingBits {
     }
 
     /// A bad word: `actual` where `want` was expected. A rescan counts its words in a `WordTally`
-    /// instead, which a chunk of bad words doesn't slow.
-    #[cfg(test)]
+    /// instead, which a chunk of bad words doesn't slow. A test's, and the final summary's fixture
+    /// (`test_support`, TODO 29).
+    #[cfg(any(test, feature = "test-support"))]
     pub(crate) fn add_word(&mut self, want: u64, actual: u64) {
         let mut tally = WordTally::default();
         tally.add(want, actual);

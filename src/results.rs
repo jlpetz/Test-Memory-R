@@ -1017,44 +1017,7 @@ impl Drop for TempDir {
 #[cfg(test)]
 mod tests {
     use super::*;
-
-    fn summary(step: usize, duration_ms: u128, bytes_processed: u64, seal_errors: u64) -> TestSummary {
-        TestSummary {
-            step,
-            test_index: step - 1,
-            id: None,
-            label: format!("step {step}"),
-            seal_errors,
-            name: "Mem-SimpleV2-Auto".to_string(),
-            duration_ms,
-            timed_ms: duration_ms as f64,
-            bytes_processed,
-            operations: 0,
-            cycles_completed: (1, 1),
-            stopped_by: Some("cycles"),
-            ops: Default::default(),
-            throughput_mib_s: if duration_ms > 0 { 1000.0 } else { 0.0 },
-            errors: 0,
-            alarms: 0,
-            not_reproduced: 0,
-            failing_bits: Default::default(),
-            seal_failing_bits: Default::default(),
-            whea_total: 0,
-            whea_corrected: 0,
-            latency_samples: None,
-            latency_p5_ns: None,
-            latency_p10_ns: None,
-            latency_p25_ns: None,
-            latency_p50_ns: None,
-            latency_p75_ns: None,
-            latency_p90_ns: None,
-            latency_p95_ns: None,
-            latency_p99_ns: None,
-            latency_p99_9_ns: None,
-            latency_spread: None,
-            threads: Vec::new(),
-        }
-    }
+    use crate::test_support::summary;
 
     /// A step that never ran, because the seal check before its first run failed under halt, keeps
     /// its seal errors through finalization and serialization and isn't a run. Astra's review: the
@@ -1114,76 +1077,6 @@ mod tests {
         let rows: Vec<(&str, &str)> = table.rows.iter().map(|r| (r[0].as_str(), r[1].as_str())).collect();
         assert_eq!(rows, [("test 1", "31: 2 / 1 (1 + 0)"), ("test 2", "39: 1 / 1 (0 + 1)"), ("Seal", "7: 2 / 1 (1 + 0)"),
                           ("All", "7: 2 / 1 (1 + 0), 31: 2 / 1 (1 + 0), 39: 1 / 1 (0 + 1)")]);
-    }
-
-    /// The final summary as the console gets it (TODO 29), from two sealed cycles: a test run twice
-    /// a cycle, a latency step, a step's errors and bits in the second cycle, a final check's
-    /// error, the seal's work and a step's, and a WHEA event. Every table it has shows.
-    #[test]
-    fn the_final_summary_prints_as_its_golden() {
-        use crate::ops::Op;
-        use std::time::Duration;
-        let bits = |mask: u64, want: u64, actual: u64| {
-            let mut b = FailingBits::default();
-            b.add_check(mask);
-            b.add_word(want, actual);
-            b
-        };
-        let step = |n: usize, test_index: usize, name: &str| TestSummary {
-            test_index,
-            name: name.to_string(),
-            label: name.to_string(),
-            throughput_mib_s: 9500.0 + 250.0 * n as f64,
-            ..summary(n, 4_000 + 500 * n as u128, 12 << 30, 0)
-        };
-        let latency = |n: usize| TestSummary {
-            latency_samples: Some(2000),
-            latency_p5_ns: Some(71.0),
-            latency_p10_ns: Some(71.5),
-            latency_p25_ns: Some(72.0),
-            latency_p50_ns: Some(72.5),
-            latency_p75_ns: Some(73.25),
-            latency_p90_ns: Some(74.5),
-            latency_p95_ns: Some(76.5),
-            latency_p99_ns: Some(85.0),
-            latency_p99_9_ns: Some(112.5),
-            latency_spread: Some(76.5 / 71.0),
-            bytes_processed: 48 << 10,
-            throughput_mib_s: 410.0,
-            ..step(n, 1, "Lat-L1-Read")
-        };
-        let mut ops = crate::ops::OpTally::default();
-        ops.add(Op::SealCheck, Duration::from_millis(350), 12 << 30);
-        ops.add(Op::SealFill, Duration::from_millis(420), 12 << 30);
-        let seal = |errors, final_check_failing_bits| CycleSeal {
-            seal_ms: 410,
-            seal_bytes: 24 << 30,
-            between_steps_ms: 90,
-            final_check_ms: 380,
-            final_check_bytes: 24 << 30,
-            final_check_errors: errors,
-            final_check_failing_bits,
-        };
-        let mut result = TestRunResult::new(Default::default());
-        let first = vec![step(1, 0, "Mem-StuckBit256_A"), latency(2), TestSummary { ops, ..step(3, 0, "Mem-StuckBit256_A") }];
-        result.add_cycle(1, 31, first, Some(seal(0, FailingBits::default())), false);
-        let bad = TestSummary {
-            errors: 3,
-            alarms: 2,
-            failing_bits: bits(1 << 17, 0, 1 << 17),
-            seal_errors: 1,
-            seal_failing_bits: bits(1 << 5, 1 << 5, 0),
-            whea_total: 1,
-            whea_corrected: 1,
-            ..step(3, 0, "Mem-StuckBit256_A")
-        };
-        result.add_cycle(2, 32, vec![step(1, 0, "Mem-StuckBit256_A"), latency(2), bad], Some(seal(1, bits(1 << 40, 0, 1 << 40))), false);
-        result.finalize(Duration::from_secs(3725));
-        result.set_whea_totals(crate::whea::WheaCounts { total: 1, corrected: 1 }, true);
-        let report = crate::reporting::converters::create_overall_stats_summary_report(&result);
-        let (printed, text) = crate::cli_render::rendered(|reporter| reporter.report_final_summary(&report));
-        printed.unwrap();
-        crate::golden::check("report_final_summary", &text);
     }
 
     /// A results file as TMR wrote it before TODO 72's fields (`testdata/result_files/before_todo_72.json`):

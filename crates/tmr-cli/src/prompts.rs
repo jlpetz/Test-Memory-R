@@ -1,10 +1,10 @@
 //! The CLI's questions (TODO 29), over any reader and writer so a test can script the answers: the
 //! large-page restart (`Frontend::large_page_restart`) and a calibration's save (the `confirm`
-//! that `commands::run` takes). The CLI asks on the console; it moves to tmr-cli in S5.
+//! that `tmr::commands::run` takes). The CLI asks on the console.
 
 use std::io::{self, BufRead, Write};
 
-use crate::frontend::RestartChoice;
+use tmr::frontend::RestartChoice;
 
 /// Large pages need a restart: what that means, the choice, A or B, and what the answer does. A
 /// that exits, B that continues on 4 KiB pages; anything else, an empty answer, the input's end or

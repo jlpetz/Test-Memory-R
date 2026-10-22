@@ -9,12 +9,10 @@ pub mod formatters;
 pub mod renderers;
 pub mod converters;
 pub mod system_info_builder;
-#[cfg(test)]
-pub(crate) mod tests; // the Reporter's goldens, and the fixtures setup's goldens share
 
 use crate::Result;
 use self::models::*;
-use self::formatters::ReportFormatter;
+use self::formatters::{DefaultFormatter, ReportFormatter};
 use self::renderers::Renderer;
 
 /// Main reporter that combines formatting and rendering
@@ -24,11 +22,13 @@ pub struct Reporter<R: Renderer> {
 }
 
 impl<R: Renderer> Reporter<R> {
-    pub fn new(formatter: Box<dyn ReportFormatter>, renderer: R) -> Self {
-        Self { formatter, renderer }
+    /// A reporter that renders the default formatting's tables through `renderer`: a frontend's
+    /// own (TODO 29: the CLI's `ConsoleRenderer`, crates/tmr-cli)
+    pub fn new(renderer: R) -> Self {
+        Self { formatter: Box::new(DefaultFormatter::new()), renderer }
     }
 
-    /// The renderer, with what it rendered: `ConsoleRenderer`'s text (TODO 29)
+    /// The renderer, with what it rendered: the CLI's `ConsoleRenderer`'s text (TODO 29)
     pub fn into_renderer(self) -> R {
         self.renderer
     }
@@ -111,9 +111,10 @@ impl<R: Renderer> Reporter<R> {
         Ok(())
     }
     
-    /// Report cycle completion
+    /// Report cycle completion. Crate-private while nothing calls it, so it stays checked as dead
+    /// code: a public `Reporter`'s public methods aren't (TODO 29).
     #[expect(dead_code, reason = "TODO #29: the per-cycle report is to be revived, not deleted (from TODO #69 F)")]
-    pub fn report_cycle(&mut self, report: &CycleReport) -> Result<()> {
+    pub(crate) fn report_cycle(&mut self, report: &CycleReport) -> Result<()> {
         let table = self.formatter.prepare_cycle_report_table(report);
         self.renderer.render_table(&table)?;
         Ok(())
@@ -188,11 +189,4 @@ impl<R: Renderer> Reporter<R> {
         }
         Ok(())
     }
-}
-
-/// Convenience function to create a console reporter with default settings
-pub fn create_console_reporter() -> Reporter<renderers::ConsoleRenderer> {
-    let formatter = Box::new(formatters::DefaultFormatter::new());
-    let renderer = renderers::ConsoleRenderer::new();
-    Reporter::new(formatter, renderer)
 }

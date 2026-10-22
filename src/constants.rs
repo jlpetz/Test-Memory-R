@@ -14,7 +14,6 @@ pub const BYTES_PER_GIB: u64 = 1024 * 1024 * 1024;
 pub const BYTES_PER_MIB_USIZE: usize = 1024 * 1024;
 
 /// Floating point memory conversion constants (for divisions)
-pub const BYTES_PER_MIB_F64: f64 = 1024.0 * 1024.0;
 pub const BYTES_PER_GIB_F64: f64 = 1024.0 * 1024.0 * 1024.0;
 
 /// Base units for cache sizes and other calculations

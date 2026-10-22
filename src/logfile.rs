@@ -1,7 +1,7 @@
 //! The log file (TODO 29): `logs/<stem>.log`, with the stem the run's results file shares, a header,
 //! then one line per record, `[stamp LEVEL module] message`, in local time to the millisecond. A
 //! frontend's logger hands each record here as well as showing it, the CLI's on the console
-//! (`cli::setup_logging`), so every frontend writes the same file.
+//! (`tmr_cli::setup_logging`), so every frontend writes the same file.
 
 use std::io::Write;
 use std::sync::{Mutex, OnceLock};

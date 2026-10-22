@@ -100,14 +100,14 @@ impl Window {
     fn start(&mut self, context: &ComponentContext<Self>) {
         let (tx, rx) = mpsc::channel();
         let fe = Arc::new(GuiFrontend { feed: tx.clone() });
-        let args = self.args.clone();
+        let (args, console) = (self.args.clone(), crate::console());
         let session = std::thread::Builder::new().name("tmr-engine".to_string()).spawn(move || {
             // The log records on the console and in the log file, as the CLI has them, until S6 of
             // TODO 29 gives the window a logger of its own
-            tmr::cli::setup_logging();
+            (console.setup_logging)();
             let result = tmr::session::run(args, fe).map_err(|e| {
                 // On the console and in the log, as the CLI has it
-                tmr::cli::report_error(e.as_ref());
+                (console.report_error)(e.as_ref());
                 e.to_string()
             });
             crate::session_ended(&result);

@@ -33,9 +33,16 @@ jobs:
     - name: ✅ Check formatting
       run: cargo +nightly fmt --all -- --check
 
-    # The workspace (TODO 29): the engine, tmr.exe and the window, the window's feature on
+    # The workspace (TODO 29): the engine, tmr.exe, the CLI and the window, the window's feature on,
+    # and the engine's test-support, which only the CLI's tests turn on
     - name: 🧹 Run clippy
       run: cargo +nightly clippy --workspace --all-targets --all-features -- -D warnings
+
+    # Again without the tests, so the engine is checked as tmr.exe builds it, test-support off.
+    # Cargo builds the engine once a command, so above it had the feature, and an engine item only
+    # the fixtures still call would raise no dead_code warning
+    - name: 🧹 Run clippy, the engine as tmr.exe builds it
+      run: cargo +nightly clippy --workspace -- -D warnings
 
     - name: 🚧 Build release version
       run: cargo +nightly build --release
@@ -45,7 +52,8 @@ jobs:
       with:
         tool: cargo-nextest
 
-    # The window's tests are of its plain-Rust model and need no Windows App Runtime
+    # The window's tests are of its plain-Rust model and need no Windows App Runtime. The CLI's
+    # console goldens are compared byte for byte (.gitattributes keeps their line ends)
     - name: 🧪 Run tests
       run: cargo +nightly nextest run --workspace --all-targets
 

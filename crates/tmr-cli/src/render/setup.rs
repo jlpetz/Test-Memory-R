@@ -1,18 +1,17 @@
 //! A session's setup and its end as the console shows them (TODO 29): each event the print group it
-//! replaced, moved here from `cli.rs` (the CPU topology's from `cpu_topology.rs`, the memory
-//! status's from `runner.rs`) with its format strings. No ticker is up during setup, so all print
-//! with plain `print!`, and to stderr what went there.
+//! replaced, moved here from the engine's `cli.rs` (the CPU topology's from `cpu_topology.rs`, the
+//! memory status's from `runner.rs`) with its format strings. No ticker is up during setup, so all
+//! print with plain `print!`, and to stderr what went there.
 
 use std::fmt::Write as _;
 
+use tmr::frontend::{CacheCalibrationState, ErrorMode, MemoryStatus, ParamNote, RunStatus, SealCalibrationState, Selection, Setup};
+use tmr::session::{SessionEnd, Stopped};
+
 use super::{rendered, report_text};
-use crate::frontend::{CacheCalibrationState, MemoryStatus, ParamNote, SealCalibrationState, Selection, Setup};
-use crate::runner::RunStatus;
-use crate::session::{SessionEnd, Stopped};
-use crate::ErrorMode;
 
 /// Shows `setup`. From `Starting` on, Ctrl+C stops the run gracefully: `take_ctrl_c` installs
-/// that (`cli::take_ctrl_c`; a test passes its own, as a test process keeps Ctrl+C for itself).
+/// that (`crate::take_ctrl_c`; a test passes its own, as a test process keeps Ctrl+C for itself).
 pub(super) fn show(setup: Setup, take_ctrl_c: impl FnOnce()) {
     match setup {
         Setup::MemoryStatus(None) => eprintln!("⚠️ Failed to retrieve system memory status"),
@@ -253,8 +252,8 @@ fn memory_status_text(text: &mut String, status: &MemoryStatus) {
 }
 
 /// How the session ended, as the console says it, `program` the exe's name for the help an unknown
-/// flag shows. A command's output is its own (`commands::run`), and the large-page restart's text
-/// was the prompt's.
+/// flag shows. A command's output is its own (`tmr::commands::run`), and the large-page restart's
+/// text was the prompt's.
 pub(crate) fn show_end(end: &SessionEnd, program: &str) {
     match end {
         SessionEnd::Stopped(Stopped::Invalid(e)) => eprintln!("{}", e),
@@ -294,7 +293,7 @@ fn end_text(end: &SessionEnd, program: &str) -> String {
             let _ = writeln!(text, "Note: --latency-test has been renamed to --ram-latency");
             let _ = writeln!(text);
             let mut help = Vec::new();
-            let _ = crate::commands::help(&mut help, program);
+            let _ = tmr::commands::help(&mut help, program);
             text += &String::from_utf8_lossy(&help);
         }
         SessionEnd::Stopped(Stopped::MemoryOverride { spec, error }) => {

@@ -1,15 +1,12 @@
 //! A run's events as the console shows them (TODO 29): each the print group it replaced, moved here
-//! from `runner.rs` and `layout.rs` with its format strings.
+//! from the engine's `runner.rs` and `layout.rs` with its format strings.
 
 use std::fmt::Write as _;
 
+use tmr::frontend::{CpuPerformanceSummary, NotRun, PageSizeLevel, Run, RunOutcome, RunStatus, SealOp, StepReport, WheaCounts};
+
 use super::{report_text, ticker};
 use crate::console;
-use crate::frontend::{CpuPerformanceSummary, NotRun, Run, StepReport};
-use crate::memory::allocator::PageSizeLevel;
-use crate::progress::RunOutcome;
-use crate::runner::RunStatus;
-use crate::thread_pool::SealOp;
 
 /// Shows `run`, with the write primitive its prints had.
 pub(super) fn show(run: Run) {
@@ -212,7 +209,7 @@ fn step_report(report: &StepReport) -> String {
     let pass_indicator = if test_passed { "✅" } else { "❌" };
     // The seal's errors, in a sealed run: what the checks before this step's chunks found
     let seal_info = if *sealed { format!(" + {} seal{}", s.seal_errors, s.seal_failing_bits.brief()) } else { String::new() };
-    let whea = crate::whea::WheaCounts { total: s.whea_total, corrected: s.whea_corrected };
+    let whea = WheaCounts { total: s.whea_total, corrected: s.whea_corrected };
 
     // WHEA is always shown, even at zero, so a clean line still states that we were watching;
     // the C/UC split only appears when there is something to split. "errors" is the word every
@@ -273,7 +270,7 @@ fn step_report(report: &StepReport) -> String {
 
 /// The run's work by thread, by CPU and by physical core.
 fn cpu_performance(summary: &CpuPerformanceSummary) -> String {
-    let mut reporter = crate::reporting::create_console_reporter();
+    let mut reporter = crate::renderer::create_console_reporter();
     if !summary.by_thread.threads.is_empty() {
         let _ = reporter.report_performance_by_thread(&summary.by_thread);
     }

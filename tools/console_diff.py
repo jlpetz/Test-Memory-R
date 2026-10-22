@@ -126,7 +126,8 @@ def normalised(path, extra):
             line = re.sub(pattern, mask, line)
         lines.append(line)
     # The workers' lines come in the order the scheduler gave them: each run of lines that name a
-    # thread goes in thread order, each thread's own lines in theirs (as src/golden.rs does)
+    # thread goes in thread order, each thread's own lines in theirs (as crates/tmr-cli/src/golden.rs
+    # does)
     at = 0
     while at < len(lines):
         end = at

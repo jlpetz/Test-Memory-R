@@ -893,7 +893,7 @@ mod tests {
     /// TODO 99: at startup, a seal calibration measured on this machine gives `auto` its width
     /// (`set`, `seal::set_calibrated_width` in a run), which the run's seal then resolves to, and
     /// is Loaded; one from other hardware gives it none and is Stale; with none, None. The line
-    /// each shows is the CLI's (`cli_render`).
+    /// each shows is the CLI's (`render::setup`, crates/tmr-cli).
     #[test]
     fn startup_gives_auto_this_machines_seal_calibration() {
         use crate::seal::{SealWidth, SealWidthSource, TestCalibratedWidth};

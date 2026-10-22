@@ -1,0 +1,23 @@
+[package]
+name = "tmr-cli"
+version.workspace = true
+edition.workspace = true
+description = "TMR's command line: a session on the console, its logging and its Ctrl+C (TODO 29)"
+publish = false
+
+[dependencies]
+tmr = { path = "../.." }
+log = "0.4"
+env_logger = "0.11"
+ctrlc = "3.5"
+chrono = "0.4"
+# The ticker's console (VT mode, its width) and Ctrl+C's exit status. The engine enables the other
+# features tmr.exe builds the crate with, so it still builds once, with the features it had
+windows = { version = "0.62", features = [
+    "Win32_Foundation",
+    "Win32_System_Console",
+] }
+
+[dev-dependencies]
+# The engine's run and reports, driven through the CLI's frontend for the console's goldens
+tmr = { path = "../..", features = ["test-support"] }

@@ -19,6 +19,7 @@ gui = ["dep:tmr-gui"]
 
 [dependencies]
 tmr = { path = "../.." }
+tmr-cli = { path = "../tmr-cli" }
 tmr-gui = { path = "../tmr-gui", optional = true }
 log = "0.4"
 # The crash handler, and the Windows build the window needs: features the engine enables already, so

@@ -1,6 +1,6 @@
 //! Goldens of the CLI's frontend (TODO 29), from fixed payloads: each event the console goldens of
-//! a run don't show (`testdata/console/{cycle,plan_only,not_run}.txt`), through `CliFrontend::event`
-//! as a run sends it, and the ticker; and the ticker's clock. `Run::Allocated` and
+//! a run don't show (`testdata/console/{cycle,plan_only,not_run}.txt`, `run_tests.rs`), through
+//! `CliFrontend::event` as a run sends it, and the ticker; and the ticker's clock. `Run::Allocated` and
 //! `Run::FinalSummary` have none of their own: each shows one report, whose golden is the
 //! Reporter's (`report_allocation_*`, `report_final_summary`). And a session's: every setup event,
 //! as a session sends it, and each way a session ends. A session itself can't run in a test: its
@@ -11,24 +11,17 @@ use std::time::{Duration, Instant};
 
 use chrono::TimeZone;
 
+use tmr::frontend::{
+    CacheCalibrationState, CpuPerformance, CpuPerformanceSummary, ErrorMode, Frontend, LiveFigures, MemoryModule, MemoryStatus,
+    NotRun, PageSizeLevel, ParamNote, PerformanceByCpuReport, PerformanceByPhysicalCoreReport, PerformanceByThreadReport,
+    PhysicalCorePerformance, ProgressSnapshot, ProgressTracker, Run, RunOutcome, RunStatus, SealCalibrationState, SealOp,
+    Selection, Setup, Stage, StepConfigLine, StepReport, TestSnapshot, TestSummary, ThreadPerformance, WheaCounts,
+};
+use tmr::session::{SessionEnd, Stopped};
+use tmr::test_support::failing_bits;
+
 use super::{draw_when_due, setup, ticker, CliFrontend};
-use crate::failing_bits::FailingBits;
-use crate::frontend::{
-    CacheCalibrationState, CpuPerformanceSummary, Frontend, MemoryStatus, NotRun, ParamNote, Run, SealCalibrationState, Selection,
-    Setup, StepConfigLine, StepReport,
-};
 use crate::golden::{capture, check};
-use crate::memory::allocator::PageSizeLevel;
-use crate::progress::{LiveFigures, ProgressSnapshot, ProgressTracker, RunOutcome, TestSnapshot, TestSummary};
-use crate::reporting::models::{
-    CpuPerformance, PerformanceByCpuReport, PerformanceByPhysicalCoreReport, PerformanceByThreadReport,
-    PhysicalCorePerformance, ThreadPerformance,
-};
-use crate::runner::RunStatus;
-use crate::session::{SessionEnd, Stopped};
-use crate::thread_pool::SealOp;
-use crate::whea::WheaCounts;
-use crate::ErrorMode;
 
 const GIB: u64 = 1 << 30;
 
@@ -61,9 +54,9 @@ fn events_print_as_their_golden() {
         ("a cycle of a limit", Run::CycleStarted { cycle: 2, limit: Some(3) }),
         ("a cycle with no limit", Run::CycleStarted { cycle: 41, limit: None }),
         ("memory sealed", Run::SealStage { op: SealOp::SealAll, kernel: "tm5-512".to_string(), bytes: 24 * GIB, errors: 0,
-                                           bits: FailingBits::default(), duration: Duration::from_millis(1250) }),
+                                           bits: Default::default(), duration: Duration::from_millis(1250) }),
         ("a final check that found errors", Run::SealStage { op: SealOp::FinalCheck, kernel: "tmr-256".to_string(), bytes: 24 * GIB,
-                                                             errors: 2, bits: bits(1 << 5), duration: Duration::from_millis(1180) }),
+                                                             errors: 2, bits: failing_bits(1 << 5), duration: Duration::from_millis(1180) }),
         ("a step unsealed, ended by its time limit, with a WHEA event and repetitions", Run::StepFinished(Box::new(step()))),
         ("WHEA after the monitor's last tick", Run::LateWhea(vec![
             "⚠️  WHEA: corrected Memory error on DIMM_A1 (Event 47)".to_string(),
@@ -117,7 +110,7 @@ fn the_ticker_draws_as_its_golden() {
     (pending.finished_errors, pending.live_errors, pending.whea) = (2, 1, WheaCounts { total: 3, corrected: 1 });
     let test = pending.test.as_mut().unwrap();
     test.time_limit = None;
-    test.live = LiveFigures { stage: Some(crate::tests::Stage::CheckingSeal), ..Default::default() };
+    test.live = LiveFigures { stage: Some(Stage::CheckingSeal), ..Default::default() };
     case("no limits, errors and WHEA, a stage, no figures yet", ticker::render(&pending));
     case("its stamp: the finished tests' errors only", ticker::test_stamp(&pending, Duration::from_secs(15)).unwrap());
 
@@ -182,13 +175,6 @@ fn snapshot() -> ProgressSnapshot {
     }
 }
 
-/// The bits of a check that found `mask` wrong
-fn bits(mask: u64) -> FailingBits {
-    let mut bits = FailingBits::default();
-    bits.add_check(mask);
-    bits
-}
-
 /// A step of 5 passes of 61 s on two threads, both numbered CPU 0, so no figure depends on this
 /// machine's topology: unsealed, on no cycle limit, ended by its time limit, with a corrected WHEA
 /// event; a test and a verify repeated.
@@ -246,7 +232,7 @@ fn step() -> StepReport {
             verify_reps: 3,
             write_read_cycles: 1,
         },
-        threads: crate::reporting::converters::create_thread_timing_report(&[thread(0, 60_000, 5), thread(1, 59_500, 4)], whea),
+        threads: tmr::test_support::create_thread_timing_report(&[thread(0, 60_000, 5), thread(1, 59_500, 4)], whea),
         latency: None,
         stamp: Some(ProgressSnapshot {
             cycle: 3,
@@ -304,7 +290,7 @@ fn cpu_performance() -> CpuPerformanceSummary {
 
 /// A session's setup events, each after a `## case` line, through `CliFrontend::event` as a session
 /// sends them, all their forms. `Setup::Starting` is shown apart, with a Ctrl+C of the test's own:
-/// the CLI's (`cli::take_ctrl_c`) would take it from the test process.
+/// the CLI's (`crate::take_ctrl_c`) would take it from the test process.
 #[test]
 fn setup_events_print_as_their_golden() {
     let fe = CliFrontend::new();
@@ -318,7 +304,7 @@ fn setup_events_print_as_their_golden() {
     };
     let large_pages = |usable, min_page: &str, min_needs_large| Setup::LargePageStatus { usable, min_page: min_page.to_string(), min_needs_large };
     let topology = |smt_p_cores, e_cores_skipped_first| Setup::CpuTopology {
-        report: Box::new(crate::reporting::tests::cpu_topology_report()), smt_p_cores, e_cores_skipped_first,
+        report: Box::new(crate::renderer::tests::cpu_topology_report()), smt_p_cores, e_cores_skipped_first,
     };
     let cases = vec![
         ("a test filter", Setup::TestFilter { pattern: "Mem-Mirror*,Lat-L3-*".to_string() }),
@@ -371,8 +357,8 @@ fn setup_events_print_as_their_golden() {
         }))),
         ("no memory status, on stderr", Setup::MemoryStatus(None)),
         ("the system", Setup::SystemInfo {
-            report: Box::new(crate::reporting::tests::system_info_report()),
-            memory_modules: vec![crate::smbios::MemoryModule { locator: "DIMM_A2".to_string(), ..Default::default() }],
+            report: Box::new(crate::renderer::tests::system_info_report()),
+            memory_modules: vec![MemoryModule { locator: "DIMM_A2".to_string(), ..Default::default() }],
         }),
         ("realtime on every CPU", Setup::RealtimeOnEveryCpu),
         ("the default plan", Setup::Plan { name: "stability", about: "the stability tests at the widest width", is_default: true }),
@@ -392,7 +378,7 @@ fn setup_events_print_as_their_golden() {
 
 /// TODO 99: the line each seal calibration shows at startup, as the CLI's test of it said before
 /// the split: Loaded, with its width and when; Stale; None. Which one a stored calibration is, is
-/// the session's to say (`session::load_seal_calibration`'s test).
+/// the session's to say (`tmr::session::load_seal_calibration`'s test).
 #[test]
 fn the_seal_calibration_says_which_width_auto_takes() {
     let at = chrono::Utc.with_ymd_and_hms(2026, 10, 21, 9, 5, 0).unwrap();
@@ -405,7 +391,7 @@ fn the_seal_calibration_says_which_width_auto_takes() {
 /// How a session ends on the console, each after a `## case` line: a run's verdict,
 /// `--startup-debug`'s, and why setup stopped one (an unknown flag shows the help, with tmr.exe's
 /// name). The restart chosen and a command show nothing here: the prompt said its piece, and a
-/// command writes its own (`commands::run`).
+/// command writes its own (`tmr::commands::run`).
 #[test]
 fn session_ends_print_as_their_golden() {
     let ran = |status, secs, plan_only| SessionEnd::Ran { status, elapsed: Duration::from_secs(secs), plan_only };
@@ -417,7 +403,7 @@ fn session_ends_print_as_their_golden() {
         ("stopped before testing", ran(RunStatus::NotRun, 1, false)),
         ("interrupted", ran(RunStatus::Interrupted, 90061, false)),
         ("the restart chosen", SessionEnd::RestartChosen),
-        ("a command", SessionEnd::Command(crate::commands::Command::Version)),
+        ("a command", SessionEnd::Command(tmr::commands::Command::Version)),
         ("unknown flags", SessionEnd::Stopped(Stopped::UnknownFlags(vec!["--latency-test".to_string(), "-x".to_string()]))),
         ("an invalid parameter, on stderr", SessionEnd::Stopped(Stopped::Invalid(
             "❌ Unknown parameter: colour\n💡 Run with --help to see all valid parameters".to_string()))),

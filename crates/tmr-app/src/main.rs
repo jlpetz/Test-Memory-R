@@ -1,7 +1,7 @@
 //! tmr.exe (TODO 29): what must run before anything else, the crash hooks and the CPU gate, then a
-//! frontend. That is the CLI, or with `--gui` in a build with the `gui` feature, the window (TODO
-//! 7). `--gui` and `--cli` are this exe's own: they pick the frontend and are taken out of the
-//! arguments before the session sees them. The engine and the CLI are the `tmr` library.
+//! frontend. That is the CLI (`tmr_cli`), or with `--gui` in a build with the `gui` feature, the
+//! window (`tmr_gui`, TODO 7). `--gui` and `--cli` are this exe's own: they pick the frontend and
+//! are taken out of the arguments before the session sees them. The engine is the `tmr` library.
 
 // The CPU gate detects CLFLUSHOPT, which std has behind a nightly gate
 #![feature(clflushopt_target_feature)]
@@ -172,11 +172,13 @@ fn main() {
     let gui = take_mode(&mut args);
 
     // The preview (TODO 29 S3, S4): launched from a shell, the window shows the session, and its
-    // log records still print to this console
+    // log records still print to this console. The window doesn't name the CLI, so this exe hands it
+    // the CLI's logging and error report, until S6 gives it a logger of its own.
     #[cfg(feature = "gui")]
     if gui {
+        let console = tmr_gui::Console { setup_logging: tmr_cli::setup_logging, report_error: tmr_cli::report_error };
         match windows_build() {
-            Some(build) if build >= FIRST_GUI_BUILD => exit(tmr_gui::main(args)),
+            Some(build) if build >= FIRST_GUI_BUILD => exit(tmr_gui::main(args, console)),
             build => eprintln!(
                 "Note: the window needs Windows build {FIRST_GUI_BUILD} or later (Windows 11, Server 2025), and this is {}: \
                  running the CLI",
@@ -189,7 +191,7 @@ fn main() {
         eprintln!("Note: this tmr.exe was built without the window (cargo build --features tmr-app/gui): running the CLI");
     }
 
-    exit(tmr::cli::main(args));
+    exit(tmr_cli::main(args));
 }
 
 #[cfg(test)]

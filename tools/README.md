@@ -66,8 +66,10 @@ python tools/bench_ab.py OUTDIR Mem-StuckBit512_A \
     before=path/to/before.exe after=path/to/after.exe --runs 3
 ```
 
-Copy each binary out of `target/` before measuring; the next build replaces it. Build nothing while
-it runs. For the noise floor, run one binary under two labels (an A/A run): on the dev box two runs
+Copy each binary out of `target/` before measuring; the next build replaces it. Build it plainly
+(`cargo build --release`): under `cargo build --all-targets` tmr.exe links the engine with the
+`test-support` feature that tmr-cli's tests turn on (Cargo builds a crate once a command, with
+every feature its targets ask for). Build nothing while it runs. For the noise floor, run one binary under two labels (an A/A run): on the dev box two runs
 of identical code landed 1.0–1.6% apart (2026-10-19).
 
 ## `asm_fingerprint.py`: whether the kernels' instructions changed
@@ -98,7 +100,9 @@ python tools/asm_fingerprint.py --dump DIR              # each normalised body, 
 ```
 
 Save the old code's fingerprint before building the new, and keep a copy of its asm: the build
-replaces the file. Compare builds of one toolchain: a nightly bump changes the code itself. The
+replaces the file. After the window's build too (`--features gui`), name each asm file: both tools
+read the newest `tmr.s`, then the window's (its symbols name `windows_reactor`, the CLI build's
+none). Compare builds of one toolchain: a nightly bump changes the code itself. The
 saved file records the compiler the asm names, and `--compare` warns when the asm is another's
 and then exits 2 rather than 1 on a change. TODO 29's baselines, at 25ff780, are in
 `doc/todo/29-baselines/` with the spill table of the same build, and from S3 on each stage's own
@@ -132,25 +136,38 @@ a panic's location is in the function's data, as bytes of a string, and isn't ma
 above an `unwrap` inlined into a kernel shows as a change. A call to a function LLVM merged with an
 identical one names the one it kept, so a change far away shows: since S3 the thread pool's spawn
 shim calls the backtrace frame of the Ctrl+C handler's thread, named after the function that sets
-the handler (`cli::take_ctrl_c` since S4, `cli::run_session` in S3, `cli::run` before), and in a
-build with the GUI three callers of `RandomState::hash_one::<&u64>` call Reactor's identical
-`hash_one::<&RealizedContainer>`. A constant pool's bytes are written in the type of its first
+the handler (`tmr_cli::take_ctrl_c` since S5, in the CLI's crate, `cli::take_ctrl_c` in S4,
+`cli::run_session` in S3, `cli::run` before), and in a build with the GUI three callers of
+`RandomState::hash_one::<&u64>` call Reactor's identical `hash_one::<&RealizedContainer>`. Who else
+calls a function can change how it is called: a generic is compiled again in each crate that uses
+it, and LLVM folds an argument every caller passes the same into the function. In S5 the call
+`ThreadPool::new` makes when a worker thread can't be spawned (std's `thread::spawn`, its
+`expect("failed to spawn thread")`, to `core::result::unwrap_failed::<io::Error>`) passes two
+arguments fewer: the engine's copy of that function lost its one caller with another message, the
+Ctrl+C handler's thread (`Critical system error while waiting for Ctrl-C`), which tmr-cli's own
+copy serves now, so the message is folded into the engine's. Those instructions, on a path never
+taken, are the only ones that changed. A constant pool's bytes are written in the type of its first
 user in the module, so code added elsewhere can respell a kernel's: in S4 the 128-bit SimpleTest
 kernels' `__xmm@00000000000000010000000000000000` became `.zero 8`, `.quad 1` where it was
 `.long 0`, `.zero 4`, `.long 1`, `.long 0`, the same 16 bytes, and 15 functions read as changed.
 
 ## `console_diff.py`: whether the console's text changed
 
-Part of the run path's output is pinned in process, by the goldens in `testdata/console/`
-(`src/golden.rs`; `TMR_BLESS=1 cargo test` rewrites them, and `git diff testdata/` shows what
-changed): each `Reporter` method from fixed models, a cycle of `execute_test_cycle` (its seal
-stages, step reports and the workers' lines), the plan `--startup-debug` prints, and the stops
-before testing an override can reach. The rest rests on an A/B of the real exe, diffed here: the
-setup path, which can't run in a test (secedit, `process::exit`); the run around the cycle (WHEA,
-allocation, the seed, the cycle's start, the verdict, the results); the line on the tests a CPU
-can't run, which depends on the CPU; a config's errors; and which stream a line goes to, as the
-goldens take stdout and stderr together. Run the same command line under the old binary and the
-new, each captured, then diff the two here.
+Part of the console's output is pinned in process, by the CLI's goldens in
+`crates/tmr-cli/testdata/console/` (`crates/tmr-cli/src/golden.rs`): each `Reporter` method from
+fixed models, each event and how a session ends, the ticker, a cycle of `execute_test_cycle` (its
+seal stages, step reports and the workers' lines), the plan `--startup-debug` prints, and the stops
+before testing an override can reach. The engine's code the last three run is driven through
+`tmr::test_support`, which the engine has in its own tests and under its `test-support` feature,
+which only tmr-cli's tests turn on (TODO 29 S5). The one-shot commands' text is the engine's
+golden, `testdata/console/commands.txt`. `TMR_BLESS=1 cargo test` rewrites both sets (the default
+members; `--workspace` would also build the window and rewrite its `colours.example.json`), and
+`git diff crates/tmr-cli/testdata/ testdata/` shows what changed. The rest rests on an A/B of the
+real exe, diffed here: the setup path, which can't run in a test (secedit, `process::exit`); the
+run around the cycle (WHEA, allocation, the seed, the cycle's start, the verdict, the results); the
+line on the tests a CPU can't run, which depends on the CPU; a config's errors; and which stream a
+line goes to, as the goldens take stdout and stderr together. Run the same command line under the
+old binary and the new, each captured, then diff the two here.
 
 Both captures are read the same way. Ticker frames are dropped (by their erase codes, or by their
 lines when a capture lost the codes) and ANSI escapes stripped. Masked: log stamps, hh:mm:ss, run

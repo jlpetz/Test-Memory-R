@@ -1,4 +1,4 @@
-//! The engine's one interface to whoever shows a run (TODO 29): the CLI (`cli_render`) and the
+//! The engine's one interface to whoever shows a run (TODO 29): the CLI (`crates/tmr-cli`) and the
 //! window (`crates/tmr-gui`). Where the engine printed text it hands the frontend a plain value, at
 //! the same moment, and the frontend formats it. The fast figures (progress, bytes, rates, live
 //! errors) don't travel: they are already shared, and a frontend reads them off the
@@ -17,15 +17,16 @@
 //! calibration, is the CLI's alone (the `confirm` that `commands::run` takes).
 //!
 //! The types the events carry that a frontend outside the engine names are re-exported here, and
-//! only those: the GUI's (`crates/tmr-gui`), its tests' included. The rest of the engine stays
-//! private, so `dead_code` still checks it. A type an event carries is reachable from outside even
-//! when it isn't re-exported, and so are its `pub` methods, which are then exported: compiled as
-//! such, their callers change too (S3 found two rescans' error paths changed by `FailingBits`'). So
-//! a payload's methods that only the engine calls are `pub(crate)` where it matters: `FailingBits`'
-//! recording ones, which the rescans call, and `ProgressTracker`'s bookkeeping, as a frontend holds
-//! the live tracker and must only read it (`snapshot`, `take_whea_descriptions`). Other payloads'
-//! accessors that the engine alone calls (a `key`, a `detail`) are still `pub`: narrow one when its
-//! callers' asm moves, as `FailingBits`' did.
+//! only those: the CLI's (`crates/tmr-cli`) and the GUI's, their tests' included, and the reports'
+//! tables, which a frontend renders through a `Renderer` of its own (the CLI's `ConsoleRenderer`).
+//! The rest of the engine stays private, so `dead_code` still checks it. A type an event carries is
+//! reachable from outside even when it isn't re-exported, and so are its `pub` methods, which are
+//! then exported: compiled as such, their callers change too (S3 found two rescans' error paths
+//! changed by `FailingBits`'). So a payload's methods that only the engine calls are `pub(crate)`
+//! where it matters: `FailingBits`' recording ones, which the rescans call, and `ProgressTracker`'s
+//! bookkeeping, as a frontend holds the live tracker and must only read it (`snapshot`,
+//! `take_whea_descriptions`). Other payloads' accessors that the engine alone calls (a `key`, a
+//! `detail`) are still `pub`: narrow one when its callers' asm moves, as `FailingBits`' did.
 
 use std::sync::Arc;
 use std::time::Duration;
@@ -33,22 +34,26 @@ use std::time::Duration;
 use chrono::{DateTime, Utc};
 
 use crate::failing_bits::FailingBits;
-use crate::memory::allocator::PageSizeLevel;
-use crate::reporting::models::{
-    ConsolidatedMemoryReport, CpuTopologyReport, FinalTestSummaryReport, LatencyTestSummaryReport, PerformanceByCpuReport,
-    PerformanceByPhysicalCoreReport, PerformanceByThreadReport,
-};
+use crate::reporting::models::{ConsolidatedMemoryReport, FinalTestSummaryReport};
 
 pub use crate::ErrorMode;
+pub use crate::memory::allocator::PageSizeLevel;
 pub use crate::progress::{LiveFigures, ProgressSnapshot, ProgressTracker, RunOutcome, TestSnapshot, TestSummary};
 pub use crate::reporting::models::{
-    AllocationReport, AllocationThread, CacheInfo, CpuInfo, SystemInfoReport, TestConfigurationReport, ThreadTimingReport,
-    TscCalibrationInfo,
+    AllocationReport, AllocationThread, CacheInfo, CpuInfo, CpuPerformance, CpuTopologyEntry, CpuTopologyReport, LatencyLevelSummary,
+    LatencyPercentiles, LatencyTestSummaryReport, LatencyThreadResult, PerformanceByCpuReport, PerformanceByPhysicalCoreReport,
+    PerformanceByThreadReport, PhysicalCorePerformance, SystemInfoReport, TestConfigurationReport, ThreadPerformance, ThreadTiming,
+    ThreadTimingReport, TopologySummary, TscCalibrationInfo,
 };
 pub use crate::runner::RunStatus;
 pub use crate::smbios::MemoryModule;
+pub use crate::tests::Stage;
 pub use crate::thread_pool::SealOp;
 pub use crate::whea::WheaCounts;
+// The reports as tables, for a frontend to render: the default formatting's, through its renderer
+pub use crate::reporting::Reporter;
+pub use crate::reporting::models::{ColumnAlignment, TableData};
+pub use crate::reporting::renderers::Renderer;
 
 /// Whoever shows a run. Two engine threads call it, so it is `Send + Sync` and takes `&self`: the
 /// thread that runs the suite sends the events, and the monitor thread ticks.

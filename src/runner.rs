@@ -4719,8 +4719,14 @@ pub fn memory_status() -> Option<crate::frontend::MemoryStatus> {
         avail_page_file: mem_status.ullAvailPageFile,
     })
 }
-#[cfg(test)]
-mod tests {
+
+/// The run's code driven for the CLI's console goldens (TODO 29), which show it through the CLI's
+/// frontend in the CLI's crate (`crates/tmr-cli`): the fake cycle, and the goldens' run on a fixed
+/// layout. The engine's tests take the fake cycle, and the heap regions it runs on, from here too.
+/// A test build has them, and a build with the `test-support` feature, which only tmr-cli's tests
+/// turn on (`crate::test_support`).
+#[cfg(any(test, feature = "test-support"))]
+pub mod test_support {
     use super::*;
     use crate::memory::allocator::AllocationConfig;
     use crate::memory::backend::{AllocError, Backend, BackendAllocation};
@@ -4736,22 +4742,19 @@ mod tests {
         fn name(&self) -> &'static str { "heap" }
     }
 
-    const KIB: usize = 1024;
+    pub(crate) const KIB: usize = 1024;
     const GUARD: usize = 64 * KIB;
     const FILL: u8 = 0xA5;
-    /// A word no test pattern writes, to find extent words a test never touched
-    const UNTOUCHED: u64 = 0x5AF0_0FA5_C3D2_1E87;
 
     /// A heap buffer with guard zones on both sides, cut into adjacent blocks of `sizes`: one span.
-    struct Region {
+    pub(crate) struct Region {
         mem: *mut u8,
         layout: std::alloc::Layout,
-        len: usize,
-        blocks: Vec<AllocationBlock>,
+        pub(crate) blocks: Vec<AllocationBlock>,
     }
 
     impl Region {
-        fn new(sizes: &[usize]) -> Self {
+        pub(crate) fn new(sizes: &[usize]) -> Self {
             let len: usize = sizes.iter().sum();
             let layout = std::alloc::Layout::from_size_align(GUARD + len + GUARD, 4096).unwrap();
             let mem = unsafe { std::alloc::alloc(layout) };
@@ -4772,16 +4775,24 @@ mod tests {
                 at += size;
                 block
             }).collect();
-            Region { mem, layout, len, blocks }
+            Region { mem, layout, blocks }
         }
 
-        fn words(&mut self) -> &mut [u64] {
-            unsafe { std::slice::from_raw_parts_mut(self.mem.add(GUARD) as *mut u64, self.len / 8) }
+        /// The blocks' bytes, between the guard zones
+        #[cfg(test)]
+        fn len(&self) -> usize {
+            self.layout.size() - 2 * GUARD
         }
 
-        fn guards_intact(&self) -> bool {
+        #[cfg(test)]
+        pub(crate) fn words(&mut self) -> &mut [u64] {
+            unsafe { std::slice::from_raw_parts_mut(self.mem.add(GUARD) as *mut u64, self.len() / 8) }
+        }
+
+        #[cfg(test)]
+        pub(crate) fn guards_intact(&self) -> bool {
             let bytes = unsafe { std::slice::from_raw_parts(self.mem, self.layout.size()) };
-            bytes[..GUARD].iter().chain(&bytes[GUARD + self.len..]).all(|&b| b == FILL)
+            bytes[..GUARD].iter().chain(&bytes[GUARD + self.len()..]).all(|&b| b == FILL)
         }
     }
 
@@ -4791,6 +4802,218 @@ mod tests {
             unsafe { std::alloc::dealloc(self.mem, self.layout) };
         }
     }
+
+    /// The word of thread 0's span `flip_then_verify` and `stuck_bit_then_flip` flip a bit in
+    const FLIPPED_WORD: usize = 1000;
+
+    /// Bench-Verify-TMR-10 at 256 bits, with bit 17 of one word of thread 0's span flipped first:
+    /// a fault between the Bench-Init's write and its verify, for the fake cycle's golden.
+    #[doc = include_str!("test_fn_safety.md")]
+    unsafe fn flip_then_verify(blocks: &[AllocationBlock], thread_id: usize, error_mode: ErrorMode, timing: &TestTiming,
+                               config: &TestMemoryConfig, progress: Option<&TestProgress>) -> TestStats {
+        if thread_id == 0 {
+            *(blocks[0].buffer.as_mut_ptr() as *mut u64).add(FLIPPED_WORD) ^= 1 << 17;
+        }
+        crate::tests::bench_verify_at(crate::simd::Width::W256)(blocks, thread_id, error_mode, timing, config, progress)
+    }
+
+    /// Mem-StuckBit256, with bit 17 of one word of thread 0's span flipped after it, once it has
+    /// resealed its chunks: a fault in sealed memory that only the final seal check can find.
+    #[doc = include_str!("test_fn_safety.md")]
+    unsafe fn stuck_bit_then_flip(blocks: &[AllocationBlock], thread_id: usize, error_mode: ErrorMode, timing: &TestTiming,
+                                  config: &TestMemoryConfig, progress: Option<&TestProgress>) -> TestStats {
+        let stats = crate::tests::stuck_bit_test_256_multi(blocks, thread_id, error_mode, timing, config, progress);
+        if thread_id == 0 {
+            *(blocks[0].buffer.as_mut_ptr() as *mut u64).add(FLIPPED_WORD) ^= 1 << 17;
+        }
+        stats
+    }
+
+    /// Where the fake cycle flips a bit (`FLIPPED_WORD`)
+    #[derive(Clone, Copy, PartialEq)]
+    pub enum Flip {
+        /// Between the Bench-Init's write and its verify, which finds it
+        Verify,
+        /// That, and after the last step, in sealed memory, which only the final seal check finds
+        VerifyAndSealed,
+        /// Only after the last step
+        Sealed,
+    }
+
+    /// The fake cycle (TODO 29): `execute_test_cycle` on two workers over heap regions, sealed, under
+    /// an error mode. Its steps: a Bench-Init/Verify pair, with a bit flipped between them unless
+    /// `Flip::Sealed`, a latency step and a step that takes the seal, which reseals what the others
+    /// left first; then the final seal check, which finds a bit flipped after the last step unless
+    /// `Flip::Verify`, and otherwise nothing. Every step's width is fixed at 256 bits, and both
+    /// workers are numbered CPU 0, so no figure depends on this machine's caches or topology. Built
+    /// by `new` and run by `run`, so a capture of what it shows can start at the run.
+    pub struct FakeCycle {
+        error_mode: ErrorMode,
+        steps: Vec<TestDefinition>,
+        kernel: crate::seal::SealKernel,
+        cache_info: CacheInfo,
+        /// The regions the workers' blocks are in, freed after the blocks
+        regions: [Region; 2],
+        blocks: HashMap<usize, Vec<AllocationBlock>>,
+    }
+
+    /// How the fake cycle ended, and the results it added
+    pub struct CycleRun {
+        pub(super) end: CycleEnd,
+        pub(super) result: TestRunResult,
+    }
+
+    impl CycleRun {
+        /// Why the cycle stopped the run (`None`: it didn't), and whether it stopped before its end
+        pub fn ended(&self) -> (Option<RunOutcome>, bool) {
+            (self.end.stop, self.end.partial)
+        }
+
+        /// Each step's errors, in the order the steps ran
+        pub fn errors(&self) -> Vec<u64> {
+            self.result.cycles.iter().flat_map(|cycle| &cycle.tests).map(|test| test.errors).collect()
+        }
+    }
+
+    impl FakeCycle {
+        /// The fake cycle under `error_mode`, with a bit flipped where `flip` says
+        pub fn new(error_mode: ErrorMode, flip: Flip) -> Self {
+            let cache_info = CacheInfo::default();
+            let kernel = crate::seal::SealKernel::new(crate::seal::SealPattern::Tmr, crate::seal::SealWidth::W256);
+            let suite = create_test_definitions(&cache_info);
+            let find = |name: &str| suite.iter().find(|d| d.actual_name == name).cloned().expect(name);
+            let (mut init, mut verify, mut latency) = (find("Bench-Init-TMR-10"), find("Bench-Verify-TMR-10"), find("Lat-L1-Read"));
+            init.function = TestFunction::MultiBlock(crate::tests::bench_init_at(crate::simd::Width::W256));
+            verify.function = TestFunction::MultiBlock(if flip == Flip::Sealed {
+                crate::tests::bench_verify_at(crate::simd::Width::W256)
+            } else {
+                flip_then_verify
+            });
+            verify.config.skip_init = true;
+            // One pass each: each of a verify's passes counts the bad word again
+            (init.config.timing, verify.config.timing) = (TestTiming::cycles_only(1), TestTiming::cycles_only(1));
+            latency.config.extent_mode = ExtentMode::Absolute { size_bytes: 64 * KIB };
+            latency.config.timing = TestTiming::cycles_only(1);
+            let mut stuck_bit = find("Mem-StuckBit256");
+            if flip != Flip::Verify {
+                stuck_bit.function = TestFunction::MultiBlock(stuck_bit_then_flip);
+            }
+            let mut steps = vec![init, verify, latency, stuck_bit];
+            set_step_seals(&mut steps, kernel, true);
+            for (i, def) in steps.iter_mut().enumerate() {
+                def.test_index = i;
+                def.config.thread_count = 2;
+                def.config.cache_line_bytes = 64;
+                def.config.tsc_frequency_ghz = 1.0;
+            }
+
+            // 10 MiB a thread: enough for a step's and a seal stage's GiB, to two places, to show a byte
+            // missing from their sums
+            let span = [4096 * KIB, 4096 * KIB, 2048 * KIB];
+            let mut regions = [Region::new(&span), Region::new(&span)];
+            let blocks = regions.iter_mut().enumerate().map(|(t, r)| (t, std::mem::take(&mut r.blocks))).collect();
+            FakeCycle { error_mode, steps, kernel, cache_info, regions, blocks }
+        }
+
+        /// Runs the cycle, `fe` showing it: the workers' start, the cycle, and their end.
+        pub fn run(self, fe: &dyn Frontend) -> CycleRun {
+            let FakeCycle { error_mode, steps, kernel, cache_info, regions, blocks } = self;
+            let progress = Arc::new(ProgressTracker::new());
+            let test_run_result = Arc::new(Mutex::new(TestRunResult::new(Default::default())));
+            let all_test_cpu_stats = Arc::new(Mutex::new(HashMap::new()));
+            let (thread_pool, result_receiver) = ThreadPool::new(blocks, false, ThreadPriority::Normal, 2, Some(&[0, 0][..]));
+            progress.begin_suite(Instant::now(), Some(1), None, steps.len() as u64, thread_pool.live_progress());
+            progress.start_new_cycle(1);
+            let ctx = CycleContext {
+                test_definitions: &steps,
+                thread_pool: &thread_pool,
+                result_receiver: &result_receiver,
+                thread_count: 2,
+                error_mode,
+                progress: &progress,
+                test_run_result: &test_run_result,
+                all_test_cpu_stats: &all_test_cpu_stats,
+                cache_info: &cache_info,
+                seal: Some(kernel),
+                tm5: false,
+                fe,
+            };
+            let end = execute_test_cycle(&ctx, 1);
+            // The workers' blocks, freed before the regions they are in
+            let (blocks, _) = thread_pool.shutdown();
+            drop(blocks);
+            drop(regions);
+            let result = test_run_result.lock().unwrap().clone();
+            CycleRun { end, result }
+        }
+    }
+
+    /// The console goldens' run (TODO 29): `golden_layout`, logging errors, default timing, no
+    /// config, the command line's `overrides`, and no caches (`CacheInfo::default()`), so no size
+    /// depends on this machine's, with every test that picks its width at run time at 256 bits.
+    /// Built by `new`, as the layout's sizing logs, and run by `run`, so a capture of what it shows
+    /// can start at the run.
+    pub struct GoldenRun {
+        setup: RunSetup<'static>,
+        /// The run's width while it lives, on the thread that built it, which runs it
+        _width: crate::simd::TestWidth,
+    }
+
+    impl GoldenRun {
+        pub fn new(overrides: TestRunOverrides<'static>) -> Self {
+            static NO_CACHES: std::sync::LazyLock<CacheInfo> = std::sync::LazyLock::new(CacheInfo::default);
+            let _width = crate::simd::TestWidth::set(Some(crate::simd::Width::W256));
+            let (layout, runtime_config) = golden_layout();
+            let setup = RunSetup { layout, error_mode: ErrorMode::Log, suite_timing: TestSuiteTiming::default(), runtime_config,
+                                   config: None, overrides, cache_info: &NO_CACHES };
+            GoldenRun { setup, _width }
+        }
+
+        /// Runs it from the run's entry point, `fe` showing it, and says how it ended
+        pub fn run(self, fe: &Arc<dyn Frontend>) -> RunStatus {
+            run_tests_with_layout_and_timing_filtered(self.setup, fe)
+        }
+    }
+
+    /// The console goldens' layout: 16 MiB over four threads on a 32 GiB box, with its runtime. A
+    /// thread's 4 MiB is below the stitched allocator's run quantum, so a run that got past its
+    /// checks would be refused before any memory is reserved.
+    pub(crate) fn golden_layout() -> (EnhancedMemoryLayout, RuntimeConfig) {
+        use crate::memory::allocation_strategy::{AllocationMode, EnhancedMemoryStrategy, ReserveAmount, RoundDirection,
+                                                 ShareRounding, SystemMemoryInfo};
+        let mem_info = SystemMemoryInfo {
+            total_installed_bytes: 32 << 30,
+            total_physical_bytes: (32 << 30) - (1200 << 20),
+            available_physical_bytes: (27 << 30) + (300 << 20),
+            used_physical_bytes: (3 << 30) + (548 << 20),
+            total_virtual_bytes: (36 << 30) + (900 << 20),
+            memory_load_percent: 12,
+        };
+        let strategy = EnhancedMemoryStrategy { allocation_mode: AllocationMode::AllocateTarget { target: ReserveAmount::Bytes(16 << 20) } };
+        let rounding = ShareRounding { step_bytes: 4 << 20, direction: RoundDirection::Up, floor_bytes: 4 << 20 };
+        let allocation_result = strategy.allocation_mode.calculate_allocation_with_threads(&mem_info, 4, rounding);
+        let blocks = (0..4).map(|thread_id| BlockInfo { size_bytes: allocation_result.per_thread_bytes as usize, thread_id }).collect();
+        let layout = EnhancedMemoryLayout { system_memory_info: mem_info, allocation_result, blocks, strategy: strategy.clone() };
+        let runtime_config = RuntimeConfig {
+            memory_backend: MemoryBackend::VirtualAlloc2,
+            large_pages_available: true,
+            cpu_list: Some(vec![0, 2, 4, 6]),
+            pin_threads: true,
+            thread_priority: ThreadPriority::High,
+            enhanced_memory_strategy: strategy,
+            memory_allocation: Default::default(),
+        };
+        (layout, runtime_config)
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use super::test_support::{golden_layout, CycleRun, FakeCycle, Flip, Region, KIB};
+
+    /// A word no test pattern writes, to find extent words a test never touched
+    const UNTOUCHED: u64 = 0x5AF0_0FA5_C3D2_1E87;
 
     /// The built-in suite, set up to run once on a test region (one thread, 64 B lines)
     fn suite() -> Vec<(TestDefinition, TestFunctionMultiBlock)> {
@@ -6049,132 +6272,29 @@ mod tests {
         }
     }
 
-    // ─── Console goldens (TODO 29) ─────────────────────────────────────────────────────────────
+    // ─── The fake cycle and the results it adds (TODO 29, 72) ──────────────────────────────────
 
-    /// The word of thread 0's span `flip_then_verify` and `stuck_bit_then_flip` flip a bit in
-    const FLIPPED_WORD: usize = 1000;
+    /// A frontend that shows nothing: these tests read what a run did from its results. What the
+    /// console shows of it is the CLI's goldens' (`crates/tmr-cli`, through `test_support`).
+    struct Unseen;
 
-    /// Bench-Verify-TMR-10 at 256 bits, with bit 17 of one word of thread 0's span flipped first:
-    /// a fault between the Bench-Init's write and its verify, for the fake cycle's golden.
-    #[doc = include_str!("test_fn_safety.md")]
-    unsafe fn flip_then_verify(blocks: &[AllocationBlock], thread_id: usize, error_mode: ErrorMode, timing: &TestTiming,
-                               config: &TestMemoryConfig, progress: Option<&TestProgress>) -> TestStats {
-        if thread_id == 0 {
-            *(blocks[0].buffer.as_mut_ptr() as *mut u64).add(FLIPPED_WORD) ^= 1 << 17;
+    impl Frontend for Unseen {
+        fn event(&self, _: crate::frontend::Event) {}
+
+        fn large_page_restart(&self) -> crate::frontend::RestartChoice {
+            unreachable!("a run asks nothing: the restart is setup's question")
         }
-        crate::tests::bench_verify_at(crate::simd::Width::W256)(blocks, thread_id, error_mode, timing, config, progress)
     }
 
-    /// Mem-StuckBit256, with bit 17 of one word of thread 0's span flipped after it, once it has
-    /// resealed its chunks: a fault in sealed memory that only the final seal check can find.
-    #[doc = include_str!("test_fn_safety.md")]
-    unsafe fn stuck_bit_then_flip(blocks: &[AllocationBlock], thread_id: usize, error_mode: ErrorMode, timing: &TestTiming,
-                                  config: &TestMemoryConfig, progress: Option<&TestProgress>) -> TestStats {
-        let stats = crate::tests::stuck_bit_test_256_multi(blocks, thread_id, error_mode, timing, config, progress);
-        if thread_id == 0 {
-            *(blocks[0].buffer.as_mut_ptr() as *mut u64).add(FLIPPED_WORD) ^= 1 << 17;
-        }
-        stats
-    }
-
-    /// Where the fake cycle flips a bit (`FLIPPED_WORD`)
-    #[derive(Clone, Copy, PartialEq)]
-    enum Flip {
-        /// Between the Bench-Init's write and its verify, which finds it
-        Verify,
-        /// That, and after the last step, in sealed memory, which only the final seal check finds
-        VerifyAndSealed,
-        /// Only after the last step
-        Sealed,
-    }
-
-    /// The fake cycle (TODO 29): `execute_test_cycle` on two workers over heap regions, sealed, under
-    /// `error_mode`. Its steps: a Bench-Init/Verify pair, with a bit flipped between them unless
-    /// `flip` is `Sealed`, a latency step and a step that takes the seal, which reseals what the
-    /// others left first; then the final seal check, which finds a bit flipped after the last step
-    /// unless `flip` is `Verify`, and otherwise nothing. Every step's width is fixed at 256 bits, and
-    /// both workers are numbered CPU 0, so no figure depends on this machine's caches or topology.
-    /// `fe` shows it. How the cycle ended, what it printed, and the results it added.
-    fn fake_cycle(error_mode: ErrorMode, flip: Flip, fe: &dyn Frontend) -> (CycleEnd, String, TestRunResult) {
-        let cache_info = CacheInfo::default();
-        let kernel = crate::seal::SealKernel::new(crate::seal::SealPattern::Tmr, crate::seal::SealWidth::W256);
-        let suite = create_test_definitions(&cache_info);
-        let find = |name: &str| suite.iter().find(|d| d.actual_name == name).cloned().expect(name);
-        let (mut init, mut verify, mut latency) = (find("Bench-Init-TMR-10"), find("Bench-Verify-TMR-10"), find("Lat-L1-Read"));
-        init.function = TestFunction::MultiBlock(crate::tests::bench_init_at(crate::simd::Width::W256));
-        verify.function = TestFunction::MultiBlock(if flip == Flip::Sealed {
-            crate::tests::bench_verify_at(crate::simd::Width::W256)
-        } else {
-            flip_then_verify
-        });
-        verify.config.skip_init = true;
-        // One pass each: each of a verify's passes counts the bad word again
-        (init.config.timing, verify.config.timing) = (TestTiming::cycles_only(1), TestTiming::cycles_only(1));
-        latency.config.extent_mode = ExtentMode::Absolute { size_bytes: 64 * KIB };
-        latency.config.timing = TestTiming::cycles_only(1);
-        let mut stuck_bit = find("Mem-StuckBit256");
-        if flip != Flip::Verify {
-            stuck_bit.function = TestFunction::MultiBlock(stuck_bit_then_flip);
-        }
-        let mut steps = vec![init, verify, latency, stuck_bit];
-        set_step_seals(&mut steps, kernel, true);
-        for (i, def) in steps.iter_mut().enumerate() {
-            def.test_index = i;
-            def.config.thread_count = 2;
-            def.config.cache_line_bytes = 64;
-            def.config.tsc_frequency_ghz = 1.0;
-        }
-
-        // 10 MiB a thread: enough for a step's and a seal stage's GiB, to two places, to show a byte
-        // missing from their sums
-        let span = [4096 * KIB, 4096 * KIB, 2048 * KIB];
-        let mut regions = [Region::new(&span), Region::new(&span)];
-        let blocks = regions.iter_mut().enumerate().map(|(t, r)| (t, std::mem::take(&mut r.blocks))).collect();
-        let progress = Arc::new(ProgressTracker::new());
-        let test_run_result = Arc::new(Mutex::new(TestRunResult::new(Default::default())));
-        let all_test_cpu_stats = Arc::new(Mutex::new(HashMap::new()));
-        let (end, text) = crate::golden::capture(|| {
-            let (thread_pool, result_receiver) = ThreadPool::new(blocks, false, ThreadPriority::Normal, 2, Some(&[0, 0][..]));
-            progress.begin_suite(Instant::now(), Some(1), None, steps.len() as u64, thread_pool.live_progress());
-            progress.start_new_cycle(1);
-            let ctx = CycleContext {
-                test_definitions: &steps,
-                thread_pool: &thread_pool,
-                result_receiver: &result_receiver,
-                thread_count: 2,
-                error_mode,
-                progress: &progress,
-                test_run_result: &test_run_result,
-                all_test_cpu_stats: &all_test_cpu_stats,
-                cache_info: &cache_info,
-                seal: Some(kernel),
-                tm5: false,
-                fe,
-            };
-            let end = execute_test_cycle(&ctx, 1);
-            // The workers' blocks, freed before the regions they are in
-            let (blocks, _) = thread_pool.shutdown();
-            drop(blocks);
-            end
-        });
-        let result = test_run_result.lock().unwrap().clone();
-        (end, text, result)
-    }
-
-    /// A cycle as the console shows it (TODO 29): the fake cycle, logging its errors. Times, rates
-    /// and the scheduler's order are masked (`golden::mask_run`). Nothing printed depends on the
-    /// run's seed either, which can't be fixed here (a process takes it once, and other tests take
-    /// it from the clock): mode 10 keys its words by its own base, and the seal, which the seed
-    /// keys, finds no error to print. A step whose output does depend on it needs a seed of its own
-    /// first.
+    /// TODO 72: the fake cycle, logging its errors, ran to its end, and its results have a whole
+    /// cycle, each step's threads in it, by thread: where each ran and what it found, the latency
+    /// step's latencies too. The CLI's golden of it is `a_cycle_prints_as_its_golden` (tmr-cli).
     #[test]
-    fn a_cycle_prints_as_its_golden() {
-        let (end, text, result) = fake_cycle(ErrorMode::Log, Flip::Verify, &crate::cli_render::CliFrontend::new());
+    fn a_cycle_records_each_step_and_its_threads() {
+        let CycleRun { end, result } = FakeCycle::new(ErrorMode::Log, Flip::Verify).run(&Unseen);
         assert_eq!((end.stop, end.partial), (None, false), "the cycle ran to its end");
         let errors: Vec<u64> = result.cycles[0].tests.iter().map(|t| t.errors).collect();
         assert_eq!(errors, [0, 1, 0, 0], "the flipped bit is the verify's one error");
-        // A whole cycle, and each step's threads in it, by thread: where each ran and what it found,
-        // the latency step's latencies too (TODO 72)
         let cycle = &result.cycles[0];
         assert!(!cycle.partial);
         let threads: Vec<Vec<_>> = cycle.tests.iter()
@@ -6198,14 +6318,13 @@ mod tests {
                 assert!(0.0 < latency.min_ns && latency.min_ns <= latency.p50_ns && latency.p50_ns <= latency.p99_ns, "{name}: {latency:?}");
             }
         }
-        crate::golden::check("cycle", &crate::golden::mask_run(&text));
     }
 
     /// TODO 72: a cycle that errors=halt stops, at the verify's error, is partial in the results, as
     /// its end says: the steps that ran, and no final seal check.
     #[test]
     fn a_halted_cycle_is_partial() {
-        let (end, _, result) = fake_cycle(ErrorMode::Halt, Flip::Verify, &crate::cli_render::CliFrontend::new());
+        let CycleRun { end, result } = FakeCycle::new(ErrorMode::Halt, Flip::Verify).run(&Unseen);
         assert_eq!((end.stop, end.partial), (Some(RunOutcome::Halted), true));
         let cycle = &result.cycles[0];
         assert!(cycle.partial);
@@ -6220,7 +6339,7 @@ mod tests {
     /// save is due, and then its end is shown, `partial` as the results have it.
     #[test]
     fn a_cycle_ends_saved_then_shown() {
-        let (end, _, mut result) = fake_cycle(ErrorMode::Halt, Flip::Sealed, &crate::cli_render::CliFrontend::new());
+        let CycleRun { end, mut result } = FakeCycle::new(ErrorMode::Halt, Flip::Sealed).run(&Unseen);
         assert_eq!((end.stop, end.partial), (Some(RunOutcome::Halted), false));
         assert_eq!(result.cycles.len(), 1);
         assert!(!result.cycles[0].partial && result.cycles[0].tests.len() == 4, "every step ran");
@@ -6259,9 +6378,43 @@ mod tests {
         assert_eq!(*fe.ends.lock().unwrap(), [(1, false, true), (2, false, false), (3, true, true)]);
     }
 
+    /// Runs `f` and returns the log records this thread logged meanwhile that the console would show
+    /// (from Info up, but the log file's alone), as `LEVEL message`. The engine's tests have no
+    /// console, so a check that a step tells the user nothing counts its records here. The logger
+    /// is installed once a process, at Info, and keeps only the records of a thread counting them.
+    fn records_of<R>(f: impl FnOnce() -> R) -> (R, Vec<String>) {
+        thread_local!(static RECORDS: std::cell::RefCell<Option<Vec<String>>> = const { std::cell::RefCell::new(None) });
+        struct Records;
+        impl log::Log for Records {
+            fn enabled(&self, metadata: &log::Metadata) -> bool {
+                metadata.level() <= log::Level::Info && RECORDS.with_borrow(Option::is_some)
+            }
+
+            fn log(&self, record: &log::Record) {
+                if self.enabled(record.metadata()) && record.target() != crate::logfile::FILE_ONLY_TARGET {
+                    let line = format!("{} {}", record.level(), record.args());
+                    RECORDS.with_borrow_mut(|records| if let Some(records) = records {
+                        records.push(line);
+                    });
+                }
+            }
+
+            fn flush(&self) {}
+        }
+        static LOGGER: Records = Records;
+        static ONCE: std::sync::Once = std::sync::Once::new();
+        ONCE.call_once(|| {
+            log::set_logger(&LOGGER).expect("no other logger in the engine's tests");
+            log::set_max_level(log::LevelFilter::Info);
+        });
+        RECORDS.set(Some(Vec::new()));
+        let value = f();
+        (value, RECORDS.take().unwrap_or_default())
+    }
+
     /// TODO 72: between cycles the results are saved silently, in progress, with the overall figures
     /// of the cycles so far and the monitor's WHEA totals, and no outcome or status; the final save
-    /// replaces that one, finished, with how the run ended and its verdict, and prints its one line.
+    /// replaces that one, finished, with how the run ended and its verdict, and says so once.
     #[test]
     fn the_results_are_saved_between_cycles_and_at_the_end() {
         let dir = crate::results::TempDir::new("cycle-saves");
@@ -6276,19 +6429,33 @@ mod tests {
         // Never started: no events, and not monitoring
         let whea = crate::whea::WheaMonitor::new();
 
-        let ((), printed) = crate::golden::capture(|| save_after_cycle(&test_run_result, 2, Duration::from_secs(65), &whea));
-        assert_eq!(printed, "", "a save between cycles is silent");
+        // Silent: it has no frontend to tell, and logs nothing but a failure
+        let ((), records) = records_of(|| save_after_cycle(&test_run_result, 2, Duration::from_secs(65), &whea));
+        assert!(records.is_empty(), "a save between cycles is silent: {records:?}");
         let text = std::fs::read_to_string(&path).unwrap();
         assert!(!text.contains("\"outcome\"") && !text.contains("\"status\""), "no outcome or status mid-run");
         let stats = TestRunResult::load_from_file(&path).unwrap().overall_stats;
         assert_eq!((stats.in_progress, stats.cycles_completed, stats.total_runtime_secs), (true, 2, 65));
         assert_eq!((stats.whea_total, stats.whea_monitored), (0, false), "the monitor's totals");
 
-        let ((), printed) = crate::golden::capture(|| display_and_save_results(&test_run_result, Duration::from_secs(70),
-            crate::whea::WheaCounts { total: 1, corrected: 1 }, true, RunOutcome::Interrupted, RunStatus::Interrupted,
-            &crate::cli_render::CliFrontend::new()));
-        assert_eq!(printed.matches("Results saved").count(), 1, "{printed}");
-        assert!(printed.contains(&format!("💾 Results saved: {path}\n")), "{printed}");
+        // The results files the frontend was told were saved
+        #[derive(Default)]
+        struct Saves(Mutex<Vec<String>>);
+        impl Frontend for Saves {
+            fn event(&self, event: crate::frontend::Event) {
+                if let crate::frontend::Event::Run(Run::ResultsSaved { path }) = event {
+                    self.0.lock().unwrap().push(path);
+                }
+            }
+            fn large_page_restart(&self) -> crate::frontend::RestartChoice {
+                unreachable!("a run asks nothing: the restart is setup's question")
+            }
+        }
+        let fe = Saves::default();
+        let ((), records) = records_of(|| display_and_save_results(&test_run_result, Duration::from_secs(70),
+            crate::whea::WheaCounts { total: 1, corrected: 1 }, true, RunOutcome::Interrupted, RunStatus::Interrupted, &fe));
+        assert_eq!(*fe.0.lock().unwrap(), std::slice::from_ref(&path), "said once, with where");
+        assert!(records.is_empty(), "and only by the frontend: {records:?}");
         let stats = TestRunResult::load_from_file(&path).unwrap().overall_stats;
         assert_eq!((stats.in_progress, stats.outcome.as_deref(), stats.status.as_deref()), (false, Some("interrupted"), Some("interrupted")));
         assert_eq!((stats.total_runtime_secs, stats.whea_total, stats.whea_monitored), (70, 1, true));
@@ -6304,192 +6471,5 @@ mod tests {
         assert!(results_save_due(7, true, soon), "a cycle that stopped early");
         assert!(!results_save_due(7, false, soon));
         assert!(results_save_due(7, false, RESULTS_SAVE_INTERVAL));
-    }
-
-    /// The console's frontend, as the CLI hands it to the run
-    fn cli() -> Arc<dyn Frontend> {
-        Arc::new(crate::cli_render::CliFrontend::new())
-    }
-
-    /// A frontend that shows each event as one line, `<Event ...>`, above the ticker as the log
-    /// records are, so a capture has the events in their order against the records.
-    struct Recording;
-
-    impl Frontend for Recording {
-        fn event(&self, event: crate::frontend::Event) {
-            let crate::frontend::Event::Run(run) = event else {
-                unreachable!("a run sends only its own events");
-            };
-            let line = match run {
-                Run::MemoryPlan(_) => "MemoryPlan".to_string(),
-                Run::NotRun(_) => "NotRun".to_string(),
-                Run::Matchable { .. } => "Matchable".to_string(),
-                Run::LeftOut { .. } => "LeftOut".to_string(),
-                Run::Channels { .. } => "Channels".to_string(),
-                Run::TestPlan(_) => "TestPlan".to_string(),
-                Run::WheaMonitoring(_) => "WheaMonitoring".to_string(),
-                Run::AllocationStarting { .. } => "AllocationStarting".to_string(),
-                Run::Allocated(_) => "Allocated".to_string(),
-                Run::SuiteStarted { .. } => "SuiteStarted".to_string(),
-                Run::CycleStarted { cycle, .. } => format!("CycleStarted {cycle}"),
-                Run::CycleFinished { cycle, .. } => format!("CycleFinished {cycle}"),
-                Run::SealStage { op, .. } => format!("SealStage {op:?}"),
-                Run::StepFinished(report) => format!("StepFinished {}, {} errors", report.summary.step, report.summary.errors),
-                Run::LateWhea(_) => "LateWhea".to_string(),
-                Run::CpuPerformance(_) => "CpuPerformance".to_string(),
-                Run::SuiteEnded { .. } => "SuiteEnded".to_string(),
-                Run::FinalSummary(_) => "FinalSummary".to_string(),
-                Run::ResultsSaved { .. } => "ResultsSaved".to_string(),
-            };
-            crate::console::print_above(&format!("<{line}>"));
-        }
-
-        fn large_page_restart(&self) -> crate::frontend::RestartChoice {
-            unreachable!("a run asks nothing: the restart is setup's question")
-        }
-    }
-
-    /// TODO 29: each event comes where its prints were, against the log records around it, so a
-    /// frontend that renders as it is called keeps the console's order. A cycle's: the records of a
-    /// step's results come before its report, the halt's after it, and the final seal check's
-    /// errors after its line; and a run's start: the memory plan before the layout's records, the
-    /// config error that stops it after the plan's. Where a list's build logs (at debug level),
-    /// its records come between the line before the list and the list: the channels and the test
-    /// plan, a filter that matched nothing and what it could have matched.
-    #[test]
-    fn events_come_in_order_with_the_log_records() {
-        // The events and the run's own records: the workers' order among themselves is the
-        // scheduler's
-        let order = |text: &str| -> Vec<String> {
-            crate::golden::mask_stamps(text).lines()
-                .filter(|line| line.starts_with('<') || line.contains(" tmr::runner]") || line.contains(" tmr::layout]"))
-                .map(|line| line.split_once("\x1b[0m ").map_or(line, |(_, message)| message).to_string())
-                .collect()
-        };
-        let (_, text, _) = fake_cycle(ErrorMode::Log, Flip::Verify, &Recording);
-        let verify_errors = "Thread 0 reported 1 memory errors in test 'Bench-Verify-TMR-10' (1 failed checks, 0 not reproduced on rescan)";
-        assert_eq!(order(&text), ["<SealStage SealAll>", "<StepFinished 1, 0 errors>", verify_errors, "<StepFinished 2, 1 errors>",
-                                  "<StepFinished 3, 0 errors>", "<StepFinished 4, 0 errors>", "<SealStage FinalCheck>"]);
-        let (_, text, _) = fake_cycle(ErrorMode::Halt, Flip::Verify, &Recording);
-        assert_eq!(order(&text), ["<SealStage SealAll>", "<StepFinished 1, 0 errors>", verify_errors, "<StepFinished 2, 1 errors>",
-                                  "Halting test suite due to memory errors"]);
-        let (_, text, _) = fake_cycle(ErrorMode::Log, Flip::VerifyAndSealed, &Recording);
-        assert_eq!(order(&text), ["<SealStage SealAll>", "<StepFinished 1, 0 errors>", verify_errors, "<StepFinished 2, 1 errors>",
-                                  "<StepFinished 3, 0 errors>", "<StepFinished 4, 0 errors>", "<SealStage FinalCheck>",
-                                  "The final seal check of cycle 1 found 1 errors"]);
-
-        let _width = crate::simd::TestWidth::set(Some(crate::simd::Width::W256));
-        let overrides = TestRunOverrides { plan: Some(crate::plans::find(crate::plans::DEFAULT).unwrap()), sequence_override: Some("W 2Q"),
-                                           ..Default::default() };
-        let (setup, fe): (_, Arc<dyn Frontend>) = (golden_setup(overrides), Arc::new(Recording));
-        let (status, text) = crate::golden::capture(|| run_tests_with_layout_and_timing_filtered(setup, &fe));
-        assert_eq!(status, RunStatus::NotRun);
-        assert_eq!(order(&text), ["<MemoryPlan>", "🧵 Thread Memory Layout:", "  Total threads: 4", "  Allocation per thread: 0.00 GiB",
-                                  "  Total planned allocation: 0.02 GiB", "Using the built-in suite, plan stability", "<NotRun>"]);
-
-        // How many Debug records came between two events
-        let debug_between = |text: &str, first: &str, second: &str| -> usize {
-            let lines: Vec<&str> = text.lines().collect();
-            let at = |event: &str| lines.iter().position(|line| *line == event).unwrap_or_else(|| panic!("{event}:\n{text}"));
-            lines[at(first)..at(second)].iter().filter(|line| line.contains(" DEBUG ")).count()
-        };
-        let stability = Some(crate::plans::find(crate::plans::DEFAULT).unwrap());
-        let plan_only = TestRunOverrides { plan: stability, plan_only: true, ..Default::default() };
-        let (setup, fe): (_, Arc<dyn Frontend>) = (golden_setup(plan_only), Arc::new(Recording));
-        let (status, text) = crate::golden::capture_with_debug(|| run_tests_with_layout_and_timing_filtered(setup, &fe));
-        assert_eq!(status, RunStatus::Passed);
-        assert!(debug_between(&text, "<Channels>", "<TestPlan>") > 0, "the plan's build logs after the channels:\n{text}");
-        for plan in [stability, None] {
-            let no_match = TestRunOverrides { plan, single_test_filter: Some("Nope-*"), ..Default::default() };
-            let (setup, fe): (_, Arc<dyn Frontend>) = (golden_setup(no_match), Arc::new(Recording));
-            let (status, text) = crate::golden::capture_with_debug(|| run_tests_with_layout_and_timing_filtered(setup, &fe));
-            assert_eq!(status, RunStatus::NotRun);
-            assert!(debug_between(&text, "<NotRun>", "<Matchable>") > 0, "the list's build logs after the stop:\n{text}");
-        }
-    }
-
-    /// The console goldens' run: `golden_layout`, logging errors, default timing, no config,
-    /// `overrides`, and no caches (`CacheInfo::default()`), so no size depends on this machine's.
-    /// Made before a capture: the layout's sizing logs.
-    fn golden_setup(overrides: TestRunOverrides<'static>) -> RunSetup<'static> {
-        static NO_CACHES: std::sync::LazyLock<CacheInfo> = std::sync::LazyLock::new(CacheInfo::default);
-        let (layout, runtime_config) = golden_layout();
-        RunSetup { layout, error_mode: ErrorMode::Log, suite_timing: TestSuiteTiming::default(), runtime_config, config: None,
-                   overrides, cache_info: &NO_CACHES }
-    }
-
-    /// The console goldens' layout: 16 MiB over four threads on a 32 GiB box, with its runtime. A
-    /// thread's 4 MiB is below the stitched allocator's run quantum, so a run that got past its
-    /// checks would be refused before any memory is reserved.
-    fn golden_layout() -> (EnhancedMemoryLayout, RuntimeConfig) {
-        use crate::memory::allocation_strategy::{AllocationMode, EnhancedMemoryStrategy, ReserveAmount, RoundDirection,
-                                                 ShareRounding, SystemMemoryInfo};
-        let mem_info = SystemMemoryInfo {
-            total_installed_bytes: 32 << 30,
-            total_physical_bytes: (32 << 30) - (1200 << 20),
-            available_physical_bytes: (27 << 30) + (300 << 20),
-            used_physical_bytes: (3 << 30) + (548 << 20),
-            total_virtual_bytes: (36 << 30) + (900 << 20),
-            memory_load_percent: 12,
-        };
-        let strategy = EnhancedMemoryStrategy { allocation_mode: AllocationMode::AllocateTarget { target: ReserveAmount::Bytes(16 << 20) } };
-        let rounding = ShareRounding { step_bytes: 4 << 20, direction: RoundDirection::Up, floor_bytes: 4 << 20 };
-        let allocation_result = strategy.allocation_mode.calculate_allocation_with_threads(&mem_info, 4, rounding);
-        let blocks = (0..4).map(|thread_id| BlockInfo { size_bytes: allocation_result.per_thread_bytes as usize, thread_id }).collect();
-        let layout = EnhancedMemoryLayout { system_memory_info: mem_info, allocation_result, blocks, strategy: strategy.clone() };
-        let runtime_config = RuntimeConfig {
-            memory_backend: MemoryBackend::VirtualAlloc2,
-            large_pages_available: true,
-            cpu_list: Some(vec![0, 2, 4, 6]),
-            pin_threads: true,
-            thread_priority: ThreadPriority::High,
-            enhanced_memory_strategy: strategy,
-            memory_allocation: Default::default(),
-        };
-        (layout, runtime_config)
-    }
-
-    /// The plan as `--startup-debug` shows it (TODO 29): the run's entry point up to its return
-    /// before WHEA and allocation, on `golden_layout` and the default plan, at 256 bits. A thread's
-    /// 4 MiB is less than what a cache asks of a chunk or an extent on any CPU with more than 2 MiB
-    /// of L3 (DRAM*2 is twice the L3, CacheTotal 2.00x twice the caches), so on every such machine
-    /// those chunks and extents are the full 4 MiB and their notes print; masked are the log stamps
-    /// and what this machine's L3 asked of a chunk (`golden::mask_plan`). A CPU with 2 MiB of L3 or
-    /// less prints another plan.
-    #[test]
-    fn the_plan_prints_as_its_golden() {
-        let _width = crate::simd::TestWidth::set(Some(crate::simd::Width::W256));
-        let overrides = TestRunOverrides { plan: Some(crate::plans::find(crate::plans::DEFAULT).unwrap()), plan_only: true, ..Default::default() };
-        let setup = golden_setup(overrides);
-        let (status, text) = crate::golden::capture(|| run_tests_with_layout_and_timing_filtered(setup, &cli()));
-        assert_eq!(status, RunStatus::Passed);
-        crate::golden::check("plan_only", &crate::golden::mask_plan(&text));
-    }
-
-    /// What a run that stops before testing prints (TODO 29), on `golden_layout` at 256 bits: a
-    /// filter no test matches, in the default plan and in the whole suite, and a config error from
-    /// the checks before WHEA and allocation that an override can reach (a sequence's, a
-    /// parameter's, the seal's; the plan's own check needs a config's dependent step). Each case's
-    /// output follows a `## case` line.
-    #[test]
-    fn what_stops_a_run_prints_as_its_golden() {
-        let _width = crate::simd::TestWidth::set(Some(crate::simd::Width::W256));
-        let stability = Some(crate::plans::find(crate::plans::DEFAULT).unwrap());
-        let cases = [
-            ("a filter no test of the plan matches", TestRunOverrides { plan: stability, single_test_filter: Some("Nope-*"), ..Default::default() }),
-            ("a filter no test matches", TestRunOverrides { single_test_filter: Some("Nope-*"), ..Default::default() }),
-            ("a sequence that doesn't parse", TestRunOverrides { plan: stability, sequence_override: Some("W 2Q"), ..Default::default() }),
-            ("a verify of the fill alone in a mode the cycle keys",
-             TestRunOverrides { plan: stability, pattern_mode_override: Some(0), test_reps_override: Some(0), ..Default::default() }),
-            ("a seal that doesn't parse", TestRunOverrides { plan: stability, seal_override: Some("bogus"), ..Default::default() }),
-        ];
-        let mut text = String::new();
-        for (case, overrides) in cases {
-            let setup = golden_setup(overrides);
-            let (status, printed) = crate::golden::capture(|| run_tests_with_layout_and_timing_filtered(setup, &cli()));
-            assert_eq!(status, RunStatus::NotRun, "{case}");
-            text += &format!("## {case}\n{printed}");
-        }
-        crate::golden::check("not_run", &crate::golden::mask_stamps(&text));
     }
 }

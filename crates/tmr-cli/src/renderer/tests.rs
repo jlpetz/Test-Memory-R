@@ -1,12 +1,19 @@
 //! Goldens of the Reporter's methods, each from a fixed model (TODO 29): the bytes the console
 //! gets, the console renderer's text, so the split's move of the renderer can be shown to keep
-//! them. The allocation report's are with its fixtures in `converters.rs`, the final summary's in
-//! `results.rs`. `report_cycle` has none: nothing calls it (TODO 29 revives it).
+//! them. The models that take the engine's code to build are the engine's fixtures
+//! (`tmr::test_support`): the memory plan, the test plan, the allocation report and the final
+//! summary. `report_cycle` has none: nothing calls it (TODO 29 revives it).
 
-use super::models::*;
-use crate::cli_render::rendered;
+use tmr::frontend::{
+    CacheInfo, CpuInfo, CpuPerformance, CpuTopologyEntry, CpuTopologyReport, LatencyLevelSummary, LatencyPercentiles,
+    LatencyTestSummaryReport, LatencyThreadResult, PerformanceByCpuReport, PerformanceByPhysicalCoreReport,
+    PerformanceByThreadReport, PhysicalCorePerformance, SystemInfoReport, ThreadPerformance, ThreadTiming, ThreadTimingReport,
+    TopologySummary, TscCalibrationInfo, WheaCounts,
+};
+use tmr::test_support;
+
 use crate::golden::check;
-use crate::whea::WheaCounts;
+use crate::render::rendered;
 
 const KIB: u64 = 1 << 10;
 const MIB: u64 = 1 << 20;
@@ -20,7 +27,7 @@ fn system_info() {
     check("report_system_info", &text);
 }
 
-/// `system_info`'s: a 6-core box with SMT. Setup's event has it too (`cli_render`'s goldens).
+/// `system_info`'s: a 6-core box with SMT. Setup's event has it too (`render`'s goldens).
 pub(crate) fn system_info_report() -> SystemInfoReport {
     SystemInfoReport {
         cpu_info: CpuInfo {
@@ -155,7 +162,7 @@ fn cpu_topology() {
 }
 
 /// `cpu_topology`'s: a hybrid box under `cputype=cores` and `skip-cores=1`. Setup's event has it too
-/// (`cli_render`'s goldens).
+/// (`render`'s goldens).
 pub(crate) fn cpu_topology_report() -> CpuTopologyReport {
     let cpu = |logical_cpu: usize, core_type: &str, status: &str, thread_id| CpuTopologyEntry {
         logical_cpu,
@@ -195,51 +202,50 @@ pub(crate) fn cpu_topology_report() -> CpuTopologyReport {
     }
 }
 
-/// `memory=50%` on a 32 GiB box, six threads, each share rounded up to whole GiB.
+/// `memory=50%` on a 32 GiB box, six threads, each share rounded up to whole GiB
+/// (`test_support::consolidated_memory_report`).
 #[test]
 fn consolidated_memory() {
-    use crate::memory::allocation_strategy::{AllocationMode, ReserveAmount, ShareRounding, SystemMemoryInfo};
-    let mem_info = SystemMemoryInfo {
-        total_installed_bytes: 32 * GIB,
-        total_physical_bytes: 32 * GIB - 1200 * MIB,
-        available_physical_bytes: 27 * GIB + 300 * MIB,
-        used_physical_bytes: 3 * GIB + 548 * MIB,
-        total_virtual_bytes: 36 * GIB + 900 * MIB,
-        memory_load_percent: 12,
-    };
-    let mode = AllocationMode::ReserveFromAvailable { reserve: ReserveAmount::Percentage(50.0) };
-    let allocation = mode.calculate_allocation_with_threads(&mem_info, 6, ShareRounding::default());
-    let report = super::converters::create_consolidated_memory_report(&mem_info, &allocation);
-    let (result, text) = rendered(|reporter| reporter.report_consolidated_memory(&report));
+    let (result, text) = rendered(|reporter| reporter.report_consolidated_memory(&test_support::consolidated_memory_report()));
     result.unwrap();
     check("report_consolidated_memory", &text);
 }
 
 /// An unsealed plan at 256 bits with a test run twice: the table and its notes (the cycle, the
-/// seal, the width). Its tests' sizes don't depend on this machine's caches: absolute and full
-/// extents, absolute chunks. `runner.rs`'s plan-only golden has a sealed plan.
+/// seal, the width; `test_support::test_configuration_report`). The plan-only golden has a sealed
+/// plan (`render/run_tests.rs`).
 #[test]
 fn test_configuration() {
-    use super::converters::{create_test_configuration_report_v2, PlanSequence};
-    let _width = crate::simd::TestWidth::set(Some(crate::simd::Width::W256));
-    let cache_info = crate::cache::CacheInfo::default();
-    let suite = crate::runner::create_test_definitions(&cache_info);
-    let pick = |name: &str| suite.iter().find(|d| d.actual_name == name || d.original_name == Some(name)).cloned().expect(name);
-    let mut tests: Vec<_> = ["Mem-StuckBitAuto", "Bench-Init-TMR-10", "Bench-Verify-TMR-10", "Mem-SimpleV2-256", "Mem-MirrorV2-256"]
-        .into_iter()
-        .map(pick)
-        .collect();
-    for (i, def) in tests.iter_mut().enumerate() {
-        def.test_index = i;
-    }
-    // Mem-StuckBit again at the end of the cycle
-    tests.push(tests[0].clone());
-    let sequence = PlanSequence { order: None, seal: None, seal_off_reason: "seal=off", tm5: false, width: crate::simd::width_given() };
-    let timing = crate::runner::TestSuiteTiming::cycles_only(3);
-    let report = create_test_configuration_report_v2(&tests, &timing, &cache_info, &[(4 * GIB) as usize; 4], None, &sequence);
-    let (result, text) = rendered(|reporter| reporter.report_test_configuration(&report));
+    let (result, text) = rendered(|reporter| reporter.report_test_configuration(&test_support::test_configuration_report()));
     result.unwrap();
     check("report_test_configuration", &text);
+}
+
+/// The 2026-10-16 run on the dev box, one node: 18 × 1 GiB granted, one refused, 80 × 128 MiB
+/// (`test_support::allocation_report_one_node`).
+#[test]
+fn allocation_on_one_node() {
+    let (result, text) = rendered(|reporter| reporter.report_allocation(&test_support::allocation_report_one_node()));
+    result.unwrap();
+    check("report_allocation_one_node", &text);
+}
+
+/// Two nodes, node 1 short of 1 GiB pages and one of its threads served from node 0
+/// (`test_support::allocation_report_two_nodes`).
+#[test]
+fn allocation_on_two_nodes() {
+    let (result, text) = rendered(|reporter| reporter.report_allocation(&test_support::allocation_report_two_nodes()));
+    result.unwrap();
+    check("report_allocation_two_nodes", &text);
+}
+
+/// The final summary of two sealed cycles, with every table it has
+/// (`test_support::final_summary_report`).
+#[test]
+fn final_summary() {
+    let (result, text) = rendered(|reporter| reporter.report_final_summary(&test_support::final_summary_report()));
+    result.unwrap();
+    check("report_final_summary", &text);
 }
 
 /// Two threads' latencies and the consolidated row.

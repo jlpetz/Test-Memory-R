@@ -4,26 +4,24 @@
 //! before `event` returns, on the engine's thread: plain `print!` before the suite and after it,
 //! `console::print_above` for a line while the ticker can be up, `console::print_block` for a
 //! step's report. So the console keeps its bytes, and its order against the log records
-//! (`frontend.rs`). The large-page restart is asked on the console (`prompts.rs`). It moves to
-//! tmr-cli in S5.
-
-#![expect(clippy::print_stdout, clippy::print_stderr, reason = "TODO 29 S5: the CLI's own output, until it moves to the tmr-cli crate")]
+//! (`tmr::frontend`). The large-page restart is asked on the console (`prompts.rs`).
 
 mod run;
 mod setup;
 mod ticker;
 #[cfg(test)]
 mod tests;
+#[cfg(test)]
+mod run_tests;
 
 use std::sync::Mutex;
 use std::time::{Duration, Instant};
 
 pub(crate) use setup::show_end;
 
-use crate::frontend::{Event, Frontend, RestartChoice};
-use crate::progress::ProgressTracker;
-use crate::reporting::renderers::ConsoleRenderer;
-use crate::reporting::{create_console_reporter, Reporter};
+use tmr::frontend::{Event, Frontend, ProgressTracker, Reporter, RestartChoice};
+
+use crate::renderer::{create_console_reporter, ConsoleRenderer};
 
 /// The console's frontend: the run's events as text, and the ticker.
 #[derive(Default)]
@@ -42,7 +40,7 @@ impl Frontend for CliFrontend {
     fn event(&self, event: Event) {
         // No wildcard arm: an event the CLI doesn't show fails to compile
         match event {
-            Event::Setup(setup) => setup::show(setup, crate::cli::take_ctrl_c),
+            Event::Setup(setup) => setup::show(setup, crate::take_ctrl_c),
             Event::Run(run) => run::show(run),
         }
     }

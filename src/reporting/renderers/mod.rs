@@ -1,7 +1,5 @@
-/// Renderer trait and implementations for different output targets
-pub mod console;
-
-pub use console::ConsoleRenderer;
+//! Renderer trait for different output targets. The console's is the CLI's (`ConsoleRenderer`,
+//! crates/tmr-cli, TODO 29).
 
 use crate::Result;
 use super::models::TableData;
@@ -17,19 +15,19 @@ pub trait Renderer: Send {
     /// Render a line of text as it is: a report's notes, a label, an empty line between tables
     fn render_text(&mut self, text: &str) -> Result<()>;
     
-    /// Render an info message
-    #[expect(dead_code, reason = "TODO #29: kept as severity levels for the event-stream renderers")]
+    /// Render an info message. Nothing calls it, nor `render_error` and `render_success`: they are
+    /// kept as severity levels for the event-stream renderers (TODO 29). The trait is public since
+    /// the console's renderer moved to the CLI's crate, so they aren't checked as dead code, and
+    /// carry no `expect`.
     fn render_info(&mut self, text: &str) -> Result<()>;
 
     /// Render a warning message
     fn render_warning(&mut self, text: &str) -> Result<()>;
 
     /// Render an error message
-    #[expect(dead_code, reason = "TODO #29: kept as severity levels for the event-stream renderers")]
     fn render_error(&mut self, text: &str) -> Result<()>;
 
     /// Render a success message
-    #[expect(dead_code, reason = "TODO #29: kept as severity levels for the event-stream renderers")]
     fn render_success(&mut self, text: &str) -> Result<()>;
 
     /// Render a separator line

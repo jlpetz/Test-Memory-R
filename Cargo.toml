@@ -1,10 +1,11 @@
-# The engine, `tmr`, a library at the repo root; the executable is `crates/tmr-app`'s, and the window
-# `crates/tmr-gui`'s (TODO 29). `src/` stays where it is, so every path to it in the docs holds.
+# The engine, `tmr`, a library at the repo root; the executable is `crates/tmr-app`'s, the command
+# line `crates/tmr-cli`'s and the window `crates/tmr-gui`'s (TODO 29). `src/` stays where it is, so
+# every path to it in the docs holds.
 [workspace]
-members = [".", "crates/tmr-app", "crates/tmr-gui"]
+members = [".", "crates/tmr-app", "crates/tmr-cli", "crates/tmr-gui"]
 # All but the window, so a plain `cargo build`, `cargo test` or `cargo run` never compiles Reactor:
 # `--features tmr-app/gui` builds it into tmr.exe
-default-members = [".", "crates/tmr-app"]
+default-members = [".", "crates/tmr-app", "crates/tmr-cli"]
 
 [workspace.package]
 version = "1.0.0"
@@ -37,17 +38,24 @@ windows = { version = "0.62", features = [
 	"Win32_System_Registry",
 	"Win32_System_LibraryLoader",
 	"Win32_System_EventLog",         # WHEA monitoring (#63): EvtSubscribe/EvtNext/EvtRender
-	"Win32_System_Console",          # progress ticker: VT mode + console width (console.rs)
 ] }
 num_cpus = "1.17"
 log = "0.4"
-env_logger = "0.11"
 serde = { version = "1.0", features = ["derive"] }
 serde_json = "1.0"
 chrono = { version = "0.4", features = ["serde"] }  # For timestamp handling
-ctrlc = "3.5"         # For CTRL+C signal handling
 raw-cpuid = "11.6"
 globset = "0.4"
+
+[features]
+# What the CLI's tests drive the engine with (`src/test_support.rs`, TODO 29): its run's code through
+# the CLI's frontend, and the reports the console renders. Off by default, and tmr-cli turns it on
+# for its tests only, so a plain build of tmr.exe or the window has none of it. Cargo builds the
+# engine once a command, with the features of every target the command builds: with
+# `--all-targets` the engine every target links has it, tmr.exe's under `cargo build` too, and
+# clippy checks the engine only with it on, so its fixtures' calls hide dead code. Hence CI's
+# second clippy, `--workspace` with no `--all-targets`.
+test-support = []
 
 [dev-dependencies]
 proptest = "1.4"  # Property-based testing for calibration correctness properties

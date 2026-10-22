@@ -1,2 +1,4 @@
-# The console goldens are compared byte for byte (src/golden.rs): no line-end conversion
+# The console goldens are compared byte for byte (src/test_support.rs, `check_golden`): no line-end
+# conversion. The engine's, of its one-shot commands, and the CLI's.
 testdata/console/** -text
+crates/tmr-cli/testdata/console/** -text

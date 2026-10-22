@@ -186,7 +186,7 @@ fn set_width_on(setting: &WidthSetting, check: impl Fn(Width) -> Result<Width, S
 
 /// The width given and where, `None` under auto.
 pub fn width_given() -> Option<(Width, &'static str)> {
-    #[cfg(test)]
+    #[cfg(any(test, feature = "test-support"))]
     if let Some(given) = TEST_WIDTH.with(|w| w.get()) {
         return given.map(|w| (w, "a test's width"));
     }
@@ -263,20 +263,21 @@ pub(crate) fn dispatches<R>(f: impl FnOnce() -> R) -> (R, Vec<*const ()>) {
     (value, called)
 }
 
-#[cfg(test)]
+#[cfg(any(test, feature = "test-support"))]
 thread_local! {
     /// A test's width on its own thread, in place of the run's (`TestWidth`)
     static TEST_WIDTH: std::cell::Cell<Option<Option<Width>>> = const { std::cell::Cell::new(None) };
 }
 
 /// While it lives, `width_given` and `test_width` on this thread give `width` (`None`: auto): the
-/// run's is set once a process, so tests can't set it.
-#[cfg(test)]
+/// run's is set once a process, so tests can't set it. The CLI's tests too, under the
+/// `test-support` feature: its goldens of the plan are at 256 bits (`test_support`, TODO 29).
+#[cfg(any(test, feature = "test-support"))]
 pub(crate) struct TestWidth {
     before: Option<Option<Width>>,
 }
 
-#[cfg(test)]
+#[cfg(any(test, feature = "test-support"))]
 impl TestWidth {
     #[must_use = "the width holds only while the guard lives"]
     pub(crate) fn set(width: Option<Width>) -> Self {
@@ -284,7 +285,7 @@ impl TestWidth {
     }
 }
 
-#[cfg(test)]
+#[cfg(any(test, feature = "test-support"))]
 impl Drop for TestWidth {
     fn drop(&mut self) {
         let before = self.before;

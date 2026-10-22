@@ -704,38 +704,12 @@ pub fn create_overall_stats_summary_report(
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::memory::allocator::PageSizeLevel::{self, Huge, Large};
-    use crate::memory::stitched::{Commit, Run, ThreadSpan};
+    use crate::memory::allocator::PageSizeLevel::{Huge, Large};
     use crate::reporting::formatters::{DefaultFormatter, ReportFormatter};
+    use crate::test_support::{allocation_report, allocation_report_one_node, allocation_report_two_nodes, repeat, span};
 
     const MIB: usize = 1 << 20;
     const GIB: usize = 1 << 30;
-
-    /// A span from its requests in order, `(bytes, page, node, refused)`, laid out as the
-    /// stitched allocator lays them: each at the cursor, granted ones merging into runs.
-    fn span(thread_id: usize, home: u32, target: usize, requests: &[(usize, PageSizeLevel, u32, bool)]) -> ThreadSpan {
-        let (mut runs, mut commits, mut cursor) = (Vec::<Run>::new(), Vec::new(), 0);
-        for &(len, page, node, refused) in requests {
-            commits.push(Commit { len, page, numa_node: Some(node), refused });
-            if refused {
-                continue;
-            }
-            match runs.last_mut() {
-                Some(run) if run.page == page && run.numa_node == Some(node) => run.len += len,
-                _ => runs.push(Run { offset: cursor, len, page, numa_node: Some(node) }),
-            }
-            cursor += len;
-        }
-        ThreadSpan { thread_id, numa_node: Some(home), base: thread_id * 16 * GIB, len: cursor, target, runs, commits }
-    }
-
-    fn repeat(n: usize, len: usize, page: PageSizeLevel, node: u32) -> Vec<(usize, PageSizeLevel, u32, bool)> {
-        vec![(len, page, node, false); n]
-    }
-
-    fn report(spans: Vec<ThreadSpan>, numa_nodes: u32) -> AllocationReport {
-        create_allocation_report(spans, std::time::Duration::from_millis(1234), numa_nodes)
-    }
 
     /// TODO 99: a width given is in the plan, with where it came from, and Mem-Sequence's own
     /// where it lacks that one; under auto the plan says nothing of it.
@@ -788,26 +762,11 @@ mod tests {
         &table.rows[row][col]
     }
 
-    /// The 2026-10-16 run on this box, as its log tallied it: 18 × 1 GiB granted, thread 2's
-    /// last 1 GiB request refused (1450), 80 × 128 MiB granted.
-    fn one_node_run() -> AllocationReport {
-        let threads = (0..4)
-            .map(|t| {
-                let (huge, large) = if t < 2 { (5, 16) } else { (4, 24) };
-                let mut requests = repeat(huge, GIB, Huge, 0);
-                if t == 2 {
-                    requests.push((GIB, Huge, 0, true));
-                }
-                requests.extend(repeat(large, 128 * MIB, Large, 0));
-                span(t, 0, 7 * GIB, &requests)
-            })
-            .collect();
-        report(threads, 1)
-    }
-
+    /// The 2026-10-16 run on this box (`allocation_report_one_node`): its console golden is the
+    /// CLI's (`report_allocation_one_node`, crates/tmr-cli).
     #[test]
     fn one_node_reads_as_local_and_fair() {
-        let report = one_node_run();
+        let report = allocation_report_one_node();
         let f = DefaultFormatter::new();
 
         let nodes = f.prepare_allocation_nodes_table(&report);
@@ -839,32 +798,13 @@ mod tests {
         let summary = f.prepare_fairness_summary_table(&report);
         assert!(summary.rows.iter().all(|r| r.last().unwrap() == "✅"));
         assert!(summary.rows.iter().all(|r| r[0] != "Remote"));
-        // The report as the console gets it (TODO 29)
-        let (result, text) = crate::cli_render::rendered(|reporter| reporter.report_allocation(&report));
-        result.unwrap();
-        crate::golden::check("report_allocation_one_node", &text);
     }
 
-    /// Two nodes; node 1 is short of 1 GiB pages, so its threads take more 2 MiB pages, and
-    /// thread 3 gets 512 MiB of them from node 0, asked for after a refusal on its own node.
+    /// Two nodes, node 1 short of 1 GiB pages (`allocation_report_two_nodes`): its console golden is
+    /// the CLI's (`report_allocation_two_nodes`, crates/tmr-cli).
     #[test]
     fn a_short_node_shows_in_every_table() {
-        let mut spans = Vec::new();
-        for t in 0..4 {
-            let home = (t / 2) as u32;
-            let mut requests = if home == 0 { repeat(7, GIB, Huge, 0) } else { repeat(2, GIB, Huge, 1) };
-            if home == 0 {
-                requests.extend(repeat(8, 128 * MIB, Large, 0));
-            } else if t == 2 {
-                requests.extend(repeat(48, 128 * MIB, Large, 1));
-            } else {
-                requests.extend(repeat(44, 128 * MIB, Large, 1));
-                requests.push((128 * MIB, Large, 1, true));
-                requests.extend(repeat(4, 128 * MIB, Large, 0));
-            }
-            spans.push(span(t, home, 8 * GIB, &requests));
-        }
-        let report = report(spans, 2);
+        let report = allocation_report_two_nodes();
         let f = DefaultFormatter::new();
 
         let nodes = f.prepare_allocation_nodes_table(&report);
@@ -899,9 +839,6 @@ mod tests {
         assert_eq!(huge[4], "2-3 (-5.00 GiB)");
         let large = summary.rows.iter().find(|r| r[0] == "2 MiB").unwrap();
         assert_eq!((large[4].as_str(), large[5].as_str()), ("0-3 (±5.00 GiB)", "✅"));
-        let (result, text) = crate::cli_render::rendered(|reporter| reporter.report_allocation(&report));
-        result.unwrap();
-        crate::golden::check("report_allocation_two_nodes", &text);
     }
 
     /// A thread short of its target is ⚠️, and one fed in small pieces is 🟡 on Requests.
@@ -915,7 +852,7 @@ mod tests {
             span(2, 0, 4 * GIB, &small),
             span(3, 0, 4 * GIB, &repeat(3, GIB, Huge, 0)),
         ];
-        let report = report(spans, 1);
+        let report = allocation_report(spans, 1);
         let f = DefaultFormatter::new();
         let threads = f.prepare_allocation_threads_table(&report);
         // Its 1 GiB of 2 MiB pages is one page from the others': fair; 67 requests to their 4 aren't.

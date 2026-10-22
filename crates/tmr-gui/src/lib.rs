@@ -2,8 +2,8 @@
 //! S3 of TODO 29 it is a preview, `tmr --gui ...` from a shell: Start runs the session on its own
 //! thread with the exe's arguments, as the CLI does (`tmr::session::run`), and the window shows its
 //! setup's facts (the info line, the system panel) and its run. Its log records still print to that
-//! shell, until S6 gives the window a logger of its own. One run a process: the engine's run
-//! settings are set once (`doc/todo/29-split-design.md`).
+//! shell, through the CLI's logging (`Console`), until S6 gives the window a logger of its own. One
+//! run a process: the engine's run settings are set once (`doc/todo/29-split-design.md`).
 //!
 //! The engine's events cross to the window on a channel (`GuiFrontend`), which a waiter on the
 //! thread pool drains every 500 ms, reading the suite's progress as it does (`window::listen`).
@@ -54,6 +54,24 @@ impl Frontend for GuiFrontend {
     }
 }
 
+/// What the window takes from the console until S6 of TODO 29 gives it a logger of its own: the
+/// CLI's logging, which Start sets up on the session's thread (the log file opens then, so its name
+/// pairs with the run's results), and how the CLI reports a session's error, on the console and in
+/// the log file. tmr.exe hands them over (`crates/tmr-app`): the window doesn't name the CLI.
+#[derive(Clone, Copy)]
+pub struct Console {
+    /// Once a process: env_logger can be set up once
+    pub setup_logging: fn(),
+    pub report_error: fn(&dyn std::error::Error),
+}
+
+/// The console `main` was given, for Start
+static CONSOLE: OnceLock<Console> = OnceLock::new();
+
+fn console() -> Console {
+    *CONSOLE.get().expect("`main` sets the console before the window opens")
+}
+
 /// Whether Start ran the session, and its exit status once it ended
 static STARTED: AtomicBool = AtomicBool::new(false);
 static EXIT_CODE: OnceLock<i32> = OnceLock::new();
@@ -74,12 +92,13 @@ fn session_ended(result: &Result<SessionEnd, String>) {
     let _ = EXIT_CODE.set(status.exit_code());
 }
 
-/// Opens the window, to run `args` (the command line, its exe's name first, less `--gui`), and
-/// returns when it closes, with the exit status the CLI would give (`session_ended`), or stopped
-/// before testing if it never started a session, or interrupted if it closed on one still running,
-/// which ends with the process. The window needs the Windows App Runtime 2.x, which Reactor offers
-/// to download when it is missing.
-pub fn main(args: Vec<String>) -> i32 {
+/// Opens the window, to run `args` (the command line, its exe's name first, less `--gui`) with
+/// `console`'s logging, and returns when it closes, with the exit status the CLI would give
+/// (`session_ended`), or stopped before testing if it never started a session, or interrupted if it
+/// closed on one still running, which ends with the process. The window needs the Windows App
+/// Runtime 2.x, which Reactor offers to download when it is missing.
+pub fn main(args: Vec<String>, console: Console) -> i32 {
+    let _ = CONSOLE.set(console);
     if let Err(e) = windows_reactor::App::run_component::<window::Window>(args) {
         eprintln!("The window couldn't open: {e}");
         return RunStatus::NotRun.exit_code();

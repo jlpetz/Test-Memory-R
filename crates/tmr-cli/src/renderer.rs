@@ -1,10 +1,18 @@
 /// Console renderer implementation using existing table.rs and terminal output
 use std::fmt::Write as _;
 
-use super::Renderer;
+use tmr::frontend::{ColumnAlignment, Renderer, Reporter, TableData};
+
 use crate::Result;
 use crate::table::{TableBuilder, Alignment};
-use crate::reporting::models::{TableData, ColumnAlignment};
+
+#[cfg(test)]
+pub(crate) mod tests; // the Reporter's goldens, and the fixtures the setup goldens share
+
+/// The console's reporter: the engine's reports, rendered as the console shows them
+pub fn create_console_reporter() -> Reporter<ConsoleRenderer> {
+    Reporter::new(ConsoleRenderer::new())
+}
 
 /// Console renderer for terminal output. It renders into its text, which whoever asked for the
 /// report prints (TODO 29): the CLI writes a report in one piece with the lines around it, so no

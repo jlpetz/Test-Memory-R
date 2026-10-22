@@ -622,7 +622,7 @@ mod tests {
                 .collect();
             text += &format!("## {case}: {status:?}\n{written}");
         }
-        crate::golden::check("commands", &text);
+        crate::test_support::check("commands", &text);
     }
 
     /// A command is the first argument: each of its spellings names it, it takes the command line

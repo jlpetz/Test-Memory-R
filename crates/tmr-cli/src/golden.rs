@@ -1,14 +1,16 @@
 //! The console's output against goldens (TODO 29): what a test printed, captured, compared with
-//! `testdata/console/<name>.txt`. The engine/presentation split moves every print behind a
-//! frontend, and these show the moved prints still write today's bytes. `TMR_BLESS=1 cargo test`
-//! writes the goldens instead of comparing them; `git diff testdata/` then shows what changed.
+//! this crate's `testdata/console/<name>.txt`. The engine/presentation split moved every print
+//! behind a frontend, and into this crate, and these show the moved prints still write the bytes
+//! they did. `TMR_BLESS=1 cargo test` writes the goldens instead of comparing them;
+//! `git diff crates/tmr-cli/testdata/` then shows what changed. The engine's code a golden runs it
+//! reaches through `tmr::test_support`.
 //!
 //! The capture is libtest's own mechanism: `set_output_capture` swaps this thread's buffer for
 //! ours, and libtest's spawn hook (under `--nocapture`, our own) hands the capture on to every
-//! thread spawned meanwhile, so the workers' lines land in it too. Two more pieces make it whole: `console.rs` writes through
-//! `print!` in a test build (a locked stdout bypasses the capture), and `Logger` prints each log
-//! record as the CLI's logger does (`cli.rs`, `setup_logging`), through `console::print_above`,
-//! so the records and their order against the prints are in the golden.
+//! thread spawned meanwhile, so the workers' lines land in it too. Two more pieces make it whole:
+//! `console.rs` writes through `print!` in a test build (a locked stdout bypasses the capture), and
+//! `Logger` prints each log record as the CLI's logger does (`setup_logging`), through
+//! `console::print_above`, so the records and their order against the prints are in the golden.
 //!
 //! The capture takes stdout and stderr together, as libtest's does, so which of the two a line
 //! goes to isn't in a golden: the owner's A/B of the exe captures them apart
@@ -16,7 +18,7 @@
 
 use std::cell::Cell;
 use std::io;
-use std::path::PathBuf;
+use std::path::Path;
 use std::sync::{Arc, Mutex};
 
 type Sink = Arc<Mutex<Vec<u8>>>;
@@ -25,10 +27,9 @@ type Sink = Arc<Mutex<Vec<u8>>>;
 /// up.
 pub(crate) fn capture<R>(f: impl FnOnce() -> R) -> (R, String) {
     install_logger();
-    // The detections print what they found at their first use, wherever that is: before the
+    // The detections log what they found at their first use, wherever that is: before the
     // capture, so no golden depends on which test ran first
-    let _ = (crate::tests::get_system_info(), crate::smbios::get_smbios(), crate::pattern::transfer_beat(),
-             crate::cpu_topology::get_cpu_topology());
+    tmr::test_support::detect();
     let sink: Sink = Arc::new(Mutex::new(Vec::new()));
     let restore = Restore { outer: io::set_output_capture(Some(Arc::clone(&sink))), sink: Arc::clone(&sink) };
     if restore.outer.is_none() {
@@ -90,26 +91,10 @@ impl Drop for Restore {
     }
 }
 
-/// Compares `text` with the golden `testdata/console/<name>.txt`, or under `TMR_BLESS=1` writes
-/// it there. A difference fails with the first line that differs; the whole text is in the
-/// test's output.
+/// Compares `text` with the golden `testdata/console/<name>.txt` of this crate, or under
+/// `TMR_BLESS=1` writes it there, as the engine's goldens are (`tmr::test_support::check_golden`).
 pub(crate) fn check(name: &str, text: &str) {
-    let path = PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("testdata").join("console").join(format!("{name}.txt"));
-    if std::env::var_os("TMR_BLESS").is_some_and(|v| v == "1") {
-        std::fs::create_dir_all(path.parent().expect("a directory")).expect("testdata/console");
-        std::fs::write(&path, text).unwrap_or_else(|e| panic!("{}: {e}", path.display()));
-        return;
-    }
-    let golden = std::fs::read_to_string(&path)
-        .unwrap_or_else(|e| panic!("{}: {e}; `TMR_BLESS=1 cargo test` writes it", path.display()));
-    if golden != text {
-        let (want, got): (Vec<&str>, Vec<&str>) = (golden.split('\n').collect(), text.split('\n').collect());
-        let at = want.iter().zip(&got).position(|(a, b)| a != b).unwrap_or(want.len().min(got.len()));
-        println!("{text}");
-        panic!("{name}: line {} differs from its golden ({} lines, now {}):\n  golden: {:?}\n  now:    {:?}\n\
-                `TMR_BLESS=1 cargo test` rewrites the golden",
-               at + 1, want.len(), got.len(), want.get(at).unwrap_or(&""), got.get(at).unwrap_or(&""));
-    }
+    tmr::test_support::check_golden(&Path::new(env!("CARGO_MANIFEST_DIR")).join("testdata").join("console"), name, text);
 }
 
 /// `text` with the log records' stamps masked, the one figure in them that changes run to run.
@@ -277,9 +262,9 @@ fn mask_figures(line: &str) -> String {
     out
 }
 
-/// Prints each record from Info up, and Debug on a thread under `capture_with_debug`, as `cli.rs`'s
-/// logger prints it on a console, colour and all, through `print_above` as its `LogSink` does.
-/// File-only records print nothing, as there.
+/// Prints each record from Info up, and Debug on a thread under `capture_with_debug`, as the CLI's
+/// logger prints it on a console (`setup_logging`), colour and all, through `print_above` as its
+/// `LogSink` does. File-only records print nothing, as there.
 struct Logger;
 
 impl log::Log for Logger {
@@ -288,7 +273,7 @@ impl log::Log for Logger {
     }
 
     fn log(&self, record: &log::Record) {
-        if !self.enabled(record.metadata()) || record.target() == crate::logfile::FILE_ONLY_TARGET {
+        if !self.enabled(record.metadata()) || record.target() == tmr::logfile::FILE_ONLY_TARGET {
             return;
         }
         let colour = match record.level() {
@@ -329,12 +314,12 @@ mod tests {
             crate::console::print_above("above");
             log::info!("a record");
             log::debug!("below the level");
-            log::info!(target: crate::logfile::FILE_ONLY_TARGET, "the log file's alone");
+            log::info!(target: tmr::logfile::FILE_ONLY_TARGET, "the log file's alone");
             std::thread::spawn(|| log::warn!("from a thread")).join().unwrap();
         });
         let text = mask_stamps(&text);
-        assert_eq!(text, "plain\nabove\n\x1b[32m[<stamp> INFO tmr::golden::tests]\x1b[0m a record\n\
-                          \x1b[33m[<stamp> WARN tmr::golden::tests]\x1b[0m from a thread\n");
+        assert_eq!(text, "plain\nabove\n\x1b[32m[<stamp> INFO tmr_cli::golden::tests]\x1b[0m a record\n\
+                          \x1b[33m[<stamp> WARN tmr_cli::golden::tests]\x1b[0m from a thread\n");
     }
 
     /// `mask_run` masks the figures that change between runs and keeps the rest.
