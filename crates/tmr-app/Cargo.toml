@@ -22,12 +22,16 @@ tmr = { path = "../.." }
 tmr-cli = { path = "../tmr-cli" }
 tmr-gui = { path = "../tmr-gui", optional = true }
 log = "0.4"
-# The crash handler, and the Windows build the window needs: features the engine enables already, so
-# the crate builds once, as it did
+# The crash handler and the crash box's thread, and the launch's facts (the console, standard
+# output, the Windows build): features the engine and the CLI enable already, so the crate builds
+# once, as it did
 windows = { version = "0.62", features = [
     "Win32_Foundation",
+    "Win32_Storage_FileSystem",
+    "Win32_System_Console",
     "Win32_System_Diagnostics_Debug",
     "Win32_System_Kernel",
     "Win32_System_LibraryLoader",
     "Win32_System_SystemInformation",
+    "Win32_System_Threading",
 ] }

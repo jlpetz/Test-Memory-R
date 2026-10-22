@@ -10,3 +10,7 @@ tmr = { path = "../.." }
 # A preview API (TODO 7): pinned, and migrations expected. No windows-canvas: the chart is XAML shapes.
 windows-reactor = "=0.100.0"
 serde_json = "1.0"
+# The window's logger (`set_boxed_logger` is std's) and its lines' stamps. Both build as they did:
+# the CLI's env_logger takes log's std, and the engine takes chrono.
+log = { version = "0.4", features = ["std"] }
+chrono = "0.4"

@@ -579,6 +579,17 @@ pub fn diagnose_and_setup_large_pages() -> String {
     report
 }
 
+/// `secedit`, with no console window of its own. Its output is piped to TMR (`output()`), but a
+/// console program started by a process with no console gets a console window, which flashes on the
+/// desktop: the window's, launched with a double-click (TODO 29 S6). Nothing changes for the CLI,
+/// whose console its output never reached.
+fn secedit() -> Command {
+    use std::os::windows::process::CommandExt;
+    let mut command = Command::new("secedit");
+    command.creation_flags(windows::Win32::System::Threading::CREATE_NO_WINDOW.0);
+    command
+}
+
 fn grant_privilege_via_secedit(username: &str) -> Result<(), String> {
     // Use absolute paths in TEMP directory to avoid working directory issues
     let temp_dir = std::env::temp_dir();
@@ -588,7 +599,7 @@ fn grant_privilege_via_secedit(username: &str) -> Result<(), String> {
     let temp_db_str = temp_db.to_str().ok_or("Invalid temp path")?;
     
     // Step 1: Export current security policy
-    let output = Command::new("secedit")
+    let output = secedit()
         .args(["/export", "/cfg", temp_config_str])
         .output()
         .map_err(|e| format!("Failed to run secedit export: {}", e))?;
@@ -651,7 +662,7 @@ fn grant_privilege_via_secedit(username: &str) -> Result<(), String> {
 	}
     
     // Step 4: Import the modified policy
-    let output = Command::new("secedit")
+    let output = secedit()
         .args(["/configure", "/db", temp_db_str, "/cfg", temp_config_str])
         .output()
         .map_err(|e| format!("Failed to run secedit configure: {}", e))?;
@@ -747,9 +758,7 @@ pub fn check_restart_needed() -> bool {
 }
 
 fn check_if_privilege_in_policy() -> Result<bool, String> {
-    use std::process::Command;
-    
-    let output = Command::new("secedit")
+    let output = secedit()
         .args(["/export", "/cfg", "temp_quick_check.inf", "/quiet"])
         .output()
         .map_err(|e| format!("Failed to export policy: {}", e))?;

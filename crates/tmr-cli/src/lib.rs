@@ -2,7 +2,7 @@
 //! frontend (`render`), and how it ended: the verdict, why setup stopped it, or the one-shot command
 //! it named, run on the console. The session itself is the engine's (`tmr::session::run`). Its own
 //! crate since S5 of TODO 29, so the engine prints nothing, and the window (`crates/tmr-gui`)
-//! doesn't name it: tmr.exe hands the window this crate's logging until the window has its own.
+//! doesn't name it: it has a logger of its own, which writes the same log file (`tmr::logfile`).
 
 // The console goldens capture what a test prints as libtest does, and hand the capture on to the
 // threads a test spawns as it does (`golden.rs`, TODO 29)
@@ -16,10 +16,8 @@ mod prompts; // the CLI's questions, over any reader and writer (TODO 29)
 #[cfg(test)]
 mod golden; // the console's output against goldens, for the engine/presentation split (TODO 29)
 
-use std::env;
 use std::io::{stdin, stdout, Write};
 use std::sync::Arc;
-use log::LevelFilter;
 use env_logger::Builder;
 
 use tmr::frontend::RunStatus;
@@ -50,9 +48,9 @@ pub fn main(args: Vec<String>) -> i32 {
     }
 }
 
-/// The error that stopped a session, as the CLI reports it, the window's preview too (TODO 29 S3;
-/// tmr.exe hands it over): `Error: ...` on the console once, and the error in the log file.
-pub fn report_error(e: &dyn std::error::Error) {
+/// The error that stopped a session, as the CLI reports it: `Error: ...` on the console once, and
+/// the error in the log file.
+fn report_error(e: &dyn std::error::Error) {
     log::error!(target: tmr::logfile::FILE_ONLY_TARGET, "{e}");
     eprintln!("Error: {e}");
 }
@@ -116,9 +114,8 @@ pub(crate) fn take_ctrl_c() {
 }
 
 /// The console's logging: VT escape processing, then env_logger, each record on the console in
-/// colour above the ticker and in the log file (`tmr::logfile`). The window's preview logs this way
-/// too (tmr.exe hands it over) until S6 of TODO 29 gives it a logger of its own.
-pub fn setup_logging() {
+/// colour above the ticker and in the log file (`tmr::logfile`).
+fn setup_logging() {
     // VT escape processing, for the log colours and the progress ticker (see console.rs).
     crate::console::init();
 
@@ -130,15 +127,8 @@ pub fn setup_logging() {
     // Shared with the result filename so a run's log and result can be paired by name
     let log_filename = tmr::logfile::path();
 
-    let log_level = env::var("RUST_LOG").unwrap_or_else(|_| "info".to_string());
-    let level_filter = match log_level.to_lowercase().as_str() {
-        "error" => LevelFilter::Error,
-        "warn" => LevelFilter::Warn,
-        "info" => LevelFilter::Info,
-        "debug" => LevelFilter::Debug,
-        "trace" => LevelFilter::Trace,
-        _ => LevelFilter::Info,
-    };
+    // The records the log file gets, as the window's logger has them too
+    let (log_level, level_filter) = tmr::logfile::level();
 
     // Initialize file logger for dual logging
     tmr::logfile::open(&log_filename);

@@ -141,9 +141,10 @@ impl Palettes {
         if dark { &self.dark } else { &self.light }
     }
 
-    /// The defaults, with `colours.json` next to the exe applied over them if it exists. What it
-    /// gets wrong goes to the console: the window opens before the session sets up its logger.
-    pub fn load() -> Self {
+    /// The defaults, with `colours.json` next to the exe applied over them if it exists, and what it
+    /// gets wrong, for the window's errors: it opens before Start sets up its logger, and maybe with
+    /// no console.
+    pub fn load() -> (Self, Vec<String>) {
         let mut problems = Vec::new();
         let palettes = beside_exe("colours.json").map_or(Self::DEFAULT, |path| match std::fs::read_to_string(&path) {
             Ok(text) => Self::parse(&text, &mut problems),
@@ -153,10 +154,7 @@ impl Palettes {
                 Self::DEFAULT
             }
         });
-        for problem in problems {
-            eprintln!("colours.json: {problem}");
-        }
-        palettes
+        (palettes, problems)
     }
 
     const DEFAULT: Self = Self { light: Palette::LIGHT, dark: Palette::DARK };

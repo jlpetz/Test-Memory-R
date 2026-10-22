@@ -1,19 +1,22 @@
 //! The window (TODO 7), the owner's layout from the demos, top to bottom: the header (the title, the
 //! status badge, the runtime and the system panel on the right, the info line under them), the
 //! position and the progress bar, the throughput chart with its error marks, the results, the
-//! errors, Start and Stop. The chart is never between the results and the errors.
+//! errors, then the parameters box with Start and Stop. The chart is never between the results and
+//! the errors. The large-page restart question is a dialog over it (TODO 29 S6).
 //!
 //! It draws `Model`, and re-renders only when a message arrives: a batch from the feed (at least
-//! every 500 ms while the session runs), a button, a theme change or a resize. Nothing animates.
+//! every 500 ms while the session runs), a button, the dialog's answer, a keystroke in the box, a
+//! theme change or a resize. Nothing animates.
 
 use std::sync::mpsc::{self, Receiver, RecvTimeoutError};
 use std::sync::Arc;
 use std::time::Duration;
 
-use tmr::frontend::{Event, ProgressSnapshot, ProgressTracker, Run};
+use tmr::frontend::{Event, ProgressSnapshot, ProgressTracker, RestartChoice, Run};
 use windows_reactor::*;
 
 use crate::chart;
+use crate::logger::{self, LogLines};
 use crate::model::{Model, Status, StepRow};
 use crate::palette::{Palette, Palettes, brush};
 use crate::sysinfo::{self, SystemPanel};
@@ -33,18 +36,31 @@ pub(crate) enum Message {
     Feed(Box<Batch>),
     Start,
     Stop,
+    /// The parameters box's text, as typed
+    Args(String),
+    /// The restart dialog's answer: its primary button exits, its close button (and Esc) continues
+    /// on 4 KiB pages
+    Restart(ContentDialogResult),
     Scheme(ColorScheme),
     Size(WindowSize),
 }
 
+/// What the window waits on: the session's feed, and the warnings and errors it logs
+pub(crate) struct Feeds {
+    events: Receiver<Feed>,
+    log: LogLines,
+}
+
 /// What a wait on the feed brought: everything queued (nothing, at a tick), where the suite stood
-/// then and what WHEA reported, and the receiver, back for the next wait. `closed` when the
-/// session's thread is gone.
+/// then and what WHEA reported, the lines logged and how many of them the logger dropped so far, and
+/// the feeds, back for the next wait. `closed` when the session's thread is gone.
 pub(crate) struct Batch {
     feed: Vec<Feed>,
     snapshot: Option<ProgressSnapshot>,
     whea: Vec<String>,
-    rx: Receiver<Feed>,
+    log: Vec<String>,
+    dropped: u64,
+    feeds: Feeds,
     closed: bool,
 }
 
@@ -59,8 +75,6 @@ impl Feed {
 }
 
 pub(crate) struct Window {
-    /// The command line Start runs (the exe's name first)
-    args: Vec<String>,
     model: Model,
     dark: bool,
     width: f64,
@@ -68,16 +82,16 @@ pub(crate) struct Window {
 }
 
 /// Waits on a thread-pool thread for the feed, up to `TICK`, then returns everything queued as one
-/// message, with where the suite stands then. A wait that brought nothing returns as well: that is
-/// the window's clock, as Reactor 0.100.0 has no timer. Re-armed from `update` after each delivery,
-/// so there is one waiter at a time, and the receiver travels with it.
-fn listen(rx: Receiver<Feed>, progress: Option<Arc<ProgressTracker>>, context: &ComponentContext<Window>) {
+/// message, with where the suite stands then and the lines logged. A wait that brought nothing
+/// returns as well: that is the window's clock, as Reactor 0.100.0 has no timer. Re-armed from
+/// `update` after each delivery, so there is one waiter at a time, and the feeds travel with it.
+fn listen(feeds: Feeds, progress: Option<Arc<ProgressTracker>>, context: &ComponentContext<Window>) {
     context.spawn_background(move |_| {
         let mut feed = Vec::new();
-        let closed = match rx.recv_timeout(TICK) {
+        let closed = match feeds.events.recv_timeout(TICK) {
             Ok(first) => {
                 feed.push(first);
-                feed.extend(rx.try_iter());
+                feed.extend(feeds.events.try_iter());
                 false
             }
             Err(RecvTimeoutError::Timeout) => false,
@@ -87,7 +101,8 @@ fn listen(rx: Receiver<Feed>, progress: Option<Arc<ProgressTracker>>, context: &
         // CLI's ticker, which takes them otherwise, isn't running.
         let progress = progress.or_else(|| feed.iter().find_map(Feed::progress));
         let (snapshot, whea) = progress.map_or((None, Vec::new()), |p| (p.snapshot(), p.take_whea_descriptions()));
-        Message::Feed(Box::new(Batch { feed, snapshot, whea, rx, closed }))
+        let (log, dropped) = feeds.log.take();
+        Message::Feed(Box::new(Batch { feed, snapshot, whea, log, dropped, feeds, closed }))
     });
 }
 
@@ -96,18 +111,18 @@ impl Window {
         self.palettes.get(self.dark)
     }
 
-    /// Runs the session on its own thread, its events to the window's feed
+    /// Runs the parameters box's command line on the session's own thread, its events to the
+    /// window's feed. The log file opens now, with the window's logger, so its name pairs with the
+    /// run's results.
     fn start(&mut self, context: &ComponentContext<Self>) {
+        let log = logger::install();
         let (tx, rx) = mpsc::channel();
         let fe = Arc::new(GuiFrontend { feed: tx.clone() });
-        let (args, console) = (self.args.clone(), crate::console());
+        let args = self.model.command();
         let session = std::thread::Builder::new().name("tmr-engine".to_string()).spawn(move || {
-            // The log records on the console and in the log file, as the CLI has them, until S6 of
-            // TODO 29 gives the window a logger of its own
-            (console.setup_logging)();
             let result = tmr::session::run(args, fe).map_err(|e| {
-                // On the console and in the log, as the CLI has it
-                (console.report_error)(e.as_ref());
+                // In the log file, as the CLI has it; the window shows it as the session's end
+                log::error!(target: tmr::logfile::FILE_ONLY_TARGET, "{e}");
                 e.to_string()
             });
             crate::session_ended(&result);
@@ -115,36 +130,37 @@ impl Window {
             let _ = tx.send(Feed::Ended(result));
         });
         match session {
-            Ok(_) => {
-                crate::session_started();
+            Ok(session) => {
+                crate::session_started(session);
                 self.model.start();
-                listen(rx, None, context);
+                listen(Feeds { events: rx, log }, None, context);
             }
             Err(e) => self.model.ended(Err(format!("the engine's thread didn't start: {e}"))),
         }
     }
 
     fn take(&mut self, batch: Batch, context: &ComponentContext<Self>) {
-        let Batch { feed, snapshot, whea, rx, closed } = batch;
+        let Batch { feed, snapshot, whea, log, dropped, feeds, closed } = batch;
         let mut ended = false;
         for item in feed {
             match item {
                 Feed::Event(event) => self.model.apply(event),
-                Feed::RestartNeeded => self.model.restart_needed(),
+                Feed::Ask(reply) => self.model.ask_restart(reply),
                 Feed::Ended(result) => {
                     self.model.ended(result);
                     ended = true;
                 }
             }
         }
+        self.model.logged(log, dropped);
         self.model.tick(snapshot, whea);
         if closed && !ended {
             // A panic ends the thread before it says how the session went (a release build aborts)
-            self.model.ended(Err("the session's thread ended without a result: the console has why".to_string()));
+            self.model.ended(Err("the session's thread ended without a result: the log file has why".to_string()));
             ended = true;
         }
         if !ended {
-            listen(rx, self.model.progress().cloned(), context);
+            listen(feeds, self.model.progress().cloned(), context);
         }
     }
 }
@@ -154,13 +170,12 @@ impl Component for Window {
     type Message = Message;
 
     fn create(args: &Vec<String>, _context: &ComponentContext<Self>) -> Self {
-        Self {
-            args: args.clone(),
-            model: Model::new(args),
-            dark: false,
-            width: 860.0,
-            palettes: Palettes::load(),
-        }
+        crate::window_opened();
+        let (palettes, problems) = Palettes::load();
+        let mut model = Model::new(args);
+        // Before Start there is no log file to take them, and maybe no console
+        model.errors.extend(problems.into_iter().map(|problem| format!("colours.json: {problem}")));
+        Self { model, dark: false, width: 860.0, palettes }
     }
 
     fn update(&mut self, message: Message, context: &ComponentContext<Self>) {
@@ -175,6 +190,11 @@ impl Component for Window {
                     self.model.stop();
                 }
             }
+            Message::Args(text) => self.model.args = text,
+            Message::Restart(result) => self.model.answer_restart(match result {
+                ContentDialogResult::Primary => RestartChoice::Exit,
+                _ => RestartChoice::Continue4K,
+            }),
             Message::Scheme(scheme) => self.dark = scheme == ColorScheme::Dark,
             Message::Size(size) => self.width = size.width,
         }
@@ -205,7 +225,7 @@ impl Component for Window {
                 GridLength::Auto,      // chart
                 GridLength::Star(3.0), // results
                 GridLength::Star(1.4), // errors
-                GridLength::Auto,      // buttons
+                GridLength::Auto,      // parameters, buttons
             ])
             .children((
                 self.header(0),
@@ -213,7 +233,8 @@ impl Component for Window {
                 self.chart_card(2),
                 self.results(3),
                 self.error_list(4),
-                self.buttons(5, context),
+                self.controls(5, context),
+                self.restart_dialog(context),
             ))
     }
 }
@@ -517,9 +538,9 @@ impl Window {
                 .foreground(brush(p.text_secondary))
                 .into()
         } else {
-            let entries = self.model.errors.iter().enumerate().rev().take(SHOWN).map(|(i, text)| {
+            let entries = self.model.errors.newest(SHOWN).map(|(number, text)| {
                 (
-                    i as u64,
+                    number,
                     Grid::new()
                         .column_spacing(8.0)
                         .margin(Thickness::xy(0.0, 3.0))
@@ -530,7 +551,7 @@ impl Window {
                                 .foreground(brush(p.error))
                                 .grid_column(0),
                             TextBlock::new()
-                                .text(text.clone())
+                                .text(text.to_string())
                                 .foreground(brush(p.text_primary))
                                 .text_wrapping(TextWrapping::Wrap)
                                 .is_text_selection_enabled(true)
@@ -542,33 +563,71 @@ impl Window {
                 .vertical_scroll_bar_visibility(ScrollBarVisibility::Auto)
                 .content(StackPanel::new().keyed_children(entries))
         };
-        let shown = if self.model.errors.len() > SHOWN { format!(" · the newest {SHOWN} shown") } else { String::new() };
-        card(row, p, card_title(format!("Errors · {}{shown}", self.model.errors.len()), p), body)
+        let total = self.model.errors.total();
+        let shown = if total > SHOWN as u64 { format!(" · the newest {SHOWN} shown") } else { String::new() };
+        let dropped = self.model.dropped_line().map_or(String::new(), |line| format!(" · {line}"));
+        card(row, p, card_title(format!("Errors · {total}{shown}{dropped}"), p), body)
     }
 
-    /// Start/Stop keep WinUI's own button colours (their hover, pressed and disabled states).
-    /// Start runs once: one session a process.
-    fn buttons(&self, row: i32, context: &ViewContext<Self>) -> View {
-        StackPanel::new()
+    /// The parameters box, then Start and Stop, which keep WinUI's own button colours (their hover,
+    /// pressed and disabled states). The box takes the CLI's parameters, as tmr.exe does; Start runs
+    /// it once, one session a process, and from then on it holds what ran.
+    fn controls(&self, row: i32, context: &ViewContext<Self>) -> View {
+        let ready = self.model.status == Status::Ready;
+        Grid::new()
             .grid_row(row)
-            .orientation(Orientation::Horizontal)
-            .horizontal_alignment(HorizontalAlignment::Right)
-            .spacing(8.0)
+            .column_spacing(8.0)
+            .columns([GridLength::STAR, GridLength::Auto, GridLength::Auto])
             .children((
+                TextBox::new()
+                    .text(self.model.args.clone())
+                    .placeholder_text("Parameters, as on the command line: memory=50% cycles=3 (none: the defaults)")
+                    .is_enabled(ready)
+                    .on_text_changed(context.callback(Message::Args))
+                    .grid_column(0)
+                    .tooltip("What Start runs, in tmr.exe's key=value syntax (tmr.exe --help lists them). \
+                              Quote one with a space in it: \"config=C:\\My configs\\x.cfg\""),
                 Button::new()
                     .style(ButtonStyle::Accent)
-                    .is_enabled(self.model.status == Status::Ready)
+                    .is_enabled(ready)
                     .width(96.0)
+                    .grid_column(1)
                     .on_click(context.callback(|()| Message::Start))
                     .content("Start"),
                 Button::new()
                     .is_enabled(self.model.status == Status::Running)
                     .width(96.0)
+                    .grid_column(2)
                     .on_click(context.callback(|()| Message::Stop))
                     .content("Stop"),
             ))
     }
+
+    /// The large-page restart question, the console's A/B as a dialog, open while the session's
+    /// thread waits for its answer. Esc is the close button's: 4 KiB pages, as an empty answer is on
+    /// the console.
+    fn restart_dialog(&self, context: &ViewContext<Self>) -> View {
+        // The text in the dialog's own colours: it follows the system's theme, not the palette's
+        ContentDialog::new()
+            .title("Large pages need Windows restarted")
+            .primary_button_text("Exit, to restart Windows")
+            .close_button_text("Continue on 4 KiB pages")
+            .is_open(self.model.restart_asked())
+            .on_closed(context.callback(Message::Restart))
+            .content(
+                TextBlock::new()
+                    .text(RESTART_QUESTION)
+                    .text_wrapping(TextWrapping::Wrap),
+            )
+    }
 }
+
+/// The restart dialog's text, the console's question (`tmr_cli`'s prompts) in a window's words
+const RESTART_QUESTION: &str = "The large-page privilege is set up, but takes effect only after Windows restarts.\n\n\
+    Exit TMR and restart Windows: TMR then runs on large pages (recommended for the most memory stress).\n\n\
+    Or continue on standard 4 KiB pages, about 5-10% slower: every test still runs and every pattern is still \
+    checked, but slower memory traffic is less stress, so marginal errors that only appear at full bandwidth may \
+    go undetected.";
 
 /// egui's progress bar, from reactor primitives: a fully rounded track, `width` wide, a rounded
 /// fill sized to the fraction by two star columns, and the percentage centred over both.

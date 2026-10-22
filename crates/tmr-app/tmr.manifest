@@ -1,0 +1,15 @@
+<?xml version="1.0" encoding="UTF-8" standalone="yes"?>
+<!--
+  tmr.exe's manifest, embedded only in a build with the window (build.rs, TODO 29 S6). One setting:
+  from build 26100 a console program launched without a console to inherit (a double-click) gets
+  none, so tmr.exe can open its window with no console behind it; from a shell it still inherits the
+  shell's. Older builds ignore it. Nothing else: Reactor reads this resource for its own
+  self-contained marker, and without it bootstraps the installed Windows App Runtime.
+-->
+<assembly xmlns="urn:schemas-microsoft-com:asm.v1" manifestVersion="1.0">
+  <application xmlns="urn:schemas-microsoft-com:asm.v3">
+    <windowsSettings>
+      <consoleAllocationPolicy xmlns="http://schemas.microsoft.com/SMI/2024/WindowsSettings">detached</consoleAllocationPolicy>
+    </windowsSettings>
+  </application>
+</assembly>

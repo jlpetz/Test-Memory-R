@@ -1,7 +1,8 @@
 //! The log file (TODO 29): `logs/<stem>.log`, with the stem the run's results file shares, a header,
 //! then one line per record, `[stamp LEVEL module] message`, in local time to the millisecond. A
 //! frontend's logger hands each record here as well as showing it, the CLI's on the console
-//! (`tmr_cli::setup_logging`), so every frontend writes the same file.
+//! (`tmr_cli::setup_logging`), the window's in its errors list (`tmr_gui`'s logger), and both let
+//! through the records `level` says, so every frontend writes the same file.
 
 use std::io::Write;
 use std::sync::{Mutex, OnceLock};
@@ -13,6 +14,22 @@ pub const FILE_ONLY_TARGET: &str = "tmr::file_only";
 
 /// The log file, once `open` has created it
 static FILE: OnceLock<Mutex<std::fs::File>> = OnceLock::new();
+
+/// `RUST_LOG` as TMR reads it, the same for every frontend: its value (`info` without it), and the
+/// records a logger lets through, that level and the ones above it. A value that isn't a level
+/// (a module's filter, as other programs take) is info.
+pub fn level() -> (String, log::LevelFilter) {
+    let log_level = std::env::var("RUST_LOG").unwrap_or_else(|_| "info".to_string());
+    let level_filter = match log_level.to_lowercase().as_str() {
+        "error" => log::LevelFilter::Error,
+        "warn" => log::LevelFilter::Warn,
+        "info" => log::LevelFilter::Info,
+        "debug" => log::LevelFilter::Debug,
+        "trace" => log::LevelFilter::Trace,
+        _ => log::LevelFilter::Info,
+    };
+    (log_level, level_filter)
+}
 
 /// Creates `logs`, where the log file goes, if it isn't there.
 pub fn create_dir() -> std::io::Result<()> {

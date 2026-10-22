@@ -3,17 +3,19 @@
 //! from the window, which `window.rs` builds from it.
 //!
 //! The events come as the engine sends them, at most a batch every 500 ms; a snapshot comes with
-//! each batch, and with each 500 ms that brought none (`tick`). The fast figures, the runtime, the
-//! position, the progress and the chart's speed, are the snapshot's; the events give the rest: the
-//! setup's the system panel and the first facts, the run's the rest.
+//! each batch, and with each 500 ms that brought none (`tick`), and so do the warnings and errors
+//! logged since (`logged`). The fast figures, the runtime, the position, the progress and the
+//! chart's speed, are the snapshot's; the events give the rest: the setup's the system panel and
+//! the first facts, the run's the rest.
 
 use std::collections::VecDeque;
 use std::sync::Arc;
+use std::sync::mpsc::SyncSender;
 use std::time::Duration;
 
 use tmr::frontend::{
-    AllocationReport, Event, NotRun, ProgressSnapshot, ProgressTracker, Run, RunOutcome, RunStatus, SealOp, Setup, StepReport,
-    TestConfigurationReport, WheaCounts,
+    AllocationReport, Event, NotRun, ProgressSnapshot, ProgressTracker, RestartChoice, Run, RunOutcome, RunStatus, SealOp, Setup,
+    StepReport, TestConfigurationReport, WheaCounts,
 };
 use tmr::session::{SessionEnd, Stopped};
 
@@ -21,6 +23,10 @@ use crate::sysinfo::{Machine, SystemPanel};
 
 const MIB: f64 = 1024.0 * 1024.0;
 const GIB: f64 = 1024.0 * 1024.0 * 1024.0;
+
+/// The entries the errors list keeps, the newest (the window shows the newest 200 of them): an
+/// error storm over a night would hold gigabytes of log lines. The log file has every line.
+pub const ERRORS_KEPT: usize = 10_000;
 
 /// The status badge: where the session is, then how its run ended.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -185,6 +191,56 @@ pub fn axis_label(value: f64) -> String {
     format!("{}{unit}", text.trim_end_matches('0').trim_end_matches('.'))
 }
 
+/// The errors list: its newest `ERRORS_KEPT` entries, oldest first, and how many came before them.
+/// Each entry has a number, its place among all of them, which stays its own as older ones go: the
+/// window's key for it.
+#[derive(Debug, Default)]
+pub struct Errors {
+    kept: VecDeque<String>,
+    /// The entries let go, the oldest, to keep `ERRORS_KEPT`
+    let_go: u64,
+}
+
+impl Errors {
+    pub fn push(&mut self, entry: String) {
+        if self.kept.len() == ERRORS_KEPT {
+            self.kept.pop_front();
+            self.let_go += 1;
+        }
+        self.kept.push_back(entry);
+    }
+
+    /// Every entry so far, those let go included
+    pub fn total(&self) -> u64 {
+        self.let_go + self.kept.len() as u64
+    }
+
+    pub fn is_empty(&self) -> bool {
+        self.kept.is_empty()
+    }
+
+    /// The newest `n` entries, newest first, each with its number
+    pub fn newest(&self, n: usize) -> impl Iterator<Item = (u64, &str)> {
+        self.kept.iter().enumerate().rev().take(n).map(|(i, entry)| (self.let_go + i as u64, entry.as_str()))
+    }
+}
+
+impl Extend<String> for Errors {
+    fn extend<I: IntoIterator<Item = String>>(&mut self, entries: I) {
+        for entry in entries {
+            self.push(entry);
+        }
+    }
+}
+
+/// The entries kept, oldest first, as a test lists them
+#[cfg(test)]
+impl<const N: usize> PartialEq<[&str; N]> for Errors {
+    fn eq(&self, entries: &[&str; N]) -> bool {
+        self.kept == *entries
+    }
+}
+
 /// The session's facts, for the info line under the title.
 #[derive(Debug, Default)]
 struct Facts {
@@ -217,13 +273,21 @@ pub struct Model {
     /// The system panel, once setup has detected the machine
     pub system: Option<SystemPanel>,
     pub rows: Vec<StepRow>,
-    /// Steps with errors, final seal checks that found some, WHEA reports, and why a run stopped,
-    /// oldest first
-    pub errors: Vec<String>,
+    /// Steps with errors, final seal checks that found some, WHEA reports, the warnings and errors
+    /// logged, and why a run stopped, oldest first
+    pub errors: Errors,
     pub series: Series,
-    /// What Start runs, as the info line gives it until the session's facts replace it
-    command: String,
+    /// The parameters Start runs, as the parameters box has them: the CLI's `key=value` syntax
+    /// (`args_of`)
+    pub args: String,
+    /// The exe's name, which Start puts before them
+    program: String,
     facts: Facts,
+    /// The large-page restart question, while it waits for the dialog's answer: the session's
+    /// thread waits on the reply
+    restart: Option<SyncSender<RestartChoice>>,
+    /// The lines the logger's channel dropped, as it last counted them
+    log_lines_dropped: u64,
     /// The suite's progress, from its start on
     progress: Option<Arc<ProgressTracker>>,
     /// The cycle running, and the last one finished, whether it stopped early
@@ -237,7 +301,8 @@ pub struct Model {
 }
 
 impl Model {
-    /// Ready to run `args`, the command line the exe was given (its name first)
+    /// Ready to run `args`, the command line the exe was given (its name first), which the parameters
+    /// box starts with
     pub fn new(args: &[String]) -> Self {
         Model {
             status: Status::Ready,
@@ -247,10 +312,13 @@ impl Model {
             ram_bytes: None,
             system: None,
             rows: Vec::new(),
-            errors: Vec::new(),
+            errors: Errors::default(),
             series: Series::default(),
-            command: std::iter::once("tmr").chain(args.iter().skip(1).map(String::as_str)).collect::<Vec<_>>().join(" "),
+            args: args_text(args.get(1..).unwrap_or_default()),
+            program: args.first().cloned().unwrap_or_else(|| "tmr".to_string()),
             facts: Facts::default(),
+            restart: None,
+            log_lines_dropped: 0,
             progress: None,
             cycle: 0,
             cycles_finished: 0,
@@ -258,6 +326,11 @@ impl Model {
             errors_seen: 0,
             over: false,
         }
+    }
+
+    /// The command line Start runs: the exe's name, then the parameters box's
+    pub fn command(&self) -> Vec<String> {
+        std::iter::once(self.program.clone()).chain(args_of(&self.args)).collect()
     }
 
     /// The session was started
@@ -278,7 +351,7 @@ impl Model {
         self.progress.as_ref()
     }
 
-    /// The info line: the session's facts, or until there are any, the command Start runs
+    /// The info line: the session's facts, or until there are any, the command Start runs (ran)
     pub fn info_line(&self) -> String {
         let f = &self.facts;
         let facts: Vec<&str> = [f.allocation.as_deref(), f.plan.as_deref(), f.no_large_pages.then_some("no large pages"),
@@ -286,7 +359,13 @@ impl Model {
             .into_iter()
             .flatten()
             .collect();
-        if facts.is_empty() { self.command.clone() } else { facts.join(" · ") }
+        if !facts.is_empty() {
+            facts.join(" · ")
+        } else if self.args.trim().is_empty() {
+            "tmr".to_string()
+        } else {
+            format!("tmr {}", self.args.trim())
+        }
     }
 
     pub fn apply(&mut self, event: Event) {
@@ -327,10 +406,46 @@ impl Model {
         }
     }
 
-    /// Large pages need Windows restarted, and the window, which can't ask, runs on 4 KiB pages
-    pub fn restart_needed(&mut self) {
-        self.errors.push("Large pages are set up but take effect after Windows restarts: this run takes 4 KiB pages \
-                          (minpage=regular)".to_string());
+    /// Large pages need Windows restarted: the dialog asks whether to exit or continue on 4 KiB
+    /// pages, and `answer_restart` replies on `reply`
+    pub fn ask_restart(&mut self, reply: SyncSender<RestartChoice>) {
+        self.position = "Large pages need Windows restarted".to_string();
+        self.restart = Some(reply);
+    }
+
+    /// The restart question is waiting for its answer: the dialog is open
+    pub fn restart_asked(&self) -> bool {
+        self.restart.is_some()
+    }
+
+    /// The dialog's answer, to the session's thread. On 4 KiB pages, the errors list says so.
+    pub fn answer_restart(&mut self, choice: RestartChoice) {
+        let Some(reply) = self.restart.take() else {
+            return;
+        };
+        // The session's thread waits for it while the window is open
+        let _ = reply.send(choice);
+        match choice {
+            RestartChoice::Exit => self.position = "Exiting, to restart Windows".to_string(),
+            RestartChoice::Continue4K => {
+                self.position = "Setting up, on 4 KiB pages".to_string();
+                self.errors.push("Large pages are set up but take effect after Windows restarts: this run takes 4 KiB pages \
+                                  (minpage=regular)".to_string());
+            }
+        }
+    }
+
+    /// The warnings and errors logged since the last batch, into the errors list, and how many the
+    /// logger has dropped so far (`logger::LogLines`)
+    pub fn logged(&mut self, lines: Vec<String>, dropped: u64) {
+        self.errors.extend(lines);
+        self.log_lines_dropped = dropped;
+    }
+
+    /// `1,234 log lines dropped, all in the log file`, when the logger's channel was full for some
+    pub fn dropped_line(&self) -> Option<String> {
+        let dropped = self.log_lines_dropped;
+        (dropped > 0).then(|| format!("{} log line{} dropped, all in the log file", thousands(dropped as f64), plural(dropped as usize)))
     }
 
     fn run(&mut self, run: Run) {
@@ -561,6 +676,36 @@ fn plural(n: usize) -> &'static str {
     if n == 1 { "" } else { "s" }
 }
 
+/// The parameters box's text for `args`, the CLI's `key=value` syntax: each argument apart, in
+/// double quotes when it has a space in it (`"config=C:\My configs\x.cfg"`), or is empty
+pub fn args_text(args: &[String]) -> String {
+    args.iter()
+        .map(|arg| if arg.is_empty() || arg.contains(char::is_whitespace) { format!("\"{arg}\"") } else { arg.clone() })
+        .collect::<Vec<_>>()
+        .join(" ")
+}
+
+/// The arguments in the parameters box's `text`, split as a shell splits them for the CLI: at
+/// whitespace outside double quotes, the quotes taken out. A backslash is the path's, as in a
+/// Windows path, never an escape.
+pub fn args_of(text: &str) -> Vec<String> {
+    let mut args = Vec::new();
+    let mut arg: Option<String> = None;
+    let mut quoted = false;
+    for ch in text.chars() {
+        match ch {
+            '"' => {
+                quoted = !quoted;
+                arg.get_or_insert_with(String::new);
+            }
+            ch if ch.is_whitespace() && !quoted => args.extend(arg.take()),
+            ch => arg.get_or_insert_with(String::new).push(ch),
+        }
+    }
+    args.extend(arg);
+    args
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -738,7 +883,7 @@ mod tests {
 
         // The thread's end agrees, and changes nothing
         m.ended(Ok(ran(RunStatus::Failed)));
-        assert_eq!((m.status, m.errors.len()), (Status::Failed, 2));
+        assert_eq!((m.status, m.errors.total()), (Status::Failed, 2));
     }
 
     /// Setup's facts (TODO 29): the threads and the plan on the info line until the run's replace
@@ -754,7 +899,10 @@ mod tests {
             m.apply(setup.into());
         }
         assert_eq!(m.position, "Checking large pages");
-        m.restart_needed();
+        let (reply, answer) = std::sync::mpsc::sync_channel(1);
+        m.ask_restart(reply);
+        m.answer_restart(RestartChoice::Continue4K);
+        assert_eq!(answer.try_recv(), Ok(RestartChoice::Continue4K));
         for setup in [Setup::LargePageStatus { usable: false, min_page: "regular".to_string(), min_needs_large: false },
                       Setup::MemoryStatus(Some(status)), Setup::MemoryStatus(None),
                       Setup::SystemInfo { report: Box::new(system_info()), memory_modules: vec![module] },
@@ -785,7 +933,7 @@ mod tests {
             m.start();
             m.ended(end);
             assert_eq!(m.status, Status::NotRun);
-            (m.position, m.errors.join(" | "))
+            (m.position, m.errors.newest(usize::MAX).map(|(_, entry)| entry).collect::<Vec<_>>().join(" | "))
         };
         let stopped = "Stopped before testing".to_string();
         assert_eq!(end(Ok(SessionEnd::Stopped(Stopped::UnknownFlags(vec!["--latency-test".to_string(), "--fast".to_string()])))),
@@ -818,7 +966,8 @@ mod tests {
         let mut m = model();
         m.start();
         m.ended(Err("bad value".to_string()));
-        assert_eq!((m.status, m.errors.as_slice()), (Status::NotRun, &["Error: bad value".to_string()][..]));
+        assert_eq!(m.status, Status::NotRun);
+        assert_eq!(m.errors, ["Error: bad value"]);
         let mut m = model();
         m.start();
         m.ended(Ok(SessionEnd::Ran { status: RunStatus::Passed, elapsed: Duration::ZERO, plan_only: true }));
@@ -834,6 +983,84 @@ mod tests {
         let mut m = model();
         m.apply(step(1, 1, 0, None, WheaCounts::default()).into());
         assert_eq!(m.rows[0].cells()[4], "–");
+    }
+
+    /// The restart question (TODO 29 S6): the dialog is open while the question waits, the answer
+    /// goes to the session's thread once, and only 4 KiB pages say so in the errors
+    #[test]
+    fn the_restart_question_waits_for_one_answer() {
+        let mut m = model();
+        m.start();
+        assert!(!m.restart_asked());
+        m.answer_restart(RestartChoice::Exit);
+        assert_eq!(m.position, "Setting up", "no question, no answer");
+
+        let (reply, answer) = std::sync::mpsc::sync_channel(1);
+        m.ask_restart(reply);
+        assert_eq!((m.restart_asked(), m.position.as_str()), (true, "Large pages need Windows restarted"));
+        m.answer_restart(RestartChoice::Exit);
+        m.answer_restart(RestartChoice::Continue4K);
+        assert_eq!((answer.try_recv(), answer.try_recv()), (Ok(RestartChoice::Exit), Err(std::sync::mpsc::TryRecvError::Disconnected)),
+                   "one answer, then the reply is gone");
+        assert_eq!((m.restart_asked(), m.position.as_str(), m.errors.total()), (false, "Exiting, to restart Windows", 0));
+        m.ended(Ok(SessionEnd::RestartChosen));
+        assert_eq!(m.position, "Restart Windows for large pages, then run again");
+
+        // The session's thread stopped waiting (the window closed): the answer goes nowhere
+        let (reply, answer) = std::sync::mpsc::sync_channel(1);
+        drop(answer);
+        let mut m = model();
+        m.ask_restart(reply);
+        m.answer_restart(RestartChoice::Continue4K);
+        assert_eq!(m.position, "Setting up, on 4 KiB pages");
+        assert_eq!(m.errors, ["Large pages are set up but take effect after Windows restarts: this run takes 4 KiB pages (minpage=regular)"]);
+    }
+
+    /// The warnings and errors logged join the errors list, and the logger's drops are one line;
+    /// the list keeps its newest `ERRORS_KEPT` entries, each with its number for good, and the
+    /// newest are what the window shows (TODO 29 S6)
+    #[test]
+    fn logged_lines_join_the_errors_and_the_newest_are_kept() {
+        let mut m = model();
+        m.logged(Vec::new(), 0);
+        assert_eq!((m.errors.total(), m.dropped_line()), (0, None));
+        m.logged(vec!["[12:00:00 ERROR tmr::tests] bad word".to_string()], 0);
+        m.logged(Vec::new(), 1);
+        assert_eq!(m.errors, ["[12:00:00 ERROR tmr::tests] bad word"]);
+        assert_eq!(m.dropped_line().as_deref(), Some("1 log line dropped, all in the log file"));
+
+        // A storm past the cap: the oldest go, and the newest, a step's errors last, are kept
+        m.logged((0..ERRORS_KEPT + 2).map(|i| format!("line {i}")).collect(), 1_500);
+        m.apply(step(1, 1, 3, None, WheaCounts::default()).into());
+        assert_eq!(m.errors.total(), ERRORS_KEPT as u64 + 4);
+        let newest: Vec<(u64, &str)> = m.errors.newest(2).collect();
+        assert_eq!(newest[1], (ERRORS_KEPT as u64 + 2, format!("line {}", ERRORS_KEPT + 1).as_str()));
+        assert!(newest[0].0 == ERRORS_KEPT as u64 + 3 && newest[0].1.starts_with("Cycle 1 · step 1"), "{newest:?}");
+        assert_eq!(m.errors.newest(usize::MAX).count(), ERRORS_KEPT);
+        assert_eq!(m.errors.newest(usize::MAX).last(), Some((4, "line 3")), "the bad word and the first 3 lines gone");
+        assert_eq!(m.dropped_line().as_deref(), Some("1,500 log lines dropped, all in the log file"), "the logger's");
+    }
+
+    /// The parameters box (TODO 29 S6): it starts with the exe's parameters, and Start runs what it
+    /// holds, split as a shell splits them, a quoted path with spaces as one
+    #[test]
+    fn the_parameters_box_gives_the_command_line() {
+        let strings = |args: &[&str]| args.iter().map(|a| a.to_string()).collect::<Vec<_>>();
+        let mut m = Model::new(&strings(&["C:\\TMR\\tmr.exe", "memory=50%", "config=C:\\My configs\\x.cfg"]));
+        assert_eq!(m.args, r#"memory=50% "config=C:\My configs\x.cfg""#);
+        assert_eq!(m.command(), strings(&["C:\\TMR\\tmr.exe", "memory=50%", "config=C:\\My configs\\x.cfg"]));
+        assert_eq!(m.info_line(), r#"tmr memory=50% "config=C:\My configs\x.cfg""#);
+
+        m.args = "  cycles=2   test=\"Mem-Refresh*\" config=\"C:\\a b\\c.cfg\"\t".to_string();
+        assert_eq!(m.command(), strings(&["C:\\TMR\\tmr.exe", "cycles=2", "test=Mem-Refresh*", "config=C:\\a b\\c.cfg"]));
+        m.args = " ".to_string();
+        assert_eq!((m.command(), m.info_line()), (strings(&["C:\\TMR\\tmr.exe"]), "tmr".to_string()), "no parameters: the defaults");
+
+        assert_eq!(args_of(r#"a "" b"#), strings(&["a", "", "b"]), "an empty argument quoted");
+        for args in [&["memory=50%", "cputype=cores"][..], &["config=C:\\a b\\c.cfg", ""], &[]] {
+            assert_eq!(args_of(&args_text(&strings(args))), strings(args), "{args:?} round-trips");
+        }
+        assert_eq!(Model::new(&[]).command(), strings(&["tmr"]));
     }
 
     /// Stop moves a running session to Stopping, and nothing else
