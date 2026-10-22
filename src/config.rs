@@ -13,7 +13,7 @@ use std::path::Path;
 // Application constants
 pub const APP_NAME: &str = "Test Memory R";
 pub const APP_SHORT_NAME: &str = "TMR";
-pub const APP_VERSION: &str = "1.0.0";
+pub const APP_VERSION: &str = crate::BUILD.version;
 pub const CONFIG_VERSION: &str = "2.0";
 
 // Modern JSON configuration format v2.0 (simplified)

@@ -71,6 +71,18 @@ pub enum RunOutcome {
     Halted,
 }
 
+impl RunOutcome {
+    /// Its key in the results file (`OverallStats::outcome`)
+    pub fn key(self) -> &'static str {
+        match self {
+            RunOutcome::Completed => "completed",
+            RunOutcome::TimeLimit => "time_limit",
+            RunOutcome::Interrupted => "interrupted",
+            RunOutcome::Halted => "halted",
+        }
+    }
+}
+
 #[derive(Debug, Clone)]
 pub struct TestSummary {
     /// The step's 1-based position in the cycle (TODO 74)
@@ -85,7 +97,11 @@ pub struct TestSummary {
     pub seal_errors: u64,
     pub name: String,
     pub duration_ms: u128,
+    /// The test's own time, its slowest thread's, which its speed divides by (TODO 90)
+    pub timed_ms: f64,
     pub bytes_processed: u64,
+    /// The operations its threads counted
+    pub operations: u64,
     /// Passes over its extent the step's threads completed, the fewest and the most (threads on a
     /// time limit can differ), and what ended it: `"cycles"` (its cycle limit), `"time"` (its time
     /// limit) or `"stopped"` (errors=halt, Ctrl+C, or a test that ends without either). `None`
@@ -121,6 +137,8 @@ pub struct TestSummary {
     pub latency_p99_ns: Option<f64>,
     pub latency_p99_9_ns: Option<f64>,
     pub latency_spread: Option<f64>,
+    /// Each thread's part of the step, by thread (TODO 72); none for a step that didn't run
+    pub threads: Vec<crate::results::ThreadStepRecord>,
 }
 
 /// The running test's figures, summed over the workers that have published.

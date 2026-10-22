@@ -1,0 +1,460 @@
+{
+  "metadata": {
+    "tmr_version": "1.0.0",
+    "start_time": 1792575000,
+    "start_time_utc": "2026-10-21 23:30:00 UTC",
+    "start_time_local": "2026-10-22 10:30:00 +11:00",
+    "filename": "results/TMR_2026-10-22_10-30-00.json",
+    "config_name": null
+  },
+  "identity": {
+    "machine_id": "0123456789abcdef",
+    "memory_id": "fedcba9876543210",
+    "system_uuid": null,
+    "machine": {
+      "cpu_vendor": "",
+      "cpu_brand": "",
+      "cpu_family": 0,
+      "cpu_model": 0,
+      "cpu_stepping": 0,
+      "cpu_base_mhz": 0,
+      "cpu_microcode": "",
+      "physical_cores": 0,
+      "bios_vendor": "",
+      "bios_version": "",
+      "bios_date": "",
+      "system_manufacturer": "",
+      "system_product": ""
+    },
+    "physical_cores": 6,
+    "logical_cores": 12,
+    "smt_available": true,
+    "l1d_cache_per_core": "0 B",
+    "l2_cache_per_core": "0 B",
+    "l3_cache": "0 B",
+    "cache_line_bytes": 64,
+    "cache_detection_method": "",
+    "tsc_frequency_ghz": 0.0,
+    "installed_memory_gib": 0.0,
+    "os_visible_memory_gib": 0.0,
+    "simd_capabilities": "",
+    "virtualized": false,
+    "hypervisor": null,
+    "memory_modules_reported": 0,
+    "memory_reported_gib": 0.0,
+    "memory_modules": [],
+    "memory_identity_is_physical": false
+  },
+  "run_config": {
+    "command_line": [
+      "tmr.exe",
+      "cycles=2",
+      "test=Mem-StuckBit256,Lat-L1-Read"
+    ],
+    "config_name": null,
+    "memory": {
+      "spec": "",
+      "spec_is_deterministic": false,
+      "allocation_type": "",
+      "reference_gib": 0.0,
+      "requested_gib": 0.0,
+      "reserve_gib": 0.0,
+      "available_at_start_gib": 0.0,
+      "memory_load_percent_at_start": 0,
+      "allocated_gib": 0.0,
+      "per_thread_gib": 0.0,
+      "requests": 0,
+      "refused": 0,
+      "backend": "",
+      "large_pages_available": false,
+      "min_page_size": "",
+      "max_page_size": "",
+      "page_mix": {
+        "huge_1gib_gib": 0.0,
+        "large_2mib_gib": 0.0,
+        "regular_4kib_gib": 0.0
+      }
+    },
+    "threads": {
+      "thread_count": 2,
+      "pinned": false,
+      "thread_priority": "high",
+      "assignments": [
+        {
+          "thread_id": 0,
+          "logical_cpu": 0,
+          "numa_node": 0
+        },
+        {
+          "thread_id": 1,
+          "logical_cpu": 2,
+          "numa_node": 0
+        }
+      ],
+      "numa_distribution": [],
+      "active_threads_per_core": 0,
+      "cpu_pool": null
+    },
+    "execution": {
+      "cycles_requested": 2,
+      "duration_secs_requested": null,
+      "error_mode": "Log",
+      "test_filter": null,
+      "plan": null,
+      "channels": 0,
+      "pattern_version": 0,
+      "pattern_seed": null,
+      "transfer_bits": null,
+      "transfer_source": null,
+      "rescan": null,
+      "simd_width_bits": null,
+      "simd_width_source": null,
+      "seal": null,
+      "seal_width_source": null
+    },
+    "calibration": null,
+    "tests": [
+      {
+        "name": "Mem-StuckBit256_A",
+        "function": "Mem-StuckBit256",
+        "extent_mode": "",
+        "chunk_mode": "",
+        "extent_bytes": 0,
+        "chunk_bytes": 0,
+        "chunks": 0,
+        "overlap_bytes": 0,
+        "verify_reps": 0,
+        "test_reps": 0,
+        "write_read_cycles": 0,
+        "pattern_mode": null,
+        "program": null,
+        "flush_before_verify": false,
+        "skip_init": false
+      },
+      {
+        "name": "Lat-L1-Read",
+        "function": "Lat-L1-Read",
+        "extent_mode": "",
+        "chunk_mode": "",
+        "extent_bytes": 0,
+        "chunk_bytes": 0,
+        "chunks": 0,
+        "overlap_bytes": 0,
+        "verify_reps": 0,
+        "test_reps": 0,
+        "write_read_cycles": 0,
+        "pattern_mode": null,
+        "program": null,
+        "flush_before_verify": false,
+        "skip_init": false
+      }
+    ]
+  },
+  "cycles": [
+    {
+      "cycle_number": 1,
+      "duration_secs": 31,
+      "tests": [
+        {
+          "step": 1,
+          "test_index": 0,
+          "name": "Mem-StuckBit256_A",
+          "label": "Mem-StuckBit256_A",
+          "duration_ms": 4500,
+          "bytes_processed": 12884901888,
+          "cycles_completed_min": 1,
+          "cycles_completed_max": 1,
+          "stopped_by": "cycles",
+          "throughput_mib_s": 9750,
+          "errors": 0,
+          "seal_errors": 0,
+          "whea_total": 0,
+          "whea_corrected": 0
+        },
+        {
+          "step": 2,
+          "test_index": 1,
+          "name": "Lat-L1-Read",
+          "label": "Lat-L1-Read",
+          "duration_ms": 5000,
+          "bytes_processed": 49152,
+          "cycles_completed_min": 1,
+          "cycles_completed_max": 1,
+          "stopped_by": "cycles",
+          "throughput_mib_s": 410,
+          "errors": 0,
+          "seal_errors": 0,
+          "whea_total": 0,
+          "whea_corrected": 0,
+          "latency_samples": 2000,
+          "latency_p5_ns": 71.0,
+          "latency_p10_ns": 71.5,
+          "latency_p25_ns": 72.0,
+          "latency_p50_ns": 72.5,
+          "latency_p75_ns": 73.25,
+          "latency_p90_ns": 74.5,
+          "latency_p95_ns": 76.5,
+          "latency_p99_ns": 85.0,
+          "latency_p99_9_ns": 112.5,
+          "latency_spread": 1.08
+        },
+        {
+          "step": 3,
+          "test_index": 0,
+          "name": "Mem-StuckBit256_A",
+          "label": "Mem-StuckBit256_A",
+          "duration_ms": 5500,
+          "bytes_processed": 12884901888,
+          "cycles_completed_min": 1,
+          "cycles_completed_max": 1,
+          "stopped_by": "cycles",
+          "intermediate": {
+            "seal_check": {
+              "ms": 350.0,
+              "bytes": 12884901888
+            },
+            "seal_fill": {
+              "ms": 420.0,
+              "bytes": 12884901888
+            }
+          },
+          "throughput_mib_s": 10250,
+          "errors": 0,
+          "seal_errors": 0,
+          "whea_total": 0,
+          "whea_corrected": 0
+        }
+      ],
+      "seal": {
+        "seal_ms": 410,
+        "seal_bytes": 25769803776,
+        "between_steps_ms": 90,
+        "final_check_ms": 380,
+        "final_check_bytes": 25769803776,
+        "final_check_errors": 0
+      },
+      "cycle_stats": {
+        "total_bytes": 25769852928,
+        "total_errors": 0,
+        "avg_throughput_mib_s": 793
+      }
+    },
+    {
+      "cycle_number": 2,
+      "duration_secs": 32,
+      "tests": [
+        {
+          "step": 1,
+          "test_index": 0,
+          "name": "Mem-StuckBit256_A",
+          "label": "Mem-StuckBit256_A",
+          "duration_ms": 4500,
+          "bytes_processed": 12884901888,
+          "cycles_completed_min": 1,
+          "cycles_completed_max": 1,
+          "stopped_by": "cycles",
+          "throughput_mib_s": 9750,
+          "errors": 0,
+          "seal_errors": 0,
+          "whea_total": 0,
+          "whea_corrected": 0
+        },
+        {
+          "step": 2,
+          "test_index": 1,
+          "name": "Lat-L1-Read",
+          "label": "Lat-L1-Read",
+          "duration_ms": 5000,
+          "bytes_processed": 49152,
+          "cycles_completed_min": 1,
+          "cycles_completed_max": 1,
+          "stopped_by": "cycles",
+          "throughput_mib_s": 410,
+          "errors": 0,
+          "seal_errors": 0,
+          "whea_total": 0,
+          "whea_corrected": 0,
+          "latency_samples": 2000,
+          "latency_p5_ns": 71.0,
+          "latency_p10_ns": 71.5,
+          "latency_p25_ns": 72.0,
+          "latency_p50_ns": 72.5,
+          "latency_p75_ns": 73.25,
+          "latency_p90_ns": 74.5,
+          "latency_p95_ns": 76.5,
+          "latency_p99_ns": 85.0,
+          "latency_p99_9_ns": 112.5,
+          "latency_spread": 1.08
+        },
+        {
+          "step": 3,
+          "test_index": 0,
+          "name": "Mem-StuckBit256_A",
+          "label": "Mem-StuckBit256_A",
+          "duration_ms": 5500,
+          "bytes_processed": 12884901888,
+          "cycles_completed_min": 1,
+          "cycles_completed_max": 1,
+          "stopped_by": "cycles",
+          "throughput_mib_s": 10250,
+          "errors": 3,
+          "alarms": 2,
+          "failing_bits": [
+            {
+              "bit": 17,
+              "checks": 1,
+              "words_0to1": 1,
+              "words_1to0": 0
+            }
+          ],
+          "seal_errors": 1,
+          "seal_failing_bits": [
+            {
+              "bit": 5,
+              "checks": 1,
+              "words_0to1": 0,
+              "words_1to0": 1
+            }
+          ],
+          "whea_total": 1,
+          "whea_corrected": 1
+        }
+      ],
+      "seal": {
+        "seal_ms": 410,
+        "seal_bytes": 25769803776,
+        "between_steps_ms": 90,
+        "final_check_ms": 380,
+        "final_check_bytes": 25769803776,
+        "final_check_errors": 1,
+        "final_check_failing_bits": [
+          {
+            "bit": 40,
+            "checks": 1,
+            "words_0to1": 1,
+            "words_1to0": 0
+          }
+        ]
+      },
+      "cycle_stats": {
+        "total_bytes": 25769852928,
+        "total_errors": 5,
+        "avg_throughput_mib_s": 768
+      }
+    }
+  ],
+  "overall_stats": {
+    "total_runtime_secs": 65,
+    "cycles_completed": 2,
+    "total_data_processed_gib": 48.0,
+    "overall_throughput_mib_s": 756,
+    "total_errors": 5,
+    "whea_total": 1,
+    "whea_corrected": 1,
+    "whea_monitored": true,
+    "seal_errors": 2,
+    "failing_bits": [
+      {
+        "bit": 17,
+        "checks": 1,
+        "words_0to1": 1,
+        "words_1to0": 0
+      }
+    ],
+    "seal_failing_bits": [
+      {
+        "bit": 5,
+        "checks": 1,
+        "words_0to1": 0,
+        "words_1to0": 1
+      },
+      {
+        "bit": 40,
+        "checks": 1,
+        "words_0to1": 1,
+        "words_1to0": 0
+      }
+    ],
+    "intermediate": {
+      "seal_check": {
+        "ms": 1110.0,
+        "bytes": 64424509440
+      },
+      "seal_fill": {
+        "ms": 1240.0,
+        "bytes": 64424509440
+      }
+    },
+    "per_step_averages": [
+      {
+        "step": 1,
+        "test_index": 0,
+        "name": "Mem-StuckBit256_A",
+        "label": "Mem-StuckBit256_A",
+        "avg_duration_ms": 4500,
+        "avg_bytes_processed": 12884901888,
+        "avg_throughput_mib_s": 9750,
+        "total_errors": 0,
+        "total_seal_errors": 0,
+        "runs": 2,
+        "whea_total": 0,
+        "whea_corrected": 0
+      },
+      {
+        "step": 2,
+        "test_index": 1,
+        "name": "Lat-L1-Read",
+        "label": "Lat-L1-Read",
+        "avg_duration_ms": 5000,
+        "avg_bytes_processed": 49152,
+        "avg_throughput_mib_s": 410,
+        "total_errors": 0,
+        "total_seal_errors": 0,
+        "runs": 2,
+        "whea_total": 0,
+        "whea_corrected": 0,
+        "latency_samples": 2000,
+        "latency_p5_ns": 71.0,
+        "latency_p10_ns": 71.5,
+        "latency_p25_ns": 72.0,
+        "latency_p50_ns": 72.5,
+        "latency_p75_ns": 73.25,
+        "latency_p90_ns": 74.5,
+        "latency_p95_ns": 76.5,
+        "latency_p99_ns": 85.0,
+        "latency_p99_9_ns": 112.5,
+        "latency_spread": 1.08
+      },
+      {
+        "step": 3,
+        "test_index": 0,
+        "name": "Mem-StuckBit256_A",
+        "label": "Mem-StuckBit256_A",
+        "avg_duration_ms": 5500,
+        "avg_bytes_processed": 12884901888,
+        "avg_throughput_mib_s": 10250,
+        "total_errors": 3,
+        "total_seal_errors": 1,
+        "failing_bits": [
+          {
+            "bit": 17,
+            "checks": 1,
+            "words_0to1": 1,
+            "words_1to0": 0
+          }
+        ],
+        "seal_failing_bits": [
+          {
+            "bit": 5,
+            "checks": 1,
+            "words_0to1": 0,
+            "words_1to0": 1
+          }
+        ],
+        "runs": 2,
+        "whea_total": 1,
+        "whea_corrected": 1
+      }
+    ]
+  }
+}

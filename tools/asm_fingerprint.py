@@ -10,12 +10,21 @@ Each body is hashed after normalising what changes when the code doesn't:
               and LLVM's local copies of a symbol (`<sym>.449`, `switch.table.<sym>.1518.rel`)
               are renumbered in their order of use in the function
   symbols     v0 symbols lose their crate hashes (`Cs<hash>_`) and back-references (`B4_`), whose
-              offsets move with the hashes' lengths
+              offsets move with the hashes' lengths, and a closure its place among its function's
+              closures (`s5_0`), which moves when a closure is added before it
+  sections    a COMDAT's number (`unique,2454`), which counts the file's sections
   data        what the function refers to by such a name (a constant pool, a jump table, a switch
               table, a string) is hashed with it; `__xmm@...`-style constants are named by content
   dropped     comments and debug-line directives; alignment directives are kept
 Two functions with one name (a generic's instances, a test fn's closures) keep a sorted list of
 hashes. Checked on 2026-10-22: a rebuild with every crate hash changed gives the same hashes.
+
+A source line can be in a function's code: a log record's line, inlined from another module, is
+an immediate `Some(line)`, `(line << 32) | 1` (`movabsq $18979460481025`, line 4419). Lines move
+when code above them does, so each function has a second hash with those masked, and --compare
+lists a function whose code differs only there as `lines`, apart from the changed ones (TODO 29
+S1: lines added to runner.rs above `pin_thread_to_cpu_with_config` showed in the worker loop). A
+line in a panic's location is in its data, as bytes of a string, and isn't masked.
 
 Build the asm, then:
     cargo rustc --release --bin tmr -- --emit asm
@@ -23,7 +32,8 @@ Build the asm, then:
     python tools/asm_fingerprint.py [file.s] --save FILE.json   # a baseline
     python tools/asm_fingerprint.py [file.s] --compare FILE.json
     python tools/asm_fingerprint.py [file.s] --dump DIR         # each normalised body, to diff by hand
---compare lists the functions changed, gone and new, and exits 1 on any. A baseline records the
+--compare lists the functions changed, gone and new, and exits 1 on any; one changed only in its
+source lines is listed too, and doesn't count. A baseline records the
 compiler that built its asm (the asm names it); when this asm's is another, --compare says so, and
 exits 2 rather than 1 on a change, which may be the compiler's. With no file, the newest asm under
 target/release/build, as hot_loop_spills.py takes it. Finding no function is an error: the lib's
@@ -42,6 +52,12 @@ sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 sys.dont_write_bytecode = True  # no __pycache__ in tools/
 import hot_loop_spills  # noqa: E402  (the selection and the names are its)
 
+# A COMDAT section's number in the file: `.section .text,"xr",one_only,<sym>,unique,2454`
+UNIQUE = re.compile(r"\bunique,\d+\b")
+# An immediate, which may be a `Some(line)`: `(line << 32) | 1`
+IMMEDIATE = re.compile(r"\$(\d+)\b")
+# Above the longest source file's last line: a `Some(line)` names a line below it
+MAX_LINE = 1 << 20
 # A name an instruction or a data line can refer to: a label, a symbol, `switch.table.<sym>.4.rel`
 NAME = re.compile(r"[A-Za-z_.$@][\w.$@]*")
 LOCAL = re.compile(r"\.L([A-Za-z_]+?)(\d[\d_]*)\b")
@@ -81,8 +97,11 @@ def plain_symbol(sym):
             i += m.end()
         elif c == "s" and (m := re.match(r"s[0-9A-Za-z]*_", sym[i:])) and (
                 out[-1:] in (["X"], ["M"]) or sym[i + m.end():i + m.end() + 1].isdigit()):
-            # A disambiguator: an impl's, or an identifier's (an `s` elsewhere is the type i16)
-            out.append(m.group(0))
+            # A disambiguator: an impl's, or an identifier's (an `s` elsewhere is the type i16). A
+            # closure's, before its empty identifier `0`, is its place among its function's closures,
+            # which moves when one is added before it: dropped, as the first closure has none
+            if sym[i + m.end():i + m.end() + 1] != "0":
+                out.append(m.group(0))
             i += m.end()
         elif c == "K" and (m := re.match(r"K(p|[a-z]n?[0-9a-f]*_)", sym[i:])):
             out.append(m.group(0))
@@ -142,15 +161,28 @@ def normalise(body, data):
     for line in body:
         code = "" if line.lstrip().startswith("#") else line.split("#", 1)[0].strip()
         if code and not code.startswith(SKIPPED):
-            out.append(NAME.sub(name, code))
+            out.append(NAME.sub(name, UNIQUE.sub("unique,#", code)))
     for label in used:
         out.append(NAME.sub(name, label) + ":")
         out += [NAME.sub(name, x) for x in data[label]]
     return out
 
 
+def without_lines(lines):
+    """The normalised lines with each immediate that may be a `Some(line)` masked."""
+    def mask(m):
+        value = int(m.group(1))
+        return "$<line>" if value & 0xFFFFFFFF == 1 and 0 < value >> 32 < MAX_LINE else m.group(0)
+    return [IMMEDIATE.sub(mask, line) for line in lines]
+
+
+def digest(lines):
+    return hashlib.sha256("\n".join(lines).encode()).hexdigest()[:16]
+
+
 def fingerprints(path):
-    """Each function's name, with its (hash, normalised lines) per instance."""
+    """Each function's name, with its (hash, hash without its lines, normalised lines) per
+    instance."""
     with open(path, encoding="utf-8", errors="replace") as f:
         data = label_data(f.read().splitlines())
     found = defaultdict(list)
@@ -159,8 +191,7 @@ def fingerprints(path):
         if not any(line.startswith(".Lfunc_begin") for line in body[:2]):
             continue
         lines = normalise(body, data)
-        digest = hashlib.sha256("\n".join(lines).encode()).hexdigest()[:16]
-        found[hot_loop_spills.short_name(sym)].append((digest, lines))
+        found[hot_loop_spills.short_name(sym)].append((digest(lines), digest(without_lines(lines)), lines))
     return {name: sorted(found[name]) for name in sorted(found)}
 
 
@@ -190,12 +221,14 @@ def main():
     funcs = fingerprints(path)
     if not funcs:
         sys.exit(f"{path}: no hot-path function; check hot_loop_spills.py's MODULES against its symbols")
-    table = {name: [d for d, _ in v] for name, v in funcs.items()}
+    table = {name: [d for d, _, _ in v] for name, v in funcs.items()}
+    # Without the lines, sorted on their own: a list compares as the set of its name's instances
+    masked = {name: sorted(m for _, m, _ in v) for name, v in funcs.items()}
     count = f"{sum(map(len, table.values()))} functions under {len(table)} names"
     if "--dump" in opt:
         os.makedirs(opt["--dump"], exist_ok=True)
         for name, v in funcs.items():
-            for k, (_, lines) in enumerate(v):
+            for k, (_, _, lines) in enumerate(v):
                 file = re.sub(r"[^\w.-]+", "_", name) + (f".{k}" if k else "") + ".s"
                 with open(os.path.join(opt["--dump"], file), "w", encoding="utf-8") as f:
                     f.write("\n".join(lines) + "\n")
@@ -203,22 +236,26 @@ def main():
     if "--save" in opt:
         rustc = compiler(path)
         # One function a line, so a baseline's diff in git reads as the functions that changed
-        functions = ",\n".join(f"  {json.dumps(name)}: {json.dumps(hashes)}" for name, hashes in table.items())
+        def block(hashes):
+            return ",\n".join(f"  {json.dumps(name)}: {json.dumps(h)}" for name, h in hashes.items())
         with open(opt["--save"], "w", encoding="utf-8", newline="\n") as f:
             f.write(f'{{\n "asm": {json.dumps(path.replace(os.sep, "/"))},\n "rustc": {json.dumps(rustc)},\n'
-                    f' "functions": {{\n{functions}\n }}\n}}\n')
+                    f' "functions": {{\n{block(table)}\n }},\n "without_lines": {{\n{block(masked)}\n }}\n}}\n')
         print(f"{count} from {path} saved to {opt['--save']}")
     if "--compare" in opt:
         with open(opt["--compare"], encoding="utf-8") as f:
             base = json.load(f)
-        changed = [n for n in table if n in base["functions"] and base["functions"][n] != table[n]]
+        differ = [n for n in table if n in base["functions"] and base["functions"][n] != table[n]]
+        # A baseline saved before the hashes without lines has none: every difference counts
+        lines = [n for n in differ if base.get("without_lines", {}).get(n) == masked[n]]
+        changed = [n for n in differ if n not in lines]
         gone = [n for n in base["functions"] if n not in table]
         new = [n for n in table if n not in base["functions"]]
-        for label, names in (("changed", changed), ("gone", gone), ("new", new)):
+        for label, names in (("changed", changed), ("gone", gone), ("new", new), ("lines", lines)):
             for name in names:
                 print(f"{label:8s} {name}")
         print(f"{count} against {len(base['functions'])} names in {opt['--compare']} ({base.get('rustc', '?')}): "
-              f"{len(changed)} changed, {len(gone)} gone, {len(new)} new")
+              f"{len(changed)} changed, {len(gone)} gone, {len(new)} new; {len(lines)} changed only in source lines")
         rustc = compiler(path)
         other = rustc != base.get("rustc")
         if other:
@@ -227,8 +264,8 @@ def main():
         sys.exit((2 if other else 1) if changed or gone or new else 0)
     if not opt:
         for name, v in funcs.items():
-            for digest, lines in v:
-                print(f"{name[:70]:70s} {len(lines):6d} {digest}")
+            for strict, _, lines in v:
+                print(f"{name[:70]:70s} {len(lines):6d} {strict}")
         print(f"{count}, from {path}")
 
 

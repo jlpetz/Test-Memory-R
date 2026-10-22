@@ -14,6 +14,21 @@ fn is_zero(n: &u64) -> bool {
     *n == 0
 }
 
+/// For `skip_serializing_if`: a flag that is off is left out, and reads back as off.
+fn is_false(b: &bool) -> bool {
+    !*b
+}
+
+/// Writes `bytes` to `path` and flushes them to the disk (`FlushFileBuffers`) before it returns
+/// (TODO 72). NTFS logs a rename at once but writes a file's data back later, so without the flush
+/// a system that went down just after a save could keep the rename and lose the data it names.
+fn write_to_disk(path: &str, bytes: &[u8]) -> std::io::Result<()> {
+    use std::io::Write as _;
+    let mut file = fs::File::create(path)?;
+    file.write_all(bytes)?;
+    file.sync_all()
+}
+
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct TestRunResult {
     pub metadata: TestRunMetadata,
@@ -31,6 +46,9 @@ pub struct TestRunResult {
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct TestRunMetadata {
     pub tmr_version: String,
+    /// The rest of the build that wrote it (TODO 72); absent from results written before it
+    #[serde(default)]
+    pub build: Option<BuildRecord>,
     /// Unix timestamp — zone-free, the machine-readable anchor.
     pub start_time: u64,
     /// Start time in UTC. Kept because result files get collected from several machines and
@@ -47,10 +65,31 @@ pub struct TestRunMetadata {
     pub config_name: Option<String>, // If loaded from config
 }
 
+/// The build that wrote a results file (`build_info::BUILD`, TODO 72). Its version is
+/// `tmr_version`.
+#[derive(Debug, Clone, Default, PartialEq, Serialize, Deserialize)]
+pub struct BuildRecord {
+    pub commit: String,
+    pub dirty: bool,
+    pub rustc: String,
+    pub profile: String,
+}
+
+impl From<crate::build_info::BuildInfo> for BuildRecord {
+    fn from(build: crate::build_info::BuildInfo) -> Self {
+        Self { commit: build.commit.to_string(), dirty: build.dirty, rustc: build.rustc.to_string(), profile: build.profile.to_string() }
+    }
+}
+
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct CycleResult {
     pub cycle_number: u32,
     pub duration_secs: u32,
+    /// The cycle stopped early, on Ctrl+C or errors=halt, before its final seal check (TODO 72): a
+    /// step was cut short or didn't run, or only the check was left. Absent for a cycle that ran to
+    /// its end, and in results written before it.
+    #[serde(default, skip_serializing_if = "is_false")]
+    pub partial: bool,
     /// One per step, in cycle order (TODO 74)
     pub tests: Vec<TestResult>,
     /// The seal's stages, in a sealed run (TODO 74)
@@ -90,7 +129,16 @@ pub struct TestResult {
     /// The step's name in reports, e.g. `Mem-SimpleV2-512_A (Test 12)`
     pub label: String,
     pub duration_ms: u128,
+    /// The test's own time, its slowest thread's: the step's without the setup a test leaves out of
+    /// its clock (TODO 90), which its speed divides by; the console's `Test:` time (TODO 72). 0 in
+    /// results written before it.
+    #[serde(default, serialize_with = "serialize_round_2dp")]
+    pub timed_ms: f64,
     pub bytes_processed: u64,
+    /// The operations its threads counted, the console's `ops` (TODO 72); 0 in results written
+    /// before it
+    #[serde(default)]
+    pub operations: u64,
     /// Passes over its extent, the fewest and the most any of the step's threads completed
     #[serde(default)]
     pub cycles_completed_min: u32,
@@ -153,6 +201,58 @@ pub struct TestResult {
     pub latency_p99_9_ns: Option<f64>,
     #[serde(skip_serializing_if = "Option::is_none", serialize_with = "serialize_round_opt_2dp")]
     pub latency_spread: Option<f64>,
+    /// Each thread's part of the step, by thread (TODO 72): what the console's thread table shows,
+    /// and where the thread ran. Absent for a step that didn't run, and in results written before
+    /// it.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub threads: Vec<ThreadStepRecord>,
+}
+
+/// One thread's part of a step (TODO 72). With its CPU, core and node, the run's CPU Performance
+/// Summary can be worked out again from the file.
+#[derive(Debug, Clone, Default, PartialEq, Serialize, Deserialize)]
+pub struct ThreadStepRecord {
+    pub thread: usize,
+    /// The logical CPU it was assigned, that CPU's physical core and its NUMA node; absent for a
+    /// thread the pool has no assignment for
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub cpu: Option<usize>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub core: Option<usize>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub node: Option<u32>,
+    pub bytes: u64,
+    /// Its own time on the test (`WorkResult::timed`), else its time on the step
+    #[serde(serialize_with = "serialize_round_2dp")]
+    pub ms: f64,
+    pub errors: u64,
+    /// As the step's, its own
+    #[serde(default, skip_serializing_if = "is_zero")]
+    pub alarms: u64,
+    #[serde(default, skip_serializing_if = "is_zero")]
+    pub not_reproduced: u64,
+    #[serde(default, skip_serializing_if = "is_zero")]
+    pub seal_errors: u64,
+    pub operations: u64,
+    /// Passes over its extent
+    pub cycles: u32,
+    /// A latency test's figures, as the latency table's row for the thread
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub latency: Option<ThreadLatency>,
+}
+
+/// One thread's latencies in a step (`ThreadStepRecord::latency`).
+#[derive(Debug, Clone, Copy, Default, PartialEq, Serialize, Deserialize)]
+pub struct ThreadLatency {
+    #[serde(serialize_with = "serialize_round_2dp")]
+    pub min_ns: f64,
+    #[serde(serialize_with = "serialize_round_2dp")]
+    pub p50_ns: f64,
+    #[serde(serialize_with = "serialize_round_2dp")]
+    pub p99_ns: f64,
+    /// P95 / P5
+    #[serde(serialize_with = "serialize_round_2dp")]
+    pub spread: f64,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -184,6 +284,20 @@ pub fn op_records(ops: &crate::ops::OpTally) -> OpRecords {
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct OverallStats {
+    /// Saved between cycles with the run still going (TODO 72): after the first cycle, then at most
+    /// once a minute (`runner::RESULTS_SAVE_INTERVAL`), and the figures are the cycles that had
+    /// finished. A run killed, lost or crashed leaves its last such save. False in the final save,
+    /// and in results written before it.
+    #[serde(default)]
+    pub in_progress: bool,
+    /// How the run ended, in the final save: `completed` (its cycle limit), `time_limit`,
+    /// `interrupted` (Ctrl+C) or `halted` (errors=halt); and its verdict, as its exit status gives
+    /// it: `passed`, `failed`, `not_run` or `interrupted`. Absent mid-run, and in results written
+    /// before them.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub outcome: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub status: Option<String>,
     pub total_runtime_secs: u64,
     pub cycles_completed: u32,
     #[serde(serialize_with = "serialize_round_2dp")]
@@ -332,7 +446,8 @@ impl TestRunResult {
 
         Self {
             metadata: TestRunMetadata {
-                tmr_version: "1.0.0".to_string(),
+                tmr_version: crate::BUILD.version.to_string(),
+                build: Some(crate::BUILD.into()),
                 start_time: started.timestamp() as u64,
                 start_time_utc: started
                     .with_timezone(&chrono::Utc)
@@ -347,6 +462,9 @@ impl TestRunResult {
             run_config,
             cycles: Vec::new(),
             overall_stats: OverallStats {
+                in_progress: false,
+                outcome: None,
+                status: None,
                 total_runtime_secs: 0,
                 cycles_completed: 0,
                 total_data_processed_gib: 0.0,
@@ -364,7 +482,9 @@ impl TestRunResult {
         }
     }
 
-    pub fn add_cycle(&mut self, cycle_number: u32, duration_secs: u32, test_summaries: Vec<TestSummary>, seal: Option<CycleSeal>) {
+    /// Adds a cycle's steps; `partial` when it stopped early (`CycleResult::partial`).
+    pub fn add_cycle(&mut self, cycle_number: u32, duration_secs: u32, test_summaries: Vec<TestSummary>, seal: Option<CycleSeal>,
+                     partial: bool) {
         let total_bytes: u64 = test_summaries.iter().map(|t| t.bytes_processed).sum();
         let total_errors: u64 = test_summaries.iter().map(|t| t.errors + t.seal_errors).sum::<u64>()
             + seal.as_ref().map_or(0, |s| s.final_check_errors);
@@ -382,7 +502,9 @@ impl TestRunResult {
                 name: summary.name.clone(),
                 label: summary.label.clone(),
                 duration_ms: summary.duration_ms,
+                timed_ms: summary.timed_ms,
                 bytes_processed: summary.bytes_processed,
+                operations: summary.operations,
                 cycles_completed_min: summary.cycles_completed.0,
                 cycles_completed_max: summary.cycles_completed.1,
                 stopped_by: summary.stopped_by.map(str::to_string),
@@ -408,12 +530,14 @@ impl TestRunResult {
                 latency_p99_ns: summary.latency_p99_ns,
                 latency_p99_9_ns: summary.latency_p99_9_ns,
                 latency_spread: summary.latency_spread,
+                threads: summary.threads.clone(),
             }
         }).collect();
 
         let cycle_result = CycleResult {
             cycle_number,
             duration_secs,
+            partial,
             tests,
             seal,
             cycle_stats: CycleStats {
@@ -651,12 +775,25 @@ impl TestRunResult {
         &self.metadata.filename
     }
 
-    pub fn save_to_file(&self, path: &str) -> Result<(), String> {
+    /// Writes the file whole or not at all (TODO 72): to `<path>.tmp`, on the disk, then renamed
+    /// over `path`, so a run killed mid-write, or a system that went down, leaves its last save,
+    /// not part of one. A refused rename, as when a viewer holds the file without letting it be
+    /// deleted, falls back to writing `path` in place, with a warning; the next save tries the
+    /// rename again. When the viewer won't let it be written either, the save stays in the `.tmp`,
+    /// and the error names both.
+    pub fn save_atomic(&self, path: &str) -> Result<(), String> {
         let json = serde_json::to_string_pretty(self)
             .map_err(|e| format!("Failed to serialize test result: {}", e))?;
-        
-        fs::write(path, json)
-            .map_err(|e| format!("Failed to write test result file: {}", e))
+        let temp = format!("{path}.tmp");
+        write_to_disk(&temp, json.as_bytes())
+            .map_err(|e| format!("Failed to write test result file {temp}: {e}"))?;
+        if let Err(refused) = fs::rename(&temp, path) {
+            log::warn!("Couldn't replace {path} with {temp} ({refused}): writing it in place");
+            write_to_disk(path, json.as_bytes())
+                .map_err(|e| format!("Couldn't replace {path} ({refused}) or write it in place ({e}): this save is in {temp}"))?;
+            let _ = fs::remove_file(&temp);
+        }
+        Ok(())
     }
 
     pub fn load_from_file(path: &str) -> Result<Self, String> {
@@ -740,9 +877,25 @@ pub fn compare_test_results(baseline_path: &str, current_path: &str) -> Result<T
         }
     }
 
-    // Identity first, then configuration: a hardware change is the more fundamental explanation,
-    // and on a new machine the config differences are usually downstream of it.
-    let mut run_differences = crate::run_context::compare_identity(&baseline.identity, &current.identity);
+    // A file saved mid-run first (TODO 72): its figures are only the cycles that had finished, of a
+    // run that was killed or lost, or is still going. Then identity, then configuration: a hardware
+    // change is the more fundamental explanation, and on a new machine the config differences are
+    // usually downstream of it.
+    let mut run_differences = Vec::new();
+    if baseline.overall_stats.in_progress || current.overall_stats.in_progress {
+        let saved = |stats: &OverallStats| {
+            let state = if stats.in_progress { "saved mid-run" } else { "finished" };
+            let cycles = stats.cycles_completed;
+            format!("{state} after {cycles} cycle{}", if cycles == 1 { "" } else { "s" })
+        };
+        run_differences.push(crate::run_context::RunDifference::new(
+            "Results file",
+            saved(&baseline.overall_stats),
+            saved(&current.overall_stats),
+            false,
+        ));
+    }
+    run_differences.extend(crate::run_context::compare_identity(&baseline.identity, &current.identity));
     run_differences.extend(crate::run_context::compare_config(
         &baseline.run_config,
         &current.run_config,
@@ -849,6 +1002,32 @@ pub fn compare_results_command(baseline_path: &str, current_path: &str, output_p
     Ok(())
 }
 
+/// A directory of a test's own in the system's temp directory, for the results files it writes,
+/// removed with what it holds when it drops, a failed test's too.
+#[cfg(test)]
+pub(crate) struct TempDir(std::path::PathBuf);
+
+#[cfg(test)]
+impl TempDir {
+    pub(crate) fn new(name: &str) -> Self {
+        let dir = std::env::temp_dir().join(format!("tmr-{name}-{}", std::process::id()));
+        let _ = fs::remove_dir_all(&dir);
+        fs::create_dir_all(&dir).unwrap();
+        TempDir(dir)
+    }
+
+    pub(crate) fn file(&self, name: &str) -> String {
+        self.0.join(name).to_str().unwrap().to_string()
+    }
+}
+
+#[cfg(test)]
+impl Drop for TempDir {
+    fn drop(&mut self) {
+        let _ = fs::remove_dir_all(&self.0);
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -862,7 +1041,9 @@ mod tests {
             seal_errors,
             name: "Mem-SimpleV2-Auto".to_string(),
             duration_ms,
+            timed_ms: duration_ms as f64,
             bytes_processed,
+            operations: 0,
             cycles_completed: (1, 1),
             stopped_by: Some("cycles"),
             ops: Default::default(),
@@ -885,6 +1066,7 @@ mod tests {
             latency_p99_ns: None,
             latency_p99_9_ns: None,
             latency_spread: None,
+            threads: Vec::new(),
         }
     }
 
@@ -894,7 +1076,7 @@ mod tests {
     #[test]
     fn a_step_that_never_ran_keeps_its_seal_errors() {
         let mut result = TestRunResult::new(Default::default());
-        result.add_cycle(1, 10, vec![summary(1, 5_000, 1 << 30, 0), summary(2, 0, 0, 3)], None);
+        result.add_cycle(1, 10, vec![summary(1, 5_000, 1 << 30, 0), summary(2, 0, 0, 3)], None, false);
         result.finalize(std::time::Duration::from_secs(10));
         let never = result.overall_stats.per_step_averages.iter().find(|a| a.step == 2).unwrap();
         assert_eq!((never.runs, never.total_seal_errors, never.avg_duration_ms, never.avg_bytes_processed), (0, 3, 0, 0));
@@ -927,9 +1109,9 @@ mod tests {
         };
         let final_check = |b: FailingBits| Some(CycleSeal { final_check_failing_bits: b, ..Default::default() });
         result.add_cycle(1, 10, vec![step(1, bits(1 << 31, 0, 1 << 31), FailingBits::default()), step(2, FailingBits::default(), FailingBits::default())],
-                         final_check(FailingBits::default()));
+                         final_check(FailingBits::default()), false);
         result.add_cycle(2, 10, vec![step(1, bits(1 << 31, 0, 0), FailingBits::default()), step(2, bits(1 << 39, 1 << 39, 0), bits(1 << 7, 0, 0))],
-                         final_check(bits(1 << 7, 0, 1 << 7)));
+                         final_check(bits(1 << 7, 0, 1 << 7)), false);
         result.finalize(std::time::Duration::from_secs(20));
         let by_step: Vec<String> = result.overall_stats.per_step_averages.iter().map(|a| a.failing_bits.detail()).collect();
         assert_eq!(by_step, ["31: 2 / 1 (1 + 0)", "39: 1 / 1 (0 + 1)"]);
@@ -998,7 +1180,7 @@ mod tests {
         };
         let mut result = TestRunResult::new(Default::default());
         let first = vec![step(1, 0, "Mem-StuckBit256_A"), latency(2), TestSummary { ops, ..step(3, 0, "Mem-StuckBit256_A") }];
-        result.add_cycle(1, 31, first, Some(seal(0, FailingBits::default())));
+        result.add_cycle(1, 31, first, Some(seal(0, FailingBits::default())), false);
         let bad = TestSummary {
             errors: 3,
             alarms: 2,
@@ -1009,12 +1191,244 @@ mod tests {
             whea_corrected: 1,
             ..step(3, 0, "Mem-StuckBit256_A")
         };
-        result.add_cycle(2, 32, vec![step(1, 0, "Mem-StuckBit256_A"), latency(2), bad], Some(seal(1, bits(1 << 40, 0, 1 << 40))));
+        result.add_cycle(2, 32, vec![step(1, 0, "Mem-StuckBit256_A"), latency(2), bad], Some(seal(1, bits(1 << 40, 0, 1 << 40))), false);
         result.finalize(Duration::from_secs(3725));
         result.set_whea_totals(crate::whea::WheaCounts { total: 1, corrected: 1 }, true);
         let report = crate::reporting::converters::create_overall_stats_summary_report(&result);
         let (printed, text) = crate::golden::capture(|| crate::reporting::create_console_reporter().report_final_summary(&report));
         printed.unwrap();
         crate::golden::check("report_final_summary", &text);
+    }
+
+    /// A results file as TMR wrote it before TODO 72's fields (`testdata/result_files/before_todo_72.json`):
+    /// two sealed cycles of three steps, a latency step among them, with errors, failing bits, the
+    /// seal's work and a WHEA event; its identity and config mostly empty. Its text, and as loaded.
+    fn written_before_todo_72() -> (String, TestRunResult) {
+        let path = Path::new(env!("CARGO_MANIFEST_DIR")).join("testdata").join("result_files").join("before_todo_72.json");
+        let text = fs::read_to_string(&path).unwrap_or_else(|e| panic!("{}: {e}", path.display()));
+        let result = TestRunResult::load_from_file(path.to_str().unwrap()).unwrap();
+        (text, result)
+    }
+
+    /// A results file written before TODO 72 still loads, and reads as a finished run of whole
+    /// cycles by an unknown build, with no thread records or operations; the final summary renders
+    /// from it as from a new one.
+    #[test]
+    fn a_results_file_written_before_todo_72_still_loads() {
+        let (text, result) = written_before_todo_72();
+        // `threads` is a key of the run config's already
+        for field in ["in_progress", "outcome", "status", "build", "partial", "timed_ms", "operations", "tests_left_out"] {
+            assert!(!text.contains(&format!("\"{field}\"")), "the fixture is from before {field}");
+        }
+        assert_eq!((result.metadata.tmr_version.as_str(), result.metadata.build.as_ref()), ("1.0.0", None));
+        let stats = &result.overall_stats;
+        assert_eq!((stats.in_progress, stats.outcome.as_deref(), stats.status.as_deref()), (false, None, None));
+        assert_eq!((stats.cycles_completed, stats.total_errors, stats.per_step_averages.len()), (2, 5, 3));
+        assert!(result.cycles.iter().all(|c| !c.partial));
+        let steps = || result.cycles.iter().flat_map(|c| &c.tests);
+        assert!(steps().all(|t| t.threads.is_empty() && t.operations == 0 && t.timed_ms == 0.0));
+        assert_eq!(steps().map(|t| t.errors).sum::<u64>(), 3);
+        assert!(result.run_config.tests_left_out.is_empty());
+        // A row for each of its two tests
+        let report = crate::reporting::converters::create_overall_stats_summary_report(&result);
+        assert_eq!(report.per_test_summaries.len(), 2);
+    }
+
+    /// TODO 72's fields read back as they were written, and those that are empty or off are left
+    /// out: a cycle that ran to its end has no `partial`, a step no `threads`, a thread with no CPU
+    /// no `cpu`, `core` or `node`, and its zero counts aren't written.
+    #[test]
+    fn the_new_fields_round_trip() {
+        let (_, mut result) = written_before_todo_72();
+        result.metadata.build = Some(crate::BUILD.into());
+        result.overall_stats.in_progress = true;
+        (result.overall_stats.outcome, result.overall_stats.status) = (Some("halted".into()), Some("failed".into()));
+        result.cycles[1].partial = true;
+        result.run_config.tests_left_out = vec![crate::run_context::LeftOutTest {
+            name: "Mem-StuckBit512".into(),
+            reason: "width 512 needs AVX-512, which this CPU lacks".into(),
+        }];
+        let step = &mut result.cycles[1].tests[1];
+        (step.timed_ms, step.operations) = (3_975.25, 163_840);
+        step.threads = vec![
+            ThreadStepRecord {
+                thread: 0,
+                cpu: Some(2),
+                core: Some(1),
+                node: Some(0),
+                bytes: 24_576,
+                ms: 3_975.25,
+                errors: 2,
+                alarms: 1,
+                not_reproduced: 1,
+                seal_errors: 1,
+                operations: 81_920,
+                cycles: 1,
+                latency: Some(ThreadLatency { min_ns: 70.5, p50_ns: 72.5, p99_ns: 85.0, spread: 1.08 }),
+            },
+            ThreadStepRecord { thread: 1, bytes: 24_576, ms: 3_900.5, operations: 81_920, cycles: 1, ..Default::default() },
+        ];
+
+        let json = serde_json::to_string_pretty(&result).unwrap();
+        let back: TestRunResult = serde_json::from_str(&json).unwrap();
+        assert_eq!(serde_json::to_string_pretty(&back).unwrap(), json);
+        assert_eq!(back.metadata.build, Some(crate::BUILD.into()));
+        let stats = &back.overall_stats;
+        assert_eq!((stats.in_progress, stats.outcome.as_deref(), stats.status.as_deref()), (true, Some("halted"), Some("failed")));
+        assert_eq!((back.cycles[0].partial, back.cycles[1].partial), (false, true));
+        assert_eq!(back.cycles[1].tests[1].threads, result.cycles[1].tests[1].threads);
+        assert_eq!((back.cycles[1].tests[1].timed_ms, back.cycles[1].tests[1].operations), (3_975.25, 163_840));
+        assert_eq!(back.run_config.tests_left_out, result.run_config.tests_left_out);
+
+        let keys = |value: serde_json::Value| value.as_object().unwrap().keys().cloned().collect::<Vec<_>>();
+        assert!(!keys(serde_json::to_value(&result.cycles[0]).unwrap()).contains(&"partial".to_string()));
+        assert!(!keys(serde_json::to_value(&result.cycles[1].tests[0]).unwrap()).contains(&"threads".to_string()));
+        assert_eq!(keys(serde_json::to_value(&result.cycles[1].tests[1].threads[1]).unwrap()),
+                   ["bytes", "cycles", "errors", "ms", "operations", "thread"]);
+    }
+
+    /// TODO 72: a save replaces the file whole, by renaming a temp file over it, and leaves nothing
+    /// of the temp file: a reader that had the old file open, and lets it be deleted, still reads
+    /// the old one, which a write in place wouldn't leave it. When a viewer holds the file without
+    /// letting it be deleted, so it can't be renamed over, the save writes it in place instead;
+    /// when the viewer won't let it be written either, the save stays in the temp file, which the
+    /// error names, and the file is as it was.
+    #[test]
+    fn a_save_replaces_the_file_whole() {
+        use std::io::Read;
+        use std::os::windows::fs::OpenOptionsExt;
+        use windows::Win32::Storage::FileSystem::{FILE_SHARE_DELETE, FILE_SHARE_MODE, FILE_SHARE_READ, FILE_SHARE_WRITE};
+        let dir = TempDir::new("save-atomic");
+        let (path, temp) = (dir.file("result.json"), dir.file("result.json.tmp"));
+        let viewer = |share: FILE_SHARE_MODE| fs::OpenOptions::new().read(true).share_mode(share.0).open(&path).unwrap();
+        fs::write(&path, "the last cycle's save").unwrap();
+        let (_, mut result) = written_before_todo_72();
+        let mut reader = viewer(FILE_SHARE_READ | FILE_SHARE_WRITE | FILE_SHARE_DELETE);
+        result.save_atomic(&path).unwrap();
+        let mut old = String::new();
+        reader.read_to_string(&mut old).unwrap();
+        assert_eq!(old, "the last cycle's save", "the file was written over, not replaced");
+        drop(reader);
+        assert_eq!(TestRunResult::load_from_file(&path).unwrap().cycles.len(), 2);
+        assert!(!Path::new(&temp).exists());
+
+        let held = viewer(FILE_SHARE_READ | FILE_SHARE_WRITE);
+        fs::write(dir.file("other.json"), "{}").unwrap();
+        assert!(fs::rename(dir.file("other.json"), &path).is_err(), "the viewer lets nothing rename over the file");
+        result.cycles.truncate(1);
+        result.save_atomic(&path).unwrap();
+        drop(held);
+        assert_eq!(TestRunResult::load_from_file(&path).unwrap().cycles.len(), 1);
+        assert!(!Path::new(&temp).exists());
+
+        let held = viewer(FILE_SHARE_READ);
+        result.cycles.clear();
+        let error = result.save_atomic(&path).unwrap_err();
+        drop(held);
+        assert!(error.contains(&path) && error.contains(&temp), "{error}");
+        assert_eq!(TestRunResult::load_from_file(&path).unwrap().cycles.len(), 1, "the file as it was");
+        assert!(TestRunResult::load_from_file(&temp).unwrap().cycles.is_empty(), "the save, in the temp file");
+    }
+
+    /// TODO 72: `--compare-results` warns, before its figures, of a file saved mid-run, with the
+    /// cycles each file has; two finished files get no such warning.
+    #[test]
+    fn a_comparison_warns_of_a_file_saved_mid_run() {
+        let dir = TempDir::new("compare-mid-run");
+        let (_, finished) = written_before_todo_72();
+        let mut mid_run = finished.clone();
+        mid_run.cycles.truncate(1);
+        mid_run.finalize(std::time::Duration::from_secs(31));
+        mid_run.overall_stats.in_progress = true;
+        let (baseline, current) = (dir.file("finished.json"), dir.file("mid_run.json"));
+        finished.save_atomic(&baseline).unwrap();
+        mid_run.save_atomic(&current).unwrap();
+
+        let comparison = compare_test_results(&baseline, &current).unwrap();
+        let first = &comparison.run_differences[0];
+        assert_eq!((first.field.as_str(), first.baseline.as_str(), first.current.as_str(), first.invalidates),
+                   ("Results file", "finished after 2 cycles", "saved mid-run after 1 cycle", false));
+        let report = comparison.to_text_report();
+        assert!(report.find("Results file").unwrap() < report.find("Overall Performance Changes").unwrap(), "{report}");
+        let both_finished = compare_test_results(&baseline, &baseline).unwrap();
+        assert!(both_finished.run_differences.iter().all(|d| d.field != "Results file"));
+    }
+
+    /// The per-cycle save on a long run (TODO 72): 32 threads, 16 steps (2 of them latency steps)
+    /// and 50 sealed cycles, every step with its thread records, saved after each cycle as a run of
+    /// cycles of a minute or more saves. Prints the final file's size, pretty and compact, the time
+    /// to serialize and to save it, and what the run writes in all; the figures are in
+    /// doc/todo/72-results-console-parity.md.
+    /// `cargo test --release -- --ignored a_long_runs_results_file --nocapture`
+    #[test]
+    #[ignore = "a measurement: run it by name"]
+    fn a_long_runs_results_file() {
+        use crate::ops::Op;
+        use std::time::{Duration, Instant};
+        const THREADS: usize = 32;
+        const STEPS: usize = 16;
+        const CYCLES: u32 = 50;
+        let (_, mut result) = written_before_todo_72();
+        result.cycles.clear();
+        let record = |thread: usize, step: usize, latency: bool| ThreadStepRecord {
+            thread,
+            cpu: Some(thread * 2),
+            core: Some(thread),
+            node: Some((thread / 16) as u32),
+            bytes: 1_073_741_824 + 4096 * thread as u64,
+            ms: 4_123.45 + thread as f64,
+            errors: 0,
+            operations: 134_217_728 + step as u64,
+            cycles: 3,
+            latency: latency.then_some(ThreadLatency { min_ns: 70.12, p50_ns: 72.53, p99_ns: 85.07, spread: 1.08 }),
+            ..Default::default()
+        };
+        let step = |n: usize| {
+            let latency = n > STEPS - 2;
+            let mut ops = crate::ops::OpTally::default();
+            ops.add(Op::SealCheck, Duration::from_millis(350), 32 << 30);
+            ops.add(Op::SealFill, Duration::from_millis(420), 32 << 30);
+            TestSummary {
+                timed_ms: 4_155.45,
+                operations: 4_294_967_296 + n as u64,
+                ops,
+                latency_samples: latency.then_some(64_000),
+                latency_p50_ns: latency.then_some(72.53),
+                latency_p99_ns: latency.then_some(85.07),
+                latency_spread: latency.then_some(1.08),
+                threads: (0..THREADS).map(|thread| record(thread, n, latency)).collect(),
+                ..summary(n, 4_200, 32 << 30, 0)
+            }
+        };
+        let seal = CycleSeal { seal_ms: 3_410, seal_bytes: 32 << 30, between_steps_ms: 900, final_check_ms: 3_380, final_check_bytes: 32 << 30, ..Default::default() };
+        let (mut written, mut serializing) = (0usize, Duration::ZERO);
+        for cycle in 1..=CYCLES {
+            result.add_cycle(cycle, 75, (1..=STEPS).map(step).collect(), Some(seal.clone()), false);
+            result.finalize(Duration::from_secs(75 * cycle as u64));
+            result.overall_stats.in_progress = true;
+            let start = Instant::now();
+            written += serde_json::to_string_pretty(&result).unwrap().len();
+            serializing += start.elapsed();
+        }
+        result.overall_stats.in_progress = false;
+        let start = Instant::now();
+        let pretty = serde_json::to_string_pretty(&result).unwrap();
+        let pretty_time = start.elapsed();
+        let compact = serde_json::to_string(&result).unwrap();
+        let mut without_threads = result.clone();
+        without_threads.cycles.iter_mut().flat_map(|c| &mut c.tests).for_each(|t| t.threads.clear());
+        let without_threads = serde_json::to_string_pretty(&without_threads).unwrap().len();
+        let dir = TempDir::new("long-run");
+        let path = dir.file("result.json");
+        let start = Instant::now();
+        result.save_atomic(&path).unwrap();
+        let save_time = start.elapsed();
+        let records = THREADS * STEPS * CYCLES as usize;
+        let mb = |bytes: usize| bytes as f64 / 1e6;
+        println!("{THREADS} threads x {STEPS} steps x {CYCLES} cycles = {records} thread records");
+        println!("final file: pretty {:.2} MB ({:.2} MB without the thread records, {} B a record), compact {:.2} MB",
+                 mb(pretty.len()), mb(without_threads), (pretty.len() - without_threads) / records, mb(compact.len()));
+        println!("final save: to_string_pretty {:.1} ms, save_atomic {:.1} ms", pretty_time.as_secs_f64() * 1e3, save_time.as_secs_f64() * 1e3);
+        println!("over the run: {:.1} MB written by {CYCLES} saves, {:.0} ms serializing", mb(written), serializing.as_secs_f64() * 1e3);
     }
 }

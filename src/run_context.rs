@@ -246,6 +246,20 @@ pub struct RunConfigSnapshot {
     /// One entry per test in the resolved plan. Stored at run level rather than repeated inside
     /// every cycle's results: this is configuration, and it does not change between cycles.
     pub tests: Vec<TestConfigSnapshot>,
+
+    /// The tests the plan had that this CPU can't run, each once and why (TODO 72; left out by
+    /// `runner::leave_out_what_the_cpu_lacks`, TODO 99): a plan has fewer steps on a CPU without
+    /// AVX-512. Absent when none was, and in results written before it.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub tests_left_out: Vec<LeftOutTest>,
+}
+
+/// A test the run left out (`RunConfigSnapshot::tests_left_out`).
+#[derive(Debug, Clone, Serialize, Deserialize, Default, PartialEq, Eq)]
+pub struct LeftOutTest {
+    pub name: String,
+    /// What the CPU lacks, e.g. `width 512 needs AVX-512, which this CPU lacks`
+    pub reason: String,
 }
 
 /// Memory request, and the allocation that came back.
@@ -532,6 +546,8 @@ pub struct TestConfigSnapshot {
 /// Everything the runner already knows at capture time, bundled so the signature stays readable
 /// (and clippy's `too_many_arguments` stays quiet without an `allow`).
 pub struct RunConfigInputs<'a> {
+    /// `argv` as the process got it, before the CLI adds its defaults.
+    pub command_line: &'a [String],
     /// `layout.system_memory_info` — free memory and load as observed when the plan was computed.
     pub system_memory_info: &'a crate::memory::allocation_strategy::SystemMemoryInfo,
     /// `layout.allocation_result` — the *requested* figures.
@@ -559,6 +575,8 @@ pub struct RunConfigInputs<'a> {
     pub config_name: Option<String>,
     /// The resolved plan — after filtering, overrides, and auto-dispatch.
     pub tests: &'a [crate::runner::TestDefinition],
+    /// The tests left out of it, by name, and why (`runner::leave_out_what_the_cpu_lacks`).
+    pub left_out: &'a [(String, String)],
     pub cache_info: &'a crate::cache::CacheInfo,
     /// The seal's kernel and where its width came from, in a sealed run.
     pub seal: Option<(crate::seal::SealKernel, crate::seal::SealWidthSource)>,
@@ -569,6 +587,7 @@ impl RunConfigSnapshot {
     /// are observed rather than predicted, and before the first cycle starts.
     pub fn capture(inputs: RunConfigInputs<'_>) -> Self {
         let RunConfigInputs {
+            command_line,
             system_memory_info,
             allocation_result: allocation,
             strategy,
@@ -589,6 +608,7 @@ impl RunConfigSnapshot {
             channels,
             config_name,
             tests,
+            left_out,
             cache_info,
             seal,
         } = inputs;
@@ -671,13 +691,17 @@ page_mix,
             .collect();
 
         Self {
-            command_line: capture_command_line(),
+            command_line: capture_command_line(command_line),
             config_name,
             memory,
             threads,
             execution,
             calibration,
             tests,
+            tests_left_out: left_out
+                .iter()
+                .map(|(name, reason)| LeftOutTest { name: name.clone(), reason: reason.clone() })
+                .collect(),
         }
     }
 }
@@ -761,8 +785,8 @@ impl TestConfigSnapshot {
 /// and `config=` in particular needs its path to stay meaningful. A caller who passes an absolute
 /// config path still puts a directory in the record; that is their own text, not something TMR
 /// injected on their behalf.
-fn capture_command_line() -> Vec<String> {
-    let mut args: Vec<String> = std::env::args().collect();
+fn capture_command_line(argv: &[String]) -> Vec<String> {
+    let mut args = argv.to_vec();
     if let Some(exe) = args.first_mut()
         && let Some(name) = std::path::Path::new(exe.as_str())
             .file_name()
@@ -790,7 +814,7 @@ pub struct RunDifference {
 }
 
 impl RunDifference {
-    fn new(field: &str, baseline: impl Into<String>, current: impl Into<String>, invalidates: bool) -> Self {
+    pub fn new(field: &str, baseline: impl Into<String>, current: impl Into<String>, invalidates: bool) -> Self {
         Self {
             field: field.to_string(),
             baseline: baseline.into(),

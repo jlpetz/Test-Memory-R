@@ -67,3 +67,59 @@ kernel touched):
 - B. per-thread records for each step, with the physical core;
 - C. the tests left out, the build commit and rustc, ops counts, commit headroom;
 - D. a `--show-results <file>` that replays the final summary through the existing converter.
+
+## 2026-10-22: TODO 29 S1, the cheap slice's A to C
+
+Every new field is `#[serde(default)]`, so a file written before them still loads
+(`testdata/result_files/before_todo_72.json`, `results::tests`).
+- **A.** The file is saved between cycles (`runner::save_after_cycle`): after the first, after one
+  that stopped early, and after any other once a minute has passed since the last save
+  (`runner::RESULTS_SAVE_INTERVAL`, see the size below), so a cycle of a minute or more is each
+  saved. A save goes to `<file>.tmp`, flushed to the disk, then renamed over the file
+  (`TestRunResult::save_atomic`), so a killed run or a system that went down leaves the last save
+  whole. A refused rename (a viewer holding the file without share-delete) writes in place with a
+  warning; when that is refused too, the save stays in the `.tmp` and the warning names both.
+  `overall_stats.in_progress` is true until the final save, which adds `outcome` (completed,
+  time_limit, interrupted, halted) and `status` (passed, failed, not_run, interrupted). A cycle
+  that stopped early is `partial`. `--compare-results` lists a "Results file" row first among the
+  run differences when either file was saved mid-run.
+- **B.** `cycles[].tests[].threads`: one `ThreadStepRecord` per thread, by thread: thread, cpu,
+  core, node, bytes, ms, errors (alarms, not_reproduced and seal_errors when not 0), operations,
+  cycles, and latency {min_ns, p50_ns, p99_ns, spread} on a latency step. A thread the pool has no
+  CPU for is kept, without cpu, core and node.
+- **C.** `run_config.tests_left_out` ({name, reason}); `metadata.build` {commit, dirty, rustc,
+  profile} from `build.rs`, the version staying `tmr_version`; `tests[].operations` and `timed_ms`.
+  Commit headroom is not in.
+- **D.** Not started.
+
+**Size, measured.** `results::tests::a_long_runs_results_file` (`#[ignore]`;
+`cargo test --release -- --ignored a_long_runs_results_file --nocapture`) builds a synthetic run
+and saves it after each cycle. Run on 2026-10-22, release build, on the dev box (Xeon 6975P-C,
+8 vCPUs):
+
+| What | Measured |
+|---|---|
+| shape | 32 threads x 16 steps (2 of them latency steps) x 50 sealed cycles: 25,600 thread records |
+| final file, pretty | 8.63 MB, of which 0.67 MB is everything but the thread records (311 B a record) |
+| final file, compact | 3.64 MB |
+| final save | `to_string_pretty` 19.4 ms; `save_atomic` 37 ms with the flush to the disk, 24 ms before it |
+| over the run | 220.4 MB written by the 50 saves, 462 ms serializing in all |
+
+The design's estimate (about 300 B a record, 7.7 MB final, 200 MB over the run) holds for this
+shape. Other shapes, worked out from the measured 311 B a thread record and about 840 B a step for
+the rest (0.67 MB over 800 steps), and the measured 445 MB/s of `to_string_pretty`:
+
+| Run | A cycle adds | Final file | Written, a save every cycle | Written, at most one a minute |
+|---|---|---|---|---|
+| 32 threads x 16 steps, 75 s cycles, 12 h (576 cycles) | 0.17 MB | 99 MB, 225 ms to serialize | 29 GB | the same: each cycle is over a minute |
+| 96 threads x 16 steps (cputype=cores on the 192-vCPU EC2 host), 50 cycles | 0.49 MB | 25 MB | 0.6 GB | the same, for cycles of a minute or more |
+| 16 threads x 1 step (a `test=` run), 3 s cycles, 8 h (9,600 cycles) | 5.8 KB | 56 MB, 125 ms to serialize | 268 GB, 4% of the run serializing at the end | 13 GB, 0.2% |
+
+A save every cycle writes what grows with the square of the cycle count, so short cycles made it
+hundreds of GB and a growing share of the run's time, which `duration=` counts. Hence the
+once-a-minute limit: what a run writes is then bounded by its length and its final file's size,
+however short its cycles. The file itself still grows with every cycle, by 0.17 MB at 32 x 16 and
+0.49 MB at 96 x 16. Pretty JSON with every step of every cycle stays for now, as the design has it
+("pretty stays unless a long run's final file is large"). What counts as large, and the fallback
+if so (compact JSON, 58% smaller; or per-test aggregates instead of the thread rows), is the
+owner's decision (29-split-design.md, "Open for the owner").

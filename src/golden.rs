@@ -27,7 +27,8 @@ pub(crate) fn capture<R>(f: impl FnOnce() -> R) -> (R, String) {
     install_logger();
     // The detections print what they found at their first use, wherever that is: before the
     // capture, so no golden depends on which test ran first
-    let _ = (crate::tests::get_system_info(), crate::smbios::get_smbios(), crate::pattern::transfer_beat());
+    let _ = (crate::tests::get_system_info(), crate::smbios::get_smbios(), crate::pattern::transfer_beat(),
+             crate::cpu_topology::get_cpu_topology());
     let sink: Sink = Arc::new(Mutex::new(Vec::new()));
     let restore = Restore { outer: io::set_output_capture(Some(Arc::clone(&sink))), sink: Arc::clone(&sink) };
     if restore.outer.is_none() {

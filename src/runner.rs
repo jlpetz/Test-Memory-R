@@ -155,6 +155,8 @@ pub struct TestRunOverrides<'a> {
     pub channels_override: Option<u32>,
     /// Print the layout and the test plan, then return before allocating (`--startup-debug`).
     pub plan_only: bool,
+    /// The process's `argv`, for the results file (`RunConfigSnapshot::command_line`)
+    pub command_line: &'a [String],
 }
 
 /// How a whole run ended, for the console's last line and the exit status: 0 passed, 1 tests
@@ -176,6 +178,16 @@ impl RunStatus {
             RunStatus::Failed => 1,
             RunStatus::NotRun => 2,
             RunStatus::Interrupted => 3,
+        }
+    }
+
+    /// Its key in the results file (`OverallStats::status`)
+    pub fn key(self) -> &'static str {
+        match self {
+            RunStatus::Passed => "passed",
+            RunStatus::Failed => "failed",
+            RunStatus::NotRun => "not_run",
+            RunStatus::Interrupted => "interrupted",
         }
     }
 }
@@ -700,6 +712,7 @@ pub fn run_tests_with_layout_and_timing_filtered(
         wrc_override,
         channels_override,
         plan_only,
+        command_line,
     } = overrides;
 
     layout.print_layout();
@@ -1077,6 +1090,7 @@ pub fn run_tests_with_layout_and_timing_filtered(
     // to know two runs used different working-set sizes and reports the difference as a code change.
     let test_run_result = {
         let snapshot = crate::run_context::RunConfigSnapshot::capture(crate::run_context::RunConfigInputs {
+            command_line,
             system_memory_info: &layout.system_memory_info,
             allocation_result: &layout.allocation_result,
             strategy: &layout.strategy,
@@ -1097,6 +1111,7 @@ pub fn run_tests_with_layout_and_timing_filtered(
             channels: effective_channels,
             config_name: config.map(|c| c.metadata.name.clone()),
             tests: &test_definitions,
+            left_out: &left_out,
             cache_info,
             seal: seal_settings.on.then_some((seal_kernel, seal_width_source)),
         });
@@ -1135,6 +1150,8 @@ pub fn run_tests_with_layout_and_timing_filtered(
         beat.map_or("unknown: switch alternates 64 and 32 bits".to_string(), |b| format!("{} bits ({beat_source})", b.bits()))));
 
     let mut cycles_done = 0u32;
+    // When the results were last saved between cycles (TODO 72)
+    let mut last_save = suite_start;
     let outcome = loop {
         if cycle_limit.is_some_and(|limit| cycles_done >= limit) {
             break RunOutcome::Completed;
@@ -1154,7 +1171,14 @@ pub fn run_tests_with_layout_and_timing_filtered(
         });
 
         // Execute all tests in sequence for this cycle
-        if let Some(stop) = execute_test_cycle(&cycle_ctx, cycle as u64) {
+        let stop = execute_test_cycle(&cycle_ctx, cycle as u64);
+        // Saved between cycles (TODO 72), so a run killed, lost or crashed from here on still leaves
+        // the cycles saved so far
+        if results_save_due(cycle, stop.is_some(), last_save.elapsed()) {
+            save_after_cycle(&test_run_result, cycle, suite_start.elapsed(), &progress.whea);
+            last_save = Instant::now();
+        }
+        if let Some(stop) = stop {
             break stop;
         }
         cycles_done = cycle;
@@ -1260,7 +1284,7 @@ pub fn run_tests_with_layout_and_timing_filtered(
     }
 
     // Always display and save results (even for partial/interrupted runs)
-    display_and_save_results(&test_run_result, suite_duration, whea_totals, whea_monitored);
+    display_and_save_results(&test_run_result, suite_duration, whea_totals, whea_monitored, outcome, status);
 
     status
 }
@@ -1380,7 +1404,9 @@ fn execute_test_cycle(ctx: &CycleContext, cycle: u64) -> Option<RunOutcome> {
                     seal_errors: seal_errors_for_test,
                     name: test_display_name.to_string(),
                     duration_ms: 0,
+                    timed_ms: 0.0,
                     bytes_processed: 0,
+                    operations: 0,
                     cycles_completed: (0, 0),
                     stopped_by: None,
                     ops: between_ops,
@@ -1403,6 +1429,7 @@ fn execute_test_cycle(ctx: &CycleContext, cycle: u64) -> Option<RunOutcome> {
                     latency_p99_ns: None,
                     latency_p99_9_ns: None,
                     latency_spread: None,
+                    threads: Vec::new(),
                 });
                 stopped = Some(RunOutcome::Halted);
                 break;
@@ -1424,15 +1451,20 @@ fn execute_test_cycle(ctx: &CycleContext, cycle: u64) -> Option<RunOutcome> {
 		let mut cycles_fewest = u32::MAX;
 		let mut cycle_limit: Option<u32> = None;
 		let mut stopped_by_time_limit = false;
+		// Each thread's part, for the results file (TODO 72)
+		let mut thread_records = Vec::with_capacity(thread_count);
 
 		for _ in 0..thread_count {
 			match result_receiver.recv() {
 				Ok(result) => {
 					// Look up CPU assignment for this thread
-					if let Some(&(_, cpu_id, _)) = thread_pool.get_cpu_assignments()
+					let assignment = thread_pool.get_cpu_assignments()
 						.iter()
 						.find(|(tid, _, _)| *tid == result.thread_id)
-					{
+						.copied();
+					// Recorded with or without one, before its latencies move below
+					thread_records.push(thread_step_record(&result, assignment));
+					if let Some((_, cpu_id, _)) = assignment {
 						// Store simplified stats: (thread_id, cpu_id, bytes, time, errors, operations, cycles_completed)
 						// The thread's own timed clock, as the step's speed (TODO 90)
 						test_stats.push((result.thread_id, cpu_id,
@@ -1487,6 +1519,7 @@ fn execute_test_cycle(ctx: &CycleContext, cycle: u64) -> Option<RunOutcome> {
 				}
 			}
 		}
+		thread_records.sort_by_key(|record| record.thread);
 
         // Attribute WHEA events that landed while this test ran. A non-zero count here is a real
         // failure signal even when every thread reported zero errors: the fault was either
@@ -1752,7 +1785,9 @@ fn execute_test_cycle(ctx: &CycleContext, cycle: u64) -> Option<RunOutcome> {
             seal_errors: seal_errors_for_test,
             name: test_display_name.to_string(), // Use display_name to preserve _A suffix for AUTO tests
             duration_ms: test_duration.as_millis(),
+            timed_ms: timed_secs * 1000.0,
             bytes_processed: total_bytes_for_test,
+            operations: total_operations_for_test,
             cycles_completed: (cycles_fewest.min(cycles_completed), cycles_completed),
             stopped_by: Some(stopped_by),
             ops: step_ops,
@@ -1775,6 +1810,7 @@ fn execute_test_cycle(ctx: &CycleContext, cycle: u64) -> Option<RunOutcome> {
             latency_p99_ns: latency_p99,
             latency_p99_9_ns: latency_p99_9,
             latency_spread,
+            threads: thread_records,
         });
 
         // Early exit on errors if required. This is reported as a halt, not routed through
@@ -1792,9 +1828,11 @@ fn execute_test_cycle(ctx: &CycleContext, cycle: u64) -> Option<RunOutcome> {
         }
     }
 
-    // The cycle ends with a check of all memory (TODO 74), unless it stopped early
+    // The cycle ends with a check of all memory (TODO 74), unless it stopped early, which makes it
+    // a partial cycle in the results (TODO 72)
+    let partial = stopped.is_some();
     if let Some(kernel) = seal
-        && stopped.is_none()
+        && !partial
     {
         let (bytes, errors, bits, duration) = run_seal_stage(ctx, crate::thread_pool::SealOp::FinalCheck, kernel, cycle);
         seal_stages.final_check_ms = duration.as_millis();
@@ -1813,12 +1851,40 @@ fn execute_test_cycle(ctx: &CycleContext, cycle: u64) -> Option<RunOutcome> {
     if !cycle_test_summaries.is_empty() {
         let cycle_duration_secs = cycle_start.elapsed().as_secs() as u32;
         if let Ok(mut result) = test_run_result.lock() {
-            result.add_cycle(cycle as u32, cycle_duration_secs, cycle_test_summaries, seal.map(|_| seal_stages));
+            result.add_cycle(cycle as u32, cycle_duration_secs, cycle_test_summaries, seal.map(|_| seal_stages), partial);
         } else {
             log::error!("Failed to lock test_run_result to add cycle {}", cycle);
         }
     }
     stopped
+}
+
+/// A worker's part of a step, for the results file (TODO 72): where it ran, from `assignment` (the
+/// pool's `(thread, cpu, node)`, `None` when it has none for the thread) and the CPU's physical
+/// core, and what it did, as the step's thread and latency tables show it.
+fn thread_step_record(result: &WorkResult, assignment: Option<CpuAssignment>) -> crate::results::ThreadStepRecord {
+    let cpu = assignment.map(|(_, cpu, _)| cpu);
+    crate::results::ThreadStepRecord {
+        thread: result.thread_id,
+        cpu,
+        core: cpu.map(crate::cpu_topology::get_physical_core_for_cpu),
+        node: assignment.map(|(_, _, node)| node),
+        bytes: result.total_bytes,
+        // The thread's own timed clock, as the step's speed (TODO 90)
+        ms: result.timed.unwrap_or(result.elapsed).as_secs_f64() * 1000.0,
+        errors: result.total_errors,
+        alarms: result.alarms,
+        not_reproduced: result.not_reproduced,
+        seal_errors: result.seal_errors,
+        operations: result.total_operations,
+        cycles: result.cycles_completed,
+        latency: result.latency_stats.as_ref().map(|stats| crate::results::ThreadLatency {
+            min_ns: stats.latencies_ns.iter().min_by(|a, b| a.partial_cmp(b).unwrap()).copied().unwrap_or(0.0),
+            p50_ns: stats.p50_ns,
+            p99_ns: stats.p99_ns,
+            spread: stats.spread_ratio,
+        }),
+    }
 }
 
 /// Run a seal stage on every worker (TODO 74) and report it: the bytes, the errors and the bits
@@ -4748,6 +4814,8 @@ fn display_and_save_results(
     suite_duration: std::time::Duration,
     whea_totals: crate::whea::WheaCounts,
     whea_monitored: bool,
+    outcome: RunOutcome,
+    status: RunStatus,
 ) {
     let mut result = test_run_result.lock().unwrap();
     result.finalize(suite_duration);
@@ -4755,6 +4823,10 @@ fn display_and_save_results(
     // per-test deltas: a test that never started (early exit) or an event logged between tests
     // would otherwise be dropped from the total.
     result.set_whea_totals(whea_totals, whea_monitored);
+    // The run is over: this save replaces the last cycle's (TODO 72)
+    result.overall_stats.in_progress = false;
+    result.overall_stats.outcome = Some(outcome.key().to_string());
+    result.overall_stats.status = Some(status.key().to_string());
 
     // Display final summary using reporting layer
     {
@@ -4768,9 +4840,41 @@ fn display_and_save_results(
 
     // Save results to file
     let filename = result.get_filename();
-    match result.save_to_file(filename) {
+    match result.save_atomic(filename) {
         Ok(_) => println!("💾 Results saved: {}", filename),
         Err(e) => log::error!("Failed to save results: {}", e),
+    }
+}
+
+/// The least time between two saves of the results between cycles (TODO 72), but for the first
+/// cycle's and a stopped cycle's. Each save writes the whole file again, which grows with every
+/// cycle: a run of cycles of a few seconds that saved after each would spend a growing part of its
+/// time serializing, and write hundreds of GB over a night. Cycles of a minute or more are each
+/// saved.
+const RESULTS_SAVE_INTERVAL: Duration = Duration::from_secs(60);
+
+/// Whether the results are saved after `cycle` (TODO 72): after the first, so a run has a file
+/// from then on, after one that `stopped` early, and after any other once `RESULTS_SAVE_INTERVAL`
+/// has passed `since_last_save`.
+fn results_save_due(cycle: u32, stopped: bool, since_last_save: Duration) -> bool {
+    cycle == 1 || stopped || since_last_save >= RESULTS_SAVE_INTERVAL
+}
+
+/// Saves the results so far, after a cycle (TODO 72): marked in progress, with no outcome or
+/// status yet, for the final save (`display_and_save_results`) to replace. Silent, and never
+/// fatal: a failure is a warning, and the next save tries again.
+fn save_after_cycle(test_run_result: &Mutex<TestRunResult>, cycle: u32, elapsed: Duration, whea: &crate::whea::WheaMonitor) {
+    let Ok(mut result) = test_run_result.lock() else {
+        log::warn!("Couldn't lock the results to save them after cycle {cycle}");
+        return;
+    };
+    // Every overall figure again, from the cycles so far
+    result.finalize(elapsed);
+    result.set_whea_totals(whea.counts(), whea.is_active());
+    result.overall_stats.in_progress = true;
+    let filename = result.get_filename();
+    if let Err(e) = result.save_atomic(filename) {
+        log::warn!("Failed to save the results after cycle {cycle}: {e}");
     }
 }
 
@@ -5140,6 +5244,58 @@ mod tests {
         let mut all = suite.clone();
         assert!(leave_out_what_the_cpu_lacks(&mut all, &mut None, Ok).is_empty());
         assert_eq!(all.len(), suite.len());
+    }
+
+    /// TODO 72: the snapshot records the tests a CPU without AVX-512 leaves out
+    /// (`a_cpu_without_avx512_runs_no_512_bit_test`), each once and why, and so the results file
+    /// does; one that left none out has no such field. The command line is the one passed in, its
+    /// executable cut to its file name. This is `RunConfigSnapshot::capture`'s part: the runner
+    /// passes `leave_out_what_the_cpu_lacks`'s list in after allocation, and the CLI its argv from
+    /// `cli::run`, where no test reaches; a live run shows those.
+    #[test]
+    fn the_snapshot_records_the_tests_left_out() {
+        let _width = crate::simd::TestWidth::set(Some(crate::simd::Width::W256));
+        let mut tests = create_test_definitions(crate::tests::get_cache_info());
+        let left_out = leave_out_what_the_cpu_lacks(&mut tests, &mut None, without_avx512);
+        assert!(!left_out.is_empty());
+        let (layout, runtime_config) = golden_layout();
+        let argv = [r"C:\TMR\tmr.exe".to_string(), "plan=all".to_string()];
+        let suite_timing = TestSuiteTiming::default();
+        let capture = |left_out: &[(String, String)]| crate::run_context::RunConfigSnapshot::capture(crate::run_context::RunConfigInputs {
+            command_line: &argv,
+            system_memory_info: &layout.system_memory_info,
+            allocation_result: &layout.allocation_result,
+            strategy: &layout.strategy,
+            runtime_config: &runtime_config,
+            page_mix: Default::default(),
+            requests: 4,
+            refused: 0,
+            thread_memory_least: 4 << 20,
+            allocated_bytes: 16 << 20,
+            thread_count: 4,
+            cpu_assignments: &[(0, 0, 0), (1, 2, 0), (2, 4, 0), (3, 6, 0)],
+            pinned: true,
+            thread_priority: ThreadPriority::High,
+            suite_timing: &suite_timing,
+            error_mode: ErrorMode::Log,
+            test_filter: None,
+            plan: Some("all".to_string()),
+            channels: 2,
+            config_name: None,
+            tests: &tests,
+            left_out,
+            cache_info: &CacheInfo::default(),
+            seal: None,
+        });
+
+        let snapshot = capture(&left_out);
+        let recorded: Vec<(String, String)> = snapshot.tests_left_out.iter().map(|t| (t.name.clone(), t.reason.clone())).collect();
+        assert_eq!(recorded, left_out);
+        assert_eq!(snapshot.command_line, ["tmr.exe", "plan=all"]);
+        let json = serde_json::to_string(&snapshot).unwrap();
+        let back: crate::run_context::RunConfigSnapshot = serde_json::from_str(&json).unwrap();
+        assert_eq!(back.tests_left_out, snapshot.tests_left_out);
+        assert!(!serde_json::to_string(&capture(&[])).unwrap().contains("tests_left_out"));
     }
 
     /// TODO 99: a test the CPU can't run that got past the choice of tests stops the run before its
@@ -6114,17 +6270,13 @@ mod tests {
         crate::tests::bench_verify_at(crate::simd::Width::W256)(blocks, thread_id, error_mode, timing, config, progress)
     }
 
-    /// A cycle as the console shows it (TODO 29): `execute_test_cycle` on two workers over heap
-    /// regions, sealed. Its steps: a Bench-Init/Verify pair with a bit flipped between them, a
-    /// latency step and a step that takes the seal, which reseals what the others left first; then
-    /// the final seal check. Every step's width is fixed at 256 bits, and both workers are numbered
-    /// CPU 0, so no figure depends on this machine's caches or topology; times, rates and the
-    /// scheduler's order are masked (`golden::mask_run`). Nothing printed depends on the run's seed
-    /// either, which can't be fixed here (a process takes it once, and other tests take it from the
-    /// clock): mode 10 keys its words by its own base, and the seal, which the seed keys, finds no
-    /// error to print. A step whose output does depend on it needs a seed of its own first.
-    #[test]
-    fn a_cycle_prints_as_its_golden() {
+    /// The fake cycle (TODO 29): `execute_test_cycle` on two workers over heap regions, sealed, under
+    /// `error_mode`. Its steps: a Bench-Init/Verify pair with a bit flipped between them, a latency
+    /// step and a step that takes the seal, which reseals what the others left first; then the final
+    /// seal check. Every step's width is fixed at 256 bits, and both workers are numbered CPU 0, so
+    /// no figure depends on this machine's caches or topology. What `execute_test_cycle` returned,
+    /// what the cycle printed, and the results it added.
+    fn fake_cycle(error_mode: ErrorMode) -> (Option<RunOutcome>, String, TestRunResult) {
         let cache_info = CacheInfo::default();
         let kernel = crate::seal::SealKernel::new(crate::seal::SealPattern::Tmr, crate::seal::SealWidth::W256);
         let suite = create_test_definitions(&cache_info);
@@ -6163,7 +6315,7 @@ mod tests {
                 thread_pool: &thread_pool,
                 result_receiver: &result_receiver,
                 thread_count: 2,
-                error_mode: ErrorMode::Log,
+                error_mode,
                 progress: &progress,
                 test_run_result: &test_run_result,
                 all_test_cpu_stats: &all_test_cpu_stats,
@@ -6177,11 +6329,108 @@ mod tests {
             drop(blocks);
             stopped
         });
+        let result = test_run_result.lock().unwrap().clone();
+        (stopped, text, result)
+    }
+
+    /// A cycle as the console shows it (TODO 29): the fake cycle, logging its errors. Times, rates
+    /// and the scheduler's order are masked (`golden::mask_run`). Nothing printed depends on the
+    /// run's seed either, which can't be fixed here (a process takes it once, and other tests take
+    /// it from the clock): mode 10 keys its words by its own base, and the seal, which the seed
+    /// keys, finds no error to print. A step whose output does depend on it needs a seed of its own
+    /// first.
+    #[test]
+    fn a_cycle_prints_as_its_golden() {
+        let (stopped, text, result) = fake_cycle(ErrorMode::Log);
         assert_eq!(stopped, None, "the cycle ran to its end");
-        let result = test_run_result.lock().unwrap();
         let errors: Vec<u64> = result.cycles[0].tests.iter().map(|t| t.errors).collect();
         assert_eq!(errors, [0, 1, 0, 0], "the flipped bit is the verify's one error");
+        // A whole cycle, and each step's threads in it, by thread: where each ran and what it found,
+        // the latency step's latencies too (TODO 72)
+        let cycle = &result.cycles[0];
+        assert!(!cycle.partial);
+        let threads: Vec<Vec<_>> = cycle.tests.iter()
+            .map(|t| t.threads.iter().map(|r| (r.thread, r.cpu, r.errors, r.latency.is_some())).collect())
+            .collect();
+        let step = |errors: u64, latency: bool| vec![(0, Some(0), errors, latency), (1, Some(0), 0, latency)];
+        assert_eq!(threads, [step(0, false), step(1, false), step(0, true), step(0, false)]);
+        // CPU 0's core and node; each thread's time, and its bytes, operations and passes, which the
+        // step's add up or bound; a latency step's latencies, in order; the step's own time
+        let place = (Some(crate::cpu_topology::get_physical_core_for_cpu(0)), Some(crate::cpu_topology::get_numa_node_for_cpu(0)));
+        for test in &cycle.tests {
+            let name = &test.name;
+            assert!(test.threads.iter().all(|r| (r.core, r.node) == place && r.ms > 0.0), "{name}: {:?}", test.threads);
+            let sum = |of: fn(&crate::results::ThreadStepRecord) -> u64| test.threads.iter().map(of).sum::<u64>();
+            assert_eq!((sum(|r| r.bytes), sum(|r| r.operations)), (test.bytes_processed, test.operations), "{name}");
+            assert!(test.operations > 0, "{name}");
+            let passes = test.cycles_completed_min..=test.cycles_completed_max;
+            assert!(test.cycles_completed_min > 0 && test.threads.iter().all(|r| passes.contains(&r.cycles)), "{name}");
+            assert!(test.timed_ms > 0.0 && test.timed_ms <= test.duration_ms as f64 + 1.0, "{name}: {} of {} ms", test.timed_ms, test.duration_ms);
+            for latency in test.threads.iter().filter_map(|r| r.latency) {
+                assert!(0.0 < latency.min_ns && latency.min_ns <= latency.p50_ns && latency.p50_ns <= latency.p99_ns, "{name}: {latency:?}");
+            }
+        }
         crate::golden::check("cycle", &crate::golden::mask_run(&text));
+    }
+
+    /// TODO 72: a cycle that errors=halt stops, at the verify's error, is partial in the results:
+    /// the steps that ran, and no final seal check.
+    #[test]
+    fn a_halted_cycle_is_partial() {
+        let (stopped, _, result) = fake_cycle(ErrorMode::Halt);
+        assert_eq!(stopped, Some(RunOutcome::Halted));
+        let cycle = &result.cycles[0];
+        assert!(cycle.partial);
+        let steps: Vec<&str> = cycle.tests.iter().map(|t| t.name.as_str()).collect();
+        assert_eq!(steps, ["Bench-Init-TMR-10", "Bench-Verify-TMR-10"], "the steps up to the verify's halt");
+        let seal = cycle.seal.as_ref().expect("a sealed cycle");
+        assert!(seal.seal_bytes > 0 && seal.final_check_bytes == 0, "sealed at its start, and no final check");
+    }
+
+    /// TODO 72: between cycles the results are saved silently, in progress, with the overall figures
+    /// of the cycles so far and the monitor's WHEA totals, and no outcome or status; the final save
+    /// replaces that one, finished, with how the run ended and its verdict, and prints its one line.
+    #[test]
+    fn the_results_are_saved_between_cycles_and_at_the_end() {
+        let dir = crate::results::TempDir::new("cycle-saves");
+        let path = dir.file("run.json");
+        let fixture = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("testdata").join("result_files").join("before_todo_72.json");
+        let mut result = TestRunResult::load_from_file(fixture.to_str().unwrap()).unwrap();
+        // Its two cycles as a run holds them, the overall figures not yet worked out
+        result.metadata.filename = path.clone();
+        (result.overall_stats.cycles_completed, result.overall_stats.total_runtime_secs) = (0, 0);
+        assert!(result.overall_stats.whea_total > 0, "the fixture saw a WHEA event");
+        let test_run_result = Arc::new(Mutex::new(result));
+        // Never started: no events, and not monitoring
+        let whea = crate::whea::WheaMonitor::new();
+
+        let ((), printed) = crate::golden::capture(|| save_after_cycle(&test_run_result, 2, Duration::from_secs(65), &whea));
+        assert_eq!(printed, "", "a save between cycles is silent");
+        let text = std::fs::read_to_string(&path).unwrap();
+        assert!(!text.contains("\"outcome\"") && !text.contains("\"status\""), "no outcome or status mid-run");
+        let stats = TestRunResult::load_from_file(&path).unwrap().overall_stats;
+        assert_eq!((stats.in_progress, stats.cycles_completed, stats.total_runtime_secs), (true, 2, 65));
+        assert_eq!((stats.whea_total, stats.whea_monitored), (0, false), "the monitor's totals");
+
+        let ((), printed) = crate::golden::capture(|| display_and_save_results(&test_run_result, Duration::from_secs(70),
+            crate::whea::WheaCounts { total: 1, corrected: 1 }, true, RunOutcome::Interrupted, RunStatus::Interrupted));
+        assert_eq!(printed.matches("Results saved").count(), 1, "{printed}");
+        assert!(printed.contains(&format!("💾 Results saved: {path}\n")), "{printed}");
+        let stats = TestRunResult::load_from_file(&path).unwrap().overall_stats;
+        assert_eq!((stats.in_progress, stats.outcome.as_deref(), stats.status.as_deref()), (false, Some("interrupted"), Some("interrupted")));
+        assert_eq!((stats.total_runtime_secs, stats.whea_total, stats.whea_monitored), (70, 1, true));
+        assert!(!std::path::Path::new(&format!("{path}.tmp")).exists());
+    }
+
+    /// TODO 72: the results are saved after the first cycle, after one that stopped early, and after
+    /// any other once `RESULTS_SAVE_INTERVAL` has passed since the last save.
+    #[test]
+    fn the_results_are_saved_at_most_once_an_interval_between_cycles() {
+        let soon = Duration::from_secs(5);
+        assert!(results_save_due(1, false, soon), "the first cycle");
+        assert!(results_save_due(7, true, soon), "a cycle that stopped early");
+        assert!(!results_save_due(7, false, soon));
+        assert!(results_save_due(7, false, RESULTS_SAVE_INTERVAL));
     }
 
     /// The console goldens' layout: 16 MiB over four threads on a 32 GiB box, with its runtime. A

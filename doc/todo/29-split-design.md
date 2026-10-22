@@ -205,7 +205,7 @@ pub fn commands::calibrate(.., out: &mut dyn io::Write, confirm: &mut dyn FnMut(
 7. **'💾 Results saved: <path>'** prints once, after the final save; per-cycle saves are silent (bench_ab.py:54, 76 use `re.search`).
 8. **Kept on purpose, each the owner's call as its own commit:**
    - the stale skip count (cli.rs:1603);
-   - the Ctrl+C wording 'without the final report or results file' (cli.rs:964, 975);
+   - ~~the Ctrl+C wording 'without the final report or results file' (cli.rs:964, 975)~~: corrected in S1, per the decisions above, to '…the results file keeps only the cycles saved so far';
    - ANSI bold in redirected output;
    - ticker frames in WinRM captures.
 
@@ -271,13 +271,13 @@ A timeout also returns, which is the window's 2 Hz clock (Reactor 0.100.0 has no
 ## Results file and log
 
 **Per-cycle save (S1, no console change).**
-- In the cycle loop right after `execute_test_cycle` returns (runner.rs:1157), on both its stop and its normal path, the engine:
+- In the cycle loop right after `execute_test_cycle` returns (runner.rs:1157), after the first cycle, after one that stopped early, and after any other once a minute has passed since the last save (`RESULTS_SAVE_INTERVAL`; S1 found that saving after every cycle writes what grows with the square of the cycle count, hundreds of GB over a night of short cycles: doc/todo/72), the engine:
   1. locks `test_run_result`;
   2. calls `finalize(suite_start.elapsed())`, which is idempotent: it reassigns every overall field from `self.cycles` (results.rs:455-487; per_step_averages replaced at 569);
   3. calls `set_whea_totals(progress.whea.counts(), is_active())`;
   4. sets `in_progress = true`;
-  5. calls `save_atomic`: writes `results/<stem>.json.tmp`, then `fs::rename` over the target.
-- A failed rename (a viewer holding the file without share-delete) falls back to `fs::write` plus a `log::warn`, retried next cycle; it is never fatal.
+  5. calls `save_atomic`: writes `results/<stem>.json.tmp` and flushes it to the disk (so a system that goes down keeps a whole file), then `fs::rename` over the target.
+- A failed rename (a viewer holding the file without share-delete) falls back to writing the file in place plus a `log::warn`, retried at the next save; when that is refused too, the save stays in the `.tmp`, which the warning names. It is never fatal.
 - The final save in `display_and_save_results` (runner.rs:4746-4775) uses `save_atomic` too, with `in_progress = false`, outcome and status, then the one 'Results saved:' line.
 - **New `#[serde(default)]` fields:**
   - `OverallStats.in_progress: bool` (default false, so old files read as finished);
@@ -333,7 +333,7 @@ A timeout also returns, which is the window's 2 Hz clock (Reactor 0.100.0 has no
 - Added: one Box<StepReport>, one TestSummary clone, N small ThreadStepRecords.
 - Removed: one full clone and sort of every thread's raw latency samples (runner.rs:1573-1594 duplicated 1717-1745).
 
-**Per cycle:** one atomic save, estimated in the tens of ms between cycles that take minutes. It is measured before the per-thread rows ship.
+**Per cycle:** at most one atomic save a minute, measured in S1 at about 37 ms for an 8.6 MB file (32 threads x 16 steps x 50 cycles; doc/todo/72 has the other shapes).
 
 **Binary size:** the CLI-only exe doesn't grow beyond the moved code. The GUI build adds about 1.6 MB (+37%) and about 17 s per build, only with the feature (reactor inventory).
 
@@ -476,7 +476,7 @@ A timeout also returns, which is the window's 2 Hz clock (Reactor 0.100.0 has no
   - save_atomic replaces an existing file in a temp dir;
   - leave-out (runner.rs:5111-5145) lands in the snapshot;
   - the #[ignore] size test, run once, numbers into doc/todo/72.
-- S0 goldens unchanged; asm fingerprint of the kernel modules identical.
+- S0 goldens unchanged; asm fingerprint of the kernel modules identical. In S1 three functions read as changed with no instruction changed (a COMDAT number, a closure's index, log records' line numbers inlined into the worker loop), so asm_fingerprint.py normalises the first two and lists a function changed only in its source lines apart, as not changed; its baseline at 25ff780 was saved again.
 - The owner retakes a bench_ab.py reference, because build.rs changes the crate metadata and the .text order.
 
 ### S2 The run path behind Frontend (still one crate) (L (~1,200 lines touched, mostly moved))
@@ -579,7 +579,7 @@ A timeout also returns, which is the window's 2 Hz clock (Reactor 0.100.0 has no
 - hot_loop_spills.py silently reports zero hot loops if the lib name or the build command drifts (`:97`, `:145`, `:213`). The S3 guard and the S0 fingerprint catch it; the fingerprint tool is new itself, so cross-check its first diff by hand.
 - GUI starvation: workers default to High priority on every selected CPU (runner.rs:4458-4459) while the UI thread is Normal.
 - The GUI has never been launched. Unverified: WinUI 3 in a console-subsystem exe with the detached manifest, the double-click on 26100, the delay-loaded start on 20348, and Reactor 0.100.0's preview limits (no timer, no close veto).
-- Per-cycle saves rewrite the whole file. The size is an estimate until the ignored test runs; a rename can fail on a sharing violation (warn, retry next cycle).
+- Per-cycle saves rewrite the whole file, which grows with every cycle; S1 measured it and limits the saves to one a minute (doc/todo/72). A rename can fail on a sharing violation (warn, retry at the next save).
 - Error storms: rescans per step are unbounded (tests.rs:3624-3629 caps only per rescan), so the GUI's bounded log channel drops lines. The file keeps every line, and the window says how many it dropped.
 - Visibility widens: the payload types become pub and drop out of dead_code (lib.rs:6-9). Keep the API to session, frontend, commands, logfile, BUILD, request_stop and the re-exports.
 - An elevated launch, now possibly a double-click, still grants SeLockMemoryPrivilege through secedit without asking (privileges.rs:398-409). Behaviour is unchanged by this split.
@@ -609,7 +609,7 @@ A timeout also returns, which is the window's 2 Hz clock (Reactor 0.100.0 has no
 - Three log lines print on every run labelled `tmr::cli` (cli.rs:581, 1512, 1513). Do we keep that label through the small parity helper, or accept a one-time change to the new module names?
 - Text kept as it is on purpose. Fix each of these in its own commit, or keep it?
 - 'Skipping first 1 CPU(s)' with skip-cores=0 (cli.rs:1603);
-- the Ctrl+C wording 'without the final report or results file', untrue once results save every cycle (cli.rs:964, 975);
+- ~~the Ctrl+C wording 'without the final report or results file', untrue once results save every cycle (cli.rs:964, 975)~~: corrected in S1;
 - bold escape codes in redirected output (renderers/console.rs:21);
 - ticker frames in WinRM captures.
 - After the size test: store per-thread rows for every step of every cycle in pretty JSON, compact JSON, or per-test averages only?

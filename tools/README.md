@@ -68,15 +68,20 @@ Hashes each function of the test code in the post-LTO asm: every one of `hot_loo
 path but still the test's), and the workers' side of a step, `thread_pool` (the worker loop,
 `WorkItem`, `WorkResult`) and `test_scaffolding` (`TestRunner`'s bookkeeping). Each is hashed
 after normalising what moves when the code doesn't: label numbers, string constants and LLVM's
-local copies of a symbol (`<sym>.449`) are renumbered in their order of use, and v0 symbols lose
-their crate hashes, back-references and the crate a generic was instantiated in. The data a
+local copies of a symbol (`<sym>.449`) are renumbered in their order of use, v0 symbols lose
+their crate hashes, back-references and the crate a generic was instantiated in, a closure its
+place among its function's closures, and a COMDAT section its number in the file. The data a
 function names (a constant pool, a jump or switch table, a string) is hashed with it. A change that
-only moves code around the kernels, as each stage of TODO 29 does, must leave every hash as it was.
+only moves code around the kernels, as each stage of TODO 29 does, must leave every hash as it was,
+but for source lines: a log record's line inlined into a function is an immediate, `(line << 32) |
+1`, so each function also has a hash with those masked, and `--compare` lists one that differs
+only there as `lines`, which doesn't fail it (TODO 29 S1, where lines added to `runner.rs` showed
+in the worker loop).
 
 ```bash
 cargo rustc --release --bin tmr -- --emit asm
 python tools/asm_fingerprint.py --save before.json      # on the old code
-python tools/asm_fingerprint.py --compare before.json   # on the new: changed, gone, new; 1 if any
+python tools/asm_fingerprint.py --compare before.json   # on the new: changed, gone, new (1 if any), lines
 python tools/asm_fingerprint.py --dump DIR              # each normalised body, to diff two builds
 ```
 
@@ -91,12 +96,17 @@ Checked on 2026-10-22: a rebuild with every crate hash changed (`RUSTFLAGS` with
 while a build of the code of 2026-10-16 shows 238 of the 278 names both have changed (one read by
 hand: a different stack frame). Before that check, the normalisation was short of the local copies,
 the instantiating crate, and the statics `hot_loop_spills.py` reads as functions (left out here: a
-static's body is the data after it).
+static's body is the data after it). TODO 29 S1 (2026-10-22) added the closures' places, the COMDAT
+numbers and the source lines, after three functions read as changed with none of their
+instructions changed; the baseline was saved again from a build of 25ff780's tree, and another
+build of that code compares clean with it.
 
 **Limits.** It sees the asm, not where the linker puts it: two builds can be instruction-identical
 and differ in speed by alignment, which is `bench_ab.py`'s to measure. A kernel inlined into a
 function outside the modules isn't seen. Read the first diff it reports by hand (`--dump` both
-builds and diff the two directories): a normalisation can hide a change or flag noise.
+builds and diff the two directories): a normalisation can hide a change or flag noise. A line in
+a panic's location is in the function's data, as bytes of a string, and isn't masked: code moved
+above an `unwrap` inlined into a kernel shows as a change.
 
 ## `console_diff.py`: whether the console's text changed
 

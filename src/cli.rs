@@ -164,10 +164,13 @@ fn run() -> Result<(), Box<dyn std::error::Error>> {
     // Initialize enhanced logging with file output
     setup_logging();
 
-    println!("🚀 Test Memory R (TMR) v1.0.0 - High-Performance Memory Testing Tool");
+    println!("🚀 Test Memory R (TMR) v{} - High-Performance Memory Testing Tool", crate::BUILD.version);
     println!("================================================================================");
 
-    let mut args: Vec<String> = env::args().collect();
+    // The command line as typed, for the results file (`RunConfigSnapshot::command_line`): `args`
+    // gains the defaults the modes below add
+    let command_line: Vec<String> = env::args().collect();
+    let mut args = command_line.clone();
 
     // core-priority= first: it decides how the topology is typed, which `--show-topology` and
     // `--debug-topology` print before any other parameter is read (TODO 96)
@@ -419,7 +422,7 @@ fn run() -> Result<(), Box<dyn std::error::Error>> {
                 return Ok(());
             }
             "--version" | "-v" => {
-                println!("Test Memory R (TMR) version 1.0.0");
+                println!("Test Memory R (TMR) version {}", crate::BUILD.version);
                 println!("High-Performance Memory Testing Tool with TM5 Compatibility");
                 println!("Three-Stage Memory Architecture with Comprehensive Testing");
                 return Ok(());
@@ -578,7 +581,7 @@ fn run() -> Result<(), Box<dyn std::error::Error>> {
         ("Release (optimized)", "✅")
     };
     println!("  Build Type: {} {}", build_icon, build_type);
-    log::info!("TMR v1.0.0 starting - {} build on {}", build_type, std::env::consts::ARCH);
+    log::info!("TMR v{} starting - {} build on {}", crate::BUILD.version, build_type, std::env::consts::ARCH);
 
     // Check environment variables
     let rust_log = env::var("RUST_LOG").unwrap_or_else(|_| "info".to_string());
@@ -962,7 +965,7 @@ fn run() -> Result<(), Box<dyn std::error::Error>> {
 			// Second press: the graceful stop is stuck or too slow. Windows frees every page the
 			// process holds, large pages included, when it exits. stderr rather than print_above,
 			// because a stuck shutdown may be one that is holding the console lock.
-			eprintln!("\n\n🛑 CTRL+C again - exiting now, without the final report or results file");
+			eprintln!("\n\n🛑 CTRL+C again - exiting now, without the final report; the results file keeps only the cycles saved so far");
 			log::logger().flush();
 			// The status Windows itself gives a process killed by CTRL+C, so a script can tell this apart
 			// from a run that finished.
@@ -973,7 +976,7 @@ fn run() -> Result<(), Box<dyn std::error::Error>> {
 		crate::console::print_above(
 			"\n🛑 CTRL+C received - initiating graceful shutdown...\n\
 			 \x20  Tests will stop at next checkpoint and print final report\n\
-			 \x20  (Press CTRL+C again to exit immediately, without the report or results file)\n\n",
+			 \x20  (Press CTRL+C again to exit immediately, without the report; the results file keeps only the cycles saved so far)\n\n",
 		);
 		crate::runner::SHUTDOWN_REQUESTED.store(true, Ordering::Relaxed);
 	}).expect("Error setting CTRL+C handler");
@@ -1089,6 +1092,7 @@ fn run() -> Result<(), Box<dyn std::error::Error>> {
             wrc_override,
             channels_override,
             plan_only,
+            command_line: &command_line,
         },
         cache_info,
     );
@@ -1439,10 +1443,12 @@ fn setup_logging() {
         let _ = writeln!(
             log_file,
             "# TMR {} — run started {} (UTC {}); all timestamps below are local time\n\
+             # build: {}\n\
              # paired result file: results/{}.json",
-            env!("CARGO_PKG_VERSION"),
+            crate::BUILD.version,
             started.format("%Y-%m-%d %H:%M:%S %:z"),
             started.with_timezone(&chrono::Utc).format("%Y-%m-%d %H:%M:%S"),
+            crate::BUILD.describe(),
             crate::run_context::run_file_stem(),
         );
         FILE_LOGGER.set(Arc::new(Mutex::new(Some(log_file)))).unwrap_or(());
@@ -1509,7 +1515,7 @@ fn setup_logging() {
         .init();
 
     // Log startup info
-    log::info!("TMR v1.0.0 started - console logging with colors and module info restored");
+    log::info!("TMR v{} started - console logging with colors and module info restored", crate::BUILD.version);
     log::info!("Log level: {} - detailed logs also saved to {}", log_level, log_filename);
 }
 

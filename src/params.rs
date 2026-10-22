@@ -493,7 +493,7 @@ pub fn parse_and_validate_args(args: &[String]) -> Result<HashMap<String, ParamV
 
 /// Print complete help text
 pub fn print_help(program_name: &str) {
-    println!("🚀 Test Memory R (TMR) v1.0.0 - High-Performance Memory Testing Tool");
+    println!("🚀 Test Memory R (TMR) v{} - High-Performance Memory Testing Tool", crate::BUILD.version);
     println!("===================================================================================");
     println!();
     println!("USAGE:");
