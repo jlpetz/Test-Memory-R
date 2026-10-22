@@ -79,7 +79,7 @@ shape. It cannot express:
 
 - more than one pattern constant per chunk visit (StuckBit needs three phases with alternating
   constants),
-- a **delay** between write and verify (Refresh sleeps 64 ms per chunk),
+- a **delay** between write and verify (Refresh waits 64 ms per chunk, or its `wait_ms`),
 - a **non-linear** access order within the chunk (Random, Stride, CacheBust),
 - a loop level **outside** the chunk walk (Stride loops over strides, then chunks),
 - **two ranges** with different roles (BlockMove uses first half as source, second as destination).
@@ -112,7 +112,7 @@ milliseconds later. The seal checks data that has sat untouched for about one wh
 to minutes) while the step hammered the rest of memory: retention under load, which is sensitive
 to refresh timings, heat and neighbouring-row disturbance. It also catches a test that wrote
 outside its own chunk. TM5 does the same with its test 0 and numbers these errors 0; nothing else
-in TMR waits under load (Mem-Refresh* waits 64 ms, idle).
+in TMR waits under load (Mem-Refresh* waits 64 ms, or its `wait_ms`, idle).
 
 **How a run uses it** (`seal.rs`, `seal=tmr|tm5|off`, `seal-width=`):
 

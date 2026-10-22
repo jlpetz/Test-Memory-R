@@ -596,6 +596,12 @@ pub struct TestConfig {
     /// (`MirrorMode`). Mirror tests take this, not `parameter`.
     #[serde(default)]
     pub mirror: Option<MirrorMode>,
+    /// Mem-Refresh*: how long each chunk waits between its write and its check, in milliseconds.
+    /// Unset is 64 (`tests::REFRESH_WAIT_MS`). A bit fade is one chunk the extent's size
+    /// (`"chunk": {"mode": "whole"}`) and minutes of wait. Another test doesn't read it, and says
+    /// so (`validate_repetition`'s rule for a knob the test doesn't read).
+    #[serde(default)]
+    pub wait_ms: Option<u64>,
 
     // Per-chunk repetition: how long each chunk is worked (TODO 79 B2). Unset is the test's own
     // default; loading a TM5 `.cfg` fills them from `Time (%)`.
@@ -733,6 +739,8 @@ pub struct TestParameterContext {
     pub subdivisions: Option<u32>,
     /// BlockMove: number of copy direction patterns (default 1).
     pub copy_directions: Option<u32>,
+    /// Mem-Refresh*: each chunk's wait between its write and its check, in ms (default 64).
+    pub wait_ms: Option<u64>,
 }
 
 /// Interpret TM5 Parameter correctly based on test function name.
@@ -1067,7 +1075,7 @@ impl ModernConfig {
         // Fold TMR-native test parameters into parameter_context
         if test.stride_patterns.is_some() || test.rng_sequences.is_some()
             || test.subdivisions.is_some() || test.copy_directions.is_some()
-            || test.mirror.is_some()
+            || test.mirror.is_some() || test.wait_ms.is_some()
         {
             let ctx = config.parameter_context.get_or_insert(TestParameterContext::default());
             if let Some(v) = test.stride_patterns { ctx.stride_patterns = Some(v); }
@@ -1075,6 +1083,12 @@ impl ModernConfig {
             if let Some(v) = test.subdivisions { ctx.subdivisions = Some(v); }
             if let Some(v) = test.copy_directions { ctx.copy_directions = Some(v); }
             if let Some(v) = test.mirror { ctx.mirror = Some(v); }
+            if let Some(v) = test.wait_ms { ctx.wait_ms = Some(v); }
+        }
+        if let Some(ms) = test.wait_ms
+            && !(test.function.starts_with("Mem-Refresh") || test.function == "RefreshStable")
+        {
+            log::warn!("{} doesn't read wait_ms; its {ms} has no effect", test.function);
         }
 
         if let Some(sequence) = parse_sequence(test, &config).map_err(|e| Self::test_error(i, test, e))? {
@@ -2248,6 +2262,30 @@ mod tests {
         let json: TestConfig = serde_json::from_str(r#"{"enabled": true, "function": "Mem-MirrorV2-Auto", "mirror": "jump:2"}"#).unwrap();
         assert_eq!(json.mirror, Some(MirrorMode::Jump(2)));
         assert!(serde_json::from_str::<TestConfig>(r#"{"enabled": true, "function": "Mem-MirrorV2-Auto", "mirror": "subblocks:3"}"#).is_err());
+    }
+
+    /// A Mem-Refresh entry's `wait_ms` reaches the test (`TestParameterContext::wait_ms`, which
+    /// the refresh kernel reads) and the plan's parameter column, in the largest unit that holds it
+    /// whole; unset, the test takes its own 64 ms. A bit fade: one chunk the extent's size, minutes
+    /// of wait.
+    #[test]
+    fn a_refresh_entrys_wait_ms_reaches_the_test() {
+        use crate::reporting::converters::format_parameter_context;
+        let config = ModernConfig::create_demo_config();
+        let built = |json: &str| {
+            let test: TestConfig = serde_json::from_str(json).unwrap();
+            config.build_test(0, &test).unwrap()
+        };
+        let fade = built(r#"{"enabled": true, "function": "Mem-RefreshAuto", "chunk": {"mode": "whole"}, "wait_ms": 1800000}"#);
+        assert_eq!(fade.parameter_context.as_ref().and_then(|c| c.wait_ms), Some(1_800_000));
+        assert!(matches!(fade.chunk_mode, ChunkMode::Whole));
+        assert_eq!(format_parameter_context(&fade.parameter_context), "Wait(30min)");
+        let plain = built(r#"{"enabled": true, "function": "Mem-RefreshAuto"}"#);
+        assert_eq!(plain.parameter_context.and_then(|c| c.wait_ms), None);
+        for (ms, shown) in [(64, "Wait(64ms)"), (1500, "Wait(1500ms)"), (90_000, "Wait(90s)"), (0, "Wait(0ms)")] {
+            let ctx = Some(TestParameterContext { wait_ms: Some(ms), ..Default::default() });
+            assert_eq!(format_parameter_context(&ctx), shown);
+        }
     }
 
 }

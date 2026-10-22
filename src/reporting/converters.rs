@@ -31,6 +31,13 @@ pub(crate) fn format_parameter_context(ctx: &Option<crate::config::TestParameter
             if let Some(cd) = c.copy_directions {
                 return format!("CopyDir({})", cd);
             }
+            if let Some(ms) = c.wait_ms {
+                return match ms {
+                    ms if ms % 60_000 == 0 && ms > 0 => format!("Wait({}min)", ms / 60_000),
+                    ms if ms % 1000 == 0 && ms > 0 => format!("Wait({}s)", ms / 1000),
+                    ms => format!("Wait({ms}ms)"),
+                };
+            }
             "-".to_string()
         }
         None => "-".to_string(),

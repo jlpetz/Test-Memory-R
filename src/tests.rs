@@ -1450,10 +1450,34 @@ pub unsafe fn stuck_bit_test_auto_multi(
 /// SIMD store loop instead of being rewritten to `memset` by LoopIdiomRecognize (#61).
 pub const REFRESH_PATTERN: u64 = 0xA55AA55AA55AA55Au64;
 
+/// Mem-Refresh's wait between a chunk's write and its check where its config gives no `wait_ms`:
+/// the 64 ms it has always waited (DDR4's refresh window; DDR5's is 32 ms).
+pub const REFRESH_WAIT_MS: u64 = 64;
+
+/// Mem-Refresh's wait between a chunk's write and its check: `wait` in slices of at most 100 ms,
+/// so a long one (a bit fade's minutes, `wait_ms`) still stops at Ctrl+C, and the live display
+/// keeps moving. Whether the run asked to stop.
+#[inline(never)]
+fn refresh_wait(runner: &mut crate::test_scaffolding::TestRunner<'_>, wait: std::time::Duration) -> bool {
+    const SLICE: std::time::Duration = std::time::Duration::from_millis(100);
+    let end = std::time::Instant::now() + wait;
+    loop {
+        if runner.shutdown_requested() {
+            return true;
+        }
+        let left = end.saturating_duration_since(std::time::Instant::now());
+        if left.is_zero() {
+            return false;
+        }
+        std::thread::sleep(left.min(SLICE));
+        runner.update_progress_in_cycle();
+    }
+}
+
 /// Generates a Refresh `_impl` at a given SIMD width (the `_multi` runtime gate stays
 /// hand-written and calls this). Per chunk: write pattern → CLFLUSHOPT the chunk to DRAM →
-/// MFENCE → sleep 64ms → verify. The flush is what makes the post-sleep verify actually read
-/// DRAM (defeats cache masking of bit-fade). Verify uses **4 independent accumulator chains**
+/// MFENCE → wait (`wait_ms`, else 64 ms; `refresh_wait`) → verify. The flush is what makes the
+/// post-wait verify actually read DRAM (defeats cache masking of bit-fade). Verify uses **4 independent accumulator chains**
 /// (MLP; see `memory/simd-loop-optimization.md`) — this is the cold-DRAM regime where MLP
 /// mattered most in benchmarking. A tripped accumulator rescans the chunk to count and log each
 /// bad word. `TestRunner` owns extent/timer/progress/stats/shutdown.
@@ -1480,6 +1504,8 @@ macro_rules! refresh_impl {
             let pattern = <$simd_type>::splat(REFRESH_PATTERN);
             // Hoisted out of the loops: never read a config field in the hot path.
             let flush_before_verify = config.flush_before_verify;
+            let wait = std::time::Duration::from_millis(
+                config.parameter_context.as_ref().and_then(|c| c.wait_ms).unwrap_or(REFRESH_WAIT_MS));
 
             loop {
                 runner.begin_cycle();
@@ -1526,8 +1552,12 @@ macro_rules! refresh_impl {
                         flush_range_to_dram(chunk_ptr, chunk_bytes, config.cache_line_bytes);
                     }
 
-                    // No fence (TODO 16): the flush, when on, ends in its own MFENCE; the sleep is the wait
-                    std::thread::sleep(std::time::Duration::from_millis(64));
+                    // No fence (TODO 16): the flush, when on, ends in its own MFENCE; the sleep is the wait.
+                    // Stopped during it, the chunk goes unchecked: the cycle's end check is skipped too
+                    if refresh_wait(&mut runner, wait) {
+                        let total_operations = (runner.bytes_processed() / lanes) as u64;
+                        return runner.finish_aborted(cycle_errors, total_operations);
+                    }
 
                     // Verify — 4 independent accumulator chains (MLP).
                     let mut a0 = <$simd_type>::splat(0);
@@ -8531,6 +8561,36 @@ mod heap_span {
         /// The span's first word.
         pub(super) fn ptr(&self) -> *mut u64 {
             self.ptr
+        }
+    }
+}
+
+#[cfg(test)]
+mod refresh_wait_tests {
+    use super::*;
+
+    /// Mem-Refresh waits between a chunk's write and its check for its `wait_ms`, else 64 ms
+    /// (`REFRESH_WAIT_MS`): one cycle of one chunk the span's size takes at least that, and checks
+    /// clean after it.
+    #[test]
+    fn mem_refresh_waits_its_wait_ms() {
+        let span = super::heap_span::HeapSpan::new(64 * 1024, 0);
+        let cache_info = get_cache_info();
+        let registered = crate::runner::registered_tests(cache_info);
+        let (_, _, base) = registered.iter().find(|(n, ..)| *n == "Mem-Refresh256").expect("Mem-Refresh256 is registered");
+        for wait_ms in [None, Some(0), Some(250)] {
+            let mut config = base.clone();
+            (config.timing, config.thread_count, config.cache_line_bytes) = (TestTiming::cycles_only(1), 1, cache_info.cache_line_size);
+            config.chunk_mode = ChunkMode::Whole;
+            config.parameter_context = wait_ms.map(|ms| crate::config::TestParameterContext { wait_ms: Some(ms), ..Default::default() });
+            let start = std::time::Instant::now();
+            // SAFETY: the span is live, 64-byte aligned and the test's alone; the startup gate
+            // gives AVX2
+            let stats = unsafe { refresh_stable_256_multi(&span.blocks, 0, ErrorMode::Log, &config.timing, &config, None) };
+            let took = start.elapsed();
+            let wait = std::time::Duration::from_millis(wait_ms.unwrap_or(REFRESH_WAIT_MS));
+            assert!(took >= wait, "wait_ms {wait_ms:?}: took {took:?}");
+            assert_eq!((stats.cycles_completed, stats.error_count), (1, 0), "wait_ms {wait_ms:?}");
         }
     }
 }

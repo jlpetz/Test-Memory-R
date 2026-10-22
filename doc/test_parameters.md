@@ -85,6 +85,20 @@ Number of copy direction patterns for memory move operations:
 - **Constraint:** Must be >= 1 (no power-of-2 requirement)
 - **JSON config field:** `"copy_directions": 2`
 
+### `wait_ms: Option<u64>`
+**Used by:** RefreshStable (`Mem-Refresh128/-256/-512/-Auto`, and the `-Flush` variants)
+
+How long each chunk waits between its write and its check, in milliseconds: the time the cells
+must hold their charge. The test writes a chunk, flushes it if `flush_before_verify` is on, waits,
+then checks it, chunk by chunk. A long wait checks for slow leaks (bit fade): one chunk the
+extent's size, so all of it waits at once, and minutes of wait. The wait stops at Ctrl+C, and the
+plan shows it in the parameter column (`Wait(30min)`). Another test doesn't read it and warns.
+TM5's RefreshStable has no wait setting, so an imported `.cfg` takes the default.
+
+- **Default:** 64 (DDR4's refresh window; DDR5's is 32 ms)
+- **JSON config field:** `"wait_ms": 64`
+- **Bit fade:** `{"function": "Mem-RefreshAuto", "chunk": {"mode": "whole"}, "wait_ms": 1800000}` (30 minutes)
+
 ## SimpleTest patterns (pattern spec 2)
 
 | Where | Field | Meaning |
