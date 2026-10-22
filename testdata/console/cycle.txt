@@ -1,0 +1,77 @@
+🔒 Sealing memory (tmr-256): #s, 0.02 GiB @ # MiB/s
+[32m[<stamp> INFO tmr::test_scaffolding][0m [Thread 0] Running Bench-Init-TMR-10 on 10 MiB (extent 10 MiB), 3 x 4 MiB chunks, overlap 2 MiB
+[32m[<stamp> INFO tmr::test_scaffolding][0m [Thread 1] Running Bench-Init-TMR-10 on 10 MiB (extent 10 MiB), 3 x 4 MiB chunks, overlap 2 MiB
+📊 Test report - Cycle 1 - Step 1 Bench-Init-TMR-10: ✅ #s, 0 errors + 0 seal + 0 WHEA, Cycles 🔴 1/1, Time Limit 🟢
+   Test: #s, 0.02 GiB @ # MiB/s, 3.15M ops @ # ops/s
+   Intermediate: seal fill n/a; seal check #s, 0.02 GiB @ # MiB/s; pattern fill n/a; chain build n/a
+   Config: parameter=-, mode=TMR-10, extent=FullAllocation, chunk=Absolute (4.00 MiB)
+-
+Thread | L CPU | P Core | NUMA | Time | Dev T | Data | Dev D | Speed | Dev S | Cycles | Errors | Pass
+-
+0 | 0 | 0 | 0 | #s | #s | 12.00 MiB | +0.00 B | # MiB/s | # | 1 | 0 | ✅
+1 | 0 | 0 | 0 | #s | #s | 12.00 MiB | +0.00 B | # MiB/s | # | 1 | 0 | ✅
+Avg | #s | 12.00 MiB | # MiB/s | 1.0 | 0 | ✅
+-
+Runtime: <hms> | Cycle 1/1 (<hms>, 25%) | 0 errors + 0 WHEA | Test 1/4 Bench-Init-TMR-10 (<hms>)
+
+[32m[<stamp> INFO tmr::test_scaffolding][0m [Thread 0] Running Bench-Verify-TMR-10 on 10 MiB (extent 10 MiB), 3 x 4 MiB chunks, overlap 2 MiB
+[31m[<stamp> ERROR tmr::tests][0m Error found by Bench-Verify-TMR-10 in step 2 (Bench-Verify-TMR-10), cycle 1, thread 0, idx 1000 (address <addr>): expected 0xdeadbeefdeadbd07, got 0xdeadbeefdeafbd07, XOR 0x0000000000020000 (1 bits)
+[31m[<stamp> ERROR tmr::tests][0m Error found by Bench-Verify-TMR-10 in step 2 (Bench-Verify-TMR-10), cycle 1, thread 0, idx 1000: 4 of 4 rereads still wrong; after flushing its line, wrong (0xdeadbeefdeafbd07)
+[31m[<stamp> ERROR tmr::tests][0m Error found by Bench-Verify-TMR-10 in step 2 (Bench-Verify-TMR-10), cycle 1, thread 0 in idx 0..524288: 1 bad words on rescan, their differences ORed 0x0000000000020000; the check's differences, ORed: 0x0000000000020000 (1 bits)
+[31m[<stamp> ERROR tmr::thread_pool][0m [Thread 0] 1 errors + 0 seal detected in Bench-Verify-TMR-10 (continuing)
+[31m[<stamp> ERROR tmr::runner][0m Thread 0 reported 1 memory errors in test 'Bench-Verify-TMR-10' (1 failed checks, 0 not reproduced on rescan)
+[32m[<stamp> INFO tmr::test_scaffolding][0m [Thread 1] Running Bench-Verify-TMR-10 on 10 MiB (extent 10 MiB), 3 x 4 MiB chunks, overlap 2 MiB
+📊 Test report - Cycle 1 - Step 2 Bench-Verify-TMR-10: ❌ #s, 1 errors (bit 17) + 0 seal + 0 WHEA, Cycles 🔴 1/1, Time Limit 🟢
+   Test: #s, 0.02 GiB @ # MiB/s, 3.15M ops @ # ops/s
+   Intermediate: seal fill n/a; seal check n/a; pattern fill n/a; chain build n/a
+   Config: parameter=-, mode=TMR-10, extent=FullAllocation, chunk=Absolute (4.00 MiB)
+-
+Thread | L CPU | P Core | NUMA | Time | Dev T | Data | Dev D | Speed | Dev S | Cycles | Errors | Pass
+-
+0 | 0 | 0 | 0 | #s | #s | 12.00 MiB | +0.00 B | # MiB/s | # | 1 | 1 | ❌
+1 | 0 | 0 | 0 | #s | #s | 12.00 MiB | +0.00 B | # MiB/s | # | 1 | 0 | ✅
+Avg | #s | 12.00 MiB | # MiB/s | 1.0 | 1 | ❌
+-
+Runtime: <hms> | Cycle 1/1 (<hms>, 50%) | ⚠️ 1 errors + 0 WHEA | Test 2/4 Bench-Verify-TMR-10 (<hms>)
+
+[32m[<stamp> INFO tmr::test_scaffolding][0m [Thread 0] Running Lat-L1-Read on 64 KiB (extent 64 KiB), 1 x 64 KiB chunks, overlap 0
+[32m[<stamp> INFO tmr::latency_tests][0m [Thread 0] ReadLatency - 1 samples | P1=# P5=# P10=# P25=# P50=# P75=# P90=# P95=# P99=# P99.9=# | Spread=#x
+[32m[<stamp> INFO tmr::test_scaffolding][0m [Thread 1] Running Lat-L1-Read on 64 KiB (extent 64 KiB), 1 x 64 KiB chunks, overlap 0
+[32m[<stamp> INFO tmr::latency_tests][0m [Thread 1] ReadLatency - 1 samples | P1=# P5=# P10=# P25=# P50=# P75=# P90=# P95=# P99=# P99.9=# | Spread=#x
+📊 Test report - Cycle 1 - Step 3 Lat-L1-Read: ✅ #s, 0 errors + 0 seal + 0 WHEA, Cycles 🔴 1/1, Time Limit 🟢
+   Test: #s, 0.00 GiB @ # MiB/s, 2.00K ops @ # ops/s, P50: #ns, Spread: #x
+   Intermediate: seal fill n/a; seal check n/a; pattern fill n/a; chain build #s
+   Config: parameter=-, mode=-, extent=64.00 KiB, chunk=Whole
+-
+Thread | L CPU | P Core | NUMA | Time | Dev T | Data | Dev D | Speed | Dev S | Cycles | Errors | Pass
+-
+0 | 0 | 0 | 0 | #s | #s | 7.81 KiB | +0.00 B | # MiB/s | # | 1 | 0 | ✅
+1 | 0 | 0 | 0 | #s | #s | 7.81 KiB | +0.00 B | # MiB/s | # | 1 | 0 | ✅
+Avg | #s | 7.81 KiB | # MiB/s | 1.0 | 0 | ✅
+-
+🔍 Latency
+-
+Thread | CPU | Samples | Min | P5 | P10 | P25 | P50 | P75 | P90 | P95 | P99 | P99.9 | Spread
+-
+0 | 0 | 1 | # | # | # | # | # | # | # | # | # | # | #x
+1 | 0 | 1 | # | # | # | # | # | # | # | # | # | # | #x
+ALL | - | 2 | # | # | # | # | # | # | # | # | # | # | #x
+-
+Runtime: <hms> | Cycle 1/1 (<hms>, 75%) | ⚠️ 1 errors + 0 WHEA | Test 3/4 Lat-L1-Read (<hms>)
+
+[32m[<stamp> INFO tmr::test_scaffolding][0m [Thread 0] Running Mem-StuckBit256 on 10 MiB (extent 10 MiB), 1 x 10 MiB chunks, overlap 0
+[32m[<stamp> INFO tmr::test_scaffolding][0m [Thread 1] Running Mem-StuckBit256 on 10 MiB (extent 10 MiB), 1 x 10 MiB chunks, overlap 0
+📊 Test report - Cycle 1 - Step 4 Mem-StuckBit256: ✅ #s, 0 errors + 0 seal + 0 WHEA, Cycles 🔴 1/1, Time Limit 🟢
+   Test: #s, 0.12 GiB @ # MiB/s, 3.93M ops @ # ops/s
+   Intermediate: seal fill #s, 0.04 GiB @ # MiB/s; seal check #s, 0.02 GiB @ # MiB/s; pattern fill n/a; chain build n/a
+   Config: parameter=-, mode=-, extent=FullAllocation, chunk=Absolute (512.00 MiB)
+-
+Thread | L CPU | P Core | NUMA | Time | Dev T | Data | Dev D | Speed | Dev S | Cycles | Errors | Pass
+-
+0 | 0 | 0 | 0 | #s | #s | 60.00 MiB | +0.00 B | # MiB/s | # | 1 | 0 | ✅
+1 | 0 | 0 | 0 | #s | #s | 60.00 MiB | +0.00 B | # MiB/s | # | 1 | 0 | ✅
+Avg | #s | 60.00 MiB | # MiB/s | 1.0 | 0 | ✅
+-
+Runtime: <hms> | Cycle 1/1 (<hms>, 100%) | ⚠️ 1 errors + 0 WHEA | Test 4/4 Mem-StuckBit256 (<hms>)
+
+🔒 Final seal check (tmr-256): 0 errors, #s, 0.02 GiB @ # MiB/s

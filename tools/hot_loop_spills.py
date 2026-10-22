@@ -132,7 +132,9 @@ def short_name(sym):
     return name + ("::{closure}" if closure else "")
 
 
-def functions(path):
+def functions(path, modules=MODULES, cold=COLD):
+    """Each function of `modules` but the `cold` ones, by its symbol: its lines. `asm_fingerprint.py`
+    reads more of them than the spill table does."""
     out, name, body = {}, None, []
     with open(path, encoding="utf-8", errors="replace") as f:
         lines = f.read().splitlines()
@@ -142,7 +144,7 @@ def functions(path):
             if name:
                 out[name] = body
             sym = m.group(1)
-            hot = any(f"3tmr{mod}" in sym for mod in MODULES) and not any(c in sym for c in COLD)
+            hot = any(f"3tmr{mod}" in sym for mod in modules) and not any(c in sym for c in cold)
             name, body = (sym if hot else None), []
             continue
         if name:

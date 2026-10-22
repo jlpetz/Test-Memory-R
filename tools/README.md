@@ -1,9 +1,11 @@
-# Kernel tools
+# Kernel and console tools
 
-Checks for what tests and clippy can't see: what the compiler made of a hot loop, and whether a
-change made a test faster. Both came out of TODO 99; the rules they check are Rule 6 of
-`doc/simd_codegen_rules.md`. Keep them working when the code they read changes (a new test module,
-a new results field), and add to them when a round finds a new trap.
+Checks for what tests and clippy can't see: what the compiler made of a hot loop, whether a change
+made a test faster, and whether a change meant to move code left the kernels' instructions and the
+console's text as they were. The first two came out of TODO 99, and the rules they check are Rule 6
+of `doc/simd_codegen_rules.md`; the last two came with TODO 29's engine/presentation split. Keep
+them working when the code they read changes (a new test module, a new results field, a new line on
+the console), and add to them when a round finds a new trap.
 
 ## `hot_loop_spills.py`: what the hot loops do that they shouldn't
 
@@ -58,3 +60,85 @@ python tools/bench_ab.py OUTDIR Mem-StuckBit512_A \
 Copy each binary out of `target/` before measuring; the next build replaces it. Build nothing while
 it runs. For the noise floor, run one binary under two labels (an A/A run): on the dev box two runs
 of identical code landed 1.0–1.6% apart (2026-10-19).
+
+## `asm_fingerprint.py`: whether the kernels' instructions changed
+
+Hashes each function of the test code in the post-LTO asm: every one of `hot_loop_spills.py`'s
+`MODULES`, its `COLD` ones too (a kernel's rescan, which formats the error lines, is off the hot
+path but still the test's), and the workers' side of a step, `thread_pool` (the worker loop,
+`WorkItem`, `WorkResult`) and `test_scaffolding` (`TestRunner`'s bookkeeping). Each is hashed
+after normalising what moves when the code doesn't: label numbers, string constants and LLVM's
+local copies of a symbol (`<sym>.449`) are renumbered in their order of use, and v0 symbols lose
+their crate hashes, back-references and the crate a generic was instantiated in. The data a
+function names (a constant pool, a jump or switch table, a string) is hashed with it. A change that
+only moves code around the kernels, as each stage of TODO 29 does, must leave every hash as it was.
+
+```bash
+cargo rustc --release --bin tmr -- --emit asm
+python tools/asm_fingerprint.py --save before.json      # on the old code
+python tools/asm_fingerprint.py --compare before.json   # on the new: changed, gone, new; 1 if any
+python tools/asm_fingerprint.py --dump DIR              # each normalised body, to diff two builds
+```
+
+Save the old code's fingerprint before building the new, and keep a copy of its asm: the build
+replaces the file. Compare builds of one toolchain: a nightly bump changes the code itself. The
+saved file records the compiler the asm names, and `--compare` warns when the asm is another's
+and then exits 2 rather than 1 on a change. TODO 29's baselines, at 25ff780, are in
+`doc/todo/29-baselines/` with the spill table of the same build.
+
+Checked on 2026-10-22: a rebuild with every crate hash changed (`RUSTFLAGS` with a
+`-C metadata=`) compares clean, its spill table too, and so does a build of 25ff780's own tree,
+while a build of the code of 2026-10-16 shows 238 of the 278 names both have changed (one read by
+hand: a different stack frame). Before that check, the normalisation was short of the local copies,
+the instantiating crate, and the statics `hot_loop_spills.py` reads as functions (left out here: a
+static's body is the data after it).
+
+**Limits.** It sees the asm, not where the linker puts it: two builds can be instruction-identical
+and differ in speed by alignment, which is `bench_ab.py`'s to measure. A kernel inlined into a
+function outside the modules isn't seen. Read the first diff it reports by hand (`--dump` both
+builds and diff the two directories): a normalisation can hide a change or flag noise.
+
+## `console_diff.py`: whether the console's text changed
+
+Part of the run path's output is pinned in process, by the goldens in `testdata/console/`
+(`src/golden.rs`; `TMR_BLESS=1 cargo test` rewrites them, and `git diff testdata/` shows what
+changed): each `Reporter` method from fixed models, a cycle of `execute_test_cycle` (its seal
+stages, step reports and the workers' lines), the plan `--startup-debug` prints, and the stops
+before testing an override can reach. The rest rests on an A/B of the real exe, diffed here: the
+setup path, which can't run in a test (secedit, `process::exit`); the run around the cycle (WHEA,
+allocation, the seed, the cycle's start, the verdict, the results); the line on the tests a CPU
+can't run, which depends on the CPU; a config's errors; and which stream a line goes to, as the
+goldens take stdout and stderr together. Run the same command line under the old binary and the
+new, each captured, then diff the two here.
+
+Both captures are read the same way. Ticker frames are dropped (by their erase codes, or by their
+lines when a capture lost the codes) and ANSI escapes stripped. Masked: log stamps, hh:mm:ss, run
+stems, pattern seeds and addresses, and what a run measured: times, rates, op and sample counts and
+every other decimal (deviations, latencies, ratios, frequencies, percentages). What a run is
+configured with stays: byte counts, whole seconds (`30s`, a test's limit), a `Wait(500ms)` and a
+cache multiplier (`CacheTotal 2.00x`). A run of lines naming a thread (the workers' `[Thread 3]
+Running ...`) is put in thread order, since the scheduler orders them. A table's cells are joined by
+` | ` (a masked cell no longer sets its column's width), and a table of threads has its rows sorted:
+a step's thread table orders them by time, its latency table by when each thread finished.
+
+```bash
+cmd /c "tmr.exe --startup-debug memory=50% cputype=cores cpus=100% skip-cores=0 > before.out 2> before.err"
+python tools/console_diff.py before.out after.out [--mask REGEX ...] [--context N]
+python tools/console_diff.py before.err after.err
+python tools/console_diff.py --show before.out      # one capture as it is compared
+```
+
+It exits 1 on a difference. Capture stdout and stderr to files of their own and diff each pair, so
+a line that moves from one stream to the other shows. Capture from cmd.exe: Windows PowerShell 5.1
+writes a native exe's stderr as error records that quote the command line, the exe's path with it
+(a capture may still be UTF-8 or UTF-16, as PowerShell's `>` writes it). Capture both with the same
+command line, on the same box, one right after the other.
+
+**Limits.** The masks go by shape. A measured figure that looks like configuration shows as a
+difference: the free memory in the memory table, a WHEA count, the pages an allocation got, and the
+data and cycles of a step that its time limit ended (a cycle limit gives the same work every run).
+Mask it with `--mask` once the diff shows it (`--mask "\d+\.\d+ [KMG]iB"` masks every byte count).
+The other way, a configured decimal other than a cache multiplier is masked, so a change to it
+doesn't show. Lines from two threads that aren't next to each other, or a log line landing inside
+another thread's run, keep their order and can still differ. Sorting a thread table's rows hides a
+change in their order.

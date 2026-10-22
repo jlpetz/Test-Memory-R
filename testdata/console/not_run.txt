@@ -1,0 +1,429 @@
+## a filter no test of the plan matches
+[1m📊 Memory Status & Allocation Plan[0m
+-------------------------------------------------------------------------------
+Memory Component           Amount    Relative  Relative Info                   
+-------------------------------------------------------------------------------
+Total Installed RAM     32.00 GiB           -  Hardware capacity               
+Total Physical RAM      30.83 GiB           -  OS available                    
+Currently Available     27.29 GiB       88.5%  free                            
+Currently Used           3.54 GiB       12.0%  load                            
+Virtual Memory Total    36.88 GiB           -  Physical + Page file            
+                                                                               
+Target Requested        16.00 MiB        0.0%  of total installed              
+Threads                         4           -                                  
+Per Thread Raw          4.000 MiB           -                                  
+Per Thread Round To      4.00 MiB           -  up                              
+Per Thread Rounded      4.000 MiB           -                                  
+Testing Allocation      16.00 MiB        0.0%  of total installed              
+Reserve Left            31.98 GiB      100.0%  of total installed              
+Reserve Rounding Diff     +0.00 B           -  Threads × per-thread rounding   
+-------------------------------------------------------------------------------
+[33m⚠️  🧪 FAILURE MODE TESTING DETECTED - This configuration may intentionally cause allocation failures[0m
+[33m⚠️  Use only for development/testing purposes![0m
+
+[32m[<stamp> INFO tmr::layout][0m 🧵 Thread Memory Layout:
+[32m[<stamp> INFO tmr::layout][0m   Total threads: 4
+[32m[<stamp> INFO tmr::layout][0m   Allocation per thread: 0.00 GiB
+[32m[<stamp> INFO tmr::layout][0m   Total planned allocation: 0.02 GiB
+[32m[<stamp> INFO tmr::runner][0m Using the built-in suite, plan stability
+❌ No test of plan stability matches filter 'Nope-*'. Its tests (plan=all for every test):
+  - Mem-StuckBitAuto
+  - Mem-SimpleV2-Auto
+  - Mem-SimpleNT-Auto
+  - Mem-MovingInv
+  - Mem-ModuloX
+  - Mem-Sequence
+  - Mem-Random
+  - Mem-RefreshAuto
+  - Mem-MirrorV2-Auto
+  - Mem-Stride
+  - Mem-BlockMove
+## a filter no test matches
+[1m📊 Memory Status & Allocation Plan[0m
+-------------------------------------------------------------------------------
+Memory Component           Amount    Relative  Relative Info                   
+-------------------------------------------------------------------------------
+Total Installed RAM     32.00 GiB           -  Hardware capacity               
+Total Physical RAM      30.83 GiB           -  OS available                    
+Currently Available     27.29 GiB       88.5%  free                            
+Currently Used           3.54 GiB       12.0%  load                            
+Virtual Memory Total    36.88 GiB           -  Physical + Page file            
+                                                                               
+Target Requested        16.00 MiB        0.0%  of total installed              
+Threads                         4           -                                  
+Per Thread Raw          4.000 MiB           -                                  
+Per Thread Round To      4.00 MiB           -  up                              
+Per Thread Rounded      4.000 MiB           -                                  
+Testing Allocation      16.00 MiB        0.0%  of total installed              
+Reserve Left            31.98 GiB      100.0%  of total installed              
+Reserve Rounding Diff     +0.00 B           -  Threads × per-thread rounding   
+-------------------------------------------------------------------------------
+[33m⚠️  🧪 FAILURE MODE TESTING DETECTED - This configuration may intentionally cause allocation failures[0m
+[33m⚠️  Use only for development/testing purposes![0m
+
+[32m[<stamp> INFO tmr::layout][0m 🧵 Thread Memory Layout:
+[32m[<stamp> INFO tmr::layout][0m   Total threads: 4
+[32m[<stamp> INFO tmr::layout][0m   Allocation per thread: 0.00 GiB
+[32m[<stamp> INFO tmr::layout][0m   Total planned allocation: 0.02 GiB
+[32m[<stamp> INFO tmr::runner][0m Using the built-in suite, plan all
+❌ No tests match filter 'Nope-*'. Available tests:
+  - Mem-StuckBit128
+  - Mem-StuckBit256
+  - Mem-StuckBit512
+  - Mem-StuckBit256
+  - Mem-StuckBit-Flush256
+  - Mem-SimpleNT-128
+  - Mem-SimpleNT-256
+  - Mem-SimpleNT-512
+  - Mem-SimpleNT-256
+  - Mem-Refresh128
+  - Mem-Refresh256
+  - Mem-Refresh512
+  - Mem-Refresh256
+  - Mem-Refresh-Flush256
+  - Mem-CacheBust
+  - Mem-Random
+  - Mem-Stride
+  - Mem-MovingInv
+  - Mem-ModuloX
+  - Mem-Sequence
+  - Mem-BlockMove
+  - Mem-SimpleV2-128
+  - Mem-SimpleV2-256
+  - Mem-SimpleV2-512
+  - Mem-SimpleV2-256
+  - Mem-MirrorV2-128
+  - Mem-MirrorV2-256
+  - Mem-MirrorV2-512
+  - Mem-MirrorV2-256
+  - Bench-Init-TM5-0
+  - Bench-Init-TM5-1
+  - Bench-Init-TM5-2
+  - Bench-Init-TMR-10
+  - Bench-Init-TMR-11
+  - Bench-Init-TMR-13
+  - Bench-Init-TMR-20
+  - Bench-Init-TMR-30
+  - Bench-Verify-TM5-0
+  - Bench-Verify-TM5-1
+  - Bench-Verify-TM5-2
+  - Bench-Verify-TMR-10
+  - Bench-Verify-TMR-11
+  - Bench-Verify-TMR-13
+  - Bench-Verify-TMR-20
+  - Bench-Verify-TMR-30
+  - Bench-Init-Seal-TMR
+  - Bench-Verify-Seal-TMR
+  - Bench-Init-Seal-TMR-128
+  - Bench-Verify-Seal-TMR-128
+  - Bench-Init-Seal-TMR-256
+  - Bench-Verify-Seal-TMR-256
+  - Bench-Init-Seal-TMR-512
+  - Bench-Verify-Seal-TMR-512
+  - Bench-Init-Seal-TM5
+  - Bench-Verify-Seal-TM5
+  - Bench-Init-Seal-TM5-128
+  - Bench-Verify-Seal-TM5-128
+  - Bench-Init-Seal-TM5-256
+  - Bench-Verify-Seal-TM5-256
+  - Bench-Init-Seal-TM5-512
+  - Bench-Verify-Seal-TM5-512
+  - Bench-Init-Ident
+  - Bench-Verify-Ident
+  - Bench-Init-Random
+  - Bench-Verify-Random
+  - Bench-Init-Switch
+  - Bench-Verify-Switch
+  - Bench-Init-Lines
+  - Bench-Verify-Lines
+  - Bench-Init-Linepair
+  - Bench-Verify-Linepair
+  - Bench-Init-Quiet
+  - Bench-Verify-Quiet
+  - Bench-Init-Header
+  - Bench-Verify-Header
+  - Lat-L1-Read
+  - Lat-L1-Write
+  - Lat-L1-Copy
+  - Lat-L2-Read
+  - Lat-L2-Write
+  - Lat-L2-Copy
+  - Lat-L3-Read
+  - Lat-L3-Write
+  - Lat-L3-Copy
+  - Lat-DRAM-Read
+  - Lat-DRAM-Write
+  - Lat-DRAM-Copy
+  - Lat-DRAMFull-Read
+  - Lat-DRAMFull-Write
+  - Lat-DRAMFull-Copy
+  - Lat-V2-L1-Read-256
+  - Lat-V2-L1-Read-128
+  - Lat-V2-L1-Read-256
+  - Lat-V2-L1-Read-512
+  - Lat-V2-L2-Read-256
+  - Lat-V2-L2-Read-128
+  - Lat-V2-L2-Read-256
+  - Lat-V2-L2-Read-512
+  - Lat-V2-L3-Read-256
+  - Lat-V2-L3-Read-128
+  - Lat-V2-L3-Read-256
+  - Lat-V2-L3-Read-512
+  - Lat-V2-DRAM-Read-256
+  - Lat-V2-DRAM-Read-128
+  - Lat-V2-DRAM-Read-256
+  - Lat-V2-DRAM-Read-512
+  - Lat-V2-DRAMFull-Read-256
+  - Lat-V2-DRAMFull-Read-128
+  - Lat-V2-DRAMFull-Read-256
+  - Lat-V2-DRAMFull-Read-512
+  - Lat-V2-L1-Write-256
+  - Lat-V2-L1-Write-128
+  - Lat-V2-L1-Write-256
+  - Lat-V2-L1-Write-512
+  - Lat-V2-L2-Write-256
+  - Lat-V2-L2-Write-128
+  - Lat-V2-L2-Write-256
+  - Lat-V2-L2-Write-512
+  - Lat-V2-L3-Write-256
+  - Lat-V2-L3-Write-128
+  - Lat-V2-L3-Write-256
+  - Lat-V2-L3-Write-512
+  - Lat-V2-DRAM-Write-256
+  - Lat-V2-DRAM-Write-128
+  - Lat-V2-DRAM-Write-256
+  - Lat-V2-DRAM-Write-512
+  - Lat-V2-DRAMFull-Write-256
+  - Lat-V2-DRAMFull-Write-128
+  - Lat-V2-DRAMFull-Write-256
+  - Lat-V2-DRAMFull-Write-512
+  - Lat-V2-L1-Copy-256
+  - Lat-V2-L1-Copy-128
+  - Lat-V2-L1-Copy-256
+  - Lat-V2-L1-Copy-512
+  - Lat-V2-L2-Copy-256
+  - Lat-V2-L2-Copy-128
+  - Lat-V2-L2-Copy-256
+  - Lat-V2-L2-Copy-512
+  - Lat-V2-L3-Copy-256
+  - Lat-V2-L3-Copy-128
+  - Lat-V2-L3-Copy-256
+  - Lat-V2-L3-Copy-512
+  - Lat-V2-DRAM-Copy-256
+  - Lat-V2-DRAM-Copy-128
+  - Lat-V2-DRAM-Copy-256
+  - Lat-V2-DRAM-Copy-512
+  - Lat-V2-DRAMFull-Copy-256
+  - Lat-V2-DRAMFull-Copy-128
+  - Lat-V2-DRAMFull-Copy-256
+  - Lat-V2-DRAMFull-Copy-512
+  - Lat-V2P-L1-Read-256
+  - Lat-V2P-L1-Read-128
+  - Lat-V2P-L1-Read-256
+  - Lat-V2P-L1-Read-512
+  - Lat-V2P-L2-Read-256
+  - Lat-V2P-L2-Read-128
+  - Lat-V2P-L2-Read-256
+  - Lat-V2P-L2-Read-512
+  - Lat-V2P-L3-Read-256
+  - Lat-V2P-L3-Read-128
+  - Lat-V2P-L3-Read-256
+  - Lat-V2P-L3-Read-512
+  - Lat-V2P-DRAM-Read-256
+  - Lat-V2P-DRAM-Read-128
+  - Lat-V2P-DRAM-Read-256
+  - Lat-V2P-DRAM-Read-512
+  - Lat-V2P-DRAMFull-Read-256
+  - Lat-V2P-DRAMFull-Read-128
+  - Lat-V2P-DRAMFull-Read-256
+  - Lat-V2P-DRAMFull-Read-512
+  - Lat-V2P-L1-Write-256
+  - Lat-V2P-L1-Write-128
+  - Lat-V2P-L1-Write-256
+  - Lat-V2P-L1-Write-512
+  - Lat-V2P-L2-Write-256
+  - Lat-V2P-L2-Write-128
+  - Lat-V2P-L2-Write-256
+  - Lat-V2P-L2-Write-512
+  - Lat-V2P-L3-Write-256
+  - Lat-V2P-L3-Write-128
+  - Lat-V2P-L3-Write-256
+  - Lat-V2P-L3-Write-512
+  - Lat-V2P-DRAM-Write-256
+  - Lat-V2P-DRAM-Write-128
+  - Lat-V2P-DRAM-Write-256
+  - Lat-V2P-DRAM-Write-512
+  - Lat-V2P-DRAMFull-Write-256
+  - Lat-V2P-DRAMFull-Write-128
+  - Lat-V2P-DRAMFull-Write-256
+  - Lat-V2P-DRAMFull-Write-512
+  - Lat-V2P-L1-Copy-256
+  - Lat-V2P-L1-Copy-128
+  - Lat-V2P-L1-Copy-256
+  - Lat-V2P-L1-Copy-512
+  - Lat-V2P-L2-Copy-256
+  - Lat-V2P-L2-Copy-128
+  - Lat-V2P-L2-Copy-256
+  - Lat-V2P-L2-Copy-512
+  - Lat-V2P-L3-Copy-256
+  - Lat-V2P-L3-Copy-128
+  - Lat-V2P-L3-Copy-256
+  - Lat-V2P-L3-Copy-512
+  - Lat-V2P-DRAM-Copy-256
+  - Lat-V2P-DRAM-Copy-128
+  - Lat-V2P-DRAM-Copy-256
+  - Lat-V2P-DRAM-Copy-512
+  - Lat-V2P-DRAMFull-Copy-256
+  - Lat-V2P-DRAMFull-Copy-128
+  - Lat-V2P-DRAMFull-Copy-256
+  - Lat-V2P-DRAMFull-Copy-512
+  - Lat-V2P-L1-WriteFull-256
+  - Lat-V2P-L1-WriteFull-128
+  - Lat-V2P-L1-WriteFull-256
+  - Lat-V2P-L1-WriteFull-512
+  - Lat-V2P-L2-WriteFull-256
+  - Lat-V2P-L2-WriteFull-128
+  - Lat-V2P-L2-WriteFull-256
+  - Lat-V2P-L2-WriteFull-512
+  - Lat-V2P-L3-WriteFull-256
+  - Lat-V2P-L3-WriteFull-128
+  - Lat-V2P-L3-WriteFull-256
+  - Lat-V2P-L3-WriteFull-512
+  - Lat-V2P-DRAM-WriteFull-256
+  - Lat-V2P-DRAM-WriteFull-128
+  - Lat-V2P-DRAM-WriteFull-256
+  - Lat-V2P-DRAM-WriteFull-512
+  - Lat-V2P-DRAMFull-WriteFull-256
+  - Lat-V2P-DRAMFull-WriteFull-128
+  - Lat-V2P-DRAMFull-WriteFull-256
+  - Lat-V2P-DRAMFull-WriteFull-512
+  - Lat-V2P-L1-CopyFull-256
+  - Lat-V2P-L1-CopyFull-128
+  - Lat-V2P-L1-CopyFull-256
+  - Lat-V2P-L1-CopyFull-512
+  - Lat-V2P-L2-CopyFull-256
+  - Lat-V2P-L2-CopyFull-128
+  - Lat-V2P-L2-CopyFull-256
+  - Lat-V2P-L2-CopyFull-512
+  - Lat-V2P-L3-CopyFull-256
+  - Lat-V2P-L3-CopyFull-128
+  - Lat-V2P-L3-CopyFull-256
+  - Lat-V2P-L3-CopyFull-512
+  - Lat-V2P-DRAM-CopyFull-256
+  - Lat-V2P-DRAM-CopyFull-128
+  - Lat-V2P-DRAM-CopyFull-256
+  - Lat-V2P-DRAM-CopyFull-512
+  - Lat-V2P-DRAMFull-CopyFull-256
+  - Lat-V2P-DRAMFull-CopyFull-128
+  - Lat-V2P-DRAMFull-CopyFull-256
+  - Lat-V2P-DRAMFull-CopyFull-512
+  - Lat-NTW-DRAM-Write-256
+  - Lat-NTW-DRAM-Write-Scalar
+  - Lat-NTW-DRAM-Write-128
+  - Lat-NTW-DRAM-Write-256
+  - Lat-NTW-DRAM-Write-512
+  - Spd-L1-Read-256
+  - Spd-L1-Write-256
+  - Spd-L1-Copy-256
+  - Spd-L2-Read-256
+  - Spd-L2-Write-256
+  - Spd-L2-Copy-256
+  - Spd-L3-Read-256
+  - Spd-L3-Write-256
+  - Spd-L3-Copy-256
+  - Spd-DRAMSmall-Read-256
+  - Spd-DRAMSmall-Write-256
+  - Spd-DRAMSmall-Copy-256
+  - Spd-DRAMFull-Read-256
+  - Spd-DRAMFull-Write-256
+  - Spd-DRAMFull-Copy-256
+## a sequence that doesn't parse
+[1m📊 Memory Status & Allocation Plan[0m
+-------------------------------------------------------------------------------
+Memory Component           Amount    Relative  Relative Info                   
+-------------------------------------------------------------------------------
+Total Installed RAM     32.00 GiB           -  Hardware capacity               
+Total Physical RAM      30.83 GiB           -  OS available                    
+Currently Available     27.29 GiB       88.5%  free                            
+Currently Used           3.54 GiB       12.0%  load                            
+Virtual Memory Total    36.88 GiB           -  Physical + Page file            
+                                                                               
+Target Requested        16.00 MiB        0.0%  of total installed              
+Threads                         4           -                                  
+Per Thread Raw          4.000 MiB           -                                  
+Per Thread Round To      4.00 MiB           -  up                              
+Per Thread Rounded      4.000 MiB           -                                  
+Testing Allocation      16.00 MiB        0.0%  of total installed              
+Reserve Left            31.98 GiB      100.0%  of total installed              
+Reserve Rounding Diff     +0.00 B           -  Threads × per-thread rounding   
+-------------------------------------------------------------------------------
+[33m⚠️  🧪 FAILURE MODE TESTING DETECTED - This configuration may intentionally cause allocation failures[0m
+[33m⚠️  Use only for development/testing purposes![0m
+
+[32m[<stamp> INFO tmr::layout][0m 🧵 Thread Memory Layout:
+[32m[<stamp> INFO tmr::layout][0m   Total threads: 4
+[32m[<stamp> INFO tmr::layout][0m   Allocation per thread: 0.00 GiB
+[32m[<stamp> INFO tmr::layout][0m   Total planned allocation: 0.02 GiB
+[32m[<stamp> INFO tmr::runner][0m Using the built-in suite, plan stability
+❌ Config error: sequence=W 2Q: '2Q': a step is W, R or RW, with a count and an @order, not 'Q'
+## a verify of the fill alone in a mode the cycle keys
+[1m📊 Memory Status & Allocation Plan[0m
+-------------------------------------------------------------------------------
+Memory Component           Amount    Relative  Relative Info                   
+-------------------------------------------------------------------------------
+Total Installed RAM     32.00 GiB           -  Hardware capacity               
+Total Physical RAM      30.83 GiB           -  OS available                    
+Currently Available     27.29 GiB       88.5%  free                            
+Currently Used           3.54 GiB       12.0%  load                            
+Virtual Memory Total    36.88 GiB           -  Physical + Page file            
+                                                                               
+Target Requested        16.00 MiB        0.0%  of total installed              
+Threads                         4           -                                  
+Per Thread Raw          4.000 MiB           -                                  
+Per Thread Round To      4.00 MiB           -  up                              
+Per Thread Rounded      4.000 MiB           -                                  
+Testing Allocation      16.00 MiB        0.0%  of total installed              
+Reserve Left            31.98 GiB      100.0%  of total installed              
+Reserve Rounding Diff     +0.00 B           -  Threads × per-thread rounding   
+-------------------------------------------------------------------------------
+[33m⚠️  🧪 FAILURE MODE TESTING DETECTED - This configuration may intentionally cause allocation failures[0m
+[33m⚠️  Use only for development/testing purposes![0m
+
+[32m[<stamp> INFO tmr::layout][0m 🧵 Thread Memory Layout:
+[32m[<stamp> INFO tmr::layout][0m   Total threads: 4
+[32m[<stamp> INFO tmr::layout][0m   Allocation per thread: 0.00 GiB
+[32m[<stamp> INFO tmr::layout][0m   Total planned allocation: 0.02 GiB
+[32m[<stamp> INFO tmr::runner][0m Using the built-in suite, plan stability
+[32m[<stamp> INFO tmr::runner][0m Applying CLI pattern-mode override: 0
+[32m[<stamp> INFO tmr::runner][0m pattern-mode=0 is a numbered mode, and Mem-Sequence runs native patterns only: it keeps its program
+[32m[<stamp> INFO tmr::runner][0m Applying CLI test-reps override: 0
+❌ Config error: Mem-SimpleV2-256_A: test_reps 0 verifies the fill alone, but pattern_mode 0 keys its image by the cycle, which the fill and the verifies don't share; use a native program, or mode 10, 11 or 13
+## a seal that doesn't parse
+[1m📊 Memory Status & Allocation Plan[0m
+-------------------------------------------------------------------------------
+Memory Component           Amount    Relative  Relative Info                   
+-------------------------------------------------------------------------------
+Total Installed RAM     32.00 GiB           -  Hardware capacity               
+Total Physical RAM      30.83 GiB           -  OS available                    
+Currently Available     27.29 GiB       88.5%  free                            
+Currently Used           3.54 GiB       12.0%  load                            
+Virtual Memory Total    36.88 GiB           -  Physical + Page file            
+                                                                               
+Target Requested        16.00 MiB        0.0%  of total installed              
+Threads                         4           -                                  
+Per Thread Raw          4.000 MiB           -                                  
+Per Thread Round To      4.00 MiB           -  up                              
+Per Thread Rounded      4.000 MiB           -                                  
+Testing Allocation      16.00 MiB        0.0%  of total installed              
+Reserve Left            31.98 GiB      100.0%  of total installed              
+Reserve Rounding Diff     +0.00 B           -  Threads × per-thread rounding   
+-------------------------------------------------------------------------------
+[33m⚠️  🧪 FAILURE MODE TESTING DETECTED - This configuration may intentionally cause allocation failures[0m
+[33m⚠️  Use only for development/testing purposes![0m
+
+[32m[<stamp> INFO tmr::layout][0m 🧵 Thread Memory Layout:
+[32m[<stamp> INFO tmr::layout][0m   Total threads: 4
+[32m[<stamp> INFO tmr::layout][0m   Allocation per thread: 0.00 GiB
+[32m[<stamp> INFO tmr::layout][0m   Total planned allocation: 0.02 GiB
+[32m[<stamp> INFO tmr::runner][0m Using the built-in suite, plan stability
+❌ Config error: seal 'bogus': use tmr, tm5 or off

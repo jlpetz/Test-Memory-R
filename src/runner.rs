@@ -6097,4 +6097,167 @@ mod tests {
             }
         }
     }
+
+    // ─── Console goldens (TODO 29) ─────────────────────────────────────────────────────────────
+
+    /// The word of thread 0's span `flip_then_verify` flips a bit in
+    const FLIPPED_WORD: usize = 1000;
+
+    /// Bench-Verify-TMR-10 at 256 bits, with bit 17 of one word of thread 0's span flipped first:
+    /// a fault between the Bench-Init's write and its verify, for the fake cycle's golden.
+    #[doc = include_str!("test_fn_safety.md")]
+    unsafe fn flip_then_verify(blocks: &[AllocationBlock], thread_id: usize, error_mode: ErrorMode, timing: &TestTiming,
+                               config: &TestMemoryConfig, progress: Option<&TestProgress>) -> TestStats {
+        if thread_id == 0 {
+            *(blocks[0].buffer.as_mut_ptr() as *mut u64).add(FLIPPED_WORD) ^= 1 << 17;
+        }
+        crate::tests::bench_verify_at(crate::simd::Width::W256)(blocks, thread_id, error_mode, timing, config, progress)
+    }
+
+    /// A cycle as the console shows it (TODO 29): `execute_test_cycle` on two workers over heap
+    /// regions, sealed. Its steps: a Bench-Init/Verify pair with a bit flipped between them, a
+    /// latency step and a step that takes the seal, which reseals what the others left first; then
+    /// the final seal check. Every step's width is fixed at 256 bits, and both workers are numbered
+    /// CPU 0, so no figure depends on this machine's caches or topology; times, rates and the
+    /// scheduler's order are masked (`golden::mask_run`). Nothing printed depends on the run's seed
+    /// either, which can't be fixed here (a process takes it once, and other tests take it from the
+    /// clock): mode 10 keys its words by its own base, and the seal, which the seed keys, finds no
+    /// error to print. A step whose output does depend on it needs a seed of its own first.
+    #[test]
+    fn a_cycle_prints_as_its_golden() {
+        let cache_info = CacheInfo::default();
+        let kernel = crate::seal::SealKernel::new(crate::seal::SealPattern::Tmr, crate::seal::SealWidth::W256);
+        let suite = create_test_definitions(&cache_info);
+        let find = |name: &str| suite.iter().find(|d| d.actual_name == name).cloned().expect(name);
+        let (mut init, mut verify, mut latency) = (find("Bench-Init-TMR-10"), find("Bench-Verify-TMR-10"), find("Lat-L1-Read"));
+        init.function = TestFunction::MultiBlock(crate::tests::bench_init_at(crate::simd::Width::W256));
+        verify.function = TestFunction::MultiBlock(flip_then_verify);
+        verify.config.skip_init = true;
+        // One pass each: each of a verify's passes counts the bad word again
+        (init.config.timing, verify.config.timing) = (TestTiming::cycles_only(1), TestTiming::cycles_only(1));
+        latency.config.extent_mode = ExtentMode::Absolute { size_bytes: 64 * KIB };
+        latency.config.timing = TestTiming::cycles_only(1);
+        let mut steps = vec![init, verify, latency, find("Mem-StuckBit256")];
+        set_step_seals(&mut steps, kernel, true);
+        for (i, def) in steps.iter_mut().enumerate() {
+            def.test_index = i;
+            def.config.thread_count = 2;
+            def.config.cache_line_bytes = 64;
+            def.config.tsc_frequency_ghz = 1.0;
+        }
+
+        // 10 MiB a thread: enough for a step's and a seal stage's GiB, to two places, to show a byte
+        // missing from their sums
+        let span = [4096 * KIB, 4096 * KIB, 2048 * KIB];
+        let mut regions = [Region::new(&span), Region::new(&span)];
+        let blocks = regions.iter_mut().enumerate().map(|(t, r)| (t, std::mem::take(&mut r.blocks))).collect();
+        let progress = Arc::new(ProgressTracker::new());
+        let test_run_result = Arc::new(Mutex::new(TestRunResult::new(Default::default())));
+        let all_test_cpu_stats = Arc::new(Mutex::new(HashMap::new()));
+        let (stopped, text) = crate::golden::capture(|| {
+            let (thread_pool, result_receiver) = ThreadPool::new(blocks, false, ThreadPriority::Normal, 2, Some(&[0, 0][..]));
+            progress.begin_suite(Instant::now(), Some(1), None, steps.len() as u64, thread_pool.live_progress());
+            progress.start_new_cycle(1);
+            let ctx = CycleContext {
+                test_definitions: &steps,
+                thread_pool: &thread_pool,
+                result_receiver: &result_receiver,
+                thread_count: 2,
+                error_mode: ErrorMode::Log,
+                progress: &progress,
+                test_run_result: &test_run_result,
+                all_test_cpu_stats: &all_test_cpu_stats,
+                cache_info: &cache_info,
+                seal: Some(kernel),
+                tm5: false,
+            };
+            let stopped = execute_test_cycle(&ctx, 1);
+            // The workers' blocks, freed before the regions they are in
+            let (blocks, _) = thread_pool.shutdown();
+            drop(blocks);
+            stopped
+        });
+        assert_eq!(stopped, None, "the cycle ran to its end");
+        let result = test_run_result.lock().unwrap();
+        let errors: Vec<u64> = result.cycles[0].tests.iter().map(|t| t.errors).collect();
+        assert_eq!(errors, [0, 1, 0, 0], "the flipped bit is the verify's one error");
+        crate::golden::check("cycle", &crate::golden::mask_run(&text));
+    }
+
+    /// The console goldens' layout: 16 MiB over four threads on a 32 GiB box, with its runtime. A
+    /// thread's 4 MiB is below the stitched allocator's run quantum, so a run that got past its
+    /// checks would be refused before any memory is reserved.
+    fn golden_layout() -> (EnhancedMemoryLayout, RuntimeConfig) {
+        use crate::memory::allocation_strategy::{AllocationMode, EnhancedMemoryStrategy, ReserveAmount, RoundDirection,
+                                                 ShareRounding, SystemMemoryInfo};
+        let mem_info = SystemMemoryInfo {
+            total_installed_bytes: 32 << 30,
+            total_physical_bytes: (32 << 30) - (1200 << 20),
+            available_physical_bytes: (27 << 30) + (300 << 20),
+            used_physical_bytes: (3 << 30) + (548 << 20),
+            total_virtual_bytes: (36 << 30) + (900 << 20),
+            memory_load_percent: 12,
+        };
+        let strategy = EnhancedMemoryStrategy { allocation_mode: AllocationMode::AllocateTarget { target: ReserveAmount::Bytes(16 << 20) } };
+        let rounding = ShareRounding { step_bytes: 4 << 20, direction: RoundDirection::Up, floor_bytes: 4 << 20 };
+        let allocation_result = strategy.allocation_mode.calculate_allocation_with_threads(&mem_info, 4, rounding);
+        let blocks = (0..4).map(|thread_id| BlockInfo { size_bytes: allocation_result.per_thread_bytes as usize, thread_id }).collect();
+        let layout = EnhancedMemoryLayout { system_memory_info: mem_info, allocation_result, blocks, strategy: strategy.clone() };
+        let runtime_config = RuntimeConfig {
+            memory_backend: MemoryBackend::VirtualAlloc2,
+            large_pages_available: true,
+            cpu_list: Some(vec![0, 2, 4, 6]),
+            pin_threads: true,
+            thread_priority: ThreadPriority::High,
+            enhanced_memory_strategy: strategy,
+            memory_allocation: Default::default(),
+        };
+        (layout, runtime_config)
+    }
+
+    /// The plan as `--startup-debug` shows it (TODO 29): the run's entry point up to its return
+    /// before WHEA and allocation, on `golden_layout` and the default plan, at 256 bits. A thread's
+    /// 4 MiB is less than what a cache asks of a chunk or an extent on any CPU with more than 2 MiB
+    /// of L3 (DRAM*2 is twice the L3, CacheTotal 2.00x twice the caches), so on every such machine
+    /// those chunks and extents are the full 4 MiB and their notes print; masked are the log stamps
+    /// and what this machine's L3 asked of a chunk (`golden::mask_plan`). A CPU with 2 MiB of L3 or
+    /// less prints another plan.
+    #[test]
+    fn the_plan_prints_as_its_golden() {
+        let _width = crate::simd::TestWidth::set(Some(crate::simd::Width::W256));
+        let (layout, runtime_config) = golden_layout();
+        let overrides = TestRunOverrides { plan: Some(crate::plans::find(crate::plans::DEFAULT).unwrap()), plan_only: true, ..Default::default() };
+        let (status, text) = crate::golden::capture(|| run_tests_with_layout_and_timing_filtered(
+            layout, ErrorMode::Log, TestSuiteTiming::default(), runtime_config, None, overrides, &CacheInfo::default()));
+        assert_eq!(status, RunStatus::Passed);
+        crate::golden::check("plan_only", &crate::golden::mask_plan(&text));
+    }
+
+    /// What a run that stops before testing prints (TODO 29), on `golden_layout` at 256 bits: a
+    /// filter no test matches, in the default plan and in the whole suite, and a config error from
+    /// the checks before WHEA and allocation that an override can reach (a sequence's, a
+    /// parameter's, the seal's; the plan's own check needs a config's dependent step). Each case's
+    /// output follows a `## case` line.
+    #[test]
+    fn what_stops_a_run_prints_as_its_golden() {
+        let _width = crate::simd::TestWidth::set(Some(crate::simd::Width::W256));
+        let stability = Some(crate::plans::find(crate::plans::DEFAULT).unwrap());
+        let cases = [
+            ("a filter no test of the plan matches", TestRunOverrides { plan: stability, single_test_filter: Some("Nope-*"), ..Default::default() }),
+            ("a filter no test matches", TestRunOverrides { single_test_filter: Some("Nope-*"), ..Default::default() }),
+            ("a sequence that doesn't parse", TestRunOverrides { plan: stability, sequence_override: Some("W 2Q"), ..Default::default() }),
+            ("a verify of the fill alone in a mode the cycle keys",
+             TestRunOverrides { plan: stability, pattern_mode_override: Some(0), test_reps_override: Some(0), ..Default::default() }),
+            ("a seal that doesn't parse", TestRunOverrides { plan: stability, seal_override: Some("bogus"), ..Default::default() }),
+        ];
+        let mut text = String::new();
+        for (case, overrides) in cases {
+            let (layout, runtime_config) = golden_layout();
+            let (status, printed) = crate::golden::capture(|| run_tests_with_layout_and_timing_filtered(
+                layout, ErrorMode::Log, TestSuiteTiming::default(), runtime_config, None, overrides, &CacheInfo::default()));
+            assert_eq!(status, RunStatus::NotRun, "{case}");
+            text += &format!("## {case}\n{printed}");
+        }
+        crate::golden::check("not_run", &crate::golden::mask_stamps(&text));
+    }
 }

@@ -1,0 +1,34 @@
+
+[1m🔍 System Information[0m
+════════════════════════════════════════════════════════════════════════════════
+[1m📊 CPU Information[0m
+------------------------------------------------------------------------
+Property      Value                                                     
+------------------------------------------------------------------------
+CPU           AMD Ryzen 5 8600G w/ Radeon 760M Graphics (AuthenticAMD)  
+Architecture  Family 25, Model 117, Stepping 2                          
+Cores         6 physical, 12 logical (HT enabled)                       
+SIMD Support  SSE2, AVX, AVX2, AVX-512F, AVX-512BW                      
+------------------------------------------------------------------------
+[1m📊 Cache Architecture (CPUID leaf 0x8000001D)[0m
+-----------------------------------------
+Cache Level      Total Size    Per Core  
+-----------------------------------------
+L1 Data          192.00 KiB   32.00 KiB  
+L1 Instruction   192.00 KiB   32.00 KiB  
+L2                 6.00 MiB    1.00 MiB  
+L3 (Shared)       16.00 MiB           -  
+Cache Line Size    64 bytes           -  
+-----------------------------------------
+[1m📊 TSC Calibration[0m
+-------------------------------------------------------
+Property                                        Value  
+-------------------------------------------------------
+Measured Freq                            4.299874 GHz  
+Likely Freq                      4300 MHz (4.300 GHz)  
+Detection Method                           CPUID 0x15  
+TSC Type                  ✅ Invariant (constant rate)  
+Confidence                                        99%  
+Calibration         12 samples in 240ms (✅ Converged)  
+Std Deviation                            0.000012 GHz  
+-------------------------------------------------------

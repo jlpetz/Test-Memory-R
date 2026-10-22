@@ -1,0 +1,56 @@
+[1m📊 Memory Status & Allocation Plan[0m
+-------------------------------------------------------------------------------
+Memory Component           Amount    Relative  Relative Info                   
+-------------------------------------------------------------------------------
+Total Installed RAM     32.00 GiB           -  Hardware capacity               
+Total Physical RAM      30.83 GiB           -  OS available                    
+Currently Available     27.29 GiB       88.5%  free                            
+Currently Used           3.54 GiB       12.0%  load                            
+Virtual Memory Total    36.88 GiB           -  Physical + Page file            
+                                                                               
+Target Requested        16.00 MiB        0.0%  of total installed              
+Threads                         4           -                                  
+Per Thread Raw          4.000 MiB           -                                  
+Per Thread Round To      4.00 MiB           -  up                              
+Per Thread Rounded      4.000 MiB           -                                  
+Testing Allocation      16.00 MiB        0.0%  of total installed              
+Reserve Left            31.98 GiB      100.0%  of total installed              
+Reserve Rounding Diff     +0.00 B           -  Threads × per-thread rounding   
+-------------------------------------------------------------------------------
+[33m⚠️  🧪 FAILURE MODE TESTING DETECTED - This configuration may intentionally cause allocation failures[0m
+[33m⚠️  Use only for development/testing purposes![0m
+
+[32m[<stamp> INFO tmr::layout][0m 🧵 Thread Memory Layout:
+[32m[<stamp> INFO tmr::layout][0m   Total threads: 4
+[32m[<stamp> INFO tmr::layout][0m   Allocation per thread: 0.00 GiB
+[32m[<stamp> INFO tmr::layout][0m   Total planned allocation: 0.02 GiB
+[32m[<stamp> INFO tmr::runner][0m Using the built-in suite, plan stability
+[32m[<stamp> INFO tmr::runner][0m SIMD width 256 bits (a test's width) for every test that picks its width at run time
+⚙  Memory Channels: 2 (affects SimpleTest stride: [channels × param - 1] × 64B cache line)
+[1m📊 Test Configuration[0m
+--------------------------------------------------------------------------------------------------------------------------------------------------
+         #  Test Name                  Timing  Per chunk               Parameter   Extent                       Chunk                    Seal     
+--------------------------------------------------------------------------------------------------------------------------------------------------
+         1  Mem-StuckBit256_A         1cycles  -                       -           Full (4.00 MiB/thread)       4.00 MiB x1               ✓       
+         2  Mem-SimpleV2-256_A  100cycles/30s  2×(1+1)                 -           Full (4.00 MiB/thread)       4.00 MiB x1               ✓       
+         3  Mem-SimpleNT-256_A  100cycles/30s  1×(1+1)                 -           Full (4.00 MiB/thread)       4.00 MiB x1               ✓       
+         4  Mem-MovingInv                 30s  -                       -           Full (4.00 MiB/thread)       4.00 MiB x1 (DRAM*2)      ✓       
+         5  Mem-ModuloX                   30s  -                       -           Full (4.00 MiB/thread)       4.00 MiB x1 (DRAM*2)      ✓       
+         6  Mem-Sequence                  30s  2×(W 2R RW 2R@random)   -           Full (4.00 MiB/thread)       4.00 MiB x1 (DRAM*2)      ✓       
+         7  Mem-Random                    25s  -                       RngSeq(8)   Full (4.00 MiB/thread)       4.00 MiB x1               –       
+         8  Mem-Refresh256_A              15s  -                       -           4.00 MiB (CacheTotal 2.00x)  4.00 MiB x1               ✓       
+         9  Mem-MirrorV2-256_A            10s  1×(1+1)                 -           4.00 MiB                     4.00 MiB x1              data     
+        10  Mem-Stride                1cycles  -                       Subdiv(4)   Full (4.00 MiB/thread)       2.00 MiB x2               ✓       
+        11  Mem-BlockMove                 20s  -                       CopyDir(1)  4.00 MiB (CacheTotal 2.00x)  4.00 MiB x1               ✓       
+--------------------------------------------------------------------------------------------------------------------------------------------------
+Suite Timing: 3 cycles | Total Tests: 11
+⚠  Chunk size was adjusted for test 1 (Mem-StuckBit256_A) from 512.00 MiB -> 4.00 MiB, as the memory allocation (4.00 MiB per thread) can't support it
+⚠  Chunk size was adjusted for test 4 (Mem-MovingInv) from <cache-sized> -> 4.00 MiB, as the memory allocation (4.00 MiB per thread) can't support it
+⚠  Chunk size was adjusted for test 5 (Mem-ModuloX) from <cache-sized> -> 4.00 MiB, as the memory allocation (4.00 MiB per thread) can't support it
+⚠  Chunk size was adjusted for test 6 (Mem-Sequence) from <cache-sized> -> 4.00 MiB, as the memory allocation (4.00 MiB per thread) can't support it
+⚠  Chunk size was adjusted for test 7 (Mem-Random) from 8.00 MiB -> 4.00 MiB, as the memory allocation (4.00 MiB per thread) can't support it
+⚠  Chunk size was adjusted for test 8 (Mem-Refresh256_A) from 2.00 GiB -> 4.00 MiB, as the memory allocation (4.00 MiB per thread) can't support it
+⚠  Chunk size was adjusted for test 9 (Mem-MirrorV2-256_A) from 8.00 MiB -> 4.00 MiB, as the memory allocation (4.00 MiB per thread) can't support it
+⚠  Chunk size was adjusted for test 11 (Mem-BlockMove) from 16.00 MiB -> 4.00 MiB, as the memory allocation (4.00 MiB per thread) can't support it
+🔒 Seal (tmr-256, a test's width): all memory is sealed at each cycle's start and checked at its end. ✓: the seal is checked before every chunk and resealed after. data: the test works on the seal. –: never sealed; what it overwrites is checked first and resealed before the next sealed step.
+ℹ  Width: 256 bits (a test's width) for every test that picks its width at run time: the -Auto tests (named for it), Mem-Sequence and the Bench pairs; the seal too unless seal-width= sets its own. Tests named for a width keep theirs.

@@ -2,6 +2,9 @@
 #![feature(portable_simd)]
 #![feature(clflushopt_target_feature)]
 #![feature(simd_x86_clflushopt)]
+// The console goldens capture what a test prints as libtest does, and hand the capture on to the
+// threads a test spawns as it does (`golden.rs`, TODO 29)
+#![cfg_attr(test, feature(internal_output_capture, thread_spawn_hook))]
 
 // The whole program, the command line included, is in this crate, and `cli` is its only public
 // item. Everything else is private, so `dead_code` checks all of it. While `main.rs` held the CLI
@@ -48,6 +51,8 @@ mod failing_bits; // which bit positions failed checks, from the verifies' cold 
 mod sequence; // Mem-Sequence's passes: writes, reads and read-then-writes in an order (TODO 97)
 mod plans; // built-in test plans: which of the suite's tests a run takes (TODO 25)
 mod ops; // the work around a test, by operation: seal fills and checks, fills (TODO 90)
+#[cfg(test)]
+mod golden; // the console's output against goldens, for the engine/presentation split (TODO 29)
 
 // Common result type for the crate
 pub(crate) type Result<T> = std::result::Result<T, Box<dyn std::error::Error>>;

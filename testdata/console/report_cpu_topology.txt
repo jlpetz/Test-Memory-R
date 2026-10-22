@@ -1,0 +1,17 @@
+[1m📊 CPU Topology and Thread Assignment[0m
+------------------------------------------------------------------------------------------------------
+Logical CPU  Physical Core     Type      Threads     NUMA Node     SMT         Status      Thread ID  
+------------------------------------------------------------------------------------------------------
+          0              0    P-core        2                0     Yes        Skipped              -  
+          1              0    P-core        2                0     Yes        Skipped              -  
+          2              1    P-core        2                0     Yes        Assigned             0  
+          3              1    P-core        2                0     Yes      SMT Excluded           -  
+          4              2    E-core        2                0     Yes        Assigned             1  
+          5              2    E-core        2                0     Yes      SMT Excluded           -  
+          6              3    E-core        2                0     Yes       Available             -  
+          7              3    E-core        2                0     Yes      SMT Excluded           -  
+------------------------------------------------------------------------------------------------------
+Total: 8 logical CPUs, 4 physical cores
+Hybrid CPU Architecture Detected!
+P-cores: 2 (4 logical), E-cores: 2 (4 logical)
+Assigned: 2, Available: 1, SMT Excluded: 3, Skipped: 2

@@ -36,9 +36,9 @@ static TICKER: Mutex<Ticker> = Mutex::new(Ticker { text: String::new(), rows: 0,
 
 /// Lock order is `TICKER`, then stdout. Plain `println!` takes only stdout, so it cannot deadlock
 /// against this.
-fn lock() -> (MutexGuard<'static, Ticker>, io::StdoutLock<'static>) {
+fn lock() -> (MutexGuard<'static, Ticker>, impl Write) {
     let ticker = TICKER.lock().unwrap_or_else(|poisoned| poisoned.into_inner());
-    (ticker, io::stdout().lock())
+    (ticker, out())
 }
 
 impl Ticker {
@@ -182,6 +182,36 @@ fn screen_rows(text: &str, width: usize) -> usize {
             columns.div_ceil(width).max(1)
         })
         .sum()
+}
+
+/// Where the console writes: stdout, locked.
+#[cfg(not(test))]
+fn out() -> io::StdoutLock<'static> {
+    io::stdout().lock()
+}
+
+/// A unit test build writes through `print!` instead, which the test harness captures, so the
+/// console goldens get these lines too (`golden.rs`, TODO 29): a locked stdout bypasses it.
+#[cfg(test)]
+fn out() -> PrintOut {
+    PrintOut
+}
+
+/// The console's writer in a unit test build (`out`).
+#[cfg(test)]
+struct PrintOut;
+
+#[cfg(test)]
+impl Write for PrintOut {
+    fn write(&mut self, buf: &[u8]) -> io::Result<usize> {
+        // Every write here is of whole `str`s, so none splits a char
+        print!("{}", String::from_utf8_lossy(buf));
+        Ok(buf.len())
+    }
+
+    fn flush(&mut self) -> io::Result<()> {
+        io::stdout().flush()
+    }
 }
 
 #[cfg(test)]

@@ -839,7 +839,10 @@ mod tests {
         let summary = f.prepare_fairness_summary_table(&report);
         assert!(summary.rows.iter().all(|r| r.last().unwrap() == "✅"));
         assert!(summary.rows.iter().all(|r| r[0] != "Remote"));
-        crate::reporting::create_console_reporter().report_allocation(&report).unwrap();
+        // The report as the console gets it (TODO 29)
+        let (result, text) = crate::golden::capture(|| crate::reporting::create_console_reporter().report_allocation(&report));
+        result.unwrap();
+        crate::golden::check("report_allocation_one_node", &text);
     }
 
     /// Two nodes; node 1 is short of 1 GiB pages, so its threads take more 2 MiB pages, and
@@ -896,7 +899,9 @@ mod tests {
         assert_eq!(huge[4], "2-3 (-5.00 GiB)");
         let large = summary.rows.iter().find(|r| r[0] == "2 MiB").unwrap();
         assert_eq!((large[4].as_str(), large[5].as_str()), ("0-3 (±5.00 GiB)", "✅"));
-        crate::reporting::create_console_reporter().report_allocation(&report).unwrap();
+        let (result, text) = crate::golden::capture(|| crate::reporting::create_console_reporter().report_allocation(&report));
+        result.unwrap();
+        crate::golden::check("report_allocation_two_nodes", &text);
     }
 
     /// A thread short of its target is ⚠️, and one fed in small pieces is 🟡 on Requests.

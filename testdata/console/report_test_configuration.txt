@@ -1,0 +1,14 @@
+[1m📊 Test Configuration[0m
+-------------------------------------------------------------------------------------------------------------------
+         #  Test Name                     Timing  Per chunk   Parameter    Extent                  Chunk           
+-------------------------------------------------------------------------------------------------------------------
+         1  Mem-StuckBit256_A ×2         1cycles  -           -            Full (4.00 GiB/thread)  512.00 MiB x8   
+         2  Bench-Init-TMR-10           10cycles  1×(1+0)     -            Full (4.00 GiB/thread)  4.00 MiB x1024  
+         3  Bench-Verify-TMR-10         10cycles  1×(0+1)     -            Full (4.00 GiB/thread)  4.00 MiB x1024  
+         4  Mem-SimpleV2-256       100cycles/30s  2×(1+1)     -            Full (4.00 GiB/thread)  4.00 MiB x1024  
+         5  Mem-MirrorV2-256                 10s  1×(1+1)     subblocks:2  128.00 MiB              8.00 MiB x16    
+-------------------------------------------------------------------------------------------------------------------
+Suite Timing: 3 cycles | Total Tests: 5 | Steps per cycle: 6
+ℹ  Cycle: 6 steps
+🔓 Seal: off (seal=off)
+ℹ  Width: 256 bits (a test's width) for every test that picks its width at run time: the -Auto tests (named for it), Mem-Sequence and the Bench pairs; the seal too unless seal-width= sets its own. Tests named for a width keep theirs.

@@ -1,0 +1,2 @@
+# The console goldens are compared byte for byte (src/golden.rs): no line-end conversion
+testdata/console/** -text

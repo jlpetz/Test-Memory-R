@@ -1,0 +1,20 @@
+[1m📊 Memory Status & Allocation Plan[0m
+-------------------------------------------------------------------------------
+Memory Component           Amount    Relative  Relative Info                   
+-------------------------------------------------------------------------------
+Total Installed RAM     32.00 GiB           -  Hardware capacity               
+Total Physical RAM      30.83 GiB           -  OS available                    
+Currently Available     27.29 GiB       88.5%  free                            
+Currently Used           3.54 GiB       12.0%  load                            
+Virtual Memory Total    36.88 GiB           -  Physical + Page file            
+                                                                               
+Reserve Requested       13.65 GiB       50.0%  of available                    
+Testing Raw             13.65 GiB       50.0%  of available                    
+Threads                         6           -                                  
+Per Thread Raw          2.274 GiB           -                                  
+Per Thread Round To      1.00 GiB           -  up                              
+Per Thread Rounded      3.000 GiB           -                                  
+Testing Allocation      18.00 GiB       66.0%  of available                    
+Reserve Left             9.29 GiB       34.0%  of available                    
+Reserve Rounding Diff   -4.35 GiB           -  Threads × per-thread rounding   
+-------------------------------------------------------------------------------

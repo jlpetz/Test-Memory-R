@@ -9,6 +9,8 @@ pub mod formatters;
 pub mod renderers;
 pub mod converters;
 pub mod system_info_builder;
+#[cfg(test)]
+mod tests;
 
 use crate::Result;
 use self::models::*;
