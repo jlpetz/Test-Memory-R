@@ -4,6 +4,7 @@
 //! `Run::FinalSummary` have none of their own: each shows one report, whose golden is the
 //! Reporter's (`report_allocation_*`, `report_final_summary`).
 
+use std::sync::Arc;
 use std::time::{Duration, Instant};
 
 use super::{draw_when_due, ticker, CliFrontend};
@@ -11,7 +12,7 @@ use crate::failing_bits::FailingBits;
 use crate::frontend::{CpuPerformanceSummary, Frontend, NotRun, Run, StepConfigLine, StepReport};
 use crate::golden::{capture, check};
 use crate::memory::allocator::PageSizeLevel;
-use crate::progress::{LiveFigures, ProgressSnapshot, RunOutcome, TestSnapshot, TestSummary};
+use crate::progress::{LiveFigures, ProgressSnapshot, ProgressTracker, RunOutcome, TestSnapshot, TestSummary};
 use crate::reporting::models::{
     CpuPerformance, PerformanceByCpuReport, PerformanceByPhysicalCoreReport, PerformanceByThreadReport,
     PhysicalCorePerformance, ThreadPerformance,
@@ -30,6 +31,9 @@ fn events_print_as_their_golden() {
         tests: names.iter().map(|name| (name.to_string(), "no AVX-512F".to_string())).collect(),
     };
     let verdict = |outcome, status, memory_errors, whea| Run::SuiteEnded { outcome, status, memory_errors, whea };
+    let suite = |seed, transfer_bits, transfer_source| {
+        Run::SuiteStarted { progress: Arc::new(ProgressTracker::new()), seed, transfer_bits, transfer_source }
+    };
     let no_whea = WheaCounts::default();
     let cases = vec![
         ("a plan the suite can't give", Run::NotRun(NotRun::Plan("plan stability: bug: no test Mem-Nope in the suite".to_string()))),
@@ -43,8 +47,8 @@ fn events_print_as_their_golden() {
         ("allocation between the default page sizes", Run::AllocationStarting { min: PageSizeLevel::Large, max: PageSizeLevel::Huge }),
         ("allocation of one page size", Run::AllocationStarting { min: PageSizeLevel::Regular, max: PageSizeLevel::Regular }),
         ("allocation between other page sizes", Run::AllocationStarting { min: PageSizeLevel::Regular, max: PageSizeLevel::Huge }),
-        ("the suite starts", Run::SuiteStarted { seed: 0x0123_4567_89ab_cdef, transfer_bits: Some(64), transfer_source: "SMBIOS" }),
-        ("the suite starts, its transfer width unknown", Run::SuiteStarted { seed: 7, transfer_bits: None, transfer_source: "none" }),
+        ("the suite starts", suite(0x0123_4567_89ab_cdef, Some(64), "SMBIOS")),
+        ("the suite starts, its transfer width unknown", suite(7, None, "none")),
         ("a cycle of a limit", Run::CycleStarted { cycle: 2, limit: Some(3) }),
         ("a cycle with no limit", Run::CycleStarted { cycle: 41, limit: None }),
         ("memory sealed", Run::SealStage { op: SealOp::SealAll, kernel: "tm5-512".to_string(), bytes: 24 * GIB, errors: 0,
@@ -78,6 +82,16 @@ fn events_print_as_their_golden() {
         text += &format!("## {case}\n{printed}");
     }
     check("events", &text);
+}
+
+/// A cycle's end has no line on the console (TODO 29): it is for the GUI
+#[test]
+fn a_cycle_ending_prints_nothing() {
+    let fe = CliFrontend::new();
+    for partial in [false, true] {
+        let ((), printed) = capture(|| fe.event(Run::CycleFinished { cycle: 2, partial }.into()));
+        assert_eq!(printed, "", "partial: {partial}");
+    }
 }
 
 /// The ticker in each of its forms, and a step's stamp, each after a `## case` line.

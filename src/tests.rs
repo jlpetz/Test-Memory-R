@@ -1129,7 +1129,7 @@ fn align_to_boundary(size: usize, alignment: usize) -> usize {
 /// verify must observe what actually landed in DRAM — refresh/bit-fade tests, or
 /// any cache-resident working set. See `doc/cache_management.md`.
 ///
-/// CLFLUSHOPT is emitted unconditionally: the startup CPUID gate (`cli.rs` `require_cpu_features`)
+/// CLFLUSHOPT is emitted unconditionally: the startup CPUID gate (tmr.exe's `require_cpu_features`)
 /// guarantees the feature, so there is no `_mm_clflush` fallback. The function
 /// carries `#[target_feature(enable = "clflushopt")]` (gated by the unstable
 /// `clflushopt_target_feature`, landed in nightly via rustc PR #157098).

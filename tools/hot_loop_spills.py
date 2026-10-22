@@ -29,11 +29,17 @@ access a unit test records it by (`tests::access`) is named without it: `Direct`
 in the binary.
 
 Build the asm, then run this (with no file, the newest one under target/release/build):
-    cargo rustc --release --bin tmr -- --emit asm
+    cargo rustc --release -p tmr-app --bin tmr -- --emit asm
     python tools/hot_loop_spills.py [file.s] [--detail SUBSTRING [--all]] [--max N]
 --detail prints each flagged loop (stack or any review flag) of the kernels whose name contains
 SUBSTRING (with --all, their clean hot loops too); --max exits 1 when the loops touching the stack
-exceed N (a ratchet for a check before releases).
+exceed N (a ratchet for a check before releases). An asm that isn't the binary's exits 1: one with
+no `main`. Since TODO 29 S3 the bin is tmr-app's, and the old command,
+    cargo rustc --release -- --emit asm
+builds the lib's asm instead, pre-LTO, as `tmr-<hash>.s`, which reads as a believable table; so the
+newest asm is looked for among those too, and refused rather than passed over for an older
+`tmr.s`. Finding no hot loop exits 1 too: the engine's crate name has drifted from the `3tmr` its
+symbols are matched by, or MODULES from its modules.
 """
 import glob
 import os
@@ -47,6 +53,11 @@ MODULES = ["5tests", "8sequence", "4seal", "15bandwidth_tests", "13latency_tests
 # Functions in them that run off the hot path: on an error, once per test, or at load time
 COLD = ["rescan", "parse", "percentiles", "finalize_stats", "TestRunner", "scale_or"]
 MAX_INSTRUCTIONS = 600
+# The binary's post-LTO asm: the bin is tmr-app's (TODO 29 S3)
+BUILD = "cargo rustc --release -p tmr-app --bin tmr -- --emit asm"
+# Where the build leaves asm: the bin's `tmr.s`; the lib's `tmr-<hash>.s`, to refuse when it is the
+# newest; and the layout before cargo's build directories, `deps/tmr-<hash>.s`
+ASM = ["target/release/build/tmr*/**/tmr.s", "target/release/build/tmr*/**/tmr-*.s", "target/release/deps/tmr-*.s"]
 LONG = 150
 
 LABEL = re.compile(r"^(\.L\w+):")
@@ -206,16 +217,26 @@ def classify(loop):
     return ("reload simd" if simd else "reload gpr"), stack, flags
 
 
+def binary_asm(args):
+    """The asm to read: the file named in `args`, else the newest the build left. Exits unless it is
+    the binary's, the one with a `main`: the lib's has the same kernels before LTO (TODO 29 S3)."""
+    files = [a for a in args if a.endswith(".s")]
+    found = [f for pattern in ASM for f in glob.glob(pattern, recursive=True)]
+    if not files and not found:
+        sys.exit(f"no asm: build it with `{BUILD}`")
+    path = files[0] if files else max(found, key=os.path.getmtime)
+    with open(path, encoding="utf-8", errors="replace") as f:
+        if not any(line.startswith("main:") for line in f):
+            sys.exit(f"FAIL: {path} isn't the binary's asm (no `main`), so not post-LTO: build it with `{BUILD}`")
+    return path
+
+
 def main():
     args = sys.argv[1:]
     detail = args[args.index("--detail") + 1] if "--detail" in args else None
     show_clean = "--all" in args
     limit = int(args[args.index("--max") + 1]) if "--max" in args else None
-    files = [a for a in args if a.endswith(".s")]
-    found = glob.glob("target/release/build/tmr*/**/tmr.s", recursive=True) + glob.glob("target/release/deps/tmr-*.s")
-    if not files and not found:
-        sys.exit("no asm: build it with `cargo rustc --release --bin tmr -- --emit asm`")
-    path = files[0] if files else max(found, key=os.path.getmtime)
+    path = binary_asm(args)
     columns = KINDS + REVIEW
     counts = defaultdict(lambda: dict.fromkeys(columns, 0))
     hot = set()
@@ -238,6 +259,9 @@ def main():
             if detail and detail in name:
                 print(f"--- {name}: {', '.join([kind] + flags)}, {len(loop)} instructions, {len(stack)} on the stack")
                 print("    " + "\n    ".join(re.sub(r"\s+", " ", x) for x in loop))
+    # Else an empty table reads as a clean one (TODO 29 S3)
+    if not hot:
+        sys.exit(f"FAIL: no hot loop in {path}: the crate isn't `tmr` (`3tmr`), or MODULES aren't its modules")
     widths = (7, 8, 7, 6, 8, 6, 5, 6)
     total = {k: sum(c[k] for c in counts.values()) for k in columns}
     print(f"{'':48s} {'round trip':>16s} {'reload':>14s}")

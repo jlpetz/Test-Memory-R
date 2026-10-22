@@ -150,7 +150,7 @@ impl ParamRegistry {
         });
 
         // The native patterns' run settings (pattern spec v2, `crate::pattern`): read early in
-        // `cli::run`, before a config loads; registered so they validate
+        // `cli::run_session`, before a config loads; registered so they validate
         params.insert("seed", ParamDef {
             key: "seed",
             can_override_config: true,
@@ -178,7 +178,7 @@ impl ParamRegistry {
             },
         });
 
-        // Read early in `cli::run`, before any topology is detected; registered so it validates
+        // Read early in `cli::run_session`, before any topology is detected; registered so it validates
         params.insert("core-priority", ParamDef {
             key: "core-priority",
             can_override_config: true,
@@ -247,8 +247,8 @@ impl ParamRegistry {
                 crate::seal::SealWidth::parse(v).map(|w| ParamValue::String(w.name().to_string()))
             },
         });
-        // The tests' SIMD width (TODO 99, `crate::simd::Width`): read early in `cli::run`, before a
-        // config loads; registered so it validates
+        // The tests' SIMD width (TODO 99, `crate::simd::Width`): read early in `cli::run_session`,
+        // before a config loads; registered so it validates
         params.insert("width", ParamDef {
             key: "width",
             can_override_config: true,

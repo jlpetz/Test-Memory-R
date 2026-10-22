@@ -1,0 +1,12 @@
+[package]
+name = "tmr-gui"
+version.workspace = true
+edition.workspace = true
+description = "TMR's window: a run's events and progress in WinUI 3, through windows-reactor (TODO 7)"
+publish = false
+
+[dependencies]
+tmr = { path = "../.." }
+# A preview API (TODO 7): pinned, and migrations expected. No windows-canvas: the chart is XAML shapes.
+windows-reactor = "=0.100.0"
+serde_json = "1.0"

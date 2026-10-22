@@ -1,8 +1,8 @@
-//! The engine's one interface to whoever shows a run (TODO 29): the CLI now, the GUI next. Where the
-//! engine printed text it hands the frontend a plain value, at the same moment, and the frontend
-//! formats it. The fast figures (progress, bytes, rates, live errors) don't travel: they are
-//! already shared, and a frontend reads them off the `ProgressTracker` on its own timer, the CLI on
-//! the engine's monitor thread (`Frontend::tick`).
+//! The engine's one interface to whoever shows a run (TODO 29): the CLI (`cli_render`) and the
+//! window (`crates/tmr-gui`). Where the engine printed text it hands the frontend a plain value, at
+//! the same moment, and the frontend formats it. The fast figures (progress, bytes, rates, live
+//! errors) don't travel: they are already shared, and a frontend reads them off the
+//! `ProgressTracker` on its own timer, the CLI on the engine's monitor thread (`Frontend::tick`).
 //!
 //! One event replaces one run of prints with no engine call between them, where that run printed,
 //! and no event spans a log call. So a frontend that renders an event before `event` returns keeps
@@ -11,20 +11,34 @@
 //! after a step's report (`execute_test_cycle`) would then overtake the report.
 //!
 //! The run's events are here; the setup's join them in S4 (`doc/todo/29-split-design.md`).
+//!
+//! The types the events carry that a frontend outside the engine names are re-exported here, and
+//! only those: the GUI's (`crates/tmr-gui`), its tests' included. The rest of the engine stays
+//! private, so `dead_code` still checks it. A type an event carries is reachable from outside even
+//! when it isn't re-exported, and so are its `pub` methods, which are then exported: compiled as
+//! such, their callers change too (S3 found two rescans' error paths changed by `FailingBits`'). So
+//! a payload's methods that only the engine calls are `pub(crate)` where it matters: `FailingBits`'
+//! recording ones, which the rescans call, and `ProgressTracker`'s bookkeeping, as a frontend holds
+//! the live tracker and must only read it (`snapshot`, `take_whea_descriptions`). Other payloads'
+//! accessors that the engine alone calls (a `key`, a `detail`) are still `pub`: narrow one when its
+//! callers' asm moves, as `FailingBits`' did.
 
+use std::sync::Arc;
 use std::time::Duration;
 
 use crate::failing_bits::FailingBits;
 use crate::memory::allocator::PageSizeLevel;
-use crate::progress::{ProgressSnapshot, ProgressTracker, RunOutcome, TestSummary};
 use crate::reporting::models::{
-    AllocationReport, ConsolidatedMemoryReport, FinalTestSummaryReport, LatencyTestSummaryReport,
-    PerformanceByCpuReport, PerformanceByPhysicalCoreReport, PerformanceByThreadReport, TestConfigurationReport,
-    ThreadTimingReport,
+    ConsolidatedMemoryReport, FinalTestSummaryReport, LatencyTestSummaryReport, PerformanceByCpuReport,
+    PerformanceByPhysicalCoreReport, PerformanceByThreadReport,
 };
-use crate::runner::RunStatus;
-use crate::thread_pool::SealOp;
-use crate::whea::WheaCounts;
+
+pub use crate::progress::{LiveFigures, ProgressSnapshot, ProgressTracker, RunOutcome, TestSnapshot, TestSummary};
+pub use crate::reporting::models::{AllocationReport, AllocationThread, TestConfigurationReport, ThreadTimingReport};
+pub use crate::runner::RunStatus;
+pub use crate::smbios::MemoryModule;
+pub use crate::thread_pool::SealOp;
+pub use crate::whea::WheaCounts;
 
 /// Whoever shows a run. Two engine threads call it, so it is `Send + Sync` and takes `&self`: the
 /// thread that runs the suite sends the events, and the monitor thread ticks.
@@ -76,11 +90,17 @@ pub enum Run {
     AllocationStarting { min: PageSizeLevel, max: PageSizeLevel },
     /// What allocation got (TODO 81)
     Allocated(Box<AllocationReport>),
-    /// The suite's clock started: the native patterns' seed, and the transfer width they take and
-    /// where it came from, `None` when it is unknown
-    SuiteStarted { seed: u64, transfer_bits: Option<u32>, transfer_source: &'static str },
+    /// The suite's clock started: where it stands from now on, for a frontend that reads it on its
+    /// own timer (the GUI; the CLI reads it on `tick`), the native patterns' seed, and the transfer
+    /// width they take and where it came from, `None` when it is unknown
+    SuiteStarted { progress: Arc<ProgressTracker>, seed: u64, transfer_bits: Option<u32>, transfer_source: &'static str },
     /// A cycle starts, of `limit` when there is one
     CycleStarted { cycle: u32, limit: Option<u32> },
+    /// A cycle is over, after its results were saved when a save was due: `partial` when it
+    /// stopped before its end (Ctrl+C, Stop, or a halt on a step's errors), its last steps and its
+    /// final seal check not run, as its results record it. One whose final seal check halts the run
+    /// ran to its end, and isn't.
+    CycleFinished { cycle: u32, partial: bool },
     /// A seal stage ended (TODO 74): the seal's kernel, the bytes, the errors a final check found
     /// and their bits, and the stage's wall time
     SealStage { op: SealOp, kernel: String, bytes: u64, errors: u64, bits: FailingBits, duration: Duration },
@@ -158,4 +178,41 @@ pub struct CpuPerformanceSummary {
     pub by_thread: PerformanceByThreadReport,
     pub by_cpu: PerformanceByCpuReport,
     pub by_core: PerformanceByPhysicalCoreReport,
+}
+
+/// The machine under test, as a frontend's system panel shows it (TODO 7): the CPU, its caches and
+/// the memory modules SMBIOS lists.
+pub struct Machine {
+    pub cpu: String,
+    pub physical_cores: usize,
+    pub logical_cpus: usize,
+    /// Per core: L1 data, L1 instruction and L2; the L3, one instance's (shared by the cores of a
+    /// CCD, or of the whole CPU); and the cache line. What `detection` found, or its fallbacks.
+    pub l1_data: usize,
+    pub l1_instruction: usize,
+    pub l2: usize,
+    pub l3: usize,
+    pub cache_line: usize,
+    pub detection: String,
+    pub memory_modules: Vec<MemoryModule>,
+}
+
+/// The machine under test. The session detects it during setup, before the run's first event, and
+/// logs what it found as it does; read after that event, this is that detection and logs nothing.
+/// Until S4 hands the setup's facts over as events, it is how the GUI gets them.
+pub fn machine() -> Machine {
+    let system = crate::tests::get_system_info();
+    let cache = system.get_cache_info();
+    Machine {
+        cpu: system.cpu_brand.clone(),
+        physical_cores: system.physical_cores,
+        logical_cpus: system.logical_cores,
+        l1_data: cache.per_core_l1d,
+        l1_instruction: cache.per_core_l1i,
+        l2: cache.per_core_l2,
+        l3: cache.l3_cache,
+        cache_line: cache.cache_line_size,
+        detection: cache.detection_method.clone(),
+        memory_modules: crate::smbios::get_smbios().memory_modules.clone(),
+    }
 }

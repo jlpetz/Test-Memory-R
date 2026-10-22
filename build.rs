@@ -26,7 +26,8 @@ fn main() {
     println!("cargo::rustc-env=TMR_DIRTY={}", if dirty { "1" } else { "0" });
     println!("cargo::rustc-env=TMR_RUSTC={}", rustc.as_deref().unwrap_or("unknown"));
 
-    // Again when the commit, the index or the sources change. Git names its files, so a worktree,
+    // Again when the commit, the index or the sources change: the engine's, and under `crates/`
+    // tmr.exe's and the window's, which are in the binary too. Git names its files, so a worktree,
     // whose `.git` is a file, watches its own: HEAD, the branch it names (a commit moves the
     // branch, not HEAD), packed-refs, the reflog and the index. A path that doesn't exist would run
     // this on every build, so only those that do.
@@ -39,7 +40,7 @@ fn main() {
             }
         }
     }
-    for path in ["src", "build.rs", "Cargo.toml"] {
+    for path in ["src", "crates", "build.rs", "Cargo.toml"] {
         println!("cargo::rerun-if-changed={path}");
     }
 }

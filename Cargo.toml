@@ -1,9 +1,23 @@
-[package]
-name = "tmr"
+# The engine, `tmr`, a library at the repo root; the executable is `crates/tmr-app`'s, and the window
+# `crates/tmr-gui`'s (TODO 29). `src/` stays where it is, so every path to it in the docs holds.
+[workspace]
+members = [".", "crates/tmr-app", "crates/tmr-gui"]
+# All but the window, so a plain `cargo build`, `cargo test` or `cargo run` never compiles Reactor:
+# `--features tmr-app/gui` builds it into tmr.exe
+default-members = [".", "crates/tmr-app"]
+
+[workspace.package]
 version = "1.0.0"
 edition = "2024"
+
+[package]
+name = "tmr"
+version.workspace = true
+edition.workspace = true
 description = "Test Memory R - High-Performance DDR5 Memory Testing Tool"
 authors = ["Your Name <your.email@example.com>"]
+# A library only: tmr.exe is `crates/tmr-app`'s bin
+autobins = false
 
 [dependencies]
 ### windows = { version = "0.62", features = [

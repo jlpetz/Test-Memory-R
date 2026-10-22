@@ -6,18 +6,28 @@ rescan, which formats the error lines, runs off the hot path but is the test's a
 the workers' side of a step: `thread_pool` (the worker loop, WorkItem and WorkResult) and
 `test_scaffolding` (TestRunner's bookkeeping). They are named as `hot_loop_spills.py` names them.
 Each body is hashed after normalising what changes when the code doesn't:
-  labels      `.LBB2750_1`, `.Ltmp3`, `.LCPI12_0`, `.LJTI4_0`, string constants (`anon.<hash>.7`)
-              and LLVM's local copies of a symbol (`<sym>.449`, `switch.table.<sym>.1518.rel`)
-              are renumbered in their order of use in the function
+  labels      `.LBB2750_1`, `.Ltmp3`, `.LCPI12_0`, `.LJTI4_0` and string constants
+              (`anon.<hash>.7`) are renumbered in their order of use in the function
+  copies      LLVM's numbered copies of a symbol (`<sym>.449`): a function's lose the number, as a
+              call reaching one copy or another is the same call; data's (`switch.table.<sym>.1518.rel`,
+              a static split into its fields, `<sym>.0`) are renumbered in their order of use, each
+              symbol's apart, and hashed with their data
   symbols     v0 symbols lose their crate hashes (`Cs<hash>_`) and back-references (`B4_`), whose
               offsets move with the hashes' lengths, and a closure its place among its function's
               closures (`s5_0`), which moves when a closure is added before it
   sections    a COMDAT's number (`unique,2454`), which counts the file's sections
   data        what the function refers to by such a name (a constant pool, a jump table, a switch
-              table, a string) is hashed with it; `__xmm@...`-style constants are named by content
+              table, a string) is hashed with it; `__xmm@...`-style constants are named by content,
+              and a number in it is written one way (LLVM writes `.quad 0x7fffffffffffffff` for a
+              constant pool it typed as floats, `.quad 9223372036854775807` for one of integers)
   dropped     comments and debug-line directives; alignment directives are kept
 Two functions with one name (a generic's instances, a test fn's closures) keep a sorted list of
 hashes. Checked on 2026-10-22: a rebuild with every crate hash changed gives the same hashes.
+TODO 29 S3 moved the bin into a crate of its own: calls reached the lib's copy of `<String as
+Display>::fmt` where they had reached another, and with one counter for all the copies a function
+names, that renumbered the rest. So function copies lose their numbers, and data's are counted per
+symbol. With the GUI linked in, a constant pool the kernels share with Reactor's code came out
+in hex.
 
 A source line can be in a function's code: a log record's line, inlined from another module, is
 an immediate `Some(line)`, `(line << 32) | 1` (`movabsq $18979460481025`, line 4419). Lines move
@@ -27,7 +37,7 @@ S1: lines added to runner.rs above `pin_thread_to_cpu_with_config` showed in the
 line in a panic's location is in its data, as bytes of a string, and isn't masked.
 
 Build the asm, then:
-    cargo rustc --release --bin tmr -- --emit asm
+    cargo rustc --release -p tmr-app --bin tmr -- --emit asm
     python tools/asm_fingerprint.py [file.s]                    # name, lines hashed, hash
     python tools/asm_fingerprint.py [file.s] --save FILE.json   # a baseline
     python tools/asm_fingerprint.py [file.s] --compare FILE.json
@@ -36,10 +46,9 @@ Build the asm, then:
 source lines is listed too, and doesn't count. A baseline records the
 compiler that built its asm (the asm names it); when this asm's is another, --compare says so, and
 exits 2 rather than 1 on a change, which may be the compiler's. With no file, the newest asm under
-target/release/build, as hot_loop_spills.py takes it. Finding no function is an error: the lib's
-name or the build command drifted.
+target/release/build, as hot_loop_spills.py takes it; an asm that isn't the binary's is refused as
+it refuses it. Finding no function is an error: the lib's name or MODULES drifted.
 """
-import glob
 import hashlib
 import json
 import os
@@ -66,6 +75,9 @@ SYMBOL = re.compile(r"_R[0-9A-Za-z_]+")
 # LLVM's number for a local copy of a symbol
 COPY = re.compile(r"\.\d+(?=\.rel$|$)")
 DATA = re.compile(r"^\s+\.(quad|long|short|byte|zero|ascii|asciz)\b")
+# A whole number as data, in decimal or hex, and the bits of its directive
+NUMBER = re.compile(r"^\.(quad|long|short|byte)\s+(-?(?:0x[0-9a-fA-F]+|\d+))$")
+BITS = {"quad": 64, "long": 32, "short": 16, "byte": 8}
 SKIPPED = (".loc", ".cv_", ".file")
 # The workers' side of a step, which the spill table leaves out (no kernel loop of its own)
 WORKERS = ["11thread_pool", "16test_scaffolding"]
@@ -120,6 +132,15 @@ def plain_symbol(sym):
     return "".join(out)
 
 
+def number(line):
+    """A data line with its number, if it is one, in unsigned decimal: one spelling for one value."""
+    m = NUMBER.match(line)
+    if not m:
+        return line
+    value = int(m.group(2), 16 if "0x" in m.group(2) else 10)
+    return f".{m.group(1)}\t{value & ((1 << BITS[m.group(1)]) - 1)}"
+
+
 def label_data(lines):
     """The data under each label that has some: constant pools, jump tables, switch tables and
     strings. A function's own label has instructions under it, so it has none."""
@@ -130,7 +151,7 @@ def label_data(lines):
             label = m.group(1)
             data[label] = []
         elif label and DATA.match(line):
-            data[label].append(line.strip())
+            data[label].append(number(line.strip()))
         else:
             label = None
     return {k: v for k, v in data.items() if v}
@@ -154,7 +175,11 @@ def normalise(body, data):
             return f"anon#{renumber('anon', text)}"
         plain = SYMBOL.sub(lambda s: plain_symbol(s.group(0)), text)
         if plain != text and COPY.search(text):
-            return COPY.sub(f".#{renumber('copy', text)}", plain)
+            # Data, hashed with the function: which of its symbol's copies, in order of use. A
+            # function: the call is the same whichever copy it reaches.
+            if text in data:
+                return COPY.sub(f".#{renumber(COPY.sub('', plain), text)}", plain)
+            return COPY.sub("", plain)
         return plain
 
     out = []
@@ -205,19 +230,10 @@ def compiler(path):
     return subprocess.run(["rustc", "--version"], capture_output=True, text=True).stdout.strip()
 
 
-def glob_asm():
-    """Every asm file the build may have left, as hot_loop_spills.py looks for them."""
-    return glob.glob("target/release/build/tmr*/**/tmr.s", recursive=True) + glob.glob("target/release/deps/tmr-*.s")
-
-
 def main():
     args = sys.argv[1:]
     opt = {f: args[args.index(f) + 1] for f in ("--save", "--compare", "--dump") if f in args}
-    files = [a for a in args if a.endswith(".s")]
-    found = glob_asm()
-    if not files and not found:
-        sys.exit("no asm: build it with `cargo rustc --release --bin tmr -- --emit asm`")
-    path = files[0] if files else max(found, key=os.path.getmtime)
+    path = hot_loop_spills.binary_asm(args)
     funcs = fingerprints(path)
     if not funcs:
         sys.exit(f"{path}: no hot-path function; check hot_loop_spills.py's MODULES against its symbols")

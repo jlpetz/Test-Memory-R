@@ -17,13 +17,22 @@ general-purpose and SIMD (vector and mask) registers. Two more columns count loo
 constant read from the binary's data every iteration).
 
 ```bash
-cargo rustc --release --bin tmr -- --emit asm      # the real binary's code; --lib is pre-LTO
+cargo rustc --release -p tmr-app --bin tmr -- --emit asm   # the real binary's code; --lib is pre-LTO
 python tools/hot_loop_spills.py                    # the table, worst kernels first
 python tools/hot_loop_spills.py --detail cache_busting --all   # one kernel's loops, clean ones too
 ```
 
 Run it before and after touching a hot loop, and save both `--detail` outputs: the loop bodies are
 also the place to check the width and the instructions.
+
+The binary is `crates/tmr-app`'s since TODO 29 S3, hence `-p tmr-app`; its asm lands under
+`target/release/build/tmr-app/`, which the tool's glob finds. The old command,
+`cargo rustc --release -- --emit asm`, still succeeds, but builds the lib's asm
+(`build/tmr/<hash>/out/tmr-<hash>.s`), pre-LTO, whose kernels make a believable table. So both
+tools look for that file too, and refuse an asm with no `main` (exit 1), the newest one included,
+rather than read it or pass it over for an older `tmr.s`. A table with no hot loop would read as a
+clean one, so finding none fails it too: the symbols are no longer the `tmr` crate's (`3tmr`), or
+`MODULES` no longer its modules.
 
 **Limits.** It decides "hot" by shape: an innermost loop that makes no call and touches memory off
 the stack. Some cold loops pass that test and count: per-pass or per-chunk setup (a division, the
@@ -67,11 +76,14 @@ Hashes each function of the test code in the post-LTO asm: every one of `hot_loo
 `MODULES`, its `COLD` ones too (a kernel's rescan, which formats the error lines, is off the hot
 path but still the test's), and the workers' side of a step, `thread_pool` (the worker loop,
 `WorkItem`, `WorkResult`) and `test_scaffolding` (`TestRunner`'s bookkeeping). Each is hashed
-after normalising what moves when the code doesn't: label numbers, string constants and LLVM's
-local copies of a symbol (`<sym>.449`) are renumbered in their order of use, v0 symbols lose
-their crate hashes, back-references and the crate a generic was instantiated in, a closure its
-place among its function's closures, and a COMDAT section its number in the file. The data a
-function names (a constant pool, a jump or switch table, a string) is hashed with it. A change that
+after normalising what moves when the code doesn't: label numbers and string constants are
+renumbered in their order of use; LLVM's numbered copies of a symbol (`<sym>.449`) lose the number
+when they are a function's (a call reaching one copy or another is the same call), and are
+renumbered in their order of use, each symbol's apart, when they are data's; v0 symbols lose their
+crate hashes, back-references and the crate a generic was instantiated in, a closure its place
+among its function's closures, and a COMDAT section its number in the file. The data a function
+names (a constant pool, a jump or switch table, a string) is hashed with it, each number in it
+spelled one way (decimal, unsigned). A change that
 only moves code around the kernels, as each stage of TODO 29 does, must leave every hash as it was,
 but for source lines: a log record's line inlined into a function is an immediate, `(line << 32) |
 1`, so each function also has a hash with those masked, and `--compare` lists one that differs
@@ -79,7 +91,7 @@ only there as `lines`, which doesn't fail it (TODO 29 S1, where lines added to `
 in the worker loop).
 
 ```bash
-cargo rustc --release --bin tmr -- --emit asm
+cargo rustc --release -p tmr-app --bin tmr -- --emit asm
 python tools/asm_fingerprint.py --save before.json      # on the old code
 python tools/asm_fingerprint.py --compare before.json   # on the new: changed, gone, new (1 if any), lines
 python tools/asm_fingerprint.py --dump DIR              # each normalised body, to diff two builds
@@ -99,14 +111,28 @@ the instantiating crate, and the statics `hot_loop_spills.py` reads as functions
 static's body is the data after it). TODO 29 S1 (2026-10-22) added the closures' places, the COMDAT
 numbers and the source lines, after three functions read as changed with none of their
 instructions changed; the baseline was saved again from a build of 25ff780's tree, and another
-build of that code compares clean with it.
+build of that code compares clean with it. TODO 29 S3 (2026-10-23), when the bin moved to its own
+crate, made function copies lose their numbers and data copies count per symbol: calls reached the
+lib's copy of `<String as Display>::fmt` rather than another, and with one counter for every copy
+a function named, the others' numbers moved with it. With the GUI linked in, a constant pool the
+kernels share with Reactor's code was written in hex (`.quad 0x7fffffffffffffff`, a pool LLVM typed
+as floats), hence the one spelling. Under the old normalisation S3's asm read 27 functions as
+changed (32 with the GUI); under the new one, S2's `BusBeat::map_or` and the merged calls under
+Limits (2 functions, 5 with the GUI), and the worker loop's closure as lines only. The baseline
+was saved again from a build of 25ff780's tree, which compared clean against the old one under the
+old normalisation, its spill table too; S2's build reads against the new one as its stage note
+says.
 
 **Limits.** It sees the asm, not where the linker puts it: two builds can be instruction-identical
 and differ in speed by alignment, which is `bench_ab.py`'s to measure. A kernel inlined into a
 function outside the modules isn't seen. Read the first diff it reports by hand (`--dump` both
 builds and diff the two directories): a normalisation can hide a change or flag noise. A line in
 a panic's location is in the function's data, as bytes of a string, and isn't masked: code moved
-above an `unwrap` inlined into a kernel shows as a change.
+above an `unwrap` inlined into a kernel shows as a change. A call to a function LLVM merged with an
+identical one names the one it kept, so a change far away shows: since S3 the thread pool's spawn
+shim calls the backtrace frame of the Ctrl+C handler's thread, named after the function that sets
+the handler (`cli::run_session`, `cli::run` before), and in a build with the GUI three callers of
+`RandomState::hash_one::<&u64>` call Reactor's identical `hash_one::<&RealizedContainer>`.
 
 ## `console_diff.py`: whether the console's text changed
 

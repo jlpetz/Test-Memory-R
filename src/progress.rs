@@ -18,7 +18,7 @@ pub struct ProgressTracker {
     // Hardware errors the OS saw that our verify reads cannot (DDR5 on-die ECC corrections, and
     // any fault landing during a non-verifying test like bandwidth/latency). Counted separately
     // from the thread-reported errors because these are OS-reported. See whea.rs.
-    pub whea: crate::whea::WheaMonitor,
+    pub(crate) whea: crate::whea::WheaMonitor,
 }
 
 /// What the suite was asked to do, fixed when it starts.
@@ -223,7 +223,7 @@ impl ProgressTracker {
     /// Start the suite clock. The progress line draws nothing until this is called, so Runtime is
     /// measured from the first test cycle — the same span the final summary reports — rather than
     /// from before allocation.
-    pub fn begin_suite(
+    pub(crate) fn begin_suite(
         &self,
         start: Instant,
         cycle_limit: Option<u32>,
@@ -234,7 +234,7 @@ impl ProgressTracker {
         let _ = self.suite.set(SuitePlan { start, cycle_limit, time_limit, tests_per_cycle, workers });
     }
 
-    pub fn start_new_cycle(&self, cycle_number: u32) {
+    pub(crate) fn start_new_cycle(&self, cycle_number: u32) {
         let mut position = self.position();
         position.cycle = cycle_number;
         position.cycle_start = Instant::now();
@@ -245,7 +245,7 @@ impl ProgressTracker {
     /// duration limit, if it has one; `publishes` is whether the test reports live figures.
     /// Must be called before the test is dispatched: it zeroes the workers' live slots, which is
     /// only safe while they are idle.
-    pub fn start_test(
+    pub(crate) fn start_test(
         &self,
         number: usize,
         name: &str,
@@ -270,7 +270,7 @@ impl ProgressTracker {
     }
 
     /// Record a finished test's errors, reported by its workers' results.
-    pub fn complete_test(&self, errors: u64) {
+    pub(crate) fn complete_test(&self, errors: u64) {
         let mut position = self.position();
         position.tests_done += 1;
         position.errors += errors;
@@ -280,29 +280,29 @@ impl ProgressTracker {
     }
 
     /// Errors a final seal check found (TODO 74): counted for the run, no test finished.
-    pub fn add_seal_errors(&self, errors: u64) {
+    pub(crate) fn add_seal_errors(&self, errors: u64) {
         self.add_errors(errors);
     }
 
     /// Errors found outside a finished test: counted for the run, no test finished. Where they
     /// were is the final summary's to say (its Errors by Step table).
-    pub fn add_errors(&self, errors: u64) {
+    pub(crate) fn add_errors(&self, errors: u64) {
         self.position().errors += errors;
     }
 
     /// Tests finished in the current cycle (reset at each cycle's start).
-    pub fn tests_done(&self) -> u64 {
+    pub(crate) fn tests_done(&self) -> u64 {
         self.position().tests_done
     }
 
     /// Thread-reported errors from every finished test.
-    pub fn total_errors(&self) -> u64 {
+    pub(crate) fn total_errors(&self) -> u64 {
         self.position().errors
     }
 
     /// The suite is over: the monitor thread makes its frontend's last call (`ticks_done`) and
     /// exits. There is no final ticker line, because the final summary reports the same figures.
-    pub fn finish(&self) {
+    pub(crate) fn finish(&self) {
         self.finished.store(true, Ordering::Relaxed);
     }
 

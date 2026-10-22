@@ -1,0 +1,32 @@
+[package]
+name = "tmr-app"
+version.workspace = true
+edition.workspace = true
+description = "tmr.exe: TMR's crash hooks and CPU gate, then the CLI or the window (TODO 29)"
+publish = false
+
+# The output is still target/<profile>/tmr.exe, the path release.yml uploads. Not documented: its
+# docs would land where the `tmr` lib's do, doc/tmr/, and one would overwrite the other.
+[[bin]]
+name = "tmr"
+path = "src/main.rs"
+doc = false
+
+[features]
+# The window (TODO 7): off by default, so a release build stays CLI-only and never compiles Reactor.
+# Toggling it relinks only the bin.
+gui = ["dep:tmr-gui"]
+
+[dependencies]
+tmr = { path = "../.." }
+tmr-gui = { path = "../tmr-gui", optional = true }
+log = "0.4"
+# The crash handler, and the Windows build the window needs: features the engine enables already, so
+# the crate builds once, as it did
+windows = { version = "0.62", features = [
+    "Win32_Foundation",
+    "Win32_System_Diagnostics_Debug",
+    "Win32_System_Kernel",
+    "Win32_System_LibraryLoader",
+    "Win32_System_SystemInformation",
+] }

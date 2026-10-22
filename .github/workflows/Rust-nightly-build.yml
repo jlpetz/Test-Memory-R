@@ -33,8 +33,9 @@ jobs:
     - name: ✅ Check formatting
       run: cargo +nightly fmt --all -- --check
 
+    # The workspace (TODO 29): the engine, tmr.exe and the window, the window's feature on
     - name: 🧹 Run clippy
-      run: cargo +nightly clippy --all-targets --all-features -- -D warnings
+      run: cargo +nightly clippy --workspace --all-targets --all-features -- -D warnings
 
     - name: 🚧 Build release version
       run: cargo +nightly build --release
@@ -44,8 +45,9 @@ jobs:
       with:
         tool: cargo-nextest
 
+    # The window's tests are of its plain-Rust model and need no Windows App Runtime
     - name: 🧪 Run tests
-      run: cargo +nightly nextest run --all-targets
+      run: cargo +nightly nextest run --workspace --all-targets
 
     - name: 🔍 Run audit
       uses: actions-rs/audit-check@v1

@@ -1,0 +1,58 @@
+{
+  "_about": [
+    "Copy this file next to tmr.exe as colours.json and edit it; it is read when the window opens.",
+    "Colours are #RRGGBB or #AARRGGBB (alpha first). Leave a key out to keep its default; keys starting with _ are ignored.",
+    "egui's grey text instead of WinUI's white: dark.text_primary #8C8C8C, light.text_primary #505050."
+  ],
+  "_keys": {
+    "text_primary": "most text: title, table cells, error lines, card titles, CPU name",
+    "text_secondary": "info line, table headings, empty-state lines, chart axis labels",
+    "error": "error bullets, a non-zero error count, the chart's error marks",
+    "critical": "the 'Failed' badge fill",
+    "success": "the 'Running' and 'Passed' badge fill",
+    "neutral": "the other badges' fill: 'Ready', 'Stopping', 'Interrupted', 'Not run'",
+    "on_status": "badge text",
+    "accent": "the chart's throughput line",
+    "chart_grid": "the chart's gridlines, the header divider",
+    "card_background": "card fill",
+    "card_stroke": "card border, progress track border",
+    "stripe": "alternate table rows",
+    "progress_track": "progress bar, empty part",
+    "progress_fill": "progress bar, filled part",
+    "progress_text": "the percentage inside the progress bar"
+  },
+  "dark": {
+    "text_primary": "#FFFFFF",
+    "text_secondary": "#C5FFFFFF",
+    "error": "#FF0000",
+    "critical": "#FF99A4",
+    "success": "#6CCB5F",
+    "neutral": "#9D9D9D",
+    "on_status": "#000000",
+    "accent": "#3987E5",
+    "chart_grid": "#3D3D3D",
+    "card_background": "#0DFFFFFF",
+    "card_stroke": "#19000000",
+    "stripe": "#0FFFFFFF",
+    "progress_track": "#0A0A0A",
+    "progress_fill": "#005C80",
+    "progress_text": "#C0DEFF"
+  },
+  "light": {
+    "text_primary": "#E4000000",
+    "text_secondary": "#9E000000",
+    "error": "#FF0000",
+    "critical": "#C42B1C",
+    "success": "#0F7B0F",
+    "neutral": "#6E6E6E",
+    "on_status": "#FFFFFF",
+    "accent": "#2A78D6",
+    "chart_grid": "#E3E3E3",
+    "card_background": "#B3FFFFFF",
+    "card_stroke": "#0F000000",
+    "stripe": "#09000000",
+    "progress_track": "#FFFFFF",
+    "progress_fill": "#90D1FF",
+    "progress_text": "#00537D"
+  }
+}

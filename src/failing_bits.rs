@@ -47,7 +47,7 @@ impl FailingBits {
     }
 
     /// A failed check, whose differences ORed to `mask`.
-    pub fn add_check(&mut self, mask: u64) {
+    pub(crate) fn add_check(&mut self, mask: u64) {
         for bit in set_bits(mask) {
             self.at(bit).checks += 1;
         }
@@ -56,14 +56,14 @@ impl FailingBits {
     /// A bad word: `actual` where `want` was expected. A rescan counts its words in a `WordTally`
     /// instead, which a chunk of bad words doesn't slow.
     #[cfg(test)]
-    pub fn add_word(&mut self, want: u64, actual: u64) {
+    pub(crate) fn add_word(&mut self, want: u64, actual: u64) {
         let mut tally = WordTally::default();
         tally.add(want, actual);
         self.add_words(&tally);
     }
 
     /// A rescan's bad words.
-    pub fn add_words(&mut self, tally: &WordTally) {
+    pub(crate) fn add_words(&mut self, tally: &WordTally) {
         for bit in 0..64 {
             let (up, down) = (tally.up[bit], tally.down[bit]);
             if up + down > 0 {
@@ -73,7 +73,7 @@ impl FailingBits {
         }
     }
 
-    pub fn add(&mut self, other: &FailingBits) {
+    pub(crate) fn add(&mut self, other: &FailingBits) {
         for b in &other.0 {
             let to = self.at(u32::from(b.bit));
             to.checks += b.checks;

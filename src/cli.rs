@@ -29,138 +29,34 @@ pub(crate) const CACHE_LATENCY_FILTER: &str = "Lat-L1-*,Lat-L2-*,Lat-L3-*,Lat-DR
 // Global file logger for dual console+file logging
 static FILE_LOGGER: std::sync::OnceLock<Arc<Mutex<Option<std::fs::File>>>> = std::sync::OnceLock::new();
 
-/// Vectored Exception Handler — catches hardware crashes (access violations, illegal
-/// instructions, stack overflows) that Rust's panic handler cannot see.
-/// Logs the faulting instruction, target address, and access type before the process dies.
-unsafe extern "system" fn crash_exception_handler(
-    info: *mut windows::Win32::System::Diagnostics::Debug::EXCEPTION_POINTERS,
-) -> i32 {
-    use windows::Win32::Foundation::{
-        EXCEPTION_ACCESS_VIOLATION, STATUS_ILLEGAL_INSTRUCTION,
-        STATUS_STACK_OVERFLOW, STATUS_STACK_BUFFER_OVERRUN,
-    };
-
-    if info.is_null() { return 0; } // EXCEPTION_CONTINUE_SEARCH
-    let ptrs = unsafe { &*info };
-    if ptrs.ExceptionRecord.is_null() { return 0; }
-    let record = unsafe { &*ptrs.ExceptionRecord };
-
-    let code = record.ExceptionCode;
-    let ip = record.ExceptionAddress as usize;
-
-    // Only handle fatal exceptions — let debugger breakpoints etc. pass through
-    let label = if code == EXCEPTION_ACCESS_VIOLATION {
-        "ACCESS_VIOLATION"
-    } else if code == STATUS_ILLEGAL_INSTRUCTION {
-        "ILLEGAL_INSTRUCTION"
-    } else if code == STATUS_STACK_OVERFLOW {
-        "STACK_OVERFLOW"
-    } else if code == STATUS_STACK_BUFFER_OVERRUN {
-        "STACK_BUFFER_OVERRUN"
-    } else {
-        return 0; // Not our problem — pass to next handler
-    };
-
-    // Compute RVA from module base (works regardless of ASLR)
-    let module_base = unsafe {
-        windows::Win32::System::LibraryLoader::GetModuleHandleA(None)
-            .map(|h| h.0 as usize).unwrap_or(0)
-    };
-    let rva = if module_base > 0 && ip >= module_base { ip - module_base } else { ip };
-
-    // For access violations, ExceptionInformation[0] = access type, [1] = target address
-    if code == EXCEPTION_ACCESS_VIOLATION && record.NumberParameters >= 2 {
-        let access_type = match record.ExceptionInformation[0] {
-            0 => "READ from",
-            1 => "WRITE to",
-            8 => "DEP violation at",
-            _ => "UNKNOWN access at",
-        };
-        let target_addr = record.ExceptionInformation[1];
-        eprintln!("\n!!! FATAL: {} (0x{:08X}) at IP={:#x} (RVA={:#x})", label, code.0, ip, rva);
-        eprintln!("!!!   {} address {:#x}", access_type, target_addr);
-    } else {
-        eprintln!("\n!!! FATAL: {} (0x{:08X}) at IP={:#x} (RVA={:#x})", label, code.0, ip, rva);
-    }
-    eprintln!("!!! Module base: {:#x}", module_base);
-
-    // Return EXCEPTION_CONTINUE_SEARCH (0) — let the default handler terminate the process
-    // after we've logged. Using 1 (EXCEPTION_CONTINUE_EXECUTION) would loop forever.
-    0
-}
-
-/// Verify the running CPU has the instruction-set features TMR is built against.
-///
-/// TMR compiles at the `x86-64-v3` baseline (AVX2) and emits CLFLUSHOPT unconditionally
-/// in the cache-flush path. CLFLUSHOPT is a standalone CPUID feature (not part of any
-/// psABI microarch level), so it must be checked at runtime. Missing either feature means
-/// the binary would hit an illegal-instruction fault during testing — so we detect it up
-/// front, explain why, and exit cleanly. This excludes pre-2015 CPUs (Intel pre-Skylake,
-/// incl. Haswell/Broadwell which have AVX2 but no CLFLUSHOPT; AMD pre-Excavator/pre-Zen),
-/// all of which are DDR3/DDR4-era and out of scope for a DDR5 tester.
-fn require_cpu_features() {
-    let mut missing: Vec<&str> = Vec::new();
-    if !is_x86_feature_detected!("avx2") {
-        missing.push("AVX2");
-    }
-    // clflushopt detection landed in std behind the unstable `clflushopt_target_feature`
-    // gate (rustc PR #157098) — gated at the crate root (`lib.rs`).
-    if !is_x86_feature_detected!("clflushopt") {
-        missing.push("CLFLUSHOPT");
-    }
-
-    if !missing.is_empty() {
-        eprintln!("FATAL: this CPU is missing required instruction set features: {}", missing.join(", "));
-        eprintln!("TMR is built for x86-64-v3 (AVX2) + CLFLUSHOPT — a 2015-or-newer CPU");
-        eprintln!("(Intel Skylake+ / AMD Excavator+ / any Zen). Pre-2015 CPUs are not supported.");
-        std::process::exit(RunStatus::NotRun.exit_code());
+/// The CLI: a session on the console, `args` the command line (the exe's name first) less tmr.exe's
+/// own `--cli`/`--gui`. Returns the exit status for scripts: 0 passed, 1 failed or found errors, 2
+/// stopped before testing, 3 interrupted (`RunStatus::exit_code`). Any error stops TMR before
+/// testing, so it exits 2 like every other "stopped before testing" case (`RunStatus::NotRun`);
+/// the console gets it once, the log file too.
+pub fn main(args: Vec<String>) -> i32 {
+    match run_session(args, Arc::new(crate::cli_render::CliFrontend::new())) {
+        Ok(status) => status.exit_code(),
+        Err(e) => {
+            report_error(e.as_ref());
+            RunStatus::NotRun.exit_code()
+        }
     }
 }
 
-/// Any error here stops TMR before testing, so it exits 2 like every other "stopped before
-/// testing" case (`RunStatus::NotRun`); returned to `main.rs` it would exit 1, which means "tests
-/// failed". The console gets it once, the log file too.
-pub fn main() -> Result<(), Box<dyn std::error::Error>> {
-    if let Err(e) = run() {
-        log::error!(target: crate::console::FILE_ONLY_TARGET, "{e}");
-        eprintln!("Error: {e}");
-        std::process::exit(RunStatus::NotRun.exit_code());
-    }
-    Ok(())
+/// The error that stopped a session, as the CLI reports it, the window's preview too (TODO 29 S3):
+/// `Error: ...` on the console once, and the error in the log file.
+pub fn report_error(e: &dyn std::error::Error) {
+    log::error!(target: crate::console::FILE_ONLY_TARGET, "{e}");
+    eprintln!("Error: {e}");
 }
 
-fn run() -> Result<(), Box<dyn std::error::Error>> {
-    // --- Crash handling: install BEFORE anything else ---
-
-    // 1. Rust panic hook — ensures panic messages reach stderr + log before abort
-    std::panic::set_hook(Box::new(|info| {
-        let msg = if let Some(s) = info.payload().downcast_ref::<&str>() {
-            s.to_string()
-        } else if let Some(s) = info.payload().downcast_ref::<String>() {
-            s.clone()
-        } else {
-            "unknown panic".to_string()
-        };
-        let location = info.location()
-            .map(|l| format!("{}:{}:{}", l.file(), l.line(), l.column()))
-            .unwrap_or_else(|| "unknown location".to_string());
-        eprintln!("\n!!! PANIC at {}: {}", location, msg);
-        log::error!("PANIC at {}: {}", location, msg);
-    }));
-
-    // 2. Windows VEH — catches hardware exceptions (segfaults, illegal instructions)
-    unsafe {
-        windows::Win32::System::Diagnostics::Debug::AddVectoredExceptionHandler(
-            1, // first=1: our handler runs BEFORE any other handlers
-            Some(crash_exception_handler),
-        );
-    }
-
-    // 3. CPU capability gate — TMR is built for x86-64-v3 (AVX2) and requires CLFLUSHOPT
-    //    (not part of any psABI level, so the compiler baseline can't guarantee it). Reject
-    //    unsupported CPUs cleanly here rather than letting them #UD-fault mid-test.
-    require_cpu_features();
-
+/// A session: the setup the console shows, then the run, its events to `fe`. Returns how the run
+/// went; a one-shot command (`--help`, `--compare-results`, ...) and the restart the large-page
+/// prompt can choose return `Passed`, as they exit 0. The GUI preview (TODO 29 S3) calls it with its
+/// own `fe`, and its setup still prints to the console and asks its question there, and a setup
+/// error still exits the process: S4 moves this to `session::run`, which does neither.
+pub fn run_session(command_line: Vec<String>, fe: Arc<dyn crate::frontend::Frontend>) -> Result<RunStatus, Box<dyn std::error::Error>> {
     // VT escape processing, for the log colours and the progress ticker (see console.rs).
     crate::console::init();
 
@@ -172,7 +68,6 @@ fn run() -> Result<(), Box<dyn std::error::Error>> {
 
     // The command line as typed, for the results file (`RunConfigSnapshot::command_line`): `args`
     // gains the defaults the modes below add
-    let command_line: Vec<String> = env::args().collect();
     let mut args = command_line.clone();
 
     // core-priority= first: it decides how the topology is typed, which `--show-topology` and
@@ -361,7 +256,7 @@ fn run() -> Result<(), Box<dyn std::error::Error>> {
                     println!("❌ Failed to create demo configs: {}", e);
                     std::process::exit(RunStatus::NotRun.exit_code());
                 }
-                return Ok(());
+                return Ok(RunStatus::Passed);
             }
             "--compare-results" => {
                 if args.len() < 4 {
@@ -379,17 +274,17 @@ fn run() -> Result<(), Box<dyn std::error::Error>> {
                         std::process::exit(RunStatus::NotRun.exit_code());
                     }
                 }
-                return Ok(());
+                return Ok(RunStatus::Passed);
             }
 			"--debug-topology" => {
                 println!("🔍 Debugging CPU Topology Detection");
                 crate::cpu_topology::debug_topology_detection();
-                return Ok(());
+                return Ok(RunStatus::Passed);
             }
 			"--show-topology" => {
 				println!("🔍 Complete CPU Topology Mapping");
 				crate::cpu_topology::show_complete_topology_mapping();
-				return Ok(());
+				return Ok(RunStatus::Passed);
 			}
 			// --cache-latency and --ram-latency are handled above
 			// They use the unified test flow with filters
@@ -412,23 +307,23 @@ fn run() -> Result<(), Box<dyn std::error::Error>> {
 						println!("This may require a system restart if privileges were just granted.");
 					}
 				}
-				return Ok(());
+				return Ok(RunStatus::Passed);
 			}
 			// The calibrations (TODO 99 adds the seal's width): each measures, shows what it found and
 			// saves it to tmr-cfg.json after a prompt
 			"--calibrate-cache" | "--calibrate-cache-ext" | "--calibrate-seal" | "--calibrate-all" => {
 				calibrate_command(&args);
-				return Ok(());
+				return Ok(RunStatus::Passed);
 			}
             "--help" | "-h" | "/?" | "-?" => {
                 params::print_help(&args[0]);
-                return Ok(());
+                return Ok(RunStatus::Passed);
             }
             "--version" | "-v" => {
                 println!("Test Memory R (TMR) version {}", crate::BUILD.version);
                 println!("High-Performance Memory Testing Tool with TM5 Compatibility");
                 println!("Three-Stage Memory Architecture with Comprehensive Testing");
-                return Ok(());
+                return Ok(RunStatus::Passed);
             }
             _ => {}
         }
@@ -834,7 +729,7 @@ fn run() -> Result<(), Box<dyn std::error::Error>> {
 				println!("  • Or use Start Menu → Power → Restart");
 				println!();
 				println!("TMR will exit now.");
-				return Ok(());
+				return Ok(RunStatus::Passed);
 			}
 			"B" => {
 				// The default minpage needs large pages, so say 4 KB for this run (TODO 88)
@@ -1076,8 +971,6 @@ fn run() -> Result<(), Box<dyn std::error::Error>> {
         println!("📋 Plan: {}{default}: {}", plan.name, plan.about);
     }
 
-    // The run's events, as the console shows them (TODO 29)
-    let frontend: Arc<dyn crate::frontend::Frontend> = Arc::new(crate::cli_render::CliFrontend::new());
     let status = run_tests_with_layout_and_timing_filtered(crate::runner::RunSetup {
         layout: enhanced_layout,
         error_mode,
@@ -1101,7 +994,7 @@ fn run() -> Result<(), Box<dyn std::error::Error>> {
             command_line: &command_line,
         },
         cache_info,
-    }, &frontend);
+    }, &fe);
 
     if plan_only {
         if status == RunStatus::Passed {
@@ -1121,11 +1014,7 @@ fn run() -> Result<(), Box<dyn std::error::Error>> {
             RunStatus::Interrupted => println!("⚠️  Interrupted after {}: only the tests that finished were checked", format_duration(total_time)),
         }
     }
-    // Exit status for scripts: 0 passed, 1 failed or found errors, 2 stopped before testing
-    if status != RunStatus::Passed {
-        std::process::exit(status.exit_code());
-    }
-	Ok(())
+    Ok(status)
 }
 
 /// Compare new calibration results with existing and prompt user to accept/reject.

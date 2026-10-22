@@ -35,7 +35,8 @@ pub(super) fn show(run: Run) {
         Run::WheaMonitoring(Err(reason)) => println!("🔎 WHEA hardware-error monitoring: unavailable ({})", reason),
         Run::AllocationStarting { min, max } => print!("{}", allocation_starting(min, max)),
         Run::Allocated(report) => print!("{}", report_text("the allocation report", |r| r.report_allocation(&report))),
-        Run::SuiteStarted { seed, transfer_bits, transfer_source } => {
+        // The CLI reads the suite's progress on the monitor's ticks
+        Run::SuiteStarted { progress: _, seed, transfer_bits, transfer_source } => {
             console::print_above(&format!("🎲 Pattern seed {seed:#018x} (seed= replays it), transfer width {}",
                 transfer_bits.map_or("unknown: switch alternates 64 and 32 bits".to_string(), |bits| format!("{bits} bits ({transfer_source})"))));
         }
@@ -43,6 +44,8 @@ pub(super) fn show(run: Run) {
             Some(limit) => format!("\n🔄 Starting test cycle {} of {}", cycle, limit),
             None => format!("\n🔄 Starting test cycle {}", cycle),
         }),
+        // No line of its own: the next cycle's start or the verdict follows
+        Run::CycleFinished { .. } => {}
         Run::SealStage { op, kernel, bytes, errors, bits, duration } => {
             let lead = match op {
                 SealOp::SealAll => "🔒 Sealing memory",

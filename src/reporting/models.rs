@@ -52,7 +52,7 @@ pub struct CacheInfo {
 
 /// Thread timing deviation report
 ///
-/// The WHEA counts sit at report level, not on [`ThreadTiming`], because WHEA events are
+/// The WHEA counts sit at report level, not on `ThreadTiming`, because WHEA events are
 /// system-wide: nothing in the event identifies the core that faulted (the XML's
 /// `Execution ProcessID` is the logging service). They are carried here so the table's aggregate
 /// row can show them in the `WHEA` column and fail even when every thread row is clean — otherwise
@@ -369,7 +369,7 @@ pub struct AllocationReport {
     pub nodes: Vec<AllocationNode>,
     /// Every request, grouped: largest page size first, then node, then the largest request.
     pub commit_groups: Vec<CommitGroup>,
-    /// One per dimension, in [`FairnessDimension::ALL`] order.
+    /// One per dimension, in `FairnessDimension::ALL` order.
     pub fairness: Vec<DimensionFairness>,
 }
 

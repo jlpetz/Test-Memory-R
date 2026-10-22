@@ -10,11 +10,14 @@
 // modules, until S5 moves them out). Test code prints freely.
 #![cfg_attr(not(test), deny(clippy::print_stdout, clippy::print_stderr, clippy::exit))]
 
-// The whole program, the command line included, is in this crate, and `cli` is its only public
-// item. Everything else is private, so `dead_code` checks all of it. While `main.rs` held the CLI
-// and every module here was `pub`, all of them counted as public API, and an uncalled `pub fn` was
-// never reported (TODO #69 E).
+// The engine and, until S5 of TODO 29 cuts its crate, the command line. Its public items are what
+// tmr.exe (`crates/tmr-app`) and the window (`crates/tmr-gui`) call: `cli`, `frontend` (the
+// interface a run is shown through, with the types its events carry) and `request_stop`. Everything
+// else is private, so `dead_code` checks it. While `main.rs` held the CLI and every module here was
+// `pub`, all of them counted as public API, and an uncalled `pub fn` was never reported (TODO 69 E).
 pub mod cli;
+pub mod frontend; // the engine's interface to whoever shows a run: its events (TODO 29)
+pub use runner::request_stop;
 
 mod config;
 mod constants;
@@ -56,7 +59,6 @@ mod sequence; // Mem-Sequence's passes: writes, reads and read-then-writes in an
 mod plans; // built-in test plans: which of the suite's tests a run takes (TODO 25)
 mod ops; // the work around a test, by operation: seal fills and checks, fills (TODO 90)
 mod build_info; // which build this binary is: version, commit, compiler (TODO 72)
-mod frontend; // the engine's interface to whoever shows a run: its events (TODO 29; public in S3)
 mod cli_render; // the CLI's frontend: the run's events as the console shows them (TODO 29)
 #[cfg(test)]
 mod golden; // the console's output against goldens, for the engine/presentation split (TODO 29)

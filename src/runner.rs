@@ -198,6 +198,13 @@ impl RunStatus {
 // Global flags for shutdown handling
 pub static SHUTDOWN_REQUESTED: AtomicBool = AtomicBool::new(false);
 
+/// Stops the run gracefully, as a first Ctrl+C does: the step running ends at its next check, and
+/// the run reports and saves what it has (TODO 29: the GUI's Stop). The flag is never cleared, so
+/// it stops this process's run for good.
+pub fn request_stop() {
+    SHUTDOWN_REQUESTED.store(true, Ordering::Relaxed);
+}
+
 // OS memory allocation per thread (renamed from AllocationBlock for clarity)
 // Represents: Physical memory allocated from the OS for testing
 #[derive(Debug)]
@@ -1118,7 +1125,7 @@ pub fn run_tests_with_layout_and_timing_filtered(setup: RunSetup, fe: &Arc<dyn F
                if crate::pattern::seed_given() { "seed=" } else { "from the clock" },
                beat.map_or("unknown".to_string(), |b| format!("{} bits", b.bits())),
                if crate::pattern::rescan_enabled() { "on" } else { "off" });
-    fe.event(Run::SuiteStarted { seed, transfer_bits: beat.map(|b| b.bits()), transfer_source: beat_source }.into());
+    fe.event(Run::SuiteStarted { progress: Arc::clone(&progress), seed, transfer_bits: beat.map(|b| b.bits()), transfer_source: beat_source }.into());
 
     let mut cycles_done = 0u32;
     // When the results were last saved between cycles (TODO 72)
@@ -1139,14 +1146,9 @@ pub fn run_tests_with_layout_and_timing_filtered(setup: RunSetup, fe: &Arc<dyn F
         fe.event(Run::CycleStarted { cycle, limit: cycle_limit }.into());
 
         // Execute all tests in sequence for this cycle
-        let stop = execute_test_cycle(&cycle_ctx, cycle as u64);
-        // Saved between cycles (TODO 72), so a run killed, lost or crashed from here on still leaves
-        // the cycles saved so far
-        if results_save_due(cycle, stop.is_some(), last_save.elapsed()) {
-            save_after_cycle(&test_run_result, cycle, suite_start.elapsed(), &progress.whea);
-            last_save = Instant::now();
-        }
-        if let Some(stop) = stop {
+        let end = execute_test_cycle(&cycle_ctx, cycle as u64);
+        last_save = after_cycle(&end, cycle, &test_run_result, &progress.whea, suite_start, last_save, fe.as_ref());
+        if let Some(stop) = end.stop {
             break stop;
         }
         cycles_done = cycle;
@@ -1238,10 +1240,20 @@ pub fn run_tests_with_layout_and_timing_filtered(setup: RunSetup, fe: &Arc<dyn F
     status
 }
 
-/// Run every test once. Returns `None` when the cycle ran to the end, or the outcome the suite
-/// must end with when it stopped early (Ctrl+C, or an `ErrorMode::Halt` trigger). Either way the
-/// tests that ran are added to the results as this cycle.
-fn execute_test_cycle(ctx: &CycleContext, cycle: u64) -> Option<RunOutcome> {
+/// How a cycle ended (`execute_test_cycle`)
+struct CycleEnd {
+    /// The outcome the suite must end with when it stops after this cycle (Ctrl+C, or an
+    /// `ErrorMode::Halt` trigger), `None` when it goes on
+    stop: Option<RunOutcome>,
+    /// The cycle stopped before its end, its last steps and its final seal check not run: a
+    /// partial cycle, as its results record it (TODO 72). One whose final seal check halts the run
+    /// ran to its end, so it isn't.
+    partial: bool,
+}
+
+/// Run every test once, and say how the cycle ended. The tests that ran are added to the results
+/// as this cycle, a partial cycle too.
+fn execute_test_cycle(ctx: &CycleContext, cycle: u64) -> CycleEnd {
     let &CycleContext {
         test_definitions,
         thread_pool,
@@ -1650,7 +1662,7 @@ fn execute_test_cycle(ctx: &CycleContext, cycle: u64) -> Option<RunOutcome> {
             log::error!("Failed to lock test_run_result to add cycle {}", cycle);
         }
     }
-    stopped
+    CycleEnd { stop: stopped, partial }
 }
 
 /// A step's Config line in its report: its parameter, its pattern mode, its extent and chunk with
@@ -4641,6 +4653,22 @@ fn display_and_save_results(
     }
 }
 
+/// A cycle's end, in the cycle loop. The results are saved between cycles when a save is due (TODO
+/// 72), so a run killed, lost or crashed from then on still leaves the cycles saved so far; then the
+/// cycle's end is shown, a partial one too, `partial` as its results record it (TODO 29). Returns
+/// when the results were last saved: now, or `last_save` when this cycle's weren't.
+fn after_cycle(end: &CycleEnd, cycle: u32, test_run_result: &Mutex<TestRunResult>, whea: &crate::whea::WheaMonitor,
+               suite_start: Instant, last_save: Instant, fe: &dyn Frontend) -> Instant {
+    let saved = if results_save_due(cycle, end.stop.is_some(), last_save.elapsed()) {
+        save_after_cycle(test_run_result, cycle, suite_start.elapsed(), whea);
+        Instant::now()
+    } else {
+        last_save
+    };
+    fe.event(Run::CycleFinished { cycle, partial: end.partial }.into());
+    saved
+}
+
 /// The least time between two saves of the results between cycles (TODO 72), but for the first
 /// cycle's and a stopped cycle's. Each save writes the whole file again, which grows with every
 /// cycle: a run of cycles of a few seconds that saved after each would spend a growing part of its
@@ -5046,8 +5074,9 @@ mod tests {
     /// (`a_cpu_without_avx512_runs_no_512_bit_test`), each once and why, and so the results file
     /// does; one that left none out has no such field. The command line is the one passed in, its
     /// executable cut to its file name. This is `RunConfigSnapshot::capture`'s part: the runner
-    /// passes `leave_out_what_the_cpu_lacks`'s list in after allocation, and the CLI its argv from
-    /// `cli::run`, where no test reaches; a live run shows those.
+    /// passes `leave_out_what_the_cpu_lacks`'s list in after allocation, and the session its argv
+    /// from tmr.exe's `main`, less `--gui`/`--cli` (`cli::run_session`), where no test reaches; a
+    /// live run shows those.
     #[test]
     fn the_snapshot_records_the_tests_left_out() {
         let _width = crate::simd::TestWidth::set(Some(crate::simd::Width::W256));
@@ -6078,28 +6107,43 @@ mod tests {
         stats
     }
 
+    /// Where the fake cycle flips a bit (`FLIPPED_WORD`)
+    #[derive(Clone, Copy, PartialEq)]
+    enum Flip {
+        /// Between the Bench-Init's write and its verify, which finds it
+        Verify,
+        /// That, and after the last step, in sealed memory, which only the final seal check finds
+        VerifyAndSealed,
+        /// Only after the last step
+        Sealed,
+    }
+
     /// The fake cycle (TODO 29): `execute_test_cycle` on two workers over heap regions, sealed, under
-    /// `error_mode`. Its steps: a Bench-Init/Verify pair with a bit flipped between them, a latency
-    /// step and a step that takes the seal, which reseals what the others left first; then the final
-    /// seal check, which with `sealed_flip` finds a bit flipped after the last step, and otherwise
-    /// nothing. Every step's width is fixed at 256 bits, and both workers are numbered CPU 0, so no
-    /// figure depends on this machine's caches or topology. `fe` shows it. What
-    /// `execute_test_cycle` returned, what the cycle printed, and the results it added.
-    fn fake_cycle(error_mode: ErrorMode, sealed_flip: bool, fe: &dyn Frontend) -> (Option<RunOutcome>, String, TestRunResult) {
+    /// `error_mode`. Its steps: a Bench-Init/Verify pair, with a bit flipped between them unless
+    /// `flip` is `Sealed`, a latency step and a step that takes the seal, which reseals what the
+    /// others left first; then the final seal check, which finds a bit flipped after the last step
+    /// unless `flip` is `Verify`, and otherwise nothing. Every step's width is fixed at 256 bits, and
+    /// both workers are numbered CPU 0, so no figure depends on this machine's caches or topology.
+    /// `fe` shows it. How the cycle ended, what it printed, and the results it added.
+    fn fake_cycle(error_mode: ErrorMode, flip: Flip, fe: &dyn Frontend) -> (CycleEnd, String, TestRunResult) {
         let cache_info = CacheInfo::default();
         let kernel = crate::seal::SealKernel::new(crate::seal::SealPattern::Tmr, crate::seal::SealWidth::W256);
         let suite = create_test_definitions(&cache_info);
         let find = |name: &str| suite.iter().find(|d| d.actual_name == name).cloned().expect(name);
         let (mut init, mut verify, mut latency) = (find("Bench-Init-TMR-10"), find("Bench-Verify-TMR-10"), find("Lat-L1-Read"));
         init.function = TestFunction::MultiBlock(crate::tests::bench_init_at(crate::simd::Width::W256));
-        verify.function = TestFunction::MultiBlock(flip_then_verify);
+        verify.function = TestFunction::MultiBlock(if flip == Flip::Sealed {
+            crate::tests::bench_verify_at(crate::simd::Width::W256)
+        } else {
+            flip_then_verify
+        });
         verify.config.skip_init = true;
         // One pass each: each of a verify's passes counts the bad word again
         (init.config.timing, verify.config.timing) = (TestTiming::cycles_only(1), TestTiming::cycles_only(1));
         latency.config.extent_mode = ExtentMode::Absolute { size_bytes: 64 * KIB };
         latency.config.timing = TestTiming::cycles_only(1);
         let mut stuck_bit = find("Mem-StuckBit256");
-        if sealed_flip {
+        if flip != Flip::Verify {
             stuck_bit.function = TestFunction::MultiBlock(stuck_bit_then_flip);
         }
         let mut steps = vec![init, verify, latency, stuck_bit];
@@ -6119,7 +6163,7 @@ mod tests {
         let progress = Arc::new(ProgressTracker::new());
         let test_run_result = Arc::new(Mutex::new(TestRunResult::new(Default::default())));
         let all_test_cpu_stats = Arc::new(Mutex::new(HashMap::new()));
-        let (stopped, text) = crate::golden::capture(|| {
+        let (end, text) = crate::golden::capture(|| {
             let (thread_pool, result_receiver) = ThreadPool::new(blocks, false, ThreadPriority::Normal, 2, Some(&[0, 0][..]));
             progress.begin_suite(Instant::now(), Some(1), None, steps.len() as u64, thread_pool.live_progress());
             progress.start_new_cycle(1);
@@ -6137,14 +6181,14 @@ mod tests {
                 tm5: false,
                 fe,
             };
-            let stopped = execute_test_cycle(&ctx, 1);
+            let end = execute_test_cycle(&ctx, 1);
             // The workers' blocks, freed before the regions they are in
             let (blocks, _) = thread_pool.shutdown();
             drop(blocks);
-            stopped
+            end
         });
         let result = test_run_result.lock().unwrap().clone();
-        (stopped, text, result)
+        (end, text, result)
     }
 
     /// A cycle as the console shows it (TODO 29): the fake cycle, logging its errors. Times, rates
@@ -6155,8 +6199,8 @@ mod tests {
     /// first.
     #[test]
     fn a_cycle_prints_as_its_golden() {
-        let (stopped, text, result) = fake_cycle(ErrorMode::Log, false, &crate::cli_render::CliFrontend::new());
-        assert_eq!(stopped, None, "the cycle ran to its end");
+        let (end, text, result) = fake_cycle(ErrorMode::Log, Flip::Verify, &crate::cli_render::CliFrontend::new());
+        assert_eq!((end.stop, end.partial), (None, false), "the cycle ran to its end");
         let errors: Vec<u64> = result.cycles[0].tests.iter().map(|t| t.errors).collect();
         assert_eq!(errors, [0, 1, 0, 0], "the flipped bit is the verify's one error");
         // A whole cycle, and each step's threads in it, by thread: where each ran and what it found,
@@ -6187,18 +6231,59 @@ mod tests {
         crate::golden::check("cycle", &crate::golden::mask_run(&text));
     }
 
-    /// TODO 72: a cycle that errors=halt stops, at the verify's error, is partial in the results:
-    /// the steps that ran, and no final seal check.
+    /// TODO 72: a cycle that errors=halt stops, at the verify's error, is partial in the results, as
+    /// its end says: the steps that ran, and no final seal check.
     #[test]
     fn a_halted_cycle_is_partial() {
-        let (stopped, _, result) = fake_cycle(ErrorMode::Halt, false, &crate::cli_render::CliFrontend::new());
-        assert_eq!(stopped, Some(RunOutcome::Halted));
+        let (end, _, result) = fake_cycle(ErrorMode::Halt, Flip::Verify, &crate::cli_render::CliFrontend::new());
+        assert_eq!((end.stop, end.partial), (Some(RunOutcome::Halted), true));
         let cycle = &result.cycles[0];
         assert!(cycle.partial);
         let steps: Vec<&str> = cycle.tests.iter().map(|t| t.name.as_str()).collect();
         assert_eq!(steps, ["Bench-Init-TMR-10", "Bench-Verify-TMR-10"], "the steps up to the verify's halt");
         let seal = cycle.seal.as_ref().expect("a sealed cycle");
         assert!(seal.seal_bytes > 0 && seal.final_check_bytes == 0, "sealed at its start, and no final check");
+    }
+
+    /// TODO 29: a cycle whose final seal check halts the run ran every step and its final check, so
+    /// neither its results nor its end call it partial. After a cycle the results are saved when a
+    /// save is due, and then its end is shown, `partial` as the results have it.
+    #[test]
+    fn a_cycle_ends_saved_then_shown() {
+        let (end, _, mut result) = fake_cycle(ErrorMode::Halt, Flip::Sealed, &crate::cli_render::CliFrontend::new());
+        assert_eq!((end.stop, end.partial), (Some(RunOutcome::Halted), false));
+        assert_eq!(result.cycles.len(), 1);
+        assert!(!result.cycles[0].partial && result.cycles[0].tests.len() == 4, "every step ran");
+        let seal = result.cycles[0].seal.as_ref().expect("a sealed cycle");
+        assert_eq!(seal.final_check_errors, 1, "the bit flipped after the last step");
+
+        // Each end shown, and whether the results file was there by then
+        struct Ends {
+            path: String,
+            ends: Mutex<Vec<(u32, bool, bool)>>,
+        }
+        impl Frontend for Ends {
+            fn event(&self, event: crate::frontend::Event) {
+                if let crate::frontend::Event::Run(Run::CycleFinished { cycle, partial }) = event {
+                    self.ends.lock().unwrap().push((cycle, partial, std::path::Path::new(&self.path).exists()));
+                }
+            }
+        }
+        let dir = crate::results::TempDir::new("cycle-ends");
+        result.metadata.filename = dir.file("run.json");
+        let fe = Ends { path: result.metadata.filename.clone(), ends: Mutex::default() };
+        let test_run_result = Mutex::new(result);
+        let whea = crate::whea::WheaMonitor::new();
+        let start = Instant::now();
+        // The first cycle is saved; the second isn't due, so the last save stands
+        let saved = after_cycle(&end, 1, &test_run_result, &whea, start, start, &fe);
+        std::fs::remove_file(&fe.path).unwrap();
+        let whole = CycleEnd { stop: None, partial: false };
+        assert_eq!(after_cycle(&whole, 2, &test_run_result, &whea, start, saved, &fe), saved, "not due");
+        // A cycle that stopped early is saved
+        let stopped = CycleEnd { stop: Some(RunOutcome::Interrupted), partial: true };
+        after_cycle(&stopped, 3, &test_run_result, &whea, start, saved, &fe);
+        assert_eq!(*fe.ends.lock().unwrap(), [(1, false, true), (2, false, false), (3, true, true)]);
     }
 
     /// TODO 72: between cycles the results are saved silently, in progress, with the overall figures
@@ -6272,6 +6357,7 @@ mod tests {
                 Run::Allocated(_) => "Allocated".to_string(),
                 Run::SuiteStarted { .. } => "SuiteStarted".to_string(),
                 Run::CycleStarted { cycle, .. } => format!("CycleStarted {cycle}"),
+                Run::CycleFinished { cycle, .. } => format!("CycleFinished {cycle}"),
                 Run::SealStage { op, .. } => format!("SealStage {op:?}"),
                 Run::StepFinished(report) => format!("StepFinished {}, {} errors", report.summary.step, report.summary.errors),
                 Run::LateWhea(_) => "LateWhea".to_string(),
@@ -6301,14 +6387,14 @@ mod tests {
                 .map(|line| line.split_once("\x1b[0m ").map_or(line, |(_, message)| message).to_string())
                 .collect()
         };
-        let (_, text, _) = fake_cycle(ErrorMode::Log, false, &Recording);
+        let (_, text, _) = fake_cycle(ErrorMode::Log, Flip::Verify, &Recording);
         let verify_errors = "Thread 0 reported 1 memory errors in test 'Bench-Verify-TMR-10' (1 failed checks, 0 not reproduced on rescan)";
         assert_eq!(order(&text), ["<SealStage SealAll>", "<StepFinished 1, 0 errors>", verify_errors, "<StepFinished 2, 1 errors>",
                                   "<StepFinished 3, 0 errors>", "<StepFinished 4, 0 errors>", "<SealStage FinalCheck>"]);
-        let (_, text, _) = fake_cycle(ErrorMode::Halt, false, &Recording);
+        let (_, text, _) = fake_cycle(ErrorMode::Halt, Flip::Verify, &Recording);
         assert_eq!(order(&text), ["<SealStage SealAll>", "<StepFinished 1, 0 errors>", verify_errors, "<StepFinished 2, 1 errors>",
                                   "Halting test suite due to memory errors"]);
-        let (_, text, _) = fake_cycle(ErrorMode::Log, true, &Recording);
+        let (_, text, _) = fake_cycle(ErrorMode::Log, Flip::VerifyAndSealed, &Recording);
         assert_eq!(order(&text), ["<SealStage SealAll>", "<StepFinished 1, 0 errors>", verify_errors, "<StepFinished 2, 1 errors>",
                                   "<StepFinished 3, 0 errors>", "<StepFinished 4, 0 errors>", "<SealStage FinalCheck>",
                                   "The final seal check of cycle 1 found 1 errors"]);

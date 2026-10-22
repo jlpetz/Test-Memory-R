@@ -364,7 +364,7 @@ Work down this list; take the first match.
 
 Whichever tier: the kernel goes in a `macro_rules!` expanded inside the `#[target_feature]` fn.
 Never a generic fn, trait method, or closure that is not monomorphized at the call site. Then
-**read the emitted assembly** (`cargo rustc --release -- --emit asm`) and confirm the width and
+**read the emitted assembly** (`cargo rustc --release -p tmr-app --bin tmr -- --emit asm`) and confirm the width and
 instructions you asked for are actually there — see `doc/simd_codegen_rules.md`. Both codegen
 traps this project has hit were silently lossy: correct results, wrong test.
 
