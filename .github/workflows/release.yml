@@ -11,7 +11,7 @@ jobs:
 
     steps:
     - name: 📥 Checkout code
-      uses: actions/checkout@v4
+      uses: actions/checkout@v7
 
     - name: 🦀 Install Rust Nightly
       uses: dtolnay/rust-toolchain@nightly
@@ -20,7 +20,7 @@ jobs:
       run: cargo +nightly build --release
 
     - name: 📦 Upload release binary
-      uses: softprops/action-gh-release@v1
+      uses: softprops/action-gh-release@v3
       with:
         files: |
           target/release/tmr.exe
