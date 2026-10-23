@@ -1,7 +1,8 @@
-//! The window (TODO 7), the owner's layout from the demos, top to bottom: the header (the title, the status badge, the runtime and the
-//! system panel on the right, the info line under them), the position and the progress bar, the throughput chart with its error marks, the
-//! results, the errors, then the parameters box with Start and Stop. The chart is never between the results and the errors. The large-page
-//! restart question is a dialog over it (TODO 29 S6).
+//! The window (TODO 7), the owner's layout from the demos, top to bottom: the header (the title, the status badge and the runtime, the
+//! run's errors and the time left under them, the info line, and the system panel on the right), the position with the test's figures
+//! beside it and the progress bar, the throughput chart with its error marks, the results, the errors, then the parameters box with Start
+//! and Stop. The chart is never between the results and the errors. The large-page restart question is a dialog over it (TODO 29 S6). The
+//! figures are the console's ticker's, word for word (`model.rs`).
 //!
 //! It draws `Model`, and re-renders only when a message arrives: a batch from the feed (at least every 500 ms while the session runs), a
 //! button, the dialog's answer, a keystroke in the box, a theme change or a resize. Nothing animates.
@@ -243,23 +244,19 @@ impl Window {
         }
     }
 
-    /// Two rows on the left (title + badge + timer, then the info line); the system panel spans both on the right, right-justified like the
-    /// timer.
+    /// Three rows on the left: the title, the badge and the runtime; the run's errors, and under the runtime the time its limit leaves;
+    /// the info line. The system panel is on the right, right-justified like the runtime.
     fn header(&self, row: i32, context: &ViewContext<Self>) -> View {
         let p = self.palette();
         let info = self.model.info_line();
-        Grid::new()
-            .grid_row(row)
+        let top = Grid::new()
+            .grid_row(0)
             .column_spacing(14.0)
-            .row_spacing(2.0)
-            .rows([GridLength::Auto, GridLength::Auto])
             .columns([
                 GridLength::Auto, // title
                 GridLength::Auto, // badge
                 GridLength::STAR,
-                GridLength::Auto, // timer
-                GridLength::Auto, // divider
-                GridLength::Auto, // system info
+                GridLength::Auto, // runtime
             ])
             .children((
                 TextBlock::new()
@@ -268,10 +265,8 @@ impl Window {
                     .font_weight(FontWeight::SEMI_BOLD)
                     .foreground(brush(p.text_primary))
                     .vertical_alignment(VerticalAlignment::Center)
-                    .grid_row(0)
                     .grid_column(0),
                 Border::new()
-                    .grid_row(0)
                     .grid_column(1)
                     .vertical_alignment(VerticalAlignment::Center)
                     .corner_radius(12.0)
@@ -284,7 +279,7 @@ impl Window {
                             .font_weight(FontWeight::SEMI_BOLD)
                             .foreground(brush(p.on_status)),
                     ),
-                // The timer keeps reactor's default font: 0.100.0's TextBlock has no font family; the next release adds it (owner's note
+                // The runtime keeps reactor's default font: 0.100.0's TextBlock has no font family; the next release adds it (owner's note
                 // 6).
                 TextBlock::new()
                     .text(self.model.runtime_line())
@@ -292,32 +287,54 @@ impl Window {
                     .font_weight(FontWeight::SEMI_LIGHT)
                     .foreground(brush(p.text_primary))
                     .vertical_alignment(VerticalAlignment::Center)
-                    .grid_row(0)
                     .grid_column(3)
                     // A tooltip wraps its target: the target's grid placement goes first
                     .tooltip("The suite's runtime, from its first cycle, as the console's ticker counts it"),
-                Border::new()
-                    .grid_row(0)
-                    .grid_row_span(2)
-                    .grid_column(4)
-                    .width(1.0)
-                    .margin(Thickness::xy(0.0, 4.0))
-                    .background(brush(p.chart_grid)),
-                Border::new()
-                    .grid_row(0)
-                    .grid_row_span(2)
-                    .grid_column(5)
-                    .vertical_alignment(VerticalAlignment::Center)
-                    .content(self.system_info(context)),
-                TextBlock::new()
-                    .text(info.clone())
-                    .foreground(brush(p.text_secondary))
-                    .text_trimming(TextTrimming::CharacterEllipsis)
-                    .vertical_alignment(VerticalAlignment::Center)
-                    .grid_row(1)
-                    .grid_column(0)
-                    .grid_column_span(4)
-                    .tooltip(info),
+            ));
+        // The errors on the left, a non-zero count in the error colour; the time left on the right, under the runtime. Each from the
+        // suite's start.
+        let mut counts: Vec<(u64, View)> = Vec::new();
+        if let Some(count) = &self.model.error_count {
+            let (weight, colour) = if count.alarm { (FontWeight::SEMI_BOLD, p.error) } else { (FontWeight::NORMAL, p.text_secondary) };
+            let text = TextBlock::new().text(count.text.clone()).font_weight(weight).foreground(brush(colour));
+            counts.push((
+                0,
+                text.text_trimming(TextTrimming::CharacterEllipsis).grid_column(0).tooltip(
+                    "The run's memory errors, the running test's so far included, and the hardware errors WHEA reported: \
+                     C corrected, UC uncorrected",
+                ),
+            ));
+        }
+        if let Some(time_left) = &self.model.time_left {
+            let text = TextBlock::new()
+                .text(time_left.clone())
+                .foreground(brush(p.text_secondary))
+                .horizontal_alignment(HorizontalAlignment::Right);
+            counts.push((1, text.grid_column(1).tooltip("The suite's time limit: the cycle running when it is reached finishes")));
+        }
+        let left = Grid::new().grid_column(0).vertical_alignment(VerticalAlignment::Center).row_spacing(2.0).rows([GridLength::Auto; 3]);
+        let left = left.children((
+            top,
+            Grid::new().grid_row(1).column_spacing(12.0).columns([GridLength::STAR, GridLength::Auto]).keyed_children(counts),
+            TextBlock::new()
+                .text(info.clone())
+                .foreground(brush(p.text_secondary))
+                .text_trimming(TextTrimming::CharacterEllipsis)
+                .grid_row(2)
+                .tooltip(info),
+        ));
+        Grid::new()
+            .grid_row(row)
+            .column_spacing(14.0)
+            .columns([
+                GridLength::STAR, // title, errors, info line
+                GridLength::Auto, // divider
+                GridLength::Auto, // system info
+            ])
+            .children((
+                left,
+                Border::new().grid_column(1).width(1.0).margin(Thickness::xy(0.0, 4.0)).background(brush(p.chart_grid)),
+                Border::new().grid_column(2).vertical_alignment(VerticalAlignment::Center).content(self.system_info(context)),
             ))
     }
 
@@ -357,39 +374,59 @@ impl Window {
         };
         lines.push((2, memory_line));
         if let Some(dimm) = s.chosen() {
-            let name =
-                |text: String| TextBlock::new().text(text).foreground(brush(p.text_primary)).vertical_alignment(VerticalAlignment::Center);
+            // Both cut short past a width, so a long locator or part number leaves the header's left side its room; the tooltip has it all
+            let name = TextBlock::new()
+                .text(dimm.name.clone())
+                .foreground(brush(p.text_primary))
+                .max_width(120.0)
+                .text_trimming(TextTrimming::CharacterEllipsis)
+                .vertical_alignment(VerticalAlignment::Center);
             // A menu of the DIMMs, each with its details, on a subtle Button with a ▾: DropDownButton takes a menu too, but 0.100.0 gives it
             // no subtle style, and its border would make the line taller than text. The negative margin cancels the button's padding for the
             // same reason, and keeps the line's spacing to the details. With one DIMM there is nothing to choose: its name alone.
             let selector: View = if s.choosable() {
                 let choices = s.dimms.iter().enumerate().map(|(i, dimm)| MenuItem::item(i, dimm.choice()));
+                let chevron = TextBlock::new().text("▾").foreground(brush(p.text_primary)).vertical_alignment(VerticalAlignment::Center);
                 Button::new()
                     .style(ButtonStyle::Subtle)
                     .margin(Thickness::new(0.0, -5.0, -11.0, -6.0))
                     .vertical_alignment(VerticalAlignment::Center)
-                    .content(name(format!("{} ▾", dimm.name)))
+                    .content(StackPanel::new().orientation(Orientation::Horizontal).spacing(4.0).children((name, chevron)))
                     .menu(Menu::new(choices, context.callback(Message::Dimm)))
             } else {
-                name(dimm.name.clone()).into()
+                name.into()
             };
             let details =
-                secondary(dimm.details.clone()).max_width(300.0).text_trimming(TextTrimming::CharacterEllipsis).tooltip(dimm.choice());
+                secondary(dimm.details.clone()).max_width(280.0).text_trimming(TextTrimming::CharacterEllipsis).tooltip(dimm.choice());
             lines.push((3, line().children((selector, details))));
         }
         StackPanel::new().spacing(2.0).horizontal_alignment(HorizontalAlignment::Right).keyed_children(lines)
     }
 
+    /// The position, the cycle and the test with their clocks, and beside it, right-justified, what the test is doing: its stage and its
+    /// figures. Then the progress bar. The position keeps its width; the figures give way when the window is narrow.
     fn position(&self, row: i32) -> View {
         let p = self.palette();
         let paused = matches!(self.model.status, Status::Stopping | Status::Interrupted);
-        StackPanel::new().grid_row(row).spacing(6.0).children((
+        let mut line: Vec<(u64, View)> = vec![(
+            0,
             TextBlock::new()
                 .text(self.model.position.clone())
                 .font_size(16.0)
                 .font_weight(FontWeight::SEMI_BOLD)
                 .foreground(brush(p.text_primary))
-                .text_trimming(TextTrimming::CharacterEllipsis),
+                .vertical_alignment(VerticalAlignment::Center)
+                .grid_column(0)
+                .into(),
+        )];
+        if let Some(live) = &self.model.live {
+            let text =
+                TextBlock::new().text(live.clone()).foreground(brush(p.text_secondary)).text_trimming(TextTrimming::CharacterEllipsis);
+            let text = text.horizontal_alignment(HorizontalAlignment::Right).vertical_alignment(VerticalAlignment::Center).grid_column(1);
+            line.push((1, text.tooltip(live.clone())));
+        }
+        StackPanel::new().grid_row(row).spacing(6.0).children((
+            Grid::new().column_spacing(16.0).columns([GridLength::Auto, GridLength::STAR]).keyed_children(line),
             progress_bar(self.model.fraction, paused, self.width - 2.0 * PAGE_MARGIN_X, p),
         ))
     }

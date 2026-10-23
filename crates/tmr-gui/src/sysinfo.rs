@@ -40,7 +40,7 @@ impl Machine {
 }
 
 /// A memory module, as the DIMM selector shows it: its name, the locator, or `DIMM 2` where SMBIOS left that empty, and the rest SMBIOS
-/// gives, `G.Skill F5-6000J3040G32G · 32 GiB · 6000 MT/s`, a field it left empty (a VM's often are) left out.
+/// gives, `32 GiB · 6000 MT/s · G.Skill F5-6000J3040G32G`, a field it left empty (a VM's often are) left out.
 #[derive(Clone, Debug, PartialEq)]
 pub struct Dimm {
     pub name: String,
@@ -177,10 +177,11 @@ fn cache_detail(m: &Machine) -> String {
 /// The `index`th module SMBIOS lists, from 0
 fn dimm(index: usize, m: &MemoryModule) -> Dimm {
     let part = format!("{} {}", m.manufacturer.trim(), m.part_number.trim());
+    // The size and the speed first: they are what a narrow window keeps when it cuts the line short
     let details: Vec<String> = [
-        Some(part.trim().to_string()).filter(|part| !part.is_empty()),
         (m.capacity_bytes > 0).then(|| size(m.capacity_bytes as usize)),
         (m.speed_mts > 0).then(|| format!("{} MT/s", m.speed_mts)),
+        Some(part.trim().to_string()).filter(|part| !part.is_empty()),
     ]
     .into_iter()
     .flatten()
@@ -279,14 +280,14 @@ mod tests {
         assert_eq!(panel.memory_line(None).about, "Installed, as SMBIOS lists the modules", "before Windows' figure");
 
         let (a2, b2) = (
-            shown("DIMM_A2", "G.Skill F5-6000J3040G32G · 32 GiB · 6000 MT/s"),
-            shown("DIMM_B2", "Kingston KF564C32-32 · 32 GiB · 6400 MT/s"),
+            shown("DIMM_A2", "32 GiB · 6000 MT/s · G.Skill F5-6000J3040G32G"),
+            shown("DIMM_B2", "32 GiB · 6400 MT/s · Kingston KF564C32-32"),
         );
         assert_eq!((panel.chosen(), panel.choosable()), (Some(&a2), true), "the first, before any choice");
         let choices: Vec<String> = panel.dimms.iter().map(Dimm::choice).collect();
         assert_eq!(choices, [
-            "DIMM_A2 · G.Skill F5-6000J3040G32G · 32 GiB · 6000 MT/s",
-            "DIMM_B2 · Kingston KF564C32-32 · 32 GiB · 6400 MT/s"
+            "DIMM_A2 · 32 GiB · 6000 MT/s · G.Skill F5-6000J3040G32G",
+            "DIMM_B2 · 32 GiB · 6400 MT/s · Kingston KF564C32-32"
         ]);
         panel.choose(&choices[1]);
         assert_eq!(panel.chosen(), Some(&b2));
@@ -302,7 +303,7 @@ mod tests {
         let panel = SystemPanel::of(&machine(vec![module("DIMM_A2", 32)]));
         let memory = panel.memory_line(WINDOWS);
         assert_eq!((memory.total.as_deref(), memory.dimms.as_str()), (Some("32 GiB DDR5"), "1 DIMM"));
-        let a2 = shown("DIMM_A2", "G.Skill F5-6000J3040G32G · 32 GiB · 6000 MT/s");
+        let a2 = shown("DIMM_A2", "32 GiB · 6000 MT/s · G.Skill F5-6000J3040G32G");
         assert_eq!((panel.chosen(), panel.choosable()), (Some(&a2), false));
     }
 

@@ -234,9 +234,9 @@ pub fn commands::calibrate(.., out: &mut dyn io::Write, confirm: &mut dyn FnMut(
 - `build.rs` delay-loads `api-ms-win-appmodel-runtime-l1-1-5.dll` plus `delayimp.lib`, only with `CARGO_FEATURE_GUI`, so the CLI still starts on 20348.
 
 **Window (the owner's layout, TODO 7 detail).**
-- **Header:** status badge (Ready / Running / Stopping / Passed / Failed / Interrupted / Not run, from Run::SuiteEnded and the thread's end); runtime timer top right (snapshot); system info top right, filled after Start so the lazily initialised detection logs (cache.rs:195-206, smbios.rs:383) land in the run's log as today: CPU, RAM, caches, and the DIMM drop-down from `MemoryModule` (smbios.rs:38-52).
+- **Header:** status badge (Ready / Running / Stopping / Passed / Failed / Interrupted / Not run, from Run::SuiteEnded and the thread's end); runtime timer top right, the time its limit leaves under it, and the run's live errors + WHEA under the title, in the ticker's words (snapshot); system info top right, filled after Start so the lazily initialised detection logs (cache.rs:195-206, smbios.rs:383) land in the run's log as today: CPU, caches, the memory's total and DIMM count, and the DIMM selector, the first DIMM's details shown, from `MemoryModule` (smbios.rs:38-52).
 - **Info line:** threads, GiB, page mix and plan, from Run::Allocated and Run::TestPlan.
-- **Position:** cycle n/L, test n/N with name and stage, and the rounded bar with the % inside, from the snapshot.
+- **Position:** cycle n/L and test n/N with name, each with its clock and percentage, the test's stage and figures beside them, as the ticker gives them, and the rounded bar with the % inside, from the snapshot.
 - **Chart at the top:** the shapes chart from chart.rs; `bytes_per_sec` each 500 ms, 120 samples; error marks when the snapshot's errors rise.
 - **Results table:** one keyed row per Run::StepFinished: C# and T# (the cycle, the step's number in it), label, MiB/s (`summary.throughput_mib_s`), errors in the palette's red when above 0, seal errors, WHEA.
 - **Errors list:** steps with errors, seal-stage errors, WHEA descriptions drained by the GUI from the Arc<ProgressTracker>.

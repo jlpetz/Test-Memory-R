@@ -2,9 +2,10 @@
 //! no Reactor type, so the translation is tested apart from the window, which `window.rs` builds from it.
 //!
 //! The events come as the engine sends them, at most a batch every 500 ms; a snapshot comes with each batch, and with each 500 ms that
-//! brought none (`tick`), and so do the warnings and errors logged since (`logged`). The fast figures, the runtime, the position, the
-//! progress and the chart's speed, are the snapshot's; the events give the rest: the setup's the system panel and the first facts, the
-//! run's the rest.
+//! brought none (`tick`), and so do the warnings and errors logged since (`logged`). The fast figures, the runtime and the time left, the
+//! live error count, the position, the test's figures, the progress and the chart's speed, are the snapshot's, each in the words of the
+//! console's ticker (crates/tmr-cli's `render/ticker.rs`, whose golden the tests check them against); the events give the rest: the
+//! setup's the system panel and the first facts, the run's the rest.
 
 use std::collections::VecDeque;
 use std::sync::Arc;
@@ -243,6 +244,23 @@ impl<const N: usize> PartialEq<[&str; N]> for Errors {
     }
 }
 
+/// The run's error count, as the ticker gives it: `0 errors + 0 WHEA`, `⚠️ 3 errors + 3 WHEA (1C/2UC)`. The memory errors count the
+/// running test's so far; the WHEA split is corrected and uncorrected.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct ErrorCount {
+    pub text: String,
+    /// Errors or WHEA reports: the ticker's ⚠️, and the count in the error colour
+    pub alarm: bool,
+}
+
+impl ErrorCount {
+    fn of(errors: u64, whea: WheaCounts) -> Self {
+        let alarm = errors > 0 || whea.total > 0;
+        let flag = if alarm { "⚠️ " } else { "" };
+        ErrorCount { text: format!("{flag}{errors} errors + {} WHEA{}", whea.total, whea.split_suffix()), alarm }
+    }
+}
+
 /// The session's facts, for the info line under the title.
 #[derive(Debug, Default)]
 struct Facts {
@@ -266,9 +284,15 @@ pub struct Model {
     pub status: Status,
     /// The suite's clock: 0 until it starts, held when it ends
     pub runtime: Duration,
+    /// Under the runtime, while the suite runs to a time limit: `remaining 00:18:50`, then `limit reached, finishing cycle`
+    pub time_left: Option<String>,
+    /// The run's errors and WHEA's, live, from the suite's start on
+    pub error_count: Option<ErrorCount>,
     /// Where the run is, one line: the cycle and the test, with their clocks, as the ticker gives them (`position`), and before the suite
     /// and after it what the session is doing and how the run ended
     pub position: String,
+    /// What the running test is doing, beside the position: its stage and its figures (`live`)
+    pub live: Option<String>,
     /// How far the run is, 0 to 1: its cycles, or its time when that ends it sooner
     pub fraction: f64,
     /// The physical memory Windows reports, from setup's memory status and the memory plan
@@ -307,7 +331,10 @@ impl Model {
         Model {
             status: Status::Ready,
             runtime: Duration::ZERO,
+            time_left: None,
+            error_count: None,
             position: "Ready".to_string(),
+            live: None,
             fraction: 0.0,
             ram_bytes: None,
             system: None,
@@ -522,6 +549,9 @@ impl Model {
             Run::SuiteEnded { outcome, status, memory_errors, whea } => {
                 self.status = Status::of(status);
                 self.position = self.ended_line(outcome, memory_errors, whea);
+                // The run's count holds, its last; no test runs and no time is left
+                self.error_count = Some(ErrorCount::of(memory_errors, whea));
+                (self.time_left, self.live) = (None, None);
                 if matches!(outcome, RunOutcome::Completed | RunOutcome::TimeLimit) {
                     self.fraction = 1.0;
                 }
@@ -539,7 +569,10 @@ impl Model {
             return;
         };
         self.runtime = s.runtime;
+        self.time_left = time_left(&s);
+        self.error_count = Some(ErrorCount::of(s.finished_errors + s.live_errors, s.whea));
         self.position = position(&s);
+        self.live = live(&s);
         self.fraction = fraction(&s);
         self.series.push(speed_mib_s(&s));
         let errors = s.finished_errors + s.live_errors + s.whea.total;
@@ -666,9 +699,38 @@ fn plan_fact(plan: &TestConfigurationReport, name: Option<&str>) -> String {
     format!("{name}{} step{} a cycle{sealed}", plan.step_count, plural(plan.step_count))
 }
 
+/// The time the suite's limit leaves, in the ticker's words: `remaining 00:18:50`, and once it is reached `limit reached, finishing cycle`
+/// (a cycle is never cut short by the clock); `None` with no time limit
+fn time_left(s: &ProgressSnapshot) -> Option<String> {
+    let limit = s.time_limit?;
+    Some(match limit.checked_sub(s.runtime) {
+        Some(left) if !left.is_zero() => format!("remaining {}", hms(left)),
+        _ => "limit reached, finishing cycle".to_string(),
+    })
+}
+
+/// What the test running is doing, in the ticker's words: its stage when it isn't just testing, then its figures, the data it has
+/// processed and its speed, `285.00 GiB @ 19108.7 MiB/s (18.66 GiB/s)`, or `pending` before its workers have published them, or
+/// `no live data` for a test that publishes none. `None` before the first test.
+fn live(s: &ProgressSnapshot) -> Option<String> {
+    let test = s.test.as_ref()?;
+    let live = &test.live;
+    let figures = if live.published {
+        format!("{:.2} GiB @ {:.1} MiB/s ({:.2} GiB/s)", live.bytes as f64 / GIB, live.bytes_per_sec / MIB, live.bytes_per_sec / GIB)
+    } else if test.publishes {
+        "pending".to_string()
+    } else {
+        "no live data".to_string()
+    };
+    Some(match live.stage.map(|stage| stage.label()).filter(|label| !label.is_empty()) {
+        Some(stage) => format!("{stage} · {figures}"),
+        None => figures,
+    })
+}
+
 /// The cycle and the test running, each with how long it has run, in the ticker's words (crates/tmr-cli's `render/ticker.rs`):
-/// `Cycle 4/8 (00:12:34, 39%) · Test 2/6 Mem-Refresh128 (00:05:12, 52%) · Checking seal`. A percentage only where a limit gives one: the
-/// cycle's is the whole run's, the test's its own time limit's.
+/// `Cycle 4/8 (00:12:34, 39%) · Test 2/6 Mem-Refresh128 (00:05:12, 52%)`. A percentage only where a limit gives one: the cycle's is the
+/// whole run's, the test's its own time limit's.
 fn position(s: &ProgressSnapshot) -> String {
     let (cycle, tests) = (u64::from(s.cycle), s.tests_per_cycle);
     let mut line = match s.cycle_limit {
@@ -685,9 +747,6 @@ fn position(s: &ProgressSnapshot) -> String {
             line += &format!(", {}%", percent(test.elapsed.as_millis(), limit.as_millis()));
         }
         line.push(')');
-        if let Some(stage) = test.live.stage.map(|stage| stage.label()).filter(|label| !label.is_empty()) {
-            line += &format!(" · {stage}");
-        }
     }
     line
 }
@@ -1256,9 +1315,11 @@ mod tests {
                 .into(),
         );
         assert_eq!(m.fraction, 1.0);
-        let later = ProgressSnapshot { runtime: Duration::from_secs(500), ..snapshot(0) };
+        let ended = ErrorCount { text: "⚠️ 3 errors + 0 WHEA".to_string(), alarm: true };
+        assert_eq!((m.error_count.as_ref(), m.live.as_ref()), (Some(&ended), None), "the run's count holds, and no test runs");
+        let later = ProgressSnapshot { runtime: Duration::from_secs(500), time_limit: Some(Duration::from_secs(600)), ..snapshot(0) };
         m.tick(Some(later), Vec::new());
-        assert_eq!((m.runtime, m.series.received), (Duration::from_secs(95), 4));
+        assert_eq!((m.runtime, m.series.received, m.time_left.as_ref()), (Duration::from_secs(95), 4, None));
     }
 
     /// The ticker's golden (crates/tmr-cli's `testdata/console/ticker.txt`), each `## case` and its lines
@@ -1307,25 +1368,75 @@ mod tests {
         }
     }
 
-    /// The position line in the ticker's words, its cases: a cycle limit and a test's time limit, each with its percentage; no limits, so
-    /// no percentages, and a stage; before the first test, the cycle alone
+    /// What a tick shows of the suite: the header's runtime, time left and error count, the position and the test's live figures
+    #[derive(Debug, PartialEq)]
+    struct Shown {
+        runtime: String,
+        time_left: Option<String>,
+        errors: Option<ErrorCount>,
+        position: String,
+        live: Option<String>,
+    }
+
+    /// What a tick of `snapshot` shows, each part checked word for word against the ticker golden's `case` when it has one
+    fn shown(snapshot: ProgressSnapshot, case: Option<&str>) -> Shown {
+        let mut m = model();
+        m.tick(Some(snapshot), Vec::new());
+        let shown = Shown { runtime: m.runtime_line(), time_left: m.time_left, errors: m.error_count, position: m.position, live: m.live };
+        if let Some(case) = case {
+            let errors = shown.errors.as_ref().map(|count| &count.text);
+            let parts = [Some(&shown.runtime), shown.time_left.as_ref(), errors, Some(&shown.position), shown.live.as_ref()];
+            in_the_ticker(case, &parts.into_iter().flatten().map(String::as_str).collect::<Vec<_>>());
+        }
+        shown
+    }
+
+    /// The header's and the position line's figures are the ticker's, in its golden's cases: a cycle limit, a time limit and a test's
+    /// own, each with its percentage, and the test's figures; no limits, errors and WHEA split, a stage and no figures yet; the limit
+    /// reached and a test that publishes none; before the first test; and a cycle limit alone
     #[test]
-    fn the_position_line_is_the_tickers() {
-        let running = ticker_snapshot();
-        assert_eq!(position(&running), "Cycle 4/8 (00:12:34, 39%) · Test 2/6 Mem-Refresh128 (00:05:12, 52%)");
-        in_the_ticker("limits, a test on its own time limit, its figures in", &[&position(&running)]);
+    fn the_figures_are_the_tickers() {
+        let some = |text: &str| Some(text.to_string());
+        let count = |text: &str, alarm| Some(ErrorCount { text: text.to_string(), alarm });
+        assert_eq!(shown(ticker_snapshot(), Some("limits, a test on its own time limit, its figures in")), Shown {
+            runtime: "00:41:10".to_string(),
+            time_left: some("remaining 00:18:50"),
+            errors: count("0 errors + 0 WHEA", false),
+            position: "Cycle 4/8 (00:12:34, 39%) · Test 2/6 Mem-Refresh128 (00:05:12, 52%)".to_string(),
+            live: some("285.00 GiB @ 19108.7 MiB/s (18.66 GiB/s)"),
+        });
 
         let mut unlimited = ticker_snapshot();
         (unlimited.time_limit, unlimited.cycle_limit, unlimited.cycle) = (None, None, 12);
+        (unlimited.finished_errors, unlimited.live_errors, unlimited.whea) = (2, 1, WheaCounts { total: 3, corrected: 1 });
         let test = unlimited.test.as_mut().unwrap();
         test.time_limit = None;
         test.live = LiveFigures { stage: Some(Stage::CheckingSeal), ..Default::default() };
-        assert_eq!(position(&unlimited), "Cycle 12 (00:12:34) · Test 2/6 Mem-Refresh128 (00:05:12) · Checking seal");
-        in_the_ticker("no limits, errors and WHEA, a stage, no figures yet", &[&position(&unlimited)]);
+        assert_eq!(shown(unlimited, Some("no limits, errors and WHEA, a stage, no figures yet")), Shown {
+            runtime: "00:41:10".to_string(),
+            time_left: None,
+            errors: count("⚠️ 3 errors + 3 WHEA (1C/2UC)", true),
+            position: "Cycle 12 (00:12:34) · Test 2/6 Mem-Refresh128 (00:05:12)".to_string(),
+            live: some("Checking seal · pending"),
+        });
+
+        let mut limit_reached = ProgressSnapshot { runtime: Duration::from_secs(3600), ..ticker_snapshot() };
+        let test = limit_reached.test.as_mut().unwrap();
+        (test.publishes, test.live) = (false, LiveFigures::default());
+        let reached = shown(limit_reached, Some("the time limit reached, a test with no live figures"));
+        let expected = ("01:00:00", some("limit reached, finishing cycle"), some("no live data"));
+        assert_eq!((reached.runtime.as_str(), reached.time_left, reached.live), expected);
 
         let before = ProgressSnapshot { test: None, cycle: 1, tests_done: 0, cycle_elapsed: Duration::ZERO, ..ticker_snapshot() };
-        assert_eq!(position(&before), "Cycle 1/8 (00:00:00, 0%)");
-        in_the_ticker("before the first test", &[&position(&before)]);
+        let before = shown(before, Some("before the first test"));
+        let expected = (some("remaining 00:18:50"), count("0 errors + 0 WHEA", false), "Cycle 1/8 (00:00:00, 0%)", None);
+        assert_eq!((before.time_left, before.errors, before.position.as_str(), before.live), expected);
+
+        // A cycle limit alone, and a WHEA report with no memory error: the count alarms, its split giving both parts
+        let cycles_only = ProgressSnapshot { time_limit: None, whea: WheaCounts { total: 1, corrected: 1 }, ..ticker_snapshot() };
+        let cycles_only = shown(cycles_only, None);
+        assert_eq!((cycles_only.time_left, cycles_only.errors), (None, count("⚠️ 0 errors + 1 WHEA (1C/0UC)", true)));
+        assert!(cycles_only.position.starts_with("Cycle 4/8 (00:12:34, 39%)"), "{}", cycles_only.position);
 
         // The last cycle's last test past its time: each percentage caps at 100
         let mut over = ProgressSnapshot { cycle: 8, tests_done: 6, ..ticker_snapshot() };
