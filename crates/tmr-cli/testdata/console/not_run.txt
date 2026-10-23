@@ -85,6 +85,7 @@ Reserve Rounding Diff     +0.00 B           -  Threads × per-thread rounding
   - Mem-Random
   - Mem-Stride
   - Mem-MovingInv
+  - Mem-TileTransform
   - Mem-ModuloX
   - Mem-Sequence
   - Mem-BlockMove

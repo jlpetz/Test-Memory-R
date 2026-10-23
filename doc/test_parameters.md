@@ -99,6 +99,29 @@ TM5's RefreshStable has no wait setting, so an imported `.cfg` takes the default
 - **JSON config field:** `"wait_ms": 64`
 - **Bit fade:** `{"function": "Mem-RefreshAuto", "chunk": {"mode": "whole"}, "wait_ms": 1800000}` (30 minutes)
 
+### `tile_patterns: Option<u32>`
+**Used by:** Mem-TileTransform (TODO 102)
+
+Patterns a set has, so a group is that many 1 KiB tiles and holds each pattern once: 16, 32 or 64.
+16 is the built-in set, whose checksum is stored in the binary and checked on the matrix unit
+before each test; 32 and 64 come from the same seed, their values computed on the tiles. Groups
+are counted from the extent's start; a chunk's partial groups at its ends are checked word by word.
+
+- **Default:** 16
+- **JSON config field:** `"tile_patterns": 32`
+
+### `tile_load: Option<u32>`
+**Used by:** Mem-TileTransform (TODO 102)
+
+The matrix unit's load: extra multiplies a tile in the test's check, each added into the same
+running checksum, so every product is checked and detection is the same at any value. 0 is one
+multiply a tile, about 10% of the unit at DRAM speed; each step adds one more. Plumb's timing
+(Xeon 6975P-C): 8 costs a pass about 20% of its speed.
+
+- **Default:** 0
+- **Range:** 0 to 65534 (above it, `1 + r` times a one- or two-bit fault's change could wrap to zero)
+- **JSON config field:** `"tile_load": 8`
+
 ## SimpleTest patterns (pattern spec 2)
 
 | Where | Field | Meaning |
@@ -190,6 +213,7 @@ All parameters are validated before tests run (in `runner.rs`):
 - `rng_sequences` and `subdivisions` must be >= 1 and power-of-2 when > 1 (both are used as shifts); `subdivisions` at most 512, since a chunk is a multiple of 4 KiB (512 u64) and more would leave part of it untested
 - `stride_patterns` and `copy_directions` must be >= 1 (no power-of-2 constraint)
 - `mirror` is checked when it is parsed (`MirrorMode::from_str`, shared by JSON, the CLI and the importer): subblocks 2 or 4, any jump
+- `tile_patterns` must be 16, 32 or 64 and `tile_load` at most 65534, when the config is loaded; another test refuses both
 - Tests panic with a clear error message if their required parameter is missing from `parameter_context`
 
 ## Sequencing and the seal (TODO 74)

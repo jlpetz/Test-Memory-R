@@ -122,6 +122,29 @@ pub fn has_avx512() -> bool {
         && is_x86_feature_detected!("avx512vl")
 }
 
+/// What a test needs of the CPU beyond the startup gate (AVX2 and CLFLUSHOPT): the width it runs at, or AMX-INT8 with the OS's tile state
+/// (TODO 102). The run leaves out a test whose needs `check` refuses (`runner::leave_out_what_the_cpu_lacks`); the runner's tests pass a
+/// fake CPU's check instead.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Need {
+    Width(Width),
+    AmxInt8,
+}
+
+/// Why a machine without AMX-INT8 can't run a test that needs it.
+pub const LACKS_AMX: &str = "the tiles need AMX-INT8 and the OS's tile state, which this machine lacks";
+
+impl Need {
+    /// This need, or why this CPU can't meet it.
+    pub fn check(self) -> Result<Need, String> {
+        match self {
+            Need::Width(w) => w.check().map(Need::Width),
+            Need::AmxInt8 if !crate::amx::has_amx_int8() => Err(LACKS_AMX.to_string()),
+            n => Ok(n),
+        }
+    }
+}
+
 /// The instruction sets a width needs, as a CPU reports them: AVX-512 (`has_avx512`) and AVX2.
 #[derive(Debug, Clone, Copy)]
 struct Isa {

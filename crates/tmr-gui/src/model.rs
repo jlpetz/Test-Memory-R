@@ -542,8 +542,14 @@ impl Model {
             Run::NotRun(why) => self.errors.push(not_run(&why)),
             Run::Matchable { tests } => self.errors.push(format!("It could match: {}", tests.join(", "))),
             Run::LeftOut { tests } => {
-                let lacks = tests.first().map_or("", |(_, lacks)| lacks.as_str());
-                self.facts.left_out = Some(format!("{} test{} left out ({lacks})", tests.len(), plural(tests.len())));
+                // Each reason once: a 512-bit test without AVX-512, the tile test without AMX-INT8 (TODO 102)
+                let mut reasons: Vec<&str> = Vec::new();
+                for (_, lacks) in &tests {
+                    if !reasons.contains(&lacks.as_str()) {
+                        reasons.push(lacks);
+                    }
+                }
+                self.facts.left_out = Some(format!("{} test{} left out ({})", tests.len(), plural(tests.len()), reasons.join("; ")));
             }
             Run::Channels { .. } => {}
             Run::TestPlan(plan) => self.facts.plan = Some(plan_fact(&plan, self.facts.plan_name)),

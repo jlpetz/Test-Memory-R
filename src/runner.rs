@@ -506,9 +506,16 @@ impl TestDefinition {
         self.simd_width().or_else(|| crate::simd::Width::of_name(self.actual_name))
     }
 
-    /// Why a CPU can't run the test, if it can't: `check` (the CPU's, `Width::check`) refuses the width it runs at (TODO 99).
-    fn cpu_lacks(&self, check: impl Fn(crate::simd::Width) -> Result<crate::simd::Width, String>) -> Option<String> {
-        self.width().and_then(|w| check(w).err())
+    /// What the test needs of the CPU beyond the startup gate: the width it runs at (`width`), and AMX-INT8 for Mem-TileTransform (TODO 102).
+    fn needs(&self) -> impl Iterator<Item = crate::simd::Need> {
+        let amx = (self.actual_name == crate::xform::TEST_NAME).then_some(crate::simd::Need::AmxInt8);
+        self.width().map(crate::simd::Need::Width).into_iter().chain(amx)
+    }
+
+    /// Why a CPU can't run the test, if it can't: `check` (the CPU's, `Need::check`) refuses something it needs, the width it runs at (TODO
+    /// 99) or AMX-INT8 (TODO 102).
+    fn cpu_lacks(&self, check: impl Fn(crate::simd::Need) -> Result<crate::simd::Need, String>) -> Option<String> {
+        self.needs().find_map(|n| check(n).err())
     }
 }
 
@@ -518,7 +525,7 @@ impl TestDefinition {
 /// Returns each test left out, once, and why.
 fn leave_out_what_the_cpu_lacks(
     tests: &mut Vec<TestDefinition>, cycle_order: &mut Option<CycleOrder>,
-    check: impl Fn(crate::simd::Width) -> Result<crate::simd::Width, String>,
+    check: impl Fn(crate::simd::Need) -> Result<crate::simd::Need, String>,
 ) -> Vec<(String, String)> {
     let mut left_out: Vec<(String, String)> = Vec::new();
     tests.retain(|def| {
@@ -536,7 +543,7 @@ fn leave_out_what_the_cpu_lacks(
 
 /// Stops the run at a test the CPU can't run (`check` the CPU's): `leave_out_what_the_cpu_lacks` should have left it out, and its kernel
 /// would fault or worse (TODO 99).
-fn assert_cpu_runs(def: &TestDefinition, check: impl Fn(crate::simd::Width) -> Result<crate::simd::Width, String>) {
+fn assert_cpu_runs(def: &TestDefinition, check: impl Fn(crate::simd::Need) -> Result<crate::simd::Need, String>) {
     if let Some(lacks) = def.cpu_lacks(check) {
         panic!("bug: {} reached the run, but {lacks}: the choice of tests should have left it out", def.display_name);
     }
@@ -751,7 +758,7 @@ pub fn run_tests_with_layout_and_timing_filtered(setup: RunSetup, fe: &Arc<dyn F
     }
 
     // The one check of the CPU against the tests, however they were picked
-    let left_out = leave_out_what_the_cpu_lacks(&mut test_definitions, &mut cycle_order, crate::simd::Width::check);
+    let left_out = leave_out_what_the_cpu_lacks(&mut test_definitions, &mut cycle_order, crate::simd::Need::check);
     if !left_out.is_empty() {
         fe.event(Run::LeftOut { tests: left_out.clone() }.into());
         for (name, lacks) in &left_out {
@@ -1246,7 +1253,7 @@ fn execute_test_cycle(ctx: &CycleContext, cycle: u64) -> CycleEnd {
         let test_name = test_def.actual_name; // Use actual_name for thread pool (requires 'static)
         let test_display_name = &test_def.display_name; // Use display_name for results to preserve _A suffix
         let test_func = &test_def.function;
-        assert_cpu_runs(test_def, crate::simd::Width::check);
+        assert_cpu_runs(test_def, crate::simd::Need::check);
         // The step as this cycle runs it: the cycle's seal kernel, and where the step is in the suite, which keys its native patterns
         // (crate::pattern), so they change every cycle
         let mut step_config = test_def.config.clone();
@@ -2333,6 +2340,15 @@ pub(crate) fn registered_tests(cache_info: &CacheInfo) -> Vec<(&'static str, Tes
         (
             "Mem-MovingInv",
             TestFunction::MultiBlock(moving_inversions_multi),
+            TestMemoryConfig::new(ExtentMode::FullAllocation, ChunkMode::Cache { target: CacheTarget::Dram { scale: 2.0 } })
+                .with_timing(TestTiming::duration_only(30))
+                .with_memory_type(None),
+        ),
+        // A memory test under the matrix unit's load, AMX's (TODO 102): W, RW (each tile multiplied in place) and R (a group checksum, with
+        // `tile_load` extra multiplies a tile), chunks twice the L3, as the moving inversions'. Left out on a CPU without AMX-INT8
+        (
+            "Mem-TileTransform",
+            TestFunction::MultiBlock(crate::xform::tile_transform_multi),
             TestMemoryConfig::new(ExtentMode::FullAllocation, ChunkMode::Cache { target: CacheTarget::Dram { scale: 2.0 } })
                 .with_timing(TestTiming::duration_only(30))
                 .with_memory_type(None),
@@ -5102,13 +5118,13 @@ mod tests {
     /// The built-in suite, set up to run once on a test region (one thread, 64 B lines)
     fn suite() -> Vec<(TestDefinition, TestFunctionMultiBlock)> {
         let cache_info = crate::tests::get_cache_info();
-        let avx512 = is_x86_feature_detected!("avx512f");
         create_test_definitions(cache_info)
             .into_iter()
             .filter_map(|mut def| {
                 // The latency tests return other stats: `latency_tests_run_in_place_on_the_span`
                 let TestFunction::MultiBlock(test_fn) = def.function else { return None };
-                if def.actual_name.contains("512") && !avx512 {
+                // What the run would leave out here: a 512-bit test without AVX-512, the tile test without AMX-INT8 (TODO 102)
+                if def.cpu_lacks(crate::simd::Need::check).is_some() {
                     return None;
                 }
                 def.config.timing = TestTiming::cycles_only(1);
@@ -5304,12 +5320,41 @@ mod tests {
         }
     }
 
-    /// `Width::check` on a CPU without AVX-512
-    fn without_avx512(width: crate::simd::Width) -> Result<crate::simd::Width, String> {
-        match width {
-            crate::simd::Width::W512 => Err("width 512 needs AVX-512, which this CPU lacks".to_string()),
-            w => Ok(w),
+    /// `Need::check` on a CPU without AVX-512 (with AMX-INT8)
+    fn without_avx512(need: crate::simd::Need) -> Result<crate::simd::Need, String> {
+        match need {
+            crate::simd::Need::Width(crate::simd::Width::W512) => Err("width 512 needs AVX-512, which this CPU lacks".to_string()),
+            n => Ok(n),
         }
+    }
+
+    /// `Need::check` on a CPU without AMX-INT8 (with AVX-512)
+    fn without_amx(need: crate::simd::Need) -> Result<crate::simd::Need, String> {
+        match need {
+            crate::simd::Need::AmxInt8 => Err(crate::simd::LACKS_AMX.to_string()),
+            n => Ok(n),
+        }
+    }
+
+    /// TODO 102: on a CPU without AMX-INT8 (`without_amx`), the run leaves out Mem-TileTransform, once and why, and keeps every other test.
+    #[test]
+    fn a_cpu_without_amx_runs_no_tile_test() {
+        let suite = create_test_definitions(crate::tests::get_cache_info());
+        let mut tests = suite.clone();
+        let left_out = leave_out_what_the_cpu_lacks(&mut tests, &mut None, without_amx);
+        assert_eq!(left_out, [(crate::xform::TEST_NAME.to_string(), crate::simd::LACKS_AMX.to_string())]);
+        assert_eq!(tests.len(), suite.len() - 1);
+        assert!(tests.iter().all(|d| d.actual_name != crate::xform::TEST_NAME));
+    }
+
+    /// TODO 102: the tile test reaching a CPU without AMX-INT8 stops the run before its kernels run; another test goes on.
+    #[test]
+    #[should_panic(expected = "bug: Mem-TileTransform reached the run, but the tiles need AMX-INT8")]
+    fn a_tile_test_reaching_a_cpu_without_amx_stops_the_run() {
+        let suite = create_test_definitions(crate::tests::get_cache_info());
+        let def = |name: &str| suite.iter().find(|d| d.display_name == name).unwrap_or_else(|| panic!("no {name}"));
+        assert_cpu_runs(def("Mem-StuckBit256"), without_amx);
+        assert_cpu_runs(def(crate::xform::TEST_NAME), without_amx);
     }
 
     /// TODO 99: on a CPU without AVX-512 (`without_avx512`, the -Auto tests resolved at 256 as they are there), the run leaves out every
@@ -5703,11 +5748,10 @@ mod tests {
     fn latency_tests_run_in_place_on_the_span() {
         let region = Region::new(&[256 * KIB, 256 * KIB, 128 * KIB]);
         let cache_info = crate::tests::get_cache_info();
-        let avx512 = is_x86_feature_detected!("avx512f");
         let mut ran = 0;
         for mut def in create_test_definitions(cache_info) {
             let TestFunction::Latency(test_fn) = def.function else { continue };
-            if def.actual_name.contains("512") && !avx512 {
+            if def.cpu_lacks(crate::simd::Need::check).is_some() {
                 continue;
             }
             def.config.timing = TestTiming::cycles_only(1);

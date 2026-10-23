@@ -2,6 +2,8 @@
 #![feature(portable_simd)]
 #![feature(clflushopt_target_feature)]
 #![feature(simd_x86_clflushopt)]
+#![feature(x86_amx_intrinsics)]
+// AMX: the amx-tile and amx-int8 target features, `_tile_*`, their detection (TODO 102)
 // The engine prints nothing and exits nowhere: it hands its frontend events (`frontend.rs`, TODO 29), and the one-shot commands write to
 // their caller's writer (`commands.rs`). The CLI, which prints, is its own crate (`crates/tmr-cli`). Test code prints freely.
 #![cfg_attr(not(test), deny(clippy::print_stdout, clippy::print_stderr, clippy::exit))]
@@ -24,6 +26,7 @@ pub use runner::request_stop;
 #[cfg(any(test, feature = "test-support"))]
 pub mod test_support;
 
+mod amx; // the AMX tile layer: detection, the tile configuration (TODO 102)
 mod app_config; // Persistent application config (tmr-cfg.json)
 mod bandwidth_tests; // Bandwidth measurement tests
 mod build_info;
@@ -62,6 +65,7 @@ mod tests;
 mod thread_pool;
 mod tsc; // TSC frequency detection (x86_64)
 mod whea; // WHEA hardware-error monitoring via the System event log (TODO #63) // which build this binary is: version, commit, compiler (TODO 72)
+mod xform; // Mem-TileTransform: a memory test under the matrix unit's load (TODO 102)
 
 // Common result type for the crate
 pub(crate) type Result<T> = std::result::Result<T, Box<dyn std::error::Error>>;

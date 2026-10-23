@@ -112,16 +112,26 @@ fn not_run(why: &NotRun) -> String {
     text
 }
 
-/// The tests left out, the first few by name: the log lists them all.
+/// The tests left out, a line a reason (a 512-bit test without AVX-512, the tile test without AMX-INT8), the first few by name: the log
+/// lists them all.
 fn left_out(tests: &[(String, String)]) -> String {
     const SHOWN: usize = 5;
-    let Some((_, lacks)) = tests.first() else {
-        return String::new();
-    };
-    let names: Vec<&str> = tests.iter().take(SHOWN).map(|(name, _)| name.as_str()).collect();
-    let more = tests.len().saturating_sub(SHOWN);
-    let more = if more > 0 { format!(" and {more} more (the log lists them)") } else { String::new() };
-    format!("ℹ  Left out {} test(s) this CPU can't run ({}): {}{more}\n", tests.len(), lacks, names.join(", "))
+    let mut reasons: Vec<&str> = Vec::new();
+    for (_, lacks) in tests {
+        if !reasons.contains(&lacks.as_str()) {
+            reasons.push(lacks);
+        }
+    }
+    reasons
+        .iter()
+        .map(|&lacks| {
+            let names: Vec<&str> = tests.iter().filter(|(_, why)| why == lacks).map(|(name, _)| name.as_str()).collect();
+            let more = names.len().saturating_sub(SHOWN);
+            let more = if more > 0 { format!(" and {more} more (the log lists them)") } else { String::new() };
+            let shown = names[..names.len().min(SHOWN)].join(", ");
+            format!("ℹ  Left out {} test(s) this CPU can't run ({lacks}): {shown}{more}\n", names.len())
+        })
+        .collect()
 }
 
 /// Allocation's first line, and the page sizes it may take.

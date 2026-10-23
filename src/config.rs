@@ -638,6 +638,13 @@ pub struct TestConfig {
     /// so (`validate_repetition`'s rule for a knob the test doesn't read).
     #[serde(default)]
     pub wait_ms: Option<u64>,
+    /// Mem-TileTransform: patterns a set, 16 (the built-in set, the default), 32 or 64: a group of that many KiB holds each once (TODO 102).
+    #[serde(default)]
+    pub tile_patterns: Option<u32>,
+    /// Mem-TileTransform: extra multiplies a tile in its check, 0 (the default) to 65534: the matrix unit's load, every product checked
+    /// (TODO 102).
+    #[serde(default)]
+    pub tile_load: Option<u32>,
 
     // Per-chunk repetition: how long each chunk is worked (TODO 79 B2). Unset is the test's own default; loading a TM5 `.cfg` fills them
     // from `Time (%)`.
@@ -772,6 +779,10 @@ pub struct TestParameterContext {
     pub copy_directions: Option<u32>,
     /// Mem-Refresh*: each chunk's wait between its write and its check, in ms (default 64).
     pub wait_ms: Option<u64>,
+    /// Mem-TileTransform: patterns a set, 16 (the built-in set, the default), 32 or 64; a group of that many KiB holds each once (TODO 102).
+    pub tile_patterns: Option<u32>,
+    /// Mem-TileTransform: extra multiplies a tile in its check, the matrix unit's load, 0 (the default) to 65534 (TODO 102).
+    pub tile_load: Option<u32>,
 }
 
 /// Interpret TM5 Parameter correctly based on test function name.
@@ -1083,6 +1094,19 @@ impl ModernConfig {
         if !is_mirror && test.mirror.is_some() {
             return Err(Self::test_error(i, test, "only the Mem-MirrorV2 tests read \"mirror\"".to_string()));
         }
+        if test.function != crate::xform::TEST_NAME && (test.tile_patterns.is_some() || test.tile_load.is_some()) {
+            return Err(Self::test_error(i, test, format!("only {} reads \"tile_patterns\" and \"tile_load\"", crate::xform::TEST_NAME)));
+        }
+        if let Some(x) = test.tile_patterns
+            && !matches!(x, 16 | 32 | 64)
+        {
+            return Err(Self::test_error(i, test, format!("\"tile_patterns\" is 16, 32 or 64, not {x}")));
+        }
+        if let Some(r) = test.tile_load
+            && r > crate::xform::MAX_R
+        {
+            return Err(Self::test_error(i, test, format!("\"tile_load\" is at most {}, not {r}", crate::xform::MAX_R)));
+        }
         if let ChunkMode::Absolute { size_bytes } = chunk_mode
             && !size_bytes.is_multiple_of(crate::test_memory::GRANULE)
         {
@@ -1120,6 +1144,8 @@ impl ModernConfig {
             || test.copy_directions.is_some()
             || test.mirror.is_some()
             || test.wait_ms.is_some()
+            || test.tile_patterns.is_some()
+            || test.tile_load.is_some()
         {
             let ctx = config.parameter_context.get_or_insert(TestParameterContext::default());
             if let Some(v) = test.stride_patterns {
@@ -1140,6 +1166,8 @@ impl ModernConfig {
             if let Some(v) = test.wait_ms {
                 ctx.wait_ms = Some(v);
             }
+            ctx.tile_patterns = test.tile_patterns.or(ctx.tile_patterns);
+            ctx.tile_load = test.tile_load.or(ctx.tile_load);
         }
         if let Some(ms) = test.wait_ms
             && !(test.function.starts_with("Mem-Refresh") || test.function == "RefreshStable")

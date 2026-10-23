@@ -55,8 +55,50 @@ and compilers arrive.
    `TILELOADD`/`TILESTORED`, ACE with zmm moves. Check ACE's int8 dot product against `TDPBUUD`'s
    unsigned-by-unsigned semantics, which the guarantees rely on.
 
+## The port (2026-10-23)
+
+Steps 1-6 done, step 6 against Rule 6.
+- **Files**: `src/amx.rs` is the tile layer. It detects AMX-TILE and AMX-INT8 with the OS's tile
+  state through `is_x86_feature_detected!`, plus leaf 1Dh's palette and 1Eh's TMUL limits, and it
+  holds the LDTILECFG descriptor and a `Tiles` guard that releases on drop. `src/xform.rs`, with
+  `xform_builtin.rs` and `xform/tests.rs` (16 tests, 3 ignored), is the test.
+- **Name and settings**:
+  - The test is `Mem-TileTransform`.
+  - The keys are `tile_patterns` (X: 16, the default, 32 or 64) and `tile_load` (r: 0, the default,
+    up to 65534). Other tests refuse both.
+  - In the suite its chunks are twice the L3, as Mem-MovingInv's, and it runs for 30 s. It is in
+    plan `all` only, not `stability` or `quick`. Results label it `Tiles(X,rN)`.
+- **Gating**: `simd::Need` (`Width` or `AmxInt8`) is what `cpu_lacks`,
+  `leave_out_what_the_cpu_lacks` and `assert_cpu_runs` check. On a CPU without AMX-INT8 the test
+  is left out with its reason, and the console and window group left-out tests by reason. The runner
+  tests' `suite()` and latency filter use the same check.
+- **Kernels**: W is `write_tiles`, RW is `transform_tiles`, and R is `verify_groups`, with a chunk's
+  partial groups compared word by word (`verify_part`). Each kernel is one tile session.
+  - Per chunk: `check_seal`, `add_bytes`, `reseal`, and the shutdown check every 2^20 multiplies.
+  - Tier 2 goes through `Rescan` (it gains `word_read`), then rechecks through the tiles.
+  - At start-up the matrix unit is checked against the stored checksum.
+- **Asm** (post-LTO; the working files are in `../tmr102-asm/`, outside the repo):
+  - It matches plumb's build block for block. R runs two chains, reads ahead from r = 6 and goes in
+    pairs below that. RW keeps tile 7 resident with four tiles in flight. W goes in pairs.
+  - Every kernel has one LDTILECFG and one TILERELEASE, and no call or div.
+  - W kept two values on the stack, a reload of each per group, until two changes:
+    - The tail is written before the whole groups. Written after them, it kept `base` and `end`
+      live through the loop.
+    - The group's rotation goes through `opaque_u64`. LLVM had kept its two terms apart and
+      re-added them for every tile.
+    - The result: 172 → 157 instructions a group, 2 → 0 reloads. Every loop is now off the stack.
+  - `indexed` on every tile loop is TILELOADD's stride register, which can't be avoided.
+  - R at X = 16 keeps six copies of its r loop, unrolled by 8, on its r ≤ 5 path. They never run;
+    the cost is code size only.
+  - Existing kernels are unchanged (asm fingerprint and spills table).
+- **Tests**: the workspace passes, and clippy is clean. Both exhaustive sweeps pass in release on
+  the dev box: every stored bit, and every bit before the transform, 131,072 cases each.
+
+Left: the ACE seam (step 8). The kernels call `_tile_loadd`/`_tile_stored` directly, and those are
+the ops ACE replaces. The owner left the timing (step 7) out (2026-10-24).
+
 ## Open questions for the owner
 
-- The test's name, and whether it joins any default plan.
-- Defaults for X and r.
+- Settled 2026-10-24: the owner kept the name, plan `all` only, and X = 16 and r = 0 by default,
+  to adjust later.
 - Whether r should load W and RW too (plumb TODO 13).

@@ -988,6 +988,7 @@ impl TestMemoryConfig {
             "Mem-MovingInv" => 32,                             // u64, which the AVX2 baseline vectorises
             "Mem-ModuloX" => 64,                               // Whole lines
             "Mem-Sequence" => 64,                              // Native lines at 256 or 512 bits
+            "Mem-TileTransform" => 1024,                       // AMX tiles, 1 KiB each; a chunk's ends may cut a group (TODO 102)
             // v2 tests
             "Mem-SimpleV2-128" => 16,  // u64x2 (128-bit)
             "Mem-SimpleV2-256" => 32,  // u64x4 (256-bit)
@@ -3611,6 +3612,20 @@ impl Rescan {
         if actual != want {
             self.bad(idx, want, actual);
         }
+    }
+
+    /// `word`, returning what it read: for a caller that also says what a run of bad words looks like (Mem-TileTransform's tiles, TODO 102),
+    /// from the values this logged.
+    ///
+    /// # Safety
+    /// As `word`.
+    #[inline(always)]
+    pub(crate) unsafe fn word_read(&mut self, idx: usize, want: u64) -> u64 {
+        let actual = std::ptr::read_volatile(self.ptr.add(idx));
+        if actual != want {
+            self.bad(idx, want, actual);
+        }
+        actual
     }
 
     /// Checks the line of words `offset..offset + 8` against `words`.
@@ -6239,9 +6254,11 @@ fn opaque_ptr(mut p: *mut u64) -> *mut u64 {
 }
 
 /// `x` as it went in, through `opaque_ptr`'s barrier: its form for an integer, `nomem` as an integer gives the asm nothing to read (see
-/// `opaque_ptr`). `header`'s line id at each group step of the sequential verify (`native_differs_seq!`).
+/// `opaque_ptr`). `header`'s line id at each group step of the sequential verify (`native_differs_seq!`), and Mem-TileTransform's rotation
+/// in W (`xform::write_tiles`), whose sum of two terms LLVM kept as both, re-adding them for each tile, one register more and a reload a
+/// group (TODO 102).
 #[inline(always)]
-fn opaque_u64(mut x: u64) -> u64 {
+pub(crate) fn opaque_u64(mut x: u64) -> u64 {
     // SAFETY: the template is a comment: the register comes out as it went in
     unsafe { std::arch::asm!("/* {0} */", inout(reg) x, options(pure, nomem, nostack, preserves_flags)) };
     x
@@ -8829,6 +8846,7 @@ pub fn get_test_function_by_name(name: &str) -> Option<crate::runner::TestFuncti
         "Mem-MovingInv" => Some(TestFunction::MultiBlock(moving_inversions_multi)),
         "Mem-ModuloX" => Some(TestFunction::MultiBlock(modulo_x_multi)),
         "Mem-Sequence" => Some(TestFunction::MultiBlock(sequence_auto_multi)),
+        "Mem-TileTransform" => Some(TestFunction::MultiBlock(crate::xform::tile_transform_multi)),
 
         // Sequential Bandwidth Tests (Spd-*-Auto → auto-dispatched)
         // Cached (L1/L2/L3) variants
