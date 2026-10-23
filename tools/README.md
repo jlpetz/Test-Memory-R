@@ -100,13 +100,23 @@ python tools/asm_fingerprint.py --dump DIR              # each normalised body, 
 ```
 
 Save the old code's fingerprint before building the new, and keep a copy of its asm: the build
-replaces the file. After the window's build too (`--features gui`), name each asm file: both tools
-read the newest `tmr.s`, then the window's (its symbols name `windows_reactor`, the CLI build's
-none). Compare builds of one toolchain: a nightly bump changes the code itself. The
+replaces the file. The command builds the window in (tmr-app's default feature since TODO 7, as
+each release is), so compare its asm with a stage's `_gui` fingerprints; the CLI alone's asm,
+`cargo rustc --release -p tmr-app --bin tmr --no-default-features -- --emit asm`, compares with
+the `_cli` ones. When you build both, rename each asm file before building the other: both tools
+read the newest `tmr.s` (the window's symbols name `windows_reactor`, the CLI build's none).
+Compare builds of one toolchain: a nightly bump changes the code itself. The
 saved file records the compiler the asm names, and `--compare` warns when the asm is another's
 and then exits 2 rather than 1 on a change. TODO 29's baselines, at 25ff780, are in
 `doc/todo/29-baselines/` with the spill table of the same build, and from S3 on each stage's own
 fingerprints, CLI and GUI (`asm_fingerprint_s4_cli.json`), which the next stage compares against.
+
+Since release builds carry line tables (`debug = "line-tables-only"`, d54fb4c), LLVM puts a `.Ltmp`
+label at almost every instruction, for the debug sections; the tool drops those that nothing in
+the function names. Checked on 2026-10-24: one tree built with line tables and without compares
+0 changed of 511 names (before the fix, 511 changed). A baseline saved before the fix kept one
+such label, inlined from std, in `thread_pool::ThreadPool::new`, so against any of those that
+function alone reads as changed.
 
 Checked on 2026-10-22: a rebuild with every crate hash changed (`RUSTFLAGS` with a
 `-C metadata=`) compares clean, its spill table too, and so does a build of 25ff780's own tree,
@@ -200,3 +210,9 @@ The other way, a configured decimal other than a cache multiplier is masked, so 
 doesn't show. Lines from two threads that aren't next to each other, or a log line landing inside
 another thread's run, keep their order and can still differ. Sorting a thread table's rows hides a
 change in their order.
+
+## `icon/`: tmr.ico and the DIMM artwork
+
+Not a check: the two scripts that draw TMR's icon and its artwork, a DDR5 DIMM in red neon, and
+pack the icon that is copied to `crates/tmr-app/tmr.ico`. How to run them and what they assert:
+`tools/icon/README.md`.

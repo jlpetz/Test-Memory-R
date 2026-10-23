@@ -20,7 +20,9 @@ Each body is hashed after normalising what changes when the code doesn't:
               table, a string) is hashed with it; `__xmm@...`-style constants are named by content,
               and a number in it is written one way (LLVM writes `.quad 0x7fffffffffffffff` for a
               constant pool it typed as floats, `.quad 9223372036854775807` for one of integers)
-  dropped     comments and debug-line directives; alignment directives are kept
+  dropped     comments, debug-line directives, and the line table's `.Ltmp` labels, which nothing in
+              the function names (one an instruction names is renumbered); alignment directives
+              are kept
 Two functions with one name (a generic's instances, a test fn's closures) keep a sorted list of
 hashes. Checked on 2026-10-22: a rebuild with every crate hash changed gives the same hashes.
 TODO 29 S3 moved the bin into a crate of its own: calls reached the lib's copy of `<String as
@@ -79,6 +81,10 @@ DATA = re.compile(r"^\s+\.(quad|long|short|byte|zero|ascii|asciz)\b")
 NUMBER = re.compile(r"^\.(quad|long|short|byte)\s+(-?(?:0x[0-9a-fA-F]+|\d+))$")
 BITS = {"quad": 64, "long": 32, "short": 16, "byte": 8}
 SKIPPED = (".loc", ".cv_", ".file")
+# A temporary label's definition. The line table (release's `debug = "line-tables-only"`, since
+# d54fb4c) puts one at almost every instruction, which only the debug sections name; std's inlined
+# code has a few without it
+TEMP = re.compile(r"^\.Ltmp\d+:$")
 # The workers' side of a step, which the spill table leaves out (no kernel loop of its own)
 WORKERS = ["11thread_pool", "16test_scaffolding"]
 # The compiler, as the debug info names it: `rustc version 1.101.0-nightly (1a2c4797e 2026-10-21)`
@@ -182,11 +188,16 @@ def normalise(body, data):
             return COPY.sub("", plain)
         return plain
 
-    out = []
+    kept = []
     for line in body:
         code = "" if line.lstrip().startswith("#") else line.split("#", 1)[0].strip()
         if code and not code.startswith(SKIPPED):
-            out.append(NAME.sub(name, UNIQUE.sub("unique,#", code)))
+            kept.append(code)
+    # A temporary label nothing in the function names is the line table's, and goes; one an
+    # instruction names stays, in its place
+    named = {n for code in kept if not TEMP.match(code) for n in NAME.findall(code)}
+    kept = [code for code in kept if not (TEMP.match(code) and code[:-1] not in named)]
+    out = [NAME.sub(name, UNIQUE.sub("unique,#", code)) for code in kept]
     for label in used:
         out.append(NAME.sub(name, label) + ":")
         out += [NAME.sub(name, x) for x in data[label]]
