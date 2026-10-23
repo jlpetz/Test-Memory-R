@@ -16,7 +16,7 @@ name = "tmr"
 version.workspace = true
 edition.workspace = true
 description = "Test Memory R - High-Performance DDR5 Memory Testing Tool"
-authors = ["Your Name <your.email@example.com>"]
+authors = ["Jarrod Petz <unknown@example.com>"]
 # A library only: tmr.exe is `crates/tmr-app`'s bin
 autobins = false
 
