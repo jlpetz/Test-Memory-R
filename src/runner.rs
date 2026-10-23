@@ -47,8 +47,9 @@ use crate::{BlockInfo, EnhancedMemoryLayout, ErrorMode, MemoryAllocationConfig, 
 /// Per-thread result row collected during a test run:
 /// `(thread_id, cpu_id, bytes, time, errors, operations, cycles_completed)`, the time the test's own (`WorkResult::timed`).
 type CpuStatRow = (usize, usize, u64, std::time::Duration, u64, u64, u32);
-/// Per-test map from test name to its collected per-thread stat rows.
-type TestCpuStats = HashMap<String, Vec<CpuStatRow>>;
+/// The run's totals by thread over every test, `thread_id -> (bytes, time, errors)`, the time the test's own: a running sum, one row a
+/// thread however long the run (it kept every thread's row of every step, about 120 MB a day at 256 threads, for these three figures).
+type ThreadTotals = HashMap<usize, (u64, std::time::Duration, u64)>;
 
 /// Stable per-suite execution context shared across every test cycle. Only the cycle number changes between cycles, so it's passed
 /// separately; everything else is bundled here to keep `execute_test_cycle`'s signature manageable.
@@ -60,7 +61,7 @@ struct CycleContext<'a> {
     error_mode: ErrorMode,
     progress: &'a Arc<ProgressTracker>,
     test_run_result: &'a Arc<Mutex<TestRunResult>>,
-    all_test_cpu_stats: &'a Arc<Mutex<TestCpuStats>>,
+    thread_totals: &'a Arc<Mutex<ThreadTotals>>,
     cache_info: &'a CacheInfo,
     /// The seal's kernel when the run is sealed (TODO 74)
     seal: Option<crate::seal::SealKernel>,
@@ -954,7 +955,7 @@ pub fn run_tests_with_layout_and_timing_filtered(setup: RunSetup, fe: &Arc<dyn F
     // without it. See whea.rs for the transport choice.
     fe.event(Run::WheaMonitoring(progress.whea.start()).into());
 
-    let all_test_cpu_stats: Arc<Mutex<TestCpuStats>> = Arc::new(Mutex::new(HashMap::new()));
+    let thread_totals: Arc<Mutex<ThreadTotals>> = Arc::new(Mutex::new(HashMap::new()));
 
     // Stage 1: Pre-allocate all memory blocks, between the page sizes allowed, which are shown first: parsed the way the allocator parses
     // them, so "2mb" or "Large" show as what they mean
@@ -1074,7 +1075,7 @@ pub fn run_tests_with_layout_and_timing_filtered(setup: RunSetup, fe: &Arc<dyn F
         error_mode,
         progress: &progress,
         test_run_result: &test_run_result,
-        all_test_cpu_stats: &all_test_cpu_stats,
+        thread_totals: &thread_totals,
         cache_info,
         seal: seal_settings.on.then_some(seal_kernel),
         tm5: tm5_run,
@@ -1173,9 +1174,9 @@ pub fn run_tests_with_layout_and_timing_filtered(setup: RunSetup, fe: &Arc<dyn F
     }
 
     // Create final performance summary with detailed per-CPU stats
-    let final_stats = all_test_cpu_stats.lock().unwrap_or_else(PoisonError::into_inner);
-    if !final_stats.is_empty() {
-        let summary = cpu_performance_summary(&final_stats, &cpu_assignments, whea_totals, runtime_config.pin_threads);
+    let totals = thread_totals.lock().unwrap_or_else(PoisonError::into_inner);
+    if !totals.is_empty() {
+        let summary = cpu_performance_summary(&totals, &cpu_assignments, whea_totals, runtime_config.pin_threads);
         fe.event(Run::CpuPerformance(Box::new(summary)).into());
     }
 
@@ -1223,7 +1224,7 @@ fn execute_test_cycle(ctx: &CycleContext, cycle: u64) -> CycleEnd {
         error_mode,
         progress,
         test_run_result,
-        all_test_cpu_stats,
+        thread_totals,
         cache_info,
         seal,
         tm5,
@@ -1370,7 +1371,7 @@ fn execute_test_cycle(ctx: &CycleContext, cycle: u64) -> CycleEnd {
         thread_pool.execute_test(test_name, test_func, test_config, error_mode, &step_context);
 
         // Collect results from all threads
-        let mut test_stats = Vec::new();
+        let mut test_stats: Vec<CpuStatRow> = Vec::new();
         let mut latency_results = Vec::new(); // Collect latency stats separately
         let mut total_bytes_for_test = 0u64;
         let mut total_errors_for_test = 0u64;
@@ -1602,10 +1603,15 @@ fn execute_test_cycle(ctx: &CycleContext, cycle: u64) -> CycleEnd {
             .into(),
         );
 
-        // Store aggregated stats for this test
+        // Add this step's work to each thread's totals
         {
-            let mut stats_map = all_test_cpu_stats.lock().unwrap_or_else(PoisonError::into_inner);
-            stats_map.entry(test_name.to_string()).or_default().extend(test_stats);
+            let mut totals = thread_totals.lock().unwrap_or_else(PoisonError::into_inner);
+            for &(thread_id, _cpu_id, bytes, time, errors, _operations, _cycles) in &test_stats {
+                let total = totals.entry(thread_id).or_default();
+                total.0 += bytes;
+                total.1 += time;
+                total.2 += errors;
+            }
         }
 
         cycle_test_summaries.push(summary);
@@ -4611,10 +4617,10 @@ fn allocate_all_blocks_new(
     }
 }
 
-/// The run's work by thread, by logical CPU and by physical core, over every test (`final_stats`) and placed by `cpu_assignments`, each
+/// The run's work by thread, by logical CPU and by physical core, over every test (`totals`) and placed by `cpu_assignments`, each
 /// with the run's WHEA total on its aggregate row.
 fn cpu_performance_summary(
-    final_stats: &TestCpuStats,
+    totals: &ThreadTotals,
     cpu_assignments: &[CpuAssignment], // (thread_id, logical_cpu, numa_node)
     whea: crate::whea::WheaCounts,
     pinned: bool,
@@ -4627,22 +4633,10 @@ fn cpu_performance_summary(
     // Get CPU topology for physical core ID lookup
     let topology = get_cpu_topology();
 
-    // Aggregate stats across ALL tests by thread_id
-    let mut thread_aggregates: HashMap<usize, (u64, std::time::Duration, u64)> = HashMap::new(); // (bytes, time, errors)
-
-    for stats in final_stats.values() {
-        for &(thread_id, _cpu_id, bytes, time, errors, _operations, _cycles) in stats {
-            let entry = thread_aggregates.entry(thread_id).or_default();
-            entry.0 += bytes;
-            entry.1 += time;
-            entry.2 += errors;
-        }
-    }
-
     // Build PerformanceByThreadReport
     let mut threads = Vec::new();
     for &(thread_id, cpu_id, numa_node) in cpu_assignments {
-        if let Some(&(total_bytes, total_time, total_errors)) = thread_aggregates.get(&thread_id) {
+        if let Some(&(total_bytes, total_time, total_errors)) = totals.get(&thread_id) {
             // Look up physical core ID from topology
             let physical_core_id = topology.iter().find(|cpu| cpu.logical_id == cpu_id).map(|cpu| cpu.physical_core_id).unwrap_or(cpu_id); // Fallback to logical ID if not found
 
@@ -5014,7 +5008,7 @@ pub mod test_support {
             let FakeCycle { error_mode, steps, kernel, cache_info, regions, blocks } = self;
             let progress = Arc::new(ProgressTracker::new());
             let test_run_result = Arc::new(Mutex::new(TestRunResult::new(Default::default())));
-            let all_test_cpu_stats = Arc::new(Mutex::new(HashMap::new()));
+            let thread_totals = Arc::new(Mutex::new(HashMap::new()));
             let (thread_pool, result_receiver) = ThreadPool::new(blocks, false, ThreadPriority::Normal, 2, Some(&[0, 0][..]));
             progress.begin_suite(Instant::now(), Some(1), None, steps.len() as u64, thread_pool.live_progress());
             progress.start_new_cycle(1);
@@ -5026,7 +5020,7 @@ pub mod test_support {
                 error_mode,
                 progress: &progress,
                 test_run_result: &test_run_result,
-                all_test_cpu_stats: &all_test_cpu_stats,
+                thread_totals: &thread_totals,
                 cache_info: &cache_info,
                 seal: Some(kernel),
                 tm5: false,
