@@ -606,10 +606,12 @@ impl Model {
             }
             Ok(SessionEnd::Ran { .. }) => {}
         }
-        // Without a suite: stopped in setup, or a plan or a command was all it was to show
+        // Without a suite: stopped in setup, or a plan or a command was all it was to show. A thread that ended mid-suite, with no verdict,
+        // leaves no test running and no time left; its last error count holds.
         if !self.over {
             self.status = Status::NotRun;
             self.position = position.to_string();
+            (self.time_left, self.live) = (None, None);
             self.over = true;
         }
     }
@@ -1455,6 +1457,17 @@ mod tests {
             ("100:01:01".to_string(), 0),
             "a night's clock; nothing of 0"
         );
+    }
+
+    /// A session's thread that ends mid-suite with no verdict leaves no test running and no time left; the last error count holds
+    #[test]
+    fn a_thread_that_ends_mid_suite_leaves_no_test_running() {
+        let mut m = model();
+        m.tick(Some(ProgressSnapshot { live_errors: 2, ..ticker_snapshot() }), Vec::new());
+        assert!(m.live.is_some() && m.time_left.is_some());
+        m.ended(Err("the session's thread ended without a result: the log file has why".to_string()));
+        assert_eq!((m.status, m.live, m.time_left), (Status::NotRun, None, None));
+        assert_eq!(m.error_count.map(|count| count.text).as_deref(), Some("⚠️ 2 errors + 0 WHEA"));
     }
 
     /// The progress takes whichever limit is nearer, or with neither, the cycle's tests
