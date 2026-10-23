@@ -13,8 +13,10 @@ path = "src/main.rs"
 doc = false
 
 [features]
-# The window (TODO 7): off by default, so a release build stays CLI-only and never compiles Reactor.
-# Toggling it relinks only the bin.
+# The window (TODO 7): on by default (the owner, 2026-10-23), so a plain build, and every release,
+# is the one tmr.exe with both frontends. `--no-default-features` leaves it out: the CLI alone,
+# which never compiles Reactor. Toggling it relinks only the bin.
+default = ["gui"]
 gui = ["dep:tmr-gui"]
 
 [dependencies]

@@ -1,7 +1,7 @@
-//! tmr.exe (TODO 29): what must run before anything else, the crash hooks, the choice of frontend
-//! and the CPU gate, then the frontend. That is the CLI (`tmr_cli`), or in a build with the `gui` feature the window (`tmr_gui`, TODO 7),
-//! which a double-click or `--gui` opens (`launch.rs`). `--gui` and `--cli` are this exe's own: they pick the frontend and are taken out of
-//! the arguments before the session sees them. The engine is the `tmr` library.
+//! tmr.exe (TODO 29): what must run before anything else, the crash hooks, the choice of frontend and the CPU gate, then the frontend. That
+//! is the CLI (`tmr_cli`), or in a build with the `gui` feature, the default, the window (`tmr_gui`, TODO 7), which a double-click or
+//! `--gui` opens (`launch.rs`). `--gui` and `--cli` are this exe's own: they pick the frontend and are taken out of the arguments before
+//! the session sees them. The engine is the `tmr` library.
 
 // The CPU gate detects CLFLUSHOPT, which std has behind a nightly gate
 #![feature(clflushopt_target_feature)]
@@ -193,6 +193,16 @@ fn main() {
     let mut args: Vec<String> = std::env::args().collect();
     let asked = launch::take_mode(&mut args);
     let launch = launch::decide(&launch::probe(asked, args.len() > 1));
+    if launch.refused {
+        // `--gui` asked for a window that can't open: nothing runs. Why, on the console and in a box: a shortcut's or Win+R's launch has
+        // only the console Windows opened for it, which closes as tmr.exe exits, before it can be read (the window's own failure to open
+        // shows a box too). A build without the window has no box.
+        let text = launch.message().expect("a refused launch says why");
+        eprintln!("{text}");
+        #[cfg(feature = "gui")]
+        message_box(&text);
+        exit(RunStatus::NotRun.exit_code());
+    }
     GUI_MODE.store(launch.mode == Mode::Gui, Ordering::Relaxed);
     #[cfg(feature = "gui")]
     if launch.mode == Mode::Gui {
@@ -210,7 +220,7 @@ fn main() {
     if launch.free_console {
         launch::free_console();
     }
-    if let Some(note) = launch.note {
+    if let Some(note) = launch.message() {
         eprintln!("{note}");
     }
 

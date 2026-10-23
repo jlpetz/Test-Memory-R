@@ -33,8 +33,8 @@ jobs:
     - name: ✅ Check formatting
       run: cargo +nightly fmt --all -- --check
 
-    # The workspace (TODO 29): the engine, tmr.exe, the CLI and the window, the window's feature on,
-    # and the engine's test-support, which only the CLI's tests turn on
+    # The workspace (TODO 29): the engine, tmr.exe, the CLI and the window (a default feature), and
+    # the engine's test-support, which only the CLI's tests turn on
     - name: 🧹 Run clippy
       run: cargo +nightly clippy --workspace --all-targets --all-features -- -D warnings
 
@@ -44,6 +44,11 @@ jobs:
     - name: 🧹 Run clippy, the engine as tmr.exe builds it
       run: cargo +nightly clippy --workspace -- -D warnings
 
+    # tmr.exe without the window (`--no-default-features`), which no release ships, so it still builds
+    - name: 🧹 Run clippy, tmr.exe without the window
+      run: cargo +nightly clippy -p tmr-app --no-default-features -- -D warnings
+
+    # tmr.exe with both frontends, as release.yml builds it
     - name: 🚧 Build release version
       run: cargo +nightly build --release
 

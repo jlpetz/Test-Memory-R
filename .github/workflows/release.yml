@@ -20,13 +20,16 @@ jobs:
     - name: 🦀 Install Rust Nightly
       uses: dtolnay/rust-toolchain@nightly
 
+    # The one tmr.exe, the console and the window (a default feature, the owner's: one download, not two)
     - name: 🚧 Build release binary
       run: cargo +nightly build --release
 
     - name: 📦 Upload release binary
       uses: softprops/action-gh-release@v3
-      # tmr.pdb beside tmr.exe: only the PDB from the same build matches it, and the runner's is gone when the job ends
+      # tmr.pdb beside tmr.exe: only the PDB from the same build matches it, and the runner's is gone when the job ends. A file
+      # missing fails the job, rather than publishing a release without it.
       with:
+        fail_on_unmatched_files: true
         files: |
           target/release/tmr.exe
           target/release/tmr.pdb

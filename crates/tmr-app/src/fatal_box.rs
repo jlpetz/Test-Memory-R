@@ -1,6 +1,6 @@
 //! The window's message boxes (TODO 29 S6): a fatal error's text, which the console has too, in a box, since a double-click gives the
-//! window no console to read it on. The panic hook and the CPU gate show theirs as they happen (`message_box`). A fault's box is the crash
-//! box (`arm`).
+//! window no console to read it on. The panic hook and the CPU gate show theirs as they happen, and a refused `--gui` its reason (main.rs),
+//! through `message_box`. A fault's box is the crash box (`arm`).
 //!
 //! The crash box shows only a fault that nothing handles: it is the process's unhandled-exception filter, which Windows calls once no
 //! handler took the fault. The vectored handler, which prints the console's FATAL lines, sees every fault first, those a DLL catches itself

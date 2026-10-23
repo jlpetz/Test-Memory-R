@@ -1,6 +1,7 @@
 //! Which frontend tmr.exe runs (TODO 29 S6), decided before anything prints, from how it was launched. `--cli` and `--gui` decide. Any
 //! other argument is a command line, so the CLI (`bench_ab.py`, `tmr.exe memory=...`). With none, a double-click opens the window, and a
-//! shell or a remote session (WinRM) runs the CLI. `decide` is a pure function of the facts `probe` reads, so its table is tested.
+//! shell or a remote session (WinRM) runs the CLI. Where the window can't open, `--gui` runs nothing and says why, and a double-click runs
+//! the CLI. `decide` is a pure function of the facts `probe` reads, so its table is tested.
 //!
 //! The console tells a double-click from a shell. On build 26100 and later the GUI build's manifest (`tmr.manifest`,
 //! `consoleAllocationPolicy` detached) gives a tmr.exe launched with no console to inherit no console at all. Older builds ignore it and
@@ -76,12 +77,28 @@ pub struct Launch {
     pub alloc_console: bool,
     /// Why the window doesn't open, for the console
     pub note: Option<Note>,
+    /// `--gui` asked for the window, which can't open (`note` says why): nothing runs, `mode` notwithstanding, and tmr.exe exits as not
+    /// run. Not a double-click's: an error there would close the console Windows opened before it could be read, so the CLI runs instead.
+    pub refused: bool,
+}
+
+impl Launch {
+    /// What the console shows before the frontend runs, or before tmr.exe exits when `refused`
+    pub fn message(&self) -> Option<String> {
+        let note = self.note?;
+        Some(if self.refused {
+            format!("Error: --gui: {note}. Nothing was run: without --gui, or with --cli, tmr.exe runs in the console")
+        } else {
+            format!("Note: {note}: running the CLI")
+        })
+    }
 }
 
 /// Why the window doesn't open, when `--gui` asked for it or the launch looked like a double-click.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum Note {
-    /// `--gui`, in a tmr.exe built without the window. A double-click on that build gets no note: the CLI is what it has always run.
+    /// `--gui`, in a tmr.exe built without the window (`--no-default-features`). A double-click on that build gets no note: the CLI is
+    /// what it runs.
     NotBuilt,
     /// Windows is older than `FIRST_GUI_BUILD`, or its build couldn't be read
     OldWindows(Option<u32>),
@@ -91,12 +108,11 @@ impl std::fmt::Display for Note {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         match self {
             Note::NotBuilt => {
-                write!(f, "Note: this tmr.exe was built without the window (cargo build --features tmr-app/gui): running the CLI")
+                write!(f, "this tmr.exe was built without the window (cargo build --no-default-features; a plain cargo build has it)")
             }
             Note::OldWindows(build) => write!(
                 f,
-                "Note: the window needs Windows build {FIRST_GUI_BUILD} or later (Windows 11, Server 2025), and this is {}: \
-                 running the CLI",
+                "the window needs Windows build {FIRST_GUI_BUILD} or later (Windows 11, Server 2025), and this is {}",
                 build.map_or("unknown".to_string(), |build| build.to_string())
             ),
         }
@@ -106,7 +122,7 @@ impl std::fmt::Display for Note {
 /// Which frontend runs, and what to do about the console first. `--cli`/`--gui` decide; any other argument means the CLI; with none,
 /// redirected output means the CLI (WinRM), no console the window (a double-click, from build 26100 with the manifest), a console of this
 /// process alone the window after leaving it (a double-click below 26100), and a shared one the CLI (a shell). The window opens only in a
-/// build that has it, from `FIRST_GUI_BUILD`; otherwise the CLI runs, with a note.
+/// build that has it, from `FIRST_GUI_BUILD`; otherwise `--gui` is refused, and a double-click runs the CLI with a note.
 pub fn decide(facts: &Facts) -> Launch {
     let wanted = facts.asked.unwrap_or(if facts.arguments || facts.stdout_redirected {
         Mode::Cli
@@ -117,16 +133,18 @@ pub fn decide(facts: &Facts) -> Launch {
     });
     let opens = facts.gui_built && facts.build.is_some_and(|build| build >= FIRST_GUI_BUILD);
     let mode = if wanted == Mode::Gui && opens { Mode::Gui } else { Mode::Cli };
+    let refused = facts.asked == Some(Mode::Gui) && !opens;
     let note = match (wanted, mode) {
-        (Mode::Gui, Mode::Cli) if !facts.gui_built => (facts.asked == Some(Mode::Gui)).then_some(Note::NotBuilt),
+        (Mode::Gui, Mode::Cli) if !facts.gui_built => refused.then_some(Note::NotBuilt),
         (Mode::Gui, Mode::Cli) => Some(Note::OldWindows(facts.build)),
         _ => None,
     };
     Launch {
         mode,
         free_console: mode == Mode::Gui && facts.console_window && facts.console_processes == 1,
-        alloc_console: mode == Mode::Cli && facts.gui_built && !facts.console_window && !facts.stdout_redirected,
+        alloc_console: !refused && mode == Mode::Cli && facts.gui_built && !facts.console_window && !facts.stdout_redirected,
         note,
+        refused,
     }
 }
 
@@ -242,7 +260,10 @@ mod tests {
     }
 
     fn launch(mode: Mode, free_console: bool, alloc_console: bool, note: Option<Note>) -> Launch {
-        Launch { mode, free_console, alloc_console, note }
+        Launch { mode, free_console, alloc_console, note, refused: false }
+    }
+    fn refused(note: Note) -> Launch {
+        Launch { mode: Mode::Cli, free_console: false, alloc_console: false, note: Some(note), refused: true }
     }
 
     /// The decision table (TODO 29 S6): the flags decide, then any other argument, then redirected output, then the console
@@ -283,44 +304,67 @@ mod tests {
         }
     }
 
-    /// Below build 22000, an unknown build, or a tmr.exe without the window: the CLI, in the console it has, with the note when the window
-    /// was asked for or the launch looked like a double-click, but none for a double-click on a build without the window
+    /// Below build 22000, an unknown build, or a tmr.exe without the window: a launch that looked like a double-click runs the CLI in the
+    /// console it has, with the note (none on a build without the window, where the CLI is what a double-click runs), and `--gui` runs
+    /// nothing, however it was launched, and says why
     #[test]
-    fn without_the_window_a_launch_runs_the_cli() {
+    fn where_the_window_cant_open_a_double_click_runs_the_cli_and_gui_is_refused() {
         let server_2022 = |facts: Facts| Facts { build: Some(20348), ..facts };
         let without = |facts: Facts| Facts { gui_built: false, ..facts };
+        let gui = |facts: Facts| Facts { asked: Some(Mode::Gui), ..facts };
         let old = |build| launch(Mode::Cli, false, false, Some(Note::OldWindows(build)));
+        let cli = launch(Mode::Cli, false, false, None);
         let cases = [
             ("a double-click on Server 2022", server_2022(own_console()), old(Some(20348))),
-            ("--gui on Server 2022", server_2022(Facts { asked: Some(Mode::Gui), ..shell() }), old(Some(20348))),
-            ("a shell on Server 2022", server_2022(shell()), launch(Mode::Cli, false, false, None)),
+            ("a shell on Server 2022", server_2022(shell()), cli),
+            ("--cli on Server 2022", server_2022(Facts { asked: Some(Mode::Cli), ..shell() }), cli),
             ("an unknown build", Facts { build: None, ..own_console() }, old(None)),
+            ("--gui on Server 2022", server_2022(gui(shell())), refused(Note::OldWindows(Some(20348)))),
+            ("--gui on Server 2022, in a console of its own", server_2022(gui(own_console())), refused(Note::OldWindows(Some(20348)))),
             (
-                "--gui without the window",
-                without(Facts { asked: Some(Mode::Gui), ..shell() }),
-                launch(Mode::Cli, false, false, Some(Note::NotBuilt)),
+                "--gui on Server 2022, with parameters",
+                server_2022(gui(Facts { arguments: true, ..shell() })),
+                refused(Note::OldWindows(Some(20348))),
             ),
-            ("a double-click without the window", without(own_console()), launch(Mode::Cli, false, false, None)),
+            ("--gui on an unknown build", Facts { build: None, ..gui(shell()) }, refused(Note::OldWindows(None))),
+            ("--gui without the window", without(gui(shell())), refused(Note::NotBuilt)),
             (
-                "no console without the window: as launched",
-                without(Facts { arguments: true, ..double_click() }),
-                launch(Mode::Cli, false, false, None),
+                "--gui without the window, no console: none opened",
+                without(gui(Facts { arguments: true, ..double_click() })),
+                refused(Note::NotBuilt),
             ),
+            ("a double-click without the window", without(own_console()), cli),
+            ("no console without the window: as launched", without(Facts { arguments: true, ..double_click() }), cli),
         ];
         for (case, facts, expected) in cases {
             assert_eq!(decide(&facts), expected, "{case}");
         }
+        let message = |facts: Facts| decide(&facts).message();
+        assert_eq!(message(server_2022(shell())), None);
         assert_eq!(
-            Note::OldWindows(Some(20348)).to_string(),
-            "Note: the window needs Windows build 22000 or later (Windows 11, Server 2025), and this is 20348: running the CLI"
+            message(server_2022(own_console())).as_deref(),
+            Some("Note: the window needs Windows build 22000 or later (Windows 11, Server 2025), and this is 20348: running the CLI")
         );
         assert_eq!(
-            Note::OldWindows(None).to_string(),
-            "Note: the window needs Windows build 22000 or later (Windows 11, Server 2025), and this is unknown: running the CLI"
+            message(server_2022(gui(shell()))).as_deref(),
+            Some(
+                "Error: --gui: the window needs Windows build 22000 or later (Windows 11, Server 2025), and this is 20348. \
+                 Nothing was run: without --gui, or with --cli, tmr.exe runs in the console"
+            )
         );
         assert_eq!(
-            Note::NotBuilt.to_string(),
-            "Note: this tmr.exe was built without the window (cargo build --features tmr-app/gui): running the CLI"
+            message(Facts { build: None, ..gui(shell()) }).as_deref(),
+            Some(
+                "Error: --gui: the window needs Windows build 22000 or later (Windows 11, Server 2025), and this is unknown. \
+                 Nothing was run: without --gui, or with --cli, tmr.exe runs in the console"
+            )
+        );
+        assert_eq!(
+            message(without(gui(shell()))).as_deref(),
+            Some(
+                "Error: --gui: this tmr.exe was built without the window (cargo build --no-default-features; a plain cargo build has it). \
+                 Nothing was run: without --gui, or with --cli, tmr.exe runs in the console"
+            )
         );
     }
 

@@ -2,23 +2,26 @@
 //!
 //! - The icon (TODO 7), in every build: tmr.ico's images as the exe's icon resources, which Explorer, the taskbar and a console window
 //!   show. Written here as a .res, which the linker takes as it takes an object, so the build needs no resource compiler.
-//! - With the window (the `gui` feature), what the CLI-only build doesn't link; without the feature, none of it, so that exe has no
-//!   delay-import directory and no manifest:
+//! - With the window (the `gui` feature, the default), what the CLI-only build (`--no-default-features`) doesn't link; without the
+//!   feature, none of it, so that exe has no delay-import directory and no manifest:
 //!   - The import older Windows lacks. Reactor imports `TryCreatePackageDependency` from `api-ms-win-appmodel-runtime-l1-1-5.dll`, which
 //!     Windows has from build 22000 (Windows 11, Server 2025). Imported the normal way, the loader refuses the exe before `main` on Server
 //!     2022; delay-loaded, the DLL loads only when the window opens, which `main` allows from 22000 only, so the CLI still starts there.
 //!   - The manifest (`tmr.manifest`, TODO 29 S6), which lets a double-click open the window with no console from build 26100
 //!     (`src/launch.rs`).
 
-use std::path::Path;
+use std::path::{Path, PathBuf};
 
 fn main() {
     println!("cargo::rerun-if-changed=build.rs");
     let dir = std::env::var("CARGO_MANIFEST_DIR").expect("cargo sets CARGO_MANIFEST_DIR");
+    // What the link takes from here is written to OUT_DIR, never named in the source tree: cargo moves a reused build's OUT_DIR with it,
+    // and doesn't rewrite a source path (a moved checkout, or a worktree that shared the target dir, whose files have since gone)
+    let out = PathBuf::from(std::env::var("OUT_DIR").expect("cargo sets OUT_DIR"));
 
     println!("cargo::rerun-if-changed=tmr.ico");
     let ico = std::fs::read(Path::new(&dir).join("tmr.ico")).expect("tmr.ico, the exe's icon, beside Cargo.toml");
-    let res = Path::new(&std::env::var("OUT_DIR").expect("cargo sets OUT_DIR")).join("tmr.res");
+    let res = out.join("tmr.res");
     std::fs::write(&res, icon_res(&ico)).expect("tmr.res written to OUT_DIR");
     println!("cargo::rustc-link-arg-bins={}", res.display());
 
@@ -29,10 +32,11 @@ fn main() {
 
         // Merged with the linker's own (its UAC level, asInvoker, as an exe with none runs at) and embedded as the exe's resource 1.
         // Forward slashes: the linker reads the option's path as given.
-        let dir = dir.replace('\\', "/");
         println!("cargo::rerun-if-changed=tmr.manifest");
+        let manifest = out.join("tmr.manifest");
+        std::fs::copy(Path::new(&dir).join("tmr.manifest"), &manifest).expect("tmr.manifest copied to OUT_DIR");
         println!("cargo::rustc-link-arg-bins=/MANIFEST:EMBED");
-        println!("cargo::rustc-link-arg-bins=/MANIFESTINPUT:{dir}/tmr.manifest");
+        println!("cargo::rustc-link-arg-bins=/MANIFESTINPUT:{}", manifest.display().to_string().replace('\\', "/"));
     }
 }
 

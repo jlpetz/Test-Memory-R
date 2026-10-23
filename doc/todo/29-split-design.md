@@ -10,7 +10,7 @@
 - **GUI thread priority:** Normal for v1 (workers stay High); measured with the owner later.
 - **An elevated launch's silent secedit grant** (privileges.rs:335-346) is unchanged by the split; noted for the owner.
 - **TODO 29's log transcript** (the log file holding everything the console showed) comes after the split.
-- **GUI v1** takes the exe's own arguments; the args box, AppConfig's `last_config`/`ui_mode`/`auto_start` and 'run again' (a relaunch, one run per process) are S6 or later. Release builds stay CLI-only until the owner turns the GUI on. The S3 preview is `tmr --gui ...` from a shell.
+- **GUI v1** takes the exe's own arguments; the args box, AppConfig's `last_config`/`ui_mode`/`auto_start` and 'run again' (a relaunch, one run per process) are S6 or later. Release builds stayed CLI-only until the owner turned the GUI on (2026-10-23: a default feature, so every build and release has it). The S3 preview is `tmr --gui ...` from a shell.
 - **CLAUDE.md's command lines** (`-p tmr-app`, `--workspace`) are updated when the workspace lands (S3), and the owner told.
 
 ## Why: the judge's choice
@@ -620,6 +620,7 @@ A timeout also returns, which is the window's 2 Hz clock (Reactor 0.100.0 has no
   - The engine's three `secedit` runs (`memory::privileges`) start with `CREATE_NO_WINDOW`. A console program started by a process with no console gets a console window, so a double-clicked window, elevated, flashed one per run: one on every elevated launch whose token lacks the privilege (`check_restart_needed`), and two more for the grant. Their output was already piped to TMR, so the CLI's console text is unchanged.
   - Not built, waiting on the owner's answers (Open for the owner): 'Run again' (a relaunch with the same args), and AppConfig's `last_config`/`ui_mode`/`auto_start`, which TODO 7 keeps parked.
   - The asm of both builds compares clean against S5's fingerprints (0 changed, gone or new), and both spill tables match 25ff780's, also after the review's fixes. The window was opened once with `--gui` (never Start) on this box (26100, App Runtime 2.5): it opened with its title, stayed up, and closed on WM_CLOSE with exit 2, leaving no process and no file. PrintWindow captures none of WinUI's content, so the parameters box wasn't seen.
+- After S6 (the owner, 2026-10-23): the window is tmr-app's default feature (`default = ["gui"]`), so a plain build, CI's and each release's, is the one tmr.exe with both frontends; one download, not a CLI-only exe beside it. `default-members` stays without tmr-gui: it never kept the window out of tmr.exe (the feature did), and without it a plain command takes the root package alone and builds no exe; tmr-gui comes in as tmr-app's dependency. `--no-default-features` builds the CLI alone, which CI's clippy keeps building. `--gui` where the window can't open (below 22000, an unknown build, a build without it) runs nothing: `Launch::refused`, its reason on the console and, in the GUI build, in a box, and exit 2 (not run). A double-click there still runs the CLI after its note: an error would close the console Windows opened for it before it could be read.
 
 **Gate.**
 - Both builds; dumpbin shows RT_MANIFEST only with the feature.
@@ -676,7 +677,7 @@ A timeout also returns, which is the window's 2 Hz clock (Reactor 0.100.0 has no
 - TODO 29's log transcript, which makes the log file hold everything the console showed: next after the split, or later? It changes what logs/*.log contains.
 - GUI v1 input: is a single args box in the CLI's key=value syntax enough? Should it save to AppConfig.last_config, and should ui_mode/auto_start (app_config.rs:200-208) be wired or deleted?
 - 'Run again' relaunches the exe (one run per process). Acceptable for v1?
-- When should release builds include the GUI (`--features tmr-app/gui`: +1.6 MB, Windows App Runtime 2.x needed for the window)?
+- ~~When should release builds include the GUI (`--features tmr-app/gui`: +1.6 MB, Windows App Runtime 2.x needed for the window)?~~ Now (the owner, 2026-10-23): a default feature, in every build and release, one tmr.exe.
 - For the preview stage, is `tmr --gui …` from a shell (setup text and the large-page prompt in the console) acceptable before the double-click launch exists?
 - May the coordinator update CLAUDE.md's asm and clippy command lines (`-p tmr-app`, `--workspace`) when the workspace lands?
 - The capture bridge (`set_output_capture`, perma-unstable) stays in tmr-cli's tests after S5, with no end date: a nightly bump can break those goldens, never the product. Accept that, pinning the nightly if a bump does, or plan writer goldens: the CLI's frontend and `console` writing to an injected sink in its tests, and a test logger writing to the same sink?

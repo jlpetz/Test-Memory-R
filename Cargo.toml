@@ -3,8 +3,9 @@
 # every path to it in the docs holds.
 [workspace]
 members = [".", "crates/tmr-app", "crates/tmr-cli", "crates/tmr-gui"]
-# All but the window, so a plain `cargo build`, `cargo test` or `cargo run` never compiles Reactor:
-# `--features tmr-app/gui` builds it into tmr.exe
+# What a plain `cargo build`, `cargo run` or `cargo test` takes: the root is a package, so without
+# this they would take it alone, and build no tmr.exe. The window comes in through tmr-app's default
+# `gui` feature; `--workspace` adds tmr-gui's own tests.
 default-members = [".", "crates/tmr-app", "crates/tmr-cli"]
 
 [workspace.package]
