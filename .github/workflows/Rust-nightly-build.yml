@@ -53,9 +53,10 @@ jobs:
         tool: cargo-nextest,cargo-audit
 
     # The window's tests are of its plain-Rust model and need no Windows App Runtime. The CLI's
-    # console goldens are compared byte for byte (.gitattributes keeps their line ends)
+    # console goldens are compared byte for byte (.gitattributes keeps their line ends). Every test
+    # runs, failing or not, so one run shows every failure (the runners' CPUs differ: some lack AVX-512)
     - name: 🧪 Run tests
-      run: cargo +nightly nextest run --workspace --all-targets
+      run: cargo +nightly nextest run --workspace --all-targets --no-fail-fast
 
     # Cargo.lock against the RustSec advisories: a vulnerability fails the job, a warning (an
     # unmaintained crate) is only listed. Plain cargo-audit: actions-rs/audit-check is archived, and

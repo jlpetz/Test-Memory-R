@@ -5514,8 +5514,9 @@ mod tests {
             }
             compared += 1;
         }
-        // Mem-Sequence, 7 native pairs, 8 numbered and 8 of the seal's
-        assert!(compared >= 24, "only {compared} compared");
+        // Mem-Sequence, 7 native pairs, 8 numbered and 8 of the seal's; a CPU without AVX-512 leaves out the seal's two 512-bit pairs
+        let expected = if is_x86_feature_detected!("avx512f") { 24 } else { 22 };
+        assert!(compared >= expected, "only {compared} compared, of {expected}");
         assert!(region.guards_intact());
     }
 
