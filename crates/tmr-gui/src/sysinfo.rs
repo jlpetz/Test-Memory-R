@@ -2,6 +2,8 @@
 //! (`Setup::SystemInfo`, TODO 29): the CPU from CPUID, the caches as the run uses them, and the memory modules SMBIOS lists. Plain Rust:
 //! the window lays it out.
 
+use std::collections::HashSet;
+
 use tmr::frontend::{MemoryModule, SystemInfoReport};
 
 /// The machine under test, as the system panel takes it.
@@ -39,8 +41,9 @@ impl Machine {
     }
 }
 
-/// A memory module, as the DIMM selector shows it: its name, the locator, or `DIMM 2` where SMBIOS left that empty, and the rest SMBIOS
-/// gives, `32 GiB · 6000 MT/s · G.Skill F5-6000J3040G32G`, a field it left empty (a VM's often are) left out.
+/// A memory module, as the DIMM selector shows it: its name, the locator, or `DIMM 2` where SMBIOS left that empty, numbered apart from
+/// another of the same name (`named_apart`), and the rest SMBIOS gives, `32 GiB · 6000 MT/s · G.Skill F5-6000J3040G32G`, a field it left
+/// empty (a VM's often are) left out.
 #[derive(Clone, Debug, PartialEq)]
 pub struct Dimm {
     pub name: String,
@@ -95,7 +98,7 @@ impl SystemPanel {
             cpu_detail: format!("{}\n{} cores, {} logical CPUs", machine.cpu, machine.physical_cores, machine.logical_cpus),
             cache_line: cache_line(machine),
             cache_detail: cache_detail(machine),
-            dimms: modules.iter().enumerate().map(|(i, module)| dimm(i, module)).collect(),
+            dimms: named_apart(modules.iter().enumerate().map(|(i, module)| dimm(i, module)).collect()),
             installed: (total > 0).then(|| format!("{}{kind}", size(total as usize))),
             chosen: 0,
         }
@@ -188,6 +191,22 @@ fn dimm(index: usize, m: &MemoryModule) -> Dimm {
     .collect();
     let locator = m.locator.trim();
     Dimm { name: if locator.is_empty() { format!("DIMM {}", index + 1) } else { locator.to_string() }, details: details.join(" · ") }
+}
+
+/// Each DIMM a name of its own: a name SMBIOS gives more than one module (AMD boards can name each channel's first slot `DIMM 1`, and
+/// put the channel only in the Bank Locator) takes ` (2)`, ` (3)` from its second on, as Explorer numbers a copy. The selector's menu
+/// gives back the item chosen by its label, so two that read the same would always choose the first.
+fn named_apart(mut dimms: Vec<Dimm>) -> Vec<Dimm> {
+    let mut taken = HashSet::new();
+    for dimm in &mut dimms {
+        let name = dimm.name.clone();
+        let mut copy = 2;
+        while !taken.insert(dimm.name.clone()) {
+            dimm.name = format!("{name} ({copy})");
+            copy += 1;
+        }
+    }
+    dimms
 }
 
 /// The SMBIOS memory type's name (Type 17 offset 0x12), for the ones a DDR5 tester meets
@@ -295,6 +314,22 @@ mod tests {
         assert_eq!(panel.chosen(), Some(&b2), "a choice that names no DIMM changes nothing");
         panel.choose(&choices[0]);
         assert_eq!(panel.chosen(), Some(&a2));
+    }
+
+    /// Modules SMBIOS names alike, as AMD boards can (`DIMM 1` in each channel), or one it names as another's place: numbered apart, so
+    /// each is an item of its own and can be chosen
+    #[test]
+    fn modules_named_alike_are_numbered_apart() {
+        let names = |panel: &SystemPanel| panel.dimms.iter().map(|dimm| dimm.name.clone()).collect::<Vec<_>>();
+        let mut panel = SystemPanel::of(&machine(vec![module("DIMM 1", 16), module("DIMM 1", 16), module("", 16)]));
+        assert_eq!(names(&panel), ["DIMM 1", "DIMM 1 (2)", "DIMM 3"]);
+        let choices: Vec<String> = panel.dimms.iter().map(Dimm::choice).collect();
+        assert_eq!(choices[1], "DIMM 1 (2) · 16 GiB · 6000 MT/s · G.Skill F5-6000J3040G32G");
+        panel.choose(&choices[1]);
+        assert_eq!(panel.chosen().map(|dimm| dimm.name.as_str()), Some("DIMM 1 (2)"), "the second, not the first");
+
+        let placed = SystemPanel::of(&machine(vec![MemoryModule::default(), module("DIMM 1", 16), module("DIMM 1 (2)", 16)]));
+        assert_eq!(names(&placed), ["DIMM 1", "DIMM 1 (2)", "DIMM 1 (2) (2)"]);
     }
 
     /// One DIMM: shown, with nothing to choose

@@ -15,7 +15,7 @@ use tmr::frontend::{Event, ProgressSnapshot, ProgressTracker, RestartChoice, Run
 use windows_reactor::*;
 
 use crate::logger::{self, LogLines};
-use crate::model::{Model, Status, StepRow};
+use crate::model::{Bar, Model, Status, StepRow};
 use crate::palette::{Palette, Palettes, brush};
 use crate::{Feed, GuiFrontend, chart};
 
@@ -292,30 +292,31 @@ impl Window {
                     .tooltip("The suite's runtime, from its first cycle, as the console's ticker counts it"),
             ));
         // The errors on the left, a non-zero count in the error colour; the time left on the right, under the runtime. Each from the
-        // suite's start.
+        // suite's start. The count keeps its width, the run's most important figure; the time left is what gives way.
         let mut counts: Vec<(u64, View)> = Vec::new();
         if let Some(count) = &self.model.error_count {
             let (weight, colour) = if count.alarm { (FontWeight::SEMI_BOLD, p.error) } else { (FontWeight::NORMAL, p.text_secondary) };
             let text = TextBlock::new().text(count.text.clone()).font_weight(weight).foreground(brush(colour));
-            counts.push((
-                0,
-                text.text_trimming(TextTrimming::CharacterEllipsis).grid_column(0).tooltip(
-                    "The run's memory errors, the running test's so far included, and the hardware errors WHEA reported: \
-                     C corrected, UC uncorrected",
-                ),
-            ));
+            let about = format!(
+                "{}\nThe run's memory errors, the running test's so far included, and the hardware errors WHEA reported: \
+                 C corrected, UC uncorrected",
+                count.text
+            );
+            counts.push((0, text.grid_column(0).tooltip(about)));
         }
         if let Some(time_left) = &self.model.time_left {
             let text = TextBlock::new()
                 .text(time_left.clone())
                 .foreground(brush(p.text_secondary))
+                .text_trimming(TextTrimming::CharacterEllipsis)
                 .horizontal_alignment(HorizontalAlignment::Right);
-            counts.push((1, text.grid_column(1).tooltip("The suite's time limit: the cycle running when it is reached finishes")));
+            let about = format!("{time_left}\nThe suite's time limit: the cycle running when it is reached finishes");
+            counts.push((1, text.grid_column(1).tooltip(about)));
         }
         let left = Grid::new().grid_column(0).vertical_alignment(VerticalAlignment::Center).row_spacing(2.0).rows([GridLength::Auto; 3]);
         let left = left.children((
             top,
-            Grid::new().grid_row(1).column_spacing(12.0).columns([GridLength::STAR, GridLength::Auto]).keyed_children(counts),
+            Grid::new().grid_row(1).column_spacing(12.0).columns([GridLength::Auto, GridLength::STAR]).keyed_children(counts),
             TextBlock::new()
                 .text(info.clone())
                 .foreground(brush(p.text_secondary))
@@ -381,9 +382,10 @@ impl Window {
                 .max_width(120.0)
                 .text_trimming(TextTrimming::CharacterEllipsis)
                 .vertical_alignment(VerticalAlignment::Center);
-            // A menu of the DIMMs, each with its details, on a subtle Button with a ▾: DropDownButton takes a menu too, but 0.100.0 gives it
-            // no subtle style, and its border would make the line taller than text. The negative margin cancels the button's padding for the
-            // same reason, and keeps the line's spacing to the details. With one DIMM there is nothing to choose: its name alone.
+            // A menu of the DIMMs, each with its details, on a subtle Button with a ▾: DropDownButton takes a menu too, but 0.100.0
+            // gives it no subtle style, and its border would make the line taller than text. The negative margin cancels the button's
+            // padding for the same reason, and keeps the line's spacing to the details. With one DIMM there is nothing to choose: its name
+            // alone. The menu gives back the item chosen by its label, which the DIMMs' names keep apart (`sysinfo::named_apart`).
             let selector: View = if s.choosable() {
                 let choices = s.dimms.iter().enumerate().map(|(i, dimm)| MenuItem::item(i, dimm.choice()));
                 let chevron = TextBlock::new().text("▾").foreground(brush(p.text_primary)).vertical_alignment(VerticalAlignment::Center);
@@ -404,30 +406,37 @@ impl Window {
     }
 
     /// The position, the cycle and the test with their clocks, and beside it, right-justified, what the test is doing: its stage and its
-    /// figures. Then the progress bar. The position keeps its width; the figures give way when the window is narrow.
+    /// figures. Then the progress bar. The position keeps its width beside the figures, which give way when the window is narrow; alone,
+    /// it takes the line, and is cut short past it, its tooltip having it all.
     fn position(&self, row: i32) -> View {
         let p = self.palette();
         let paused = matches!(self.model.status, Status::Stopping | Status::Interrupted);
+        let position = &self.model.position;
         let mut line: Vec<(u64, View)> = vec![(
             0,
             TextBlock::new()
-                .text(self.model.position.clone())
+                .text(position.clone())
                 .font_size(16.0)
                 .font_weight(FontWeight::SEMI_BOLD)
                 .foreground(brush(p.text_primary))
+                .text_trimming(TextTrimming::CharacterEllipsis)
                 .vertical_alignment(VerticalAlignment::Center)
                 .grid_column(0)
-                .into(),
+                .tooltip(position.clone()),
         )];
-        if let Some(live) = &self.model.live {
-            let text =
-                TextBlock::new().text(live.clone()).foreground(brush(p.text_secondary)).text_trimming(TextTrimming::CharacterEllipsis);
-            let text = text.horizontal_alignment(HorizontalAlignment::Right).vertical_alignment(VerticalAlignment::Center).grid_column(1);
-            line.push((1, text.tooltip(live.clone())));
-        }
+        let columns = match &self.model.live {
+            Some(live) => {
+                let text =
+                    TextBlock::new().text(live.clone()).foreground(brush(p.text_secondary)).text_trimming(TextTrimming::CharacterEllipsis);
+                let text = text.horizontal_alignment(HorizontalAlignment::Right).vertical_alignment(VerticalAlignment::Center);
+                line.push((1, text.grid_column(1).tooltip(live.clone())));
+                vec![GridLength::Auto, GridLength::STAR]
+            }
+            None => vec![GridLength::STAR],
+        };
         StackPanel::new().grid_row(row).spacing(6.0).children((
-            Grid::new().column_spacing(16.0).columns([GridLength::Auto, GridLength::STAR]).keyed_children(line),
-            progress_bar(self.model.fraction, paused, self.width - 2.0 * PAGE_MARGIN_X, p),
+            Grid::new().column_spacing(16.0).columns(columns).keyed_children(line),
+            progress_bar(&self.model.bar, paused, self.width - 2.0 * PAGE_MARGIN_X, p),
         ))
     }
 
@@ -566,10 +575,11 @@ const RESTART_QUESTION: &str = "The large-page privilege is set up, but takes ef
     go undetected.";
 
 /// egui's progress bar, from reactor primitives: a fully rounded track, `width` wide, a rounded fill sized to the fraction by two star
-/// columns, and the percentage centred over both. Determinate, no animation; a stopped run dims the fill. A fill begun is never narrower
-/// than it is high (egui's `min_width`), so its rounding stays round: a run's first percent is a dot.
-fn progress_bar(fraction: f64, paused: bool, width: f64, p: &Palette) -> View {
-    let f = fraction.clamp(0.0, 1.0);
+/// columns, and the percentage centred over both, the model's, rounded down as the ticker's are. Its tooltip says what it follows.
+/// Determinate, no animation; a stopped run dims the fill. A fill begun is never narrower than it is high (egui's `min_width`), so its
+/// rounding stays round: a run's first percent is a dot.
+fn progress_bar(bar: &Bar, paused: bool, width: f64, p: &Palette) -> View {
+    let f = bar.fraction.clamp(0.0, 1.0);
     let inner_radius = (PROGRESS_HEIGHT - 2.0) / 2.0;
     let fill = if f > 0.0 { f.max(PROGRESS_HEIGHT / width.max(PROGRESS_HEIGHT)) } else { 0.0 };
     Border::new()
@@ -588,7 +598,7 @@ fn progress_bar(fraction: f64, paused: bool, width: f64, p: &Palette) -> View {
                     },
                 ),
                 TextBlock::new()
-                    .text(format!("{:.0}%", f * 100.0))
+                    .text(format!("{}%", bar.percent))
                     .font_size(12.0)
                     .font_weight(FontWeight::SEMI_BOLD)
                     .foreground(brush(p.progress_text))
@@ -598,6 +608,7 @@ fn progress_bar(fraction: f64, paused: bool, width: f64, p: &Palette) -> View {
                     .grid_column_span(2),
             )),
         )
+        .tooltip(bar.about)
 }
 
 fn card_title(title: String, p: &Palette) -> TextBlock {

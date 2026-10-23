@@ -268,6 +268,25 @@ impl ErrorCount {
     }
 }
 
+/// The progress bar: how far the run is, the fill and its label, and what it follows, which its tooltip says.
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub struct Bar {
+    /// 0 to 1
+    pub fraction: f64,
+    /// Rounded down from the counts the fraction is of, as the ticker's percentages are: a bar the cycle limit drives says what the
+    /// position line does, `39%` where rounding would say 40%
+    pub percent: u128,
+    pub about: &'static str,
+}
+
+impl Bar {
+    /// Before the suite
+    const NONE: Bar = Bar { fraction: 0.0, percent: 0, about: "How far the run is, once its suite starts" };
+    const CYCLES: &str = "How far the run is: its finished tests, against all its cycles'";
+    const TIME: &str = "How far the run is: its runtime, against its time limit";
+    const CYCLE: &str = "How far the cycle is: its finished tests (no limit ends the run)";
+}
+
 /// The session's facts, for the info line under the title.
 #[derive(Debug, Default)]
 struct Facts {
@@ -300,8 +319,8 @@ pub struct Model {
     pub position: String,
     /// What the running test is doing, beside the position: its stage and its figures (`live`)
     pub live: Option<String>,
-    /// How far the run is, 0 to 1: its cycles, or its time when that ends it sooner
-    pub fraction: f64,
+    /// How far the run is: its cycles, or its time when that ends it sooner
+    pub bar: Bar,
     /// The physical memory Windows reports, from setup's memory status and the memory plan
     pub ram_bytes: Option<u64>,
     /// The system panel, once setup has detected the machine
@@ -342,7 +361,7 @@ impl Model {
             error_count: None,
             position: "Ready".to_string(),
             live: None,
-            fraction: 0.0,
+            bar: Bar::NONE,
             ram_bytes: None,
             system: None,
             rows: Vec::new(),
@@ -560,7 +579,7 @@ impl Model {
                 self.error_count = Some(ErrorCount::of(memory_errors, whea));
                 (self.time_left, self.live) = (None, None);
                 if matches!(outcome, RunOutcome::Completed | RunOutcome::TimeLimit) {
-                    self.fraction = 1.0;
+                    (self.bar.fraction, self.bar.percent) = (1.0, 100);
                 }
                 self.over = true;
             }
@@ -580,7 +599,7 @@ impl Model {
         self.error_count = Some(ErrorCount::of(s.finished_errors + s.live_errors, s.whea));
         self.position = position(&s);
         self.live = live(&s);
-        self.fraction = fraction(&s);
+        self.bar = bar(&s);
         self.series.push(speed_mib_s(&s));
         let errors = s.finished_errors + s.live_errors + s.whea.total;
         if errors > self.errors_seen {
@@ -606,14 +625,28 @@ impl Model {
             }
             Ok(SessionEnd::Ran { .. }) => {}
         }
-        // Without a suite: stopped in setup, or a plan or a command was all it was to show. A thread that ended mid-suite, with no verdict,
-        // leaves no test running and no time left; its last error count holds.
-        if !self.over {
-            self.status = Status::NotRun;
-            self.position = position.to_string();
-            (self.time_left, self.live) = (None, None);
-            self.over = true;
+        if self.over {
+            return;
         }
+        if self.progress.is_some() {
+            // Mid-suite, with no verdict (a panic, or the session's error): no test runs and no time is left, and the last error count
+            // holds. The status is the one the engine's verdict would give the steps finished: Failed on an error, Interrupted after a
+            // step, Not run before one.
+            self.status = if self.error_count.as_ref().is_some_and(|count| count.alarm) {
+                Status::Failed
+            } else if self.rows.is_empty() {
+                Status::NotRun
+            } else {
+                Status::Interrupted
+            };
+            position = "The session ended mid-suite, with no verdict: the log file has why";
+        } else {
+            // Without a suite: stopped in setup, or a plan or a command was all it was to show
+            self.status = Status::NotRun;
+        }
+        self.position = position.to_string();
+        (self.time_left, self.live) = (None, None);
+        self.over = true;
     }
 
     /// The position line when the suite has ended: how, its cycles and steps, and its errors
@@ -772,18 +805,19 @@ fn hms(d: Duration) -> String {
 }
 
 /// How far the run is: its finished tests against its cycle limit's, as the ticker's percentage counts them, or its runtime against its
-/// time limit, whichever is further; with neither, the cycle's finished tests
-fn fraction(s: &ProgressSnapshot) -> f64 {
-    let tests = s.tests_per_cycle.max(1) as f64;
-    let done = f64::from(s.cycle.saturating_sub(1)) * tests + s.tests_done as f64;
-    let by_cycles = s.cycle_limit.filter(|&limit| limit > 0).map(|limit| done / (f64::from(limit) * tests));
-    let by_time = s.time_limit.filter(|limit| !limit.is_zero()).map(|limit| s.runtime.as_secs_f64() / limit.as_secs_f64());
-    let fraction = match (by_cycles, by_time) {
-        (Some(cycles), Some(time)) => cycles.max(time),
-        (Some(fraction), None) | (None, Some(fraction)) => fraction,
-        (None, None) => s.tests_done as f64 / tests,
-    };
-    fraction.clamp(0.0, 1.0)
+/// time limit, whichever is further; with neither, the cycle's finished tests. The percentage is of the same counts, rounded down.
+fn bar(s: &ProgressSnapshot) -> Bar {
+    let of = |part: u128, whole: u128, about| Bar { fraction: (part as f64 / whole as f64).min(1.0), percent: percent(part, whole), about };
+    let tests = u128::from(s.tests_per_cycle.max(1));
+    let done = u128::from(s.cycle.saturating_sub(1)) * tests + u128::from(s.tests_done);
+    let by_cycles = s.cycle_limit.filter(|&limit| limit > 0).map(|limit| of(done, u128::from(limit) * tests, Bar::CYCLES));
+    let by_time = s.time_limit.map(|limit| limit.as_millis()).filter(|&ms| ms > 0).map(|ms| of(s.runtime.as_millis(), ms, Bar::TIME));
+    // The further; of two as far, the cycles', whose percentage the position line has (`max_by` takes the last)
+    [by_time, by_cycles]
+        .into_iter()
+        .flatten()
+        .max_by(|a, b| a.fraction.total_cmp(&b.fraction))
+        .unwrap_or_else(|| of(u128::from(s.tests_done), tests, Bar::CYCLE))
 }
 
 /// The running test's speed in MiB/s, as the ticker gives it: 0 between tests, and before its workers have published
@@ -846,6 +880,7 @@ mod tests {
     };
 
     use super::*;
+    use crate::sysinfo::Dimm;
 
     /// A step of `cycle` that found `errors`, and `seal` errors in a sealed run (`None` unsealed), while WHEA saw `whea`. Every count is
     /// its own, so a row or a line that read the wrong one shows it: the alarms (failed checks) are 2 more than the errors.
@@ -1082,6 +1117,9 @@ mod tests {
         m.start();
         assert_eq!(m.position, "Setting up");
         let module = MemoryModule { locator: "DIMM_A2".to_string(), capacity_bytes: 32 << 30, memory_type: 0x22, ..Default::default() };
+        let second = MemoryModule { locator: "DIMM_B2".to_string(), capacity_bytes: 16 << 30, ..module.clone() };
+        m.choose_dimm("DIMM_B2 · 16 GiB");
+        assert!(m.system.is_none(), "no DIMM to choose before setup has detected them");
         let status = MemoryStatus { total_phys: 62 << 30, avail_phys: 50 << 30, total_page_file: 70 << 30, avail_page_file: 60 << 30 };
         for setup in [Setup::Selection(Box::new(selection())), Setup::LargePageCheck] {
             m.apply(setup.into());
@@ -1095,7 +1133,7 @@ mod tests {
             Setup::LargePageStatus { usable: false, min_page: "regular".to_string(), min_needs_large: false },
             Setup::MemoryStatus(Some(status)),
             Setup::MemoryStatus(None),
-            Setup::SystemInfo { report: Box::new(system_info()), memory_modules: vec![module] },
+            Setup::SystemInfo { report: Box::new(system_info()), memory_modules: vec![module, second] },
             Setup::Starting,
             Setup::RealtimeOnEveryCpu,
             Setup::Plan { name: "stability", about: "the stability tests", is_default: true },
@@ -1110,10 +1148,12 @@ mod tests {
             ("AMD Ryzen 5 8600G w/ Radeon 760M Graphics", "L1 32 KiB · L2 1 MiB per core · L3 16 MiB")
         );
         let memory = m.memory_line().expect("the memory line");
-        assert_eq!((memory.total.as_deref(), memory.dimms.as_str()), (Some("32 GiB DDR5"), "1 DIMM"));
+        assert_eq!((memory.total.as_deref(), memory.dimms.as_str()), (Some("48 GiB DDR5"), "2 DIMMs"));
         assert!(memory.about.contains("Windows reports 62 GiB"), "{}", memory.about);
-        m.choose_dimm("DIMM_A2 · 32 GiB");
-        assert_eq!(m.system.as_ref().and_then(SystemPanel::chosen).map(|dimm| dimm.details.as_str()), Some("32 GiB"));
+        let chosen = |m: &Model| m.system.as_ref().and_then(SystemPanel::chosen).map(Dimm::choice);
+        assert_eq!(chosen(&m).as_deref(), Some("DIMM_A2 · 32 GiB"), "the first, before any choice");
+        m.choose_dimm("DIMM_B2 · 16 GiB");
+        assert_eq!(chosen(&m).as_deref(), Some("DIMM_B2 · 16 GiB"), "the one chosen");
         assert_eq!(m.errors, [
             "Large pages are set up but take effect after Windows restarts: this run takes 4 KiB pages (minpage=regular)",
             "priority=realtime with a worker on every logical CPU: the window can freeze until the run ends"
@@ -1305,7 +1345,7 @@ mod tests {
         m.tick(Some(snapshot(0)), Vec::new());
         assert_eq!((m.runtime, m.runtime_line().as_str()), (Duration::from_secs(95), "00:01:35"));
         assert_eq!(m.position, "Cycle 2/4 (00:00:30, 33%) · Test 3/6 Mem-Refresh128 (00:00:05)");
-        assert_eq!(m.fraction, 8.0 / 24.0, "a cycle and 2 tests of 4 cycles of 6");
+        assert_eq!((m.bar.fraction, m.bar.percent), (8.0 / 24.0, 33), "a cycle and 2 tests of 4 cycles of 6");
         assert_eq!(m.series.latest().map(|v| (v * 10.0).round() / 10.0), Some(19108.7));
         assert_eq!(m.series.marks().count(), 1, "the finished test's error");
 
@@ -1324,7 +1364,7 @@ mod tests {
             Run::SuiteEnded { outcome: RunOutcome::Completed, status: RunStatus::Failed, memory_errors: 3, whea: WheaCounts::default() }
                 .into(),
         );
-        assert_eq!(m.fraction, 1.0);
+        assert_eq!((m.bar.fraction, m.bar.percent), (1.0, 100));
         let ended = ErrorCount { text: "⚠️ 3 errors + 0 WHEA".to_string(), alarm: true };
         assert_eq!((m.error_count.as_ref(), m.live.as_ref()), (Some(&ended), None), "the run's count holds, and no test runs");
         let later = ProgressSnapshot { runtime: Duration::from_secs(500), time_limit: Some(Duration::from_secs(600)), ..snapshot(0) };
@@ -1342,14 +1382,31 @@ mod tests {
             .collect()
     }
 
-    /// Each of `parts`, a window line's, cut at its ` · `, is word for word in the golden's `case`: the window and the console's ticker
-    /// say the same, which a change to the ticker that the window doesn't follow breaks
+    /// A golden case's parts: its lines cut at ` | `, the runtime without its `Runtime: `, and the time left in its bracket a part of its
+    /// own
+    fn ticker_parts(text: &str) -> Vec<&str> {
+        let mut parts = Vec::new();
+        for part in text.lines().filter(|line| !line.is_empty()).flat_map(|line| line.split(" | ")) {
+            match part.strip_prefix("Runtime: ").map(|runtime| runtime.split_once(" (").ok_or(runtime)) {
+                Some(Ok((clock, left))) => parts.extend([clock, left.strip_suffix(')').unwrap_or(left)]),
+                Some(Err(clock)) => parts.push(clock),
+                None => parts.push(part),
+            }
+        }
+        parts
+    }
+
+    /// `parts`, a window line's each, cut at its ` · `, are the golden `case`'s parts word for word, every one of them and no other (in any
+    /// order): the window and the console's ticker say the same, which a change to the ticker that the window doesn't follow breaks, a
+    /// part the ticker adds as much as a part reworded
     fn in_the_ticker(case: &str, parts: &[&str]) {
         let golden = ticker_golden();
         let (_, text) = golden.iter().find(|(name, _)| name == case).unwrap_or_else(|| panic!("no case {case:?} in {golden:?}"));
-        for part in parts.iter().flat_map(|part| part.split(" · ")) {
-            assert!(text.contains(part), "{part:?} is not in the ticker's {case:?}:\n{text}");
-        }
+        let mut window: Vec<&str> = parts.iter().flat_map(|part| part.split(" · ")).collect();
+        let mut ticker = ticker_parts(text);
+        window.sort_unstable();
+        ticker.sort_unstable();
+        assert_eq!(window, ticker, "the window's parts, and the ticker's {case:?}:\n{text}");
     }
 
     /// The ticker golden's snapshot (crates/tmr-cli's `render/tests.rs`): 41:10 into a run of 8 cycles or an hour, cycle 4 12:34 in with 1
@@ -1459,28 +1516,51 @@ mod tests {
         );
     }
 
-    /// A session's thread that ends mid-suite with no verdict leaves no test running and no time left; the last error count holds
+    /// A session's thread that ends mid-suite with no verdict leaves no test running and no time left, and says so; the last error count
+    /// holds, and the status is the one the engine's verdict would give: Failed on an error, Interrupted after a step, Not run before one
     #[test]
     fn a_thread_that_ends_mid_suite_leaves_no_test_running() {
-        let mut m = model();
-        m.tick(Some(ProgressSnapshot { live_errors: 2, ..ticker_snapshot() }), Vec::new());
-        assert!(m.live.is_some() && m.time_left.is_some());
-        m.ended(Err("the session's thread ended without a result: the log file has why".to_string()));
-        assert_eq!((m.status, m.live, m.time_left), (Status::NotRun, None, None));
-        assert_eq!(m.error_count.map(|count| count.text).as_deref(), Some("⚠️ 2 errors + 0 WHEA"));
+        let mid_suite = |steps: Vec<Run>, live_errors| {
+            let mut m = model();
+            m.start();
+            let started =
+                Run::SuiteStarted { progress: Arc::new(ProgressTracker::new()), seed: 1, transfer_bits: None, transfer_source: "none" };
+            for run in std::iter::once(started).chain(steps) {
+                m.apply(run.into());
+            }
+            m.tick(Some(ProgressSnapshot { live_errors, ..ticker_snapshot() }), Vec::new());
+            assert!(m.live.is_some() && m.time_left.is_some());
+            m.ended(Err("the session's thread ended without a result: the log file has why".to_string()));
+            assert_eq!((m.live, m.time_left), (None, None));
+            assert_eq!(m.position, "The session ended mid-suite, with no verdict: the log file has why");
+            (m.status, m.error_count.map(|count| count.text).unwrap_or_default())
+        };
+        let clean = || vec![step(1, 1, 0, None, WheaCounts::default())];
+        assert_eq!(mid_suite(clean(), 2), (Status::Failed, "⚠️ 2 errors + 0 WHEA".to_string()));
+        assert_eq!(mid_suite(clean(), 0), (Status::Interrupted, "0 errors + 0 WHEA".to_string()));
+        assert_eq!(mid_suite(Vec::new(), 0), (Status::NotRun, "0 errors + 0 WHEA".to_string()), "no step finished");
     }
 
-    /// The progress takes whichever limit is nearer, or with neither, the cycle's tests
+    /// The progress takes whichever limit is nearer, or with neither, the cycle's tests, its tooltip saying which; its percentage is
+    /// rounded down from the same counts, as the ticker's
     #[test]
     fn the_progress_follows_the_nearer_limit() {
         let at = |cycle_limit, time_limit: Option<u64>| {
-            fraction(&ProgressSnapshot { cycle_limit, time_limit: time_limit.map(Duration::from_secs), ..snapshot(0) })
+            let bar = bar(&ProgressSnapshot { cycle_limit, time_limit: time_limit.map(Duration::from_secs), ..snapshot(0) });
+            (bar.fraction, bar.percent, bar.about)
         };
-        assert_eq!(at(Some(4), None), 8.0 / 24.0);
-        assert_eq!(at(Some(4), Some(190)), 0.5, "95 s of 190 s");
-        assert_eq!(at(None, Some(950)), 0.1);
-        assert_eq!(at(None, None), 2.0 / 6.0);
-        assert_eq!(at(Some(0), Some(0)), 2.0 / 6.0, "a zero limit divides nothing");
+        assert_eq!(at(Some(4), None), (8.0 / 24.0, 33, Bar::CYCLES));
+        assert_eq!(at(Some(4), Some(190)), (0.5, 50, Bar::TIME), "95 s of 190 s");
+        assert_eq!(at(None, Some(950)), (0.1, 10, Bar::TIME));
+        assert_eq!(at(None, None), (2.0 / 6.0, 33, Bar::CYCLE));
+        assert_eq!(at(Some(0), Some(0)), (2.0 / 6.0, 33, Bar::CYCLE), "a zero limit divides nothing");
+
+        // The ticker golden's: its time limit is the nearer. A cycle limit alone gives 19 of 48 tests, the position line's 39%, where
+        // rounding would give 40%.
+        assert_eq!(bar(&ticker_snapshot()), Bar { fraction: 2470.0 / 3600.0, percent: 68, about: Bar::TIME });
+        let cycles_only = ProgressSnapshot { time_limit: None, ..ticker_snapshot() };
+        assert_eq!(bar(&cycles_only), Bar { fraction: 19.0 / 48.0, percent: 39, about: Bar::CYCLES });
+        assert!(position(&cycles_only).starts_with("Cycle 4/8 (00:12:34, 39%)"), "{}", position(&cycles_only));
     }
 
     /// The chart keeps a minute of samples, and its marks scroll off with them; its axis rounds up to round labels
