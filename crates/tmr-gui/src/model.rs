@@ -72,6 +72,8 @@ pub struct StepRow {
     pub cycle: u64,
     pub step: usize,
     pub label: String,
+    /// How long it ran, the time its report gives and the console's stamp under it (`Test 6/6 Mem-Refresh512 (00:00:15)`)
+    pub time: Duration,
     /// Its test's speed, the figure the console's step report gives
     pub mib_s: f64,
     pub errors: u64,
@@ -88,6 +90,7 @@ impl StepRow {
             cycle: report.cycle,
             step: s.step,
             label: s.label.clone(),
+            time: report.wall,
             mib_s: s.throughput_mib_s,
             errors: s.errors,
             seal_errors: report.sealed.then_some(s.seal_errors),
@@ -95,15 +98,19 @@ impl StepRow {
         }
     }
 
-    /// The table's headings: the cycle, the step's number in it (the ticker's `Test 2/6`), then the rest of `cells`
-    pub const HEADINGS: [&str; 7] = ["C#", "T#", "Test", "MiB/s", "Errors", "Seal errors", "WHEA"];
+    /// The table's columns
+    pub const COLUMNS: usize = 8;
 
-    /// Its cells: the cycle, the step, the step's label, MiB/s, errors, seal errors (`–` unsealed), WHEA
-    pub fn cells(&self) -> [String; 7] {
+    /// The table's headings: the cycle, the step's number in it (the ticker's `Test 2/6`), then the rest of `cells`
+    pub const HEADINGS: [&str; Self::COLUMNS] = ["C#", "T#", "Test", "Time", "MiB/s", "Errors", "Seal errors", "WHEA"];
+
+    /// Its cells: the cycle, the step, the step's label, its time, MiB/s, errors, seal errors (`–` unsealed), WHEA
+    pub fn cells(&self) -> [String; Self::COLUMNS] {
         [
             self.cycle.to_string(),
             self.step.to_string(),
             self.label.clone(),
+            hms(self.time),
             thousands(self.mib_s),
             self.errors.to_string(),
             self.seal_errors.map_or("–".to_string(), |errors| errors.to_string()),
@@ -112,8 +119,8 @@ impl StepRow {
     }
 
     /// The cells a non-zero count flags, which take the error colour: the errors, the seal's and WHEA's
-    pub fn flagged(&self) -> [bool; 7] {
-        [false, false, false, false, self.errors > 0, self.seal_errors.is_some_and(|errors| errors > 0), self.whea > 0]
+    pub fn flagged(&self) -> [bool; Self::COLUMNS] {
+        [false, false, false, false, false, self.errors > 0, self.seal_errors.is_some_and(|errors| errors > 0), self.whea > 0]
     }
 }
 
@@ -1044,13 +1051,14 @@ mod tests {
         }
         assert!(m.progress().is_some());
         assert_eq!(m.info_line(), "2 threads · 9.0 GiB · pages 1 GiB 89%, 2 MiB 11% · 3 steps a cycle · sealed · results/run.json");
-        let cells: Vec<[String; 7]> = m.rows.iter().map(StepRow::cells).collect();
+        let cells: Vec<[String; StepRow::COLUMNS]> = m.rows.iter().map(StepRow::cells).collect();
         let row = |cycle: &str, test: usize, errors: &str, seal: &str, whea: &str| {
-            [cycle, &test.to_string(), &format!("Mem-StuckBit256 (Test {test})"), "20,480", errors, seal, whea].map(str::to_string)
+            let label = format!("Mem-StuckBit256 (Test {test})");
+            [cycle, &test.to_string(), &label, "00:00:10", "20,480", errors, seal, whea].map(str::to_string)
         };
         assert_eq!(cells, [row("1", 1, "0", "0", "0"), row("1", 2, "3", "4", "0"), row("2", 1, "0", "0", "2")]);
-        let flagged: Vec<[bool; 7]> = m.rows.iter().map(StepRow::flagged).collect();
-        let count = |errors, seal, whea| [false, false, false, false, errors, seal, whea];
+        let flagged: Vec<[bool; StepRow::COLUMNS]> = m.rows.iter().map(StepRow::flagged).collect();
+        let count = |errors, seal, whea| [false, false, false, false, false, errors, seal, whea];
         assert_eq!(flagged, [count(false, false, false), count(true, true, false), count(false, false, true)], "each count flags its cell");
         assert_eq!(m.errors, [
             "Cycle 1 · step 2 · Mem-StuckBit256 (Test 2): 3 errors + 4 seal + 0 WHEA",
@@ -1188,7 +1196,7 @@ mod tests {
 
         let mut m = model();
         m.apply(step(1, 1, 0, None, WheaCounts::default()).into());
-        assert_eq!(m.rows[0].cells()[5], "–");
+        assert_eq!(m.rows[0].cells()[6], "–");
     }
 
     /// The restart question (TODO 29 S6): the dialog is open while the question waits, the answer goes to the session's thread once, and

@@ -433,7 +433,7 @@ impl Window {
 
     fn results(&self, row: i32) -> View {
         let p = self.palette();
-        let header = table_row(&StepRow::HEADINGS.map(str::to_string), p, None, true, [false; 7]);
+        let header = table_row(&StepRow::HEADINGS.map(str::to_string), p, None, true, [false; StepRow::COLUMNS]);
         let stripe = brush(p.stripe);
         // Newest first: reactor 0.100.0 exposes no ScrollIntoView / scroll offset, so a list in step order could not follow the latest row.
         // Rows are keyed by their place in the run, so a new step inserts one native row and leaves the others alone.
@@ -625,11 +625,12 @@ fn card(row: i32, p: &Palette, title: impl Into<View>, content: impl Into<View>)
         )
 }
 
-/// `StepRow::HEADINGS`'s columns: C# and T# hold 3 digits, a night's cycles
-const TABLE_COLUMNS: [GridLength; 7] = [
+/// `StepRow::HEADINGS`'s columns: C# and T# hold 3 digits, a night's cycles, and Time a step's 00:00:15
+const TABLE_COLUMNS: [GridLength; StepRow::COLUMNS] = [
     GridLength::Pixel(32.0),
     GridLength::Pixel(32.0),
     GridLength::Star(1.0),
+    GridLength::Pixel(64.0),
     GridLength::Pixel(88.0),
     GridLength::Pixel(64.0),
     GridLength::Pixel(80.0),
@@ -638,7 +639,9 @@ const TABLE_COLUMNS: [GridLength; 7] = [
 
 /// One table line; the header uses the same columns and padding so the columns line up. `flagged` marks a non-zero count: palette error
 /// red, semi-bold (egui's `.strong()`).
-fn table_row(cells: &[String; 7], p: &Palette, stripe: Option<Brush>, header: bool, flagged: [bool; 7]) -> View {
+fn table_row(
+    cells: &[String; StepRow::COLUMNS], p: &Palette, stripe: Option<Brush>, header: bool, flagged: [bool; StepRow::COLUMNS],
+) -> View {
     let weight = if header { FontWeight::SEMI_BOLD } else { FontWeight::NORMAL };
     let text = if header { p.text_secondary } else { p.text_primary };
     let cell = |column: usize| {
@@ -651,7 +654,10 @@ fn table_row(cells: &[String; 7], p: &Palette, stripe: Option<Brush>, header: bo
             .horizontal_alignment(if column == 2 { HorizontalAlignment::Left } else { HorizontalAlignment::Right })
             .grid_column(column as i32)
     };
-    Border::new().background_optional(stripe).corner_radius(4.0).padding(Thickness::new(8.0, 4.0, 12.0, 4.0)).content(
-        Grid::new().columns(TABLE_COLUMNS).column_spacing(12.0).children((cell(0), cell(1), cell(2), cell(3), cell(4), cell(5), cell(6))),
-    )
+    let row: [TextBlock; StepRow::COLUMNS] = std::array::from_fn(cell);
+    Border::new()
+        .background_optional(stripe)
+        .corner_radius(4.0)
+        .padding(Thickness::new(8.0, 4.0, 12.0, 4.0))
+        .content(Grid::new().columns(TABLE_COLUMNS).column_spacing(12.0).children(row))
 }
