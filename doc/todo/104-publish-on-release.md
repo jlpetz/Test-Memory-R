@@ -61,4 +61,25 @@ test-memory-r`). CLFLUSHOPT stays the startup gate's: it isn't in any baseline.
   `Microsoft.WindowsAppRuntime.2.0`, an older 2.0 release).
 - The package identifier (`Publisher.Name`, for example `JarrodPetz.TMR`) is the owner's choice;
   it stays across releases.
-- Each later release: a new manifest version (`wingetcreate update` with the new URL).
+- Each later release: a new manifest version (`wingetcreate update` with the new URL), or a GitHub
+  Action in `release.yml` that submits it on each tag.
+- The first submission is Microsoft's to approve: their checks install the package on a test
+  machine and scan it, then a moderator merges it, usually within a day or a few for a new one.
+
+## An installer? (to weigh, the owner, 2026-10-24)
+
+A portable package (the bare `tmr.exe`) puts `tmr` on the PATH, which serves a console user, but
+makes no Start menu shortcut, which a double-click user wants. The options, smallest first:
+
+- **Portable only**: no work; the shortcut is the user's to make.
+- **An MSI**, with `cargo-wix` (the Rust ecosystem's: it writes a WiX source from `Cargo.toml` and
+  builds `tmr-<version>-x86_64.msi`): a Start menu shortcut, an entry in Settings > Apps, and a
+  clean uninstall; winget takes it as `InstallerType: wix`, and `release.yml` can build it beside
+  the exe. Needs the WiX Toolset on the runner.
+- **Inno Setup**: a small script, a common choice for Windows tools; winget's `inno` type.
+- **MSIX**: Windows' modern package, but it must be signed with a certificate the PC trusts (a
+  paid one, or the Store's), and a packaged app runs with restrictions (a virtualised file system,
+  among them) that TMR's large-page setup would need checking against. The least suited.
+
+Code signing is its own question, whichever the package: an unsigned download gets SmartScreen's
+"Windows protected your PC" until it builds a reputation; a code-signing certificate avoids it.
