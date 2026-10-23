@@ -8,15 +8,16 @@ decoupling capacitors between the chips; 144 gold fingers a side at 0.85 mm, the
 notches at the ends. Traces run vertical with 45-degree bends, as a board's are routed. The chips' laser markings run vertically, as
 a DIMM's chips are turned; the last chip's reads TMR.
 
-The artwork (`module`, vector) is the module at its real 133.35 x 31.25 mm. The icon is a pair of modules, the one behind darker
-(layout B): vector at 256 px; on the pixel grid (`pixel_module`) at 96 px and below, whole pixels and one-pixel lines so nothing
-blurs: 4 + 4 chips and the PMIC at 48 px and up, 2 + 2 below, a bus line over the chips at every size, and a single module at 16 px,
-where a pair has no room. Checks: no two lit traces of a vector module run closer than half a stroke apart, edge to edge; on the grid,
+The artwork (`module`, vector) is the module at its real 133.35 x 31.25 mm. The icon is one module, as large as the square allows
+(the owner, 2026-10-24: one larger module reads better than two smaller): vector at 256 px; on the pixel grid (`pixel_module`) at 96
+px and below, whole pixels and one-pixel lines so nothing blurs: 4 + 4 chips and the PMIC from 60 px, 2 + 2 below, a bus line over
+the chips at every size. `--pair` draws the layout before it, B: a pair of modules, the one behind darker (one module at 16 px, where
+a pair has no room). Checks: no two lit traces of a vector module run closer than half a stroke apart, edge to edge; on the grid,
 every lane ends on a finger, none in the key, and no part shares another's column.
 
-Usage: dimm.py DIR. Writes into DIR: dimm-burn.svg (the artwork), icon<px>.svg for each icon size, preview.html (the artwork and the
-icons at their sizes, on dark and light) and pixels.html (each pixel-grid icon, 96 px and below, rasterised at its size, then
-magnified). pack.py turns them into tmr.ico (tools/icon/README.md)."""
+Usage: dimm.py DIR [--pair]. Writes into DIR: dimm-burn.svg (the artwork), icon<px>.svg for each icon size, preview.html (the
+artwork and the icons at their sizes, on dark and light) and pixels.html (each pixel-grid icon, 96 px and below, rasterised at its
+size, then magnified). pack.py turns them into tmr.ico (tools/icon/README.md)."""
 import math
 import os
 import sys
@@ -61,7 +62,7 @@ def chip_marking(x, y, cw, ch, u, last):
     base = y + ch * 0.84
     out = [f'<circle cx="{x + 1.1 * u:.1f}" cy="{y + ch - 1.1 * u:.1f}" r="{0.32 * u:.2f}" fill="{MARK}"/>']
     if last:
-        fs = ch * 0.3
+        fs = min(ch * 0.3, cw * 0.6)
         tx = x + cw * 0.44
         out.append(f'<text x="{tx:.1f}" y="{base:.1f}" transform="rotate(-90 {tx:.1f} {base:.1f})" text-anchor="start" '
                    f'dominant-baseline="central" '
@@ -177,11 +178,13 @@ def jog(fx, y_from, rx, y_turn, top, c):
             f"V {top:.2f}")
 
 
-def module(uid, x0, y0, w, h, art, edge, left_notch=True, omit=None):
+def module(uid, x0, y0, w, h, art, edge, left_notch=True, omit=None, packages=False):
     """The module in the box (x0, y0, w, h): the artwork (`art`, the real board) or the 256 px icon's (a 2:1 board, fewer of
     everything). `left_notch`: the left retention notch (off for a module behind another, where it would peek out). `omit`: an x
-    range whose fingers aren't drawn (a module behind another, where one would show against the front's edge). Returns the SVG, the
-    outline, the chips' lower edge (from y0), every lane's x, and the fingers' centres with their width."""
+    range whose fingers aren't drawn (a module behind another, where one would show against the front's edge). `packages`: the
+    icon's chips as tall as the artwork's packages, 11 mm from 6 mm down (the single icon's board, 0.6 of its width tall, has the
+    height; the pair's 2:1 board keeps its chips 1.45 times as tall as wide). Returns the SVG, the outline, the chips' lower edge
+    (from y0), every lane's x, and the fingers' centres with their width."""
     u = h / 31.25  # a millimetre of a real DIMM's height
     r, rr = 0.9 * u, 0.5 * u
     finger_top = y0 + h - 3.6 * u
@@ -217,7 +220,7 @@ def module(uid, x0, y0, w, h, art, edge, left_notch=True, omit=None):
     else:
         per_side, lanes, bus, centre, cgap, inset, pw = 4, 2, 2, 9.5 * u, 1.2 * u, 1.0 * u, 2.4 * u
         cw = (w / 2 - centre / 2 - 2.5 * u - cgap * (per_side - 1)) / per_side
-        ch, cy = cw * 1.45, y0 + 8.6 * u
+        ch, cy = (11.0 * u, y0 + 6.0 * u) if packages else (cw * 1.45, y0 + 8.6 * u)
     xs = ([cx - centre / 2 - cw - i * (cw + cgap) for i in range(per_side)][::-1]
           + [cx + centre / 2 + i * (cw + cgap) for i in range(per_side)])
 
@@ -392,11 +395,18 @@ def art_svg():
             f'{defs("a", 4.5)}{body}</svg>')
 
 
-def vector_icon(px):
-    """The pair as vector: the one behind shaded through its own outline, without the left notch the front would show a sliver of;
+def vector_icon(px, pair):
+    """The icon as vector: one module centred, 0.6 of its width tall, as the pixel grid's are (`pair` False); or the pair, the one
+    behind shaded through its own outline, without the left notch the front would show a sliver of;
     the front's top meeting the back's chips' lower edge, so no stray row of the back's lanes shows; the back placed so none of its
     lanes runs within 3 px of the front's right edge, and without the finger that would show against it; the two centred in the
     square."""
+    if not pair:
+        w = px * 0.96
+        h = w * 0.6
+        body, *_ = module(f"s{px}", (px - w) / 2, (px - h) / 2, w, h, False, ICON_EDGE, packages=True)
+        return (f'<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 {px} {px}" width="{px}" height="{px}">'
+                f'{defs(f"s{px}", (h / 31.25) * 0.35)}{body}</svg>')
     w = px * 0.84
     h = w / 2.0
     fx0 = px * 0.01
@@ -428,6 +438,10 @@ FRONT = ("#252a32", "#6a7079", "#08090b", "#454a52", "#ff2a2a", "#f0c65a", "#b38
 BACK = ("#20242b", "#50555f", "#060708", "#33373e", "#c42222", "#a8873a", "#7a6022", "#40454f", "#1e2126", "#6f7279")
 
 
+# The comb's gaps on the single icon's connector: darker than a finger's lower rows, so the teeth still show
+COMB_GAP = "#7a6022"
+
+
 # "TMR" in a 3 x 5 pixel font, each glyph's rows top to bottom, for the last chip at the sizes it fits (turned to read upward)
 GLYPHS = {"T": ["###", ".#.", ".#.", ".#.", ".#."], "M": ["#...#", "##.##", "#.#.#", "#...#", "#...#"],
           "R": ["##.", "#.#", "##.", "#.#", "#.#"]}
@@ -454,17 +468,22 @@ def turned_text(x0, y0, text):
     return pixels
 
 
-def pixel_module(px0, py0, w, h, per_side, colours, comb, stubs, centre, skip_fingers=(), tmr=False):
+def pixel_module(px0, py0, w, h, per_side, colours, comb, stubs, centre, skip_fingers=(), tmr=False, fill=False):
     """A module `w` x `h` pixels at (px0, py0), its parts on whole pixels: the edge, down to the bottom; a bus dash over each group of
     chips, a board row below it (and a stub down into each chip when `stubs`); the chips, with vertical marking lines from their lower
     edge part way up, and on the last, when `tmr` and it fits, TMR in place of its lines; the lanes, mirrored about the centre; the gold
     fingers, combed when `comb`, the comb mirrored with the lanes so every lane ends on a finger; the PMIC in the centre gap when it is 4
     pixels wide. Each part of a chip has a column of its own, and the chips sit a pitch of even width apart when combed, so all lanes
-    share the comb's parity. Returns the rects and the layout (the key's columns, to cut, among it)."""
+    share the comb's parity. `fill`: a module with height to spare (the single icon's) shares it as a real one does: fingers a tenth
+    of its height, chips at least a third, a third of the rows left under the bus and the rest to the lanes; and a 3-pixel chip has no
+    mark (a lone faint one made it a ring), and the comb's gaps are dark gold, so the connector reads as one band on a dark
+    background. Returns the rects and the layout (the key's columns, to cut, among it)."""
     board, edge, chip, mark, lane, gold, gold_low, pmic, faint, etch = colours
     gap_rows = 2 if h >= 20 else 1
     lane_rows = 3 if h >= 20 else 2 if h >= 9 else 1
     finger_rows = 3 if h >= 20 else 2 if h >= 9 else 1
+    if fill and h >= 20:
+        finger_rows = max(3, round(h / 10))
     chip_rows = h - 2 - gap_rows - lane_rows - finger_rows
     for g in (1, 2, 3):
         cw = (w - 4 - centre - 2 * (per_side - 1) * g) // (2 * per_side)
@@ -472,13 +491,17 @@ def pixel_module(px0, py0, w, h, per_side, colours, comb, stubs, centre, skip_fi
             break
     else:
         raise AssertionError(("no even chip pitch", w, per_side))
-    # A chip no taller than a package is: the rows to spare go to the bus stubs and the lanes
+    # A chip no taller than a package is (with `fill`, at least a third of the module): the rows to spare go to the bus stubs and
+    # the lanes
     tallest = text_height("TMR") + 2 if cw == 7 else max(3, math.ceil(cw * 1.8))
+    if fill:
+        tallest = max(tallest, round(h / 3))
     if chip_rows > tallest:
         spare = chip_rows - tallest
         chip_rows = tallest
-        gap_rows += spare // 2
-        lane_rows += spare - spare // 2
+        under_bus = spare // 3 if fill else spare // 2
+        gap_rows += under_bus
+        lane_rows += spare - under_bus
     block = 2 * (per_side * cw + (per_side - 1) * g) + centre
     assert (w - block) % 2 == 0, (w, per_side, block)
     rects = []
@@ -503,7 +526,7 @@ def pixel_module(px0, py0, w, h, per_side, colours, comb, stubs, centre, skip_fi
     # inner edge; marks on the odd columns between, at most 3; the stub on the inner edge
     if cw >= 3:
         lane_cols = list(range(0, cw - 2, 2))[:4]
-        mark_cols = list(range(1, cw - 1, 2))[:3]
+        mark_cols = [] if fill and cw == 3 else list(range(1, cw - 1, 2))[:3]
         stub_col = cw - 1
     else:
         lane_cols, mark_cols, stub_col = [cw - 1], [], cw - 1
@@ -523,7 +546,7 @@ def pixel_module(px0, py0, w, h, per_side, colours, comb, stubs, centre, skip_fi
         if stubs:
             rect(sx, bus_y + 1, 1, gap_rows, lane)
         if x == last and tmr_here:
-            for tx, ty in turned_text(x + (cw - 5) // 2, chips_y + 1, "TMR"):
+            for tx, ty in turned_text(x + (cw - 5) // 2, chips_y + chip_rows - 1 - text_height("TMR"), "TMR"):
                 rect(tx, ty, 1, 1, etch)
             continue
         # Turned text: each line from a row above the chip's lower edge, part way up; a chip with one line has it faint, which a
@@ -548,6 +571,8 @@ def pixel_module(px0, py0, w, h, per_side, colours, comb, stubs, centre, skip_fi
     assert not notch & set(lanes), ("a lane in the key", notch, lanes)
     cols -= notch
     assert set(lanes) <= cols, ("a lane off the fingers", sorted(set(lanes) - cols))
+    if fill and comb:
+        rect(px0 + 1, fingers_y, w - 2, finger_rows, COMB_GAP)
     for c in sorted(cols - set(skip_fingers)):
         rect(c, fingers_y, 1, 1, gold)
         if finger_rows > 1:
@@ -558,25 +583,35 @@ def pixel_module(px0, py0, w, h, per_side, colours, comb, stubs, centre, skip_fi
                                 tmr=tmr_here)
 
 
-# (px, module w, module h, chips a side, combed fingers, stubs, centre gap): 16 one module, the rest the pair. Sizes Windows asks
-# for at 100-200% scaling (taskbar 24/30/36/48, Explorer 48/60/72/80/96, 16/20/32/40/64 elsewhere), each drawn, none scaled
-PIXEL = [(16, 16, 10, 2, False, False, 2), (20, 18, 10, 2, False, False, 2), (24, 20, 12, 2, False, False, 2),
+# (px, module w, module h, chips a side, combed fingers, stubs, centre gap), at the sizes Windows asks for at 100-200% scaling
+# (taskbar 24/30/36/48, Explorer 48/60/72/80/96, 16/20/32/40/64 elsewhere), each drawn, none scaled. The single module's: the widest a
+# margin allows (none to 24 px, 1 px a side to 60, 2 from 64 but 72's, which at 80's pitch takes 7-pixel chips and TMR), about 0.6 of
+# its width tall (40's 0.66, for TMR), 2 + 2 chips to 48 px and 4 + 4 from 60, where a chip is at least 5 px wide (4 + 4 at 48 would
+# leave chips of 3, no larger than the pair's), and bus stubs from 40 px
+SINGLE = [(16, 16, 10, 2, False, False, 2), (20, 20, 12, 2, False, False, 2), (24, 24, 14, 2, False, False, 2),
+          (30, 28, 17, 2, True, False, 2), (32, 30, 18, 2, True, False, 2), (36, 34, 20, 2, True, False, 2),
+          (40, 38, 25, 2, True, True, 2), (48, 46, 28, 2, True, True, 2), (60, 58, 35, 4, True, True, 4),
+          (64, 60, 36, 4, True, True, 4), (72, 72, 43, 4, True, True, 4), (80, 76, 46, 4, True, True, 4),
+          (96, 92, 55, 4, True, True, 4)]
+# The pair's: 16 one module, the rest the pair
+PAIR = [(16, 16, 10, 2, False, False, 2), (20, 18, 10, 2, False, False, 2), (24, 20, 12, 2, False, False, 2),
          (30, 26, 12, 2, True, False, 2), (32, 28, 13, 2, True, False, 2), (36, 30, 14, 2, True, False, 2),
          (40, 34, 16, 2, True, False, 2), (48, 40, 20, 4, True, True, 4), (60, 52, 25, 4, True, True, 4), (64, 54, 27, 4, True, True, 4),
          (72, 60, 30, 4, True, True, 4), (80, 68, 34, 4, True, True, 4), (96, 76, 38, 4, True, True, 4)]
 
 
-def pixel_icon(px, w, h, per_side, comb, stubs, centre):
-    """The pair on the grid: the front's top meeting the back's chips' lower edge; the back right-aligned, nudged left until two
-    columns of board separate its lanes from the front's right edge, and without fingers there if none of its lanes shows above them.
-    The key cut through the front's fingers, and from 48 px the retention notches through the edges, taller as the module is (a
-    real notch is 2.6 mm of 31.25), outlined inside by the edge colour except beside a lane."""
+def pixel_icon(px, w, h, per_side, comb, stubs, centre, pair):
+    """The icon on the grid: one module centred (`pair` False, and the pair's at 16 px); or the pair, the front's top meeting the
+    back's chips' lower edge, the back right-aligned, nudged left until two columns of board separate its lanes from the front's right
+    edge, and without fingers there if none of its lanes shows above them. The key cut through the front's fingers, and once a module
+    is 20 px tall the retention notches through the edges, taller as the module is (a real notch is 2.6 mm of 31.25), outlined inside
+    by the edge colour except beside a lane."""
     holes = []
 
     def cut_ends(rows, x0, both):
         if h < 20:
             return ""
-        tall = 3 if h >= 30 else 2 if h >= 24 else 1
+        tall = 3 if h >= 30 else 2 if h >= 24 or not pair else 1
         top = rows["side_y"] - (tall - 1) // 2
         ends = [(x0, x0 + 1, x0 + 2), (x0 + w - 1, x0 + w - 2, x0 + w - 3)] if both else [(x0 + w - 1, x0 + w - 2, x0 + w - 3)]
         lane_rows = range(rows["lanes_y"], rows["lanes_y"] + rows["lane_rows"])
@@ -588,11 +623,11 @@ def pixel_icon(px, w, h, per_side, comb, stubs, centre):
                 paint.append(f'<rect x="{inner_x}" y="{top}" width="1" height="{tall}" fill="{rows["edge"]}"/>')
         return "".join(paint)
 
-    if px == 16:
-        y = (px - h) // 2
-        body, rows = pixel_module(0, y, w, h, per_side, FRONT, comb, stubs, centre)
+    if not pair or px == 16:
+        x0, y0 = (px - w) // 2, (px - h) // 2
+        body, rows = pixel_module(x0, y0, w, h, per_side, FRONT, comb, stubs, centre, tmr=True, fill=not pair)
         holes += [(x, rows["fingers_y"], 1, rows["finger_rows"]) for x in rows["notch"]]
-        parts = [body]
+        parts = [body, cut_ends(rows, x0, True)]
     else:
         _, probe = pixel_module(0, 0, w, h, per_side, BACK, comb, stubs, centre)
         off = probe["chips_end"]
@@ -621,15 +656,16 @@ def pixel_icon(px, w, h, per_side, comb, stubs, centre):
             f'<g mask="url(#m{px})">{"".join(parts)}</g></svg>')
 
 
-SIZES = [256] + [p[0] for p in PIXEL][::-1]
+assert [p[0] for p in SINGLE] == [p[0] for p in PAIR], "both layouts draw the same sizes"
+SIZES = [256] + [p[0] for p in SINGLE][::-1]
 
 
-def main(out):
+def main(out, pair):
     os.makedirs(out, exist_ok=True)
     open(os.path.join(out, "dimm-burn.svg"), "w", encoding="utf-8").write(art_svg())
-    open(os.path.join(out, "icon256.svg"), "w", encoding="utf-8").write(vector_icon(256))
-    for spec in PIXEL:
-        open(os.path.join(out, f"icon{spec[0]}.svg"), "w", encoding="utf-8").write(pixel_icon(*spec))
+    open(os.path.join(out, "icon256.svg"), "w", encoding="utf-8").write(vector_icon(256, pair))
+    for spec in PAIR if pair else SINGLE:
+        open(os.path.join(out, f"icon{spec[0]}.svg"), "w", encoding="utf-8").write(pixel_icon(*spec, pair))
     icons = "".join(f'<img src="icon{p}.svg" width="{p}" height="{p}">' for p in SIZES)
     page = ("<!doctype html><html><head><style>body{margin:0;padding:14px;background:#2b2b2b;color:#ddd;font:14px Segoe UI}"
             ".name{font-weight:600;margin:10px 0 4px}.bg{display:flex;align-items:center;gap:12px;padding:8px;flex-wrap:wrap}"
@@ -655,6 +691,7 @@ def main(out):
 
 
 if __name__ == "__main__":
-    if len(sys.argv) != 2:
-        sys.exit("usage: dimm.py DIR")
-    main(sys.argv[1])
+    args = sys.argv[1:]
+    if len(args) not in (1, 2) or args[1:] not in ([], ["--pair"]):
+        sys.exit("usage: dimm.py DIR [--pair]")
+    main(args[0], args[1:] == ["--pair"])
