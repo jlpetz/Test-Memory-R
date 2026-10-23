@@ -12,7 +12,9 @@ results/
 # By Cargo: https://github.com/github/gitignore/blob/main/Rust.gitignore
 /target
 **/*.rs.bk
-Cargo.lock
+# Cargo.lock is tracked: the exact dependency versions tmr.exe is built with. The research crates
+# keep theirs out.
+research/**/Cargo.lock
 
 # Ignore patch files
 *patch*.txt
