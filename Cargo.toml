@@ -71,16 +71,18 @@ codegen-units = 1
 panic = "abort"
 strip = true 
 
+# Release's code with its symbols, for a profiler (WPA, PerfView): `cargo build --profile
+# release-with-debug` gives target/release-with-debug/tmr.exe and the tmr.pdb beside it. Release's
+# fat LTO too: without it the code isn't release's (2026-10-23: 3.91 MB of .text against 4.11 MB).
+# With it, the debug info alone moves 1% of the instructions, in 42 of the 1158 functions
+# asm_fingerprint.py covers: other registers or order, mostly in rescans and setup. The hot loops'
+# spill table is release's (hot_loop_spills.py). The CPU baseline is .cargo/config.toml's, as for
+# every profile. No frame pointers: x64 Windows walks a stack by the unwind tables every function
+# has. Never pass a flag through RUSTFLAGS: it replaces config.toml's flags, the baseline with them.
 [profile.release-with-debug]
 inherits = "release"
-lto = false
 strip = false
 debug = 2
-split-debuginfo = "unpacked"
-codegen-units = 1         # keep layout stable for profiling
-panic = "abort"           # match your release panic strategy
-# Note: For profiling with frame pointers, build with:
-# RUSTFLAGS="-C force-frame-pointers=yes" cargo build --profile release-with-debug
 
 [profile.bench]
 opt-level = 3

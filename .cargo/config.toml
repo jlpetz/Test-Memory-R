@@ -167,8 +167,8 @@ rustflags = ["-C", "target-cpu=x86-64-v3"]
 #     "-C", "llvm-args=-enable-no-nans-fp-math",  # Aggressive FP optimization
 # ]
 #
-# For profiling builds with frame pointers (mentioned in Cargo.toml):
-#   rustflags = ["-C", "target-cpu=native", "-C", "force-frame-pointers=yes"]
+# Profiling builds: Cargo.toml's release-with-debug profile, at this baseline. x64 Windows needs no
+# frame pointers to walk stacks, and RUSTFLAGS would replace this file's flags, not add to them.
 
 # ==============================================================================
 # REFERENCES
