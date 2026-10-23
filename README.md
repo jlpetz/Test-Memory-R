@@ -25,10 +25,15 @@ and hardware, with DDR5 systems in mind.
 - **Built for today's CPUs:** threads are pinned to physical cores and take their memory from their
   own NUMA node while it has room, CPUs beyond 64 (processor groups) are used, and checks can bypass the caches
   (non-temporal stores, CLFLUSHOPT) so they read DRAM.
-- **New data patterns** alongside TM5's, some shaped by the memory's transfer width (DDR5's 32-bit
-  subchannels), and built-in test plans (`plan=`; `stability` by default).
-- **Results as JSON**, saved during the run and comparable between runs, and a console (CLI) and,
-  optionally, a window (GUI, WinUI 3 through `windows-reactor`) in one `tmr.exe`.
+- **Patterns aimed at the memory bus**, alongside TM5's. A switching family inverts each beat of a
+  burst at the bus's own width, so every data line toggles on every transfer, the most switching
+  noise the data can make: 64-bit for DDR4 and earlier, 32-bit for DDR5's subchannels, 16-bit for
+  LPDDR4/5, picked from the memory type SMBIOS reports, and models of LPDDR6's 12-bit and DDR6's
+  24-bit, chosen with `beat=`. A random family feeds every line every short bit sequence, which DDR5's receive
+  equalisers react to. Both aim to make a marginal overclock fail sooner.
+- **Built-in test plans** (`plan=`; `stability` by default), **results as JSON** saved during the
+  run and comparable between runs, and a console (CLI) and, optionally, a window (GUI, WinUI 3
+  through `windows-reactor`) in one `tmr.exe`.
 
 ## Windows support
 
