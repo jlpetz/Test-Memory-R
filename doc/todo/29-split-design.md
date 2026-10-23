@@ -238,7 +238,7 @@ pub fn commands::calibrate(.., out: &mut dyn io::Write, confirm: &mut dyn FnMut(
 - **Info line:** threads, GiB, page mix and plan, from Run::Allocated and Run::TestPlan.
 - **Position:** cycle n/L, test n/N with name and stage, and the rounded bar with the % inside, from the snapshot.
 - **Chart at the top:** the shapes chart from chart.rs; `bytes_per_sec` each 500 ms, 120 samples; error marks when the snapshot's errors rise.
-- **Results table:** one keyed row per Run::StepFinished: cycle·step, label, MiB/s (`summary.throughput_mib_s`), errors in the palette's red when above 0, seal errors, WHEA.
+- **Results table:** one keyed row per Run::StepFinished: C# and T# (the cycle, the step's number in it), label, MiB/s (`summary.throughput_mib_s`), errors in the palette's red when above 0, seal errors, WHEA.
 - **Errors list:** steps with errors, seal-stage errors, WHEA descriptions drained by the GUI from the Arc<ProgressTracker>.
 - **Start/Stop:** Stop calls `request_stop()`.
 - **Colours:** palette.rs and colours.json.

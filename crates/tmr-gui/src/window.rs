@@ -438,15 +438,13 @@ impl Window {
 
     fn results(&self, row: i32) -> View {
         let p = self.palette();
-        let headings = ["#", "Test", "MiB/s", "Errors", "Seal errors", "WHEA"].map(str::to_string);
-        let header = table_row(&headings, p, None, true, [false; 6]);
+        let header = table_row(&StepRow::HEADINGS.map(str::to_string), p, None, true, [false; 7]);
         let stripe = brush(p.stripe);
         // Newest first: reactor 0.100.0 exposes no ScrollIntoView / scroll offset, so a list in step order could not follow the latest row.
         // Rows are keyed by their place in the run, so a new step inserts one native row and leaves the others alone.
-        let rows = self.model.rows.iter().enumerate().rev().take(SHOWN).map(|(i, r): (usize, &StepRow)| {
-            let flagged = [false, false, false, r.errors > 0, r.seal_errors.is_some_and(|e| e > 0), r.whea > 0];
-            (i as u64, table_row(&r.cells(), p, (i % 2 == 1).then_some(stripe), false, flagged))
-        });
+        let newest = self.model.rows.iter().enumerate().rev().take(SHOWN);
+        let rows = newest
+            .map(|(i, r): (usize, &StepRow)| (i as u64, table_row(&r.cells(), p, (i % 2 == 1).then_some(stripe), false, r.flagged())));
         let body: View = if self.model.rows.is_empty() {
             TextBlock::new().text("No steps finished yet").foreground(brush(p.text_secondary)).margin(Thickness::xy(8.0, 6.0)).into()
         } else {
@@ -632,8 +630,10 @@ fn card(row: i32, p: &Palette, title: impl Into<View>, content: impl Into<View>)
         )
 }
 
-const TABLE_COLUMNS: [GridLength; 6] = [
-    GridLength::Pixel(48.0),
+/// `StepRow::HEADINGS`'s columns: C# and T# hold 3 digits, a night's cycles
+const TABLE_COLUMNS: [GridLength; 7] = [
+    GridLength::Pixel(32.0),
+    GridLength::Pixel(32.0),
     GridLength::Star(1.0),
     GridLength::Pixel(88.0),
     GridLength::Pixel(64.0),
@@ -643,7 +643,7 @@ const TABLE_COLUMNS: [GridLength; 6] = [
 
 /// One table line; the header uses the same columns and padding so the columns line up. `flagged` marks a non-zero count: palette error
 /// red, semi-bold (egui's `.strong()`).
-fn table_row(cells: &[String; 6], p: &Palette, stripe: Option<Brush>, header: bool, flagged: [bool; 6]) -> View {
+fn table_row(cells: &[String; 7], p: &Palette, stripe: Option<Brush>, header: bool, flagged: [bool; 7]) -> View {
     let weight = if header { FontWeight::SEMI_BOLD } else { FontWeight::NORMAL };
     let text = if header { p.text_secondary } else { p.text_primary };
     let cell = |column: usize| {
@@ -653,12 +653,10 @@ fn table_row(cells: &[String; 6], p: &Palette, stripe: Option<Brush>, header: bo
             .font_weight(if flag { FontWeight::SEMI_BOLD } else { weight })
             .foreground(brush(if flag { p.error } else { text }))
             .text_trimming(TextTrimming::CharacterEllipsis)
-            .horizontal_alignment(if column == 1 { HorizontalAlignment::Left } else { HorizontalAlignment::Right })
+            .horizontal_alignment(if column == 2 { HorizontalAlignment::Left } else { HorizontalAlignment::Right })
             .grid_column(column as i32)
     };
-    Border::new()
-        .background_optional(stripe)
-        .corner_radius(4.0)
-        .padding(Thickness::new(8.0, 4.0, 12.0, 4.0))
-        .content(Grid::new().columns(TABLE_COLUMNS).column_spacing(12.0).children((cell(0), cell(1), cell(2), cell(3), cell(4), cell(5))))
+    Border::new().background_optional(stripe).corner_radius(4.0).padding(Thickness::new(8.0, 4.0, 12.0, 4.0)).content(
+        Grid::new().columns(TABLE_COLUMNS).column_spacing(12.0).children((cell(0), cell(1), cell(2), cell(3), cell(4), cell(5), cell(6))),
+    )
 }
