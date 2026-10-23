@@ -2,3 +2,5 @@
 # git config blame.ignoreRevsFile .git-blame-ignore-revs).
 # rustfmt: the workspace in one layout, dense and 140 wide (2026-10-23)
 f410c709fdd02fb19c1f50b589d3e4f9149007aa
+# Comments wrap at 140, the code's width (2026-10-23)
+e2ff861e0c5eda66b7830031c0ebad44bae57fc4

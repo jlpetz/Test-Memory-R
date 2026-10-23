@@ -60,7 +60,7 @@ on `available` memory at launch. Close a browser between runs and the plan chang
                               + 1 x 256 MiB + 1 x 128 MiB (6 blocks)
 ```
 
-`prepare_blocks_for_window` (`src/tests.rs:1406`) then spreads the window budget across
+`prepare_blocks_for_window` (`src/tests.rs:1369`) then spreads the window budget across
 whatever blocks exist, largest first. Different block count → different per-block spans →
 **different addresses tested**. For "did BIOS change X make this stable?", where the whole
 method is A/B comparison, non-reproducible coverage is a direct attack on the tool's purpose.
@@ -111,7 +111,7 @@ is a multiple of the page size and aligned to it. So:
 
 The tile layer costs one extra descriptor indirection **at setup time only** — it is pointer
 arithmetic over an existing mapping, zero syscalls, zero hot-path effect. `TestBlock` already
-wraps the buffer (`src/test_harness.rs:169` takes `tb.block.buffer.as_mut_ptr()`), so this is a
+wraps the buffer (`src/test_harness.rs:158` takes `tb.block.buffer.as_mut_ptr()`), so this is a
 change to what `TestBlock` points at, not to any inner loop.
 
 **Why there is no tail.** Every size on the ladder
@@ -439,7 +439,7 @@ While mapping TM5's sliding window onto TMR, one asymmetry stands out (detail in
   TMR:  window is pinned to block offset 0     ->  small working set XOR full coverage
 ```
 
-`test_harness.rs:169` takes `tb.block.buffer.as_mut_ptr()` — the block base, always, every
+`test_harness.rs:158` takes `tb.block.buffer.as_mut_ptr()` — the block base, always, every
 cycle. So whenever `window_size < total_allocated`, the tail of every block is **never visited
 by that test, in any cycle**, and the covered part is re-tested at the same addresses forever.
 

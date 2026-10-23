@@ -99,7 +99,7 @@ So **"zero clippy warnings" (#20) means "no dead *private* code"** and says noth
 | Item | Visibility | What the compiler said |
 |------|-----------|------------------------|
 | `create_final_test_summary_report` (142 LOC) | `pub fn` | **silence**, for as long as it sat there |
-| `format_duration` (`converters.rs:790`, 14 LOC) | plain `fn` | `never used` on the *first* `cargo check` after its caller went |
+| `format_duration` (`converters.rs:787`, 14 LOC) | plain `fn` | `never used` on the *first* `cargo check` after its caller went |
 
 Identical dead status; the only difference is the `pub` keyword.
 
@@ -111,7 +111,7 @@ probe crate has any path dependency on `tmr`, no `pub use` re-export chain), plu
 **hardcoded `whea_monitored: true`** with the comment "this path has no handle on the monitor's
 state" — the exact false-clean-bill-of-health that #68A check 1 exists to catch, so it was a
 latent footgun of the same class as B, not merely unused. The live path
-(`create_overall_stats_summary_report` ← `runner.rs:4472`) correctly reads
+(`create_overall_stats_summary_report` ← `runner.rs:4400`) correctly reads
 `overall_stats.whea_monitored` from `progress.whea.is_active()`, so **#68A check 1 needs no code
 fix.** `clippy --all-targets` clean, `cargo build --release` clean. `cargo test` / `--quick-test`
 still owed (user runs those).
@@ -150,9 +150,9 @@ call: don't mix a deletion into a reporting change). It is exactly the family E 
 `create_cycle_report` is already named above as one of the 62 candidates.
 
 The chain, top to bottom, with no external caller at any level:
-- `reporting/formatters.rs:1079` `prepare_cycle_report_table` (to ~1227)
+- `reporting/formatters.rs:1073` `prepare_cycle_report_table` (to ~1227)
 - `reporting/mod.rs:150` `report_cycle` — **zero callers repo-wide**
-- `reporting/models.rs:405` `CycleReport`, built at `reporting/converters.rs:272` and `282`
+- `reporting/models.rs:399` `CycleReport`, built at `reporting/converters.rs:270` and `282`
 
 Two reasons it matters beyond LOC:
 1. **It is drifting.** The live tables were just converted to a `Pass` column with ✅/❌ and plain

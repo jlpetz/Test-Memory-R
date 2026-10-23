@@ -93,13 +93,13 @@ entire distinction between Tier 1 and Tier 2. It is about *loop shape*, nothing 
 
 | Tier | Mechanism | Who owns the loop | Gives you | Costs you |
 |---|---|---|---|---|
-| **1 — Phased** | `run_phased_test` (`test_harness.rs:108`) | Harness | Cycle/chunk/block walk, shutdown checks, error-mode dispatch, byte + op accounting, progress, `TestStats`, `skip_init` for dependent tests, `flush_before_verify`, TM5 `write_read_cycles`/`test_reps`/`verify_reps` | The fixed nest above. One pattern per phase, linear chunk range, no delays |
-| **2 — Loop-owning** | `TestRunner` (`test_scaffolding.rs:32`) | **Test** | Extent sizing, block prep, timers, cycle counter, shutdown probe, throttled progress, error-mode dispatch, `TestStats` construction | You write the cycle/block/chunk walk and the byte accounting yourself |
+| **1 — Phased** | `run_phased_test` (`test_harness.rs:100`) | Harness | Cycle/chunk/block walk, shutdown checks, error-mode dispatch, byte + op accounting, progress, `TestStats`, `skip_init` for dependent tests, `flush_before_verify`, TM5 `write_read_cycles`/`test_reps`/`verify_reps` | The fixed nest above. One pattern per phase, linear chunk range, no delays |
+| **2 — Loop-owning** | `TestRunner` (`test_scaffolding.rs:28`) | **Test** | Extent sizing, block prep, timers, cycle counter, shutdown probe, throttled progress, error-mode dispatch, `TestStats` construction | You write the cycle/block/chunk walk and the byte accounting yourself |
 | **— Unscaffolded** | none (hand-rolled in a macro) | Test | nothing | You duplicate all of the above |
 | **3 — Concurrent** | worker/mailbox model — **not built** (TODO #28) | Coordinator routes *jobs*; workers own access | cross-thread coordination | does not exist yet |
 
 Tiers 1 and 2 are not independent implementations: `run_phased_test` **builds on** `TestRunner`
-internally (`test_harness.rs:139`), so extent sizing, the info log, timers, progress, and stats
+internally (`test_harness.rs:130`), so extent sizing, the info log, timers, progress, and stats
 have one source of truth across both. Tier 1 adds the loop and the phased-specific accounting
 (`total_operations`, `ops_per_wrc` byte math, `block_metas`, `check_mask`, `skip_init`).
 
@@ -178,7 +178,7 @@ Test:   FnMut(&ChunkCtx)          // per chunk per cycle — the "shake"; may be
 Verify: FnMut(&ChunkCtx) -> u64   // per chunk per cycle — returns error count
 ```
 
-`ChunkCtx` (`test_harness.rs:23`) carries `ptr`, `chunk_start`, `chunk_end`, `cycle`, `thread_id`,
+`ChunkCtx` (`test_harness.rs:22`) carries `ptr`, `chunk_start`, `chunk_end`, `cycle`, `thread_id`,
 `check_mask`. Note it gives the closure a **block base pointer plus an index range**, not a slice
 — the kernel does its own `ptr.add(i)`.
 
@@ -406,7 +406,7 @@ than run N sequential timed tests.
 - `MultiBlock(fn) -> TestStats` — everything in §4, §5, §6-bandwidth
 - `Latency(fn) -> LatencyTestStats` — everything in §6-latency
 - `Simple`, `WithConfig` — **dead.** The variants and their dispatch arms exist
-  (`runner.rs:4201-4202`) but nothing constructs them; `thread_pool.rs:298` has
+  (`runner.rs:4131-4132`) but nothing constructs them; `thread_pool.rs:296` has
   `unreachable!("Only MultiBlock and Latency tests are registered")`. These are the pre-MultiBlock
   single-pointer signature, left behind by the migration
 

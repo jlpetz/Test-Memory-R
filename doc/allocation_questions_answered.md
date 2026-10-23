@@ -155,7 +155,7 @@ coverage is pinned to block offset 0. If we add rotation (Q11), we can have TM5'
 **The knobs already exist and are correctly nested. The TM5 loader wires `Time (%)` to the wrong
 one.**
 
-`test_harness.rs:208-236` — TMR's Tier-1 harness is structurally identical to TM5:
+`test_harness.rs:195-221` — TMR's Tier-1 harness is structurally identical to TM5:
 
 ```rust
 for chunk in chunks {
@@ -170,7 +170,7 @@ for chunk in chunks {
 So `write_read_cycles` ≡ `ST_WriteReadCycles` and `verify_reps` ≡ `dLoopCounter`, both
 per-chunk, both innermost. Good design, already there.
 
-The problem is the translation. `config.rs:1503-1511`:
+The problem is the translation. `config.rs:1483-1491`:
 
 ```rust
 let base_cycles = test.time_percent as f64 / 100.0;
@@ -218,7 +218,7 @@ cycles:             Some(self.main_section.cycles),   // TM5 [Main Section] Cycl
 ```
 
 `Cycles` is a separate TM5 key that already means "repeat the sequence" — that's what should map
-to `cycles`. Right now it's parsed (`config.rs:1439`) and stashed in `legacy_metadata` but
+to `cycles`. Right now it's parsed (`config.rs:1419`) and stashed in `legacy_metadata` but
 **never used for execution**.
 
 So you don't need new tunables for TM5 fidelity. What you *should* add is what you asked for —
@@ -240,7 +240,7 @@ same class of silent-lossiness as the memset trap.
 
 ## Q5. `BUG` — Does the compat layer handle the `Test Block Size (Mb)` discontinuity?
 
-**No.** `config.rs:1515-1519`:
+**No.** `config.rs:1495-1498`:
 
 ```rust
 chunk: Some(if test.test_chunk_size_mb == 0 {
@@ -369,7 +369,7 @@ relationship** — a traffic shape striding cannot produce.
 
 ### `allow_misaligned` exists but does not do this
 
-There's a knob named for it (`tests.rs:708`, `config.rs:516`) and `Mem-Random` sets it `true`
+There's a knob named for it (`tests.rs:708`, `config.rs:509`) and `Mem-Random` sets it `true`
 with the comment `// Maximum stress`. It does not deliver:
 
 - It only controls whether the chunk **length** is rounded to the cache line
@@ -841,14 +841,14 @@ localities at once. Verified:
       each block gets test_size = full block if it fits the remaining budget,
                                   else prev_power_of_two(remaining)
 
-  test_scaffolding.rs:97 / test_harness.rs:171
+  test_scaffolding.rs:91 / test_harness.rs:160
       chunk_size_bytes(tb.test_size)   <-- PER BLOCK, from that block's test_size
       tests.rs:1175  raw_chunk_size.min(window_size)
 ```
 
 Because chunk is derived from each block's own `test_size`, a heterogeneous block set produces a
 heterogeneous chunk set. Worked example — thread owns `[512 MB, 256 MB, 32 MB]`, config asks for
-`ChunkMode::Absolute { 2048 MB }` (which is what `runner.rs:1926` actually sets), window = full:
+`ChunkMode::Absolute { 2048 MB }` (which is what `runner.rs:1885` actually sets), window = full:
 
 ```
   block 0: 512 MB   chunk = min(2048, 512) = 512 MB  -> 1 chunk, firmly DRAM-resident
@@ -955,7 +955,7 @@ pages) — class 1, and deliberately so.
 **Verified: TMR is already class 1.**
 
 ```
-  test_harness.rs:23-29   ChunkCtx { ptr, chunk_start, chunk_end, .. }
+  test_harness.rs:22-28   ChunkCtx { ptr, chunk_start, chunk_end, .. }
         ptr         = start of the BLOCK  ("Pointer to the start of this block's memory")
         chunk_start = element index WITHIN THE BLOCK
 
@@ -990,7 +990,7 @@ Two bytes more per descriptor, resolved at setup, nothing in the hot loop.
 
 ### `thread_id` in the seed blocks cross-thread tile exchange
 
-`block_seed(addr, thread_id, cycle)` (`pattern_gen.rs:50`) mixes in `thread_id`. So if thread B
+`block_seed(addr, thread_id, cycle)` (`pattern_gen.rs:44`) mixes in `thread_id`. So if thread B
 verifies a tile thread A wrote (TODO #19, and Q17's last row), B computes a different seed and sees
 every element as an error. Fix is either: carry `owner` in the descriptor and seed from that, or
 drop `thread_id` from the seed entirely — `(block_base, offset)` is already globally unique, so
@@ -1052,12 +1052,12 @@ Nothing is uncovered, and the ring arithmetic stays uniform.
 
 | # | Where | Effect | Fix |
 |---|---|---|---|
-| **B1** | `config.rs:1515-1519` | TM5 `Test Block Size` 1/2/3 read as MB, not fraction codes → chunk up to **440× too small**. Fires on `1usmus_v3.cfg`. | `0..=3 => fraction(1/(n+1))` (Q5) |
-| **B2** | `config.rs:1503-1511` | TM5 `Time (%)` mapped to outermost `cycles` with a 10000 divisor instead of innermost `verify_reps` with 2000; `write_read_cycles` left at 1 instead of 4. **~12× dwell deficit** at defaults; destroys `Check_absolutnew.cfg`'s residency sweep. `[Main Section] Cycles` parsed but never executed. | map to `verify_reps`/`write_read_cycles`; `cycles` ← TM5 `Cycles` (Q4) |
+| **B1** | `config.rs:1495-1498` | TM5 `Test Block Size` 1/2/3 read as MB, not fraction codes → chunk up to **440× too small**. Fires on `1usmus_v3.cfg`. | `0..=3 => fraction(1/(n+1))` (Q5) |
+| **B2** | `config.rs:1483-1491` | TM5 `Time (%)` mapped to outermost `cycles` with a 10000 divisor instead of innermost `verify_reps` with 2000; `write_read_cycles` left at 1 instead of 4. **~12× dwell deficit** at defaults; destroys `Check_absolutnew.cfg`'s residency sweep. `[Main Section] Cycles` parsed but never executed. | map to `verify_reps`/`write_read_cycles`; `cycles` ← TM5 `Cycles` (Q4) |
 | **B3** | `tests.rs:1350-1356` | `flush_range_to_dram` ignores the base's offset within its line → misses the tail line on a misaligned base → `Mem-Refresh` verifies **cached** data and passes for the wrong reason. Latent now, live as soon as offsets exist. | count from the base's own line start (Q10) |
 | **B4** (fixed 2026-10-02, TODO 75 A) | `allocator.rs:491-504` + `581-652` + `1062-1069` + `1141-1154` | When per-thread target is in **[512 MiB, 1 GiB)**, 1024 is absent from the plan → Phase 1b allocates 1 GiB huge chunks off-plan → distribution walks only the plan → gap filling rejects any chunk larger than the gap → `:1180` warns and **the huge pages are discarded**. Hits 32 GiB/32t consumer systems. Second path: `blocks_per_thread == 0 → continue` at `:1065`. | distribute per NUMA node and let tiles split a chunk across threads (Q18) |
 
-| **B5** | `tests.rs:1433-1478` + `1175` + `test_scaffolding.rs:97` | Window is a per-thread *byte budget* spread greedily over unequal blocks, and chunk is derived **per block** from that block's `test_size` → **chunk size varies per block within one test**, up to 16× apart, so one test runs at several localities at once and a small block can stay cache-resident. Every `2048 * MB` chunk setting in `runner.rs:1926-2003` is inert on consumer budgets. `prev_power_of_two` also discards budget. All reporting is `log::debug!`. | uniform tiles: the kernel's unit stops inheriting the block's size (Q19/Q20) |
+| **B5** | `tests.rs:1433-1478` + `1175` + `test_scaffolding.rs:91` | Window is a per-thread *byte budget* spread greedily over unequal blocks, and chunk is derived **per block** from that block's `test_size` → **chunk size varies per block within one test**, up to 16× apart, so one test runs at several localities at once and a small block can stay cache-resident. Every `2048 * MB` chunk setting in `runner.rs:1885-1962` is inert on consumer budgets. `prev_power_of_two` also discards budget. All reporting is `log::debug!`. | uniform tiles: the kernel's unit stops inheriting the block's size (Q19/Q20) |
 
 Plus one mislabelled knob: **`allow_misaligned` cannot produce a misaligned access** — it only
 affects chunk length, and `next_power_of_two` re-aligns it anyway (Q8). Implement or rename.
@@ -1165,7 +1165,7 @@ Take the worked example, `T = 5632 MB`, `C = 1536 MB`:
   4 x 1536 = 6144 MB of visiting over 5632 MB of memory -> 512 MB visited twice.
 ```
 
-Now the seed (`tests.rs:3067`, `pattern_gen.rs:50`):
+Now the seed (`tests.rs:3067`, `pattern_gen.rs:44`):
 
 ```rust
 let seed = pattern_gen::block_seed(ctx.ptr as usize, ctx.thread_id, ctx.cycle);
