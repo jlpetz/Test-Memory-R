@@ -1,5 +1,7 @@
 # TMR (Test Memory R)
 
+![A DDR5 memory module with its heat spreader off, its traces lit red like neon, TMR on its last chip](tools/icon/svg/dimm-burn.svg)
+
 **TMR** is short for **Test Memory R**, the R for Rust. It's a remake of TM5 (TestMem5 by Serj,
 <https://testmem.tz.ru>), the memory tester highly acclaimed by memory overclockers. I contacted Serj,
 who was kind enough to fix a broken link on his website that gave me TM5's original assembly source.
