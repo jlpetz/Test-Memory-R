@@ -758,6 +758,9 @@ pub struct TestMemoryConfig {
     /// Where this step runs in the suite (run seed, suite cycle, step), for the native patterns' keys; set per dispatch by the runner, all
     /// zero outside a run and for the Bench pairs.
     pub epoch: crate::pattern::StepEpoch,
+    /// The page exchange's step, which its workers share (TODO 28, `exchange::Step`): set per dispatch by the worker pool for
+    /// Mem-PageExchange, `None` for every other test and outside a run.
+    pub exchange: Option<std::sync::Arc<crate::exchange::Step>>,
 }
 
 impl TestMemoryConfig {
@@ -785,6 +788,7 @@ impl TestMemoryConfig {
             program: None,                                       // The default program, or the pattern_mode if one is set
             sequence: None,                                      // Mem-Sequence's passes; its default when unset
             epoch: crate::pattern::StepEpoch::default(),         // Set per dispatch by the runner
+            exchange: None,                                      // Set per dispatch by the worker pool, for the page exchange
         }
     }
 
@@ -989,6 +993,7 @@ impl TestMemoryConfig {
             "Mem-ModuloX" => 64,                               // Whole lines
             "Mem-Sequence" => 64,                              // Native lines at 256 or 512 bits
             "Mem-TileTransform" => 1024,                       // AMX tiles, 1 KiB each; a chunk's ends may cut a group (TODO 102)
+            "Mem-PageExchange" => 4096,                        // Its tiles: whole pages (TODO 28)
             // v2 tests
             "Mem-SimpleV2-128" => 16,  // u64x2 (128-bit)
             "Mem-SimpleV2-256" => 32,  // u64x4 (256-bit)
@@ -8847,6 +8852,7 @@ pub fn get_test_function_by_name(name: &str) -> Option<crate::runner::TestFuncti
         "Mem-ModuloX" => Some(TestFunction::MultiBlock(modulo_x_multi)),
         "Mem-Sequence" => Some(TestFunction::MultiBlock(sequence_auto_multi)),
         "Mem-TileTransform" => Some(TestFunction::MultiBlock(crate::xform::tile_transform_multi)),
+        "Mem-PageExchange" => Some(TestFunction::MultiBlock(crate::exchange::page_exchange_multi)),
 
         // Sequential Bandwidth Tests (Spd-*-Auto → auto-dispatched)
         // Cached (L1/L2/L3) variants

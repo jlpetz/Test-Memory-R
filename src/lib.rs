@@ -37,6 +37,7 @@ mod constants;
 mod cpu_selection; // two-stage CPU selection: skip-cores filter + cpu-stride spacing
 mod cpu_topology;
 mod error_context; // where a worker is in the run, for its error lines (TODO 74)
+mod exchange; // Mem-PageExchange: tiles that cross threads, CCDs and NUMA nodes (TODO 28)
 mod failing_bits; // which bit positions failed checks, from the verifies' cold path (TODO 97)
 mod formatting;
 mod latency_tests; // Latency measurement tests

@@ -36,6 +36,9 @@ pub(crate) fn format_parameter_context(ctx: &Option<crate::config::TestParameter
             if c.tile_patterns.is_some() || c.tile_load.is_some() {
                 return format!("Tiles({},r{})", c.tile_patterns.unwrap_or(crate::xform::DEFAULT_X), c.tile_load.unwrap_or(0));
             }
+            if let Some(share) = c.exchange_share {
+                return format!("Share({})", share.name());
+            }
             if let Some(ms) = c.wait_ms {
                 return match ms {
                     ms if ms % 60_000 == 0 && ms > 0 => format!("Wait({}min)", ms / 60_000),

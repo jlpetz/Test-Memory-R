@@ -131,3 +131,69 @@ being measured. The permutation must be arithmetic, not stored.
 **Bonus**: the per-block odd colour offset (decorrelating identically-aligned power-of-2 blocks
 so they don't all present the same DRAM bank/row phase — see #19) drops in as the starting
 offset within each granule. No allocator change, no padding.
+
+---
+
+## The page exchange as built (2026-10-24)
+
+`Mem-PageExchange`, `src/exchange.rs` (tests `src/exchange/tests.rs`), built overnight at the owner's
+request, the open choices left as defaults to revisit. In plan `all` only, and not yet run on hardware.
+
+**Memory.** Each thread's extent (the whole span by default) is cut into tiles of the test's chunk
+(`ChunkMode::Absolute`, 2 MiB by default), apart and never overlapping, the last one shorter when
+the chunk doesn't divide the extent, so every word is tested (as this TODO's entry had it).
+
+**The claim protocol** (the one-owner convention's exception, now in `memory/buffer.rs`'s `Sync`
+note). Each tile has a state word, an `AtomicU64` on a 64 B line of its own, allocated by its home
+thread: 0 (no write this step: the seal in a sealed step), a write (its writer + 1, its claim, its
+polarity), or that with a busy bit. Claim: one compare-and-swap, free to busy, Acquire. Release: one
+store, Release, after the fill's own SFENCE (its stores are non-temporal). A busy tile is skipped,
+never waited for: with far more tiles than threads it is rare, and no thread ever sleeps. The
+state word is the only signal; nothing is sent.
+
+Cost, against the work it rides on: a 2 MiB tile is 4 MiB of traffic (a check and a write), about
+0.5 ms at a desktop thread's bandwidth and about 2.3 ms at a 256-thread server's share; the claim
+is one atomic add (the pool's counter), one CAS and one store, a few hundred ns even across nodes.
+The owner asked (2026-10-24) whether a messaging layer like iceoryx2 was needed: no, it moves large
+payloads between processes; here the threads share memory and the "message" is a tile's number.
+
+**Which tile.** A pool's claims are numbered by one counter; claim `t` takes the pool's tile
+`(t * s + o) mod N` for its pass `t / N`, with `s` coprime with `N` and `o` both drawn from the
+step's key and the pass. Each pass covers every tile once, and arranges them anew, so a tile goes
+to different threads from pass to pass even when the threads run in step (a plain `t mod N` would
+give each thread the same tiles every pass on a uniform machine).
+
+**Sharing groups** (`exchange_share`): `any` (every thread's tiles, one counter), `node` (the
+claimer's node's threads', a counter a node), `cross` (the other nodes', a counter a claiming node;
+on one node it is `any`). A thread's node is its CPU's (`ThreadPool::cpu_assignments`); the memory
+a worker fills is on its node first.
+
+**The pattern** is the seal's `tmr` (an address hash under a key), keyed from the step's key and the
+tile's state word, so the next claimer checks it from that word alone; odd passes invert it. Written
+by the seal's fill and checked by its verify, at the seal's width: no new kernel, so no new hot loop.
+A check's bad words are logged by the seal's rescan, then one line names the tile, its home thread,
+its last writer and the checker, with their nodes.
+
+**The seal and the end.** In a sealed step a tile's first claim checks the seal (`TestRunner::
+check_seal_of`, new: `check_seal` indexes from the thread's own extent); its errors are seal errors.
+A barrier ends the claims; then each thread checks its own tiles' last writes (or the seal, on a
+tile no one claimed) and they are resealed: per tile in a one-cycle step, the whole extent as the
+test finishes otherwise (`TestRunner::finish_*`). A halt or Ctrl+C still meets both barriers.
+
+**Dispatch.** The step's workers share one `exchange::Step` (their nodes, tiles, the pools'
+counters, the barrier), which `ThreadPool::execute_test` creates for this test and hands every
+worker in `TestMemoryConfig::exchange`. Called without one (the seal's and the suite's unit tests),
+a thread exchanges its tiles with itself.
+
+**Defaults taken, for the owner to revisit:**
+- Non-temporal stores (the seal's fill): a claimer reads the tile from DRAM, over the links when it
+  is on another node. Normal stores, so a tile could pass cache to cache, need a normal-store `tmr`
+  fill kernel (and an asm check).
+- A tile is handed on whenever its next claim comes; no cache-to-cache mode. That mode would be a
+  small lock-free ring of recently released tiles per pool.
+- Plan `all` only, until the owner puts it in a plan.
+
+**Next:** a run on a machine with more than one CCD or NUMA node (the US VM resized to two nodes,
+or the metal box): errors 0; the per-thread debug line (`RUST_LOG=debug`: claims, of other threads'
+tiles, on other nodes, found busy); its speed beside Mem-SimpleV2's. Then the rest of v1: different
+tests running at once across threads, and a shared-line coherence storm.

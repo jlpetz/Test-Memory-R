@@ -197,6 +197,15 @@ impl ThreadPool {
     ) {
         let thread_count = self.senders.len();
         let barrier = Arc::new(Barrier::new(thread_count));
+        // The page exchange's workers share one step (TODO 28): its tiles, claims and barrier, with each worker's node
+        let shared;
+        let test_config = if test_name == crate::exchange::TEST_NAME {
+            let nodes = self.cpu_assignments.iter().map(|&(_, _, node)| node).collect();
+            shared = TestMemoryConfig { exchange: Some(Arc::new(crate::exchange::Step::new(nodes))), ..test_config.clone() };
+            &shared
+        } else {
+            test_config
+        };
 
         // Send work to all threads
         for sender in &self.senders {

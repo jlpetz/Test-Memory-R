@@ -645,6 +645,10 @@ pub struct TestConfig {
     /// (TODO 102).
     #[serde(default)]
     pub tile_load: Option<u32>,
+    /// Mem-PageExchange: whose tiles a thread claims, `any` (every thread's, the default), `node` (its own node's threads') or `cross`
+    /// (the other nodes', so every claim crosses a link) (TODO 28).
+    #[serde(default)]
+    pub exchange_share: Option<String>,
 
     // Per-chunk repetition: how long each chunk is worked (TODO 79 B2). Unset is the test's own default; loading a TM5 `.cfg` fills them
     // from `Time (%)`.
@@ -783,6 +787,8 @@ pub struct TestParameterContext {
     pub tile_patterns: Option<u32>,
     /// Mem-TileTransform: extra multiplies a tile in its check, the matrix unit's load, 0 (the default) to 65534 (TODO 102).
     pub tile_load: Option<u32>,
+    /// Mem-PageExchange: whose tiles a thread claims (TODO 28); `None` is `any`.
+    pub exchange_share: Option<crate::exchange::Share>,
 }
 
 /// Interpret TM5 Parameter correctly based on test function name.
@@ -1107,6 +1113,11 @@ impl ModernConfig {
         {
             return Err(Self::test_error(i, test, format!("\"tile_load\" is at most {}, not {r}", crate::xform::MAX_R)));
         }
+        if test.function != crate::exchange::TEST_NAME && test.exchange_share.is_some() {
+            return Err(Self::test_error(i, test, format!("only {} reads \"exchange_share\"", crate::exchange::TEST_NAME)));
+        }
+        let exchange_share =
+            test.exchange_share.as_deref().map(crate::exchange::Share::parse).transpose().map_err(|e| Self::test_error(i, test, e))?;
         if let ChunkMode::Absolute { size_bytes } = chunk_mode
             && !size_bytes.is_multiple_of(crate::test_memory::GRANULE)
         {
@@ -1146,6 +1157,7 @@ impl ModernConfig {
             || test.wait_ms.is_some()
             || test.tile_patterns.is_some()
             || test.tile_load.is_some()
+            || exchange_share.is_some()
         {
             let ctx = config.parameter_context.get_or_insert(TestParameterContext::default());
             if let Some(v) = test.stride_patterns {
@@ -1168,6 +1180,7 @@ impl ModernConfig {
             }
             ctx.tile_patterns = test.tile_patterns.or(ctx.tile_patterns);
             ctx.tile_load = test.tile_load.or(ctx.tile_load);
+            ctx.exchange_share = exchange_share.or(ctx.exchange_share);
         }
         if let Some(ms) = test.wait_ms
             && !(test.function.starts_with("Mem-Refresh") || test.function == "RefreshStable")

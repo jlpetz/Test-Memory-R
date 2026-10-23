@@ -2359,6 +2359,15 @@ pub(crate) fn registered_tests(cache_info: &CacheInfo) -> Vec<(&'static str, Tes
                 .with_timing(TestTiming::duration_only(30))
                 .with_memory_type(None),
         ),
+        // A GSAT-style page exchange (TODO 28): every thread's extent in tiles of the chunk, 2 MiB (a large page), which threads claim
+        // from each other, check against their last writer's pattern and rewrite, so they cross threads, CCDs and NUMA nodes
+        (
+            "Mem-PageExchange",
+            TestFunction::MultiBlock(crate::exchange::page_exchange_multi),
+            TestMemoryConfig::new(ExtentMode::FullAllocation, ChunkMode::Absolute { size_bytes: 2 * MB })
+                .with_timing(TestTiming::duration_only(30))
+                .with_memory_type(None),
+        ),
         // Protected victims, memtest86's modulo-20 (TODO 97): chunks twice the L3, as the moving inversions'
         (
             "Mem-ModuloX",
@@ -5203,8 +5212,9 @@ mod tests {
     }
 
     /// TODO 76: chunks overlap where they don't tile, so a word's value may depend only on its position. Each writer whose last pass covers
-    /// every word leaves the same image at 68 KiB and 100 KiB chunks (Mem-Stride's last pass doesn't), and each Bench-Verify finds its
-    /// Bench-Init's image clean at a third size, 132 KiB.
+    /// every word leaves the same image at 68 KiB and 100 KiB chunks (Mem-Stride's last pass doesn't, and Mem-PageExchange's tiles hold
+    /// their last writer's pattern by design: they never overlap, TODO 28), and each Bench-Verify finds its Bench-Init's image clean at a
+    /// third size, 132 KiB.
     #[test]
     fn writers_leave_the_same_image_at_any_chunk_size() {
         let mut region = Region::new(&[256 * KIB, 256 * KIB, 128 * KIB]);
@@ -5217,7 +5227,10 @@ mod tests {
         let mut compared = 0;
         for (def, test_fn) in &suite {
             let name = def.actual_name;
-            if !(name.starts_with("Mem-") || name.starts_with("Bench-Init-")) || name.starts_with("Mem-Stride") {
+            if !(name.starts_with("Mem-") || name.starts_with("Bench-Init-"))
+                || name.starts_with("Mem-Stride")
+                || name == crate::exchange::TEST_NAME
+            {
                 continue;
             }
             let mut images = Vec::new();

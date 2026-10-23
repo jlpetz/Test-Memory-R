@@ -209,6 +209,27 @@ impl<'a> TestRunner<'a> {
         self.set_stage(Stage::Testing);
     }
 
+    /// Check the seal on `len` bytes at `ptr`, in another thread's span: a tile's first claim in the page exchange (TODO 28), which
+    /// `check_seal` can't take, as it indexes from this thread's extent. In any cycle, as a tile's first claim of the step comes when it
+    /// comes; a no-op unless the step wraps. Bad words count as seal errors, as `check_seal`'s.
+    ///
+    /// # Safety
+    /// `ptr..ptr + len` must be readable and held by this thread (the exchange's claim protocol), 64 B aligned and a whole number of 64 B.
+    #[inline(never)]
+    pub unsafe fn check_seal_of(&mut self, ptr: *const u64, len: usize) {
+        if !self.seal.wrap {
+            return;
+        }
+        self.set_stage(Stage::CheckingSeal);
+        let at = Instant::now();
+        // SAFETY: the caller's
+        self.seal_errors += unsafe { self.seal.kernel.check(ptr, 0, len / 8, "seal check before") };
+        let time = at.elapsed();
+        self.ops.add(crate::ops::Op::SealCheck, time, len as u64);
+        self.inside += time;
+        self.set_stage(Stage::Testing);
+    }
+
     /// Reseal bytes `[start, start + len)` of the extent once the test is done with them (TODO 74); a no-op unless the step wraps, and
     /// after its first cycle (see `check_seal`, which splits the same way).
     #[inline(always)]

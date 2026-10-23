@@ -122,6 +122,24 @@ multiply a tile, about 10% of the unit at DRAM speed; each step adds one more. P
 - **Range:** 0 to 65534 (above it, `1 + r` times a one- or two-bit fault's change could wrap to zero)
 - **JSON config field:** `"tile_load": 8`
 
+### `exchange_share: Option<String>`
+**Used by:** Mem-PageExchange (TODO 28)
+
+Whose tiles a thread claims in the page exchange. Each thread's extent is cut into tiles of the
+test's chunk (2 MiB by default), and threads claim tiles from each other's extents, check the
+pattern their last writer left and write their own:
+
+- `any`: every thread's tiles, so tiles cross threads, CCDs and NUMA nodes as they come.
+- `node`: only the tiles of threads on the claimer's own node: the exchange without the links
+  between nodes.
+- `cross`: only the other nodes' tiles, so every claim crosses a link between nodes. On a machine
+  with one node it is `any`.
+
+- **Default:** `any`
+- **JSON config field:** `"exchange_share": "cross"`
+- The tile size is the test's `chunk` (`"chunk": {"mode": "absolute", "size": "2MiB"}`); the last
+  tile of an extent is shorter when the chunk doesn't divide it, so every word is tested.
+
 ## SimpleTest patterns (pattern spec 2)
 
 | Where | Field | Meaning |
@@ -214,6 +232,7 @@ All parameters are validated before tests run (in `runner.rs`):
 - `stride_patterns` and `copy_directions` must be >= 1 (no power-of-2 constraint)
 - `mirror` is checked when it is parsed (`MirrorMode::from_str`, shared by JSON, the CLI and the importer): subblocks 2 or 4, any jump
 - `tile_patterns` must be 16, 32 or 64 and `tile_load` at most 65534, when the config is loaded; another test refuses both
+- `exchange_share` must be `any`, `node` or `cross`, when the config is loaded; another test refuses it
 - Tests panic with a clear error message if their required parameter is missing from `parameter_context`
 
 ## Sequencing and the seal (TODO 74)

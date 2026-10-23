@@ -75,12 +75,12 @@ fn free_failed(e: &str) {
 unsafe impl Send for MemoryBuffer {}
 
 // SAFETY: this is the stronger claim and it rests on a CONVENTION, not on the type. `as_mut_ptr(&self)` hands out a `*mut u8` from a
-// *shared* reference, so `&MemoryBuffer` shared across threads could alias mutable memory. It is sound only because the allocator gives
-// each worker thread its OWN blocks and workers never write outside the block(s) they were assigned — the disjointness is enforced by the
-// coordinator (see `AllocationBlock` / `BlockInfo` thread assignment), not by the borrow checker.
+// *shared* reference, so `&MemoryBuffer` shared across threads could alias mutable memory. It is sound because the allocator gives each
+// worker thread its OWN blocks, which no other thread touches — the disjointness is enforced by the coordinator (see `AllocationBlock` /
+// `BlockInfo` thread assignment), not by the borrow checker — with one exception, by protocol:
 //
-// WARNING: if a future change lets two threads write the same block (e.g. the shared-block worker model in TODO #28, or a cross-thread
-// page-exchange test), this `Sync` impl is no longer justified by the above and the aliasing must be made explicit instead — split the
-// buffer into disjoint `&mut [u8]` slices per worker, or move to atomics/`UnsafeCell` with a documented protocol. Do not rely on this
-// comment staying true by accident.
+// The page exchange (TODO 28, `exchange.rs`) reads and writes other workers' blocks, a tile at a time, and only a tile it holds: each tile
+// has a state word, claimed with a compare-and-swap (Acquire) and released with a store (Release), so one thread at a time works a tile
+// and each sees the stores of the one before. During its step no worker touches its span but through that protocol, and after it (a
+// barrier) each touches only its own again. A new test that shares memory across threads must keep to it, or one of its own as explicit.
 unsafe impl Sync for MemoryBuffer {}
