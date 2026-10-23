@@ -852,7 +852,7 @@ coverage. They control **dwell on each chunk**. Total runtime rises as a side ef
 
 ### 5.3 TMR's loop nest (Tier 1, `run_phased_test`)
 
-`test_harness.rs:239-266`. Structurally the same shape, with explicit counts instead of a
+`test_harness.rs:208-236`. Structurally the same shape, with explicit counts instead of a
 percentage of a magic constant:
 
 ```
@@ -886,7 +886,7 @@ Two things fall out of this table, both covered in
 - TMR has no **window slice** row. That is the missing sliding window — the reason a test whose
   extent is smaller than its allocation never visits the tail (§2.2).
 - TM5's `Time (%)` belongs on the **bottom** rows. TMR's legacy loader puts it on the **top** row
-  (`config.rs:1439-1447`), which preserves neither the amount of work nor the locality.
+  (`config.rs:1503-1511`), which preserves neither the amount of work nor the locality.
 
 ### 5.5 Coverage of Tier 1 vs Tier 2
 

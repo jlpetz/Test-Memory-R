@@ -70,11 +70,11 @@ Options to weigh (still not decided):
 
 **Requirement the final solution must satisfy (added 2026-09-21): a single owner for the console.**
 Two threads write to stdout today — the coordinator (banners, per-test reports, final summary) and
-the `progress_reporter` thread (`runner.rs:718` spawns it; the 500 ms ticker line). They are
+the `progress_reporter` thread (`runner.rs:700` spawns it; the 500 ms ticker line). They are
 coordinated only by an **advisory flag**, `pause_progress_output` (`progress.rs:39`, set at
-`runner.rs:1060`, cleared at `1225`), and that flag is **check-then-act**: the reporter tests it at
-`progress.rs:260` and then does its whole print block (line-clear, pending WHEA lines, the status
-line, `flush()`) through to `progress.rs:363`. If the coordinator sets the flag anywhere inside that
+`runner.rs:1049`, cleared at `1225`), and that flag is **check-then-act**: the reporter tests it at
+`progress.rs:242` and then does its whole print block (line-clear, pending WHEA lines, the status
+line, `flush()`) through to `progress.rs:339`. If the coordinator sets the flag anywhere inside that
 window, the reporter is already committed and its line lands in the middle of the report. Windows
 console writes go through conhost IPC and take milliseconds, so the window is milliseconds wide, not
 nanoseconds — which is why the user sees this occasionally rather than never. `AtomicBool` is not the

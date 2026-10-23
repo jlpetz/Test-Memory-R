@@ -8,7 +8,7 @@
 - **The Ctrl+C wording** 'without the final report or results file' (cli.rs:964, 975) becomes untrue when S1 saves the results after every cycle: S1 corrects it. The other stale text (the skip count at cli.rs:1603, bold escapes in redirected output, ticker frames in WinRM captures) is left for the owner.
 - **Per-thread rows** are stored per step per cycle; the size test (S1) decides pretty vs compact JSON. Pretty stays unless a long run's final file is large.
 - **GUI thread priority:** Normal for v1 (workers stay High); measured with the owner later.
-- **An elevated launch's silent secedit grant** (privileges.rs:398-409) is unchanged by the split; noted for the owner.
+- **An elevated launch's silent secedit grant** (privileges.rs:345-356) is unchanged by the split; noted for the owner.
 - **TODO 29's log transcript** (the log file holding everything the console showed) comes after the split.
 - **GUI v1** takes the exe's own arguments; the args box, AppConfig's `last_config`/`ui_mode`/`auto_start` and 'run again' (a relaunch, one run per process) are S6 or later. Release builds stay CLI-only until the owner turns the GUI on. The S3 preview is `tmr --gui ...` from a shell.
 - **CLAUDE.md's command lines** (`-p tmr-app`, `--workspace`) are updated when the workspace lands (S3), and the owner told.
@@ -20,7 +20,7 @@ A synthesis, with design A as the base. A wins on the points that decide weight 
 - **The engine stays at the repo root as crate `tmr`.** I built a scratch workspace outside the repo with this shape: a lib-only root package with `autobins = false`, `crates/tmr-app` holding `[[bin]] name = "tmr"`, and `default-members` set. Plain `cargo run` from the root runs the bin, `cargo build` writes `target/debug/tmr.exe`, and `cargo run --features tmr-app/gui` works. A `[lints.clippy]` deny on the root package fails a planted `println!` and `process::exit` in the engine and leaves the bin alone.
   - The asm lands under the cargo build dir layout `target/release/build/<pkg>/<hash>/out/` (I looked at the current `target/release/build/tmr/...`). So `tools/hot_loop_spills.py:213`'s glob `build/tmr*/**/tmr.s` still matches with a `tmr-app` package, and its `3tmr` symbol filter (`:97`, `:145`) holds while the lib keeps the name `tmr`.
   - B instead moves 48k lines into `crates/engine`. That breaks every `src/` path in TODO and docs and collides with TODO 28's work in progress.
-- **The engine keeps today's monitor thread.** That is `progress_reporter` (progress.rs:394-437), whose 500 ms `whea.poll()` (progress.rs:403) must survive in both modes. It calls `Frontend::tick` instead of drawing. B moves the poll into `recv_timeout` loops at the result channel (runner.rs:1349, 1424, 1838): that is more code near the workers, and it leaves gaps where the coordinator isn't waiting.
+- **The engine keeps today's monitor thread.** That is `progress_reporter` (progress.rs:370-424), whose 500 ms `whea.poll()` (progress.rs:379) must survive in both modes. It calls `Frontend::tick` instead of drawing. B moves the poll into `recv_timeout` loops at the result channel (runner.rs:1343, 1424, 1838): that is more code near the workers, and it leaves gaps where the coordinator isn't waiting.
 - **env_logger stays.** Its format prints `record.module_path()` (cli.rs:1474, 1491) and relies on `WriteStyle::Never` stripping escapes when redirected (cli.rs:1504-1508). B's replacement logger would have to reproduce both, byte for byte.
 
 **Taken from B:**
@@ -48,10 +48,10 @@ A synthesis, with design A as the base. A wins on the points that decide weight 
   - **CLI:** the call formats the same text with the same format strings and writes it before returning, on the same thread. There is no message queue, no extra thread and nothing serialised, so the console keeps today's bytes and today's order against log lines, by construction.
   - **GUI:** the call drops the value into a standard channel. A Reactor background waiter (the demo's pattern, gui-test/reactor/src/main.rs:82-101 and 189-197) collects everything queued every 500 ms and redraws once.
 - **The fast numbers never travel at all.** Progress, bytes, MiB/s and live error counts are already shared atomics plus one mutex (`ProgressTracker`, `TestProgress`). The frontend reads them with a new `ProgressTracker::snapshot()` on its own timer:
-  - the CLI on the engine's existing 500 ms monitor thread, the one that must stay anyway for the WHEA poll at progress.rs:403;
+  - the CLI on the engine's existing 500 ms monitor thread, the one that must stay anyway for the WHEA poll at progress.rs:379;
   - the GUI from its waiter at 2 Hz.
 - **The one question during a run** is the large-page restart (cli.rs:803-851, stdin at 817). It becomes a blocking method the frontend answers. The calibration save (cli.rs:1188-1199) becomes a closure the CLI hands to the one-shot command.
-- **Stop** stays the `SHUTDOWN_REQUESTED` flag (runner.rs:184).
+- **Stop** stays the `SHUTDOWN_REQUESTED` flag (runner.rs:151).
 - **Kernels, hot loops, `WorkResult`, `TestProgress` and the worker loop do not change.** Every call sits where a `println!` sits today.
 
 **Order of work.** Characterisation goldens come first. Then TODO 72's cheap slice: save after every cycle, record the build and the left-out tests, per-thread rows. It doesn't depend on events and TODO 100 wants it first. Then:
@@ -71,13 +71,13 @@ Repo root: `C:/Users/Administrator/Downloads/TMR/TMR-APP`. It becomes a workspac
 - `[workspace] members = [".", "crates/tmr-app", "crates/tmr-cli", "crates/tmr-gui"]`.
 - `default-members` = all but `tmr-gui`, so plain `cargo build`, `cargo test` and `cargo run` never compile Reactor.
 - The profiles stay here (Cargo.toml: `lto=true`, `codegen-units=1`, `panic=abort`, `strip`), and so does `.cargo/config.toml` (x86-64-v3).
-- `src/` stays where it is. So every `src/...` path in TODO.md, `doc/todo/*.md` and CLAUDE.md stays valid, and so does `config.rs:2085`'s `CARGO_MANIFEST_DIR` `test_configs` path.
+- `src/` stays where it is. So every `src/...` path in TODO.md, `doc/todo/*.md` and CLAUDE.md stays valid, and so does `config.rs:2203`'s `CARGO_MANIFEST_DIR` `test_configs` path.
 - Log records keep their module paths `tmr::runner` etc. (cli.rs:1474), and v0 symbols keep `3tmr`.
 - New `build.rs` for the build identity.
 
 **Engine keeps:**
 - everything that computes;
-- `reporting/{models, converters, formatters}`, plus `Reporter` and the `Renderer` trait. These are presentation-neutral `TableData` with no ANSI. The converters read engine state (converters.rs:554, 110), so they must stay.
+- `reporting/{models, converters, formatters}`, plus `Reporter` and the `Renderer` trait. These are presentation-neutral `TableData` with no ANSI. The converters read engine state (converters.rs:546, 110), so they must stay.
 
 **Engine gains:**
 - `frontend.rs`: the trait, `Event`/`Setup`/`Run`, `StepReport`, `ProgressSnapshot`, `RestartChoice`.
@@ -134,7 +134,7 @@ pub trait Frontend: Send + Sync {
 }
 pub enum Event { Setup(Setup), Run(Run) }
 pub fn session::run(args: Vec<String>, fe: Arc<dyn Frontend>) -> crate::Result<SessionEnd>;
-pub fn request_stop(); // SHUTDOWN_REQUESTED.store(true), runner.rs:184
+pub fn request_stop(); // SHUTDOWN_REQUESTED.store(true), runner.rs:151
 impl ProgressTracker {
     pub fn snapshot(&self) -> Option<ProgressSnapshot>;
     pub fn take_whea_descriptions(&self) -> Vec<String>;
@@ -142,21 +142,21 @@ impl ProgressTracker {
 pub fn commands::calibrate(.., out: &mut dyn io::Write, confirm: &mut dyn FnMut(&str) -> bool);
 ```
 
-**Why `Send + Sync` and `&self`.** Two engine threads call it: the session/coordinator thread (events) and the monitor thread (tick). `Arc` is cloned once, into the monitor at runner.rs:1032. Events move by value, so the GUI keeps them with no clone, and `StepReport` is boxed so the enum stays small.
+**Why `Send + Sync` and `&self`.** Two engine threads call it: the session/coordinator thread (events) and the monitor thread (tick). `Arc` is cloned once, into the monitor at runner.rs:1025. Events move by value, so the GUI keeps them with no clone, and `StepReport` is boxed so the enum stays small.
 
-**`session::run` takes `args`,** not `std::env::args` (cli.rs:170). The CLI and the GUI therefore accept the same parameters, and the run records the args it was given; TestRunOverrides carries them in place of run_context.rs:764.
+**`session::run` takes `args`,** not `std::env::args` (cli.rs:170). The CLI and the GUI therefore accept the same parameters, and the run records the args it was given; TestRunOverrides carries them in place of run_context.rs:723.
 
 **CLI (`CliFrontend`).**
 - `event()` formats with the moved format strings into a String and writes it before returning. There is no channel and no thread.
 - Each site keeps its write primitive:
-  - plain `print!` before the suite and after it (the ticker is down for good after progress.rs:428);
-  - `console::print_above` for the seed, cycle and seal lines (runner.rs:1134, 1151, 1852);
+  - plain `print!` before the suite and after it (the ticker is down for good after progress.rs:406);
+  - `console::print_above` for the seed, cycle and seal lines (runner.rs:1128, 1151, 1852);
   - a new `console::print_block` for the step report: one TICKER lock, erase, write, flush, no redraw until the next draw. That is today's `hold()`/`release()` bytes (console.rs:98-110), but no log line can land inside the report, which meets TODO 29's criterion.
 - The `match` over `Event` has no wildcard arm, so a new event fails to compile until the CLI handles it.
 - `tick()` is today's 2 s draw:
   - a `Mutex<Option<Instant>>`, set at the first tick;
   - snapshot → `render` → `console::draw_ticker(text, || p.take_whea_descriptions())`;
-  - `last_draw` advances only when it drew, as progress.rs:422-424.
+  - `last_draw` advances only when it drew, as progress.rs:398-400.
 - `ticks_done()` is `hold()` plus printing the pending WHEA lines.
 - `large_page_restart()` prints the A/B block and reads stdin (`prompts.rs` over `BufRead`/`Write`, so tests can script it).
 
@@ -171,9 +171,9 @@ pub fn commands::calibrate(.., out: &mut dyn io::Write, confirm: &mut dyn FnMut(
 - No new checks anywhere.
 
 **Progress.**
-- `snapshot()` takes the Position lock once and sums the workers' `TestProgress` atomics via `live_figures` (progress.rs:360-382), exactly what `render` reads today. One small String (the test name) is cloned per read.
+- `snapshot()` takes the Position lock once and sums the workers' `TestProgress` atomics via `live_figures` (progress.rs:336-358), exactly what `render` reads today. One small String (the test name) is cloned per read.
 - It returns: runtime, time_limit, cycle, cycle_limit, cycle_elapsed, tests_done, tests_per_cycle, finished_errors, live_errors, WheaCounts, test{number, name, elapsed, time_limit, finished, publishes} and live{published, bytes, bytes_per_sec, stage}.
-- `render`, `suite_line`, `test_stamp`, `hms` and `percent` (progress.rs:262-392) move verbatim to the CLI as functions of the snapshot.
+- `render`, `suite_line`, `test_stamp`, `hms` and `percent` (progress.rs:244-368) move verbatim to the CLI as functions of the snapshot.
 
 **One-shot commands** (help, demo configs, compare, topology debug/show, setup-large-pages, calibrate) live in `tmr::commands` and write to the caller's writer: `println!` becomes `writeln!(out)`, byte for byte. They are not on the run path, and the GUI doesn't offer them in v1.
 
@@ -188,20 +188,20 @@ pub fn commands::calibrate(.., out: &mut dyn io::Write, confirm: &mut dyn FnMut(
 
 1. **Synchronous at the same spot.** `CliFrontend` writes inside `event()`, on the emitting thread, where today's println group ran. Log records still go through the unchanged env_logger and LogSink path, also synchronously, so their interleaving is today's.
    - **Conversion rule:** one event per run of consecutive prints with no engine call between them, emitted where that run printed; an event never spans a log call.
-   - Hence the splits: StartupHeader/StartupParams around cli.rs:581, Cache/SealCalibration around `valid_seal_calibration`'s logs, and LeftOut before runner.rs:778. Two more, found in S2's review: Channels/TestPlan, because building the plan logs (its extents and chunks, at debug level), and NoTestMatches/Matchable, because collecting the list builds the suite (each auto-dispatch test's width, at debug level).
-   - frontend.rs documents that the CLI must not become asynchronous: runner.rs:1783's 'Halting test suite' would then overtake its step report.
+   - Hence the splits: StartupHeader/StartupParams around cli.rs:581, Cache/SealCalibration around `valid_seal_calibration`'s logs, and LeftOut before runner.rs:763. Two more, found in S2's review: Channels/TestPlan, because building the plan logs (its extents and chunks, at debug level), and NoTestMatches/Matchable, because collecting the list builds the suite (each auto-dispatch test's width, at debug level).
+   - frontend.rs documents that the CLI must not become asynchronous: runner.rs:1808's 'Halting test suite' would then overtake its step report.
 2. **Verbatim moves.** Each CLI arm is the old print group cut and pasted with the same format strings, written into a String.
-   - `TableBuilder::print` (table.rs:41-107) becomes `write_to(&mut impl fmt::Write)`, which `print()` calls.
+   - `TableBuilder::print` (table.rs:36-99) becomes `write_to(&mut impl fmt::Write)`, which `print()` calls.
    - `ConsoleRenderer` buffers.
-   - Reporter's three bare printlns (reporting/mod.rs:103, 155, 180) go through a new `Renderer::render_text`.
+   - Reporter's three bare printlns (reporting/mod.rs:102, 155, 180) go through a new `Renderer::render_text`.
    - The shared wording stays in the engine, untouched: `WheaCounts::split_suffix`, `FailingBits::brief`, `OpTally::line`, `Stage::label`, the formatters.
 3. **Streams and colour kept.**
-   - stderr stays stderr for cli.rs:123, 436, 763, 110-112, 144 and 965, and runner.rs:4816.
+   - stderr stays stderr for cli.rs:123, 436, 763, 110-112, 144 and 965, and runner.rs:4970.
    - Log colour still follows `is_terminal` (cli.rs:1504).
    - ConsoleRenderer's hard-wired bold (renderers/console.rs:21) is kept.
 4. **The three moved log records keep `tmr::cli`.** cli.rs:581, 1512 and 1513 print on every run with `record.module_path()` (cli.rs:1474), and the panic record at 145 too. A 6-line helper builds them with `log::Record::builder().module_path_static(Some("tmr::cli"))` (log-0.4.34/src/lib.rs:1107); env_logger still applies its level filter. The owner may drop the helper in a one-line commit.
 5. **The ticker.** Same text, the 500 ms poll and 2 s draw, the same erase sequences (console.rs:47-55, 81-93). Frame timing may shift by at most one 500 ms tick; nothing parses frames.
-6. **Versions.** The literal '1.0.0'/'v1.0.0' becomes `env!("CARGO_PKG_VERSION")` = 1.0.0, the same bytes (cli.rs:167, 422, 581, 1512; params.rs:496; config.rs:16; results.rs:335).
+6. **Versions.** The literal '1.0.0'/'v1.0.0' becomes `env!("CARGO_PKG_VERSION")` = 1.0.0, the same bytes (cli.rs:167, 422, 581, 1512; params.rs:448; config.rs:17; results.rs:335).
 7. **'💾 Results saved: <path>'** prints once, after the final save; per-cycle saves are silent (bench_ab.py:54, 76 use `re.search`).
 8. **Kept on purpose, each the owner's call as its own commit:**
    - the stale skip count (cli.rs:1603);
@@ -211,14 +211,14 @@ pub fn commands::calibrate(.., out: &mut dyn io::Write, confirm: &mut dyn FnMut(
 
 **Proof:**
 - **S0, on today's code:** exact-byte goldens of each Reporter method from fixed models.
-- **A masked fake `execute_test_cycle`** over two heap Regions (runner.rs:4826-4895) on `ThreadPool::new(…, false, ThreadPriority::Normal, 2, None)` (thread_pool.rs:110). It uses `TestRunResult::new(Default::default())`, a never-started WHEA monitor (inert per whea.rs:821-827) and a fixed seed (pattern.rs:631). The plan is a sealed Mem- step, a Bench-Init/Verify pair with one injected flip and a latency step; times, rates and hh:mm:ss are masked, and labels, counts, glyphs and line order stay exact.
-- **A plan-only golden** of `run_tests_with_layout_and_timing_filtered` with a literal EnhancedMemoryLayout. It returns at runner.rs:947-951 before WHEA and allocation; the host-dependent left-out line is masked.
+- **A masked fake `execute_test_cycle`** over two heap Regions (runner.rs:4982-5051) on `ThreadPool::new(…, false, ThreadPriority::Normal, 2, None)` (thread_pool.rs:110). It uses `TestRunResult::new(Default::default())`, a never-started WHEA monitor (inert per whea.rs:790-796) and a fixed seed (pattern.rs:630). The plan is a sealed Mem- step, a Bench-Init/Verify pair with one injected flip and a latency step; times, rates and hh:mm:ss are masked, and labels, counts, glyphs and line order stay exact.
+- **A plan-only golden** of `run_tests_with_layout_and_timing_filtered` with a literal EnhancedMemoryLayout. It returns at runner.rs:942-944 before WHEA and allocation; the host-dependent left-out line is masked.
 - **The capture itself:**
   - `std::io::set_output_capture` (nightly stdio.rs:1105-1111); libtest propagates it to spawned threads (test/src/lib.rs:142-148);
   - a `#[cfg(test)]` shim routes console.rs's writes (console.rs:41) through `print!` so `print_above` lines are captured;
   - a once-installed test logger formats records like cli.rs:1458-1475, so log lines and their order are in the golden.
 - **S2:** the same goldens pass byte-identical through `CliFrontend`; per-event goldens with fixed payloads; an order test with a RecordingFrontend plus the test logger.
-- **Setup can't run in-process** (secedit via privileges.rs:404, 737-786; process::exit). So the owner runs the old and new exe, diffed by a new tools/console_diff.py (strips ANSI and ticker frames, masks times, rates, seeds and stems):
+- **Setup can't run in-process** (secedit via privileges.rs:351, 737-786; process::exit). So the owner runs the old and new exe, diffed by a new tools/console_diff.py (strips ANSI and ticker frames, masks times, rates, seeds and stems):
   - `--startup-debug memory=50% cputype=cores cpus=100% skip-cores=0`;
   - `--help`, `--version`, an unknown flag, a bad value;
   - one short run.
@@ -234,7 +234,7 @@ pub fn commands::calibrate(.., out: &mut dyn io::Write, confirm: &mut dyn FnMut(
 - `build.rs` delay-loads `api-ms-win-appmodel-runtime-l1-1-5.dll` plus `delayimp.lib`, only with `CARGO_FEATURE_GUI`, so the CLI still starts on 20348.
 
 **Window (the owner's layout, TODO 7 detail).**
-- **Header:** status badge (Ready / Running / Stopping / Passed / Failed / Interrupted / Not run, from Run::SuiteEnded and the thread's end); runtime timer top right (snapshot); system info top right, filled after Start so the lazily initialised detection logs (cache.rs:206-216, smbios.rs:392) land in the run's log as today: CPU, RAM, caches, and the DIMM drop-down from `MemoryModule` (smbios.rs:37-51).
+- **Header:** status badge (Ready / Running / Stopping / Passed / Failed / Interrupted / Not run, from Run::SuiteEnded and the thread's end); runtime timer top right (snapshot); system info top right, filled after Start so the lazily initialised detection logs (cache.rs:195-206, smbios.rs:384) land in the run's log as today: CPU, RAM, caches, and the DIMM drop-down from `MemoryModule` (smbios.rs:38-52).
 - **Info line:** threads, GiB, page mix and plan, from Run::Allocated and Run::TestPlan.
 - **Position:** cycle n/L, test n/N with name and stage, and the rounded bar with the % inside, from the snapshot.
 - **Chart at the top:** the shapes chart from chart.rs; `bytes_per_sec` each 500 ms, 120 samples; error marks when the snapshot's errors rise.
@@ -265,25 +265,25 @@ A timeout also returns, which is the window's 2 Hz clock (Reactor 0.100.0 has no
   - An args TextBox in the CLI's `key=value` syntax, prefilled from the exe's args minus `--gui`, so both frontends take the same parameters.
   - The panic hook, VEH and CPU gate also show a MessageBoxW in GUI mode (as built, a fault's box comes from the unhandled-exception filter, not the VEH: S6's notes).
   - The log file opens at Start, so RUN_START (run_context.rs:51-54) names the run.
-- **One run per process.** These are first-set-wins OnceLocks: simd.rs:163, pattern.rs:627-635 and 684-688, seal.rs:85-91, tests.rs:469-489, cpu_topology.rs:112-144. SHUTDOWN_REQUESTED is never reset; env_logger `.init()` and ctrlc are once per process. So 'Run again' relaunches the exe with the same args.
+- **One run per process.** These are first-set-wins OnceLocks: simd.rs:162, pattern.rs:626-634 and 684-688, seal.rs:85-91, tests.rs:469-489, cpu_topology.rs:107-139. SHUTDOWN_REQUESTED is never reset; env_logger `.init()` and ctrlc are once per process. So 'Run again' relaunches the exe with the same args.
 - **Closing mid-run:** Reactor 0.100.0 can't veto a close. After `App::run` returns, main calls `request_stop()` and joins the engine thread for up to 30 s, so the current step ends and the final save runs. The cycles already finished are in the per-cycle file anyway.
 
 ## Results file and log
 
 **Per-cycle save (S1, no console change).**
-- In the cycle loop right after `execute_test_cycle` returns (runner.rs:1157), after the first cycle, after one that stopped early, and after any other once a minute has passed since the last save (`RESULTS_SAVE_INTERVAL`; S1 found that saving after every cycle writes what grows with the square of the cycle count, hundreds of GB over a night of short cycles: doc/todo/72), the engine:
+- In the cycle loop right after `execute_test_cycle` returns (runner.rs:1151), after the first cycle, after one that stopped early, and after any other once a minute has passed since the last save (`RESULTS_SAVE_INTERVAL`; S1 found that saving after every cycle writes what grows with the square of the cycle count, hundreds of GB over a night of short cycles: doc/todo/72), the engine:
   1. locks `test_run_result`;
-  2. calls `finalize(suite_start.elapsed())`, which is idempotent: it reassigns every overall field from `self.cycles` (results.rs:455-487; per_step_averages replaced at 569);
+  2. calls `finalize(suite_start.elapsed())`, which is idempotent: it reassigns every overall field from `self.cycles` (results.rs:452-484; per_step_averages replaced at 569);
   3. calls `set_whea_totals(progress.whea.counts(), is_active())`;
   4. sets `in_progress = true`;
   5. calls `save_atomic`: writes `results/<stem>.json.tmp` and flushes it to the disk (so a system that goes down keeps a whole file), then `fs::rename` over the target.
 - A failed rename (a viewer holding the file without share-delete) falls back to writing the file in place plus a `log::warn`, retried at the next save; when that is refused too, the save stays in the `.tmp`, which the warning names. It is never fatal.
-- The final save in `display_and_save_results` (runner.rs:4746-4775) uses `save_atomic` too, with `in_progress = false`, outcome and status, then the one 'Results saved:' line.
+- The final save in `display_and_save_results` (runner.rs:4901-4926) uses `save_atomic` too, with `in_progress = false`, outcome and status, then the one 'Results saved:' line.
 - **New `#[serde(default)]` fields:**
   - `OverallStats.in_progress: bool` (default false, so old files read as finished);
   - `outcome: Option<String>` (completed / time_limit / interrupted / halted);
   - `status: Option<String>` (passed / failed / not_run / interrupted). Neither is in OverallStats today (results.rs:186-215);
-  - `CycleResult.partial: bool`: the step loop stopped before the final check; add_cycle at runner.rs:1812-1819 gains the flag.
+  - `CycleResult.partial: bool`: the step loop stopped before the final check; add_cycle at runner.rs:1837-1844 gains the flag.
 - `--compare-results` warns when either file is `in_progress`.
 
 **Build identity.**
@@ -293,18 +293,18 @@ A timeout also returns, which is the window's 2 Hz clock (Reactor 0.100.0 has no
 - `metadata.tmr_version` comes from BUILD.version (replacing results.rs:335), plus a `#[serde(default)] build` record.
 - The log file header (file only, cli.rs:1439-1447) gains a '# build:' line.
 
-**Tests left out.** runner.rs:770's `Vec<(name, reason)>` goes into RunConfigInputs (run_context.rs:534-565), then into `RunConfigSnapshot.tests_left_out: Vec<{name, reason}>`, skipped when empty. It is captured at runner.rs:1077-1103.
+**Tests left out.** runner.rs:752's `Vec<(name, reason)>` goes into RunConfigInputs (run_context.rs:517-548), then into `RunConfigSnapshot.tests_left_out: Vec<{name, reason}>`, skipped when empty. It is captured at runner.rs:1066-1092.
 
 **Per-thread data.**
-- In the result loop (runner.rs:1424-1489), next to the CpuStatRow push, one `ThreadStepRecord` per WorkResult (thread_pool.rs:59), keyed by thread:
-  - thread, cpu and node from `get_cpu_assignments` (thread_pool.rs:189);
-  - core from `cpu_topology::get_physical_core_for_cpu` (cpu_topology.rs:199);
+- In the result loop (runner.rs:1421-1501), next to the CpuStatRow push, one `ThreadStepRecord` per WorkResult (thread_pool.rs:59), keyed by thread:
+  - thread, cpu and node from `get_cpu_assignments` (thread_pool.rs:181);
+  - core from `cpu_topology::get_physical_core_for_cpu` (cpu_topology.rs:198);
   - bytes, ms (timed, else elapsed), errors;
   - alarms, not_reproduced, seal_errors (skipped when 0);
   - operations and cycles;
   - latency{min, p50, p99, spread} when present.
 - A row whose CPU isn't found is still recorded with `cpu: None`; today it is dropped (1428-1434).
-- The records go into TestSummary.threads, then `TestResult.threads`, skipped when empty. Both also gain `operations` and `timed_ms`, which the console shows (runner.rs:1628-1633) and the JSON lacks.
+- The records go into TestSummary.threads, then `TestResult.threads`, skipped when empty. Both also gain `operations` and `timed_ms`, which the console shows (runner.rs:1650-1655) and the JSON lacks.
 - With the CPU, core and node stored, the CPU Performance Summary can later be replayed off-box (TODO 72 D).
 - **Size, estimated:** about 300 B per record pretty-printed, so 32×16×50 is about 7.7 MB final and about 200 MB written over the run. An `#[ignore]` test builds that synthetic TestRunResult and prints its bytes and `to_string_pretty` time; run it once and record the numbers in doc/todo/72 before the per-thread rows ship. Fallbacks: compact JSON, or per-test aggregates.
 
@@ -331,7 +331,7 @@ A timeout also returns, which is the window's 2 Hz clock (Reactor 0.100.0 has no
 
 **Per step:**
 - Added: one Box<StepReport>, one TestSummary clone, N small ThreadStepRecords.
-- Removed: one full clone and sort of every thread's raw latency samples (runner.rs:1573-1594 duplicated 1717-1745).
+- Removed: one full clone and sort of every thread's raw latency samples (runner.rs:1593-1614 duplicated 1717-1745).
 
 **Per cycle:** at most one atomic save a minute, measured in S1 at about 37 ms for an 8.6 MB file (32 threads x 16 steps x 50 cycles; doc/todo/72 has the other shapes).
 
@@ -361,12 +361,12 @@ A timeout also returns, which is the window's 2 Hz clock (Reactor 0.100.0 has no
 
 ### Setup::LargePageCheck, then Frontend::large_page_restart() -> RestartChoice{Exit, Continue4K}
 - **Fields:** none / blocking request
-- **Emitted at:** S4, cli.rs:801, then cli.rs:803 when check_restart_needed() (privileges.rs:737-747) is true. Blocks the session thread, which is idle then
+- **Emitted at:** S4, cli.rs:801, then cli.rs:803 when check_restart_needed() (privileges.rs:671-681) is true. Blocks the session thread, which is idle then
 - **Replaces:** cli.rs:801 and 804-851 including stdin at 817. The CLI prints the A/B text and the branch text inside its implementation; an empty answer or EOF is Continue4K as today (846-851). Exit becomes SessionEnd::RestartChosen (exit 0, as the `return Ok` at 831); Continue4K sets minpage=regular (835, 847)
 
 ### Setup::LargePageDiagnostic / Setup::LargePageStatus
-- **Fields:** Diagnostic{report: String}, the prose privileges.rs:536-579 already returns, untouched here. Status{usable: bool, min_page: String, min_needs_large: bool}
-- **Emitted at:** S4, cli.rs:853-857, then 859-882 after check_large_page_privilege (which logs at privileges.rs:84-135)
+- **Fields:** Diagnostic{report: String}, the prose privileges.rs:478-521 already returns, untouched here. Status{usable: bool, min_page: String, min_needs_large: bool}
+- **Emitted at:** S4, cli.rs:853-857, then 859-882 after check_large_page_privilege (which logs at privileges.rs:69-115)
 - **Replaces:** println at cli.rs:856, 861-878, 882
 
 ### Setup::CacheCalibration / Setup::SealCalibration
@@ -376,8 +376,8 @@ A timeout also returns, which is the window's 2 Hz clock (Reactor 0.100.0 has no
 
 ### Setup::CpuTopology / Setup::MemoryStatus / Setup::SystemInfo
 - **Fields:** CpuTopology{report: CpuTopologyReport, smt_p_cores: Option<usize>, e_cores_skipped_first: bool}. MemoryStatus(Option<{total_phys, avail_phys, total_page_file, avail_page_file}>). SystemInfo{report: SystemInfoReport, memory_modules: Vec<MemoryModule>}
-- **Emitted at:** S4, cli.rs:925 (display_cpu_topology cpu_topology.rs:649-818 split into an engine builder and a CLI render), 929 (runner.rs:4777-4822, GlobalMemoryStatusEx stays in the engine), 931-943
-- **Replaces:** the Reporter tables, println at cpu_topology.rs:812, 816 and cli.rs:926, 943; the eprintln at runner.rs:4816 (kept on stderr)
+- **Emitted at:** S4, cli.rs:925 (display_cpu_topology cpu_topology.rs:652-805 split into an engine builder and a CLI render), 929 (runner.rs:4928-4976, GlobalMemoryStatusEx stays in the engine), 931-943
+- **Replaces:** the Reporter tables, println at cpu_topology.rs:801, 816 and cli.rs:926, 943; the eprintln at runner.rs:4970 (kept on stderr)
 
 ### Setup::Starting / Setup::RealtimeOnEveryCpu / Setup::Plan
 - **Fields:** none / none / {name, about: &'static str, is_default}
@@ -386,48 +386,48 @@ A timeout also returns, which is the window's 2 Hz clock (Reactor 0.100.0 has no
 
 ### Run::MemoryPlan / Run::NotRun / Run::Matchable / Run::LeftOut / Run::Channels / Run::TestPlan
 - **Fields:** MemoryPlan(ConsolidatedMemoryReport). NotRun: Config(String) | Plan(String) | NoTestMatches{filter, plan} | NothingLeftToRun | Allocation(String). Matchable{tests: Vec<String>}. LeftOut{tests: Vec<(String, String)>}. Channels{channels, cache_line}. TestPlan(TestConfigurationReport)
-- **Emitted at:** S2. runner.rs:705 (layout.rs:31-50; its log::info at 52-59 stays after the event). The NotRun sites at 719, 730, 744-752, 781, 802, 885, 894, 919 and 1001, each before its existing return; NoTestMatches before the list is collected, then Matchable with it (collecting it logs). 770-777 before the per-test log::info at 778. 950 and 1028 (print_test_plan 655-667): Channels before the plan is built, then TestPlan (building it logs)
-- **Replaces:** the Reporter render and println at layout.rs:49; the '❌' println at those sites (their FILE_ONLY log records stay); println at runner.rs:776; println at 659 and reporting/mod.rs:103
+- **Emitted at:** S2. runner.rs:687 (layout.rs:31-50; its log::info at 52-59 stays after the event). The NotRun sites at 719, 730, 744-752, 781, 802, 885, 894, 919 and 1001, each before its existing return; NoTestMatches before the list is collected, then Matchable with it (collecting it logs). 770-777 before the per-test log::info at 778. 950 and 1028 (print_test_plan 655-667): Channels before the plan is built, then TestPlan (building it logs)
+- **Replaces:** the Reporter render and println at layout.rs:48; the '❌' println at those sites (their FILE_ONLY log records stay); println at runner.rs:761; println at 659 and reporting/mod.rs:102
 
 ### Run::WheaMonitoring / Run::AllocationStarting / Run::Allocated
 - **Fields:** Result<(), String> / {min, max: PageSizeLevel} / AllocationReport
-- **Emitted at:** S2, runner.rs:960-963, 967-994, 1012-1020
-- **Replaces:** println at 961-962, 968, 987-993; report_allocation with its blank lines (reporting/mod.rs:180)
+- **Emitted at:** S2, runner.rs:953-956, 967-994, 1012-1020
+- **Replaces:** println at 961-962, 968, 987-993; report_allocation with its blank lines (reporting/mod.rs:179)
 
 ### Run::SuiteStarted
 - **Fields:** progress: Arc<ProgressTracker> (from S3, with its first reader), seed: u64, transfer_bits: Option<u32>, transfer_source: &'static str
-- **Emitted at:** S2, runner.rs:1125-1135, after begin_suite and the log::info at 1130
-- **Replaces:** print_above at runner.rs:1134. The GUI keeps the Arc for its timer; the CLI ignores it
+- **Emitted at:** S2, runner.rs:1115-1129, after begin_suite and the log::info at 1130
+- **Replaces:** print_above at runner.rs:1128. The GUI keeps the Arc for its timer; the CLI ignores it
 
 ### Run::CycleStarted / Run::SealStage
 - **Fields:** {cycle: u32, limit: Option<u32>} / {op: SealOp, kernel: &'static str, bytes, errors, bits: FailingBits, duration}
-- **Emitted at:** S2, runner.rs:1150-1154; run_seal_stage at 1852, before its log::error at 1855
-- **Replaces:** print_above at runner.rs:1151 and 1852
+- **Emitted at:** S2, runner.rs:1144-1148; run_seal_stage at 1852, before its log::error at 1855
+- **Replaces:** print_above at runner.rs:1145 and 1852
 
 ### Run::StepFinished(Box<StepReport>)
-- **Fields:** cycle; summary: TestSummary (progress.rs:74-124, gaining threads: Vec<ThreadStepRecord>, operations, timed_ms in S1); wall: Duration; timed_secs; ops_per_sec; cycles: Option<{completed, limit, by_time}>; sealed: bool; config: StepConfigLine{parameter, mode, extent, chunk, reps} (Strings from the engine's DefaultFormatter, as runner.rs:1641-1644 does now); threads: ThreadTimingReport; latency: Option<LatencyTestSummaryReport>; stamp: Option<ProgressSnapshot>. P50 and Spread come from summary.latency_p50_ns and latency_spread: the same arithmetic (runner.rs:1573-1594 duplicates 1717-1745), so one clone and sort of the raw samples goes
-- **Emitted at:** S2, at the point of today's report (runner.rs:1551-1708). TestSummary is built first and complete_test (now 1672) moves ahead of the event; nothing printed before 1672 reads the tracker, so the stamp is still taken after it, as test_stamp does (progress.rs:310-318, finished test so live errors = 0)
-- **Replaces:** hold() at 1551 through release() at 1708: the lines at 1616-1635 and 1663-1668, the thread-timing and latency tables (and '🔍 Latency' at reporting/mod.rs:155), the stamp and the blank line, written as one console::print_block
+- **Fields:** cycle; summary: TestSummary (progress.rs:74-124, gaining threads: Vec<ThreadStepRecord>, operations, timed_ms in S1); wall: Duration; timed_secs; ops_per_sec; cycles: Option<{completed, limit, by_time}>; sealed: bool; config: StepConfigLine{parameter, mode, extent, chunk, reps} (Strings from the engine's DefaultFormatter, as runner.rs:1663-1666 does now); threads: ThreadTimingReport; latency: Option<LatencyTestSummaryReport>; stamp: Option<ProgressSnapshot>. P50 and Spread come from summary.latency_p50_ns and latency_spread: the same arithmetic (runner.rs:1593-1614 duplicates 1717-1745), so one clone and sort of the raw samples goes
+- **Emitted at:** S2, at the point of today's report (runner.rs:1571-1732). TestSummary is built first and complete_test (now 1672) moves ahead of the event; nothing printed before 1672 reads the tracker, so the stamp is still taken after it, as test_stamp does (progress.rs:285-293, finished test so live errors = 0)
+- **Replaces:** hold() at 1551 through release() at 1708: the lines at 1616-1635 and 1663-1668, the thread-timing and latency tables (and '🔍 Latency' at reporting/mod.rs:154), the stamp and the blank line, written as one console::print_block
 
 ### Run::CycleFinished
 - **Fields:** cycle: u32, partial: bool
-- **Emitted at:** S3 (planned for S2; it waits for its first reader), in the cycle loop after execute_test_cycle (runner.rs:1157) and S1's per-cycle save, partial cycles too
+- **Emitted at:** S3 (planned for S2; it waits for its first reader), in the cycle loop after execute_test_cycle (runner.rs:1151) and S1's per-cycle save, partial cycles too
 - **Replaces:** nothing on the console (there's none today); it is for the GUI
 
 ### Frontend::tick / Frontend::ticks_done (not events)
 - **Fields:** &ProgressTracker; the frontend calls snapshot() and take_whea_descriptions() itself
-- **Emitted at:** S2, the engine's monitor thread: today's progress_reporter (spawned at runner.rs:1031-1034). tick every 500 ms after whea.poll (progress.rs:403); ticks_done once after finish() (progress.rs:427-436)
-- **Replaces:** the ticker draw (render progress.rs:262-301, draw_ticker at 422), the final hold() at 428 and the pending WHEA lines at 434-436
+- **Emitted at:** S2, the engine's monitor thread: today's progress_reporter (spawned at runner.rs:1024-1027). tick every 500 ms after whea.poll (progress.rs:379); ticks_done once after finish() (progress.rs:405-423)
+- **Replaces:** the ticker draw (render progress.rs:244-276, draw_ticker at 422), the final hold() at 428 and the pending WHEA lines at 434-436
 
 ### Run::LateWhea / Run::CpuPerformance / Run::SuiteEnded
-- **Fields:** Vec<String> / {by_thread, by_cpu, by_core} reports (the aggregation at runner.rs:4598-4744 stays in the engine) / {outcome: RunOutcome, status: RunStatus, memory_errors, whea: WheaCounts}
-- **Emitted at:** S2, runner.rs:1209-1213, 1216-1225, 1243-1261
+- **Fields:** Vec<String> / {by_thread, by_cpu, by_core} reports (the aggregation at runner.rs:4754-4899 stays in the engine) / {outcome: RunOutcome, status: RunStatus, memory_errors, whea: WheaCounts}
+- **Emitted at:** S2, runner.rs:1198-1202, 1216-1225, 1243-1261
 - **Replaces:** println at 1212; the header at 4609 and the three tables; the verdict lines at 1246-1261
 
 ### Run::FinalSummary / Run::ResultsSaved
-- **Fields:** FinalTestSummaryReport (converters.rs:594) / path: String
-- **Emitted at:** S2, display_and_save_results runner.rs:4757-4766, then after the final save at 4771-4772; a failed save stays a log::error (4773)
-- **Replaces:** report_final_summary and '💾 Results saved: {path}' (runner.rs:4772), printed once, so bench_ab.py:54 and 76 keep matching
+- **Fields:** FinalTestSummaryReport (converters.rs:581) / path: String
+- **Emitted at:** S2, display_and_save_results runner.rs:4912-4923, then after the final save at 4771-4772; a failed save stays a log::error (4773)
+- **Replaces:** report_final_summary and '💾 Results saved: {path}' (runner.rs:4924), printed once, so bench_ab.py:54 and 76 keep matching
 
 ### SessionEnd (session::run's return value)
 - **Fields:** Ran{status, elapsed, plan_only} | RestartChosen | Stopped(UnknownFlags(Vec<String>) | Invalid(String) | MemoryOverride{spec, error} | CpuSelection(String)) | Command; Err(e) stays the ? path
@@ -444,7 +444,7 @@ A timeout also returns, which is the window's 2 Hz clock (Reactor 0.100.0 has no
 - A `#[cfg(test)]` shim in console.rs routing its writes through `print!`.
 - A once-installed test logger.
 - Goldens:
-  - one per Reporter method, from fixed models (the converters' fixtures at converters.rs:716-729; final summary via add_cycle and finalize, as results.rs:896-912);
+  - one per Reporter method, from fixed models (the converters' fixtures at converters.rs:701-714; final summary via add_cycle and finalize, as results.rs:899-912);
   - the masked fake execute_test_cycle (two heap Regions, fixed seed, sealed step, Init/Verify pair with an injected flip, latency step);
   - the plan-only golden.
 - New `tools/asm_fingerprint.py`: hash each post-LTO function of hot_loop_spills.py's MODULES, with labels and crate hashes normalised.
@@ -474,7 +474,7 @@ A timeout also returns, which is the window's 2 Hz clock (Reactor 0.100.0 has no
   - an existing small results file committed as a fixture still loads (serde defaults);
   - the new fields round-trip;
   - save_atomic replaces an existing file in a temp dir;
-  - leave-out (runner.rs:5111-5145) lands in the snapshot;
+  - leave-out (runner.rs:5286-5320) lands in the snapshot;
   - the #[ignore] size test, run once, numbers into doc/todo/72.
 - S0 goldens unchanged; asm fingerprint of the kernel modules identical. In S1 three functions read as changed with no instruction changed (a COMDAT number, a closure's index, log records' line numbers inlined into the worker loop), so asm_fingerprint.py normalises the first two and lists a function changed only in its source lines apart, as not changed; its baseline at 25ff780 was saved again.
 - The owner retakes a bench_ab.py reference, because build.rs changes the crate metadata and the .text order.
@@ -483,7 +483,7 @@ A timeout also returns, which is the window's 2 Hz clock (Reactor 0.100.0 has no
 
 **Work.**
 - frontend.rs (pub(crate) for now).
-- `src/cli_render/` with CliFrontend: the step report (runner.rs:1616-1705), the seed/cycle/seal lines, WHEA and Stage 1 (961-993), NotRun and LeftOut (719-920), the CPU-performance header (4609), the verdict (1245-1261), 'Results saved' (4772), and the ticker render (progress.rs:262-392), all verbatim.
+- `src/cli_render/` with CliFrontend: the step report (runner.rs:1638-1729), the seed/cycle/seal lines, WHEA and Stage 1 (961-993), NotRun and LeftOut (719-920), the CPU-performance header (4609), the verdict (1245-1261), 'Results saved' (4772), and the ticker render (progress.rs:244-368), all verbatim.
 - `ProgressTracker::snapshot` and `take_whea_descriptions`.
 - progress_reporter becomes `monitor(progress, fe)`.
 - TableBuilder::write_to, the buffered ConsoleRenderer, Renderer::render_text.
@@ -547,7 +547,7 @@ A timeout also returns, which is the window's 2 Hz clock (Reactor 0.100.0 has no
 - build_config_from_validated_params and load_seal_calibration (typed status) move with it.
 - display_cpu_topology splits; print_current_memory_status becomes memory_status().
 - commands.rs: help (params.rs:495-668), demo configs, compare, topology debug/show, setup-large-pages, calibrate. They take `out` and `confirm`.
-- buffer.rs:70's eprintln becomes log::error.
+- buffer.rs:63's eprintln becomes log::error.
 - logfile.rs.
 - The GUI moves to session::run and shows the Setup facts.
 - The matching `#[expect]`s come off.
@@ -629,19 +629,19 @@ A timeout also returns, which is the window's 2 Hz clock (Reactor 0.100.0 has no
 
 ## Risks
 
-- Setup parity can't be captured in-process: cli.rs::run runs secedit (privileges.rs:404, 737-786) and calls process::exit. It rests on verbatim moves, per-event goldens and the owner's A/B at S4.
+- Setup parity can't be captured in-process: cli.rs::run runs secedit (privileges.rs:351, 737-786) and calls process::exit. It rests on verbatim moves, per-event goldens and the owner's A/B at S4.
 - Ordering depends on the conversion rule, followed by hand. The order test covers coordinator records in the fake cycle; worker and setup records are covered only by the A/B transcripts.
 - `set_output_capture` is perma-unstable (stdio.rs:1105-1111) and the nightly is unpinned, CI's too. S5 didn't replace the bridge with writer goldens, as planned: the goldens of the cycle, the plan, the stops before testing, the events, setup and the order test need what the CLI prints through `print_above` and `print_block`, and the workers' records, captured. So it stays, in tmr-cli's tests, with no end date. A nightly bump can break only those goldens, never the product or the engine's tests (the engine captures nothing since S5). Open for the owner: accept that, or plan writer goldens.
 - The S3 preview still exits the process on setup errors and reads the prompt from the inherited console. It must be launched with `--gui` from a shell until S4/S6.
 - Every Cargo.toml or build.rs change re-hashes the crate and reorders .text (reactor finding). Kernel instructions stay identical but loop alignment moves. Retake bench_ab references after S1 and S3, and with the GUI feature on.
 - hot_loop_spills.py silently reports zero hot loops if the lib name or the build command drifts (`:97`, `:145`, `:213`). The S3 guard and the S0 fingerprint catch it; the fingerprint tool is new itself, so cross-check its first diff by hand.
-- GUI starvation: workers default to High priority on every selected CPU (runner.rs:4458-4459) while the UI thread is Normal.
+- GUI starvation: workers default to High priority on every selected CPU (runner.rs:4622-4623) while the UI thread is Normal.
 - The GUI has never been launched. Unverified: WinUI 3 in a console-subsystem exe with the detached manifest, the double-click on 26100, the delay-loaded start on 20348, and Reactor 0.100.0's preview limits (no timer, no close veto).
 - Per-cycle saves rewrite the whole file, which grows with every cycle; S1 measured it and limits the saves to one a minute (doc/todo/72). A rename can fail on a sharing violation (warn, retry at the next save).
 - Error storms: rescans per step are unbounded (tests.rs:3624-3629 caps only per rescan), so the GUI's bounded log channel drops lines. The file keeps every line, and the window says how many it dropped.
 - Visibility widens: the payload types become pub and drop out of dead_code (lib.rs:6-9). Keep the API to session, frontend, commands, logfile, BUILD, request_stop and the re-exports.
-- An elevated launch, now possibly a double-click, still grants SeLockMemoryPrivilege through secedit without asking (privileges.rs:398-409). Behaviour is unchanged by this split.
-- TODO 28's mixed steps will need a work-item key on WorkResult (thread_pool.rs:59) and ThreadStepRecord. Today the coordinator takes thread_count results off one channel (runner.rs:1424), so the key is additive later.
+- An elevated launch, now possibly a double-click, still grants SeLockMemoryPrivilege through secedit without asking (privileges.rs:345-356). Behaviour is unchanged by this split.
+- TODO 28's mixed steps will need a work-item key on WorkResult (thread_pool.rs:59) and ThreadStepRecord. Today the coordinator takes thread_count results off one channel (runner.rs:1421), so the key is additive later.
 - CLAUDE.md's asm and clippy command lines go stale at S3. They are owner-controlled, so the coordinator should ask before editing them.
 
 ## Rejected
@@ -649,14 +649,14 @@ A timeout also returns, which is the window's 2 Hz clock (Reactor 0.100.0 has no
 - B's move of src/ into crates/engine (a ~48k-line git mv). It breaks every src/ path in TODO and docs and conflicts with TODO 28 in flight. The root-engine layout is verified: `cargo run`, `cargo build` and the asm glob all still work.
 - B's IO-free tmr-text crate. It is needed only for a GUI-mode log transcript, which is out of this scope. tmr-gui can reuse tmr-cli's renderer later if wanted.
 - B's custom logger replacing env_logger. It has to reproduce env_logger's escape stripping on redirected output (cli.rs:1504-1508) byte for byte, for no gain.
-- B's move of the 500 ms WHEA poll into `recv_timeout` result waits (runner.rs:1349, 1424, 1838). It adds code at the worker result channel and leaves the coordinator's non-waiting stretches unpolled. The engine's existing monitor thread is kept instead.
+- B's move of the 500 ms WHEA poll into `recv_timeout` result waits (runner.rs:1343, 1424, 1838). It adds code at the worker result channel and leaves the coordinator's non-waiting stretches unpolled. The engine's existing monitor thread is kept instead.
 - B's `&mut dyn Frontend` with no Sync. It is incompatible with the engine's monitor thread calling tick.
 - B's results as a fold over events (Recorder) now. It restructures add_cycle before TODO 100 needs the cheap slice. The fold is TODO 72's 'better version', for later with replay.
 - A's `Frontend::confirm` on the trait. Only the one-shot calibration asks, so a closure passed to that command keeps the trait to what a run needs. A default answer would repeat the silent-yes bug at cli.rs:1195-1197.
 - A's GUI as the last stage. It moves to right after the run path, so the vocabulary is proven before the 1,500-line setup move.
 - Structured MemoryError events from Rescan::bad (tests.rs:3763). That code sits next to the kernels' cold paths, and Rescan::word is inline(always) (tests.rs:3731). The log facade already carries those lines.
 - Progress as events, like the demo's per-tick Progress (gui-test/reactor/src/engine.rs). The frontends read snapshot() on their own timers instead.
-- A typed WheaRecord in the pending queue (whea.rs:258) and Commit error codes. Later; the strings are enough for v1.
+- A typed WheaRecord in the pending queue (whea.rs:250) and Commit error codes. Later; the strings are enough for v1.
 - B's Arc<str> test name. It saves two small allocations a second, which isn't worth the churn.
 - Extracting the thread-selection arithmetic into pure functions before the move (B and the inventory). Verbatim moves change only the prints, so the untested arithmetic is not rewritten.
 - clippy disallowed-methods for stdin/stdout/stderr. A root clippy.toml would also apply to tmr-cli, which needs a shadow file; a grep in the S5 gate is lighter.
@@ -672,9 +672,9 @@ A timeout also returns, which is the window's 2 Hz clock (Reactor 0.100.0 has no
 - ticker frames in WinRM captures.
 - After the size test: store per-thread rows for every step of every cycle in pretty JSON, compact JSON, or per-test averages only?
 - GUI responsiveness under cpus=100% at High worker priority: raise the window thread's priority during a run, or leave one core free in GUI mode?
-- An elevated launch silently grants the large-page privilege through secedit (privileges.rs:398-409). Should it become a question, now that a double-click can trigger it?
+- An elevated launch silently grants the large-page privilege through secedit (privileges.rs:345-356). Should it become a question, now that a double-click can trigger it?
 - TODO 29's log transcript, which makes the log file hold everything the console showed: next after the split, or later? It changes what logs/*.log contains.
-- GUI v1 input: is a single args box in the CLI's key=value syntax enough? Should it save to AppConfig.last_config, and should ui_mode/auto_start (app_config.rs:197-205) be wired or deleted?
+- GUI v1 input: is a single args box in the CLI's key=value syntax enough? Should it save to AppConfig.last_config, and should ui_mode/auto_start (app_config.rs:205-213) be wired or deleted?
 - 'Run again' relaunches the exe (one run per process). Acceptable for v1?
 - When should release builds include the GUI (`--features tmr-app/gui`: +1.6 MB, Windows App Runtime 2.x needed for the window)?
 - For the preview stage, is `tmr --gui …` from a shell (setup text and the large-page prompt in the console) acceptable before the double-click launch exists?

@@ -46,7 +46,7 @@ between storing every cycle and storing per-thread aggregates per test.
 The line numbers above are from 2026-09-27; these are current.
 
 - **Written once, at the end.** The file is saved only when the suite finishes
-  (`runner.rs:1263` → `display_and_save_results` → `save_to_file`, `runner.rs:4771`). Ctrl+C
+  (`runner.rs:1252` → `display_and_save_results` → `save_to_file`, `runner.rs:4924`). Ctrl+C
   still saves, but a timeout kill (the test hosts' `run-tmr.ps1` calls `$p.Kill()`), a dropped
   remote session, a hang or a bugcheck loses the whole run.
 - **No build identity.** `tmr_version` is hard-coded `"1.0.0"` (`results.rs:335`); no commit, no
@@ -57,7 +57,7 @@ The line numbers above are from 2026-09-27; these are current.
   final summary already renders from the saved struct
   (`converters::create_overall_stats_summary_report(&TestRunResult)`): one report already works
   the way the better version wants.
-- **`--compare-results` matches steps by position** (`(step, id, name)`, `results.rs:709`), so a
+- **`--compare-results` matches steps by position** (`(step, id, name)`, `results.rs:704`), so a
   test left out on one host (the 5700X) shifts every later step and they silently stop matching.
   Cross-host comparison (TODO 100) needs it to match by test.
 

@@ -1,0 +1,4 @@
+# Commits that only reformat, which git blame skips (GitHub reads this file; locally:
+# git config blame.ignoreRevsFile .git-blame-ignore-revs).
+# rustfmt: the workspace in one layout, dense and 140 wide (2026-10-23)
+f410c709fdd02fb19c1f50b589d3e4f9149007aa

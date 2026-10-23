@@ -298,7 +298,7 @@ This is the part that must be airtight, because if re-tiling forces pattern rege
 dead on cost.
 
 **TMR is already safe.** The pattern is a function of `(block_base, offset_within_block)` —
-verified at `test_harness.rs:25-31` (`ChunkCtx.ptr` is documented "start of this block's memory",
+verified at `test_harness.rs:23-29` (`ChunkCtx.ptr` is documented "start of this block's memory",
 `chunk_start` is an index *within the block*) and `tests.rs:3067-3069`. Neither coordinate is a
 property of the tile or the chunk. So:
 
@@ -798,7 +798,7 @@ The critical point: **this does not add a loop level, it swaps one.** Today the 
 blocks, then chunks within a block. Now it loops chunks, then segments within a chunk. Same depth.
 
 ```
-  TODAY  (test_harness.rs:239-266)        PROPOSED
+  TODAY  (test_harness.rs:208-236)        PROPOSED
 
   for block in blocks:                    for chunk in cycle:
     for chunk in block:                     segs = resolve(chunk)   <-- once per chunk
@@ -1001,7 +1001,7 @@ behaviour, preserved for the tests that need it. The difference from today is th
 tests get unbounded cross-block chunks, 3 keep the old constraint and say why.
 
 `TestMemoryConfig` already carries per-test flags of this shape (`requires_locality`,
-`config.rs:409/757`), so this is one more field, not new machinery.
+`config.rs:450/757`), so this is one more field, not new machinery.
 
 *Could* a relational kernel work across segments? Yes — express both positions in logical space,
 resolve twice, and walk the two segment lists in lockstep, merging their boundary sets. That is a

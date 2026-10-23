@@ -143,7 +143,7 @@ fixed on 2026-09-28.
      settle how Time(%) → cycles applies to a test that appears N times.
      **Decided 2026-09-27: wire it, TMR-native first. Moved to #74**, with the design, so this
      cleanup can commit without it.
-  2. **The results JSON's `backend` always says `NativeLargePages`** (`runner.rs:3857`), even on
+  2. **The results JSON's `backend` always says `NativeLargePages`** (`runner.rs:4009`), even on
      the 4KB fallback. That is deliberate, so `WindowsBackend` keeps its soft fallback, but it makes
      the recorded label meaningless. Either derive it from the allocation outcome or drop the field.
      **Done 2026-09-27.** The variant is now `MemoryBackend::VirtualAlloc2`, so `backend` names the
@@ -176,7 +176,7 @@ fixed on 2026-09-28.
      trailing text, and on a bare amount (`2048MB:start=…`) it fails to parse.
 - **Recorded, no change:**
   - `per_test_cycle_multiplier` in the results JSON is a float copy of `default_test_cycles`
-    (`config.rs:560`). The value itself is applied through `TestTiming.cycles`, so nothing is lost,
+    (`config.rs:608`). The value itself is applied through `TestTiming.cycles`, so nothing is lost,
     but the name suggests a multiplier that doesn't exist.
   - The calibration sweep hard-codes its stability cuts (`spread < 1.5` at `calibration.rs:972`,
     `CV < 0.15` at `:1098`). The deleted config fields were a second, unused copy, and their values
