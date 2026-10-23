@@ -275,10 +275,14 @@ From TODO 99 (2026-10-19, dev box, Granite Rapids with AVX-512). Check every one
    legacy SimpleTest's strided walks). A count can come out right (Mem-CacheBust's walks); the asm
    decides. One index serving the address and the value
    saves an instruction and gives `(%base,%index,8)`, which cost Mem-CacheBust (every access an L1
-   miss) about 6%, and a 512-bit verify at L2 speed 16% (`fearless_simd/FINDINGS.md`; a load folded
-   into a 3-operand vector op splits in two on Intel when it has an index). It isn't always slower
-   (the same study's 128/256-bit `chunks_exact` loops were 3–7% faster in L2), so measure an index
-   you keep rather than assume.
+   miss) about 6% (`fearless_simd/FINDINGS.md`). It isn't always slower (the same study's
+   128/256-bit `chunks_exact` loops were 3–7% faster in L2), so measure an index you keep rather
+   than assume. The same study put a 512-bit verify's 16% loss at L2 speed down to its index; it
+   wasn't (`../plumb/bench/RESULTS.md`, TODO 101): base and displacement were just as slow. LLVM
+   had unrolled the OR-accumulate loop and reassociated it, which replaces the fused `vpternlogq
+   acc, p, [mem]` (one uop a load) with `vpxorq` + `vpternlogq`; one quad an iteration keeps the
+   fused form (99.8–101%). At 128 and 256 bits the unrolled loop is the faster one (103%, 110%), so
+   read a 512-bit OR loop's asm for the fused `vpternlogq` rather than its addressing.
 4. **Make a fixed set of strides compile-time constants** (a const generic, a `match` dispatching to
    `#[inline(never)]` instances): fixed displacements and fewer live values (Mem-Stride).
 5. **Check the shape you got, not the shape you wrote: the auto-vectorizer takes counted scalar

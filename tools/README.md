@@ -35,7 +35,7 @@ clean one, so finding none fails it too: the symbols are no longer the `tmr` cra
 `MODULES` no longer its modules.
 
 **Limits.** It decides "hot" by shape: an innermost loop that makes no call and touches memory off
-the stack. Some cold loops pass that test and count: per-pass or per-chunk setup (a division, the
+the stack (one that calls is reported below the table, by why). Some cold loops pass that test and count: per-pass or per-chunk setup (a division, the
 shutdown flag), an inlined rescan, a setup fill inlined into the test function. Read the loop
 before acting on it. Functions are left out by name (`COLD`), so a new cold helper with a
 different name shows up until it is added. It can't see:
@@ -54,6 +54,17 @@ loop's range are skipped; const-generic instances are named (`verify_strided::<1
 counts the kernels whose hot loops are all clean. A kernel generic over the access a unit test
 records it by (`tests::access`; only `Direct` is in the binary) is named without it, as it was
 before it took one (2026-10-20).
+
+Since TODO 101 (2026-10-24), a hot-shaped loop that makes a call, which isn't in the table, is
+reported below it rather than dropped without a word: a hot loop that picked up a call (an
+intrinsic that didn't inline, a helper kept out of line, a copy or fill loop LLVM collapsed into
+`memcpy` or `memset`) would have left the table looking cleaner. Each is counted by why: timing,
+an error path, bookkeeping or allocation (`COLD_CALLS`), dispatch (a test function with a loop of
+its own, or a few calls below, the loop handing it a chunk or a phase), or a struct move (a
+`memcpy` of a constant size). The rest are listed by kernel and callee, to read. On the asm of
+2026-10-24: 440 such loops, 14 to read (indirect calls in the mirror moves and the numbered
+SimpleTest sequences, hashing in Mem-Random's rescan and the latency tests' setup, and the
+rescans' own); the table above them was unchanged.
 
 ## `bench_ab.py`: A/B speeds, alternating
 

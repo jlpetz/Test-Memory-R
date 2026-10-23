@@ -11,9 +11,9 @@ Each is counted by the register it spills: general purpose (gpr), or SIMD (a vec
 xmm/ymm/zmm, or an AVX-512 mask, k0-k7). Two last columns count hot loops, spilling or not, for
 review and measurement rather than failure:
   indexed     memory addressed with an index register (`disp(%base,%index,8)`) rather than a walked
-              pointer and a fixed displacement. It cost Mem-CacheBust 6% and a 512-bit verify 16%
-              in L2 (and a folded load in a 3-operand vector op splits in two on Intel), but it
-              isn't always slower.
+              pointer and a fixed displacement. It cost Mem-CacheBust 6% (and a folded load in a
+              3-operand vector op splits in two on Intel), but it isn't always slower; a 512-bit
+              verify's 16% in L2, once put down to it, was a lost fused vpternlogq (Rule 6.3).
   const       a constant loaded from the binary's data (`(%rip)`) every iteration: a reload, like a
               stack one, that the stack columns can't see.
   long        over 150 instructions: the heavy pattern families' unrolled steps run to 200 and more,
@@ -24,7 +24,15 @@ review and measurement rather than failure:
 A stack access through an index register (`128(%rsp,%r10)`, an array kept on the stack) counts as a
 stack access; an indexed prefetch doesn't count as indexed (it folds into no other op). A "loop"
 whose range holds a `ret` is an epilogue laid out inside an outer loop's blocks, and is skipped.
-Cold functions (rescans, parsers, setup) are left out by name, below. A kernel generic over the
+Cold functions (rescans, parsers, setup) are left out by name, below.
+
+A hot-shaped loop that makes a call isn't in the table: it would be a chunk's or a phase's loop,
+or a hot loop that picked up a call (an intrinsic that didn't inline, a helper kept out of line,
+a copy or fill loop LLVM turned into memcpy or memset). Below the table they are counted by why
+(`calls_in`): timing, an error path, bookkeeping or allocation (`COLD_CALLS`), dispatch (the call
+is a test function with a loop of its own, or a few calls below), or a struct move (a memcpy of a
+constant size); the rest are listed by kernel and callee, to read: an indirect call, a memcpy or
+memset of a size the loop computes, a test function with no loop under it. A kernel generic over the
 access a unit test records it by (`tests::access`) is named without it: `Direct` is the only one
 in the binary.
 
@@ -54,6 +62,16 @@ MODULES = ["5tests", "8sequence", "4seal", "15bandwidth_tests", "13latency_tests
 COLD = ["rescan", "parse", "percentiles", "finalize_stats", "TestRunner", "scale_or",
         # Mem-TileTransform's set-up (once a test) and tier 2's helpers (TODO 102)
         "PatternSet", "Matrices", "distinct_odd", "gen_patterns", "self_test", "group_checksum", "still_wrong", "signature"]
+# Calls a hot-shaped loop may make off its hot path, by symbol substring: timing (once a chunk), error and panic paths, the
+# bookkeeping and allocation around a chunk, formatting, a one-time initialisation
+COLD_CALLS = {
+    "timing": ["3std4time", "QueryPerformanceCounter", "perf_counter", "9functions5sleep"],
+    "error": ["unwrap_failed", "expect_failed", "slice_index_fail", "panicking", "handle_error", "Rescan", "rescan", "13error_context"],
+    "bookkeeping": ["16test_scaffolding", "raw_vec", "HeapFree", "GetProcessHeap", "process_heap_alloc", "alloc3fmt", "once_lock"],
+}
+# memcpy and its kind: with a constant size it is a struct moved, not a copy loop LLVM collapsed
+MEM_CALLS = ("memcpy", "memmove", "memset")
+CONST_SIZE = re.compile(r"^mov[lq]\s+\$(\d+), %r8d?$")
 MAX_INSTRUCTIONS = 600
 # The binary's post-LTO asm: the bin is tmr-app's (TODO 29 S3)
 BUILD = "cargo rustc --release -p tmr-app --bin tmr -- --emit asm"
@@ -183,6 +201,50 @@ def innermost_loops(body):
         yield [x.strip() for x in body[s:e + 1] if x.startswith("\t") and not x.strip().startswith((".", "#"))]
 
 
+def loops_below(sym, kernels, depth=3, seen=None):
+    """Whether the test function `sym`, or one it calls a few levels down, has a loop: a kernel that
+    hands its work to the closures holding its loops (`sequence_read_256` to `::stride::{closure}`)
+    is a kernel all the same, not a helper that should have inlined."""
+    seen = set() if seen is None else seen
+    if sym in seen or depth < 0:
+        return False
+    seen.add(sym)
+    body = kernels[sym]
+    if next(innermost_loops(body), None) is not None:
+        return True
+    callees = {x.split(None, 1)[-1] for x in (y.strip() for y in body) if x.startswith("call")}
+    return any(c in kernels and loops_below(c, kernels, depth - 1, seen) for c in callees)
+
+
+def calls_in(loop, kernels):
+    """A hot-shaped loop's calls, each (why, callee): a cold call (`COLD_CALLS`' kinds), "dispatch" (a
+    test function with loops of its own, the loop handing it a chunk or a phase), "struct move N B"
+    (a memcpy of a constant size), or "read" for the rest: an indirect call, a memcpy or memset of a
+    size it computes (a copy or fill loop LLVM may have collapsed), a helper that didn't inline. None
+    for a loop that isn't hot-shaped or makes no call. `kernels`: the test functions' bodies."""
+    if len(loop) > MAX_INSTRUCTIONS or any(x.startswith("ret") for x in loop) or not any(OFF_STACK.search(x) for x in loop):
+        return None
+    found = []
+    for i, x in enumerate(loop):
+        if not x.startswith("call"):
+            continue
+        callee = x.split(None, 1)[-1]
+        why = next((kind for kind, subs in COLD_CALLS.items() if any(s in callee for s in subs)), None)
+        if why is None and callee in MEM_CALLS:
+            # The size is the third argument, %r8, set a few instructions before
+            size = next((m.group(1) for y in loop[max(0, i - 6):i][::-1] if (m := CONST_SIZE.match(y))), None)
+            why = f"struct move {size} B" if size else "read"
+        elif why is None and callee in kernels:
+            why = "dispatch" if loops_below(callee, kernels) else "read"
+        elif why is None and callee.startswith("_R") and any(c in callee for c in COLD):
+            why = "error"
+        found.append((why or "read", callee))
+    # A loop that hands a kernel its chunk or phase makes its other calls once a chunk or phase too (`Program::phase` beside it)
+    if any(why == "dispatch" for why, _ in found):
+        found = [(why if why != "read" else "dispatch", callee) for why, callee in found]
+    return found or None
+
+
 def classify(loop):
     """None for a loop that isn't hot, else (kind, stack lines, review flags): kind "clean" when it
     keeps everything in registers; the flags are `REVIEW` names."""
@@ -219,6 +281,14 @@ def classify(loop):
     return ("reload simd" if simd else "reload gpr"), stack, flags
 
 
+def callee_name(callee):
+    """A call's target as the table names a function: a symbol shortened, an import by its name"""
+    if callee.startswith("_R"):
+        return short_name(callee)
+    m = re.match(r"\*__imp_(\w+)", callee)
+    return m.group(1) if m else callee
+
+
 def binary_asm(args):
     """The asm to read: the file named in `args`, else the newest the build left. Exits unless it is
     the binary's, the one with a `main`: the lib's has the same kernels before LTO (TODO 29 S3)."""
@@ -242,9 +312,20 @@ def main():
     columns = KINDS + REVIEW
     counts = defaultdict(lambda: dict.fromkeys(columns, 0))
     hot = set()
-    for sym, body in functions(path).items():
+    kernels = functions(path)
+    calling = defaultdict(int)  # loops that call, by why
+    to_read = []
+    for sym, body in kernels.items():
         name = short_name(sym)
         for loop in innermost_loops(body):
+            called = calls_in(loop, kernels)
+            if called:
+                # A loop with a call isn't in the table; one whose calls aren't all known is listed below it
+                whys = {why for why, _ in called}
+                calling["read" if "read" in whys else sorted(whys)[0]] += 1
+                if "read" in whys:
+                    to_read.append((name, len(loop), sorted({callee_name(c) for why, c in called if why == "read"})))
+                continue
             found = classify(loop)
             if not found:
                 continue
@@ -273,6 +354,11 @@ def main():
         print(f"{name[:48]:48s} " + " ".join(f"{c[k]:{w}d}" for k, w in zip(columns, widths)))
     print(f"{'total (' + str(len(counts)) + ' kernels)':48s} " + " ".join(f"{total[k]:{w}d}" for k, w in zip(columns, widths)))
     print(f"kernels whose hot loops are all clean and unflagged: {len(hot - set(counts))}")
+    known = ", ".join(f"{n} {why}" for why, n in sorted(calling.items()) if why != "read")
+    print(f"hot-shaped loops that make a call, so not in the table: {sum(calling.values())}"
+          f" ({known}; {calling['read']} to read)")
+    for name, length, callees in sorted(to_read):
+        print(f"  {name[:60]:60s} {length:4d} instructions, calls {', '.join(callees)}")
     spilling = sum(total[k] for k in KINDS)
     if limit is not None and spilling > limit:
         print(f"FAIL: {spilling} hot loops touch the stack, over {limit}")
