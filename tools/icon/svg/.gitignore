@@ -1,0 +1,4 @@
+# pack.py's output: the icon is committed once, as crates/tmr-app/tmr.ico, and the PNGs are in it
+*.png
+render.html
+tmr.ico
