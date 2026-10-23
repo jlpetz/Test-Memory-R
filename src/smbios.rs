@@ -143,6 +143,7 @@ fn read_smbios_raw() -> Option<Vec<u8>> {
     use windows::Win32::System::SystemInformation::{GetSystemFirmwareTable, RSMB};
 
     // First call: get required buffer size
+    // SAFETY: no buffer, so it only returns the size the table needs
     let size = unsafe { GetSystemFirmwareTable(RSMB, 0, None) };
     if size == 0 {
         log::warn!("GetSystemFirmwareTable returned 0 size");
@@ -151,6 +152,7 @@ fn read_smbios_raw() -> Option<Vec<u8>> {
 
     // Second call: read the data
     let mut buffer = vec![0u8; size as usize];
+    // SAFETY: the slice carries its length, and Windows writes within it
     let written = unsafe { GetSystemFirmwareTable(RSMB, 0, Some(&mut buffer)) };
     if written == 0 {
         log::warn!("GetSystemFirmwareTable failed to read data");
@@ -178,6 +180,7 @@ fn read_cpu_registry_info() -> (String, u32) {
     let subkey = b"HARDWARE\\DESCRIPTION\\System\\CentralProcessor\\0\0";
 
     let mut hkey = HKEY::default();
+    // SAFETY: a NUL-terminated name that outlives the call, and the key's out-param on the stack
     let result = unsafe { RegOpenKeyExA(HKEY_LOCAL_MACHINE, PCSTR::from_raw(subkey.as_ptr()), Some(0), KEY_READ, &mut hkey) };
 
     if result.is_err() {
@@ -189,6 +192,8 @@ fn read_cpu_registry_info() -> (String, u32) {
     let mhz_name = b"~MHz\0";
     let mut mhz_value: u32 = 0;
     let mut mhz_size = std::mem::size_of::<u32>() as u32;
+    // SAFETY: the key opened above, a NUL-terminated name, and a u32 on the stack with its size,
+    // which Windows writes within (a larger value fails instead)
     let result = unsafe {
         RegQueryValueExA(
             hkey,
@@ -208,6 +213,7 @@ fn read_cpu_registry_info() -> (String, u32) {
     let rev_name = b"Update Revision\0";
     let mut rev_buf = [0u8; 8];
     let mut rev_size = 8u32;
+    // SAFETY: as for ~MHz, into an 8-byte array with its length
     let result =
         unsafe { RegQueryValueExA(hkey, PCSTR::from_raw(rev_name.as_ptr()), None, None, Some(rev_buf.as_mut_ptr()), Some(&mut rev_size)) };
     if result.is_ok() && rev_size >= 4 {
@@ -222,6 +228,7 @@ fn read_cpu_registry_info() -> (String, u32) {
         log::debug!("Registry CPU microcode: {} (raw bytes: {:02X?})", microcode, &rev_buf[..rev_size as usize]);
     }
 
+    // SAFETY: the key `RegOpenKeyExA` opened (failing, it returned early), closed once
     let _ = unsafe { RegCloseKey(hkey) };
 
     (microcode, base_mhz)

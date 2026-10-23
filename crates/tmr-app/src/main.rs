@@ -6,6 +6,8 @@
 
 // The CPU gate detects CLFLUSHOPT, which std has behind a nightly gate
 #![feature(clflushopt_target_feature)]
+// As the engine's (src/lib.rs): a `// SAFETY:` on every `unsafe` block, and `expect` for `unwrap()`
+#![cfg_attr(not(test), warn(clippy::undocumented_unsafe_blocks, clippy::unwrap_used))]
 
 #[cfg(feature = "gui")]
 mod fatal_box; // the window's message boxes, the crash box among them (TODO 29 S6)
@@ -66,10 +68,13 @@ impl Fault {
         if info.is_null() {
             return None;
         }
+        // SAFETY: not null (checked above), so by the contract the exception pointers Windows
+        // passed the handler, valid while it runs
         let ptrs = unsafe { &*info };
         if ptrs.ExceptionRecord.is_null() {
             return None;
         }
+        // SAFETY: not null (checked above), and the exception pointers point at the fault's record
         let record = unsafe { &*ptrs.ExceptionRecord };
 
         let code = record.ExceptionCode;
@@ -89,6 +94,7 @@ impl Fault {
         };
 
         // Compute RVA from module base (works regardless of ASLR)
+        // SAFETY: with no name it returns the exe's own module; nothing is passed or kept
         let module_base = unsafe { windows::Win32::System::LibraryLoader::GetModuleHandleA(None).map(|h| h.0 as usize).unwrap_or(0) };
         let rva = if module_base > 0 && ip >= module_base { ip - module_base } else { ip };
 
@@ -182,6 +188,8 @@ fn main() {
     }));
 
     // 2. Windows VEH — catches hardware exceptions (segfaults, illegal instructions)
+    // SAFETY: the handler is an `extern "system"` fn of the signature the API takes, and lives as
+    // long as the process; it is never removed, so the handle returned isn't kept
     unsafe {
         windows::Win32::System::Diagnostics::Debug::AddVectoredExceptionHandler(
             1, // first=1: our handler runs BEFORE any other handlers

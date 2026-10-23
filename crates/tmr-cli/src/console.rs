@@ -11,8 +11,8 @@
 //! it finishes (`hold`). A test's report, many lines long, prints in one piece through
 //! `print_block`.
 
-// Every `unsafe` block in this file is a Win32 console call. See the engine's
-// src/memory/backend.rs for why this lint is scoped per file rather than crate-wide.
+// Every `unsafe` block in this file is a Win32 console call. The crate's lint (lib.rs) covers its
+// shipped code; this one the tests too.
 #![warn(clippy::undocumented_unsafe_blocks)]
 
 use std::io::{self, Write};

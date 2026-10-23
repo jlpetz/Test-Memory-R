@@ -286,6 +286,7 @@ fn detect_via_timing_calibration() -> (f64, CalibrationStats) {
 
     loop {
         // Take a single measurement
+        // SAFETY: RDTSC has no preconditions, and every x86-64 CPU has it
         unsafe {
             let start_tsc = _rdtsc();
             let start_time = Instant::now();

@@ -1,7 +1,7 @@
 use std::collections::HashMap;
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::mpsc::Receiver;
-use std::sync::{Arc, Mutex};
+use std::sync::{Arc, Mutex, PoisonError};
 use std::thread;
 use std::time::{Duration, Instant};
 
@@ -1197,7 +1197,7 @@ pub fn run_tests_with_layout_and_timing_filtered(setup: RunSetup, fe: &Arc<dyn F
     }
 
     // Create final performance summary with detailed per-CPU stats
-    let final_stats = all_test_cpu_stats.lock().unwrap();
+    let final_stats = all_test_cpu_stats.lock().unwrap_or_else(PoisonError::into_inner);
     if !final_stats.is_empty() {
         let summary = cpu_performance_summary(&final_stats, &cpu_assignments, whea_totals, runtime_config.pin_threads);
         fe.event(Run::CpuPerformance(Box::new(summary)).into());
@@ -1546,7 +1546,7 @@ fn execute_test_cycle(ctx: &CycleContext, cycle: u64) -> CycleEnd {
 
             if !all_latencies.is_empty() {
                 let mut sorted = all_latencies.clone();
-                sorted.sort_by(|a: &f64, b: &f64| a.partial_cmp(b).unwrap());
+                sorted.sort_by(f64::total_cmp);
                 let len = sorted.len();
                 let percentile = |p: f64| sorted[((len as f64 - 1.0) * p / 100.0) as usize];
                 let p5 = percentile(5.0);
@@ -1635,7 +1635,7 @@ fn execute_test_cycle(ctx: &CycleContext, cycle: u64) -> CycleEnd {
 
         // Store aggregated stats for this test
         {
-            let mut stats_map = all_test_cpu_stats.lock().unwrap();
+            let mut stats_map = all_test_cpu_stats.lock().unwrap_or_else(PoisonError::into_inner);
             stats_map.entry(test_name.to_string()).or_default().extend(test_stats);
         }
 
@@ -1742,7 +1742,7 @@ fn thread_step_record(result: &WorkResult, assignment: Option<CpuAssignment>) ->
         operations: result.total_operations,
         cycles: result.cycles_completed,
         latency: result.latency_stats.as_ref().map(|stats| crate::results::ThreadLatency {
-            min_ns: stats.latencies_ns.iter().min_by(|a, b| a.partial_cmp(b).unwrap()).copied().unwrap_or(0.0),
+            min_ns: stats.latencies_ns.iter().copied().min_by(f64::total_cmp).unwrap_or(0.0),
             p50_ns: stats.p50_ns,
             p99_ns: stats.p99_ns,
             spread: stats.spread_ratio,
@@ -4449,6 +4449,8 @@ pub fn pin_thread_to_cpu_with_config(thread_id: usize, cpu_id: usize, enable: bo
         GetCurrentProcessorNumberEx, GetCurrentThread, SetThreadGroupAffinity, SetThreadIdealProcessorEx,
     };
 
+    // SAFETY: the current thread's pseudo-handle, which needs no closing, and affinity and
+    // processor structs on the stack, passed directly for the calls' duration
     unsafe {
         let thread_handle = GetCurrentThread();
 
@@ -4564,6 +4566,7 @@ impl ThreadPriority {
     pub fn apply(self) -> Result<(), String> {
         use windows::Win32::System::Threading::{GetCurrentThread, SetThreadPriority};
 
+        // SAFETY: the current thread's pseudo-handle, needing no closing, and a defined level
         unsafe { SetThreadPriority(GetCurrentThread(), self.win32().0) }
             .map_err(|e| format!("SetThreadPriority({}) failed: {e}", self.win32_name()))
     }
@@ -4592,7 +4595,7 @@ fn convert_to_latency_level_summary(latency_results: &[(usize, usize, LatencyTes
             cpu_id: *cpu_id,
             sample_count: lat_stats.sample_count,
             percentiles: LatencyPercentiles {
-                min_ns: lat_stats.latencies_ns.iter().min_by(|a, b| a.partial_cmp(b).unwrap()).copied().unwrap_or(0.0),
+                min_ns: lat_stats.latencies_ns.iter().copied().min_by(f64::total_cmp).unwrap_or(0.0),
                 p5_ns: lat_stats.p5_ns,
                 p10_ns: lat_stats.p10_ns,
                 p25_ns: lat_stats.p25_ns,
@@ -4612,8 +4615,7 @@ fn convert_to_latency_level_summary(latency_results: &[(usize, usize, LatencyTes
 
     // Calculate consolidated percentiles
     let consolidated = if !all_latencies.is_empty() {
-        // Sort latencies (safe to unwrap - timing values are never NaN)
-        all_latencies.sort_by(|a: &f64, b: &f64| a.partial_cmp(b).unwrap());
+        all_latencies.sort_by(f64::total_cmp);
         let len = all_latencies.len();
 
         let percentile = |p: f64| -> f64 {
@@ -4782,7 +4784,7 @@ fn display_and_save_results(
     test_run_result: &Arc<Mutex<TestRunResult>>, suite_duration: std::time::Duration, whea_totals: crate::whea::WheaCounts,
     whea_monitored: bool, outcome: RunOutcome, status: RunStatus, fe: &dyn Frontend,
 ) {
-    let mut result = test_run_result.lock().unwrap();
+    let mut result = test_run_result.lock().unwrap_or_else(PoisonError::into_inner);
     result.finalize(suite_duration);
     // Run-level WHEA figures come from the monitor's cumulative counters, not from summing the
     // per-test deltas: a test that never started (early exit) or an event logged between tests
@@ -4911,9 +4913,12 @@ pub mod test_support {
     impl Region {
         pub(crate) fn new(sizes: &[usize]) -> Self {
             let len: usize = sizes.iter().sum();
-            let layout = std::alloc::Layout::from_size_align(GUARD + len + GUARD, 4096).unwrap();
+            let layout =
+                std::alloc::Layout::from_size_align(GUARD + len + GUARD, 4096).expect("a page-aligned layout of the blocks and guards");
+            // SAFETY: the layout is at least the two guards, so not empty
             let mem = unsafe { std::alloc::alloc(layout) };
             assert!(!mem.is_null());
+            // SAFETY: the allocation just checked non-null, `layout.size()` bytes long
             unsafe { std::ptr::write_bytes(mem, FILL, layout.size()) };
             let backend: Arc<dyn Backend> = Arc::new(HeapView);
             let mut at = GUARD;
@@ -4921,6 +4926,7 @@ pub mod test_support {
                 .iter()
                 .map(|&size| {
                     let block = AllocationBlock {
+                        // SAFETY: `at` (a guard plus the sizes before) is inside the allocation
                         buffer: MemoryBuffer::new(BackendAllocation { ptr: unsafe { mem.add(at) }, size }, backend.clone()),
                     };
                     at += size;
@@ -4951,6 +4957,7 @@ pub mod test_support {
     impl Drop for Region {
         fn drop(&mut self) {
             self.blocks.clear();
+            // SAFETY: the allocation `new` made with this layout, freed once, its blocks gone first
             unsafe { std::alloc::dealloc(self.mem, self.layout) };
         }
     }
@@ -5099,7 +5106,7 @@ pub mod test_support {
             let (blocks, _) = thread_pool.shutdown();
             drop(blocks);
             drop(regions);
-            let result = test_run_result.lock().unwrap().clone();
+            let result = test_run_result.lock().unwrap_or_else(PoisonError::into_inner).clone();
             CycleRun { end, result }
         }
     }

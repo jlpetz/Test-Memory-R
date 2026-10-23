@@ -7,6 +7,8 @@
 // The console goldens capture what a test prints as libtest does, and hand the capture on to the
 // threads a test spawns as it does (`golden.rs`, TODO 29)
 #![cfg_attr(test, feature(internal_output_capture, thread_spawn_hook))]
+// As the engine's (src/lib.rs): a `// SAFETY:` on every `unsafe` block, and `expect` for `unwrap()`
+#![cfg_attr(not(test), warn(clippy::undocumented_unsafe_blocks, clippy::unwrap_used))]
 
 mod console; // single writer path while the progress ticker is on screen
 #[cfg(test)]

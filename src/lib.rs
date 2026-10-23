@@ -6,6 +6,9 @@
 // 29), and the one-shot commands write to their caller's writer (`commands.rs`). The CLI, which
 // prints, is its own crate (`crates/tmr-cli`). Test code prints freely.
 #![cfg_attr(not(test), deny(clippy::print_stdout, clippy::print_stderr, clippy::exit))]
+// Every `unsafe` block says why it is sound (`// SAFETY:`), and shipped code doesn't `unwrap()`:
+// `expect` says why it can't fail (2026-10-23). Tests may do either.
+#![cfg_attr(not(test), warn(clippy::undocumented_unsafe_blocks, clippy::unwrap_used))]
 
 // The engine. Its public items are what tmr.exe (`crates/tmr-app`), the CLI (`crates/tmr-cli`) and
 // the window (`crates/tmr-gui`) call: `session` (a command line's setup and run), `frontend` (the

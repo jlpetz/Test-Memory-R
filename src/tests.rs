@@ -1134,13 +1134,16 @@ pub unsafe fn flush_range_to_dram(base: *const u8, len_bytes: usize, cache_line_
     debug_assert!((base as usize).is_multiple_of(line), "flush_range_to_dram: base {base:p} not aligned to {line} B");
     let line_count = len_bytes.div_ceil(line);
     for i in 0..line_count {
+        // SAFETY: `i * line` is below `len_bytes`, inside the range the caller vouches for
         let addr = unsafe { base.add(i * line) };
+        // SAFETY: this fn's target feature (the startup gate checks it), on the caller's line
         unsafe {
             std::arch::x86_64::_mm_clflushopt(addr);
         }
     }
     // Mandatory: CLFLUSHOPT is weakly ordered. Without this fence a verify-load
     // could issue while flushes are still draining and read stale cached data.
+    // SAFETY: MFENCE has no preconditions (SSE2, which every x86-64 CPU has)
     unsafe {
         std::arch::x86_64::_mm_mfence();
     }

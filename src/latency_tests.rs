@@ -55,7 +55,7 @@ impl LatencyTestStats {
             };
         }
 
-        latencies.sort_by(|a, b| a.partial_cmp(b).unwrap());
+        latencies.sort_by(f64::total_cmp);
         let len = latencies.len();
 
         let percentile = |p: f64| -> f64 {

@@ -1,9 +1,8 @@
 // Every `unsafe` block in this file crosses a Win32 FFI boundary, where the borrow checker is
 // switched off precisely where the invariants get subtle (TODO #66). The lint below makes a missing
-// `// SAFETY:` a warning *here* rather than relying on a periodic audit — it is deliberately not
-// crate-wide, because the SIMD test kernels' `unsafe` is a different, repetitive story already
-// covered by `test_fn_safety.md`, and a blanket rule there would produce boilerplate that trains
-// you to skip reading these.
+// `// SAFETY:` a warning here in the tests too; `src/lib.rs` makes it one in all shipped code. It
+// was per file until 2026-10-23, lest the SIMD kernels need boilerplate, but their `unsafe fn`s
+// need no blocks (`test_fn_safety.md` covers them): crate-wide added 30 sites, none a kernel's.
 #![warn(clippy::undocumented_unsafe_blocks)]
 
 use std::sync::Arc;

@@ -142,6 +142,7 @@ impl ThreadPool {
                     match crate::runner::pin_thread_to_cpu_with_config(thread_id, cpu_id, pin_threads) {
                         Ok(actual_cpu) => {
                             log::debug!("Thread {} pinned to CPU {}", thread_id, actual_cpu);
+                            // SAFETY: the current thread's pseudo-handle, needing no closing
                             let thread_handle = unsafe { windows::Win32::System::Threading::GetCurrentThread() };
                             let _ = crate::runner::set_thread_ideal_processor_ex(thread_handle, actual_cpu as u32);
                         }
@@ -418,12 +419,16 @@ fn worker_thread_loop(context: &mut WorkerContext) {
                 let (stats, latency_stats) = match &test_func {
                     crate::runner::TestFunction::MultiBlock(f) => {
                         // Regular bandwidth test - returns TestStats only
+                        // SAFETY: test_fn_safety.md's contract: this worker's own blocks,
+                        // committed, page-aligned and live until the pool shuts down, and the run
+                        // left out any test the CPU can't run
                         let stats =
                             unsafe { f(blocks_slice, context.thread_id, error_mode, &test_config.timing, &test_config, Some(progress)) };
                         (stats, None)
                     }
                     crate::runner::TestFunction::Latency(f) => {
                         // Latency test - returns LatencyTestStats with percentiles
+                        // SAFETY: as for MultiBlock above
                         let latency_stats =
                             unsafe { f(blocks_slice, context.thread_id, error_mode, &test_config.timing, &test_config, Some(progress)) };
                         (latency_stats.basic_stats.clone(), Some(latency_stats))

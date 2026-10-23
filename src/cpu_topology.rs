@@ -534,6 +534,9 @@ fn l3_sizes(topology: &[CpuTopologyInfo]) -> Option<HashMap<usize, Option<usize>
 pub fn detect_cpu_topology() -> Vec<CpuTopologyInfo> {
     let mut topology = Vec::new();
 
+    // SAFETY: the first call only writes the size. The second fills a u64-backed buffer of that
+    // many bytes, 8-aligned as the records' KAFFINITY needs. The walk reads records only below the
+    // length Windows returned, each at the last one's `Size`, as it lays them end to end.
     unsafe {
         use windows::Win32::System::SystemInformation::{
             GetLogicalProcessorInformationEx, RelationProcessorCore, SYSTEM_LOGICAL_PROCESSOR_INFORMATION_EX,
@@ -801,6 +804,8 @@ pub fn startup_topology(
 }
 
 pub fn get_system_cpu_set_information() -> Result<Vec<EnhancedCpuInfo>, String> {
+    // SAFETY: as `detect_cpu_topology`'s: the size first, then a u64-backed buffer that long,
+    // walked by each record's `Size` below the length Windows returned
     unsafe {
         use windows::Win32::System::SystemInformation::{GetSystemCpuSetInformation, SYSTEM_CPU_SET_INFORMATION};
 
@@ -855,6 +860,8 @@ pub fn get_system_cpu_set_information() -> Result<Vec<EnhancedCpuInfo>, String> 
 
 // Modern NUMA topology discovery
 pub fn discover_numa_topology() -> Result<NumaTopology, String> {
+    // SAFETY: as `detect_cpu_topology`'s walk. A node record holds its `GroupCount` masks (one when
+    // the older request gives 0), inside the record's `Size`.
     unsafe {
         // RelationNumaNodeEx: each node with every processor group it spans (GroupCount masks).
         // RelationNumaNode gives only a node's primary group, so on a node over 64 CPUs (an

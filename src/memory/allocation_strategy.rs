@@ -1,9 +1,8 @@
 // Every `unsafe` block in this file crosses a Win32 FFI boundary, where the borrow checker is
 // switched off precisely where the invariants get subtle (TODO #66). The lint below makes a missing
-// `// SAFETY:` a warning *here* rather than relying on a periodic audit — it is deliberately not
-// crate-wide, because the SIMD test kernels' `unsafe` is a different, repetitive story already
-// covered by `test_fn_safety.md`, and a blanket rule there would produce boilerplate that trains
-// you to skip reading these.
+// `// SAFETY:` a warning here in the tests too; `src/lib.rs` makes it one in all shipped code. It
+// was per file until 2026-10-23, lest the SIMD kernels need boilerplate, but their `unsafe fn`s
+// need no blocks (`test_fn_safety.md` covers them): crate-wide added 30 sites, none a kernel's.
 #![warn(clippy::undocumented_unsafe_blocks)]
 
 /// Enhanced memory allocation strategy with clear reserve semantics
@@ -362,24 +361,20 @@ impl AllocationMode {
         let allocation_part = s.as_str();
 
         // Parse allocation mode
-        let allocation_mode = if allocation_part.contains("-from-available") {
-            let amount_str = allocation_part.split("-from-available").next().unwrap();
+        let allocation_mode = if let Some((amount_str, _)) = allocation_part.split_once("-from-available") {
             let reserve = ReserveAmount::parse(amount_str)?;
             AllocationMode::ReserveFromAvailable { reserve }
-        } else if allocation_part.contains("-from-total") {
-            let amount_str = allocation_part.split("-from-total").next().unwrap();
+        } else if let Some((amount_str, _)) = allocation_part.split_once("-from-total") {
             let reserve = ReserveAmount::parse(amount_str)?;
             AllocationMode::ReserveFromTotal { reserve }
-        } else if allocation_part.contains("-target") {
-            let amount_str = allocation_part.split("-target").next().unwrap();
+        } else if let Some((amount_str, _)) = allocation_part.split_once("-target") {
             let target = ReserveAmount::parse(amount_str)?;
             AllocationMode::AllocateTarget { target }
         } else if allocation_part.contains("-legacy") || (allocation_part.ends_with("mb") && !allocation_part.contains("-")) {
             // Legacy TM5 mode or simple "2048mb" format - both reserve from available (TM5 behavior)
-            let amount_str = if allocation_part.contains("-legacy") {
-                allocation_part.split("-legacy").next().unwrap()
-            } else {
-                &allocation_part[..allocation_part.len() - 2] // Remove "mb"
+            let amount_str = match allocation_part.split_once("-legacy") {
+                Some((amount, _)) => amount,
+                None => &allocation_part[..allocation_part.len() - 2], // Remove "mb"
             };
             match amount_str.parse::<u32>() {
                 Ok(mb) => AllocationMode::LegacyTM5 { reserve_mb: mb },

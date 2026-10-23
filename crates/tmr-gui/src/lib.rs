@@ -23,6 +23,9 @@
 //! - From 26100 (Windows 11 24H2, Server 2025) the window is fully supported: a double-click opens
 //!   it with no console.
 
+// As the engine's (src/lib.rs): a `// SAFETY:` on every `unsafe` block, and `expect` for `unwrap()`
+#![cfg_attr(not(test), warn(clippy::undocumented_unsafe_blocks, clippy::unwrap_used))]
+
 mod chart;
 mod logger;
 mod model;

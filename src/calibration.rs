@@ -491,6 +491,7 @@ impl ProbeEngine {
                 let base = buffer.as_mut_ptr() as *mut u64;
                 let len = max_size / std::mem::size_of::<u64>();
 
+                // SAFETY: a page-aligned buffer of `max_size` bytes, just allocated: `len` u64s
                 unsafe {
                     Self::setup_pointer_chase(base, len, 0);
                 }
@@ -524,6 +525,8 @@ impl ProbeEngine {
 
         log::info!("ProbeEngine: Using external buffer ({} bytes, {} u64 elements)", max_size, len);
 
+        // SAFETY: `len` u64s are the caller's buffer, test memory and so aligned, which outlives
+        // the engine and isn't touched meanwhile, as this fn's doc requires
         unsafe {
             Self::setup_pointer_chase(base, len, 0);
         }
@@ -537,7 +540,11 @@ impl ProbeEngine {
     /// Get the base pointer for probe operations.
     /// Returns the external buffer pointer if set, otherwise the owned buffer.
     fn get_base_ptr(&mut self) -> *mut u64 {
-        if let Some(ext) = self.external_ptr { ext } else { self.memory_buffer.as_mut().unwrap().as_mut_ptr() as *mut u64 }
+        if let Some(ext) = self.external_ptr {
+            ext
+        } else {
+            self.memory_buffer.as_mut().expect("an initialized engine has its own buffer or an external one").as_mut_ptr() as *mut u64
+        }
     }
 
     /// Setup random pointer-chasing pattern in memory
@@ -595,6 +602,7 @@ impl ProbeEngine {
         // CRITICAL: Re-initialize pointer-chase pattern for THIS working set size
         // The chain must be constrained to the working set being tested, otherwise
         // we'll be hitting random locations across the entire buffer (always DRAM)
+        // SAFETY: `working_set_u64` is at most `max_working_set` / 8, the engine buffer's u64s
         unsafe {
             Self::setup_pointer_chase(base, working_set_u64, 0);
         }
@@ -609,6 +617,8 @@ impl ProbeEngine {
 
         loop {
             // Take a measurement
+            // SAFETY: RDTSCP, which every CPU past the startup gate has, and loads along the chain
+            // `setup_pointer_chase` just laid in the working set, every link an address inside it
             unsafe {
                 std::sync::atomic::fence(std::sync::atomic::Ordering::SeqCst);
                 let mut aux = 0u32;
@@ -1039,7 +1049,7 @@ impl CalibrationTest {
             }
 
             if !median_latencies.is_empty() {
-                median_latencies.sort_by(|a, b| a.partial_cmp(b).unwrap());
+                median_latencies.sort_by(f64::total_cmp);
                 let overall_median = median_latencies[median_latencies.len() / 2];
 
                 // Consistency: std dev of median latencies across repeats

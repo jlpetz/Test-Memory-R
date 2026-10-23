@@ -1582,7 +1582,7 @@ fn finalize_stats(
     runner: &mut TestRunner<'_>, test_name: &'static str, thread_id: usize, total_ops: u64, latencies_ns: Vec<f64>,
 ) -> LatencyTestStats {
     let mut sorted = latencies_ns;
-    sorted.sort_by(|a, b| a.partial_cmp(b).unwrap());
+    sorted.sort_by(f64::total_cmp);
     let len = sorted.len();
     let percentile = |slice: &[f64], p: f64| -> f64 {
         if slice.is_empty() {

@@ -26,7 +26,7 @@ const GIB: u64 = 1 << 30;
 
 /// The built-in plan a plain run takes (`plan=stability`)
 pub fn default_plan() -> &'static crate::plans::Plan {
-    crate::plans::find(crate::plans::DEFAULT).unwrap()
+    crate::plans::find(crate::plans::DEFAULT).expect("the default plan is built in")
 }
 
 /// Runs the detections, which log what they found at their first use, wherever that is: before a
