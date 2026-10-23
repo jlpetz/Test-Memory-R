@@ -1,7 +1,7 @@
-# Dense and wide, one layout everywhere (the owner, 2026-10-23): long lines on a wide screen, and
-# fewer lines for an agent to read. Run `cargo fmt --all` before clippy; CI checks it. A layout
-# worth keeping (a golden table, one row a line) takes `#[rustfmt::skip]`. The options from
-# `overflow_delimited_expr` on are nightly rustfmt's, which the nightly toolchain runs.
+# Dense and wide, one layout everywhere (the owner, 2026-10-23): long lines on a wide screen, and fewer lines for an agent to read. Run
+# `cargo fmt --all` before clippy; CI checks it. A layout worth keeping (a golden table, one row a line) takes `#[rustfmt::skip]`.
+# Comments wrap at 140 too, by hand: rustfmt leaves them alone (`wrap_comments` only breaks lines, never joins them, so it strands words).
+# The options from `overflow_delimited_expr` on are nightly rustfmt's, which the nightly toolchain runs.
 max_width = 140
 use_small_heuristics = "Max"
 fn_params_layout = "Compressed"
