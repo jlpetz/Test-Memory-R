@@ -197,3 +197,16 @@ a thread exchanges its tiles with itself.
 or the metal box): errors 0; the per-thread debug line (`RUST_LOG=debug`: claims, of other threads'
 tiles, on other nodes, found busy); its speed beside Mem-SimpleV2's. Then the rest of v1: different
 tests running at once across threads, and a shared-line coherence storm.
+
+**Review (2026-10-24, one agent, adversarial) and its fixes.** It confirmed one thread at a time a
+tile, the Acquire/Release pairing after the fill's SFENCE, both barriers met on every path but a
+panic in a debug build (release aborts), and no access outside a tile. Fixed: under
+`errors=halt` a claim overwrote the bad words it found and other threads kept claiming and could
+reseal them; now the claim releases its tile unwritten, a step-wide flag stops every thread, and
+none rechecks or reseals (`TestRunner::keep_memory`). A first claim's seal errors now name their
+tile and its home thread too, and the per-thread line and the results file describe the tiles as
+they are (apart, the last shorter), not as overlapping chunks. Added: a sealed four-thread step and
+a halt test. Left as concerns: a thread's node is its CPU's, not its memory's (the allocator's
+`ThreadSpan` knows the memory's); no CCD-level group, so on one node only `any` crosses CCDs; the
+per-thread time includes the wait at the second barrier (a step's speed takes the slowest thread's
+anyway); the results file records no SIMD width for it (it runs at the seal's).

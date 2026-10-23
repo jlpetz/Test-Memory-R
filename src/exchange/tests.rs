@@ -24,12 +24,20 @@ fn sealed() -> crate::seal::SealStep {
     crate::seal::SealStep { kernel: SealKernel::detect(), on: true, expects: true, wrap: true }
 }
 
-/// `threads` threads on `nodes`, each with a span of `tiles` tiles, run one step together; their stats, and the step for its tallies.
-fn run_step(nodes: Vec<u32>, tiles: usize, config: TestMemoryConfig) -> (Vec<TestStats>, Arc<Step>) {
+/// `threads` threads on `nodes`, each with a span of `tiles` tiles, run one step together (each span sealed first in a sealed step);
+/// their stats, the step for its tallies, and the spans.
+fn run_step(nodes: Vec<u32>, tiles: usize, config: TestMemoryConfig) -> (Vec<TestStats>, Arc<Step>, Vec<Region>) {
     let threads = nodes.len();
     let step = Arc::new(Step::new(nodes));
     let config = TestMemoryConfig { exchange: Some(Arc::clone(&step)), ..config };
-    let regions: Vec<Region> = (0..threads).map(|_| Region::new(&[tiles * 64 * KIB])).collect();
+    let mut regions: Vec<Region> = (0..threads).map(|_| Region::new(&[tiles * 64 * KIB])).collect();
+    if config.seal.wrap {
+        for region in &mut regions {
+            let words = region.words().len();
+            // SAFETY: the region's words
+            unsafe { config.seal.kernel.fill(region.words().as_mut_ptr(), 0, words) };
+        }
+    }
     let stats = std::thread::scope(|s| {
         let handles: Vec<_> = regions
             .iter()
@@ -43,7 +51,7 @@ fn run_step(nodes: Vec<u32>, tiles: usize, config: TestMemoryConfig) -> (Vec<Tes
         handles.into_iter().map(|h| h.join().expect("a worker of the step")).collect()
     });
     assert!(regions.iter().all(Region::guards_intact), "a claim wrote outside its tile");
-    (stats, step)
+    (stats, step, regions)
 }
 
 #[test]
@@ -96,7 +104,7 @@ fn a_bad_word_under_the_seal_is_a_seal_error() {
 /// Four threads on two nodes: every thread claims other threads' tiles and other nodes', and every write checks out
 #[test]
 fn tiles_cross_threads_and_nodes_and_every_write_checks_out() {
-    let (stats, step) = run_step(vec![0, 0, 1, 1], 4, config(6));
+    let (stats, step, _) = run_step(vec![0, 0, 1, 1], 4, config(6));
     for (t, s) in stats.iter().enumerate() {
         assert_eq!((s.error_count, s.seal_errors), (0, 0), "thread {t}");
         let tally = step.tally(t).expect("each thread's tally");
@@ -107,16 +115,34 @@ fn tiles_cross_threads_and_nodes_and_every_write_checks_out() {
     assert!(claims >= 16 * 5, "{claims} claims");
 }
 
+/// A sealed step of four threads: first claims check the seal in each other's spans, and every span ends resealed, one cycle or more
+#[test]
+fn a_sealed_step_across_threads_leaves_every_span_resealed() {
+    for cycles in [1, 4] {
+        let (stats, step, mut regions) = run_step(vec![0, 0, 1, 1], 4, TestMemoryConfig { seal: sealed(), ..config(cycles) });
+        for (t, s) in stats.iter().enumerate() {
+            assert_eq!((s.error_count, s.seal_errors), (0, 0), "{cycles} cycles, thread {t}");
+            assert!(step.tally(t).is_some_and(|x| x.others > 0), "{cycles} cycles, thread {t}");
+        }
+        let kernel = sealed().kernel;
+        for (t, region) in regions.iter_mut().enumerate() {
+            let words = region.words().len();
+            // SAFETY: the region's words
+            assert_eq!(unsafe { kernel.check(region.words().as_mut_ptr(), 0, words, "test") }, 0, "{cycles} cycles: span {t} not resealed");
+        }
+    }
+}
+
 /// `node` keeps to the claimer's node, `cross` to the others
 #[test]
 fn the_sharing_groups_keep_to_their_nodes() {
-    let (stats, step) = run_step(vec![0, 0, 1, 1], 4, sharing(config(4), Share::Node));
+    let (stats, step, _) = run_step(vec![0, 0, 1, 1], 4, sharing(config(4), Share::Node));
     for (t, s) in stats.iter().enumerate() {
         assert_eq!((s.error_count, s.seal_errors), (0, 0));
         let tally = step.tally(t).expect("each thread's tally");
         assert!(tally.claims > 0 && tally.other_nodes == 0, "node, thread {t}: {tally:?}");
     }
-    let (stats, step) = run_step(vec![0, 0, 1, 1], 4, sharing(config(4), Share::Cross));
+    let (stats, step, _) = run_step(vec![0, 0, 1, 1], 4, sharing(config(4), Share::Cross));
     for (t, s) in stats.iter().enumerate() {
         assert_eq!((s.error_count, s.seal_errors), (0, 0));
         let tally = step.tally(t).expect("each thread's tally");
@@ -127,7 +153,7 @@ fn the_sharing_groups_keep_to_their_nodes() {
 /// `cross` on one node is `any`
 #[test]
 fn cross_on_one_node_is_any() {
-    let (stats, step) = run_step(vec![0, 0], 4, sharing(config(3), Share::Cross));
+    let (stats, step, _) = run_step(vec![0, 0], 4, sharing(config(3), Share::Cross));
     for (t, s) in stats.iter().enumerate() {
         assert_eq!(s.error_count, 0);
         let tally = step.tally(t).expect("each thread's tally");
@@ -159,17 +185,71 @@ fn a_bad_word_is_found_by_the_next_claimer() {
         pass: (0, 0, 0),
         tally: Tally::default(),
     };
+    let worked = |claim: Claim| match claim {
+        Claim::Worked(found) => found,
+        _ => panic!("no tile busy, and no halt under errors=log"),
+    };
     // SAFETY: the region's tiles, this thread's alone
-    let first: u64 = (0..tiles).map(|_| unsafe { worker.claim(&mut runner) }.expect("no tile busy")).sum();
+    let first: u64 = (0..tiles).map(|_| worked(unsafe { worker.claim(&mut runner, 0) })).sum();
     assert_eq!(first, 0);
     // SAFETY: a word of the region, which no claim holds now
     unsafe { *base.add(2 * 8 * KIB + 100) ^= 1 << 40 };
     // SAFETY: as above
-    let second: u64 = (0..tiles).map(|_| unsafe { worker.claim(&mut runner) }.expect("no tile busy")).sum();
+    let second: u64 = (0..tiles).map(|_| worked(unsafe { worker.claim(&mut runner, 0) })).sum();
     assert_eq!(second, 1, "the next pass's claim of the tile finds the bad word");
     // SAFETY: as above
-    let third: u64 = (0..tiles).map(|_| unsafe { worker.claim(&mut runner) }.expect("no tile busy")).sum();
+    let third: u64 = (0..tiles).map(|_| worked(unsafe { worker.claim(&mut runner, 0) })).sum();
     assert_eq!(third, 0, "the claim that found it wrote the tile anew");
+}
+
+/// Under errors=halt the claim that finds a bad word leaves the tile as it found it, and halts the step
+#[test]
+fn a_halt_leaves_the_bad_word_where_it_was_found() {
+    let mut region = Region::new(&[256 * KIB]);
+    let base = region.words().as_mut_ptr();
+    let config = config(1);
+    let step = Step::new(vec![0]);
+    let (mut runner, extent) =
+        TestRunner::new(&region.blocks, 0, crate::ErrorMode::Halt, &config.timing, &config, None, TEST_NAME, TestAction::ReadWrite);
+    let tile_bytes = 64 * KIB;
+    let tiles = extent.test_size / tile_bytes;
+    let states = (0..tiles).map(|_| Slot::default()).collect();
+    assert!(step.homes[0].set(Home { base: extent.ptr as usize, bytes: extent.test_size, tile_bytes, states }).is_ok());
+    step.barrier.wait();
+    let mut worker = Worker {
+        step: &step,
+        me: 0,
+        pool: Pool::new(&step, 0, Share::Any),
+        key: 7,
+        width: config.seal.kernel.width,
+        sealed: false,
+        pass: (0, 0, 0),
+        tally: Tally::default(),
+    };
+    for _ in 0..tiles {
+        // SAFETY: the region's tiles, this thread's alone
+        assert!(matches!(unsafe { worker.claim(&mut runner, 0) }, Claim::Worked(0)));
+    }
+    let bad = 2 * 8 * KIB + 100;
+    // SAFETY: a word of the region, which no claim holds now
+    let corrupted = unsafe {
+        *base.add(bad) ^= 1 << 40;
+        *base.add(bad)
+    };
+    let states_before: Vec<u64> = step.home(0).states.iter().map(|s| s.0.load(Ordering::Relaxed)).collect();
+    let mut halted = None;
+    for _ in 0..tiles {
+        // SAFETY: as above
+        if let Claim::Halted(found) = unsafe { worker.claim(&mut runner, 0) } {
+            halted = Some(found);
+            break;
+        }
+    }
+    assert_eq!(halted, Some(1), "the claim of the bad tile halts");
+    // SAFETY: as above
+    assert_eq!(unsafe { *base.add(bad) }, corrupted, "the bad word stays as found");
+    assert_eq!(step.home(0).states[2].0.load(Ordering::Relaxed), states_before[2], "the tile is released as it was, unwritten");
+    assert_ne!(step.halted.0.load(Ordering::Relaxed), 0, "the step halts");
 }
 
 /// Each pass's arrangement visits every tile once

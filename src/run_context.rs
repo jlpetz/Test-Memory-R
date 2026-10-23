@@ -694,8 +694,13 @@ impl TestConfigSnapshot {
             skip_init: def.config.skip_init,
             extent_bytes: extent as u64,
             chunk_bytes: spread.as_ref().map_or(0, |s| s.chunk() as u64),
-            chunks: spread.as_ref().map_or(0, |s| s.count()),
-            overlap_bytes: spread.as_ref().map_or(0, |s| s.overlap() as u64),
+            // The page exchange's tiles sit apart, the last one shorter (TODO 28)
+            chunks: spread
+                .as_ref()
+                .map_or(0, |s| if def.actual_name == crate::exchange::TEST_NAME { extent.div_ceil(s.chunk().max(1)) } else { s.count() }),
+            overlap_bytes: spread
+                .as_ref()
+                .map_or(0, |s| if def.actual_name == crate::exchange::TEST_NAME { 0 } else { s.overlap() as u64 }),
             cycle_limit: def.config.timing.cycles,
             time_limit_secs: def.config.timing.duration_secs,
             simd_width_bits: def.simd_width().map(crate::simd::Width::bits),

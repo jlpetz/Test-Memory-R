@@ -49,6 +49,9 @@ pub struct TestRunner<'a> {
     seal_words: usize,
     /// Bad words the seal checks before chunks found: not this test's errors, but they halt it
     seal_errors: u64,
+    /// Another thread halted the step on an error in memory this test shares (the page exchange, TODO 28): finishing leaves the extent
+    /// as it is, as a halt here does
+    kept: bool,
 }
 
 /// The extent a test of this config covers on these blocks: the first bytes of the thread's span (TODO 76), at least one granule when there
@@ -102,6 +105,7 @@ impl<'a> TestRunner<'a> {
             seal_base: extent.ptr as *mut u64,
             seal_words: extent.test_size / 8,
             seal_errors: 0,
+            kept: false,
         };
         // The untimed setup a latency or bandwidth test does before `restart_clock`, for the ticker
         match action {
@@ -120,7 +124,11 @@ impl<'a> TestRunner<'a> {
             log_name,
             crate::test_memory::size_str(total_test_size),
             crate::test_memory::size_str(extent_size),
-            crate::test_memory::describe_chunks(runner.chunks(total_test_size)),
+            if test_name == crate::exchange::TEST_NAME {
+                crate::test_memory::describe_tiles(total_test_size, chunk)
+            } else {
+                crate::test_memory::describe_chunks(runner.chunks(total_test_size))
+            },
         );
         (runner, extent)
     }
@@ -213,21 +221,31 @@ impl<'a> TestRunner<'a> {
     /// `check_seal` can't take, as it indexes from this thread's extent. In any cycle, as a tile's first claim of the step comes when it
     /// comes; a no-op unless the step wraps. Bad words count as seal errors, as `check_seal`'s.
     ///
+    /// Returns the bad words it found, for the caller to say whose memory they were in.
+    ///
     /// # Safety
     /// `ptr..ptr + len` must be readable and held by this thread (the exchange's claim protocol), 64 B aligned and a whole number of 64 B.
     #[inline(never)]
-    pub unsafe fn check_seal_of(&mut self, ptr: *const u64, len: usize) {
+    pub unsafe fn check_seal_of(&mut self, ptr: *const u64, len: usize) -> u64 {
         if !self.seal.wrap {
-            return;
+            return 0;
         }
         self.set_stage(Stage::CheckingSeal);
         let at = Instant::now();
         // SAFETY: the caller's
-        self.seal_errors += unsafe { self.seal.kernel.check(ptr, 0, len / 8, "seal check before") };
+        let found = unsafe { self.seal.kernel.check(ptr, 0, len / 8, "seal check before") };
+        self.seal_errors += found;
         let time = at.elapsed();
         self.ops.add(crate::ops::Op::SealCheck, time, len as u64);
         self.inside += time;
         self.set_stage(Stage::Testing);
+        found
+    }
+
+    /// Another thread halted the step on an error in memory this test shares (the page exchange, TODO 28): finishing leaves the extent as
+    /// it is, so the bad words stay where they were found, for a look after the run.
+    pub fn keep_memory(&mut self) {
+        self.kept = true;
     }
 
     /// Reseal bytes `[start, start + len)` of the extent once the test is done with them (TODO 74); a no-op unless the step wraps, and
@@ -350,10 +368,18 @@ impl<'a> TestRunner<'a> {
     /// step anyway.
     fn reseal_extent(&mut self, aborted: bool, cycle_errors: u64) -> std::time::Duration {
         let timed = self.start.elapsed().saturating_sub(self.inside);
-        let halted = matches!(self.error_mode, ErrorMode::Halt) && self.total_error_count + cycle_errors + self.seal_errors > 0;
-        if halted {
+        let own = matches!(self.error_mode, ErrorMode::Halt) && self.total_error_count + cycle_errors + self.seal_errors > 0;
+        let halted = own || self.kept;
+        if own {
             log::info!(
                 "[Thread {}] {}: halted on an error, so the extent keeps what the test found (no reseal)",
+                self.thread_id,
+                self.test_name
+            );
+        } else if self.kept {
+            log::info!(
+                "[Thread {}] {}: another thread halted the step on an error in memory they share, so the extent keeps what the test left (no \
+                 reseal)",
                 self.thread_id,
                 self.test_name
             );

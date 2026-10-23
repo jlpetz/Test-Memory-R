@@ -118,6 +118,18 @@ pub fn size_str(bytes: usize) -> String {
 
 /// The chunks for the per-thread log line: `2 x 440 MiB chunks, overlap 0`, or `3 x 440 MiB chunks, overlap 184 MiB` when they don't divide
 /// the extent and overlap to cover it. Page sizes and nodes are the allocation report's, printed once a run.
+/// The page exchange's tiles of an extent `extent` bytes long (TODO 28): apart, each `tile` bytes but the last, which takes what is left.
+pub fn describe_tiles(extent: usize, tile: usize) -> String {
+    let tile = tile.clamp(1, extent.max(1));
+    let count = extent.div_ceil(tile);
+    let last = extent - count.saturating_sub(1) * tile;
+    if last == tile {
+        format!("{count} x {} tiles, apart", size_str(tile))
+    } else {
+        format!("{count} x {} tiles, the last {}, apart", size_str(tile), size_str(last))
+    }
+}
+
 pub fn describe_chunks(spread: ChunkSpread) -> String {
     let overlap = match spread.overlap() {
         0 => "0".to_string(),

@@ -26,7 +26,10 @@
 //! **The seal and the end.** In a sealed step a tile's first claim checks the seal (those are seal errors). Once every thread has stopped
 //! claiming (a barrier), each checks its own tiles' last writes, and they are resealed (`TestRunner::reseal`, or the whole extent as the
 //! test finishes), so the cycle's final check finds the seal. Unsealed, a first claim only writes. A claim's errors are the claimer's: it
-//! found them; one more line says whose tile it was and who wrote it last.
+//! found them; one more line says whose tile it was and who wrote it last (or that it held the seal).
+//!
+//! **A halt** (`errors=halt`) keeps the bad words where they were found, as every test does: the claim that found them releases its tile
+//! unwritten, and since the memory is shared, the whole step halts: every thread stops claiming, and none rechecks or reseals its tiles.
 
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::{Barrier, OnceLock};
@@ -133,6 +136,8 @@ pub struct Step {
     counters: Box<[Slot]>,
     /// Between publishing the tiles and claiming them, and between claiming and the end
     barrier: Barrier,
+    /// A thread halted on an error (`errors=halt`): every thread stops, and the memory keeps what was found
+    halted: Slot,
     tallies: Box<[OnceLock<Tally>]>,
 }
 
@@ -149,6 +154,7 @@ impl Step {
             homes: (0..threads).map(|_| OnceLock::new()).collect(),
             counters: (0..1 + 2 * NODES).map(|_| Slot::default()).collect(),
             barrier: Barrier::new(threads),
+            halted: Slot::default(),
             tallies: (0..threads).map(|_| OnceLock::new()).collect(),
         }
     }
@@ -180,6 +186,8 @@ impl std::fmt::Debug for Step {
 
 /// The tiles a thread claims from: its sharing group's homes, in order, numbered through.
 struct Pool {
+    /// The group in effect: `cross` on one node is `any`
+    share: Share,
     homes: Vec<usize>,
     /// Each home's first tile in the pool's numbering
     starts: Vec<usize>,
@@ -194,18 +202,18 @@ impl Pool {
         let mine = step.node(me);
         let threads = 0..step.threads();
         let crosses = threads.clone().any(|t| step.node(t) != mine);
+        let share = if share == Share::Cross && !crosses { Share::Any } else { share };
         let (members, claimers, counter): (Vec<usize>, usize, usize) = match share {
             Share::Node => {
                 let same: Vec<usize> = threads.filter(|&t| step.node(t) == mine).collect();
                 let n = same.len();
                 (same, n, 1 + mine)
             }
-            Share::Cross if crosses => {
+            Share::Cross => {
                 let claimers = threads.clone().filter(|&t| step.node(t) == mine).count();
                 (threads.filter(|&t| step.node(t) != mine).collect(), claimers, 1 + NODES + mine)
             }
-            // `cross` on one node: every thread's
-            _ => (threads.collect(), step.threads(), 0),
+            Share::Any => (threads.collect(), step.threads(), 0),
         };
         let (mut homes, mut starts, mut tiles) = (Vec::new(), Vec::new(), 0);
         for t in members {
@@ -216,7 +224,7 @@ impl Pool {
                 tiles += n;
             }
         }
-        Pool { homes, starts, tiles, claimers: claimers.max(1), counter }
+        Pool { share, homes, starts, tiles, claimers: claimers.max(1), counter }
     }
 
     /// The pool's tile `i`: its home thread and its index there.
@@ -258,6 +266,16 @@ struct Worker<'s> {
     tally: Tally,
 }
 
+/// What a claim did
+enum Claim {
+    /// The tile was busy: nothing
+    Busy,
+    /// Checked and rewritten: the bad words found
+    Worked(u64),
+    /// Found bad words under `errors=halt`: the tile released as found, unwritten, and the step halted
+    Halted(u64),
+}
+
 /// Why the claims stopped
 enum Stop {
     /// The step's time or cycles are done
@@ -291,11 +309,11 @@ impl<'s> Worker<'s> {
         self.pool.at(i as usize)
     }
 
-    /// One claim: the bad words its check found, or `None` when the tile was busy.
+    /// One claim, `cycle_errors` already found this cycle.
     ///
     /// # Safety
     /// Every home's tiles are inside its thread's extent, committed and live for the step.
-    unsafe fn claim(&mut self, runner: &mut TestRunner) -> Option<u64> {
+    unsafe fn claim(&mut self, runner: &mut TestRunner, cycle_errors: u64) -> Claim {
         let step = self.step;
         let t = step.counters[self.pool.counter].0.fetch_add(1, Ordering::Relaxed);
         let (home_thread, k) = self.tile(t);
@@ -304,7 +322,7 @@ impl<'s> Worker<'s> {
         let was = slot.load(Ordering::Relaxed);
         if was & BUSY != 0 || slot.compare_exchange(was, was | BUSY, Ordering::Acquire, Ordering::Relaxed).is_err() {
             self.tally.busy += 1;
-            return None;
+            return Claim::Busy;
         }
         let (ptr, len) = home.tile(k);
         let mut found = 0;
@@ -312,12 +330,21 @@ impl<'s> Worker<'s> {
             // SAFETY: the tile, held (busy) from the CAS above until the release below
             found = unsafe { self.kernel(was).verify(ptr, 0, len / 8, "page exchange's check") };
             if found > 0 {
-                self.bad_tile(found, home_thread, k, was);
+                self.bad_tile(found, home_thread, k, Some(writer(was)));
             }
             runner.add_bytes(len);
         } else if self.sealed {
             // SAFETY: as above
-            unsafe { runner.check_seal_of(ptr, len) };
+            let seal = unsafe { runner.check_seal_of(ptr, len) };
+            if seal > 0 {
+                self.bad_tile(seal, home_thread, k, None);
+            }
+        }
+        // Under errors=halt the bad words stay as found: the tile goes back unwritten, and the step halts, as the memory is shared
+        if runner.should_halt(cycle_errors + found) {
+            slot.store(was, Ordering::Release);
+            step.halted.0.store(1, Ordering::Relaxed);
+            return Claim::Halted(found);
         }
         let pass = t / self.pool.tiles as u64;
         let now = written(t, self.me, pass % 2 == 1);
@@ -328,21 +355,22 @@ impl<'s> Worker<'s> {
         self.tally.claims += 1;
         self.tally.others += u64::from(home_thread != self.me);
         self.tally.other_nodes += u64::from(step.node(home_thread) != step.node(self.me));
-        Some(found)
+        Claim::Worked(found)
     }
 
-    /// The tile's story, for the bad words the check before it logged
+    /// The tile's story, for the bad words the check before it logged: whose tile, and its last writer (`None`: it held the seal)
     #[cold]
     #[inline(never)]
-    fn bad_tile(&self, found: u64, home_thread: usize, k: usize, was: u64) {
+    fn bad_tile(&self, found: u64, home_thread: usize, k: usize, last: Option<usize>) {
         let step = self.step;
+        let held = match last {
+            Some(w) => format!("last written by thread {w} (node {})", step.node(w)),
+            None => "which held the seal".to_string(),
+        };
         log::error!(
-            "{}: those {found} words are tile {k} of thread {home_thread} (node {}), last written by thread {} (node {}), and checked by \
-             thread {} (node {})",
+            "{}: those {found} words are tile {k} of thread {home_thread} (node {}), {held}, and checked by thread {} (node {})",
             crate::error_context::found_by(TEST_NAME),
             step.node(home_thread),
-            writer(was),
-            step.node(writer(was)),
             self.me,
             step.node(self.me),
         );
@@ -361,13 +389,14 @@ impl<'s> Worker<'s> {
             runner.begin_cycle();
             let mut cycle_errors = 0;
             for _ in 0..share {
-                if runner.shutdown_requested() {
+                if runner.shutdown_requested() || self.step.halted.0.load(Ordering::Relaxed) != 0 {
                     return Stop::Aborted(cycle_errors);
                 }
                 // SAFETY: the caller's
-                cycle_errors += unsafe { self.claim(runner) }.unwrap_or(0);
-                if runner.should_halt(cycle_errors) {
-                    return Stop::Aborted(cycle_errors);
+                match unsafe { self.claim(runner, cycle_errors) } {
+                    Claim::Busy => {}
+                    Claim::Worked(found) => cycle_errors += found,
+                    Claim::Halted(found) => return Stop::Aborted(cycle_errors + found),
                 }
                 runner.update_progress_in_cycle();
             }
@@ -393,13 +422,16 @@ impl<'s> Worker<'s> {
                 // SAFETY: the thread's own tile, which no thread claims any more
                 let found = unsafe { self.kernel(state).verify(ptr, 0, len / 8, "page exchange's last check") };
                 if found > 0 {
-                    self.bad_tile(found, self.me, k, state);
+                    self.bad_tile(found, self.me, k, Some(writer(state)));
                     errors += found;
                 }
                 runner.add_bytes(len);
             } else if self.sealed {
                 // SAFETY: as above
-                unsafe { runner.check_seal_of(ptr, len) };
+                let seal = unsafe { runner.check_seal_of(ptr, len) };
+                if seal > 0 {
+                    self.bad_tile(seal, self.me, k, None);
+                }
             }
             // A no-op past the first cycle: finishing then reseals the whole extent
             runner.reseal(k * home.tile_bytes, len);
@@ -450,22 +482,28 @@ pub unsafe fn page_exchange_multi(
     // SAFETY: every home's tiles are its thread's extent, which the step's caller vouches for, and the claim protocol gives each claim its
     // tile alone
     let stop = unsafe { worker.claims(&mut runner) };
-    // Every thread waits here, however it stopped, so none checks its own tiles while another still claims
+    // Every thread waits here, however it stopped, so none checks its own tiles while another still claims; after it, each sees whether
+    // one halted (the barrier orders the flag's store before)
     step.barrier.wait();
+    let halted = step.halted.0.load(Ordering::Relaxed) != 0;
+    if halted {
+        runner.keep_memory();
+    }
     let ops = |runner: &TestRunner| (runner.bytes_processed() / 8) as u64;
     let stats = match stop {
-        Stop::Done => {
+        Stop::Done if !halted => {
             // SAFETY: the thread's own tiles; no thread claims any more
             let errors = unsafe { worker.finish_home(&mut runner) };
             runner.commit_cycle_errors(errors);
             runner.finish_completed(ops(&runner))
         }
+        Stop::Done => runner.finish_aborted(0, ops(&runner)),
         Stop::Aborted(errors) => runner.finish_aborted(errors, ops(&runner)),
     };
     let t = worker.tally;
     log::debug!(
         "[Thread {me}] {TEST_NAME} ({}): {} claims, {} of other threads' tiles, {} on other nodes; {} found busy",
-        share.name(),
+        worker.pool.share.name(),
         t.claims,
         t.others,
         t.other_nodes,
