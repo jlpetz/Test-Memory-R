@@ -47,17 +47,18 @@ jobs:
     - name: 🚧 Build release version
       run: cargo +nightly build --release
 
-    - name: ⚙️ Install cargo-nextest
+    - name: ⚙️ Install cargo-nextest and cargo-audit
       uses: taiki-e/install-action@v2
       with:
-        tool: cargo-nextest
+        tool: cargo-nextest,cargo-audit
 
     # The window's tests are of its plain-Rust model and need no Windows App Runtime. The CLI's
     # console goldens are compared byte for byte (.gitattributes keeps their line ends)
     - name: 🧪 Run tests
       run: cargo +nightly nextest run --workspace --all-targets
 
+    # Cargo.lock against the RustSec advisories: a vulnerability fails the job, a warning (an
+    # unmaintained crate) is only listed. Plain cargo-audit: actions-rs/audit-check is archived, and
+    # posting a check run needs a write token this workflow doesn't have.
     - name: 🔍 Run audit
-      uses: actions-rs/audit-check@v1
-      with:
-        token: ${{ secrets.GITHUB_TOKEN }}
+      run: cargo audit
