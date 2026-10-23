@@ -11,6 +11,17 @@
 //! thread pool drains every 500 ms, reading the suite's progress and the log's lines as it does
 //! (`window::listen`). `model.rs` turns what it brings into what the window shows, and `window.rs`
 //! draws it.
+//!
+//! Where the window runs (the README's table): Windows build 22000 or later, with the Windows App
+//! Runtime 2.x installed.
+//! - Below 22000 (Server 2022 is 20348) Reactor's bootstrap call doesn't exist, so tmr.exe never
+//!   opens the window and runs the CLI (`FIRST_GUI_BUILD` in crates/tmr-app's `launch.rs`; the
+//!   delay-load in its `build.rs` is what lets the exe start there at all).
+//! - From 22000 to 26099 (Windows 11 21H2 to 23H2) a double-click flashes a console briefly: those
+//!   builds ignore the manifest's `consoleAllocationPolicy`, so Windows opens one, which tmr.exe
+//!   leaves before the window opens.
+//! - From 26100 (Windows 11 24H2, Server 2025) the window is fully supported: a double-click opens
+//!   it with no console.
 
 mod chart;
 mod logger;

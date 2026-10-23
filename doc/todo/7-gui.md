@@ -72,7 +72,10 @@ stream; the CLI and the GUI are separate crates rendering it, so the compiler en
 inside one exe. The exe opens the GUI on a desktop launch and the CLI from a shell or with
 redirected output (WinRM runs), `--cli`/`--gui` override. A console-subsystem exe with the
 `consoleAllocationPolicy=detached` manifest opens no console on a double-click from Windows 11
-24H2 / Server 2025 (build 26100); older builds flash a console briefly. TMR's panic hook and
+24H2 / Server 2025 (build 26100). Windows 11 builds 22000-26099 ignore the manifest, so a
+double-click flashes a console briefly before the window. Below 22000 (Server 2022) there is no
+window, so there's no flash: a double-click runs the CLI in its own console. The README has the
+support table. TMR's panic hook and
 vectored exception handler (`cli.rs:133-154`) log a crash before the process ends; the GUI shows
 the reason the same way. If crash isolation ever matters, the same exe can run the engine as its
 own child, with no second file.
