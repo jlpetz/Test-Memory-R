@@ -14,9 +14,8 @@ pub fn create_console_reporter() -> Reporter<ConsoleRenderer> {
     Reporter::new(ConsoleRenderer::new())
 }
 
-/// Console renderer for terminal output. It renders into its text, which whoever asked for the
-/// report prints (TODO 29): the CLI writes a report in one piece with the lines around it, so no
-/// log line lands inside it.
+/// Console renderer for terminal output. It renders into its text, which whoever asked for the report prints (TODO 29): the CLI writes a
+/// report in one piece with the lines around it, so no log line lands inside it.
 pub struct ConsoleRenderer {
     use_colors: bool,
     text: String,

@@ -9,13 +9,12 @@
 //   - Layout C (Lat-NTW-DRAM-Write): NT streaming write saturation (sustained NT-write commit
 //                                     time at memory controller saturation)
 //
-// SIMD width variants per layout: 128-bit (SSE2), 256-bit (AVX2), 512-bit (AVX-512), Auto-dispatch.
-// The chain pointer reads stay scalar (loading addresses, not vectors). Data cell reads use
-// the configured SIMD width — they exercise the data cell address space without affecting
-// the chain step's latency-bearing dependency.
+// SIMD width variants per layout: 128-bit (SSE2), 256-bit (AVX2), 512-bit (AVX-512), Auto-dispatch. The chain pointer reads stay scalar
+// (loading addresses, not vectors). Data cell reads use the configured SIMD width — they exercise the data cell address space without
+// affecting the chain step's latency-bearing dependency.
 //
-// All chain cells are 64-byte aligned (cache-line aligned). Data cells are pure 64-byte payloads
-// — no metadata embedded — so SIMD ops up to AVX-512 work directly on them.
+// All chain cells are 64-byte aligned (cache-line aligned). Data cells are pure 64-byte payloads — no metadata embedded — so SIMD ops up to
+// AVX-512 work directly on them.
 
 #[cfg(target_arch = "x86_64")]
 use std::arch::x86_64::__rdtscp;
@@ -51,8 +50,8 @@ const LAYOUT_A_BLOCK_BYTES: usize = 2 * CACHE_LINE_BYTES; // chain + 1 data = 12
 //   Line 0 (chain cell): [unused: 8B][next: 8B][d0..d5: 6×8B = 48B]
 //   Lines 1-6 (data cells): 6× 64-byte clean payloads
 //
-// Per-step work: 1 chain read + 6 SIMD-width data loads. The 6 data loads are independent
-// random accesses (separate random permutation), CPU-pipelined through the load buffer.
+// Per-step work: 1 chain read + 6 SIMD-width data loads. The 6 data loads are independent random accesses (separate random permutation),
+// CPU-pipelined through the load buffer.
 
 const LAYOUT_B_BLOCK_BYTES: usize = 7 * CACHE_LINE_BYTES; // 1 chain + 6 data = 448B
 
@@ -65,11 +64,10 @@ fn setup_rng(stream: usize) -> u64 {
     0x123456789ABCDEFu64.wrapping_add(stream as u64)
 }
 
-/// Layout A in place (TODO 76; the heap permutations were an eighth of the extent). The chain
-/// cells form one random cycle (Sattolo in insertion form: cell i goes in after a random earlier
-/// cell), and each chain cell's data target is a random data cell, every one exactly once
-/// (inside-out Fisher-Yates). The same distributions as the old shuffle-then-link, one ascending
-/// pass, no division. Returns the chain's start; any cell is on the cycle.
+/// Layout A in place (TODO 76; the heap permutations were an eighth of the extent). The chain cells form one random cycle (Sattolo in
+/// insertion form: cell i goes in after a random earlier cell), and each chain cell's data target is a random data cell, every one exactly
+/// once (inside-out Fisher-Yates). The same distributions as the old shuffle-then-link, one ascending pass, no division. Returns the
+/// chain's start; any cell is on the cycle.
 unsafe fn setup_layout_a(base: *mut u8, working_bytes: usize, thread_id: usize) -> *mut u64 {
     let block_count = working_bytes / LAYOUT_A_BLOCK_BYTES;
     if block_count < 2 {
@@ -96,8 +94,8 @@ unsafe fn setup_layout_a(base: *mut u8, working_bytes: usize, thread_id: usize) 
     chain_addr(0)
 }
 
-/// Layout B in place, as Layout A: one random cycle through the chain cells, and the 6 data
-/// fields of each a random data cell, every one of the 6 x n exactly once.
+/// Layout B in place, as Layout A: one random cycle through the chain cells, and the 6 data fields of each a random data cell, every one of
+/// the 6 x n exactly once.
 unsafe fn setup_layout_b(base: *mut u8, working_bytes: usize, thread_id: usize) -> *mut u64 {
     let block_count = working_bytes / LAYOUT_B_BLOCK_BYTES;
     if block_count < 2 {
@@ -128,9 +126,9 @@ unsafe fn setup_layout_b(base: *mut u8, working_bytes: usize, thread_id: usize) 
     chain_addr(0)
 }
 
-/// The first `k` entries of a uniform random permutation of `0..n` (`k <= n`), without building
-/// the permutation: Fisher-Yates over a sparse map of the entries it has moved. The NT-write
-/// tests take their store addresses from it (TODO 76; the full permutation was the extent / 8).
+/// The first `k` entries of a uniform random permutation of `0..n` (`k <= n`), without building the permutation: Fisher-Yates over a sparse
+/// map of the entries it has moved. The NT-write tests take their store addresses from it (TODO 76; the full permutation was the extent /
+/// 8).
 fn random_prefix(n: usize, k: usize, seed: usize) -> Vec<usize> {
     let mut rng = setup_rng(seed);
     let mut moved: HashMap<usize, usize> = HashMap::with_capacity(k);
@@ -149,9 +147,8 @@ fn random_prefix(n: usize, k: usize, seed: usize) -> Vec<usize> {
 // Layout A macro — stamps out one read test for a given SIMD width
 // ============================================================================
 //
-// The data load consumes the data cell payload via a SIMD-width load. The result is XOR-
-// accumulated into a register-width scratch, then black_boxed at the end so the optimizer
-// can't elide the load. Chain pointer reads stay scalar.
+// The data load consumes the data cell payload via a SIMD-width load. The result is XOR- accumulated into a register-width scratch, then
+// black_boxed at the end so the optimizer can't elide the load. Chain pointer reads stay scalar.
 
 macro_rules! lat_v2_read_impl {
     (
@@ -211,15 +208,14 @@ macro_rules! lat_v2_read_impl {
 
                 let end_cyc = __rdtscp(&mut aux);
                 fence(Ordering::SeqCst);
-                // Reduce the SIMD accumulator to a u64 via the supplied closure, then
-                // hand it to black_box so the SIMD load isn't optimized away.
+                // Reduce the SIMD accumulator to a u64 via the supplied closure, then hand it to black_box so the SIMD load isn't optimized
+                // away.
                 let scalar_accum: u64 = ($reduce)(accum);
                 std::hint::black_box(scalar_accum);
 
                 let delta = end_cyc - start_cyc;
-                // 1 op per iteration: chain read is the latency-bearing operation. The
-                // SIMD data load pipelines in parallel — it exercises data cell address
-                // space without gating the chain step, so we don't count it.
+                // 1 op per iteration: chain read is the latency-bearing operation. The SIMD data load pipelines in parallel — it exercises
+                // data cell address space without gating the chain step, so we don't count it.
                 let ops = ITER as u64;
                 let cycles_per_op = delta as f64 / ops as f64;
                 let ns_per_op = cycles_per_op / cpu_ghz;
@@ -243,11 +239,9 @@ macro_rules! lat_v2_read_impl {
 // Layout A Write macro — single SIMD-width store per chain step (baseline)
 // ============================================================================
 //
-// Same chain structure as Layout A Read, but each chain step issues one SIMD-width
-// cached store to the data cell. Predicted to closely track Lat-V2-Read at every tier
-// because a single in-flight write has plenty of slack to retire during the chain miss.
-// Validates that the store-buffer pressure observed in Lat-V2P-Write requires the
-// concurrency density of 6 simultaneous stores per step.
+// Same chain structure as Layout A Read, but each chain step issues one SIMD-width cached store to the data cell. Predicted to closely
+// track Lat-V2-Read at every tier because a single in-flight write has plenty of slack to retire during the chain miss. Validates that the
+// store-buffer pressure observed in Lat-V2P-Write requires the concurrency density of 6 simultaneous stores per step.
 
 macro_rules! lat_v2_write_impl {
     (
@@ -297,8 +291,8 @@ macro_rules! lat_v2_write_impl {
                 for _ in 0..ITER {
                     let next = *chain.add(1) as *mut u64;
                     let dtarget = *chain.add(2) as *mut $vec_type;
-                    // Single SIMD-width cached store — fires into store buffer behind
-                    // the chain miss, retires before next iteration needs the slot.
+                    // Single SIMD-width cached store — fires into store buffer behind the chain miss, retires before next iteration needs
+                    // the slot.
                     $store_fn(dtarget, pattern);
                     chain = next;
                 }
@@ -330,11 +324,9 @@ macro_rules! lat_v2_write_impl {
 // Layout A Copy macro — single read-modify-write per chain step (baseline)
 // ============================================================================
 //
-// Same chain structure as Layout A Read, but each chain step does a load-XOR-store on
-// the single data cell. Predicted to closely track Lat-V2-Read because the RMW chain is
-// short (one cell) and easily fits behind the chain miss. Validates that the L1
-// dependency-chain limit observed in Lat-V2P-Copy requires multiple simultaneous RMW
-// pipelines.
+// Same chain structure as Layout A Read, but each chain step does a load-XOR-store on the single data cell. Predicted to closely track
+// Lat-V2-Read because the RMW chain is short (one cell) and easily fits behind the chain miss. Validates that the L1 dependency-chain limit
+// observed in Lat-V2P-Copy requires multiple simultaneous RMW pipelines.
 
 macro_rules! lat_v2_copy_impl {
     (
@@ -496,8 +488,7 @@ macro_rules! lat_v2p_read_impl {
                 std::hint::black_box(scalar_accum);
 
                 let delta = end_cyc - start_cyc;
-                // 1 op per iteration: chain read is latency-bearing. The 6 data loads
-                // pipeline in parallel through the CPU's load buffer.
+                // 1 op per iteration: chain read is latency-bearing. The 6 data loads pipeline in parallel through the CPU's load buffer.
                 let ops = ITER as u64;
                 let cycles_per_op = delta as f64 / ops as f64;
                 let ns_per_op = cycles_per_op / cpu_ghz;
@@ -521,14 +512,13 @@ macro_rules! lat_v2p_read_impl {
 // Layout B Write macro — packed 6 SIMD-width WRITES per chain step (Path B PoC)
 // ============================================================================
 //
-// Same chain structure as Layout B Read, but each chain step issues 6 SIMD-width *cached*
-// stores to the 6 random data cells. The stores enter the store buffer (~56-72 entries
-// on Intel) and pipeline behind the chain miss. Hypothesis: under sustained pressure at
-// DRAM tier (each RFO ~140 ns), 6 outstanding writes per iteration could fill the store
-// buffer faster than it drains, making per-step latency rise above pure Lat-V2P-Read.
+// Same chain structure as Layout B Read, but each chain step issues 6 SIMD-width *cached* stores to the 6 random data cells. The stores
+// enter the store buffer (~56-72 entries on Intel) and pipeline behind the chain miss. Hypothesis: under sustained pressure at DRAM tier
+// (each RFO ~140 ns), 6 outstanding writes per iteration could fill the store buffer faster than it drains, making per-step latency rise
+// above pure Lat-V2P-Read.
 //
-// If results match Read closely → cached writes are still hidden by store buffer (expected).
-// If DRAM tier rises notably → store-buffer pressure becomes visible (informative).
+// If results match Read closely → cached writes are still hidden by store buffer (expected). If DRAM tier rises notably → store-buffer
+// pressure becomes visible (informative).
 
 macro_rules! lat_v2p_write_impl {
     (
@@ -583,10 +573,8 @@ macro_rules! lat_v2p_write_impl {
                     let d3 = *chain.add(5) as *mut $vec_type;
                     let d4 = *chain.add(6) as *mut $vec_type;
                     let d5 = *chain.add(7) as *mut $vec_type;
-                    // 6 SIMD-width cached stores — fire into store buffer, pipeline
-                    // behind the chain miss. Hypothesis test: at DRAM tier with 6 RFOs
-                    // outstanding per iteration, does the store buffer become a
-                    // measurable bottleneck?
+                    // 6 SIMD-width cached stores — fire into store buffer, pipeline behind the chain miss. Hypothesis test: at DRAM tier
+                    // with 6 RFOs outstanding per iteration, does the store buffer become a measurable bottleneck?
                     $store_fn(d0, pattern);
                     $store_fn(d1, pattern);
                     $store_fn(d2, pattern);
@@ -600,9 +588,8 @@ macro_rules! lat_v2p_write_impl {
                 fence(Ordering::SeqCst);
 
                 let delta = end_cyc - start_cyc;
-                // 1 op per iteration: chain read is the latency-bearing operation. The
-                // 6 writes pipeline through the store buffer. If they ever gate the
-                // chain step (store buffer fills), it shows up here.
+                // 1 op per iteration: chain read is the latency-bearing operation. The 6 writes pipeline through the store buffer. If they
+                // ever gate the chain step (store buffer fills), it shows up here.
                 let ops = ITER as u64;
                 let cycles_per_op = delta as f64 / ops as f64;
                 let ns_per_op = cycles_per_op / cpu_ghz;
@@ -626,18 +613,16 @@ macro_rules! lat_v2p_write_impl {
 // Layout B Copy macro — packed 6 SIMD-width READ-MODIFY-WRITE per chain step
 // ============================================================================
 //
-// Same chain structure as Layout B Read/Write, but each chain step issues 6 SIMD-width
-// read-modify-write operations: load → XOR → store on each of the 6 random data cells.
-// This produces realistic "copy" memory traffic — each cell incurs both a load and a
-// store on the same cache line.
+// Same chain structure as Layout B Read/Write, but each chain step issues 6 SIMD-width read-modify-write operations: load → XOR → store on
+// each of the 6 random data cells.
+// This produces realistic "copy" memory traffic — each cell incurs both a load and a store on the same cache line.
 //
 // vs Lat-V2P-Read: same load pressure, plus 6 stores
 // vs Lat-V2P-Write: stores write to lines that were just loaded (already in L1, no RFO)
 //
-// Hypothesis: Copy should be FASTER than Write at most tiers because the loads warm the
-// lines into L1 first, eliminating the RFO cost of the stores. The store-buffer pressure
-// pattern from Lat-V2P-Write should mostly disappear, replaced by a simpler "Read +
-// trivial stores" profile.
+// Hypothesis: Copy should be FASTER than Write at most tiers because the loads warm the lines into L1 first, eliminating the RFO cost of
+// the stores. The store-buffer pressure pattern from Lat-V2P-Write should mostly disappear, replaced by a simpler "Read + trivial stores"
+// profile.
 
 macro_rules! lat_v2p_copy_impl {
     (
@@ -694,9 +679,8 @@ macro_rules! lat_v2p_copy_impl {
                     let d3 = *chain.add(5) as *mut $vec_type;
                     let d4 = *chain.add(6) as *mut $vec_type;
                     let d5 = *chain.add(7) as *mut $vec_type;
-                    // Read-Modify-Write each data cell. Loads warm the lines into L1
-                    // first, so the subsequent stores hit a cached line (no RFO needed).
-                    // Tests the "copy traffic" path — load + store on same cache line.
+                    // Read-Modify-Write each data cell. Loads warm the lines into L1 first, so the subsequent stores hit a cached line (no
+                    // RFO needed). Tests the "copy traffic" path — load + store on same cache line.
                     let v0 = $load_fn(d0);
                     $store_fn(d0, $xor_fn(v0, mask));
                     let v1 = $load_fn(d1);
@@ -741,17 +725,16 @@ macro_rules! lat_v2p_copy_impl {
 // Layout B WriteFull macro — sized to write the entire 64-byte cache line per cell
 // ============================================================================
 //
-// Same chain structure as Lat-V2P-Write, but instead of a single SIMD-width store per
-// data cell (which writes 16/32/64 bytes depending on width), this variant repeats the
-// store at consecutive offsets within the same cell so that every width writes the FULL
-// 64-byte cache line per cell.
+// Same chain structure as Lat-V2P-Write, but instead of a single SIMD-width store per data cell (which writes 16/32/64 bytes depending on
+// width), this variant repeats the store at consecutive offsets within the same cell so that every width writes the FULL 64-byte cache line
+// per cell.
 //
 // 128-bit: 4 stores per cell at offsets 0, 16, 32, 48
 // 256-bit: 2 stores per cell at offsets 0, 32
 // 512-bit: 1 store per cell at offset 0 (already full-line)
 //
-// Comparing to Lat-V2P-Write isolates the byte-coverage variable. Same total cache lines
-// touched, but every line gets fully overwritten regardless of width.
+// Comparing to Lat-V2P-Write isolates the byte-coverage variable. Same total cache lines touched, but every line gets fully overwritten
+// regardless of width.
 
 macro_rules! lat_v2p_write_full_impl {
     (
@@ -807,9 +790,8 @@ macro_rules! lat_v2p_write_full_impl {
                     let d3 = *chain.add(5) as *mut $vec_type;
                     let d4 = *chain.add(6) as *mut $vec_type;
                     let d5 = *chain.add(7) as *mut $vec_type;
-                    // Write the full 64-byte cache line per cell. Loop unrolled by
-                    // $stores_per_cell so 128/256/512 all touch every byte of every
-                    // target line.
+                    // Write the full 64-byte cache line per cell. Loop unrolled by $stores_per_cell so 128/256/512 all touch every byte of
+                    // every target line.
                     for i in 0..$stores_per_cell {
                         $store_fn(d0.add(i), pattern);
                         $store_fn(d1.add(i), pattern);
@@ -848,11 +830,9 @@ macro_rules! lat_v2p_write_full_impl {
 // Layout B CopyFull macro — read-modify-write the entire 64-byte cache line per cell
 // ============================================================================
 //
-// Same as Lat-V2P-Copy but each cell is fully covered by RMW operations regardless of
-// SIMD width. Comparing to Lat-V2P-Copy isolates whether the L3 bimodality observed at
-// 256/512 widths is due to (a) byte coverage of the target line, or (b) the SIMD path
-// itself (single wide instruction vs multiple narrow instructions doing the same total
-// work).
+// Same as Lat-V2P-Copy but each cell is fully covered by RMW operations regardless of SIMD width. Comparing to Lat-V2P-Copy isolates
+// whether the L3 bimodality observed at 256/512 widths is due to (a) byte coverage of the target line, or (b) the SIMD path itself (single
+// wide instruction vs multiple narrow instructions doing the same total work).
 
 macro_rules! lat_v2p_copy_full_impl {
     (
@@ -1357,17 +1337,14 @@ pub unsafe fn lat_v2p_copy_full_auto_multi(
 // Lat-NTW-DRAM-Write — Non-temporal streaming write saturation experiment
 // ============================================================================
 //
-// Hypothesis: per-write hardware commit latency is independently measurable if we saturate
-// the WCBs / store buffer with NT stores, then sfence to force commit before stopping the
-// timer. Each sample issues N NT stores then sfences and divides total time by N.
+// Hypothesis: per-write hardware commit latency is independently measurable if we saturate the WCBs / store buffer with NT stores, then
+// sfence to force commit before stopping the timer. Each sample issues N NT stores then sfences and divides total time by N.
 //
-// NT stores bypass cache hierarchy → there's no per-tier difference, only one number exists:
-// sustained per-write commit time at memory controller saturation. So we register only a
-// single test (Lat-NTW-DRAM-Write) rather than per-tier variants.
+// NT stores bypass cache hierarchy → there's no per-tier difference, only one number exists: sustained per-write commit time at memory
+// controller saturation. So we register only a single test (Lat-NTW-DRAM-Write) rather than per-tier variants.
 //
-// SIMD widths could matter for write-throughput (wider stores fewer instructions) but the
-// commit time per cache line is what we're measuring — width should not change the per-line
-// commit cost. We register width variants for comparison anyway.
+// SIMD widths could matter for write-throughput (wider stores fewer instructions) but the commit time per cache line is what we're
+// measuring — width should not change the per-line commit cost. We register width variants for comparison anyway.
 
 macro_rules! lat_ntw_write_impl {
     (
@@ -1398,18 +1375,17 @@ macro_rules! lat_ntw_write_impl {
                 return finalize_stats(&mut runner, test_name, thread_id, 0, Vec::new());
             }
 
-            // Stores per sample. Large enough to saturate WCBs and dilute the warmup phase
-            // (first ~12 stores fit in empty WCBs and appear instant).
+            // Stores per sample. Large enough to saturate WCBs and dilute the warmup phase (first ~12 stores fit in empty WCBs and appear
+            // instant).
             const STORES_PER_SAMPLE: usize = 4096;
             let pattern_word = 0x5A5A5A5A_5A5A5A5Au64 as i64;
             let pattern: $vec_type = $set1_fn(pattern_word);
 
-            // Build a randomized address table per block. Each address is a 64-byte-aligned
-            // cache line — we issue one SIMD-width store per address (writes $vec_size bytes
-            // at the start of the line). The vec_size doesn't change per-line commit cost
-            // (still one cache line) but changes how many instructions we issue.
-            // Random distinct lines of the extent, in random order: the first STORES_PER_SAMPLE of a
-            // random permutation of its lines, repeated when it has fewer
+            // Build a randomized address table per block. Each address is a 64-byte-aligned cache line — we issue one SIMD-width store per
+            // address (writes $vec_size bytes at the start of the line). The vec_size doesn't change per-line commit cost (still one cache
+            // line) but changes how many instructions we issue.
+            // Random distinct lines of the extent, in random order: the first STORES_PER_SAMPLE of a random permutation of its lines,
+            // repeated when it has fewer
             let line_count = extent.test_size / CACHE_LINE_BYTES;
             if line_count < 2 {
                 return finalize_stats(&mut runner, test_name, thread_id, 0, Vec::new());
@@ -1452,18 +1428,17 @@ macro_rules! lat_ntw_write_impl {
                 }
             }
 
-            // Suppress unused-vec_size warning; the value is documentary and may be used in
-            // future variants that issue multiple stores per cache line.
+            // Suppress unused-vec_size warning; the value is documentary and may be used in future variants that issue multiple stores per
+            // cache line.
             let _ = $vec_size;
             finalize_stats(&mut runner, test_name, thread_id, total_ops, latencies_ns)
         }
     };
 }
 
-/// Scalar (8-byte) NT-write variant. `_mm_stream_si64` writes a single u64 (8 bytes) per
-/// store — fills only 1/8 of a cache line. Tests the lower bound of the WCB-fill-ratio
-/// hypothesis: stores that leave the most empty bytes per cache line should produce the
-/// slowest sustained commit time. Validates the progression Scalar < 128 ≤ 256 ≪ 512.
+/// Scalar (8-byte) NT-write variant. `_mm_stream_si64` writes a single u64 (8 bytes) per store — fills only 1/8 of a cache line. Tests the
+/// lower bound of the WCB-fill-ratio hypothesis: stores that leave the most empty bytes per cache line should produce the slowest sustained
+/// commit time. Validates the progression Scalar < 128 ≤ 256 ≪ 512.
 #[doc = include_str!("test_fn_safety.md")]
 #[target_feature(enable = "sse4.2,sse4.1,ssse3,sse3,sse2,popcnt")]
 pub unsafe fn lat_ntw_write_scalar_multi(
@@ -1486,8 +1461,8 @@ pub unsafe fn lat_ntw_write_scalar_multi(
     const STORES_PER_SAMPLE: usize = 4096;
     const PATTERN: i64 = 0x5A5A5A5A_5A5A5A5Au64 as i64;
 
-    // Random distinct lines of the extent, in random order: the first STORES_PER_SAMPLE of a
-    // random permutation of its lines, repeated when it has fewer
+    // Random distinct lines of the extent, in random order: the first STORES_PER_SAMPLE of a random permutation of its lines, repeated when
+    // it has fewer
     let line_count = extent.test_size / CACHE_LINE_BYTES;
     if line_count < 2 {
         return finalize_stats(&mut runner, test_name, thread_id, 0, Vec::new());
@@ -1576,8 +1551,7 @@ pub unsafe fn lat_ntw_write_auto_multi(
 // Common stats helpers
 // ============================================================================
 
-/// The test's stats: the runner's bytes, time and cycles (one sample per cycle), and the
-/// percentiles of the samples.
+/// The test's stats: the runner's bytes, time and cycles (one sample per cycle), and the percentiles of the samples.
 fn finalize_stats(
     runner: &mut TestRunner<'_>, test_name: &'static str, thread_id: usize, total_ops: u64, latencies_ns: Vec<f64>,
 ) -> LatencyTestStats {
@@ -1640,8 +1614,7 @@ fn finalize_stats(
 mod tests {
     use super::*;
 
-    /// Walks the chain from `start`: every chain cell once, back to the start. Returns the data
-    /// targets in the order the chase meets them.
+    /// Walks the chain from `start`: every chain cell once, back to the start. Returns the data targets in the order the chase meets them.
     fn chase(start: *mut u64, cells: usize, slots: std::ops::Range<usize>) -> Vec<u64> {
         let mut seen = std::collections::HashSet::new();
         let mut targets = Vec::new();
@@ -1655,8 +1628,8 @@ mod tests {
         targets
     }
 
-    /// TODO 76: built in place, each layout's chain is one cycle through every chain cell, and
-    /// its data targets are every data cell exactly once.
+    /// TODO 76: built in place, each layout's chain is one cycle through every chain cell, and its data targets are every data cell exactly
+    /// once.
     #[test]
     fn layouts_are_one_cycle_and_a_bijection_onto_the_data_cells() {
         let cells = 300;

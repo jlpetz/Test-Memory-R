@@ -1,7 +1,6 @@
-//! A session's setup and its end as the console shows them (TODO 29): each event the print group it
-//! replaced, moved here from the engine's `cli.rs` (the CPU topology's from `cpu_topology.rs`, the
-//! memory status's from `runner.rs`) with its format strings. No ticker is up during setup, so all
-//! print with plain `print!`, and to stderr what went there.
+//! A session's setup and its end as the console shows them (TODO 29): each event the print group it replaced, moved here from the engine's
+//! `cli.rs` (the CPU topology's from `cpu_topology.rs`, the memory status's from `runner.rs`) with its format strings. No ticker is up
+//! during setup, so all print with plain `print!`, and to stderr what went there.
 
 use std::fmt::Write as _;
 
@@ -10,8 +9,8 @@ use tmr::session::{SessionEnd, Stopped};
 
 use super::{rendered, report_text};
 
-/// Shows `setup`. From `Starting` on, Ctrl+C stops the run gracefully: `take_ctrl_c` installs
-/// that (`crate::take_ctrl_c`; a test passes its own, as a test process keeps Ctrl+C for itself).
+/// Shows `setup`. From `Starting` on, Ctrl+C stops the run gracefully: `take_ctrl_c` installs that (`crate::take_ctrl_c`; a test passes its
+/// own, as a test process keeps Ctrl+C for itself).
 pub(super) fn show(setup: Setup, take_ctrl_c: impl FnOnce()) {
     match setup {
         Setup::MemoryStatus(None) => eprintln!("⚠️ Failed to retrieve system memory status"),
@@ -261,9 +260,8 @@ fn memory_status_text(text: &mut String, status: &MemoryStatus) {
     let _ = writeln!(text);
 }
 
-/// How the session ended, as the console says it, `program` the exe's name for the help an unknown
-/// flag shows. A command's output is its own (`tmr::commands::run`), and the large-page restart's
-/// text was the prompt's.
+/// How the session ended, as the console says it, `program` the exe's name for the help an unknown flag shows. A command's output is its
+/// own (`tmr::commands::run`), and the large-page restart's text was the prompt's.
 pub(crate) fn show_end(end: &SessionEnd, program: &str) {
     match end {
         SessionEnd::Stopped(Stopped::Invalid(e)) => eprintln!("{}", e),

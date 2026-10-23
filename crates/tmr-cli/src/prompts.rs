@@ -1,14 +1,13 @@
-//! The CLI's questions (TODO 29), over any reader and writer so a test can script the answers: the
-//! large-page restart (`Frontend::large_page_restart`) and a calibration's save (the `confirm`
-//! that `tmr::commands::run` takes). The CLI asks on the console.
+//! The CLI's questions (TODO 29), over any reader and writer so a test can script the answers: the large-page restart
+//! (`Frontend::large_page_restart`) and a calibration's save (the `confirm` that `tmr::commands::run` takes). The CLI asks on the console.
 
 use std::io::{self, BufRead, Write};
 
 use tmr::frontend::RestartChoice;
 
-/// Large pages need a restart: what that means, the choice, A or B, and what the answer does. A
-/// that exits, B that continues on 4 KiB pages; anything else, an empty answer, the input's end or
-/// an input that can't be read continue on them too, saying the choice was invalid.
+/// Large pages need a restart: what that means, the choice, A or B, and what the answer does. A that exits, B that continues on 4 KiB
+/// pages; anything else, an empty answer, the input's end or an input that can't be read continue on them too, saying the choice was
+/// invalid.
 pub fn large_page_restart(input: &mut dyn BufRead, out: &mut dyn Write) -> io::Result<RestartChoice> {
     writeln!(out, "⚠️  LARGE PAGE SETUP REQUIRES RESTART")?;
     writeln!(out, "=====================================")?;
@@ -62,10 +61,9 @@ pub fn large_page_restart(input: &mut dyn BufRead, out: &mut dyn Write) -> io::R
     }
 }
 
-/// Asks `question` [Y/n]: yes for Enter, y or yes; no for anything else. When no answer can come
-/// (the input ended, or can't be read: a run with no console to answer from, over WinRM), the
-/// default, yes, as the [Y/n] says: the one question is a calibration's save, whose command was the
-/// request to calibrate. `--no-save` is how such a run keeps what is stored.
+/// Asks `question` [Y/n]: yes for Enter, y or yes; no for anything else. When no answer can come (the input ended, or can't be read: a run
+/// with no console to answer from, over WinRM), the default, yes, as the [Y/n] says: the one question is a calibration's save, whose
+/// command was the request to calibrate. `--no-save` is how such a run keeps what is stored.
 pub fn confirm(input: &mut dyn BufRead, out: &mut dyn Write, question: &str) -> bool {
     let _ = write!(out, "\n{question} [Y/n]: ");
     let _ = out.flush();
@@ -83,8 +81,8 @@ pub fn confirm(input: &mut dyn BufRead, out: &mut dyn Write, question: &str) -> 
 mod tests {
     use super::*;
 
-    /// The restart's question and each answer's text, after a `## case` line: A exits; B, an empty
-    /// answer, the input's end and anything else continue on 4 KiB pages (TODO 29).
+    /// The restart's question and each answer's text, after a `## case` line: A exits; B, an empty answer, the input's end and anything
+    /// else continue on 4 KiB pages (TODO 29).
     #[test]
     fn the_restart_question_takes_a_or_b() {
         let mut text = String::new();
@@ -104,9 +102,8 @@ mod tests {
         crate::golden::check("large_page_restart", &text);
     }
 
-    /// A calibration's save: Enter, y and yes save, and so does no answer at all (the input's end:
-    /// a run with no console to answer from; or an input that can't be read), as the [Y/n] default
-    /// says; n and anything else keep what is stored.
+    /// A calibration's save: Enter, y and yes save, and so does no answer at all (the input's end: a run with no console to answer from; or
+    /// an input that can't be read), as the [Y/n] default says; n and anything else keep what is stored.
     #[test]
     fn a_calibration_is_saved_unless_the_user_says_no() {
         let ask = |input: &[u8]| {

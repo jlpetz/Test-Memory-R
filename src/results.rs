@@ -19,9 +19,9 @@ fn is_false(b: &bool) -> bool {
     !*b
 }
 
-/// Writes `bytes` to `path` and flushes them to the disk (`FlushFileBuffers`) before it returns
-/// (TODO 72). NTFS logs a rename at once but writes a file's data back later, so without the flush
-/// a system that went down just after a save could keep the rename and lose the data it names.
+/// Writes `bytes` to `path` and flushes them to the disk (`FlushFileBuffers`) before it returns (TODO 72). NTFS logs a rename at once but
+/// writes a file's data back later, so without the flush a system that went down just after a save could keep the rename and lose the data
+/// it names.
 fn write_to_disk(path: &str, bytes: &[u8]) -> std::io::Result<()> {
     use std::io::Write as _;
     let mut file = fs::File::create(path)?;
@@ -32,12 +32,11 @@ fn write_to_disk(path: &str, bytes: &[u8]) -> std::io::Result<()> {
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct TestRunResult {
     pub metadata: TestRunMetadata,
-    /// Which machine produced this result (TODO #67). Filled in by `new()` rather than a setter —
-    /// the field this replaced was an all-placeholder `SystemInfoSnapshot` whose setter nothing
-    /// ever called, so every result claimed `CPU: Unknown, 0.00 GiB`.
+    /// Which machine produced this result (TODO #67). Filled in by `new()` rather than a setter — the field this replaced was an
+    /// all-placeholder `SystemInfoSnapshot` whose setter nothing ever called, so every result claimed `CPU: Unknown, 0.00 GiB`.
     pub identity: crate::run_context::RunIdentity,
-    /// What was actually allocated and executed (TODO #67). Required, and taken by `new()`, so a
-    /// saved result can never be missing the context needed to interpret its own numbers.
+    /// What was actually allocated and executed (TODO #67). Required, and taken by `new()`, so a saved result can never be missing the
+    /// context needed to interpret its own numbers.
     pub run_config: crate::run_context::RunConfigSnapshot,
     pub cycles: Vec<CycleResult>,
     pub overall_stats: OverallStats,
@@ -51,22 +50,19 @@ pub struct TestRunMetadata {
     pub build: Option<BuildRecord>,
     /// Unix timestamp — zone-free, the machine-readable anchor.
     pub start_time: u64,
-    /// Start time in UTC. Kept because result files get collected from several machines and
-    /// consolidated centrally, where local stamps from different boxes cannot be ordered.
+    /// Start time in UTC. Kept because result files get collected from several machines and consolidated centrally, where local stamps from
+    /// different boxes cannot be ordered.
     pub start_time_utc: String,
-    /// The same instant in the running machine's local zone, **with its offset** (e.g.
-    /// `2026-09-08 14:18:23 +10:00`). This is the one a human matches against `logs/` and against
-    /// their own memory of when they ran it; the offset is recorded so it stays unambiguous once
+    /// The same instant in the running machine's local zone, **with its offset** (e.g. `2026-09-08 14:18:23 +10:00`). This is the one a
+    /// human matches against `logs/` and against their own memory of when they ran it; the offset is recorded so it stays unambiguous once
     /// the file leaves this machine, and across DST.
     pub start_time_local: String,
-    /// Generated filename. Shares its stem with this run's log file — see
-    /// [`crate::run_context::run_file_stem`].
+    /// Generated filename. Shares its stem with this run's log file — see [`crate::run_context::run_file_stem`].
     pub filename: String,
     pub config_name: Option<String>, // If loaded from config
 }
 
-/// The build that wrote a results file (`build_info::BUILD`, TODO 72). Its version is
-/// `tmr_version`.
+/// The build that wrote a results file (`build_info::BUILD`, TODO 72). Its version is `tmr_version`.
 #[derive(Debug, Clone, Default, PartialEq, Serialize, Deserialize)]
 pub struct BuildRecord {
     pub commit: String,
@@ -85,9 +81,8 @@ impl From<crate::build_info::BuildInfo> for BuildRecord {
 pub struct CycleResult {
     pub cycle_number: u32,
     pub duration_secs: u32,
-    /// The cycle stopped early, on Ctrl+C or errors=halt, before its final seal check (TODO 72): a
-    /// step was cut short or didn't run, or only the check was left. Absent for a cycle that ran to
-    /// its end, and in results written before it.
+    /// The cycle stopped early, on Ctrl+C or errors=halt, before its final seal check (TODO 72): a step was cut short or didn't run, or
+    /// only the check was left. Absent for a cycle that ran to its end, and in results written before it.
     #[serde(default, skip_serializing_if = "is_false")]
     pub partial: bool,
     /// One per step, in cycle order (TODO 74)
@@ -98,8 +93,8 @@ pub struct CycleResult {
     pub cycle_stats: CycleStats,
 }
 
-/// A cycle's run-wide seal stages (TODO 74): sealing all memory at its start, checking it all at
-/// its end. Their time is the cycle's, not any step's.
+/// A cycle's run-wide seal stages (TODO 74): sealing all memory at its start, checking it all at its end. Their time is the cycle's, not
+/// any step's.
 #[derive(Debug, Clone, Default, Serialize, Deserialize)]
 pub struct CycleSeal {
     pub seal_ms: u128,
@@ -129,14 +124,12 @@ pub struct TestResult {
     /// The step's name in reports, e.g. `Mem-SimpleV2-512_A (Test 12)`
     pub label: String,
     pub duration_ms: u128,
-    /// The test's own time, its slowest thread's: the step's without the setup a test leaves out of
-    /// its clock (TODO 90), which its speed divides by; the console's `Test:` time (TODO 72). 0 in
-    /// results written before it.
+    /// The test's own time, its slowest thread's: the step's without the setup a test leaves out of its clock (TODO 90), which its speed
+    /// divides by; the console's `Test:` time (TODO 72). 0 in results written before it.
     #[serde(default, serialize_with = "serialize_round_2dp")]
     pub timed_ms: f64,
     pub bytes_processed: u64,
-    /// The operations its threads counted, the console's `ops` (TODO 72); 0 in results written
-    /// before it
+    /// The operations its threads counted, the console's `ops` (TODO 72); 0 in results written before it
     #[serde(default)]
     pub operations: u64,
     /// Passes over its extent, the fewest and the most any of the step's threads completed
@@ -149,25 +142,23 @@ pub struct TestResult {
     /// run, and in results written before it.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub stopped_by: Option<String>,
-    /// The step's work around its test sequence, by operation (`ops::Op::key`): the seal's
-    /// between the steps and around its chunks, its fills. Only the operations it did.
+    /// The step's work around its test sequence, by operation (`ops::Op::key`): the seal's between the steps and around its chunks, its
+    /// fills. Only the operations it did.
     #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
     pub intermediate: OpRecords,
-    /// Recorded in MiB/s only. A GiB/s field alongside it would be the same measurement stored
-    /// twice — every producer computed it as `mib_s / 1024.0` — and rounding the pair to
-    /// different scales made the two disagree. Readers that want GiB/s divide by 1024.
+    /// Recorded in MiB/s only. A GiB/s field alongside it would be the same measurement stored twice — every producer computed it as `mib_s
+    /// / 1024.0` — and rounding the pair to different scales made the two disagree. Readers that want GiB/s divide by 1024.
     #[serde(serialize_with = "serialize_round_int")]
     pub throughput_mib_s: f64,
     pub errors: u64,
-    /// Checks that found a difference (TODO 27). `errors` counts the bad words their rescans found,
-    /// and one for each check a rescan didn't reproduce (`not_reproduced`): a failing check and a
-    /// bad word are different observations.
+    /// Checks that found a difference (TODO 27). `errors` counts the bad words their rescans found, and one for each check a rescan didn't
+    /// reproduce (`not_reproduced`): a failing check and a bad word are different observations.
     #[serde(default, skip_serializing_if = "is_zero")]
     pub alarms: u64,
     #[serde(default, skip_serializing_if = "is_zero")]
     pub not_reproduced: u64,
-    /// The bits that failed the step's own checks (TODO 97): each bit's failed checks, and the bad
-    /// words its rescans found with it wrong, 0→1 and 1→0. None on a clean step.
+    /// The bits that failed the step's own checks (TODO 97): each bit's failed checks, and the bad words its rescans found with it wrong,
+    /// 0→1 and 1→0. None on a clean step.
     #[serde(default, skip_serializing_if = "FailingBits::is_empty")]
     pub failing_bits: FailingBits,
     /// What the seal checks before the step's chunks found (TODO 74): TM5's test 0 errors
@@ -201,20 +192,18 @@ pub struct TestResult {
     pub latency_p99_9_ns: Option<f64>,
     #[serde(skip_serializing_if = "Option::is_none", serialize_with = "serialize_round_opt_2dp")]
     pub latency_spread: Option<f64>,
-    /// Each thread's part of the step, by thread (TODO 72): what the console's thread table shows,
-    /// and where the thread ran. Absent for a step that didn't run, and in results written before
-    /// it.
+    /// Each thread's part of the step, by thread (TODO 72): what the console's thread table shows, and where the thread ran. Absent for a
+    /// step that didn't run, and in results written before it.
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub threads: Vec<ThreadStepRecord>,
 }
 
-/// One thread's part of a step (TODO 72). With its CPU, core and node, the run's CPU Performance
-/// Summary can be worked out again from the file.
+/// One thread's part of a step (TODO 72). With its CPU, core and node, the run's CPU Performance Summary can be worked out again from the
+/// file.
 #[derive(Debug, Clone, Default, PartialEq, Serialize, Deserialize)]
 pub struct ThreadStepRecord {
     pub thread: usize,
-    /// The logical CPU it was assigned, that CPU's physical core and its NUMA node; absent for a
-    /// thread the pool has no assignment for
+    /// The logical CPU it was assigned, that CPU's physical core and its NUMA node; absent for a thread the pool has no assignment for
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub cpu: Option<usize>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
@@ -284,15 +273,13 @@ pub fn op_records(ops: &crate::ops::OpTally) -> OpRecords {
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct OverallStats {
-    /// Saved between cycles with the run still going (TODO 72): after the first cycle, then at most
-    /// once a minute (`runner::RESULTS_SAVE_INTERVAL`), and the figures are the cycles that had
-    /// finished. A run killed, lost or crashed leaves its last such save. False in the final save,
-    /// and in results written before it.
+    /// Saved between cycles with the run still going (TODO 72): after the first cycle, then at most once a minute
+    /// (`runner::RESULTS_SAVE_INTERVAL`), and the figures are the cycles that had finished. A run killed, lost or crashed leaves its last
+    /// such save. False in the final save, and in results written before it.
     #[serde(default)]
     pub in_progress: bool,
-    /// How the run ended, in the final save: `completed` (its cycle limit), `time_limit`,
-    /// `interrupted` (Ctrl+C) or `halted` (errors=halt); and its verdict, as its exit status gives
-    /// it: `passed`, `failed`, `not_run` or `interrupted`. Absent mid-run, and in results written
+    /// How the run ended, in the final save: `completed` (its cycle limit), `time_limit`, `interrupted` (Ctrl+C) or `halted` (errors=halt);
+    /// and its verdict, as its exit status gives it: `passed`, `failed`, `not_run` or `interrupted`. Absent mid-run, and in results written
     /// before them.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub outcome: Option<String>,
@@ -305,25 +292,22 @@ pub struct OverallStats {
     #[serde(serialize_with = "serialize_round_int")]
     pub overall_throughput_mib_s: f64,
     pub total_errors: u64,
-    // Run-level WHEA tally, taken from the monitor's cumulative counters rather than summed from
-    // the per-test figures (see `set_whea_totals`).
+    // Run-level WHEA tally, taken from the monitor's cumulative counters rather than summed from the per-test figures (see
+    // `set_whea_totals`).
     pub whea_total: u64,
     pub whea_corrected: u64,
-    /// Whether WHEA monitoring was actually running. Without this, `whea_total: 0` is ambiguous
-    /// between "no hardware errors" and "we never looked" — which would read as a clean bill of
-    /// health it did not earn.
+    /// Whether WHEA monitoring was actually running. Without this, `whea_total: 0` is ambiguous between "no hardware errors" and "we never
+    /// looked" — which would read as a clean bill of health it did not earn.
     pub whea_monitored: bool,
     /// The seal's errors, all of them in `total_errors` too (TODO 74)
     pub seal_errors: u64,
-    /// The bits that failed the tests' own checks over the run, and the seal's checks (TODO 97): as
-    /// a step's, the seal's apart
+    /// The bits that failed the tests' own checks over the run, and the seal's checks (TODO 97): as a step's, the seal's apart
     #[serde(default, skip_serializing_if = "FailingBits::is_empty")]
     pub failing_bits: FailingBits,
     #[serde(default, skip_serializing_if = "FailingBits::is_empty")]
     pub seal_failing_bits: FailingBits,
     /// Each step's figures over the cycles (TODO 74)
-    /// The run's work around its tests, by operation (TODO 90): every step's, and each cycle's
-    /// seal at its start and check at its end
+    /// The run's work around its tests, by operation (TODO 90): every step's, and each cycle's seal at its start and check at its end
     #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
     pub intermediate: OpRecords,
     pub per_step_averages: Vec<TestAverage>,
@@ -351,8 +335,8 @@ pub struct TestAverage {
     pub seal_failing_bits: FailingBits,
     /// Cycles the step ran in
     pub runs: u64,
-    // WHEA counts summed across every cycle this test ran in (totals, not averages — a hardware
-    // error is an event count, and averaging it would hide a single-cycle fault).
+    // WHEA counts summed across every cycle this test ran in (totals, not averages — a hardware error is an event count, and averaging it
+    // would hide a single-cycle fault).
     pub whea_total: u64,
     pub whea_corrected: u64,
     // Latency metrics (averaged across cycles, Some for latency tests, None for other tests)
@@ -387,9 +371,8 @@ pub struct TestComparison {
     pub comparison_time: String,
     pub overall_comparison: OverallComparison,
     pub per_test_comparisons: Vec<TestComparisonResult>,
-    /// Hardware and configuration differences between the two runs (TODO #67). Non-empty means the
-    /// percentages above are at least partly explained by something other than a code change; any
-    /// entry with `invalidates` set means they cannot be attributed at all.
+    /// Hardware and configuration differences between the two runs (TODO #67). Non-empty means the percentages above are at least partly
+    /// explained by something other than a code change; any entry with `invalidates` set means they cannot be attributed at all.
     pub run_differences: Vec<crate::run_context::RunDifference>,
 }
 
@@ -428,19 +411,17 @@ pub struct TestComparisonResult {
 impl TestRunResult {
     /// Start a result file for this run.
     ///
-    /// `run_config` is a constructor argument rather than a setter because its values are only
-    /// *observed* facts once allocation has returned and the thread pool exists — and because the
-    /// placeholder-snapshot bug this replaced was caused precisely by an optional setter nothing
-    /// called. Callers must therefore build it after `ThreadPool::new`.
+    /// `run_config` is a constructor argument rather than a setter because its values are only *observed* facts once allocation has
+    /// returned and the thread pool exists — and because the placeholder-snapshot bug this replaced was caused precisely by an optional
+    /// setter nothing called. Callers must therefore build it after `ThreadPool::new`.
     pub fn new(run_config: crate::run_context::RunConfigSnapshot) -> Self {
         // Create results directory if it doesn't exist
         if let Err(e) = std::fs::create_dir_all("results") {
             log::warn!("Failed to create results directory: {}", e);
         }
 
-        // Read from `run_start()` rather than sampling the clock here: this runs after allocation
-        // and `ThreadPool::new`, so a fresh `now()` would be seconds later than the one that named
-        // the log file, leaving the pair unmatchable. See `run_context::run_start`.
+        // Read from `run_start()` rather than sampling the clock here: this runs after allocation and `ThreadPool::new`, so a fresh `now()`
+        // would be seconds later than the one that named the log file, leaving the pair unmatchable. See `run_context::run_start`.
         let started = crate::run_context::run_start();
         let filename = format!("results/{}.json", crate::run_context::run_file_stem());
 
@@ -686,8 +667,7 @@ impl TestRunResult {
         self.overall_stats.per_step_averages = test_aggregates
             .into_iter()
             .map(|(step, agg)| {
-                // A step a halt stopped before it ever ran has no runs: it keeps its seal errors and
-                // averages nothing
+                // A step a halt stopped before it ever ran has no runs: it keeps its seal errors and averages nothing
                 let (avg_duration_ms, avg_bytes) = match agg.runs {
                     0 => (0, 0),
                     runs => (agg.total_duration_ms / runs as u128, agg.total_bytes / runs),
@@ -769,10 +749,9 @@ impl TestRunResult {
 
     /// Records the run-level WHEA tally.
     ///
-    /// Deliberately not summed from the per-test figures: those are deltas around test execution,
-    /// so an event logged between tests, during allocation, or after an early exit belongs to the
-    /// run but to no single test. The monitor's cumulative counter has all of them. Call after
-    /// [`finalize`](Self::finalize) — it does not touch these fields.
+    /// Deliberately not summed from the per-test figures: those are deltas around test execution, so an event logged between tests, during
+    /// allocation, or after an early exit belongs to the run but to no single test. The monitor's cumulative counter has all of them. Call
+    /// after [`finalize`](Self::finalize) — it does not touch these fields.
     pub fn set_whea_totals(&mut self, whea: crate::whea::WheaCounts, monitored: bool) {
         self.overall_stats.whea_total = whea.total;
         self.overall_stats.whea_corrected = whea.corrected;
@@ -783,12 +762,10 @@ impl TestRunResult {
         &self.metadata.filename
     }
 
-    /// Writes the file whole or not at all (TODO 72): to `<path>.tmp`, on the disk, then renamed
-    /// over `path`, so a run killed mid-write, or a system that went down, leaves its last save,
-    /// not part of one. A refused rename, as when a viewer holds the file without letting it be
-    /// deleted, falls back to writing `path` in place, with a warning; the next save tries the
-    /// rename again. When the viewer won't let it be written either, the save stays in the `.tmp`,
-    /// and the error names both.
+    /// Writes the file whole or not at all (TODO 72): to `<path>.tmp`, on the disk, then renamed over `path`, so a run killed mid-write, or
+    /// a system that went down, leaves its last save, not part of one. A refused rename, as when a viewer holds the file without letting it
+    /// be deleted, falls back to writing `path` in place, with a warning; the next save tries the rename again. When the viewer won't let
+    /// it be written either, the save stays in the `.tmp`, and the error names both.
     pub fn save_atomic(&self, path: &str) -> Result<(), String> {
         let json = serde_json::to_string_pretty(self).map_err(|e| format!("Failed to serialize test result: {}", e))?;
         let temp = format!("{path}.tmp");
@@ -843,8 +820,8 @@ pub fn compare_test_results(baseline_path: &str, current_path: &str) -> Result<T
         errors_diff: current.overall_stats.total_errors as i64 - baseline.overall_stats.total_errors as i64,
     };
 
-    // Per-step comparisons: a step matches the baseline's step at the same position running the
-    // same test (TODO 74), so a test that runs twice is compared twice
+    // Per-step comparisons: a step matches the baseline's step at the same position running the same test (TODO 74), so a test that runs
+    // twice is compared twice
     let mut per_test_comparisons = Vec::new();
     let baseline_tests: HashMap<(usize, Option<String>, String), &TestAverage> =
         baseline.overall_stats.per_step_averages.iter().map(|t| ((t.step, t.id.clone(), t.name.clone()), t)).collect();
@@ -880,10 +857,9 @@ pub fn compare_test_results(baseline_path: &str, current_path: &str) -> Result<T
         }
     }
 
-    // A file saved mid-run first (TODO 72): its figures are only the cycles that had finished, of a
-    // run that was killed or lost, or is still going. Then identity, then configuration: a hardware
-    // change is the more fundamental explanation, and on a new machine the config differences are
-    // usually downstream of it.
+    // A file saved mid-run first (TODO 72): its figures are only the cycles that had finished, of a run that was killed or lost, or is
+    // still going. Then identity, then configuration: a hardware change is the more fundamental explanation, and on a new machine the
+    // config differences are usually downstream of it.
     let mut run_differences = Vec::new();
     if baseline.overall_stats.in_progress || current.overall_stats.in_progress {
         let saved = |stats: &OverallStats| {
@@ -917,16 +893,14 @@ impl TestComparison {
 
         report.push_str("=== TMR Test Result Comparison ===\n");
         report.push_str(&format!("Comparison Time: {}\n", self.comparison_time));
-        // UTC here, unlike the single-run report above, because the two files being compared may
-        // come from different machines in different zones — UTC is the only stamp that makes
-        // "which ran first" answerable, and it matches `comparison_time`.
+        // UTC here, unlike the single-run report above, because the two files being compared may come from different machines in different
+        // zones — UTC is the only stamp that makes "which ran first" answerable, and it matches `comparison_time`.
         report.push_str(&format!("Baseline: {} ({})\n", self.baseline.start_time_utc, self.baseline.filename));
         report.push_str(&format!("Current:  {} ({})\n", self.current.start_time_utc, self.current.filename));
         report.push('\n');
 
-        // Deliberately placed *before* the numbers: the whole point of TODO #67 was that a reader
-        // who sees "+20% faster" first has already drawn a conclusion by the time they reach a
-        // caveat at the bottom.
+        // Deliberately placed *before* the numbers: the whole point of TODO #67 was that a reader who sees "+20% faster" first has already
+        // drawn a conclusion by the time they reach a caveat at the bottom.
         report.push_str(&crate::run_context::render_differences(&self.run_differences));
 
         report.push_str("Overall Performance Changes:\n");
@@ -999,8 +973,8 @@ impl TestComparison {
     }
 }
 
-/// A directory of a test's own in the system's temp directory, for the results files it writes,
-/// removed with what it holds when it drops, a failed test's too.
+/// A directory of a test's own in the system's temp directory, for the results files it writes, removed with what it holds when it drops, a
+/// failed test's too.
 #[cfg(test)]
 pub(crate) struct TempDir(std::path::PathBuf);
 
@@ -1030,9 +1004,9 @@ mod tests {
     use super::*;
     use crate::test_support::summary;
 
-    /// A step that never ran, because the seal check before its first run failed under halt, keeps
-    /// its seal errors through finalization and serialization and isn't a run. Astra's review: the
-    /// averages divided by its zero runs, so a release build aborted before saving its results.
+    /// A step that never ran, because the seal check before its first run failed under halt, keeps its seal errors through finalization and
+    /// serialization and isn't a run. Astra's review: the averages divided by its zero runs, so a release build aborted before saving its
+    /// results.
     #[test]
     fn a_step_that_never_ran_keeps_its_seal_errors() {
         let mut result = TestRunResult::new(Default::default());
@@ -1051,8 +1025,8 @@ mod tests {
         assert_eq!((row.average_duration_secs, row.average_data_gib, row.average_throughput_mib_s), (0.0, 0.0, 0.0));
     }
 
-    /// Failing bits add up by step over the cycles, and over the run with the seal's, the final
-    /// checks' included; the final summary's table has a row per test, the seal's, and all (TODO 97).
+    /// Failing bits add up by step over the cycles, and over the run with the seal's, the final checks' included; the final summary's table
+    /// has a row per test, the seal's, and all (TODO 97).
     #[test]
     fn failing_bits_add_up_by_step_and_run() {
         let bits = |mask: u64, want: u64, actual: u64| {
@@ -1107,9 +1081,9 @@ mod tests {
         ]);
     }
 
-    /// A results file as TMR wrote it before TODO 72's fields (`testdata/result_files/before_todo_72.json`):
-    /// two sealed cycles of three steps, a latency step among them, with errors, failing bits, the
-    /// seal's work and a WHEA event; its identity and config mostly empty. Its text, and as loaded.
+    /// A results file as TMR wrote it before TODO 72's fields (`testdata/result_files/before_todo_72.json`): two sealed cycles of three
+    /// steps, a latency step among them, with errors, failing bits, the seal's work and a WHEA event; its identity and config mostly empty.
+    /// Its text, and as loaded.
     fn written_before_todo_72() -> (String, TestRunResult) {
         let path = Path::new(env!("CARGO_MANIFEST_DIR")).join("testdata").join("result_files").join("before_todo_72.json");
         let text = fs::read_to_string(&path).unwrap_or_else(|e| panic!("{}: {e}", path.display()));
@@ -1117,9 +1091,8 @@ mod tests {
         (text, result)
     }
 
-    /// A results file written before TODO 72 still loads, and reads as a finished run of whole
-    /// cycles by an unknown build, with no thread records or operations; the final summary renders
-    /// from it as from a new one.
+    /// A results file written before TODO 72 still loads, and reads as a finished run of whole cycles by an unknown build, with no thread
+    /// records or operations; the final summary renders from it as from a new one.
     #[test]
     fn a_results_file_written_before_todo_72_still_loads() {
         let (text, result) = written_before_todo_72();
@@ -1141,9 +1114,8 @@ mod tests {
         assert_eq!(report.per_test_summaries.len(), 2);
     }
 
-    /// TODO 72's fields read back as they were written, and those that are empty or off are left
-    /// out: a cycle that ran to its end has no `partial`, a step no `threads`, a thread with no CPU
-    /// no `cpu`, `core` or `node`, and its zero counts aren't written.
+    /// TODO 72's fields read back as they were written, and those that are empty or off are left out: a cycle that ran to its end has no
+    /// `partial`, a step no `threads`, a thread with no CPU no `cpu`, `core` or `node`, and its zero counts aren't written.
     #[test]
     fn the_new_fields_round_trip() {
         let (_, mut result) = written_before_todo_72();
@@ -1195,12 +1167,10 @@ mod tests {
         ]);
     }
 
-    /// TODO 72: a save replaces the file whole, by renaming a temp file over it, and leaves nothing
-    /// of the temp file: a reader that had the old file open, and lets it be deleted, still reads
-    /// the old one, which a write in place wouldn't leave it. When a viewer holds the file without
-    /// letting it be deleted, so it can't be renamed over, the save writes it in place instead;
-    /// when the viewer won't let it be written either, the save stays in the temp file, which the
-    /// error names, and the file is as it was.
+    /// TODO 72: a save replaces the file whole, by renaming a temp file over it, and leaves nothing of the temp file: a reader that had the
+    /// old file open, and lets it be deleted, still reads the old one, which a write in place wouldn't leave it. When a viewer holds the
+    /// file without letting it be deleted, so it can't be renamed over, the save writes it in place instead; when the viewer won't let it
+    /// be written either, the save stays in the temp file, which the error names, and the file is as it was.
     #[test]
     fn a_save_replaces_the_file_whole() {
         use std::io::Read;
@@ -1239,8 +1209,8 @@ mod tests {
         assert!(TestRunResult::load_from_file(&temp).unwrap().cycles.is_empty(), "the save, in the temp file");
     }
 
-    /// TODO 72: `--compare-results` warns, before its figures, of a file saved mid-run, with the
-    /// cycles each file has; two finished files get no such warning.
+    /// TODO 72: `--compare-results` warns, before its figures, of a file saved mid-run, with the cycles each file has; two finished files
+    /// get no such warning.
     #[test]
     fn a_comparison_warns_of_a_file_saved_mid_run() {
         let dir = TempDir::new("compare-mid-run");
@@ -1265,10 +1235,9 @@ mod tests {
         assert!(both_finished.run_differences.iter().all(|d| d.field != "Results file"));
     }
 
-    /// The per-cycle save on a long run (TODO 72): 32 threads, 16 steps (2 of them latency steps)
-    /// and 50 sealed cycles, every step with its thread records, saved after each cycle as a run of
-    /// cycles of a minute or more saves. Prints the final file's size, pretty and compact, the time
-    /// to serialize and to save it, and what the run writes in all; the figures are in
+    /// The per-cycle save on a long run (TODO 72): 32 threads, 16 steps (2 of them latency steps) and 50 sealed cycles, every step with its
+    /// thread records, saved after each cycle as a run of cycles of a minute or more saves. Prints the final file's size, pretty and
+    /// compact, the time to serialize and to save it, and what the run writes in all; the figures are in
     /// doc/todo/72-results-console-parity.md.
     /// `cargo test --release -- --ignored a_long_runs_results_file --nocapture`
     #[test]

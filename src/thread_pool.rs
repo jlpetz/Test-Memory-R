@@ -26,8 +26,8 @@ pub enum WorkItem {
         /// Where the step is in the run, for its error lines: `step 7 (Test 12, Mem-SimpleV2-512_A), cycle 2`
         context: String,
     },
-    /// Before a step in a sealed run, the seal work between steps (TODO 74, `seal_before_step`):
-    /// its own dispatch, so the step's time doesn't include it.
+    /// Before a step in a sealed run, the seal work between steps (TODO 74, `seal_before_step`): its own dispatch, so the step's time
+    /// doesn't include it.
     SealBeforeStep {
         test_name: &'static str,
         test_config: Box<TestMemoryConfig>,
@@ -61,9 +61,8 @@ pub struct WorkResult {
     pub total_bytes: u64,
     /// The worker's time on the item, setup included
     pub elapsed: Duration,
-    /// The test's own time (`TestStats::timed`): without setup it restarts its clock after, such
-    /// as a Bench-Verify's fill (TODO 90). The step's throughput divides by the longest; `None`
-    /// when the test didn't run.
+    /// The test's own time (`TestStats::timed`): without setup it restarts its clock after, such as a Bench-Verify's fill (TODO 90). The
+    /// step's throughput divides by the longest; `None` when the test didn't run.
     pub timed: Option<Duration>,
     pub total_errors: u64,
     pub total_operations: u64,                   // Add operations tracking from runner.rs
@@ -71,8 +70,8 @@ pub struct WorkResult {
     pub cycle_limit: Option<u32>,                // Planned cycles (None = unlimited)
     pub stopped_by_time_limit: bool,             // True if stopped due to time limit
     pub latency_stats: Option<LatencyTestStats>, // Set for latency tests - includes percentiles
-    /// Bad words the seal checks found during the step: before its chunks, or before a step that
-    /// never takes the seal overwrote them (TODO 74). For a final check, its errors.
+    /// Bad words the seal checks found during the step: before its chunks, or before a step that never takes the seal overwrote them (TODO
+    /// 74). For a final check, its errors.
     pub seal_errors: u64,
     /// The test's failed checks, and those its rescans didn't reproduce (`TestStats`, TODO 27)
     pub alarms: u64,
@@ -93,8 +92,8 @@ pub struct WorkerContext {
     pub result_sender: Sender<WorkResult>,
     /// Every worker's live-progress slot; this worker publishes into `live[thread_id]`.
     pub live: Arc<[TestProgress]>,
-    /// In a sealed run, the first bytes of the span that don't hold the seal: what the steps that
-    /// never take it have written since the last reseal (TODO 74). All of it until the first seal.
+    /// In a sealed run, the first bytes of the span that don't hold the seal: what the steps that never take it have written since the last
+    /// reseal (TODO 74). All of it until the first seal.
     pub unsealed: usize,
 }
 
@@ -119,8 +118,8 @@ impl ThreadPool {
         // Get CPU assignments from provided list or calculate
         let cpu_list_final: Vec<usize> = if let Some(list) = cpu_list { list.to_vec() } else { (0..thread_count).collect() };
 
-        // One live-progress slot per worker, indexed by thread_id. They outlive every test, so the
-        // progress ticker can read the running test's figures while its workers publish them.
+        // One live-progress slot per worker, indexed by thread_id. They outlive every test, so the progress ticker can read the running
+        // test's figures while its workers publish them.
         let live: Arc<[TestProgress]> = (0..cpu_list_final.len().min(thread_count)).map(|_| TestProgress::new()).collect();
 
         // Create persistent worker threads
@@ -183,8 +182,7 @@ impl ThreadPool {
         &self.cpu_assignments
     }
 
-    /// The workers' live-progress slots, for the progress ticker. Reset one only while no test is
-    /// running.
+    /// The workers' live-progress slots, for the progress ticker. Reset one only while no test is running.
     pub fn live_progress(&self) -> Arc<[TestProgress]> {
         Arc::clone(&self.live)
     }
@@ -284,9 +282,9 @@ fn handle_test_errors(stats: &crate::tests::TestStats, error_mode: ErrorMode, te
     Ok(())
 }
 
-/// Before a step in a sealed run (TODO 74), on the worker's span: a step that takes the seal gets
-/// back the seal on what the steps before it that don't left unsealed; one that doesn't has the
-/// sealed part of what it will overwrite checked first. Returns the bad words that check found.
+/// Before a step in a sealed run (TODO 74), on the worker's span: a step that takes the seal gets back the seal on what the steps before it
+/// that don't left unsealed; one that doesn't has the sealed part of what it will overwrite checked first. Returns the bad words that check
+/// found.
 pub(crate) fn seal_before_step(
     blocks: &[AllocationBlock], config: &TestMemoryConfig, test_name: &str, progress: &TestProgress, unsealed: &mut usize,
 ) -> (u64, crate::ops::OpTally) {
@@ -340,8 +338,7 @@ pub(crate) fn seal_before_step(
     (errors, ops)
 }
 
-/// A run-wide seal stage on the worker's whole span, in 64 MiB pieces so Ctrl+C and the ticker see
-/// it move (TODO 74).
+/// A run-wide seal stage on the worker's whole span, in 64 MiB pieces so Ctrl+C and the ticker see it move (TODO 74).
 fn run_seal_stage(
     blocks: &[AllocationBlock], op: SealOp, kernel: SealKernel, progress: &TestProgress, unsealed: &mut usize, thread_id: usize,
 ) -> WorkResult {
@@ -419,9 +416,8 @@ fn worker_thread_loop(context: &mut WorkerContext) {
                 let (stats, latency_stats) = match &test_func {
                     crate::runner::TestFunction::MultiBlock(f) => {
                         // Regular bandwidth test - returns TestStats only
-                        // SAFETY: test_fn_safety.md's contract: this worker's own blocks,
-                        // committed, page-aligned and live until the pool shuts down, and the run
-                        // left out any test the CPU can't run
+                        // SAFETY: test_fn_safety.md's contract: this worker's own blocks, committed, page-aligned and live until the pool
+                        // shuts down, and the run left out any test the CPU can't run
                         let stats =
                             unsafe { f(blocks_slice, context.thread_id, error_mode, &test_config.timing, &test_config, Some(progress)) };
                         (stats, None)

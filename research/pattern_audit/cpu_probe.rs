@@ -2,8 +2,8 @@
 //! Compile with:
 //! rustc -O -C target-cpu=x86-64-v3 --edition=2024 --emit=link,asm cpu_probe.rs
 //!
-//! Single thread, ordinary heap, at most 32 MiB. Each kernel has a statically
-//! inlined line generator; dispatch occurs once per buffer, never once per line.
+//! Single thread, ordinary heap, at most 32 MiB. Each kernel has a statically inlined line generator; dispatch occurs once per buffer,
+//! never once per line.
 //! Four independent portable-SIMD accumulators verify 128 bytes per iteration.
 #![feature(portable_simd)]
 

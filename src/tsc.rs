@@ -89,8 +89,8 @@ impl CalibrationStats {
     }
 
     /// Get standard error in nanoseconds (for convergence check)
-    /// Since frequency is in GHz (cycles/ns), error in ns = error_ghz / mean_ghz² × some_factor
-    /// But for simplicity, we express error as a ratio
+    /// Since frequency is in GHz (cycles/ns), error in ns = error_ghz / mean_ghz² × some_factor But for simplicity, we express error as a
+    /// ratio
     pub fn relative_error(&self) -> f64 {
         if self.mean_ghz == 0.0 {
             return f64::MAX;
@@ -171,9 +171,8 @@ impl TscInfo {
             validate_and_select(cpuid_15_result, cpuid_16_result, timing_freq, &timing_stats);
 
         // Snap to nearest MHz — CPU base frequencies are always integer MHz multiples.
-        // Sub-MHz differences (e.g. 2.700018 vs 2.700016) are measurement noise from
-        // timing calibration. Without this, the config file stores noisy floats that
-        // differ on every boot, falsely invalidating calibration.
+        // Sub-MHz differences (e.g. 2.700018 vs 2.700016) are measurement noise from timing calibration. Without this, the config file
+        // stores noisy floats that differ on every boot, falsely invalidating calibration.
         let frequency_ghz = snap_to_nearest_mhz(raw_frequency_ghz);
 
         log::info!("  TSC: Selected {:.3} GHz via {} (confidence: {:.0}%)", frequency_ghz, detection_method, confidence * 100.0);

@@ -1,13 +1,11 @@
-//! The one-shot commands (TODO 29): `--help`, `--version`, `--create-demo-configs`,
-//! `--compare-results`, `--debug-topology`, `--show-topology`, `--setup-large-pages` and the
-//! calibrations. A session that is handed one returns it (`session::SessionEnd::Command`), past the
-//! parameters every session reads first (`core-priority=` types the topology the topology commands
-//! show); its caller runs it here, writing to a writer of its own. The CLI does, on the console;
-//! the window doesn't offer them.
+//! The one-shot commands (TODO 29): `--help`, `--version`, `--create-demo-configs`, `--compare-results`, `--debug-topology`,
+//! `--show-topology`, `--setup-large-pages` and the calibrations. A session that is handed one returns it (`session::SessionEnd::Command`),
+//! past the parameters every session reads first (`core-priority=` types the topology the topology commands show); its caller runs it here,
+//! writing to a writer of its own. The CLI does, on the console; the window doesn't offer them.
 //!
-//! A calibration asks whether to save what it measured over what tmr-cfg.json holds. That question
-//! is the caller's to put: it passes `confirm`, which gets the question and says yes or no, unless
-//! the command line has answered it already (`--yes`, `--no-save`: `SaveChoice`).
+//! A calibration asks whether to save what it measured over what tmr-cfg.json holds. That question is the caller's to put: it passes
+//! `confirm`, which gets the question and says yes or no, unless the command line has answered it already (`--yes`, `--no-save`:
+//! `SaveChoice`).
 
 use std::io::{self, Write};
 
@@ -17,8 +15,7 @@ use crate::runner::RunStatus;
 pub enum Command {
     /// `--create-demo-configs`: two demo configs in the working directory
     DemoConfigs,
-    /// `--compare-results <baseline.json> <current.json> [output.json]`: the command line, the
-    /// exe's name first
+    /// `--compare-results <baseline.json> <current.json> [output.json]`: the command line, the exe's name first
     Compare(Vec<String>),
     /// `--debug-topology`: every topology detector, alone and as Auto's cascade
     DebugTopology,
@@ -26,8 +23,8 @@ pub enum Command {
     ShowTopology,
     /// `--setup-large-pages`: grant the large-page privilege, and check it
     SetupLargePages,
-    /// `--calibrate-cache`, `--calibrate-cache-ext`, `--calibrate-seal`, `--calibrate-all`: the
-    /// command line, the exe's name first, then the command
+    /// `--calibrate-cache`, `--calibrate-cache-ext`, `--calibrate-seal`, `--calibrate-all`: the command line, the exe's name first, then
+    /// the command
     Calibrate(Vec<String>),
     /// `--help`: the exe's name, as the usage lines give it
     Help(String),
@@ -46,8 +43,8 @@ impl Command {
                 "--show-topology" => return Some(Command::ShowTopology),
                 // --cache-latency and --ram-latency are no commands: they pick tests for the run
                 "--setup-large-pages" => return Some(Command::SetupLargePages),
-                // The calibrations (TODO 99 adds the seal's width): each measures, shows what it found and
-                // saves it to tmr-cfg.json after a prompt
+                // The calibrations (TODO 99 adds the seal's width): each measures, shows what it found and saves it to tmr-cfg.json after a
+                // prompt
                 "--calibrate-cache" | "--calibrate-cache-ext" | "--calibrate-seal" | "--calibrate-all" => {
                     return Some(Command::Calibrate(args.to_vec()));
                 }
@@ -60,9 +57,8 @@ impl Command {
     }
 }
 
-/// Runs `command`, writing what it shows to `out`; a calibration asks `confirm` whether to save
-/// what it measured. Returns `Passed` when it did what it was asked, `NotRun` when it failed: exit
-/// statuses 0 and 2 (`RunStatus::exit_code`), as `--help` gives them.
+/// Runs `command`, writing what it shows to `out`; a calibration asks `confirm` whether to save what it measured. Returns `Passed` when it
+/// did what it was asked, `NotRun` when it failed: exit statuses 0 and 2 (`RunStatus::exit_code`), as `--help` gives them.
 pub fn run(command: &Command, out: &mut dyn Write, confirm: &mut dyn FnMut(&str) -> bool) -> io::Result<RunStatus> {
     match command {
         Command::DemoConfigs => return demo_configs(out),
@@ -106,8 +102,7 @@ pub fn run(command: &Command, out: &mut dyn Write, confirm: &mut dyn FnMut(&str)
     Ok(RunStatus::Passed)
 }
 
-/// The complete help text, `program_name` the exe's name in its usage lines: `--help`'s, and what
-/// follows an unknown flag's error.
+/// The complete help text, `program_name` the exe's name in its usage lines: `--help`'s, and what follows an unknown flag's error.
 pub fn help(out: &mut dyn Write, program_name: &str) -> io::Result<()> {
     writeln!(out, "🚀 Test Memory R (TMR) v{} - High-Performance Memory Testing Tool", crate::BUILD.version)?;
     writeln!(out, "===================================================================================")?;
@@ -278,8 +273,7 @@ fn usage(out: &mut dyn Write, program_name: &str) -> io::Result<()> {
     Ok(())
 }
 
-/// `--create-demo-configs`: writes the two demo configs to the working directory, then says what
-/// each is.
+/// `--create-demo-configs`: writes the two demo configs to the working directory, then says what each is.
 fn demo_configs(out: &mut dyn Write) -> io::Result<RunStatus> {
     if let Err(e) = save_demo_configs() {
         writeln!(out, "❌ Failed to create demo configs: {}", e)?;
@@ -316,8 +310,8 @@ fn save_demo_configs() -> Result<(), String> {
     tm5_config.save_to_file("demo_tm5_compatible.json")
 }
 
-/// `--compare-results <baseline.json> <current.json> [output.json]`, `args` the command line: the
-/// comparison of two results files, saved to the third file when one is given.
+/// `--compare-results <baseline.json> <current.json> [output.json]`, `args` the command line: the comparison of two results files, saved to
+/// the third file when one is given.
 fn compare(args: &[String], out: &mut dyn Write) -> io::Result<RunStatus> {
     if args.len() < 4 {
         writeln!(out, "❌ Usage: {} --compare-results <baseline.json> <current.json> [output.json]", args[0])?;
@@ -349,8 +343,8 @@ fn compare(args: &[String], out: &mut dyn Write) -> io::Result<RunStatus> {
     Ok(RunStatus::Passed)
 }
 
-/// What a calibration does with what it measured, from its command line: asks (`confirm`), or,
-/// without asking, saves (`--yes`) or keeps what tmr-cfg.json holds (`--no-save`).
+/// What a calibration does with what it measured, from its command line: asks (`confirm`), or, without asking, saves (`--yes`) or keeps
+/// what tmr-cfg.json holds (`--no-save`).
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 enum SaveChoice {
     Ask,
@@ -371,16 +365,15 @@ impl SaveChoice {
     }
 }
 
-/// A calibration's save question, answered by the command line (`SaveChoice`) or, when that
-/// leaves it open, by `confirm`.
+/// A calibration's save question, answered by the command line (`SaveChoice`) or, when that leaves it open, by `confirm`.
 struct Save<'a> {
     choice: SaveChoice,
     confirm: &'a mut dyn FnMut(&str) -> bool,
 }
 
 impl Save<'_> {
-    /// Whether to save over what is stored: `confirm`'s answer to `question`, or the command line's,
-    /// which `out` then shows after the question.
+    /// Whether to save over what is stored: `confirm`'s answer to `question`, or the command line's, which `out` then shows after the
+    /// question.
     fn answer(&mut self, question: &str, out: &mut dyn Write) -> io::Result<bool> {
         match self.choice {
             SaveChoice::Ask => Ok((self.confirm)(question)),
@@ -401,11 +394,10 @@ impl Save<'_> {
     }
 }
 
-/// The calibration commands: `--calibrate-cache` and `--calibrate-cache-ext` (the cache tiers),
-/// `--calibrate-seal` (the seal's width, TODO 99) and `--calibrate-all` (the cache tiers as
-/// `--calibrate-cache` measures them, then the seal's width). Each part measures, shows what it
-/// found and saves it to tmr-cfg.json if `confirm` (or `--yes` / `--no-save`) says to; a failure
-/// stops it before any more runs. `maxpage=` sets the page size both ask for.
+/// The calibration commands: `--calibrate-cache` and `--calibrate-cache-ext` (the cache tiers), `--calibrate-seal` (the seal's width, TODO
+/// 99) and `--calibrate-all` (the cache tiers as `--calibrate-cache` measures them, then the seal's width). Each part measures, shows what
+/// it found and saves it to tmr-cfg.json if `confirm` (or `--yes` / `--no-save`) says to; a failure stops it before any more runs.
+/// `maxpage=` sets the page size both ask for.
 fn calibrate(args: &[String], out: &mut dyn Write, confirm: &mut dyn FnMut(&str) -> bool) -> io::Result<RunStatus> {
     let mut save = match SaveChoice::of(args) {
         Ok(choice) => Save { choice, confirm },
@@ -466,8 +458,8 @@ fn calibrate(args: &[String], out: &mut dyn Write, confirm: &mut dyn FnMut(&str)
     Ok(RunStatus::Passed)
 }
 
-/// `--calibrate-cache` (`extended`: `--calibrate-cache-ext`): the cache tiers, shown, saved if
-/// `save` says to and written to `--output`'s file when given.
+/// `--calibrate-cache` (`extended`: `--calibrate-cache-ext`): the cache tiers, shown, saved if `save` says to and written to `--output`'s
+/// file when given.
 fn calibrate_cache(
     args: &[String], config: crate::calibration::CalibrationConfig, system_info: &crate::SystemInfo, smbios: &crate::smbios::SmbiosData,
     extended: bool, out: &mut dyn Write, save: &mut Save,
@@ -528,9 +520,8 @@ fn calibrate_cache(
     }
 }
 
-/// `--calibrate-seal`, and `--calibrate-all`'s second part (TODO 99): the seal's fill and check at
-/// every width the CPU has, on one thread (`calibration::calibrate_seal`), shown, and saved if
-/// `save` says to as what `seal-width=auto` runs on this machine.
+/// `--calibrate-seal`, and `--calibrate-all`'s second part (TODO 99): the seal's fill and check at every width the CPU has, on one thread
+/// (`calibration::calibrate_seal`), shown, and saved if `save` says to as what `seal-width=auto` runs on this machine.
 fn calibrate_seal(
     page_size: &str, system_info: &crate::SystemInfo, smbios: &crate::smbios::SmbiosData, out: &mut dyn Write, save: &mut Save,
 ) -> io::Result<RunStatus> {
@@ -648,9 +639,8 @@ fn prompt_calibration_save(
     save.answer(&format!("Save new {} calibration?", cal_type), out)
 }
 
-/// The seal calibration's save prompt (TODO 99), as `prompt_calibration_save`'s: with none
-/// stored it saves (unless `--no-save`); otherwise it shows each width's fill + check, old and new,
-/// and the width each chose, and asks `save`.
+/// The seal calibration's save prompt (TODO 99), as `prompt_calibration_save`'s: with none stored it saves (unless `--no-save`); otherwise
+/// it shows each width's fill + check, old and new, and the width each chose, and asks `save`.
 fn prompt_seal_calibration_save(
     existing: &Option<crate::calibration::SealCalibration>, new: &crate::calibration::SealCalibration, out: &mut dyn Write, save: &mut Save,
 ) -> io::Result<bool> {
@@ -708,10 +698,9 @@ mod tests {
         args.iter().map(|a| a.to_string()).collect()
     }
 
-    /// The commands that read and change nothing on this machine, as they write, each after a
-    /// `## case` line with how it ended (TODO 29): `--version`, `--help`, and `--compare-results`
-    /// without its files, of one that isn't there, and of a results file with itself (its time
-    /// masked). None asks a question.
+    /// The commands that read and change nothing on this machine, as they write, each after a `## case` line with how it ended (TODO 29):
+    /// `--version`, `--help`, and `--compare-results` without its files, of one that isn't there, and of a results file with itself (its
+    /// time masked). None asks a question.
     #[test]
     fn commands_write_as_their_golden() {
         let fixture = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("testdata").join("result_files").join("before_todo_72.json");
@@ -741,9 +730,8 @@ mod tests {
         crate::test_support::check("commands", &text);
     }
 
-    /// A command is the first argument: each of its spellings names it, it takes the command line
-    /// it needs, and anything else (a parameter, a run mode like `--ram-latency`, no argument) is
-    /// none.
+    /// A command is the first argument: each of its spellings names it, it takes the command line it needs, and anything else (a parameter,
+    /// a run mode like `--ram-latency`, no argument) is none.
     #[test]
     fn the_first_argument_names_the_command() {
         let parse = |line: &[&str]| Command::parse(&args(line));
@@ -764,9 +752,8 @@ mod tests {
         }
     }
 
-    /// A calibration's save: `--yes` saves and `--no-save` keeps, each without asking and saying
-    /// so after the question; with neither, `confirm` answers it. Both together are refused. With
-    /// nothing stored yet it saves without a question, unless `--no-save`.
+    /// A calibration's save: `--yes` saves and `--no-save` keeps, each without asking and saying so after the question; with neither,
+    /// `confirm` answers it. Both together are refused. With nothing stored yet it saves without a question, unless `--no-save`.
     #[test]
     fn a_calibrations_save_takes_the_command_lines_answer() {
         let choice = |line: &[&str]| SaveChoice::of(&args(line));

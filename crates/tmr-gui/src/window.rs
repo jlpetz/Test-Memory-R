@@ -1,12 +1,10 @@
-//! The window (TODO 7), the owner's layout from the demos, top to bottom: the header (the title, the
-//! status badge, the runtime and the system panel on the right, the info line under them), the
-//! position and the progress bar, the throughput chart with its error marks, the results, the
-//! errors, then the parameters box with Start and Stop. The chart is never between the results and
-//! the errors. The large-page restart question is a dialog over it (TODO 29 S6).
+//! The window (TODO 7), the owner's layout from the demos, top to bottom: the header (the title, the status badge, the runtime and the
+//! system panel on the right, the info line under them), the position and the progress bar, the throughput chart with its error marks, the
+//! results, the errors, then the parameters box with Start and Stop. The chart is never between the results and the errors. The large-page
+//! restart question is a dialog over it (TODO 29 S6).
 //!
-//! It draws `Model`, and re-renders only when a message arrives: a batch from the feed (at least
-//! every 500 ms while the session runs), a button, the dialog's answer, a keystroke in the box, a
-//! theme change or a resize. Nothing animates.
+//! It draws `Model`, and re-renders only when a message arrives: a batch from the feed (at least every 500 ms while the session runs), a
+//! button, the dialog's answer, a keystroke in the box, a theme change or a resize. Nothing animates.
 
 use std::sync::Arc;
 use std::sync::mpsc::{self, Receiver, RecvTimeoutError};
@@ -27,8 +25,7 @@ const CARD_PADDING_X: f64 = 16.0;
 const PROGRESS_HEIGHT: f64 = 22.0;
 /// The window's clock: the waiter returns at least this often while the session runs
 const TICK: Duration = Duration::from_millis(500);
-/// The rows and error lines drawn, the newest: a night's run has thousands, and every redraw
-/// builds the ones drawn
+/// The rows and error lines drawn, the newest: a night's run has thousands, and every redraw builds the ones drawn
 const SHOWN: usize = 200;
 
 pub(crate) enum Message {
@@ -37,8 +34,7 @@ pub(crate) enum Message {
     Stop,
     /// The parameters box's text, as typed
     Args(String),
-    /// The restart dialog's answer: its primary button exits, its close button (and Esc) continues
-    /// on 4 KiB pages
+    /// The restart dialog's answer: its primary button exits, its close button (and Esc) continues on 4 KiB pages
     Restart(ContentDialogResult),
     Scheme(ColorScheme),
     Size(WindowSize),
@@ -50,9 +46,9 @@ pub(crate) struct Feeds {
     log: LogLines,
 }
 
-/// What a wait on the feed brought: everything queued (nothing, at a tick), where the suite stood
-/// then and what WHEA reported, the lines logged and how many of them the logger dropped so far, and
-/// the feeds, back for the next wait. `closed` when the session's thread is gone.
+/// What a wait on the feed brought: everything queued (nothing, at a tick), where the suite stood then and what WHEA reported, the lines
+/// logged and how many of them the logger dropped so far, and the feeds, back for the next wait. `closed` when the session's thread is
+/// gone.
 pub(crate) struct Batch {
     feed: Vec<Feed>,
     snapshot: Option<ProgressSnapshot>,
@@ -80,10 +76,9 @@ pub(crate) struct Window {
     palettes: Palettes,
 }
 
-/// Waits on a thread-pool thread for the feed, up to `TICK`, then returns everything queued as one
-/// message, with where the suite stands then and the lines logged. A wait that brought nothing
-/// returns as well: that is the window's clock, as Reactor 0.100.0 has no timer. Re-armed from
-/// `update` after each delivery, so there is one waiter at a time, and the feeds travel with it.
+/// Waits on a thread-pool thread for the feed, up to `TICK`, then returns everything queued as one message, with where the suite stands
+/// then and the lines logged. A wait that brought nothing returns as well: that is the window's clock, as Reactor 0.100.0 has no timer.
+/// Re-armed from `update` after each delivery, so there is one waiter at a time, and the feeds travel with it.
 fn listen(feeds: Feeds, progress: Option<Arc<ProgressTracker>>, context: &ComponentContext<Window>) {
     context.spawn_background(move |_| {
         let mut feed = Vec::new();
@@ -96,8 +91,8 @@ fn listen(feeds: Feeds, progress: Option<Arc<ProgressTracker>>, context: &Compon
             Err(RecvTimeoutError::Timeout) => false,
             Err(RecvTimeoutError::Disconnected) => true,
         };
-        // From this batch's start, when it is in it. The WHEA lines are the window's to show: the
-        // CLI's ticker, which takes them otherwise, isn't running.
+        // From this batch's start, when it is in it. The WHEA lines are the window's to show: the CLI's ticker, which takes them otherwise,
+        // isn't running.
         let progress = progress.or_else(|| feed.iter().find_map(Feed::progress));
         let (snapshot, whea) = progress.map_or((None, Vec::new()), |p| (p.snapshot(), p.take_whea_descriptions()));
         let (log, dropped) = feeds.log.take();
@@ -110,9 +105,8 @@ impl Window {
         self.palettes.get(self.dark)
     }
 
-    /// Runs the parameters box's command line on the session's own thread, its events to the
-    /// window's feed. The log file opens now, with the window's logger, so its name pairs with the
-    /// run's results.
+    /// Runs the parameters box's command line on the session's own thread, its events to the window's feed. The log file opens now, with
+    /// the window's logger, so its name pairs with the run's results.
     fn start(&mut self, context: &ComponentContext<Self>) {
         let log = logger::install();
         let (tx, rx) = mpsc::channel();
@@ -247,8 +241,8 @@ impl Window {
         }
     }
 
-    /// Two rows on the left (title + badge + timer, then the info line); the system panel spans
-    /// both on the right, right-justified like the timer.
+    /// Two rows on the left (title + badge + timer, then the info line); the system panel spans both on the right, right-justified like the
+    /// timer.
     fn header(&self, row: i32) -> View {
         let p = self.palette();
         let secs = self.model.runtime.as_secs();
@@ -290,8 +284,8 @@ impl Window {
                             .font_weight(FontWeight::SEMI_BOLD)
                             .foreground(brush(p.on_status)),
                     ),
-                // The timer keeps reactor's default font: 0.100.0's TextBlock has no font family;
-                // the next release adds it (owner's note 6).
+                // The timer keeps reactor's default font: 0.100.0's TextBlock has no font family; the next release adds it (owner's note
+                // 6).
                 TextBlock::new()
                     .text(runtime)
                     .font_size(20.0)
@@ -327,8 +321,7 @@ impl Window {
             ))
     }
 
-    /// CPU, RAM + the DIMM drop-down, caches; every line right-justified. Empty until the session's
-    /// setup has detected them.
+    /// CPU, RAM + the DIMM drop-down, caches; every line right-justified. Empty until the session's setup has detected them.
     fn system_info(&self) -> View {
         let p = self.palette();
         let Some(s) = &self.model.system else {
@@ -340,9 +333,8 @@ impl Window {
         };
         let dimms = s.dimms.len();
         let dimm_label = format!("{dimms} DIMM{} ▾", if dimms == 1 { "" } else { "s" });
-        // DropDownButton takes no flyout in 0.100.0 (the native side attaches flyouts to Button
-        // and SplitButton only), so this is a subtle Button with a ▾ and a flyout. The negative
-        // margin cancels the button's padding so the line keeps text height and lines up right.
+        // DropDownButton takes no flyout in 0.100.0 (the native side attaches flyouts to Button and SplitButton only), so this is a subtle
+        // Button with a ▾ and a flyout. The negative margin cancels the button's padding so the line keeps text height and lines up right.
         let dimm_button = Button::new()
             .style(ButtonStyle::Subtle)
             .margin(Thickness::new(0.0, -5.0, -11.0, -6.0))
@@ -378,10 +370,9 @@ impl Window {
         ))
     }
 
-    /// The DIMM flyout: one line per module, from SMBIOS's memory devices. Manufacturer and part
-    /// number share a column: WinUI's FlyoutPresenter caps the width at 456 px
-    /// (FlyoutThemeMaxWidth, not settable from reactor 0.100.0) and scrolls sideways past it, which
-    /// five columns overran.
+    /// The DIMM flyout: one line per module, from SMBIOS's memory devices. Manufacturer and part number share a column: WinUI's
+    /// FlyoutPresenter caps the width at 456 px (FlyoutThemeMaxWidth, not settable from reactor 0.100.0) and scrolls sideways past it,
+    /// which five columns overran.
     fn dimm_table(&self, s: &SystemPanel) -> View {
         let p = self.palette();
         const HEADINGS: [&str; 4] = ["Locator", "Manufacturer · part number", "Capacity", "MT/s"];
@@ -450,9 +441,8 @@ impl Window {
         let headings = ["#", "Test", "MiB/s", "Errors", "Seal errors", "WHEA"].map(str::to_string);
         let header = table_row(&headings, p, None, true, [false; 6]);
         let stripe = brush(p.stripe);
-        // Newest first: reactor 0.100.0 exposes no ScrollIntoView / scroll offset, so a list in
-        // step order could not follow the latest row. Rows are keyed by their place in the run, so
-        // a new step inserts one native row and leaves the others alone.
+        // Newest first: reactor 0.100.0 exposes no ScrollIntoView / scroll offset, so a list in step order could not follow the latest row.
+        // Rows are keyed by their place in the run, so a new step inserts one native row and leaves the others alone.
         let rows = self.model.rows.iter().enumerate().rev().take(SHOWN).map(|(i, r): (usize, &StepRow)| {
             let flagged = [false, false, false, r.errors > 0, r.seal_errors.is_some_and(|e| e > 0), r.whea > 0];
             (i as u64, table_row(&r.cells(), p, (i % 2 == 1).then_some(stripe), false, flagged))
@@ -481,8 +471,8 @@ impl Window {
         let latest = series.latest().map_or_else(|| "–".to_owned(), crate::model::thousands);
         let marks = series.marks().count();
         let title = format!("Throughput (MiB/s) · last 60 s · now {latest}");
-        // Title on the left, a two-item legend on the right (line = MiB/s, red mark = errors rose).
-        // A temperature series would add a third legend item here.
+        // Title on the left, a two-item legend on the right (line = MiB/s, red mark = errors rose). A temperature series would add a third
+        // legend item here.
         let header = Grid::new().columns([GridLength::STAR, GridLength::Auto]).children((
             card_title(title, p).grid_column(0),
             StackPanel::new().grid_column(1).orientation(Orientation::Horizontal).spacing(6.0).children((
@@ -530,9 +520,8 @@ impl Window {
         card(row, p, card_title(format!("Errors · {total}{shown}{dropped}"), p), body)
     }
 
-    /// The parameters box, then Start and Stop, which keep WinUI's own button colours (their hover,
-    /// pressed and disabled states). The box takes the CLI's parameters, as tmr.exe does; Start runs
-    /// it once, one session a process, and from then on it holds what ran.
+    /// The parameters box, then Start and Stop, which keep WinUI's own button colours (their hover, pressed and disabled states). The box
+    /// takes the CLI's parameters, as tmr.exe does; Start runs it once, one session a process, and from then on it holds what ran.
     fn controls(&self, row: i32, context: &ViewContext<Self>) -> View {
         let ready = self.model.status == Status::Ready;
         Grid::new().grid_row(row).column_spacing(8.0).columns([GridLength::STAR, GridLength::Auto, GridLength::Auto]).children((
@@ -562,9 +551,8 @@ impl Window {
         ))
     }
 
-    /// The large-page restart question, the console's A/B as a dialog, open while the session's
-    /// thread waits for its answer. Esc is the close button's: 4 KiB pages, as an empty answer is on
-    /// the console.
+    /// The large-page restart question, the console's A/B as a dialog, open while the session's thread waits for its answer. Esc is the
+    /// close button's: 4 KiB pages, as an empty answer is on the console.
     fn restart_dialog(&self, context: &ViewContext<Self>) -> View {
         // The text in the dialog's own colours: it follows the system's theme, not the palette's
         ContentDialog::new()
@@ -584,10 +572,9 @@ const RESTART_QUESTION: &str = "The large-page privilege is set up, but takes ef
     checked, but slower memory traffic is less stress, so marginal errors that only appear at full bandwidth may \
     go undetected.";
 
-/// egui's progress bar, from reactor primitives: a fully rounded track, `width` wide, a rounded
-/// fill sized to the fraction by two star columns, and the percentage centred over both.
-/// Determinate, no animation; a stopped run dims the fill. A fill begun is never narrower than it
-/// is high (egui's `min_width`), so its rounding stays round: a run's first percent is a dot.
+/// egui's progress bar, from reactor primitives: a fully rounded track, `width` wide, a rounded fill sized to the fraction by two star
+/// columns, and the percentage centred over both. Determinate, no animation; a stopped run dims the fill. A fill begun is never narrower
+/// than it is high (egui's `min_width`), so its rounding stays round: a run's first percent is a dot.
 fn progress_bar(fraction: f64, paused: bool, width: f64, p: &Palette) -> View {
     let f = fraction.clamp(0.0, 1.0);
     let inner_radius = (PROGRESS_HEIGHT - 2.0) / 2.0;
@@ -654,8 +641,8 @@ const TABLE_COLUMNS: [GridLength; 6] = [
     GridLength::Pixel(56.0),
 ];
 
-/// One table line; the header uses the same columns and padding so the columns line up.
-/// `flagged` marks a non-zero count: palette error red, semi-bold (egui's `.strong()`).
+/// One table line; the header uses the same columns and padding so the columns line up. `flagged` marks a non-zero count: palette error
+/// red, semi-bold (egui's `.strong()`).
 fn table_row(cells: &[String; 6], p: &Palette, stripe: Option<Brush>, header: bool, flagged: [bool; 6]) -> View {
     let weight = if header { FontWeight::SEMI_BOLD } else { FontWeight::NORMAL };
     let text = if header { p.text_secondary } else { p.text_primary };

@@ -105,12 +105,10 @@ pub(crate) fn below(rng: &mut u64, n: usize) -> usize {
     ((*rng as u128 * n as u128) >> 64) as usize
 }
 
-/// A random pointer chase through the `n` u64 slots at `base`: each slot holds the address of
-/// the next, and the chain is one cycle through all `n`, so a chase from any slot visits every
-/// slot before it repeats, and no prefetcher can follow it. Sattolo's algorithm in insertion form:
-/// slot i goes in after a random earlier slot. Every one of the (n-1)! single cycles is equally
-/// likely, as with the old shuffle-then-link, but in place, in one ascending pass, with no heap
-/// (TODO 76: the heap index was as big as the extent).
+/// A random pointer chase through the `n` u64 slots at `base`: each slot holds the address of the next, and the chain is one cycle through
+/// all `n`, so a chase from any slot visits every slot before it repeats, and no prefetcher can follow it. Sattolo's algorithm in insertion
+/// form: slot i goes in after a random earlier slot. Every one of the (n-1)! single cycles is equally likely, as with the old
+/// shuffle-then-link, but in place, in one ascending pass, with no heap (TODO 76: the heap index was as big as the extent).
 pub(crate) unsafe fn build_cycle_u64(base: *mut u64, n: usize, seed: u64) {
     if n == 0 {
         return;
@@ -162,8 +160,7 @@ pub unsafe fn read_latency_multi(
     runner.setup_done(crate::ops::Op::ChainBuild, 0);
 
     let mut latencies_ns = Vec::with_capacity(10000);
-    // Each sample CONTINUES the chase from where the last one stopped, so it walks the whole
-    // working set, not a cached subset
+    // Each sample CONTINUES the chase from where the last one stopped, so it walks the whole working set, not a cached subset
     let mut ptr = base;
 
     // Main measurement loop: one sample per cycle
@@ -257,8 +254,7 @@ pub unsafe fn write_latency_multi(
         return LatencyTestStats { basic_stats: runner.finish_completed(0), ..LatencyTestStats::calculate_percentiles(vec![]) };
     }
 
-    // The extent in two halves: the pointer chain (read only) and the write targets, so the
-    // writes don't destroy the chain
+    // The extent in two halves: the pointer chain (read only) and the write targets, so the writes don't destroy the chain
     let chain_base = extent.ptr as *mut u64;
     let chain_len = extent.test_size / std::mem::size_of::<u64>() / 2;
     let write_base = chain_base.add(chain_len);
@@ -379,8 +375,8 @@ pub unsafe fn copy_latency_multi(
         return LatencyTestStats { basic_stats: runner.finish_completed(0), ..LatencyTestStats::calculate_percentiles(vec![]) };
     }
 
-    // The extent in two halves: src (pointer chain) + dst (write target), so the total
-    // footprint stays within the target tier. Matches Lat-Write's split for comparable results.
+    // The extent in two halves: src (pointer chain) + dst (write target), so the total footprint stays within the target tier. Matches
+    // Lat-Write's split for comparable results.
     let src_base = extent.ptr as *mut u64;
     let half_len = extent.test_size / std::mem::size_of::<u64>() / 2;
     let dst_base = src_base.add(half_len);
@@ -414,8 +410,8 @@ pub unsafe fn copy_latency_multi(
         let mut aux = 0u32;
         let start_cycles = __rdtscp(&mut aux);
 
-        // Use pointer chain for source, write to corresponding destination. The destination is a
-        // pointer bumped against a register end, so the store's address never waits on a load
+        // Use pointer chain for source, write to corresponding destination. The destination is a pointer bumped against a register end, so
+        // the store's address never waits on a load
         let dst_end = dst_base.add(half_len);
         let mut dst_ptr = dst_base.add(dst_offset);
         for _ in 0..iterations {
@@ -489,15 +485,14 @@ pub unsafe fn copy_latency_multi(
     result
 }
 
-// Note: run_cache_hierarchy_diagnostic() was removed - --cache-latency now uses
-// the same ThreadPool infrastructure as --latency-test with cpus=1 for single-thread mode
+// Note: run_cache_hierarchy_diagnostic() was removed - --cache-latency now uses the same ThreadPool infrastructure as --latency-test with
+// cpus=1 for single-thread mode
 
 #[cfg(test)]
 mod tests {
     use super::build_cycle_u64;
 
-    /// The chain is one cycle through every slot, for any length, so a chase visits all of the
-    /// working set.
+    /// The chain is one cycle through every slot, for any length, so a chase visits all of the working set.
     #[test]
     fn the_chain_is_one_cycle_through_every_slot() {
         for n in [1usize, 2, 3, 7, 64, 1000, 4096] {

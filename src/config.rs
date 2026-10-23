@@ -26,8 +26,8 @@ pub struct ModernConfig {
     pub metadata: ConfigMetadata,
     pub system: SystemConfig,
     pub test_sequence: Vec<TestConfig>,
-    /// What one cycle runs, as test `id`s in order; an id may repeat (TODO 74). Unset is every
-    /// enabled test once, in file order. A disabled test listed here is skipped.
+    /// What one cycle runs, as test `id`s in order; an id may repeat (TODO 74). Unset is every enabled test once, in file order. A disabled
+    /// test listed here is skipped.
     #[serde(default)]
     pub cycle_order: Option<Vec<String>>,
     pub legacy_metadata: Option<LegacyMetadata>,
@@ -41,8 +41,8 @@ pub struct LegacyMetadata {
     /// Memory channel count from TM5 .cfg (default 2). Used in stride formula.
     #[serde(default = "default_channels")]
     pub tm5_channels: u32,
-    /// The `.cfg`'s Testing Window Size and Lock Memory Granularity (MiB): they size block codes
-    /// 0-3 and cap larger blocks, nothing else (TODO 76). Shown in the plan.
+    /// The `.cfg`'s Testing Window Size and Lock Memory Granularity (MiB): they size block codes 0-3 and cap larger blocks, nothing else
+    /// (TODO 76). Shown in the plan.
     #[serde(default)]
     pub tm5_window_mb: u32,
     #[serde(default)]
@@ -76,27 +76,24 @@ pub struct SystemConfig {
     pub cpu_pinning: CpuPinningConfig,
     #[serde(default)]
     pub memory_allocation: MemoryAllocationConfig,
-    /// Memory channel count for stride calculation (default 2 for consumer DDR5 dual-channel).
-    /// Higher values produce larger strides to match DDR interleave boundaries.
+    /// Memory channel count for stride calculation (default 2 for consumer DDR5 dual-channel). Higher values produce larger strides to
+    /// match DDR interleave boundaries.
     /// Consumer: 2, Server: 4-12+.
     #[serde(default = "default_channels")]
     pub channels: u32,
-    /// The seal (TODO 74, `seal.rs`): `"tmr"` (the default), `"tm5"`, or `"off"` to run without
-    /// it. The mirror tests' data is the seal pattern either way.
+    /// The seal (TODO 74, `seal.rs`): `"tmr"` (the default), `"tm5"`, or `"off"` to run without it. The mirror tests' data is the seal
+    /// pattern either way.
     #[serde(default)]
     pub seal: Option<String>,
-    /// The seal kernels' SIMD width: `"auto"` (this machine's `--calibrate-seal` width, else the
-    /// seal's rule, 256 with AVX2), `"128"`, `"256"`, `"512"`; unset, `width`'s when that is set,
-    /// else `"auto"`.
+    /// The seal kernels' SIMD width: `"auto"` (this machine's `--calibrate-seal` width, else the seal's rule, 256 with AVX2), `"128"`,
+    /// `"256"`, `"512"`; unset, `width`'s when that is set, else `"auto"`.
     #[serde(default)]
     pub seal_width: Option<String>,
-    /// The SIMD width of every test that picks its width at run time, and of the seal unless
-    /// `seal_width` sets its own (TODO 99, `crate::simd::Width`): `"auto"` (the default, the widest
-    /// the CPU has), `"128"`, `"256"`, `"512"`; `width=` overrides it.
+    /// The SIMD width of every test that picks its width at run time, and of the seal unless `seal_width` sets its own (TODO 99,
+    /// `crate::simd::Width`): `"auto"` (the default, the widest the CPU has), `"128"`, `"256"`, `"512"`; `width=` overrides it.
     #[serde(default)]
     pub width: Option<String>,
-    /// The workers' scheduling priority (TODO 77): `"normal"`, `"high"` (the default) or
-    /// `"realtime"`; `priority=` overrides it.
+    /// The workers' scheduling priority (TODO 77): `"normal"`, `"high"` (the default) or `"realtime"`; `priority=` overrides it.
     #[serde(default)]
     pub thread_priority: Option<String>,
 }
@@ -112,8 +109,8 @@ pub struct SystemConfig {
 #[serde(deny_unknown_fields)]
 pub struct CpuPinningConfig {
     pub enable_pinning: bool,
-    /// Resolved count of leading cores to skip. Kept for back-compat with existing JSON
-    /// configs and the topology display; derived from `skip_spec` when that is set.
+    /// Resolved count of leading cores to skip. Kept for back-compat with existing JSON configs and the topology display; derived from
+    /// `skip_spec` when that is set.
     #[serde(default = "default_cpus_to_skip")]
     pub cpus_to_skip: usize,
     #[serde(default = "default_avoid_smt_doubling")]
@@ -219,8 +216,8 @@ impl MemoryAllocationConfig {
         true
     }
 
-    /// `hugechunk`, `largechunk` and `largefloor`, parsed and checked. An unset `largechunk` is
-    /// `DEFAULT_LARGE_CHUNK`, never below `largefloor`.
+    /// `hugechunk`, `largechunk` and `largefloor`, parsed and checked. An unset `largechunk` is `DEFAULT_LARGE_CHUNK`, never below
+    /// `largefloor`.
     pub fn block_sizing(&self) -> Result<BlockSizing, String> {
         let size = |key: &str, value: &str| parse_size_string(value).map_err(|e| format!("{key}={value}: {e}"));
         let large_floor = size("largefloor", &self.large_floor)?;
@@ -231,10 +228,9 @@ impl MemoryAllocationConfig {
         BlockSizing::new(size("hugechunk", &self.huge_chunk)?, large_chunk, large_floor)
     }
 
-    /// `blkroundtarget` and `blkround`, parsed and checked. The step must be a multiple of
-    /// `largefloor`, so the smallest request can fill a share exactly, and no bigger than the
-    /// largest request (`hugechunk` or `largechunk`). `largefloor` is also the finest step a
-    /// share falls back to when rounding would pass the memory there is.
+    /// `blkroundtarget` and `blkround`, parsed and checked. The step must be a multiple of `largefloor`, so the smallest request can fill a
+    /// share exactly, and no bigger than the largest request (`hugechunk` or `largechunk`). `largefloor` is also the finest step a share
+    /// falls back to when rounding would pass the memory there is.
     pub fn share_rounding(&self) -> Result<ShareRounding, String> {
         let sizing = self.block_sizing()?;
         let step = parse_size_string(&self.share_round_step).map_err(|e| format!("blkroundtarget={}: {e}", self.share_round_step))?;
@@ -296,9 +292,8 @@ impl ChunkSpec {
     }
 }
 
-/// Per-chunk repetition for one test: its own `verify_reps` / `write_read_cycles` / `test_reps`
-/// when set, else the test's default. SimpleTest defaults to TM5's loop at 100 % / 100 %:
-/// 4 x (1 fill + 5 verifies) per chunk (`mtests0.asm` ST_Check :298-308).
+/// Per-chunk repetition for one test: its own `verify_reps` / `write_read_cycles` / `test_reps` when set, else the test's default.
+/// SimpleTest defaults to TM5's loop at 100 % / 100 %: 4 x (1 fill + 5 verifies) per chunk (`mtests0.asm` ST_Check :298-308).
 fn apply_repetition(test: &TestConfig, config: &mut TestMemoryConfig) {
     let simple = test.function.starts_with("Mem-SimpleV2") || test.function == "Mem-Simple" || test.function == "SimpleTest";
     if simple {
@@ -322,8 +317,8 @@ fn apply_repetition(test: &TestConfig, config: &mut TestMemoryConfig) {
     }
 }
 
-/// Mem-Sequence's `sequence` and `order`, on it alone. A step in TM5's stride needs the stride,
-/// from `parameter`; a write no read checks is allowed (write stress), with a warning.
+/// Mem-Sequence's `sequence` and `order`, on it alone. A step in TM5's stride needs the stride, from `parameter`; a write no read checks is
+/// allowed (write stress), with a warning.
 fn parse_sequence(test: &TestConfig, config: &TestMemoryConfig) -> Result<Option<crate::sequence::Sequence>, String> {
     if test.function != "Mem-Sequence" {
         if test.sequence.is_some() || test.order.is_some() {
@@ -364,8 +359,7 @@ pub fn check_sequence(sequence: &crate::sequence::Sequence, config: &TestMemoryC
     Ok(())
 }
 
-/// The numbered mode a Bench pair's name gives: 30 for `Bench-Init-TMR-30` or `Bench-Verify-TMR-30`,
-/// 2 for `Bench-Init-TM5-2`.
+/// The numbered mode a Bench pair's name gives: 30 for `Bench-Init-TMR-30` or `Bench-Verify-TMR-30`, 2 for `Bench-Init-TM5-2`.
 fn bench_mode(function: &str) -> Option<u32> {
     let rest = function.strip_prefix("Bench-Init-").or_else(|| function.strip_prefix("Bench-Verify-"))?;
     let n = rest.strip_prefix("TM5-").or_else(|| rest.strip_prefix("TMR-"))?.parse().ok()?;
@@ -375,11 +369,10 @@ fn bench_mode(function: &str) -> Option<u32> {
 /// The most any repetition knob may be: a `.cfg`'s `Time (%)` gives at most a few hundred.
 const MAX_REPS: u32 = 10_000;
 
-/// The repetition knobs as the test reads them must make it test something (the audit's
-/// verification-free settings): a correctness test with no verify reports nothing, and one with no
-/// rounds neither writes nor verifies. Explicit write-only and read-only roles stay valid: the
-/// Bench pairs set their own, and a SimpleTest with `test_reps` 0 verifies the fill. A knob the
-/// test doesn't read is reported, not refused.
+/// The repetition knobs as the test reads them must make it test something (the audit's verification-free settings): a correctness test
+/// with no verify reports nothing, and one with no rounds neither writes nor verifies. Explicit write-only and read-only roles stay valid:
+/// the Bench pairs set their own, and a SimpleTest with `test_reps` 0 verifies the fill. A knob the test doesn't read is reported, not
+/// refused.
 fn validate_repetition(test: &TestConfig, config: &TestMemoryConfig) -> Result<(), String> {
     let f = test.function.as_str();
     let (simple, mirror) = (f.starts_with("Mem-SimpleV2") || f == "Mem-Simple" || f == "SimpleTest", f.starts_with("Mem-MirrorV2"));
@@ -422,8 +415,8 @@ fn validate_repetition(test: &TestConfig, config: &TestMemoryConfig) -> Result<(
     Ok(())
 }
 
-/// Convert a ExtentSpec into a runtime ExtentMode. Returns Err with a human-readable
-/// reason on malformed input. Mode names are case-insensitive.
+/// Convert a ExtentSpec into a runtime ExtentMode. Returns Err with a human-readable reason on malformed input. Mode names are
+/// case-insensitive.
 pub fn spec_to_extent_mode(spec: &ExtentSpec) -> Result<ExtentMode, String> {
     match spec.mode.to_ascii_lowercase().as_str() {
         "full_allocation" | "full-allocation" | "full" => Ok(ExtentMode::FullAllocation),
@@ -545,8 +538,8 @@ pub struct ExtentSpec {
 /// - `cache` — tier-aware; requires `target`
 /// - `cache_total` — coarse cache fraction; requires `fraction`
 /// - `absolute` — hard byte size; requires `size`
-/// - `tm5_block` — a TM5 block code 0-3 (what a `.cfg` import makes): the smaller of `size` (the
-///   `.cfg`'s Testing Window Size) and the extent, / `divisor`, floored to `granularity`
+/// - `tm5_block` — a TM5 block code 0-3 (what a `.cfg` import makes): the smaller of `size` (the `.cfg`'s Testing Window Size) and the
+///   extent, / `divisor`, floored to `granularity`
 #[derive(Debug, Clone, Serialize, Deserialize, Default)]
 #[serde(deny_unknown_fields)]
 pub struct ChunkSpec {
@@ -602,14 +595,13 @@ pub struct CpuConfig {
 #[derive(Debug, Clone, Default, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct TestConfig {
-    /// The name `cycle_order` lists this test by; unique in the config (TODO 74). A TM5 import
-    /// gives each `[TestN]` the id `"N"`.
+    /// The name `cycle_order` lists this test by; unique in the config (TODO 74). A TM5 import gives each `[TestN]` the id `"N"`.
     #[serde(default)]
     pub id: Option<String>,
     pub enabled: bool,
     pub function: String,
-    /// `false` runs this correctness test without the seal around its chunks (TODO 74). Bandwidth,
-    /// latency, Bench and Mem-Random tests never take it.
+    /// `false` runs this correctness test without the seal around its chunks (TODO 74). Bandwidth, latency, Bench and Mem-Random tests
+    /// never take it.
     #[serde(default)]
     pub seal: Option<bool>,
 
@@ -625,11 +617,10 @@ pub struct TestConfig {
     #[serde(default)]
     pub chunk: Option<ChunkSpec>,
 
-    /// Flush each chunk out of cache (CLFLUSHOPT + MFENCE) between the write and verify phases,
-    /// so the verify round-trips through DRAM instead of reading the just-written cached copy
-    /// (#59). Defaults to false. Only meaningful where the extent/chunk would otherwise stay
-    /// cache-resident — at large chunks natural eviction already forces DRAM reads, so enabling
-    /// it there costs bandwidth without changing what is tested.
+    /// Flush each chunk out of cache (CLFLUSHOPT + MFENCE) between the write and verify phases, so the verify round-trips through DRAM
+    /// instead of reading the just-written cached copy (#59). Defaults to false. Only meaningful where the extent/chunk would otherwise
+    /// stay cache-resident — at large chunks natural eviction already forces DRAM reads, so enabling it there costs bandwidth without
+    /// changing what is tested.
     #[serde(default)]
     pub flush_before_verify: Option<bool>,
 
@@ -638,19 +629,18 @@ pub struct TestConfig {
     pub rng_sequences: Option<u32>,   // RandomTorture: number of independent RNG sequences
     pub subdivisions: Option<u32>,    // StrideAccess: number of chunk subdivisions
     pub copy_directions: Option<u32>, // BlockMove: number of copy direction patterns
-    /// Mem-MirrorV2-*: `"whole"` (the default), `"subblocks:2"`, `"subblocks:4"` or `"jump:N"`
-    /// (`MirrorMode`). Mirror tests take this, not `parameter`.
+    /// Mem-MirrorV2-*: `"whole"` (the default), `"subblocks:2"`, `"subblocks:4"` or `"jump:N"` (`MirrorMode`). Mirror tests take this, not
+    /// `parameter`.
     #[serde(default)]
     pub mirror: Option<MirrorMode>,
-    /// Mem-Refresh*: how long each chunk waits between its write and its check, in milliseconds.
-    /// Unset is 64 (`tests::REFRESH_WAIT_MS`). A bit fade is one chunk the extent's size
-    /// (`"chunk": {"mode": "whole"}`) and minutes of wait. Another test doesn't read it, and says
+    /// Mem-Refresh*: how long each chunk waits between its write and its check, in milliseconds. Unset is 64 (`tests::REFRESH_WAIT_MS`). A
+    /// bit fade is one chunk the extent's size (`"chunk": {"mode": "whole"}`) and minutes of wait. Another test doesn't read it, and says
     /// so (`validate_repetition`'s rule for a knob the test doesn't read).
     #[serde(default)]
     pub wait_ms: Option<u64>,
 
-    // Per-chunk repetition: how long each chunk is worked (TODO 79 B2). Unset is the test's own
-    // default; loading a TM5 `.cfg` fills them from `Time (%)`.
+    // Per-chunk repetition: how long each chunk is worked (TODO 79 B2). Unset is the test's own default; loading a TM5 `.cfg` fills them
+    // from `Time (%)`.
     #[serde(default)]
     pub verify_reps: Option<u32>, // Verify passes after each fill
     #[serde(default)]
@@ -658,40 +648,36 @@ pub struct TestConfig {
     #[serde(default)]
     pub test_reps: Option<u32>, // Test-op repetitions before verifying (MirrorMove: round trips)
 
-    /// Mem-SimpleV2 and Mem-Sequence: the native pattern program (pattern spec v2, `crate::pattern`), family names
-    /// in order, e.g. `["ident", "switch", "random", "switch"]`; each runs as a P/~P pair. Unset
-    /// with no `pattern_mode` is the default program; a TM5 import sets it from the `.cfg`'s mode.
+    /// Mem-SimpleV2 and Mem-Sequence: the native pattern program (pattern spec v2, `crate::pattern`), family names in order, e.g.
+    /// `["ident", "switch", "random", "switch"]`; each runs as a P/~P pair. Unset with no `pattern_mode` is the default program; a TM5
+    /// import sets it from the `.cfg`'s mode.
     #[serde(default)]
     pub program: Option<Vec<String>>,
 
-    /// Mem-Sequence: its passes, e.g. `"W 2R RW 2R@random"` (`crate::sequence`), and the order the
-    /// steps that name none take (`forward`, `reverse`, `random` or `stride`). Unset: `W 5R`,
-    /// forward. `write_read_cycles` is how many times the sequence runs a chunk.
+    /// Mem-Sequence: its passes, e.g. `"W 2R RW 2R@random"` (`crate::sequence`), and the order the steps that name none take (`forward`,
+    /// `reverse`, `random` or `stride`). Unset: `W 5R`, forward. `write_read_cycles` is how many times the sequence runs a chunk.
     #[serde(default)]
     pub sequence: Option<String>,
     #[serde(default)]
     pub order: Option<String>,
 
-    /// TMR's numbered pattern modes (pattern spec 1, `pattern_gen::MODES`): 0-2 TM5-derived; 10,
-    /// 11, 13, 20 and 30 TMR's. A native family's number (`pattern::Family::number`) runs it alone.
+    /// TMR's numbered pattern modes (pattern spec 1, `pattern_gen::MODES`): 0-2 TM5-derived; 10, 11, 13, 20 and 30 TMR's. A native family's
+    /// number (`pattern::Family::number`) runs it alone.
     pub pattern_mode: Option<u32>,
     pub pattern_param0: Option<u64>,
     pub pattern_param1: Option<u64>,
     pub parameter: Option<u32>, // Raw TM5 parameter — interpreted via TestParameterContext
 }
 
-/// How a Mem-MirrorV2 test walks each chunk (TODO 85). Written `whole`, `subblocks:N` or `jump:N`
-/// in JSON (`"mirror"`) and on the command line (`mirror=`). Every mode is a round trip per test
-/// op: the two ends walk toward each other, swapping, and cross the middle, so each pair is
-/// swapped twice and the chunk ends as it began (TM5 `MirrorMove_Check`/`MirrorMove128_Check`,
-/// `mtests0.asm` ~1159-1435, ~1593-1676).
+/// How a Mem-MirrorV2 test walks each chunk (TODO 85). Written `whole`, `subblocks:N` or `jump:N` in JSON (`"mirror"`) and on the command
+/// line (`mirror=`). Every mode is a round trip per test op: the two ends walk toward each other, swapping, and cross the middle, so each
+/// pair is swapped twice and the chunk ends as it began (TM5 `MirrorMove_Check`/`MirrorMove128_Check`, `mtests0.asm` ~1159-1435,
+/// ~1593-1676).
 /// - `Whole`: one mirror over the chunk, one vector per step (TM5 MirrorMove, any Parameter but
 ///   2-4).
-/// - `Subblocks(n)`, n = 2 or 4: the chunk in n equal parts, each mirrored, all n in lockstep
-///   (TM5 MirrorMove Parameter = n).
-/// - `Jump(j)`: 128 B swaps every (j + 1) x 128 B, the jump capped at a quarter of the chunk,
-///   then again from 128 B further in, until every 128 B has been visited (TM5 MirrorMove128
-///   Parameter = j).
+/// - `Subblocks(n)`, n = 2 or 4: the chunk in n equal parts, each mirrored, all n in lockstep (TM5 MirrorMove Parameter = n).
+/// - `Jump(j)`: 128 B swaps every (j + 1) x 128 B, the jump capped at a quarter of the chunk, then again from 128 B further in, until every
+///   128 B has been visited (TM5 MirrorMove128 Parameter = j).
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
 pub enum MirrorMode {
     #[default]
@@ -701,8 +687,8 @@ pub enum MirrorMode {
 }
 
 impl MirrorMode {
-    /// Why TM5's three-subblock mirror is refused: it is the one split that doesn't divide a
-    /// 4 KiB-multiple chunk into vector-aligned parts.
+    /// Why TM5's three-subblock mirror is refused: it is the one split that doesn't divide a 4 KiB-multiple chunk into vector-aligned
+    /// parts.
     pub const THREE_SUBBLOCKS: &'static str = "three subblocks are not supported: a third of a \
         chunk isn't a whole number of vectors, and TM5 rounds each third down to 128 B and leaves \
         the tail unmirrored; no shipped TM5 config uses it";
@@ -759,10 +745,9 @@ impl<'de> Deserialize<'de> for MirrorMode {
 /// Correctly interpreted TM5 parameter context for v2 tests.
 ///
 /// TM5's `Parameter` field means different things per test type:
-/// - **SimpleTest**: stride in cache lines. TM5 formula: `Channels * Parameter - 1` cache lines.
-///   Converted to u64 elements: `stride_cachelines * (cache_line_bytes / 8)`.
-/// - **MirrorMove**, **MirrorMove128**: the importer turns it into a `MirrorMode`, which TMR's
-///   mirror tests take instead of `parameter`.
+/// - **SimpleTest**: stride in cache lines. TM5 formula: `Channels * Parameter - 1` cache lines. Converted to u64 elements:
+///   `stride_cachelines * (cache_line_bytes / 8)`.
+/// - **MirrorMove**, **MirrorMove128**: the importer turns it into a `MirrorMode`, which TMR's mirror tests take instead of `parameter`.
 ///
 /// The v1 code incorrectly funneled all of these into a single field.
 #[derive(Debug, Clone, Default)]
@@ -773,8 +758,7 @@ pub struct TestParameterContext {
     /// TM5: `Channels * Parameter - 1`. TMR JSON: direct value.
     /// 0 or None means sequential (no striding).
     pub stride_cachelines: Option<usize>,
-    /// SimpleTest: stride in u64 elements (derived from stride_cachelines at runtime).
-    /// `stride_cachelines * (cache_line_bytes / 8)`.
+    /// SimpleTest: stride in u64 elements (derived from stride_cachelines at runtime). `stride_cachelines * (cache_line_bytes / 8)`.
     pub stride_elements: Option<usize>,
     /// Mem-MirrorV2-*: how each chunk is mirrored. Unset is `Whole`.
     pub mirror: Option<MirrorMode>,
@@ -796,8 +780,8 @@ pub struct TestParameterContext {
 /// parameters as stream counts.
 ///
 /// `channels`: memory channel count (default 2 for DDR5 dual-channel).
-/// TM5 SimpleTest stride formula: `JumpStep = BlkSize * (Channels * Parameter - 1)`
-/// where BlkSize=64 bytes (cache line). In cache line units: `Channels * Parameter - 1`.
+/// TM5 SimpleTest stride formula: `JumpStep = BlkSize * (Channels * Parameter - 1)` where BlkSize=64 bytes (cache line). In cache line
+/// units: `Channels * Parameter - 1`.
 pub fn interpret_tm5_parameter_with_channels(function: &str, parameter: u32, channels: u32) -> TestParameterContext {
     match function {
         // Every width: Mem-SimpleV2-128/256/512/Auto stride too (TODO 93)
@@ -847,8 +831,7 @@ pub struct LegacyMemorySetup {
     /// Memory channel count from .cfg (TM5: 1-3, default 2).
     /// Used in SimpleTest stride formula: `Channels * Parameter - 1` cache lines.
     pub channels: u32,
-    /// `Lock Memory Granularity (Mb)` (TM5: 1-512, default 16). TM5 floors a fractional block
-    /// size to it (`MainThread.asm` ~627-650).
+    /// `Lock Memory Granularity (Mb)` (TM5: 1-512, default 16). TM5 floors a fractional block size to it (`MainThread.asm` ~627-650).
     pub lock_granularity_mb: u32,
 }
 
@@ -881,15 +864,13 @@ pub struct CyclePlan<'a> {
     pub tests: Vec<ConfigTest<'a>>,
     /// The cycle's steps, as indices into `tests`.
     pub steps: Vec<usize>,
-    /// `cycle_order` as written, each id with whether it runs (a disabled test's doesn't); `None`
-    /// without one.
+    /// `cycle_order` as written, each id with whether it runs (a disabled test's doesn't); `None` without one.
     pub order: Option<Vec<(String, bool)>>,
 }
 
 impl ModernConfig {
-    /// Check the system fields with the parsers the CLI uses for the same settings, so a typo in
-    /// a JSON config stops the run instead of quietly becoming a default (an unknown `error_mode`
-    /// used to mean `log`, an unknown page size `regular`).
+    /// Check the system fields with the parsers the CLI uses for the same settings, so a typo in a JSON config stops the run instead of
+    /// quietly becoming a default (an unknown `error_mode` used to mean `log`, an unknown page size `regular`).
     pub fn validate_system(&self) -> Result<(), String> {
         let registry = crate::params::get_registry();
         let sys = &self.system;
@@ -954,8 +935,8 @@ impl ModernConfig {
         EnhancedMemoryStrategy { allocation_mode }
     }
 
-    // Parse default extent spec into runtime ExtentMode. An invalid spec is an error, not a
-    // fallback: the run stops rather than test something the config didn't ask for.
+    // Parse default extent spec into runtime ExtentMode. An invalid spec is an error, not a fallback: the run stops rather than test
+    // something the config didn't ask for.
     pub fn get_default_extent_mode(&self) -> Result<ExtentMode, String> {
         spec_to_extent_mode(&self.system.memory_strategy.default_extent).map_err(|e| format!("invalid default extent spec: {e}"))
     }
@@ -988,8 +969,8 @@ impl ModernConfig {
             .collect()
     }
 
-    /// What one cycle runs (TODO 74): the enabled tests, validated, and the steps, as indices
-    /// into them, in `cycle_order` or else each test once in file order.
+    /// What one cycle runs (TODO 74): the enabled tests, validated, and the steps, as indices into them, in `cycle_order` or else each test
+    /// once in file order.
     pub fn plan(&self) -> Result<CyclePlan<'_>, String> {
         let mut ids = HashMap::new();
         for (i, test) in self.test_sequence.iter().enumerate() {
@@ -1049,9 +1030,8 @@ impl ModernConfig {
                 ),
             ));
         }
-        // A native family's number is a program of the family alone, not a numbered mode. A Bench
-        // pair of a numbered mode runs the one its name gives, `Bench-Init-TMR-30` mode 30, when
-        // the entry names none
+        // A native family's number is a program of the family alone, not a numbered mode. A Bench pair of a numbered mode runs the one its
+        // name gives, `Bench-Init-TMR-30` mode 30, when the entry names none
         let native = test.pattern_mode.and_then(crate::pattern::Family::from_number);
         let pattern_mode = if native.is_some() { None } else { test.pattern_mode.or_else(|| bench_mode(&test.function)) };
         let is_sequence = test.function == "Mem-Sequence";
@@ -1176,8 +1156,8 @@ impl ModernConfig {
         Ok(config)
     }
 
-    /// Which entry an error belongs to: its `test_sequence` index and function, since a config can
-    /// repeat a function (a TM5 import has eleven `Mem-SimpleV2`).
+    /// Which entry an error belongs to: its `test_sequence` index and function, since a config can repeat a function (a TM5 import has
+    /// eleven `Mem-SimpleV2`).
     fn test_error(index: usize, test: &TestConfig, e: String) -> String {
         format!("test_sequence[{index}] ('{}'): {e}", test.function)
     }
@@ -1251,8 +1231,8 @@ impl ModernConfig {
                     cycles: Some(1),
                     extent: Some(ExtentSpec::cache_total(2.0)), // 2x cache for refresh testing
                     chunk: Some(ChunkSpec::absolute("1MB")),    // Small 1MB blocks
-                    // A 1 MB chunk is written, slept on and verified inside the caches unless it is
-                    // flushed first, as the scalar Mem-Refresh this step ran until TODO 99 always was
+                    // A 1 MB chunk is written, slept on and verified inside the caches unless it is flushed first, as the scalar
+                    // Mem-Refresh this step ran until TODO 99 always was
                     flush_before_verify: Some(true),
                     ..Default::default()
                 },
@@ -1435,8 +1415,8 @@ impl LegacyConfig {
             }
         }
 
-        // A key that is there must parse: an unparsable value used to become its default silently
-        // (an unreadable Parameter made a strided test sequential)
+        // A key that is there must parse: an unparsable value used to become its default silently (an unreadable Parameter made a strided
+        // test sequential)
         fn num<T: std::str::FromStr>(section: &HashMap<String, String>, name: &str, key: &str, default: T) -> Result<T, String> {
             match section.get(key) {
                 None => Ok(default),
@@ -1512,11 +1492,10 @@ impl LegacyConfig {
     }
 
     // Convert legacy config to modern config v2.0
-    /// Every `[TestN]` becomes a test with the id `"N"` and its `Enable=`, `Test Sequence` the
-    /// `cycle_order` and `Cycles` the run's cycles (TODO 74). Test 0 is TM5's RefreshStable, which
-    /// TM5 runs around every step: TMR's seal. Enabled, the run is sealed and a `0` step is a
-    /// seal check (`Seal-Check`); disabled, the run is unsealed. TM5 skips a disabled step, and
-    /// stops reading `Test Sequence` at a number of 16 or more.
+    /// Every `[TestN]` becomes a test with the id `"N"` and its `Enable=`, `Test Sequence` the `cycle_order` and `Cycles` the run's cycles
+    /// (TODO 74). Test 0 is TM5's RefreshStable, which TM5 runs around every step: TMR's seal. Enabled, the run is sealed and a `0` step is
+    /// a seal check (`Seal-Check`); disabled, the run is unsealed. TM5 skips a disabled step, and stops reading `Test Sequence` at a number
+    /// of 16 or more.
     pub fn to_modern_config(&self) -> Result<ModernConfig, String> {
         let mut test_sequence = Vec::new();
         let mut sealed = false;
@@ -1540,8 +1519,8 @@ impl LegacyConfig {
                 });
                 continue;
             }
-            // A disabled test is declared, so a `Test Sequence` that names it skips it; one whose
-            // function TMR doesn't know is left out (naming it is then an error)
+            // A disabled test is declared, so a `Test Sequence` that names it skips it; one whose function TMR doesn't know is left out
+            // (naming it is then an error)
             let function = match Self::map_legacy_function(&test.function) {
                 Ok(function) => function,
                 Err(e) if test.enabled => return Err(e),
@@ -1557,13 +1536,12 @@ impl LegacyConfig {
                     other => other?,
                 };
 
-                // A SimpleTest's mode becomes a native program (pattern spec v2): its intent's family
-                // and switching, then mixed data and switching (`Program::from_tm5_mode`), or a native
-                // family's number that family alone, on Mem-SimpleV2-Auto: at the run's width
+                // A SimpleTest's mode becomes a native program (pattern spec v2): its intent's family and switching, then mixed data and
+                // switching (`Program::from_tm5_mode`), or a native family's number that family alone, on Mem-SimpleV2-Auto: at the run's
+                // width
                 // (`width=`, else the widest the CPU has, TODO 99), every width writing one image.
-                // With patterns=legacy it keeps TMR's numbered mode (spec 1), to compare, on the same
-                // test (there is no scalar test). No other function reads the pattern fields, so they
-                // get none.
+                // With patterns=legacy it keeps TMR's numbered mode (spec 1), to compare, on the same test (there is no scalar test). No
+                // other function reads the pattern fields, so they get none.
                 let (function, program, pattern) = match function.as_str() {
                     "Mem-SimpleV2-Auto" if crate::pattern::legacy_import() => {
                         (function, None, Some((test.pattern_mode, test.pattern_param0, test.pattern_param1)))
@@ -1572,16 +1550,14 @@ impl LegacyConfig {
                         .or_else(|| crate::pattern::Family::from_number(test.pattern_mode).map(crate::pattern::Program::single))
                     {
                         Some(program) => (function, Some(program.names()), None),
-                        // Not one of TM5's: kept as the TMR mode it names (build_test refuses one TMR
-                        // doesn't have)
+                        // Not one of TM5's: kept as the TMR mode it names (build_test refuses one TMR doesn't have)
                         None => (function, None, Some((test.pattern_mode, test.pattern_param0, test.pattern_param1))),
                     },
                     _ => (function, None, None),
                 };
-                // An imported RefreshStable flushes each chunk before its sleep, as the scalar
-                // Mem-Refresh it ran on until TODO 99 did always: a chunk the .cfg sizes inside the
-                // caches would otherwise verify cached copies. The built-in Mem-RefreshAuto doesn't
-                // (its extent is twice the caches)
+                // An imported RefreshStable flushes each chunk before its sleep, as the scalar Mem-Refresh it ran on until TODO 99 did
+                // always: a chunk the .cfg sizes inside the caches would otherwise verify cached copies. The built-in Mem-RefreshAuto
+                // doesn't (its extent is twice the caches)
                 let flush_before_verify = (function == "Mem-RefreshAuto").then_some(true);
                 test_sequence.push(TestConfig {
                     id: Some(test.id.to_string()),
@@ -1591,8 +1567,8 @@ impl LegacyConfig {
                     // One pass per plan cycle; TM5 `Time (%)` is per-chunk dwell, set below (TODO 79 B2)
                     cycles: Some(1),
 
-                    // `extent` unset is the default, the full allocation: every TM5 test visits every
-                    // locked page, walking its AWE window over them (TODO 76)
+                    // `extent` unset is the default, the full allocation: every TM5 test visits every locked page, walking its AWE window
+                    // over them (TODO 76)
                     chunk: Some(self.chunk_spec(test)),
 
                     verify_reps,
@@ -1682,13 +1658,11 @@ impl LegacyConfig {
         })
     }
 
-    /// TM5 `Test Block Size (Mb)` as a TMR chunk (TODO 79 B1), sized exactly as TM5 sizes it
-    /// (`mt_ini.asm:287-303`, `MainThread.asm:627-661`). 0-3 are fraction codes, resolved at run
-    /// time against the thread's memory (`ChunkMode::Tm5Block`): the smaller of tm5_window and the
-    /// extent, / (V + 1), floored to the `.cfg`'s Lock Memory Granularity. 4 and up are binary
-    /// megabytes, clamped to tm5_window and floored to 4 KiB. tm5_window is the `.cfg`'s own
-    /// `Testing Window Size`, not TMR's extent, which for an import is the full allocation. A size
-    /// that differs from the plain fraction or value is logged.
+    /// TM5 `Test Block Size (Mb)` as a TMR chunk (TODO 79 B1), sized exactly as TM5 sizes it (`mt_ini.asm:287-303`,
+    /// `MainThread.asm:627-661`). 0-3 are fraction codes, resolved at run time against the thread's memory (`ChunkMode::Tm5Block`): the
+    /// smaller of tm5_window and the extent, / (V + 1), floored to the `.cfg`'s Lock Memory Granularity. 4 and up are binary megabytes,
+    /// clamped to tm5_window and floored to 4 KiB. tm5_window is the `.cfg`'s own `Testing Window Size`, not TMR's extent, which for an
+    /// import is the full allocation. A size that differs from the plain fraction or value is logged.
     fn chunk_spec(&self, test: &LegacyTest) -> ChunkSpec {
         let tm5_window = self.memory_setup.testing_window_size_mb as u64 * BYTES_PER_MIB;
         let granule = crate::test_memory::GRANULE as u64;
@@ -1741,10 +1715,9 @@ impl LegacyConfig {
         ChunkSpec::absolute(&format!("{}KiB", chunk / 1024))
     }
 
-    /// TM5's MirrorMove and MirrorMove128 read `Parameter` differently; TMR's mirror tests take
-    /// one `MirrorMode` (TODO 85). MirrorMove: 2 or 4 is that many subblocks, 3 is refused, and
-    /// any other value is the whole block (`mtests0.asm` ~1152-1157). MirrorMove128: the jump, in
-    /// 128 B units (~1527-1543). `None` for every other test.
+    /// TM5's MirrorMove and MirrorMove128 read `Parameter` differently; TMR's mirror tests take one `MirrorMode` (TODO 85). MirrorMove: 2
+    /// or 4 is that many subblocks, 3 is refused, and any other value is the whole block (`mtests0.asm` ~1152-1157). MirrorMove128: the
+    /// jump, in 128 B units (~1527-1543). `None` for every other test.
     fn mirror_mode(test: &LegacyTest) -> Result<Option<MirrorMode>, String> {
         match test.function.as_str() {
             "MirrorMove" => match test.parameter {
@@ -1762,14 +1735,12 @@ impl LegacyConfig {
         }
     }
 
-    /// TM5 `Time (%)` as per-chunk repetition (TODO 79 B2), returned as (`verify_reps`,
-    /// `write_read_cycles`, `test_reps`). N = test % x global % / 2000, at least 1 (`mtests0.asm`
-    /// ST_Check :298-308, MirrorMove_Check :1135-1145, MirrorMove128_Check :1566-1576): how long
-    /// each chunk is worked, not passes over the extent. SimpleTest does 4 x (1 fill + N
-    /// verifies). MirrorMove does N passes, and each is a round trip: its two ends cross the
-    /// middle, so every pair is swapped twice, as in TMR's test op (TODO 85). RefreshStable
-    /// ignores `Time (%)`. BlockMove reads it too, but no shipped config uses it and TMR's
-    /// BlockMove has its own loop, so it is left at its default.
+    /// TM5 `Time (%)` as per-chunk repetition (TODO 79 B2), returned as (`verify_reps`, `write_read_cycles`, `test_reps`). N = test % x
+    /// global % / 2000, at least 1 (`mtests0.asm` ST_Check :298-308, MirrorMove_Check :1135-1145, MirrorMove128_Check :1566-1576): how long
+    /// each chunk is worked, not passes over the extent. SimpleTest does 4 x (1 fill + N verifies). MirrorMove does N passes, and each is a
+    /// round trip: its two ends cross the middle, so every pair is swapped twice, as in TMR's test op (TODO 85). RefreshStable ignores
+    /// `Time (%)`. BlockMove reads it too, but no shipped config uses it and TMR's BlockMove has its own loop, so it is left at its
+    /// default.
     fn repetition(&self, test: &LegacyTest) -> (Option<u32>, Option<u32>, Option<u32>) {
         let n = (test.time_percent as u64 * self.main_section.time_percent as u64 / 2000).max(1) as u32;
         let reps = match test.function.as_str() {
@@ -1794,13 +1765,12 @@ impl LegacyConfig {
 
     fn map_legacy_function(legacy_name: &str) -> Result<String, String> {
         match legacy_name {
-            // TM5 legacy names -> new prefixed names, the -Auto tests: at the run's width (`width=`,
-            // else the widest the CPU has, TODO 99). TMR has no scalar tests, and its startup gate
-            // requires AVX2
+            // TM5 legacy names -> new prefixed names, the -Auto tests: at the run's width (`width=`, else the widest the CPU has, TODO 99).
+            // TMR has no scalar tests, and its startup gate requires AVX2
             "RefreshStable" => Ok("Mem-RefreshAuto".to_string()),
             "SimpleTest" => Ok("Mem-SimpleV2-Auto".to_string()),
-            // Both mirrors run Mem-MirrorV2-Auto, at the run's width; the 128 in MirrorMove128 is its
-            // swap size, not a vector width (TODO 85)
+            // Both mirrors run Mem-MirrorV2-Auto, at the run's width; the 128 in MirrorMove128 is its swap size, not a vector width (TODO
+            // 85)
             "MirrorMove" | "MirrorMove128" => Ok("Mem-MirrorV2-Auto".to_string()),
             "BlockMove" => Ok("Mem-BlockMove".to_string()),
             // Also accept new names directly, a name without a width as its -Auto test
@@ -1841,8 +1811,8 @@ pub fn load_config(path: &str) -> Result<ModernConfig, String> {
         let legacy = LegacyConfig::load_from_file(path)?;
         legacy.to_modern_config()?
     } else {
-        // Try JSON first, then legacy. If neither parses, say why for both: one of the two
-        // messages is the real problem, and it isn't always the second.
+        // Try JSON first, then legacy. If neither parses, say why for both: one of the two messages is the real problem, and it isn't
+        // always the second.
         match ModernConfig::load_from_file(path) {
             Ok(config) => config,
             Err(json_err) => match LegacyConfig::load_from_file(path).and_then(|l| l.to_modern_config()) {
@@ -1891,19 +1861,17 @@ mod tests {
         }
     }
 
-    /// TODO 79 B1, TODO 76: code 0 is the `.cfg`'s window, 1-3 are window fractions floored to
-    /// the Lock Memory Granularity (16 MiB here) as TM5 does, 4 and up are binary megabytes
-    /// clamped to the window. A thread with less memory than the window (500 MiB) takes them as
-    /// fractions of its memory, as TM5 does, and the plan can tell they shrank. Every import
-    /// covers the full allocation.
+    /// TODO 79 B1, TODO 76: code 0 is the `.cfg`'s window, 1-3 are window fractions floored to the Lock Memory Granularity (16 MiB here) as
+    /// TM5 does, 4 and up are binary megabytes clamped to the window. A thread with less memory than the window (500 MiB) takes them as
+    /// fractions of its memory, as TM5 does, and the plan can tell they shrank. Every import covers the full allocation.
     #[test]
     fn tm5_block_size_codes_are_window_fractions() {
         let tests = [0, 1, 2, 3, 4, 1536].iter().enumerate().map(|(i, &block)| test(i as u32 + 1, "SimpleTest", 100, block)).collect();
         let modern = legacy(100, tests).to_modern_config().unwrap();
         let configs = modern.get_test_configs().unwrap();
         let chunks = |extent: usize| -> Vec<usize> { configs.iter().map(|(name, c)| c.calculate_chunk_size(name, extent) / MIB).collect() };
-        // The 880 MiB window; window/2 = 440 -> 432, window/3 = 293.33 -> 288, window/4 = 220
-        // -> 208 (each floored to 16 MiB, as TM5 does); 4 MiB; 1536 MiB clamped to the window.
+        // The 880 MiB window; window/2 = 440 -> 432, window/3 = 293.33 -> 288, window/4 = 220 -> 208 (each floored to 16 MiB, as TM5 does);
+        // 4 MiB; 1536 MiB clamped to the window.
         assert_eq!(chunks(5 * 1024 * MIB), [880, 432, 288, 208, 4, 880]);
         // 500 MiB of memory: 500, 250 -> 240, 166.67 -> 160, 125 -> 112; 4; and 880 capped at 500
         assert_eq!(chunks(500 * MIB), [500, 240, 160, 112, 4, 500]);
@@ -1915,9 +1883,8 @@ mod tests {
         assert_eq!((meta.tm5_window_mb, meta.tm5_lock_mb), (880, 16));
     }
 
-    /// TODO 76: an imported RefreshStable covers the full allocation too, and as TM5's test 0 it
-    /// is the seal check (TODO 74). TODO 99: elsewhere it is Mem-RefreshAuto, flushing each chunk
-    /// before its sleep as the scalar Mem-Refresh it used to be did.
+    /// TODO 76: an imported RefreshStable covers the full allocation too, and as TM5's test 0 it is the seal check (TODO 74). TODO 99:
+    /// elsewhere it is Mem-RefreshAuto, flushing each chunk before its sleep as the scalar Mem-Refresh it used to be did.
     #[test]
     fn imported_refresh_covers_the_full_allocation() {
         let modern = legacy(100, vec![test(0, "RefreshStable", 100, 0), test(4, "RefreshStable", 100, 0)]).to_modern_config().unwrap();
@@ -1930,8 +1897,8 @@ mod tests {
         assert!(!configs[0].1.flush_before_verify, "the seal check flushes");
     }
 
-    /// TODO 99: a .cfg's TMR names without a width (and TM5's own) import as -Auto tests, at the
-    /// run's width; TMR has no scalar tests. A name with a width keeps it.
+    /// TODO 99: a .cfg's TMR names without a width (and TM5's own) import as -Auto tests, at the run's width; TMR has no scalar tests. A
+    /// name with a width keeps it.
     #[test]
     fn widthless_names_import_as_auto_tests() {
         let tests =
@@ -1948,8 +1915,8 @@ mod tests {
         ]);
     }
 
-    /// An invalid extent or chunk spec stops the run: no fallback to the default, which would
-    /// test something the config didn't ask for. A removed mode such as `fraction` is one.
+    /// An invalid extent or chunk spec stops the run: no fallback to the default, which would test something the config didn't ask for. A
+    /// removed mode such as `fraction` is one.
     #[test]
     fn invalid_specs_are_errors() {
         let mut modern = legacy(100, vec![test(1, "SimpleTest", 100, 16)]).to_modern_config().unwrap();
@@ -1992,8 +1959,8 @@ mod tests {
         assert!(modern.get_test_configs().is_err());
         modern.test_sequence[0].extent = None;
 
-        // So is a pattern mode that doesn't exist; 13 does. The import gave the test a native
-        // program, and a test takes a program or a mode, not both
+        // So is a pattern mode that doesn't exist; 13 does. The import gave the test a native program, and a test takes a program or a
+        // mode, not both
         modern.test_sequence[0].pattern_mode = Some(7);
         let err = modern.get_test_configs().unwrap_err();
         assert!(err.contains("pattern_mode 7"), "{err}");
@@ -2003,8 +1970,8 @@ mod tests {
         modern.test_sequence[0].program = None;
         assert!(modern.get_test_configs().is_ok());
 
-        // 12 and 14 are 20 and 30 now, and refused, saying so (TODO 97). A native family's number
-        // is a program of it alone, on a SimpleTest only
+        // 12 and 14 are 20 and 30 now, and refused, saying so (TODO 97). A native family's number is a program of it alone, on a SimpleTest
+        // only
         for (old, new) in [(12, 20), (14, 30)] {
             modern.test_sequence[0].pattern_mode = Some(old);
             let err = modern.get_test_configs().unwrap_err();
@@ -2032,8 +1999,8 @@ mod tests {
         assert!(modern.get_test_configs().is_ok());
     }
 
-    /// A Bench pair of a numbered mode runs the mode its name gives when its entry names none, as
-    /// the built-in one does (the second review: `Bench-Init-TMR-30` ran mode 10).
+    /// A Bench pair of a numbered mode runs the mode its name gives when its entry names none, as the built-in one does (the second review:
+    /// `Bench-Init-TMR-30` ran mode 10).
     #[test]
     fn a_bench_pair_runs_the_mode_its_name_gives() {
         let mut modern = legacy(100, vec![test(1, "SimpleTest", 100, 16)]).to_modern_config().unwrap();
@@ -2046,8 +2013,7 @@ mod tests {
         assert_eq!(modern.get_test_configs().unwrap()[0].1.pattern_mode, Some(20), "the entry's mode wins");
     }
 
-    /// Mem-Sequence's `sequence` and `order` load on it alone; a stride step needs a parameter; it
-    /// runs native patterns only (TODO 97).
+    /// Mem-Sequence's `sequence` and `order` load on it alone; a stride step needs a parameter; it runs native patterns only (TODO 97).
     #[test]
     fn mem_sequence_entries() {
         let mut modern = legacy(100, vec![test(1, "SimpleTest", 100, 16)]).to_modern_config().unwrap();
@@ -2078,8 +2044,8 @@ mod tests {
         assert!(load(not_it).unwrap_err().contains("only Mem-Sequence reads"));
     }
 
-    /// The audit's verification-free settings are refused: a correctness test that never verifies,
-    /// or never runs a round, reports nothing. A verify-only SimpleTest stays valid on a program.
+    /// The audit's verification-free settings are refused: a correctness test that never verifies, or never runs a round, reports nothing.
+    /// A verify-only SimpleTest stays valid on a program.
     #[test]
     fn repetition_that_tests_nothing_is_refused() {
         let base = legacy(100, vec![test(1, "SimpleTest", 100, 16)]).to_modern_config().unwrap();
@@ -2235,8 +2201,8 @@ mod tests {
         assert_eq!(half.get_test_configs().unwrap()[0].1.verify_reps, 2);
     }
 
-    /// TODO 93: `"parameter"` strides the SimpleTest at every width, as TM5's formula on the
-    /// config's channels (2 x 8 - 1 = 15 lines), and nothing else.
+    /// TODO 93: `"parameter"` strides the SimpleTest at every width, as TM5's formula on the config's channels (2 x 8 - 1 = 15 lines), and
+    /// nothing else.
     #[test]
     fn parameter_strides_simple_tests_at_every_width() {
         let mut modern = ModernConfig::create_demo_config();
@@ -2250,8 +2216,8 @@ mod tests {
         }
     }
 
-    /// TODO 74: `cycle_order` lists ids in order, repeats them, and skips a disabled test's; an
-    /// unknown or repeated id is a load error. Without it, each enabled test runs once in order.
+    /// TODO 74: `cycle_order` lists ids in order, repeats them, and skips a disabled test's; an unknown or repeated id is a load error.
+    /// Without it, each enabled test runs once in order.
     #[test]
     fn cycle_order_runs_ids_in_order() {
         let mut modern = ModernConfig::create_demo_config();
@@ -2277,9 +2243,8 @@ mod tests {
         assert!(modern.plan().err().unwrap().contains("used twice"));
     }
 
-    /// TODO 74: a TM5 import declares every `[TestN]` as id "N", `Test Sequence` becomes the cycle
-    /// order (read up to a number of 16 or more), test 0 is the seal check and turns the seal on,
-    /// and `Cycles = 0` runs until stopped.
+    /// TODO 74: a TM5 import declares every `[TestN]` as id "N", `Test Sequence` becomes the cycle order (read up to a number of 16 or
+    /// more), test 0 is the seal check and turns the seal on, and `Cycles = 0` runs until stopped.
     #[test]
     fn tm5_sequence_becomes_the_cycle_order() {
         let mut tests = vec![test(0, "RefreshStable", 100, 0), test(1, "SimpleTest", 100, 0), test(2, "MirrorMove", 100, 0)];
@@ -2353,10 +2318,9 @@ mod tests {
         );
     }
 
-    /// A Mem-Refresh entry's `wait_ms` reaches the test (`TestParameterContext::wait_ms`, which
-    /// the refresh kernel reads) and the plan's parameter column, in the largest unit that holds it
-    /// whole; unset, the test takes its own 64 ms. A bit fade: one chunk the extent's size, minutes
-    /// of wait.
+    /// A Mem-Refresh entry's `wait_ms` reaches the test (`TestParameterContext::wait_ms`, which the refresh kernel reads) and the plan's
+    /// parameter column, in the largest unit that holds it whole; unset, the test takes its own 64 ms. A bit fade: one chunk the extent's
+    /// size, minutes of wait.
     #[test]
     fn a_refresh_entrys_wait_ms_reaches_the_test() {
         use crate::reporting::converters::format_parameter_context;

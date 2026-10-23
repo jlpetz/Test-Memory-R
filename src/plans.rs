@@ -1,10 +1,8 @@
-//! Built-in test plans (TODO 25): which of the built-in suite's tests a run takes, and in what
-//! order. A plan only chooses. Each test keeps its built-in settings (extent, chunk, timing,
-//! program), so `plan=stability` and `test=Mem-MovingInv` run the same Mem-MovingInv, and
+//! Built-in test plans (TODO 25): which of the built-in suite's tests a run takes, and in what order. A plan only chooses. Each test keeps
+//! its built-in settings (extent, chunk, timing, program), so `plan=stability` and `test=Mem-MovingInv` run the same Mem-MovingInv, and
 //! tuning a test in the suite tunes it in every plan. `config=` brings its own tests instead.
 //!
-//! Names are the suite's registration names; an `-Auto` name runs the widest width the CPU has,
-//! or `width=`'s (`crate::simd::Width`).
+//! Names are the suite's registration names; an `-Auto` name runs the widest width the CPU has, or `width=`'s (`crate::simd::Width`).
 //! The layout and the reasons for each test: `doc/todo/25-curated-plans.md`.
 
 use crate::runner::TestDefinition;
@@ -22,17 +20,16 @@ pub struct Plan {
 /// What a run with no `plan=`, `config=` or test filter runs.
 pub const DEFAULT: &str = "stability";
 
-/// The stability families at the widest width: a hard-fault screen first, then the full-memory
-/// pattern tests, then the access-shape ones. CacheBust is left out (it works mostly inside the
-/// caches), as are the flush variants (at these chunk sizes eviction already reaches DRAM).
+/// The stability families at the widest width: a hard-fault screen first, then the full-memory pattern tests, then the access-shape ones.
+/// CacheBust is left out (it works mostly inside the caches), as are the flush variants (at these chunk sizes eviction already reaches
+/// DRAM).
 const STABILITY: &[&str] = &[
     "Mem-StuckBitAuto", "Mem-SimpleV2-Auto", "Mem-SimpleNT-Auto", "Mem-MovingInv", "Mem-ModuloX", "Mem-Sequence", "Mem-Random",
     "Mem-RefreshAuto", "Mem-MirrorV2-Auto", "Mem-Stride", "Mem-BlockMove",
 ];
 
-/// The families with width variants, every width side by side (128, 256, 512 and Auto; there are
-/// no scalar ones since TODO 99): one run, so every width tests the same memory in the same few
-/// seconds of each cycle.
+/// The families with width variants, every width side by side (128, 256, 512 and Auto; there are no scalar ones since TODO 99): one run, so
+/// every width tests the same memory in the same few seconds of each cycle.
 const WIDTHS: &[&str] = &[
     "Mem-StuckBit128", "Mem-StuckBit256", "Mem-StuckBit512", "Mem-StuckBitAuto", "Mem-SimpleNT-128", "Mem-SimpleNT-256",
     "Mem-SimpleNT-512", "Mem-SimpleNT-Auto", "Mem-Refresh128", "Mem-Refresh256", "Mem-Refresh512", "Mem-RefreshAuto", "Mem-SimpleV2-128",
@@ -40,8 +37,7 @@ const WIDTHS: &[&str] = &[
     "Mem-MirrorV2-Auto",
 ];
 
-/// Unloaded latency (one dependent access at a time, the figure other tools report), bandwidth,
-/// and the write that skips the cache.
+/// Unloaded latency (one dependent access at a time, the figure other tools report), bandwidth, and the write that skips the cache.
 const PERF: &[&str] = &[
     "Lat-L1-Read", "Lat-L1-Write", "Lat-L1-Copy", "Lat-L2-Read", "Lat-L2-Write", "Lat-L2-Copy", "Lat-L3-Read", "Lat-L3-Write",
     "Lat-L3-Copy", "Lat-DRAM-Read", "Lat-DRAM-Write", "Lat-DRAM-Copy", "Lat-DRAMFull-Read", "Lat-DRAMFull-Write", "Lat-DRAMFull-Copy",
@@ -66,8 +62,8 @@ pub fn find(name: &str) -> Result<&'static Plan, String> {
     })
 }
 
-/// The plan that picks a run's tests: the one named, else the default. `None` when a config
-/// brings its own tests, or a test filter with no plan picks from every test, as it always has.
+/// The plan that picks a run's tests: the one named, else the default. `None` when a config brings its own tests, or a test filter with no
+/// plan picks from every test, as it always has.
 pub fn resolve(named: Option<&'static Plan>, has_config: bool, has_filter: bool) -> Result<Option<&'static Plan>, String> {
     match (named, has_config) {
         (Some(plan), true) => Err(format!("plan={} and config= both choose the tests: give one", plan.name)),
@@ -77,9 +73,8 @@ pub fn resolve(named: Option<&'static Plan>, has_config: bool, has_filter: bool)
     }
 }
 
-/// The plan's tests from the built-in `suite`, in the plan's order, numbered as its tests. Every
-/// name must be in the suite. A test the CPU can't run is the run's to leave out, as it is from a
-/// config or a filter (`runner::leave_out_what_the_cpu_lacks`).
+/// The plan's tests from the built-in `suite`, in the plan's order, numbered as its tests. Every name must be in the suite. A test the CPU
+/// can't run is the run's to leave out, as it is from a config or a filter (`runner::leave_out_what_the_cpu_lacks`).
 pub fn select(plan: &Plan, suite: Vec<TestDefinition>) -> Result<Vec<TestDefinition>, String> {
     let Some(names) = plan.tests else {
         return Ok(suite);
@@ -126,8 +121,8 @@ mod tests {
         assert!(!names.iter().any(|n| n.contains("CacheBust") || n.contains("Flush")));
     }
 
-    /// A plain run takes the default; a filter alone picks from every test, as before plans;
-    /// a config brings its own tests and can't take a plan as well.
+    /// A plain run takes the default; a filter alone picks from every test, as before plans; a config brings its own tests and can't take a
+    /// plan as well.
     #[test]
     fn the_plan_a_run_takes() {
         let quick = find("quick").unwrap();

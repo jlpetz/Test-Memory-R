@@ -1,15 +1,12 @@
-//! Which frontend tmr.exe runs (TODO 29 S6), decided before anything prints, from how it was
-//! launched. `--cli` and `--gui` decide. Any other argument is a command line, so the CLI
-//! (`bench_ab.py`, `tmr.exe memory=...`). With none, a double-click opens the window, and a shell
-//! or a remote session (WinRM) runs the CLI. `decide` is a pure function of the facts `probe`
-//! reads, so its table is tested.
+//! Which frontend tmr.exe runs (TODO 29 S6), decided before anything prints, from how it was launched. `--cli` and `--gui` decide. Any
+//! other argument is a command line, so the CLI (`bench_ab.py`, `tmr.exe memory=...`). With none, a double-click opens the window, and a
+//! shell or a remote session (WinRM) runs the CLI. `decide` is a pure function of the facts `probe` reads, so its table is tested.
 //!
-//! The console tells a double-click from a shell. On build 26100 and later the GUI build's manifest
-//! (`tmr.manifest`, `consoleAllocationPolicy` detached) gives a tmr.exe launched with no console to
-//! inherit no console at all. Older builds ignore it and open one, which no other process shares
-//! (`GetConsoleProcessList` counts 1), so tmr.exe leaves it before the window opens. A shell shares
-//! its console with tmr.exe, which counts 2 or more. A remote session's output is a pipe, and its
-//! console may have no window, so redirected output decides for the CLI first.
+//! The console tells a double-click from a shell. On build 26100 and later the GUI build's manifest (`tmr.manifest`,
+//! `consoleAllocationPolicy` detached) gives a tmr.exe launched with no console to inherit no console at all. Older builds ignore it and
+//! open one, which no other process shares (`GetConsoleProcessList` counts 1), so tmr.exe leaves it before the window opens. A shell shares
+//! its console with tmr.exe, which counts 2 or more. A remote session's output is a pipe, and its console may have no window, so redirected
+//! output decides for the CLI first.
 
 use windows::Win32::Foundation::HANDLE;
 use windows::Win32::Storage::FileSystem::{FILE_TYPE, FILE_TYPE_DISK, FILE_TYPE_PIPE, GetFileType};
@@ -25,8 +22,8 @@ pub enum Mode {
     Gui,
 }
 
-/// Takes `--gui` and `--cli` out of `args`, and says which was asked for: the last of them given
-/// decides, and `None` without either. The session never sees them.
+/// Takes `--gui` and `--cli` out of `args`, and says which was asked for: the last of them given decides, and `None` without either. The
+/// session never sees them.
 pub fn take_mode(args: &mut Vec<String>) -> Option<Mode> {
     let mut asked = None;
     args.retain(|arg| match arg.as_str() {
@@ -43,8 +40,8 @@ pub fn take_mode(args: &mut Vec<String>) -> Option<Mode> {
     asked
 }
 
-/// The first Windows build the window runs on: Windows 11 and Server 2025 (TODO 7). Below it the
-/// Windows App Runtime's bootstrap has no `TryCreatePackageDependency` (build.rs).
+/// The first Windows build the window runs on: Windows 11 and Server 2025 (TODO 7). Below it the Windows App Runtime's bootstrap has no
+/// `TryCreatePackageDependency` (build.rs).
 pub const FIRST_GUI_BUILD: u32 = 22000;
 
 /// How tmr.exe was launched, as `decide` reads it.
@@ -54,13 +51,13 @@ pub struct Facts {
     pub asked: Option<Mode>,
     /// Any argument besides those: a session's parameters, or a one-shot command
     pub arguments: bool,
-    /// Standard output is a file or a pipe: `tmr.exe > out.txt`, or a remote session's. No
-    /// standard output at all, which a double-click has under the manifest, isn't redirection.
+    /// Standard output is a file or a pipe: `tmr.exe > out.txt`, or a remote session's. No standard output at all, which a double-click has
+    /// under the manifest, isn't redirection.
     pub stdout_redirected: bool,
     /// The process has a console with a window (`GetConsoleWindow`)
     pub console_window: bool,
-    /// The processes attached to the console, this one counted (`GetConsoleProcessList`): 1 for
-    /// a console Windows opened for tmr.exe alone, more for a shell's, 0 with none
+    /// The processes attached to the console, this one counted (`GetConsoleProcessList`): 1 for a console Windows opened for tmr.exe alone,
+    /// more for a shell's, 0 with none
     pub console_processes: u32,
     /// The Windows build, `None` if it couldn't be read
     pub build: Option<u32>,
@@ -72,12 +69,10 @@ pub struct Facts {
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub struct Launch {
     pub mode: Mode,
-    /// Leave the console before the window opens: Windows opened it for tmr.exe alone, and it would
-    /// stay up, empty, behind the window
+    /// Leave the console before the window opens: Windows opened it for tmr.exe alone, and it would stay up, empty, behind the window
     pub free_console: bool,
-    /// Open a console before the CLI runs, which has none to show on: a launch with parameters and
-    /// no console to inherit (a shortcut, Win+R), which the manifest left without one. Windows
-    /// opened one for it before the GUI build had the manifest.
+    /// Open a console before the CLI runs, which has none to show on: a launch with parameters and no console to inherit (a shortcut,
+    /// Win+R), which the manifest left without one. Windows opened one for it before the GUI build had the manifest.
     pub alloc_console: bool,
     /// Why the window doesn't open, for the console
     pub note: Option<Note>,
@@ -86,8 +81,7 @@ pub struct Launch {
 /// Why the window doesn't open, when `--gui` asked for it or the launch looked like a double-click.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum Note {
-    /// `--gui`, in a tmr.exe built without the window. A double-click on that build gets no note:
-    /// the CLI is what it has always run.
+    /// `--gui`, in a tmr.exe built without the window. A double-click on that build gets no note: the CLI is what it has always run.
     NotBuilt,
     /// Windows is older than `FIRST_GUI_BUILD`, or its build couldn't be read
     OldWindows(Option<u32>),
@@ -109,12 +103,10 @@ impl std::fmt::Display for Note {
     }
 }
 
-/// Which frontend runs, and what to do about the console first. `--cli`/`--gui` decide; any other
-/// argument means the CLI; with none, redirected output means the CLI (WinRM), no console the
-/// window (a double-click, from build 26100 with the manifest), a console of this process alone
-/// the window after leaving it (a double-click below 26100), and a shared one the CLI (a shell).
-/// The window opens only in a build that has it, from `FIRST_GUI_BUILD`; otherwise the CLI runs,
-/// with a note.
+/// Which frontend runs, and what to do about the console first. `--cli`/`--gui` decide; any other argument means the CLI; with none,
+/// redirected output means the CLI (WinRM), no console the window (a double-click, from build 26100 with the manifest), a console of this
+/// process alone the window after leaving it (a double-click below 26100), and a shared one the CLI (a shell). The window opens only in a
+/// build that has it, from `FIRST_GUI_BUILD`; otherwise the CLI runs, with a note.
 pub fn decide(facts: &Facts) -> Launch {
     let wanted = facts.asked.unwrap_or(if facts.arguments || facts.stdout_redirected {
         Mode::Cli
@@ -138,12 +130,11 @@ pub fn decide(facts: &Facts) -> Launch {
     }
 }
 
-/// This launch's facts: what the command line asked for (`asked`, and whether it has other
-/// `arguments`), the console and the Windows build.
+/// This launch's facts: what the command line asked for (`asked`, and whether it has other `arguments`), the console and the Windows build.
 pub fn probe(asked: Option<Mode>, arguments: bool) -> Facts {
-    // SAFETY: none of them takes a pointer but `GetConsoleProcessList`, which writes at most the
-    // slice's length into it; with no console it fails, and counts 0. No standard output at all (a
-    // double-click under the manifest) is an error from `GetStdHandle`, so not redirected.
+    // SAFETY: none of them takes a pointer but `GetConsoleProcessList`, which writes at most the slice's length into it; with no console it
+    // fails, and counts 0. No standard output at all (a double-click under the manifest) is an error from `GetStdHandle`, so not
+    // redirected.
     let (stdout_redirected, console_window, console_processes) = unsafe {
         (
             GetStdHandle(STD_OUTPUT_HANDLE).is_ok_and(|out| redirected(GetFileType(out))),
@@ -162,15 +153,14 @@ pub fn probe(asked: Option<Mode>, arguments: bool) -> Facts {
     }
 }
 
-/// Standard output of this type is redirected: a file or a pipe (`tmr.exe > out.txt`, a remote
-/// session's). A character device isn't, a console's or NUL's (`> NUL` from a shell, which has the
-/// shell's console), and nor is a type Windows can't tell or a remote one.
+/// Standard output of this type is redirected: a file or a pipe (`tmr.exe > out.txt`, a remote session's). A character device isn't, a
+/// console's or NUL's (`> NUL` from a shell, which has the shell's console), and nor is a type Windows can't tell or a remote one.
 fn redirected(file_type: FILE_TYPE) -> bool {
     matches!(file_type, FILE_TYPE_DISK | FILE_TYPE_PIPE)
 }
 
-/// The Windows build, from `RtlGetVersion`, which unlike `GetVersionEx` doesn't take the answer
-/// from the exe's manifest. `None` if it fails.
+/// The Windows build, from `RtlGetVersion`, which unlike `GetVersionEx` doesn't take the answer from the exe's manifest. `None` if it
+/// fails.
 fn windows_build() -> Option<u32> {
     use windows::Win32::System::SystemInformation::OSVERSIONINFOW;
     // ntdll's: the `windows` crate has it only behind a WDK feature the engine doesn't take
@@ -183,9 +173,8 @@ fn windows_build() -> Option<u32> {
     (unsafe { RtlGetVersion(&mut info) } == 0).then_some(info.dwBuildNumber)
 }
 
-/// Leaves the console (`Launch::free_console`) and empties the standard handles it leaves behind:
-/// a closed handle's value is given to the next file opened, where a stray print would land. A
-/// print to an empty handle writes nothing (std takes it as no output).
+/// Leaves the console (`Launch::free_console`) and empties the standard handles it leaves behind: a closed handle's value is given to the
+/// next file opened, where a stray print would land. A print to an empty handle writes nothing (std takes it as no output).
 pub fn free_console() {
     // SAFETY: no pointers; leaving a console this process alone has, and setting handles to null
     unsafe {
@@ -206,8 +195,7 @@ pub fn alloc_console() {
 mod tests {
     use super::*;
 
-    /// `--gui` and `--cli` pick the frontend, the last one given deciding, and the session never sees
-    /// them
+    /// `--gui` and `--cli` pick the frontend, the last one given deciding, and the session never sees them
     #[test]
     fn the_mode_flags_are_taken_out_of_the_arguments() {
         let take = |args: &[&str]| {
@@ -222,8 +210,7 @@ mod tests {
         assert_eq!(take(&["tmr", "--cli", "--gui"]), (Some(Mode::Gui), args(&["tmr"])));
     }
 
-    /// Only a file or a pipe is redirected output: a console or NUL (a character device) isn't, and
-    /// nor is a type that can't be told
+    /// Only a file or a pipe is redirected output: a console or NUL (a character device) isn't, and nor is a type that can't be told
     #[test]
     fn redirected_output_is_a_file_or_a_pipe() {
         use windows::Win32::Storage::FileSystem::{FILE_TYPE_CHAR, FILE_TYPE_REMOTE, FILE_TYPE_UNKNOWN};
@@ -234,9 +221,8 @@ mod tests {
         }
     }
 
-    /// The launches: a double-click on build 26100 with the manifest (no console), one below it (a
-    /// console of tmr.exe's own), a shell, a redirected shell, WinRM (a pipe, a console with no
-    /// window), and a shortcut with parameters on 26100 (no console)
+    /// The launches: a double-click on build 26100 with the manifest (no console), one below it (a console of tmr.exe's own), a shell, a
+    /// redirected shell, WinRM (a pipe, a console with no window), and a shortcut with parameters on 26100 (no console)
     fn double_click() -> Facts {
         Facts {
             asked: None,
@@ -259,8 +245,7 @@ mod tests {
         Launch { mode, free_console, alloc_console, note }
     }
 
-    /// The decision table (TODO 29 S6): the flags decide, then any other argument, then redirected
-    /// output, then the console
+    /// The decision table (TODO 29 S6): the flags decide, then any other argument, then redirected output, then the console
     #[test]
     fn a_launch_picks_its_frontend() {
         let (cli, gui) = (launch(Mode::Cli, false, false, None), launch(Mode::Gui, false, false, None));
@@ -298,9 +283,8 @@ mod tests {
         }
     }
 
-    /// Below build 22000, an unknown build, or a tmr.exe without the window: the CLI, in the console
-    /// it has, with the note when the window was asked for or the launch looked like a double-click,
-    /// but none for a double-click on a build without the window
+    /// Below build 22000, an unknown build, or a tmr.exe without the window: the CLI, in the console it has, with the note when the window
+    /// was asked for or the launch looked like a double-click, but none for a double-click on a build without the window
     #[test]
     fn without_the_window_a_launch_runs_the_cli() {
         let server_2022 = |facts: Facts| Facts { build: Some(20348), ..facts };
@@ -340,9 +324,8 @@ mod tests {
         );
     }
 
-    /// The manifest asks only for the detached console, and doesn't carry the marker Reactor reads
-    /// for a self-contained Windows App Runtime: with it, Reactor would skip the bootstrap of the
-    /// installed one and look for the runtime's DLLs beside the exe
+    /// The manifest asks only for the detached console, and doesn't carry the marker Reactor reads for a self-contained Windows App
+    /// Runtime: with it, Reactor would skip the bootstrap of the installed one and look for the runtime's DLLs beside the exe
     #[test]
     fn the_manifest_detaches_the_console_and_leaves_reactor_its_bootstrap() {
         let manifest = include_str!("../tmr.manifest");

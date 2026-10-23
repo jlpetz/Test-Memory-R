@@ -1,8 +1,7 @@
-//! Goldens of the Reporter's methods, each from a fixed model (TODO 29): the bytes the console
-//! gets, the console renderer's text, so the split's move of the renderer can be shown to keep
-//! them. The models that take the engine's code to build are the engine's fixtures
-//! (`tmr::test_support`): the memory plan, the test plan, the allocation report and the final
-//! summary. `report_cycle` has none: nothing calls it (TODO 29 revives it).
+//! Goldens of the Reporter's methods, each from a fixed model (TODO 29): the bytes the console gets, the console renderer's text, so the
+//! split's move of the renderer can be shown to keep them. The models that take the engine's code to build are the engine's fixtures
+//! (`tmr::test_support`): the memory plan, the test plan, the allocation report and the final summary. `report_cycle` has none: nothing
+//! calls it (TODO 29 revives it).
 
 use tmr::frontend::{
     CacheInfo, CpuInfo, CpuPerformance, CpuTopologyEntry, CpuTopologyReport, LatencyLevelSummary, LatencyPercentiles,
@@ -65,8 +64,7 @@ pub(crate) fn system_info_report() -> SystemInfoReport {
     }
 }
 
-/// A step's threads, one slower and one with errors, and a WHEA event during the step: the WHEA
-/// column shows only then.
+/// A step's threads, one slower and one with errors, and a WHEA event during the step: the WHEA column shows only then.
 #[test]
 fn thread_timing() {
     let timing = |thread_id, cpu_id, runtime_ms, deviation_ms, errors| ThreadTiming {
@@ -152,8 +150,7 @@ fn performance_by_physical_core() {
     check("report_performance_by_physical_core", &text);
 }
 
-/// A hybrid box under `cputype=cores` and `skip-cores=1`: a skipped core, SMT siblings left out,
-/// one E-core free.
+/// A hybrid box under `cputype=cores` and `skip-cores=1`: a skipped core, SMT siblings left out, one E-core free.
 #[test]
 fn cpu_topology() {
     let (result, text) = rendered(|reporter| reporter.report_cpu_topology(&cpu_topology_report()));
@@ -161,8 +158,7 @@ fn cpu_topology() {
     check("report_cpu_topology", &text);
 }
 
-/// `cpu_topology`'s: a hybrid box under `cputype=cores` and `skip-cores=1`. Setup's event has it too
-/// (`render`'s goldens).
+/// `cpu_topology`'s: a hybrid box under `cputype=cores` and `skip-cores=1`. Setup's event has it too (`render`'s goldens).
 pub(crate) fn cpu_topology_report() -> CpuTopologyReport {
     let cpu = |logical_cpu: usize, core_type: &str, status: &str, thread_id| CpuTopologyEntry {
         logical_cpu,
@@ -211,9 +207,8 @@ fn consolidated_memory() {
     check("report_consolidated_memory", &text);
 }
 
-/// An unsealed plan at 256 bits with a test run twice: the table and its notes (the cycle, the
-/// seal, the width; `test_support::test_configuration_report`). The plan-only golden has a sealed
-/// plan (`render/run_tests.rs`).
+/// An unsealed plan at 256 bits with a test run twice: the table and its notes (the cycle, the seal, the width;
+/// `test_support::test_configuration_report`). The plan-only golden has a sealed plan (`render/run_tests.rs`).
 #[test]
 fn test_configuration() {
     let (result, text) = rendered(|reporter| reporter.report_test_configuration(&test_support::test_configuration_report()));
@@ -221,8 +216,7 @@ fn test_configuration() {
     check("report_test_configuration", &text);
 }
 
-/// The 2026-10-16 run on the dev box, one node: 18 × 1 GiB granted, one refused, 80 × 128 MiB
-/// (`test_support::allocation_report_one_node`).
+/// The 2026-10-16 run on the dev box, one node: 18 × 1 GiB granted, one refused, 80 × 128 MiB (`test_support::allocation_report_one_node`).
 #[test]
 fn allocation_on_one_node() {
     let (result, text) = rendered(|reporter| reporter.report_allocation(&test_support::allocation_report_one_node()));
@@ -230,8 +224,7 @@ fn allocation_on_one_node() {
     check("report_allocation_one_node", &text);
 }
 
-/// Two nodes, node 1 short of 1 GiB pages and one of its threads served from node 0
-/// (`test_support::allocation_report_two_nodes`).
+/// Two nodes, node 1 short of 1 GiB pages and one of its threads served from node 0 (`test_support::allocation_report_two_nodes`).
 #[test]
 fn allocation_on_two_nodes() {
     let (result, text) = rendered(|reporter| reporter.report_allocation(&test_support::allocation_report_two_nodes()));
@@ -239,8 +232,7 @@ fn allocation_on_two_nodes() {
     check("report_allocation_two_nodes", &text);
 }
 
-/// The final summary of two sealed cycles, with every table it has
-/// (`test_support::final_summary_report`).
+/// The final summary of two sealed cycles, with every table it has (`test_support::final_summary_report`).
 #[test]
 fn final_summary() {
     let (result, text) = rendered(|reporter| reporter.report_final_summary(&test_support::final_summary_report()));

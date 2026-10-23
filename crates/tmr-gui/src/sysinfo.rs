@@ -1,6 +1,6 @@
-//! What the header's system panel shows (TODO 7): the engine's own detection of the machine, as
-//! the session's setup reports it (`Setup::SystemInfo`, TODO 29): the CPU from CPUID, the caches as
-//! the run uses them, and the memory modules SMBIOS lists. Plain Rust: the window lays it out.
+//! What the header's system panel shows (TODO 7): the engine's own detection of the machine, as the session's setup reports it
+//! (`Setup::SystemInfo`, TODO 29): the CPU from CPUID, the caches as the run uses them, and the memory modules SMBIOS lists. Plain Rust:
+//! the window lays it out.
 
 use tmr::frontend::{MemoryModule, SystemInfoReport};
 
@@ -9,8 +9,8 @@ pub struct Machine {
     pub cpu: String,
     pub physical_cores: usize,
     pub logical_cpus: usize,
-    /// Per core: L1 data, L1 instruction and L2; the L3, one instance's (shared by the cores of a
-    /// CCD, or of the whole CPU); and the cache line. What `detection` found, or its fallbacks.
+    /// Per core: L1 data, L1 instruction and L2; the L3, one instance's (shared by the cores of a CCD, or of the whole CPU); and the cache
+    /// line. What `detection` found, or its fallbacks.
     pub l1_data: usize,
     pub l1_instruction: usize,
     pub l2: usize,
@@ -39,8 +39,8 @@ impl Machine {
     }
 }
 
-/// A memory module's line in the DIMM list: its locator, its maker and part number, its capacity
-/// and its speed. A field SMBIOS left empty (a VM's often are) shows as `–`.
+/// A memory module's line in the DIMM list: its locator, its maker and part number, its capacity and its speed. A field SMBIOS left empty
+/// (a VM's often are) shows as `–`.
 #[derive(Clone, Debug, PartialEq)]
 pub struct Dimm {
     pub locator: String,

@@ -33,8 +33,7 @@ impl TableBuilder {
         self
     }
 
-    /// Writes the table as the console shows it: a rule, the headers, a rule, the rows, a rule.
-    /// Nothing when it has no headers.
+    /// Writes the table as the console shows it: a rule, the headers, a rule, the rows, a rule. Nothing when it has no headers.
     pub fn write_to(&self, out: &mut impl std::fmt::Write) -> std::fmt::Result {
         if self.headers.is_empty() {
             return Ok(());

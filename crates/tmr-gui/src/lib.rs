@@ -1,27 +1,19 @@
-//! TMR's window (TODO 7): a session's events and progress in WinUI 3, through windows-reactor. A
-//! double-click opens it, or `tmr --gui ...` (crates/tmr-app's `launch.rs`, TODO 29 S6). Start runs
-//! the session on its own thread with the parameters in the window's box, the exe's own to begin
-//! with, as the CLI runs them (`tmr::session::run`), and the window shows its setup's facts (the
-//! info line, the system panel), the large-page restart question as a dialog, and its run. Its log
-//! records go to the log file, and the warnings and errors to the window's errors list too
-//! (`logger.rs`). One run a process: the engine's run settings are set once
-//! (`doc/todo/29-split-design.md`).
+//! TMR's window (TODO 7): a session's events and progress in WinUI 3, through windows-reactor. A double-click opens it, or `tmr --gui ...`
+//! (crates/tmr-app's `launch.rs`, TODO 29 S6). Start runs the session on its own thread with the parameters in the window's box, the exe's
+//! own to begin with, as the CLI runs them (`tmr::session::run`), and the window shows its setup's facts (the info line, the system panel),
+//! the large-page restart question as a dialog, and its run. Its log records go to the log file, and the warnings and errors to the
+//! window's errors list too (`logger.rs`). One run a process: the engine's run settings are set once (`doc/todo/29-split-design.md`).
 //!
-//! The engine's events cross to the window on a channel (`GuiFrontend`), which a waiter on the
-//! thread pool drains every 500 ms, reading the suite's progress and the log's lines as it does
-//! (`window::listen`). `model.rs` turns what it brings into what the window shows, and `window.rs`
-//! draws it.
+//! The engine's events cross to the window on a channel (`GuiFrontend`), which a waiter on the thread pool drains every 500 ms, reading the
+//! suite's progress and the log's lines as it does (`window::listen`). `model.rs` turns what it brings into what the window shows, and
+//! `window.rs` draws it.
 //!
-//! Where the window runs (the README's table): Windows build 22000 or later, with the Windows App
-//! Runtime 2.x installed.
-//! - Below 22000 (Server 2022 is 20348) Reactor's bootstrap call doesn't exist, so tmr.exe never
-//!   opens the window and runs the CLI (`FIRST_GUI_BUILD` in crates/tmr-app's `launch.rs`; the
-//!   delay-load in its `build.rs` is what lets the exe start there at all).
-//! - From 22000 to 26099 (Windows 11 21H2 to 23H2) a double-click flashes a console briefly: those
-//!   builds ignore the manifest's `consoleAllocationPolicy`, so Windows opens one, which tmr.exe
-//!   leaves before the window opens.
-//! - From 26100 (Windows 11 24H2, Server 2025) the window is fully supported: a double-click opens
-//!   it with no console.
+//! Where the window runs (the README's table): Windows build 22000 or later, with the Windows App Runtime 2.x installed.
+//! - Below 22000 (Server 2022 is 20348) Reactor's bootstrap call doesn't exist, so tmr.exe never opens the window and runs the CLI
+//!   (`FIRST_GUI_BUILD` in crates/tmr-app's `launch.rs`; the delay-load in its `build.rs` is what lets the exe start there at all).
+//! - From 22000 to 26099 (Windows 11 21H2 to 23H2) a double-click flashes a console briefly: those builds ignore the manifest's
+//!   `consoleAllocationPolicy`, so Windows opens one, which tmr.exe leaves before the window opens.
+//! - From 26100 (Windows 11 24H2, Server 2025) the window is fully supported: a double-click opens it with no console.
 
 // As the engine's (src/lib.rs): a `// SAFETY:` on every `unsafe` block, and `expect` for `unwrap()`
 #![cfg_attr(not(test), warn(clippy::undocumented_unsafe_blocks, clippy::unwrap_used))]
@@ -46,22 +38,19 @@ use tmr::session::SessionEnd;
 enum Feed {
     /// A session's event, as the engine sent it
     Event(Event),
-    /// Large pages need Windows restarted: the window asks, and answers on the reply
-    /// (`GuiFrontend::large_page_restart`)
+    /// Large pages need Windows restarted: the window asks, and answers on the reply (`GuiFrontend::large_page_restart`)
     Ask(SyncSender<RestartChoice>),
     /// The session ended: how, or the error that stopped it
     Ended(Result<SessionEnd, String>),
 }
 
-/// The window's frontend: each event onto the window's feed, as it comes. No ticks: they draw the
-/// CLI's ticker, and the window reads the progress on its own clock. WHEA is still polled by the
-/// engine's monitor.
+/// The window's frontend: each event onto the window's feed, as it comes. No ticks: they draw the CLI's ticker, and the window reads the
+/// progress on its own clock. WHEA is still polled by the engine's monitor.
 struct GuiFrontend {
     feed: Sender<Feed>,
 }
 
-/// How often the session's thread, waiting for the restart's answer, looks whether the window has
-/// closed
+/// How often the session's thread, waiting for the restart's answer, looks whether the window has closed
 const ANSWER_WAIT: Duration = Duration::from_millis(500);
 
 impl Frontend for GuiFrontend {
@@ -70,11 +59,10 @@ impl Frontend for GuiFrontend {
         let _ = self.feed.send(Feed::Event(event));
     }
 
-    /// The window asks with a dialog, and this thread waits for its answer. Once the window has gone
-    /// nobody can answer, and the session is being stopped (`end_session`), so the answer is Exit:
-    /// the session ends with nothing allocated, as not run (`UNANSWERED`). 4 KiB pages, the console's
-    /// answer to an empty line, would allocate the run's memory only for the stop to end the run
-    /// before its first cycle.
+    /// The window asks with a dialog, and this thread waits for its answer. Once the window has gone nobody can answer, and the session is
+    /// being stopped (`end_session`), so the answer is Exit: the session ends with nothing allocated, as not run (`UNANSWERED`). 4 KiB
+    /// pages, the console's answer to an empty line, would allocate the run's memory only for the stop to end the run before its first
+    /// cycle.
     fn large_page_restart(&self) -> RestartChoice {
         let (reply, answer) = mpsc::sync_channel(1);
         if self.feed.send(Feed::Ask(reply)).is_ok() {
@@ -96,17 +84,14 @@ impl Frontend for GuiFrontend {
 static SESSION: Mutex<Option<JoinHandle<()>>> = Mutex::new(None);
 static EXIT_CODE: OnceLock<i32> = OnceLock::new();
 
-/// Set when the window has opened, for the wording of its error, and when it has closed, for the
-/// restart's question
+/// Set when the window has opened, for the wording of its error, and when it has closed, for the restart's question
 static WINDOW_OPENED: AtomicBool = AtomicBool::new(false);
 static WINDOW_CLOSED: AtomicBool = AtomicBool::new(false);
 
-/// Set when the restart's question went unanswered, the window having gone: the session ended as
-/// for a restart, but nobody chose it
+/// Set when the restart's question went unanswered, the window having gone: the session ended as for a restart, but nobody chose it
 static UNANSWERED: AtomicBool = AtomicBool::new(false);
 
-/// How long a session still running when the window closes has to finish its step and save its
-/// results, before it ends with the process
+/// How long a session still running when the window closes has to finish its step and save its results, before it ends with the process
 const CLOSE_GRACE: Duration = Duration::from_secs(30);
 
 fn window_opened() {
@@ -121,10 +106,9 @@ fn session_ended(result: &Result<SessionEnd, String>) {
     let _ = EXIT_CODE.set(exit_status(result, UNANSWERED.load(Ordering::Relaxed)).exit_code());
 }
 
-/// The exit status of how the session ended, as the CLI gives it (`RunStatus::exit_code`): its
-/// run's; passed (0) when the restart was chosen, but not run (2) when the question went
-/// `unanswered`; not run when setup or an error stopped it, and for a one-shot command, which the
-/// window doesn't run
+/// The exit status of how the session ended, as the CLI gives it (`RunStatus::exit_code`): its run's; passed (0) when the restart was
+/// chosen, but not run (2) when the question went `unanswered`; not run when setup or an error stopped it, and for a one-shot command,
+/// which the window doesn't run
 fn exit_status(result: &Result<SessionEnd, String>, unanswered: bool) -> RunStatus {
     match result {
         Ok(SessionEnd::Ran { status, .. }) => *status,
@@ -133,9 +117,8 @@ fn exit_status(result: &Result<SessionEnd, String>, unanswered: bool) -> RunStat
     }
 }
 
-/// The window has closed. Reactor 0.100.0 can't keep it open, so a session still running is stopped
-/// as Stop stops it, and has `CLOSE_GRACE` to end its step and save its results; the cycles it
-/// finished are in the results file already. After that it ends with the process.
+/// The window has closed. Reactor 0.100.0 can't keep it open, so a session still running is stopped as Stop stops it, and has `CLOSE_GRACE`
+/// to end its step and save its results; the cycles it finished are in the results file already. After that it ends with the process.
 fn end_session(session: JoinHandle<()>) {
     if !session.is_finished() {
         tmr::request_stop();
@@ -158,10 +141,9 @@ pub struct Closed {
     pub error: Option<String>,
 }
 
-/// Opens the window, to run `args` (the command line, its exe's name first, less `--gui`), and
-/// returns when it closes and the session has ended (`end_session`), with the exit status and the
-/// window's error, if it had one (`closed`). The window needs the Windows App Runtime 2.x, which
-/// Reactor offers to download when it is missing.
+/// Opens the window, to run `args` (the command line, its exe's name first, less `--gui`), and returns when it closes and the session has
+/// ended (`end_session`), with the exit status and the window's error, if it had one (`closed`). The window needs the Windows App Runtime
+/// 2.x, which Reactor offers to download when it is missing.
 pub fn main(args: Vec<String>) -> Closed {
     let shown = windows_reactor::App::run_component::<window::Window>(args);
     WINDOW_CLOSED.store(true, Ordering::Relaxed);
@@ -179,11 +161,10 @@ pub fn main(args: Vec<String>) -> Closed {
     closed
 }
 
-/// How the window ended, from Reactor's `error`, whether the window had `opened`, whether Start
-/// `started` a session, and the exit status that session ended with (`session_ended`). The status is
-/// the session's, interrupted (3) when it outlived `CLOSE_GRACE`, and stopped before testing (2) when
-/// Start never ran, whether the window failed or not: a failure ends the window, not the run under
-/// way, whose status it would hide. The error says whether the window had opened.
+/// How the window ended, from Reactor's `error`, whether the window had `opened`, whether Start `started` a session, and the exit status
+/// that session ended with (`session_ended`). The status is the session's, interrupted (3) when it outlived `CLOSE_GRACE`, and stopped
+/// before testing (2) when Start never ran, whether the window failed or not: a failure ends the window, not the run under way, whose
+/// status it would hide. The error says whether the window had opened.
 fn closed(error: Option<String>, opened: bool, started: bool, exit_code: Option<i32>) -> Closed {
     let exit_code = match exit_code {
         Some(code) => code,
@@ -198,9 +179,9 @@ fn closed(error: Option<String>, opened: bool, started: bool, exit_code: Option<
 mod tests {
     use super::*;
 
-    /// The restart question (TODO 29 S6): the session's thread waits for the window's answer, and
-    /// once nobody can answer (the question dropped, no window, or the window closed with it open),
-    /// the answer is Exit, as not run. The only test that touches the window's flags: closing is last.
+    /// The restart question (TODO 29 S6): the session's thread waits for the window's answer, and once nobody can answer (the question
+    /// dropped, no window, or the window closed with it open), the answer is Exit, as not run. The only test that touches the window's
+    /// flags: closing is last.
     #[test]
     fn the_restart_question_waits_for_the_window_and_gives_up_once_it_has_gone() {
         let ask = || {
@@ -229,8 +210,7 @@ mod tests {
         drop(window);
         assert_eq!((GuiFrontend { feed }.large_page_restart(), unanswered()), (RestartChoice::Exit, true), "no window to ask");
 
-        // The window closes with the question open, the reply still held: the window's state may
-        // hold it after Reactor's loop has ended
+        // The window closes with the question open, the reply still held: the window's state may hold it after Reactor's loop has ended
         let (asked, _reply, _window) = ask();
         std::thread::sleep(ANSWER_WAIT / 2);
         let closed = Instant::now();
@@ -239,8 +219,7 @@ mod tests {
         assert!(closed.elapsed() < 2 * ANSWER_WAIT, "given up after {:?}", closed.elapsed());
     }
 
-    /// The exit status is the CLI's for the same end, and the restart is 0 only when it was chosen
-    /// (TODO 29 S6)
+    /// The exit status is the CLI's for the same end, and the restart is 0 only when it was chosen (TODO 29 S6)
     #[test]
     fn a_session_ends_with_the_clis_exit_status() {
         let ran = |status| Ok(SessionEnd::Ran { status, elapsed: Duration::from_secs(60), plan_only: false });
@@ -256,9 +235,8 @@ mod tests {
         );
     }
 
-    /// The window's end: the session's status whatever became of the window, interrupted past the
-    /// grace, not run without Start, and the window's error, worded by whether it had opened (TODO 29
-    /// S6)
+    /// The window's end: the session's status whatever became of the window, interrupted past the grace, not run without Start, and the
+    /// window's error, worded by whether it had opened (TODO 29 S6)
     #[test]
     fn the_window_closes_with_the_sessions_status_and_its_own_error() {
         let failed = || Some("Unspecified error (0x80004005)".to_string());

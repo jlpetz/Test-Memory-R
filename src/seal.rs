@@ -1,40 +1,32 @@
 //! The seal (TODO 74): TMR's take on TM5's test 0.
 //!
-//! **What it is for.** Every test checks its own data almost as soon as it writes it. The seal
-//! checks data that has sat untouched for a long time while heavy traffic hit the rest of memory:
-//! retention under load, sensitive to refresh timings, heat and neighbouring-row disturbance. It
-//! also catches a test that wrote outside its own chunk. TM5 calls these errors "test 0".
+//! **What it is for.** Every test checks its own data almost as soon as it writes it. The seal checks data that has sat untouched for a
+//! long time while heavy traffic hit the rest of memory: retention under load, sensitive to refresh timings, heat and neighbouring-row
+//! disturbance. It also catches a test that wrote outside its own chunk. TM5 calls these errors "test 0".
 //!
-//! **How a run uses it.** At the start of each cycle every thread seals its whole span. Then for
-//! each step, around each chunk of a correctness test, the harness checks the seal before the test
-//! works the chunk and reseals it after; the chunk then sits sealed until the next step reaches it,
-//! about one step later. A mirror test works on the sealed data itself and the seal check after it
-//! is its verify (TM5's `Capable_UseTst0ForGenAndCheck`). Bandwidth, latency, Bench and Mem-Random
-//! steps never take it: the worker checks what they will overwrite before they run and reseals it
-//! before the next sealed step. The cycle ends with a final check of all memory.
+//! **How a run uses it.** At the start of each cycle every thread seals its whole span. Then for each step, around each chunk of a
+//! correctness test, the harness checks the seal before the test works the chunk and reseals it after; the chunk then sits sealed until the
+//! next step reaches it, about one step later. A mirror test works on the sealed data itself and the seal check after it is its verify
+//! (TM5's `Capable_UseTst0ForGenAndCheck`). Bandwidth, latency, Bench and Mem-Random steps never take it: the worker checks what they will
+//! overwrite before they run and reseals it before the next sealed step. The cycle ends with a final check of all memory.
 //!
-//! **The patterns.** Both depend only on the word's address and the cycle, so any chunk layout
-//! works, and in both each 8 B word is followed by its inverse. On a 64-bit bus that flips every
-//! data line on every other transfer. On DDR5's 32-bit beats it flips about half, as random data
-//! does:
-//! - `tmr` (the default): each 16 B holds `[v, !v]`, where `v` is a 63-bit bijective hash of the
-//!   16 B unit's address and the cycle's key, so `v` has its top bit clear and `!v` set: no two
-//!   words anywhere hold the same value, and a write that lands at the wrong address always shows.
-//! - `tm5`: TM5's `RS_GeneratePattern`, bit for bit in odd cycles (64-bit bus): per 4 KiB page a
-//!   16-bit word from the page number, written as a 48 B motif `[q0, !q0, q1, !q1, q2, !q2]`
-//!   repeated across the page. Different pages can share it (page 1 and page 65,536 do), and inside
-//!   a page it repeats every 48 B.
+//! **The patterns.** Both depend only on the word's address and the cycle, so any chunk layout works, and in both each 8 B word is followed
+//! by its inverse. On a 64-bit bus that flips every data line on every other transfer. On DDR5's 32-bit beats it flips about half, as
+//! random data does:
+//! - `tmr` (the default): each 16 B holds `[v, !v]`, where `v` is a 63-bit bijective hash of the 16 B unit's address and the cycle's key,
+//!   so `v` has its top bit clear and `!v` set: no two words anywhere hold the same value, and a write that lands at the wrong address
+//!   always shows.
+//! - `tm5`: TM5's `RS_GeneratePattern`, bit for bit in odd cycles (64-bit bus): per 4 KiB page a 16-bit word from the page number, written
+//!   as a 48 B motif `[q0, !q0, q1, !q1, q2, !q2]` repeated across the page. Different pages can share it (page 1 and page 65,536 do), and
+//!   inside a page it repeats every 48 B.
 //!
-//! **Cycles.** Each cycle seals with its own kernel (`SealKernel::for_cycle`). Cycles go in pairs:
-//! `tmr` takes a key per pair, and the pair's second cycle inverts every word (`tm5` too). So every
-//! sealed bit holds 1 for one cycle's dwell and 0 for the other's, and memory still holding the
-//! last cycle's seal fails this cycle's check: inverted within a pair, another key across pairs.
-//! One kernel serves a whole cycle, from the seal at its start to the final check at its end, so
-//! each check expects what the step before it sealed.
+//! **Cycles.** Each cycle seals with its own kernel (`SealKernel::for_cycle`). Cycles go in pairs: `tmr` takes a key per pair, and the
+//! pair's second cycle inverts every word (`tm5` too). So every sealed bit holds 1 for one cycle's dwell and 0 for the other's, and memory
+//! still holding the last cycle's seal fails this cycle's check: inverted within a pair, another key across pairs. One kernel serves a
+//! whole cycle, from the seal at its start to the final check at its end, so each check expects what the step before it sealed.
 //!
-//! **The kernels.** Fill (non-temporal stores, so the seal lands in DRAM rather than waiting in
-//! cache) and check (XOR/OR into accumulators; a hit rescans to count and log each bad word),
-//! stamped per width (128/256/512) with `macro_rules!`. One call per chunk, never per word.
+//! **The kernels.** Fill (non-temporal stores, so the seal lands in DRAM rather than waiting in cache) and check (XOR/OR into accumulators;
+//! a hit rescans to count and log each bad word), stamped per width (128/256/512) with `macro_rules!`. One call per chunk, never per word.
 
 use std::simd::num::SimdUint;
 use std::simd::{u64x2, u64x4, u64x8};
@@ -47,8 +39,7 @@ pub enum SealPattern {
     Tm5,
 }
 
-/// The seal kernels' SIMD width; `Auto` is this machine's calibrated width, else the rule
-/// (`SealWidth::resolve_from`).
+/// The seal kernels' SIMD width; `Auto` is this machine's calibrated width, else the rule (`SealWidth::resolve_from`).
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
 pub enum SealWidth {
     #[default]
@@ -65,8 +56,7 @@ pub enum SealWidthSource {
     Calibrated,
     /// `auto` with no seal calibration for this machine: 256 where AVX2 is, else 128
     Rule,
-    /// A width set, and where: `seal-width=`, a config's `seal_width`, `width=` or a config's
-    /// `width` (`width_setting`)
+    /// A width set, and where: `seal-width=`, a config's `seal_width`, `width=` or a config's `width` (`width_setting`)
     Setting(&'static str),
 }
 
@@ -80,8 +70,8 @@ impl SealWidthSource {
     }
 }
 
-/// This machine's calibrated seal width, set once at startup from a seal calibration measured on
-/// this machine (`AppConfig::valid_seal_calibration`); unset, `auto` takes the rule.
+/// This machine's calibrated seal width, set once at startup from a seal calibration measured on this machine
+/// (`AppConfig::valid_seal_calibration`); unset, `auto` takes the rule.
 static CALIBRATED_WIDTH: std::sync::OnceLock<SealWidth> = std::sync::OnceLock::new();
 
 /// Sets the width `auto` resolves to for the rest of the process (the first call wins).
@@ -89,8 +79,8 @@ pub fn set_calibrated_width(width: SealWidth) {
     let _ = CALIBRATED_WIDTH.set(width);
 }
 
-/// The calibrated width `auto` resolves to: this machine's (`set_calibrated_width`), or in a unit
-/// test a test's on its own thread (`TestCalibratedWidth`), since the process's is set once.
+/// The calibrated width `auto` resolves to: this machine's (`set_calibrated_width`), or in a unit test a test's on its own thread
+/// (`TestCalibratedWidth`), since the process's is set once.
 fn calibrated_width() -> Option<SealWidth> {
     #[cfg(test)]
     if let Some(width) = TEST_CALIBRATED_WIDTH.with(|w| w.get()) {
@@ -105,8 +95,8 @@ thread_local! {
     static TEST_CALIBRATED_WIDTH: std::cell::Cell<Option<Option<SealWidth>>> = const { std::cell::Cell::new(None) };
 }
 
-/// While it lives, `auto` on this thread resolves to `width` as this machine's calibrated width
-/// (`None`: none, so the rule), as `crate::simd::TestWidth` stands in for the run's width.
+/// While it lives, `auto` on this thread resolves to `width` as this machine's calibrated width (`None`: none, so the rule), as
+/// `crate::simd::TestWidth` stands in for the run's width.
 #[cfg(test)]
 pub(crate) struct TestCalibratedWidth {
     before: Option<Option<SealWidth>>,
@@ -139,28 +129,24 @@ impl SealWidth {
         }
     }
 
-    /// The width this CPU runs: `Auto` resolved (`resolve_from`), or an error if the CPU lacks the
-    /// asked-for one.
+    /// The width this CPU runs: `Auto` resolved (`resolve_from`), or an error if the CPU lacks the asked-for one.
     pub fn resolve(self) -> Result<Self, String> {
         self.resolve_from("a width given").map(|(width, _)| width)
     }
 
-    /// `resolve`, and where the width came from: for a width given, `setting` (where it was set);
-    /// for `Auto`, this machine's calibrated width (`set_calibrated_width`), else the rule.
+    /// `resolve`, and where the width came from: for a width given, `setting` (where it was set); for `Auto`, this machine's calibrated
+    /// width (`set_calibrated_width`), else the rule.
     pub fn resolve_from(self, setting: &'static str) -> Result<(Self, SealWidthSource), String> {
         self.resolve_on(calibrated_width(), is_x86_feature_detected!("avx2"), crate::simd::has_avx512(), setting)
     }
 
-    /// `resolve_from` with the calibrated width and the CPU's AVX2 and AVX-512 given, as tests
-    /// give them.
+    /// `resolve_from` with the calibrated width and the CPU's AVX2 and AVX-512 given, as tests give them.
     ///
-    /// A width given wins, and is refused where the CPU lacks it. `Auto` is the calibrated width
-    /// where there is one the CPU has; a calibrated width it lacks (AVX-512 hidden under the same
-    /// fingerprint, as a hypervisor can) falls to the rule. The rule is 256, not 512, where AVX2
-    /// is: on the dev box (Xeon 6975P, 2026-10-06, 28 GiB, 4 threads) every width filled at
-    /// ~90 GiB/s (the non-temporal store ceiling), but the 512-bit check ran at 52-55 GiB/s against
-    /// 58-63 for 128 and 256. The Bench-*-Seal-* pairs measure it; `--calibrate-seal` measures it
-    /// on the machine (`calibration::calibrate_seal`).
+    /// A width given wins, and is refused where the CPU lacks it. `Auto` is the calibrated width where there is one the CPU has; a
+    /// calibrated width it lacks (AVX-512 hidden under the same fingerprint, as a hypervisor can) falls to the rule. The rule is 256, not
+    /// 512, where AVX2 is: on the dev box (Xeon 6975P, 2026-10-06, 28 GiB, 4 threads) every width filled at ~90 GiB/s (the non-temporal
+    /// store ceiling), but the 512-bit check ran at 52-55 GiB/s against 58-63 for 128 and 256. The Bench-*-Seal-* pairs measure it;
+    /// `--calibrate-seal` measures it on the machine (`calibration::calibrate_seal`).
     pub(crate) fn resolve_on(
         self, calibrated: Option<SealWidth>, avx2: bool, avx512: bool, setting: &'static str,
     ) -> Result<(Self, SealWidthSource), String> {
@@ -234,20 +220,19 @@ pub struct SealKernel {
 }
 
 impl SealKernel {
-    /// The default kernel on this CPU: `tmr` at the seal's auto width (`SealWidth::resolve_from`:
-    /// calibrated, else the rule), key 0, not inverted.
+    /// The default kernel on this CPU: `tmr` at the seal's auto width (`SealWidth::resolve_from`: calibrated, else the rule), key 0, not
+    /// inverted.
     pub fn detect() -> Self {
         SealKernel::new(SealPattern::Tmr, SealWidth::Auto.resolve().unwrap_or(SealWidth::W128))
     }
 
-    /// A pattern at a width, key 0 and not inverted: the kernel outside a run (the Bench pairs,
-    /// plan-time steps).
+    /// A pattern at a width, key 0 and not inverted: the kernel outside a run (the Bench pairs, plan-time steps).
     pub fn new(pattern: SealPattern, width: SealWidth) -> Self {
         SealKernel { pattern, width, key: 0, invert: false }
     }
 
-    /// This kernel for suite cycle `cycle` (from 1) of a run seeded `seed`: cycles `2n - 1` and
-    /// `2n` share a key, and the even one is inverted, so each bit takes both values over the pair.
+    /// This kernel for suite cycle `cycle` (from 1) of a run seeded `seed`: cycles `2n - 1` and `2n` share a key, and the even one is
+    /// inverted, so each bit takes both values over the pair.
     pub fn for_cycle(self, seed: u64, cycle: u64) -> Self {
         let pair = cycle.div_ceil(2);
         let key = crate::pattern::fmix(seed ^ crate::pattern::fmix(pair.wrapping_add(0x5EA1)));
@@ -271,8 +256,7 @@ impl SealKernel {
     /// Seal the words `[start, end)` of `ptr`. Both ends must be 64 B aligned addresses.
     ///
     /// # Safety
-    /// `ptr.add(start)..ptr.add(end)` must be valid for writes, and the width's instructions
-    /// available (`SealWidth::resolve`).
+    /// `ptr.add(start)..ptr.add(end)` must be valid for writes, and the width's instructions available (`SealWidth::resolve`).
     pub unsafe fn fill(self, ptr: *mut u64, start: usize, end: usize) {
         debug_assert!((ptr.add(start) as usize).is_multiple_of(64) && (end - start).is_multiple_of(8), "unaligned seal range");
         let (key, invert) = (self.key, self.invert_mask());
@@ -291,9 +275,8 @@ impl SealKernel {
         if self.invert { !0 } else { 0 }
     }
 
-    /// Check the words `[start, end)` of `ptr` hold the seal; returns the bad words, the first 10
-    /// logged as found by `what` (e.g. "seal check before") and the thread's error context. The
-    /// seal's own check: its errors are seal errors, not in the test's alarms.
+    /// Check the words `[start, end)` of `ptr` hold the seal; returns the bad words, the first 10 logged as found by `what` (e.g. "seal
+    /// check before") and the thread's error context. The seal's own check: its errors are seal errors, not in the test's alarms.
     ///
     /// # Safety
     /// As `fill`, for reads.
@@ -301,8 +284,7 @@ impl SealKernel {
         self.check_as(ptr, start, end, what, false)
     }
 
-    /// `check` as a test's own verify (a mirror's, Seal-Check's, Bench-Verify-Seal's): a failed
-    /// check is one of the test's alarms.
+    /// `check` as a test's own verify (a mirror's, Seal-Check's, Bench-Verify-Seal's): a failed check is one of the test's alarms.
     ///
     /// # Safety
     /// As `check`.
@@ -328,9 +310,8 @@ impl SealKernel {
     }
 }
 
-/// The seal's width setting and where it was set: `seal_width` when given (`seal-width=`, else a
-/// config's `system.seal_width`), else the run's `width=` (`width`, `crate::simd::width_given`),
-/// else `auto`, which resolves to this machine's calibrated width or the rule
+/// The seal's width setting and where it was set: `seal_width` when given (`seal-width=`, else a config's `system.seal_width`), else the
+/// run's `width=` (`width`, `crate::simd::width_given`), else `auto`, which resolves to this machine's calibrated width or the rule
 /// (`SealWidth::resolve_from`).
 pub fn width_setting<'a>(
     seal_width: Option<(&'a str, &'static str)>, width: Option<(crate::simd::Width, &'static str)>,
@@ -348,8 +329,8 @@ pub struct SealSettings {
 }
 
 impl SealSettings {
-    /// `seal` is `tmr`, `tm5` or `off`; `width` is `auto`, `128`, `256` or `512`. `off` keeps the
-    /// `tmr` pattern for the mirror tests, whose data it is either way.
+    /// `seal` is `tmr`, `tm5` or `off`; `width` is `auto`, `128`, `256` or `512`. `off` keeps the `tmr` pattern for the mirror tests, whose
+    /// data it is either way.
     pub fn parse(seal: &str, width: &str) -> Result<Self, String> {
         let (on, pattern) = match seal.trim().to_lowercase().as_str() {
             "tmr" => (true, SealPattern::Tmr),
@@ -360,8 +341,8 @@ impl SealSettings {
         Ok(SealSettings { on, pattern, width: SealWidth::parse(width)? })
     }
 
-    /// The kernel this CPU runs and where its width came from, `setting` saying where a width
-    /// given was set (`width_setting`); or why the asked-for width can't run.
+    /// The kernel this CPU runs and where its width came from, `setting` saying where a width given was set (`width_setting`); or why the
+    /// asked-for width can't run.
     pub fn kernel(&self, setting: &'static str) -> Result<(SealKernel, SealWidthSource), String> {
         let (width, source) = self.width.resolve_from(setting)?;
         Ok((SealKernel::new(self.pattern, width), source))
@@ -375,11 +356,10 @@ pub struct SealStep {
     pub kernel: SealKernel,
     /// The run is sealed.
     pub on: bool,
-    /// The step's memory holds the seal when it starts: the worker reseals what an unsealed step
-    /// before it left. Every step but one that never takes the seal, in a sealed run.
+    /// The step's memory holds the seal when it starts: the worker reseals what an unsealed step before it left. Every step but one that
+    /// never takes the seal, in a sealed run.
     pub expects: bool,
-    /// Check each chunk before the test works it and reseal it after (a correctness test in a
-    /// sealed run that hasn't opted out).
+    /// Check each chunk before the test works it and reseal it after (a correctness test in a sealed run that hasn't opted out).
     pub wrap: bool,
 }
 
@@ -397,8 +377,8 @@ const SEAL_MUL: u64 = 0x9E37_79B9_7F4A_7C15;
 /// `tmr`'s hash keeps 63 bits, so `v` has its top bit clear and `!v` set and the two never meet.
 const LOW63: u64 = u64::MAX >> 1;
 
-/// The `tmr` seal word at byte address `addr` (a multiple of 8) under `key`, before the cycle's
-/// inversion: `v` for the unit's first 8 B, `!v` for its second.
+/// The `tmr` seal word at byte address `addr` (a multiple of 8) under `key`, before the cycle's inversion: `v` for the unit's first 8 B,
+/// `!v` for its second.
 #[inline(always)]
 pub fn tmr_word(addr: usize, key: u64) -> u64 {
     let x = ((addr >> 4) as u64).wrapping_mul(SEAL_MUL).wrapping_add(key) & LOW63;
@@ -406,9 +386,8 @@ pub fn tmr_word(addr: usize, key: u64) -> u64 {
     if addr & 8 == 0 { v } else { !v }
 }
 
-/// TM5's 48 B motif for the 4 KiB page at `page` (`RS_GeneratePattern`, `mtests0.asm` ~1714,
-/// 64-bit bus): a 16-bit word `d` from the page number, then words `rol16(d, n)` for n = 0..11,
-/// four to a qword, each qword followed by its inverse.
+/// TM5's 48 B motif for the 4 KiB page at `page` (`RS_GeneratePattern`, `mtests0.asm` ~1714, 64-bit bus): a 16-bit word `d` from the page
+/// number, then words `rol16(d, n)` for n = 0..11, four to a qword, each qword followed by its inverse.
 #[inline(always)]
 pub fn tm5_motif(page: usize) -> [u64; 6] {
     let d = ((page >> 12).wrapping_add(page >> 28)) as u16;
@@ -423,9 +402,8 @@ pub fn tm5_word(addr: usize) -> u64 {
     tm5_motif(addr & !0xFFF)[((addr & 0xFFF) >> 3) % 6]
 }
 
-/// Counts and logs the words of `[start, end)` that don't hold the seal, once a kernel's
-/// accumulator has seen one (the tests' cold path, `crate::tests::Rescan`). A fault gone by the
-/// rescan still counts once.
+/// Counts and logs the words of `[start, end)` that don't hold the seal, once a kernel's accumulator has seen one (the tests' cold path,
+/// `crate::tests::Rescan`). A fault gone by the rescan still counts once.
 #[cold]
 #[inline(never)]
 unsafe fn rescan(kernel: SealKernel, ptr: *const u64, start: usize, end: usize, what: &str, seen: u64, count: bool) -> u64 {
@@ -442,14 +420,12 @@ unsafe fn rescan(kernel: SealKernel, ptr: *const u64, start: usize, end: usize, 
 
 // ─── The kernels ─────────────────────────────────────────────────────────────────────────────────
 
-/// `tmr` at one width: lane j of the vector at address `a` is the word at `a + 8j`, so the lanes
-/// hold the 16 B units `a/16 + j/2`, odd lanes inverted. `x = unit * SEAL_MUL` steps by a constant,
-/// so the hash costs an add, a shift and two XORs per vector, no multiply.
+/// `tmr` at one width: lane j of the vector at address `a` is the word at `a + 8j`, so the lanes hold the 16 B units `a/16 + j/2`, odd
+/// lanes inverted. `x = unit * SEAL_MUL` steps by a constant, so the hash costs an add, a shift and two XORs per vector, no multiply.
 ///
-/// Both walk a pointer over the range's vectors, four a step, then the rest, each access at the
-/// pointer plus a fixed displacement (TODO 99). Counting words from `start` instead, the check's
-/// loads were `(base,index,8)` for the index its tail continued from, and on Intel a load with an
-/// index folded into a three-operand vector op splits in two (Rule 6.3).
+/// Both walk a pointer over the range's vectors, four a step, then the rest, each access at the pointer plus a fixed displacement (TODO
+/// 99). Counting words from `start` instead, the check's loads were `(base,index,8)` for the index its tail continued from, and on Intel a
+/// load with an index folded into a three-operand vector op splits in two (Rule 6.3).
 macro_rules! tmr_kernels {
     ($fill:ident, $check:ident, $t:ty, $lanes:literal, $arch:ty, $stream:path, $tf:literal) => {
         #[target_feature(enable = $tf)]
@@ -503,9 +479,8 @@ macro_rules! tmr_kernels {
     };
 }
 
-/// The first vector's `x` lanes, the per-vector step and the inversion mask for `tmr` at `LANES`
-/// lanes from byte address `addr` (16 B aligned), under `key` and the cycle's `invert` mask. `x`
-/// stays below 2^63: the kernels mask each step's sum.
+/// The first vector's `x` lanes, the per-vector step and the inversion mask for `tmr` at `LANES` lanes from byte address `addr` (16 B
+/// aligned), under `key` and the cycle's `invert` mask. `x` stays below 2^63: the kernels mask each step's sum.
 #[inline(always)]
 fn tmr_start<const LANES: usize>(addr: usize, key: u64, invert: u64) -> (std::simd::Simd<u64, LANES>, u64, std::simd::Simd<u64, LANES>) {
     let unit = (addr >> 4) as u64;
@@ -514,12 +489,10 @@ fn tmr_start<const LANES: usize>(addr: usize, key: u64, invert: u64) -> (std::si
     (x, (LANES as u64 / 2).wrapping_mul(SEAL_MUL), inv)
 }
 
-/// `tm5` at one width. The motif is 6 words, so at any width it repeats every 3 vectors: per page
-/// (or the part of one in range) the kernel builds the 3 from the page's motif and the range's
-/// phase in it, then stores or checks them in turn.
+/// `tm5` at one width. The motif is 6 words, so at any width it repeats every 3 vectors: per page (or the part of one in range) the kernel
+/// builds the 3 from the page's motif and the range's phase in it, then stores or checks them in turn.
 ///
-/// Per page, both walk a pointer over its vectors, three a step, then the rest (`tmr_kernels`: no
-/// index in the check's loads, TODO 99).
+/// Per page, both walk a pointer over its vectors, three a step, then the rest (`tmr_kernels`: no index in the check's loads, TODO 99).
 macro_rules! tm5_kernels {
     ($fill:ident, $check:ident, $t:ty, $lanes:literal, $arch:ty, $stream:path, $tf:literal) => {
         #[target_feature(enable = $tf)]
@@ -579,9 +552,8 @@ macro_rules! tm5_kernels {
     };
 }
 
-/// The 3 vectors of `tm5` from word `i` of `ptr` to the end of its 4 KiB page (or `end`), and that
-/// end: vector `u`'s lane `j` is the motif word `(m + u * LANES + j) % 6` XOR the cycle's `invert`
-/// mask, where `m` is `i`'s word in the page.
+/// The 3 vectors of `tm5` from word `i` of `ptr` to the end of its 4 KiB page (or `end`), and that end: vector `u`'s lane `j` is the motif
+/// word `(m + u * LANES + j) % 6` XOR the cycle's `invert` mask, where `m` is `i`'s word in the page.
 #[inline(always)]
 fn tm5_vectors<const LANES: usize>(ptr: *mut u64, i: usize, end: usize, invert: u64) -> ([std::simd::Simd<u64, LANES>; 3], usize) {
     let addr = ptr.wrapping_add(i) as usize;
@@ -609,8 +581,8 @@ tm5_kernels!(tm5_fill_512, tm5_check_512, u64x8, 8, std::arch::x86_64::__m512i, 
 mod tests {
     use super::*;
 
-    /// TM5's `RS_GeneratePattern` as the binary runs it (`MT0.cxx` `sub_100021A9`, bus width 8):
-    /// the 48 B buffer it loads into xmm0-2, built byte for byte.
+    /// TM5's `RS_GeneratePattern` as the binary runs it (`MT0.cxx` `sub_100021A9`, bus width 8): the 48 B buffer it loads into xmm0-2,
+    /// built byte for byte.
     fn tm5_reference(page: u32) -> [u64; 6] {
         let mut buf = [0u8; 128];
         let mut dx = ((page >> 28).wrapping_add(page >> 12)) as u16;
@@ -673,8 +645,8 @@ mod tests {
         assert_ne!(tmr_word(0x6B39_4CE3_7B10, 0), tmr_word(0x6B49_4CE3_7B18, 0));
     }
 
-    /// TODO 99: the seal takes `width=` unless `seal-width=` (or a config's `seal_width`) sets its
-    /// own, `auto` included; with neither it keeps its own auto rule.
+    /// TODO 99: the seal takes `width=` unless `seal-width=` (or a config's `seal_width`) sets its own, `auto` included; with neither it
+    /// keeps its own auto rule.
     #[test]
     fn seal_width_is_its_own_then_the_runs_then_auto() {
         use crate::simd::Width;
@@ -692,9 +664,8 @@ mod tests {
         assert_eq!(width(Some("512"), None), (SealWidth::W512, "seal-width="));
     }
 
-    /// TODO 99: a width given wins over a calibrated one, and says where it was set; `auto` takes
-    /// the calibrated width, else the rule (256 with AVX2, else 128); a calibrated width the CPU
-    /// lacks falls to the rule, and a width given that it lacks is refused.
+    /// TODO 99: a width given wins over a calibrated one, and says where it was set; `auto` takes the calibrated width, else the rule (256
+    /// with AVX2, else 128); a calibrated width the CPU lacks falls to the rule, and a width given that it lacks is refused.
     #[test]
     fn auto_is_the_calibrated_width_else_the_rule_and_a_setting_wins() {
         use SealWidth::{Auto, W128, W256, W512};
@@ -727,12 +698,10 @@ mod tests {
         assert_eq!(SealWidth::from_bits(64), None);
     }
 
-    /// TODO 99: `auto` resolves to the calibrated width startup set (a test's here,
-    /// `TestCalibratedWidth`) by every path a run takes it: `resolve_from` (the run's seal, with
-    /// where it came from), `resolve` and `SealKernel::detect` (the Bench-*-Seal-* pairs, an
-    /// unsealed run's mirror tests). A width given still wins, and with none set `auto` is the
-    /// rule. `resolve_on`'s test above gives the calibrated width itself, so a `resolve_from` that
-    /// never passed it on passed there.
+    /// TODO 99: `auto` resolves to the calibrated width startup set (a test's here, `TestCalibratedWidth`) by every path a run takes it:
+    /// `resolve_from` (the run's seal, with where it came from), `resolve` and `SealKernel::detect` (the Bench-*-Seal-* pairs, an unsealed
+    /// run's mirror tests). A width given still wins, and with none set `auto` is the rule. `resolve_on`'s test above gives the calibrated
+    /// width itself, so a `resolve_from` that never passed it on passed there.
     #[test]
     fn auto_takes_the_calibrated_width_startup_set() {
         use SealWidth::{Auto, W128, W256, W512};
@@ -750,8 +719,8 @@ mod tests {
         assert_eq!(SealKernel::detect().width, rule);
     }
 
-    /// Known answers from an independent implementation of `doc/pattern_spec.md`'s seal section
-    /// (Python, from the spec's text alone, 2026-10-11).
+    /// Known answers from an independent implementation of `doc/pattern_spec.md`'s seal section (Python, from the spec's text alone,
+    /// 2026-10-11).
     #[test]
     fn independent_known_answers() {
         let keys: &[(u64, u64, u64, bool)] = &[
@@ -784,8 +753,8 @@ mod tests {
         }
     }
 
-    /// The seal's own checks are seal errors, never the test's alarms; a test that verifies with
-    /// the seal (a mirror, Seal-Check) counts its failed checks as alarms. With rescan on or off.
+    /// The seal's own checks are seal errors, never the test's alarms; a test that verifies with the seal (a mirror, Seal-Check) counts its
+    /// failed checks as alarms. With rescan on or off.
     #[test]
     fn only_a_tests_own_seal_checks_are_its_alarms() {
         let mut buf = vec![u64x8::splat(0); 64];
@@ -824,8 +793,8 @@ mod tests {
         assert_eq!(t.for_cycle(5, 2).word(0x3000), !tm5_word(0x3000));
     }
 
-    /// Every kernel writes exactly the reference words over ranges that start and end mid-page,
-    /// checks clean on them, and counts each bad word (the first and last of the range too).
+    /// Every kernel writes exactly the reference words over ranges that start and end mid-page, checks clean on them, and counts each bad
+    /// word (the first and last of the range too).
     #[test]
     fn kernels_match_the_reference_and_count_each_bad_word() {
         let words = 3 * 512 + 64;
@@ -858,9 +827,8 @@ mod tests {
         }
     }
 
-    /// The raw fill at a kernel's pattern and width, past `fill`'s 64 B contract: any whole number
-    /// of vectors, so a test reaches the tails a 64 B-aligned range can't (at 128 bits a line is
-    /// exactly one step).
+    /// The raw fill at a kernel's pattern and width, past `fill`'s 64 B contract: any whole number of vectors, so a test reaches the tails
+    /// a 64 B-aligned range can't (at 128 bits a line is exactly one step).
     unsafe fn raw_fill(k: SealKernel, p: *mut u64, start: usize, end: usize) {
         let (key, invert) = (k.key, k.invert_mask());
         match (k.pattern, k.width) {
@@ -886,17 +854,15 @@ mod tests {
         }
     }
 
-    /// TODO 99: the kernels' walks write exactly the seal's words (`SealKernel::word`, the pattern
-    /// one word at a time) and nothing else, check clean, and see a bad bit in every word of the
-    /// range: each lane of each accumulator, each tail (tmr: 1-3 vectors after its steps of 4; tm5:
-    /// 1-2 after a page's steps of 3) and the steps the compiler's unrolling leaves to a remainder.
-    /// Ranges from 1 vector to over two pages, starting at and inside a page, at every width.
+    /// TODO 99: the kernels' walks write exactly the seal's words (`SealKernel::word`, the pattern one word at a time) and nothing else,
+    /// check clean, and see a bad bit in every word of the range: each lane of each accumulator, each tail (tmr: 1-3 vectors after its
+    /// steps of 4; tm5: 1-2 after a page's steps of 3) and the steps the compiler's unrolling leaves to a remainder. Ranges from 1 vector
+    /// to over two pages, starting at and inside a page, at every width.
     #[test]
     fn kernel_walks_write_the_seal_and_see_every_bad_word() {
         let words: usize = 3 * 512 + 64;
-        // A guard page either side, in 4 KiB pages: a `Vec<u64x8>` is only 64 B aligned, so where
-        // its pages began was the heap's choice (`p` 0xf40 into one on the dev box), and with it
-        // which tails a range's first and last page took (round 3's review; TODO 99)
+        // A guard page either side, in 4 KiB pages: a `Vec<u64x8>` is only 64 B aligned, so where its pages began was the heap's choice
+        // (`p` 0xf40 into one on the dev box), and with it which tails a range's first and last page took (round 3's review; TODO 99)
         #[derive(Clone, Copy)]
         #[repr(C, align(4096))]
         struct Page([u64; 512]);
@@ -910,9 +876,8 @@ mod tests {
                 SealWidth::W256 => 4,
                 _ => 2,
             };
-            // Starts at a page, one vector in, mid-page, and 16 words before a page's end; lengths
-            // in vectors from one to 25, then over two pages (a full page is 21 steps at 512 bits,
-            // 42 at 256 and 85 at 128)
+            // Starts at a page, one vector in, mid-page, and 16 words before a page's end; lengths in vectors from one to 25, then over two
+            // pages (a full page is 21 steps at 512 bits, 42 at 256 and 85 at 128)
             let starts = [0, lanes, 40, 496];
             let lengths = (1..=9).chain([15, 22, 23, 24, 25]).chain([1100 / lanes]);
             let ranges: Vec<(usize, usize)> = lengths.flat_map(|n| starts.map(|s| (s, s + n * lanes))).collect();

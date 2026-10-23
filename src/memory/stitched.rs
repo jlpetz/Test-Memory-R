@@ -1,76 +1,63 @@
-//! Stitched placeholder allocator, TMR's only one since TODO 76: one reservation, one contiguous
-//! VA span per thread (TODO 70, brought into TMR by TODO 75 C).
+//! Stitched placeholder allocator, TMR's only one since TODO 76: one reservation, one contiguous VA span per thread (TODO 70, brought into
+//! TMR by TODO 75 C).
 //!
-//! A chunk allocator (plan-pagesize-pref, removed in TODO 76) hands each thread a list of
-//! independent `VirtualAlloc2` blocks, wherever the OS puts them. This one reserves a single
-//! placeholder region up front, carves it into one
-//! 1 GiB-aligned slice per thread, and fills each slice from its base upward: 1 GiB HUGE pages
-//! first, 2 MiB LARGE pages once those run out, then 4 KiB REGULAR pages. Each thread's memory is
-//! one contiguous VA range, 1 GiB pages at its base, with the unused tail of its slice left as
-//! placeholder.
+//! A chunk allocator (plan-pagesize-pref, removed in TODO 76) hands each thread a list of independent `VirtualAlloc2` blocks, wherever the
+//! OS puts them. This one reserves a single placeholder region up front, carves it into one
+//! 1 GiB-aligned slice per thread, and fills each slice from its base upward: 1 GiB HUGE pages first, 2 MiB LARGE pages once those run out,
+//! then 4 KiB REGULAR pages. Each thread's memory is one contiguous VA range, 1 GiB pages at its base, with the unused tail of its slice
+//! left as placeholder.
 //!
 //! # Committing: the replace bug and the workaround
 //!
-//! The natural way to commit into a placeholder is one `MEM_REPLACE_PLACEHOLDER` call
-//! ([`CommitMethod::Replace`]). With large pages that is not safe on Windows Server 2025
-//! (10.0.26100). Once the kernel refuses such a replace for lack of contiguous memory (1450), the
-//! next `VirtualFree` of that placeholder, whole or split, bugchecks 0x139 / 0xE
-//! (`INVALID_REFERENCE_COUNT`) in `nt!MiUnlockAndDereferenceVad`. It has happened with 1 GiB pages
-//! (the E5 run, on release) and with 2 MiB pages (2026-09-24, `threads=4 size=16GiB`, on the split
-//! that halves the retry: `MiDeletePartialVad`). 2 MiB pages just need more memory pressure before
-//! they are refused.
+//! The natural way to commit into a placeholder is one `MEM_REPLACE_PLACEHOLDER` call ([`CommitMethod::Replace`]). With large pages that is
+//! not safe on Windows Server 2025 (10.0.26100). Once the kernel refuses such a replace for lack of contiguous memory (1450), the next
+//! `VirtualFree` of that placeholder, whole or split, bugchecks 0x139 / 0xE (`INVALID_REFERENCE_COUNT`) in `nt!MiUnlockAndDereferenceVad`.
+//! It has happened with 1 GiB pages (the E5 run, on release) and with 2 MiB pages (2026-09-24, `threads=4 size=16GiB`, on the split that
+//! halves the retry: `MiDeletePartialVad`). 2 MiB pages just need more memory pressure before they are refused.
 //!
-//! So by default ([`CommitMethod::FreeThenAllocate`]) every slot, at every page size, is committed
-//! like this instead:
+//! So by default ([`CommitMethod::FreeThenAllocate`]) every slot, at every page size, is committed like this instead:
 //!
 //! 1. split the slot off as its own placeholder (`MEM_RELEASE | MEM_PRESERVE_PLACEHOLDER`),
 //! 2. release that placeholder outright, leaving a momentary hole in the VA,
 //! 3. allocate at exactly that address as an ordinary allocation.
 //!
-//! If step 3 is refused, the hole is re-reserved as a placeholder so a smaller commit can fill it.
-//! A refusal on this path never touches a VAD we hold, and it was shown live to be safe with 1 GiB
-//! pages (refused, re-reserved, later split and freed). 4 KiB pages never showed the bug. But a
-//! refused 4 KiB replace would be followed by teardown freeing that same placeholder, which is the
-//! crashing sequence, so they take this path too. Between steps 2 and 3 another allocation in the
-//! process could land in the hole; that shows up as the re-reserve failing and is reported as an
-//! error, not retried.
+//! If step 3 is refused, the hole is re-reserved as a placeholder so a smaller commit can fill it. A refusal on this path never touches a
+//! VAD we hold, and it was shown live to be safe with 1 GiB pages (refused, re-reserved, later split and freed). 4 KiB pages never showed
+//! the bug. But a refused 4 KiB replace would be followed by teardown freeing that same placeholder, which is the crashing sequence, so
+//! they take this path too. Between steps 2 and 3 another allocation in the process could land in the hole; that shows up as the re-reserve
+//! failing and is reported as an error, not retried.
 //!
-//! `Replace` is kept whole for when the kernel is fixed: one call per slot and no VA hole. Do not
-//! select it on a build that still has the bug; any refusal takes the machine down.
+//! `Replace` is kept whole for when the kernel is fixed: one call per slot and no VA hole. Do not select it on a build that still has the
+//! bug; any refusal takes the machine down.
 //!
 //! # Fairness: commit-size ladders, least-filled first
 //!
-//! The order is [`fill::fill_ladder`]; this file supplies the commits. HUGE and LARGE pages are each handed out one commit at a time, and the next commit always goes
-//! to the thread holding the fewest committed bytes; equally filled threads take turns. Commit
-//! sizes come down a power-of-two ladder. They start at `huge_chunk` / `large_chunk` (in TMR,
-//! 1 GiB and 128 MiB by default). When a commit is refused, that node steps down to the largest rung below it and
-//! the same thread retries at the same address. The node is out of that page size once the bottom
-//! rung is refused: 1 GiB for HUGE, `large_floor` (16 MiB by default) for LARGE.
+//! The order is [`fill::fill_ladder`]; this file supplies the commits. HUGE and LARGE pages are each handed out one commit at a time, and
+//! the next commit always goes to the thread holding the fewest committed bytes; equally filled threads take turns. Commit sizes come down
+//! a power-of-two ladder. They start at `huge_chunk` / `large_chunk` (in TMR, 1 GiB and 128 MiB by default). When a commit is refused, that
+//! node steps down to the largest rung below it and the same thread retries at the same address. The node is out of that page size once the
+//! bottom rung is refused: 1 GiB for HUGE, `large_floor` (16 MiB by default) for LARGE.
 //!
-//! At the default 1 GiB `huge_chunk`, HUGE is plain round-robin, one page per thread per round:
-//! every thread gets its `r`-th page before any thread gets its `r+1`-th. When a node runs out, its
-//! threads end at most one page apart. Committing each thread's whole HUGE share in one call
-//! instead lets the first threads drain the pool and leaves the rest with none. A bigger
-//! `huge_chunk` cuts the calls on machines with hundreds of GiB, at the price of a coarser split:
-//! threads can end about one chunk apart.
+//! At the default 1 GiB `huge_chunk`, HUGE is plain round-robin, one page per thread per round: every thread gets its `r`-th page before
+//! any thread gets its `r+1`-th. When a node runs out, its threads end at most one page apart. Committing each thread's whole HUGE share in
+//! one call instead lets the first threads drain the pool and leaves the rest with none. A bigger `huge_chunk` cuts the calls on machines
+//! with hundreds of GiB, at the price of a coarser split: threads can end about one chunk apart.
 //!
-//! Nothing committed is released afterwards to level the split. A released 1 GiB page goes back to
-//! the whole system and may not come back, and TMR never frees memory to break a block into
-//! smaller ones (TMR-APP `CLAUDE.md`).
+//! Nothing committed is released afterwards to level the split. A released 1 GiB page goes back to the whole system and may not come back,
+//! and TMR never frees memory to break a block into smaller ones (TMR-APP `CLAUDE.md`).
 //!
-//! LARGE then tops up the threads HUGE left short before anyone else gets more. Each thread's
-//! locked total ends within about one `large_chunk` of the others on its node, and so does its
-//! 4 KiB remainder, instead of piling up on the highest thread indices.
+//! LARGE then tops up the threads HUGE left short before anyone else gets more. Each thread's locked total ends within about one
+//! `large_chunk` of the others on its node, and so does its 4 KiB remainder, instead of piling up on the highest thread indices.
 //!
 //! # Handing memory out
 //!
-//! Each thread's span becomes one [`AllocationBlock`] whose `MemoryBuffer` points back at the
-//! arena as its `Backend`. Dropping a buffer releases nothing; the arena
-//! releases every piece (each commit and each placeholder is its own VAD and needs its own
-//! `VirtualFree`) once the last buffer drops its `Arc`.
+//! Each thread's span becomes one [`AllocationBlock`] whose `MemoryBuffer` points back at the arena as its `Backend`. Dropping a buffer
+//! releases nothing; the arena
+//! releases every piece (each commit and each placeholder is its own VAD and needs its own `VirtualFree`) once the last buffer drops its
+//! `Arc`.
 //!
-//! All OS calls go through [`VmOps`], so the fill logic runs against a fake in the tests below: the
-//! exhaustion paths are exactly the ones that are dangerous to exercise for real.
+//! All OS calls go through [`VmOps`], so the fill logic runs against a fake in the tests below: the exhaustion paths are exactly the ones
+//! that are dangerous to exercise for real.
 #![warn(clippy::undocumented_unsafe_blocks)]
 
 use std::collections::HashMap;
@@ -108,20 +95,18 @@ const WHO: &str = "stitched";
 // Request
 // ---------------------------------------------------------------------------------------------
 
-/// How a slot is committed, at every page size. See the module docs for why the default is not
-/// the obvious one.
+/// How a slot is committed, at every page size. See the module docs for why the default is not the obvious one.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum CommitMethod {
-    /// `MEM_REPLACE_PLACEHOLDER` straight into the split slot: one call, and the VA never leaves
-    /// our hands. **Bugchecks 10.0.26100** (0x139) as soon as a 1 GiB or 2 MiB replace is
-    /// refused and that placeholder is later freed or split. For kernels with the fix.
+    /// `MEM_REPLACE_PLACEHOLDER` straight into the split slot: one call, and the VA never leaves our hands. **Bugchecks 10.0.26100**
+    /// (0x139) as soon as a 1 GiB or 2 MiB replace is refused and that placeholder is later freed or split. For kernels with the fix.
     #[cfg_attr(
         not(test),
         expect(dead_code, reason = "dormant until the kernel's refused-replace bug is fixed (module docs, TMR-APP CLAUDE.md)")
     )]
     Replace,
-    /// Split the slot off, release it, allocate at the address: two more calls per slot and a
-    /// momentary VA hole, but a refusal leaves no damaged placeholder behind.
+    /// Split the slot off, release it, allocate at the address: two more calls per slot and a momentary VA hole, but a refusal leaves no
+    /// damaged placeholder behind.
     FreeThenAllocate,
 }
 
@@ -130,8 +115,8 @@ pub enum CommitMethod {
 pub struct StitchThread {
     pub thread_id: usize,
     pub bytes: usize,
-    /// Preferred node for this thread's pages (`MemExtendedParameterNumaNode`); `None` lets the OS
-    /// choose. Threads on the same node draw from one pool, and fairness is judged within it.
+    /// Preferred node for this thread's pages (`MemExtendedParameterNumaNode`); `None` lets the OS choose. Threads on the same node draw
+    /// from one pool, and fairness is judged within it.
     pub numa_node: Option<u32>,
 }
 
@@ -144,25 +129,21 @@ pub struct StitchRequest {
     /// `LowestStartingAddress` for the reservation; `None` places it anywhere.
     pub lowest_address: Option<usize>,
     pub commit_method: CommitMethod,
-    /// Top of the HUGE ladder: each 1 GiB-page commit is this big until one is refused, then
-    /// halved on every refusal down to 1 GiB. A power of two, at least 1 GiB. The default 1 GiB is
-    /// the fairest split. Bigger means fewer calls on very large machines, and threads can end
+    /// Top of the HUGE ladder: each 1 GiB-page commit is this big until one is refused, then halved on every refusal down to 1 GiB. A power
+    /// of two, at least 1 GiB. The default 1 GiB is the fairest split. Bigger means fewer calls on very large machines, and threads can end
     /// about one chunk apart.
     pub huge_chunk: usize,
-    /// Top of the LARGE ladder: each 2 MiB-page commit is this big until one is refused, then
-    /// halved on every refusal down to `large_floor`. A power of two, at least `large_floor`.
-    /// Roughly how far apart the threads on a node can end in locked bytes.
+    /// Top of the LARGE ladder: each 2 MiB-page commit is this big until one is refused, then halved on every refusal down to
+    /// `large_floor`. A power of two, at least `large_floor`. Roughly how far apart the threads on a node can end in locked bytes.
     pub large_chunk: usize,
-    /// Bottom of the LARGE ladder: once a commit this small is refused, the node is out of 2 MiB
-    /// pages, and whatever each thread still needs goes to 4 KiB. A power of two, at least
-    /// `run_quantum`.
+    /// Bottom of the LARGE ladder: once a commit this small is refused, the node is out of 2 MiB pages, and whatever each thread still
+    /// needs goes to 4 KiB. A power of two, at least `run_quantum`.
     pub large_floor: usize,
-    /// NUMA nodes on the machine (`0..numa_nodes`). Threads short after their own node's 1 GiB and
-    /// 2 MiB pages ask the others in turn, by name (`fill::fill_all`).
+    /// NUMA nodes on the machine (`0..numa_nodes`). Threads short after their own node's 1 GiB and 2 MiB pages ask the others in turn, by
+    /// name (`fill::fill_all`).
     pub numa_nodes: u32,
-    /// Every thread size is rounded down to a multiple of this and every LARGE commit is one, so
-    /// no run is smaller. A power of two, 2 MiB ..= 1 GiB; the default 16 MiB is TMR's smallest
-    /// planned block.
+    /// Every thread size is rounded down to a multiple of this and every LARGE commit is one, so no run is smaller. A power of two, 2 MiB
+    /// ..= 1 GiB; the default 16 MiB is TMR's smallest planned block.
     pub run_quantum: usize,
 }
 
@@ -187,8 +168,7 @@ impl StitchRequest {
 /// The address-space layout a request resolves to, before any OS call.
 #[derive(Debug, Clone)]
 pub struct StitchPlan {
-    /// Distance between thread bases: the largest target rounded up to 1 GiB, which keeps every
-    /// base 1 GiB-aligned for HUGE pages.
+    /// Distance between thread bases: the largest target rounded up to 1 GiB, which keeps every base 1 GiB-aligned for HUGE pages.
     pub stride: usize,
     /// Size of the single reservation: `stride` per thread.
     pub reservation: usize,
@@ -280,16 +260,16 @@ pub struct ThreadSpan {
     pub len: usize,
     /// What it asked for; `len` falls short only when the allowed page sizes ran out.
     pub target: usize,
-    /// Committed runs from `base` upward. Each starts on its own page size's boundary: 1 GiB runs
-    /// can follow 2 MiB ones from another node when those end on a whole GiB.
+    /// Committed runs from `base` upward. Each starts on its own page size's boundary: 1 GiB runs can follow 2 MiB ones from another node
+    /// when those end on a whole GiB.
     pub runs: Vec<Run>,
-    /// Every request made for this thread, in the order made, for the allocation report
-    /// (TODO 81). Startup only: one small entry a request, dropped once the report prints.
+    /// Every request made for this thread, in the order made, for the allocation report (TODO 81). Startup only: one small entry a request,
+    /// dropped once the report prints.
     pub commits: Vec<Commit>,
 }
 
-/// One request to the OS for a thread: a commit of `len` bytes at its cursor, granted or refused.
-/// The runs are the granted ones merged. A refusal's error is in the log, where it happened.
+/// One request to the OS for a thread: a commit of `len` bytes at its cursor, granted or refused. The runs are the granted ones merged. A
+/// refusal's error is in the log, where it happened.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct Commit {
     pub len: usize,
@@ -300,8 +280,8 @@ pub struct Commit {
 }
 
 impl ThreadSpan {
-    /// Bytes on 1 GiB or 2 MiB pages from a node other than the thread's own, which the commits
-    /// named strictly. 4 KiB runs only prefer the home node.
+    /// Bytes on 1 GiB or 2 MiB pages from a node other than the thread's own, which the commits named strictly. 4 KiB runs only prefer the
+    /// home node.
     pub fn remote_bytes(&self) -> usize {
         self.runs.iter().filter(|r| r.page != PageSizeLevel::Regular && r.numa_node != self.numa_node).map(|r| r.len).sum()
     }
@@ -315,9 +295,8 @@ impl ThreadSpan {
 // OS operations
 // ---------------------------------------------------------------------------------------------
 
-/// The six OS operations the arena is built from. [`Win32Vm`] is the real thing; the tests swap in
-/// a fake that models the placeholder rules, finite page pools and the refused-replace bug, so
-/// refusals can be driven without exhausting anything. Errors are raw Win32 codes.
+/// The six OS operations the arena is built from. [`Win32Vm`] is the real thing; the tests swap in a fake that models the placeholder
+/// rules, finite page pools and the refused-replace bug, so refusals can be driven without exhausting anything. Errors are raw Win32 codes.
 pub trait VmOps {
     /// Reserve `len` bytes of placeholder VA aligned to `align`, at or above `lowest`.
     fn reserve(&mut self, len: usize, align: usize, lowest: Option<usize>) -> Result<usize, u32>;
@@ -325,13 +304,11 @@ pub trait VmOps {
     fn reserve_at(&mut self, addr: usize, len: usize) -> Result<(), u32>;
     /// Split `[addr, addr + len)` off the front of the larger placeholder that starts at `addr`.
     fn split(&mut self, addr: usize, len: usize) -> Result<(), u32>;
-    /// Commit over the placeholder that is exactly `[addr, addr + len)`. A refusal leaves the
-    /// placeholder in place, and on 10.0.26100 a large-page refusal leaves it poisoned: see
-    /// [`CommitMethod::Replace`].
+    /// Commit over the placeholder that is exactly `[addr, addr + len)`. A refusal leaves the placeholder in place, and on 10.0.26100 a
+    /// large-page refusal leaves it poisoned: see [`CommitMethod::Replace`].
     fn replace(&mut self, addr: usize, len: usize, page: PageSizeLevel, numa: Option<u32>) -> Result<(), u32>;
-    /// Merge the adjacent placeholders that exactly cover `[addr, addr + len)` into one, the VA
-    /// staying reserved throughout (`MEM_RELEASE | MEM_COALESCE_PLACEHOLDERS`). The range must
-    /// start and end on placeholder edges, else 487 (`../numa-test/FINDINGS.md`, part 5).
+    /// Merge the adjacent placeholders that exactly cover `[addr, addr + len)` into one, the VA staying reserved throughout (`MEM_RELEASE |
+    /// MEM_COALESCE_PLACEHOLDERS`). The range must start and end on placeholder edges, else 487 (`../numa-test/FINDINGS.md`, part 5).
     fn coalesce(&mut self, addr: usize, len: usize) -> Result<(), u32>;
     /// Commit an ordinary allocation at exactly `[addr, addr + len)`, which must be free VA.
     fn allocate_at(&mut self, addr: usize, len: usize, page: PageSizeLevel, numa: Option<u32>) -> Result<(), u32>;
@@ -339,14 +316,14 @@ pub trait VmOps {
     fn release(&mut self, addr: usize, len: usize) -> Result<(), u32>;
 }
 
-/// `VirtualAlloc2` / `VirtualFree` on the current process. Every call is logged at debug level
-/// *before* it is made, so a log that is written through survives a bugcheck on that call.
+/// `VirtualAlloc2` / `VirtualFree` on the current process. Every call is logged at debug level *before* it is made, so a log that is
+/// written through survives a bugcheck on that call.
 #[derive(Debug, Default)]
 pub struct Win32Vm;
 
 impl Win32Vm {
-    /// Same packing as `WindowsBackend::create_extended_param`: the type goes in the low
-    /// `MEM_EXTENDED_PARAMETER_TYPE_BITS` of the bitfield.
+    /// Same packing as `WindowsBackend::create_extended_param`: the type goes in the low `MEM_EXTENDED_PARAMETER_TYPE_BITS` of the
+    /// bitfield.
     fn ext_param(kind: MEM_EXTENDED_PARAMETER_TYPE, value: u64) -> MEM_EXTENDED_PARAMETER {
         let mut param = MEM_EXTENDED_PARAMETER::default();
         param.Anonymous1._bitfield = (kind.0 as u64) & ((1_u64 << MEM_EXTENDED_PARAMETER_TYPE_BITS) - 1);
@@ -354,9 +331,8 @@ impl Win32Vm {
         param
     }
 
-    /// Page-size attribute plus node: required for HUGE and LARGE (`NUMA_NODE_MANDATORY`),
-    /// preferred for REGULAR, which refuses the strict form. Plain values only, no pointers, so
-    /// these carry no lifetime hazard.
+    /// Page-size attribute plus node: required for HUGE and LARGE (`NUMA_NODE_MANDATORY`), preferred for REGULAR, which refuses the strict
+    /// form. Plain values only, no pointers, so these carry no lifetime hazard.
     fn page_params(page: PageSizeLevel, numa: Option<u32>) -> Vec<MEM_EXTENDED_PARAMETER> {
         let mut params = Vec::with_capacity(2);
         let attribute = match page {
@@ -382,20 +358,19 @@ impl Win32Vm {
     }
 
     fn last_error() -> u32 {
-        // SAFETY: reads this thread's error slot; no arguments. Called straight after the failed
-        // call, before anything else can overwrite the slot.
+        // SAFETY: reads this thread's error slot; no arguments. Called straight after the failed call, before anything else can overwrite
+        // the slot.
         unsafe { GetLastError() }.0
     }
 
-    /// A `VirtualAlloc2` at a fixed address returns that address or NULL; anything else is
-    /// released and treated as a refusal rather than trusted.
+    /// A `VirtualAlloc2` at a fixed address returns that address or NULL; anything else is released and treated as a refusal rather than
+    /// trusted.
     fn at_address(ptr: *mut c_void, addr: usize) -> Result<(), u32> {
         if ptr.is_null() {
             return Err(Self::last_error());
         }
         if ptr as usize != addr {
-            // SAFETY: `ptr` was just returned by a successful `VirtualAlloc2`; we own it and
-            // release it once, by its base.
+            // SAFETY: `ptr` was just returned by a successful `VirtualAlloc2`; we own it and release it once, by its base.
             let _ = unsafe { VirtualFree(ptr, 0, MEM_RELEASE) };
             return Err(ERROR_INVALID_ADDRESS);
         }
@@ -403,9 +378,8 @@ impl Win32Vm {
     }
 
     fn free(addr: usize, len: usize, kind: VIRTUAL_FREE_TYPE) -> Result<(), u32> {
-        // SAFETY: `addr` is the base of a region the arena owns (tracked piece by piece), and
-        // `len` is either 0 for `MEM_RELEASE` or the exact front slice of that placeholder for a
-        // split. The call dereferences nothing of ours.
+        // SAFETY: `addr` is the base of a region the arena owns (tracked piece by piece), and `len` is either 0 for `MEM_RELEASE` or the
+        // exact front slice of that placeholder for a split. The call dereferences nothing of ours.
         unsafe { VirtualFree(addr as *mut c_void, len, kind) }.map_err(|e| win32_code(&e))
     }
 }
@@ -423,9 +397,8 @@ fn os_call<T>(call: String, f: impl FnOnce() -> Result<T, u32>) -> Result<T, u32
 
 impl VmOps for Win32Vm {
     fn reserve(&mut self, len: usize, align: usize, lowest: Option<usize>) -> Result<usize, u32> {
-        // LIFETIME: `addr_req` is reached through a raw pointer in `params`, which the kernel
-        // dereferences inside the `VirtualAlloc2` call. It must stay in this scope until after
-        // the call (the full note is on `WindowsBackend::allocate_with_virtualalloc2`).
+        // LIFETIME: `addr_req` is reached through a raw pointer in `params`, which the kernel dereferences inside the `VirtualAlloc2` call.
+        // It must stay in this scope until after the call (the full note is on `WindowsBackend::allocate_with_virtualalloc2`).
         let mut addr_req = MEM_ADDRESS_REQUIREMENTS {
             LowestStartingAddress: lowest.unwrap_or(0) as *mut c_void,
             HighestEndingAddress: std::ptr::null_mut(),
@@ -441,9 +414,8 @@ impl VmOps for Win32Vm {
                 lowest.unwrap_or(0)
             ),
             || {
-                // SAFETY: `params` holds a pointer to `addr_req`, which is live for this whole
-                // function (see LIFETIME above). Placeholder reservation takes no base address,
-                // which is the only form that accepts address requirements.
+                // SAFETY: `params` holds a pointer to `addr_req`, which is live for this whole function (see LIFETIME above). Placeholder
+                // reservation takes no base address, which is the only form that accepts address requirements.
                 let ptr =
                     unsafe { VirtualAlloc2(None, None, len, MEM_RESERVE | MEM_RESERVE_PLACEHOLDER, PAGE_NOACCESS.0, Some(&mut params)) };
                 if ptr.is_null() { Err(Self::last_error()) } else { Ok(ptr as usize) }
@@ -456,8 +428,7 @@ impl VmOps for Win32Vm {
 
     fn reserve_at(&mut self, addr: usize, len: usize) -> Result<(), u32> {
         os_call(format!("VirtualAlloc2({addr:#x}, {len:#x}, MEM_RESERVE|MEM_RESERVE_PLACEHOLDER, PAGE_NOACCESS)"), || {
-            // SAFETY: no extended parameters; the kernel either reserves exactly this free
-            // range or fails. Nothing of ours is dereferenced.
+            // SAFETY: no extended parameters; the kernel either reserves exactly this free range or fails. Nothing of ours is dereferenced.
             let ptr = unsafe {
                 VirtualAlloc2(None, Some(addr as *const c_void), len, MEM_RESERVE | MEM_RESERVE_PLACEHOLDER, PAGE_NOACCESS.0, None)
             };
@@ -474,8 +445,8 @@ impl VmOps for Win32Vm {
     fn replace(&mut self, addr: usize, len: usize, page: PageSizeLevel, numa: Option<u32>) -> Result<(), u32> {
         let mut params = Self::page_params(page, numa);
         os_call(format!("VirtualAlloc2({addr:#x}, {len:#x}, MEM_REPLACE_PLACEHOLDER|commit, {}, node {numa:?})", page_label(page)), || {
-            // SAFETY: `params` holds plain values (no pointers) and lives across the call.
-            // `[addr, addr + len)` is exactly one placeholder we own, as a replace requires.
+            // SAFETY: `params` holds plain values (no pointers) and lives across the call. `[addr, addr + len)` is exactly one placeholder
+            // we own, as a replace requires.
             let ptr = unsafe {
                 VirtualAlloc2(
                     None,
@@ -499,9 +470,8 @@ impl VmOps for Win32Vm {
     fn allocate_at(&mut self, addr: usize, len: usize, page: PageSizeLevel, numa: Option<u32>) -> Result<(), u32> {
         let mut params = Self::page_params(page, numa);
         os_call(format!("VirtualAlloc2({addr:#x}, {len:#x}, commit, {}, node {numa:?})", page_label(page)), || {
-            // SAFETY: `params` holds plain values (no pointers) and lives across the call.
-            // The range is free VA we released a moment ago; the kernel either maps it or
-            // fails.
+            // SAFETY: `params` holds plain values (no pointers) and lives across the call. The range is free VA we released a moment ago;
+            // the kernel either maps it or fails.
             let ptr = unsafe {
                 VirtualAlloc2(
                     None,
@@ -559,8 +529,7 @@ struct Slice {
     numa_node: Option<u32>,
     base: usize,
     target: usize,
-    /// Bytes committed from `base`. Everything below is committed; the piece starting here and
-    /// everything above it is placeholder.
+    /// Bytes committed from `base`. Everything below is committed; the piece starting here and everything above it is placeholder.
     cursor: usize,
     /// Covers the slice, in address order.
     pieces: Vec<Piece>,
@@ -607,8 +576,7 @@ impl Slice {
     }
 }
 
-/// Sort a refused commit: exhaustion steps down the ladder (`backend::is_exhaustion`), anything
-/// else ends the build.
+/// Sort a refused commit: exhaustion steps down the ladder (`backend::is_exhaustion`), anything else ends the build.
 fn refusal(code: u32, page: PageSizeLevel, addr: usize, len: usize) -> Result<Grant, String> {
     if is_exhaustion(code) {
         return Ok(Grant::Refused(code));
@@ -621,8 +589,8 @@ fn refusal(code: u32, page: PageSizeLevel, addr: usize, len: usize) -> Result<Gr
     ))
 }
 
-/// One placeholder reservation, carved into per-thread slices and filled HUGE → LARGE → REGULAR.
-/// Owns every piece of it; `Drop` releases them.
+/// One placeholder reservation, carved into per-thread slices and filled HUGE → LARGE → REGULAR. Owns every piece of it; `Drop` releases
+/// them.
 #[derive(Debug)]
 pub struct StitchedArena<V: VmOps = Win32Vm> {
     vm: V,
@@ -631,14 +599,12 @@ pub struct StitchedArena<V: VmOps = Win32Vm> {
     stride: usize,
     commit_method: CommitMethod,
     slices: Vec<Slice>,
-    /// The part of the reservation not yet carved into slices: set only while `build_with` carves,
-    /// or if carving failed partway.
+    /// The part of the reservation not yet carved into slices: set only while `build_with` carves, or if carving failed partway.
     uncarved: Option<(usize, usize)>,
 }
 
 impl StitchedArena<Win32Vm> {
-    /// Large-page bytes each thread got from another node, by (home, source), for
-    /// `fill::warn_remote`.
+    /// Large-page bytes each thread got from another node, by (home, source), for `fill::warn_remote`.
     fn remote_memory(&self) -> fill::RemoteMemory {
         let mut remote = fill::RemoteMemory::new();
         for span in self.spans() {
@@ -662,8 +628,8 @@ impl StitchedArena<Win32Vm> {
 }
 
 impl<V: VmOps> StitchedArena<V> {
-    /// Reserve, carve and fill through `vm`. On error everything taken so far is released (the
-    /// half-built arena drops) before the error returns.
+    /// Reserve, carve and fill through `vm`. On error everything taken so far is released (the half-built arena drops) before the error
+    /// returns.
     pub fn build_with(vm: V, req: &StitchRequest) -> Result<Self, String> {
         let plan = plan(req)?;
         let mut vm = vm;
@@ -683,8 +649,7 @@ impl<V: VmOps> StitchedArena<V> {
 
         let pages = PageSizes { min: req.min_page, max: req.max_page };
         let sizing = BlockSizing { huge_chunk: req.huge_chunk, large_chunk: req.large_chunk, large_floor: req.large_floor };
-        // No fairness question for 4 KiB pages: a refusal there is the commit limit, and that
-        // fails the build.
+        // No fairness question for 4 KiB pages: a refusal there is the commit limit, and that fails the build.
         if let Some((i, code)) = fill::fill_all(&mut arena, pages, &sizing, req.numa_nodes, WHO)? {
             let slice = &arena.slices[i];
             return Err(format!(
@@ -714,8 +679,7 @@ impl<V: VmOps> StitchedArena<V> {
         Ok(arena)
     }
 
-    /// Cut the reservation into one placeholder per thread, bottom up. Each cut is a front split
-    /// of what is left.
+    /// Cut the reservation into one placeholder per thread, bottom up. Each cut is a front split of what is left.
     fn carve(&mut self, req: &StitchRequest, plan: &StitchPlan) -> Result<(), String> {
         let end = self.base + plan.reservation;
         for (t, (thread, &target)) in req.threads.iter().zip(&plan.targets).enumerate() {
@@ -741,9 +705,8 @@ impl<V: VmOps> StitchedArena<V> {
         Ok(())
     }
 
-    /// The most one commit at slice `i`'s cursor can cover. A refused commit leaves its hole
-    /// re-reserved at the size it asked for, so the free space there can be several placeholders
-    /// in a row. A commit spans them (`cover`): free-then-allocate releases them all and
+    /// The most one commit at slice `i`'s cursor can cover. A refused commit leaves its hole re-reserved at the size it asked for, so the
+    /// free space there can be several placeholders in a row. A commit spans them (`cover`): free-then-allocate releases them all and
     /// allocates once across them, a replace merges them into one placeholder first.
     fn slot_len(&self, i: usize) -> Result<usize, String> {
         let slice = &self.slices[i];
@@ -756,8 +719,8 @@ impl<V: VmOps> StitchedArena<V> {
         Ok(slice.pieces[start..].iter().take_while(|p| p.holding == Holding::Placeholder).map(|p| p.len).sum())
     }
 
-    /// Make `[cursor, cursor + len)` of slice `i` a run of whole placeholder pieces, splitting the
-    /// last one where the range ends. Returns their indices.
+    /// Make `[cursor, cursor + len)` of slice `i` a run of whole placeholder pieces, splitting the last one where the range ends. Returns
+    /// their indices.
     fn cover(&mut self, i: usize, len: usize) -> Result<std::ops::Range<usize>, String> {
         let slice = &mut self.slices[i];
         let addr = slice.next_addr();
@@ -786,8 +749,7 @@ impl<V: VmOps> StitchedArena<V> {
         Ok(start..end)
     }
 
-    /// Commit `len` bytes of `node`'s pages at slice `i`'s cursor, by the request's
-    /// [`CommitMethod`].
+    /// Commit `len` bytes of `node`'s pages at slice `i`'s cursor, by the request's [`CommitMethod`].
     fn commit(&mut self, i: usize, len: usize, page: PageSizeLevel, node: Option<u32>) -> Result<Grant, String> {
         match self.commit_method {
             CommitMethod::Replace => self.commit_replace(i, len, page, node),
@@ -802,9 +764,8 @@ impl<V: VmOps> StitchedArena<V> {
         let addr = slice.next_addr();
         let idx = range.start;
         if range.len() > 1 {
-            // Several placeholders a refusal left behind: merge them, the VA never leaving our
-            // hands. (On 10.0.26100 a placeholder a refused large-page replace poisoned would
-            // bugcheck here as it would on any split or free; Replace waits for the fix.)
+            // Several placeholders a refusal left behind: merge them, the VA never leaving our hands. (On 10.0.26100 a placeholder a
+            // refused large-page replace poisoned would bugcheck here as it would on any split or free; Replace waits for the fix.)
             self.vm
                 .coalesce(addr, len)
                 .map_err(|code| format!("stitched: merging the placeholders at {addr:#x}+{len:#x} failed: {}", describe_error(code)))?;
@@ -816,15 +777,13 @@ impl<V: VmOps> StitchedArena<V> {
                 slice.cursor += len;
                 Ok(Grant::Done)
             }
-            // A refused replace leaves the placeholder where it was, ready for a smaller retry.
-            // On 10.0.26100 a refused large-page one is also poisoned: the next `VirtualFree` of
-            // it bugchecks (module docs).
+            // A refused replace leaves the placeholder where it was, ready for a smaller retry. On 10.0.26100 a refused large-page one is
+            // also poisoned: the next `VirtualFree` of it bugchecks (module docs).
             Err(code) => refusal(code, page, addr, len),
         }
     }
 
-    /// Commit `len` bytes at slice `i`'s cursor without a replace: split the slot off in its own
-    /// call, release it, allocate into the hole.
+    /// Commit `len` bytes at slice `i`'s cursor without a replace: split the slot off in its own call, release it, allocate into the hole.
     fn commit_free_then_allocate(&mut self, i: usize, len: usize, page: PageSizeLevel, node: Option<u32>) -> Result<Grant, String> {
         // 1. The slot becomes whole placeholders, in calls separate from the commit.
         let range = self.cover(i, len)?;
@@ -851,8 +810,7 @@ impl<V: VmOps> StitchedArena<V> {
                 Ok(Grant::Done)
             }
             Err(code) => {
-                // Take the hole back so a smaller page size can fill it. If that fails, another
-                // allocation in the process got there first.
+                // Take the hole back so a smaller page size can fill it. If that fails, another allocation in the process got there first.
                 self.vm.reserve_at(addr, len).map_err(|again| {
                     format!(
                         "stitched: lost VA {addr:#x}+{len:#x}: the {} commit was refused ({}) \
@@ -873,8 +831,7 @@ impl<V: VmOps> StitchedArena<V> {
         self.slices.iter().map(|s| s.span(s.commits.clone())).collect()
     }
 
-    /// [`Self::spans`], with the request record moved out rather than copied: the allocation
-    /// report is its only reader.
+    /// [`Self::spans`], with the request record moved out rather than copied: the allocation report is its only reader.
     fn take_spans(&mut self) -> Vec<ThreadSpan> {
         self.slices
             .iter_mut()
@@ -912,9 +869,8 @@ impl<V: VmOps> StitchedArena<V> {
     }
 }
 
-/// stitched's side of `fill::Fill`: a request is a commit at the slice's cursor. Neighbouring
-/// commits of one page size merge into a single run, so a commit can be any multiple of the floor;
-/// the span is handed out whole.
+/// stitched's side of `fill::Fill`: a request is a commit at the slice's cursor. Neighbouring commits of one page size merge into a single
+/// run, so a commit can be any multiple of the floor; the span is handed out whole.
 impl<V: VmOps> Fill for StitchedArena<V> {
     fn thread_count(&self) -> usize {
         self.slices.len()
@@ -955,10 +911,9 @@ impl<V: VmOps> Fill for StitchedArena<V> {
         Ok(grant)
     }
 
-    /// 1 GiB pages need a 1 GiB-aligned cursor. The base is one, and every 1 GiB commit and every
-    /// whole-GiB 2 MiB run keeps it, so a remote pass can still put 1 GiB pages above local 2 MiB
-    /// ones. A 2 MiB tail that is not whole GiB (the node's last 256, 64, 32 MiB pieces) moves the
-    /// cursor off the boundary, and from then on the thread takes 2 MiB pages only.
+    /// 1 GiB pages need a 1 GiB-aligned cursor. The base is one, and every 1 GiB commit and every whole-GiB 2 MiB run keeps it, so a remote
+    /// pass can still put 1 GiB pages above local 2 MiB ones. A 2 MiB tail that is not whole GiB (the node's last 256, 64, 32 MiB pieces)
+    /// moves the cursor off the boundary, and from then on the thread takes 2 MiB pages only.
     fn can_take(&self, i: usize, page: PageSizeLevel) -> bool {
         page != PageSizeLevel::Huge || self.slices[i].cursor.is_multiple_of(HUGE)
     }
@@ -976,8 +931,8 @@ impl<V: VmOps> Drop for StitchedArena<V> {
     fn drop(&mut self) {
         let vm = &mut self.vm;
         let (mut released, mut failed) = (0usize, 0usize);
-        // Commits before the placeholders around them. Each piece is its own VAD and is released
-        // on its own; `Lost` VA may belong to someone else and is left alone.
+        // Commits before the placeholders around them. Each piece is its own VAD and is released on its own; `Lost` VA may belong to
+        // someone else and is left alone.
         for commits in [true, false] {
             for piece in self.slices.iter().flat_map(|s| &s.pieces) {
                 let wanted = match piece.holding {
@@ -1023,8 +978,7 @@ impl<V: VmOps + Send + Sync + std::fmt::Debug + 'static> Backend for StitchedAre
     }
 
     fn free(&self, allocation: BackendAllocation) -> Result<(), String> {
-        // A view going away frees nothing: the arena releases every piece together when the last
-        // `MemoryBuffer` drops its `Arc`.
+        // A view going away frees nothing: the arena releases every piece together when the last `MemoryBuffer` drops its `Arc`.
         log::trace!("stitched: view {:?} (+{:#x}) returned", allocation.ptr, allocation.size);
         Ok(())
     }
@@ -1038,9 +992,8 @@ impl<V: VmOps + Send + Sync + std::fmt::Debug + 'static> Backend for StitchedAre
 // Handing out blocks
 // ---------------------------------------------------------------------------------------------
 
-/// Each thread's span as one block: its start and length, a view sharing `arena` as its backend.
-/// The memory is released when the last view drops. The tests take the span as one extent
-/// (`test_memory::extent`, TODO 76).
+/// Each thread's span as one block: its start and length, a view sharing `arena` as its backend. The memory is released when the last view
+/// drops. The tests take the span as one extent (`test_memory::extent`, TODO 76).
 pub fn into_allocation_blocks<V>(arena: Arc<StitchedArena<V>>) -> HashMap<usize, Vec<AllocationBlock>>
 where
     V: VmOps + Send + Sync + std::fmt::Debug + 'static,
@@ -1134,8 +1087,8 @@ mod tests {
         Foreign,
     }
 
-    /// Finite page pools per node, plus the placeholder rules applied as strictly as the kernel
-    /// does (stricter where the docs are vague). A pool is unlimited unless set.
+    /// Finite page pools per node, plus the placeholder rules applied as strictly as the kernel does (stricter where the docs are vague). A
+    /// pool is unlimited unless set.
     #[derive(Debug, Default)]
     struct State {
         regions: BTreeMap<usize, (usize, Region)>,
@@ -1162,9 +1115,9 @@ mod tests {
     }
 
     impl State {
-        /// Split or release a poisoned placeholder and the real kernel bugchecks (seen at 1 GiB and
-        /// 2 MiB). Replacing it again is untested live, so that is assumed to bugcheck too. Quiet
-        /// while already unwinding, so a test's teardown does not turn the panic into an abort.
+        /// Split or release a poisoned placeholder and the real kernel bugchecks (seen at 1 GiB and 2 MiB). Replacing it again is untested
+        /// live, so that is assumed to bugcheck too. Quiet while already unwinding, so a test's teardown does not turn the panic into an
+        /// abort.
         fn touch(&self, addr: usize, op: &str) {
             if self.poisoned.contains(&addr) && !std::thread::panicking() {
                 panic!("bugcheck 0x139/0xE: {op} of {addr:#x} after a refused large-page replace");
@@ -1390,9 +1343,8 @@ mod tests {
             .collect()
     }
 
-    /// 11 pages for four 8 GiB threads. From 1 GiB that is 11 commits ending 3, 3, 3, 2; from
-    /// 4 GiB it is 4 commits (4, 4, then 4 refused -> 2, then 2 refused -> 1, then 1 refused ->
-    /// dry) ending 4, 4, 2, 1.
+    /// 11 pages for four 8 GiB threads. From 1 GiB that is 11 commits ending 3, 3, 3, 2; from 4 GiB it is 4 commits (4, 4, then 4 refused
+    /// -> 2, then 2 refused -> 1, then 1 refused -> dry) ending 4, 4, 2, 1.
     #[test]
     fn huge_ladder_trades_evenness_for_fewer_commits() {
         let run = |huge_chunk| {
@@ -1440,9 +1392,8 @@ mod tests {
         assert!(with(GIB, 32 * MIB, 64 * MIB).is_err());
     }
 
-    /// 1 GiB + 48 MiB of 2 MiB pages for a 2 GiB thread. The ladder takes 1 GiB, is refused from
-    /// 1 GiB down to 64 MiB, then takes 32 MiB. From there the default 16 MiB floor also takes the
-    /// last 16 MiB; a 32 MiB floor stops and leaves it to 4 KiB.
+    /// 1 GiB + 48 MiB of 2 MiB pages for a 2 GiB thread. The ladder takes 1 GiB, is refused from 1 GiB down to 64 MiB, then takes 32 MiB.
+    /// From there the default 16 MiB floor also takes the last 16 MiB; a 32 MiB floor stops and leaves it to 4 KiB.
     #[test]
     fn large_floor_is_where_the_ladder_gives_up() {
         let run = |large_floor| {
@@ -1487,10 +1438,9 @@ mod tests {
         assert_well_formed(&arena);
     }
 
-    /// Node 0 has one 1 GiB page and 512 MiB of 2 MiB pages for two 2 GiB threads; node 1 has
-    /// plenty. Thread 0 tops up with a remote 1 GiB page. Thread 1's 512 MiB of local 2 MiB pages
-    /// leave it off a 1 GiB boundary, so it pads with node 1's 2 MiB pages up to the boundary and
-    /// then takes a 1 GiB page from node 1 too. Each run records the node it came from.
+    /// Node 0 has one 1 GiB page and 512 MiB of 2 MiB pages for two 2 GiB threads; node 1 has plenty. Thread 0 tops up with a remote 1 GiB
+    /// page. Thread 1's 512 MiB of local 2 MiB pages leave it off a 1 GiB boundary, so it pads with node 1's 2 MiB pages up to the boundary
+    /// and then takes a 1 GiB page from node 1 too. Each run records the node it came from.
     #[test]
     fn short_node_threads_go_remote_and_runs_record_the_node() {
         let vm = FakeVm::default();
@@ -1515,10 +1465,9 @@ mod tests {
         assert_eq!(remote, vec![GIB, GIB + 512 * MIB, 0, 0]);
     }
 
-    /// The user's 2026-10-02 case, small: node 0's 1 GiB pages split 2/2/1/1 and its 2 MiB pages
-    /// end in a 512 MiB and a 256 MiB piece, which leave threads 2 and 3 off a 1 GiB boundary.
-    /// Unpadded they took no 1 GiB pages from node 1 (4/4/1/1). Padded with node 1's 2 MiB pages up
-    /// to the boundary first, they take one each: 4/4/2/2, every thread exact.
+    /// The user's 2026-10-02 case, small: node 0's 1 GiB pages split 2/2/1/1 and its 2 MiB pages end in a 512 MiB and a 256 MiB piece,
+    /// which leave threads 2 and 3 off a 1 GiB boundary. Unpadded they took no 1 GiB pages from node 1 (4/4/1/1). Padded with node 1's 2
+    /// MiB pages up to the boundary first, they take one each: 4/4/2/2, every thread exact.
     #[test]
     fn misaligned_threads_are_padded_before_remote_huge_pages() {
         let vm = FakeVm::default();
@@ -1536,9 +1485,8 @@ mod tests {
         assert_eq!(remote, vec![2 * GIB, 2 * GIB, GIB + 512 * MIB, GIB + 768 * MIB]);
     }
 
-    /// Thread 0's 2 MiB requests are refused down to the floor, which leaves the free space at its
-    /// cursor as 16, 16, 32, 64, 128 MiB placeholders and the rest. Its next 1 GiB page, from node
-    /// 1, spans those pieces in one commit instead of failing on the 16 MiB one.
+    /// Thread 0's 2 MiB requests are refused down to the floor, which leaves the free space at its cursor as 16, 16, 32, 64, 128 MiB
+    /// placeholders and the rest. Its next 1 GiB page, from node 1, spans those pieces in one commit instead of failing on the 16 MiB one.
     #[test]
     fn a_commit_spans_the_pieces_a_refusal_left() {
         let vm = FakeVm::default();
@@ -1554,9 +1502,8 @@ mod tests {
         assert_eq!(remote, vec![GIB, GIB]);
     }
 
-    /// The same as `a_commit_spans_the_pieces_a_refusal_left`, by `Replace` on a kernel with
-    /// Microsoft's fix: the pieces are merged into one placeholder, never freed, and the result
-    /// is the same layout.
+    /// The same as `a_commit_spans_the_pieces_a_refusal_left`, by `Replace` on a kernel with Microsoft's fix: the pieces are merged into
+    /// one placeholder, never freed, and the result is the same layout.
     #[test]
     fn replace_merges_the_pieces_a_refusal_left() {
         let layout = |method| {
@@ -1599,10 +1546,9 @@ mod tests {
         assert!(spans[1].commits.iter().all(|c| c.page != PageSizeLevel::Huge));
     }
 
-    /// Plain round-robin would give 1, 1, 0.5, 0 GiB of 2 MiB pages here: 3, 3, 1.5, 1 GiB locked,
-    /// with the 4 KiB remainder piling up on the threads that were already short of 1 GiB pages.
-    /// Least-filled first tops threads 2 and 3 up to level, and they keep the lead after: the last
-    /// 512 MiB goes to thread 2, not to thread 0, which already has two 1 GiB pages.
+    /// Plain round-robin would give 1, 1, 0.5, 0 GiB of 2 MiB pages here: 3, 3, 1.5, 1 GiB locked, with the 4 KiB remainder piling up on
+    /// the threads that were already short of 1 GiB pages. Least-filled first tops threads 2 and 3 up to level, and they keep the lead
+    /// after: the last 512 MiB goes to thread 2, not to thread 0, which already has two 1 GiB pages.
     #[test]
     fn large_tops_up_the_threads_short_of_huge_first() {
         let vm = FakeVm::default();
@@ -1641,8 +1587,7 @@ mod tests {
         assert_eq!(none, 0, "the default must never issue MEM_REPLACE_PLACEHOLDER");
     }
 
-    /// The 2026-09-24 crash in miniature: a 1 GiB commit of 2 MiB pages is refused, then the
-    /// halving retry splits that same placeholder.
+    /// The 2026-09-24 crash in miniature: a 1 GiB commit of 2 MiB pages is refused, then the halving retry splits that same placeholder.
     fn refused_large_request(method: CommitMethod) -> (FakeVm, StitchRequest) {
         let vm = FakeVm::default();
         vm.state().large_bytes.insert(None, GIB + 256 * MIB);
@@ -1731,8 +1676,8 @@ mod tests {
         assert!(vm.state().regions.is_empty());
     }
 
-    /// A refusal that is not exhaustion (87: a bad request) ends the build with the hint instead
-    /// of stepping down to 2 MiB pages, and nothing granted is kept.
+    /// A refusal that is not exhaustion (87: a bad request) ends the build with the hint instead of stepping down to 2 MiB pages, and
+    /// nothing granted is kept.
     #[test]
     fn a_bad_request_is_an_error_not_a_step_down() {
         let vm = FakeVm::default();
@@ -1745,8 +1690,8 @@ mod tests {
         assert!(s.commits.iter().all(|&(page, _, _)| page == PageSizeLevel::Huge), "{:?}", s.commits);
     }
 
-    /// 1 GiB and 2 MiB requests name their node strictly, so a block's recorded node is true;
-    /// 4 KiB requests name it as a preference, since the strict form is refused for them.
+    /// 1 GiB and 2 MiB requests name their node strictly, so a block's recorded node is true; 4 KiB requests name it as a preference, since
+    /// the strict form is refused for them.
     #[test]
     fn large_pages_name_their_node_strictly() {
         let decode = |params: Vec<MEM_EXTENDED_PARAMETER>| -> Vec<(i32, u64)> {
@@ -1777,8 +1722,8 @@ mod tests {
         assert!(decode(Win32Vm::page_params(PageSizeLevel::Regular, None)).is_empty());
     }
 
-    /// Both threads live on node 0, which runs out of 1 GiB pages. They take node 0's 2 MiB pages
-    /// before anything from node 1, so every node 0 request comes before the first node 1 one.
+    /// Both threads live on node 0, which runs out of 1 GiB pages. They take node 0's 2 MiB pages before anything from node 1, so every
+    /// node 0 request comes before the first node 1 one.
     #[test]
     fn local_2mib_pages_come_before_remote_1gib_pages() {
         let vm = FakeVm::default();

@@ -1,8 +1,7 @@
 //! SIMD encoder for the existing 24-DQ contiguous-payload model.
 //!
-//! The scalar oracle remains `bus_flip_from_hash(h, BusBeat::Bits24)`. This encoder
-//! produces exactly those bytes: a three-byte seed, then its three complemented
-//! bytes, repeated across the 64-byte payload. No hash, seed, or phase changes.
+//! The scalar oracle remains `bus_flip_from_hash(h, BusBeat::Bits24)`. This encoder produces exactly those bytes: a three-byte seed, then
+//! its three complemented bytes, repeated across the 64-byte payload. No hash, seed, or phase changes.
 //! Macros place the width-specific operations inside the caller's hot loop.
 
 use std::arch::x86_64::*;
@@ -64,8 +63,8 @@ macro_rules! layout {
             }
             out
         };
-        // SAFETY: The caller has the selected width's target features, including
-        // AVX-512BW for 512 bits. Every bitcast preserves the vector's bit size.
+        // SAFETY: The caller has the selected width's target features, including AVX-512BW for 512 bits. Every bitcast preserves the
+        // vector's bit size.
         unsafe {
             let source = $source;
             std::array::from_fn::<std::simd::Simd<u64, $lanes>, $vectors, _>(|v| {

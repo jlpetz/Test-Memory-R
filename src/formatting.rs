@@ -4,14 +4,12 @@
 
 /// A byte count that reads as a human unit in JSON and parses back **exactly**.
 ///
-/// `"l3_cache": 503316480` makes a reader do long division to answer "is this the same CPU?".
-/// Cache sizes, alignments and addresses have an unambiguous natural unit (nobody wants L3 in KiB),
-/// so a single auto-scaled field beats both a raw byte count and a bytes+display pair — the pair
-/// doubles the line count for no new information.
+/// `"l3_cache": 503316480` makes a reader do long division to answer "is this the same CPU?". Cache sizes, alignments and addresses have an
+/// unambiguous natural unit (nobody wants L3 in KiB), so a single auto-scaled field beats both a raw byte count and a bytes+display pair —
+/// the pair doubles the line count for no new information.
 ///
-/// The safety property: it only uses a unit that divides the value **exactly**, so no rounding is
-/// ever involved and `Deserialize` recovers the original integer. A value with no clean unit
-/// (`49153`) is written as `"49153 B"` rather than quietly rounded to `"48 KiB"`.
+/// The safety property: it only uses a unit that divides the value **exactly**, so no rounding is ever involved and `Deserialize` recovers
+/// the original integer. A value with no clean unit (`49153`) is written as `"49153 B"` rather than quietly rounded to `"48 KiB"`.
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq, PartialOrd, Ord)]
 pub struct ByteSize(pub u64);
 
@@ -72,14 +70,12 @@ impl<'de> serde::Deserialize<'de> for ByteSize {
 
 /// Serde helpers that trim float noise out of JSON output.
 ///
-/// Full `f64` precision on a derived quantity is not information — `30538.906752411574` MiB/s is
-/// resolution far below the run-to-run variance of the thing being measured, and it makes result
-/// files hard to read. These round at *serialisation* time only, so in-memory arithmetic keeps full
-/// precision.
+/// Full `f64` precision on a derived quantity is not information — `30538.906752411574` MiB/s is resolution far below the run-to-run
+/// variance of the thing being measured, and it makes result files hard to read. These round at *serialisation* time only, so in-memory
+/// arithmetic keeps full precision.
 ///
-/// Scales are chosen so the last digit still means something: whole MiB/s (sub-1 MiB/s on a
-/// ~30,000 MiB/s figure is noise), 2 dp for GiB and GiB/s (~10 MiB), and 2 dp for nanoseconds
-/// (~1% at L1 latency, where it is still a real difference).
+/// Scales are chosen so the last digit still means something: whole MiB/s (sub-1 MiB/s on a ~30,000 MiB/s figure is noise), 2 dp for GiB
+/// and GiB/s (~10 MiB), and 2 dp for nanoseconds (~1% at L1 latency, where it is still a real difference).
 pub fn serialize_round_int<S: serde::Serializer>(value: &f64, s: S) -> Result<S::Ok, S::Error> {
     s.serialize_i64(value.round() as i64)
 }
@@ -104,9 +100,8 @@ mod tests {
     use super::*;
     use crate::constants::MB;
 
-    /// The whole point of `ByteSize` is that making the JSON readable does not make it lossy, so the
-    /// test that matters is the round trip — including the awkward value (`49153`) that has no clean
-    /// unit and must stay in bytes rather than being rounded to `48 KiB`.
+    /// The whole point of `ByteSize` is that making the JSON readable does not make it lossy, so the test that matters is the round trip —
+    /// including the awkward value (`49153`) that has no clean unit and must stay in bytes rather than being rounded to `48 KiB`.
     #[test]
     fn byte_size_round_trips_through_json() {
         for (bytes, text) in [

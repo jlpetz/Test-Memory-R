@@ -6,18 +6,17 @@ use std::time::{Duration, Instant};
 use crate::frontend::Frontend;
 use crate::tests::TestProgress;
 
-// Live suite position for the progress ticker, plus the run's error tallies. Per-cycle and per-test
-// results are not kept here: `TestRunResult` (results.rs) owns those, and the final summary and
-// the JSON file are both built from it. A frontend reads it with `snapshot` (TODO 29).
+// Live suite position for the progress ticker, plus the run's error tallies. Per-cycle and per-test results are not kept here:
+// `TestRunResult` (results.rs) owns those, and the final summary and the JSON file are both built from it. A frontend reads it with
+// `snapshot` (TODO 29).
 pub struct ProgressTracker {
     // What the suite was asked to do, fixed by `begin_suite`.
     suite: OnceLock<SuitePlan>,
     position: Mutex<Position>,
     finished: AtomicBool,
 
-    // Hardware errors the OS saw that our verify reads cannot (DDR5 on-die ECC corrections, and
-    // any fault landing during a non-verifying test like bandwidth/latency). Counted separately
-    // from the thread-reported errors because these are OS-reported. See whea.rs.
+    // Hardware errors the OS saw that our verify reads cannot (DDR5 on-die ECC corrections, and any fault landing during a non-verifying
+    // test like bandwidth/latency). Counted separately from the thread-reported errors because these are OS-reported. See whea.rs.
     pub(crate) whea: crate::whea::WheaMonitor,
 }
 
@@ -31,9 +30,8 @@ struct SuitePlan {
     workers: Arc<[TestProgress]>,
 }
 
-/// Where the suite is now, and the errors of the tests already finished. One lock, so a render
-/// never sees a half-made step: in particular a test's errors counted both in `errors` and still in
-/// its workers' live figures.
+/// Where the suite is now, and the errors of the tests already finished. One lock, so a render never sees a half-made step: in particular a
+/// test's errors counted both in `errors` and still in its workers' live figures.
 struct Position {
     cycle: u32, // 1-based, 0 = not started
     cycle_start: Instant,
@@ -48,11 +46,9 @@ struct RunningTest {
     name: String,
     start: Instant,
     time_limit: Option<Duration>,
-    /// Whether this kind of test publishes live figures. Every built-in does since TODO 76, when
-    /// the latency tests moved onto `TestRunner`.
+    /// Whether this kind of test publishes live figures. Every built-in does since TODO 76, when the latency tests moved onto `TestRunner`.
     publishes: bool,
-    /// Results are in and its errors are in `Position::errors`, so its workers' live errors must
-    /// not be added again.
+    /// Results are in and its errors are in `Position::errors`, so its workers' live errors must not be added again.
     finished: bool,
 }
 
@@ -61,8 +57,7 @@ struct RunningTest {
 pub enum RunOutcome {
     /// The cycle limit was reached.
     Completed,
-    /// The suite time limit expired. It is checked between cycles, so the last cycle always
-    /// finishes.
+    /// The suite time limit expired. It is checked between cycles, so the last cycle always finishes.
     TimeLimit,
     /// Ctrl+C.
     Interrupted,
@@ -101,27 +96,24 @@ pub struct TestSummary {
     pub bytes_processed: u64,
     /// The operations its threads counted
     pub operations: u64,
-    /// Passes over its extent the step's threads completed, the fewest and the most (threads on a
-    /// time limit can differ), and what ended it: `"cycles"` (its cycle limit), `"time"` (its time
-    /// limit) or `"stopped"` (errors=halt, Ctrl+C, or a test that ends without either). `None`
-    /// for a step that didn't run.
+    /// Passes over its extent the step's threads completed, the fewest and the most (threads on a time limit can differ), and what ended
+    /// it: `"cycles"` (its cycle limit), `"time"` (its time limit) or `"stopped"` (errors=halt, Ctrl+C, or a test that ends without
+    /// either). `None` for a step that didn't run.
     pub cycles_completed: (u32, u32),
     pub stopped_by: Option<&'static str>,
-    /// The work around its test sequence, by operation (TODO 90): the seal's between the steps
-    /// and around its chunks, its fills
+    /// The work around its test sequence, by operation (TODO 90): the seal's between the steps and around its chunks, its fills
     pub ops: crate::ops::OpTally,
     pub throughput_mib_s: f64,
     pub errors: u64,
-    /// The test's failed checks, and of those the ones its rescans didn't reproduce (TODO 27):
-    /// `errors` counts the bad words the rescans found, plus one for each not reproduced.
+    /// The test's failed checks, and of those the ones its rescans didn't reproduce (TODO 27): `errors` counts the bad words the rescans
+    /// found, plus one for each not reproduced.
     pub alarms: u64,
     pub not_reproduced: u64,
     /// The bits that failed the step's own checks, and its seal checks' (TODO 97)
     pub failing_bits: crate::failing_bits::FailingBits,
     pub seal_failing_bits: crate::failing_bits::FailingBits,
-    // Hardware errors WHEA reported to the OS while this test was running (all severities), and
-    // the subset the OS reported as corrected. Tracked apart from `errors` because they are not
-    // thread-detected: see whea.rs.
+    // Hardware errors WHEA reported to the OS while this test was running (all severities), and the subset the OS reported as corrected.
+    // Tracked apart from `errors` because they are not thread-detected: see whea.rs.
     pub whea_total: u64,
     pub whea_corrected: u64,
     // Latency metrics (Some for latency tests, None for other tests)
@@ -152,8 +144,8 @@ pub struct LiveFigures {
     pub stage: Option<crate::tests::Stage>,
 }
 
-/// Where the suite is, read at once (TODO 29): what the ticker shows, and what a test's report
-/// ends with. `ProgressTracker::snapshot` takes it.
+/// Where the suite is, read at once (TODO 29): what the ticker shows, and what a test's report ends with. `ProgressTracker::snapshot` takes
+/// it.
 #[derive(Debug, Clone)]
 pub struct ProgressSnapshot {
     /// Since the suite began (`begin_suite`), and its time limit
@@ -166,8 +158,8 @@ pub struct ProgressSnapshot {
     /// Tests finished in this cycle, of the cycle's
     pub tests_done: u64,
     pub tests_per_cycle: u64,
-    /// The errors of the tests finished, the whole run's, and what the running test has found so
-    /// far, not yet in them (0 once it has finished)
+    /// The errors of the tests finished, the whole run's, and what the running test has found so far, not yet in them (0 once it has
+    /// finished)
     pub finished_errors: u64,
     pub live_errors: u64,
     pub whea: crate::whea::WheaCounts,
@@ -204,8 +196,8 @@ impl ProgressTracker {
             suite: OnceLock::new(),
             position: Mutex::new(Position { cycle: 0, cycle_start: Instant::now(), tests_done: 0, test: None, errors: 0 }),
             finished: AtomicBool::new(false),
-            // Inert until `whea.start()` is called by the runner — constructing a tracker must not
-            // have the side effect of opening an event-log subscription.
+            // Inert until `whea.start()` is called by the runner — constructing a tracker must not have the side effect of opening an
+            // event-log subscription.
             whea: crate::whea::WheaMonitor::new(),
         }
     }
@@ -214,9 +206,8 @@ impl ProgressTracker {
         self.position.lock().unwrap_or_else(|poisoned| poisoned.into_inner())
     }
 
-    /// Start the suite clock. The progress line draws nothing until this is called, so Runtime is
-    /// measured from the first test cycle — the same span the final summary reports — rather than
-    /// from before allocation.
+    /// Start the suite clock. The progress line draws nothing until this is called, so Runtime is measured from the first test cycle — the
+    /// same span the final summary reports — rather than from before allocation.
     pub(crate) fn begin_suite(
         &self, start: Instant, cycle_limit: Option<u32>, time_limit: Option<Duration>, tests_per_cycle: u64, workers: Arc<[TestProgress]>,
     ) {
@@ -230,9 +221,8 @@ impl ProgressTracker {
         position.tests_done = 0;
     }
 
-    /// `number` is the test's 1-based position in the cycle; `time_limit` is the test's own
-    /// duration limit, if it has one; `publishes` is whether the test reports live figures.
-    /// Must be called before the test is dispatched: it zeroes the workers' live slots, which is
+    /// `number` is the test's 1-based position in the cycle; `time_limit` is the test's own duration limit, if it has one; `publishes` is
+    /// whether the test reports live figures. Must be called before the test is dispatched: it zeroes the workers' live slots, which is
     /// only safe while they are idle.
     pub(crate) fn start_test(&self, number: usize, name: &str, start: Instant, time_limit: Option<Duration>, publishes: bool) {
         let mut position = self.position();
@@ -259,8 +249,8 @@ impl ProgressTracker {
         self.add_errors(errors);
     }
 
-    /// Errors found outside a finished test: counted for the run, no test finished. Where they
-    /// were is the final summary's to say (its Errors by Step table).
+    /// Errors found outside a finished test: counted for the run, no test finished. Where they were is the final summary's to say (its
+    /// Errors by Step table).
     pub(crate) fn add_errors(&self, errors: u64) {
         self.position().errors += errors;
     }
@@ -275,21 +265,20 @@ impl ProgressTracker {
         self.position().errors
     }
 
-    /// The suite is over: the monitor thread makes its frontend's last call (`ticks_done`) and
-    /// exits. There is no final ticker line, because the final summary reports the same figures.
+    /// The suite is over: the monitor thread makes its frontend's last call (`ticks_done`) and exits. There is no final ticker line,
+    /// because the final summary reports the same figures.
     pub(crate) fn finish(&self) {
         self.finished.store(true, Ordering::Relaxed);
     }
 
-    /// Where the suite is now, or `None` before it has begun: one read of the position, under its
-    /// lock, and of the workers' live figures. The running test's live errors are 0 once its
-    /// results are in, as they are then in `finished_errors`.
+    /// Where the suite is now, or `None` before it has begun: one read of the position, under its lock, and of the workers' live figures.
+    /// The running test's live errors are 0 once its results are in, as they are then in `finished_errors`.
     pub fn snapshot(&self) -> Option<ProgressSnapshot> {
         let plan = self.suite.get()?;
         let position = self.position();
 
-        // The running test's figures, while there is one. After it finishes they stay readable
-        // until the next test starts, but its errors are then in `position.errors` instead.
+        // The running test's figures, while there is one. After it finishes they stay readable until the next test starts, but its errors
+        // are then in `position.errors` instead.
         let test = position.test.as_ref().map(|test| TestSnapshot {
             number: test.number,
             name: test.name.clone(),
@@ -315,16 +304,15 @@ impl ProgressTracker {
         })
     }
 
-    /// What WHEA reported since the last call, one line each: they name the failing component,
-    /// which is what tells a marginal DIMM from a marginal NIC. The monitor thread's poll queues
-    /// them (`whea.rs`).
+    /// What WHEA reported since the last call, one line each: they name the failing component, which is what tells a marginal DIMM from a
+    /// marginal NIC. The monitor thread's poll queues them (`whea.rs`).
     pub fn take_whea_descriptions(&self) -> Vec<String> {
         self.whea.take_pending()
     }
 }
 
-/// Sum the workers' last published figures. Workers publish at most every 250 ms, at a cycle
-/// boundary of their own loop, so this lags the work by up to one publish.
+/// Sum the workers' last published figures. Workers publish at most every 250 ms, at a cycle boundary of their own loop, so this lags the
+/// work by up to one publish.
 fn live_figures(workers: &[TestProgress]) -> LiveFigures {
     let mut live = LiveFigures {
         stage: workers
@@ -342,24 +330,21 @@ fn live_figures(workers: &[TestProgress]) -> LiveFigures {
         live.published = true;
         live.bytes += bytes;
         live.errors += slot.errors_found.load(Ordering::Relaxed);
-        // Each worker's own average since the test began, as of its publish. Summing these rather
-        // than dividing the summed bytes by the wall clock keeps the rate from sagging between
-        // publishes.
+        // Each worker's own average since the test began, as of its publish. Summing these rather than dividing the summed bytes by the
+        // wall clock keeps the rate from sagging between publishes.
         live.bytes_per_sec += bytes as f64 * 1000.0 / ms as f64;
     }
     live
 }
 
-/// The engine's monitor thread while a suite runs (TODO 29): every 500 ms it drains what WHEA
-/// queued, then hands `fe` its tick, which the CLI draws its ticker on; when the suite is over,
-/// `fe`'s last call. The WHEA drain is the engine's, whatever the frontend draws.
+/// The engine's monitor thread while a suite runs (TODO 29): every 500 ms it drains what WHEA queued, then hands `fe` its tick, which the
+/// CLI draws its ticker on; when the suite is over, `fe`'s last call. The WHEA drain is the engine's, whatever the frontend draws.
 pub fn monitor(progress: Arc<ProgressTracker>, fe: Arc<dyn Frontend>) {
     loop {
         thread::sleep(Duration::from_millis(500));
 
-        // Drain any WHEA events the OS queued for us. Costs a single zero-timeout wait on a local
-        // event handle when nothing has happened, so it is safe to do on every 500ms tick — the
-        // descriptions are cached and only printed when the frontend draws (TODO 63).
+        // Drain any WHEA events the OS queued for us. Costs a single zero-timeout wait on a local event handle when nothing has happened,
+        // so it is safe to do on every 500ms tick — the descriptions are cached and only printed when the frontend draws (TODO 63).
         progress.whea.poll();
 
         if progress.finished.load(Ordering::Relaxed) {
@@ -376,10 +361,9 @@ mod tests {
     use super::*;
     use crate::tests::Stage;
 
-    /// A snapshot as a frontend reads it (TODO 29): nothing before the suite begins; while a test
-    /// runs, the figures and errors of its workers that have published, live, apart from the
-    /// finished tests' errors; once its results are in, its errors with the finished tests' and
-    /// none live, its figures still readable until the next test starts.
+    /// A snapshot as a frontend reads it (TODO 29): nothing before the suite begins; while a test runs, the figures and errors of its
+    /// workers that have published, live, apart from the finished tests' errors; once its results are in, its errors with the finished
+    /// tests' and none live, its figures still readable until the next test starts.
     #[test]
     fn a_snapshot_has_a_tests_errors_live_until_its_results_are_in() {
         let ago = |secs: u64| Instant::now().checked_sub(Duration::from_secs(secs)).expect("a clock that has run a minute");
@@ -389,8 +373,8 @@ mod tests {
         progress.begin_suite(ago(60), Some(2), Some(Duration::from_secs(600)), 4, Arc::clone(&workers));
         progress.start_new_cycle(1);
         progress.start_test(3, "Mem-StuckBit256", ago(5), Some(Duration::from_secs(60)), true);
-        // The first worker has published 3 errors in 1 MiB half a second in; the second, checking
-        // the seal, nothing yet, so its errors aren't read
+        // The first worker has published 3 errors in 1 MiB half a second in; the second, checking the seal, nothing yet, so its errors
+        // aren't read
         workers[0].bytes_processed.store(1 << 20, Ordering::Relaxed);
         workers[0].errors_found.store(3, Ordering::Relaxed);
         workers[0].last_update_ms.store(500, Ordering::Relaxed);

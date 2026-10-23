@@ -1,16 +1,13 @@
 //! Shared, zero-cost scaffolding for the loop-owning correctness tests.
 //!
-//! This is **not** an orchestrator (that mistake — a generic `TestPattern` trait +
-//! `run_interleaved_test()` — was tried and deleted 2026-04-13 because
-//! `#[target_feature]` does not propagate through trait/closure calls and SIMD
-//! silently dropped to baseline). Instead `TestRunner` is a bag of bookkeeping
-//! utilities the test composes while owning its entire hot inner loop.
+//! This is **not** an orchestrator (that mistake — a generic `TestPattern` trait + `run_interleaved_test()` — was tried and deleted
+//! 2026-04-13 because
+//! `#[target_feature]` does not propagate through trait/closure calls and SIMD silently dropped to baseline). Instead `TestRunner` is a bag
+//! of bookkeeping utilities the test composes while owning its entire hot inner loop.
 //!
-//! Every method here runs **between** chunks/blocks, never inside the SIMD loop:
-//! they are simple field reads/writes that inline trivially. The hot path stays
-//! byte-identical to the hand-written v1 tests — only the surrounding boilerplate
-//! (extent sizing, block prep, timer/cycle loop, shutdown checks, throttled
-//! progress, error-mode dispatch, `TestStats` construction) moves in here.
+//! Every method here runs **between** chunks/blocks, never inside the SIMD loop: they are simple field reads/writes that inline trivially.
+//! The hot path stays byte-identical to the hand-written v1 tests — only the surrounding boilerplate (extent sizing, block prep,
+//! timer/cycle loop, shutdown checks, throttled progress, error-mode dispatch, `TestStats` construction) moves in here.
 //!
 //! See TODO #19 Part A for the design and the three-tier execution model.
 
@@ -23,9 +20,8 @@ use crate::tests::{Stage, TestAction, TestBlock, TestMemoryConfig, TestProgress,
 
 /// Per-test bookkeeping shared by the loop-owning v1 tests.
 ///
-/// Construct with [`TestRunner::new`], which also returns the test's extent as a
-/// [`TestBlock`] (kept as a local in the test, so the test can hold it while calling
-/// `&mut self` methods on the runner).
+/// Construct with [`TestRunner::new`], which also returns the test's extent as a [`TestBlock`] (kept as a local in the test, so the test
+/// can hold it while calling `&mut self` methods on the runner).
 pub struct TestRunner<'a> {
     test_name: &'static str,
     action: TestAction,
@@ -34,14 +30,13 @@ pub struct TestRunner<'a> {
     timing: &'a TestTiming,
     progress: Option<&'a TestProgress>,
 
-    /// The test's chunk, resolved once from its extent (TODO 76). Every chunk is exactly this,
-    /// spread evenly over the extent (`chunks`).
+    /// The test's chunk, resolved once from its extent (TODO 76). Every chunk is exactly this, spread evenly over the extent (`chunks`).
     chunk: usize,
     start: Instant,
     /// The work around the test sequence, by operation (TODO 90)
     ops: crate::ops::OpTally,
-    /// The part of it inside the clock (the first cycle's seal checks and reseals, a sealed step's
-    /// per-chunk fill): left out of the test's time when it finishes
+    /// The part of it inside the clock (the first cycle's seal checks and reseals, a sealed step's per-chunk fill): left out of the test's
+    /// time when it finishes
     inside: Duration,
     cycle: u32,
     total_error_count: u64,
@@ -56,9 +51,8 @@ pub struct TestRunner<'a> {
     seal_errors: u64,
 }
 
-/// The extent a test of this config covers on these blocks: the first bytes of the thread's span
-/// (TODO 76), at least one granule when there is memory. Also the worker's view of what a step
-/// that never takes the seal will overwrite (TODO 74).
+/// The extent a test of this config covers on these blocks: the first bytes of the thread's span (TODO 76), at least one granule when there
+/// is memory. Also the worker's view of what a step that never takes the seal will overwrite (TODO 74).
 pub fn test_extent<'a>(blocks: &'a [AllocationBlock], config: &TestMemoryConfig, test_name: &str) -> (TestBlock<'a>, usize) {
     let total_allocated: usize = blocks.iter().map(|b| b.buffer.size()).sum();
     let extent_size = config.calculate_extent_size(test_name, total_allocated);
@@ -116,11 +110,9 @@ impl<'a> TestRunner<'a> {
             _ => {}
         }
 
-        // Log the registration name (carries the `_A` auto-dispatch suffix and distinguishes
-        // registrations that share one test fn, e.g. Mem-StuckBit-Flush128); fall back to the
-        // fn's baked-in name. Sizing above still keys off `test_name` — do not swap that.
-        // What it covers, the extent asked for, and the chunks (Mem-Random's chunks are RNG
-        // iterations, not these byte ranges).
+        // Log the registration name (carries the `_A` auto-dispatch suffix and distinguishes registrations that share one test fn, e.g.
+        // Mem-StuckBit-Flush128); fall back to the fn's baked-in name. Sizing above still keys off `test_name` — do not swap that. What it
+        // covers, the extent asked for, and the chunks (Mem-Random's chunks are RNG iterations, not these byte ranges).
         let log_name = config.display_name.as_deref().unwrap_or(test_name);
         log::info!(
             "[Thread {}] Running {} on {} (extent {}), {}",
@@ -133,30 +125,27 @@ impl<'a> TestRunner<'a> {
         (runner, extent)
     }
 
-    /// The chunks of an extent `len` bytes long: each exactly the test's chunk (or the extent,
-    /// when it is shorter), spread evenly from 0 to `len` (TODO 76). The test converts the byte
-    /// offsets to its own element/operation units.
+    /// The chunks of an extent `len` bytes long: each exactly the test's chunk (or the extent, when it is shorter), spread evenly from 0 to
+    /// `len` (TODO 76). The test converts the byte offsets to its own element/operation units.
     #[inline]
     pub fn chunks(&self, len: usize) -> crate::test_memory::ChunkSpread {
         crate::test_memory::ChunkSpread::new(len, self.chunk)
     }
 
-    /// Half-chunks over the first half of an extent, for tests that copy it to the second half:
-    /// `chunks(len)` halved, on a 2 KiB granule.
+    /// Half-chunks over the first half of an extent, for tests that copy it to the second half: `chunks(len)` halved, on a 2 KiB granule.
     #[inline]
     pub fn half_chunks(&self, len: usize) -> crate::test_memory::ChunkSpread {
         crate::test_memory::ChunkSpread::with_granule(len / 2, self.chunk.min(len) / 2, crate::test_memory::GRANULE / 2)
     }
 
-    /// The test's chunk in bytes, for tests whose chunks aren't byte ranges (Mem-Random's are
-    /// batches of random reads).
+    /// The test's chunk in bytes, for tests whose chunks aren't byte ranges (Mem-Random's are batches of random reads).
     #[inline]
     pub fn chunk_bytes(&self) -> usize {
         self.chunk
     }
 
-    /// Start the clock again, leaving out what came before, with no record of it. A test with
-    /// setup to leave out says what it was: `setup_done`. Call it before counting any bytes.
+    /// Start the clock again, leaving out what came before, with no record of it. A test with setup to leave out says what it was:
+    /// `setup_done`. Call it before counting any bytes.
     #[inline]
     pub fn restart_clock(&mut self) {
         self.set_stage(Stage::Testing);
@@ -166,18 +155,16 @@ impl<'a> TestRunner<'a> {
         self.last_progress_update = now;
     }
 
-    /// Setup since the clock started is done (TODO 90): recorded as `op` over `bytes`, and the
-    /// clock starts again, so it counts toward neither the test's time nor its throughput. A fill
-    /// (Mem-Random's, a bandwidth test's first touch) or a latency test's chain build.
+    /// Setup since the clock started is done (TODO 90): recorded as `op` over `bytes`, and the clock starts again, so it counts toward
+    /// neither the test's time nor its throughput. A fill (Mem-Random's, a bandwidth test's first touch) or a latency test's chain build.
     #[inline]
     pub fn setup_done(&mut self, op: crate::ops::Op, bytes: u64) {
         self.ops.add(op, self.start.elapsed(), bytes);
         self.restart_clock();
     }
 
-    /// Run `f`, setup inside the test's clock (TODO 90): recorded as `op` over `bytes` and left
-    /// out of the test's time, as a sealed step's per-chunk fill. Two clock reads a call, so for
-    /// per-chunk work, not per word.
+    /// Run `f`, setup inside the test's clock (TODO 90): recorded as `op` over `bytes` and left out of the test's time, as a sealed step's
+    /// per-chunk fill. Two clock reads a call, so for per-chunk work, not per word.
     #[inline]
     pub fn untimed<R>(&mut self, op: crate::ops::Op, bytes: u64, f: impl FnOnce() -> R) -> R {
         let at = Instant::now();
@@ -188,20 +175,17 @@ impl<'a> TestRunner<'a> {
         r
     }
 
-    /// Whether this step wraps each chunk in the seal (TODO 74): `check_seal` before the test works
-    /// it, `reseal` after.
+    /// Whether this step wraps each chunk in the seal (TODO 74): `check_seal` before the test works it, `reseal` after.
     #[inline]
     pub fn seal_wrap(&self) -> bool {
         self.seal.wrap
     }
 
-    /// Check the seal on bytes `[start, start + len)` of the extent before the test works them
-    /// (TODO 74); a no-op unless the step wraps, and after the step's first cycle. Bad words count
-    /// as seal errors, not the test's, and halt it under `errors=halt`.
+    /// Check the seal on bytes `[start, start + len)` of the extent before the test works them (TODO 74); a no-op unless the step wraps,
+    /// and after the step's first cycle. Bad words count as seal errors, not the test's, and halt it under `errors=halt`.
     ///
-    /// Only the first cycle: a later one finds the chunks as the test left them, so a test that
-    /// runs many cycles of its own (a duration) pays for the wrap once, and its extent is resealed
-    /// once, when it finishes.
+    /// Only the first cycle: a later one finds the chunks as the test left them, so a test that runs many cycles of its own (a duration)
+    /// pays for the wrap once, and its extent is resealed once, when it finishes.
     ///
     /// The guard, every chunk, is inlined; the work, a chunk's worth of the seal kernel, is a call.
     #[inline(always)]
@@ -225,9 +209,8 @@ impl<'a> TestRunner<'a> {
         self.set_stage(Stage::Testing);
     }
 
-    /// Reseal bytes `[start, start + len)` of the extent once the test is done with them (TODO 74);
-    /// a no-op unless the step wraps, and after its first cycle (see `check_seal`, which splits
-    /// the same way).
+    /// Reseal bytes `[start, start + len)` of the extent once the test is done with them (TODO 74); a no-op unless the step wraps, and
+    /// after its first cycle (see `check_seal`, which splits the same way).
     #[inline(always)]
     pub fn reseal(&mut self, start: usize, len: usize) {
         if self.seal.wrap && self.cycle <= 1 {
@@ -282,8 +265,7 @@ impl<'a> TestRunner<'a> {
     /// Error-mode dispatch for a mid-chunk error check.
     ///
     /// - `Panic`: panics immediately (debug builds / strict runs).
-    /// - `Halt`: returns `true` when `cycle_errors > 0` so the test can break its
-    ///   own (possibly labeled) loop and `finish_aborted`.
+    /// - `Halt`: returns `true` when `cycle_errors > 0` so the test can break its own (possibly labeled) loop and `finish_aborted`.
     /// - `Log`: returns `false` (errors already logged in the hot loop).
     #[inline]
     pub fn should_halt(&self, cycle_errors: u64) -> bool {
@@ -339,13 +321,12 @@ impl<'a> TestRunner<'a> {
         self.timing.should_continue(self.cycle, elapsed_secs)
     }
 
-    /// A step that wrapped its chunks in the seal reseals its whole extent as it finishes when it
-    /// ran past its first cycle (TODO 74, `check_seal`), or was cut short (`aborted`), which can
-    /// leave a chunk it was working unsealed. Returns the test's time, taken before, without its
-    /// setup (TODO 90).
+    /// A step that wrapped its chunks in the seal reseals its whole extent as it finishes when it ran past its first cycle (TODO 74,
+    /// `check_seal`), or was cut short (`aborted`), which can leave a chunk it was working unsealed. Returns the test's time, taken before,
+    /// without its setup (TODO 90).
     ///
-    /// Not when an error halts it: the bad words stay in memory as the test found them, for a
-    /// look after the run, and the run stops at this step anyway.
+    /// Not when an error halts it: the bad words stay in memory as the test found them, for a look after the run, and the run stops at this
+    /// step anyway.
     fn reseal_extent(&mut self, aborted: bool, cycle_errors: u64) -> std::time::Duration {
         let timed = self.start.elapsed().saturating_sub(self.inside);
         let halted = matches!(self.error_mode, ErrorMode::Halt) && self.total_error_count + cycle_errors + self.seal_errors > 0;
@@ -368,8 +349,8 @@ impl<'a> TestRunner<'a> {
         timed
     }
 
-    /// Build `TestStats` for a mid-cycle abort (Halt on error, or shutdown).
-    /// `error_count = running total + this cycle's errors`, `stopped_by_time_limit = false`.
+    /// Build `TestStats` for a mid-cycle abort (Halt on error, or shutdown). `error_count = running total + this cycle's errors`,
+    /// `stopped_by_time_limit = false`.
     #[inline]
     pub fn finish_aborted(&mut self, cycle_errors: u64, total_operations: u64) -> TestStats {
         let timed = Some(self.reseal_extent(true, cycle_errors));

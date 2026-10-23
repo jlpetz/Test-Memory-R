@@ -1,9 +1,7 @@
-//! The window's logger (TODO 29 S6): every record into the log file through `tmr::logfile`, the
-//! same lines as the CLI's, and the warnings and errors into the window's errors list as well, the
-//! kernels' bad-word lines among them (`Rescan::bad`'s cold path), with no kernel change. A record
-//! is handed over with `try_send` on a bounded channel, so a worker that logs never waits for the
-//! window: in an error storm the channel fills, the lines it can't take are counted, and the
-//! window says how many it dropped. The file has every line.
+//! The window's logger (TODO 29 S6): every record into the log file through `tmr::logfile`, the same lines as the CLI's, and the warnings
+//! and errors into the window's errors list as well, the kernels' bad-word lines among them (`Rescan::bad`'s cold path), with no kernel
+//! change. A record is handed over with `try_send` on a bounded channel, so a worker that logs never waits for the window: in an error
+//! storm the channel fills, the lines it can't take are counted, and the window says how many it dropped. The file has every line.
 
 use std::sync::Arc;
 use std::sync::atomic::{AtomicU64, Ordering};
@@ -23,8 +21,7 @@ struct GuiLogger {
     dropped: Arc<AtomicU64>,
 }
 
-/// The window's side of the logger: the warnings and errors logged, and how many the channel
-/// couldn't take.
+/// The window's side of the logger: the warnings and errors logged, and how many the channel couldn't take.
 pub(crate) struct LogLines {
     lines: Receiver<String>,
     dropped: Arc<AtomicU64>,
@@ -54,8 +51,8 @@ impl Log for GuiLogger {
             return;
         }
         tmr::logfile::write(record);
-        // As on the CLI's console, a record for the file only isn't shown: the window has its text
-        // another way (WHEA's lines from the progress, a session's error from its end)
+        // As on the CLI's console, a record for the file only isn't shown: the window has its text another way (WHEA's lines from the
+        // progress, a session's error from its end)
         if record.level() <= Level::Warn && record.target() != tmr::logfile::FILE_ONLY_TARGET {
             let line = format!(
                 "[{} {} {}] {}",
@@ -75,9 +72,8 @@ impl Log for GuiLogger {
     fn flush(&self) {}
 }
 
-/// Sets up the window's logging at Start, once a process (one session a process): the log file,
-/// opened now so its name pairs with the run's results (`tmr::logfile::path`), then this logger,
-/// and the two records the CLI's logging starts with. Returns the window's side.
+/// Sets up the window's logging at Start, once a process (one session a process): the log file, opened now so its name pairs with the run's
+/// results (`tmr::logfile::path`), then this logger, and the two records the CLI's logging starts with. Returns the window's side.
 pub(crate) fn install() -> LogLines {
     let made = tmr::logfile::create_dir();
     let (rust_log, level) = tmr::logfile::level();
@@ -100,8 +96,8 @@ pub(crate) fn install() -> LogLines {
 mod tests {
     use super::*;
 
-    /// Warnings and errors reach the window, the file's records alone don't, and a full channel
-    /// counts what it drops instead of waiting (TODO 29 S6)
+    /// Warnings and errors reach the window, the file's records alone don't, and a full channel counts what it drops instead of waiting
+    /// (TODO 29 S6)
     #[test]
     fn warnings_reach_the_window_and_a_full_channel_counts_what_it_drops() {
         let (logger, window) = logger(LevelFilter::Info, 2);

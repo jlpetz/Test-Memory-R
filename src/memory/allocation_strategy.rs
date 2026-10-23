@@ -1,8 +1,7 @@
-// Every `unsafe` block in this file crosses a Win32 FFI boundary, where the borrow checker is
-// switched off precisely where the invariants get subtle (TODO #66). The lint below makes a missing
-// `// SAFETY:` a warning here in the tests too; `src/lib.rs` makes it one in all shipped code. It
-// was per file until 2026-10-23, lest the SIMD kernels need boilerplate, but their `unsafe fn`s
-// need no blocks (`test_fn_safety.md` covers them): crate-wide added 30 sites, none a kernel's.
+// Every `unsafe` block in this file crosses a Win32 FFI boundary, where the borrow checker is switched off precisely where the invariants
+// get subtle (TODO #66). The lint below makes a missing `// SAFETY:` a warning here in the tests too; `src/lib.rs` makes it one in all
+// shipped code. It was per file until 2026-10-23, lest the SIMD kernels need boilerplate, but their `unsafe fn`s need no blocks
+// (`test_fn_safety.md` covers them): crate-wide added 30 sites, none a kernel's.
 #![warn(clippy::undocumented_unsafe_blocks)]
 
 /// Enhanced memory allocation strategy with clear reserve semantics
@@ -38,8 +37,7 @@
 ///
 /// # Why Failure Mode Testing?
 ///
-/// The `-from-total` and `-target` modes allow testing how the memory allocator
-/// handles unrealistic or impossible allocation requests:
+/// The `-from-total` and `-target` modes allow testing how the memory allocator handles unrealistic or impossible allocation requests:
 ///
 /// - **Memory pressure testing**: See how system behaves under extreme memory pressure
 /// - **Allocation failure paths**: Test error handling when allocations fail
@@ -50,7 +48,7 @@
 ///
 /// Failure mode configurations may:
 /// - Cause allocation failures (by design)
-/// - Make system unresponsive due to memory pressure  
+/// - Make system unresponsive due to memory pressure
 /// - Trigger out-of-memory conditions
 /// - Cause test crashes or hangs
 ///
@@ -86,9 +84,8 @@ pub struct SystemMemoryInfo {
 impl SystemMemoryInfo {
     /// Gather current system memory information
     pub fn gather() -> Result<Self, String> {
-        // SAFETY: both calls write into initialised locals passed by `&mut`. `MEMORYSTATUSEX`
-        // carries its own `dwLength`, set to `size_of` of that type above — the API relies on it
-        // to know the struct version, so a wrong value there (not a bad pointer) is the real
+        // SAFETY: both calls write into initialised locals passed by `&mut`. `MEMORYSTATUSEX` carries its own `dwLength`, set to `size_of`
+        // of that type above — the API relies on it to know the struct version, so a wrong value there (not a bad pointer) is the real
         // hazard, and it is derived rather than hard-coded.
         unsafe {
             // Get total installed memory
@@ -124,23 +121,22 @@ impl SystemMemoryInfo {
 /// Enhanced allocation modes with clear semantics
 #[derive(Debug, Clone)]
 pub enum AllocationMode {
-    /// Reserve from currently available memory (standard/default behavior, matches TM5)
-    /// Examples: "memory=4GiB-from-available", "memory=15%-from-available", "memory=1024MB-from-available"
-    /// This is what TM5 configs use - reserves from currently available memory
+    /// Reserve from currently available memory (standard/default behavior, matches TM5) Examples: "memory=4GiB-from-available",
+    /// "memory=15%-from-available", "memory=1024MB-from-available" This is what TM5 configs use - reserves from currently available memory
     ReserveFromAvailable { reserve: ReserveAmount },
 
-    /// Reserve from total installed memory (for failure mode testing - unrealistic configs)
-    /// Examples: "memory=8GiB-from-total", "memory=20%-from-total", "memory=2048MB-from-total"
+    /// Reserve from total installed memory (for failure mode testing - unrealistic configs) Examples: "memory=8GiB-from-total",
+    /// "memory=20%-from-total", "memory=2048MB-from-total"
     /// WARNING: Can create unrealistic allocations that may fail - intended for testing failure modes
     ReserveFromTotal { reserve: ReserveAmount },
 
-    /// Allocate specific amount regardless of available memory (for failure mode testing)
-    /// Examples: "memory=16GiB-target", "memory=80%-target", "memory=8192MB-target"
+    /// Allocate specific amount regardless of available memory (for failure mode testing) Examples: "memory=16GiB-target",
+    /// "memory=80%-target", "memory=8192MB-target"
     /// WARNING: Can request more than available - intended for testing failure modes
     AllocateTarget { target: ReserveAmount },
 
-    /// Legacy TM5 compatibility mode (reserves MB from available memory, like original TM5)
-    /// Examples: "memory=2048MB", "memory=1024MB-legacy"
+    /// Legacy TM5 compatibility mode (reserves MB from available memory, like original TM5) Examples: "memory=2048MB",
+    /// "memory=1024MB-legacy"
     /// This is the standard TM5 behavior - reserves from available memory
     LegacyTM5 { reserve_mb: u32 },
 }
@@ -211,13 +207,12 @@ impl ReserveAmount {
         }
     }
 
-    /// Canonical spec text for this amount, in the form `parse` accepts (`"20%"`, `"8GiB"`).
-    /// Recorded into result files so a run's memory request is reconstructable (TODO #67).
+    /// Canonical spec text for this amount, in the form `parse` accepts (`"20%"`, `"8GiB"`). Recorded into result files so a run's memory
+    /// request is reconstructable (TODO #67).
     pub fn describe_spec(&self) -> String {
         match self {
-            // GiB with 3 decimals: a byte count from `parse` is always a clean GiB/MiB value, and
-            // 3 decimals round-trips MiB-granular specs (e.g. 2048MB -> "1.953GiB") without
-            // printing 10 digits of noise.
+            // GiB with 3 decimals: a byte count from `parse` is always a clean GiB/MiB value, and 3 decimals round-trips MiB-granular specs
+            // (e.g. 2048MB -> "1.953GiB") without printing 10 digits of noise.
             ReserveAmount::Bytes(bytes) => format!("{:.3}GiB", bytes_to_gib_f64(*bytes)),
             ReserveAmount::Percentage(pct) => format!("{}%", pct),
         }
@@ -243,11 +238,10 @@ impl AllocationMode {
 
     /// Whether this mode produces the **same allocation size** on every run of the same machine.
     ///
-    /// Only the `-from-total` and `-target` forms do: their reference is total installed RAM (a
-    /// constant) or an explicit figure. The `-from-available` forms — including the `--quick-test`
-    /// default and TM5 legacy configs — key off *currently free* memory, so two runs minutes apart
-    /// can size differently and their throughput numbers are not directly comparable. Recorded in
-    /// result files so `--compare-results` can say so instead of the user having to know (TODO #67).
+    /// Only the `-from-total` and `-target` forms do: their reference is total installed RAM (a constant) or an explicit figure. The
+    /// `-from-available` forms — including the `--quick-test` default and TM5 legacy configs — key off *currently free* memory, so two runs
+    /// minutes apart can size differently and their throughput numbers are not directly comparable. Recorded in result files so
+    /// `--compare-results` can say so instead of the user having to know (TODO #67).
     pub fn is_deterministic(&self) -> bool {
         match self {
             AllocationMode::ReserveFromTotal { .. } | AllocationMode::AllocateTarget { .. } => true,
@@ -259,8 +253,7 @@ impl AllocationMode {
 /// Which way each thread's share is rounded to the step (`blkround`).
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum RoundDirection {
-    /// The default, greedy: the extra comes out of the reserve, and with enough threads can take
-    /// all of it.
+    /// The default, greedy: the extra comes out of the reserve, and with enough threads can take all of it.
     Up,
     /// Never past what the reserve leaves.
     Down,
@@ -291,9 +284,8 @@ impl std::fmt::Display for RoundDirection {
     }
 }
 
-/// How each thread's share is rounded before any allocator runs (`blkroundtarget`, `blkround`).
-/// The default, up to whole GiB, lets a share be whole 1 GiB pages. Checked against the block
-/// sizes by `MemoryAllocationConfig::share_rounding`.
+/// How each thread's share is rounded before any allocator runs (`blkroundtarget`, `blkround`). The default, up to whole GiB, lets a share
+/// be whole 1 GiB pages. Checked against the block sizes by `MemoryAllocationConfig::share_rounding`.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct ShareRounding {
     pub step_bytes: u64,
@@ -326,11 +318,10 @@ impl ShareRounding {
         }
     }
 
-    /// `bytes` rounded so `threads` shares fit in `limit`. First at `step_bytes`; if that passes
-    /// `limit`, the same direction at each power of two below it, down to `floor_bytes`; if none
-    /// fits, down to `floor_bytes`, which always does when `bytes` × `threads` fits. A smaller step
-    /// keeps the share coarse, so it ends in fewer small blocks than rounding straight down to the
-    /// floor (TODO 75 B). Returns the share and the rounding that made it.
+    /// `bytes` rounded so `threads` shares fit in `limit`. First at `step_bytes`; if that passes `limit`, the same direction at each power
+    /// of two below it, down to `floor_bytes`; if none fits, down to `floor_bytes`, which always does when `bytes` × `threads` fits. A
+    /// smaller step keeps the share coarse, so it ends in fewer small blocks than rounding straight down to the floor (TODO 75 B). Returns
+    /// the share and the rounding that made it.
     fn fit(&self, bytes: u64, threads: u64, limit: u64) -> (u64, ShareRounding) {
         let mut rounding = *self;
         loop {
@@ -391,11 +382,10 @@ impl AllocationMode {
 
     /// Size the test allocation for `thread_count` workers with identical blocks.
     ///
-    /// The reserve comes off the mode's reference figure (currently available, or total
-    /// installed), then each thread's share is rounded to a multiple of `rounding.step_bytes`.
-    /// Rounding up comes out of the reserve, so `reserve_bytes` is what is actually left to the OS.
-    /// It may take all of the reserve but no more: a round that would pass the reference figure
-    /// steps down to a smaller step instead (`ShareRounding::fit`, `rounding_asked`).
+    /// The reserve comes off the mode's reference figure (currently available, or total installed), then each thread's share is rounded to
+    /// a multiple of `rounding.step_bytes`. Rounding up comes out of the reserve, so `reserve_bytes` is what is actually left to the OS. It
+    /// may take all of the reserve but no more: a round that would pass the reference figure steps down to a smaller step instead
+    /// (`ShareRounding::fit`, `rounding_asked`).
     pub fn calculate_allocation_with_threads(
         &self, mem_info: &SystemMemoryInfo, thread_count: usize, rounding: ShareRounding,
     ) -> AllocationResult {
@@ -439,8 +429,8 @@ impl AllocationMode {
 
         let base_allocation_bytes = reference_bytes.saturating_sub(requested_reserve_bytes);
         let per_thread_raw_bytes = base_allocation_bytes / thread_count as u64;
-        // Past the reference the OS has to take the memory from running processes: "available"
-        // already counts the standby list, the file cache it can drop for free (TODO 75 B).
+        // Past the reference the OS has to take the memory from running processes: "available" already counts the standby list, the file
+        // cache it can drop for free (TODO 75 B).
         let (per_thread_bytes, used) = rounding.fit(per_thread_raw_bytes, thread_count as u64, reference_bytes);
         let rounding_asked = (used != rounding).then_some(rounding);
         if rounding_asked.is_some() {
@@ -509,8 +499,7 @@ pub struct AllocationResult {
     /// What `reference_bytes` is, for display: "available" or "total installed".
     pub reference_name: &'static str,
 
-    /// The reserve the spec asked for. For a `-target` spec, what the target leaves of total
-    /// installed memory.
+    /// The reserve the spec asked for. For a `-target` spec, what the target leaves of total installed memory.
     pub requested_reserve_bytes: u64,
 
     /// The target a `-target` spec asked for; `None` for the reserve forms.
@@ -525,13 +514,13 @@ pub struct AllocationResult {
     /// Each thread's share before rounding.
     pub per_thread_raw_bytes: u64,
 
-    /// Each share is rounded to a multiple of this, in `rounding_direction`: `blkroundtarget`
-    /// and `blkround`, unless `rounding_asked` is set.
+    /// Each share is rounded to a multiple of this, in `rounding_direction`: `blkroundtarget` and `blkround`, unless `rounding_asked` is
+    /// set.
     pub rounding_step_bytes: u64,
     pub rounding_direction: RoundDirection,
 
-    /// The rounding asked for, when it would have passed `reference_bytes`; the two fields above
-    /// are then the smaller step that fit (`ShareRounding::fit`).
+    /// The rounding asked for, when it would have passed `reference_bytes`; the two fields above are then the smaller step that fit
+    /// (`ShareRounding::fit`).
     pub rounding_asked: Option<ShareRounding>,
 
     /// Each thread's share after rounding. `allocation_bytes` is this × `thread_count`.
@@ -559,9 +548,8 @@ impl Default for EnhancedMemoryStrategy {
 }
 
 impl EnhancedMemoryStrategy {
-    /// Canonical `memory=` spec that reproduces this strategy, e.g. `"20%-from-available"`.
-    /// Written into result files so a run's request is reconstructable from the result alone
-    /// rather than only from `logs/` (TODO #67).
+    /// Canonical `memory=` spec that reproduces this strategy, e.g. `"20%-from-available"`. Written into result files so a run's request is
+    /// reconstructable from the result alone rather than only from `logs/` (TODO #67).
     pub fn describe_spec(&self) -> String {
         self.allocation_mode.describe_spec()
     }
@@ -646,8 +634,8 @@ mod tests {
             // Rounding comes out of the reserve, and never takes more than there is.
             assert!(r.allocation_bytes <= available);
             assert_eq!(r.reserve_bytes, available - r.allocation_bytes);
-            // Up at the largest step that fits: the share is a multiple of it, and up at twice it
-            // (where that is still at most 1 GiB) would not have fitted.
+            // Up at the largest step that fits: the share is a multiple of it, and up at twice it (where that is still at most 1 GiB) would
+            // not have fitted.
             let step = r.rounding_step_bytes;
             assert_eq!(r.rounding_direction, RoundDirection::Up);
             assert_eq!(r.per_thread_bytes, r.per_thread_raw_bytes.div_ceil(step) * step);
@@ -660,8 +648,7 @@ mod tests {
         // 4 threads × 12.43 GiB: a clean 3 × 4 GiB + 1 GiB each.
         let r = mode.calculate_allocation_with_threads(&mem_info, 4, rounding);
         assert_eq!(r.per_thread_bytes, 13 * BYTES_PER_GIB);
-        // 16 threads × 3.11 GiB: up to 1 GiB would plan 64 GiB on 55.25 available and 512 MiB
-        // 56 GiB, so 256 MiB: 3.25 GiB each.
+        // 16 threads × 3.11 GiB: up to 1 GiB would plan 64 GiB on 55.25 available and 512 MiB 56 GiB, so 256 MiB: 3.25 GiB each.
         let r = mode.calculate_allocation_with_threads(&mem_info, 16, rounding);
         assert_eq!(r.rounding_asked, Some(rounding));
         assert_eq!((r.rounding_step_bytes, r.per_thread_bytes), (256 * BYTES_PER_MIB, 3 * BYTES_PER_GIB + 256 * BYTES_PER_MIB));
@@ -690,9 +677,8 @@ mod tests {
         assert_eq!(share(256, RoundDirection::Down), 12544);
         assert_eq!(share(256, RoundDirection::Nearest), 12800);
 
-        // No reserve: 4 × 13.8125 GiB is 56 GiB on 55.25 rounded up to 1 GiB, 512 MiB or
-        // 256 MiB, and 55.5 at 128 MiB. At 64 MiB the share is exact. Nearest gets there at
-        // 256 MiB, rounding down to 13.75 GiB.
+        // No reserve: 4 × 13.8125 GiB is 56 GiB on 55.25 rounded up to 1 GiB, 512 MiB or 256 MiB, and 55.5 at 128 MiB. At 64 MiB the share
+        // is exact. Nearest gets there at 256 MiB, rounding down to 13.75 GiB.
         let none = AllocationMode::ReserveFromAvailable { reserve: ReserveAmount::Percentage(0.0) };
         let fit = |direction: RoundDirection| {
             let rounding = ShareRounding { direction, ..Default::default() };

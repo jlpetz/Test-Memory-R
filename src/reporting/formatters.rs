@@ -58,9 +58,8 @@ pub trait ReportFormatter: Send + Sync {
     fn format_chunk_mode(&self, mode: &crate::tests::ChunkMode) -> String;
     /// Format chunk mode, appending the resolved byte size for `Cache` targets.
     ///
-    /// `Cache` specs hide a real behavioural detail: `L1`/`L2` divide by *active threads per
-    /// core*, so `Cache (L2)` resolves to a different size with and without SMT. Absolute
-    /// specs are self-explanatory and are left as-is.
+    /// `Cache` specs hide a real behavioural detail: `L1`/`L2` divide by *active threads per core*, so `Cache (L2)` resolves to a different
+    /// size with and without SMT. Absolute specs are self-explanatory and are left as-is.
     fn format_chunk_mode_with_size(
         &self, mode: &crate::tests::ChunkMode, cache_info: &crate::cache::CacheInfo, thread_count: usize,
     ) -> String;
@@ -109,20 +108,18 @@ impl DefaultFormatter {
 
     /// The `Pass` cell: the verdict for a row, and the only place in a table that uses an emoji.
     ///
-    /// Error counts elsewhere are plain numbers. Putting the verdict in one dedicated column keeps
-    /// the glyph meaning single: ✅/❌ is pass/fail, whereas the 🔴/🟢 on the per-test topline marks
-    /// *which limit ended the test*. (The previous convention rendered zero errors as ✅ inside the
-    /// error columns and non-zero as a bare number, so failures had less visual weight than passes
-    /// and ❌ never appeared at all.)
+    /// Error counts elsewhere are plain numbers. Putting the verdict in one dedicated column keeps the glyph meaning single: ✅/❌ is
+    /// pass/fail, whereas the 🔴/🟢 on the per-test topline marks *which limit ended the test*. (The previous convention rendered zero errors
+    /// as ✅ inside the error columns and non-zero as a bare number, so failures had less visual weight than passes and ❌ never appeared at
+    /// all.)
     fn pass_cell(&self, passed: bool) -> String {
         if passed { "✅" } else { "❌" }.to_string()
     }
 
     /// Adds the trailing `Errors | WHEA | Pass` headers shared by every table that carries a verdict.
     ///
-    /// The `WHEA` column exists only when the table has something to put in it, so a healthy run's
-    /// tables look exactly as they did before WHEA monitoring existed. Every table uses this, so the
-    /// three columns have the same names, order and alignment everywhere.
+    /// The `WHEA` column exists only when the table has something to put in it, so a healthy run's tables look exactly as they did before
+    /// WHEA monitoring existed. Every table uses this, so the three columns have the same names, order and alignment everywhere.
     fn with_verdict_headers(&self, table: TableData, has_whea: bool) -> TableData {
         let table = table.add_header("Errors", ColumnAlignment::Right);
         let table = if has_whea { table.add_header("WHEA", ColumnAlignment::Right) } else { table };
@@ -131,12 +128,11 @@ impl DefaultFormatter {
 
     /// Appends the `Errors | WHEA | Pass` cells matching [`Self::with_verdict_headers`].
     ///
-    /// `whea` is `None` on per-thread/CPU/core rows: WHEA events are system-wide and nothing in them
-    /// identifies the core that faulted, so those rows get a blank WHEA cell (the same way the
-    /// aggregate row leaves its location columns blank) and a data-errors-only verdict. The
-    /// aggregate row passes `Some`, as does any per-test row — a per-test count *is* attributable,
-    /// being the delta across that test. WHEA and data errors stay in separate columns rather than
-    /// being summed: a combined figure over a column of per-row zeros would not add up.
+    /// `whea` is `None` on per-thread/CPU/core rows: WHEA events are system-wide and nothing in them identifies the core that faulted, so
+    /// those rows get a blank WHEA cell (the same way the aggregate row leaves its location columns blank) and a data-errors-only verdict.
+    /// The aggregate row passes `Some`, as does any per-test row — a per-test count *is* attributable, being the delta across that test.
+    /// WHEA and data errors stay in separate columns rather than being summed: a combined figure over a column of per-row zeros would not
+    /// add up.
     fn push_verdict_cells(&self, row: &mut Vec<String>, errors: u64, whea: Option<WheaCounts>, has_whea: bool) {
         row.push(errors.to_string());
         if has_whea {
@@ -236,8 +232,8 @@ fn page_name(page: crate::memory::allocator::PageSizeLevel) -> &'static str {
     }
 }
 
-/// Requests in order as their sizes in MB, a run of equal ones written once with `×count`, and
-/// a 1 GiB or 2 MiB one from a node other than `home` tagged `@node`: `1024×2+128×4@0`.
+/// Requests in order as their sizes in MB, a run of equal ones written once with `×count`, and a 1 GiB or 2 MiB one from a node other than
+/// `home` tagged `@node`: `1024×2+128×4@0`.
 fn commit_signature<'a>(commits: impl Iterator<Item = &'a crate::memory::stitched::Commit>, home: Option<u32>) -> String {
     use crate::memory::allocator::PageSizeLevel;
     let mut runs: Vec<(String, usize)> = Vec::new();
@@ -876,8 +872,8 @@ impl ReportFormatter for DefaultFormatter {
             of_reference(requested_bytes),
             relative_info.clone(),
         ]);
-        // Under a `-target` spec the raw figure is the target itself, already on the row above,
-        // unless the target is more than is installed.
+        // Under a `-target` spec the raw figure is the target itself, already on the row above, unless the target is more than is
+        // installed.
         if report.target_bytes != Some(report.raw_allocation_bytes) {
             table = table.add_row(vec![
                 "Testing Raw".to_string(),
@@ -930,8 +926,8 @@ impl ReportFormatter for DefaultFormatter {
             ExtentMode::FullAllocation => "FullAllocation".to_string(),
             ExtentMode::Absolute { size_bytes } => self.format_bytes(*size_bytes as u64),
             ExtentMode::CacheTotal { fraction } => {
-                // Naive sum-of-tiers — no thread division (CacheTotal is intentionally coarse).
-                // The same total the test sizes from (`calculate_extent_size`).
+                // Naive sum-of-tiers — no thread division (CacheTotal is intentionally coarse). The same total the test sizes from
+                // (`calculate_extent_size`).
                 let size = (cache_info.total_cache as f64 * fraction) as u64;
                 format!("{} (CacheTotal {:.2}x)", self.format_bytes(size), fraction)
             }
@@ -979,9 +975,8 @@ impl ReportFormatter for DefaultFormatter {
     ) -> String {
         use crate::tests::ChunkMode;
         match mode {
-            // Show the resolved size: `Cache (L2)` alone hides the SMT divisor (L1/L2 divide by
-            // active threads per core), so the same spec means 2 MiB at 1 thread/core and 1 MiB
-            // under SMT. Everything else already states its size in the spec.
+            // Show the resolved size: `Cache (L2)` alone hides the SMT divisor (L1/L2 divide by active threads per core), so the same spec
+            // means 2 MiB at 1 thread/core and 1 MiB under SMT. Everything else already states its size in the spec.
             ChunkMode::Cache { target } => {
                 let size = target.size_bytes(cache_info, thread_count);
                 if size == usize::MAX {
@@ -1030,9 +1025,9 @@ impl ReportFormatter for DefaultFormatter {
     }
 
     fn prepare_cycle_report_table(&self, report: &CycleReport) -> TableData {
-        // Not wired up yet (TODO #29): nothing calls `report_cycle`. Kept deliberately for a
-        // between-cycle report, and kept in step with the final per-test table below so reinstating
-        // it needs only the call site. Unlike that table there is nothing to average — one cycle.
+        // Not wired up yet (TODO #29): nothing calls `report_cycle`. Kept deliberately for a between-cycle report, and kept in step with
+        // the final per-test table below so reinstating it needs only the call site. Unlike that table there is nothing to average — one
+        // cycle.
         let has_whea = report.test_performances.iter().any(|t| t.whea_total > 0);
 
         let table = TableData::new()
@@ -1061,9 +1056,8 @@ impl ReportFormatter for DefaultFormatter {
     }
 
     fn prepare_final_summary_overview_table(&self, report: &FinalTestSummaryReport) -> TableData {
-        // Both error sources fail the run: a WHEA event means the hardware reported a fault whether
-        // or not a verify read could see it. First row, because it is the answer the whole table
-        // exists to give — everything below it is the supporting detail.
+        // Both error sources fail the run: a WHEA event means the hardware reported a fault whether or not a verify read could see it.
+        // First row, because it is the answer the whole table exists to give — everything below it is the supporting detail.
         let passed = report.total_errors == 0 && report.whea_total == 0;
 
         TableData::new()
@@ -1090,12 +1084,11 @@ impl ReportFormatter for DefaultFormatter {
             .add_row(vec![
                 "Total WHEA".to_string(),
                 if !report.whea_monitored {
-                    // Say so explicitly: a bare "0" here would claim a clean bill of health that
-                    // was never actually checked.
+                    // Say so explicitly: a bare "0" here would claim a clean bill of health that was never actually checked.
                     "not monitored".to_string()
                 } else {
-                    // The C/UC split matters: a corrected error means the fault happened but the
-                    // data was still right, which is exactly the case our verify reads cannot see.
+                    // The C/UC split matters: a corrected error means the fault happened but the data was still right, which is exactly the
+                    // case our verify reads cannot see.
                     WheaCounts { total: report.whea_total, corrected: report.whea_corrected }.to_string()
                 },
             ])
@@ -1104,8 +1097,8 @@ impl ReportFormatter for DefaultFormatter {
     fn prepare_final_summary_performance_table(&self, report: &FinalTestSummaryReport) -> TableData {
         // Check if any test has latency data
         let has_latency = report.per_test_summaries.iter().any(|t| t.latency_samples.is_some());
-        // Only widen the table when the OS actually reported hardware errors — on a healthy system
-        // the summary looks exactly as it did before WHEA monitoring existed.
+        // Only widen the table when the OS actually reported hardware errors — on a healthy system the summary looks exactly as it did
+        // before WHEA monitoring existed.
         let has_whea = report.per_test_summaries.iter().any(|t| t.whea_total > 0);
 
         // A test that runs more than once a cycle (TODO 74) gets a Runs column; a sealed run, Seal
@@ -1171,8 +1164,7 @@ impl ReportFormatter for DefaultFormatter {
                 row.push(test.latency_spread.map(|v| format!("{:.2}x", v)).unwrap_or_else(|| "-".to_string()));
             }
 
-            // Counts, not averages: an error is an event, and averaging over cycles would dilute a
-            // single-cycle fault into "0.3 errors".
+            // Counts, not averages: an error is an event, and averaging over cycles would dilute a single-cycle fault into "0.3 errors".
             if sealed {
                 row.push(test.seal_errors.to_string());
             }
@@ -1188,8 +1180,8 @@ impl ReportFormatter for DefaultFormatter {
             table = table.add_row(row);
         }
 
-        // Say which columns are averages and which are totals — `Data` (an average) beside `Errors`
-        // (a total) is genuinely ambiguous otherwise, and nothing else on screen settles it.
+        // Say which columns are averages and which are totals — `Data` (an average) beside `Errors` (a total) is genuinely ambiguous
+        // otherwise, and nothing else on screen settles it.
         let cycles = report.cycles_completed;
         table.with_footer(format!(
             "{} cycle{}: Time/Data/Speed{} averaged per run, {}Errors{}{} summed.",
@@ -1258,8 +1250,7 @@ impl ReportFormatter for DefaultFormatter {
         )
     }
 
-    /// Which bits failed, by test, the seal's checks, and over all of them when there's more than
-    /// one row (TODO 97)
+    /// Which bits failed, by test, the seal's checks, and over all of them when there's more than one row (TODO 97)
     fn prepare_failing_bits_table(&self, report: &FinalTestSummaryReport) -> TableData {
         let mut rows: Vec<(String, &crate::failing_bits::FailingBits)> =
             report.per_test_summaries.iter().filter(|t| !t.failing_bits.is_empty()).map(|t| (t.name.clone(), &t.failing_bits)).collect();

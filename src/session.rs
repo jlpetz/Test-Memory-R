@@ -1,11 +1,9 @@
-//! A session (TODO 29): a command line's setup, then its run, shown through a frontend. This is what
-//! the CLI did before the engine/presentation split, with an event (`frontend::Setup`) where it
-//! printed and an end (`SessionEnd`) where it exited, so the CLI and the window take the same
-//! parameters and the console shows what it did. The question it asks, the large-page restart, is
-//! the frontend's to answer (`Frontend::large_page_restart`).
+//! A session (TODO 29): a command line's setup, then its run, shown through a frontend. This is what the CLI did before the
+//! engine/presentation split, with an event (`frontend::Setup`) where it printed and an end (`SessionEnd`) where it exited, so the CLI and
+//! the window take the same parameters and the console shows what it did. The question it asks, the large-page restart, is the frontend's
+//! to answer (`Frontend::large_page_restart`).
 //!
-//! One session a process: the run settings it sets (the seed, the width, the topology's typing) are
-//! first-set-wins.
+//! One session a process: the run settings it sets (the seed, the width, the topology's typing) are first-set-wins.
 
 use std::collections::HashMap;
 use std::env;
@@ -22,14 +20,12 @@ use crate::{ErrorMode, load_config, params};
 
 /// `--ram-latency`: the 6 DRAM latency tests, DRAM-* and DRAMFull-* (TODO 92)
 pub(crate) const RAM_LATENCY_FILTER: &str = "Lat-DRAM-*,Lat-DRAMFull-*";
-/// `--cache-latency`: Read/Write/Copy at L1, L2, L3 and DRAM, 12 tests; DRAMFull is
-/// `--ram-latency`'s (TODO 92)
+/// `--cache-latency`: Read/Write/Copy at L1, L2, L3 and DRAM, 12 tests; DRAMFull is `--ram-latency`'s (TODO 92)
 pub(crate) const CACHE_LATENCY_FILTER: &str = "Lat-L1-*,Lat-L2-*,Lat-L3-*,Lat-DRAM-*";
 
 /// How a session ended. An error that stops it is `run`'s `Err`.
 pub enum SessionEnd {
-    /// The run ran, or with `plan_only` (`--startup-debug`) showed its plan: its status, and the
-    /// time from the end of setup
+    /// The run ran, or with `plan_only` (`--startup-debug`) showed its plan: its status, and the time from the end of setup
     Ran { status: RunStatus, elapsed: Duration, plan_only: bool },
     /// The large-page restart was chosen (`RestartChoice::Exit`): nothing ran
     RestartChosen,
@@ -51,11 +47,9 @@ pub enum Stopped {
     CpuSelection(String),
 }
 
-/// A session: `command_line` (the exe's name first) set up, then run, its events to `fe`. Returns how
-/// it ended.
+/// A session: `command_line` (the exe's name first) set up, then run, its events to `fe`. Returns how it ended.
 pub fn run(command_line: Vec<String>, fe: Arc<dyn Frontend>) -> crate::Result<SessionEnd> {
-    // The command line as typed, for the results file (`RunConfigSnapshot::command_line`): `args`
-    // gains the defaults the modes below add
+    // The command line as typed, for the results file (`RunConfigSnapshot::command_line`): `args` gains the defaults the modes below add
     let mut args = command_line.clone();
 
     // core-priority= first: it decides how the topology is typed, which `--show-topology` and
@@ -63,9 +57,8 @@ pub fn run(command_line: Vec<String>, fe: Arc<dyn Frontend>) -> crate::Result<Se
     if let Some(value) = args.iter().rev().find_map(|a| a.strip_prefix("core-priority=")) {
         crate::cpu_topology::set_core_priority(crate::cpu_topology::CorePriority::parse(value)?);
     }
-    // The native patterns' run settings, before a config loads: patterns= decides how a .cfg's
-    // SimpleTests import. The last of each wins, as for every parameter. width= too, before a
-    // config's can (TODO 99): a width this CPU lacks stops the run here.
+    // The native patterns' run settings, before a config loads: patterns= decides how a .cfg's SimpleTests import. The last of each wins,
+    // as for every parameter. width= too, before a config's can (TODO 99): a width this CPU lacks stops the run here.
     let mut seen_keys = std::collections::HashSet::new();
     for (key, value) in args.iter().rev().filter_map(|a| a.split_once('=')) {
         if !seen_keys.insert(key) {
@@ -432,9 +425,8 @@ pub fn run(command_line: Vec<String>, fe: Arc<dyn Frontend>) -> crate::Result<Se
     let avoid_smt = cputype == "cores";
     fe.event(Setup::CpuType { cputype: cputype.clone(), avoid_smt }.into());
 
-    // Stage 1 FILTER: resolve the skip-cores spec ("N" | "N%" | "A-B") into a leading-skip
-    // count and/or an excluded core-id range. The range form is how you isolate one memory
-    // domain on a multi-CCD part (e.g. skip-cores=0-7 tests only cores 8+).
+    // Stage 1 FILTER: resolve the skip-cores spec ("N" | "N%" | "A-B") into a leading-skip count and/or an excluded core-id range. The
+    // range form is how you isolate one memory domain on a multi-CCD part (e.g. skip-cores=0-7 tests only cores 8+).
     let (resolved_skip, skip_excluded_range) = crate::cpu_selection::resolve_skip_spec(&pinning_config.skip_spec, total_cpus);
     pinning_config.cpus_to_skip = resolved_skip;
     if let Some((lo, hi)) = skip_excluded_range {
@@ -517,9 +509,8 @@ pub fn run(command_line: Vec<String>, fe: Arc<dyn Frontend>) -> crate::Result<Se
         cpus.parse::<usize>().unwrap_or(available_cpus).min(available_cpus).max(1)
     };
 
-    // Selected even when pinning is off: the list also decides which NUMA node each thread's
-    // memory comes from, so a pinned/unpinned A/B differs in scheduling alone. The pool skips
-    // only the affinity call (`RuntimeConfig.pin_threads`).
+    // Selected even when pinning is off: the list also decides which NUMA node each thread's memory comes from, so a pinned/unpinned A/B
+    // differs in scheduling alone. The pool skips only the affinity call (`RuntimeConfig.pin_threads`).
     // Override avoid_smt_doubling if cputype=cores
     let effective_avoid_smt = pinning_config.avoid_smt_doubling || avoid_smt;
     let (actual_threads, cpu_list) = match crate::cpu_selection::calculate_thread_allocation(
@@ -699,15 +690,13 @@ pub fn run(command_line: Vec<String>, fe: Arc<dyn Frontend>) -> crate::Result<Se
         None
     };
 
-    // --startup-debug: run the startup sequence and print the test plan, but allocate no test memory and
-    // run no test
+    // --startup-debug: run the startup sequence and print the test plan, but allocate no test memory and run no test
     let plan_only = args.iter().any(|a| a == "--startup-debug");
 
     let start_time = std::time::Instant::now();
 
-    // Unified test execution path - works for bandwidth tests, latency tests, or mixed
-    // test_filter may be set by --ram-latency or --cache-latency to run specific test subsets
-    // test_filter_param may be set by test=Pattern for CLI filtering
+    // Unified test execution path - works for bandwidth tests, latency tests, or mixed test_filter may be set by --ram-latency or
+    // --cache-latency to run specific test subsets test_filter_param may be set by test=Pattern for CLI filtering
     let final_test_filter = test_filter.as_deref().or(test_filter_param.as_deref());
 
     let plan = crate::plans::resolve(plan_param, config_opt.is_some(), final_test_filter.is_some())?;
@@ -746,9 +735,8 @@ pub fn run(command_line: Vec<String>, fe: Arc<dyn Frontend>) -> crate::Result<Se
     Ok(SessionEnd::Ran { status, elapsed: start_time.elapsed(), plan_only })
 }
 
-/// Why `args` can't be run, if they give `--yes` or `--no-save` to anything but a calibration
-/// (`commands::Command::Calibrate` takes them first): they answer its save question, which nothing
-/// else asks.
+/// Why `args` can't be run, if they give `--yes` or `--no-save` to anything but a calibration (`commands::Command::Calibrate` takes them
+/// first): they answer its save question, which nothing else asks.
 fn calibration_flag_without_calibration(args: &[String]) -> Option<String> {
     args.iter().find(|a| *a == "--yes" || *a == "--no-save").map(|flag| {
         format!(
@@ -758,9 +746,8 @@ fn calibration_flag_without_calibration(args: &[String]) -> Option<String> {
     })
 }
 
-/// The seal's width under `auto`, at startup (TODO 99): this machine's seal calibration
-/// (`AppConfig::valid_seal_calibration`), whose width `set` makes the one `auto` resolves to
-/// (`seal::set_calibrated_width` in a run), else none, so the rule; and which it was.
+/// The seal's width under `auto`, at startup (TODO 99): this machine's seal calibration (`AppConfig::valid_seal_calibration`), whose width
+/// `set` makes the one `auto` resolves to (`seal::set_calibrated_width` in a run), else none, so the rule; and which it was.
 fn load_seal_calibration(
     app_config: &crate::app_config::AppConfig, system_info: &crate::SystemInfo, smbios: &crate::smbios::SmbiosData,
     set: impl FnOnce(crate::seal::SealWidth),
@@ -780,8 +767,8 @@ fn load_seal_calibration(
 /// `(memory_strategy, error_mode, suite_timing, cputype, cpus, pinning, alloc)`.
 type ParsedRunConfig = (EnhancedMemoryStrategy, ErrorMode, TestSuiteTiming, String, String, CpuPinningConfig, MemoryAllocationConfig);
 
-/// Build configuration from validated parameters (using centralized registry). What the
-/// allocation and pinning parameters set goes to `fe`, once they are read.
+/// Build configuration from validated parameters (using centralized registry). What the allocation and pinning parameters set goes to `fe`,
+/// once they are read.
 fn build_config_from_validated_params(
     validated: &HashMap<String, params::ParamValue>, fe: &dyn Frontend,
 ) -> Result<ParsedRunConfig, String> {
@@ -814,8 +801,8 @@ fn build_config_from_validated_params(
         EnhancedMemoryStrategy::default()
     };
 
-    // Build CPU pinning config. skip_spec/stride_spec are the two-stage selection specs;
-    // cpus_to_skip is resolved from skip_spec later (needs the real core count).
+    // Build CPU pinning config. skip_spec/stride_spec are the two-stage selection specs; cpus_to_skip is resolved from skip_spec later
+    // (needs the real core count).
     let mut pinning_config = CpuPinningConfig {
         skip_spec: params::get_string(validated, "skip-cores", "1"),
         stride_spec: params::get_string(validated, "cpu-stride", "1"),
@@ -879,8 +866,8 @@ fn parse_enhanced_memory_parameter(param: &str) -> Result<crate::memory::allocat
 mod tests {
     use super::*;
 
-    /// `--yes` and `--no-save` go with a calibration, which takes them before this check; a run
-    /// that gives either is stopped with what they are for.
+    /// `--yes` and `--no-save` go with a calibration, which takes them before this check; a run that gives either is stopped with what they
+    /// are for.
     #[test]
     fn the_save_flags_go_only_with_a_calibration() {
         let args = |line: &[&str]| line.iter().map(|s| s.to_string()).collect::<Vec<_>>();
@@ -892,10 +879,9 @@ mod tests {
         assert!(matches!(Command::parse(&args(&["tmr", "--calibrate-seal", "--yes"])), Some(Command::Calibrate(_))));
     }
 
-    /// TODO 99: at startup, a seal calibration measured on this machine gives `auto` its width
-    /// (`set`, `seal::set_calibrated_width` in a run), which the run's seal then resolves to, and
-    /// is Loaded; one from other hardware gives it none and is Stale; with none, None. The line
-    /// each shows is the CLI's (`render::setup`, crates/tmr-cli).
+    /// TODO 99: at startup, a seal calibration measured on this machine gives `auto` its width (`set`, `seal::set_calibrated_width` in a
+    /// run), which the run's seal then resolves to, and is Loaded; one from other hardware gives it none and is Stale; with none, None. The
+    /// line each shows is the CLI's (`render::setup`, crates/tmr-cli).
     #[test]
     fn startup_gives_auto_this_machines_seal_calibration() {
         use crate::seal::{SealWidth, SealWidthSource, TestCalibratedWidth};

@@ -52,13 +52,11 @@ pub struct CacheInfo {
 
 /// Thread timing deviation report
 ///
-/// The WHEA counts sit at report level, not on `ThreadTiming`, because WHEA events are
-/// system-wide: nothing in the event identifies the core that faulted (the XML's
-/// `Execution ProcessID` is the logging service). They are carried here so the table's aggregate
-/// row can show them in the `WHEA` column and fail even when every thread row is clean — otherwise
-/// a WHEA-only failure shows a table of zeros under a failing topline, and the table is not
-/// self-contained once it is rendered anywhere other than directly under that topline. Same
-/// reasoning applies to the three `PerformanceBy*Report`s below.
+/// The WHEA counts sit at report level, not on `ThreadTiming`, because WHEA events are system-wide: nothing in the event identifies the
+/// core that faulted (the XML's `Execution ProcessID` is the logging service). They are carried here so the table's aggregate row can show
+/// them in the `WHEA` column and fail even when every thread row is clean — otherwise a WHEA-only failure shows a table of zeros under a
+/// failing topline, and the table is not self-contained once it is rendered anywhere other than directly under that topline. Same reasoning
+/// applies to the three `PerformanceBy*Report`s below.
 #[derive(Debug, Clone)]
 pub struct ThreadTimingReport {
     pub average_elapsed_ms: u128,
@@ -88,8 +86,7 @@ pub struct ThreadTiming {
 #[derive(Debug, Clone)]
 pub struct PerformanceByThreadReport {
     pub threads: Vec<ThreadPerformance>,
-    /// False under `--disable-pinning`: the CPU columns then only say which NUMA node a thread's
-    /// memory came from, not where it ran.
+    /// False under `--disable-pinning`: the CPU columns then only say which NUMA node a thread's memory came from, not where it ran.
     pub pinned: bool,
     /// WHEA events for the whole run — see [`ThreadTimingReport`] for why this is not per-thread.
     pub whea: crate::whea::WheaCounts,
@@ -195,8 +192,8 @@ pub struct TestConfigurationReport {
     /// The run is sealed: the table gets a Seal column
     pub sealed: bool,
     pub tests: Vec<TestConfigurationEntry>,
-    /// Lines printed under the table: what a TM5 import's window does, and every chunk the
-    /// thread's memory made smaller than its spec asks for (TODO 76)
+    /// Lines printed under the table: what a TM5 import's window does, and every chunk the thread's memory made smaller than its spec asks
+    /// for (TODO 76)
     pub notes: Vec<String>,
 }
 
@@ -205,8 +202,7 @@ pub struct TestConfigurationEntry {
     pub number: usize,
     pub name: String,
     pub timing: String,
-    /// `W×(T+V)` per chunk: write/read cycles × (test ops + verifies), or `-` when the test
-    /// ignores them
+    /// `W×(T+V)` per chunk: write/read cycles × (test ops + verifies), or `-` when the test ignores them
     pub per_chunk: String,
     pub parameter: String,
     /// The extent spec, with its per-thread size once the thread memory is known
@@ -267,8 +263,7 @@ pub struct FinalTestSummaryReport {
     pub intermediate: Vec<IntermediateEntry>,
 }
 
-/// One operation over the run: `None` time when the run did none of it, `None` bytes when its
-/// bytes mean nothing (a chain build).
+/// One operation over the run: `None` time when the run did none of it, `None` bytes when its bytes mean nothing (a chain build).
 #[derive(Debug, Clone)]
 pub struct IntermediateEntry {
     pub name: &'static str,
@@ -276,8 +271,7 @@ pub struct IntermediateEntry {
     pub bytes: Option<u64>,
 }
 
-/// The seal over the run, in a sealed run (TODO 74): its time and data are the Intermediate
-/// Operations table's.
+/// The seal over the run, in a sealed run (TODO 74): its time and data are the Intermediate Operations table's.
 #[derive(Debug, Clone)]
 pub struct SealStagesSummary {
     /// The final checks' errors (TM5 numbers them 0)
@@ -355,8 +349,8 @@ pub struct ConsolidatedMemoryReport {
     pub warnings: Vec<String>,
 }
 
-/// The allocation report (TODO 81): what each thread got, by node, page size and request, and how
-/// evenly. Built from the stitched allocator's record of every request.
+/// The allocation report (TODO 81): what each thread got, by node, page size and request, and how evenly. Built from the stitched
+/// allocator's record of every request.
 #[derive(Debug, Clone)]
 pub struct AllocationReport {
     pub allocator: String,
@@ -382,8 +376,8 @@ pub struct AllocationThread {
     pub huge_bytes: u64,
     pub large_bytes: u64,
     pub regular_bytes: u64,
-    /// 1 GiB and 2 MiB pages from a node other than the thread's own, which the requests named
-    /// strictly. 4 KiB pages only prefer the home node and count as local.
+    /// 1 GiB and 2 MiB pages from a node other than the thread's own, which the requests named strictly. 4 KiB pages only prefer the home
+    /// node and count as local.
     pub remote_bytes: u64,
     /// Every request, in the order made: the allocator's record, moved here.
     pub commits: Vec<crate::memory::stitched::Commit>,

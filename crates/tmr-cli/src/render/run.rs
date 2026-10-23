@@ -1,5 +1,5 @@
-//! A run's events as the console shows them (TODO 29): each the print group it replaced, moved here
-//! from the engine's `runner.rs` and `layout.rs` with its format strings.
+//! A run's events as the console shows them (TODO 29): each the print group it replaced, moved here from the engine's `runner.rs` and
+//! `layout.rs` with its format strings.
 
 use std::fmt::Write as _;
 
@@ -77,9 +77,8 @@ pub(super) fn show(run: Run) {
                 println!("\n✅ All test cycles completed successfully!");
             }
             if status == RunStatus::Failed {
-                // Same form as the per-test topline. Either count alone fails the run: a WHEA event
-                // with `0 errors` is a fault that ECC corrected, or one raised during a test phase
-                // that does not verify — still not a stable configuration.
+                // Same form as the per-test topline. Either count alone fails the run: a WHEA event with `0 errors` is a fault that ECC
+                // corrected, or one raised during a test phase that does not verify — still not a stable configuration.
                 println!("\n❌ Test suite failed: {} errors + {} WHEA{}", memory_errors, whea.total, whea.split_suffix());
             }
         }
@@ -98,8 +97,7 @@ fn not_run(why: &NotRun) -> String {
         NotRun::Plan(e) => {
             let _ = writeln!(text, "❌ {e}");
         }
-        // A filter narrows a named plan: the list (`Run::Matchable`) is what it could have picked
-        // from
+        // A filter narrows a named plan: the list (`Run::Matchable`) is what it could have picked from
         NotRun::NoTestMatches { filter, plan: Some(plan) } => {
             let _ = writeln!(text, "❌ No test of plan {} matches filter '{}'. Its tests (plan=all for every test):", plan, filter);
         }
@@ -150,8 +148,8 @@ fn allocation_starting(min: PageSizeLevel, max: PageSizeLevel) -> String {
     text
 }
 
-/// A step's report: its verdict and figures, its config, its threads' table (and a latency step's
-/// latencies), and where the suite stood as it ended, then a blank line before the next.
+/// A step's report: its verdict and figures, its config, its threads' table (and a latency step's latencies), and where the suite stood as
+/// it ended, then a blank line before the next.
 fn step_report(report: &StepReport) -> String {
     let StepReport { cycle, summary: s, wall, timed_secs, cycle_limit, stopped_by_time, sealed, config, threads, latency, stamp } = report;
     let cycles_completed = s.cycles_completed.1;
@@ -197,25 +195,23 @@ fn step_report(report: &StepReport) -> String {
         _ => String::new(),
     };
 
-    // Pass/fail for this test. Both error sources count: a WHEA event during the test means the
-    // hardware reported a fault whether or not a verify read caught it, and either way the
-    // system is not stable. This is the only per-test verdict in the output.
+    // Pass/fail for this test. Both error sources count: a WHEA event during the test means the hardware reported a fault whether or not a
+    // verify read caught it, and either way the system is not stable. This is the only per-test verdict in the output.
     //
-    // The ✅/❌ here is a verdict; the 🔴/🟢 in `cycles_info` is not — those mark *which limit
-    // ended the test*, so the two glyph pairs are deliberately different.
+    // The ✅/❌ here is a verdict; the 🔴/🟢 in `cycles_info` is not — those mark *which limit ended the test*, so the two glyph pairs are
+    // deliberately different.
     let test_passed = s.errors == 0 && s.seal_errors == 0 && s.whea_total == 0;
     let pass_indicator = if test_passed { "✅" } else { "❌" };
     // The seal's errors, in a sealed run: what the checks before this step's chunks found
     let seal_info = if *sealed { format!(" + {} seal{}", s.seal_errors, s.seal_failing_bits.brief()) } else { String::new() };
     let whea = WheaCounts { total: s.whea_total, corrected: s.whea_corrected };
 
-    // WHEA is always shown, even at zero, so a clean line still states that we were watching;
-    // the C/UC split only appears when there is something to split. "errors" is the word every
-    // table uses for these (the `Errors` column) — "data" would collide with the `Data` column,
-    // which is bytes processed.
+    // WHEA is always shown, even at zero, so a clean line still states that we were watching; the C/UC split only appears when there is
+    // something to split. "errors" is the word every table uses for these (the `Errors` column) — "data" would collide with the `Data`
+    // column, which is bytes processed.
     // The bits that failed follow each count: ` (bit 31)`
-    // The step's verdict and wall time, then its test's own figures, the work around it by
-    // operation (TODO 90, `n/a` where it did none), and its config
+    // The step's verdict and wall time, then its test's own figures, the work around it by operation (TODO 90, `n/a` where it did none),
+    // and its config
     let mut text = String::new();
     let _ = writeln!(
         text,
@@ -261,8 +257,8 @@ fn step_report(report: &StepReport) -> String {
         text += &report_text("latency report", |r| r.report_latency_summary(latency));
     }
 
-    // Where the suite stood as this test ended. The ticker is down during every report and
-    // gone after the run, so this is what stays on screen: one line per test.
+    // Where the suite stood as this test ended. The ticker is down during every report and gone after the run, so this is what stays on
+    // screen: one line per test.
     if let Some(stamp) = stamp.as_ref().and_then(|stamp| ticker::test_stamp(stamp, *wall)) {
         let _ = writeln!(text, "{}", stamp);
     }

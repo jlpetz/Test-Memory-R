@@ -1,18 +1,15 @@
 //! The one path to the terminal while the progress ticker is on screen.
 //!
-//! The ticker sits under the last line of output and is redrawn in place, which means moving the
-//! cursor back up over every row it covers. Anything another thread printed in the meantime would be
-//! overwritten by that, or stranded between two ticker rows. So everything that can print while the
-//! ticker is up — the logger, WHEA events, the Ctrl+C handler, the run's events (`render`) —
-//! goes through here: each print takes the ticker down, writes, and puts it back under one lock, so
-//! the ticker is always the last thing on screen and is never torn.
+//! The ticker sits under the last line of output and is redrawn in place, which means moving the cursor back up over every row it covers.
+//! Anything another thread printed in the meantime would be overwritten by that, or stranded between two ticker rows. So everything that
+//! can print while the ticker is up — the logger, WHEA events, the Ctrl+C handler, the run's events (`render`) — goes through here: each
+//! print takes the ticker down, writes, and puts it back under one lock, so the ticker is always the last thing on screen and is never
+//! torn.
 //!
-//! Plain `println!` is still fine wherever no ticker can be drawn: before the suite starts, and after
-//! it finishes (`hold`). A test's report, many lines long, prints in one piece through
-//! `print_block`.
+//! Plain `println!` is still fine wherever no ticker can be drawn: before the suite starts, and after it finishes (`hold`). A test's
+//! report, many lines long, prints in one piece through `print_block`.
 
-// Every `unsafe` block in this file is a Win32 console call. The crate's lint (lib.rs) covers its
-// shipped code; this one the tests too.
+// Every `unsafe` block in this file is a Win32 console call. The crate's lint (lib.rs) covers its shipped code; this one the tests too.
 #![warn(clippy::undocumented_unsafe_blocks)]
 
 use std::io::{self, Write};
@@ -24,8 +21,7 @@ use windows::Win32::System::Console::{
 };
 
 struct Ticker {
-    /// The ticker as last drawn, kept so it can be put back after a print. Empty when there is
-    /// nothing to put back.
+    /// The ticker as last drawn, kept so it can be put back after a print. Empty when there is nothing to put back.
     text: String,
     /// Screen rows the ticker covers now, wrapped rows included. 0 = not on screen.
     rows: usize,
@@ -35,16 +31,14 @@ struct Ticker {
 
 static TICKER: Mutex<Ticker> = Mutex::new(Ticker { text: String::new(), rows: 0, held: false });
 
-/// Lock order is `TICKER`, then stdout. Plain `println!` takes only stdout, so it cannot deadlock
-/// against this.
+/// Lock order is `TICKER`, then stdout. Plain `println!` takes only stdout, so it cannot deadlock against this.
 fn lock() -> (MutexGuard<'static, Ticker>, impl Write) {
     let ticker = TICKER.lock().unwrap_or_else(|poisoned| poisoned.into_inner());
     (ticker, out())
 }
 
 impl Ticker {
-    /// Take the ticker off the screen, leaving the cursor where its first row began. `text` is
-    /// kept for the redraw.
+    /// Take the ticker off the screen, leaving the cursor where its first row began. `text` is kept for the redraw.
     fn erase(&mut self, out: &mut impl Write) {
         // `ESC[0A` moves up one row, not zero, so a one-row ticker must not send it.
         let _ = match self.rows {
@@ -78,8 +72,8 @@ pub fn print_above(text: &str) {
     let _ = out.flush();
 }
 
-/// Replace the ticker with `text`, printing the lines from `above` first. Draws nothing, and does
-/// not call `above`, once the console is held. Returns whether it drew.
+/// Replace the ticker with `text`, printing the lines from `above` first. Draws nothing, and does not call `above`, once the console is
+/// held. Returns whether it drew.
 pub fn draw_ticker(text: String, above: impl FnOnce() -> Vec<String>) -> bool {
     let (mut ticker, mut out) = lock();
     if ticker.held {
@@ -94,8 +88,8 @@ pub fn draw_ticker(text: String, above: impl FnOnce() -> Vec<String>) -> bool {
     true
 }
 
-/// Take the ticker down for good, at the end of the suite, so what follows can print with plain
-/// `println!`. Other writers can still print through `print_above`; they just don't redraw it.
+/// Take the ticker down for good, at the end of the suite, so what follows can print with plain `println!`. Other writers can still print
+/// through `print_above`; they just don't redraw it.
 pub fn hold() {
     let (mut ticker, mut out) = lock();
     ticker.erase(&mut out);
@@ -104,9 +98,9 @@ pub fn hold() {
     let _ = out.flush();
 }
 
-/// Print a multi-line report in place of the ticker (TODO 29): the ticker comes down and the
-/// report is written under one lock, so no other line can land inside it. The ticker comes back at
-/// its next scheduled draw, with fresh figures rather than the ones from before the report.
+/// Print a multi-line report in place of the ticker (TODO 29): the ticker comes down and the report is written under one lock, so no other
+/// line can land inside it. The ticker comes back at its next scheduled draw, with fresh figures rather than the ones from before the
+/// report.
 pub fn print_block(text: &str) {
     let (mut ticker, mut out) = lock();
     ticker.erase(&mut out);
@@ -131,27 +125,25 @@ impl Write for LogSink {
     }
 }
 
-/// Switch stdout to VT processing, which the ticker's cursor movement and the log colours both
-/// need. Windows Terminal always has it on; classic conhost only for programs that ask. It used to
-/// be switched on as a side effect of env_logger writing to stdout, which stopped when the logger
-/// moved to `LogSink`, so it is done explicitly here. A no-op when stdout is not a console.
+/// Switch stdout to VT processing, which the ticker's cursor movement and the log colours both need. Windows Terminal always has it on;
+/// classic conhost only for programs that ask. It used to be switched on as a side effect of env_logger writing to stdout, which stopped
+/// when the logger moved to `LogSink`, so it is done explicitly here. A no-op when stdout is not a console.
 pub fn init() {
-    // SAFETY: no pointer arguments. The handle is the process's own stdout, which we do not own
-    // and never close.
+    // SAFETY: no pointer arguments. The handle is the process's own stdout, which we do not own and never close.
     let Ok(handle) = (unsafe { GetStdHandle(STD_OUTPUT_HANDLE) }) else {
         return;
     };
     let mut mode = CONSOLE_MODE::default();
-    // SAFETY: `mode` is a local passed directly as the out-parameter, so it outlives the call.
-    // Fails, harmlessly, when stdout is redirected.
+    // SAFETY: `mode` is a local passed directly as the out-parameter, so it outlives the call. Fails, harmlessly, when stdout is
+    // redirected.
     if unsafe { GetConsoleMode(handle, &mut mode) }.is_ok() {
         // SAFETY: value arguments only, on the console handle `GetConsoleMode` just accepted.
         let _ = unsafe { SetConsoleMode(handle, mode | ENABLE_VIRTUAL_TERMINAL_PROCESSING) };
     }
 }
 
-/// The column the console wraps at, or `usize::MAX` when stdout is not a console, where nothing
-/// wraps. Read on every draw, so a resized window is picked up at the next one.
+/// The column the console wraps at, or `usize::MAX` when stdout is not a console, where nothing wraps. Read on every draw, so a resized
+/// window is picked up at the next one.
 fn console_width() -> usize {
     // SAFETY: as in `init`.
     let Ok(handle) = (unsafe { GetStdHandle(STD_OUTPUT_HANDLE) }) else {
@@ -165,9 +157,8 @@ fn console_width() -> usize {
     }
 }
 
-/// Rows `text` covers on a console `width` columns wide. Everything the ticker prints is ASCII
-/// except ⚠️ (U+26A0 plus the U+FE0F presentation selector), which terminals draw two columns wide,
-/// so a non-ASCII char counts as two columns and the selector as none.
+/// Rows `text` covers on a console `width` columns wide. Everything the ticker prints is ASCII except ⚠️ (U+26A0 plus the U+FE0F
+/// presentation selector), which terminals draw two columns wide, so a non-ASCII char counts as two columns and the selector as none.
 fn screen_rows(text: &str, width: usize) -> usize {
     text.split('\n')
         .map(|line| {
@@ -190,8 +181,8 @@ fn out() -> io::StdoutLock<'static> {
     io::stdout().lock()
 }
 
-/// A unit test build writes through `print!` instead, which the test harness captures, so the
-/// console goldens get these lines too (`golden.rs`, TODO 29): a locked stdout bypasses it.
+/// A unit test build writes through `print!` instead, which the test harness captures, so the console goldens get these lines too
+/// (`golden.rs`, TODO 29): a locked stdout bypasses it.
 #[cfg(test)]
 fn out() -> PrintOut {
     PrintOut

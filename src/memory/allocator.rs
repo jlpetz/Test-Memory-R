@@ -20,8 +20,8 @@ pub struct AllocationConfig {
     pub memory_type: BufferMemoryType,
     pub zero_memory: bool,
     pub alignment: Option<usize>, // Custom alignment requirement (must be power of 2)
-    /// `numa_node` is required, not preferred (`NUMA_NODE_MANDATORY`): refuse rather than take
-    /// another node's pages. Only 1 GiB and 2 MiB pages take it; 4 KiB requests stay preferred.
+    /// `numa_node` is required, not preferred (`NUMA_NODE_MANDATORY`): refuse rather than take another node's pages. Only 1 GiB and 2 MiB
+    /// pages take it; 4 KiB requests stay preferred.
     pub numa_strict: bool,
 }
 
@@ -32,25 +32,21 @@ pub enum PageSizePreference {
     Require(PageSizeLevel), // Must have or fail
 }
 
-/// `largechunk` when it is not set. Stitched commits merge into one run per page size, so a
-/// small first request costs only calls, and it spreads a node's 2 MiB shortfall over all its
-/// threads instead of the last few: on a 2-node box, 3.02 GiB remote over 32 threads at 128 MiB,
-/// against 0.8-0.9 GiB on each of 3 at 1 GiB, for 3.9 s of allocation instead of 2.3 (TODO 75,
-/// follow-up 2). To be re-checked now that the tests take the span (TODO 83).
+/// `largechunk` when it is not set. Stitched commits merge into one run per page size, so a small first request costs only calls, and it
+/// spreads a node's 2 MiB shortfall over all its threads instead of the last few: on a 2-node box, 3.02 GiB remote over 32 threads at 128
+/// MiB, against 0.8-0.9 GiB on each of 3 at 1 GiB, for 3.9 s of allocation instead of 2.3 (TODO 75, follow-up 2). To be re-checked now that
+/// the tests take the span (TODO 83).
 pub(crate) const DEFAULT_LARGE_CHUNK: usize = 128 * BYTES_PER_MIB_USIZE;
 
 /// The block-size tunables, checked: `hugechunk`, `largechunk`, `largefloor`.
 /// Built by `MemoryAllocationConfig::block_sizing`; the stitched allocator takes all three.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct BlockSizing {
-    /// The first size of each 1 GiB-page request, halved on every refusal down to 1 GiB. A power
-    /// of two, at least 1 GiB.
+    /// The first size of each 1 GiB-page request, halved on every refusal down to 1 GiB. A power of two, at least 1 GiB.
     pub huge_chunk: usize,
-    /// The first size of each 2 MiB-page request, halved on every refusal down to `large_floor`.
-    /// A power of two, at least `large_floor`.
+    /// The first size of each 2 MiB-page request, halved on every refusal down to `large_floor`. A power of two, at least `large_floor`.
     pub large_chunk: usize,
-    /// The smallest 2 MiB-page request: once the node refuses one this small, it is out of 2 MiB
-    /// pages. A power of two, 16 MiB ..= 1 GiB.
+    /// The smallest 2 MiB-page request: once the node refuses one this small, it is out of 2 MiB pages. A power of two, 16 MiB ..= 1 GiB.
     pub large_floor: usize,
 }
 
@@ -79,8 +75,8 @@ impl BlockSizing {
     }
 }
 
-/// A page size: what a request asks for and what the allocator's record says it got (ordered:
-/// Regular < Large < Huge). The one page-size vocabulary, a revived backend's too.
+/// A page size: what a request asks for and what the allocator's record says it got (ordered: Regular < Large < Huge). The one page-size
+/// vocabulary, a revived backend's too.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord)]
 pub enum PageSizeLevel {
     Regular = 0,
@@ -184,8 +180,7 @@ mod tests {
         assert_eq!(rounding("4GiB", "4GiB", "16MiB"), Ok(4 * GIB));
     }
 
-    /// An unset `largechunk` is 128 MiB, and never falls below `largefloor`; a set one is taken
-    /// as given.
+    /// An unset `largechunk` is 128 MiB, and never falls below `largefloor`; a set one is taken as given.
     #[test]
     fn largechunk_defaults_to_128mib() {
         let large_chunk = |largechunk: Option<&str>, largefloor: &str| {

@@ -1,6 +1,5 @@
-//! Mem-Sequence's sequence (TODO 97): the passes a chunk gets, in order, each a write, a read, or
-//! a read-then-write, each in an access order. Parsed once when the config loads; the test runs
-//! each pass as one loop, matched once outside it.
+//! Mem-Sequence's sequence (TODO 97): the passes a chunk gets, in order, each a write, a read, or a read-then-write, each in an access
+//! order. Parsed once when the config loads; the test runs each pass as one loop, matched once outside it.
 
 /// What a pass does to each line it visits.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -9,8 +8,7 @@ pub enum Op {
     Write,
     /// Checks the phase last written
     Read,
-    /// Checks the phase last written, then writes its inverse in the same visit: the reads are
-    /// checked in a stream with writes in it
+    /// Checks the phase last written, then writes its inverse in the same visit: the reads are checked in a stream with writes in it
     ReadWrite,
 }
 
@@ -75,8 +73,8 @@ impl Default for Sequence {
 }
 
 impl Sequence {
-    /// From steps separated by spaces or commas: an optional count, `W`, `R` or `RW`, and an
-    /// optional `@forward`, `@reverse`, `@random` or `@stride`.
+    /// From steps separated by spaces or commas: an optional count, `W`, `R` or `RW`, and an optional `@forward`, `@reverse`, `@random` or
+    /// `@stride`.
     pub fn parse(text: &str, order: Order) -> Result<Self, String> {
         let mut steps = [Step { op: Op::Read, count: 1, order: None }; MAX_STEPS];
         let mut len = 0;
@@ -148,11 +146,10 @@ impl Sequence {
         self.steps().iter().any(|s| self.order_of(s) == Order::Stride)
     }
 
-    /// The program rounds a chunk's passes write over `reps` runs, the fill included (rounds `2n`
-    /// and `2n + 1` are pair `n`'s P and ~P, `Program::phase`). A `W` writes the next round. An
-    /// `RW` writes the inverse of the round it read, `c ^ 1`: the next round when it read a pair's
-    /// P, else that pair's P again. So no `W` writes what an `RW` already left (the review: the
-    /// second `W` of `W 2R RW 2R` rewrote ~P over ~P). `round_after` steps the same rule.
+    /// The program rounds a chunk's passes write over `reps` runs, the fill included (rounds `2n` and `2n + 1` are pair `n`'s P and ~P,
+    /// `Program::phase`). A `W` writes the next round. An `RW` writes the inverse of the round it read, `c ^ 1`: the next round when it
+    /// read a pair's P, else that pair's P again. So no `W` writes what an `RW` already left (the review: the second `W` of `W 2R RW 2R`
+    /// rewrote ~P over ~P). `round_after` steps the same rule.
     pub fn rounds(&self, reps: u32) -> u32 {
         let (mut current, mut next) = (0u64, 0u64);
         if self.reads_first() {
@@ -168,8 +165,7 @@ impl Sequence {
         next as u32
     }
 
-    /// Passes a chunk gets over `reps` runs, the fill included, and the line visits that read and
-    /// write in them: for bytes counted.
+    /// Passes a chunk gets over `reps` runs, the fill included, and the line visits that read and write in them: for bytes counted.
     pub fn visits(&self, reps: u32) -> (u64, u64) {
         let (mut reads, mut writes) = (0u64, u64::from(self.reads_first()));
         for s in self.steps() {
@@ -183,8 +179,8 @@ impl Sequence {
         (reads, writes)
     }
 
-    /// Whether some pass writes what no read checks: a write straight before a `W` (`2W R`,
-    /// `RW W R`), or the last step's (`W R RW`). Allowed, as write stress; the run warns.
+    /// Whether some pass writes what no read checks: a write straight before a `W` (`2W R`, `RW W R`), or the last step's (`W R RW`).
+    /// Allowed, as write stress; the run warns.
     pub fn unread_writes(&self) -> bool {
         let steps = self.steps();
         let writes = |s: &Step| s.op != Op::Read;
@@ -212,8 +208,8 @@ impl Sequence {
     }
 }
 
-/// The round a chunk holds after a pass of `op`, and the next round a `W` writes, from the round it
-/// held and the next (`Sequence::rounds`). A read changes neither.
+/// The round a chunk holds after a pass of `op`, and the next round a `W` writes, from the round it held and the next (`Sequence::rounds`).
+/// A read changes neither.
 #[inline]
 pub fn round_after(op: Op, current: u64, next: u64) -> (u64, u64) {
     match op {
@@ -226,9 +222,8 @@ pub fn round_after(op: Op, current: u64, next: u64) -> (u64, u64) {
     }
 }
 
-/// Line `j`'s place in a random pass over a block of `2^bits` lines: a bijection of `j` on
-/// `0..2^bits` (odd multiplies and right xorshifts, each invertible there) keyed by `key`, so every
-/// line of the block comes up once and consecutive visits land far apart.
+/// Line `j`'s place in a random pass over a block of `2^bits` lines: a bijection of `j` on `0..2^bits` (odd multiplies and right xorshifts,
+/// each invertible there) keyed by `key`, so every line of the block comes up once and consecutive visits land far apart.
 #[inline(always)]
 pub fn random_line(j: u64, bits: u32, key: u64) -> u64 {
     let mask = (1u64 << bits).wrapping_sub(1) | u64::from(bits == 64).wrapping_neg();

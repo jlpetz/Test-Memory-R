@@ -1,31 +1,26 @@
 //! Where a test's extent lies in a thread's memory (TODO 76).
 //!
-//! Each thread gets one contiguous VA span from the stitched allocator, as a list of
-//! `AllocationBlock`s that each end where the next begins. A test's extent is the first `extent`
-//! bytes of that span, and its chunks spread evenly over the extent (`ChunkSpread`).
+//! Each thread gets one contiguous VA span from the stitched allocator, as a list of `AllocationBlock`s that each end where the next
+//! begins. A test's extent is the first `extent` bytes of that span, and its chunks spread evenly over the extent (`ChunkSpread`).
 
 use crate::runner::AllocationBlock;
 use crate::tests::TestBlock;
 
-/// Extent pieces and chunks are multiples of this, and chunks start on it. It makes halves,
-/// quarters and subdivisions exact for every vector width, and keeps chunk starts page-aligned.
+/// Extent pieces and chunks are multiples of this, and chunks start on it. It makes halves, quarters and subdivisions exact for every
+/// vector width, and keeps chunk starts page-aligned.
 ///
-/// The kernels rely on it (TODO 99): their walks step whole vectors, lines and groups of four
-/// lines to a bound, and some would loop forever or run past the end on a range whose length
-/// isn't a multiple of 4 KiB (Mem-Sequence's 512-bit random step, mirror's whole tail), guarded
-/// only by `debug_assert`s. This is about the range's arithmetic, not the pages under it: a span
-/// stitches 1 GiB, 2 MiB and 4 KiB pages and the tests never see where they meet. Powers of two
-/// are not needed; whole granules are. If chunks ever stop being uniform (threads handing each
-/// other ranges), drop the tail or clip it to a granule multiple.
+/// The kernels rely on it (TODO 99): their walks step whole vectors, lines and groups of four lines to a bound, and some would loop forever
+/// or run past the end on a range whose length isn't a multiple of 4 KiB (Mem-Sequence's 512-bit random step, mirror's whole tail), guarded
+/// only by `debug_assert`s. This is about the range's arithmetic, not the pages under it: a span stitches 1 GiB, 2 MiB and 4 KiB pages and
+/// the tests never see where they meet. Powers of two are not needed; whole granules are. If chunks ever stop being uniform (threads
+/// handing each other ranges), drop the tail or clip it to a granule multiple.
 pub const GRANULE: usize = 4096;
 
-/// How a test's chunks cover its extent (TODO 76): `count()` chunks of exactly `chunk()` bytes,
-/// spread evenly, the first at 0 and the last ending at the extent. Start k is k(E-c)/(n-1)
-/// floored to the granule, each start on its own, so consecutive starts are at most c apart (no
-/// holes) and the overlaps differ by at most one granule; the total overlap is under c. When c
-/// divides the extent the starts are k*c, TM5's tiling with no overlap; when c is at least the
-/// extent there is one chunk, the extent. With 3 or more chunks, chunks k and k+2 never overlap.
-/// Every word must be position-pure for this: a chunk rewrites what its neighbour wrote.
+/// How a test's chunks cover its extent (TODO 76): `count()` chunks of exactly `chunk()` bytes, spread evenly, the first at 0 and the last
+/// ending at the extent. Start k is k(E-c)/(n-1) floored to the granule, each start on its own, so consecutive starts are at most c apart
+/// (no holes) and the overlaps differ by at most one granule; the total overlap is under c. When c divides the extent the starts are k*c,
+/// TM5's tiling with no overlap; when c is at least the extent there is one chunk, the extent. With 3 or more chunks, chunks k and k+2
+/// never overlap. Every word must be position-pure for this: a chunk rewrites what its neighbour wrote.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub struct ChunkSpread {
     extent: usize,
@@ -86,8 +81,8 @@ impl ChunkSpread {
     }
 }
 
-/// The extent: the first `extent` bytes of the thread's span, floored to `GRANULE`, at most the
-/// span. Empty below one granule, or when the thread has no memory.
+/// The extent: the first `extent` bytes of the thread's span, floored to `GRANULE`, at most the span. Empty below one granule, or when the
+/// thread has no memory.
 pub fn extent(blocks: &[AllocationBlock], extent: usize) -> TestBlock<'_> {
     debug_assert!(
         blocks.windows(2).all(|w| w[0].buffer.as_mut_ptr() as usize + w[0].buffer.size() == w[1].buffer.as_mut_ptr() as usize),
@@ -100,9 +95,8 @@ pub fn extent(blocks: &[AllocationBlock], extent: usize) -> TestBlock<'_> {
     TestBlock::in_blocks(blocks, first.buffer.as_mut_ptr(), extent.min(span) / GRANULE * GRANULE)
 }
 
-/// What a test of `config` covers on a thread with `memory` bytes, as `TestRunner::new` resolves
-/// it: the extent floored to 4 KiB (one granule at least), and the chunks spread over it. `None`
-/// with no memory.
+/// What a test of `config` covers on a thread with `memory` bytes, as `TestRunner::new` resolves it: the extent floored to 4 KiB (one
+/// granule at least), and the chunks spread over it. `None` with no memory.
 pub fn resolve_layout(config: &crate::tests::TestMemoryConfig, test_name: &str, memory: usize) -> Option<(usize, ChunkSpread)> {
     if memory < GRANULE {
         return None;
@@ -122,9 +116,8 @@ pub fn size_str(bytes: usize) -> String {
     }
 }
 
-/// The chunks for the per-thread log line: `2 x 440 MiB chunks, overlap 0`, or `3 x 440 MiB
-/// chunks, overlap 184 MiB` when they don't divide the extent and overlap to cover it. Page sizes
-/// and nodes are the allocation report's, printed once a run.
+/// The chunks for the per-thread log line: `2 x 440 MiB chunks, overlap 0`, or `3 x 440 MiB chunks, overlap 184 MiB` when they don't divide
+/// the extent and overlap to cover it. Page sizes and nodes are the allocation report's, printed once a run.
 pub fn describe_chunks(spread: ChunkSpread) -> String {
     let overlap = match spread.overlap() {
         0 => "0".to_string(),
@@ -189,8 +182,8 @@ mod tests {
         assert_eq!(extent(&[], 880 * MIB).test_size, 0);
     }
 
-    /// The results file's layout is the one the test runs with: the extent floored to 4 KiB and
-    /// capped at the thread's memory, the chunks spread over it.
+    /// The results file's layout is the one the test runs with: the extent floored to 4 KiB and capped at the thread's memory, the chunks
+    /// spread over it.
     #[test]
     fn the_resolved_layout_is_the_tests() {
         use crate::tests::{ChunkMode, ExtentMode, TestMemoryConfig};

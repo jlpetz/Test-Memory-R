@@ -1,12 +1,10 @@
-//! The window's state (TODO 7): what the session's events and the progress snapshots say, in the
-//! form the window draws it. Plain Rust with no Reactor type, so the translation is tested apart
-//! from the window, which `window.rs` builds from it.
+//! The window's state (TODO 7): what the session's events and the progress snapshots say, in the form the window draws it. Plain Rust with
+//! no Reactor type, so the translation is tested apart from the window, which `window.rs` builds from it.
 //!
-//! The events come as the engine sends them, at most a batch every 500 ms; a snapshot comes with
-//! each batch, and with each 500 ms that brought none (`tick`), and so do the warnings and errors
-//! logged since (`logged`). The fast figures, the runtime, the position, the progress and the
-//! chart's speed, are the snapshot's; the events give the rest: the setup's the system panel and
-//! the first facts, the run's the rest.
+//! The events come as the engine sends them, at most a batch every 500 ms; a snapshot comes with each batch, and with each 500 ms that
+//! brought none (`tick`), and so do the warnings and errors logged since (`logged`). The fast figures, the runtime, the position, the
+//! progress and the chart's speed, are the snapshot's; the events give the rest: the setup's the system panel and the first facts, the
+//! run's the rest.
 
 use std::collections::VecDeque;
 use std::sync::Arc;
@@ -24,8 +22,8 @@ use crate::sysinfo::{Machine, SystemPanel};
 const MIB: f64 = 1024.0 * 1024.0;
 const GIB: f64 = 1024.0 * 1024.0 * 1024.0;
 
-/// The entries the errors list keeps, the newest (the window shows the newest 200 of them): an
-/// error storm over a night would hold gigabytes of log lines. The log file has every line.
+/// The entries the errors list keeps, the newest (the window shows the newest 200 of them): an error storm over a night would hold
+/// gigabytes of log lines. The log file has every line.
 pub const ERRORS_KEPT: usize = 10_000;
 
 /// The status badge: where the session is, then how its run ended.
@@ -39,8 +37,8 @@ pub enum Status {
     Passed,
     Failed,
     Interrupted,
-    /// The session ended with no suite run: setup or a config stopped it, `--startup-debug` showed
-    /// only the plan, or it named a one-shot command (`--help`), which the window doesn't run
+    /// The session ended with no suite run: setup or a config stopped it, `--startup-debug` showed only the plan, or it named a one-shot
+    /// command (`--help`), which the window doesn't run
     NotRun,
 }
 
@@ -109,19 +107,16 @@ impl StepRow {
     }
 }
 
-/// What the chart plots: the last `SAMPLES` speeds, one per 500 ms, and the samples at which the
-/// run's errors rose.
+/// What the chart plots: the last `SAMPLES` speeds, one per 500 ms, and the samples at which the run's errors rose.
 #[derive(Clone, Debug, Default, PartialEq)]
 pub struct Series {
     pub samples: VecDeque<f64>,
     /// Samples received since the run started; the newest is number `received - 1`
     pub received: u64,
-    /// The numbers of the samples at which the errors rose, oldest first. Marks that scroll off
-    /// the left edge are dropped.
+    /// The numbers of the samples at which the errors rose, oldest first. Marks that scroll off the left edge are dropped.
     pub error_marks: VecDeque<u64>,
-    // A temperature series would go here: one DIMM temperature per sample (SPD hub sensor, or
-    // HWiNFO's shared memory; see doc/todo/7-gui.md note 3), drawn on a second y axis on the
-    // right so temperature, errors and throughput share this one box.
+    // A temperature series would go here: one DIMM temperature per sample (SPD hub sensor, or HWiNFO's shared memory; see doc/todo/7-gui.md
+    // note 3), drawn on a second y axis on the right so temperature, errors and throughput share this one box.
 }
 
 /// The samples the chart shows, a minute of them
@@ -153,8 +148,7 @@ impl Series {
         self.samples.back().copied()
     }
 
-    /// Each visible mark: its sample's number, how many samples before the newest it is, and its
-    /// value
+    /// Each visible mark: its sample's number, how many samples before the newest it is, and its value
     pub fn marks(&self) -> impl Iterator<Item = (u64, usize, f64)> + '_ {
         let n = self.samples.len();
         let oldest = self.received - n as u64;
@@ -164,8 +158,8 @@ impl Series {
         })
     }
 
-    /// The top of the y axis: the samples' largest, rounded up to 1, 2, 4, 6 or 8 times a power of
-    /// ten, so its four divisions take round labels
+    /// The top of the y axis: the samples' largest, rounded up to 1, 2, 4, 6 or 8 times a power of ten, so its four divisions take round
+    /// labels
     pub fn axis_top(&self) -> f64 {
         axis_top(self.samples.iter().copied().fold(0.0, f64::max))
     }
@@ -191,9 +185,8 @@ pub fn axis_label(value: f64) -> String {
     format!("{}{unit}", text.trim_end_matches('0').trim_end_matches('.'))
 }
 
-/// The errors list: its newest `ERRORS_KEPT` entries, oldest first, and how many came before them.
-/// Each entry has a number, its place among all of them, which stays its own as older ones go: the
-/// window's key for it.
+/// The errors list: its newest `ERRORS_KEPT` entries, oldest first, and how many came before them. Each entry has a number, its place among
+/// all of them, which stays its own as older ones go: the window's key for it.
 #[derive(Debug, Default)]
 pub struct Errors {
     kept: VecDeque<String>,
@@ -273,18 +266,16 @@ pub struct Model {
     /// The system panel, once setup has detected the machine
     pub system: Option<SystemPanel>,
     pub rows: Vec<StepRow>,
-    /// Steps with errors, final seal checks that found some, WHEA reports, the warnings and errors
-    /// logged, and why a run stopped, oldest first
+    /// Steps with errors, final seal checks that found some, WHEA reports, the warnings and errors logged, and why a run stopped, oldest
+    /// first
     pub errors: Errors,
     pub series: Series,
-    /// The parameters Start runs, as the parameters box has them: the CLI's `key=value` syntax
-    /// (`args_of`)
+    /// The parameters Start runs, as the parameters box has them: the CLI's `key=value` syntax (`args_of`)
     pub args: String,
     /// The exe's name, which Start puts before them
     program: String,
     facts: Facts,
-    /// The large-page restart question, while it waits for the dialog's answer: the session's
-    /// thread waits on the reply
+    /// The large-page restart question, while it waits for the dialog's answer: the session's thread waits on the reply
     restart: Option<SyncSender<RestartChoice>>,
     /// The lines the logger's channel dropped, as it last counted them
     log_lines_dropped: u64,
@@ -301,8 +292,7 @@ pub struct Model {
 }
 
 impl Model {
-    /// Ready to run `args`, the command line the exe was given (its name first), which the parameters
-    /// box starts with
+    /// Ready to run `args`, the command line the exe was given (its name first), which the parameters box starts with
     pub fn new(args: &[String]) -> Self {
         Model {
             status: Status::Ready,
@@ -421,8 +411,8 @@ impl Model {
         }
     }
 
-    /// Large pages need Windows restarted: the dialog asks whether to exit or continue on 4 KiB
-    /// pages, and `answer_restart` replies on `reply`
+    /// Large pages need Windows restarted: the dialog asks whether to exit or continue on 4 KiB pages, and `answer_restart` replies on
+    /// `reply`
     pub fn ask_restart(&mut self, reply: SyncSender<RestartChoice>) {
         self.position = "Large pages need Windows restarted".to_string();
         self.restart = Some(reply);
@@ -453,8 +443,8 @@ impl Model {
         }
     }
 
-    /// The warnings and errors logged since the last batch, into the errors list, and how many the
-    /// logger has dropped so far (`logger::LogLines`)
+    /// The warnings and errors logged since the last batch, into the errors list, and how many the logger has dropped so far
+    /// (`logger::LogLines`)
     pub fn logged(&mut self, lines: Vec<String>, dropped: u64) {
         self.errors.extend(lines);
         self.log_lines_dropped = dropped;
@@ -515,8 +505,7 @@ impl Model {
         }
     }
 
-    /// The 500 ms clock: where the suite stands, if it has begun, and what WHEA reported since the
-    /// last tick
+    /// The 500 ms clock: where the suite stands, if it has begun, and what WHEA reported since the last tick
     pub fn tick(&mut self, snapshot: Option<ProgressSnapshot>, whea: Vec<String>) {
         self.errors.extend(whea);
         let Some(s) = snapshot.filter(|_| !self.over) else {
@@ -601,8 +590,7 @@ fn not_run(why: &NotRun) -> String {
     }
 }
 
-/// A step that found errors, or saw a WHEA event, as the console's step headline counts them;
-/// `None` for one that passed
+/// A step that found errors, or saw a WHEA event, as the console's step headline counts them; `None` for one that passed
 fn step_errors(report: &StepReport) -> Option<String> {
     let s = &report.summary;
     if s.errors == 0 && s.seal_errors == 0 && s.whea_total == 0 {
@@ -622,8 +610,7 @@ fn step_errors(report: &StepReport) -> Option<String> {
     ))
 }
 
-/// What allocation got: `8 threads · 28.0 GiB · 1 GiB pages`, the page sizes by their share when
-/// it got more than one
+/// What allocation got: `8 threads · 28.0 GiB · 1 GiB pages`, the page sizes by their share when it got more than one
 fn allocation_fact(report: &AllocationReport) -> String {
     let threads = report.threads.len();
     let bytes: u64 = report.threads.iter().map(|t| t.allocated_bytes).sum();
@@ -645,8 +632,7 @@ fn allocation_fact(report: &AllocationReport) -> String {
     format!("{threads} thread{} · {:.1} GiB{pages}", plural(threads), bytes as f64 / GIB)
 }
 
-/// The plan: `plan stability · 16 steps a cycle · sealed`, without the name when the tests aren't a
-/// built-in plan's (a config's)
+/// The plan: `plan stability · 16 steps a cycle · sealed`, without the name when the tests aren't a built-in plan's (a config's)
 fn plan_fact(plan: &TestConfigurationReport, name: Option<&str>) -> String {
     let name = name.map_or(String::new(), |name| format!("plan {name} · "));
     let sealed = if plan.sealed { " · sealed" } else { "" };
@@ -668,9 +654,8 @@ fn position(s: &ProgressSnapshot) -> String {
     line
 }
 
-/// How far the run is: its finished tests against its cycle limit's, as the ticker's percentage
-/// counts them, or its runtime against its time limit, whichever is further; with neither, the
-/// cycle's finished tests
+/// How far the run is: its finished tests against its cycle limit's, as the ticker's percentage counts them, or its runtime against its
+/// time limit, whichever is further; with neither, the cycle's finished tests
 fn fraction(s: &ProgressSnapshot) -> f64 {
     let tests = s.tests_per_cycle.max(1) as f64;
     let done = f64::from(s.cycle.saturating_sub(1)) * tests + s.tests_done as f64;
@@ -684,8 +669,7 @@ fn fraction(s: &ProgressSnapshot) -> f64 {
     fraction.clamp(0.0, 1.0)
 }
 
-/// The running test's speed in MiB/s, as the ticker gives it: 0 between tests, and before its
-/// workers have published
+/// The running test's speed in MiB/s, as the ticker gives it: 0 between tests, and before its workers have published
 fn speed_mib_s(s: &ProgressSnapshot) -> f64 {
     s.test.as_ref().filter(|test| !test.finished && test.live.published).map_or(0.0, |test| test.live.bytes_per_sec / MIB)
 }
@@ -708,8 +692,8 @@ fn plural(n: usize) -> &'static str {
     if n == 1 { "" } else { "s" }
 }
 
-/// The parameters box's text for `args`, the CLI's `key=value` syntax: each argument apart, in
-/// double quotes when it has a space in it (`"config=C:\My configs\x.cfg"`), or is empty
+/// The parameters box's text for `args`, the CLI's `key=value` syntax: each argument apart, in double quotes when it has a space in it
+/// (`"config=C:\My configs\x.cfg"`), or is empty
 pub fn args_text(args: &[String]) -> String {
     args.iter()
         .map(|arg| if arg.is_empty() || arg.contains(char::is_whitespace) { format!("\"{arg}\"") } else { arg.clone() })
@@ -717,9 +701,8 @@ pub fn args_text(args: &[String]) -> String {
         .join(" ")
 }
 
-/// The arguments in the parameters box's `text`, split as a shell splits them for the CLI: at
-/// whitespace outside double quotes, the quotes taken out. A backslash is the path's, as in a
-/// Windows path, never an escape.
+/// The arguments in the parameters box's `text`, split as a shell splits them for the CLI: at whitespace outside double quotes, the quotes
+/// taken out. A backslash is the path's, as in a Windows path, never an escape.
 pub fn args_of(text: &str) -> Vec<String> {
     let mut args = Vec::new();
     let mut arg: Option<String> = None;
@@ -747,9 +730,8 @@ mod tests {
 
     use super::*;
 
-    /// A step of `cycle` that found `errors`, and `seal` errors in a sealed run (`None` unsealed),
-    /// while WHEA saw `whea`. Every count is its own, so a row or a line that read the wrong one
-    /// shows it: the alarms (failed checks) are 2 more than the errors.
+    /// A step of `cycle` that found `errors`, and `seal` errors in a sealed run (`None` unsealed), while WHEA saw `whea`. Every count is
+    /// its own, so a row or a line that read the wrong one shows it: the alarms (failed checks) are 2 more than the errors.
     fn step(cycle: u64, step: usize, errors: u64, seal: Option<u64>, whea: WheaCounts) -> Run {
         Run::StepFinished(Box::new(StepReport {
             cycle,
@@ -808,8 +790,7 @@ mod tests {
         }))
     }
 
-    /// Where the suite stands: cycle 2 of 4, its third test of 6 running at 19,108.7 MiB/s with
-    /// `live_errors` found so far
+    /// Where the suite stands: cycle 2 of 4, its third test of 6 running at 19,108.7 MiB/s with `live_errors` found so far
     fn snapshot(live_errors: u64) -> ProgressSnapshot {
         ProgressSnapshot {
             runtime: Duration::from_secs(95),
@@ -899,9 +880,8 @@ mod tests {
         }
     }
 
-    /// A run as the window takes it (TODO 29): Ready, Running once started, a row per step and an
-    /// error entry for the one that found errors, the facts on the info line, and the verdict with
-    /// the cycles the run finished
+    /// A run as the window takes it (TODO 29): Ready, Running once started, a row per step and an error entry for the one that found
+    /// errors, the facts on the info line, and the verdict with the cycles the run finished
     #[test]
     fn a_run_fills_the_rows_errors_and_verdict() {
         let mut m = model();
@@ -973,8 +953,8 @@ mod tests {
         assert_eq!((m.status, m.errors.total()), (Status::Failed, 2));
     }
 
-    /// Setup's facts (TODO 29): the threads and the plan on the info line until the run's replace
-    /// them, no large pages, the RAM and the system panel, and its warnings in the errors
+    /// Setup's facts (TODO 29): the threads and the plan on the info line until the run's replace them, no large pages, the RAM and the
+    /// system panel, and its warnings in the errors
     #[test]
     fn setup_fills_the_info_line_and_the_system_panel() {
         let mut m = model();
@@ -1026,8 +1006,7 @@ mod tests {
         assert_eq!(m.info_line(), "6 threads · plan stability · 3 steps a cycle · no large pages");
     }
 
-    /// A session setup stopped, or that named a command, is Not run, saying why as the console does;
-    /// the restart chosen says what to do
+    /// A session setup stopped, or that named a command, is Not run, saying why as the console does; the restart chosen says what to do
     #[test]
     fn a_session_setup_stopped_says_why() {
         let end = |end: Result<SessionEnd, String>| {
@@ -1060,8 +1039,7 @@ mod tests {
         assert_eq!(end(Ok(SessionEnd::RestartChosen)), ("Restart Windows for large pages, then run again".to_string(), String::new()));
     }
 
-    /// A session that ends with no suite run is Not run, its reason in the errors: an unsealed
-    /// run's rows have no seal count
+    /// A session that ends with no suite run is Not run, its reason in the errors: an unsealed run's rows have no seal count
     #[test]
     fn a_session_with_no_suite_is_not_run() {
         let mut m = model();
@@ -1098,8 +1076,8 @@ mod tests {
         assert_eq!(m.rows[0].cells()[4], "–");
     }
 
-    /// The restart question (TODO 29 S6): the dialog is open while the question waits, the answer
-    /// goes to the session's thread once, and only 4 KiB pages say so in the errors
+    /// The restart question (TODO 29 S6): the dialog is open while the question waits, the answer goes to the session's thread once, and
+    /// only 4 KiB pages say so in the errors
     #[test]
     fn the_restart_question_waits_for_one_answer() {
         let mut m = model();
@@ -1134,9 +1112,8 @@ mod tests {
         ]);
     }
 
-    /// The warnings and errors logged join the errors list, and the logger's drops are one line;
-    /// the list keeps its newest `ERRORS_KEPT` entries, each with its number for good, and the
-    /// newest are what the window shows (TODO 29 S6)
+    /// The warnings and errors logged join the errors list, and the logger's drops are one line; the list keeps its newest `ERRORS_KEPT`
+    /// entries, each with its number for good, and the newest are what the window shows (TODO 29 S6)
     #[test]
     fn logged_lines_join_the_errors_and_the_newest_are_kept() {
         let mut m = model();
@@ -1159,8 +1136,8 @@ mod tests {
         assert_eq!(m.dropped_line().as_deref(), Some("1,500 log lines dropped, all in the log file"), "the logger's");
     }
 
-    /// The parameters box (TODO 29 S6): it starts with the exe's parameters, and Start runs what it
-    /// holds, split as a shell splits them, a quoted path with spaces as one
+    /// The parameters box (TODO 29 S6): it starts with the exe's parameters, and Start runs what it holds, split as a shell splits them, a
+    /// quoted path with spaces as one
     #[test]
     fn the_parameters_box_gives_the_command_line() {
         let strings = |args: &[&str]| args.iter().map(|a| a.to_string()).collect::<Vec<_>>();
@@ -1192,9 +1169,8 @@ mod tests {
         assert_eq!(m.status, Status::Stopping);
     }
 
-    /// Each tick: the runtime, the position and the progress as the ticker gives them, a speed on
-    /// the chart, and a mark where the errors rose; WHEA's lines into the errors; nothing once the
-    /// suite has ended
+    /// Each tick: the runtime, the position and the progress as the ticker gives them, a speed on the chart, and a mark where the errors
+    /// rose; WHEA's lines into the errors; nothing once the suite has ended
     #[test]
     fn ticks_move_the_clock_position_progress_and_chart() {
         let mut m = model();
@@ -1242,8 +1218,7 @@ mod tests {
         assert_eq!(at(Some(0), Some(0)), 2.0 / 6.0, "a zero limit divides nothing");
     }
 
-    /// The chart keeps a minute of samples, and its marks scroll off with them; its axis rounds
-    /// up to round labels
+    /// The chart keeps a minute of samples, and its marks scroll off with them; its axis rounds up to round labels
     #[test]
     fn the_chart_keeps_a_minute_and_rounds_its_axis() {
         let mut series = Series::default();

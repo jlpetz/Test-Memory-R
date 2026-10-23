@@ -73,9 +73,8 @@ impl ParamRegistry {
         });
 
         // Stage 1 of CPU selection — FILTER which cores are eligible.
-        // Accepts: `N` (skip first N), `N%` (skip first N% of cores), or `A-B`
-        // (exclude the inclusive core-id range, e.g. skip-cores=0-7 tests only cores 8+).
-        // Ranges are the diagnostic tool for multi-CCD/NUMA-domain machines.
+        // Accepts: `N` (skip first N), `N%` (skip first N% of cores), or `A-B` (exclude the inclusive core-id range, e.g. skip-cores=0-7
+        // tests only cores 8+). Ranges are the diagnostic tool for multi-CCD/NUMA-domain machines.
         params.insert("skip-cores", ParamDef {
             key: "skip-cores",
             can_override_config: true,
@@ -104,9 +103,8 @@ impl ParamRegistry {
             },
         });
 
-        // Stage 2 of CPU selection — SPACING within the post-filter (available) pool.
-        // `1` = densely packed (default, current behaviour). `N` = take every Nth core.
-        // `even` = spread the requested count evenly across the whole available pool.
+        // Stage 2 of CPU selection — SPACING within the post-filter (available) pool. `1` = densely packed (default, current behaviour).
+        // `N` = take every Nth core. `even` = spread the requested count evenly across the whole available pool.
         // Errors (never silently adjusts) if count × stride overflows the pool — use the
         // `cpus=` percentage to right-size instead.
         params.insert("cpu-stride", ParamDef {
@@ -140,8 +138,8 @@ impl ParamRegistry {
             },
         });
 
-        // The native patterns' run settings (pattern spec v2, `crate::pattern`): read early in
-        // `session::run`, before a config loads; registered so they validate
+        // The native patterns' run settings (pattern spec v2, `crate::pattern`): read early in `session::run`, before a config loads;
+        // registered so they validate
         params.insert("seed", ParamDef {
             key: "seed",
             can_override_config: true,
@@ -221,8 +219,8 @@ impl ParamRegistry {
             can_override_config: true,
             parser: |v| crate::seal::SealWidth::parse(v).map(|w| ParamValue::String(w.name().to_string())),
         });
-        // The tests' SIMD width (TODO 99, `crate::simd::Width`): read early in `session::run`,
-        // before a config loads; registered so it validates
+        // The tests' SIMD width (TODO 99, `crate::simd::Width`): read early in `session::run`, before a config loads; registered so it
+        // validates
         params.insert("width", ParamDef {
             key: "width",
             can_override_config: true,
@@ -326,8 +324,7 @@ impl ParamRegistry {
             },
         });
 
-        // Block sizes and share rounding. Each parses here; how they fit together is checked by
-        // MemoryAllocationConfig::share_rounding.
+        // Block sizes and share rounding. Each parses here; how they fit together is checked by MemoryAllocationConfig::share_rounding.
         for key in ["hugechunk", "largechunk", "largefloor", "blkroundtarget"] {
             params.insert(key, ParamDef {
                 key,

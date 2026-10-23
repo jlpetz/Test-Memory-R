@@ -22,8 +22,8 @@ pub struct Reporter<R: Renderer> {
 }
 
 impl<R: Renderer> Reporter<R> {
-    /// A reporter that renders the default formatting's tables through `renderer`: a frontend's
-    /// own (TODO 29: the CLI's `ConsoleRenderer`, crates/tmr-cli)
+    /// A reporter that renders the default formatting's tables through `renderer`: a frontend's own (TODO 29: the CLI's `ConsoleRenderer`,
+    /// crates/tmr-cli)
     pub fn new(renderer: R) -> Self {
         Self { formatter: Box::new(DefaultFormatter::new()), renderer }
     }
@@ -110,8 +110,8 @@ impl<R: Renderer> Reporter<R> {
         Ok(())
     }
 
-    /// Report cycle completion. Crate-private while nothing calls it, so it stays checked as dead
-    /// code: a public `Reporter`'s public methods aren't (TODO 29).
+    /// Report cycle completion. Crate-private while nothing calls it, so it stays checked as dead code: a public `Reporter`'s public
+    /// methods aren't (TODO 29).
     #[expect(dead_code, reason = "TODO #29: the per-cycle report is to be revived, not deleted (from TODO #69 F)")]
     pub(crate) fn report_cycle(&mut self, report: &CycleReport) -> Result<()> {
         let table = self.formatter.prepare_cycle_report_table(report);
@@ -169,8 +169,8 @@ impl<R: Renderer> Reporter<R> {
         Ok(())
     }
 
-    /// The allocation report (TODO 81): by node, the requests, by thread, each thread's requests,
-    /// and with more than one thread, how evenly they were served.
+    /// The allocation report (TODO 81): by node, the requests, by thread, each thread's requests, and with more than one thread, how evenly
+    /// they were served.
     pub fn report_allocation(&mut self, report: &AllocationReport) -> Result<()> {
         let mut tables = vec![
             self.formatter.prepare_allocation_nodes_table(report),

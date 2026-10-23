@@ -1,10 +1,9 @@
 //! Zero-cost phased test orchestration harness for TMR memory tests.
 //!
-//! This replaces the duplicated boilerplate in each test function with a single
-//! generic function that monomorphizes per call site. Unlike the failed
-//! previous `test_framework.rs` approach which used `dyn TestPattern` (vtable dispatch in
-//! hot loop → no inlining → no SIMD), this uses concrete generic types that the
-//! compiler fully specializes.
+//! This replaces the duplicated boilerplate in each test function with a single generic function that monomorphizes per call site. Unlike
+//! the failed
+//! previous `test_framework.rs` approach which used `dyn TestPattern` (vtable dispatch in hot loop → no inlining → no SIMD), this uses
+//! concrete generic types that the compiler fully specializes.
 //!
 //! # Why this works where traits didn't
 //!
@@ -30,12 +29,11 @@ pub struct ChunkCtx {
     pub cycle: u32,
     /// Thread ID running this test.
     pub thread_id: usize,
-    /// Error check interval mask from config (None = PER_CHUNK, Some(mask) = check every N elements).
-    /// Verify closures should use this for intermediate error batch reporting.
+    /// Error check interval mask from config (None = PER_CHUNK, Some(mask) = check every N elements). Verify closures should use this for
+    /// intermediate error batch reporting.
     pub check_mask: Option<u32>,
-    /// The step's write round, from 0 across its own cycles (`(cycle - 1) * write_read_cycles +
-    /// round`), when the test writes first; 0 for the fill and every verify of a test that doesn't,
-    /// so they expect what the fill wrote. The native patterns take their phase from it
+    /// The step's write round, from 0 across its own cycles (`(cycle - 1) * write_read_cycles + round`), when the test writes first; 0 for
+    /// the fill and every verify of a test that doesn't, so they expect what the fill wrote. The native patterns take their phase from it
     /// (`crate::pattern::Program::phase`); nothing else reads it.
     pub round: u64,
 }
@@ -53,39 +51,33 @@ pub struct ChunkCtx {
 ///
 /// # Type Parameters
 ///
-/// - `Init`: Writes the pattern a test needs in memory before its first op: over the extent at
-///   startup, or per chunk after the seal check in a sealed step. Not called when `skip_init`, or
-///   when the test writes first (below). Always provided even when skipped — verify closures may
-///   need the same pattern knowledge for error repair. Signature: `fn(ctx: &ChunkCtx)`
-/// - `Test`: Called per chunk per cycle for the "shake" operation (mirror swap, pattern write, etc).
-///   May be a no-op closure `|_| {}` for tests that only write+verify. In a `Write` or
-///   `WriteVerify` test with `test_reps > 0` it must write every word of its chunk: such a test
-///   writes first, so the harness fills nothing before it, as TM5 has no separate fill
-///   (`built_in_tests_run_clean_on_joined_blocks` checks no word is left unwritten).
+/// - `Init`: Writes the pattern a test needs in memory before its first op: over the extent at startup, or per chunk after the seal check
+///   in a sealed step. Not called when `skip_init`, or when the test writes first (below). Always provided even when skipped — verify
+///   closures may need the same pattern knowledge for error repair. Signature: `fn(ctx: &ChunkCtx)`
+/// - `Test`: Called per chunk per cycle for the "shake" operation (mirror swap, pattern write, etc). May be a no-op closure `|_| {}` for
+///   tests that only write+verify. In a `Write` or `WriteVerify` test with `test_reps > 0` it must write every word of its chunk: such a
+///   test writes first, so the harness fills nothing before it, as TM5 has no separate fill (`built_in_tests_run_clean_on_joined_blocks`
+///   checks no word is left unwritten).
 ///   Signature: `fn(ctx: &ChunkCtx)`
-/// - `Verify`: Called per chunk per cycle to verify patterns. Returns error count for this chunk.
-///   Signature: `fn(ctx: &ChunkCtx) -> u64`
+/// - `Verify`: Called per chunk per cycle to verify patterns. Returns error count for this chunk. Signature: `fn(ctx: &ChunkCtx) -> u64`
 ///
 /// # Parameters
 ///
-/// - `bytes_per_test_op`: Memory touched per test_fn call as a multiplier of block size.
-///   1 for simple write (SimpleTest), 4 for MirrorMove (2R + 2W per round-trip).
+/// - `bytes_per_test_op`: Memory touched per test_fn call as a multiplier of block size. 1 for simple write (SimpleTest), 4 for MirrorMove
+///   (2R + 2W per round-trip).
 ///   Used for bytes accounting only — does not affect test behavior.
-/// - `skip_init`: When true, init_fn is NOT called at startup. Used for dependent tests
-///   where a prior test in the plan already wrote the expected patterns. Init_fn is still
-///   provided for pattern knowledge (verify/repair needs it).
+/// - `skip_init`: When true, init_fn is NOT called at startup. Used for dependent tests where a prior test in the plan already wrote the
+///   expected patterns. Init_fn is still provided for pattern knowledge (verify/repair needs it).
 ///
 /// # test_reps / verify_reps (TM5 repetition control)
 ///
 /// Three repetition knobs matching TM5's SimpleTest loop structure:
-/// - `write_read_cycles`: Outer loop — repeat the entire write+verify sequence N times per
-///   chunk. TM5 uses `ST_WriteReadCycles=4`. Each cycle re-writes the pattern and verifies
-///   it `verify_reps` times. Catches intermittent errors through repetition. Default 1.
-/// - `test_reps`: Run test_fn N times per chunk before verifying. For MirrorMove, this means
-///   N mirror round-trips before checking — more bus stress between checks. Default 1.
-/// - `verify_reps`: Run verify_fn N times per chunk after each write. TM5 SimpleTest
-///   writes once then reads/verifies `dLoopCounter` times (typically 5), stressing DRAM
-///   refresh and retention. Default 1.
+/// - `write_read_cycles`: Outer loop — repeat the entire write+verify sequence N times per chunk. TM5 uses `ST_WriteReadCycles=4`. Each
+///   cycle re-writes the pattern and verifies it `verify_reps` times. Catches intermittent errors through repetition. Default 1.
+/// - `test_reps`: Run test_fn N times per chunk before verifying. For MirrorMove, this means N mirror round-trips before checking — more
+///   bus stress between checks. Default 1.
+/// - `verify_reps`: Run verify_fn N times per chunk after each write. TM5 SimpleTest writes once then reads/verifies `dLoopCounter` times
+///   (typically 5), stressing DRAM refresh and retention. Default 1.
 ///
 /// Per cycle per chunk: `(test_fn × test_reps → verify_fn × verify_reps) × write_read_cycles`
 ///
@@ -96,8 +88,8 @@ pub struct ChunkCtx {
 /// total = cycle_bytes × cycles_completed
 /// ```
 ///
-/// A fill the harness does (up front unsealed, per chunk sealed) is setup: its time and bytes are
-/// left out (TODO 90), as are the seal's checks and reseals.
+/// A fill the harness does (up front unsealed, per chunk sealed) is setup: its time and bytes are left out (TODO 90), as are the seal's
+/// checks and reseals.
 ///
 /// # Safety
 ///
@@ -118,10 +110,9 @@ where
         return TestStats::not_run(test_name, action, thread_id, timing.cycles);
     }
 
-    // Block prep, extent sizing, the info log, and the timers all live in TestRunner
-    // now — one source of truth shared with the Tier-2 loop-owning tests (TODO #19 A.3).
-    // The runner also starts the timer BEFORE init, preserving the v1 behaviour of
-    // counting the first write in cycle timing.
+    // Block prep, extent sizing, the info log, and the timers all live in TestRunner now — one source of truth shared with the Tier-2
+    // loop-owning tests (TODO #19 A.3). The runner also starts the timer BEFORE init, preserving the v1 behaviour of counting the first
+    // write in cycle timing.
     let (mut runner, extent) =
         crate::test_scaffolding::TestRunner::new(blocks, thread_id, error_mode, timing, config, progress, test_name, action);
 
@@ -136,21 +127,19 @@ where
     // Hoist config flags into locals — never read a struct field inside the hot loop.
     let flush_before_verify = config.flush_before_verify;
 
-    // Operation counting is unique to the phased tests, so the runner doesn't own it.
-    // (Bytes and errors are accumulated through the runner.)
+    // Operation counting is unique to the phased tests, so the runner doesn't own it. (Bytes and errors are accumulated through the
+    // runner.)
     let mut total_operations = 0u64;
 
-    // The extent and its chunks, fixed for the test: every chunk is exactly the test's chunk,
-    // spread evenly over the extent (TODO 76)
+    // The extent and its chunks, fixed for the test: every chunk is exactly the test's chunk, spread evenly over the extent (TODO 76)
     let ptr = extent.ptr as *mut u64;
     let len_elements = extent.test_size / std::mem::size_of::<u64>();
     let chunks = runner.chunks(extent.test_size);
     let chunk_len = chunks.chunk() / std::mem::size_of::<u64>();
 
-    // A test whose first op writes every word of its chunk needs no fill, sealed or not. Any other
-    // test fills unless it's dependent (a prior test wrote its pattern). A sealed step wraps each
-    // chunk in the seal (TODO 74): check before, reseal after. Its chunks hold the seal until the
-    // test works them, so the fill moves inside each chunk, after the check.
+    // A test whose first op writes every word of its chunk needs no fill, sealed or not. Any other test fills unless it's dependent (a
+    // prior test wrote its pattern). A sealed step wraps each chunk in the seal (TODO 74): check before, reseal after. Its chunks hold the
+    // seal until the test works them, so the fill moves inside each chunk, after the check.
     let wrap = runner.seal_wrap();
     let writes_first = test_reps > 0 && matches!(action, TestAction::Write | TestAction::WriteVerify);
     let fill = !skip_init && !writes_first;
@@ -199,16 +188,13 @@ where
                     test_fn(&ctx);
                 }
 
-                // No fence before the verifies (TODO 16): this thread reads its own writes in
-                // order on the cached memory TMR tests, and the non-temporal kernels end in their
-                // own SFENCE. A barrier was for uncached and write-combining memory, the driver's.
+                // No fence before the verifies (TODO 16): this thread reads its own writes in order on the cached memory TMR tests, and the
+                // non-temporal kernels end in their own SFENCE. A barrier was for uncached and write-combining memory, the driver's.
 
-                // Optional flush phase (TODO #59): evict this chunk so the verify below
-                // round-trips through DRAM instead of reading the just-written cached copy.
-                // After the writes (CLFLUSHOPT is ordered after older stores to its line) and
-                // before the reads: flush_range_to_dram ends in its own MFENCE, so the flushes
-                // are drained before any verify load can issue. Off by default; costs real
-                // bandwidth.
+                // Optional flush phase (TODO #59): evict this chunk so the verify below round-trips through DRAM instead of reading the
+                // just-written cached copy. After the writes (CLFLUSHOPT is ordered after older stores to its line) and before the reads:
+                // flush_range_to_dram ends in its own MFENCE, so the flushes are drained before any verify load can issue. Off by default;
+                // costs real bandwidth.
                 if flush_before_verify {
                     let chunk_ptr = ctx.ptr.add(chunk_start) as *const u8;
                     let chunk_bytes = (chunk_end - chunk_start) * std::mem::size_of::<u64>();
@@ -218,9 +204,8 @@ where
                 // Verify phase — run verify_reps times (e.g., multi-read for retention stress)
                 for rep in 0..verify_reps {
                     cycle_errors += verify_fn(&ctx);
-                    // An error halts here, before the next round's writes or the reseal overwrite
-                    // the bad words (TODO 27): they stay in memory as the verify found them. The
-                    // chunk's work so far counts.
+                    // An error halts here, before the next round's writes or the reseal overwrite the bad words (TODO 27): they stay in
+                    // memory as the verify found them. The chunk's work so far counts.
                     if cycle_errors > 0 && runner.should_halt(cycle_errors) {
                         let ops = ops_per_wrc * round as usize + bytes_per_test_op * test_reps as usize + rep as usize + 1;
                         runner.add_bytes(chunk_len * std::mem::size_of::<u64>() * ops);
@@ -233,8 +218,7 @@ where
 
             runner.reseal(chunk_start * std::mem::size_of::<u64>(), chunks.chunk());
 
-            // Count the chunk when it is done, so a halt or shutdown below reports what ran
-            // (TODO 76). Overlaps count each time.
+            // Count the chunk when it is done, so a halt or shutdown below reports what ran (TODO 76). Overlaps count each time.
             runner.add_bytes(chunk_len * std::mem::size_of::<u64>() * ops_per_wrc * wrc as usize);
             total_operations += chunk_len as u64 * (test_reps as u64 + verify_reps as u64) * wrc as u64;
 
@@ -267,10 +251,9 @@ where
     }
 }
 
-/// Auto-dispatch macro: generates a function that runs the SIMD variant at the run's width
-/// (`crate::simd::test_width`: `width=`'s, else the widest the CPU has, the 128-bit one when it
-/// has neither AVX-512 nor AVX2, a fallback the startup gate's AVX2 never lets run). Each call is
-/// `crate::dispatched!`'s, so a unit test sees which one it made.
+/// Auto-dispatch macro: generates a function that runs the SIMD variant at the run's width (`crate::simd::test_width`: `width=`'s, else the
+/// widest the CPU has, the 128-bit one when it has neither AVX-512 nor AVX2, a fallback the startup gate's AVX2 never lets run). Each call
+/// is `crate::dispatched!`'s, so a unit test sees which one it made.
 ///
 /// Usage:
 /// ```ignore

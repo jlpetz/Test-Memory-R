@@ -1,8 +1,7 @@
 //! tmr.exe (TODO 29): what must run before anything else, the crash hooks, the choice of frontend
-//! and the CPU gate, then the frontend. That is the CLI (`tmr_cli`), or in a build with the `gui`
-//! feature the window (`tmr_gui`, TODO 7), which a double-click or `--gui` opens (`launch.rs`).
-//! `--gui` and `--cli` are this exe's own: they pick the frontend and are taken out of the arguments
-//! before the session sees them. The engine is the `tmr` library.
+//! and the CPU gate, then the frontend. That is the CLI (`tmr_cli`), or in a build with the `gui` feature the window (`tmr_gui`, TODO 7),
+//! which a double-click or `--gui` opens (`launch.rs`). `--gui` and `--cli` are this exe's own: they pick the frontend and are taken out of
+//! the arguments before the session sees them. The engine is the `tmr` library.
 
 // The CPU gate detects CLFLUSHOPT, which std has behind a nightly gate
 #![feature(clflushopt_target_feature)]
@@ -22,14 +21,12 @@ use launch::Mode;
 use tmr::frontend::RunStatus;
 use windows::Win32::System::Diagnostics::Debug::EXCEPTION_POINTERS;
 
-/// Set once the launch is the window's (`launch::decide`). The panic hook and the CPU gate then
-/// show their text in a message box as well, and a fatal fault nothing handles has the crash box
-/// (`fatal_box`): a double-click gives the window no console to read it on, and one launched from a
-/// shell isn't watched there. Never set in a build without the window.
+/// Set once the launch is the window's (`launch::decide`). The panic hook and the CPU gate then show their text in a message box as well,
+/// and a fatal fault nothing handles has the crash box (`fatal_box`): a double-click gives the window no console to read it on, and one
+/// launched from a shell isn't watched there. Never set in a build without the window.
 static GUI_MODE: AtomicBool = AtomicBool::new(false);
 
-/// A fatal error's `text` in a message box, in the window's mode only. Blocks the calling thread
-/// until it is dismissed.
+/// A fatal error's `text` in a message box, in the window's mode only. Blocks the calling thread until it is dismissed.
 fn show_fatal(text: &str) {
     if GUI_MODE.load(Ordering::Relaxed) {
         message_box(text);
@@ -40,8 +37,7 @@ fn show_fatal(text: &str) {
 #[cfg(not(feature = "gui"))]
 fn message_box(_text: &str) {}
 
-/// A fatal fault, as the crash hooks report it: the vectored handler's console lines, and in the
-/// window's mode the crash box's text.
+/// A fatal fault, as the crash hooks report it: the vectored handler's console lines, and in the window's mode the crash box's text.
 struct Fault {
     label: &'static str,
     code: i32,
@@ -54,9 +50,8 @@ struct Fault {
 }
 
 impl Fault {
-    /// The fault `info` holds, when it is one the hooks report: an access violation, an illegal
-    /// instruction, a stack overflow or a stack buffer overrun. `None` for the rest (a debugger's
-    /// breakpoint and the like), and for a null pointer.
+    /// The fault `info` holds, when it is one the hooks report: an access violation, an illegal instruction, a stack overflow or a stack
+    /// buffer overrun. `None` for the rest (a debugger's breakpoint and the like), and for a null pointer.
     ///
     /// # Safety
     /// `info` is null or the exception pointers Windows passed the handler.
@@ -68,8 +63,7 @@ impl Fault {
         if info.is_null() {
             return None;
         }
-        // SAFETY: not null (checked above), so by the contract the exception pointers Windows
-        // passed the handler, valid while it runs
+        // SAFETY: not null (checked above), so by the contract the exception pointers Windows passed the handler, valid while it runs
         let ptrs = unsafe { &*info };
         if ptrs.ExceptionRecord.is_null() {
             return None;
@@ -112,12 +106,11 @@ impl Fault {
     }
 }
 
-/// Vectored Exception Handler — catches hardware crashes (access violations, illegal
-/// instructions, stack overflows) that Rust's panic handler cannot see.
-/// Logs the faulting instruction, target address, and access type before the process dies.
-/// It allocates nothing, which a fault in the heap may need. It runs first-chance, so it also prints
-/// for a fault that a DLL then handles itself; the window's crash box shows only a fault nothing
-/// handles (`fatal_box`).
+/// Vectored Exception Handler — catches hardware crashes (access violations, illegal instructions, stack overflows) that Rust's panic
+/// handler cannot see.
+/// Logs the faulting instruction, target address, and access type before the process dies. It allocates nothing, which a fault in the heap
+/// may need. It runs first-chance, so it also prints for a fault that a DLL then handles itself; the window's crash box shows only a fault
+/// nothing handles (`fatal_box`).
 unsafe extern "system" fn crash_exception_handler(info: *mut EXCEPTION_POINTERS) -> i32 {
     // SAFETY: Windows passes a vectored handler the fault's exception pointers
     let Some(fault) = (unsafe { Fault::of(info) }) else {
@@ -129,27 +122,25 @@ unsafe extern "system" fn crash_exception_handler(info: *mut EXCEPTION_POINTERS)
     }
     eprintln!("!!! Module base: {:#x}", fault.module_base);
 
-    // Return EXCEPTION_CONTINUE_SEARCH (0) — let the default handler terminate the process
-    // after we've logged. Using 1 (EXCEPTION_CONTINUE_EXECUTION) would loop forever.
+    // Return EXCEPTION_CONTINUE_SEARCH (0) — let the default handler terminate the process after we've logged. Using 1
+    // (EXCEPTION_CONTINUE_EXECUTION) would loop forever.
     0
 }
 
 /// Verify the running CPU has the instruction-set features TMR is built against.
 ///
-/// TMR compiles at the `x86-64-v3` baseline (AVX2) and emits CLFLUSHOPT unconditionally
-/// in the cache-flush path. CLFLUSHOPT is a standalone CPUID feature (not part of any
-/// psABI microarch level), so it must be checked at runtime. Missing either feature means
-/// the binary would hit an illegal-instruction fault during testing — so we detect it up
-/// front, explain why, and exit cleanly. This excludes pre-2015 CPUs (Intel pre-Skylake,
-/// incl. Haswell/Broadwell which have AVX2 but no CLFLUSHOPT; AMD pre-Excavator/pre-Zen),
-/// all of which are DDR3/DDR4-era and out of scope for a DDR5 tester.
+/// TMR compiles at the `x86-64-v3` baseline (AVX2) and emits CLFLUSHOPT unconditionally in the cache-flush path. CLFLUSHOPT is a standalone
+/// CPUID feature (not part of any psABI microarch level), so it must be checked at runtime. Missing either feature means the binary would
+/// hit an illegal-instruction fault during testing — so we detect it up front, explain why, and exit cleanly. This excludes pre-2015 CPUs
+/// (Intel pre-Skylake, incl. Haswell/Broadwell which have AVX2 but no CLFLUSHOPT; AMD pre-Excavator/pre-Zen), all of which are
+/// DDR3/DDR4-era and out of scope for a DDR5 tester.
 fn require_cpu_features() {
     let mut missing: Vec<&str> = Vec::new();
     if !is_x86_feature_detected!("avx2") {
         missing.push("AVX2");
     }
-    // clflushopt detection landed in std behind the unstable `clflushopt_target_feature`
-    // gate (rustc PR #157098) — gated at the crate root, above.
+    // clflushopt detection landed in std behind the unstable `clflushopt_target_feature` gate (rustc PR #157098) — gated at the crate root,
+    // above.
     if !is_x86_feature_detected!("clflushopt") {
         missing.push("CLFLUSHOPT");
     }
@@ -188,8 +179,8 @@ fn main() {
     }));
 
     // 2. Windows VEH — catches hardware exceptions (segfaults, illegal instructions)
-    // SAFETY: the handler is an `extern "system"` fn of the signature the API takes, and lives as
-    // long as the process; it is never removed, so the handle returned isn't kept
+    // SAFETY: the handler is an `extern "system"` fn of the signature the API takes, and lives as long as the process; it is never removed,
+    // so the handle returned isn't kept
     unsafe {
         windows::Win32::System::Diagnostics::Debug::AddVectoredExceptionHandler(
             1, // first=1: our handler runs BEFORE any other handlers
@@ -197,9 +188,8 @@ fn main() {
         );
     }
 
-    // 3. The frontend, decided before anything prints, so the CPU gate below knows whether to show
-    //    its text in a message box as well, and has a console to print it on when the CLI needs one
-    //    opened. In the window's mode the crash box's thread starts now (`fatal_box`).
+    // 3. The frontend, decided before anything prints, so the CPU gate below knows whether to show its text in a message box as well, and
+    //    has a console to print it on when the CLI needs one opened. In the window's mode the crash box's thread starts now (`fatal_box`).
     let mut args: Vec<String> = std::env::args().collect();
     let asked = launch::take_mode(&mut args);
     let launch = launch::decide(&launch::probe(asked, args.len() > 1));
@@ -212,9 +202,8 @@ fn main() {
         launch::alloc_console();
     }
 
-    // 4. CPU capability gate — TMR is built for x86-64-v3 (AVX2) and requires CLFLUSHOPT
-    //    (not part of any psABI level, so the compiler baseline can't guarantee it). Reject
-    //    unsupported CPUs cleanly here rather than letting them #UD-fault mid-test.
+    // 4. CPU capability gate — TMR is built for x86-64-v3 (AVX2) and requires CLFLUSHOPT (not part of any psABI level, so the compiler
+    //    baseline can't guarantee it). Reject unsupported CPUs cleanly here rather than letting them #UD-fault mid-test.
     require_cpu_features();
 
     // The console Windows opened for the window is left only now, so the gate's text above was on it
@@ -225,8 +214,8 @@ fn main() {
         eprintln!("{note}");
     }
 
-    // The window shows the session, its setup and its run, and its log records go to the log
-    // file, the warnings and errors to the window too (tmr_gui's logger)
+    // The window shows the session, its setup and its run, and its log records go to the log file, the warnings and errors to the window
+    // too (tmr_gui's logger)
     #[cfg(feature = "gui")]
     if launch.mode == Mode::Gui {
         let closed = tmr_gui::main(args);

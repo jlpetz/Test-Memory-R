@@ -1,8 +1,7 @@
-//! The throughput chart (TODO 7), in retained XAML shapes: Reactor's Canvas with a Line per
-//! segment and an Ellipse per error mark. One series (a 2 px line), hairline gridlines at the
-//! axis's quarters, the y axis rounded up from the samples' largest (`Series::axis_top`), a "60 s
-//! ago .. now" x axis (120 samples at 500 ms), and at each sample where the run's errors rose a
-//! mark: a thin vertical line in the palette's error red, with a dot on the series.
+//! The throughput chart (TODO 7), in retained XAML shapes: Reactor's Canvas with a Line per segment and an Ellipse per error mark. One
+//! series (a 2 px line), hairline gridlines at the axis's quarters, the y axis rounded up from the samples' largest (`Series::axis_top`), a
+//! "60 s ago .. now" x axis (120 samples at 500 ms), and at each sample where the run's errors rose a mark: a thin vertical line in the
+//! palette's error red, with a dot on the series.
 
 use windows_reactor::*;
 
@@ -55,16 +54,16 @@ impl Plot {
     }
 }
 
-// Keys for the Canvas children. Segments are keyed by position (an update moves coordinates);
-// marks by sample number (a mark keeps its native element while it scrolls left).
+// Keys for the Canvas children. Segments are keyed by position (an update moves coordinates); marks by sample number (a mark keeps its
+// native element while it scrolls left).
 const KEY_GRID: u64 = 1000;
 const KEY_Y_LABEL: u64 = 2000;
 const KEY_X_LABEL: u64 = 3000;
 const KEY_MARK_LINE: u64 = 1 << 40;
 const KEY_MARK_DOT: u64 = 1 << 41;
 
-/// The chart, `width` wide: one Line per segment, kept by position key, so an update only changes
-/// coordinates. Nothing renders between updates.
+/// The chart, `width` wide: one Line per segment, kept by position key, so an update only changes coordinates. Nothing renders between
+/// updates.
 pub fn shapes_chart(series: &Series, width: f64, p: &Palette) -> View {
     let plot = Plot::new(width, HEIGHT, series.axis_top());
     let mut children: Vec<(u64, View)> = Vec::with_capacity(SAMPLES + 32);
@@ -76,8 +75,7 @@ pub fn shapes_chart(series: &Series, width: f64, p: &Palette) -> View {
             KEY_GRID + k,
             Line::new().x1(plot.left).y1(y).x2(plot.right()).y2(y).stroke(brush(p.chart_grid)).stroke_thickness(1.0).into(),
         ));
-        // Canvas does not align, and TextBlock has no TextAlignment in reactor 0.100.0, so a
-        // fixed-width Grid right-aligns the label.
+        // Canvas does not align, and TextBlock has no TextAlignment in reactor 0.100.0, so a fixed-width Grid right-aligns the label.
         children.push((
             KEY_Y_LABEL + k,
             Grid::new().width(LEFT - 6.0).canvas_left(0.0).canvas_top(y - 8.0).children((TextBlock::new()
@@ -123,8 +121,8 @@ pub fn shapes_chart(series: &Series, width: f64, p: &Palette) -> View {
         children.push((j as u64, Line::new().x1(x1).y1(y1).x2(x2).y2(y2).stroke(brush(p.accent)).stroke_thickness(2.0).into()));
     }
 
-    // The temperature series' segments would go here, keyed in their own range, coloured by a
-    // palette key of their own, scaled to a right-hand axis.
+    // The temperature series' segments would go here, keyed in their own range, coloured by a palette key of their own, scaled to a
+    // right-hand axis.
 
     // A dot on the series at each mark, over the line.
     for (sample, ago, value) in series.marks() {

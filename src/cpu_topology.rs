@@ -53,18 +53,17 @@ pub struct NumaTopology {
 }
 
 /// `topology=`: which core-type detector types the cores. Each reads one signal and stops at "no
-/// hit" (every core the same type); Auto runs them as a cascade (`detect_cpu_topology_auto`). All
-/// type the same core list (`detect_cpu_topology`), so picking one alone shows what its signal says
-/// on this CPU, for debugging it outside Auto.
+/// hit" (every core the same type); Auto runs them as a cascade (`detect_cpu_topology_auto`). All type the same core list
+/// (`detect_cpu_topology`), so picking one alone shows what its signal says on this CPU, for debugging it outside Auto.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum TopologyDetectionMethod {
     /// `windows`: Windows' efficiency class (Intel's P-, E- and LP E-cores).
     WindowsApi,
-    /// `windowsv2`: Windows' core priority, the scheduling class. A hybrid that reports nothing else
-    /// (a Ryzen 8500G); on a uniform CPU it is only the preferred cores.
+    /// `windowsv2`: Windows' core priority, the scheduling class. A hybrid that reports nothing else (a Ryzen 8500G); on a uniform CPU it
+    /// is only the preferred cores.
     WindowsApiV2,
-    /// `cpuid`: each core's own L3 size. Not in Auto: a 7950X3D's CCD without the 3D V-Cache would
-    /// read as E-cores, though both are full cores.
+    /// `cpuid`: each core's own L3 size. Not in Auto: a 7950X3D's CCD without the 3D V-Cache would read as E-cores, though both are full
+    /// cores.
     CpuidBased,
     /// `amd`: AMD's CPUID 0x80000026 core type (Zen 5 with Zen 5c).
     AmdCpuid,
@@ -112,12 +111,12 @@ pub fn set_topology_detection_method(method: TopologyDetectionMethod) {
 /// nothing else tells the cores apart (TODO 96).
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
 pub enum CorePriority {
-    /// The default: a priority ranking alone types nothing. On most CPUs it is only the preferred
-    /// cores (a Ryzen 5 8600G ranks 2 of its 6 identical cores above the rest).
+    /// The default: a priority ranking alone types nothing. On most CPUs it is only the preferred cores (a Ryzen 5 8600G ranks 2 of its 6
+    /// identical cores above the rest).
     #[default]
     Equal,
-    /// The higher-priority cores are P-cores and the rest E-cores, for a hybrid that reports no
-    /// core types: a Ryzen 5 8500G's Zen 4 and Zen 4c cores show only as that ranking.
+    /// The higher-priority cores are P-cores and the rest E-cores, for a hybrid that reports no core types: a Ryzen 5 8500G's Zen 4 and Zen
+    /// 4c cores show only as that ranking.
     Hybrid,
 }
 
@@ -178,8 +177,8 @@ pub fn get_cpu_topology() -> &'static Vec<CpuTopologyInfo> {
     })
 }
 
-/// Physical cores across every processor group. `num_cpus::get_physical()` sees only the calling
-/// thread's group on Windows (64 CPUs), so on a 192-CPU m8a.48xlarge TMR started 64 threads.
+/// Physical cores across every processor group. `num_cpus::get_physical()` sees only the calling thread's group on Windows (64 CPUs), so on
+/// a 192-CPU m8a.48xlarge TMR started 64 threads.
 pub fn physical_core_count() -> usize {
     get_cpu_topology().iter().map(|cpu| cpu.physical_core_id).collect::<HashSet<_>>().len()
 }
@@ -191,9 +190,8 @@ pub fn logical_cpu_ids() -> Vec<usize> {
     ids
 }
 
-/// Physical-core id for a logical CPU, from the real detected topology (the same source the
-/// CPU Topology table uses). Replaces the old `cpu_id / 2` approximation, which hardcoded
-/// 2-way SMT and mislabeled cores on non-SMT (e.g. AMD EPYC) or non-2-way-SMT parts.
+/// Physical-core id for a logical CPU, from the real detected topology (the same source the CPU Topology table uses). Replaces the old
+/// `cpu_id / 2` approximation, which hardcoded 2-way SMT and mislabeled cores on non-SMT (e.g. AMD EPYC) or non-2-way-SMT parts.
 /// Falls back to the logical id (a sane 1:1 default) if the CPU isn't found.
 pub fn get_physical_core_for_cpu(cpu_id: usize) -> usize {
     get_cpu_topology().iter().find(|cpu| cpu.logical_id == cpu_id).map(|cpu| cpu.physical_core_id).unwrap_or(cpu_id)
@@ -247,8 +245,8 @@ pub fn is_hybrid_cpu(topology: &[CpuTopologyInfo]) -> bool {
     has_multiple_classes || has_both_core_types
 }
 
-/// The cores from `detect_cpu_topology`, typed by `method`: Auto's cascade, or one detector alone,
-/// every core the same type when its signal doesn't tell them apart.
+/// The cores from `detect_cpu_topology`, typed by `method`: Auto's cascade, or one detector alone, every core the same type when its signal
+/// doesn't tell them apart.
 pub fn detect_cpu_topology_with(method: TopologyDetectionMethod) -> Vec<CpuTopologyInfo> {
     use TopologyDetectionMethod::*;
     if method == Auto {
@@ -276,9 +274,8 @@ pub fn detect_cpu_topology_with(method: TopologyDetectionMethod) -> Vec<CpuTopol
 }
 
 /// `topology=auto`, the default: the detectors as a cascade, stopping at the first that tells the
-/// cores apart (`classify_core_types`): the efficiency class, then AMD's core type, then, only
-/// with `core-priority=hybrid`, Windows' core priority; else every core the same type, with a
-/// warning when the priority alone tells them apart.
+/// cores apart (`classify_core_types`): the efficiency class, then AMD's core type, then, only with `core-priority=hybrid`, Windows' core
+/// priority; else every core the same type, with a warning when the priority alone tells them apart.
 pub fn detect_cpu_topology_auto() -> Vec<CpuTopologyInfo> {
     let mut topology = detect_cpu_topology();
     let efficiency = efficiency_classes(&topology);
@@ -321,8 +318,7 @@ fn efficiency_classes(topology: &[CpuTopologyInfo]) -> HashMap<usize, u8> {
     topology.iter().map(|cpu| (cpu.physical_core_id, cpu.efficiency_class)).collect()
 }
 
-/// Each physical core's priority (Windows' scheduling class), the highest of its logical CPUs.
-/// Empty if Windows doesn't give the CPU sets.
+/// Each physical core's priority (Windows' scheduling class), the highest of its logical CPUs. Empty if Windows doesn't give the CPU sets.
 fn core_priorities(topology: &[CpuTopologyInfo]) -> HashMap<usize, u8> {
     let Ok(sets) = get_system_cpu_set_information() else { return HashMap::new() };
     let by_cpu: HashMap<usize, u8> = sets.iter().map(|set| (set.logical_processor_index as usize, set.scheduling_class)).collect();
@@ -336,8 +332,8 @@ fn core_priorities(topology: &[CpuTopologyInfo]) -> HashMap<usize, u8> {
     priority
 }
 
-/// The higher-priority cores, ascending, when the priority ranking is the only thing that tells the
-/// cores apart: efficiency classes uniform, no AMD core types, and the priorities differ.
+/// The higher-priority cores, ascending, when the priority ranking is the only thing that tells the cores apart: efficiency classes
+/// uniform, no AMD core types, and the priorities differ.
 fn ranked_only(efficiency: &HashMap<usize, u8>, amd: Option<&HashMap<usize, u8>>, priority: &HashMap<usize, u8>) -> Option<Vec<usize>> {
     if classes_vary(efficiency) || amd.is_some() || !classes_vary(priority) {
         return None;
@@ -357,14 +353,14 @@ fn core_list(cores: &[usize]) -> String {
     }
 }
 
-/// Whether the classes Windows reports differ between cores (0xFF, "not specified", left out):
-/// the efficiency classes, or the scheduling classes in `core_priorities`.
+/// Whether the classes Windows reports differ between cores (0xFF, "not specified", left out): the efficiency classes, or the scheduling
+/// classes in `core_priorities`.
 fn classes_vary(classes_by_core: &HashMap<usize, u8>) -> bool {
     classes_by_core.values().filter(|&&class| class != 0xFF).collect::<HashSet<_>>().len() > 1
 }
 
-/// Types from per-core classes that vary: the highest class is the performance cores, each lower
-/// one an efficiency tier, the lowest tier 0; 0xFF ("not specified") is Unknown.
+/// Types from per-core classes that vary: the highest class is the performance cores, each lower one an efficiency tier, the lowest tier 0;
+/// 0xFF ("not specified") is Unknown.
 fn types_by_class(classes_by_core: &HashMap<usize, u8>) -> HashMap<usize, CoreType> {
     let mut classes: Vec<u8> = classes_by_core.values().copied().filter(|&class| class != 0xFF).collect();
     classes.sort_unstable();
@@ -385,17 +381,14 @@ fn types_by_class(classes_by_core: &HashMap<usize, u8>) -> HashMap<usize, CoreTy
         .collect()
 }
 
-/// Each physical core's type. From the efficiency class Windows reports when it varies (Intel's
-/// P- and E-cores, and any CPU Windows itself treats as hybrid): the highest class is the
-/// performance cores, each lower one an efficiency tier, the lowest tier 0. Else from AMD's CPUID
-/// core type (`amd`: 0 performance, 1 efficiency), given only when the CPU says its cores differ.
-/// Else, under `core-priority=hybrid` (`priority` given), from Windows' core priority the same way
-/// as the efficiency class. Else every core is a performance core.
+/// Each physical core's type. From the efficiency class Windows reports when it varies (Intel's P- and E-cores, and any CPU Windows itself
+/// treats as hybrid): the highest class is the performance cores, each lower one an efficiency tier, the lowest tier 0. Else from AMD's
+/// CPUID core type (`amd`: 0 performance, 1 efficiency), given only when the CPU says its cores differ. Else, under `core-priority=hybrid`
+/// (`priority` given), from Windows' core priority the same way as the efficiency class. Else every core is a performance core.
 ///
-/// A priority ranking is not a core type by default. On a uniform AMD part it is the preferred-core
-/// (CPPC) ranking, and reading it as types made a Ryzen 5 8600G "2 P-cores + 4 E-cores" and a
-/// Ryzen 7 5700X "2 + 6". A Ryzen 5 8500G's ranking looks the same and is its real Zen 4 and
-/// Zen 4c cores (cores 0 and 4 sustain 5.2 GHz, the rest 3.5), hence the opt-in.
+/// A priority ranking is not a core type by default. On a uniform AMD part it is the preferred-core (CPPC) ranking, and reading it as types
+/// made a Ryzen 5 8600G "2 P-cores + 4 E-cores" and a Ryzen 7 5700X "2 + 6". A Ryzen 5 8500G's ranking looks the same and is its real Zen 4
+/// and Zen 4c cores (cores 0 and 4 sustain 5.2 GHz, the rest 3.5), hence the opt-in.
 pub fn classify_core_types(
     efficiency: &HashMap<usize, u8>, amd: Option<&HashMap<usize, u8>>, priority: Option<&HashMap<usize, u8>>,
 ) -> HashMap<usize, CoreType> {
@@ -412,8 +405,7 @@ pub fn classify_core_types(
         .collect()
 }
 
-/// The efficiency-class detector (`topology=windows`, Auto's first step): None when every core
-/// has the same class.
+/// The efficiency-class detector (`topology=windows`, Auto's first step): None when every core has the same class.
 fn types_from_efficiency(classes: &HashMap<usize, u8>) -> Option<HashMap<usize, CoreType>> {
     classes_vary(classes).then(|| types_by_class(classes))
 }
@@ -425,8 +417,7 @@ fn types_from_priority(priority: &HashMap<usize, u8>) -> Option<HashMap<usize, C
     classes_vary(priority).then(|| types_by_class(priority))
 }
 
-/// The AMD detector (`topology=amd`, Auto's second step): `amd_cpuid_core_types`'s 0 is
-/// performance, 1 efficiency.
+/// The AMD detector (`topology=amd`, Auto's second step): `amd_cpuid_core_types`'s 0 is performance, 1 efficiency.
 fn types_from_amd(amd: &HashMap<usize, u8>) -> HashMap<usize, CoreType> {
     amd.iter()
         .map(|(&core, &t)| {
@@ -440,8 +431,8 @@ fn types_from_amd(amd: &HashMap<usize, u8>) -> HashMap<usize, CoreType> {
         .collect()
 }
 
-/// The L3 detector (`topology=cpuid`): the cores with the most L3 are P-cores, the rest E.
-/// None when every core has the same L3, or a core can't be read.
+/// The L3 detector (`topology=cpuid`): the cores with the most L3 are P-cores, the rest E. None when every core has the same L3, or a core
+/// can't be read.
 fn types_from_l3(topology: &[CpuTopologyInfo]) -> Option<HashMap<usize, CoreType>> {
     let sizes = l3_sizes(topology)?;
     let mut distinct: Vec<usize> = sizes.values().flatten().copied().collect::<HashSet<_>>().into_iter().collect();
@@ -469,11 +460,9 @@ fn types_by_l3(sizes: &HashMap<usize, Option<usize>>) -> Option<HashMap<usize, C
     })
 }
 
-/// AMD's type for each physical core, from CPUID leaf 0x80000026 (Extended CPU Topology): EAX bit 30
-/// (HeterogeneousCores) says the cores differ, and EBX bits 31:28 are each core's type, 0 for
-/// performance and 1 for efficiency (Zen 5 with Zen 5c; whether Zen 4c parts set it is unchecked).
-/// None unless the CPU is AMD, has the leaf, and sets that bit. Each core is read on its own CPU
-/// (`read_on_each_core`).
+/// AMD's type for each physical core, from CPUID leaf 0x80000026 (Extended CPU Topology): EAX bit 30 (HeterogeneousCores) says the cores
+/// differ, and EBX bits 31:28 are each core's type, 0 for performance and 1 for efficiency (Zen 5 with Zen 5c; whether Zen 4c parts set it
+/// is unchecked). None unless the CPU is AMD, has the leaf, and sets that bit. Each core is read on its own CPU (`read_on_each_core`).
 fn amd_cpuid_core_types(topology: &[CpuTopologyInfo]) -> Option<HashMap<usize, u8>> {
     use std::arch::x86_64::{__cpuid, __cpuid_count};
 
@@ -487,9 +476,8 @@ fn amd_cpuid_core_types(topology: &[CpuTopologyInfo]) -> Option<HashMap<usize, u
     read_on_each_core(topology, "core type", || (__cpuid_count(0x8000_0026, 0).ebx >> 28) as u8)
 }
 
-/// `read()` once for each physical core, on that core's first logical CPU, from a short-lived
-/// thread pinned there by processor group: above 64 CPUs too, and without touching the caller's
-/// affinity. None if a pin fails.
+/// `read()` once for each physical core, on that core's first logical CPU, from a short-lived thread pinned there by processor group: above
+/// 64 CPUs too, and without touching the caller's affinity. None if a pin fails.
 fn read_on_each_core<T: Send>(topology: &[CpuTopologyInfo], what: &str, read: impl Fn() -> T + Sync) -> Option<HashMap<usize, T>> {
     use windows::Win32::System::SystemInformation::GROUP_AFFINITY;
     use windows::Win32::System::Threading::{GetCurrentThread, SetThreadGroupAffinity};
@@ -519,9 +507,9 @@ fn read_on_each_core<T: Send>(topology: &[CpuTopologyInfo], what: &str, read: im
     })
 }
 
-/// Each physical core's L3 in bytes, from its own CPUID cache parameters: ways x partitions x
-/// line size x sets, as `cache.rs` sizes it (raw_cpuid gives the counts, not the fields' "minus
-/// one" encoding; adding 1 to each read a 16 MiB L3 as 34.5 MiB). None for a core that lists no L3.
+/// Each physical core's L3 in bytes, from its own CPUID cache parameters: ways x partitions x line size x sets, as `cache.rs` sizes it
+/// (raw_cpuid gives the counts, not the fields' "minus one" encoding; adding 1 to each read a 16 MiB L3 as 34.5 MiB). None for a core that
+/// lists no L3.
 fn l3_sizes(topology: &[CpuTopologyInfo]) -> Option<HashMap<usize, Option<usize>>> {
     read_on_each_core(topology, "L3 size", || {
         CpuId::new()
@@ -534,9 +522,9 @@ fn l3_sizes(topology: &[CpuTopologyInfo]) -> Option<HashMap<usize, Option<usize>
 pub fn detect_cpu_topology() -> Vec<CpuTopologyInfo> {
     let mut topology = Vec::new();
 
-    // SAFETY: the first call only writes the size. The second fills a u64-backed buffer of that
-    // many bytes, 8-aligned as the records' KAFFINITY needs. The walk reads records only below the
-    // length Windows returned, each at the last one's `Size`, as it lays them end to end.
+    // SAFETY: the first call only writes the size. The second fills a u64-backed buffer of that many bytes, 8-aligned as the records'
+    // KAFFINITY needs. The walk reads records only below the length Windows returned, each at the last one's `Size`, as it lays them end to
+    // end.
     unsafe {
         use windows::Win32::System::SystemInformation::{
             GetLogicalProcessorInformationEx, RelationProcessorCore, SYSTEM_LOGICAL_PROCESSOR_INFORMATION_EX,
@@ -563,10 +551,9 @@ pub fn detect_cpu_topology() -> Vec<CpuTopologyInfo> {
             return topology;
         }
 
-        // ALIGNMENT: u64-backed, not u8 — `SYSTEM_LOGICAL_PROCESSOR_INFORMATION_EX` contains
-        // `KAFFINITY` (u64) so it needs 8-byte alignment, which `Vec<u8>` does not guarantee.
-        // See the same note in `memory/privileges.rs`. The walk below is still in BYTES, so it
-        // takes an explicit `*const u8` base — do not call `.add(offset)` on the `*const u64`.
+        // ALIGNMENT: u64-backed, not u8 — `SYSTEM_LOGICAL_PROCESSOR_INFORMATION_EX` contains `KAFFINITY` (u64) so it needs 8-byte
+        // alignment, which `Vec<u8>` does not guarantee. See the same note in `memory/privileges.rs`. The walk below is still in BYTES, so
+        // it takes an explicit `*const u8` base — do not call `.add(offset)` on the `*const u64`.
         let mut buffer = vec![0u64; (buffer_size as usize).div_ceil(std::mem::size_of::<u64>())];
 
         if GetLogicalProcessorInformationEx(
@@ -592,8 +579,8 @@ pub fn detect_cpu_topology() -> Vec<CpuTopologyInfo> {
 
                     log::debug!("Physical Core {}: EfficiencyClass = {}", physical_core_id, efficiency_class);
 
-                    // The cores only; a detector types them (`detect_cpu_topology_with`). Typing
-                    // class 0 as E-cores here made every uniform CPU read as all E-cores.
+                    // The cores only; a detector types them (`detect_cpu_topology_with`). Typing class 0 as E-cores here made every uniform
+                    // CPU read as all E-cores.
                     let core_type = CoreType::Unknown;
 
                     let mut logical_processors = Vec::new();
@@ -652,10 +639,9 @@ pub fn detect_cpu_topology() -> Vec<CpuTopologyInfo> {
     topology
 }
 
-/// The CPUs at startup (TODO 29: `Setup::CpuTopology`): each CPU's core, type and NUMA node, and
-/// what the run does with it (skips it, assigns it a thread, leaves it out as an assigned core's SMT
-/// sibling, or leaves it free), `cpu_list` being the threads' CPUs. On a hybrid CPU, also how many
-/// of its P-cores have SMT (`None` on one that isn't), and whether skipping took E-cores first.
+/// The CPUs at startup (TODO 29: `Setup::CpuTopology`): each CPU's core, type and NUMA node, and what the run does with it (skips it,
+/// assigns it a thread, leaves it out as an assigned core's SMT sibling, or leaves it free), `cpu_list` being the threads' CPUs. On a
+/// hybrid CPU, also how many of its P-cores have SMT (`None` on one that isn't), and whether skipping took E-cores first.
 pub fn startup_topology(
     cpu_list: &[usize], cpus_to_skip: usize, avoid_smt: bool, pinned: bool,
 ) -> (crate::reporting::models::CpuTopologyReport, Option<usize>, bool) {
@@ -804,8 +790,8 @@ pub fn startup_topology(
 }
 
 pub fn get_system_cpu_set_information() -> Result<Vec<EnhancedCpuInfo>, String> {
-    // SAFETY: as `detect_cpu_topology`'s: the size first, then a u64-backed buffer that long,
-    // walked by each record's `Size` below the length Windows returned
+    // SAFETY: as `detect_cpu_topology`'s: the size first, then a u64-backed buffer that long, walked by each record's `Size` below the
+    // length Windows returned
     unsafe {
         use windows::Win32::System::SystemInformation::{GetSystemCpuSetInformation, SYSTEM_CPU_SET_INFORMATION};
 
@@ -818,8 +804,8 @@ pub fn get_system_cpu_set_information() -> Result<Vec<EnhancedCpuInfo>, String> 
             return Err("Failed to get buffer size for CPU set information".to_string());
         }
 
-        // Allocate buffer. ALIGNMENT: u64-backed (see `memory/privileges.rs`); the walk below
-        // stays in BYTES via an explicit `*const u8` base.
+        // Allocate buffer. ALIGNMENT: u64-backed (see `memory/privileges.rs`); the walk below stays in BYTES via an explicit `*const u8`
+        // base.
         let mut buffer = vec![0u64; (buffer_length as usize).div_ceil(std::mem::size_of::<u64>())];
 
         // Second call to get actual data
@@ -843,8 +829,8 @@ pub fn get_system_cpu_set_information() -> Result<Vec<EnhancedCpuInfo>, String> 
         while offset < buffer_length as usize {
             let info = &*(base.add(offset) as *const SYSTEM_CPU_SET_INFORMATION);
 
-            // Per logical CPU; a CPU's physical core comes from `detect_cpu_topology`, not from
-            // here (dividing by 2 assumed 2-way SMT, wrong on CPUs without it)
+            // Per logical CPU; a CPU's physical core comes from `detect_cpu_topology`, not from here (dividing by 2 assumed 2-way SMT,
+            // wrong on CPUs without it)
             cpu_infos.push(EnhancedCpuInfo {
                 // Group-relative in the API; TMR numbers CPUs group * 64 + index
                 logical_processor_index: info.Anonymous.CpuSet.Group as u32 * 64 + info.Anonymous.CpuSet.LogicalProcessorIndex as u32,
@@ -860,12 +846,11 @@ pub fn get_system_cpu_set_information() -> Result<Vec<EnhancedCpuInfo>, String> 
 
 // Modern NUMA topology discovery
 pub fn discover_numa_topology() -> Result<NumaTopology, String> {
-    // SAFETY: as `detect_cpu_topology`'s walk. A node record holds its `GroupCount` masks (one when
-    // the older request gives 0), inside the record's `Size`.
+    // SAFETY: as `detect_cpu_topology`'s walk. A node record holds its `GroupCount` masks (one when the older request gives 0), inside the
+    // record's `Size`.
     unsafe {
-        // RelationNumaNodeEx: each node with every processor group it spans (GroupCount masks).
-        // RelationNumaNode gives only a node's primary group, so on a node over 64 CPUs (an
-        // m8a.48xlarge: 96 per node, group 1 split between both) the rest defaulted to node 0.
+        // RelationNumaNodeEx: each node with every processor group it spans (GroupCount masks). RelationNumaNode gives only a node's
+        // primary group, so on a node over 64 CPUs (an m8a.48xlarge: 96 per node, group 1 split between both) the rest defaulted to node 0.
         let mut relation = RelationNumaNodeEx;
         let mut buffer_size = 0u32;
 
@@ -880,8 +865,7 @@ pub fn discover_numa_topology() -> Result<NumaTopology, String> {
             return Ok(NumaTopology { cpu_to_node: (0..num_cpus::get() as u32).map(|cpu| (cpu, 0)).collect() });
         }
 
-        // ALIGNMENT: u64-backed (see `memory/privileges.rs`); the walk below stays in BYTES
-        // via an explicit `*const u8` base.
+        // ALIGNMENT: u64-backed (see `memory/privileges.rs`); the walk below stays in BYTES via an explicit `*const u8` base.
         let mut buffer = vec![0u64; (buffer_size as usize).div_ceil(std::mem::size_of::<u64>())];
 
         GetLogicalProcessorInformationEx(
@@ -921,8 +905,8 @@ pub fn discover_numa_topology() -> Result<NumaTopology, String> {
     }
 }
 
-/// `--debug-topology`: every detector alone, then Auto's cascade, each core's type under each,
-/// and the signals they read, so a platform's detectors can be checked one by one.
+/// `--debug-topology`: every detector alone, then Auto's cascade, each core's type under each, and the signals they read, so a platform's
+/// detectors can be checked one by one.
 pub fn debug_topology_detection(out: &mut dyn std::io::Write) -> std::io::Result<()> {
     writeln!(out, "\n=== CPU Topology Detection Debug ===")?;
     let mut cores: Vec<usize> = Vec::new();
@@ -1039,9 +1023,9 @@ mod tests {
         (0..efficiency.len()).map(|core| types[&core]).collect()
     }
 
-    /// TODO 96: under `core-priority=hybrid` Windows' core priority types the cores when nothing
-    /// else does, as the efficiency class would; anything the OS or CPU reports wins over it.
-    /// Under `equal` the ranking only earns the warning, which names the higher-priority cores.
+    /// TODO 96: under `core-priority=hybrid` Windows' core priority types the cores when nothing else does, as the efficiency class would;
+    /// anything the OS or CPU reports wins over it. Under `equal` the ranking only earns the warning, which names the higher-priority
+    /// cores.
     #[test]
     fn core_priority_types_cores_only_when_asked() {
         use CoreType::{Efficiency as E, Performance as P};
@@ -1069,9 +1053,8 @@ mod tests {
         assert_eq!(CorePriority::default(), CorePriority::Equal);
     }
 
-    /// TODO 96: a core's type comes from the efficiency class when it varies, else from AMD's
-    /// CPUID core type, else every core is a performance core; never from a scheduling class
-    /// unless `core-priority=hybrid` asks (above).
+    /// TODO 96: a core's type comes from the efficiency class when it varies, else from AMD's CPUID core type, else every core is a
+    /// performance core; never from a scheduling class unless `core-priority=hybrid` asks (above).
     #[test]
     fn core_types_come_from_efficiency_class_or_amd_cpuid() {
         use CoreType::{Efficiency as E, Performance as P};
@@ -1090,8 +1073,8 @@ mod tests {
         assert_eq!(types(&[1, 0], Some(&[0, 0])), [P(0), E(0)]);
     }
 
-    /// TODO 96: on the machine running the tests every detector, alone and as Auto's cascade, gives
-    /// every core a type, one entry per logical CPU in every processor group.
+    /// TODO 96: on the machine running the tests every detector, alone and as Auto's cascade, gives every core a type, one entry per
+    /// logical CPU in every processor group.
     #[test]
     fn detection_types_every_core_here() {
         use windows::Win32::System::Threading::{ALL_PROCESSOR_GROUPS, GetActiveProcessorCount};
@@ -1107,8 +1090,8 @@ mod tests {
         assert_eq!(TopologyDetectionMethod::parse("l3"), None);
     }
 
-    /// TODO 96: the L3 detector's rule. A 7950X3D-like split types the larger L3's cores P (the
-    /// reason it isn't in Auto's cascade); one size types nothing; an unread core is Unknown.
+    /// TODO 96: the L3 detector's rule. A 7950X3D-like split types the larger L3's cores P (the reason it isn't in Auto's cascade); one
+    /// size types nothing; an unread core is Unknown.
     #[test]
     fn l3_sizes_type_cores_only_when_they_differ() {
         use CoreType::{Efficiency as E, Performance as P};
@@ -1121,9 +1104,8 @@ mod tests {
         assert_eq!(types_by_l3(&partial).expect("two sizes")[&2], CoreType::Unknown);
     }
 
-    /// TODO 96: each core's own L3, as the L3 detector reads it, is the size the cache detection
-    /// (`cache.rs`) reports. The detector once added 1 to each of its four factors and read the
-    /// 8500G's 16 MiB as 34.5 MiB.
+    /// TODO 96: each core's own L3, as the L3 detector reads it, is the size the cache detection (`cache.rs`) reports. The detector once
+    /// added 1 to each of its four factors and read the 8500G's 16 MiB as 34.5 MiB.
     #[test]
     fn per_core_l3_is_what_the_cache_detection_reports() {
         let topology = detect_cpu_topology();

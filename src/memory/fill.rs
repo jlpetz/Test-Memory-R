@@ -1,19 +1,15 @@
-//! How a thread's share is filled (TODO 75): which page sizes a run may use, each thread's share
-//! and NUMA node, the order 1 GiB and 2 MiB pages are handed out in, and the warning when some of
-//! it is on another node.
+//! How a thread's share is filled (TODO 75): which page sizes a run may use, each thread's share and NUMA node, the order 1 GiB and 2 MiB
+//! pages are handed out in, and the warning when some of it is on another node.
 //!
-//! The stitched allocator (`stitched.rs`) commits into one placeholder slice per thread;
-//! neighbouring commits of one page size merge into a single run, so a request can be any
-//! multiple of the floor, and each thread's span is handed out whole.
-//! It implements [`Fill`] and runs the passes of [`fill_all`]. (A second implementation,
-//! plan-pagesize-pref, one `VirtualAlloc2` block per request, went in TODO 76; `Fill` is the seam
-//! another would take.)
+//! The stitched allocator (`stitched.rs`) commits into one placeholder slice per thread; neighbouring commits of one page size merge into a
+//! single run, so a request can be any multiple of the floor, and each thread's span is handed out whole.
+//! It implements [`Fill`] and runs the passes of [`fill_all`]. (A second implementation, plan-pagesize-pref, one `VirtualAlloc2` block per
+//! request, went in TODO 76; `Fill` is the seam another would take.)
 //!
-//! 1 GiB and 2 MiB requests name their node strictly (`NUMA_NODE_MANDATORY`), so every block's
-//! node is the one recorded for it. A preferred node is only a preference: once the node is out,
-//! Windows quietly takes the pages from another one, even splitting one request across nodes
-//! (`../numa-test/FINDINGS.md`). 4 KiB requests refuse the strict form (87), so they stay
-//! preferred, and their node is the one asked for, not one known.
+//! 1 GiB and 2 MiB requests name their node strictly (`NUMA_NODE_MANDATORY`), so every block's node is the one recorded for it. A preferred
+//! node is only a preference: once the node is out, Windows quietly takes the pages from another one, even splitting one request across
+//! nodes (`../numa-test/FINDINGS.md`). 4 KiB requests refuse the strict form (87), so they stay preferred, and their node is the one asked
+//! for, not one known.
 #![warn(clippy::undocumented_unsafe_blocks)]
 
 use std::collections::{BTreeMap, HashMap};
@@ -38,8 +34,7 @@ pub(crate) struct ThreadShare {
     pub numa_node: u32,
 }
 
-/// Each thread's share and node, in thread order. The node comes from the CPU the thread is
-/// pinned to (`cpu_list`), not from its index.
+/// Each thread's share and node, in thread order. The node comes from the CPU the thread is pinned to (`cpu_list`), not from its index.
 pub(crate) fn thread_shares(thread_blocks: &HashMap<usize, Vec<BlockInfo>>, runtime_config: &crate::RuntimeConfig) -> Vec<ThreadShare> {
     let mut shares: Vec<ThreadShare> = thread_blocks
         .iter()
@@ -76,8 +71,8 @@ impl PageSizes {
     }
 }
 
-/// `minpage` ..= `maxpage`, capped at 4 KiB without SeLockMemoryPrivilege. A `minpage` above
-/// 4 KiB without the privilege, or above `maxpage`, is an error.
+/// `minpage` ..= `maxpage`, capped at 4 KiB without SeLockMemoryPrivilege. A `minpage` above 4 KiB without the privilege, or above
+/// `maxpage`, is an error.
 pub(crate) fn allowed_page_sizes(runtime_config: &crate::RuntimeConfig) -> Result<PageSizes, String> {
     let alloc = &runtime_config.memory_allocation;
     let min = PageSizeLevel::from_config_str(&alloc.min_page_size);
@@ -106,14 +101,13 @@ pub(crate) fn allowed_page_sizes(runtime_config: &crate::RuntimeConfig) -> Resul
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub(crate) enum Grant {
     Done,
-    /// The thread's pool is out of this page size, or large pages are refused for want of the
-    /// privilege (`backend::is_exhaustion`). Carries the Win32 code for the log.
+    /// The thread's pool is out of this page size, or large pages are refused for want of the privilege (`backend::is_exhaustion`). Carries
+    /// the Win32 code for the log.
     Refused(u32),
 }
 
-/// One allocator's threads, as [`fill_ladder`] sees them. Thread `i` is the `i`th in a fixed
-/// order. `numa_node(i)` is the node of the CPU it runs on, its home; a pass's [`Source`] says
-/// which node's pages it asks for, and threads drawing on one node share that pool.
+/// One allocator's threads, as [`fill_ladder`] sees them. Thread `i` is the `i`th in a fixed order. `numa_node(i)` is the node of the CPU
+/// it runs on, its home; a pass's [`Source`] says which node's pages it asks for, and threads drawing on one node share that pool.
 pub(crate) trait Fill {
     fn thread_count(&self) -> usize;
     fn thread_id(&self, i: usize) -> usize;
@@ -124,19 +118,19 @@ pub(crate) trait Fill {
     fn bytes_at(&self, i: usize, page: PageSizeLevel) -> usize;
     /// Bytes thread `i` still wants.
     fn remaining(&self, i: usize) -> usize;
-    /// What thread `i` asks for with the ladder at `rung`: at most `rung` and `remaining(i)`, at
-    /// least `floor`. Only asked of threads with `remaining(i) >= floor`.
+    /// What thread `i` asks for with the ladder at `rung`: at most `rung` and `remaining(i)`, at least `floor`. Only asked of threads with
+    /// `remaining(i) >= floor`.
     fn request_len(&self, i: usize, rung: usize, floor: usize) -> Result<usize, String>;
-    /// Ask for `len` bytes of `page` pages from `node` for thread `i`: strictly that node for
-    /// 1 GiB and 2 MiB pages, preferred for 4 KiB (`None`: any node).
+    /// Ask for `len` bytes of `page` pages from `node` for thread `i`: strictly that node for 1 GiB and 2 MiB pages, preferred for 4 KiB
+    /// (`None`: any node).
     fn request(&mut self, i: usize, len: usize, page: PageSizeLevel, node: Option<u32>) -> Result<Grant, String>;
-    /// Whether thread `i` can take `page` pages at all now. Stitched cannot once a smaller page
-    /// size sits below the next address: 1 GiB pages need a 1 GiB-aligned one.
+    /// Whether thread `i` can take `page` pages at all now. Stitched cannot once a smaller page size sits below the next address: 1 GiB
+    /// pages need a 1 GiB-aligned one.
     fn can_take(&self, _i: usize, _page: PageSizeLevel) -> bool {
         true
     }
-    /// Bytes from thread `i`'s next address up to the next `page` boundary: what it must take in
-    /// smaller pages before `page` pages fit again. 0 where requests are separate blocks.
+    /// Bytes from thread `i`'s next address up to the next `page` boundary: what it must take in smaller pages before `page` pages fit
+    /// again. 0 where requests are separate blocks.
     fn gap_to_boundary(&self, _i: usize, _page: PageSizeLevel) -> usize {
         0
     }
@@ -172,13 +166,11 @@ impl Source {
     }
 }
 
-/// Every pass, in order: 1 GiB then 2 MiB pages from each thread's own node, then the same from
-/// each other node in turn, then 4 KiB pages (preferred home node) for whatever is left. Page
-/// size gives way before locality: a thread takes its own node's 2 MiB pages before another
-/// node's 1 GiB ones, and no thread goes remote until every node has filled its own threads as
-/// far as it can. A stitched thread whose local 2 MiB pages end off a 1 GiB boundary is padded up
-/// to it before each remote 1 GiB pass (`pad_to_huge_boundary`). Returns the first 4 KiB refusal,
-/// as `fill_regular` does.
+/// Every pass, in order: 1 GiB then 2 MiB pages from each thread's own node, then the same from each other node in turn, then 4 KiB pages
+/// (preferred home node) for whatever is left. Page size gives way before locality: a thread takes its own node's 2 MiB pages before
+/// another node's 1 GiB ones, and no thread goes remote until every node has filled its own threads as far as it can. A stitched thread
+/// whose local 2 MiB pages end off a 1 GiB boundary is padded up to it before each remote 1 GiB pass (`pad_to_huge_boundary`). Returns the
+/// first 4 KiB refusal, as `fill_regular` does.
 pub(crate) fn fill_all(
     fill: &mut impl Fill, pages: PageSizes, sizing: &crate::memory::allocator::BlockSizing, nodes: u32, who: &str,
 ) -> Result<Option<(usize, u32)>, String> {
@@ -200,12 +192,11 @@ pub(crate) fn fill_all(
     Ok(None)
 }
 
-/// Before a remote 1 GiB pass: a thread whose next address is off a 1 GiB boundary takes 2 MiB
-/// pages from that pass's node up to the boundary, as long as a 1 GiB page still fits after them,
-/// so the pass can give it 1 GiB pages too. (A stitched thread lands there when its own node's
-/// last 2 MiB pages came in odd-sized pieces; without the pad it would get no remote 1 GiB pages
-/// at all.) Nothing is freed: the pad is part of what the thread needs anyway, and where it
-/// lands is fixed, the thread's own next addresses. A refused pad leaves the thread on 2 MiB pages.
+/// Before a remote 1 GiB pass: a thread whose next address is off a 1 GiB boundary takes 2 MiB pages from that pass's node up to the
+/// boundary, as long as a 1 GiB page still fits after them, so the pass can give it 1 GiB pages too. (A stitched thread lands there when
+/// its own node's last 2 MiB pages came in odd-sized pieces; without the pad it would get no remote 1 GiB pages at all.) Nothing is freed:
+/// the pad is part of what the thread needs anyway, and where it lands is fixed, the thread's own next addresses. A refused pad leaves the
+/// thread on 2 MiB pages.
 fn pad_to_huge_boundary(fill: &mut impl Fill, source: Source, floor: usize, who: &str) -> Result<(), String> {
     let label = page_label(PageSizeLevel::Large);
     for i in 0..fill.thread_count() {
@@ -244,23 +235,20 @@ fn pad_to_huge_boundary(fill: &mut impl Fill, source: Source, floor: usize, who:
     Ok(())
 }
 
-/// Hand out `page` pages one request at a time, starting at `top` bytes per request, to whichever
-/// thread holds the fewest bytes so far. Threads a node shorted on 1 GiB pages are then topped up
-/// with 2 MiB ones before anyone gets more. A refusal drops that pool to the largest power of two
-/// below the refused size, and the same thread retries. Once a `floor` request is refused, the
-/// pool is out of that page size. Pools are per node: `source` says which node each thread asks.
+/// Hand out `page` pages one request at a time, starting at `top` bytes per request, to whichever thread holds the fewest bytes so far.
+/// Threads a node shorted on 1 GiB pages are then topped up with 2 MiB ones before anyone gets more. A refusal drops that pool to the
+/// largest power of two below the refused size, and the same thread retries. Once a `floor` request is refused, the pool is out of that
+/// page size. Pools are per node: `source` says which node each thread asks.
 ///
-/// Ties between equally filled threads go to the one with less on bigger pages, then to the one
-/// served longest ago. So once a 2 MiB top-up has levelled the threads 1 GiB pages shorted, those
-/// threads still lead every round after it. If the 2 MiB pool runs out partway through a round,
-/// the threads it skips are ones that got more 1 GiB pages, not the same threads again.
+/// Ties between equally filled threads go to the one with less on bigger pages, then to the one served longest ago. So once a 2 MiB top-up
+/// has levelled the threads 1 GiB pages shorted, those threads still lead every round after it. If the 2 MiB pool runs out partway through
+/// a round, the threads it skips are ones that got more 1 GiB pages, not the same threads again.
 ///
-/// At a 1 GiB `top` for 1 GiB pages this is plain round-robin, so a node's threads end at most
-/// one page apart. A bigger `top` makes fewer requests and lets the threads end about one `top`
-/// apart. Nothing granted is ever released to even the split out.
+/// At a 1 GiB `top` for 1 GiB pages this is plain round-robin, so a node's threads end at most one page apart. A bigger `top` makes fewer
+/// requests and lets the threads end about one `top` apart. Nothing granted is ever released to even the split out.
 ///
-/// Every request is traced at info: a ✅ line per size granted, logged whenever the pool's size
-/// drops and at the end, and a ❌ line per refusal.
+/// Every request is traced at info: a ✅ line per size granted, logged whenever the pool's size drops and at the end, and a ❌ line per
+/// refusal.
 pub(crate) fn fill_ladder(
     fill: &mut impl Fill, page: PageSizeLevel, top: usize, floor: usize, source: Source, who: &str,
 ) -> Result<(), String> {
@@ -341,10 +329,9 @@ fn log_granted(who: &str, pool: &str, label: &str, sizes: Option<BTreeMap<usize,
     }
 }
 
-/// Fill what each thread still needs with 4 KiB pages, thread by thread: there is no shared pool
-/// to split fairly. The home node is preferred, not required (4 KiB pages refuse the strict
-/// form). Returns the first refusal, as (thread index, code); a 4 KiB refusal is the commit
-/// limit, and what to do about it is the caller's call. Traced like `fill_ladder`.
+/// Fill what each thread still needs with 4 KiB pages, thread by thread: there is no shared pool to split fairly. The home node is
+/// preferred, not required (4 KiB pages refuse the strict form). Returns the first refusal, as (thread index, code); a 4 KiB refusal is the
+/// commit limit, and what to do about it is the caller's call. Traced like `fill_ladder`.
 pub(crate) fn fill_regular(fill: &mut impl Fill, who: &str) -> Result<Option<(usize, u32)>, String> {
     let label = page_label(PageSizeLevel::Regular);
     let mut tally: BTreeMap<Option<u32>, BTreeMap<usize, usize>> = BTreeMap::new();
@@ -375,8 +362,7 @@ pub(crate) fn fill_regular(fill: &mut impl Fill, who: &str) -> Result<Option<(us
     Ok(refused)
 }
 
-/// Appended to a hard refusal: the one setting that gets past a 1 GiB-page request the machine
-/// cannot serve at all.
+/// Appended to a hard refusal: the one setting that gets past a 1 GiB-page request the machine cannot serve at all.
 pub(crate) fn hard_error_hint(page: PageSizeLevel) -> &'static str {
     match page {
         PageSizeLevel::Huge => "; if this machine has no 1 GiB pages, run with maxpage=large",
@@ -409,14 +395,13 @@ pub(crate) fn size_label(bytes: usize) -> String {
 // Remote memory
 // ---------------------------------------------------------------------------------------------
 
-/// Large-page bytes threads got from a node other than their own: (home, source) -> (bytes,
-/// threads). Built by each allocator from its records, which the strict requests made exact.
+/// Large-page bytes threads got from a node other than their own: (home, source) -> (bytes, threads). Built by each allocator from its
+/// records, which the strict requests made exact.
 pub(crate) type RemoteMemory = BTreeMap<(u32, u32), (usize, usize)>;
 
-/// One warning when any thread's 1 GiB or 2 MiB pages came from another node: how much, between
-/// which nodes, and what to change if it was not intended. Remote memory is still tested, but
-/// over the socket link, so those threads run slower. Testing across nodes can be the point, so
-/// this warns rather than refuses.
+/// One warning when any thread's 1 GiB or 2 MiB pages came from another node: how much, between which nodes, and what to change if it was
+/// not intended. Remote memory is still tested, but over the socket link, so those threads run slower. Testing across nodes can be the
+/// point, so this warns rather than refuses.
 pub(crate) fn warn_remote(who: &str, remote: &RemoteMemory) {
     if remote.is_empty() {
         return;
@@ -448,8 +433,8 @@ mod tests {
         1 << (usize::BITS - 1 - len.leading_zeros())
     }
 
-    /// Threads with equal targets drawing on per-node pools of 1 GiB pages; requests are
-    /// recorded in order as (thread index, bytes, granted).
+    /// Threads with equal targets drawing on per-node pools of 1 GiB pages; requests are recorded in order as (thread index, bytes,
+    /// granted).
     struct Pools {
         nodes: Vec<Option<u32>>,
         filled: Vec<usize>,
@@ -507,8 +492,8 @@ mod tests {
         }
     }
 
-    /// Two nodes, two threads each, one shared order: each node splits its own pool, one page at
-    /// a time, and running dry on one node does not stop the other.
+    /// Two nodes, two threads each, one shared order: each node splits its own pool, one page at a time, and running dry on one node does
+    /// not stop the other.
     #[test]
     fn nodes_split_their_own_pools_one_page_apart() {
         let nodes = [Some(0), Some(1), Some(0), Some(1)];
@@ -520,8 +505,8 @@ mod tests {
         assert_eq!(refused, vec![2, 3]);
     }
 
-    /// A refused rung halves for that node and the same thread asks again. The rung only drops
-    /// on a refusal, so the empty pool costs two more: 2 GiB, then 1 GiB, the floor.
+    /// A refused rung halves for that node and the same thread asks again. The rung only drops on a refusal, so the empty pool costs two
+    /// more: 2 GiB, then 1 GiB, the floor.
     #[test]
     fn a_refusal_halves_the_rung_and_the_same_thread_retries() {
         let mut fill = pools(&[Some(0); 2], 8 * GIB, &[(Some(0), 6)]);
@@ -531,8 +516,8 @@ mod tests {
         assert_eq!(fill.filled, vec![4 * GIB, 2 * GIB]);
     }
 
-    /// Node 0 cannot cover its threads; node 1 has pages to spare. Local first: every node fills
-    /// its own threads, and only then do node 0's threads ask node 1, by name.
+    /// Node 0 cannot cover its threads; node 1 has pages to spare. Local first: every node fills its own threads, and only then do node 0's
+    /// threads ask node 1, by name.
     #[test]
     fn remote_passes_come_after_every_local_one() {
         let nodes = [Some(0), Some(0), Some(1), Some(1)];

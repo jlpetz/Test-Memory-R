@@ -1,8 +1,7 @@
-// Every `unsafe` block in this file crosses a Win32 FFI boundary, where the borrow checker is
-// switched off precisely where the invariants get subtle (TODO #66). The lint below makes a missing
-// `// SAFETY:` a warning here in the tests too; `src/lib.rs` makes it one in all shipped code. It
-// was per file until 2026-10-23, lest the SIMD kernels need boilerplate, but their `unsafe fn`s
-// need no blocks (`test_fn_safety.md` covers them): crate-wide added 30 sites, none a kernel's.
+// Every `unsafe` block in this file crosses a Win32 FFI boundary, where the borrow checker is switched off precisely where the invariants
+// get subtle (TODO #66). The lint below makes a missing `// SAFETY:` a warning here in the tests too; `src/lib.rs` makes it one in all
+// shipped code. It was per file until 2026-10-23, lest the SIMD kernels need boilerplate, but their `unsafe fn`s need no blocks
+// (`test_fn_safety.md` covers them): crate-wide added 30 sites, none a kernel's.
 #![warn(clippy::undocumented_unsafe_blocks)]
 
 // Windows API imports for VirtualAlloc2 (moved from buffer.rs)
@@ -19,8 +18,8 @@ use crate::constants::{HUGE_PAGE_SIZE_USIZE, LARGE_PAGE_SIZE_USIZE, MB, PAGE_SIZ
 use crate::memory::allocator::{AllocationConfig, PageSizeLevel};
 use crate::memory::privileges::setup_large_pages_automatically;
 
-// Win32 codes an allocation can be refused with. 1450 = no contiguous physical memory (a pool ran
-// dry), 1314 = no SeLockMemoryPrivilege, 87 = a bug in the request (TMR-APP CLAUDE.md).
+// Win32 codes an allocation can be refused with. 1450 = no contiguous physical memory (a pool ran dry), 1314 = no SeLockMemoryPrivilege, 87
+// = a bug in the request (TMR-APP CLAUDE.md).
 pub(crate) const ERROR_NOT_ENOUGH_MEMORY: u32 = 8;
 pub(crate) const ERROR_OUTOFMEMORY: u32 = 14;
 pub(crate) const ERROR_INVALID_PARAMETER: u32 = 87;
@@ -29,11 +28,10 @@ pub(crate) const ERROR_PRIVILEGE_NOT_HELD: u32 = 1314;
 pub(crate) const ERROR_NO_SYSTEM_RESOURCES: u32 = 1450;
 pub(crate) const ERROR_COMMITMENT_LIMIT: u32 = 1455;
 
-/// OR-ed into a `MemExtendedParameterNumaNode` value, makes the node required: the request is
-/// refused (1450) rather than served from another node. In winnt.h (SDK 10.0.22621 and 10.0.26100)
-/// as `MINLONG64`, not in the `windows` crate, and not on the `VirtualAlloc2` page, which documents
-/// the node as preferred only. Shown to work for 1 GiB and 2 MiB pages on 10.0.26100; 4 KiB
-/// requests refuse it with 87 (`../numa-test/FINDINGS.md`).
+/// OR-ed into a `MemExtendedParameterNumaNode` value, makes the node required: the request is refused (1450) rather than served from
+/// another node. In winnt.h (SDK 10.0.22621 and 10.0.26100) as `MINLONG64`, not in the `windows` crate, and not on the `VirtualAlloc2`
+/// page, which documents the node as preferred only. Shown to work for 1 GiB and 2 MiB pages on 10.0.26100; 4 KiB requests refuse it with
+/// 87 (`../numa-test/FINDINGS.md`).
 pub(crate) const NUMA_NODE_MANDATORY: u64 = 1 << 63;
 
 /// `code` with its name, for logs and errors.
@@ -51,9 +49,8 @@ pub(crate) fn describe_error(code: u32) -> String {
     format!("error {code}{name}")
 }
 
-/// Whether a refusal with `code` means the page size it asked for has run out, so a smaller
-/// request or the next page size is worth trying. A missing privilege counts, so 1 GiB and 2 MiB
-/// pages are each tried before 4 KiB. Any other code is a hard error.
+/// Whether a refusal with `code` means the page size it asked for has run out, so a smaller request or the next page size is worth trying.
+/// A missing privilege counts, so 1 GiB and 2 MiB pages are each tried before 4 KiB. Any other code is a hard error.
 pub(crate) fn is_exhaustion(code: u32) -> bool {
     matches!(
         code,
@@ -61,9 +58,8 @@ pub(crate) fn is_exhaustion(code: u32) -> bool {
     )
 }
 
-/// Why `Backend::allocate` failed, with the Win32 error named in the message when the OS refused
-/// the request. (The stitched allocator, which sorts refusals by code, calls `VirtualAlloc2`
-/// itself.)
+/// Why `Backend::allocate` failed, with the Win32 error named in the message when the OS refused the request. (The stitched allocator,
+/// which sorts refusals by code, calls `VirtualAlloc2` itself.)
 #[derive(Debug)]
 pub struct AllocError {
     pub message: String,
@@ -88,8 +84,8 @@ pub trait Backend: Send + Sync + std::fmt::Debug {
     fn name(&self) -> &'static str;
 }
 
-/// Where a backend's memory is and how long. A backend reports what it got (page sizes, nodes,
-/// request sizes) per thread span, as the stitcher does (`stitched::ThreadSpan`), not here.
+/// Where a backend's memory is and how long. A backend reports what it got (page sizes, nodes, request sizes) per thread span, as the
+/// stitcher does (`stitched::ThreadSpan`), not here.
 #[derive(Debug)]
 pub struct BackendAllocation {
     pub ptr: *mut u8,
@@ -98,9 +94,8 @@ pub struct BackendAllocation {
 
 /// Which `Backend` impl to allocate through.
 ///
-/// Kept as an enum rather than collapsed to a bool: a ring-0 backend would return here
-/// as one more variant, which is the whole reason the `Backend` trait boundary survived
-/// the driver-client purge (TODO #4/5).
+/// Kept as an enum rather than collapsed to a bool: a ring-0 backend would return here as one more variant, which is the whole reason the
+/// `Backend` trait boundary survived the driver-client purge (TODO #4/5).
 #[derive(Debug, Clone)]
 pub enum BackendType {
     Auto, // Let system decide
@@ -154,9 +149,8 @@ impl Backend for WindowsBackend {
     fn free(&self, allocation: BackendAllocation) -> Result<(), String> {
         use windows::Win32::System::Memory::{MEM_RELEASE, VirtualFree};
 
-        // SAFETY: `allocation` is taken by value, so this is the unique owner of the region and the
-        // release happens exactly once. `ptr` came from a successful `VirtualAlloc2` in this same
-        // backend, which is the base address `MEM_RELEASE` requires.
+        // SAFETY: `allocation` is taken by value, so this is the unique owner of the region and the release happens exactly once. `ptr`
+        // came from a successful `VirtualAlloc2` in this same backend, which is the base address `MEM_RELEASE` requires.
         unsafe {
             // VirtualFree with MEM_RELEASE must pass size = 0
             // See: https://docs.microsoft.com/en-us/windows/win32/api/memoryapi/nf-memoryapi-virtualfree
@@ -253,8 +247,7 @@ impl WindowsBackend {
                 (aligned, MEM_RESERVE | MEM_COMMIT | MEM_LARGE_PAGES, (true, true))
             }
             Some((false, true)) => {
-                // This combination is impossible (huge pages require large pages flag too)
-                // Treat as regular pages
+                // This combination is impossible (huge pages require large pages flag too) Treat as regular pages
                 let page_size = PAGE_SIZE_4KB;
                 let aligned = (size_bytes + page_size - 1) & !(page_size - 1);
                 (aligned, MEM_RESERVE | MEM_COMMIT, (false, false))
@@ -320,12 +313,10 @@ impl WindowsBackend {
 
         // Add the alignment requirement if specified.
         //
-        // LIFETIME: `addr_req` MUST be declared at function scope, not inside the `if` below.
-        // `MEM_EXTENDED_PARAMETER` stores it as a *raw pointer*, which the kernel dereferences
-        // inside the `VirtualAlloc2` call further down. A block-scoped `addr_req` is dead by
-        // then (LLVM emits `lifetime.end` at scope exit and may reuse the stack slot), so the
-        // kernel would read whatever landed there — UB that the borrow checker cannot catch
-        // because the raw cast erases the borrow. Keep this binding alive until after the call.
+        // LIFETIME: `addr_req` MUST be declared at function scope, not inside the `if` below. `MEM_EXTENDED_PARAMETER` stores it as a *raw
+        // pointer*, which the kernel dereferences inside the `VirtualAlloc2` call further down. A block-scoped `addr_req` is dead by then
+        // (LLVM emits `lifetime.end` at scope exit and may reuse the stack slot), so the kernel would read whatever landed there — UB that
+        // the borrow checker cannot catch because the raw cast erases the borrow. Keep this binding alive until after the call.
         let mut addr_req = MEM_ADDRESS_REQUIREMENTS {
             LowestStartingAddress: std::ptr::null_mut(),
             HighestEndingAddress: std::ptr::null_mut(),
@@ -348,9 +339,8 @@ impl WindowsBackend {
             log::trace!("Note: VirtualAlloc2 always zeros memory, zero_memory=false is ignored");
         }
 
-        // SAFETY: `extended_params` may hold a raw pointer to `addr_req` (see the LIFETIME note
-        // where it is built). `addr_req` is function-scoped, so it is still live here — the
-        // kernel dereferences that pointer during this call. Do not move `addr_req` into a
+        // SAFETY: `extended_params` may hold a raw pointer to `addr_req` (see the LIFETIME note where it is built). `addr_req` is
+        // function-scoped, so it is still live here — the kernel dereferences that pointer during this call. Do not move `addr_req` into a
         // narrower scope.
         let ptr = unsafe {
             VirtualAlloc2(
@@ -362,13 +352,13 @@ impl WindowsBackend {
                 if extended_params.is_empty() { None } else { Some(&mut extended_params) },
             )
         };
-        // Keep `addr_req` provably alive across the call above (defensive against a future
-        // refactor reordering or shrinking its scope; compiles to nothing).
+        // Keep `addr_req` provably alive across the call above (defensive against a future refactor reordering or shrinking its scope;
+        // compiles to nothing).
         let _ = &addr_req;
 
         if ptr.is_null() {
-            // SAFETY: `GetLastError` reads this thread's error slot and takes no arguments. It is
-            // read immediately after the failed call, before anything else can overwrite it.
+            // SAFETY: `GetLastError` reads this thread's error slot and takes no arguments. It is read immediately after the failed call,
+            // before anything else can overwrite it.
             let err = unsafe { GetLastError() };
 
             // Handle fallback scenarios

@@ -1,6 +1,6 @@
 //! Isolated code-generation experiment. Does not change TMR.
-//! Compare the original expression, the current shared helper, and explicit
-//! 16/32-bit truncation. Bounded tests use ordinary aligned heap memory.
+//! Compare the original expression, the current shared helper, and explicit 16/32-bit truncation. Bounded tests use ordinary aligned heap
+//! memory.
 #![feature(portable_simd)]
 
 #[path = "../../../src/pattern_gen.rs"]

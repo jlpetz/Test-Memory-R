@@ -190,8 +190,7 @@ macro_rules! make_line {
 macro_rules! kernels {
     ($fill:ident, $verify:ident, $image:ident, $candidate:ident, $n:tt, $features:literal) => {
         /// # Safety
-        /// Requires the declared CPU features. `ptr` is 64-byte aligned and
-        /// writable for `words` u64s; `words` is a multiple of 32.
+        /// Requires the declared CPU features. `ptr` is 64-byte aligned and writable for `words` u64s; `words` is a multiple of 32.
         #[unsafe(no_mangle)]
         #[inline(never)]
         #[target_feature(enable = $features)]
@@ -209,8 +208,7 @@ macro_rules! kernels {
         }
 
         /// # Safety
-        /// Requires the declared CPU features. `ptr` is 64-byte aligned and
-        /// readable for `words` u64s; `words` is a multiple of 32.
+        /// Requires the declared CPU features. `ptr` is 64-byte aligned and readable for `words` u64s; `words` is a multiple of 32.
         #[unsafe(no_mangle)]
         #[inline(never)]
         #[target_feature(enable = $features)]
@@ -324,8 +322,8 @@ mod checks {
     #[test]
     fn review_switch24_all_balanced_seeds_and_affine_basis() {
         let candidates = candidates();
-        // The packers use only bit placement and XOR: zero and all 24 input basis
-        // vectors also check arbitrary (not just balanced) 24-bit seeds.
+        // The packers use only bit placement and XOR: zero and all 24 input basis vectors also check arbitrary (not just balanced) 24-bit
+        // seeds.
         for seed in std::iter::once(0).chain((0..24).map(|bit| 1u64 << bit)) {
             let expected = oracle(seed);
             assert_eq!(scalar_repeat(seed), expected);

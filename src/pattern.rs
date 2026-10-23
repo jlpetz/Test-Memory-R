@@ -1,33 +1,30 @@
 //! The native patterns (pattern spec v2, `doc/pattern_spec.md`): what a SimpleTest step writes.
 //!
 //! **Families.** Each family answers one way memory fails:
-//! - `ident`: every word of the run a different value (a cheap bijection of its id), so a read
-//!   or write that lands at the wrong address shows. Needs no bus width.
-//! - `random`: strongly mixed words (splitmix64's finalizer, also a bijection), so every data
-//!   line sees every short bit sequence, which DDR5's equalisers respond to. Needs no bus width.
-//! - `switch`: each beat of a line's burst the inverse of the one before, at the memory's
-//!   transfer width, so every data line toggles on every beat (mode 30 found the 8600G's fault).
-//! - `lines`: each line an arithmetic chain `seed + j * step` hashed from the line (TM5 mode 2's
-//!   idea, without the chain that collapses).
+//! - `ident`: every word of the run a different value (a cheap bijection of its id), so a read or write that lands at the wrong address
+//!   shows. Needs no bus width.
+//! - `random`: strongly mixed words (splitmix64's finalizer, also a bijection), so every data line sees every short bit sequence, which
+//!   DDR5's equalisers respond to. Needs no bus width.
+//! - `switch`: each beat of a line's burst the inverse of the one before, at the memory's transfer width, so every data line toggles on
+//!   every beat (mode 30 found the 8600G's fault).
+//! - `lines`: each line an arithmetic chain `seed + j * step` hashed from the line (TM5 mode 2's idea, without the chain that collapses).
 //! - `linepair`: aligned pairs of lines, the second the first's complement (TM5 mode 1's idea).
 //!
-//! **Programs and pairs.** A step runs a program, an ordered list of families. Each family is
-//! written as a pair of rounds: its image P, then the complement ~P under the same key, so every
-//! bit is written and verified as both 1 and 0. Pairs walk the program across the step's write
-//! rounds and the suite's cycles (`Program::phase`).
+//! **Programs and pairs.** A step runs a program, an ordered list of families. Each family is written as a pair of rounds: its image P,
+//! then the complement ~P under the same key, so every bit is written and verified as both 1 and 0. Pairs walk the program across the
+//! step's write rounds and the suite's cycles (`Program::phase`).
 //!
-//! **Keys.** A pair's key comes from the run seed, the suite cycle, the step and the pair, never
-//! the thread or the chunk. A word's value is a function of its id (the thread and its offset in
-//! the thread's span), the family, the key and the polarity only, so chunks may overlap, any walk
-//! order works, every thread's words differ, and `seed=` replays a run's bytes on the same layout.
+//! **Keys.** A pair's key comes from the run seed, the suite cycle, the step and the pair, never the thread or the chunk. A word's value is
+//! a function of its id (the thread and its offset in the thread's span), the family, the key and the polarity only, so chunks may overlap,
+//! any walk order works, every thread's words differ, and `seed=` replays a run's bytes on the same layout.
 
 use std::sync::OnceLock;
 use std::sync::atomic::{AtomicBool, Ordering};
 
 use crate::pattern_gen::BusBeat;
 
-/// The pattern spec this module implements, recorded in results. Version 1 is the numbered modes
-/// (`pattern_gen::MODES`), which TMR still runs when a config names one.
+/// The pattern spec this module implements, recorded in results. Version 1 is the numbered modes (`pattern_gen::MODES`), which TMR still
+/// runs when a config names one.
 pub const VERSION: u32 = 2;
 
 /// Words in a 64 B cache line.
@@ -52,17 +49,15 @@ const fn mix(a: u64, b: u64) -> u64 {
     fmix(a ^ fmix(b.wrapping_add(G)))
 }
 
-/// The id of line 0 of thread `thread_id`'s span: word `idx` of the span is word id
-/// `thread_id << 40 | idx`, so line `n` of it is line id `line_base(thread_id) + n`. A span holds
-/// fewer than 2^40 words (8 TiB).
+/// The id of line 0 of thread `thread_id`'s span: word `idx` of the span is word id `thread_id << 40 | idx`, so line `n` of it is line id
+/// `line_base(thread_id) + n`. A span holds fewer than 2^40 words (8 TiB).
 #[inline(always)]
 pub fn line_base(thread_id: usize) -> u64 {
     (thread_id as u64) << 37
 }
 
-/// The id of word 0 of thread `thread_id`'s span, `thread_id << 40`: word `idx` of the span is
-/// word id `word_base(thread_id) | idx`. The other tests add it to their values, so no word of one
-/// thread holds what a word of another does (TODO 97).
+/// The id of word 0 of thread `thread_id`'s span, `thread_id << 40`: word `idx` of the span is word id `word_base(thread_id) | idx`. The
+/// other tests add it to their values, so no word of one thread holds what a word of another does (TODO 97).
 #[inline(always)]
 pub fn word_base(thread_id: usize) -> u64 {
     (thread_id as u64) << 40
@@ -107,8 +102,8 @@ impl Family {
         Family::ALL.into_iter().find(|f| f.name().eq_ignore_ascii_case(s.trim()))
     }
 
-    /// Its number, in the groups of the numbered modes (`pattern_gen::MODES`): 1x identities, 2x
-    /// in-line arithmetic, 3x switching. A `pattern_mode` of it runs the family alone.
+    /// Its number, in the groups of the numbered modes (`pattern_gen::MODES`): 1x identities, 2x in-line arithmetic, 3x switching. A
+    /// `pattern_mode` of it runs the family alone.
     pub const fn number(self) -> u32 {
         match self {
             Family::Ident => 15,
@@ -163,10 +158,9 @@ pub fn renumbered(n: u32) -> &'static str {
     }
 }
 
-/// `ident` line `lid`: word id `i` holds `x ^ (x >> 32)` with `x = i * G + key`, a bijection of
-/// `i`, so every word differs. Cheap (a Weyl step and a shift per word), but each upper bit of a
-/// word is a bit of an arithmetic progression, which shows at most 10 of the 32 five-bit
-/// histories on a 64-bit beat: `random` covers those.
+/// `ident` line `lid`: word id `i` holds `x ^ (x >> 32)` with `x = i * G + key`, a bijection of `i`, so every word differs. Cheap (a Weyl
+/// step and a shift per word), but each upper bit of a word is a bit of an arithmetic progression, which shows at most 10 of the 32
+/// five-bit histories on a 64-bit beat: `random` covers those.
 #[inline(always)]
 pub fn ident_line(lid: u64, key: u64) -> [u64; LINE_WORDS] {
     let x0 = (lid << 3).wrapping_mul(G).wrapping_add(key);
@@ -183,37 +177,34 @@ pub fn ident_word(id: u64, key: u64) -> u64 {
     x ^ (x >> 32)
 }
 
-/// `random` line `lid`: word id `i` holds `fmix(i + key)`, a bijection of `i` (TMR mode 13 keyed
-/// by the word's id), strongly mixed: every bit position sees all short bit sequences.
+/// `random` line `lid`: word id `i` holds `fmix(i + key)`, a bijection of `i` (TMR mode 13 keyed by the word's id), strongly mixed: every
+/// bit position sees all short bit sequences.
 #[inline(always)]
 pub fn random_line(lid: u64, key: u64) -> [u64; LINE_WORDS] {
     let i0 = (lid << 3).wrapping_add(key);
     std::array::from_fn(|j| fmix(i0.wrapping_add(j as u64)))
 }
 
-/// `switch` line `lid` at `beat` bits a transfer: each transfer of the line's bursts the inverse
-/// of the one before (TMR mode 30 keyed by the line's id, `pattern_gen::bus_flip_line`; LPDDR6's
-/// 12 and DDR6's 24 are models). 32 bits of `fmix(lid + key)` go one nibble to a byte, each byte's
-/// high nibble the inverse of its low, so every byte holds four 1s and a count-based DBI never
-/// undoes a flip at 16, 32 or 64 bits. The first transfer fixes the line, so it carries 8 to 32
-/// bits of the hash.
+/// `switch` line `lid` at `beat` bits a transfer: each transfer of the line's bursts the inverse of the one before (TMR mode 30 keyed by
+/// the line's id, `pattern_gen::bus_flip_line`; LPDDR6's 12 and DDR6's 24 are models). 32 bits of `fmix(lid + key)` go one nibble to a
+/// byte, each byte's high nibble the inverse of its low, so every byte holds four 1s and a count-based DBI never undoes a flip at 16, 32 or
+/// 64 bits. The first transfer fixes the line, so it carries 8 to 32 bits of the hash.
 #[inline(always)]
 pub fn switch_line(lid: u64, key: u64, beat: BusBeat) -> [u64; LINE_WORDS] {
     crate::pattern_gen::bus_flip_line(crate::pattern_gen::balanced_bytes(fmix(lid.wrapping_add(key))), beat)
 }
 
-/// The pin `quiet` holds on its line, from the high half of the hash `switch` takes the low half
-/// of: uniform over the transfer's `beat.bits()` pins, so every pin gets turns.
+/// The pin `quiet` holds on its line, from the high half of the hash `switch` takes the low half of: uniform over the transfer's
+/// `beat.bits()` pins, so every pin gets turns.
 #[inline(always)]
 pub fn quiet_pin(hash: u64, beat: BusBeat) -> u32 {
     (((hash >> 32) * u64::from(beat.bits())) >> 32) as u32
 }
 
-/// `quiet` line `lid`: `switch`'s line with one pin held. The line's quiet pin (`quiet_pin`) is 1
-/// in every transfer, 0 under ~P, while every other pin toggles on every beat, so the held line
-/// sits among switching neighbours, the crosstalk case `switch` (all toggling) doesn't make. Its
-/// byte keeps four or five 1s a transfer in P (DDR4's DBI, which counts 0s, leaves it alone) and
-/// four or three in ~P (LPDDR's, which counts 1s, leaves that alone).
+/// `quiet` line `lid`: `switch`'s line with one pin held. The line's quiet pin (`quiet_pin`) is 1 in every transfer, 0 under ~P, while
+/// every other pin toggles on every beat, so the held line sits among switching neighbours, the crosstalk case `switch` (all toggling)
+/// doesn't make. Its byte keeps four or five 1s a transfer in P (DDR4's DBI, which counts 0s, leaves it alone) and four or three in ~P
+/// (LPDDR's, which counts 1s, leaves that alone).
 #[inline(always)]
 pub fn quiet_line(lid: u64, key: u64, beat: BusBeat) -> [u64; LINE_WORDS] {
     let hash = fmix(lid.wrapping_add(key));
@@ -222,9 +213,9 @@ pub fn quiet_line(lid: u64, key: u64, beat: BusBeat) -> [u64; LINE_WORDS] {
     std::array::from_fn(|j| line[j] | held[j])
 }
 
-/// `header` line `lid`: `switch`'s line with an identity word heading each 32 B half: words 0 and
-/// 4 are `ident`'s words 0 and 4 of the line under the same key. So every half-line of the run
-/// differs (a misplaced half shows, as in `switch` it may not), and six words of eight switch.
+/// `header` line `lid`: `switch`'s line with an identity word heading each 32 B half: words 0 and 4 are `ident`'s words 0 and 4 of the line
+/// under the same key. So every half-line of the run differs (a misplaced half shows, as in `switch` it may not), and six words of eight
+/// switch.
 #[inline(always)]
 pub fn header_line(lid: u64, key: u64, beat: BusBeat) -> [u64; LINE_WORDS] {
     let (mut line, ident) = (switch_line(lid, key, beat), ident_line(lid, key));
@@ -232,8 +223,8 @@ pub fn header_line(lid: u64, key: u64, beat: BusBeat) -> [u64; LINE_WORDS] {
     line
 }
 
-/// `lines` line `lid`: `seed + j * step`, both hashed from the line's id (TMR mode 20 keyed by the
-/// line's id). The step is odd, so a line's 8 words all differ.
+/// `lines` line `lid`: `seed + j * step`, both hashed from the line's id (TMR mode 20 keyed by the line's id). The step is odd, so a line's
+/// 8 words all differ.
 #[inline(always)]
 pub fn lines_line(lid: u64, key: u64) -> [u64; LINE_WORDS] {
     let seed = fmix(lid.wrapping_add(key));
@@ -241,9 +232,8 @@ pub fn lines_line(lid: u64, key: u64) -> [u64; LINE_WORDS] {
     crate::pattern_gen::line_words(seed, step)
 }
 
-/// `linepair` line `lid`: lines `2n` and `2n + 1` are a pair, the first `ident`'s line `2n`, the
-/// second its complement. So each aligned pair of neighbours is opposite in every bit (TM5 mode 1
-/// inverted every line); a line and the next pair's first are not.
+/// `linepair` line `lid`: lines `2n` and `2n + 1` are a pair, the first `ident`'s line `2n`, the second its complement. So each aligned
+/// pair of neighbours is opposite in every bit (TM5 mode 1 inverted every line); a line and the next pair's first are not.
 #[inline(always)]
 pub fn linepair_line(lid: u64, key: u64) -> [u64; LINE_WORDS] {
     let invert = 0u64.wrapping_sub(lid & 1);
@@ -252,10 +242,9 @@ pub fn linepair_line(lid: u64, key: u64) -> [u64; LINE_WORDS] {
 
 // ─── The line functions at a SIMD width ──────────────────────────────────────────────────────────
 //
-// The same words as the functions above, computed as `V` vectors of `N` lanes (`N * V` = 8), lane
-// `l` of vector `v` the line's word `v * N + l`. The SIMD kernels use these: computed from the
-// scalar words instead, LLVM's SLP vectoriser did the 128-bit variant's math and stores at 256 bits
-// on the AVX2 baseline, so the variant wasn't the width it is named for.
+// The same words as the functions above, computed as `V` vectors of `N` lanes (`N * V` = 8), lane `l` of vector `v` the line's word `v * N
+// + l`. The SIMD kernels use these: computed from the scalar words instead, LLVM's SLP vectoriser did the 128-bit variant's math and stores
+// at 256 bits on the AVX2 baseline, so the variant wasn't the width it is named for.
 
 type V64<const N: usize> = std::simd::Simd<u64, N>;
 
@@ -294,8 +283,8 @@ pub fn random_line_v<const N: usize, const V: usize>(lid: u64, key: u64) -> [V64
     std::array::from_fn(|v| fmix_v(i0 + lanes[v]))
 }
 
-/// `switch_line` as vectors: the line's first word (and, at 64 bits, its inverse in odd lanes); at
-/// 12 and 24 bits, whose words differ, its words in their lanes.
+/// `switch_line` as vectors: the line's first word (and, at 64 bits, its inverse in odd lanes); at 12 and 24 bits, whose words differ, its
+/// words in their lanes.
 #[inline(always)]
 pub fn switch_line_v<const N: usize, const V: usize>(lid: u64, key: u64, beat: BusBeat) -> [V64<N>; V] {
     let w = switch_line(lid, key, beat);
@@ -309,8 +298,8 @@ pub fn switch_line_v<const N: usize, const V: usize>(lid: u64, key: u64, beat: B
     }
 }
 
-/// `quiet_line` as vectors: `switch`'s with the held pin's bits set. At 12 and 24 bits, whose words
-/// differ, from the scalar words, as `switch`'s at 12.
+/// `quiet_line` as vectors: `switch`'s with the held pin's bits set. At 12 and 24 bits, whose words differ, from the scalar words, as
+/// `switch`'s at 12.
 #[inline(always)]
 pub fn quiet_line_v<const N: usize, const V: usize>(lid: u64, key: u64, beat: BusBeat) -> [V64<N>; V] {
     match beat {
@@ -355,9 +344,8 @@ pub fn linepair_line_v<const N: usize, const V: usize>(lid: u64, key: u64) -> [V
     ident_line_v::<N, V>(lid & !1, key).map(|x| x ^ invert)
 }
 
-/// Runs `$body` with `$line` the phase's line function at `$n` lanes (a line id to its `8 / $n`
-/// vectors, the polarity applied), matched once outside the body, so a loop in it is compiled per
-/// family and beat with no branch on either.
+/// Runs `$body` with `$line` the phase's line function at `$n` lanes (a line id to its `8 / $n` vectors, the polarity applied), matched
+/// once outside the body, so a loop in it is compiled per family and beat with no branch on either.
 macro_rules! with_phase_vectors {
     ($n:tt, $phase:expr, |$line:ident| $body:block) => {{
         const V: usize = $crate::pattern::LINE_WORDS / $n;
@@ -503,20 +491,18 @@ impl Program {
         Program { families: [family; MAX_PROGRAM], len: 1 }
     }
 
-    /// A SimpleTest's program when its config names none (the owner's call, 2026-10-16): `random`
-    /// every cycle at TM5's four write rounds a chunk, with `header`, `switch` and `quiet` taking
-    /// turns, each every third. `random` is an identity too (every word differs) and gives every data
-    /// line all short bit histories, so `ident` adds nothing to it (it stays available by name and
-    /// in a TM5 mode-0 import). On the 8600G's read fault `header` found the most, the plain
-    /// switching patterns none that day and the most on another: the evidence can't rank the
-    /// three, so they share the turns.
+    /// A SimpleTest's program when its config names none (the owner's call, 2026-10-16): `random` every cycle at TM5's four write rounds a
+    /// chunk, with `header`, `switch` and `quiet` taking turns, each every third. `random` is an identity too (every word differs) and
+    /// gives every data line all short bit histories, so `ident` adds nothing to it (it stays available by name and in a TM5 mode-0
+    /// import). On the 8600G's read fault `header` found the most, the plain switching patterns none that day and the most on another: the
+    /// evidence can't rank the three, so they share the turns.
     pub fn default_simple() -> Self {
         Program::new(&[Family::Random, Family::Header, Family::Random, Family::Switch, Family::Random, Family::Quiet])
             .expect("a valid program")
     }
 
-    /// What a TM5 `.cfg`'s SimpleTest `Pattern Mode` imports as: its intent's family and
-    /// switching, then mixed data and switching. `None` for a mode TM5 doesn't have.
+    /// What a TM5 `.cfg`'s SimpleTest `Pattern Mode` imports as: its intent's family and switching, then mixed data and switching. `None`
+    /// for a mode TM5 doesn't have.
     pub fn from_tm5_mode(mode: u32) -> Option<Self> {
         let intent = match mode {
             0 => Family::Ident,
@@ -527,18 +513,16 @@ impl Program {
         Some(Program::new(&[intent, Family::Switch, Family::Random, Family::Switch]).expect("a valid program"))
     }
 
-    /// The phase of a step's write round `g` (from 0, counted across the step's own cycles; a step
-    /// that writes only before its verifies stays at 0), as `schedule` pairs them:
-    /// - `Rounds`: rounds `2n` and `2n + 1` are a pair, P then ~P, one key. A chunk's rounds run
-    ///   back to back, and `wrc` is even (`pair_native_rounds` rounds it up), so every chunk ends
-    ///   each cycle on whole pairs. The pair's place in the program advances `wrc / 2` a suite
-    ///   cycle, so a TM5 step (one cycle of its own, four rounds) runs the program's next two
-    ///   pairs each suite cycle.
-    /// - `OncePerRun`: P in odd suite cycles, ~P in even ones, one key over the two, as the seal
-    ///   does; the place advances one pair each two suite cycles.
+    /// The phase of a step's write round `g` (from 0, counted across the step's own cycles; a step that writes only before its verifies
+    /// stays at 0), as `schedule` pairs them:
+    /// - `Rounds`: rounds `2n` and `2n + 1` are a pair, P then ~P, one key. A chunk's rounds run back to back, and `wrc` is even
+    ///   (`pair_native_rounds` rounds it up), so every chunk ends each cycle on whole pairs. The pair's place in the program advances `wrc
+    ///   / 2` a suite cycle, so a TM5 step (one cycle of its own, four rounds) runs the program's next two pairs each suite cycle.
+    /// - `OncePerRun`: P in odd suite cycles, ~P in even ones, one key over the two, as the seal does; the place advances one pair each two
+    ///   suite cycles.
     ///
-    /// An unknown transfer width alternates the 64- and 32-bit `switch` profiles from one `switch`
-    /// pair to the next, whatever the program's shape.
+    /// An unknown transfer width alternates the 64- and 32-bit `switch` profiles from one `switch` pair to the next, whatever the program's
+    /// shape.
     pub fn phase(&self, epoch: &StepEpoch, wrc: u32, g: u64, schedule: Schedule, beat: Option<BusBeat>) -> Phase {
         let suite_cycle = epoch.suite_cycle.max(1);
         let (pair, inverse, epoch) = match schedule {
@@ -551,8 +535,7 @@ impl Program {
         let len = u64::from(self.len);
         let at = (pair % len) as usize;
         let family = self.families()[at];
-        // This switching pair's place among all of them: the program's switching families per lap,
-        // and the ones before it in this lap
+        // This switching pair's place among all of them: the program's switching families per lap, and the ones before it in this lap
         let switches = |list: &[Family]| list.iter().filter(|f| f.uses_beat()).count() as u64;
         let nth_switch = pair / len * switches(self.families()) + switches(&self.families()[..at]);
         let beat = beat.unwrap_or(if nth_switch.is_multiple_of(2) { BusBeat::Bits64 } else { BusBeat::Bits32 });
@@ -565,13 +548,12 @@ impl Program {
 pub enum Schedule {
     /// A step that writes first: a pair every two rounds
     Rounds,
-    /// A step that verifies its fill (`test_reps` 0): one image a suite cycle (each dispatch of
-    /// the step), so a pair spans two
+    /// A step that verifies its fill (`test_reps` 0): one image a suite cycle (each dispatch of the step), so a pair spans two
     OncePerRun,
 }
 
-/// Where a step runs in the suite, set per dispatch by the runner. All zero (the default) outside
-/// a run (unit tests) and for the Bench pairs, which pin it so their images repeat.
+/// Where a step runs in the suite, set per dispatch by the runner. All zero (the default) outside a run (unit tests) and for the Bench
+/// pairs, which pin it so their images repeat.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
 pub struct StepEpoch {
     pub seed: u64,
@@ -588,8 +570,7 @@ impl StepEpoch {
     }
 }
 
-/// One write round's pattern: a family, its pair's key, the polarity (0 for P, all ones for ~P)
-/// and the `switch` profile.
+/// One write round's pattern: a family, its pair's key, the polarity (0 for P, all ones for ~P) and the `switch` profile.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct Phase {
     pub family: Family,
@@ -599,8 +580,8 @@ pub struct Phase {
 }
 
 impl Phase {
-    /// The 8 words of line `lid`: one match a line, for a cold path or a test. Hot loops match once
-    /// outside the loop with `with_phase_vectors!`.
+    /// The 8 words of line `lid`: one match a line, for a cold path or a test. Hot loops match once outside the loop with
+    /// `with_phase_vectors!`.
     pub fn line(&self, lid: u64) -> [u64; LINE_WORDS] {
         let words = match self.family {
             Family::Ident => ident_line(lid, self.key),
@@ -709,9 +690,8 @@ thread_local! {
     static TEST_BEAT: std::cell::Cell<Option<Option<BusBeat>>> = const { std::cell::Cell::new(None) };
 }
 
-/// While it lives, `transfer_beat` on this thread gives `beat` (a test's): the run's is resolved
-/// once a process, so tests can't set it. Not for mode 30, whose width `bus_beat` keeps for the
-/// process at its first call.
+/// While it lives, `transfer_beat` on this thread gives `beat` (a test's): the run's is resolved once a process, so tests can't set it. Not
+/// for mode 30, whose width `bus_beat` keeps for the process at its first call.
 #[cfg(test)]
 pub(crate) struct TestBeat {
     before: Option<Option<BusBeat>>,
@@ -745,8 +725,8 @@ fn model_note(beat: BusBeat) -> &'static str {
     }
 }
 
-/// The transfer width and where it came from, resolved and logged once: `beat=`, else the DIMMs'
-/// SMBIOS memory type, else unknown (`None`), when `switch` alternates its 64- and 32-bit profiles.
+/// The transfer width and where it came from, resolved and logged once: `beat=`, else the DIMMs' SMBIOS memory type, else unknown (`None`),
+/// when `switch` alternates its 64- and 32-bit profiles.
 pub fn transfer_beat() -> (Option<BusBeat>, &'static str) {
     #[cfg(test)]
     if let Some(beat) = TEST_BEAT.with(|b| b.get()) {
@@ -795,9 +775,8 @@ mod tests {
         };
         let (bits, burst) = (u64::from(phase.beat.bits()), u64::from(phase.beat.burst_bits()));
         let h = fmix(lid.wrapping_add(phase.key));
-        // `switch`'s word: byte b of `a` holds nibble b of the hash's low half and its inverse; bit p
-        // of the line is place q = p mod burst of its burst, pin q mod bits of transfer q / bits:
-        // that bit of `a`, inverted on odd transfers
+        // `switch`'s word: byte b of `a` holds nibble b of the hash's low half and its inverse; bit p of the line is place q = p mod burst
+        // of its burst, pin q mod bits of transfer q / bits: that bit of `a`, inverted on odd transfers
         let switch = || {
             let a = (0..8).fold(0u64, |acc, b| {
                 let n = (h >> (4 * b)) & 0xF;
@@ -903,9 +882,8 @@ mod tests {
         }
     }
 
-    /// Known answers from an independent implementation of `doc/pattern_spec.md`: Python written
-    /// from the spec's text alone, without this code (2026-10-11). A mismatch is this code and the
-    /// spec disagreeing.
+    /// Known answers from an independent implementation of `doc/pattern_spec.md`: Python written from the spec's text alone, without this
+    /// code (2026-10-11). A mismatch is this code and the spec disagreeing.
     #[test]
     fn independent_known_answers() {
         let fmix_cases: &[(u64, u64)] = &[
@@ -1029,8 +1007,7 @@ mod tests {
             let phase = Phase { family, key, mask, beat: beat.unwrap_or(BusBeat::Bits64) };
             assert_eq!(phase.line(lid), words, "{} line {lid:#x} key {key:#x}", phase.label());
         }
-        // `quiet` and `header` (and `switch` again) from another implementation of the spec alone
-        // (2026-10-16), at every transfer width
+        // `quiet` and `header` (and `switch` again) from another implementation of the spec alone (2026-10-16), at every transfer width
         #[rustfmt::skip] // a golden table, one row a line
         let stage6: &[Line] = &[
             (Family::Quiet, 0x0, 0x0, 0x0, Some(BusBeat::Bits12), [0xf0f1f0f0f1f0f0f1, 0xf1f0f0f1f0f0f1f0, 0xf0f0f1f0f0f1f0f0, 0xf0f1f0f0f1f0f0f1, 0xf0f1f0f0f1f0f0f1, 0xf1f0f0f1f0f0f1f0, 0xf0f0f1f0f0f1f0f0, 0xf0f1f0f0f1f0f0f1]),
@@ -1241,9 +1218,9 @@ mod tests {
         }
     }
 
-    /// Every pair is completed (Astra's review: with 3 rounds `switch` got P every cycle and never
-    /// ~P). Even rounds a chunk, over any number of its own cycles, end each cycle on whole pairs
-    /// and run every family; a verify-only step pairs two suite cycles under one key.
+    /// Every pair is completed (Astra's review: with 3 rounds `switch` got P every cycle and never ~P). Even rounds a chunk, over any
+    /// number of its own cycles, end each cycle on whole pairs and run every family; a verify-only step pairs two suite cycles under one
+    /// key.
     #[test]
     fn every_pair_is_completed() {
         let program = Program::from_tm5_mode(0).unwrap();
@@ -1296,9 +1273,8 @@ mod tests {
         assert_eq!(keys.iter().collect::<std::collections::HashSet<_>>().len(), keys.len());
     }
 
-    /// Every pattern number is one pattern's: the native families' sit in the numbered modes' groups
-    /// of ten (1x identities, 2x in-line arithmetic, 3x switching), and none is a numbered mode or
-    /// 12 or 14, the old numbers of 20 and 30 (TODO 97).
+    /// Every pattern number is one pattern's: the native families' sit in the numbered modes' groups of ten (1x identities, 2x in-line
+    /// arithmetic, 3x switching), and none is a numbered mode or 12 or 14, the old numbers of 20 and 30 (TODO 97).
     #[test]
     fn pattern_numbers_are_grouped_and_unique() {
         let group = |n: u32| n / 10;
@@ -1321,8 +1297,8 @@ mod tests {
         );
     }
 
-    /// `quiet` holds one pin through each line's transfers, 1 under P, and every other pin flips on
-    /// every beat; over lines every pin of the width is held, about equally often (TODO 97).
+    /// `quiet` holds one pin through each line's transfers, 1 under P, and every other pin flips on every beat; over lines every pin of the
+    /// width is held, about equally often (TODO 97).
     #[test]
     fn quiet_holds_one_pin_and_flips_the_rest() {
         for beat in BEATS {
@@ -1352,8 +1328,8 @@ mod tests {
         }
     }
 
-    /// Every 32 B half of a `header` line differs from every other's in the run, as no `switch`
-    /// line's do, and its other six words are `switch`'s (TODO 97).
+    /// Every 32 B half of a `header` line differs from every other's in the run, as no `switch` line's do, and its other six words are
+    /// `switch`'s (TODO 97).
     #[test]
     fn header_halves_are_distinct_and_the_rest_switches() {
         for beat in BEATS {
@@ -1366,9 +1342,8 @@ mod tests {
         }
     }
 
-    /// The default program runs a `random` pair every suite cycle at TM5's four rounds, and a
-    /// `header`, `switch` or `quiet` pair in turn; at the built-in suite's two rounds, `random`
-    /// every other cycle and the three in turn between.
+    /// The default program runs a `random` pair every suite cycle at TM5's four rounds, and a `header`, `switch` or `quiet` pair in turn;
+    /// at the built-in suite's two rounds, `random` every other cycle and the three in turn between.
     #[test]
     fn the_default_program_takes_turns_with_random() {
         let program = Program::default_simple();
@@ -1382,9 +1357,8 @@ mod tests {
         assert_eq!(two, [Family::Random, turns[0], Family::Random, turns[1], Family::Random, turns[2]]);
     }
 
-    /// Whatever the program's shape, successive `switch` pairs alternate 64 and 32 on an unknown
-    /// bus, so neither DDR4 nor DDR5 goes without switching (the independent implementation found
-    /// `(pair >> 1) & 1` fixed the width for `[ident, random, switch, switch]`).
+    /// Whatever the program's shape, successive `switch` pairs alternate 64 and 32 on an unknown bus, so neither DDR4 nor DDR5 goes without
+    /// switching (the independent implementation found `(pair >> 1) & 1` fixed the width for `[ident, random, switch, switch]`).
     #[test]
     fn unknown_width_alternates_the_switch_profiles() {
         use Family::*;
@@ -1408,8 +1382,7 @@ mod tests {
         }
     }
 
-    /// Every pin of every burst toggles at every transfer, at every width and polarity; at 16, 32
-    /// and 64 bits every byte holds four 1s.
+    /// Every pin of every burst toggles at every transfer, at every width and polarity; at 16, 32 and 64 bits every byte holds four 1s.
     #[test]
     fn switch_flips_every_beat_and_keeps_bytes_balanced() {
         for beat in BEATS {

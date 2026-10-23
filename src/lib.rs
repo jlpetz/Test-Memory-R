@@ -2,20 +2,18 @@
 #![feature(portable_simd)]
 #![feature(clflushopt_target_feature)]
 #![feature(simd_x86_clflushopt)]
-// The engine prints nothing and exits nowhere: it hands its frontend events (`frontend.rs`, TODO
-// 29), and the one-shot commands write to their caller's writer (`commands.rs`). The CLI, which
-// prints, is its own crate (`crates/tmr-cli`). Test code prints freely.
+// The engine prints nothing and exits nowhere: it hands its frontend events (`frontend.rs`, TODO 29), and the one-shot commands write to
+// their caller's writer (`commands.rs`). The CLI, which prints, is its own crate (`crates/tmr-cli`). Test code prints freely.
 #![cfg_attr(not(test), deny(clippy::print_stdout, clippy::print_stderr, clippy::exit))]
-// Every `unsafe` block says why it is sound (`// SAFETY:`), and shipped code doesn't `unwrap()`:
-// `expect` says why it can't fail (2026-10-23). Tests may do either.
+// Every `unsafe` block says why it is sound (`// SAFETY:`), and shipped code doesn't `unwrap()`: `expect` says why it can't fail
+// (2026-10-23). Tests may do either.
 #![cfg_attr(not(test), warn(clippy::undocumented_unsafe_blocks, clippy::unwrap_used))]
 
-// The engine. Its public items are what tmr.exe (`crates/tmr-app`), the CLI (`crates/tmr-cli`) and
-// the window (`crates/tmr-gui`) call: `session` (a command line's setup and run), `frontend` (the
-// interface a session is shown through, with the types its events carry), `commands` (the one-shot
-// commands), `logfile`, `BUILD` and `request_stop`. Everything else is private, so `dead_code`
-// checks it. While `main.rs` held the CLI and every module here was `pub`, all of them counted as
-// public API, and an uncalled `pub fn` was never reported (TODO 69 E).
+// The engine. Its public items are what tmr.exe (`crates/tmr-app`), the CLI (`crates/tmr-cli`) and the window (`crates/tmr-gui`) call:
+// `session` (a command line's setup and run), `frontend` (the interface a session is shown through, with the types its events carry),
+// `commands` (the one-shot commands), `logfile`, `BUILD` and `request_stop`. Everything else is private, so `dead_code` checks it. While
+// `main.rs` held the CLI and every module here was `pub`, all of them counted as public API, and an uncalled `pub fn` was never reported
+// (TODO 69 E).
 pub mod commands; // the one-shot commands, writing to their caller's writer (TODO 29)
 pub mod frontend; // the engine's interface to whoever shows a session: its events (TODO 29)
 pub mod logfile;
@@ -86,11 +84,9 @@ pub enum ErrorMode {
     Panic, // Panic on first error (for debugging)
 }
 
-/// One variant since the driver-client purge (TODO #4/5). A ring-0 backend would come back as a
-/// second one.
+/// One variant since the driver-client purge (TODO #4/5). A ring-0 backend would come back as a second one.
 ///
-/// Names the API only. Whether a block got large pages is decided per allocation, and the results
-/// file records the outcome as `page_mix`.
+/// Names the API only. Whether a block got large pages is decided per allocation, and the results file records the outcome as `page_mix`.
 #[derive(Debug, Clone, Copy)]
 pub(crate) enum MemoryBackend {
     VirtualAlloc2,
@@ -100,8 +96,8 @@ pub(crate) struct RuntimeConfig {
     pub memory_backend: MemoryBackend,
     pub large_pages_available: bool,
     pub cpu_list: Option<Vec<usize>>,
-    /// Pin each worker to its `cpu_list` entry. When false the OS schedules the workers, and
-    /// `cpu_list` is only the ids they are numbered by.
+    /// Pin each worker to its `cpu_list` entry. When false the OS schedules the workers, and `cpu_list` is only the ids they are numbered
+    /// by.
     pub pin_threads: bool,
     /// The workers' scheduling priority (`priority=`, `system.thread_priority`; TODO 77).
     pub thread_priority: crate::runner::ThreadPriority,

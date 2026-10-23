@@ -18,8 +18,8 @@ use crate::runner::AllocationBlock;
 use crate::test_scaffolding::TestRunner;
 use crate::tests::{TestAction, TestMemoryConfig, TestProgress, TestStats, TestTiming};
 
-/// The write pattern. Not byte-uniform: a byte-uniform fill (it was 0x5555...) lets LLVM turn the
-/// cached write loop into `memset`, which measured the C runtime, the same at every width.
+/// The write pattern. Not byte-uniform: a byte-uniform fill (it was 0x5555...) lets LLVM turn the cached write loop into `memset`, which
+/// measured the C runtime, the same at every width.
 const STATIC_PATTERN: u64 = 0xA55AA55AA55AA55A;
 
 // ============================================================================
@@ -121,21 +121,18 @@ macro_rules! spd_read_hot {
 // COPY — Hot loop macros (4x unrolled load from src + store to dst)
 // ============================================================================
 
-/// One Spd-Copy chunk, `$chunk_fn(src, dst, bytes)`: `bytes` from `src` to `dst`, the chunk at one
-/// offset in each half. 4x unrolled SIMD copy loop. `$store_fn` is `_mm*_store_si*` (cached; the
-/// 128-bit cached copy uses `read_volatile`/`write_volatile`) or `_mm*_stream_si*` (NT).
+/// One Spd-Copy chunk, `$chunk_fn(src, dst, bytes)`: `bytes` from `src` to `dst`, the chunk at one offset in each half. 4x unrolled SIMD
+/// copy loop. `$store_fn` is `_mm*_store_si*` (cached; the 128-bit cached copy uses `read_volatile`/`write_volatile`) or `_mm*_stream_si*`
+/// (NT).
 ///
-/// It walks both pointers over the chunk's vectors, four a step, then the rest, and runs in a
-/// function of its own (`$chunk_fn`, called once a chunk; TODO 99): inlined in the test function,
-/// where the compiler knows the halves' distance, it kept one pointer and addressed the other half
-/// through an index, `(walked,distance)` for each store (or each load), and the NT copy indexed
-/// both from one offset. It takes three scalars, which come in registers: as a struct by value
-/// (round 3) they went through the stack, three stores and three store-forwarded loads before the
-/// chunk's first load, twice a cycle, which with the call at L1 size (a 12 KiB chunk, 192 vectors
-/// at 512 bits) cost about 2%.
+/// It walks both pointers over the chunk's vectors, four a step, then the rest, and runs in a function of its own (`$chunk_fn`, called once
+/// a chunk; TODO 99): inlined in the test function, where the compiler knows the halves' distance, it kept one pointer and addressed the
+/// other half through an index, `(walked,distance)` for each store (or each load), and the NT copy indexed both from one offset. It takes
+/// three scalars, which come in registers: as a struct by value (round 3) they went through the stack, three stores and three
+/// store-forwarded loads before the chunk's first load, twice a cycle, which with the call at L1 size (a 12 KiB chunk, 192 vectors at 512
+/// bits) cost about 2%.
 ///
-/// Safety: `src` and `dst` are valid for `bytes` rounded up to a whole vector, aligned to the
-/// vector, and don't overlap.
+/// Safety: `src` and `dst` are valid for `bytes` rounded up to a whole vector, aligned to the vector, and don't overlap.
 macro_rules! spd_copy_hot {
     ($chunk_fn:ident, $target_feature:literal, $arch_type:ty, $load_fn:path, $store_fn:path) => {
         #[target_feature(enable = $target_feature)]
@@ -156,8 +153,8 @@ macro_rules! spd_copy_hot {
                 sp = sp.wrapping_add(4);
                 dp = dp.wrapping_add(4);
             }
-            // The rest, at most 3, in line: as a loop, the NT copy's (its stores are asm, so the
-            // compiler doesn't unroll it) indexed both from one offset
+            // The rest, at most 3, in line: as a loop, the NT copy's (its stores are asm, so the compiler doesn't unroll it) indexed both
+            // from one offset
             let rest = vectors % 4;
             if rest > 0 {
                 $store_fn(dp, $load_fn(sp));
@@ -329,8 +326,7 @@ macro_rules! spd_copy_impl {
                 return runner.finish_completed(0);
             }
             let base = extent.ptr;
-            // The extent's halves: it is a multiple of 4 KiB, so each half is a multiple of every
-            // vector width
+            // The extent's halves: it is a multiple of 4 KiB, so each half is a multiple of every vector width
             let half_bytes = extent.test_size / 2;
 
             // Init phase: scalar fill source half (skipped in dependent mode), not timed
@@ -508,9 +504,9 @@ crate::auto_dispatch!(
 // Regular load + regular store — measures cache copy bandwidth.
 // ============================================================================
 
-// Volatile 16 B loads and stores, which the compiler can't merge: with `_mm_load_si128` and
-// `_mm_store_si128` it copied each two adjacent vectors as one 32 B `ymm` move (the AVX2 baseline),
-// so Spd-Copy-128 ran at 256 bits (TODO 99). The same instructions otherwise (`vmovaps xmm`).
+// Volatile 16 B loads and stores, which the compiler can't merge: with `_mm_load_si128` and `_mm_store_si128` it copied each two adjacent
+// vectors as one 32 B `ymm` move (the AVX2 baseline), so Spd-Copy-128 ran at 256 bits (TODO 99). The same instructions otherwise (`vmovaps
+// xmm`).
 spd_copy_impl!(
     spd_copy_128_impl,
     spd_copy_128_multi,
@@ -600,9 +596,8 @@ crate::auto_dispatch!(
 mod tests {
     use super::*;
 
-    /// TODO 99: each width's copy chunk, cached and NT, copies exactly its chunk, each vector to
-    /// its own place, over lengths that take its steps of 4 vectors (and the compiler's unrolling
-    /// of them), each tail of 1-3 and L1 size, and writes nothing else.
+    /// TODO 99: each width's copy chunk, cached and NT, copies exactly its chunk, each vector to its own place, over lengths that take its
+    /// steps of 4 vectors (and the compiler's unrolling of them), each tail of 1-3 and L1 size, and writes nothing else.
     #[test]
     fn copy_chunks_copy_every_vector_and_nothing_else() {
         type Chunk = unsafe fn(*const u8, *mut u8, usize);

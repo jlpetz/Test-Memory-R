@@ -45,15 +45,13 @@ use crate::thread_pool::{CpuAssignment, ThreadPool, WorkResult};
 use crate::{BlockInfo, EnhancedMemoryLayout, ErrorMode, MemoryAllocationConfig, MemoryBackend, ProgressTracker, RuntimeConfig};
 
 /// Per-thread result row collected during a test run:
-/// `(thread_id, cpu_id, bytes, time, errors, operations, cycles_completed)`, the time the test's own
-/// (`WorkResult::timed`).
+/// `(thread_id, cpu_id, bytes, time, errors, operations, cycles_completed)`, the time the test's own (`WorkResult::timed`).
 type CpuStatRow = (usize, usize, u64, std::time::Duration, u64, u64, u32);
 /// Per-test map from test name to its collected per-thread stat rows.
 type TestCpuStats = HashMap<String, Vec<CpuStatRow>>;
 
-/// Stable per-suite execution context shared across every test cycle. Only the
-/// cycle number changes between cycles, so it's passed separately; everything
-/// else is bundled here to keep `execute_test_cycle`'s signature manageable.
+/// Stable per-suite execution context shared across every test cycle. Only the cycle number changes between cycles, so it's passed
+/// separately; everything else is bundled here to keep `execute_test_cycle`'s signature manageable.
 struct CycleContext<'a> {
     test_definitions: &'a [TestDefinition],
     thread_pool: &'a ThreadPool,
@@ -72,8 +70,7 @@ struct CycleContext<'a> {
     fe: &'a dyn Frontend,
 }
 
-/// Keeps the tests whose display, actual or original name matches one of the filter's
-/// comma-separated globs, e.g. `"Lat-*,Mem-*-Read"`.
+/// Keeps the tests whose display, actual or original name matches one of the filter's comma-separated globs, e.g. `"Lat-*,Mem-*-Read"`.
 pub(crate) fn retain_matching(test_definitions: &mut Vec<TestDefinition>, filter: &str) {
     let matchers: Vec<GlobMatcher> = filter
         .split(',')
@@ -96,8 +93,8 @@ pub(crate) fn retain_matching(test_definitions: &mut Vec<TestDefinition>, filter
     });
 }
 
-/// CLI-derived overrides controlling which tests run and how their parameters
-/// are tweaked. Bundled so the run entry point keeps a manageable signature.
+/// CLI-derived overrides controlling which tests run and how their parameters are tweaked. Bundled so the run entry point keeps a
+/// manageable signature.
 /// All fields are optional — `None` means "use the value from the config/defaults".
 #[derive(Default, Clone, Copy)]
 pub struct TestRunOverrides<'a> {
@@ -129,9 +126,8 @@ pub struct TestRunOverrides<'a> {
     pub command_line: &'a [String],
 }
 
-/// How a whole run ended, for the console's last line and the exit status: 0 passed, 1 tests
-/// failed or found errors, 2 stopped before testing (a config error, no test matched, allocation
-/// failed, or no test ran at all), 3 interrupted (Ctrl+C) with no errors so far. Not
+/// How a whole run ended, for the console's last line and the exit status: 0 passed, 1 tests failed or found errors, 2 stopped before
+/// testing (a config error, no test matched, allocation failed, or no test ran at all), 3 interrupted (Ctrl+C) with no errors so far. Not
 /// `progress::RunOutcome`, which says why the test loop stopped.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum RunStatus {
@@ -165,9 +161,8 @@ impl RunStatus {
 // Global flags for shutdown handling
 pub static SHUTDOWN_REQUESTED: AtomicBool = AtomicBool::new(false);
 
-/// Stops the run gracefully, as a first Ctrl+C does: the step running ends at its next check, and
-/// the run reports and saves what it has (TODO 29: the GUI's Stop). The flag is never cleared, so
-/// it stops this process's run for good.
+/// Stops the run gracefully, as a first Ctrl+C does: the step running ends at its next check, and the run reports and saves what it has
+/// (TODO 29: the GUI's Stop). The flag is never cleared, so it stops this process's run for good.
 pub fn request_stop() {
     SHUTDOWN_REQUESTED.store(true, Ordering::Relaxed);
 }
@@ -193,8 +188,7 @@ pub enum MemoryEffect {
     /// After this test, memory still contains whatever was there before.
     /// Examples: MirrorMove (mirror + unmirror), Bench-Verify (read-only)
     Preserves,
-    /// Test overwrites memory with test-specific patterns that don't match any
-    /// standard PatternId. Dependent tests cannot follow this.
+    /// Test overwrites memory with test-specific patterns that don't match any standard PatternId. Dependent tests cannot follow this.
     /// Examples: StuckBit (writes 0xAAAA/0x5555), RefreshStable (writes fixed pattern)
     Destroys,
 }
@@ -209,10 +203,9 @@ pub struct PatternId {
 }
 
 impl PatternId {
-    /// The pattern a test writes or expects: a Bench-*-Seal-* test's is its seal pattern, modes
-    /// 200 (TMR) and 201 (TM5) whatever its width; a native Bench pair's, Init and Verify alike, its
-    /// family's pinned image (`NATIVE`, `param0` numbering the family from 1); any other test's is
-    /// its config's.
+    /// The pattern a test writes or expects: a Bench-*-Seal-* test's is its seal pattern, modes 200 (TMR) and 201 (TM5) whatever its width;
+    /// a native Bench pair's, Init and Verify alike, its family's pinned image (`NATIVE`, `param0` numbering the family from 1); any other
+    /// test's is its config's.
     pub fn for_test(test_name: &str, config: &crate::tests::TestMemoryConfig) -> Self {
         if test_name.starts_with("Bench-Init-Seal-") || test_name.starts_with("Bench-Verify-Seal-") {
             let mode = if test_name.contains("-Seal-TM5") { 201 } else { 200 };
@@ -226,8 +219,7 @@ impl PatternId {
         Self::from_config(config)
     }
 
-    /// Mode 300: a native program's image (pattern spec v2), keyed by its step and cycle, which
-    /// no other step's verify expects.
+    /// Mode 300: a native program's image (pattern spec v2), keyed by its step and cycle, which no other step's verify expects.
     pub const NATIVE: u32 = 300;
 
     /// Create from a TestMemoryConfig's pattern settings.
@@ -262,11 +254,10 @@ impl std::fmt::Display for MemoryEffect {
     }
 }
 
-/// The command line's `pattern-mode=`. On a SimpleTest it replaces the native program, which would
-/// otherwise win and leave the mode reported but not run. A numbered mode goes on every test but
-/// Mem-Sequence, which runs native patterns only and keeps its program. A native family's number
-/// runs the family alone on every SimpleTest and Mem-Sequence and leaves the other tests as they
-/// were; with neither in the plan it changes nothing, and says so.
+/// The command line's `pattern-mode=`. On a SimpleTest it replaces the native program, which would otherwise win and leave the mode
+/// reported but not run. A numbered mode goes on every test but Mem-Sequence, which runs native patterns only and keeps its program. A
+/// native family's number runs the family alone on every SimpleTest and Mem-Sequence and leaves the other tests as they were; with neither
+/// in the plan it changes nothing, and says so.
 fn apply_pattern_mode(defs: &mut [TestDefinition], mode: u32) {
     let Some(family) = crate::pattern::Family::from_number(mode) else {
         for def in defs.iter_mut() {
@@ -293,8 +284,8 @@ fn apply_pattern_mode(defs: &mut [TestDefinition], mode: u32) {
     }
 }
 
-/// The command line's `sequence=` and `order=`, on every Mem-Sequence step: `sequence=` replaces
-/// its passes, `order=` the order its steps take when they name none. Checked as a config's are.
+/// The command line's `sequence=` and `order=`, on every Mem-Sequence step: `sequence=` replaces its passes, `order=` the order its steps
+/// take when they name none. Checked as a config's are.
 fn apply_sequence(defs: &mut [TestDefinition], sequence: Option<&str>, order: Option<&str>) -> Result<(), String> {
     let order = order
         .map(|o| crate::sequence::Order::parse(o).ok_or_else(|| format!("order={o}: forward, reverse, random or stride")))
@@ -317,11 +308,10 @@ fn apply_sequence(defs: &mut [TestDefinition], sequence: Option<&str>, order: Op
     Ok(())
 }
 
-/// A native SimpleTest that writes first writes each pattern as a pair, P then its inverse ~P, in
-/// a chunk's back-to-back rounds (`Program::phase`): an odd `write_read_cycles` rounds up to even,
-/// so no pattern goes without its inverse, whatever the cycles or the time limit. After the CLI's
-/// overrides, so it covers theirs too. A config's SimpleTest and a TM5 import take 4 by default,
-/// the built-in suite's 2.
+/// A native SimpleTest that writes first writes each pattern as a pair, P then its inverse ~P, in a chunk's back-to-back rounds
+/// (`Program::phase`): an odd `write_read_cycles` rounds up to even, so no pattern goes without its inverse, whatever the cycles or the
+/// time limit. After the CLI's overrides, so it covers theirs too. A config's SimpleTest and a TM5 import take 4 by default, the built-in
+/// suite's 2.
 fn pair_native_rounds(defs: &mut [TestDefinition]) {
     for def in defs {
         let wrc = def.config.write_read_cycles;
@@ -335,8 +325,7 @@ fn pair_native_rounds(defs: &mut [TestDefinition]) {
             );
             def.config.write_read_cycles = wrc + 1;
         }
-        // Mem-Sequence: its program rounds a chunk (`Sequence::rounds`), the same way, where one
-        // more run makes them even
+        // Mem-Sequence: its program rounds a chunk (`Sequence::rounds`), the same way, where one more run makes them even
         if def.actual_name == "Mem-Sequence" {
             let seq = def.config.sequence();
             let reps = wrc.max(1);
@@ -368,8 +357,8 @@ fn pair_native_rounds(defs: &mut [TestDefinition]) {
 /// Classification:
 /// - **Writes**: Tests that write a known, repeatable pattern (SimpleTest, SimpleTestNT, Bench-Init)
 /// - **Preserves**: Tests that leave memory intact (MirrorMove round-trip, Bench-Verify read-only)
-/// - **Destroys**: Tests that overwrite with non-standard patterns (StuckBit, Refresh, CacheBust, etc.)
-///   Latency and bandwidth tests also destroy — they use internal patterns not tracked by PatternId.
+/// - **Destroys**: Tests that overwrite with non-standard patterns (StuckBit, Refresh, CacheBust, etc.) Latency and bandwidth tests also
+///   destroy — they use internal patterns not tracked by PatternId.
 fn derive_memory_effect(test_name: &str, config: &crate::tests::TestMemoryConfig) -> MemoryEffect {
     // Tests that write a known, config-derived pattern
     if test_name.starts_with("Mem-SimpleV2") && config.native_program().is_some() {
@@ -384,18 +373,16 @@ fn derive_memory_effect(test_name: &str, config: &crate::tests::TestMemoryConfig
         return MemoryEffect::Preserves;
     }
 
-    // Everything else destroys: StuckBit, Refresh, CacheBust, Random, Stride,
-    // BlockMove, Saturate, latency tests, bandwidth tests
+    // Everything else destroys: StuckBit, Refresh, CacheBust, Random, Stride, BlockMove, Saturate, latency tests, bandwidth tests
     MemoryEffect::Destroys
 }
 
 /// Validate a test plan's dependency chain.
 ///
-/// Walks the steps in order, tracking what pattern is currently in memory. Reports each step that
-/// uses `skip_init=true` (dependent mode) but finds no pattern in memory or the wrong one: a load
-/// error, since it would verify data nothing wrote. A step that takes the seal leaves the seal. A
-/// native SimpleTest that verifies without writing is refused outright: its image is keyed by its
-/// own step, which no other step writes, and only a native Bench pair shares one (TODO 13).
+/// Walks the steps in order, tracking what pattern is currently in memory. Reports each step that uses `skip_init=true` (dependent mode)
+/// but finds no pattern in memory or the wrong one: a load error, since it would verify data nothing wrote. A step that takes the seal
+/// leaves the seal. A native SimpleTest that verifies without writing is refused outright: its image is keyed by its own step, which no
+/// other step writes, and only a native Bench pair shares one (TODO 13).
 ///
 /// Returns a list of (step_index, message) for any issues found.
 pub fn validate_test_plan(tests: &[TestDefinition]) -> Vec<(usize, String)> {
@@ -422,9 +409,8 @@ pub fn validate_test_plan(tests: &[TestDefinition]) -> Vec<(usize, String)> {
         }
 
         if is_dependent {
-            // Dependent test skips its own init — needs compatible pattern already in memory.
-            // Exception: Writes tests (like Bench-Init) with skip_init just skip the init_fn
-            // and do their writes in test_fn — they don't depend on prior memory state.
+            // Dependent test skips its own init — needs compatible pattern already in memory. Exception: Writes tests (like Bench-Init)
+            // with skip_init just skip the init_fn and do their writes in test_fn — they don't depend on prior memory state.
             let needs_existing_pattern = matches!(&test.memory_effect, MemoryEffect::Preserves);
 
             if needs_existing_pattern {
@@ -452,8 +438,7 @@ pub fn validate_test_plan(tests: &[TestDefinition]) -> Vec<(usize, String)> {
             }
         }
 
-        // Update memory state based on what this test does. A step that takes the seal leaves it
-        // in memory, whatever it wrote (TODO 74).
+        // Update memory state based on what this test does. A step that takes the seal leaves it in memory, whatever it wrote (TODO 74).
         let sealed = test.config.seal.expects.then_some(MemoryEffect::Writes(PatternId {
             mode: match test.config.seal.kernel.pattern {
                 crate::seal::SealPattern::Tmr => 200,
@@ -498,8 +483,8 @@ pub struct TestDefinition {
 }
 
 impl TestDefinition {
-    /// The step's name in the plan, the ticker and error lines: the TM5 test number for an import,
-    /// the id for a config that gives one, e.g. `Mem-SimpleV2_A (Test 12)`.
+    /// The step's name in the plan, the ticker and error lines: the TM5 test number for an import, the id for a config that gives one, e.g.
+    /// `Mem-SimpleV2_A (Test 12)`.
     pub fn step_label(&self, tm5: bool) -> String {
         match (&self.id, tm5) {
             (Some(id), true) => format!("{} (Test {id})", self.display_name),
@@ -508,33 +493,29 @@ impl TestDefinition {
         }
     }
 
-    /// The SIMD width the test runs at where its name alone doesn't fix it (TODO 99), as the results
-    /// file records it: an `-Auto` test the run's width, which it resolved to (its name says it
-    /// too, `crate::simd::test_width`), Mem-Sequence and the Bench pairs that name no width theirs
-    /// (`tests::picked_width`). `None` for a test that runs at the width it is named for, or has
-    /// none.
+    /// The SIMD width the test runs at where its name alone doesn't fix it (TODO 99), as the results file records it: an `-Auto` test the
+    /// run's width, which it resolved to (its name says it too, `crate::simd::test_width`), Mem-Sequence and the Bench pairs that name no
+    /// width theirs (`tests::picked_width`). `None` for a test that runs at the width it is named for, or has none.
     pub fn simd_width(&self) -> Option<crate::simd::Width> {
         if self.original_name.is_some() { Some(crate::simd::test_width()) } else { crate::tests::picked_width(self.actual_name) }
     }
 
-    /// The SIMD width the test runs at: the one it picks at run time (`simd_width`), else the one
-    /// its name says (`Width::of_name`). `None` for a test with no SIMD width.
+    /// The SIMD width the test runs at: the one it picks at run time (`simd_width`), else the one its name says (`Width::of_name`). `None`
+    /// for a test with no SIMD width.
     pub fn width(&self) -> Option<crate::simd::Width> {
         self.simd_width().or_else(|| crate::simd::Width::of_name(self.actual_name))
     }
 
-    /// Why a CPU can't run the test, if it can't: `check` (the CPU's, `Width::check`) refuses the
-    /// width it runs at (TODO 99).
+    /// Why a CPU can't run the test, if it can't: `check` (the CPU's, `Width::check`) refuses the width it runs at (TODO 99).
     fn cpu_lacks(&self, check: impl Fn(crate::simd::Width) -> Result<crate::simd::Width, String>) -> Option<String> {
         self.width().and_then(|w| check(w).err())
     }
 }
 
-/// Leaves out of the run each test the CPU can't run (`TestDefinition::cpu_lacks`, `check` the
-/// CPU's): a test named for 512 on a CPU without AVX-512, picked by a plan, a filter or a config
-/// (TODO 99). The kernels don't check: a test that got past this would run instructions the CPU
-/// lacks, and `assert_cpu_runs` stops the run at it instead. Marks a left-out step's id not run in
-/// `cycle_order`. Returns each test left out, once, and why.
+/// Leaves out of the run each test the CPU can't run (`TestDefinition::cpu_lacks`, `check` the CPU's): a test named for 512 on a CPU
+/// without AVX-512, picked by a plan, a filter or a config (TODO 99). The kernels don't check: a test that got past this would run
+/// instructions the CPU lacks, and `assert_cpu_runs` stops the run at it instead. Marks a left-out step's id not run in `cycle_order`.
+/// Returns each test left out, once, and why.
 fn leave_out_what_the_cpu_lacks(
     tests: &mut Vec<TestDefinition>, cycle_order: &mut Option<CycleOrder>,
     check: impl Fn(crate::simd::Width) -> Result<crate::simd::Width, String>,
@@ -553,20 +534,19 @@ fn leave_out_what_the_cpu_lacks(
     left_out
 }
 
-/// Stops the run at a test the CPU can't run (`check` the CPU's): `leave_out_what_the_cpu_lacks`
-/// should have left it out, and its kernel would fault or worse (TODO 99).
+/// Stops the run at a test the CPU can't run (`check` the CPU's): `leave_out_what_the_cpu_lacks` should have left it out, and its kernel
+/// would fault or worse (TODO 99).
 fn assert_cpu_runs(def: &TestDefinition, check: impl Fn(crate::simd::Width) -> Result<crate::simd::Width, String>) {
     if let Some(lacks) = def.cpu_lacks(check) {
         panic!("bug: {} reached the run, but {lacks}: the choice of tests should have left it out", def.display_name);
     }
 }
 
-/// The run's seal (TODO 74): the command line's (`overrides.seal_override`, `seal=`), else the
-/// config's, else tmr; at the command line's width (`seal_width_override`, `seal-width=`), else
-/// the config's `seal_width`, else the run's `width=` (TODO 99), else the seal's auto (this
-/// machine's calibrated width, else the rule); with where the width came from. A width the CPU
-/// lacks is refused, unsealed too, where it would set a mirror's data (TODO 99: refused, not
-/// stepped down). It takes the overrides whole, so the run can't hand it one and drop the other.
+/// The run's seal (TODO 74): the command line's (`overrides.seal_override`, `seal=`), else the config's, else tmr; at the command line's
+/// width (`seal_width_override`, `seal-width=`), else the config's `seal_width`, else the run's `width=` (TODO 99), else the seal's auto
+/// (this machine's calibrated width, else the rule); with where the width came from. A width the CPU lacks is refused, unsealed too, where
+/// it would set a mirror's data (TODO 99: refused, not stepped down). It takes the overrides whole, so the run can't hand it one and drop
+/// the other.
 fn run_seal(
     overrides: &TestRunOverrides, config: Option<&crate::config::ModernConfig>,
 ) -> Result<(crate::seal::SealSettings, crate::seal::SealKernel, crate::seal::SealWidthSource), String> {
@@ -586,18 +566,17 @@ fn run_seal(
 pub enum SealUse {
     /// A correctness test: the seal is checked before each of its chunks and resealed after.
     Wrap,
-    /// A mirror test: its data is the seal and its verify the seal check (TM5's
-    /// `Capable_UseTst0ForGenAndCheck`).
+    /// A mirror test: its data is the seal and its verify the seal check (TM5's `Capable_UseTst0ForGenAndCheck`).
     Data,
     /// TM5's test 0 as a step: the seal check alone.
     Check,
-    /// Bandwidth, latency, Bench and Mem-Random tests: never sealed. The worker checks what one will
-    /// overwrite before it runs and reseals it before the next step that takes the seal.
+    /// Bandwidth, latency, Bench and Mem-Random tests: never sealed. The worker checks what one will overwrite before it runs and reseals
+    /// it before the next step that takes the seal.
     Never,
 }
 
-/// A test's seal use, from its name. A new `Mem-*` correctness test takes the seal unless it is
-/// listed here; `every_sealed_test_honours_the_seal` checks each one does.
+/// A test's seal use, from its name. A new `Mem-*` correctness test takes the seal unless it is listed here;
+/// `every_sealed_test_honours_the_seal` checks each one does.
 pub fn seal_use(test_name: &str) -> SealUse {
     if test_name == "Seal-Check" {
         SealUse::Check
@@ -610,8 +589,8 @@ pub fn seal_use(test_name: &str) -> SealUse {
     }
 }
 
-/// The seal each step runs with (TODO 74): `kernel` when the run is sealed (`None` when not, and
-/// then the mirror tests still use `pattern`'s kernel for their data).
+/// The seal each step runs with (TODO 74): `kernel` when the run is sealed (`None` when not, and then the mirror tests still use
+/// `pattern`'s kernel for their data).
 fn set_step_seals(test_definitions: &mut [TestDefinition], kernel: crate::seal::SealKernel, on: bool) {
     for def in test_definitions {
         let takes = def.seal_use != SealUse::Never && !def.seal_opt_out;
@@ -647,10 +626,9 @@ impl TestSuiteTiming {
     }
 }
 
-/// The test configuration, shown before a run and by `--startup-debug`, after the channels
-/// (`Run::Channels`): built once that event is sent, because building it logs. `thread_memory` is
-/// each thread's bytes, planned or allocated, so the table shows the extents and chunks the tests
-/// will resolve; `tm5` a TM5 import's `.cfg` window and lock granularity.
+/// The test configuration, shown before a run and by `--startup-debug`, after the channels (`Run::Channels`): built once that event is
+/// sent, because building it logs. `thread_memory` is each thread's bytes, planned or allocated, so the table shows the extents and chunks
+/// the tests will resolve; `tm5` a TM5 import's `.cfg` window and lock granularity.
 fn test_plan(
     test_definitions: &[TestDefinition], suite_timing: &TestSuiteTiming, cache_info: &CacheInfo, thread_memory: &[usize],
     tm5: Option<(u32, u32)>, sequence: &crate::reporting::converters::PlanSequence,
@@ -675,9 +653,8 @@ pub enum TestFunction {
     Latency(TestFunctionLatency),
 }
 
-/// What the setup hands a run: the memory layout and the machine's settings for it, how errors
-/// are handled and how long the suite runs, the config and the command line's overrides, and the
-/// caches the tests' sizes come from. Bundled so the run's entry point keeps a manageable
+/// What the setup hands a run: the memory layout and the machine's settings for it, how errors are handled and how long the suite runs, the
+/// config and the command line's overrides, and the caches the tests' sizes come from. Bundled so the run's entry point keeps a manageable
 /// signature (TODO 29 added its frontend).
 pub struct RunSetup<'a> {
     pub layout: EnhancedMemoryLayout,
@@ -747,8 +724,7 @@ pub fn run_tests_with_layout_and_timing_filtered(setup: RunSetup, fe: &Arc<dyn F
         retain_matching(&mut test_definitions, test_name_filter);
 
         if test_definitions.is_empty() {
-            // The stop, then what the filter could have matched: collecting that logs, so it is an
-            // event of its own
+            // The stop, then what the filter could have matched: collecting that logs, so it is an event of its own
             let plan = plan.filter(|p| p.tests.is_some());
             fe.event(Run::NotRun(NotRun::NoTestMatches { filter: test_name_filter.to_string(), plan: plan.map(|p| p.name) }).into());
             let tests = match plan {
@@ -787,8 +763,8 @@ pub fn run_tests_with_layout_and_timing_filtered(setup: RunSetup, fe: &Arc<dyn F
         }
     }
 
-    // Apply the mirror override if provided: it sets the one field on every mirror test, leaving
-    // the rest of each test's parameters as they were (TODO 85)
+    // Apply the mirror override if provided: it sets the one field on every mirror test, leaving the rest of each test's parameters as they
+    // were (TODO 85)
     if let Some(mirror) = mirror_override {
         log::info!("🔧 Applying CLI mirror override: {}", mirror);
         for def in test_definitions.iter_mut().filter(|d| d.actual_name.starts_with("Mem-MirrorV2")) {
@@ -856,12 +832,12 @@ pub fn run_tests_with_layout_and_timing_filtered(setup: RunSetup, fe: &Arc<dyn F
 
     pair_native_rounds(&mut test_definitions);
 
-    // Validate test parameter values (must be >= 1 and power-of-2 where required). A bad value is a
-    // config error: stop before anything is allocated.
+    // Validate test parameter values (must be >= 1 and power-of-2 where required). A bad value is a config error: stop before anything is
+    // allocated.
     let mut param_errors = Vec::new();
     for def in &test_definitions {
-        // After the CLI's overrides too: a verify of the fill with a cycle-keyed TMR mode fails on
-        // every word, as the config check refuses (`validate_repetition`)
+        // After the CLI's overrides too: a verify of the fill with a cycle-keyed TMR mode fails on every word, as the config check refuses
+        // (`validate_repetition`)
         if def.actual_name.starts_with("Mem-SimpleV2")
             && def.config.test_reps == 0
             && matches!(def.config.pattern_mode, Some(0 | 1 | 2 | 20 | 30))
@@ -886,8 +862,8 @@ pub fn run_tests_with_layout_and_timing_filtered(setup: RunSetup, fe: &Arc<dyn F
             check("rng_sequences", ctx.rng_sequences, true);
             check("subdivisions", ctx.subdivisions, true);
             check("copy_directions", ctx.copy_directions, false);
-            // Mem-Stride splits each chunk by shifting; a chunk is a multiple of 4 KiB (512 u64),
-            // so more subdivisions than that would leave part of a chunk untested (TODO 76)
+            // Mem-Stride splits each chunk by shifting; a chunk is a multiple of 4 KiB (512 u64), so more subdivisions than that would
+            // leave part of a chunk untested (TODO 76)
             if let Some(v) = ctx.subdivisions
                 && v > 512
             {
@@ -922,8 +898,8 @@ pub fn run_tests_with_layout_and_timing_filtered(setup: RunSetup, fe: &Arc<dyn F
     }
     let tm5_run = config.is_some_and(|c| c.legacy_metadata.is_some());
 
-    // Validate test plan dependency chain: a step that verifies the data an earlier one left must
-    // directly follow it, with no seal in between (TODO 74, the plan-time half of TODO 13)
+    // Validate test plan dependency chain: a step that verifies the data an earlier one left must directly follow it, with no seal in
+    // between (TODO 74, the plan-time half of TODO 13)
     for (i, def) in test_definitions.iter().enumerate() {
         log::debug!("Test plan [{}] '{}': effect={}, skip_init={}", i + 1, def.display_name, def.memory_effect, def.config.skip_init);
     }
@@ -966,16 +942,15 @@ pub fn run_tests_with_layout_and_timing_filtered(setup: RunSetup, fe: &Arc<dyn F
 
     let progress = Arc::new(ProgressTracker::new());
 
-    // Subscribe to WHEA before any memory is touched, so hardware errors during allocation are
-    // caught too. Failure is non-fatal — WHEA adds visibility that our verify reads cannot have
-    // (DDR5 on-die ECC corrections, faults during non-verifying tests), but testing works without
-    // it. See whea.rs for the transport choice.
+    // Subscribe to WHEA before any memory is touched, so hardware errors during allocation are caught too. Failure is non-fatal — WHEA adds
+    // visibility that our verify reads cannot have (DDR5 on-die ECC corrections, faults during non-verifying tests), but testing works
+    // without it. See whea.rs for the transport choice.
     fe.event(Run::WheaMonitoring(progress.whea.start()).into());
 
     let all_test_cpu_stats: Arc<Mutex<TestCpuStats>> = Arc::new(Mutex::new(HashMap::new()));
 
-    // Stage 1: Pre-allocate all memory blocks, between the page sizes allowed, which are shown
-    // first: parsed the way the allocator parses them, so "2mb" or "Large" show as what they mean
+    // Stage 1: Pre-allocate all memory blocks, between the page sizes allowed, which are shown first: parsed the way the allocator parses
+    // them, so "2mb" or "Large" show as what they mean
     {
         use crate::memory::allocator::PageSizeLevel;
         let min = PageSizeLevel::from_config_str(&runtime_config.memory_allocation.min_page_size);
@@ -992,8 +967,8 @@ pub fn run_tests_with_layout_and_timing_filtered(setup: RunSetup, fe: &Arc<dyn F
             }
         };
 
-    // The results file's page mix and request counts, from the spans, before the report takes
-    // them. Outcomes, not requests: 1 GiB pages come only when physical memory is contiguous enough.
+    // The results file's page mix and request counts, from the spans, before the report takes them. Outcomes, not requests: 1 GiB pages
+    // come only when physical memory is contiguous enough.
     let page_mix = crate::run_context::PageSizeMix::from_spans(&spans);
     let requests: usize = spans.iter().map(|s| s.commits.len()).sum();
     let refused = spans.iter().flat_map(|s| &s.commits).filter(|c| c.refused).count();
@@ -1020,8 +995,8 @@ pub fn run_tests_with_layout_and_timing_filtered(setup: RunSetup, fe: &Arc<dyn F
     // Create thread pool with pre-allocated blocks
     let thread_count = allocated_blocks.len();
 
-    // Set thread_count, cache_line_bytes and the TSC rate on all test configs (a config's latency
-    // tests need the TSC rate as the built-in ones do, TODO 94)
+    // Set thread_count, cache_line_bytes and the TSC rate on all test configs (a config's latency tests need the TSC rate as the built-in
+    // ones do, TODO 94)
     let cache_info = crate::tests::get_cache_info();
     for test_def in &mut test_definitions {
         test_def.config.thread_count = thread_count;
@@ -1033,9 +1008,8 @@ pub fn run_tests_with_layout_and_timing_filtered(setup: RunSetup, fe: &Arc<dyn F
 
     let thread_priority = runtime_config.thread_priority;
 
-    // The real allocated total while we still own the blocks (`ThreadPool::new` takes them by value
-    // below). An outcome: a partially satisfied request still runs, so it can't come from
-    // `layout.allocation_result`.
+    // The real allocated total while we still own the blocks (`ThreadPool::new` takes them by value below). An outcome: a partially
+    // satisfied request still runs, so it can't come from `layout.allocation_result`.
     let allocated_bytes: u64 = allocated_blocks.values().flat_map(|blocks| blocks.iter()).map(|block| block.buffer.size() as u64).sum();
 
     log::info!(
@@ -1052,9 +1026,9 @@ pub fn run_tests_with_layout_and_timing_filtered(setup: RunSetup, fe: &Arc<dyn F
         runtime_config.cpu_list.as_deref(), // Pass the CPU list
     );
 
-    // Open the result file with the run's resolved configuration, now that both allocation and
-    // thread placement are observable facts (TODO #67). Without this, `--compare-results` has no way
-    // to know two runs used different working-set sizes and reports the difference as a code change.
+    // Open the result file with the run's resolved configuration, now that both allocation and thread placement are observable facts (TODO
+    // #67). Without this, `--compare-results` has no way to know two runs used different working-set sizes and reports the difference as a
+    // code change.
     let test_run_result = {
         let snapshot = crate::run_context::RunConfigSnapshot::capture(crate::run_context::RunConfigInputs {
             command_line,
@@ -1099,16 +1073,14 @@ pub fn run_tests_with_layout_and_timing_filtered(setup: RunSetup, fe: &Arc<dyn F
         tm5: tm5_run,
         fe: fe.as_ref(),
     };
-    // Run cycles until a suite limit is reached. Both limits are checked *between* cycles, so a
-    // cycle is never cut short by the clock; with neither limit set the suite runs until Ctrl+C or
-    // an error halt, as the "Unlimited" in the banner says.
+    // Run cycles until a suite limit is reached. Both limits are checked *between* cycles, so a cycle is never cut short by the clock; with
+    // neither limit set the suite runs until Ctrl+C or an error halt, as the "Unlimited" in the banner says.
     let cycle_limit = suite_timing.global_cycles;
     let time_limit = suite_timing.global_duration_secs.map(|secs| Duration::from_secs(secs.into()));
     let suite_start = Instant::now();
     progress.begin_suite(suite_start, cycle_limit, time_limit, tests_per_cycle, thread_pool.live_progress());
 
-    // The native patterns' seed and transfer width, once: with the seed (and the same layout) a
-    // run writes the same bytes again
+    // The native patterns' seed and transfer width, once: with the seed (and the same layout) a run writes the same bytes again
     let (seed, (beat, beat_source)) = (crate::pattern::run_seed(), crate::pattern::transfer_beat());
     log::info!(
         "Pattern seed {seed:#018x} ({}); transfer width {} ({beat_source}); rescan {}",
@@ -1172,25 +1144,22 @@ pub fn run_tests_with_layout_and_timing_filtered(setup: RunSetup, fe: &Arc<dyn F
 
     log::info!("Memory cleanup complete");
 
-    // Final WHEA tally for the run. Taken from the monitor's own cumulative counter, so unlike the
-    // per-test deltas this is exact — no event can fall between two snapshots.
+    // Final WHEA tally for the run. Taken from the monitor's own cumulative counter, so unlike the per-test deltas this is exact — no event
+    // can fall between two snapshots.
     //
-    // ORDER MATTERS: `stop()` takes a last drain, and the window it covers is real work — the
-    // progress reporter stopped polling at its `join()` above, and freeing tens of GiB of large
-    // pages happens between there and here. On an interrupted run that window is the whole tail of
-    // the run. So stop (and drain) first, *then* read the counts; reading them first silently
-    // discards whatever that final drain found. `is_active()` is the exception — it must be read
-    // before `stop()` flips the flag.
+    // ORDER MATTERS: `stop()` takes a last drain, and the window it covers is real work — the progress reporter stopped polling at its
+    // `join()` above, and freeing tens of GiB of large pages happens between there and here. On an interrupted run that window is the whole
+    // tail of the run. So stop (and drain) first, *then* read the counts; reading them first silently discards whatever that final drain
+    // found. `is_active()` is the exception — it must be read before `stop()` flips the flag.
     //
-    // This also has to precede the performance summary below, which reports the run's WHEA total on
-    // its aggregate rows. Nothing between the free above and here touches memory, so the drain has
-    // already covered every window that could produce an event.
+    // This also has to precede the performance summary below, which reports the run's WHEA total on its aggregate rows. Nothing between the
+    // free above and here touches memory, so the drain has already covered every window that could produce an event.
     let whea_monitored = progress.whea.is_active();
     progress.whea.stop();
     let whea_totals = progress.whea.counts();
 
-    // The monitor thread handed on everything it had seen before it exited, so anything that last
-    // drain turned up would otherwise be counted but never described. Flush it here.
+    // The monitor thread handed on everything it had seen before it exited, so anything that last drain turned up would otherwise be
+    // counted but never described. Flush it here.
     let late = progress.take_whea_descriptions();
     if !late.is_empty() {
         fe.event(Run::LateWhea(late).into());
@@ -1203,9 +1172,8 @@ pub fn run_tests_with_layout_and_timing_filtered(setup: RunSetup, fe: &Arc<dyn F
         fe.event(Run::CpuPerformance(Box::new(summary)).into());
     }
 
-    // `progress.total_errors()` is the accurate aggregate (summed from every thread's result in
-    // `complete_test`), so the verdict is derived from it directly. A halt fails the run even at
-    // zero counts: the one halt trigger that carries no count is a lost worker result.
+    // `progress.total_errors()` is the accurate aggregate (summed from every thread's result in `complete_test`), so the verdict is derived
+    // from it directly. A halt fails the run even at zero counts: the one halt trigger that carries no count is a lost worker result.
     let memory_errors = progress.total_errors();
     let failed = outcome == RunOutcome::Halted || memory_errors > 0 || whea_totals.total > 0;
     // `tests_done` counts the current cycle only; a finished cycle means tests ran.
@@ -1231,17 +1199,14 @@ pub fn run_tests_with_layout_and_timing_filtered(setup: RunSetup, fe: &Arc<dyn F
 
 /// How a cycle ended (`execute_test_cycle`)
 struct CycleEnd {
-    /// The outcome the suite must end with when it stops after this cycle (Ctrl+C, or an
-    /// `ErrorMode::Halt` trigger), `None` when it goes on
+    /// The outcome the suite must end with when it stops after this cycle (Ctrl+C, or an `ErrorMode::Halt` trigger), `None` when it goes on
     stop: Option<RunOutcome>,
-    /// The cycle stopped before its end, its last steps and its final seal check not run: a
-    /// partial cycle, as its results record it (TODO 72). One whose final seal check halts the run
-    /// ran to its end, so it isn't.
+    /// The cycle stopped before its end, its last steps and its final seal check not run: a partial cycle, as its results record it (TODO
+    /// 72). One whose final seal check halts the run ran to its end, so it isn't.
     partial: bool,
 }
 
-/// Run every test once, and say how the cycle ended. The tests that ran are added to the results
-/// as this cycle, a partial cycle too.
+/// Run every test once, and say how the cycle ended. The tests that ran are added to the results as this cycle, a partial cycle too.
 fn execute_test_cycle(ctx: &CycleContext, cycle: u64) -> CycleEnd {
     let &CycleContext {
         test_definitions,
@@ -1268,8 +1233,8 @@ fn execute_test_cycle(ctx: &CycleContext, cycle: u64) -> CycleEnd {
     let success = Arc::new(AtomicBool::new(true));
     let mut stopped = None;
     let mut seal_stages = crate::results::CycleSeal::default();
-    // This cycle's seal: a key of its own and every other cycle inverted, from the seal at its
-    // start to the final check at its end, so each check expects what the step before it sealed
+    // This cycle's seal: a key of its own and every other cycle inverted, from the seal at its start to the final check at its end, so each
+    // check expects what the step before it sealed
     let run_seed = crate::pattern::run_seed();
     let seal = seal.map(|kernel| kernel.for_cycle(run_seed, cycle));
     if let Some(kernel) = seal {
@@ -1282,8 +1247,8 @@ fn execute_test_cycle(ctx: &CycleContext, cycle: u64) -> CycleEnd {
         let test_display_name = &test_def.display_name; // Use display_name for results to preserve _A suffix
         let test_func = &test_def.function;
         assert_cpu_runs(test_def, crate::simd::Width::check);
-        // The step as this cycle runs it: the cycle's seal kernel, and where the step is in the
-        // suite, which keys its native patterns (crate::pattern), so they change every cycle
+        // The step as this cycle runs it: the cycle's seal kernel, and where the step is in the suite, which keys its native patterns
+        // (crate::pattern), so they change every cycle
         let mut step_config = test_def.config.clone();
         step_config.seal.kernel = step_config.seal.kernel.for_cycle(run_seed, cycle);
         step_config.epoch = crate::pattern::StepEpoch { seed: run_seed, suite_cycle: cycle as u32, step: test_idx as u32 };
@@ -1304,9 +1269,8 @@ fn execute_test_cycle(ctx: &CycleContext, cycle: u64) -> CycleEnd {
             true,
         );
 
-        // Baseline for this test's WHEA attribution. Drain first so anything queued from the
-        // previous test is charged there, not here. Attribution is still approximate at a test
-        // boundary — the OS logs WHEA asynchronously (kernel → ETW → EventLog service) — but the
+        // Baseline for this test's WHEA attribution. Drain first so anything queued from the previous test is charged there, not here.
+        // Attribution is still approximate at a test boundary — the OS logs WHEA asynchronously (kernel → ETW → EventLog service) — but the
         // run-level total below is exact regardless.
         progress.whea.poll();
         let whea_before = progress.whea.counts();
@@ -1316,8 +1280,8 @@ fn execute_test_cycle(ctx: &CycleContext, cycle: u64) -> CycleEnd {
         // The seal's work between steps first, on its own clock (TODO 74)
         let mut seal_errors_for_test = 0u64;
         let mut seal_bits_for_test = crate::failing_bits::FailingBits::default();
-        // The seal's work before the step, and the step's own around its test (TODO 90): each the
-        // slowest thread's time over all threads' bytes
+        // The seal's work before the step, and the step's own around its test (TODO 90): each the slowest thread's time over all threads'
+        // bytes
         let (mut between_ops, mut test_ops) = (crate::ops::OpTally::default(), crate::ops::OpTally::default());
         if seal.is_some() {
             let between = Instant::now();
@@ -1422,8 +1386,8 @@ fn execute_test_cycle(ctx: &CycleContext, cycle: u64) -> CycleEnd {
                     // Recorded with or without one, before its latencies move below
                     thread_records.push(thread_step_record(&result, assignment));
                     if let Some((_, cpu_id, _)) = assignment {
-                        // Store simplified stats: (thread_id, cpu_id, bytes, time, errors, operations, cycles_completed)
-                        // The thread's own timed clock, as the step's speed (TODO 90)
+                        // Store simplified stats: (thread_id, cpu_id, bytes, time, errors, operations, cycles_completed) The thread's own
+                        // timed clock, as the step's speed (TODO 90)
                         test_stats.push((
                             result.thread_id,
                             cpu_id,
@@ -1495,10 +1459,9 @@ fn execute_test_cycle(ctx: &CycleContext, cycle: u64) -> CycleEnd {
         }
         thread_records.sort_by_key(|record| record.thread);
 
-        // Attribute WHEA events that landed while this test ran. A non-zero count here is a real
-        // failure signal even when every thread reported zero errors: the fault was either
-        // corrected before our verify read could see it, or it happened during a test that does no
-        // verification at all.
+        // Attribute WHEA events that landed while this test ran. A non-zero count here is a real failure signal even when every thread
+        // reported zero errors: the fault was either corrected before our verify read could see it, or it happened during a test that does
+        // no verification at all.
         progress.whea.poll();
         let whea_for_test = progress.whea.counts().since(&whea_before);
         if whea_for_test.total > 0 {
@@ -1519,9 +1482,8 @@ fn execute_test_cycle(ctx: &CycleContext, cycle: u64) -> CycleEnd {
         } else {
             "stopped"
         };
-        // Over the test's own time, its slowest thread's: without the setup a test leaves out of its
-        // clock (a Bench-Verify's fill, a bandwidth test's page faults, TODO 90), however short. The
-        // step's wall time when no thread ran the test.
+        // Over the test's own time, its slowest thread's: without the setup a test leaves out of its clock (a Bench-Verify's fill, a
+        // bandwidth test's page faults, TODO 90), however short. The step's wall time when no thread ran the test.
         let timed_secs = timed_for_test.map_or(test_duration_secs, |t| t.as_secs_f64());
         let throughput_mib_s = if timed_secs > 0.0 { (total_bytes_for_test as f64 / MB_F64) / timed_secs } else { 0.0 };
 
@@ -1612,8 +1574,8 @@ fn execute_test_cycle(ctx: &CycleContext, cycle: u64) -> CycleEnd {
         // Update progress tracker with test completion
         progress.complete_test(total_errors_for_test + seal_errors_for_test);
 
-        // The step's report (TODO 29): its thread timing deviations, a latency step's latencies,
-        // and where the suite stood as it ended, its results in
+        // The step's report (TODO 29): its thread timing deviations, a latency step's latencies, and where the suite stood as it ended, its
+        // results in
         let latency = (!latency_results.is_empty())
             .then(|| LatencyTestSummaryReport { levels_tested: vec![convert_to_latency_level_summary(&latency_results)] });
         fe.event(
@@ -1641,23 +1603,21 @@ fn execute_test_cycle(ctx: &CycleContext, cycle: u64) -> CycleEnd {
 
         cycle_test_summaries.push(summary);
 
-        // Early exit on errors if required. This is reported as a halt, not routed through
-        // SHUTDOWN_REQUESTED — that flag means Ctrl+C, and the verdict would report it as one.
+        // Early exit on errors if required. This is reported as a halt, not routed through SHUTDOWN_REQUESTED — that flag means Ctrl+C, and
+        // the verdict would report it as one.
         if !success.load(Ordering::Relaxed) && matches!(error_mode, ErrorMode::Halt) {
             log::error!("Halting test suite due to memory errors");
             stopped = Some(RunOutcome::Halted);
             break;
         }
-        // Ctrl+C during this test cut it short, so the cycle did not finish even if this was its
-        // last test.
+        // Ctrl+C during this test cut it short, so the cycle did not finish even if this was its last test.
         if SHUTDOWN_REQUESTED.load(Ordering::Relaxed) {
             stopped = Some(RunOutcome::Interrupted);
             break;
         }
     }
 
-    // The cycle ends with a check of all memory (TODO 74), unless it stopped early, which makes it
-    // a partial cycle in the results (TODO 72)
+    // The cycle ends with a check of all memory (TODO 74), unless it stopped early, which makes it a partial cycle in the results (TODO 72)
     let partial = stopped.is_some();
     if let Some(kernel) = seal
         && !partial
@@ -1687,8 +1647,8 @@ fn execute_test_cycle(ctx: &CycleContext, cycle: u64) -> CycleEnd {
     CycleEnd { stop: stopped, partial }
 }
 
-/// A step's Config line in its report: its parameter, its pattern mode, its extent and chunk with
-/// their sizes (from `cache_info` and the thread count, as the step resolves them), its repetitions.
+/// A step's Config line in its report: its parameter, its pattern mode, its extent and chunk with their sizes (from `cache_info` and the
+/// thread count, as the step resolves them), its repetitions.
 fn step_config_line(def: &TestDefinition, cache_info: &CacheInfo, thread_count: usize) -> StepConfigLine {
     use crate::reporting::formatters::{DefaultFormatter, ReportFormatter};
     let formatter = DefaultFormatter::new();
@@ -1722,9 +1682,8 @@ fn step_config_line(def: &TestDefinition, cache_info: &CacheInfo, thread_count: 
     }
 }
 
-/// A worker's part of a step, for the results file (TODO 72): where it ran, from `assignment` (the
-/// pool's `(thread, cpu, node)`, `None` when it has none for the thread) and the CPU's physical
-/// core, and what it did, as the step's thread and latency tables show it.
+/// A worker's part of a step, for the results file (TODO 72): where it ran, from `assignment` (the pool's `(thread, cpu, node)`, `None`
+/// when it has none for the thread) and the CPU's physical core, and what it did, as the step's thread and latency tables show it.
 fn thread_step_record(result: &WorkResult, assignment: Option<CpuAssignment>) -> crate::results::ThreadStepRecord {
     let cpu = assignment.map(|(_, cpu, _)| cpu);
     crate::results::ThreadStepRecord {
@@ -1750,8 +1709,8 @@ fn thread_step_record(result: &WorkResult, assignment: Option<CpuAssignment>) ->
     }
 }
 
-/// Run a seal stage on every worker (TODO 74) and report it: the bytes, the errors and the bits
-/// that failed (a final check's), and the wall time.
+/// Run a seal stage on every worker (TODO 74) and report it: the bytes, the errors and the bits that failed (a final check's), and the wall
+/// time.
 fn run_seal_stage(
     ctx: &CycleContext, op: crate::thread_pool::SealOp, kernel: crate::seal::SealKernel, cycle: u64,
 ) -> (u64, u64, crate::failing_bits::FailingBits, Duration) {
@@ -1783,8 +1742,8 @@ fn run_seal_stage(
     (bytes, errors, bits, duration)
 }
 
-// Generic auto-dispatch resolver - converts "*-Auto" test names to the SIMD variant at the run's
-// width (`crate::simd::test_width`: `width=`'s, else the widest the CPU has)
+// Generic auto-dispatch resolver - converts "*-Auto" test names to the SIMD variant at the run's width (`crate::simd::test_width`:
+// `width=`'s, else the widest the CPU has)
 fn resolve_auto_dispatch_test(test_name: &str) -> Option<(&'static str, TestFunction)> {
     resolve_auto_dispatch_test_at(test_name, crate::simd::test_width())
 }
@@ -1801,8 +1760,8 @@ pub(crate) fn resolve_auto_dispatch_test_at(test_name: &str, width: crate::simd:
     }
 
     // Lat-V2/V2P/NTW family — Latency-typed auto-dispatch
-    // Test names are "Lat-V2-{tier}-Read-Auto", "Lat-V2P-{tier}-Read-Auto", "Lat-NTW-DRAM-Write-Auto"
-    // Resolved names follow the same pattern with -{128,256,512} replacing -Auto
+    // Test names are "Lat-V2-{tier}-Read-Auto", "Lat-V2P-{tier}-Read-Auto", "Lat-NTW-DRAM-Write-Auto" Resolved names follow the same
+    // pattern with -{128,256,512} replacing -Auto
     if test_name.starts_with("Lat-V2-") || test_name.starts_with("Lat-V2P-") || test_name.starts_with("Lat-NTW-") {
         let width: &str = width.name();
 
@@ -2070,8 +2029,7 @@ pub(crate) fn resolve_auto_dispatch_test_at(test_name: &str, width: crate::simd:
             },
         })
     } else {
-        // SSE2 is always available on x86-64: auto takes it only without AVX2, which the startup
-        // gate requires, so only width=128 runs it
+        // SSE2 is always available on x86-64: auto takes it only without AVX2, which the startup gate requires, so only width=128 runs it
         ("128", match base_name {
             "Mem-MirrorV2-" => TestFunction::MultiBlock(mirror_move_v2_128_multi),
             "Mem-SimpleV2-" => TestFunction::MultiBlock(simple_test_v2_128_multi),
@@ -2173,8 +2131,8 @@ pub(crate) fn resolve_auto_dispatch_test_at(test_name: &str, width: crate::simd:
     Some((concrete_name, test_function))
 }
 
-/// The built-in suite as registered, before its `-Auto` tests resolve (`create_test_definitions`):
-/// each test's name, function (an `-Auto` test's own dispatcher) and config.
+/// The built-in suite as registered, before its `-Auto` tests resolve (`create_test_definitions`): each test's name, function (an `-Auto`
+/// test's own dispatcher) and config.
 pub(crate) fn registered_tests(cache_info: &CacheInfo) -> Vec<(&'static str, TestFunction, TestMemoryConfig)> {
     // TSC frequency from the passed cache_info (detected once at startup)
     let tsc_freq = cache_info.tsc_frequency_ghz;
@@ -2212,51 +2170,40 @@ pub(crate) fn registered_tests(cache_info: &CacheInfo) -> Vec<(&'static str, Tes
                 .with_memory_type(None),
         ),
         // === StuckBit CLFLUSHOPT-verify variant (TODO #59) ===
-        // Same 3-phase alternating-bit test, but each chunk is flushed out of cache between
-        // write and verify, so the verify provably round-trips through DRAM instead of reading
-        // the line it just wrote. User-mode replacement for UC driver memory: stops a valid
+        // Same 3-phase alternating-bit test, but each chunk is flushed out of cache between write and verify, so the verify provably
+        // round-trips through DRAM instead of reading the line it just wrote. User-mode replacement for UC driver memory: stops a valid
         // cached line from masking a flipped DRAM bit.
         //
-        // These deliberately use an L2-sized chunk, NOT the plain variants' large one (512 MiB).
-        // Measured on Intel Granite Rapids, 4T (1/core) and 8T (SMT), MiB/s, flush off → on:
+        // These deliberately use an L2-sized chunk, NOT the plain variants' large one (512 MiB). Measured on Intel Granite Rapids, 4T
+        // (1/core) and 8T (SMT), MiB/s, flush off → on:
         //     chunk    64 KiB   1 MiB   16 MiB   256 MiB
         //     4T off   134500  120763    55725     42944
         //     4T on     23061   36285    36629     36064
         //     8T off   150104  134165    61726     56338
         //     8T on     31680   48574    47846     45250
-        // Two things to read off that: the penalty grows as chunks shrink (1.19× → 5.8×), and
-        // — the actual point — *flush=off varies ~3× with chunk size while flush=on is flat
-        // within 1.6% for chunks ≥ 1 MiB*. Without the flush, what the test measures depends on
-        // chunk-vs-cache: at small chunks the "verify" reads SRAM written microseconds ago and
-        // never touches DRAM. So the flush belongs precisely where the chunk is cache-resident;
-        // at the plain variants' large chunks natural eviction already forces DRAM reads and
+        // Two things to read off that: the penalty grows as chunks shrink (1.19× → 5.8×), and — the actual point — *flush=off varies ~3×
+        // with chunk size while flush=on is flat within 1.6% for chunks ≥ 1 MiB*. Without the flush, what the test measures depends on
+        // chunk-vs-cache: at small chunks the "verify" reads SRAM written microseconds ago and never touches DRAM. So the flush belongs
+        // precisely where the chunk is cache-resident; at the plain variants' large chunks natural eviction already forces DRAM reads and
         // flushing only buys ~20% less bandwidth for no change in what is tested.
         //
-        // Why `scale: 1.0` and not 0.5: `CacheTarget::L2` divides by *active threads per core*
-        // (see `size_bytes_cpuid`), so on this 2 MiB-L2 part 0.5 resolves to 1 MiB at
-        // 1 thread/core but only 512 KiB under SMT — and flush-on throughput *falls* below
-        // ~1 MiB (8T: 48574 @ 1 MiB → 31680 @ 64 KiB) because the per-chunk fence + call +
-        // trailing MFENCE is paid far more often per GiB with too little work to overlap the
-        // drain against. There is no minimum-chunk floor here beyond SIMD alignment, so nothing
-        // would clamp that. 1.0 lands at 2 MiB / 1 MiB respectively — both in the measured flat
-        // zone, still cache-resident by construction.
+        // Why `scale: 1.0` and not 0.5: `CacheTarget::L2` divides by *active threads per core* (see `size_bytes_cpuid`), so on this 2
+        // MiB-L2 part 0.5 resolves to 1 MiB at 1 thread/core but only 512 KiB under SMT — and flush-on throughput *falls* below ~1 MiB (8T:
+        // 48574 @ 1 MiB → 31680 @ 64 KiB) because the per-chunk fence + call + trailing MFENCE is paid far more often per GiB with too
+        // little work to overlap the drain against. There is no minimum-chunk floor here beyond SIMD alignment, so nothing would clamp
+        // that. 1.0 lands at 2 MiB / 1 MiB respectively — both in the measured flat zone, still cache-resident by construction.
         //
-        // Those numbers come from a fixed-absolute-chunk sweep of Mem-StuckBit128
-        // (test_configs/flush_chunk_sweep.json), i.e. they isolate "does the verify reach DRAM"
-        // by holding chunk size constant. Compared instead at *operational defaults* — plain at
-        // its then ~6% fraction (512 MiB since 2026-10-03) vs this at Cache{L2} — the
-        // guarantee turns out to be free (8T, MiB/s): scalar 43056 → 43763, 128 47681 → 45705,
-        // 256 48060 → 46965, 512 46301 → 47886. Two are faster; all four are inside this box's
-        // noise. Both configs are DRAM-bandwidth-bound and move the same total traffic, so the
-        // flush *reschedules* the writeback rather than adding to it. (Contrast
-        // Mem-Refresh-FlushAuto at -22%: there the write already streams to DRAM naturally, so the
-        // flush is pure added instruction cost.) Single run — treat the ±4% spread as "no
-        // measurable difference".
+        // Those numbers come from a fixed-absolute-chunk sweep of Mem-StuckBit128 (test_configs/flush_chunk_sweep.json), i.e. they isolate
+        // "does the verify reach DRAM" by holding chunk size constant. Compared instead at *operational defaults* — plain at its then ~6%
+        // fraction (512 MiB since 2026-10-03) vs this at Cache{L2} — the guarantee turns out to be free (8T, MiB/s): scalar 43056 → 43763,
+        // 128 47681 → 45705, 256 48060 → 46965, 512 46301 → 47886. Two are faster; all four are inside this box's noise. Both configs are
+        // DRAM-bandwidth-bound and move the same total traffic, so the flush *reschedules* the writeback rather than adding to it.
+        // (Contrast Mem-Refresh-FlushAuto at -22%: there the write already streams to DRAM naturally, so the flush is pure added
+        // instruction cost.) Single run — treat the ±4% spread as "no measurable difference".
         //
-        // Auto-dispatch (one preset, not four): under flush the widths converge to a 4.8% spread
-        // because all are DRAM-bound (see doc/simd_codegen_rules.md Rule 3), so per-width
-        // registrations would measure the same number repeatedly. Set `flush_before_verify` in a
-        // JSON config to pin a specific width.
+        // Auto-dispatch (one preset, not four): under flush the widths converge to a 4.8% spread because all are DRAM-bound (see
+        // doc/simd_codegen_rules.md Rule 3), so per-width registrations would measure the same number repeatedly. Set `flush_before_verify`
+        // in a JSON config to pin a specific width.
         (
             "Mem-StuckBit-FlushAuto",
             TestFunction::MultiBlock(stuck_bit_test_auto_multi),
@@ -2326,19 +2273,16 @@ pub(crate) fn registered_tests(cache_info: &CacheInfo) -> Vec<(&'static str, Tes
                 .with_memory_type(None),
         ),
         // === Refresh CLFLUSHOPT-verify variant (TODO #59, opt-in) ===
-        // Same test with the pre-sleep flush enabled, making the DRAM round-trip architecturally
-        // guaranteed rather than relying on eviction policy. Not the default: the plain variants'
-        // `CacheTotal 2.0x` extent, multi-thread shared-L3 pressure, and forward verify order
+        // Same test with the pre-sleep flush enabled, making the DRAM round-trip architecturally guaranteed rather than relying on eviction
+        // policy. Not the default: the plain variants' `CacheTotal 2.0x` extent, multi-thread shared-L3 pressure, and forward verify order
         // already evict all but a small, least-likely-resident tail (see refresh_impl!).
         //
-        // Measured cost (Intel Granite Rapids, 8T, MiB/s): Mem-Refresh512 45,797 and
-        // Mem-Refresh512_A 45,457 vs Mem-Refresh-Flush 35,293 — **-22%** for the guarantee.
-        // Worth it when you want certainty rather than probability; not worth it for routine
-        // stability runs, where throughput is coverage per unit time.
+        // Measured cost (Intel Granite Rapids, 8T, MiB/s): Mem-Refresh512 45,797 and Mem-Refresh512_A 45,457 vs Mem-Refresh-Flush 35,293 —
+        // **-22%** for the guarantee. Worth it when you want certainty rather than probability; not worth it for routine stability runs,
+        // where throughput is coverage per unit time.
         //
-        // Auto-dispatch (one preset, not four): under flush every width is DRAM-bound, so the
-        // widths converge and separate per-width registrations would measure the same number
-        // repeatedly. Set `flush_before_verify` in a JSON config to pin a specific width.
+        // Auto-dispatch (one preset, not four): under flush every width is DRAM-bound, so the widths converge and separate per-width
+        // registrations would measure the same number repeatedly. Set `flush_before_verify` in a JSON config to pin a specific width.
         // Listed last so it reads as the variant of the plain suite above it.
         (
             "Mem-Refresh-FlushAuto",
@@ -2393,8 +2337,7 @@ pub(crate) fn registered_tests(cache_info: &CacheInfo) -> Vec<(&'static str, Tes
                 .with_timing(TestTiming::duration_only(30))
                 .with_memory_type(None),
         ),
-        // Protected victims, memtest86's modulo-20 (TODO 97): chunks twice the L3, as the moving
-        // inversions'
+        // Protected victims, memtest86's modulo-20 (TODO 97): chunks twice the L3, as the moving inversions'
         (
             "Mem-ModuloX",
             TestFunction::MultiBlock(modulo_x_multi),
@@ -2402,9 +2345,8 @@ pub(crate) fn registered_tests(cache_info: &CacheInfo) -> Vec<(&'static str, Tes
                 .with_timing(TestTiming::duration_only(30))
                 .with_memory_type(None),
         ),
-        // A configurable sequence of writes, reads and read-then-writes in an order (TODO 97):
-        // SimpleTest's write and reads, a pass that reads and writes line by line, and reads in a
-        // random order, with chunks twice the L3, so each pass reaches DRAM
+        // A configurable sequence of writes, reads and read-then-writes in an order (TODO 97): SimpleTest's write and reads, a pass that
+        // reads and writes line by line, and reads in a random order, with chunks twice the L3, so each pass reaches DRAM
         (
             "Mem-Sequence",
             TestFunction::MultiBlock(sequence_auto_multi),
@@ -2434,8 +2376,8 @@ pub(crate) fn registered_tests(cache_info: &CacheInfo) -> Vec<(&'static str, Tes
         ),
         // === v2 Tests — fixed PRNG, correct parameter interpretation, u64 MirrorMove ===
 
-        // Mem-SimpleV2-*: matches v1 Mem-Simple config (FullAllocation, 4MB chunk, 100cycles/30s),
-        // with one pair of rounds a cycle: a native program writes P, then ~P (`pair_native_rounds`)
+        // Mem-SimpleV2-*: matches v1 Mem-Simple config (FullAllocation, 4MB chunk, 100cycles/30s), with one pair of rounds a cycle: a
+        // native program writes P, then ~P (`pair_native_rounds`)
         (
             "Mem-SimpleV2-128",
             TestFunction::MultiBlock(simple_test_v2_128_multi),
@@ -2468,8 +2410,7 @@ pub(crate) fn registered_tests(cache_info: &CacheInfo) -> Vec<(&'static str, Tes
                 .with_memory_type(None)
                 .with_write_read_cycles(2),
         ),
-        // Mem-MirrorV2-*: v1 Mem-Mirror's config (FixedSize 64MB extent, 10s), the wider ones
-        // larger, with subblocks
+        // Mem-MirrorV2-*: v1 Mem-Mirror's config (FixedSize 64MB extent, 10s), the wider ones larger, with subblocks
         (
             "Mem-MirrorV2-128",
             TestFunction::MultiBlock(mirror_move_v2_128_multi),
@@ -2786,9 +2727,8 @@ pub(crate) fn registered_tests(cache_info: &CacheInfo) -> Vec<(&'static str, Tes
         //   Lat-V2P-*-Read   — Layout B packed: 1 chain cell + 6 data cells (6 reads per step, MLP)
         //   Lat-NTW-DRAM-Write — NT streaming write saturation (single tier — NT bypasses cache)
         //
-        // Each variant registered with -Auto (CPU-best dispatch) plus -128/-256/-512 explicit
-        // widths so users can compare widths side-by-side via test= filter, matching the
-        // Mem-MirrorV2 / Mem-SimpleV2 convention.
+        // Each variant registered with -Auto (CPU-best dispatch) plus -128/-256/-512 explicit widths so users can compare widths
+        // side-by-side via test= filter, matching the Mem-MirrorV2 / Mem-SimpleV2 convention.
 
         // Layout A — Lat-V2-Read (5 tiers × {Auto,128,256,512} = 20 tests)
         (
@@ -2952,9 +2892,8 @@ pub(crate) fn registered_tests(cache_info: &CacheInfo) -> Vec<(&'static str, Tes
                 .with_memory_type(None),
         ),
         // Layout A Write — Lat-V2-Write (5 tiers × {Auto,128,256,512} = 20 tests)
-        // Single SIMD-width cached store per chain step. Baseline: predicted to track
-        // Lat-V2-Read at every tier because one in-flight write fits behind any chain
-        // miss. Validates that store-buffer pressure requires concurrency density.
+        // Single SIMD-width cached store per chain step. Baseline: predicted to track Lat-V2-Read at every tier because one in-flight write
+        // fits behind any chain miss. Validates that store-buffer pressure requires concurrency density.
         (
             "Lat-V2-L1-Write-Auto",
             TestFunction::Latency(lat_v2_write_auto_multi),
@@ -3116,9 +3055,8 @@ pub(crate) fn registered_tests(cache_info: &CacheInfo) -> Vec<(&'static str, Tes
                 .with_memory_type(None),
         ),
         // Layout A Copy — Lat-V2-Copy (5 tiers × {Auto,128,256,512} = 20 tests)
-        // Single read-modify-write per chain step. Baseline: predicted to track Lat-V2-Read
-        // closely because the load+XOR+store dependency chain is short and one in-flight
-        // RMW fits behind any chain miss. Validates L1 dependency-chain limit findings.
+        // Single read-modify-write per chain step. Baseline: predicted to track Lat-V2-Read closely because the load+XOR+store dependency
+        // chain is short and one in-flight RMW fits behind any chain miss. Validates L1 dependency-chain limit findings.
         (
             "Lat-V2-L1-Copy-Auto",
             TestFunction::Latency(lat_v2_copy_auto_multi),
@@ -3441,11 +3379,9 @@ pub(crate) fn registered_tests(cache_info: &CacheInfo) -> Vec<(&'static str, Tes
                 .with_memory_type(None),
         ),
         // Layout B Write — Lat-V2P-Write (5 tiers × {Auto,128,256,512} = 20 tests)
-        // Path B PoC: 6 SIMD-width cached stores per chain step. Tests whether the store
-        // buffer becomes a measurable bottleneck under sustained random write pressure
-        // at DRAM tier. If results match Lat-V2P-Read closely, cached writes remain
-        // hidden by the store buffer (expected on x86). If DRAM tier rises notably above
-        // the Read baseline, store-buffer pressure is visible.
+        // Path B PoC: 6 SIMD-width cached stores per chain step. Tests whether the store buffer becomes a measurable bottleneck under
+        // sustained random write pressure at DRAM tier. If results match Lat-V2P-Read closely, cached writes remain hidden by the store
+        // buffer (expected on x86). If DRAM tier rises notably above the Read baseline, store-buffer pressure is visible.
         (
             "Lat-V2P-L1-Write-Auto",
             TestFunction::Latency(lat_v2p_write_auto_multi),
@@ -3606,12 +3542,10 @@ pub(crate) fn registered_tests(cache_info: &CacheInfo) -> Vec<(&'static str, Tes
                 .with_tsc(tsc_freq)
                 .with_memory_type(None),
         ),
-        // Layout B Copy — Lat-V2P-Copy (5 tiers × {Auto,128,256,512} = 20 tests)
-        // Read-modify-write: each chain step loads 6 random data cells, XORs them, stores
-        // back. Loads warm lines into L1 first, so stores hit cached lines without RFO.
-        // Tests realistic "copy traffic" — predicted to fall between Read and Write since
-        // the load+store-on-same-line path avoids the store-buffer pressure that pure
-        // random writes hit at L2/L3.
+        // Layout B Copy — Lat-V2P-Copy (5 tiers × {Auto,128,256,512} = 20 tests) Read-modify-write: each chain step loads 6 random data
+        // cells, XORs them, stores back. Loads warm lines into L1 first, so stores hit cached lines without RFO. Tests realistic "copy
+        // traffic" — predicted to fall between Read and Write since the load+store-on-same-line path avoids the store-buffer pressure that
+        // pure random writes hit at L2/L3.
         (
             "Lat-V2P-L1-Copy-Auto",
             TestFunction::Latency(lat_v2p_copy_auto_multi),
@@ -3772,9 +3706,8 @@ pub(crate) fn registered_tests(cache_info: &CacheInfo) -> Vec<(&'static str, Tes
                 .with_tsc(tsc_freq)
                 .with_memory_type(None),
         ),
-        // Layout B WriteFull — full-cache-line cached writes (5 tiers × {Auto,128,256,512} = 20 tests)
-        // Compares to Lat-V2P-Write to isolate the byte-coverage variable. Same chain
-        // structure but every width writes the full 64-byte cache line per cell.
+        // Layout B WriteFull — full-cache-line cached writes (5 tiers × {Auto,128,256,512} = 20 tests) Compares to Lat-V2P-Write to isolate
+        // the byte-coverage variable. Same chain structure but every width writes the full 64-byte cache line per cell.
         (
             "Lat-V2P-L1-WriteFull-Auto",
             TestFunction::Latency(lat_v2p_write_full_auto_multi),
@@ -3935,9 +3868,8 @@ pub(crate) fn registered_tests(cache_info: &CacheInfo) -> Vec<(&'static str, Tes
                 .with_tsc(tsc_freq)
                 .with_memory_type(None),
         ),
-        // Layout B CopyFull — full-cache-line RMW (5 tiers × {Auto,128,256,512} = 20 tests)
-        // Compares to Lat-V2P-Copy to isolate the byte-coverage variable. Tests whether
-        // the L3 bimodal distribution is byte-coverage driven or SIMD-path driven.
+        // Layout B CopyFull — full-cache-line RMW (5 tiers × {Auto,128,256,512} = 20 tests) Compares to Lat-V2P-Copy to isolate the
+        // byte-coverage variable. Tests whether the L3 bimodal distribution is byte-coverage driven or SIMD-path driven.
         (
             "Lat-V2P-L1-CopyFull-Auto",
             TestFunction::Latency(lat_v2p_copy_full_auto_multi),
@@ -4098,10 +4030,9 @@ pub(crate) fn registered_tests(cache_info: &CacheInfo) -> Vec<(&'static str, Tes
                 .with_tsc(tsc_freq)
                 .with_memory_type(None),
         ),
-        // NT Write saturation — Lat-NTW-DRAM-Write ({Auto,Scalar,128,256,512} = 5 tests)
-        // NT stores bypass cache hierarchy — only the DRAM tier exists. Width variants exposed
-        // because per-store commit time differs (wider stores fill cache lines in fewer ops).
-        // Scalar variant uses 8-byte MOVNTI to validate the WCB-fill-ratio hypothesis.
+        // NT Write saturation — Lat-NTW-DRAM-Write ({Auto,Scalar,128,256,512} = 5 tests) NT stores bypass cache hierarchy — only the DRAM
+        // tier exists. Width variants exposed because per-store commit time differs (wider stores fill cache lines in fewer ops). Scalar
+        // variant uses 8-byte MOVNTI to validate the WCB-fill-ratio hypothesis.
         (
             "Lat-NTW-DRAM-Write-Auto",
             TestFunction::Latency(lat_ntw_write_auto_multi),
@@ -4143,9 +4074,8 @@ pub(crate) fn registered_tests(cache_info: &CacheInfo) -> Vec<(&'static str, Tes
                 .with_memory_type(None),
         ),
         // === Sequential Bandwidth Tests (Auto-dispatch) ===
-        // Measures peak sequential memory bandwidth (unlike latency tests which use random access)
-        // Naming: Spd-{Level}-{Operation}-Auto → resolves to Spd-{Level}-{Operation}-{128,256,512}_A
-        // Uses ExtentMode::Cache for automatic sizing based on detected cache
+        // Measures peak sequential memory bandwidth (unlike latency tests which use random access) Naming: Spd-{Level}-{Operation}-Auto →
+        // resolves to Spd-{Level}-{Operation}-{128,256,512}_A Uses ExtentMode::Cache for automatic sizing based on detected cache
         // tests=Spd-* (all 15 bandwidth tests: L1/L2/L3/DRAMSmall/DRAMFull × Read/Write/Copy)
         // tests=Spd-L3-* (3 tests: L3 × Read/Write/Copy)
         // tests=Spd-DRAM* (6 tests: DRAMSmall + DRAMFull)
@@ -4275,8 +4205,8 @@ pub(crate) fn registered_tests(cache_info: &CacheInfo) -> Vec<(&'static str, Tes
     });
     test_definitions.splice(bench_at..bench_at, seal_benches);
 
-    // The native families' write and verify alone (pattern spec v2), after the seal's: each family's
-    // Init then its Verify, which fills itself and times only its verifies (TODO 90)
+    // The native families' write and verify alone (pattern spec v2), after the seal's: each family's Init then its Verify, which fills
+    // itself and times only its verifies (TODO 90)
     let bench_at =
         test_definitions.iter().rposition(|(name, _, _)| name.starts_with("Bench-Verify-")).map_or(test_definitions.len(), |i| i + 1);
     let native_benches = crate::tests::native_bench_tests()
@@ -4339,11 +4269,11 @@ pub(crate) fn create_test_definitions(cache_info: &CacheInfo) -> Vec<TestDefinit
 /// `cycle_order` as written: each id, with whether it runs (a disabled test's doesn't)
 type CycleOrder = Vec<(String, bool)>;
 
-/// A config's steps (TODO 74): its tests in `cycle_order`, or each enabled test once in file
-/// order. Returns them with `cycle_order` as written (each id with whether it runs), if it has one.
+/// A config's steps (TODO 74): its tests in `cycle_order`, or each enabled test once in file order. Returns them with `cycle_order` as
+/// written (each id with whether it runs), if it has one.
 ///
-/// A config can name any test the built-in suite has, latency and bandwidth tests included
-/// (TODO 94), by its name or its `-Auto` name, plus the aliases `get_test_function_by_name` knows.
+/// A config can name any test the built-in suite has, latency and bandwidth tests included (TODO 94), by its name or its `-Auto` name, plus
+/// the aliases `get_test_function_by_name` knows.
 fn create_test_definitions_from_config(
     config: &crate::config::ModernConfig, cache_info: &CacheInfo,
 ) -> Result<(Vec<TestDefinition>, Option<CycleOrder>), String> {
@@ -4412,10 +4342,9 @@ fn create_test_definitions_from_config(
 
 // Detect runtime capabilities
 pub fn detect_runtime_capabilities(alloc_config: &MemoryAllocationConfig) -> RuntimeConfig {
-    // Always large-page capable, even without the privilege: `WindowsBackend` itself
-    // decides per-allocation whether large pages are usable and falls back, whereas building it
-    // with `large_pages: false` would turn that soft fallback into a hard "backend doesn't
-    // support large pages" error. `large_pages_available` is reported separately for display.
+    // Always large-page capable, even without the privilege: `WindowsBackend` itself decides per-allocation whether large pages are usable
+    // and falls back, whereas building it with `large_pages: false` would turn that soft fallback into a hard "backend doesn't support
+    // large pages" error. `large_pages_available` is reported separately for display.
     let memory_backend = MemoryBackend::VirtualAlloc2;
 
     let large_pages_available = crate::memory::privileges::check_large_page_privilege().is_ok();
@@ -4426,8 +4355,7 @@ pub fn detect_runtime_capabilities(alloc_config: &MemoryAllocationConfig) -> Run
         memory_backend,
         large_pages_available,
         cpu_list: {
-            // Every CPU by default, in TMR's numbering (group * 64 + bit: not 0..n once a
-            // processor group is short of 64)
+            // Every CPU by default, in TMR's numbering (group * 64 + bit: not 0..n once a processor group is short of 64)
             Some(crate::cpu_topology::logical_cpu_ids())
         },
         pin_threads: true,
@@ -4449,14 +4377,14 @@ pub fn pin_thread_to_cpu_with_config(thread_id: usize, cpu_id: usize, enable: bo
         GetCurrentProcessorNumberEx, GetCurrentThread, SetThreadGroupAffinity, SetThreadIdealProcessorEx,
     };
 
-    // SAFETY: the current thread's pseudo-handle, which needs no closing, and affinity and
-    // processor structs on the stack, passed directly for the calls' duration
+    // SAFETY: the current thread's pseudo-handle, which needs no closing, and affinity and processor structs on the stack, passed directly
+    // for the calls' duration
     unsafe {
         let thread_handle = GetCurrentThread();
 
-        // Method 1: hard pinning, in the CPU's own processor group. TMR numbers CPUs
-        // group * 64 + bit (cpu_topology), and SetThreadAffinityMask only reaches the thread's
-        // current group: above CPU 63 its 1 << cpu wrapped, stacking workers on group 0's CPUs.
+        // Method 1: hard pinning, in the CPU's own processor group. TMR numbers CPUs group * 64 + bit (cpu_topology), and
+        // SetThreadAffinityMask only reaches the thread's current group: above CPU 63 its 1 << cpu wrapped, stacking workers on group 0's
+        // CPUs.
         let target = GROUP_AFFINITY { Mask: 1usize << (cpu_id % 64), Group: (cpu_id / 64) as u16, Reserved: [0; 3] };
         if !SetThreadGroupAffinity(thread_handle, &target, None).as_bool() {
             return Err(format!(
@@ -4514,8 +4442,8 @@ pub fn pin_thread_to_cpu_with_config(thread_id: usize, cpu_id: usize, enable: bo
 }
 
 pub fn set_thread_ideal_processor_ex(_thread_handle: windows::Win32::Foundation::HANDLE, cpu_id: u32) -> Result<(), String> {
-    // Simplified implementation - SetThreadIdealProcessorEx requires PROCESSOR_NUMBER which isn't easily available
-    // For now, just log and return success since SetThreadAffinityMask already does the pinning
+    // Simplified implementation - SetThreadIdealProcessorEx requires PROCESSOR_NUMBER which isn't easily available For now, just log and
+    // return success since SetThreadAffinityMask already does the pinning
     log::debug!("Ideal processor set to CPU {}", cpu_id);
     Ok(())
 }
@@ -4528,9 +4456,8 @@ pub enum ThreadPriority {
     Normal,
     #[default]
     High,
-    /// `THREAD_PRIORITY_TIME_CRITICAL`: base priority 15, the top of the normal range. Not the
-    /// realtime priority *class* (16-31). With a worker on every logical CPU it can still starve
-    /// the console and input, so it suits runs that leave cores free.
+    /// `THREAD_PRIORITY_TIME_CRITICAL`: base priority 15, the top of the normal range. Not the realtime priority *class* (16-31). With a
+    /// worker on every logical CPU it can still starve the console and input, so it suits runs that leave cores free.
     Realtime,
 }
 
@@ -4668,8 +4595,8 @@ fn allocate_all_blocks_new(
     }
 }
 
-/// The run's work by thread, by logical CPU and by physical core, over every test (`final_stats`)
-/// and placed by `cpu_assignments`, each with the run's WHEA total on its aggregate row.
+/// The run's work by thread, by logical CPU and by physical core, over every test (`final_stats`) and placed by `cpu_assignments`, each
+/// with the run's WHEA total on its aggregate row.
 fn cpu_performance_summary(
     final_stats: &TestCpuStats,
     cpu_assignments: &[CpuAssignment], // (thread_id, logical_cpu, numa_node)
@@ -4770,9 +4697,8 @@ fn cpu_performance_summary(
         .collect();
     cores.sort_by_key(|c| c.core_id);
 
-    // All three breakdowns carry the same run-wide WHEA figure: the events cannot be attributed to a
-    // thread, CPU or core, so each view reports the run total on its aggregate row rather than
-    // dividing something indivisible.
+    // All three breakdowns carry the same run-wide WHEA figure: the events cannot be attributed to a thread, CPU or core, so each view
+    // reports the run total on its aggregate row rather than dividing something indivisible.
     CpuPerformanceSummary {
         by_thread: PerformanceByThreadReport { threads, whea, pinned },
         by_cpu: PerformanceByCpuReport { cpus, whea },
@@ -4786,9 +4712,8 @@ fn display_and_save_results(
 ) {
     let mut result = test_run_result.lock().unwrap_or_else(PoisonError::into_inner);
     result.finalize(suite_duration);
-    // Run-level WHEA figures come from the monitor's cumulative counters, not from summing the
-    // per-test deltas: a test that never started (early exit) or an event logged between tests
-    // would otherwise be dropped from the total.
+    // Run-level WHEA figures come from the monitor's cumulative counters, not from summing the per-test deltas: a test that never started
+    // (early exit) or an event logged between tests would otherwise be dropped from the total.
     result.set_whea_totals(whea_totals, whea_monitored);
     // The run is over: this save replaces the last cycle's (TODO 72)
     result.overall_stats.in_progress = false;
@@ -4807,10 +4732,9 @@ fn display_and_save_results(
     }
 }
 
-/// A cycle's end, in the cycle loop. The results are saved between cycles when a save is due (TODO
-/// 72), so a run killed, lost or crashed from then on still leaves the cycles saved so far; then the
-/// cycle's end is shown, a partial one too, `partial` as its results record it (TODO 29). Returns
-/// when the results were last saved: now, or `last_save` when this cycle's weren't.
+/// A cycle's end, in the cycle loop. The results are saved between cycles when a save is due (TODO 72), so a run killed, lost or crashed
+/// from then on still leaves the cycles saved so far; then the cycle's end is shown, a partial one too, `partial` as its results record it
+/// (TODO 29). Returns when the results were last saved: now, or `last_save` when this cycle's weren't.
 fn after_cycle(
     end: &CycleEnd, cycle: u32, test_run_result: &Mutex<TestRunResult>, whea: &crate::whea::WheaMonitor, suite_start: Instant,
     last_save: Instant, fe: &dyn Frontend,
@@ -4825,23 +4749,19 @@ fn after_cycle(
     saved
 }
 
-/// The least time between two saves of the results between cycles (TODO 72), but for the first
-/// cycle's and a stopped cycle's. Each save writes the whole file again, which grows with every
-/// cycle: a run of cycles of a few seconds that saved after each would spend a growing part of its
-/// time serializing, and write hundreds of GB over a night. Cycles of a minute or more are each
-/// saved.
+/// The least time between two saves of the results between cycles (TODO 72), but for the first cycle's and a stopped cycle's. Each save
+/// writes the whole file again, which grows with every cycle: a run of cycles of a few seconds that saved after each would spend a growing
+/// part of its time serializing, and write hundreds of GB over a night. Cycles of a minute or more are each saved.
 const RESULTS_SAVE_INTERVAL: Duration = Duration::from_secs(60);
 
-/// Whether the results are saved after `cycle` (TODO 72): after the first, so a run has a file
-/// from then on, after one that `stopped` early, and after any other once `RESULTS_SAVE_INTERVAL`
-/// has passed `since_last_save`.
+/// Whether the results are saved after `cycle` (TODO 72): after the first, so a run has a file from then on, after one that `stopped`
+/// early, and after any other once `RESULTS_SAVE_INTERVAL` has passed `since_last_save`.
 fn results_save_due(cycle: u32, stopped: bool, since_last_save: Duration) -> bool {
     cycle == 1 || stopped || since_last_save >= RESULTS_SAVE_INTERVAL
 }
 
-/// Saves the results so far, after a cycle (TODO 72): marked in progress, with no outcome or
-/// status yet, for the final save (`display_and_save_results`) to replace. Silent, and never
-/// fatal: a failure is a warning, and the next save tries again.
+/// Saves the results so far, after a cycle (TODO 72): marked in progress, with no outcome or status yet, for the final save
+/// (`display_and_save_results`) to replace. Silent, and never fatal: a failure is a warning, and the next save tries again.
 fn save_after_cycle(test_run_result: &Mutex<TestRunResult>, cycle: u32, elapsed: Duration, whea: &crate::whea::WheaMonitor) {
     let Ok(mut result) = test_run_result.lock() else {
         log::warn!("Couldn't lock the results to save them after cycle {cycle}");
@@ -4857,8 +4777,7 @@ fn save_after_cycle(test_run_result: &Mutex<TestRunResult>, cycle: u32, elapsed:
     }
 }
 
-/// The system's memory now (`GlobalMemoryStatusEx`), as setup shows it (TODO 29:
-/// `Setup::MemoryStatus`); `None` when Windows doesn't say.
+/// The system's memory now (`GlobalMemoryStatusEx`), as setup shows it (TODO 29: `Setup::MemoryStatus`); `None` when Windows doesn't say.
 pub fn memory_status() -> Option<crate::frontend::MemoryStatus> {
     use windows::Win32::System::SystemInformation::{GlobalMemoryStatusEx, MEMORYSTATUSEX};
 
@@ -4873,11 +4792,10 @@ pub fn memory_status() -> Option<crate::frontend::MemoryStatus> {
     })
 }
 
-/// The run's code driven for the CLI's console goldens (TODO 29), which show it through the CLI's
-/// frontend in the CLI's crate (`crates/tmr-cli`): the fake cycle, and the goldens' run on a fixed
-/// layout. The engine's tests take the fake cycle, and the heap regions it runs on, from here too.
-/// A test build has them, and a build with the `test-support` feature, which only tmr-cli's tests
-/// turn on (`crate::test_support`).
+/// The run's code driven for the CLI's console goldens (TODO 29), which show it through the CLI's frontend in the CLI's crate
+/// (`crates/tmr-cli`): the fake cycle, and the goldens' run on a fixed layout. The engine's tests take the fake cycle, and the heap regions
+/// it runs on, from here too. A test build has them, and a build with the `test-support` feature, which only tmr-cli's tests turn on
+/// (`crate::test_support`).
 #[cfg(any(test, feature = "test-support"))]
 pub mod test_support {
     use super::*;
@@ -4965,8 +4883,8 @@ pub mod test_support {
     /// The word of thread 0's span `flip_then_verify` and `stuck_bit_then_flip` flip a bit in
     const FLIPPED_WORD: usize = 1000;
 
-    /// Bench-Verify-TMR-10 at 256 bits, with bit 17 of one word of thread 0's span flipped first:
-    /// a fault between the Bench-Init's write and its verify, for the fake cycle's golden.
+    /// Bench-Verify-TMR-10 at 256 bits, with bit 17 of one word of thread 0's span flipped first: a fault between the Bench-Init's write
+    /// and its verify, for the fake cycle's golden.
     #[doc = include_str!("test_fn_safety.md")]
     unsafe fn flip_then_verify(
         blocks: &[AllocationBlock], thread_id: usize, error_mode: ErrorMode, timing: &TestTiming, config: &TestMemoryConfig,
@@ -4978,8 +4896,8 @@ pub mod test_support {
         crate::tests::bench_verify_at(crate::simd::Width::W256)(blocks, thread_id, error_mode, timing, config, progress)
     }
 
-    /// Mem-StuckBit256, with bit 17 of one word of thread 0's span flipped after it, once it has
-    /// resealed its chunks: a fault in sealed memory that only the final seal check can find.
+    /// Mem-StuckBit256, with bit 17 of one word of thread 0's span flipped after it, once it has resealed its chunks: a fault in sealed
+    /// memory that only the final seal check can find.
     #[doc = include_str!("test_fn_safety.md")]
     unsafe fn stuck_bit_then_flip(
         blocks: &[AllocationBlock], thread_id: usize, error_mode: ErrorMode, timing: &TestTiming, config: &TestMemoryConfig,
@@ -5003,13 +4921,11 @@ pub mod test_support {
         Sealed,
     }
 
-    /// The fake cycle (TODO 29): `execute_test_cycle` on two workers over heap regions, sealed, under
-    /// an error mode. Its steps: a Bench-Init/Verify pair, with a bit flipped between them unless
-    /// `Flip::Sealed`, a latency step and a step that takes the seal, which reseals what the others
-    /// left first; then the final seal check, which finds a bit flipped after the last step unless
-    /// `Flip::Verify`, and otherwise nothing. Every step's width is fixed at 256 bits, and both
-    /// workers are numbered CPU 0, so no figure depends on this machine's caches or topology. Built
-    /// by `new` and run by `run`, so a capture of what it shows can start at the run.
+    /// The fake cycle (TODO 29): `execute_test_cycle` on two workers over heap regions, sealed, under an error mode. Its steps: a
+    /// Bench-Init/Verify pair, with a bit flipped between them unless `Flip::Sealed`, a latency step and a step that takes the seal, which
+    /// reseals what the others left first; then the final seal check, which finds a bit flipped after the last step unless `Flip::Verify`,
+    /// and otherwise nothing. Every step's width is fixed at 256 bits, and both workers are numbered CPU 0, so no figure depends on this
+    /// machine's caches or topology. Built by `new` and run by `run`, so a capture of what it shows can start at the run.
     pub struct FakeCycle {
         error_mode: ErrorMode,
         steps: Vec<TestDefinition>,
@@ -5070,8 +4986,7 @@ pub mod test_support {
                 def.config.tsc_frequency_ghz = 1.0;
             }
 
-            // 10 MiB a thread: enough for a step's and a seal stage's GiB, to two places, to show a byte
-            // missing from their sums
+            // 10 MiB a thread: enough for a step's and a seal stage's GiB, to two places, to show a byte missing from their sums
             let span = [4096 * KIB, 4096 * KIB, 2048 * KIB];
             let mut regions = [Region::new(&span), Region::new(&span)];
             let blocks = regions.iter_mut().enumerate().map(|(t, r)| (t, std::mem::take(&mut r.blocks))).collect();
@@ -5111,11 +5026,9 @@ pub mod test_support {
         }
     }
 
-    /// The console goldens' run (TODO 29): `golden_layout`, logging errors, default timing, no
-    /// config, the command line's `overrides`, and no caches (`CacheInfo::default()`), so no size
-    /// depends on this machine's, with every test that picks its width at run time at 256 bits.
-    /// Built by `new`, as the layout's sizing logs, and run by `run`, so a capture of what it shows
-    /// can start at the run.
+    /// The console goldens' run (TODO 29): `golden_layout`, logging errors, default timing, no config, the command line's `overrides`, and
+    /// no caches (`CacheInfo::default()`), so no size depends on this machine's, with every test that picks its width at run time at 256
+    /// bits. Built by `new`, as the layout's sizing logs, and run by `run`, so a capture of what it shows can start at the run.
     pub struct GoldenRun {
         setup: RunSetup<'static>,
         /// The run's width while it lives, on the thread that built it, which runs it
@@ -5145,9 +5058,8 @@ pub mod test_support {
         }
     }
 
-    /// The console goldens' layout: 16 MiB over four threads on a 32 GiB box, with its runtime. A
-    /// thread's 4 MiB is below the stitched allocator's run quantum, so a run that got past its
-    /// checks would be refused before any memory is reserved.
+    /// The console goldens' layout: 16 MiB over four threads on a 32 GiB box, with its runtime. A thread's 4 MiB is below the stitched
+    /// allocator's run quantum, so a run that got past its checks would be refused before any memory is reserved.
     pub(crate) fn golden_layout() -> (EnhancedMemoryLayout, RuntimeConfig) {
         use crate::memory::allocation_strategy::{
             AllocationMode, EnhancedMemoryStrategy, ReserveAmount, RoundDirection, ShareRounding, SystemMemoryInfo,
@@ -5207,13 +5119,11 @@ mod tests {
             .collect()
     }
 
-    /// TODO 76: every built-in correctness and bandwidth test runs clean on one region of three
-    /// joined blocks (640 KiB, not a power of two). Tests with an absolute chunk get 68 KiB, which
-    /// divides neither the region nor a block, so its 10 chunks overlap by 4 or 8 KiB. Nothing is
-    /// written outside the region (guard zones), and the correctness tests leave no extent word
-    /// untouched, so nothing is skipped. That also checks that a test the harness doesn't fill,
-    /// because it writes first, really writes every word. Every chunk is exactly 68 KiB: a
-    /// Bench-Init writes first, so its bytes are 10 x 68 KiB per write pass.
+    /// TODO 76: every built-in correctness and bandwidth test runs clean on one region of three joined blocks (640 KiB, not a power of
+    /// two). Tests with an absolute chunk get 68 KiB, which divides neither the region nor a block, so its 10 chunks overlap by 4 or 8 KiB.
+    /// Nothing is written outside the region (guard zones), and the correctness tests leave no extent word untouched, so nothing is
+    /// skipped. That also checks that a test the harness doesn't fill, because it writes first, really writes every word. Every chunk is
+    /// exactly 68 KiB: a Bench-Init writes first, so its bytes are 10 x 68 KiB per write pass.
     #[test]
     fn built_in_tests_run_clean_on_joined_blocks() {
         let mut region = Region::new(&[256 * KIB, 256 * KIB, 128 * KIB]);
@@ -5246,9 +5156,8 @@ mod tests {
         assert!(ran.len() > 30, "only {} tests ran: {:?}", ran.len(), ran);
     }
 
-    /// TODO 90: a step's time and bytes are its test sequence only. A mirror test fills its
-    /// extent before its swaps (unsealed), and that pass is setup: two cycles count twice one
-    /// cycle's bytes, with no fill pass on top. Time run `untimed` is left out of the test's.
+    /// TODO 90: a step's time and bytes are its test sequence only. A mirror test fills its extent before its swaps (unsealed), and that
+    /// pass is setup: two cycles count twice one cycle's bytes, with no fill pass on top. Time run `untimed` is left out of the test's.
     #[test]
     fn fills_and_setup_are_left_out_of_a_tests_time_and_bytes() {
         let region = Region::new(&[256 * KIB, 256 * KIB, 128 * KIB]);
@@ -5283,9 +5192,8 @@ mod tests {
         assert!(fill.time >= std::time::Duration::from_millis(60) && fill.bytes == 4096, "{fill:?}");
     }
 
-    /// TODO 76: chunks overlap where they don't tile, so a word's value may depend only on its
-    /// position. Each writer whose last pass covers every word leaves the same image at 68 KiB
-    /// and 100 KiB chunks (Mem-Stride's last pass doesn't), and each Bench-Verify finds its
+    /// TODO 76: chunks overlap where they don't tile, so a word's value may depend only on its position. Each writer whose last pass covers
+    /// every word leaves the same image at 68 KiB and 100 KiB chunks (Mem-Stride's last pass doesn't), and each Bench-Verify finds its
     /// Bench-Init's image clean at a third size, 132 KiB.
     #[test]
     fn writers_leave_the_same_image_at_any_chunk_size() {
@@ -5331,9 +5239,8 @@ mod tests {
         assert!(region.guards_intact());
     }
 
-    /// TODO 74: every test that takes the seal honours it. Sealed, on memory that holds the seal,
-    /// it finds no errors of its own or the seal's and leaves every word of the span sealed again.
-    /// A new `Mem-*` test that skips the wrap fails here.
+    /// TODO 74: every test that takes the seal honours it. Sealed, on memory that holds the seal, it finds no errors of its own or the
+    /// seal's and leaves every word of the span sealed again. A new `Mem-*` test that skips the wrap fails here.
     #[test]
     fn every_sealed_test_honours_the_seal() {
         let mut region = Region::new(&[256 * KIB, 256 * KIB, 128 * KIB]);
@@ -5364,9 +5271,8 @@ mod tests {
         assert!(region.guards_intact());
     }
 
-    /// TODO 99: under `width=` every `-Auto` test resolves to that width's test: named for it
-    /// (`Mem-StuckBit256_A`, as the plan and the results file show it) and running the function
-    /// the test named for that width runs. Under auto, the widest the CPU has.
+    /// TODO 99: under `width=` every `-Auto` test resolves to that width's test: named for it (`Mem-StuckBit256_A`, as the plan and the
+    /// results file show it) and running the function the test named for that width runs. Under auto, the widest the CPU has.
     #[test]
     fn a_forced_width_resolves_every_auto_test_to_that_widths_test() {
         use crate::simd::{TestWidth, Width};
@@ -5406,11 +5312,9 @@ mod tests {
         }
     }
 
-    /// TODO 99: on a CPU without AVX-512 (`without_avx512`, the -Auto tests resolved at 256 as
-    /// they are there), the run leaves out every test that would run at 512, the latency tests
-    /// (which had no check of their own) and the Bench-*-Seal-*-512 pairs among them, each once and
-    /// why, and keeps the rest. A left-out step's id is marked not run in `cycle_order`; another id
-    /// keeps its mark.
+    /// TODO 99: on a CPU without AVX-512 (`without_avx512`, the -Auto tests resolved at 256 as they are there), the run leaves out every
+    /// test that would run at 512, the latency tests (which had no check of their own) and the Bench-*-Seal-*-512 pairs among them, each
+    /// once and why, and keeps the rest. A left-out step's id is marked not run in `cycle_order`; another id keeps its mark.
     #[test]
     fn a_cpu_without_avx512_runs_no_512_bit_test() {
         use crate::simd::{TestWidth, Width};
@@ -5447,13 +5351,11 @@ mod tests {
         assert_eq!(all.len(), suite.len());
     }
 
-    /// TODO 72: the snapshot records the tests a CPU without AVX-512 leaves out
-    /// (`a_cpu_without_avx512_runs_no_512_bit_test`), each once and why, and so the results file
-    /// does; one that left none out has no such field. The command line is the one passed in, its
-    /// executable cut to its file name. This is `RunConfigSnapshot::capture`'s part: the runner
-    /// passes `leave_out_what_the_cpu_lacks`'s list in after allocation, and the session its argv
-    /// from tmr.exe's `main`, less `--gui`/`--cli` (`session::run`), where no test reaches; a
-    /// live run shows those.
+    /// TODO 72: the snapshot records the tests a CPU without AVX-512 leaves out (`a_cpu_without_avx512_runs_no_512_bit_test`), each once
+    /// and why, and so the results file does; one that left none out has no such field. The command line is the one passed in, its
+    /// executable cut to its file name. This is `RunConfigSnapshot::capture`'s part: the runner passes `leave_out_what_the_cpu_lacks`'s
+    /// list in after allocation, and the session its argv from tmr.exe's `main`, less `--gui`/`--cli` (`session::run`), where no test
+    /// reaches; a live run shows those.
     #[test]
     fn the_snapshot_records_the_tests_left_out() {
         let _width = crate::simd::TestWidth::set(Some(crate::simd::Width::W256));
@@ -5502,8 +5404,8 @@ mod tests {
         assert!(!serde_json::to_string(&capture(&[])).unwrap().contains("tests_left_out"));
     }
 
-    /// TODO 99: a test the CPU can't run that got past the choice of tests stops the run before its
-    /// kernel runs, since the kernels don't check; one it can run, or with no width, goes on.
+    /// TODO 99: a test the CPU can't run that got past the choice of tests stops the run before its kernel runs, since the kernels don't
+    /// check; one it can run, or with no width, goes on.
     #[test]
     #[should_panic(expected = "bug: Mem-SimpleNT-512 reached the run, but width 512 needs AVX-512")]
     fn a_512_bit_test_reaching_a_cpu_without_avx512_stops_the_run() {
@@ -5514,12 +5416,10 @@ mod tests {
         assert_cpu_runs(def("Mem-SimpleNT-512"), without_avx512);
     }
 
-    /// TODO 99: the run's seal (`run_seal`, which the run takes its seal from, handing it its
-    /// overrides whole) takes `width=` unless `seal-width=` or the config's `seal_width` sets its
-    /// own, `auto` included, and keeps its own auto with neither: the calibrated width, else the
-    /// rule. Each says where the width came from, as the plan and the results file give it. Its
-    /// pattern is `seal=`'s, else the config's, else tmr. `seal::width_setting`'s test checks the
-    /// precedence alone, which a run handing it no `width=` passed.
+    /// TODO 99: the run's seal (`run_seal`, which the run takes its seal from, handing it its overrides whole) takes `width=` unless
+    /// `seal-width=` or the config's `seal_width` sets its own, `auto` included, and keeps its own auto with neither: the calibrated width,
+    /// else the rule. Each says where the width came from, as the plan and the results file give it. Its pattern is `seal=`'s, else the
+    /// config's, else tmr. `seal::width_setting`'s test checks the precedence alone, which a run handing it no `width=` passed.
     #[test]
     fn the_runs_seal_takes_width_unless_seal_width_sets_its_own() {
         use SealWidthSource::{Calibrated, Rule, Setting};
@@ -5569,9 +5469,9 @@ mod tests {
         assert!(on && pattern == SealPattern::Tm5, "seal=tm5 over the config's off");
     }
 
-    /// TODO 99: under `width=` the Bench pairs and Mem-Sequence, which pick their width at run time,
-    /// run at each width the CPU has (Mem-Sequence at 256 for 128): each writes the same image at
-    /// every width, and each Bench-Verify finds its Bench-Init's image clean at every width.
+    /// TODO 99: under `width=` the Bench pairs and Mem-Sequence, which pick their width at run time, run at each width the CPU has
+    /// (Mem-Sequence at 256 for 128): each writes the same image at every width, and each Bench-Verify finds its Bench-Init's image clean
+    /// at every width.
     #[test]
     fn the_bench_pairs_and_mem_sequence_write_one_image_at_every_width() {
         use crate::simd::{TestWidth, Width};
@@ -5619,10 +5519,9 @@ mod tests {
         assert!(region.guards_intact());
     }
 
-    /// TODO 93: the strided SimpleTest, at every width and in every mode, runs clean and leaves the
-    /// image the sequential one leaves (strided mode 2 writes mode 20's lines, at every width),
-    /// over a 15-line stride (TM5 Parameter 8 on 2 channels) and one longer than a chunk; sealed,
-    /// it leaves the span sealed.
+    /// TODO 93: the strided SimpleTest, at every width and in every mode, runs clean and leaves the image the sequential one leaves
+    /// (strided mode 2 writes mode 20's lines, at every width), over a 15-line stride (TM5 Parameter 8 on 2 channels) and one longer than a
+    /// chunk; sealed, it leaves the span sealed.
     #[test]
     fn strided_simple_tests_write_the_sequential_image() {
         let mut region = Region::new(&[256 * KIB, 256 * KIB, 128 * KIB]);
@@ -5681,9 +5580,8 @@ mod tests {
         assert!(region.guards_intact());
     }
 
-    /// TODO 74: a bit flipped in sealed memory is the seal's error before a correctness test's
-    /// chunk (TM5 numbers it 0), but the mirror's own after a mirror (TM5's step number), and
-    /// either way the chunk ends sealed again.
+    /// TODO 74: a bit flipped in sealed memory is the seal's error before a correctness test's chunk (TM5 numbers it 0), but the mirror's
+    /// own after a mirror (TM5's step number), and either way the chunk ends sealed again.
     #[test]
     fn the_seal_attributes_a_flipped_bit_as_tm5_does() {
         let mut region = Region::new(&[256 * KIB, 256 * KIB, 128 * KIB]);
@@ -5705,9 +5603,8 @@ mod tests {
         }
     }
 
-    /// TODO 74: the worker's seal bookkeeping between steps. A step that never takes the seal has
-    /// the part of its extent still sealed checked first, and leaves it unsealed; the next step
-    /// that takes the seal gets it back first. A bad word found there is a seal error.
+    /// TODO 74: the worker's seal bookkeeping between steps. A step that never takes the seal has the part of its extent still sealed
+    /// checked first, and leaves it unsealed; the next step that takes the seal gets it back first. A bad word found there is a seal error.
     #[test]
     fn steps_that_skip_the_seal_are_checked_first_and_resealed_after() {
         let mut region = Region::new(&[256 * KIB, 256 * KIB, 128 * KIB]);
@@ -5738,8 +5635,7 @@ mod tests {
         assert_eq!(unsafe { kernel.check(region.words().as_ptr(), 0, words, "test") }, 0);
     }
 
-    /// TODO 94: a config can name every built-in test, latency and bandwidth tests included, by
-    /// its name or its `-Auto` name.
+    /// TODO 94: a config can name every built-in test, latency and bandwidth tests included, by its name or its `-Auto` name.
     #[test]
     fn a_config_can_name_every_built_in_test() {
         let cache_info = crate::tests::get_cache_info();
@@ -5780,8 +5676,8 @@ mod tests {
         assert_eq!(selected(crate::session::CACHE_LATENCY_FILTER), tests(&["DRAM", "L1", "L2", "L3"]));
     }
 
-    /// TODO 85: every mirror test runs clean in every mode, twice per chunk, on joined blocks
-    /// with overlapping 68 KiB chunks, and writes nothing outside the region.
+    /// TODO 85: every mirror test runs clean in every mode, twice per chunk, on joined blocks with overlapping 68 KiB chunks, and writes
+    /// nothing outside the region.
     #[test]
     fn mirror_tests_run_clean_in_every_mode() {
         let mut region = Region::new(&[256 * KIB, 256 * KIB, 128 * KIB]);
@@ -5801,8 +5697,7 @@ mod tests {
         assert!(region.guards_intact());
     }
 
-    /// TODO 76: every latency test builds its chain in place on the span (no heap), takes its
-    /// sample, and writes nothing outside the span.
+    /// TODO 76: every latency test builds its chain in place on the span (no heap), takes its sample, and writes nothing outside the span.
     #[test]
     fn latency_tests_run_in_place_on_the_span() {
         let region = Region::new(&[256 * KIB, 256 * KIB, 128 * KIB]);
@@ -5826,9 +5721,8 @@ mod tests {
         assert!(ran >= 100, "only {ran} latency tests ran");
     }
 
-    /// Why `subdivisions` is capped at 512: past it, Mem-Stride's shift no longer divides a 4 KiB
-    /// multiple of a chunk, and the tail of each chunk goes untested. Also shows the coverage check
-    /// in `built_in_tests_run_clean_on_joined_blocks` catches a skipped tail.
+    /// Why `subdivisions` is capped at 512: past it, Mem-Stride's shift no longer divides a 4 KiB multiple of a chunk, and the tail of each
+    /// chunk goes untested. Also shows the coverage check in `built_in_tests_run_clean_on_joined_blocks` catches a skipped tail.
     #[test]
     fn stride_with_too_many_subdivisions_skips_tails() {
         let mut region = Region::new(&[256 * KIB, 256 * KIB, 128 * KIB]);
@@ -5844,10 +5738,9 @@ mod tests {
         assert!(untouched_with(1024, &mut region) > 0);
     }
 
-    /// TODO 76: a fault between a write and its verify is counted once per chunk that verifies
-    /// it: once in one chunk, twice in the overlap of two (as `verify_reps` counts each detection),
-    /// and once under halt, which stops at the first. A halted test still reports the bytes it got
-    /// through (accounting is per chunk, not per piece).
+    /// TODO 76: a fault between a write and its verify is counted once per chunk that verifies it: once in one chunk, twice in the overlap
+    /// of two (as `verify_reps` counts each detection), and once under halt, which stops at the first. A halted test still reports the
+    /// bytes it got through (accounting is per chunk, not per piece).
     #[test]
     fn an_injected_fault_is_counted_and_halt_reports_progress() {
         let mut region = Region::new(&[256 * KIB, 256 * KIB, 128 * KIB]);
@@ -5876,10 +5769,9 @@ mod tests {
 
     // ─── Native patterns (pattern spec v2) ─────────────────────────────────────────────────────
 
-    /// Every registered test resolves its chunk by its own name, as the plan table and the seal's
-    /// work between steps do: a name the sizing doesn't know panics there, on the first live run
-    /// (it did for the native Bench pairs). TODO 19's rule: audit new names against name-keyed
-    /// lookups, not just registration.
+    /// Every registered test resolves its chunk by its own name, as the plan table and the seal's work between steps do: a name the sizing
+    /// doesn't know panics there, on the first live run (it did for the native Bench pairs). TODO 19's rule: audit new names against
+    /// name-keyed lookups, not just registration.
     #[test]
     fn every_registered_test_sizes_its_chunk_by_name() {
         for def in create_test_definitions(crate::tests::get_cache_info()) {
@@ -5888,9 +5780,8 @@ mod tests {
         }
     }
 
-    /// The image a native SimpleTest of thread 0 leaves after write round `g` of `program` under
-    /// `schedule`: every word from `Phase::line`, whose formulas `pattern::tests` checks against
-    /// the spec's.
+    /// The image a native SimpleTest of thread 0 leaves after write round `g` of `program` under `schedule`: every word from `Phase::line`,
+    /// whose formulas `pattern::tests` checks against the spec's.
     fn native_image(
         program: crate::pattern::Program, epoch: crate::pattern::StepEpoch, wrc: u32, g: u64, schedule: crate::pattern::Schedule,
         words: usize,
@@ -5899,8 +5790,7 @@ mod tests {
         (0..words).map(|i| phase.line((i / 8) as u64)[i % 8]).collect()
     }
 
-    /// The Mem-SimpleV2 tests at every width this CPU has, as the built-in suite registers them:
-    /// no pattern_mode, so a native program.
+    /// The Mem-SimpleV2 tests at every width this CPU has, as the built-in suite registers them: no pattern_mode, so a native program.
     fn native_tests() -> Vec<(TestDefinition, TestFunctionMultiBlock)> {
         suite()
             .into_iter()
@@ -5914,9 +5804,8 @@ mod tests {
             .collect()
     }
 
-    /// `switch` at every transfer width, LPDDR6's 12 and DDR6's 24 among them: every kernel width
-    /// writes the spec's image, sequential and strided, verifies it clean, and finds one flipped
-    /// bit, localised to its word.
+    /// `switch` at every transfer width, LPDDR6's 12 and DDR6's 24 among them: every kernel width writes the spec's image, sequential and
+    /// strided, verifies it clean, and finds one flipped bit, localised to its word.
     #[test]
     fn switch_writes_one_image_at_every_beat() {
         use crate::pattern_gen::BusBeat;
@@ -5942,8 +5831,7 @@ mod tests {
                     assert_eq!((stats.error_count, stats.alarms), (0, 0), "{what}");
                     let want = native_image(program, def.config.epoch, 2, 1, crate::pattern::Schedule::Rounds, words);
                     assert!(region.words().iter().zip(&want).all(|(g, w)| g == w), "{what}: not the spec's image");
-                    // A verify of that image finds one flipped bit, and each check that saw it
-                    // finds its word on the rescan
+                    // A verify of that image finds one flipped bit, and each check that saw it finds its word on the rescan
                     let mut verify = def.clone();
                     (verify.config.test_reps, verify.config.skip_init, verify.config.write_read_cycles) = (0, true, 1);
                     let image = native_image(program, verify.config.epoch, 2, 0, crate::pattern::Schedule::OncePerRun, words);
@@ -5960,9 +5848,8 @@ mod tests {
         assert!(region.guards_intact());
     }
 
-    /// Every width writes the one image, sequential and strided (TM5's walk), over overlapping
-    /// chunks, for each family alone and the default program, and verifies it clean: the last
-    /// round of two (pair 0's ~P) is what memory holds.
+    /// Every width writes the one image, sequential and strided (TM5's walk), over overlapping chunks, for each family alone and the
+    /// default program, and verifies it clean: the last round of two (pair 0's ~P) is what memory holds.
     #[test]
     fn native_programs_write_one_image_at_every_width() {
         let mut region = Region::new(&[256 * KIB, 256 * KIB, 128 * KIB]);
@@ -5999,9 +5886,8 @@ mod tests {
         assert!(region.guards_intact());
     }
 
-    /// A verify of the fill (test_reps 0, skip_init) on an image with flipped bits counts each bad
-    /// word once per chunk that covers it, as a failed check its rescan localised; under halt it
-    /// stops at the first and leaves the bad word as it found it.
+    /// A verify of the fill (test_reps 0, skip_init) on an image with flipped bits counts each bad word once per chunk that covers it, as a
+    /// failed check its rescan localised; under halt it stops at the first and leaves the bad word as it found it.
     #[test]
     fn native_verify_counts_each_bad_word_and_halts_with_the_evidence() {
         let mut region = Region::new(&[256 * KIB, 256 * KIB, 128 * KIB]);
@@ -6021,8 +5907,8 @@ mod tests {
                 crate::pattern::Schedule::OncePerRun,
                 words,
             );
-            // Chunks of 68 KiB spread over 640: word 5 is in the first alone, word 34000 in one chunk
-            // (34000 * 8 = 265 KiB), and three bits of word 71000 in another
+            // Chunks of 68 KiB spread over 640: word 5 is in the first alone, word 34000 in one chunk (34000 * 8 = 265 KiB), and three bits
+            // of word 71000 in another
             for (mode, flips, errors) in [(ErrorMode::Log, vec![5usize, 34_000, 71_000], 3u64), (ErrorMode::Halt, vec![34_000, 71_000], 1)]
             {
                 region.words().copy_from_slice(&image);
@@ -6050,9 +5936,8 @@ mod tests {
         }
     }
 
-    /// A flipped bit in any word of a group of 4 lines is found, at every width, sequential and
-    /// strided: the group covers every accumulator of every width's verify (the second review: the
-    /// other corruption test reaches only some of them).
+    /// A flipped bit in any word of a group of 4 lines is found, at every width, sequential and strided: the group covers every accumulator
+    /// of every width's verify (the second review: the other corruption test reaches only some of them).
     #[test]
     fn native_verify_sees_every_word_of_a_group() {
         let mut region = Region::new(&[256 * KIB, 256 * KIB, 128 * KIB]);
@@ -6081,8 +5966,8 @@ mod tests {
         }
     }
 
-    /// Under errors=halt a bad word the seal check before a chunk finds stays in memory: the test
-    /// stops before writing that chunk, and doesn't reseal.
+    /// Under errors=halt a bad word the seal check before a chunk finds stays in memory: the test stops before writing that chunk, and
+    /// doesn't reseal.
     #[test]
     fn halt_keeps_what_the_seal_check_found() {
         let mut region = Region::new(&[256 * KIB, 256 * KIB, 128 * KIB]);
@@ -6123,9 +6008,9 @@ mod tests {
         assert!(same(&a, &b) < a.len() / 1000 && same(&a, &c) < a.len() / 1000, "{} {}", same(&a, &b), same(&a, &c));
     }
 
-    /// A SimpleTest that verifies its fill (test_reps 0) writes one image a run, so its pairs span
-    /// two suite cycles (P, then ~P under the same key), and it visits every place in the program
-    /// (the second review: with its wrc's rotation the default program never ran switch there).
+    /// A SimpleTest that verifies its fill (test_reps 0) writes one image a run, so its pairs span two suite cycles (P, then ~P under the
+    /// same key), and it visits every place in the program (the second review: with its wrc's rotation the default program never ran switch
+    /// there).
     #[test]
     fn a_verify_only_native_step_visits_every_family() {
         let mut region = Region::new(&[256 * KIB, 256 * KIB, 128 * KIB]);
@@ -6151,8 +6036,8 @@ mod tests {
         assert!(phases.chunks(2).all(|p| p[0].key == p[1].key && (p[0].mask, p[1].mask) == (0, !0)), "P then ~P, one key");
     }
 
-    /// An odd write_read_cycles rounds up to even for a native SimpleTest that writes first, so
-    /// its rounds are whole P/~P pairs; not for a TMR mode, a verify-only step or another test.
+    /// An odd write_read_cycles rounds up to even for a native SimpleTest that writes first, so its rounds are whole P/~P pairs; not for a
+    /// TMR mode, a verify-only step or another test.
     #[test]
     fn odd_native_rounds_round_up_to_pairs() {
         let base = native_tests().into_iter().next().unwrap().0;
@@ -6175,8 +6060,8 @@ mod tests {
             with(3, &|d| d.config.pattern_mode = Some(30)),
             with(3, &|d| d.config.test_reps = 0),
             with(3, &|d| d.actual_name = "Mem-MirrorV2-Auto"),
-            // Mem-Sequence: one W a run, an odd 3 runs, so 4; W and RW, 2 rounds a run, stay;
-            // a fill and two Ws a run are odd however many runs, so they stay too
+            // Mem-Sequence: one W a run, an odd 3 runs, so 4; W and RW, 2 rounds a run, stay; a fill and two Ws a run are odd however many
+            // runs, so they stay too
             with(3, &sequence("W 5R")),
             with(3, &sequence("W 2R RW 2R")),
             with(1, &sequence("R 2W R")),
@@ -6191,8 +6076,7 @@ mod tests {
         assert_eq!(before, builtin.iter().map(|d| d.config.write_read_cycles).collect::<Vec<_>>());
     }
 
-    /// Three rounds asked of a native SimpleTest run as four, two whole pairs: the last image is the
-    /// second pair's ~P.
+    /// Three rounds asked of a native SimpleTest run as four, two whole pairs: the last image is the second pair's ~P.
     #[test]
     fn three_native_rounds_run_two_pairs() {
         let mut region = Region::new(&[256 * KIB, 256 * KIB, 128 * KIB]);
@@ -6213,9 +6097,8 @@ mod tests {
         assert!(last.iter().zip(&first).all(|(l, f)| *l == !*f), "the last round is the pair's ~P");
     }
 
-    /// A native SimpleTest that verifies without writing (dependent, test_reps 0) is refused
-    /// whatever precedes it: no other step writes its step-keyed image (TODO 13). With its own
-    /// writes, or its own fill, it stands alone.
+    /// A native SimpleTest that verifies without writing (dependent, test_reps 0) is refused whatever precedes it: no other step writes its
+    /// step-keyed image (TODO 13). With its own writes, or its own fill, it stands alone.
     #[test]
     fn a_dependent_verify_only_native_step_is_refused() {
         let (writer, _) = native_tests().into_iter().next().unwrap();
@@ -6237,8 +6120,8 @@ mod tests {
         }
     }
 
-    /// Mem-Random, CacheBust, Stride and BlockMove write each word's id into it, so two threads'
-    /// images share no value (TODO 97: they shared the index, or were one apart).
+    /// Mem-Random, CacheBust, Stride and BlockMove write each word's id into it, so two threads' images share no value (TODO 97: they
+    /// shared the index, or were one apart).
     #[test]
     fn other_tests_values_differ_between_threads() {
         let mut region = Region::new(&[256 * KIB, 256 * KIB, 128 * KIB]);
@@ -6260,10 +6143,9 @@ mod tests {
         }
     }
 
-    /// TODO 99: a Mem-Random cycle reads as many random words as the extent holds, split over its
-    /// sequences, in batches of a chunk's words (68 KiB, so 8704 and 1536 of each eighth of 640
-    /// KiB); its operations and bytes count each read once, 8 bytes each, and the final sweep's
-    /// words on top.
+    /// TODO 99: a Mem-Random cycle reads as many random words as the extent holds, split over its sequences, in batches of a chunk's words
+    /// (68 KiB, so 8704 and 1536 of each eighth of 640 KiB); its operations and bytes count each read once, 8 bytes each, and the final
+    /// sweep's words on top.
     #[test]
     fn a_random_cycle_reads_the_extents_words() {
         let region = Region::new(&[256 * KIB, 256 * KIB, 128 * KIB]);
@@ -6281,8 +6163,8 @@ mod tests {
         }
     }
 
-    /// After a cycle Mem-MovingInv leaves P everywhere, and Mem-ModuloX P in its victim lines and ~P
-    /// in the rest: `ident`'s word of each word's id under the cycle's key (TODO 97).
+    /// After a cycle Mem-MovingInv leaves P everywhere, and Mem-ModuloX P in its victim lines and ~P in the rest: `ident`'s word of each
+    /// word's id under the cycle's key (TODO 97).
     #[test]
     fn moving_inversions_and_modulo_x_leave_their_images() {
         let mut region = Region::new(&[256 * KIB, 256 * KIB, 128 * KIB]);
@@ -6307,8 +6189,7 @@ mod tests {
         }
     }
 
-    /// The phase a Mem-Sequence chunk ends a cycle on: its last write's, inverted by each
-    /// read-then-write since.
+    /// The phase a Mem-Sequence chunk ends a cycle on: its last write's, inverted by each read-then-write since.
     fn sequence_end_phase(def: &TestDefinition, cycle: u32) -> crate::pattern::Phase {
         let seq = def.config.sequence();
         let reps = def.config.write_read_cycles.max(1);
@@ -6330,9 +6211,8 @@ mod tests {
         program.phase(&def.config.epoch, rounds, current, crate::pattern::Schedule::Rounds, beat)
     }
 
-    /// Mem-Sequence in every order and with every step: each pass visits every line (an
-    /// untouched word would fail a read), every read finds what the last write left, inverted by
-    /// each read-then-write, and the chunk ends on that phase's image. Sealed and not; over
+    /// Mem-Sequence in every order and with every step: each pass visits every line (an untouched word would fail a read), every read finds
+    /// what the last write left, inverted by each read-then-write, and the chunk ends on that phase's image. Sealed and not; over
     /// overlapping chunks, and a stride (TODO 97).
     #[test]
     fn mem_sequence_runs_every_order_and_step() {
@@ -6407,8 +6287,7 @@ mod tests {
     }
 
     /// `pattern-mode=` sets a numbered mode on every test, replacing a SimpleTest's program; a
-    /// native family's number runs that family alone on the SimpleTests and leaves the rest (the
-    /// second review).
+    /// native family's number runs that family alone on the SimpleTests and leaves the rest (the second review).
     #[test]
     fn the_command_lines_pattern_mode_reaches_the_tests_it_names() {
         let suite = suite();
@@ -6428,8 +6307,8 @@ mod tests {
         assert_eq!(modes(&defs), [(Some(30), None)]);
     }
 
-    /// A dependent native Bench-Verify follows its own family's Bench-Init and no other (Astra's
-    /// review: the Verify's identity was its config's, mode 10, so even the matching pair failed).
+    /// A dependent native Bench-Verify follows its own family's Bench-Init and no other (Astra's review: the Verify's identity was its
+    /// config's, mode 10, so even the matching pair failed).
     #[test]
     fn native_bench_dependencies_match_by_family() {
         let suite = suite();
@@ -6442,9 +6321,8 @@ mod tests {
         assert!(other.len() == 1 && other[0].1.contains("(Ident)") && other[0].1.contains("(Random)"), "{other:?}");
     }
 
-    /// A native Bench-Init pins pair 0's P, so after any number of its cycles a dependent
-    /// Bench-Verify of the same family finds its image (the review: unpinned, the Init's last cycle
-    /// wrote another phase).
+    /// A native Bench-Init pins pair 0's P, so after any number of its cycles a dependent Bench-Verify of the same family finds its image
+    /// (the review: unpinned, the Init's last cycle wrote another phase).
     #[test]
     fn native_bench_pairs_agree_over_cycles() {
         let region = Region::new(&[256 * KIB, 256 * KIB, 128 * KIB]);
@@ -6463,9 +6341,8 @@ mod tests {
         }
     }
 
-    /// TODO 99: each numbered Bench-Init writes its mode's image under cycle 0, from the mode's
-    /// definitions (`numbered_mode_image`): the widest width's SimpleTest kernels, seeded as a
-    /// Bench-Verify expects them whatever cycle wrote last.
+    /// TODO 99: each numbered Bench-Init writes its mode's image under cycle 0, from the mode's definitions (`numbered_mode_image`): the
+    /// widest width's SimpleTest kernels, seeded as a Bench-Verify expects them whatever cycle wrote last.
     #[test]
     fn numbered_bench_inits_write_the_modes_image() {
         let mut region = Region::new(&[256 * KIB, 256 * KIB, 128 * KIB]);
@@ -6484,10 +6361,8 @@ mod tests {
         }
     }
 
-    /// Every width writes each TMR mode's own image, from the mode's definitions
-    /// (`numbered_mode_image`), not mode 10's (TODO 3): its own loops for every mode, sequential,
-    /// and the shared strided ones. The reference was the scalar test's image until TODO 99 removed
-    /// it.
+    /// Every width writes each TMR mode's own image, from the mode's definitions (`numbered_mode_image`), not mode 10's (TODO 3): its own
+    /// loops for every mode, sequential, and the shared strided ones. The reference was the scalar test's image until TODO 99 removed it.
     #[test]
     fn simd_widths_write_the_tmr_modes_own_image() {
         let mut region = Region::new(&[256 * KIB, 256 * KIB, 128 * KIB]);
@@ -6511,8 +6386,8 @@ mod tests {
 
     // ─── The fake cycle and the results it adds (TODO 29, 72) ──────────────────────────────────
 
-    /// A frontend that shows nothing: these tests read what a run did from its results. What the
-    /// console shows of it is the CLI's goldens' (`crates/tmr-cli`, through `test_support`).
+    /// A frontend that shows nothing: these tests read what a run did from its results. What the console shows of it is the CLI's goldens'
+    /// (`crates/tmr-cli`, through `test_support`).
     struct Unseen;
 
     impl Frontend for Unseen {
@@ -6523,9 +6398,9 @@ mod tests {
         }
     }
 
-    /// TODO 72: the fake cycle, logging its errors, ran to its end, and its results have a whole
-    /// cycle, each step's threads in it, by thread: where each ran and what it found, the latency
-    /// step's latencies too. The CLI's golden of it is `a_cycle_prints_as_its_golden` (tmr-cli).
+    /// TODO 72: the fake cycle, logging its errors, ran to its end, and its results have a whole cycle, each step's threads in it, by
+    /// thread: where each ran and what it found, the latency step's latencies too. The CLI's golden of it is `a_cycle_prints_as_its_golden`
+    /// (tmr-cli).
     #[test]
     fn a_cycle_records_each_step_and_its_threads() {
         let CycleRun { end, result } = FakeCycle::new(ErrorMode::Log, Flip::Verify).run(&Unseen);
@@ -6538,8 +6413,8 @@ mod tests {
             cycle.tests.iter().map(|t| t.threads.iter().map(|r| (r.thread, r.cpu, r.errors, r.latency.is_some())).collect()).collect();
         let step = |errors: u64, latency: bool| vec![(0, Some(0), errors, latency), (1, Some(0), 0, latency)];
         assert_eq!(threads, [step(0, false), step(1, false), step(0, true), step(0, false)]);
-        // CPU 0's core and node; each thread's time, and its bytes, operations and passes, which the
-        // step's add up or bound; a latency step's latencies, in order; the step's own time
+        // CPU 0's core and node; each thread's time, and its bytes, operations and passes, which the step's add up or bound; a latency
+        // step's latencies, in order; the step's own time
         let place = (Some(crate::cpu_topology::get_physical_core_for_cpu(0)), Some(crate::cpu_topology::get_numa_node_for_cpu(0)));
         for test in &cycle.tests {
             let name = &test.name;
@@ -6564,8 +6439,8 @@ mod tests {
         }
     }
 
-    /// TODO 72: a cycle that errors=halt stops, at the verify's error, is partial in the results, as
-    /// its end says: the steps that ran, and no final seal check.
+    /// TODO 72: a cycle that errors=halt stops, at the verify's error, is partial in the results, as its end says: the steps that ran, and
+    /// no final seal check.
     #[test]
     fn a_halted_cycle_is_partial() {
         let CycleRun { end, result } = FakeCycle::new(ErrorMode::Halt, Flip::Verify).run(&Unseen);
@@ -6578,9 +6453,8 @@ mod tests {
         assert!(seal.seal_bytes > 0 && seal.final_check_bytes == 0, "sealed at its start, and no final check");
     }
 
-    /// TODO 29: a cycle whose final seal check halts the run ran every step and its final check, so
-    /// neither its results nor its end call it partial. After a cycle the results are saved when a
-    /// save is due, and then its end is shown, `partial` as the results have it.
+    /// TODO 29: a cycle whose final seal check halts the run ran every step and its final check, so neither its results nor its end call it
+    /// partial. After a cycle the results are saved when a save is due, and then its end is shown, `partial` as the results have it.
     #[test]
     fn a_cycle_ends_saved_then_shown() {
         let CycleRun { end, mut result } = FakeCycle::new(ErrorMode::Halt, Flip::Sealed).run(&Unseen);
@@ -6622,10 +6496,9 @@ mod tests {
         assert_eq!(*fe.ends.lock().unwrap(), [(1, false, true), (2, false, false), (3, true, true)]);
     }
 
-    /// Runs `f` and returns the log records this thread logged meanwhile that the console would show
-    /// (from Info up, but the log file's alone), as `LEVEL message`. The engine's tests have no
-    /// console, so a check that a step tells the user nothing counts its records here. The logger
-    /// is installed once a process, at Info, and keeps only the records of a thread counting them.
+    /// Runs `f` and returns the log records this thread logged meanwhile that the console would show (from Info up, but the log file's
+    /// alone), as `LEVEL message`. The engine's tests have no console, so a check that a step tells the user nothing counts its records
+    /// here. The logger is installed once a process, at Info, and keeps only the records of a thread counting them.
     fn records_of<R>(f: impl FnOnce() -> R) -> (R, Vec<String>) {
         thread_local!(static RECORDS: std::cell::RefCell<Option<Vec<String>>> = const { std::cell::RefCell::new(None) });
         struct Records;
@@ -6658,9 +6531,9 @@ mod tests {
         (value, RECORDS.take().unwrap_or_default())
     }
 
-    /// TODO 72: between cycles the results are saved silently, in progress, with the overall figures
-    /// of the cycles so far and the monitor's WHEA totals, and no outcome or status; the final save
-    /// replaces that one, finished, with how the run ended and its verdict, and says so once.
+    /// TODO 72: between cycles the results are saved silently, in progress, with the overall figures of the cycles so far and the monitor's
+    /// WHEA totals, and no outcome or status; the final save replaces that one, finished, with how the run ended and its verdict, and says
+    /// so once.
     #[test]
     fn the_results_are_saved_between_cycles_and_at_the_end() {
         let dir = crate::results::TempDir::new("cycle-saves");
@@ -6720,8 +6593,8 @@ mod tests {
         assert!(!std::path::Path::new(&format!("{path}.tmp")).exists());
     }
 
-    /// TODO 72: the results are saved after the first cycle, after one that stopped early, and after
-    /// any other once `RESULTS_SAVE_INTERVAL` has passed since the last save.
+    /// TODO 72: the results are saved after the first cycle, after one that stopped early, and after any other once `RESULTS_SAVE_INTERVAL`
+    /// has passed since the last save.
     #[test]
     fn the_results_are_saved_at_most_once_an_interval_between_cycles() {
         let soon = Duration::from_secs(5);

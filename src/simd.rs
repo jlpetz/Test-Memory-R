@@ -36,13 +36,11 @@ pub fn detect_simd_capabilities() -> String {
     if capabilities.is_empty() { "None detected".to_string() } else { capabilities.join(", ") }
 }
 
-/// A SIMD width: what `width=` gives every test that picks its width at run time (TODO 99), and
-/// what such a test runs at.
+/// A SIMD width: what `width=` gives every test that picks its width at run time (TODO 99), and what such a test runs at.
 ///
-/// Those tests are every `-Auto` test (resolved by name, `runner::resolve_auto_dispatch_test`,
-/// and in their own dispatchers), Mem-Sequence and the Bench pairs that name no width; the seal
-/// takes it too unless `seal-width=` sets its own (`seal::width_setting`). A test named for a
-/// width (`-128`, `-256`, `-512`) keeps that one.
+/// Those tests are every `-Auto` test (resolved by name, `runner::resolve_auto_dispatch_test`, and in their own dispatchers), Mem-Sequence
+/// and the Bench pairs that name no width; the seal takes it too unless `seal-width=` sets its own (`seal::width_setting`). A test named
+/// for a width (`-128`, `-256`, `-512`) keeps that one.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord)]
 pub enum Width {
     W128,
@@ -78,8 +76,7 @@ impl Width {
         }
     }
 
-    /// The widest width this CPU has: what auto runs. 128 is a fallback the startup gate (AVX2)
-    /// never lets run.
+    /// The widest width this CPU has: what auto runs. 128 is a fallback the startup gate (AVX2) never lets run.
     pub fn widest() -> Width {
         Isa::detect().widest()
     }
@@ -89,8 +86,8 @@ impl Width {
         Isa::detect().check(self)
     }
 
-    /// The width a test's name says: one ending in 128, 256 or 512 (`Mem-StuckBit512`,
-    /// `Spd-L1-Read-256`, `Bench-Init-Seal-TMR-512`). `None` for a name with no width.
+    /// The width a test's name says: one ending in 128, 256 or 512 (`Mem-StuckBit512`, `Spd-L1-Read-256`, `Bench-Init-Seal-TMR-512`).
+    /// `None` for a name with no width.
     pub fn of_name(name: &str) -> Option<Width> {
         [Width::W128, Width::W256, Width::W512].into_iter().find(|w| name.ends_with(w.name()))
     }
@@ -115,9 +112,8 @@ impl Width {
     }
 }
 
-/// Whether this CPU has AVX-512 as every 512-bit kernel is compiled for it: F, BW, CD, DQ and VL,
-/// their `#[target_feature]` set. The one test for it, behind `Width::check` (and so the run's
-/// choice of tests, `runner::leave_out_what_the_cpu_lacks`) and the seal's widths.
+/// Whether this CPU has AVX-512 as every 512-bit kernel is compiled for it: F, BW, CD, DQ and VL, their `#[target_feature]` set. The one
+/// test for it, behind `Width::check` (and so the run's choice of tests, `runner::leave_out_what_the_cpu_lacks`) and the seal's widths.
 pub fn has_avx512() -> bool {
     is_x86_feature_detected!("avx512f")
         && is_x86_feature_detected!("avx512bw")
@@ -161,16 +157,14 @@ type WidthSetting = std::sync::OnceLock<(Option<Width>, &'static str)>;
 /// The run's width setting (`set_width`).
 static WIDTH: WidthSetting = std::sync::OnceLock::new();
 
-/// Sets the run's width once, `source` saying where it came from: the command line's `width=`
-/// first, then a config's, which a `width=` given (`auto` too) keeps out. A width this CPU lacks
-/// is refused, before anything runs.
+/// Sets the run's width once, `source` saying where it came from: the command line's `width=` first, then a config's, which a `width=`
+/// given (`auto` too) keeps out. A width this CPU lacks is refused, before anything runs.
 pub fn set_width(width: Option<Width>, source: &'static str) -> Result<(), String> {
     set_width_on(&WIDTH, Width::check, width, source)
 }
 
-/// `set_width` on `setting`, `check` saying whether the CPU has a width (`Width::check`): the first
-/// width set holds, a later one isn't checked, and a width the CPU lacks is refused, leaving
-/// `setting` unset.
+/// `set_width` on `setting`, `check` saying whether the CPU has a width (`Width::check`): the first width set holds, a later one isn't
+/// checked, and a width the CPU lacks is refused, leaving `setting` unset.
 fn set_width_on(
     setting: &WidthSetting, check: impl Fn(Width) -> Result<Width, String>, width: Option<Width>, source: &'static str,
 ) -> Result<(), String> {
@@ -193,22 +187,20 @@ pub fn width_given() -> Option<(Width, &'static str)> {
     WIDTH.get().and_then(|&(width, source)| width.map(|w| (w, source)))
 }
 
-/// The width every test that picks its width at run time runs at: the one given, else the widest
-/// this CPU has. Read once a test function call, outside its hot loops.
+/// The width every test that picks its width at run time runs at: the one given, else the widest this CPU has. Read once a test function
+/// call, outside its hot loops.
 pub fn test_width() -> Width {
     width_given().map_or_else(Width::widest, |(w, _)| w)
 }
 
-/// Where the run's width came from, as the results file records it: `width=`, the config's, or
-/// `auto` when none was given.
+/// Where the run's width came from, as the results file records it: `width=`, the config's, or `auto` when none was given.
 pub fn width_source() -> &'static str {
     width_given().map_or("auto", |(_, source)| source)
 }
 
-/// `$f`, the function a run-time dispatcher calls at the run's width (`test_width`), called as the
-/// dispatcher calls it: `crate::dispatched!(f)(args)`. In a unit test build it is noted first, on
-/// the thread's record while a test takes one (`dispatches`), so the test sees which width's
-/// function the dispatch took. The binary's is `$f` alone.
+/// `$f`, the function a run-time dispatcher calls at the run's width (`test_width`), called as the dispatcher calls it:
+/// `crate::dispatched!(f)(args)`. In a unit test build it is noted first, on the thread's record while a test takes one (`dispatches`), so
+/// the test sees which width's function the dispatch took. The binary's is `$f` alone.
 #[cfg(not(test))]
 #[macro_export]
 macro_rules! dispatched {
@@ -233,8 +225,7 @@ thread_local! {
     static DISPATCHED: std::cell::RefCell<Option<Vec<*const ()>>> = const { std::cell::RefCell::new(None) };
 }
 
-/// Notes `f`, the function a dispatcher is calling (`dispatched!`), on this thread's record if a
-/// test takes one.
+/// Notes `f`, the function a dispatcher is calling (`dispatched!`), on this thread's record if a test takes one.
 #[cfg(test)]
 pub(crate) fn note_dispatch(f: *const ()) {
     DISPATCHED.with_borrow_mut(|record| {
@@ -244,9 +235,8 @@ pub(crate) fn note_dispatch(f: *const ()) {
     });
 }
 
-/// Runs `f`, and returns its value and the functions the dispatchers it ran called on this thread,
-/// in order (`dispatched!`): a test runs a test function in `f`, and sees which width's function
-/// its dispatch took (TODO 99).
+/// Runs `f`, and returns its value and the functions the dispatchers it ran called on this thread, in order (`dispatched!`): a test runs a
+/// test function in `f`, and sees which width's function its dispatch took (TODO 99).
 #[cfg(test)]
 pub(crate) fn dispatches<R>(f: impl FnOnce() -> R) -> (R, Vec<*const ()>) {
     /// Ends the record however `f` ends, so a failed test leaves none on its thread
@@ -273,9 +263,8 @@ thread_local! {
     static TEST_WIDTH: std::cell::Cell<Option<Option<Width>>> = const { std::cell::Cell::new(None) };
 }
 
-/// While it lives, `width_given` and `test_width` on this thread give `width` (`None`: auto): the
-/// run's is set once a process, so tests can't set it. The CLI's tests too, under the
-/// `test-support` feature: its goldens of the plan are at 256 bits (`test_support`, TODO 29).
+/// While it lives, `width_given` and `test_width` on this thread give `width` (`None`: auto): the run's is set once a process, so tests
+/// can't set it. The CLI's tests too, under the `test-support` feature: its goldens of the plan are at 256 bits (`test_support`, TODO 29).
 #[cfg(any(test, feature = "test-support"))]
 pub(crate) struct TestWidth {
     before: Option<Option<Width>>,
@@ -341,10 +330,9 @@ mod tests {
         }
     }
 
-    /// TODO 99: the run's width is the first one set, `width=`'s over the config's (`auto` too),
-    /// and a width the CPU lacks is refused, with where it came from and what it needs, leaving
-    /// the width unset; a config's that `width=` keeps out isn't checked. `set_width` on a setting
-    /// of the test's own, for a CPU with AVX2 alone.
+    /// TODO 99: the run's width is the first one set, `width=`'s over the config's (`auto` too), and a width the CPU lacks is refused, with
+    /// where it came from and what it needs, leaving the width unset; a config's that `width=` keeps out isn't checked. `set_width` on a
+    /// setting of the test's own, for a CPU with AVX2 alone.
     #[test]
     fn the_first_width_set_holds_and_one_the_cpu_lacks_is_refused() {
         let check = |w| Isa { avx2: true, avx512: false }.check(w);

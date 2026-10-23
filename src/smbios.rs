@@ -110,9 +110,8 @@ impl SmbiosData {
 
 static SMBIOS: OnceLock<SmbiosData> = OnceLock::new();
 
-/// The machine's SMBIOS data, read from firmware on first use. The tables cannot change while we
-/// run, and both the calibration identity check and the result file's identity need them, so they
-/// are read once rather than once per caller.
+/// The machine's SMBIOS data, read from firmware on first use. The tables cannot change while we run, and both the calibration identity
+/// check and the result file's identity need them, so they are read once rather than once per caller.
 pub fn get_smbios() -> &'static SmbiosData {
     SMBIOS.get_or_init(SmbiosData::detect)
 }
@@ -192,8 +191,8 @@ fn read_cpu_registry_info() -> (String, u32) {
     let mhz_name = b"~MHz\0";
     let mut mhz_value: u32 = 0;
     let mut mhz_size = std::mem::size_of::<u32>() as u32;
-    // SAFETY: the key opened above, a NUL-terminated name, and a u32 on the stack with its size,
-    // which Windows writes within (a larger value fails instead)
+    // SAFETY: the key opened above, a NUL-terminated name, and a u32 on the stack with its size, which Windows writes within (a larger
+    // value fails instead)
     let result = unsafe {
         RegQueryValueExA(
             hkey,
@@ -345,8 +344,8 @@ fn parse_smbios(raw: &[u8]) -> SmbiosData {
     }
 
     // Fix up Type 17 modules that have capacity=0 but Type 16 has the real capacity.
-    // This happens on VMs (e.g. EC2) with buggy firmware: Type 17 says size=0x7FFF
-    // (use extended) but extended size is 0. Type 16 has the correct total.
+    // This happens on VMs (e.g. EC2) with buggy firmware: Type 17 says size=0x7FFF (use extended) but extended size is 0. Type 16 has the
+    // correct total.
     if !data.memory_modules.is_empty() && type16_capacity_bytes > 0 {
         let modules_needing_fixup: Vec<usize> =
             data.memory_modules.iter().enumerate().filter(|(_, m)| m.capacity_bytes == 0).map(|(i, _)| i).collect();

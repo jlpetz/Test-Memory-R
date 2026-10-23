@@ -3,8 +3,7 @@ use super::*;
 
 #[test]
 fn review_repro_linepair_collision_above_32_gib() {
-    // F(x) = x XOR (x >> 32). Complementing F corresponds to complementing
-    // only the high 32 bits of x. For this key, x(0) and x(2^32)
+    // F(x) = x XOR (x >> 32). Complementing F corresponds to complementing only the high 32 bits of x. For this key, x(0) and x(2^32)
     // have that relationship. The odd line's explicit complement makes
     // two stored words equal.
     let key = 0x405a_c1f5_0000_0000;
@@ -47,8 +46,7 @@ fn review_switch_wire_formula_equals_legacy_mode14() {
             let old_address = 0x1e98_0000_0000u64 + n * 64;
             let old_key = 0x1234_5678_9abc_def0;
             let new_lid = line_base(3) + n;
-            // Match the pre-hash input. This proves the encoder's identical
-            // image, without pretending the real schedules/keys are equal.
+            // Match the pre-hash input. This proves the encoder's identical image, without pretending the real schedules/keys are equal.
             let new_key = old_address.wrapping_add(old_key).wrapping_sub(new_lid);
             assert_eq!(
                 switch_line(new_lid, new_key, beat),

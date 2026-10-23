@@ -1,11 +1,10 @@
-//! Which bit positions failed (TODO 97). Counted on the verifies' cold path only, after a check
-//! has failed, and reported by step and over the run: one bit failing everywhere points at one
-//! data line, many bits at the timings.
+//! Which bit positions failed (TODO 97). Counted on the verifies' cold path only, after a check has failed, and reported by step and over
+//! the run: one bit failing everywhere points at one data line, many bits at the timings.
 
 use serde::{Deserialize, Serialize};
 
-/// One bit position's failures: the failed checks whose ORed differences had it, and the bad words
-/// rescans found with it wrong, by the way it went.
+/// One bit position's failures: the failed checks whose ORed differences had it, and the bad words rescans found with it wrong, by the way
+/// it went.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 pub struct BitFailures {
     pub bit: u8,
@@ -53,9 +52,8 @@ impl FailingBits {
         }
     }
 
-    /// A bad word: `actual` where `want` was expected. A rescan counts its words in a `WordTally`
-    /// instead, which a chunk of bad words doesn't slow. A test's, and the final summary's fixture
-    /// (`test_support`, TODO 29).
+    /// A bad word: `actual` where `want` was expected. A rescan counts its words in a `WordTally` instead, which a chunk of bad words
+    /// doesn't slow. A test's, and the final summary's fixture (`test_support`, TODO 29).
     #[cfg(any(test, feature = "test-support"))]
     pub(crate) fn add_word(&mut self, want: u64, actual: u64) {
         let mut tally = WordTally::default();
@@ -83,8 +81,7 @@ impl FailingBits {
         }
     }
 
-    /// For a step line, after its error count: ` (bit 31)`, ` (bits 7, 31)`, ` (17 bits)`; empty
-    /// when none failed.
+    /// For a step line, after its error count: ` (bit 31)`, ` (bits 7, 31)`, ` (17 bits)`; empty when none failed.
     pub fn brief(&self) -> String {
         match self.0.len() {
             0 => String::new(),
@@ -94,8 +91,8 @@ impl FailingBits {
         }
     }
 
-    /// For a summary row: `31: 99 / 1 (1 + 0), 39: 3 / 0`, each bit's failed checks and bad words
-    /// (0→1 + 1→0). More than `LISTED_BITS` bits: the most failed, in bit order, and how many more.
+    /// For a summary row: `31: 99 / 1 (1 + 0), 39: 3 / 0`, each bit's failed checks and bad words (0→1 + 1→0). More than `LISTED_BITS`
+    /// bits: the most failed, in bit order, and how many more.
     pub fn detail(&self) -> String {
         let mut listed: Vec<&BitFailures> = self.0.iter().collect();
         if listed.len() > LISTED_BITS {
@@ -129,9 +126,8 @@ fn set_bits(mut mask: u64) -> impl Iterator<Item = u32> {
     })
 }
 
-/// A rescan's bad words by bit and way: a fixed table, so a chunk of bad words costs a count per
-/// wrong bit, not a search (the second review: a chunk of 4 MiB of bad words took 248 ms with the
-/// search, 14 ms with this).
+/// A rescan's bad words by bit and way: a fixed table, so a chunk of bad words costs a count per wrong bit, not a search (the second
+/// review: a chunk of 4 MiB of bad words took 248 ms with the search, 14 ms with this).
 #[derive(Debug, Clone)]
 pub struct WordTally {
     up: [u64; 64],
@@ -194,8 +190,7 @@ mod tests {
         assert_eq!((bits.brief(), bits.detail()), (String::new(), String::new()));
         bits.add_check(1 << 31);
         assert_eq!((bits.brief(), bits.detail()), (" (bit 31)".to_string(), "31: 1 / 0".to_string()));
-        // Bits 0 to 9 and 31, bit 31 failing most: the step line counts them, the row lists the
-        // most failed
+        // Bits 0 to 9 and 31, bit 31 failing most: the step line counts them, the row lists the most failed
         bits.add_check(0x3ff);
         bits.add_check(1 << 31);
         bits.add_check(1 << 31);

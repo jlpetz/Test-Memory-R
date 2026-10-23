@@ -1,13 +1,10 @@
-//! What the CLI's tests drive the engine with (TODO 29). The console's text is the CLI's
-//! (`crates/tmr-cli`), and its goldens show it keeps its bytes; much of what they show is the
-//! engine's code at work, which they reach here: a cycle of `execute_test_cycle` on heap regions
-//! (`FakeCycle`), the run's entry point on a fixed layout (`GoldenRun`), the detections that log at
-//! their first use, and the reports that take the engine's code to build, each from a fixed model.
-//! A unit test build has it, and a build with the `test-support` feature, which only tmr-cli's tests
-//! turn on (its dev-dependency), so a plain build of tmr.exe or the window has none of it. Cargo
-//! builds the engine once a command, with every feature that command's targets ask for: under
-//! `cargo build --all-targets` tmr.exe links it too. Ship, benchmark and read the asm of a plain
-//! build only (`cargo build --release`, `cargo rustc --release -p tmr-app --bin tmr`).
+//! What the CLI's tests drive the engine with (TODO 29). The console's text is the CLI's (`crates/tmr-cli`), and its goldens show it keeps
+//! its bytes; much of what they show is the engine's code at work, which they reach here: a cycle of `execute_test_cycle` on heap regions
+//! (`FakeCycle`), the run's entry point on a fixed layout (`GoldenRun`), the detections that log at their first use, and the reports that
+//! take the engine's code to build, each from a fixed model. A unit test build has it, and a build with the `test-support` feature, which
+//! only tmr-cli's tests turn on (its dev-dependency), so a plain build of tmr.exe or the window has none of it. Cargo builds the engine
+//! once a command, with every feature that command's targets ask for: under `cargo build --all-targets` tmr.exe links it too. Ship,
+//! benchmark and read the asm of a plain build only (`cargo build --release`, `cargo rustc --release -p tmr-app --bin tmr`).
 
 use std::path::Path;
 use std::time::Duration;
@@ -29,8 +26,8 @@ pub fn default_plan() -> &'static crate::plans::Plan {
     crate::plans::find(crate::plans::DEFAULT).expect("the default plan is built in")
 }
 
-/// Runs the detections, which log what they found at their first use, wherever that is: before a
-/// capture of what a test prints, so no golden depends on which test ran first.
+/// Runs the detections, which log what they found at their first use, wherever that is: before a capture of what a test prints, so no
+/// golden depends on which test ran first.
 pub fn detect() {
     let _ = (
         crate::tests::get_system_info(),
@@ -47,9 +44,8 @@ pub fn failing_bits(mask: u64) -> FailingBits {
     bits
 }
 
-/// Compares `text` with the golden `<dir>/<name>.txt`, or under `TMR_BLESS=1` writes it there. A
-/// difference fails with the first line that differs, and the whole text after it. The engine's
-/// goldens are in `testdata/console/` (`check`), the CLI's in its crate's.
+/// Compares `text` with the golden `<dir>/<name>.txt`, or under `TMR_BLESS=1` writes it there. A difference fails with the first line that
+/// differs, and the whole text after it. The engine's goldens are in `testdata/console/` (`check`), the CLI's in its crate's.
 pub fn check_golden(dir: &Path, name: &str, text: &str) {
     let path = dir.join(format!("{name}.txt"));
     if std::env::var_os("TMR_BLESS").is_some_and(|v| v == "1") {
@@ -95,9 +91,8 @@ pub fn consolidated_memory_report() -> ConsolidatedMemoryReport {
     crate::reporting::converters::create_consolidated_memory_report(&mem_info, &allocation)
 }
 
-/// An unsealed plan at 256 bits with a test run twice: the table and its notes (the cycle, the
-/// seal, the width). Its tests' sizes don't depend on this machine's caches: absolute and full
-/// extents, absolute chunks. The CLI's plan-only golden has a sealed plan (`GoldenRun`).
+/// An unsealed plan at 256 bits with a test run twice: the table and its notes (the cycle, the seal, the width). Its tests' sizes don't
+/// depend on this machine's caches: absolute and full extents, absolute chunks. The CLI's plan-only golden has a sealed plan (`GoldenRun`).
 pub fn test_configuration_report() -> TestConfigurationReport {
     use crate::reporting::converters::{PlanSequence, create_test_configuration_report_v2};
     let _width = crate::simd::TestWidth::set(Some(crate::simd::Width::W256));
@@ -118,8 +113,8 @@ pub fn test_configuration_report() -> TestConfigurationReport {
     create_test_configuration_report_v2(&tests, &timing, &cache_info, &[(4 * GIB) as usize; 4], None, &sequence)
 }
 
-/// A span from its requests in order, `(bytes, page, node, refused)`, laid out as the
-/// stitched allocator lays them: each at the cursor, granted ones merging into runs.
+/// A span from its requests in order, `(bytes, page, node, refused)`, laid out as the stitched allocator lays them: each at the cursor,
+/// granted ones merging into runs.
 pub(crate) fn span(thread_id: usize, home: u32, target: usize, requests: &[(usize, PageSizeLevel, u32, bool)]) -> ThreadSpan {
     let (mut runs, mut commits, mut cursor) = (Vec::<Run>::new(), Vec::new(), 0);
     for &(len, page, node, refused) in requests {
@@ -146,8 +141,8 @@ pub(crate) fn allocation_report(spans: Vec<ThreadSpan>, numa_nodes: u32) -> Allo
     crate::reporting::converters::create_allocation_report(spans, Duration::from_millis(1234), numa_nodes)
 }
 
-/// The 2026-10-16 run on this box, as its log tallied it: 18 × 1 GiB granted, thread 2's
-/// last 1 GiB request refused (1450), 80 × 128 MiB granted.
+/// The 2026-10-16 run on this box, as its log tallied it: 18 × 1 GiB granted, thread 2's last 1 GiB request refused (1450), 80 × 128 MiB
+/// granted.
 pub fn allocation_report_one_node() -> AllocationReport {
     let (gib, mib) = (GIB as usize, MIB as usize);
     let threads = (0..4)
@@ -164,8 +159,8 @@ pub fn allocation_report_one_node() -> AllocationReport {
     allocation_report(threads, 1)
 }
 
-/// Two nodes; node 1 is short of 1 GiB pages, so its threads take more 2 MiB pages, and
-/// thread 3 gets 512 MiB of them from node 0, asked for after a refusal on its own node.
+/// Two nodes; node 1 is short of 1 GiB pages, so its threads take more 2 MiB pages, and thread 3 gets 512 MiB of them from node 0, asked
+/// for after a refusal on its own node.
 pub fn allocation_report_two_nodes() -> AllocationReport {
     let (gib, mib) = (GIB as usize, MIB as usize);
     let mut spans = Vec::new();
@@ -186,8 +181,8 @@ pub fn allocation_report_two_nodes() -> AllocationReport {
     allocation_report(spans, 2)
 }
 
-/// Step `step` of the built-in suite's simplest kind: one pass of `duration_ms` over
-/// `bytes_processed`, clean but for `seal_errors`, at 1000 MiB/s when it ran at all.
+/// Step `step` of the built-in suite's simplest kind: one pass of `duration_ms` over `bytes_processed`, clean but for `seal_errors`, at
+/// 1000 MiB/s when it ran at all.
 pub(crate) fn summary(step: usize, duration_ms: u128, bytes_processed: u64, seal_errors: u64) -> TestSummary {
     TestSummary {
         step,
@@ -226,9 +221,8 @@ pub(crate) fn summary(step: usize, duration_ms: u128, bytes_processed: u64, seal
     }
 }
 
-/// The final summary of two sealed cycles: a test run twice a cycle, a latency step, a step's
-/// errors and bits in the second cycle, a final check's error, the seal's work and a step's, and a
-/// WHEA event. Every table it has shows.
+/// The final summary of two sealed cycles: a test run twice a cycle, a latency step, a step's errors and bits in the second cycle, a final
+/// check's error, the seal's work and a step's, and a WHEA event. Every table it has shows.
 pub fn final_summary_report() -> FinalTestSummaryReport {
     use crate::ops::Op;
     use crate::results::{CycleSeal, TestRunResult};

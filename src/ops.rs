@@ -1,20 +1,17 @@
-//! The work a step does around its test sequence, by operation (TODO 90): the seal's fills and
-//! checks, a test's own pattern fill, a latency test's chain build. Every record has the same
-//! shape, a time and the bytes it covered, and is named by its `Op`. The step report, the results
-//! file and the final summary's table list them from `Op::ALL`, so a new kind of work is a new
-//! variant here and nothing else.
+//! The work a step does around its test sequence, by operation (TODO 90): the seal's fills and checks, a test's own pattern fill, a latency
+//! test's chain build. Every record has the same shape, a time and the bytes it covered, and is named by its `Op`. The step report, the
+//! results file and the final summary's table list them from `Op::ALL`, so a new kind of work is a new variant here and nothing else.
 
 use std::time::Duration;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord)]
 pub enum Op {
-    /// The seal written over memory: the whole span at a cycle's start, each chunk after its test,
-    /// a step's extent at its end, what a step without the seal left unsealed
+    /// The seal written over memory: the whole span at a cycle's start, each chunk after its test, a step's extent at its end, what a step
+    /// without the seal left unsealed
     SealFill,
     /// The seal checked: before each chunk, before a step that overwrites it, at a cycle's end
     SealCheck,
-    /// A test's own fill before its sequence: the harness's, Mem-Random's, BlockMove's source,
-    /// a bandwidth test's first touch
+    /// A test's own fill before its sequence: the harness's, Mem-Random's, BlockMove's source, a bandwidth test's first touch
     PatternFill,
     /// A latency test's pointer chain or store table: time only
     ChainBuild,
@@ -83,8 +80,8 @@ impl OpTally {
         work.bytes += bytes;
     }
 
-    /// Another thread's, in the same step: the threads run at once, so the bytes add and the time
-    /// is the slowest thread's, as the test's own figures are.
+    /// Another thread's, in the same step: the threads run at once, so the bytes add and the time is the slowest thread's, as the test's
+    /// own figures are.
     pub fn merge_thread(&mut self, other: &OpTally) {
         for (mine, theirs) in self.0.iter_mut().zip(&other.0) {
             mine.time = mine.time.max(theirs.time);
@@ -104,8 +101,8 @@ impl OpTally {
         Op::ALL.into_iter().map(|op| (op, self.get(op)))
     }
 
-    /// The step report's form: every operation, `n/a` where the step did none.
-    /// `seal fill 0.4s, 28.00 GiB @ 68266 MiB/s; seal check 0.5s, …; pattern fill n/a; chain build n/a`
+    /// The step report's form: every operation, `n/a` where the step did none. `seal fill 0.4s, 28.00 GiB @ 68266 MiB/s; seal check 0.5s,
+    /// …; pattern fill n/a; chain build n/a`
     pub fn line(&self) -> String {
         self.iter()
             .map(|(op, work)| {

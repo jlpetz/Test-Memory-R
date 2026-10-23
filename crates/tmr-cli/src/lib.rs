@@ -1,11 +1,10 @@
-//! The command-line front end (TODO 29): the console's logging, a session shown through the CLI's
-//! frontend (`render`), and how it ended: the verdict, why setup stopped it, or the one-shot command
-//! it named, run on the console. The session itself is the engine's (`tmr::session::run`). Its own
-//! crate since S5 of TODO 29, so the engine prints nothing, and the window (`crates/tmr-gui`)
-//! doesn't name it: it has a logger of its own, which writes the same log file (`tmr::logfile`).
+//! The command-line front end (TODO 29): the console's logging, a session shown through the CLI's frontend (`render`), and how it ended:
+//! the verdict, why setup stopped it, or the one-shot command it named, run on the console. The session itself is the engine's
+//! (`tmr::session::run`). Its own crate since S5 of TODO 29, so the engine prints nothing, and the window (`crates/tmr-gui`) doesn't name
+//! it: it has a logger of its own, which writes the same log file (`tmr::logfile`).
 
-// The console goldens capture what a test prints as libtest does, and hand the capture on to the
-// threads a test spawns as it does (`golden.rs`, TODO 29)
+// The console goldens capture what a test prints as libtest does, and hand the capture on to the threads a test spawns as it does
+// (`golden.rs`, TODO 29)
 #![cfg_attr(test, feature(internal_output_capture, thread_spawn_hook))]
 // As the engine's (src/lib.rs): a `// SAFETY:` on every `unsafe` block, and `expect` for `unwrap()`
 #![cfg_attr(not(test), warn(clippy::undocumented_unsafe_blocks, clippy::unwrap_used))]
@@ -28,9 +27,9 @@ use tmr::session::SessionEnd;
 /// What the engine's reports and the CLI's renders return: the engine's `Result`
 type Result<T> = std::result::Result<T, Box<dyn std::error::Error>>;
 
-/// The CLI: a session on the console, `args` the command line (the exe's name first) less tmr.exe's
-/// own `--cli`/`--gui`. Returns the exit status for scripts: 0 passed, 1 failed or found errors, 2
-/// stopped before testing, 3 interrupted (`RunStatus::exit_code`). Any error stops TMR before
+/// The CLI: a session on the console, `args` the command line (the exe's name first) less tmr.exe's own `--cli`/`--gui`. Returns the exit
+/// status for scripts: 0 passed, 1 failed or found errors, 2 stopped before testing, 3 interrupted (`RunStatus::exit_code`). Any error
+/// stops TMR before
 /// testing, so it exits 2 like every other "stopped before testing" case (`RunStatus::NotRun`);
 /// the console gets it once, the log file too.
 pub fn main(args: Vec<String>) -> i32 {
@@ -50,15 +49,14 @@ pub fn main(args: Vec<String>) -> i32 {
     }
 }
 
-/// The error that stopped a session, as the CLI reports it: `Error: ...` on the console once, and
-/// the error in the log file.
+/// The error that stopped a session, as the CLI reports it: `Error: ...` on the console once, and the error in the log file.
 fn report_error(e: &dyn std::error::Error) {
     log::error!(target: tmr::logfile::FILE_ONLY_TARGET, "{e}");
     eprintln!("Error: {e}");
 }
 
-/// How the session ended, on the console (`program` the exe's name, for the help an unknown flag
-/// shows), and its exit status. A one-shot command runs here.
+/// How the session ended, on the console (`program` the exe's name, for the help an unknown flag shows), and its exit status. A one-shot
+/// command runs here.
 fn finish(end: &SessionEnd, program: &str) -> i32 {
     let status = match end {
         SessionEnd::Command(command) => return run_command(command),
@@ -71,8 +69,7 @@ fn finish(end: &SessionEnd, program: &str) -> i32 {
     status.exit_code()
 }
 
-/// A one-shot command on the console, which a calibration asks whether to save what it measured.
-/// Its exit status: 0 done, 2 failed.
+/// A one-shot command on the console, which a calibration asks whether to save what it measured. Its exit status: 0 done, 2 failed.
 fn run_command(command: &tmr::commands::Command) -> i32 {
     let mut confirm = |question: &str| crate::prompts::confirm(&mut stdin().lock(), &mut stdout(), question);
     match tmr::commands::run(command, &mut stdout(), &mut confirm) {
@@ -85,23 +82,20 @@ fn run_command(command: &tmr::commands::Command) -> i32 {
     }
 }
 
-/// Ctrl+C from the tests' start (`Setup::Starting`): a first press stops the run gracefully, a
-/// second exits. Once a process: a second handler can't be set.
+/// Ctrl+C from the tests' start (`Setup::Starting`): a first press stops the run gracefully, a second exits. Once a process: a second
+/// handler can't be set.
 pub(crate) fn take_ctrl_c() {
     // Register CTRL+C handler for graceful shutdown
-    // This allows tests to stop at next checkpoint and print final reports
-    // A flag of the handler's own, not the engine's SHUTDOWN_REQUESTED: a halt sets that too, and
-    // the first CTRL+C after a halt must still be the graceful one.
+    // This allows tests to stop at next checkpoint and print final reports A flag of the handler's own, not the engine's
+    // SHUTDOWN_REQUESTED: a halt sets that too, and the first CTRL+C after a halt must still be the graceful one.
     let mut pressed = false;
     ctrlc::set_handler(move || {
         if pressed {
-            // Second press: the graceful stop is stuck or too slow. Windows frees every page the
-            // process holds, large pages included, when it exits. stderr rather than print_above,
-            // because a stuck shutdown may be one that is holding the console lock.
+            // Second press: the graceful stop is stuck or too slow. Windows frees every page the process holds, large pages included, when
+            // it exits. stderr rather than print_above, because a stuck shutdown may be one that is holding the console lock.
             eprintln!("\n\n🛑 CTRL+C again - exiting now, without the final report; the results file keeps only the cycles saved so far");
             log::logger().flush();
-            // The status Windows itself gives a process killed by CTRL+C, so a script can tell this apart
-            // from a run that finished.
+            // The status Windows itself gives a process killed by CTRL+C, so a script can tell this apart from a run that finished.
             std::process::exit(windows::Win32::Foundation::STATUS_CONTROL_C_EXIT.0);
         }
         pressed = true;
@@ -116,8 +110,8 @@ pub(crate) fn take_ctrl_c() {
     .expect("Error setting CTRL+C handler");
 }
 
-/// The console's logging: VT escape processing, then env_logger, each record on the console in
-/// colour above the ticker and in the log file (`tmr::logfile`).
+/// The console's logging: VT escape processing, then env_logger, each record on the console in colour above the ticker and in the log file
+/// (`tmr::logfile`).
 fn setup_logging() {
     // VT escape processing, for the log colours and the progress ticker (see console.rs).
     crate::console::init();
@@ -140,9 +134,8 @@ fn setup_logging() {
     Builder::new()
         .filter_level(level_filter)
         .format(|buf, record| {
-            // Write to console with original env_logger format. `LogSink` below prints it above
-            // the progress ticker, so the two never merge. A file-only record writes nothing here,
-            // and `LogSink` drops an empty write.
+            // Write to console with original env_logger format. `LogSink` below prints it above the progress ticker, so the two never
+            // merge. A file-only record writes nothing here, and `LogSink` drops an empty write.
             let console_result = if record.target() == tmr::logfile::FILE_ONLY_TARGET {
                 Ok(())
             } else {
@@ -156,10 +149,9 @@ fn setup_logging() {
                         log::Level::Debug => "36", // Cyan
                         log::Level::Trace => "35", // Magenta
                     },
-                    // Plain local time, no zone marker. This used to be `…%SZ` on a `Local::now()` —
-                    // printing local while claiming UTC, which was the actual bug. A bare stamp claims
-                    // nothing, which is both honest and easier to read; the zone is stated once in the
-                    // log file's header for anything that gets archived. Matches the file format.
+                    // Plain local time, no zone marker. This used to be `…%SZ` on a `Local::now()` — printing local while claiming UTC,
+                    // which was the actual bug. A bare stamp claims nothing, which is both honest and easier to read; the zone is stated
+                    // once in the log file's header for anything that gets archived. Matches the file format.
                     chrono::Local::now().format("%Y-%m-%d %H:%M:%S"),
                     record.level(),
                     record.module_path().unwrap_or("unknown"),
@@ -172,9 +164,8 @@ fn setup_logging() {
 
             console_result
         })
-        // Through the console module, so a log line can never land inside the progress ticker.
-        // A pipe target gets no colour detection of its own (env_logger would strip the escapes
-        // above), so decide here as the stdout target used to: colours on a console, none when
+        // Through the console module, so a log line can never land inside the progress ticker. A pipe target gets no colour detection of
+        // its own (env_logger would strip the escapes above), so decide here as the stdout target used to: colours on a console, none when
         // redirected.
         .target(env_logger::Target::Pipe(Box::new(crate::console::LogSink)))
         .write_style(if std::io::IsTerminal::is_terminal(&stdout()) {

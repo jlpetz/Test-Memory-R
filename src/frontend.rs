@@ -1,32 +1,26 @@
-//! The engine's one interface to whoever shows a run (TODO 29): the CLI (`crates/tmr-cli`) and the
-//! window (`crates/tmr-gui`). Where the engine printed text it hands the frontend a plain value, at
-//! the same moment, and the frontend formats it. The fast figures (progress, bytes, rates, live
-//! errors) don't travel: they are already shared, and a frontend reads them off the
-//! `ProgressTracker` on its own timer, the CLI on the engine's monitor thread (`Frontend::tick`).
+//! The engine's one interface to whoever shows a run (TODO 29): the CLI (`crates/tmr-cli`) and the window (`crates/tmr-gui`). Where the
+//! engine printed text it hands the frontend a plain value, at the same moment, and the frontend formats it. The fast figures (progress,
+//! bytes, rates, live errors) don't travel: they are already shared, and a frontend reads them off the `ProgressTracker` on its own timer,
+//! the CLI on the engine's monitor thread (`Frontend::tick`).
 //!
-//! One event replaces one run of prints with no engine call between them, where that run printed,
-//! and no event spans a log call. So a frontend that renders an event before `event` returns keeps
-//! the console's order against the log records, which go through the logger as before. The CLI
-//! renders that way and must not become asynchronous: the 'Halting test suite' record logged right
-//! after a step's report (`execute_test_cycle`) would then overtake the report.
+//! One event replaces one run of prints with no engine call between them, where that run printed, and no event spans a log call. So a
+//! frontend that renders an event before `event` returns keeps the console's order against the log records, which go through the logger as
+//! before. The CLI renders that way and must not become asynchronous: the 'Halting test suite' record logged right after a step's report
+//! (`execute_test_cycle`) would then overtake the report.
 //!
-//! A session has two kinds: its setup's (`Setup`, from `session::run`: the parameters, the CPUs
-//! chosen, large pages, the machine) and its run's (`Run`, from the memory plan to the results
-//! file). It asks one question, during setup, when large pages need a restart
-//! (`Frontend::large_page_restart`); the one-shot commands' question, whether to save a
-//! calibration, is the CLI's alone (the `confirm` that `commands::run` takes).
+//! A session has two kinds: its setup's (`Setup`, from `session::run`: the parameters, the CPUs chosen, large pages, the machine) and its
+//! run's (`Run`, from the memory plan to the results file). It asks one question, during setup, when large pages need a restart
+//! (`Frontend::large_page_restart`); the one-shot commands' question, whether to save a calibration, is the CLI's alone (the `confirm` that
+//! `commands::run` takes).
 //!
-//! The types the events carry that a frontend outside the engine names are re-exported here, and
-//! only those: the CLI's (`crates/tmr-cli`) and the GUI's, their tests' included, and the reports'
-//! tables, which a frontend renders through a `Renderer` of its own (the CLI's `ConsoleRenderer`).
-//! The rest of the engine stays private, so `dead_code` still checks it. A type an event carries is
-//! reachable from outside even when it isn't re-exported, and so are its `pub` methods, which are
-//! then exported: compiled as such, their callers change too (S3 found two rescans' error paths
-//! changed by `FailingBits`'). So a payload's methods that only the engine calls are `pub(crate)`
-//! where it matters: `FailingBits`' recording ones, which the rescans call, and `ProgressTracker`'s
-//! bookkeeping, as a frontend holds the live tracker and must only read it (`snapshot`,
-//! `take_whea_descriptions`). Other payloads' accessors that the engine alone calls (a `key`, a
-//! `detail`) are still `pub`: narrow one when its callers' asm moves, as `FailingBits`' did.
+//! The types the events carry that a frontend outside the engine names are re-exported here, and only those: the CLI's (`crates/tmr-cli`)
+//! and the GUI's, their tests' included, and the reports' tables, which a frontend renders through a `Renderer` of its own (the CLI's
+//! `ConsoleRenderer`). The rest of the engine stays private, so `dead_code` still checks it. A type an event carries is reachable from
+//! outside even when it isn't re-exported, and so are its `pub` methods, which are then exported: compiled as such, their callers change
+//! too (S3 found two rescans' error paths changed by `FailingBits`'). So a payload's methods that only the engine calls are `pub(crate)`
+//! where it matters: `FailingBits`' recording ones, which the rescans call, and `ProgressTracker`'s bookkeeping, as a frontend holds the
+//! live tracker and must only read it (`snapshot`, `take_whea_descriptions`). Other payloads' accessors that the engine alone calls (a
+//! `key`, a `detail`) are still `pub`: narrow one when its callers' asm moves, as `FailingBits`' did.
 
 use std::sync::Arc;
 use std::time::Duration;
@@ -53,19 +47,19 @@ pub use crate::tests::Stage;
 pub use crate::thread_pool::SealOp;
 pub use crate::whea::WheaCounts;
 
-/// Whoever shows a run. Two engine threads call it, so it is `Send + Sync` and takes `&self`: the
-/// thread that runs the suite sends the events, and the monitor thread ticks.
+/// Whoever shows a run. Two engine threads call it, so it is `Send + Sync` and takes `&self`: the thread that runs the suite sends the
+/// events, and the monitor thread ticks.
 pub trait Frontend: Send + Sync {
-    /// A low-rate fact, on the engine thread that printed it before. The CLI renders it before
-    /// returning: the console's order against the log records depends on it.
+    /// A low-rate fact, on the engine thread that printed it before. The CLI renders it before returning: the console's order against the
+    /// log records depends on it.
     fn event(&self, event: Event);
     /// Every 500 ms while a suite runs, from the engine's monitor thread, after its WHEA poll.
     fn tick(&self, _progress: &ProgressTracker) {}
     /// The suite is over: the monitor thread's last call.
     fn ticks_done(&self, _progress: &ProgressTracker) {}
-    /// Large pages are set up, but take effect only after Windows restarts (`Setup::LargePageCheck`
-    /// came first): exit to restart, or run on 4 KiB pages. Blocks the session's thread, idle then,
-    /// until answered. A frontend that can't ask answers `Continue4K`, as an empty answer does.
+    /// Large pages are set up, but take effect only after Windows restarts (`Setup::LargePageCheck` came first): exit to restart, or run on
+    /// 4 KiB pages. Blocks the session's thread, idle then, until answered. A frontend that can't ask answers `Continue4K`, as an empty
+    /// answer does.
     fn large_page_restart(&self) -> RestartChoice;
 }
 
@@ -98,8 +92,7 @@ impl From<Run> for Event {
     }
 }
 
-/// A session's setup facts, in the order a session has them (`session::run`). The large ones are
-/// boxed, so the enum stays small.
+/// A session's setup facts, in the order a session has them (`session::run`). The large ones are boxed, so the enum stays small.
 pub enum Setup {
     /// `test=` picks the tests `pattern` matches, once each unless `cycles=` says otherwise. One for
     /// each `test=` given.
@@ -108,11 +101,11 @@ pub enum Setup {
     QuickTest,
     /// What the allocation and pinning parameters set, without a config. Never empty.
     ParamNotes(Vec<ParamNote>),
-    /// The command line, with the defaults the modes added, and whether this is a release build.
-    /// Its own event, because the build's record is logged between it and `StartupParams`.
+    /// The command line, with the defaults the modes added, and whether this is a release build. Its own event, because the build's record
+    /// is logged between it and `StartupParams`.
     StartupHeader { command_line: Vec<String>, release: bool },
-    /// The logging environment (`RUST_LOG`, and `RUST_BACKTRACE` when set), and which parameters
-    /// were given and which defaults stand (none with a config)
+    /// The logging environment (`RUST_LOG`, and `RUST_BACKTRACE` when set), and which parameters were given and which defaults stand (none
+    /// with a config)
     StartupParams { rust_log: String, rust_backtrace: Option<String>, explicit: Vec<String>, defaults: Vec<String> },
     /// Whether the run counts logical CPUs or physical cores (`cputype=`), avoiding SMT for cores
     CpuType { cputype: String, avoid_smt: bool },
@@ -122,21 +115,20 @@ pub enum Setup {
     CpuCount { percent: u32, available: usize, threads: usize },
     /// The CPUs chosen, and the run's error mode, limits and SIMD
     Selection(Box<Selection>),
-    /// Large pages are checked next: `Frontend::large_page_restart` follows when they need a
-    /// restart, `LargePageDiagnostic` otherwise
+    /// Large pages are checked next: `Frontend::large_page_restart` follows when they need a restart, `LargePageDiagnostic` otherwise
     LargePageCheck,
     /// What the large-page check found and did (`memory::diagnose_and_setup_large_pages`)
     LargePageDiagnostic { report: String },
-    /// Whether this run can take large pages, and its `minpage=`, which stops the run before it
-    /// allocates when it needs them (`min_needs_large`) and they aren't usable
+    /// Whether this run can take large pages, and its `minpage=`, which stops the run before it allocates when it needs them
+    /// (`min_needs_large`) and they aren't usable
     LargePageStatus { usable: bool, min_page: String, min_needs_large: bool },
     /// The cache calibration the tests' sizes take, from tmr-cfg.json
     CacheCalibration(CacheCalibrationState),
-    /// The seal calibration `seal-width=auto` takes. Its own event, because checking it against
-    /// this machine logs (`AppConfig::valid_seal_calibration`).
+    /// The seal calibration `seal-width=auto` takes. Its own event, because checking it against this machine logs
+    /// (`AppConfig::valid_seal_calibration`).
     SealCalibration(SealCalibrationState),
-    /// The CPUs and the threads assigned them; on a hybrid CPU, how many of its P-cores have SMT
-    /// (`None` on one that isn't), and whether skip-cores= skipped E-cores first
+    /// The CPUs and the threads assigned them; on a hybrid CPU, how many of its P-cores have SMT (`None` on one that isn't), and whether
+    /// skip-cores= skipped E-cores first
     CpuTopology { report: Box<CpuTopologyReport>, smt_p_cores: Option<usize>, e_cores_skipped_first: bool },
     /// The system's memory now, `None` when Windows doesn't say
     MemoryStatus(Option<MemoryStatus>),
@@ -217,23 +209,20 @@ pub struct MemoryStatus {
     pub avail_page_file: u64,
 }
 
-/// A run's facts, in the order a run has them (`run_tests_with_layout_and_timing_filtered`).
-/// The large ones are boxed, so the enum stays small.
+/// A run's facts, in the order a run has them (`run_tests_with_layout_and_timing_filtered`). The large ones are boxed, so the enum stays
+/// small.
 pub enum Run {
     /// The memory status and the allocation plan, the run's first fact (`layout.rs`)
     MemoryPlan(Box<ConsolidatedMemoryReport>),
     /// The run stops before testing, and why. Each config error is one: each is logged after it.
     NotRun(NotRun),
-    /// What a filter that matched no test could have matched, right after its
-    /// `NotRun::NoTestMatches`: the named plan's tests, or the whole suite's. Its own event,
-    /// because collecting them logs (each auto-dispatch test's width, at debug level).
+    /// What a filter that matched no test could have matched, right after its `NotRun::NoTestMatches`: the named plan's tests, or the whole
+    /// suite's. Its own event, because collecting them logs (each auto-dispatch test's width, at debug level).
     Matchable { tests: Vec<String> },
-    /// The tests this CPU can't run, left out of the run: each one's name and what the CPU lacks.
-    /// Never empty.
+    /// The tests this CPU can't run, left out of the run: each one's name and what the CPU lacks. Never empty.
     LeftOut { tests: Vec<(String, String)> },
-    /// The channel count the stride formulas take, and the cache line: the test plan's first line.
-    /// Its own event, sent before the plan is built, because building it logs (each extent and
-    /// chunk it resolves, at debug level).
+    /// The channel count the stride formulas take, and the cache line: the test plan's first line. Its own event, sent before the plan is
+    /// built, because building it logs (each extent and chunk it resolves, at debug level).
     Channels { channels: u32, cache_line: usize },
     /// The test plan, right after `Channels`
     TestPlan(Box<TestConfigurationReport>),
@@ -243,19 +232,16 @@ pub enum Run {
     AllocationStarting { min: PageSizeLevel, max: PageSizeLevel },
     /// What allocation got (TODO 81)
     Allocated(Box<AllocationReport>),
-    /// The suite's clock started: where it stands from now on, for a frontend that reads it on its
-    /// own timer (the GUI; the CLI reads it on `tick`), the native patterns' seed, and the transfer
-    /// width they take and where it came from, `None` when it is unknown
+    /// The suite's clock started: where it stands from now on, for a frontend that reads it on its own timer (the GUI; the CLI reads it on
+    /// `tick`), the native patterns' seed, and the transfer width they take and where it came from, `None` when it is unknown
     SuiteStarted { progress: Arc<ProgressTracker>, seed: u64, transfer_bits: Option<u32>, transfer_source: &'static str },
     /// A cycle starts, of `limit` when there is one
     CycleStarted { cycle: u32, limit: Option<u32> },
-    /// A cycle is over, after its results were saved when a save was due: `partial` when it
-    /// stopped before its end (Ctrl+C, Stop, or a halt on a step's errors), its last steps and its
-    /// final seal check not run, as its results record it. One whose final seal check halts the run
-    /// ran to its end, and isn't.
+    /// A cycle is over, after its results were saved when a save was due: `partial` when it stopped before its end (Ctrl+C, Stop, or a halt
+    /// on a step's errors), its last steps and its final seal check not run, as its results record it. One whose final seal check halts the
+    /// run ran to its end, and isn't.
     CycleFinished { cycle: u32, partial: bool },
-    /// A seal stage ended (TODO 74): the seal's kernel, the bytes, the errors a final check found
-    /// and their bits, and the stage's wall time
+    /// A seal stage ended (TODO 74): the seal's kernel, the bytes, the errors a final check found and their bits, and the stage's wall time
     SealStage { op: SealOp, kernel: String, bytes: u64, errors: u64, bits: FailingBits, duration: Duration },
     /// A step ended
     StepFinished(Box<StepReport>),
@@ -263,25 +249,22 @@ pub enum Run {
     LateWhea(Vec<String>),
     /// What each thread, CPU and physical core did over the whole run
     CpuPerformance(Box<CpuPerformanceSummary>),
-    /// The suite ended: how, the verdict, and the run's errors (`status` is `Failed` exactly when
-    /// the run failed)
+    /// The suite ended: how, the verdict, and the run's errors (`status` is `Failed` exactly when the run failed)
     SuiteEnded { outcome: RunOutcome, status: RunStatus, memory_errors: u64, whea: WheaCounts },
     /// The final summary of the run
     FinalSummary(Box<FinalTestSummaryReport>),
-    /// The results file was saved, at the end of the run: once, after the final save. The saves
-    /// between cycles are silent.
+    /// The results file was saved, at the end of the run: once, after the final save. The saves between cycles are silent.
     ResultsSaved { path: String },
 }
 
 /// Why a run stops before testing.
 pub enum NotRun {
-    /// A config error: the config's, an override's, a test parameter's, the seal's, or a step's
-    /// in the plan (`step N: ...`)
+    /// A config error: the config's, an override's, a test parameter's, the seal's, or a step's in the plan (`step N: ...`)
     Config(String),
     /// The built-in plan can't be taken from the suite
     Plan(String),
-    /// No test matches `filter`: of the named `plan` that picked the tests, or of the whole suite.
-    /// `Run::Matchable` follows, with what it could have matched.
+    /// No test matches `filter`: of the named `plan` that picked the tests, or of the whole suite. `Run::Matchable` follows, with what it
+    /// could have matched.
     NoTestMatches { filter: String, plan: Option<&'static str> },
     /// Every test was left out (`Run::LeftOut`)
     NothingLeftToRun,
@@ -295,8 +278,8 @@ pub struct StepReport {
     pub cycle: u64,
     /// The step as the results file gets it, its threads' parts too
     pub summary: TestSummary,
-    /// Its wall time, without the seal's work before it, and its test's own time, its slowest
-    /// thread's (TODO 90), which its speed divides by
+    /// Its wall time, without the seal's work before it, and its test's own time, its slowest thread's (TODO 90), which its speed divides
+    /// by
     pub wall: Duration,
     pub timed_secs: f64,
     /// Its cycle limit, and whether its time limit stopped a thread
@@ -313,8 +296,8 @@ pub struct StepReport {
     pub stamp: Option<ProgressSnapshot>,
 }
 
-/// A step's settings, as its report's Config line gives them: the parameter, the pattern mode, the
-/// extent and the chunk with their sizes (the engine's `DefaultFormatter`), and the repetitions.
+/// A step's settings, as its report's Config line gives them: the parameter, the pattern mode, the extent and the chunk with their sizes
+/// (the engine's `DefaultFormatter`), and the repetitions.
 pub struct StepConfigLine {
     pub parameter: String,
     pub mode: String,
@@ -325,8 +308,8 @@ pub struct StepConfigLine {
     pub write_read_cycles: u32,
 }
 
-/// The run's work by thread, by logical CPU and by physical core, each with the run's WHEA total on
-/// its aggregate row. A table with no rows isn't shown.
+/// The run's work by thread, by logical CPU and by physical core, each with the run's WHEA total on its aggregate row. A table with no rows
+/// isn't shown.
 pub struct CpuPerformanceSummary {
     pub by_thread: PerformanceByThreadReport,
     pub by_cpu: PerformanceByCpuReport,

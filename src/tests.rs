@@ -16,11 +16,11 @@ pub enum ExtentMode {
     /// Use the entire per-thread allocation (sweep all memory).
     FullAllocation,
     /// Tier-aware sizing. Target string parsed via `CacheTarget::parse()`
-    /// (e.g. "L3/2", "L3*4", "DRAM*8"). Divides per-thread share for L3,
-    /// per-SMT-sibling share for L1/L2. Calibration-aware when tmr-cfg.json data exists.
+    /// (e.g. "L3/2", "L3*4", "DRAM*8"). Divides per-thread share for L3, per-SMT-sibling share for L1/L2. Calibration-aware when
+    /// tmr-cfg.json data exists.
     Cache { target: CacheTarget },
-    /// Coarse `(L1+L2+L3) × fraction` working-set size. NOT tier-aware, NOT thread-aware.
-    /// Originally designed as a "spill-the-whole-hierarchy" floor (multiplier > 1).
+    /// Coarse `(L1+L2+L3) × fraction` working-set size. NOT tier-aware, NOT thread-aware. Originally designed as a
+    /// "spill-the-whole-hierarchy" floor (multiplier > 1).
     /// Use `Cache` for precise tier targeting; this is for portable cross-machine ratios.
     CacheTotal { fraction: f64 },
     /// Hard-coded byte size. Replaces former FixedSize (MB) and FixedBytes.
@@ -48,8 +48,8 @@ impl ExtentMode {
 /// - `MB` = 1000² / `MiB` = 1024²
 /// - `GB` = 1000³ / `GiB` = 1024³
 ///
-/// **Default for unsuffixed values is MB** (TM5 backward-compat: `testing_window_size_mb=64`
-/// becomes `"64"` which means 64 MiB). Pure numeric strings should pass through cleanly.
+/// **Default for unsuffixed values is MB** (TM5 backward-compat: `testing_window_size_mb=64` becomes `"64"` which means 64 MiB). Pure
+/// numeric strings should pass through cleanly.
 ///
 /// Returns Err with a human-readable reason on malformed input.
 pub fn parse_size_string(s: &str) -> Result<usize, String> {
@@ -93,8 +93,8 @@ pub fn parse_size_string(s: &str) -> Result<usize, String> {
 ///
 /// `DRAMFull` is a sentinel meaning "use the full thread allocation" (no scale).
 ///
-/// Sanity range for scale: 0.01..=100.0. Both `*N` and `/N` syntax accepted in parser
-/// (e.g. `L3/2` → scale 0.5; `L3*0.5` → scale 0.5; `DRAM*8` → scale 8.0; `DRAM/2` → scale 0.5).
+/// Sanity range for scale: 0.01..=100.0. Both `*N` and `/N` syntax accepted in parser (e.g. `L3/2` → scale 0.5; `L3*0.5` → scale 0.5;
+/// `DRAM*8` → scale 8.0; `DRAM/2` → scale 0.5).
 #[derive(Debug, Clone, Copy, PartialEq)]
 pub enum CacheTarget {
     /// Target L1 data cache (per-core, ÷ SMT siblings).
@@ -145,9 +145,8 @@ impl CacheTarget {
         let tier = self.to_calibration_tier()?;
         let tier_result = cal.tiers.get(&tier)?;
 
-        // The calibrated optimal_size is the largest working set that stays in this tier
-        // (single-threaded measurement). Only topology sharing matters — no CPUID heuristics.
-        // Final 64-byte alignment is applied downstream in TestMemoryConfig::calculate_extent_size.
+        // The calibrated optimal_size is the largest working set that stays in this tier (single-threaded measurement). Only topology
+        // sharing matters — no CPUID heuristics. Final 64-byte alignment is applied downstream in TestMemoryConfig::calculate_extent_size.
         let calibrated = tier_result.optimal_size as f64;
 
         let size = match self {
@@ -162,10 +161,9 @@ impl CacheTarget {
                 (per_thread * scale) as usize
             }
             CacheTarget::Dram { scale } => {
-                // DRAM: each thread's working set is sized off the L3-spill threshold
-                // (calibrated total L3). No thread divisor — sharing L3 across threads
-                // would make the per-thread region too small for a clean DRAM measurement
-                // under multi-thread cache competition.
+                // DRAM: each thread's working set is sized off the L3-spill threshold (calibrated total L3). No thread divisor — sharing L3
+                // across threads would make the per-thread region too small for a clean DRAM measurement under multi-thread cache
+                // competition.
                 let cal_l3 = cal.tiers.get(&crate::calibration::CacheTier::L3).map(|t| t.optimal_size as f64).unwrap_or(calibrated);
                 (cal_l3 * scale) as usize
             }
@@ -260,8 +258,8 @@ impl CacheTarget {
         }
     }
 
-    /// Get a human-readable name that reflects actual calculation with thread count and VM status.
-    /// Shows `[cal]` suffix when calibration data is active for this tier.
+    /// Get a human-readable name that reflects actual calculation with thread count and VM status. Shows `[cal]` suffix when calibration
+    /// data is active for this tier.
     pub fn name_with_context(&self, thread_count: usize, is_vm: bool) -> String {
         let has_cal = get_calibration_data()
             .and_then(|cal| {
@@ -276,8 +274,8 @@ impl CacheTarget {
             CacheTarget::L2 { scale } => format!("L2{}{}", Self::format_scale(*scale), suffix),
             CacheTarget::L3 { scale } => {
                 if has_cal {
-                    // Calibrated: show thread count division (calibration optimal_size already
-                    // captures the true L3 ceiling, so the only post-divisor is thread sharing)
+                    // Calibrated: show thread count division (calibration optimal_size already captures the true L3 ceiling, so the only
+                    // post-divisor is thread sharing)
                     let scale_frag = Self::format_scale(*scale);
                     if thread_count == 1 { format!("L3{} [cal]", scale_frag) } else { format!("L3/{}{} [cal]", thread_count, scale_frag) }
                 } else {
@@ -303,9 +301,9 @@ impl CacheTarget {
         }
     }
 
-    /// Parse from string like "L1", "L1/2", "L2*0.8", "L3/4", "DRAM", "DRAM*8", "DRAM/2", "DRAM-FULL".
-    /// Both `/N` and `*N` operators are accepted on every tier; values may be decimal. No scale
-    /// means the tier default; a scale that is there but invalid is `None`, never the default.
+    /// Parse from string like "L1", "L1/2", "L2*0.8", "L3/4", "DRAM", "DRAM*8", "DRAM/2", "DRAM-FULL". Both `/N` and `*N` operators are
+    /// accepted on every tier; values may be decimal. No scale means the tier default; a scale that is there but invalid is `None`, never
+    /// the default.
     pub fn parse(s: &str) -> Option<Self> {
         let s = s.trim().to_uppercase();
 
@@ -330,15 +328,14 @@ impl CacheTarget {
         }
     }
 
-    /// The scale in `rest`, or `default` when there is none. `None` when a scale is there but
-    /// invalid: a bad operator, not a number, or out of range.
+    /// The scale in `rest`, or `default` when there is none. `None` when a scale is there but invalid: a bad operator, not a number, or out
+    /// of range.
     fn scale_or(rest: &str, default: f64) -> Option<f64> {
         if rest.trim().is_empty() { Some(default) } else { Self::parse_scale(rest) }
     }
 
-    /// Parse a scale fragment like `/2`, `*8`, `*0.8`. Empty string returns None
-    /// (so caller can apply the tier-specific default). Returns None for out-of-range
-    /// values (must be in CACHE_SCALE_MIN..=CACHE_SCALE_MAX) or unparseable input.
+    /// Parse a scale fragment like `/2`, `*8`, `*0.8`. Empty string returns None (so caller can apply the tier-specific default). Returns
+    /// None for out-of-range values (must be in CACHE_SCALE_MIN..=CACHE_SCALE_MAX) or unparseable input.
     fn parse_scale(s: &str) -> Option<f64> {
         let s = s.trim();
         if s.is_empty() {
@@ -374,8 +371,8 @@ fn trim_float(v: f64) -> String {
 pub enum ChunkMode {
     /// Per-test heuristic chunk sizing.
     Auto,
-    /// One chunk, the whole extent (TODO 76): the latency and bandwidth tests, which walk their
-    /// extent as one working set. Resolved before the minimum, which those names don't have.
+    /// One chunk, the whole extent (TODO 76): the latency and bandwidth tests, which walk their extent as one working set. Resolved before
+    /// the minimum, which those names don't have.
     Whole,
     /// Tier-aware sizing — same target syntax as `ExtentMode::Cache`.
     /// L3/N keeps writes warm through verify; DRAM*N forces eviction (refresh stress).
@@ -384,15 +381,14 @@ pub enum ChunkMode {
     CacheTotal { fraction: f64 },
     /// Hard-coded byte size. Replaces former FixedSize (MB).
     Absolute { size_bytes: usize },
-    /// A TM5 `Test Block Size` code 0-3 (TODO 76): the smaller of the `.cfg`'s Testing Window
-    /// Size and the extent, divided by `divisor` (code + 1), floored to `granularity` (the
-    /// `.cfg`'s Lock Memory Granularity). Resolved against the extent, as TM5 resolves it against
+    /// A TM5 `Test Block Size` code 0-3 (TODO 76): the smaller of the `.cfg`'s Testing Window Size and the extent, divided by `divisor`
+    /// (code + 1), floored to `granularity` (the `.cfg`'s Lock Memory Granularity). Resolved against the extent, as TM5 resolves it against
     /// the memory it maps (`function.asm:497-506`, `MainThread.asm:624-661`).
     Tm5Block { window: usize, divisor: u32, granularity: usize },
 }
 
-/// TM5's block for a `Test Block Size` code over `base` bytes: `base / divisor` floored to
-/// `granularity`, at least one granule (`MainThread.asm:627-661`). Code 0 (divisor 1) is `base`.
+/// TM5's block for a `Test Block Size` code over `base` bytes: `base / divisor` floored to `granularity`, at least one granule
+/// (`MainThread.asm:627-661`). Code 0 (divisor 1) is `base`.
 pub fn tm5_block_size(base: usize, divisor: u32, granularity: usize) -> usize {
     if divisor <= 1 {
         return base;
@@ -406,8 +402,7 @@ pub fn tm5_block_size(base: usize, divisor: u32, granularity: usize) -> usize {
 pub struct ChunkResolution {
     /// The spec's size before the extent bounds it; a TM5 block code at the `.cfg`'s own window.
     pub requested: usize,
-    /// The chunk the test runs: at least the test's minimum, at most the extent, a multiple of
-    /// 4 KiB.
+    /// The chunk the test runs: at least the test's minimum, at most the extent, a multiple of 4 KiB.
     pub resolved: usize,
 }
 
@@ -419,10 +414,9 @@ impl ChunkResolution {
 }
 
 /// Controls error checking frequency within tests using power-of-2 intervals.
-/// Only `PER_CHUNK` is constructed today, so the one `check_mask` path (the sequential SIMD
-/// positional verify: SimpleTest's modes 10 and 11, and SimpleNT) never runs. Every other kernel,
-/// the native ones among them, checks once a chunk whatever it says, so constructing another
-/// interval needs them taught it first.
+/// Only `PER_CHUNK` is constructed today, so the one `check_mask` path (the sequential SIMD positional verify: SimpleTest's modes 10 and
+/// 11, and SimpleNT) never runs. Every other kernel, the native ones among them, checks once a chunk whatever it says, so constructing
+/// another interval needs them taught it first.
 #[derive(Debug, Clone, Copy)]
 pub struct ErrorCheckInterval {
     /// Power-of-2 shift for check interval (0 = every op, 9 = every 512 ops, etc.)
@@ -452,8 +446,8 @@ static SYSTEM_INFO: OnceLock<SystemInfo> = OnceLock::new();
 // Global calibration data — set from tmr-cfg.json on startup, used by CacheTarget sizing
 static CALIBRATION_DATA: OnceLock<Option<crate::calibration::CalibrationResults>> = OnceLock::new();
 
-// Active SMT threads per physical core (1 if cputype=cores or no HT, 2 if cputype=threads with HT)
-// Set by main.rs after topology + cputype are resolved. Defaults to 1 if not set.
+// Active SMT threads per physical core (1 if cputype=cores or no HT, 2 if cputype=threads with HT) Set by main.rs after topology + cputype
+// are resolved. Defaults to 1 if not set.
 static ACTIVE_THREADS_PER_CORE: OnceLock<usize> = OnceLock::new();
 
 /// Set the global calibration data (called once at startup from tmr-cfg.json)
@@ -512,8 +506,8 @@ pub struct TestStats {
     pub name: &'static str,
     pub action: TestAction,
     pub bytes_processed: usize,
-    /// The test's own time: its clock restarts after setup it leaves out, such as a Bench-Verify's
-    /// fill (TODO 90). `None` when it didn't run.
+    /// The test's own time: its clock restarts after setup it leaves out, such as a Bench-Verify's fill (TODO 90). `None` when it didn't
+    /// run.
     pub timed: Option<std::time::Duration>,
     pub thread_id: usize,
     pub error_count: u64,
@@ -521,17 +515,16 @@ pub struct TestStats {
     pub cycles_completed: u32,       // Actual cycles completed
     pub cycles_planned: Option<u32>, // Planned cycles (None = unlimited)
     pub stopped_by_time_limit: bool, // True if stopped due to time, false if stopped due to cycle limit
-    /// Bad words the seal check before a chunk found (TODO 74): data the previous step left
-    /// sealed went bad, so they aren't this test's errors. TM5 numbers them 0.
+    /// Bad words the seal check before a chunk found (TODO 74): data the previous step left sealed went bad, so they aren't this test's
+    /// errors. TM5 numbers them 0.
     pub seal_errors: u64,
-    /// Checks that found a difference (TODO 27's first tier): each failed accumulator, the seal's
-    /// included. `error_count` counts the bad words their rescans found instead.
+    /// Checks that found a difference (TODO 27's first tier): each failed accumulator, the seal's included. `error_count` counts the bad
+    /// words their rescans found instead.
     pub alarms: u64,
-    /// Failed checks whose rescan found every word right (`alarms` minus the localised ones, when
-    /// rescanning): each still counts one error.
+    /// Failed checks whose rescan found every word right (`alarms` minus the localised ones, when rescanning): each still counts one error.
     pub not_reproduced: u64,
-    /// The work around the test sequence, by operation (TODO 90): the seal's fills and checks, a
-    /// fill, a chain build. Left out of `timed` and `bytes_processed`.
+    /// The work around the test sequence, by operation (TODO 90): the seal's fills and checks, a fill, a chain build. Left out of `timed`
+    /// and `bytes_processed`.
     pub ops: crate::ops::OpTally,
 }
 
@@ -560,8 +553,8 @@ impl TestStats {
 /// Optional progress reporting structure for tests
 /// Allows tests to report progress back to the coordinator at checkpoints
 ///
-/// One per worker, owned by the thread pool and read by the progress ticker. Each worker's slot is
-/// on its own cache line so workers publishing never contend with one another.
+/// One per worker, owned by the thread pool and read by the progress ticker. Each worker's slot is on its own cache line so workers
+/// publishing never contend with one another.
 #[derive(Debug)]
 #[repr(align(64))]
 pub struct TestProgress {
@@ -715,62 +708,55 @@ pub struct TestMemoryConfig {
     pub error_check_interval: ErrorCheckInterval, // Controls error checking frequency
     pub tsc_frequency_ghz: f64,                   // TSC frequency detected at startup (for latency tests)
     pub thread_count: usize,                      // Total thread count for cache-aware extent calculations
-    /// v2: Correctly interpreted TM5 parameter context (stride, subblocks, page stride).
-    /// None for v1 tests or TMR-native configs that don't originate from TM5.
+    /// v2: Correctly interpreted TM5 parameter context (stride, subblocks, page stride). None for v1 tests or TMR-native configs that don't
+    /// originate from TM5.
     pub parameter_context: Option<crate::config::TestParameterContext>,
-    /// Cache line size in bytes (from CacheInfo, typically 64). Used by TM5-faithful pattern
-    /// modes for cache-line-boundary complement toggle and page evolution.
+    /// Cache line size in bytes (from CacheInfo, typically 64). Used by TM5-faithful pattern modes for cache-line-boundary complement
+    /// toggle and page evolution.
     pub cache_line_bytes: usize,
     /// Number of verify passes per cycle (TM5 write-then-multi-read).
     /// TM5 typically uses dLoopCounter=5. Default 1 = single verify per cycle.
     pub verify_reps: u32,
-    /// Number of test operation repetitions per cycle (e.g., MirrorMove mirror round-trips).
-    /// Default 1 = single test op per cycle.
+    /// Number of test operation repetitions per cycle (e.g., MirrorMove mirror round-trips). Default 1 = single test op per cycle.
     pub test_reps: u32,
-    /// Number of write+verify cycles per chunk. TM5 SimpleTest uses ST_WriteReadCycles=4:
-    /// each chunk gets (1 write + 5 reads) × 4 = tight repeated access stress.
+    /// Number of write+verify cycles per chunk. TM5 SimpleTest uses ST_WriteReadCycles=4: each chunk gets (1 write + 5 reads) × 4 = tight
+    /// repeated access stress.
     /// Default 1 for non-TM5 tests. Set to 4 for TM5-faithful SimpleTest behavior.
     pub write_read_cycles: u32,
-    /// Skip the init phase (dependent mode). When true, the harness assumes a prior test
-    /// in the plan already wrote the expected patterns. The init_fn closure is still provided
-    /// (for pattern knowledge / error repair) but not called at startup.
+    /// Skip the init phase (dependent mode). When true, the harness assumes a prior test in the plan already wrote the expected patterns.
+    /// The init_fn closure is still provided (for pattern knowledge / error repair) but not called at startup.
     /// Plan validation ensures the required pattern gen test appeared earlier.
     pub skip_init: bool,
-    /// Flush each chunk out of the cache hierarchy (CLFLUSHOPT + MFENCE) between the write and
-    /// verify phases, so the verify **round-trips through DRAM** instead of reading the
-    /// still-hot copy the test just wrote (TODO #59).
+    /// Flush each chunk out of the cache hierarchy (CLFLUSHOPT + MFENCE) between the write and verify phases, so the verify **round-trips
+    /// through DRAM** instead of reading the still-hot copy the test just wrote (TODO #59).
     ///
-    /// This is the user-mode replacement for UC/WC driver memory: without it, a flipped DRAM
-    /// bit can be masked by a valid cached line, and whether a verify reaches DRAM at all is an
-    /// accident of chunk-size-vs-cache rather than a guarantee. Costs real bandwidth (the reads
-    /// become cold), which is the point — enable it on tests whose job is to prove what actually
-    /// landed in DRAM.
+    /// This is the user-mode replacement for UC/WC driver memory: without it, a flipped DRAM bit can be masked by a valid cached line, and
+    /// whether a verify reaches DRAM at all is an accident of chunk-size-vs-cache rather than a guarantee. Costs real bandwidth (the reads
+    /// become cold), which is the point — enable it on tests whose job is to prove what actually landed in DRAM.
     ///
     /// Default `false`: existing tests keep their current behaviour and timings.
     pub flush_before_verify: bool,
 
     /// Registration/display name for **logging only** — never for lookups.
     ///
-    /// Test fns bake in their own hardcoded `$test_name` (e.g. `"Mem-StuckBit128"`), which is the
-    /// key used for extent/chunk sizing and metadata lookups and must not change. But several
-    /// registrations share one fn: `Mem-StuckBit-Flush128` and the auto-dispatch `_A` variants
-    /// both run `stuck_bit_test_128_impl`. Logging the baked-in name therefore mislabels those
-    /// runs (`Mem-StuckBit-Flush128` was logging as `Mem-StuckBit128`).
+    /// Test fns bake in their own hardcoded `$test_name` (e.g. `"Mem-StuckBit128"`), which is the key used for extent/chunk sizing and
+    /// metadata lookups and must not change. But several registrations share one fn: `Mem-StuckBit-Flush128` and the auto-dispatch `_A`
+    /// variants both run `stuck_bit_test_128_impl`. Logging the baked-in name therefore mislabels those runs (`Mem-StuckBit-Flush128` was
+    /// logging as `Mem-StuckBit128`).
     ///
-    /// When set, `TestRunner::new` logs this instead. `None` falls back to the baked-in name, so
-    /// tests constructed outside the registry are unaffected.
+    /// When set, `TestRunner::new` logs this instead. `None` falls back to the baked-in name, so tests constructed outside the registry are
+    /// unaffected.
     pub display_name: Option<String>,
     /// The seal as this step runs it (TODO 74), set per step by the runner.
     pub seal: crate::seal::SealStep,
-    /// The native program a SimpleTest runs (pattern spec v2, `crate::pattern`). `None` with no
-    /// `pattern_mode` is the default program; a `pattern_mode` runs that TMR mode (spec 1).
+    /// The native program a SimpleTest runs (pattern spec v2, `crate::pattern`). `None` with no `pattern_mode` is the default program; a
+    /// `pattern_mode` runs that TMR mode (spec 1).
     pub program: Option<crate::pattern::Program>,
-    /// Mem-Sequence's passes (`crate::sequence`); `None` is its default, `W 5R`. Boxed: the
-    /// registry builds a config per test by value, and 132 bytes more each made the release
-    /// build 3x slower
+    /// Mem-Sequence's passes (`crate::sequence`); `None` is its default, `W 5R`. Boxed: the registry builds a config per test by value, and
+    /// 132 bytes more each made the release build 3x slower
     pub sequence: Option<Box<crate::sequence::Sequence>>,
-    /// Where this step runs in the suite (run seed, suite cycle, step), for the native patterns'
-    /// keys; set per dispatch by the runner, all zero outside a run and for the Bench pairs.
+    /// Where this step runs in the suite (run seed, suite cycle, step), for the native patterns' keys; set per dispatch by the runner, all
+    /// zero outside a run and for the Bench pairs.
     pub epoch: crate::pattern::StepEpoch,
 }
 
@@ -819,8 +805,7 @@ impl TestMemoryConfig {
         self
     }
 
-    /// The native program a SimpleTest with this config runs, or `None` when a `pattern_mode`
-    /// selects a TMR mode instead.
+    /// The native program a SimpleTest with this config runs, or `None` when a `pattern_mode` selects a TMR mode instead.
     pub fn native_program(&self) -> Option<crate::pattern::Program> {
         match (self.program, self.pattern_mode) {
             (Some(program), _) => Some(program),
@@ -829,15 +814,15 @@ impl TestMemoryConfig {
         }
     }
 
-    /// Builder: force the verify phase to read DRAM by flushing each chunk out of cache first
-    /// (CLFLUSHOPT + MFENCE between write and verify). See `flush_before_verify`.
+    /// Builder: force the verify phase to read DRAM by flushing each chunk out of cache first (CLFLUSHOPT + MFENCE between write and
+    /// verify). See `flush_before_verify`.
     pub fn with_flush_before_verify(mut self, flush: bool) -> Self {
         self.flush_before_verify = flush;
         self
     }
 
-    /// Builder: set the name used in per-thread log lines. Logging only — sizing and metadata
-    /// lookups still key off the test fn's baked-in name. See `display_name`.
+    /// Builder: set the name used in per-thread log lines. Logging only — sizing and metadata lookups still key off the test fn's baked-in
+    /// name. See `display_name`.
     pub fn with_display_name(mut self, name: impl Into<String>) -> Self {
         self.display_name = Some(name.into());
         self
@@ -900,9 +885,8 @@ impl TestMemoryConfig {
             }
         };
 
-        // Round down to 64-byte boundary so SIMD operations (especially NT stores) don't fault.
-        // This is the single source of alignment for all extent modes — calibrated values are
-        // raw measurements and topology divisions can produce non-aligned results, both expected.
+        // Round down to 64-byte boundary so SIMD operations (especially NT stores) don't fault. This is the single source of alignment for
+        // all extent modes — calibrated values are raw measurements and topology divisions can produce non-aligned results, both expected.
         let aligned = (size / 64) * 64;
         if aligned != size {
             log::debug!(
@@ -917,16 +901,14 @@ impl TestMemoryConfig {
         aligned
     }
 
-    /// The chunk for a test whose extent is `extent_size` bytes, resolved once per test (TODO 76):
-    /// the configured size, at least the test's minimum, at most the extent, rounded up to
-    /// `test_memory::GRANULE`. Any such multiple works: no kernel needs a power of two (TODO 76's
-    /// audit). A chunk bigger than the extent is the extent, as TM5 clamps its block to its memory.
+    /// The chunk for a test whose extent is `extent_size` bytes, resolved once per test (TODO 76): the configured size, at least the test's
+    /// minimum, at most the extent, rounded up to `test_memory::GRANULE`. Any such multiple works: no kernel needs a power of two (TODO
+    /// 76's audit). A chunk bigger than the extent is the extent, as TM5 clamps its block to its memory.
     pub fn calculate_chunk_size(&self, test_name: &str, extent_size: usize) -> usize {
         self.resolve_chunk(test_name, extent_size).resolved
     }
 
-    /// `calculate_chunk_size`, with the size the spec asks for, so the plan can say when the
-    /// thread's memory shrank it.
+    /// `calculate_chunk_size`, with the size the spec asks for, so the plan can say when the thread's memory shrank it.
     pub fn resolve_chunk(&self, test_name: &str, extent_size: usize) -> ChunkResolution {
         if let ChunkMode::Whole = self.chunk_mode {
             let whole = extent_size.next_multiple_of(crate::test_memory::GRANULE).max(crate::test_memory::GRANULE);
@@ -945,15 +927,14 @@ impl TestMemoryConfig {
             ChunkMode::CacheTotal { fraction } => (cache_info.total_cache as f64 * fraction) as usize,
             ChunkMode::Auto => self.calculate_optimal_block_for_test(test_name, extent_size, cache_info),
             ChunkMode::Cache { target } => {
-                // Reuse the calibration-aware sizing path. DRAMFull returns usize::MAX
-                // as a sentinel meaning "use the whole extent".
+                // Reuse the calibration-aware sizing path. DRAMFull returns usize::MAX as a sentinel meaning "use the whole extent".
                 let calculated = target.size_bytes(cache_info, self.thread_count);
                 if calculated == usize::MAX { extent_size } else { calculated }
             }
         };
 
-        // Calculate minimum chunk size considering SIMD operations and variant requirements
-        // Extract the relevant variant count from parameter_context (stride_patterns, rng_sequences, subdivisions, copy_directions)
+        // Calculate minimum chunk size considering SIMD operations and variant requirements Extract the relevant variant count from
+        // parameter_context (stride_patterns, rng_sequences, subdivisions, copy_directions)
         let variant_count = self
             .parameter_context
             .as_ref()
@@ -1040,8 +1021,8 @@ impl TestMemoryConfig {
             "Seal-Check" => 64,
             // Sequential bandwidth tests (all SIMD variants: 128/256/512/Auto)
             s if s.starts_with("Spd-") => 64,
-            // Latency tests: one chunk, the extent, under the `whole` chunk mode they register
-            // with; the minimum only matters for a config that gives them another one
+            // Latency tests: one chunk, the extent, under the `whole` chunk mode they register with; the minimum only matters for a config
+            // that gives them another one
             "ReadLatency" | "WriteLatency" | "CopyLatency" => 16,
             s if s.starts_with("Lat-") => 448,
             _ => panic!("Unknown test '{}' - add explicit SIMD requirement to calculate_minimum_chunk_size()", test_name),
@@ -1088,44 +1069,33 @@ fn align_to_boundary(size: usize, alignment: usize) -> usize {
     size.div_ceil(alignment) * alignment
 }
 
-/// Flush a byte range out of the cache hierarchy so subsequent reads round-trip
-/// through DRAM. Issues CLFLUSHOPT over each cache line, then a trailing MFENCE
-/// to drain all outstanding flushes before any later load can issue.
+/// Flush a byte range out of the cache hierarchy so subsequent reads round-trip through DRAM. Issues CLFLUSHOPT over each cache line, then
+/// a trailing MFENCE to drain all outstanding flushes before any later load can issue.
 ///
-/// This is the user-mode equivalent of UC memory: it defeats cache masking
-/// (where a verify-load hits the still-hot L1/L2/L3 copy and silently misses a
-/// DRAM bit error). Use it between a write phase and a verify phase whenever the
-/// verify must observe what actually landed in DRAM — refresh/bit-fade tests, or
-/// any cache-resident working set. See `doc/cache_management.md`.
+/// This is the user-mode equivalent of UC memory: it defeats cache masking (where a verify-load hits the still-hot L1/L2/L3 copy and
+/// silently misses a DRAM bit error). Use it between a write phase and a verify phase whenever the verify must observe what actually landed
+/// in DRAM — refresh/bit-fade tests, or any cache-resident working set. See `doc/cache_management.md`.
 ///
-/// CLFLUSHOPT is emitted unconditionally: the startup CPUID gate (tmr.exe's `require_cpu_features`)
-/// guarantees the feature, so there is no `_mm_clflush` fallback. The function
-/// carries `#[target_feature(enable = "clflushopt")]` (gated by the unstable
+/// CLFLUSHOPT is emitted unconditionally: the startup CPUID gate (tmr.exe's `require_cpu_features`) guarantees the feature, so there is no
+/// `_mm_clflush` fallback. The function carries `#[target_feature(enable = "clflushopt")]` (gated by the unstable
 /// `clflushopt_target_feature`, landed in nightly via rustc PR #157098).
 ///
-/// This flush-only loop uses the `_mm_clflushopt` intrinsic (stdarch PR #2141,
-/// now synced into nightly behind `simd_x86_clflushopt`, tracking #157096),
-/// NOT inline `asm!`. The intrinsic lowers to a real LLVM `clflushopt` op, so
-/// LLVM can unroll and schedule the loop freely; the asm form is an opaque
-/// `#APP` block LLVM cannot see through. The shipped binary unrolls it 8x plus a
-/// remainder loop (checked 2026-10-03 in `tmr.exe`; the `--lib` asm is pre-LTO
-/// and shows a plain loop). The asm idiom is reserved for a *mixed*
-/// flush + NT-store hot loop, where NT stores are themselves asm in stdarch
-/// (`doc/nt_stores.md`) and one consistent `#APP` boundary avoids
+/// This flush-only loop uses the `_mm_clflushopt` intrinsic (stdarch PR #2141, now synced into nightly behind `simd_x86_clflushopt`,
+/// tracking #157096), NOT inline `asm!`. The intrinsic lowers to a real LLVM `clflushopt` op, so LLVM can unroll and schedule the loop
+/// freely; the asm form is an opaque `#APP` block LLVM cannot see through. The shipped binary unrolls it 8x plus a remainder loop (checked
+/// 2026-10-03 in `tmr.exe`; the `--lib` asm is pre-LTO and shows a plain loop). The asm idiom is reserved for a *mixed*
+/// flush + NT-store hot loop, where NT stores are themselves asm in stdarch (`doc/nt_stores.md`) and one consistent `#APP` boundary avoids
 /// intrinsic→asm→intrinsic `#APP`/`#NO_APP` churn — we have no such loop today.
-/// We do NOT use the SSE2 `_mm_clflush` — it emits the slow, globally-serialized
-/// CLFLUSH (~15× slower; see `../clflush-test`).
+/// We do NOT use the SSE2 `_mm_clflush` — it emits the slow, globally-serialized CLFLUSH (~15× slower; see `../clflush-test`).
 ///
-/// Not manually unrolled: clflushopt is throughput-bound on its own issue rate,
-/// so hand-unroll buys nothing (and is slightly worse at small ranges —
-/// benchmarked in `../clflush-test`); LLVM unrolls the intrinsic loop as it sees
-/// fit. `cache_line_bytes` comes from the detected `CacheInfo`
+/// Not manually unrolled: clflushopt is throughput-bound on its own issue rate, so hand-unroll buys nothing (and is slightly worse at small
+/// ranges — benchmarked in `../clflush-test`); LLVM unrolls the intrinsic loop as it sees fit. `cache_line_bytes` comes from the detected
+/// `CacheInfo`
 /// (e.g. `config.cache_line_bytes`) — do not hardcode 64.
 ///
 /// # Safety
-/// `base..base+len_bytes` must be a valid, mapped range for the duration of the call.
-/// `base` must be aligned to `cache_line_bytes`: lines are counted from `base`, so an unaligned
-/// `base` leaves the last line its range touches cached (TODO 79 B3). Chunk starts satisfy this.
+/// `base..base+len_bytes` must be a valid, mapped range for the duration of the call. `base` must be aligned to `cache_line_bytes`: lines
+/// are counted from `base`, so an unaligned `base` leaves the last line its range touches cached (TODO 79 B3). Chunk starts satisfy this.
 /// Checked by `debug_assert!` only, to keep the release loop free of it.
 #[inline]
 #[target_feature(enable = "clflushopt")]
@@ -1141,17 +1111,17 @@ pub unsafe fn flush_range_to_dram(base: *const u8, len_bytes: usize, cache_line_
             std::arch::x86_64::_mm_clflushopt(addr);
         }
     }
-    // Mandatory: CLFLUSHOPT is weakly ordered. Without this fence a verify-load
-    // could issue while flushes are still draining and read stale cached data.
+    // Mandatory: CLFLUSHOPT is weakly ordered. Without this fence a verify-load could issue while flushes are still draining and read stale
+    // cached data.
     // SAFETY: MFENCE has no preconditions (SSE2, which every x86-64 CPU has)
     unsafe {
         std::arch::x86_64::_mm_mfence();
     }
 }
 
-/// Under `errors=halt`, ends a loop-owning test where it is once it has found errors (its own, or
-/// the seal check's before its chunk), before it writes over them: the bad words stay in memory
-/// (TODO 27). `$ops` is the test's operation count so far. Expands to an early return.
+/// Under `errors=halt`, ends a loop-owning test where it is once it has found errors (its own, or the seal check's before its chunk),
+/// before it writes over them: the bad words stay in memory (TODO 27). `$ops` is the test's operation count so far. Expands to an early
+/// return.
 macro_rules! halt_here {
     ($runner:expr, $cycle_errors:expr, $ops:expr) => {
         if $runner.should_halt($cycle_errors) {
@@ -1198,25 +1168,20 @@ impl<'a> TestBlock<'a> {
 ///
 /// StuckBit alternating-bit patterns.
 ///
-/// NOTE (TODO #61): these must NOT be byte-uniform (all 8 bytes equal) or LLVM's
-/// LoopIdiomRecognize rewrites the fill loop into `memset`, collapsing every SIMD-width
-/// variant to one identical libcall and erasing the width. `0xAA55...`/`0x55AA...` alternate
-/// the bytes while staying exact bitwise complements of each other — every bit is still
-/// tested as both 1 and 0 across the two phases (the stuck-at coverage is unchanged). The
-/// two constants XOR to all-ones (`P1 ^ P2 == !0`), i.e. P2 == !P1: a true inversion test.
+/// NOTE (TODO #61): these must NOT be byte-uniform (all 8 bytes equal) or LLVM's LoopIdiomRecognize rewrites the fill loop into `memset`,
+/// collapsing every SIMD-width variant to one identical libcall and erasing the width. `0xAA55...`/`0x55AA...` alternate the bytes while
+/// staying exact bitwise complements of each other — every bit is still tested as both 1 and 0 across the two phases (the stuck-at coverage
+/// is unchanged). The two constants XOR to all-ones (`P1 ^ P2 == !0`), i.e. P2 == !P1: a true inversion test.
 pub const STUCKBIT_P1: u64 = 0xAA55AA55AA55AA55u64; // 10101010 01010101 ... (per byte)
 pub const STUCKBIT_P2: u64 = 0x55AA55AA55AA55AAu64; // exact complement of P1
 
-/// Generates a StuckBit `_impl` at a given SIMD width. The `_multi` runtime-gate wrapper
-/// stays hand-written (it returns zero-stats when the feature is absent); this macro is the
-/// hot body it calls.
+/// Generates a StuckBit `_impl` at a given SIMD width. The `_multi` runtime-gate wrapper stays hand-written (it returns zero-stats when the
+/// feature is absent); this macro is the hot body it calls.
 ///
-/// 3-phase alternating-bit test per chunk: write P1 → verify → write P2 → verify → write P1 →
-/// verify. Verify uses **4 independent accumulator chains** (MLP — see
-/// `memory/simd-loop-optimization.md`: single-chain starves memory-level parallelism, worst
-/// on Intel 256-bit; N=4 fixes it, free on 128/512). No intermediate `ErrorCheckInterval`
-/// mode — on error the chunk trips and TODO #27's two-tier verifier does exact localization.
-/// The scaffolding (`TestRunner`) owns extent/timer/progress/stats/shutdown; the hot loop is
+/// 3-phase alternating-bit test per chunk: write P1 → verify → write P2 → verify → write P1 → verify. Verify uses **4 independent
+/// accumulator chains** (MLP — see `memory/simd-loop-optimization.md`: single-chain starves memory-level parallelism, worst on Intel
+/// 256-bit; N=4 fixes it, free on 128/512). No intermediate `ErrorCheckInterval` mode — on error the chunk trips and TODO #27's two-tier
+/// verifier does exact localization. The scaffolding (`TestRunner`) owns extent/timer/progress/stats/shutdown; the hot loop is
 /// byte-identical across widths modulo the `$simd_type`.
 macro_rules! stuck_bit_impl {
     ($fn_name:ident, $test_name:literal, $simd_type:ty, $tf:literal) => {
@@ -1306,10 +1271,9 @@ macro_rules! stuck_bit_impl {
     };
 }
 
-/// One write+verify phase of StuckBit at a SIMD width. Writes `$pat` across the chunk, fences,
-/// then verifies with 4 independent XOR/OR accumulator chains (MLP), merged once at the end.
-/// Adds each bad word to `$errs`, counted in a cold rescan when an accumulator trips. Expanded
-/// inside the `#[target_feature]` fn so the SIMD width is honored (no fn-call boundary).
+/// One write+verify phase of StuckBit at a SIMD width. Writes `$pat` across the chunk, fences, then verifies with 4 independent XOR/OR
+/// accumulator chains (MLP), merged once at the end. Adds each bad word to `$errs`, counted in a cold rescan when an accumulator trips.
+/// Expanded inside the `#[target_feature]` fn so the SIMD width is honored (no fn-call boundary).
 macro_rules! stuck_bit_write_verify {
     ($simd_type:ty, $base:expr, $start:expr, $end:expr, $pat:expr, $errs:expr, $test_name:expr, $thread_id:expr, $phase:literal, $flush:expr, $line_bytes:expr) => {{
         // Write phase.
@@ -1318,11 +1282,10 @@ macro_rules! stuck_bit_write_verify {
         }
         // No fence (TODO 16): this thread reads its own cached writes in order; the optional flush ends in its own MFENCE
 
-        // Optional flush phase (TODO #59): evict this chunk so the verify below round-trips
-        // through DRAM instead of reading the cache-resident copy we just wrote. Without it,
-        // whether the verify reaches DRAM is an accident of chunk-size-vs-cache. Placed after
-        // the fence (writes ordered) and before the reads; flush_range_to_dram ends in MFENCE
-        // so flushes drain before any verify load issues.
+        // Optional flush phase (TODO #59): evict this chunk so the verify below round-trips through DRAM instead of reading the
+        // cache-resident copy we just wrote. Without it, whether the verify reaches DRAM is an accident of chunk-size-vs-cache. Placed
+        // after the fence (writes ordered) and before the reads; flush_range_to_dram ends in MFENCE so flushes drain before any verify load
+        // issues.
         if $flush {
             let chunk_ptr = $base.add($start) as *const u8;
             let chunk_bytes = ($end - $start) * std::mem::size_of::<$simd_type>();
@@ -1360,8 +1323,8 @@ macro_rules! stuck_bit_write_verify {
 /// # Safety
 /// Caller must ensure all blocks are valid for reads/writes.
 ///
-/// StuckBitTest128 MultiBlock implementation (SSE2) - tests for stuck bits using alternating patterns.
-/// Preserves EXACT SSE2 algorithm from old version.
+/// StuckBitTest128 MultiBlock implementation (SSE2) - tests for stuck bits using alternating patterns. Preserves EXACT SSE2 algorithm from
+/// old version.
 /// StuckBitTest128 - SSE2 optimized - MultiBlock pattern
 /// The CPU has SSE2: the run leaves out a test it can't run (`runner::leave_out_what_the_cpu_lacks`)
 pub unsafe fn stuck_bit_test_128_multi(
@@ -1420,17 +1383,16 @@ pub unsafe fn stuck_bit_test_auto_multi(
 // RefreshStable MultiBlock Implementations
 // ================================================================================================
 
-/// Refresh fill pattern. Non-byte-uniform (0xA5/0x5A alternating) so the fill stays a real
-/// SIMD store loop instead of being rewritten to `memset` by LoopIdiomRecognize (#61).
+/// Refresh fill pattern. Non-byte-uniform (0xA5/0x5A alternating) so the fill stays a real SIMD store loop instead of being rewritten to
+/// `memset` by LoopIdiomRecognize (#61).
 pub const REFRESH_PATTERN: u64 = 0xA55AA55AA55AA55Au64;
 
-/// Mem-Refresh's wait between a chunk's write and its check where its config gives no `wait_ms`:
-/// the 64 ms it has always waited (DDR4's refresh window; DDR5's is 32 ms).
+/// Mem-Refresh's wait between a chunk's write and its check where its config gives no `wait_ms`: the 64 ms it has always waited (DDR4's
+/// refresh window; DDR5's is 32 ms).
 pub const REFRESH_WAIT_MS: u64 = 64;
 
-/// Mem-Refresh's wait between a chunk's write and its check: `wait` in slices of at most 100 ms,
-/// so a long one (a bit fade's minutes, `wait_ms`) still stops at Ctrl+C, and the live display
-/// keeps moving. Whether the run asked to stop.
+/// Mem-Refresh's wait between a chunk's write and its check: `wait` in slices of at most 100 ms, so a long one (a bit fade's minutes,
+/// `wait_ms`) still stops at Ctrl+C, and the live display keeps moving. Whether the run asked to stop.
 #[inline(never)]
 fn refresh_wait(runner: &mut crate::test_scaffolding::TestRunner<'_>, wait: std::time::Duration) -> bool {
     const SLICE: std::time::Duration = std::time::Duration::from_millis(100);
@@ -1448,13 +1410,11 @@ fn refresh_wait(runner: &mut crate::test_scaffolding::TestRunner<'_>, wait: std:
     }
 }
 
-/// Generates a Refresh `_impl` at a given SIMD width (the `_multi` runtime gate stays
-/// hand-written and calls this). Per chunk: write pattern → CLFLUSHOPT the chunk to DRAM →
-/// MFENCE → wait (`wait_ms`, else 64 ms; `refresh_wait`) → verify. The flush is what makes the
-/// post-wait verify actually read DRAM (defeats cache masking of bit-fade). Verify uses **4 independent accumulator chains**
-/// (MLP; see `memory/simd-loop-optimization.md`) — this is the cold-DRAM regime where MLP
-/// mattered most in benchmarking. A tripped accumulator rescans the chunk to count and log each
-/// bad word. `TestRunner` owns extent/timer/progress/stats/shutdown.
+/// Generates a Refresh `_impl` at a given SIMD width (the `_multi` runtime gate stays hand-written and calls this). Per chunk: write
+/// pattern → CLFLUSHOPT the chunk to DRAM → MFENCE → wait (`wait_ms`, else 64 ms; `refresh_wait`) → verify. The flush is what makes the
+/// post-wait verify actually read DRAM (defeats cache masking of bit-fade). Verify uses **4 independent accumulator chains** (MLP; see
+/// `memory/simd-loop-optimization.md`) — this is the cold-DRAM regime where MLP mattered most in benchmarking. A tripped accumulator
+/// rescans the chunk to count and log each bad word. `TestRunner` owns extent/timer/progress/stats/shutdown.
 macro_rules! refresh_impl {
     ($fn_name:ident, $test_name:literal, $simd_type:ty, $tf:literal) => {
         #[doc = include_str!("test_fn_safety.md")]
@@ -1505,9 +1465,8 @@ macro_rules! refresh_impl {
                         *base.add(i) = pattern;
                     }
 
-                    // Optional flush (TODO #59, opt-in): evict this chunk so the post-sleep
-                    // verify reads DRAM rather than a cache-resident copy that would mask
-                    // bit-fade. Default OFF — natural eviction already handles this here:
+                    // Optional flush (TODO #59, opt-in): evict this chunk so the post-sleep verify reads DRAM rather than a cache-resident
+                    // copy that would mask bit-fade. Default OFF — natural eviction already handles this here:
                     //   - the extent is `CacheTotal 2.0x`, i.e. 2× the whole hierarchy by
                     //     design, so writing it evicts its own earlier half;
                     //   - N threads run concurrently against a *shared* L3, cutting the
@@ -1517,19 +1476,18 @@ macro_rules! refresh_impl {
                     //     so any surviving tail line is read last — after the verify's own
                     //     reads have pulled ~a whole extent through the cache. The residual is
                     //     both the smallest and the least-likely-resident part of the range.
-                    // So this buys insurance against a fluke at ~20-30% throughput. For a
-                    // tool where throughput *is* coverage-per-unit-time, faster cycles find
-                    // more errors than a marginally stricter single pass. Turn it on to make
-                    // the DRAM round-trip architecturally guaranteed instead of policy-
-                    // dependent (shared virtualized L3, non-inclusive caches, prefetchers).
+                    // So this buys insurance against a fluke at ~20-30% throughput. For a tool where throughput *is*
+                    // coverage-per-unit-time, faster cycles find more errors than a marginally stricter single pass. Turn it on to make the
+                    // DRAM round-trip architecturally guaranteed instead of policy- dependent (shared virtualized L3, non-inclusive caches,
+                    // prefetchers).
                     if flush_before_verify {
                         let chunk_ptr = base.add(processed) as *const u8;
                         let chunk_bytes = (chunk_end - processed) * lanes;
                         flush_range_to_dram(chunk_ptr, chunk_bytes, config.cache_line_bytes);
                     }
 
-                    // No fence (TODO 16): the flush, when on, ends in its own MFENCE; the sleep is the wait.
-                    // Stopped during it, the chunk goes unchecked: the cycle's end check is skipped too
+                    // No fence (TODO 16): the flush, when on, ends in its own MFENCE; the sleep is the wait. Stopped during it, the chunk
+                    // goes unchecked: the cycle's end check is skipped too
                     if refresh_wait(&mut runner, wait) {
                         let total_operations = (runner.bytes_processed() / lanes) as u64;
                         return runner.finish_aborted(cycle_errors, total_operations);
@@ -1658,15 +1616,13 @@ pub unsafe fn refresh_stable_auto_multi(
 /// Mem-CacheBust's walk: a page apart, in words.
 const CACHE_BUST_WORDS: usize = CACHE_BUSTING_STRIDE / std::mem::size_of::<u64>();
 
-/// One Mem-CacheBust pass over a chunk: from each offset in its first page, every word a page on,
-/// each word its variant's pattern plus its index. The variant follows from the word's index, a
-/// page round, so a word's value is position-pure. The write and the verify are functions of their
-/// own so their loops keep every value in registers (TODO 99): in the test's function the write
-/// reloaded its pattern and the verify a vector constant every iteration. A call a chunk.
+/// One Mem-CacheBust pass over a chunk: from each offset in its first page, every word a page on, each word its variant's pattern plus its
+/// index. The variant follows from the word's index, a page round, so a word's value is position-pure. The write and the verify are
+/// functions of their own so their loops keep every value in registers (TODO 99): in the test's function the write reloaded its pattern and
+/// the verify a vector constant every iteration. A call a chunk.
 ///
-/// Both walk a pointer, so each access is that register plus a fixed displacement. Every access
-/// misses L1 (a page apart, all in one set), and there an index serving the address and the value
-/// too, one instruction fewer, ran 6% slower (TODO 99 round 2).
+/// Both walk a pointer, so each access is that register plus a fixed displacement. Every access misses L1 (a page apart, all in one set),
+/// and there an index serving the address and the value too, one instruction fewer, ran 6% slower (TODO 99 round 2).
 #[derive(Clone, Copy)]
 struct CacheBustChunk {
     base: *mut u64,
@@ -1704,11 +1660,9 @@ impl CacheBustChunk {
         }
     }
 
-    /// The accumulators ORed: nonzero when a word differs. Each step reads 16 words a page apart, as
-    /// four vectors of four, into four vector accumulators, and steps a vector of their expected
-    /// values: the shape the compiler gave the inlined loop. Written as vectors because from four
-    /// scalar chains the compiler vectorizes it itself, eight accumulators wide, and spills five of
-    /// its constants.
+    /// The accumulators ORed: nonzero when a word differs. Each step reads 16 words a page apart, as four vectors of four, into four vector
+    /// accumulators, and steps a vector of their expected values: the shape the compiler gave the inlined loop. Written as vectors because
+    /// from four scalar chains the compiler vectorizes it itself, eight accumulators wide, and spills five of its constants.
     #[inline(never)]
     unsafe fn verify(self) -> u64 {
         const W: usize = CACHE_BUST_WORDS;
@@ -1797,8 +1751,8 @@ pub unsafe fn cache_busting_multi(
             runner.check_seal(spread.start(k), spread.chunk());
             halt_here!(runner, cycle_errors, (runner.bytes_processed() / std::mem::size_of::<u64>()) as u64);
 
-            // Every word from each offset in the chunk's first page, a page apart, so each write
-            // and read lands in a different page; the walks cover every word
+            // Every word from each offset in the chunk's first page, a page apart, so each write and read lands in a different page; the
+            // walks cover every word
             let chunk = CacheBustChunk { base, start: processed, end: chunk_end, pattern_base, stride_patterns };
             chunk.write();
             let seen = chunk.verify();
@@ -1851,9 +1805,8 @@ struct RandomExtent {
 const RANDOM_SWEEP_STEP: usize = 16;
 
 impl RandomExtent {
-    /// The RNG's next step and the index it picks: `rng * len >> 64`, uniform over any length, one
-    /// multiply off the RNG's dependency chain (TODO 76; the old `& (len - 1)` needed a power of
-    /// two). `random_replay` takes the same steps.
+    /// The RNG's next step and the index it picks: `rng * len >> 64`, uniform over any length, one multiply off the RNG's dependency chain
+    /// (TODO 76; the old `& (len - 1)` needed a power of two). `random_replay` takes the same steps.
     #[inline(always)]
     fn pick(self, rng: &mut u64) -> usize {
         *rng ^= *rng << 13;
@@ -1862,9 +1815,8 @@ impl RandomExtent {
         ((*rng as u128 * self.len as u128) >> 64) as usize
     }
 
-    /// `n` random reads from RNG state `rng`, each word checked against its id. Returns the
-    /// differences ORed, four reads a step into four accumulators, and the RNG's state after. A
-    /// function of its own so its loop keeps every value in registers (TODO 99), called once a
+    /// `n` random reads from RNG state `rng`, each word checked against its id. Returns the differences ORed, four reads a step into four
+    /// accumulators, and the RNG's state after. A function of its own so its loop keeps every value in registers (TODO 99), called once a
     /// batch. The index is random, so each read is the base and an index, not a walked pointer.
     #[inline(never)]
     unsafe fn reads(self, mut rng: u64, n: usize) -> (u64, u64) {
@@ -1883,16 +1835,15 @@ impl RandomExtent {
         ((acc[0] | acc[1]) | (acc[2] | acc[3]), rng)
     }
 
-    /// The final sweep's check of words `[from, to)`, in order: 16 words a step as four `u64x4`
-    /// (the AVX2 baseline's width, which the compiler gave it) into four accumulators, on a walked
-    /// pointer with the indices carried, then a word at a time. Returns the differences ORed. A
-    /// function of its own (TODO 99): inlined, the compiler made five loops of it, reloading the
-    /// lanes' offsets from the stack or shuffling the words into the accumulators' order.
+    /// The final sweep's check of words `[from, to)`, in order: 16 words a step as four `u64x4` (the AVX2 baseline's width, which the
+    /// compiler gave it) into four accumulators, on a walked pointer with the indices carried, then a word at a time. Returns the
+    /// differences ORed. A function of its own (TODO 99): inlined, the compiler made five loops of it, reloading the lanes' offsets from
+    /// the stack or shuffling the words into the accumulators' order.
     #[inline(never)]
     unsafe fn verify(self, from: usize, to: usize) -> u64 {
         let RandomExtent { base, ids, .. } = self;
-        // The words past the whole steps are volatile, so they stay a word at a time: as a plain
-        // loop the compiler folded it into masked vector loads (a sweep's pieces are whole steps)
+        // The words past the whole steps are volatile, so they stay a word at a time: as a plain loop the compiler folded it into masked
+        // vector loads (a sweep's pieces are whole steps)
         let (steps, rest) = ((to - from) / RANDOM_SWEEP_STEP, (to - from) % RANDOM_SWEEP_STEP);
         let ids_v = u64x4::splat(ids);
         let (q1, q2, q3, step) = (u64x4::splat(4), u64x4::splat(8), u64x4::splat(12), u64x4::splat(RANDOM_SWEEP_STEP as u64));
@@ -1918,9 +1869,9 @@ impl RandomExtent {
     }
 }
 
-/// Cold path of Mem-Random: rerun one chunk's reads from its saved RNG state, counting and logging
-/// each mismatch. A fault that was gone by the reread still counts once. Random reads can land on
-/// a word twice: a bad word counts once, and its repeat reads are counted in the record.
+/// Cold path of Mem-Random: rerun one chunk's reads from its saved RNG state, counting and logging each mismatch. A fault that was gone by
+/// the reread still counts once. Random reads can land on a word twice: a bad word counts once, and its repeat reads are counted in the
+/// record.
 #[cold]
 #[inline(never)]
 unsafe fn random_replay(
@@ -1955,9 +1906,8 @@ unsafe fn random_replay(
     scan.finish(format_args!("in rng_seq {seq}, iterations {first}..{last}{repeats}"))
 }
 
-/// Mem-Random's final sweep (TODO 97): every word of the extent read once in order, `piece` words
-/// a check, stopping when `stop(errors so far)` says to. Returns the errors and the words it got
-/// through.
+/// Mem-Random's final sweep (TODO 97): every word of the extent read once in order, `piece` words a check, stopping when `stop(errors so
+/// far)` says to. Returns the errors and the words it got through.
 unsafe fn random_sweep(extent: RandomExtent, piece: usize, test_name: &str, mut stop: impl FnMut(u64) -> bool) -> (u64, usize) {
     let RandomExtent { base, len, ids } = extent;
     let mut errors = 0;
@@ -2021,9 +1971,8 @@ pub unsafe fn random_torture_multi(
     // Setup, not the test: its own record (TODO 90)
     runner.setup_done(crate::ops::Op::PatternFill, extent.test_size as u64);
 
-    // A cycle reads as many random words as the extent holds, split over the RNG sequences (a
-    // power of two, checked with the plan), each a batch of a chunk's words at a time for
-    // responsive shutdown (TODO 99; it read (len / 1000).clamp(5000, 50000) words a cycle before,
+    // A cycle reads as many random words as the extent holds, split over the RNG sequences (a power of two, checked with the plan), each a
+    // batch of a chunk's words at a time for responsive shutdown (TODO 99; it read (len / 1000).clamp(5000, 50000) words a cycle before,
     // 50,000 at any extent over 400 MB)
     let rng_sequences =
         config.parameter_context.as_ref().and_then(|c| c.rng_sequences).expect("RandomTorture requires rng_sequences in parameter_context");
@@ -2042,9 +1991,8 @@ pub unsafe fn random_torture_multi(
                 .wrapping_add(cycle as u64)
                 .wrapping_add((seq as u64).wrapping_mul(0x8765432187654321u64));
 
-            // Random read verification for this sequence - chunked for responsive shutdown
-            // (`RandomExtent::pick` picks each index). Mismatches OR into the accumulators; a
-            // nonzero one replays the chunk to count and log each bad word, so the loop has no
+            // Random read verification for this sequence - chunked for responsive shutdown (`RandomExtent::pick` picks each index).
+            // Mismatches OR into the accumulators; a nonzero one replays the chunk to count and log each bad word, so the loop has no
             // branch and no logging.
             for chunk_start in (0..iterations_per_seq).step_by(chunk_size_operations) {
                 let chunk_end = (chunk_start + chunk_size_operations).min(iterations_per_seq);
@@ -2055,12 +2003,11 @@ pub unsafe fn random_torture_multi(
                 if acc != 0 {
                     cycle_errors += random_replay(reads, chunk_rng, chunk_start..chunk_end, seq, test_name, acc);
                 }
-                // Count the batch when it is done, so a stop below reports what ran: a cycle can
-                // take seconds
+                // Count the batch when it is done, so a stop below reports what ran: a cycle can take seconds
                 runner.add_bytes((chunk_end - chunk_start) * std::mem::size_of::<u64>());
 
-                // An error under halt, or a shutdown: the reads done are the cycles completed and
-                // this cycle's so far, the sequences before this one and this one's batches
+                // An error under halt, or a shutdown: the reads done are the cycles completed and this cycle's so far, the sequences before
+                // this one and this one's batches
                 if runner.should_halt(cycle_errors) || runner.shutdown_requested() {
                     let this_cycle = seq as usize * iterations_per_seq + chunk_end;
                     let total_operations = u64::from(cycle - 1) * reads_per_cycle + this_cycle as u64;
@@ -2078,9 +2025,8 @@ pub unsafe fn random_torture_multi(
         if !runner.should_continue() {
             let total_operations = u64::from(cycle) * reads_per_cycle;
 
-            // The final sweep (TODO 97): the reads are drawn with replacement, so a cycle's reads
-            // leave about a third of the words unread (1/e), and the fill has sat since the test
-            // began, so every word is read once, in order, a chunk at a time: a bad word the
+            // The final sweep (TODO 97): the reads are drawn with replacement, so a cycle's reads leave about a third of the words unread
+            // (1/e), and the fill has sat since the test began, so every word is read once, in order, a chunk at a time: a bad word the
             // reads missed shows, and one that decayed over the test
             let piece = (runner.chunk_bytes() / std::mem::size_of::<u64>()).max(1);
             let (sweep_errors, swept) =
@@ -2101,15 +2047,13 @@ pub unsafe fn random_torture_multi(
 // StrideAccess, BandwidthSat, BlockMove MultiBlock Implementations
 // ================================================================================================
 
-/// One Mem-Stride pass over a chunk: each subdivision from its start, every `stride` words, each
-/// word the pattern plus its index. The write and the verify are functions of their own so their
-/// loops keep every value in registers (TODO 99): in the test's function, with its passes and
-/// chunks live too, the allocator kept the stride on the stack. A call a chunk, not a word.
+/// One Mem-Stride pass over a chunk: each subdivision from its start, every `stride` words, each word the pattern plus its index. The write
+/// and the verify are functions of their own so their loops keep every value in registers (TODO 99): in the test's function, with its
+/// passes and chunks live too, the allocator kept the stride on the stack. A call a chunk, not a word.
 ///
-/// Each loop walks a pointer, every access at it plus a fixed displacement, the expected value
-/// carried beside it, and runs while the pointer is below its last step's start rather than for a
-/// count (TODO 99 round 3). With a count the compiler vectorizes the strided verify itself, eight
-/// vector accumulators wide with five constants spilled, and turns the walks back into indexes.
+/// Each loop walks a pointer, every access at it plus a fixed displacement, the expected value carried beside it, and runs while the
+/// pointer is below its last step's start rather than for a count (TODO 99 round 3). With a count the compiler vectorizes the strided
+/// verify itself, eight vector accumulators wide with five constants spilled, and turns the walks back into indexes.
 #[derive(Clone, Copy)]
 struct StrideWalk {
     base: *mut u64,
@@ -2153,10 +2097,9 @@ impl StrideWalk {
         }
     }
 
-    /// The four accumulators ORed: nonzero when a word differs. Each of the test's strides is a
-    /// compile-time constant here, so the four loads a stride apart are one pointer and fixed
-    /// displacements, and the four expected values one value and fixed offsets: with the four
-    /// accumulators, every value fits in registers (at a runtime stride two didn't).
+    /// The four accumulators ORed: nonzero when a word differs. Each of the test's strides is a compile-time constant here, so the four
+    /// loads a stride apart are one pointer and fixed displacements, and the four expected values one value and fixed offsets: with the
+    /// four accumulators, every value fits in registers (at a runtime stride two didn't).
     #[inline]
     unsafe fn verify(self) -> u64 {
         match self.stride {
@@ -2183,8 +2126,8 @@ impl StrideWalk {
         (acc[0] | acc[1]) | (acc[2] | acc[3])
     }
 
-    /// `verify` at stride `S`: four words a stride apart a step, word `k` into accumulator `k`,
-    /// then the rest into the first, as `accumulate_stride_4`.
+    /// `verify` at stride `S`: four words a stride apart a step, word `k` into accumulator `k`, then the rest into the first, as
+    /// `accumulate_stride_4`.
     #[inline(never)]
     unsafe fn verify_strided<const S: usize>(self) -> u64 {
         let StrideWalk { base, chunk_start, subdivisions, elements_per_subdiv, pattern, .. } = self;
@@ -2212,11 +2155,10 @@ impl StrideWalk {
         (acc[0] | acc[1]) | (acc[2] | acc[3])
     }
 
-    /// `verify` at stride 1, where the words are contiguous: 16 a step, as four vectors of four,
-    /// one into each accumulator, each against its own vector of expected values (so no constant
-    /// is reloaded); then the rest a word at a time. Explicit vectors, at the baseline's 256 bits
-    /// (Mem-Stride has no width variants): from four scalar chains the compiler built a mix of
-    /// scalar and 128-bit loads through an index, four words a step.
+    /// `verify` at stride 1, where the words are contiguous: 16 a step, as four vectors of four, one into each accumulator, each against
+    /// its own vector of expected values (so no constant is reloaded); then the rest a word at a time. Explicit vectors, at the baseline's
+    /// 256 bits (Mem-Stride has no width variants): from four scalar chains the compiler built a mix of scalar and 128-bit loads through an
+    /// index, four words a step.
     #[inline(never)]
     unsafe fn verify_unit(self) -> u64 {
         let StrideWalk { base, chunk_start, subdivisions, elements_per_subdiv, pattern, .. } = self;
@@ -2280,15 +2222,13 @@ pub unsafe fn stride_access_multi(
         let chunk_len = spread.chunk() / std::mem::size_of::<u64>();
         let elements_per_subdiv = chunk_len >> subdiv_shift;
 
-        // Each stride pass sweeps the extent, so its strided traffic reaches DRAM. In a sealed step
-        // (TODO 74) the first pass checks each chunk's seal, the part no earlier chunk of the pass
-        // has written (chunks may overlap), and the last pass reseals each chunk.
+        // Each stride pass sweeps the extent, so its strided traffic reaches DRAM. In a sealed step (TODO 74) the first pass checks each
+        // chunk's seal, the part no earlier chunk of the pass has written (chunks may overlap), and the last pass reseals each chunk.
         let passes: Vec<usize> = strides.iter().copied().filter(|&stride| stride < len).collect();
         for (pass, &stride) in passes.iter().enumerate() {
             // Words written and read per chunk: each subdivision from its start, every stride
             let touched = subdivisions * elements_per_subdiv.div_ceil(stride);
-            // A word's value depends on its index and the pass, not on the chunk: the pass in the
-            // top byte, above every thread's ids
+            // A word's value depends on its index and the pass, not on the chunk: the pass in the top byte, above every thread's ids
             let pattern = pattern_base.wrapping_add((pass as u64 + 1) << 56);
             let mut checked_to = 0;
 
@@ -2350,22 +2290,19 @@ pub unsafe fn stride_access_multi(
     }
 }
 
-/// How Mem-BlockMove's, Mem-MovingInv's and Mem-Sequence's kernels read and write test memory, so
-/// a unit test can see their accesses in order (TODO 99): the image a kernel leaves doesn't show
-/// which way it went. Each access goes through an `Access`, which makes it and reports it to
-/// `seen`. The test's is `Direct`, whose `seen` is nothing: the accesses as written, which inline
-/// to the loop they were (the release asm is the same, instruction for instruction). A unit test
-/// runs the same code by `Recorded`. Mem-MovingInv's out-of-line functions are its loops by
-/// `Direct`. Mem-BlockMove's copies and Mem-Sequence's passes take the access themselves, through
-/// the dispatch that picks them, so a unit test's goes the way the test's does: the test's
-/// functions are their `Direct` instances.
+/// How Mem-BlockMove's, Mem-MovingInv's and Mem-Sequence's kernels read and write test memory, so a unit test can see their accesses in
+/// order (TODO 99): the image a kernel leaves doesn't show which way it went. Each access goes through an `Access`, which makes it and
+/// reports it to `seen`. The test's is `Direct`, whose `seen` is nothing: the accesses as written, which inline to the loop they were (the
+/// release asm is the same, instruction for instruction). A unit test runs the same code by `Recorded`. Mem-MovingInv's out-of-line
+/// functions are its loops by `Direct`. Mem-BlockMove's copies and Mem-Sequence's passes take the access themselves, through the dispatch
+/// that picks them, so a unit test's goes the way the test's does: the test's functions are their `Direct` instances.
 ///
-/// A unit test that runs a test function itself, to see what the function's own dispatch gives its
-/// kernels, records `Direct` (`record_direct`): in a unit test build `Direct` reports to the
-/// thread's tape while one runs. The binary has no tape, and its `Direct` reports nothing.
+/// A unit test that runs a test function itself, to see what the function's own dispatch gives its kernels, records `Direct`
+/// (`record_direct`): in a unit test build `Direct` reports to the thread's tape while one runs. The binary has no tape, and its `Direct`
+/// reports nothing.
 ///
-/// A module of its own because a symbol names an impl by the number of impls before it in its
-/// module: `Direct`'s impl here leaves the symbols of the impls below, and so the asm, as they were.
+/// A module of its own because a symbol names an impl by the number of impls before it in its module: `Direct`'s impl here leaves the
+/// symbols of the impls below, and so the asm, as they were.
 mod access {
     use std::simd::u64x4;
 
@@ -2420,8 +2357,8 @@ mod access {
         }
     }
 
-    /// The test's own access: each as written, reported to no one (in a unit test build, to the
-    /// thread's tape while one runs: `record_direct`).
+    /// The test's own access: each as written, reported to no one (in a unit test build, to the thread's tape while one runs:
+    /// `record_direct`).
     #[derive(Clone, Copy)]
     pub(super) struct Direct;
 
@@ -2439,8 +2376,7 @@ mod access {
         }
     }
 
-    /// One access a kernel made: its first word, from the recorder's base, and the words it read or
-    /// wrote.
+    /// One access a kernel made: its first word, from the recorder's base, and the words it read or wrote.
     #[cfg(test)]
     #[derive(Clone, Debug, PartialEq, Eq)]
     pub(super) enum Visit {
@@ -2464,9 +2400,8 @@ mod access {
         }
     }
 
-    /// A fault a tape makes (`record_direct`): once visit `after` (from 0) is reported, word `word`
-    /// from the tape's base XORed with `flip`. A read is reported once made and a write before it
-    /// is made, so the fault lands after the one and before the other.
+    /// A fault a tape makes (`record_direct`): once visit `after` (from 0) is reported, word `word` from the tape's base XORed with `flip`.
+    /// A read is reported once made and a write before it is made, so the fault lands after the one and before the other.
     #[cfg(test)]
     #[derive(Clone, Copy, Debug)]
     pub(super) struct Fault {
@@ -2475,8 +2410,8 @@ mod access {
         pub(super) flip: u64,
     }
 
-    /// What a unit test build's `Direct` reports to on a thread while a test records it: the
-    /// visits, their first words from `base`, and the faults to make.
+    /// What a unit test build's `Direct` reports to on a thread while a test records it: the visits, their first words from `base`, and the
+    /// faults to make.
     #[cfg(test)]
     struct Tape {
         base: *mut u64,
@@ -2501,9 +2436,9 @@ mod access {
         static TAPE: std::cell::RefCell<Option<Tape>> = const { std::cell::RefCell::new(None) };
     }
 
-    /// Runs `f`, recording each access this thread's `Direct` makes in it, its first word from
-    /// `base`, and making `faults`: a unit test runs a test function in `f`, and sees what its own
-    /// dispatch did, through the kernels it called (TODO 99). Returns `f`'s value and the visits.
+    /// Runs `f`, recording each access this thread's `Direct` makes in it, its first word from `base`, and making `faults`: a unit test
+    /// runs a test function in `f`, and sees what its own dispatch did, through the kernels it called (TODO 99). Returns `f`'s value and
+    /// the visits.
     #[cfg(test)]
     pub(super) fn record_direct<R>(base: *mut u64, faults: &[Fault], f: impl FnOnce() -> R) -> (R, Vec<Visit>) {
         /// Ends the tape however `f` ends, so a failed test leaves none on its thread
@@ -2535,15 +2470,13 @@ mod access {
 }
 use access::{Access, Direct};
 
-/// One Mem-BlockMove half-chunk: the source's words `[start, end)` copied to the same offsets of
-/// the destination half, in the test's direction pattern, then checked there, each word the
-/// pattern plus its index. The copies and the verify are functions of their own so their loops
-/// keep every value in registers (TODO 99): in the test's function a backward copy reloaded its
-/// bound, and the verify a vector constant, every iteration. A call a half-chunk.
+/// One Mem-BlockMove half-chunk: the source's words `[start, end)` copied to the same offsets of the destination half, in the test's
+/// direction pattern, then checked there, each word the pattern plus its index. The copies and the verify are functions of their own so
+/// their loops keep every value in registers (TODO 99): in the test's function a backward copy reloaded its bound, and the verify a vector
+/// constant, every iteration. A call a half-chunk.
 ///
-/// Each walks a pointer, every access at it plus a fixed displacement. The vector copies and the
-/// verify move 16 words a step as four 32 B vectors, the shape the compiler gave the inlined loops
-/// at the `x86-64-v3` baseline; the strided copies move one word a step, as written.
+/// Each walks a pointer, every access at it plus a fixed displacement. The vector copies and the verify move 16 words a step as four 32 B
+/// vectors, the shape the compiler gave the inlined loops at the `x86-64-v3` baseline; the strided copies move one word a step, as written.
 #[derive(Clone, Copy)]
 struct BlockMoveChunk {
     src: *mut u64,
@@ -2560,9 +2493,8 @@ impl BlockMoveChunk {
         self.pattern_base.wrapping_add(i as u64)
     }
 
-    /// The copy of `[start, end)` for `dirs` directions: 1 up; 2 the first half up and the second
-    /// down; 4 four quarters, up, down, even words then odd, up; any other count `dirs`
-    /// interleaved strided passes, each up. Each access by `access`: the test's `Direct`, or a
+    /// The copy of `[start, end)` for `dirs` directions: 1 up; 2 the first half up and the second down; 4 four quarters, up, down, even
+    /// words then odd, up; any other count `dirs` interleaved strided passes, each up. Each access by `access`: the test's `Direct`, or a
     /// unit test's recorder through the same dispatch and the same functions (TODO 99).
     #[inline(always)]
     unsafe fn copy<A: Access>(self, dirs: u32, access: A) {
@@ -2615,8 +2547,8 @@ impl BlockMoveChunk {
         }
     }
 
-    /// Words `[from, to)` copied down from the top, 16 a step, the step's four vectors from its
-    /// top too; the words below the last whole step one at a time, down.
+    /// Words `[from, to)` copied down from the top, 16 a step, the step's four vectors from its top too; the words below the last whole
+    /// step one at a time, down.
     #[inline(never)]
     unsafe fn copy_down<A: Access>(self, from: usize, to: usize, access: A) {
         let (mut s, mut d) = (self.src.add(to) as *const u64, self.dst.add(to));
@@ -2639,9 +2571,8 @@ impl BlockMoveChunk {
         }
     }
 
-    /// Words `[from, to)` copied in `stride` passes, pass `k` the words `from + k`, `from + k +
-    /// stride`, ..., each pass up. The stride is `S`, or `stride` when `S` is 0: the 4-way copy's
-    /// even-then-odd quarter is a constant 2, so its accesses are fixed displacements.
+    /// Words `[from, to)` copied in `stride` passes, pass `k` the words `from + k`, `from + k + stride`, ..., each pass up. The stride is
+    /// `S`, or `stride` when `S` is 0: the 4-way copy's even-then-odd quarter is a constant 2, so its accesses are fixed displacements.
     #[inline(never)]
     unsafe fn copy_strided<const S: usize, A: Access>(self, from: usize, to: usize, stride: usize, access: A) {
         let stride = if S == 0 { stride } else { S };
@@ -2656,9 +2587,8 @@ impl BlockMoveChunk {
         }
     }
 
-    /// The source's words written, each its value: a sealed step's setup for each half-chunk, an
-    /// unsealed one's once for the half. Setup, so left to the vectorizer as written: in vectors
-    /// of its own, the unroller gave each of 16 stores an offset and spilled two.
+    /// The source's words written, each its value: a sealed step's setup for each half-chunk, an unsealed one's once for the half. Setup,
+    /// so left to the vectorizer as written: in vectors of its own, the unroller gave each of 16 stores an offset and spilled two.
     #[inline(never)]
     unsafe fn fill(self) {
         let (mut p, mut value) = (self.src.add(self.start), self.expected(self.start));
@@ -2669,9 +2599,8 @@ impl BlockMoveChunk {
         }
     }
 
-    /// The destination's words checked: the accumulators ORed, nonzero when a word differs. Each
-    /// step reads 16 words as four vectors into four vector accumulators and steps a vector of
-    /// their expected values; the words past the last whole step go to a scalar accumulator.
+    /// The destination's words checked: the accumulators ORed, nonzero when a word differs. Each step reads 16 words as four vectors into
+    /// four vector accumulators and steps a vector of their expected values; the words past the last whole step go to a scalar accumulator.
     #[inline(never)]
     unsafe fn verify(self) -> u64 {
         let lanes = u64x4::from_array([0, 1, 2, 3]);
@@ -2719,16 +2648,14 @@ pub unsafe fn block_move_multi(
     }
     let total_test_size = extent.test_size;
 
-    // Initialize the source half, each word the constant plus its id (`pattern::word_base`), so no
-    // two threads' words match (TODO 97)
+    // Initialize the source half, each word the constant plus its id (`pattern::word_base`), so no two threads' words match (TODO 97)
     let pattern_base = 0xDEADBEEFCAFEBABEu64.wrapping_add(crate::pattern::word_base(thread_id));
     // Divide the extent in half: first half = source, second half = destination
     let half_size = extent.test_size / 2;
     let src_base = extent.ptr as *mut u64;
     let len = half_size / std::mem::size_of::<u64>();
 
-    // Initialize source with pattern; a sealed step fills each source piece after its seal check
-    // instead (TODO 74)
+    // Initialize source with pattern; a sealed step fills each source piece after its seal check instead (TODO 74)
     let sealed = runner.seal_wrap();
     if !sealed {
         BlockMoveChunk { src: src_base, dst: src_base.wrapping_add(len), start: 0, end: len, pattern_base }.fill();
@@ -2745,8 +2672,8 @@ pub unsafe fn block_move_multi(
         let src_base = extent.ptr as *mut u64;
         let dst_base = src_base.add(half_size / std::mem::size_of::<u64>());
 
-        // Half-chunks of exactly half the test's chunk, spread evenly over the source half
-        // (TODO 76); each is copied to the same offset in the destination half
+        // Half-chunks of exactly half the test's chunk, spread evenly over the source half (TODO 76); each is copied to the same offset in
+        // the destination half
         let spread = runner.half_chunks(extent.test_size);
         let chunk_size_operations = spread.chunk() / std::mem::size_of::<u64>();
 
@@ -2764,8 +2691,7 @@ pub unsafe fn block_move_multi(
                 runner.untimed(crate::ops::Op::PatternFill, spread.chunk() as u64, || chunk.fill());
             }
 
-            // Copy from source to destination in the direction pattern, then verify the copy
-            // (indices from the destination half's start)
+            // Copy from source to destination in the direction pattern, then verify the copy (indices from the destination half's start)
             chunk.copy(copy_dirs, Direct);
             let seen = chunk.verify();
             if seen != 0 {
@@ -2798,8 +2724,8 @@ pub unsafe fn block_move_multi(
 // Moving inversions (TODO 97, TODO 19's order)
 // ================================================================================================
 
-/// `pattern::ident_word`'s `x` for word id `id` under `key`: the word is `ident_mix(x)`, and word
-/// id `id + n`'s `x` is `x + n * G`, so a walk carries it and adds G a word instead of multiplying.
+/// `pattern::ident_word`'s `x` for word id `id` under `key`: the word is `ident_mix(x)`, and word id `id + n`'s `x` is `x + n * G`, so a
+/// walk carries it and adds G a word instead of multiplying.
 #[inline(always)]
 fn ident_x(id: u64, key: u64) -> u64 {
     id.wrapping_mul(crate::pattern::G).wrapping_add(key)
@@ -2833,12 +2759,11 @@ fn ident_x_v(id: u64, key: u64) -> u64x4 {
 /// Words a Mem-MovingInv step covers: four vectors of four, one per accumulator.
 const MOVING_INV_STEP: usize = 16;
 
-/// One Mem-MovingInv chunk, words `[start, end)` of `base`: word `i`'s P is `ident`'s word of its
-/// id `ids + i` under `key`. Each pass is a function of its own, so its loop keeps every value in
-/// registers (TODO 99): in the test's function each word reloaded `ids` and `key` through the
-/// closures' references and multiplied by G. Here each pass walks a pointer, 16 words a step as
-/// four `u64x4` (the AVX2 baseline's width, which the compiler gave the fill and the verify), with
-/// `ident_x` carried, and a word at a time for the rest. A call a pass.
+/// One Mem-MovingInv chunk, words `[start, end)` of `base`: word `i`'s P is `ident`'s word of its id `ids + i` under `key`. Each pass is a
+/// function of its own, so its loop keeps every value in registers (TODO 99): in the test's function each word reloaded `ids` and `key`
+/// through the closures' references and multiplied by G. Here each pass walks a pointer, 16 words a step as four `u64x4` (the AVX2
+/// baseline's width, which the compiler gave the fill and the verify), with `ident_x` carried, and a word at a time for the rest. A call a
+/// pass.
 #[derive(Clone, Copy)]
 struct MovingInvChunk {
     base: *mut u64,
@@ -2849,9 +2774,8 @@ struct MovingInvChunk {
 }
 
 impl MovingInvChunk {
-    /// The chunk's whole steps, and the words past them, which go a word at a time. Those are
-    /// volatile so they stay that: as plain loops the compiler folded them into masked vector
-    /// loads and stores. (A chunk is whole 4 KiB granules, so a test's never has them.)
+    /// The chunk's whole steps, and the words past them, which go a word at a time. Those are volatile so they stay that: as plain loops
+    /// the compiler folded them into masked vector loads and stores. (A chunk is whole 4 KiB granules, so a test's never has them.)
     #[inline(always)]
     fn steps(self) -> (usize, usize) {
         let len = self.end - self.start;
@@ -2864,8 +2788,8 @@ impl MovingInvChunk {
         self.fill_by(Direct)
     }
 
-    /// `fill`'s loop, each access by `access`: `Direct` for `fill`, a recorder for a unit test
-    /// (TODO 99). `pass_by` and `verify_by` are the same for theirs.
+    /// `fill`'s loop, each access by `access`: `Direct` for `fill`, a recorder for a unit test (TODO 99). `pass_by` and `verify_by` are the
+    /// same for theirs.
     #[inline(always)]
     unsafe fn fill_by<A: Access>(self, access: A) {
         let MovingInvChunk { base, start, ids, key, .. } = self;
@@ -2890,10 +2814,9 @@ impl MovingInvChunk {
         }
     }
 
-    /// A read-then-write pass: going up (`UP`), each word checked as P and written ~P; going down,
-    /// checked as ~P and written P. Down starts with the words past the whole steps, from the top,
-    /// then takes the steps from the top, their vectors from the top. Returns the differences ORed,
-    /// in four accumulators as every verify keeps them.
+    /// A read-then-write pass: going up (`UP`), each word checked as P and written ~P; going down, checked as ~P and written P. Down starts
+    /// with the words past the whole steps, from the top, then takes the steps from the top, their vectors from the top. Returns the
+    /// differences ORed, in four accumulators as every verify keeps them.
     #[inline(never)]
     unsafe fn pass<const UP: bool>(self) -> u64 {
         self.pass_by::<UP, Direct>(Direct)
@@ -2990,13 +2913,11 @@ impl MovingInvChunk {
     }
 }
 
-/// The cold path of a read-then-write pass's failed check (Mem-Sequence's `RW`, Mem-MovingInv's
-/// middle passes). The pass kept no copy of what it read, so first rescan what it wrote, `wrote`:
-/// a cell that didn't take the write shows. If every word holds it, the word that read wrong may
-/// be a cell stuck at the value the pass then wrote over it, which it holds fine (the review): so
-/// write back what was read, flush it to DRAM, and rescan for that. A cell stuck shows; a read
-/// that went wrong doesn't (not reproduced). Returns the errors, and whether the chunk now holds
-/// `read`: the caller writes `wrote` again to go on, except under halt, which keeps what it found.
+/// The cold path of a read-then-write pass's failed check (Mem-Sequence's `RW`, Mem-MovingInv's middle passes). The pass kept no copy of
+/// what it read, so first rescan what it wrote, `wrote`: a cell that didn't take the write shows. If every word holds it, the word that
+/// read wrong may be a cell stuck at the value the pass then wrote over it, which it holds fine (the review): so write back what was read,
+/// flush it to DRAM, and rescan for that. A cell stuck shows; a read that went wrong doesn't (not reproduced). Returns the errors, and
+/// whether the chunk now holds `read`: the caller writes `wrote` again to go on, except under halt, which keeps what it found.
 #[cold]
 #[inline(never)]
 unsafe fn rescan_read_write(
@@ -3031,17 +2952,14 @@ unsafe fn rescan_read_write(
     )
 }
 
-/// Mem-MovingInv: memtest86's moving inversions, a March X over each chunk. The chunk is written
-/// with P going up; then each word is read as P and written as ~P going up; then read as ~P and
-/// written as P going down; then read as P. So every word is checked just before it is
-/// overwritten, while the words below it hold one value and those above the other: a write that
-/// disturbs other cells, or lands at another address, shows. Chunks are twice the L3 by default,
-/// so each pass reaches DRAM and moves through its rows.
+/// Mem-MovingInv: memtest86's moving inversions, a March X over each chunk. The chunk is written with P going up; then each word is read as
+/// P and written as ~P going up; then read as ~P and written as P going down; then read as P. So every word is checked just before it is
+/// overwritten, while the words below it hold one value and those above the other: a write that disturbs other cells, or lands at another
+/// address, shows. Chunks are twice the L3 by default, so each pass reaches DRAM and moves through its rows.
 ///
-/// P is `ident`'s word of each word's id (`pattern::word_base`) under a key per step and cycle:
-/// position-unique, and new every cycle. The read-then-write passes keep no copy of what a word
-/// read, so their failed checks go to `rescan_read_write`. The last pass only reads, and its
-/// rescan is every verify's.
+/// P is `ident`'s word of each word's id (`pattern::word_base`) under a key per step and cycle: position-unique, and new every cycle. The
+/// read-then-write passes keep no copy of what a word read, so their failed checks go to `rescan_read_write`. The last pass only reads, and
+/// its rescan is every verify's.
 #[doc = include_str!("test_fn_safety.md")]
 pub unsafe fn moving_inversions_multi(
     blocks: &[crate::runner::AllocationBlock], thread_id: usize, error_mode: ErrorMode, timing: &TestTiming, config: &TestMemoryConfig,
@@ -3124,10 +3042,9 @@ const MODULO_X: usize = 20;
 /// The aggressor passes over a chunk between writing its victims and checking them.
 const MODULO_PASSES: usize = 2;
 
-/// Mem-ModuloX's victims and aggressors in lines `[start, end)` of the extent (line `l` from the
-/// extent's start): line `l` is a victim when `l % MODULO_X == offset`. Calls `victim(line)` for
-/// each victim and `aggressors(lines)` for each run of the lines between them, so neither has a
-/// branch a line.
+/// Mem-ModuloX's victims and aggressors in lines `[start, end)` of the extent (line `l` from the extent's start): line `l` is a victim when
+/// `l % MODULO_X == offset`. Calls `victim(line)` for each victim and `aggressors(lines)` for each run of the lines between them, so
+/// neither has a branch a line.
 #[inline(always)]
 fn modulo_lines(
     start: usize, end: usize, offset: usize, mut victim: impl FnMut(usize), mut aggressors: impl FnMut(std::ops::Range<usize>),
@@ -3153,13 +3070,11 @@ fn modulo_lines(
 /// Words from one Mem-ModuloX victim to the next.
 const MODULO_APART: usize = MODULO_X * LINE_WORDS;
 
-/// One Mem-ModuloX chunk, lines `[start, end)` of `base`: the victims and aggressors of
-/// `modulo_lines`, word `i`'s P `ident`'s word of its id `ids + i` under `key`. The victims'
-/// write, the aggressors' pass and the victims' check are functions of their own, so their loops
-/// keep every value in registers (TODO 99): in the test's function each aggressor store redid its
-/// run's bounds, and the victims' loops reloaded G and their offsets. Each walks a pointer, a line
-/// as two `u64x4` (the AVX2 baseline's width, which the compiler gave them), with `ident_x`
-/// carried. A call a pass.
+/// One Mem-ModuloX chunk, lines `[start, end)` of `base`: the victims and aggressors of `modulo_lines`, word `i`'s P `ident`'s word of its
+/// id `ids + i` under `key`. The victims' write, the aggressors' pass and the victims' check are functions of their own, so their loops
+/// keep every value in registers (TODO 99): in the test's function each aggressor store redid its run's bounds, and the victims' loops
+/// reloaded G and their offsets. Each walks a pointer, a line as two `u64x4` (the AVX2 baseline's width, which the compiler gave them),
+/// with `ident_x` carried. A call a pass.
 #[derive(Clone, Copy)]
 struct ModuloChunk {
     base: *mut u64,
@@ -3184,8 +3099,7 @@ impl ModuloChunk {
         ident_x_v(self.ids.wrapping_add((line * LINE_WORDS) as u64), self.key)
     }
 
-    /// Writes P over each victim line, going up: the first alone if their count is odd, then two a
-    /// step.
+    /// Writes P over each victim line, going up: the first alone if their count is odd, then two a step.
     #[inline(never)]
     unsafe fn write_victims(self) {
         let (first, victims) = self.victims();
@@ -3210,10 +3124,9 @@ impl ModuloChunk {
         }
     }
 
-    /// One aggressor pass: ~P over every line but the victims, going up, in `modulo_lines`'s order.
-    /// Round 2's loop, inlined into the test and left to the compiler: written as a walk of its own
-    /// (u64x4, a pointer, the pattern stepped), every value in registers, the test ran 7% slower;
-    /// with this loop it runs 3% faster than round 2 (TODO 99 round 3b; the cause is unmeasured).
+    /// One aggressor pass: ~P over every line but the victims, going up, in `modulo_lines`'s order. Round 2's loop, inlined into the test
+    /// and left to the compiler: written as a walk of its own (u64x4, a pointer, the pattern stepped), every value in registers, the test
+    /// ran 7% slower; with this loop it runs 3% faster than round 2 (TODO 99 round 3b; the cause is unmeasured).
     #[inline(always)]
     unsafe fn aggress(self) {
         let ModuloChunk { base, start, end, offset, ids, key } = self;
@@ -3230,8 +3143,8 @@ impl ModuloChunk {
         );
     }
 
-    /// Checks each victim line for P, going up: the first alone if their count is odd, then two
-    /// a step, a vector each into the four accumulators. Returns the differences ORed.
+    /// Checks each victim line for P, going up: the first alone if their count is odd, then two a step, a vector each into the four
+    /// accumulators. Returns the differences ORed.
     #[inline(never)]
     unsafe fn verify_victims(self) -> u64 {
         let (first, victims) = self.victims();
@@ -3259,13 +3172,11 @@ impl ModuloChunk {
     }
 }
 
-/// Mem-ModuloX: memtest86's modulo-20, protected victims. In each chunk one line in every
-/// `MODULO_X` is a victim: it is written with P, then every other line is written with ~P,
-/// `MODULO_PASSES` times over the chunk, then the victims are read. So a victim holds still while
-/// the lines around it are written again and again: a write that disturbs other cells, or lands
-/// at a victim's address, shows. Lines, not words: the cache writes whole lines back. The offset
-/// moves on a line each cycle, from one each step picks, so every line is a victim in turn. P is
-/// `ident`'s word of each word's id under a key per step and cycle, as in Mem-MovingInv.
+/// Mem-ModuloX: memtest86's modulo-20, protected victims. In each chunk one line in every `MODULO_X` is a victim: it is written with P,
+/// then every other line is written with ~P, `MODULO_PASSES` times over the chunk, then the victims are read. So a victim holds still while
+/// the lines around it are written again and again: a write that disturbs other cells, or lands at a victim's address, shows. Lines, not
+/// words: the cache writes whole lines back. The offset moves on a line each cycle, from one each step picks, so every line is a victim in
+/// turn. P is `ident`'s word of each word's id under a key per step and cycle, as in Mem-MovingInv.
 #[doc = include_str!("test_fn_safety.md")]
 pub unsafe fn modulo_x_multi(
     blocks: &[crate::runner::AllocationBlock], thread_id: usize, error_mode: ErrorMode, timing: &TestTiming, config: &TestMemoryConfig,
@@ -3323,8 +3234,7 @@ pub unsafe fn modulo_x_multi(
                 };
             }
 
-            // Count the chunk when it is done: the victims written and read, the rest written
-            // each pass; overlaps count each time
+            // Count the chunk when it is done: the victims written and read, the rest written each pass; overlaps count each time
             let victims = spread.chunk() / MODULO_X;
             runner.add_bytes(2 * victims + MODULO_PASSES * (spread.chunk() - victims));
             halt_here!(runner, cycle_errors, ops(&runner));
@@ -3363,13 +3273,11 @@ use crate::test_harness::{ChunkCtx, run_phased_test};
 
 // ─── Line patterns: modes 2 and 20 (TODO 76) ─────────────────────────────────
 //
-// Both write each 64 B line as `seed + j * step`. Mode 2 takes seed and step from TM5's chain,
-// restarted at every 4 KiB page; mode 20 hashes them from the line's address. Either way a
-// word depends only on its address, so chunks may overlap and start on any page. These walks are
-// each mode's definition for its rescan and the tests' reference image (`numbered_mode_image`);
-// the writes and verifies are each width's (`simple_simd_loops!`), which SimpleV2 runs seeded
-// with the cycle and Bench-Init/Verify with cycle 0, so a later Bench-Verify can check what
-// Bench-Init wrote (TODO 99).
+// Both write each 64 B line as `seed + j * step`. Mode 2 takes seed and step from TM5's chain, restarted at every 4 KiB page; mode 20
+// hashes them from the line's address. Either way a word depends only on its address, so chunks may overlap and start on any page. These
+// walks are each mode's definition for its rescan and the tests' reference image (`numbered_mode_image`); the writes and verifies are each
+// width's (`simple_simd_loops!`), which SimpleV2 runs seeded with the cycle and Bench-Init/Verify with cycle 0, so a later Bench-Verify can
+// check what Bench-Init wrote (TODO 99).
 
 /// Mode 2 for one thread and cycle.
 #[derive(Clone, Copy)]
@@ -3381,8 +3289,7 @@ struct Mode2 {
 }
 
 impl Mode2 {
-    /// Calls `line(word_offset, expected)` for each line of words `[start, end)` of `ptr`,
-    /// which are whole 4 KiB pages.
+    /// Calls `line(word_offset, expected)` for each line of words `[start, end)` of `ptr`, which are whole 4 KiB pages.
     #[inline(always)]
     unsafe fn walk(self, ptr: *const u64, start: usize, end: usize, mut line: impl FnMut(usize, [u64; LINE_WORDS])) {
         debug_assert!(start.is_multiple_of(PAGE_WORDS) && end.is_multiple_of(PAGE_WORDS), "mode 2 needs whole pages: {start}..{end}");
@@ -3442,9 +3349,8 @@ impl Mode20 {
     }
 }
 
-/// The bus beat mode 30 flips at: the transfer width (`beat=`, else the DIMMs' SMBIOS memory
-/// type, `crate::pattern::transfer_beat`), or DDR5's 32 bits when neither gives one, as mode 30
-/// always has (the native `switch` alternates 64 and 32 there instead).
+/// The bus beat mode 30 flips at: the transfer width (`beat=`, else the DIMMs' SMBIOS memory type, `crate::pattern::transfer_beat`), or
+/// DDR5's 32 bits when neither gives one, as mode 30 always has (the native `switch` alternates 64 and 32 there instead).
 fn bus_beat() -> pattern_gen::BusBeat {
     static BEAT: std::sync::OnceLock<pattern_gen::BusBeat> = std::sync::OnceLock::new();
     *BEAT.get_or_init(|| {
@@ -3462,8 +3368,8 @@ struct Mode30 {
     beat: pattern_gen::BusBeat,
 }
 
-/// Runs `$body` with `$line` the line function (`*const u64` to the line's words) for `$mode30`'s
-/// beat, matched once outside the body, so a loop in it is compiled per beat with no branch on it.
+/// Runs `$body` with `$line` the line function (`*const u64` to the line's words) for `$mode30`'s beat, matched once outside the body, so a
+/// loop in it is compiled per beat with no branch on it.
 macro_rules! with_mode30_line {
     ($mode30:expr, |$line:ident| $body:block) => {{
         let key = $mode30.key;
@@ -3520,9 +3426,8 @@ impl Mode30 {
     }
 }
 
-/// Verify for the per-word patterns (modes 0, 1, 10, 11, 13): XOR each word with
-/// `expected(idx)` and OR into 4 accumulators, then count and log in a cold rescan only if one is
-/// set. A per-word branch and `log::error!` kept the log's arguments spilled to the stack on every
+/// Verify for the per-word patterns (modes 0, 1, 10, 11, 13): XOR each word with `expected(idx)` and OR into 4 accumulators, then count and
+/// log in a cold rescan only if one is set. A per-word branch and `log::error!` kept the log's arguments spilled to the stack on every
 /// word, and cost Bench-Verify-TM5-0 30% when the harness around it changed (TODO 76).
 // Test-only since TODO 99 round 3 (the kernels have their own): the tests' reference
 #[cfg(test)]
@@ -3556,11 +3461,10 @@ unsafe fn verify_words_in(
     rescan_words_in(ptr, start, end, test_name, seen, label, expected)
 }
 
-/// ORs the differences of words `start, start + stride, ...` below `end` into the 4 accumulators,
-/// 4 strides per step (TODO 89): the strided twin of `verify_words`'s loop, for walks over a chunk
-/// that stays in cache (Mem-CacheBust's 1 MiB, Mem-Stride's 2 MiB), where the loop is the limit.
-/// The caller checks them once and rescans on a hit. Measured on the dev box (2026-10-06):
-/// CacheBust 12% and Mem-Stride 5% faster than one load per step.
+/// ORs the differences of words `start, start + stride, ...` below `end` into the 4 accumulators, 4 strides per step (TODO 89): the strided
+/// twin of `verify_words`'s loop, for walks over a chunk that stays in cache (Mem-CacheBust's 1 MiB, Mem-Stride's 2 MiB), where the loop is
+/// the limit. The caller checks them once and rescans on a hit. Measured on the dev box (2026-10-06): CacheBust 12% and Mem-Stride 5%
+/// faster than one load per step.
 #[inline(always)]
 unsafe fn accumulate_stride_4(
     acc: &mut [u64; 4], ptr: *const u64, start: usize, end: usize, stride: usize, expected: impl Fn(usize) -> u64 + Copy,
@@ -3581,14 +3485,12 @@ unsafe fn accumulate_stride_4(
 
 // ─── The cold path of every verify (TODO 27's second tier) ──────────────────────────────────────
 //
-// A verify ORs each word's difference into accumulators and branches once per chunk: the first
-// tier, unchanged. When an accumulator is set, the region is rescanned before anything overwrites
-// or reseals it. Each bad word is logged with its index, address, expected and actual values and
-// their XOR, and the first few are reread: volatile loads, so each is a real load, then once more
-// after flushing the word's line. A reread that still sees the wrong value may be reading a cached
-// copy of a bad read, so neither result locates the fault; they are reported as seen. A rescan that
-// finds every word right reports the check as not reproduced, and it still counts one error: the
-// check saw a difference. `rescan=off` skips all of it and counts one error a failed check.
+// A verify ORs each word's difference into accumulators and branches once per chunk: the first tier, unchanged. When an accumulator is set,
+// the region is rescanned before anything overwrites or reseals it. Each bad word is logged with its index, address, expected and actual
+// values and their XOR, and the first few are reread: volatile loads, so each is a real load, then once more after flushing the word's
+// line. A reread that still sees the wrong value may be reading a cached copy of a bad read, so neither result locates the fault; they are
+// reported as seen. A rescan that finds every word right reports the check as not reproduced, and it still counts one error: the check saw
+// a difference. `rescan=off` skips all of it and counts one error a failed check.
 
 /// Bad words a rescan logs.
 const RESCAN_LOGGED: u64 = 10;
@@ -3612,8 +3514,7 @@ pub(crate) struct RescanCounts {
 thread_local! {
     static RESCANS: std::cell::Cell<RescanCounts> =
         const { std::cell::Cell::new(RescanCounts { alarms: 0, not_reproduced: 0, rereading: 0 }) };
-    /// This thread's failing bits since the last take: the worker sends them with each item's
-    /// result (`thread_pool`)
+    /// This thread's failing bits since the last take: the worker sends them with each item's result (`thread_pool`)
     static BITS: std::cell::RefCell<crate::failing_bits::CheckBits> = std::cell::RefCell::default();
 }
 
@@ -3649,15 +3550,14 @@ pub(crate) struct Rescan {
     lead: String,
     found: u64,
     reread: bool,
-    /// The check's differences ORed over the region: which bits differed somewhere. The rescan's
-    /// bad words are compared with it, so bits the check saw and the rescan didn't are kept.
+    /// The check's differences ORed over the region: which bits differed somewhere. The rescan's bad words are compared with it, so bits
+    /// the check saw and the rescan didn't are kept.
     seen: u64,
     /// The rescan's bad words' differences, ORed
     found_xor: u64,
     /// In the test's alarms and not-reproduced counts (not the seal's own checks)
     count: bool,
-    /// The first bad words, reread once the scan is done: a flush in mid-scan would make the
-    /// rest of their line a fresh read
+    /// The first bad words, reread once the scan is done: a flush in mid-scan would make the rest of their line a fresh read
     suspects: [(usize, u64); REREAD_WORDS as usize],
     /// The bad words' bits, by the way each went
     words: crate::failing_bits::WordTally,
@@ -3669,8 +3569,7 @@ impl Rescan {
         Self::begin(ptr, found_by(test_name), true)
     }
 
-    /// A rescan whose log lines start with `lead`; `count` puts it in the test's alarms (the seal's
-    /// checks count apart, as seal errors).
+    /// A rescan whose log lines start with `lead`; `count` puts it in the test's alarms (the seal's checks count apart, as seal errors).
     pub(crate) fn begin(ptr: *const u64, lead: String, count: bool) -> Self {
         let reread = RESCANS.with(|c| {
             let mut n = c.get();
@@ -3758,9 +3657,8 @@ impl Rescan {
         }
     }
 
-    /// Rereads the first bad words, after the scan: `REREADS` times each, then once after flushing
-    /// its line. Neither tells where the fault is: a reread can hit a cached copy of a bad read, and
-    /// the flush writes back a dirty line first.
+    /// Rereads the first bad words, after the scan: `REREADS` times each, then once after flushing its line. Neither tells where the fault
+    /// is: a reread can hit a cached copy of a bad read, and the flush writes back a dirty line first.
     unsafe fn reread(&self) {
         let suspects = &self.suspects[..self.found.min(REREAD_WORDS) as usize];
         RESCANS.with(|c| {
@@ -3768,8 +3666,8 @@ impl Rescan {
             n.rereading += 1;
             c.set(n);
         });
-        // Every suspect's rereads before any flush: a flush evicts the whole line, so a second
-        // suspect in it would be reread fresh from DRAM
+        // Every suspect's rereads before any flush: a flush evicts the whole line, so a second suspect in it would be reread fresh from
+        // DRAM
         let still: Vec<usize> = suspects
             .iter()
             .map(|&(idx, want)| (0..REREADS).filter(|_| std::ptr::read_volatile(self.ptr.add(idx)) != want).count())
@@ -3785,16 +3683,15 @@ impl Rescan {
         }
     }
 
-    /// The bad words found, which the caller counts as errors; or one if none was, since the check
-    /// saw a difference. `what` names the region and the pattern (`in idx 0..512 (random-~P, ...)`).
-    /// Every failed check leaves this one record, whatever the rescan found.
+    /// The bad words found, which the caller counts as errors; or one if none was, since the check saw a difference. `what` names the
+    /// region and the pattern (`in idx 0..512 (random-~P, ...)`). Every failed check leaves this one record, whatever the rescan found.
     pub(crate) fn finish(self, what: std::fmt::Arguments) -> u64 {
         if self.reread && self.found > 0 {
             // SAFETY: the suspects are words of the region the scan just read
             unsafe { self.reread() };
         }
-        // The check's bits are those its differences had; where it kept none, the rescan's. A bit
-        // only the rescan found (the word changed since) counts in its words alone.
+        // The check's bits are those its differences had; where it kept none, the rescan's. A bit only the rescan found (the word changed
+        // since) counts in its words alone.
         let mut bits = crate::failing_bits::FailingBits::default();
         bits.add_check(if self.seen != 0 { self.seen } else { self.found_xor });
         bits.add_words(&self.words);
@@ -3812,9 +3709,8 @@ impl Rescan {
     }
 }
 
-/// A failed check's record: what its rescan found, the check's ORed differences, and the bits the
-/// check saw but no bad word of the rescan had (gone by the rescan). An ORed mask names bit
-/// positions over the region, not which words, how many, or which way.
+/// A failed check's record: what its rescan found, the check's ORed differences, and the bits the check saw but no bad word of the rescan
+/// had (gone by the rescan). An ORed mask names bit positions over the region, not which words, how many, or which way.
 fn alarm_record(found: u64, seen: u64, found_xor: u64) -> String {
     let rescan = match found {
         0 => "not reproduced on rescan, every word read back right".to_string(),
@@ -3828,8 +3724,7 @@ fn alarm_record(found: u64, seen: u64, found_xor: u64) -> String {
     format!("{rescan}; the check's differences, ORed: {seen:#018x} ({} bits){gone}", seen.count_ones())
 }
 
-/// Under `rescan=off`, a failed check: one error, and one alarm when `count` (as `Rescan::begin`),
-/// naming only the region.
+/// Under `rescan=off`, a failed check: one error, and one alarm when `count` (as `Rescan::begin`), naming only the region.
 #[cold]
 #[inline(never)]
 pub(crate) fn unlocalised_as(lead: String, what: std::fmt::Arguments, seen: u64, count: bool) -> u64 {
@@ -3850,16 +3745,15 @@ pub(crate) fn unlocalised(lead: String, what: std::fmt::Arguments, seen: u64) ->
     unlocalised_as(lead, what, seen, true)
 }
 
-/// Counts and logs the words of `[start, end)` that differ from `expected(idx)`, once an
-/// accumulator has seen one.
+/// Counts and logs the words of `[start, end)` that differ from `expected(idx)`, once an accumulator has seen one.
 #[cold]
 #[inline(never)]
 unsafe fn rescan_words(ptr: *const u64, start: usize, end: usize, test_name: &str, seen: u64, expected: impl Fn(usize) -> u64) -> u64 {
     rescan_words_in(ptr, start, end, test_name, seen, "", expected)
 }
 
-/// As `rescan_words`, the region also named by `label` when it isn't empty (StuckBit's phase), as
-/// a native kernel names its phase: `in idx 0..512 (phase 2)`.
+/// As `rescan_words`, the region also named by `label` when it isn't empty (StuckBit's phase), as a native kernel names its phase: `in idx
+/// 0..512 (phase 2)`.
 #[cold]
 #[inline(never)]
 unsafe fn rescan_words_in(
@@ -3888,23 +3782,18 @@ impl std::fmt::Display for Region<'_> {
     }
 }
 
-/// TM5's strided walk (`mtests0.asm` ~336-394, TODO 93): runs `$body` once for each 64 B line of
-/// words `[$start, $end)` of `$ptr`, with `$offset` its first word. TM5 writes or reads a whole
-/// line, then jumps `64 x (Channels x Parameter - 1)` bytes, so a period of `$period` words (a line
-/// plus the jump) is touched one line at a time; each of its lines starts an interleave pass, the
-/// last line first, and a pass steps a period at a time to the end. A macro, not a closure, so the
-/// SIMD variants' bodies keep their `#[target_feature]`.
+/// TM5's strided walk (`mtests0.asm` ~336-394, TODO 93): runs `$body` once for each 64 B line of words `[$start, $end)` of `$ptr`, with
+/// `$offset` its first word. TM5 writes or reads a whole line, then jumps `64 x (Channels x Parameter - 1)` bytes, so a period of `$period`
+/// words (a line plus the jump) is touched one line at a time; each of its lines starts an interleave pass, the last line first, and a pass
+/// steps a period at a time to the end. A macro, not a closure, so the SIMD variants' bodies keep their `#[target_feature]`.
 ///
-/// What the walk is for: every access opens a new DRAM row, as many per second as the timings
-/// allow. So each step prefetches the line the walk reaches `STRIDED_AHEAD` steps on, a period or
-/// more away and so in another row, keeping requests queued without fetching neighbours together.
-/// TM5's descending order serves the same end: the L1's next-line prefetcher fetches the line above
-/// each one, which this order has already done. With passes going up instead and the line above
-/// prefetched, the walk ran 1.2x faster over 1usmus_v3's seven shapes and 1.9x at Test 13's, where
-/// a pass has 57 lines; likely in part by letting the hardware fetch neighbours together, fewer row
-/// openings per line, so its speed was no measure of the stress. See TODO 93's detail file.
-// Test-only since TODO 99 round 3: the reference the kernels' strided walk (`strided_walk!`) is
-// tested against
+/// What the walk is for: every access opens a new DRAM row, as many per second as the timings allow. So each step prefetches the line the
+/// walk reaches `STRIDED_AHEAD` steps on, a period or more away and so in another row, keeping requests queued without fetching neighbours
+/// together. TM5's descending order serves the same end: the L1's next-line prefetcher fetches the line above each one, which this order
+/// has already done. With passes going up instead and the line above prefetched, the walk ran 1.2x faster over 1usmus_v3's seven shapes and
+/// 1.9x at Test 13's, where a pass has 57 lines; likely in part by letting the hardware fetch neighbours together, fewer row openings per
+/// line, so its speed was no measure of the stress. See TODO 93's detail file.
+// Test-only since TODO 99 round 3: the reference the kernels' strided walk (`strided_walk!`) is tested against
 #[cfg(test)]
 macro_rules! for_each_strided_line {
     ($ptr:expr, $start:expr, $end:expr, $period:expr, |$offset:ident| $body:block) => {{
@@ -3927,28 +3816,26 @@ macro_rules! for_each_strided_line {
     }};
 }
 
-/// How many steps ahead the strided walk prefetches. TM5 prefetches 8 periods on in the same pass
-/// (`prefetchnta [edi+esi]`), which lands outside the chunk once a pass has fewer than 8 lines. On
-/// 1usmus_v3's seven shapes (2026-10-08) the walk sped up to 64 steps and was flat from there to
-/// 256 (about level: two shapes moved 8% and 16%, opposite ways); 128 is the middle of it.
+/// How many steps ahead the strided walk prefetches. TM5 prefetches 8 periods on in the same pass (`prefetchnta [edi+esi]`), which lands
+/// outside the chunk once a pass has fewer than 8 lines. On 1usmus_v3's seven shapes (2026-10-08) the walk sped up to 64 steps and was flat
+/// from there to 256 (about level: two shapes moved 8% and 16%, opposite ways); 128 is the middle of it.
 const STRIDED_AHEAD: usize = 128;
 
-/// The strided walk's lookahead in words: `STRIDED_AHEAD` steps, but no more than the shortest
-/// pass has lines, so a step past a pass's end lands in the next pass.
+/// The strided walk's lookahead in words: `STRIDED_AHEAD` steps, but no more than the shortest pass has lines, so a step past a pass's end
+/// lands in the next pass.
 #[inline(always)]
 fn strided_lookahead(start: usize, end: usize, period: usize) -> usize {
     STRIDED_AHEAD.min((end - start) / period) * period
 }
 
-/// For the pass whose first line is `first`: how far `strided_ahead` steps back to go from past
-/// this pass's end into the next pass, a line lower. The pass's lines, in words, plus one line.
+/// For the pass whose first line is `first`: how far `strided_ahead` steps back to go from past this pass's end into the next pass, a line
+/// lower. The pass's lines, in words, plus one line.
 #[inline(always)]
 fn strided_wrap(first: usize, end: usize, period: usize) -> usize {
     end.saturating_sub(first).div_ceil(period) * period + LINE_WORDS
 }
 
-/// The line `ahead` words of steps on from `offset` in the strided walk: on in this pass, or past
-/// its end, on into the next.
+/// The line `ahead` words of steps on from `offset` in the strided walk: on in this pass, or past its end, on into the next.
 #[cfg(test)]
 #[inline(always)]
 fn strided_ahead(offset: usize, ahead: usize, end: usize, wrap: usize) -> usize {
@@ -3956,9 +3843,9 @@ fn strided_ahead(offset: usize, ahead: usize, end: usize, wrap: usize) -> usize 
     if next < end { next } else { next.wrapping_sub(wrap) }
 }
 
-/// Prefetches the line at `line` into the L2 and below. `prefetcht1`, not `t0`: at 128 steps on,
-/// `t0` was 0.79x `t1` at 1usmus Test 6's shape and 0.91x at Test 12's (likely the L1's few miss
-/// slots, which `t0` holds until the line arrives), and within 10% at the other five.
+/// Prefetches the line at `line` into the L2 and below. `prefetcht1`, not `t0`: at 128 steps on, `t0` was 0.79x `t1` at 1usmus Test 6's
+/// shape and 0.91x at Test 12's (likely the L1's few miss slots, which `t0` holds until the line arrives), and within 10% at the other
+/// five.
 #[inline(always)]
 fn prefetch_line(line: *const u64) {
     // SAFETY: SSE is in the x86-64-v3 baseline, and a prefetch neither faults nor writes, at any address
@@ -3970,31 +3857,25 @@ fn strided_period(stride: usize) -> usize {
     stride.next_multiple_of(LINE_WORDS) + LINE_WORDS
 }
 
-/// TM5's strided walk on a walked pointer, the one every strided kernel runs (TODO 99): native
-/// SimpleTest's, the numbered modes' and Mem-Sequence's. It visits `for_each_strided_line!`'s lines
-/// (the reference, which the tests hold it to) in its order, each step prefetching the same line,
-/// by `$prefetch` (`prefetch_line`, or a test's recorder). `$body` runs with `$p` the line's first
-/// word (`*mut u64`) and, when asked for, the line's id: with `lid $lid0` its line id, a `u64`,
-/// `$lid0` at `$start` (native SimpleTest's and Mem-Sequence's patterns); with `offset` its first
-/// word's index from `$base`, a `usize` (the numbered modes').
+/// TM5's strided walk on a walked pointer, the one every strided kernel runs (TODO 99): native SimpleTest's, the numbered modes' and
+/// Mem-Sequence's. It visits `for_each_strided_line!`'s lines (the reference, which the tests hold it to) in its order, each step
+/// prefetching the same line, by `$prefetch` (`prefetch_line`, or a test's recorder). `$body` runs with `$p` the line's first word (`*mut
+/// u64`) and, when asked for, the line's id: with `lid $lid0` its line id, a `u64`, `$lid0` at `$start` (native SimpleTest's and
+/// Mem-Sequence's patterns); with `offset` its first word's index from `$base`, a `usize` (the numbered modes').
 ///
-/// Each step is a register and a fixed displacement, not a base and an index: every access opens a
-/// new row, as in Mem-CacheBust, where the index cost 6% (TODO 99 round 2). Each pass is two loops,
-/// split at the step where its prefetches go from on in the pass to on into the next, so no step
-/// selects: in one loop with an index, its offset, end, step and the prefetch's two offsets didn't
-/// all fit in registers. Each loop runs to a pointer bound: with a count, the compiler unrolled
-/// them, and the unrolled loops spilled. The pointer goes through `opaque_ptr` at each step
-/// and the id comes from it, so a step carries one value: seen through, the pointer became an
-/// offset from the pass's first line (every access `(%first,%offset)`), and an id stepped beside it
-/// put each value a pattern takes from the id on its own induction variable.
+/// Each step is a register and a fixed displacement, not a base and an index: every access opens a new row, as in Mem-CacheBust, where the
+/// index cost 6% (TODO 99 round 2). Each pass is two loops, split at the step where its prefetches go from on in the pass to on into the
+/// next, so no step selects: in one loop with an index, its offset, end, step and the prefetch's two offsets didn't all fit in registers.
+/// Each loop runs to a pointer bound: with a count, the compiler unrolled them, and the unrolled loops spilled. The pointer goes through
+/// `opaque_ptr` at each step and the id comes from it, so a step carries one value: seen through, the pointer became an offset from the
+/// pass's first line (every access `(%first,%offset)`), and an id stepped beside it put each value a pattern takes from the id on its own
+/// induction variable.
 ///
-/// The three walks this replaced (native SimpleTest's, which this is; Mem-Sequence's, which carried
-/// its pointer from pass to pass and stepped its id; the numbered modes') visited the same lines by
-/// different loops. In the release asm, this one left native's loops as they were, took
-/// Mem-Sequence's from 15 stack accesses to 7 and kept the numbered modes' clean. It spilled more
-/// with Mem-Sequence's id stepped beside the pointer (111), and in two shapes without the pass's
-/// division (the second loop's target from where the first ended): the register allocator spilled
-/// `ahead` in the first loop once the second stopped using it.
+/// The three walks this replaced (native SimpleTest's, which this is; Mem-Sequence's, which carried its pointer from pass to pass and
+/// stepped its id; the numbered modes') visited the same lines by different loops. In the release asm, this one left native's loops as they
+/// were, took Mem-Sequence's from 15 stack accesses to 7 and kept the numbered modes' clean. It spilled more with Mem-Sequence's id stepped
+/// beside the pointer (111), and in two shapes without the pass's division (the second loop's target from where the first ended): the
+/// register allocator spilled `ahead` in the first loop once the second stopped using it.
 macro_rules! strided_walk {
     ($prefetch:expr, $base:expr, $start:expr, $end:expr, $period:expr, |$p:ident| $body:block) => {{
         let (base, start, end, period): (*mut u64, usize, usize, usize) = ($base, $start, $end, $period);
@@ -4007,8 +3888,8 @@ macro_rules! strided_walk {
         for _ in 0..period / LINE_WORDS {
             first = first.wrapping_sub(LINE_WORDS);
             let mut $p = first;
-            // While the line `ahead` words on is in the chunk, `strided_ahead` takes it; from there it
-            // steps back `strided_wrap` words from it, into the next pass
+            // While the line `ahead` words on is in the chunk, `strided_ahead` takes it; from there it steps back `strided_wrap` words from
+            // it, into the next pass
             while $p.wrapping_add(ahead) < stop {
                 $prefetch($p.wrapping_add(ahead));
                 $body
@@ -4034,8 +3915,8 @@ macro_rules! strided_walk {
     }};
     ($prefetch:expr, $base:expr, $start:expr, $end:expr, $period:expr, lid $lid0:expr, |$p:ident, $lid:ident| $body:block) => {{
         let (base, start, end, lid0): (*mut u64, usize, usize, u64) = ($base, $start, $end, $lid0);
-        // A line's id is its address's distance from `at` in lines: `lid0` at `start`, exact while
-        // ids are under 2^58 (thread ids under 2^21, `pattern::line_base`)
+        // A line's id is its address's distance from `at` in lines: `lid0` at `start`, exact while ids are under 2^58 (thread ids under
+        // 2^21, `pattern::line_base`)
         debug_assert!(lid0 + ((end - start) / LINE_WORDS) as u64 <= 1 << 58, "line ids from {lid0} past 2^58");
         let at = (base.wrapping_add(start) as u64).wrapping_sub(lid0 << 6);
         strided_walk!($prefetch, base, start, end, $period, |$p| {
@@ -4048,8 +3929,8 @@ macro_rules! strided_walk {
 // ─── SimpleTest v2 ───────────────────────────────────────────────────────────
 
 /// Pattern-generation parameters for the SimpleTest v2 implementations.
-/// Bundles the mode selector, its two free parameters, the access stride and the test it runs as,
-/// so the test functions keep to the standard 6-arg test signature + this config.
+/// Bundles the mode selector, its two free parameters, the access stride and the test it runs as, so the test functions keep to the
+/// standard 6-arg test signature + this config.
 #[derive(Clone, Copy)]
 struct SimplePatternConfig {
     mode: u32,
@@ -4063,22 +3944,19 @@ struct SimplePatternConfig {
 
 // ─── SimpleTest v2's shared strided loops (TODO 99) ─────────────────────────────────────────────
 //
-// The numbered modes' strided walks for modes 0, 1, 2, 13 and 30 run here, at every width: each
-// width's dispatch sends them (`simple_test_v2_strided`). Each pattern's strided write and verify
-// is a function of its own in `simple_test_v2_loops`, taking its chunk as a `Copy` struct by value
-// and called once a chunk: in the test function, with every mode's closures and the harness's
-// chunks, seal and stats live too, the loops reloaded their constants and spilled their
-// accumulators. Each walks a pointer, the expected value computed from the word's index (or a
-// line's address) beside it. Their width is the baseline's, 256 bits, written as `u64x4`, which
-// the compiler leaves in that shape: four words a vector, a line two.
+// The numbered modes' strided walks for modes 0, 1, 2, 13 and 30 run here, at every width: each width's dispatch sends them
+// (`simple_test_v2_strided`). Each pattern's strided write and verify is a function of its own in `simple_test_v2_loops`, taking its chunk
+// as a `Copy` struct by value and called once a chunk: in the test function, with every mode's closures and the harness's chunks, seal and
+// stats live too, the loops reloaded their constants and spilled their accumulators. Each walks a pointer, the expected value computed from
+// the word's index (or a line's address) beside it. Their width is the baseline's, 256 bits, written as `u64x4`, which the compiler leaves
+// in that shape: four words a vector, a line two.
 //
-// Every numbered mode's sequential write and verify is the width's own (`simple_simd_loops!`),
-// and Bench-Init/Verify run the same ones at the run's width (`bench_numbered!`, TODO 99).
+// Every numbered mode's sequential write and verify is the width's own (`simple_simd_loops!`), and Bench-Init/Verify run the same ones at
+// the run's width (`bench_numbered!`, TODO 99).
 
-/// The per-word patterns on words `[start, end)` of `ptr`: word `i` holds `expected(i)`, mode
-/// `MODE` (0, 1 or 13) from `seed` (the chunk's seed for modes 0 and 1, the base for 13) and, for
-/// mode 1, `cl_shift`. The mode is a constant so each mode's loops are compiled with its pattern
-/// inlined.
+/// The per-word patterns on words `[start, end)` of `ptr`: word `i` holds `expected(i)`, mode `MODE` (0, 1 or 13) from `seed` (the chunk's
+/// seed for modes 0 and 1, the base for 13) and, for mode 1, `cl_shift`. The mode is a constant so each mode's loops are compiled with its
+/// pattern inlined.
 #[derive(Clone, Copy)]
 struct SimpleWords<const MODE: u32> {
     ptr: *mut u64,
@@ -4106,8 +3984,8 @@ impl<const MODE: u32> SimpleWords<MODE> {
         u64x4::from_array([self.expected(idx), self.expected(idx + 1), self.expected(idx + 2), self.expected(idx + 3)])
     }
 
-    /// The errors of a verify of the words that saw `seen` (its accumulators ORed): none, or each
-    /// bad word counted and logged by the cold rescan.
+    /// The errors of a verify of the words that saw `seen` (its accumulators ORed): none, or each bad word counted and logged by the cold
+    /// rescan.
     #[inline(always)]
     unsafe fn errors(self, seen: u64, test_name: &str) -> u64 {
         if seen == 0 {
@@ -4116,16 +3994,14 @@ impl<const MODE: u32> SimpleWords<MODE> {
         rescan_words(self.ptr, self.start, self.end, test_name, seen, |idx| self.expected(idx))
     }
 
-    /// The strided verify (the walk covers every word of the chunk, so a hit rescans it in order,
-    /// TODO 89).
+    /// The strided verify (the walk covers every word of the chunk, so a hit rescans it in order, TODO 89).
     #[inline(always)]
     unsafe fn check_strided(self, period: usize, test_name: &str) -> u64 {
         self.errors(simple_test_v2_loops::words_verify_str(self, period), test_name)
     }
 }
 
-/// Mode 2 on the whole pages of words `[start, end)` of `ptr`: TM5's evolving lines, the chain
-/// restarted at each page (`Mode2`).
+/// Mode 2 on the whole pages of words `[start, end)` of `ptr`: TM5's evolving lines, the chain restarted at each page (`Mode2`).
 #[derive(Clone, Copy)]
 struct SimpleMode2 {
     ptr: *mut u64,
@@ -4145,8 +4021,7 @@ impl SimpleMode2 {
     }
 }
 
-/// Mode 30 on the whole lines of words `[start, end)` of `ptr`: each line the bus-flip line of its
-/// address (`Mode30`).
+/// Mode 30 on the whole lines of words `[start, end)` of `ptr`: each line the bus-flip line of its address (`Mode30`).
 #[derive(Clone, Copy)]
 struct SimpleMode30 {
     ptr: *mut u64,
@@ -4166,11 +4041,9 @@ impl SimpleMode30 {
     }
 }
 
-/// The shared strided loops (mode 2's strided walk writes mode 20's lines, from a `SimpleMode20` as
-/// each width's own mode 20 does), and the per-word loops' words outside their steps. Each verify
-/// returns its accumulators ORed, nonzero when a word differs; the caller rescans. A strided verify
-/// takes a line at a time into one accumulator, whose four lanes take words `k` and
-/// `k + 4` of each line into the `k`th.
+/// The shared strided loops (mode 2's strided walk writes mode 20's lines, from a `SimpleMode20` as each width's own mode 20 does), and the
+/// per-word loops' words outside their steps. Each verify returns its accumulators ORed, nonzero when a word differs; the caller rescans. A
+/// strided verify takes a line at a time into one accumulator, whose four lanes take words `k` and `k + 4` of each line into the `k`th.
 mod simple_test_v2_loops {
     use super::*;
 
@@ -4200,9 +4073,8 @@ mod simple_test_v2_loops {
         (*(line as *const u64x4) ^ lo) | (*(line.add(4) as *const u64x4) ^ hi)
     }
 
-    /// A per-word write's words `[from, to)` outside its steps (each width's `word_steps`): under a
-    /// step at either end, none on chunks of whole pages. A word at a time, volatile, so the
-    /// compiler makes no masked vector loop of them (Rule 6.9).
+    /// A per-word write's words `[from, to)` outside its steps (each width's `word_steps`): under a step at either end, none on chunks of
+    /// whole pages. A word at a time, volatile, so the compiler makes no masked vector loop of them (Rule 6.9).
     #[cold]
     #[inline(never)]
     pub(super) unsafe fn words_write_rest<const MODE: u32>(c: SimpleWords<MODE>, from: usize, to: usize) {
@@ -4243,8 +4115,8 @@ mod simple_test_v2_loops {
         acc.reduce_or()
     }
 
-    /// Mode 2's strided image (as `simple_test_v2_strided`'s doc says): mode 20's lines, each from
-    /// its address's hash, on TM5's strided walk.
+    /// Mode 2's strided image (as `simple_test_v2_strided`'s doc says): mode 20's lines, each from its address's hash, on TM5's strided
+    /// walk.
     #[inline(never)]
     pub(super) unsafe fn mode20_write_str(c: SimpleMode20, period: usize) {
         let SimpleMode20 { ptr, start, end, key } = c;
@@ -4305,10 +4177,9 @@ impl SimplePatternConfig {
     }
 }
 
-/// One numbered mode's sequential SimpleTest, `$args` the test function's six arguments: each
-/// chunk `$chunk(ctx)` (a mode's chunk struct), written by `$write` at the init and every cycle,
-/// checked by `$verify` and, on a hit, the struct's `errors` (the cold rescan). The kernels are a
-/// width's own (`simple_simd_loops!`), out of line, as Bench-Init/Verify's are (`bench_numbered!`).
+/// One numbered mode's sequential SimpleTest, `$args` the test function's six arguments: each chunk `$chunk(ctx)` (a mode's chunk struct),
+/// written by `$write` at the init and every cycle, checked by `$verify` and, on a hit, the struct's `errors` (the cold rescan). The
+/// kernels are a width's own (`simple_simd_loops!`), out of line, as Bench-Init/Verify's are (`bench_numbered!`).
 macro_rules! simple_numbered_run {
     ($args:expr, $test_name:expr, $chunk:expr, $write:path, $verify:path) => {{
         let (blocks, thread_id, error_mode, timing, config, progress) = $args;
@@ -4336,12 +4207,11 @@ macro_rules! simple_numbered_run {
     }};
 }
 
-/// Strided SimpleTest v2 (TODO 93): TM5's strided SimpleTest (`mtests0.asm` ~336-394), the
-/// `for_each_strided_line!` walk. Each step writes or reads a whole 64 B line, then jumps the
-/// stride: TM5 Parameter 8 on 2 channels jumps 15 lines, so the period is 16 lines (1 KiB) and
-/// each chunk takes 16 interleave passes. The image is the sequential test's: the per-word modes
-/// (0, 1, 13) compute each word from its index, and mode 2 writes mode 20's lines, hashed from
-/// each line's address, as mode 2's chain runs a page in order (each width's mode 20 does too).
+/// Strided SimpleTest v2 (TODO 93): TM5's strided SimpleTest (`mtests0.asm` ~336-394), the `for_each_strided_line!` walk. Each step writes
+/// or reads a whole 64 B line, then jumps the stride: TM5 Parameter 8 on 2 channels jumps 15 lines, so the period is 16 lines (1 KiB) and
+/// each chunk takes 16 interleave passes. The image is the sequential test's: the per-word modes (0, 1, 13) compute each word from its
+/// index, and mode 2 writes mode 20's lines, hashed from each line's address, as mode 2's chain runs a page in order (each width's mode 20
+/// does too).
 #[doc = include_str!("test_fn_safety.md")]
 unsafe fn simple_test_v2_strided(
     blocks: &[crate::runner::AllocationBlock], thread_id: usize, error_mode: ErrorMode, timing: &TestTiming, config: &TestMemoryConfig,
@@ -4407,10 +4277,9 @@ unsafe fn simple_test_v2_strided(
         );
     }
 
-    // One copy of the loops per pattern (`SimpleWords`'s mode is a constant), so each inlines its
-    // pattern function. A `fn` pointer picked at run time was called once per element (`callq
-    // *%reg` in the release asm, 2026-10-03). `$seed` gives the chunk's seed for modes 0 and 1,
-    // the base for 13.
+    // One copy of the loops per pattern (`SimpleWords`'s mode is a constant), so each inlines its pattern function. A `fn` pointer picked
+    // at run time was called once per element (`callq *%reg` in the release asm, 2026-10-03). `$seed` gives the chunk's seed for modes 0
+    // and 1, the base for 13.
     macro_rules! run_strided {
         ($mode:literal, $seed:expr) => {{
             let seed_of = $seed;
@@ -4436,8 +4305,8 @@ unsafe fn simple_test_v2_strided(
                 config.verify_reps,
                 |ctx: &ChunkCtx| simple_test_v2_loops::words_write_str(words(ctx), period),
                 |ctx: &ChunkCtx| simple_test_v2_loops::words_write_str(words(ctx), period),
-                // Verify: the same walk, a line at a time into 4 accumulators; the walk covers every
-                // word of the chunk, so a hit rescans it in order (TODO 89)
+                // Verify: the same walk, a line at a time into 4 accumulators; the walk covers every word of the chunk, so a hit rescans it
+                // in order (TODO 89)
                 |ctx: &ChunkCtx| -> u64 { words(ctx).check_strided(period, test_name) },
             )
         }};
@@ -4452,10 +4321,9 @@ unsafe fn simple_test_v2_strided(
     }
 }
 
-/// The image a sequential numbered-mode SimpleTest of `config` leaves on words `[0, words)` of
-/// `ptr`, its extent, in `cycle` of thread `thread_id`, from each mode's definitions (`pattern_gen`
-/// and the `Mode2`, `Mode20` and `Mode30` walks): the tests' reference for every width, which the
-/// scalar test was until TODO 99 removed it.
+/// The image a sequential numbered-mode SimpleTest of `config` leaves on words `[0, words)` of `ptr`, its extent, in `cycle` of thread
+/// `thread_id`, from each mode's definitions (`pattern_gen` and the `Mode2`, `Mode20` and `Mode30` walks): the tests' reference for every
+/// width, which the scalar test was until TODO 99 removed it.
 #[cfg(test)]
 pub(crate) fn numbered_mode_image(config: &TestMemoryConfig, ptr: *const u64, words: usize, thread_id: usize, cycle: u32) -> Vec<u64> {
     let mode = config.pattern_mode.expect("a numbered mode");
@@ -4497,17 +4365,14 @@ fn mirror_mode(config: &TestMemoryConfig) -> MirrorMode {
 
 // ─── MirrorMove v2: the swap kernels ─────────────────────────────────────────
 //
-// A mirror test's data is the seal (TODO 74, TM5's `Capable_UseTst0ForGenAndCheck`): it swaps the
-// sealed words and puts them back, and the seal check after it is its verify. In an unsealed run
-// it writes the seal first. These macros stamp the swaps per width; `mirror_move_v2_impl!` makes
-// the test function.
+// A mirror test's data is the seal (TODO 74, TM5's `Capable_UseTst0ForGenAndCheck`): it swaps the sealed words and puts them back, and the
+// seal check after it is its verify. In an unsealed run it writes the seal first. These macros stamp the swaps per width;
+// `mirror_move_v2_impl!` makes the test function.
 //
-// Each width's swaps are a function of their own (`mirror_swap_fn!`, TODO 99 round 3). The whole
-// and jump mirrors walk two pointers, each access at one plus a fixed displacement, while the low
-// end is below its last step's start: inlined into the test function they addressed every access
-// through an index, and with a count instead of the bound the compiler unrolls them and addresses
-// the leftover steps through one. The swap itself is a macro passed in (`$swap`), so the unit test
-// can record each swap of the same walks.
+// Each width's swaps are a function of their own (`mirror_swap_fn!`, TODO 99 round 3). The whole and jump mirrors walk two pointers, each
+// access at one plus a fixed displacement, while the low end is below its last step's start: inlined into the test function they addressed
+// every access through an index, and with a count instead of the bound the compiler unrolls them and addresses the leftover steps through
+// one. The swap itself is a macro passed in (`$swap`), so the unit test can record each swap of the same walks.
 
 /// The chunk a mirror swaps: words `start..end` from `ptr`, a test op's `ChunkCtx`.
 #[derive(Clone, Copy)]
@@ -4528,9 +4393,9 @@ macro_rules! mirror_swap_pair {
     }};
 }
 
-/// Whole mirror, one `$w`-element vector per swap, four swaps a step. The two ends walk the whole
-/// chunk and cross the middle, so every pair is swapped twice and the chunk ends as it began: one
-/// round trip, as one pass of TM5 MirrorMove (`mtests0.asm` ~1159-1218, 64 B per step).
+/// Whole mirror, one `$w`-element vector per swap, four swaps a step. The two ends walk the whole chunk and cross the middle, so every pair
+/// is swapped twice and the chunk ends as it began: one round trip, as one pass of TM5 MirrorMove (`mtests0.asm` ~1159-1218, 64 B per
+/// step).
 macro_rules! mirror_swap_whole {
     ($t:ty, $w:expr, $chunk:expr, $swap:ident) => {{
         let MirrorChunk { ptr, start, end } = $chunk;
@@ -4554,11 +4419,10 @@ macro_rules! mirror_swap_whole {
     }};
 }
 
-/// Subblocks: the chunk in `$n` equal parts (a literal, 2 or 4), each mirrored as above, all `$n`
-/// in lockstep (TM5 MirrorMove Parameter 2 and 4, ~1224-1286 and ~1360-1435). A chunk is a
-/// multiple of 4 KiB, so a quarter is a whole number of vectors at any width. Still indexed: the
-/// parts are a runtime length apart, and from a pointer for each end of each part the compiler
-/// makes bases and shared offsets anyway, in more instructions than from these indexes.
+/// Subblocks: the chunk in `$n` equal parts (a literal, 2 or 4), each mirrored as above, all `$n` in lockstep (TM5 MirrorMove Parameter 2
+/// and 4, ~1224-1286 and ~1360-1435). A chunk is a multiple of 4 KiB, so a quarter is a whole number of vectors at any width. Still
+/// indexed: the parts are a runtime length apart, and from a pointer for each end of each part the compiler makes bases and shared offsets
+/// anyway, in more instructions than from these indexes.
 macro_rules! mirror_swap_subblocks {
     ($t:ty, $w:expr, $chunk:expr, $n:literal, $swap:ident) => {{
         let MirrorChunk { ptr, start, end } = $chunk;
@@ -4575,11 +4439,9 @@ macro_rules! mirror_swap_subblocks {
     }};
 }
 
-/// Jump: 128 B swaps every (jump + 1) x 128 B, the jump capped at a quarter of the chunk. Each
-/// pass starts 128 B further in, until every 128 B has been visited, last pass first; each pass
-/// crosses the middle. TM5 MirrorMove128 (~1522-1676). A pass pairs 128 B units x and n-1-x,
-/// so it either swaps its units with another pass's, which swaps them back, or with its own,
-/// twice: one round trip over all passes.
+/// Jump: 128 B swaps every (jump + 1) x 128 B, the jump capped at a quarter of the chunk. Each pass starts 128 B further in, until every
+/// 128 B has been visited, last pass first; each pass crosses the middle. TM5 MirrorMove128 (~1522-1676). A pass pairs 128 B units x and
+/// n-1-x, so it either swaps its units with another pass's, which swaps them back, or with its own, twice: one round trip over all passes.
 macro_rules! mirror_swap_jump {
     ($t:ty, $w:expr, $chunk:expr, $jump:expr, $swap:ident) => {{
         const UNIT: usize = 128 / std::mem::size_of::<u64>();
@@ -4617,9 +4479,8 @@ macro_rules! mirror_swap {
     }};
 }
 
-/// The function a mirror test calls for one round trip over a chunk: `mirror_swap!` at `$t`,
-/// `#[inline(never)]` so its loops are allocated registers on their own, with the variant's
-/// target features (`$tf`) so the width holds.
+/// The function a mirror test calls for one round trip over a chunk: `mirror_swap!` at `$t`, `#[inline(never)]` so its loops are allocated
+/// registers on their own, with the variant's target features (`$tf`) so the width holds.
 macro_rules! mirror_swap_fn {
     ($name:ident, $t:ty, $w:expr, $tf:literal) => {
         #[inline(never)]
@@ -4630,8 +4491,8 @@ macro_rules! mirror_swap_fn {
     };
 }
 
-/// Master macro: stamps out a complete MirrorMove v2 impl function for a given SIMD width.
-/// Generates an `unsafe fn` with `#[target_feature]` that handles all swap modes.
+/// Master macro: stamps out a complete MirrorMove v2 impl function for a given SIMD width. Generates an `unsafe fn` with
+/// `#[target_feature]` that handles all swap modes.
 macro_rules! mirror_move_v2_impl {
     (
         $fn_name:ident,
@@ -4673,9 +4534,8 @@ macro_rules! mirror_move_v2_impl {
     };
 }
 
-/// A mirror test's verify (TODO 74): the seal check after the mirror, its errors the test's own
-/// (TM5 numbers them by the mirror step), and the chunk resealed if it failed, unless the error
-/// halts the run: then the bad words stay in memory.
+/// A mirror test's verify (TODO 74): the seal check after the mirror, its errors the test's own (TM5 numbers them by the mirror step), and
+/// the chunk resealed if it failed, unless the error halts the run: then the bad words stay in memory.
 #[inline(always)]
 unsafe fn mirror_seal_check(kernel: crate::seal::SealKernel, ctx: &ChunkCtx, error_mode: ErrorMode) -> u64 {
     let errors = kernel.verify(ctx.ptr, ctx.chunk_start, ctx.chunk_end, "seal check after");
@@ -4688,8 +4548,8 @@ unsafe fn mirror_seal_check(kernel: crate::seal::SealKernel, ctx: &ChunkCtx, err
 /// MirrorMove v2 SSE2 (u64x2) — 128-bit SIMD with u64 lanes.
 ///
 /// # Safety
-/// Caller must ensure all blocks contain valid, aligned, writable memory, and that the CPU has the
-/// width's instructions (the run leaves out a test it can't run, `runner::leave_out_what_the_cpu_lacks`).
+/// Caller must ensure all blocks contain valid, aligned, writable memory, and that the CPU has the width's instructions (the run leaves out
+/// a test it can't run, `runner::leave_out_what_the_cpu_lacks`).
 pub unsafe fn mirror_move_v2_128_multi(
     blocks: &[crate::runner::AllocationBlock], thread_id: usize, error_mode: ErrorMode, timing: &TestTiming, config: &TestMemoryConfig,
     progress: Option<&TestProgress>,
@@ -4702,8 +4562,8 @@ mirror_move_v2_impl!(mirror_move_v2_128_impl, "Mem-MirrorV2-128", u64x2, 2, "sse
 /// MirrorMove v2 AVX2 (u64x4) — 256-bit SIMD with u64 lanes.
 ///
 /// # Safety
-/// Caller must ensure all blocks contain valid, aligned, writable memory, and that the CPU has the
-/// width's instructions (the run leaves out a test it can't run, `runner::leave_out_what_the_cpu_lacks`).
+/// Caller must ensure all blocks contain valid, aligned, writable memory, and that the CPU has the width's instructions (the run leaves out
+/// a test it can't run, `runner::leave_out_what_the_cpu_lacks`).
 pub unsafe fn mirror_move_v2_256_multi(
     blocks: &[crate::runner::AllocationBlock], thread_id: usize, error_mode: ErrorMode, timing: &TestTiming, config: &TestMemoryConfig,
     progress: Option<&TestProgress>,
@@ -4716,8 +4576,8 @@ mirror_move_v2_impl!(mirror_move_v2_256_impl, "Mem-MirrorV2-256", u64x4, 4, "avx
 /// MirrorMove v2 AVX-512 (u64x8) — 512-bit SIMD with u64 lanes.
 ///
 /// # Safety
-/// Caller must ensure all blocks contain valid, aligned, writable memory, and that the CPU has the
-/// width's instructions (the run leaves out a test it can't run, `runner::leave_out_what_the_cpu_lacks`).
+/// Caller must ensure all blocks contain valid, aligned, writable memory, and that the CPU has the width's instructions (the run leaves out
+/// a test it can't run, `runner::leave_out_what_the_cpu_lacks`).
 pub unsafe fn mirror_move_v2_512_multi(
     blocks: &[crate::runner::AllocationBlock], thread_id: usize, error_mode: ErrorMode, timing: &TestTiming, config: &TestMemoryConfig,
     progress: Option<&TestProgress>,
@@ -4737,17 +4597,15 @@ crate::auto_dispatch!(
 
 // ─── SIMD SimpleTest v2: the loops, a module a width (TODO 99) ──────────────────────────────────
 //
-// SimpleTest's SIMD paths are positional (modes 10 and 11, and SimpleNT) and mode 20, each
-// sequential and strided. Each width's writes and verifies are functions of their own, stamped per
-// width by `simple_simd_loops!` with the width's `#[target_feature]` (Rule 4), each taking its
-// chunk as a `Copy` struct by value and called once a chunk. In the test functions, with the
-// harness's chunks, seal and stats live too, the loops were indexed (`(%base,%index,8)`), and
-// their verifies had one accumulator. Here each walks a pointer, addressing at fixed
-// displacements from it, and each sequential verify keeps four accumulators. The master macro
-// `simple_test_v2_impl!` makes the test functions.
+// SimpleTest's SIMD paths are positional (modes 10 and 11, and SimpleNT) and mode 20, each sequential and strided. Each width's writes and
+// verifies are functions of their own, stamped per width by `simple_simd_loops!` with the width's `#[target_feature]` (Rule 4), each taking
+// its chunk as a `Copy` struct by value and called once a chunk. In the test functions, with the harness's chunks, seal and stats live too,
+// the loops were indexed (`(%base,%index,8)`), and their verifies had one accumulator. Here each walks a pointer, addressing at fixed
+// displacements from it, and each sequential verify keeps four accumulators. The master macro `simple_test_v2_impl!` makes the test
+// functions.
 
-/// SimpleTest's positional pattern on words `[start, end)` of `ptr` at a SIMD width (modes 10 and
-/// 11, and SimpleNT): word `i` holds `i ^ base`. The words are whole vectors.
+/// SimpleTest's positional pattern on words `[start, end)` of `ptr` at a SIMD width (modes 10 and 11, and SimpleNT): word `i` holds `i ^
+/// base`. The words are whole vectors.
 #[derive(Clone, Copy)]
 struct SimplePositional {
     ptr: *mut u64,
@@ -4767,8 +4625,8 @@ impl SimplePositional {
     }
 }
 
-/// Mode 20 on the whole lines of words `[start, end)` of `ptr`: a line holds `seed + j * step` in
-/// word `j`, both hashed from its address and `key` (`pattern_gen::mode20_line`).
+/// Mode 20 on the whole lines of words `[start, end)` of `ptr`: a line holds `seed + j * step` in word `j`, both hashed from its address
+/// and `key` (`pattern_gen::mode20_line`).
 #[derive(Clone, Copy)]
 struct SimpleMode20 {
     ptr: *mut u64,
@@ -4788,11 +4646,9 @@ impl SimpleMode20 {
     }
 }
 
-/// A width's sequential mode 20 loops, `m20_write` and `m20_verify`, inside its
-/// `simple_simd_loops!` module: `by_line` hashes each line in scalar code (128 bits), `by_4lanes`
-/// four lines in the lanes of a `u64x4` (256 bits, whose 64-bit multiply AVX2 emulates; Bench-
-/// Init/Verify-TMR-20's form since TODO 99 round 3b), `by_lanes` a vector of lines at once (512
-/// bits, a line a vector).
+/// A width's sequential mode 20 loops, `m20_write` and `m20_verify`, inside its `simple_simd_loops!` module: `by_line` hashes each line in
+/// scalar code (128 bits), `by_4lanes` four lines in the lanes of a `u64x4` (256 bits, whose 64-bit multiply AVX2 emulates; Bench-
+/// Init/Verify-TMR-20's form since TODO 99 round 3b), `by_lanes` a vector of lines at once (512 bits, a line a vector).
 macro_rules! simple_m20_seq_loops {
     (by_4lanes, $lane_offsets:expr, $target_feature:literal) => {
         /// Rows to columns: vector `l` of the result holds lane `l` of each row, in row order.
@@ -4809,11 +4665,9 @@ macro_rules! simple_m20_seq_loops {
             ]
         }
 
-        /// Mode 20's four lines at the addresses in `addrs`, a lane a line, as eight vectors, each
-        /// line's two halves in turn: each lane's seed and step (`pattern_gen::mode20_line`, whose
-        /// definition it repeats; the loop tests check it against that), its line's words 0-3
-        /// (`line_words`) a vector each across the lanes, turned to a vector per line, and words 4-7
-        /// those plus four steps.
+        /// Mode 20's four lines at the addresses in `addrs`, a lane a line, as eight vectors, each line's two halves in turn: each lane's
+        /// seed and step (`pattern_gen::mode20_line`, whose definition it repeats; the loop tests check it against that), its line's words
+        /// 0-3 (`line_words`) a vector each across the lanes, turned to a vector per line, and words 4-7 those plus four steps.
         #[inline(always)]
         fn mode20_lines4(addrs: V, key: V) -> [V; 8] {
             let seed = splitmix(addrs + key, splitmix_multipliers());
@@ -4835,8 +4689,8 @@ macro_rules! simple_m20_seq_loops {
             ]
         }
 
-        /// The step of four lines `m20_write` and `m20_verify` take in the whole lines `[start,
-        /// end)` of `ptr`: `(steps_end, stop)`, the end of the last whole step and of the lines.
+        /// The step of four lines `m20_write` and `m20_verify` take in the whole lines `[start, end)` of `ptr`: `(steps_end, stop)`, the
+        /// end of the last whole step and of the lines.
         #[inline(always)]
         fn m20_steps(ptr: *mut u64, start: usize, end: usize) -> (*mut u64, *mut u64) {
             const { assert!(W == 4, "four lines in the lanes of a vector of four") };
@@ -4844,10 +4698,9 @@ macro_rules! simple_m20_seq_loops {
             (ptr.wrapping_add(start + (end - start) / (4 * LINE_WORDS) * (4 * LINE_WORDS)), ptr.wrapping_add(end))
         }
 
-        /// The mode 20 write: four lines a step, their hashes in the lanes of one vector
-        /// (`mode20_lines4`) and stored as eight vectors at fixed offsets from a walked pointer;
-        /// the lines past the last step, under four (none on chunks of whole pages), from the
-        /// scalar hash.
+        /// The mode 20 write: four lines a step, their hashes in the lanes of one vector (`mode20_lines4`) and stored as eight vectors at
+        /// fixed offsets from a walked pointer; the lines past the last step, under four (none on chunks of whole pages), from the scalar
+        /// hash.
         #[target_feature(enable = $target_feature)]
         #[inline(never)]
         pub(super) unsafe fn m20_write(c: SimpleMode20) {
@@ -4872,11 +4725,10 @@ macro_rules! simple_m20_seq_loops {
             }
         }
 
-        /// The mode 20 verify: the write's four lines a step, their eight differences ORed and
-        /// then into one accumulator, words k and k + 4 of a line into lane k. It reloads two
-        /// multiplier halves from the stack each step (AVX2's emulated 64-bit multiply needs more
-        /// than its 16 registers), and computes the step's lines before it checks them: 14% faster
-        /// in Bench-Verify-TMR-20 than the clean, line-at-a-time check (TODO 99 round 3b).
+        /// The mode 20 verify: the write's four lines a step, their eight differences ORed and then into one accumulator, words k and k + 4
+        /// of a line into lane k. It reloads two multiplier halves from the stack each step (AVX2's emulated 64-bit multiply needs more
+        /// than its 16 registers), and computes the step's lines before it checks them: 14% faster in Bench-Verify-TMR-20 than the clean,
+        /// line-at-a-time check (TODO 99 round 3b).
         #[target_feature(enable = $target_feature)]
         #[inline(never)]
         pub(super) unsafe fn m20_verify(c: SimpleMode20) -> u64 {
@@ -4922,8 +4774,7 @@ macro_rules! simple_m20_seq_loops {
             }
         }
 
-        /// The mode 20 verify: four lines a step, each into its own accumulator, then the rest
-        /// into the first.
+        /// The mode 20 verify: four lines a step, each into its own accumulator, then the rest into the first.
         #[target_feature(enable = $target_feature)]
         #[inline(never)]
         pub(super) unsafe fn m20_verify(c: SimpleMode20) -> u64 {
@@ -4959,9 +4810,8 @@ macro_rules! simple_m20_seq_loops {
         }
     };
     (by_lanes, $lane_offsets:expr, $target_feature:literal) => {
-        /// Mode 20's hash of a vector of lines at once (`pattern_gen::mode20_line`, whose
-        /// definition it repeats; the loop tests check it against that): lane `l` of `at` is line
-        /// `l`'s address plus the key, the hash's first sum; the lines' seeds and steps.
+        /// Mode 20's hash of a vector of lines at once (`pattern_gen::mode20_line`, whose definition it repeats; the loop tests check it
+        /// against that): lane `l` of `at` is line `l`'s address plus the key, the hash's first sum; the lines' seeds and steps.
         #[inline(always)]
         fn mode20_lanes(at: V, key: V) -> (V, V) {
             let h = splitmix(at, splitmix_multipliers());
@@ -4969,9 +4819,8 @@ macro_rules! simple_m20_seq_loops {
             (h, ((x << V::splat(29)) | (x >> V::splat(35))) * V::splat(0x9E3779B97F4A7C15) | V::splat(1))
         }
 
-        /// The mode 20 write at a line a vector: the hashes of `W` lines a step in one vector
-        /// each (`mode20_lanes`), then each line from its lanes, in address order, to a bound
-        /// pointer; the lines after the last step from the scalar hash.
+        /// The mode 20 write at a line a vector: the hashes of `W` lines a step in one vector each (`mode20_lanes`), then each line from
+        /// its lanes, in address order, to a bound pointer; the lines after the last step from the scalar hash.
         #[target_feature(enable = $target_feature)]
         #[inline(never)]
         pub(super) unsafe fn m20_write(c: SimpleMode20) {
@@ -5000,10 +4849,9 @@ macro_rules! simple_m20_seq_loops {
             }
         }
 
-        /// The mode 20 verify at a line a vector: the hashes of `W` lines a step in one vector
-        /// each, then each line built from its lanes and checked before the next (Rule 6.12), line
-        /// `j` into accumulator `j % 4`, in address order, to a bound pointer; the lines after the
-        /// last step from the scalar hash, into the first.
+        /// The mode 20 verify at a line a vector: the hashes of `W` lines a step in one vector each, then each line built from its lanes
+        /// and checked before the next (Rule 6.12), line `j` into accumulator `j % 4`, in address order, to a bound pointer; the lines
+        /// after the last step from the scalar hash, into the first.
         #[target_feature(enable = $target_feature)]
         #[inline(never)]
         pub(super) unsafe fn m20_verify(c: SimpleMode20) -> u64 {
@@ -5036,16 +4884,13 @@ macro_rules! simple_m20_seq_loops {
     };
 }
 
-/// A width's sequential mode 30 loops, `m30_write` and `m30_verify`, inside its
-/// `simple_simd_loops!` module. `by_line` takes each line from `pattern_gen::mode30_line`, its hash
-/// in scalar code, the beat matched once outside the loop (`with_mode30_line!`), and verifies four
-/// lines a step, each into its own accumulator (128 bits). `by_lanes` hashes `W` lines in the
-/// lanes of a vector at the beats with a closed form (64, 32 and 16 bits; 12 and 24 go a line at a
-/// time, as `by_line`), each line built from its lane and stored, or checked before the next is
-/// built, a step's vectors into the accumulators in turn (256 and 512 bits). Round 2's check on
-/// `Mode30::walk`, which the compiler vectorizes with gathers, was dropped: in lanes, mode 30 ran
-/// 1.06x faster at 256 bits (Intel) and 1.07x at 512 (AMD Zen 5), where the walk lost; Intel at
-/// 512 favoured the walk, but its AVX-512 is server-only (TODO 99, 2026-10-20).
+/// A width's sequential mode 30 loops, `m30_write` and `m30_verify`, inside its `simple_simd_loops!` module. `by_line` takes each line from
+/// `pattern_gen::mode30_line`, its hash in scalar code, the beat matched once outside the loop (`with_mode30_line!`), and verifies four
+/// lines a step, each into its own accumulator (128 bits). `by_lanes` hashes `W` lines in the lanes of a vector at the beats with a closed
+/// form (64, 32 and 16 bits; 12 and 24 go a line at a time, as `by_line`), each line built from its lane and stored, or checked before the
+/// next is built, a step's vectors into the accumulators in turn (256 and 512 bits). Round 2's check on `Mode30::walk`, which the compiler
+/// vectorizes with gathers, was dropped: in lanes, mode 30 ran 1.06x faster at 256 bits (Intel) and 1.07x at 512 (AMD Zen 5), where the
+/// walk lost; Intel at 512 favoured the walk, but its AVX-512 is server-only (TODO 99, 2026-10-20).
 macro_rules! simple_m30_seq_loops {
     (by_line, $lane_offsets:expr, $target_feature:literal) => {
         simple_m30_seq_loops!(@line_vectors);
@@ -5074,8 +4919,7 @@ macro_rules! simple_m30_seq_loops {
         simple_m30_seq_loops!(@write_lanes, $target_feature);
         simple_m30_seq_loops!(@verify_lanes);
 
-        /// The mode 30 verify: `W` lines a step at 64, 32 and 16 bits (`m30_verify_lanes`), a line
-        /// at a time at 12 and 24.
+        /// The mode 30 verify: `W` lines a step at 64, 32 and 16 bits (`m30_verify_lanes`), a line at a time at 12 and 24.
         #[target_feature(enable = $target_feature)]
         #[inline(never)]
         pub(super) unsafe fn m30_verify(c: SimpleMode30) -> u64 {
@@ -5099,9 +4943,8 @@ macro_rules! simple_m30_seq_loops {
         }
     };
     (@write_lines) => {
-        /// The mode 30 write a line at a time, the beat matched once outside the loop. Each vector
-        /// a volatile store: at 64, 32 and 16 bits a line is one or two values, and the compiler
-        /// merged the 128-bit variant's equal 16 B stores into 32 B ones (Rule 6.11).
+        /// The mode 30 write a line at a time, the beat matched once outside the loop. Each vector a volatile store: at 64, 32 and 16 bits
+        /// a line is one or two values, and the compiler merged the 128-bit variant's equal 16 B stores into 32 B ones (Rule 6.11).
         #[inline(always)]
         unsafe fn m30_write_lines(c: SimpleMode30) {
             let SimpleMode30 { ptr, start, end, mode30 } = c;
@@ -5119,8 +4962,8 @@ macro_rules! simple_m30_seq_loops {
         }
     };
     (@verify_lines) => {
-        /// The mode 30 verify a line at a time, four lines a step, each into its own accumulator,
-        /// to a bound pointer; the lines past the last step, under four, into the first.
+        /// The mode 30 verify a line at a time, four lines a step, each into its own accumulator, to a bound pointer; the lines past the
+        /// last step, under four, into the first.
         #[inline(always)]
         unsafe fn m30_verify_lines(c: SimpleMode30) -> u64 {
             let SimpleMode30 { ptr, start, end, mode30 } = c;
@@ -5151,11 +4994,10 @@ macro_rules! simple_m30_seq_loops {
     };
     // `W` lines in the lanes of a vector: the beats with a closed form
     (@lanes, $lane_offsets:expr) => {
-        /// The lines' mode 30 words at `BITS` bits, 64, 32 or 16, a lane a line: the value of the
-        /// line at the lane's address (`pattern_gen::mode30_line`'s `balanced_bytes` of its hash,
-        /// whose definitions this repeats; the loop tests check it against them), `at` the address
-        /// plus the key, the hash's first sum, then its line's first word (`bus_flip_line`'s
-        /// closed forms), which at 32 and 16 bits is every word of the line.
+        /// The lines' mode 30 words at `BITS` bits, 64, 32 or 16, a lane a line: the value of the line at the lane's address
+        /// (`pattern_gen::mode30_line`'s `balanced_bytes` of its hash, whose definitions this repeats; the loop tests check it against
+        /// them), `at` the address plus the key, the hash's first sum, then its line's first word (`bus_flip_line`'s closed forms), which
+        /// at 32 and 16 bits is every word of the line.
         #[inline(always)]
         fn m30_words<const BITS: u32>(at: V, m: (V, V)) -> V {
             let low_nibbles = V::splat(0x0F0F_0F0F_0F0F_0F0F);
@@ -5176,15 +5018,15 @@ macro_rules! simple_m30_seq_loops {
             }
         }
 
-        /// What a mode 30 line's vector at `BITS` bits holds over its first word in each lane: at 64
-        /// bits the odd words are its inverse, at 32 and 16 bits every word is the first.
+        /// What a mode 30 line's vector at `BITS` bits holds over its first word in each lane: at 64 bits the odd words are its inverse, at
+        /// 32 and 16 bits every word is the first.
         #[inline(always)]
         fn m30_inversion<const BITS: u32>() -> V {
             if BITS == 64 { V::from_array($lane_offsets.map(|l: u64| 0u64.wrapping_sub(l & 1))) } else { V::splat(0) }
         }
 
-        /// The step of `W` lines the lanes loops take in the whole lines `[start, end)` of `ptr`:
-        /// `(steps_end, stop)`, the end of the last whole step and of the lines.
+        /// The step of `W` lines the lanes loops take in the whole lines `[start, end)` of `ptr`: `(steps_end, stop)`, the end of the last
+        /// whole step and of the lines.
         #[inline(always)]
         fn m30_steps(ptr: *mut u64, start: usize, end: usize) -> (*mut u64, *mut u64) {
             debug_assert!(start.is_multiple_of(LINE_WORDS) && end.is_multiple_of(LINE_WORDS), "mode 30 needs whole lines: {start}..{end}");
@@ -5207,17 +5049,16 @@ macro_rules! simple_m30_seq_loops {
             }
         }
 
-        /// `c` at the beat `beat`, which its own is: a constant, so the lines loops, which match the
-        /// beat (`with_mode30_line!`), are compiled for it alone.
+        /// `c` at the beat `beat`, which its own is: a constant, so the lines loops, which match the beat (`with_mode30_line!`), are
+        /// compiled for it alone.
         #[inline(always)]
         fn m30_at_beat(c: SimpleMode30, beat: pattern_gen::BusBeat) -> SimpleMode30 {
             SimpleMode30 { mode30: Mode30 { beat, ..c.mode30 }, ..c }
         }
     };
     (@write_lanes, $target_feature:literal) => {
-        /// The mode 30 write at `BITS` bits: `W` lines a step, hashed in the lanes of a vector,
-        /// each line its lane's word, the inversion applied, in its vectors, in address order to a
-        /// bound pointer; the lines past the last step from `pattern_gen::mode30_line`.
+        /// The mode 30 write at `BITS` bits: `W` lines a step, hashed in the lanes of a vector, each line its lane's word, the inversion
+        /// applied, in its vectors, in address order to a bound pointer; the lines past the last step from `pattern_gen::mode30_line`.
         #[inline(always)]
         unsafe fn m30_write_lanes<const BITS: u32>(c: SimpleMode30) {
             let SimpleMode30 { ptr, start, end, mode30 } = c;
@@ -5244,9 +5085,8 @@ macro_rules! simple_m30_seq_loops {
             }
         }
 
-        /// The mode 30 write: `W` lines a step at 64, 32 and 16 bits (`m30_write_lanes`), a line
-        /// at a time at 12 and 24, the modelled beats, whose words each take their own shift of the
-        /// line's value.
+        /// The mode 30 write: `W` lines a step at 64, 32 and 16 bits (`m30_write_lanes`), a line at a time at 12 and 24, the modelled
+        /// beats, whose words each take their own shift of the line's value.
         #[target_feature(enable = $target_feature)]
         #[inline(never)]
         pub(super) unsafe fn m30_write(c: SimpleMode30) {
@@ -5262,9 +5102,8 @@ macro_rules! simple_m30_seq_loops {
         }
     };
     (@verify_lanes) => {
-        /// The mode 30 verify at `BITS` bits: the write's lines, each built from its lane and
-        /// checked before the next (Rule 6.12), a step's vectors into the four accumulators in
-        /// turn; the lines past the last step into the first.
+        /// The mode 30 verify at `BITS` bits: the write's lines, each built from its lane and checked before the next (Rule 6.12), a step's
+        /// vectors into the four accumulators in turn; the lines past the last step into the first.
         #[inline(always)]
         unsafe fn m30_verify_lanes<const BITS: u32>(c: SimpleMode30) -> u64 {
             let SimpleMode30 { ptr, start, end, mode30 } = c;
@@ -5296,12 +5135,10 @@ macro_rules! simple_m30_seq_loops {
     };
 }
 
-/// Stamps a width's SimpleTest loops into module `$module`: `$simd_type` vectors of `$w` words,
-/// lanes `$lane_offsets`, NT stores through `$stream_fn` on `$arch_type`, the sequential mode 20
-/// and 30 loops `$m20` and `$m30` (`simple_m20_seq_loops!`, `simple_m30_seq_loops!`). Every
-/// numbered mode's sequential write and verify is here, one each a width, which SimpleTest runs at
-/// its width and Bench-Init/Verify at the run's (TODO 99). Each verify returns its accumulators
-/// ORed, nonzero when a word differs; the caller rescans.
+/// Stamps a width's SimpleTest loops into module `$module`: `$simd_type` vectors of `$w` words, lanes `$lane_offsets`, NT stores through
+/// `$stream_fn` on `$arch_type`, the sequential mode 20 and 30 loops `$m20` and `$m30` (`simple_m20_seq_loops!`, `simple_m30_seq_loops!`).
+/// Every numbered mode's sequential write and verify is here, one each a width, which SimpleTest runs at its width and Bench-Init/Verify at
+/// the run's (TODO 99). Each verify returns its accumulators ORed, nonzero when a word differs; the caller rescans.
 macro_rules! simple_simd_loops {
     ($module:ident, $simd_type:ty, $w:expr, $lane_offsets:expr, $arch_type:ty, $stream_fn:path, $m20:ident, $m30:ident, $target_feature:literal) => {
         mod $module {
@@ -5310,11 +5147,9 @@ macro_rules! simple_simd_loops {
             type V = $simd_type;
             const W: usize = $w;
 
-            /// Where the positional steps run in the whole vectors of words `[start, end)` (`start`
-            /// on a vector, as every access is), which end at `whole`: `(first, last, whole)`, the
-            /// steps `[first, last)` of four vectors each starting on a multiple of `4 * W`, the
-            /// head `[start, first)` and the tail `[last, whole)` a vector at a time. A chunk of
-            /// whole pages has neither.
+            /// Where the positional steps run in the whole vectors of words `[start, end)` (`start` on a vector, as every access is), which
+            /// end at `whole`: `(first, last, whole)`, the steps `[first, last)` of four vectors each starting on a multiple of `4 * W`,
+            /// the head `[start, first)` and the tail `[last, whole)` a vector at a time. A chunk of whole pages has neither.
             #[inline(always)]
             fn pos_steps(start: usize, end: usize) -> (usize, usize, usize) {
                 debug_assert!(start.is_multiple_of(W), "chunk not aligned to SIMD width");
@@ -5323,16 +5158,15 @@ macro_rules! simple_simd_loops {
                 (first, first + (whole - first) / (4 * W) * (4 * W), whole)
             }
 
-            /// Vector `k`'s value in a step is the step's first index XOR constant `k`: that index
-            /// is a multiple of `4 * W`, so adding a word's offset in the step, `k * W + lane`
-            /// (under `4 * W`), is XORing it, and `(at + offset) ^ base == at ^ (offset ^ base)`.
+            /// Vector `k`'s value in a step is the step's first index XOR constant `k`: that index is a multiple of `4 * W`, so adding a
+            /// word's offset in the step, `k * W + lane` (under `4 * W`), is XORing it, and `(at + offset) ^ base == at ^ (offset ^ base)`.
             #[inline(always)]
             fn pos_constants(base: u64) -> [V; 4] {
                 std::array::from_fn(|k| (V::from_array($lane_offsets) + V::splat((k * W) as u64)) ^ V::splat(base))
             }
 
-            /// The positional write of the head or tail, words `[from, to)` (whole vectors), a
-            /// vector at a time, to a bound pointer (from a count the compiler unrolls it).
+            /// The positional write of the head or tail, words `[from, to)` (whole vectors), a vector at a time, to a bound pointer (from a
+            /// count the compiler unrolls it).
             #[target_feature(enable = $target_feature)]
             #[cold]
             #[inline(never)]
@@ -5348,9 +5182,8 @@ macro_rules! simple_simd_loops {
                 }
             }
 
-            /// The positional write: `i ^ base` to each word, four vectors a step in address order,
-            /// each one XOR of the step's first index with its constant (`pos_constants`), run to a
-            /// bound pointer (Rule 6.3); the head and tail a vector at a time.
+            /// The positional write: `i ^ base` to each word, four vectors a step in address order, each one XOR of the step's first index
+            /// with its constant (`pos_constants`), run to a bound pointer (Rule 6.3); the head and tail a vector at a time.
             #[target_feature(enable = $target_feature)]
             #[inline(never)]
             pub(super) unsafe fn pos_write(c: SimplePositional) {
@@ -5378,8 +5211,8 @@ macro_rules! simple_simd_loops {
                 }
             }
 
-            /// The positional write in non-temporal stores (SimpleNT), four a step (the manual
-            /// unroll, `doc/nt_stores.md`), then the rest one at a time, and an SFENCE.
+            /// The positional write in non-temporal stores (SimpleNT), four a step (the manual unroll, `doc/nt_stores.md`), then the rest
+            /// one at a time, and an SFENCE.
             #[target_feature(enable = $target_feature)]
             #[inline(never)]
             pub(super) unsafe fn pos_write_nt(c: SimplePositional) {
@@ -5406,8 +5239,8 @@ macro_rules! simple_simd_loops {
                 std::arch::x86_64::_mm_sfence();
             }
 
-            /// The positional verify of the head or tail, words `[from, to)` (whole vectors), a
-            /// vector at a time to a bound pointer: its differences ORed.
+            /// The positional verify of the head or tail, words `[from, to)` (whole vectors), a vector at a time to a bound pointer: its
+            /// differences ORed.
             #[target_feature(enable = $target_feature)]
             #[cold]
             #[inline(never)]
@@ -5425,9 +5258,8 @@ macro_rules! simple_simd_loops {
                 acc.reduce_or()
             }
 
-            /// The positional verify: four vectors a step in address order, each XORed with the
-            /// step's first index and its constant (`pos_constants`) into its own accumulator, run
-            /// to a bound pointer (Rule 6.3); the head and tail a vector at a time.
+            /// The positional verify: four vectors a step in address order, each XORed with the step's first index and its constant
+            /// (`pos_constants`) into its own accumulator, run to a bound pointer (Rule 6.3); the head and tail a vector at a time.
             #[target_feature(enable = $target_feature)]
             #[inline(never)]
             pub(super) unsafe fn pos_verify(c: SimplePositional) -> u64 {
@@ -5458,8 +5290,7 @@ macro_rules! simple_simd_loops {
                 ((acc[0] | acc[1]) | (acc[2] | acc[3])).reduce_or() | rest
             }
 
-            /// The positional write on TM5's strided walk (TODO 93): each line `i ^ base` in
-            /// `W`-word stores.
+            /// The positional write on TM5's strided walk (TODO 93): each line `i ^ base` in `W`-word stores.
             #[target_feature(enable = $target_feature)]
             #[inline(never)]
             pub(super) unsafe fn pos_write_str(c: SimplePositional, period: usize) {
@@ -5475,9 +5306,8 @@ macro_rules! simple_simd_loops {
                 });
             }
 
-            /// The positional verify on the strided walk: a line a step, in the walk's order, its
-            /// vectors into the accumulators in turn (four at 128 bits, two at 256, one at 512,
-            /// where a line is one vector). Four lines a step would take the period, a run-time
+            /// The positional verify on the strided walk: a line a step, in the walk's order, its vectors into the accumulators in turn
+            /// (four at 128 bits, two at 256, one at 512, where a line is one vector). Four lines a step would take the period, a run-time
             /// value, as an index register.
             #[target_feature(enable = $target_feature)]
             #[inline(never)]
@@ -5514,8 +5344,7 @@ macro_rules! simple_simd_loops {
                 });
             }
 
-            /// The mode 20 verify on the strided walk: a line a step, its vectors into the
-            /// accumulators in turn, as `pos_verify_str`.
+            /// The mode 20 verify on the strided walk: a line a step, its vectors into the accumulators in turn, as `pos_verify_str`.
             #[target_feature(enable = $target_feature)]
             #[inline(never)]
             pub(super) unsafe fn m20_verify_str(c: SimpleMode20, period: usize) -> u64 {
@@ -5538,10 +5367,9 @@ macro_rules! simple_simd_loops {
 
             // ── The per-word numbered modes (0, 1 and 13) and mode 2 ──────────────────────────
 
-            /// The splitmix64 finalizer of each lane (`pattern_gen::pattern_mode13`, whose
-            /// definition it repeats; the loop tests check it against that): `h` the sum of an index
-            /// and the seed (mode 13) or of a line's address and the key (modes 20 and 30), `m`
-            /// its two multipliers (`splitmix_multipliers`).
+            /// The splitmix64 finalizer of each lane (`pattern_gen::pattern_mode13`, whose definition it repeats; the loop tests check it
+            /// against that): `h` the sum of an index and the seed (mode 13) or of a line's address and the key (modes 20 and 30), `m` its
+            /// two multipliers (`splitmix_multipliers`).
             #[inline(always)]
             fn splitmix(mut h: V, m: (V, V)) -> V {
                 h ^= h >> V::splat(30);
@@ -5557,9 +5385,8 @@ macro_rules! simple_simd_loops {
                 (V::splat(0xbf58476d1ce4e5b9), V::splat(0x94d049bb133111eb))
             }
 
-            /// The steps of four vectors a per-word loop takes in words `[start, end)`: `(first,
-            /// last)`, from the first multiple of `4 * W` to the end of the last whole step. The
-            /// words either side, under a step each (none on chunks of whole pages), go a word at a
+            /// The steps of four vectors a per-word loop takes in words `[start, end)`: `(first, last)`, from the first multiple of `4 * W`
+            /// to the end of the last whole step. The words either side, under a step each (none on chunks of whole pages), go a word at a
             /// time out of line (`simple_test_v2_loops::words_write_rest`).
             #[inline(always)]
             fn word_steps(start: usize, end: usize) -> (usize, usize) {
@@ -5573,12 +5400,10 @@ macro_rules! simple_simd_loops {
                 V::splat(first as u64) + V::from_array($lane_offsets)
             }
 
-            /// Mode 0 at word `first` (`pattern_gen::pattern_mode0`: the seed XOR the index times
-            /// the golden-ratio constant, inverted on odd 4 KiB pages): `seed` with `first`'s page's
-            /// inversion folded in, the products of its vector, and a vector's product. Both
-            /// constants come from `pattern_mode0` (the multiplier is word 1's value under a zero
-            /// seed, the inversion word `first`'s less its product), so a change to its form fails
-            /// the loop tests rather than going unseen.
+            /// Mode 0 at word `first` (`pattern_gen::pattern_mode0`: the seed XOR the index times the golden-ratio constant, inverted on
+            /// odd 4 KiB pages): `seed` with `first`'s page's inversion folded in, the products of its vector, and a vector's product. Both
+            /// constants come from `pattern_mode0` (the multiplier is word 1's value under a zero seed, the inversion word `first`'s less
+            /// its product), so a change to its form fails the loop tests rather than going unseen.
             #[inline(always)]
             fn m0_start(seed: u64, first: usize) -> (V, V, V) {
                 let golden = pattern_gen::pattern_mode0(1, 0);
@@ -5592,9 +5417,8 @@ macro_rules! simple_simd_loops {
                 ptr.wrapping_add(first - first % PAGE_WORDS + PAGE_WORDS) as *mut V
             }
 
-            /// The mode 0 write: a page at a time, the page's inversion folded into the seed, four
-            /// vectors a step in address order, each one XOR of the seed and its product, the
-            /// product stepped by an add a vector (Bench-Init-TM5-0's addition, TODO 99 round 3; a
+            /// The mode 0 write: a page at a time, the page's inversion folded into the seed, four vectors a step in address order, each
+            /// one XOR of the seed and its product, the product stepped by an add a vector (Bench-Init-TM5-0's addition, TODO 99 round 3; a
             /// multiply a vector before), to bound pointers.
             #[target_feature(enable = $target_feature)]
             #[inline(never)]
@@ -5626,8 +5450,7 @@ macro_rules! simple_simd_loops {
                 }
             }
 
-            /// The mode 0 verify: the write's values, each step's four vectors into four
-            /// accumulators.
+            /// The mode 0 verify: the write's values, each step's four vectors into four accumulators.
             #[target_feature(enable = $target_feature)]
             #[inline(never)]
             pub(super) unsafe fn m0_verify(c: SimpleWords<0>) -> u64 {
@@ -5660,26 +5483,22 @@ macro_rules! simple_simd_loops {
                 seen
             }
 
-            /// Mode 1's inversion of each lane's word (`pattern_gen::pattern_mode1`): all ones on
-            /// the odd lines of `1 << cl_shift` words.
+            /// Mode 1's inversion of each lane's word (`pattern_gen::pattern_mode1`): all ones on the odd lines of `1 << cl_shift` words.
             #[inline(always)]
             fn m1_mask(idx: V, cl_shift: u32) -> V {
                 V::splat(0) - ((idx >> V::splat(u64::from(cl_shift))) & V::splat(1))
             }
 
-            /// Mode 1's value of each lane's word: the seed less three times its index, inverted
-            /// (`m1_mask`).
+            /// Mode 1's value of each lane's word: the seed less three times its index, inverted (`m1_mask`).
             #[inline(always)]
             fn m1_word(idx: V, seed: V, cl_shift: u32) -> V {
                 (seed - idx * V::splat(3)) ^ m1_mask(idx, cl_shift)
             }
 
-            /// How the mode 1 loops take the inversion, from the line (`1 << cl_shift` words)
-            /// against a step (`4 * W`): `Fixed` when two lines divide a step, so each of a step's
-            /// vectors keeps its mask and only its value steps (two operations a vector rather than
-            /// seven, Bench-Init-TM5-1's fill, TODO 99 round 3b); `Flip` when a line is a step (128
-            /// bits on 64 B lines), a step's vectors sharing one mask, inverted each step; else
-            /// `Index`, each vector's from its indices.
+            /// How the mode 1 loops take the inversion, from the line (`1 << cl_shift` words) against a step (`4 * W`): `Fixed` when two
+            /// lines divide a step, so each of a step's vectors keeps its mask and only its value steps (two operations a vector rather
+            /// than seven, Bench-Init-TM5-1's fill, TODO 99 round 3b); `Flip` when a line is a step (128 bits on 64 B lines), a step's
+            /// vectors sharing one mask, inverted each step; else `Index`, each vector's from its indices.
             #[inline(always)]
             fn m1_shape(cl_shift: u32) -> M1Shape {
                 let line = 1usize << cl_shift;
@@ -5692,17 +5511,16 @@ macro_rules! simple_simd_loops {
                 }
             }
 
-            /// Mode 1's start at word `first`: the indices of the step's four vectors, the value of
-            /// its first (the seed less three times the index), and a vector's step down.
+            /// Mode 1's start at word `first`: the indices of the step's four vectors, the value of its first (the seed less three times
+            /// the index), and a vector's step down.
             #[inline(always)]
             fn m1_start(seed: u64, first: usize) -> ([V; 4], V, V) {
                 let idx: [V; 4] = std::array::from_fn(|k| indices(first + k * W));
                 (idx, V::splat(seed) - idx[0] * V::splat(3), V::splat((3 * W) as u64))
             }
 
-            /// The mode 1 write: four vectors a step, in address order, to bound pointers, the
-            /// value stepped down by a subtraction a vector and the inversion as `m1_shape` gives
-            /// it.
+            /// The mode 1 write: four vectors a step, in address order, to bound pointers, the value stepped down by a subtraction a vector
+            /// and the inversion as `m1_shape` gives it.
             #[target_feature(enable = $target_feature)]
             #[inline(never)]
             pub(super) unsafe fn m1_write(c: SimpleWords<1>) {
@@ -5753,8 +5571,7 @@ macro_rules! simple_simd_loops {
                 }
             }
 
-            /// The mode 1 verify: the write's values, each step's four vectors into four
-            /// accumulators.
+            /// The mode 1 verify: the write's values, each step's four vectors into four accumulators.
             #[target_feature(enable = $target_feature)]
             #[inline(never)]
             pub(super) unsafe fn m1_verify(c: SimpleWords<1>) -> u64 {
@@ -5807,9 +5624,8 @@ macro_rules! simple_simd_loops {
                 seen
             }
 
-            /// The mode 13 write (`pattern_gen::pattern_mode13`): four vectors a step, in address
-            /// order, each the hash of its sums of index and seed, the sum stepped by an add a
-            /// vector (Bench-Init-TMR-13's one running sum, which leaves the 256-bit verify's
+            /// The mode 13 write (`pattern_gen::pattern_mode13`): four vectors a step, in address order, each the hash of its sums of index
+            /// and seed, the sum stepped by an add a vector (Bench-Init-TMR-13's one running sum, which leaves the 256-bit verify's
             /// emulated multiplies their registers).
             #[target_feature(enable = $target_feature)]
             #[inline(never)]
@@ -5835,8 +5651,7 @@ macro_rules! simple_simd_loops {
                 }
             }
 
-            /// The mode 13 verify: each vector's hash checked as it is computed, into its own of
-            /// four accumulators.
+            /// The mode 13 verify: each vector's hash checked as it is computed, into its own of four accumulators.
             #[target_feature(enable = $target_feature)]
             #[inline(never)]
             pub(super) unsafe fn m13_verify(c: SimpleWords<13>) -> u64 {
@@ -5876,10 +5691,9 @@ macro_rules! simple_simd_loops {
                 })
             }
 
-            /// The mode 2 write: each page's chain from the page's address, a line a link, its
-            /// vectors stored at fixed offsets from a walked pointer, each page and line to a bound
-            /// pointer (from 64 lines a page the compiler addressed each line through an offset
-            /// register).
+            /// The mode 2 write: each page's chain from the page's address, a line a link, its vectors stored at fixed offsets from a
+            /// walked pointer, each page and line to a bound pointer (from 64 lines a page the compiler addressed each line through an
+            /// offset register).
             #[target_feature(enable = $target_feature)]
             #[inline(never)]
             pub(super) unsafe fn m2_write(c: SimpleMode2) {
@@ -5903,8 +5717,8 @@ macro_rules! simple_simd_loops {
                 }
             }
 
-            /// The mode 2 verify: the write's chain, four lines a step, each into its own
-            /// accumulator (SimpleTest's since TODO 99 round 3; Bench-Verify-TM5-2's had one).
+            /// The mode 2 verify: the write's chain, four lines a step, each into its own accumulator (SimpleTest's since TODO 99 round 3;
+            /// Bench-Verify-TM5-2's had one).
             #[target_feature(enable = $target_feature)]
             #[inline(never)]
             pub(super) unsafe fn m2_verify(c: SimpleMode2) -> u64 {
@@ -5954,9 +5768,9 @@ simple_simd_loops!(simple_test_v2_512_loops, u64x8, 8, [0, 1, 2, 3, 4, 5, 6, 7],
     std::arch::x86_64::__m512i, std::arch::x86_64::_mm512_stream_si512, by_lanes, by_lanes,
     "avx512f,avx512bw,avx512cd,avx512dq,avx512vl,avx2,avx,fma,bmi1,bmi2");
 
-/// A positional verify of a chunk (modes 10 and 11, SimpleNT): the width's `$verify` on the chunk,
-/// or on each batch of `check_mask + 1` vectors when an `ErrorCheckInterval` asks for one (none
-/// does yet), and the cold rescan of each chunk or batch whose accumulators saw a difference.
+/// A positional verify of a chunk (modes 10 and 11, SimpleNT): the width's `$verify` on the chunk, or on each batch of `check_mask + 1`
+/// vectors when an `ErrorCheckInterval` asks for one (none does yet), and the cold rescan of each chunk or batch whose accumulators saw a
+/// difference.
 macro_rules! simple_verify_positional {
     ($verify:path, $simd_w:expr, $ctx:expr, $base:expr, $test_name:expr) => {{
         let ctx: &ChunkCtx = $ctx;
@@ -5988,19 +5802,16 @@ macro_rules! simple_verify_positional {
 }
 
 /// Master macro: stamps out a complete SIMD SimpleTest v2 function for a given width.
-/// Three pattern paths: positional (idx^base, or idx^combined for mode 11), mode 20, and the
-/// other numbered modes (0, 1, 2, 13 and 30) sequential, on the width's loops; strided, those run
-/// the shared loops (`simple_test_v2_strided`). Generates 5 specialized `#[target_feature]`
-/// functions plus a lightweight dispatch function. This prevents LLVM from inlining all the code
-/// paths into one mega-function, which caused 9K+ lines of assembly, 46 `vzeroupper` calls,
-/// and instruction cache pressure that made wider SIMD slower than narrower.
+/// Three pattern paths: positional (idx^base, or idx^combined for mode 11), mode 20, and the other numbered modes (0, 1, 2, 13 and 30)
+/// sequential, on the width's loops; strided, those run the shared loops (`simple_test_v2_strided`). Generates 5 specialized
+/// `#[target_feature]` functions plus a lightweight dispatch function. This prevents LLVM from inlining all the code paths into one
+/// mega-function, which caused 9K+ lines of assembly, 46 `vzeroupper` calls, and instruction cache pressure that made wider SIMD slower
+/// than narrower.
 ///
-/// Each specialized function contains one run_phased_test call with its closures (the numbered
-/// one a call a mode, its hot loops out of line in the width's loops module), producing tight,
-/// focused assembly, and is `#[inline(never)]`: the 128-bit ones' features are the baseline's, so
-/// the compiler inlined them all into the dispatch's caller. The dispatch
-/// function has NO `#[target_feature]` so it compiles to a simple branch without pulling in SIMD
-/// register state.
+/// Each specialized function contains one run_phased_test call with its closures (the numbered one a call a mode, its hot loops out of line
+/// in the width's loops module), producing tight, focused assembly, and is `#[inline(never)]`: the 128-bit ones' features are the
+/// baseline's, so the compiler inlined them all into the dispatch's caller. The dispatch
+/// function has NO `#[target_feature]` so it compiles to a simple branch without pulling in SIMD register state.
 macro_rules! simple_test_v2_impl {
     (
         $dispatch_fn:ident,
@@ -6015,8 +5826,8 @@ macro_rules! simple_test_v2_impl {
         $loops:ident,
         $target_feature:literal
     ) => {
-        /// Modes 0, 1, 2, 13 and 30 sequential, on this width's own loops (`simple_simd_loops!`),
-        /// which Bench-Init/Verify run at the run's width (TODO 99).
+        /// Modes 0, 1, 2, 13 and 30 sequential, on this width's own loops (`simple_simd_loops!`), which Bench-Init/Verify run at the run's
+        /// width (TODO 99).
         #[target_feature(enable = $target_feature)]
         #[inline(never)]
         unsafe fn $num_seq_fn(
@@ -6251,8 +6062,8 @@ macro_rules! simple_test_v2_impl {
             )
         }
 
-        /// Dispatch — selects the right specialized function based on pattern mode and stride.
-        /// No `#[target_feature]` so this compiles to a simple branch without SIMD register state.
+        /// Dispatch — selects the right specialized function based on pattern mode and stride. No `#[target_feature]` so this compiles to a
+        /// simple branch without SIMD register state.
         #[inline(always)]
         unsafe fn $dispatch_fn(
             blocks: &[crate::runner::AllocationBlock], thread_id: usize, error_mode: ErrorMode, timing: &TestTiming,
@@ -6262,8 +6073,8 @@ macro_rules! simple_test_v2_impl {
             if let Some(program) = config.native_program() {
                 return $native_fn(blocks, thread_id, error_mode, timing, config, progress, NativeRun::simple(program, config));
             }
-            // Modes 0, 1, 2, 13 and 30, each its own image (modes 0, 1, 2 and 13 used to write mode
-            // 10's here, TODO 3): sequential on this width's loops, strided on the shared ones
+            // Modes 0, 1, 2, 13 and 30, each its own image (modes 0, 1, 2 and 13 used to write mode 10's here, TODO 3): sequential on this
+            // width's loops, strided on the shared ones
             if matches!(config.pattern_mode, Some(0 | 1 | 2 | 13 | 30)) {
                 let pattern = SimplePatternConfig::of(config, $test_name);
                 return if pattern.stride > 0 {
@@ -6306,8 +6117,8 @@ simple_test_v2_impl!(simple_test_v2_512_impl,
 /// SimpleTest v2 SSE2 (u64x2) — 128-bit SIMD.
 ///
 /// # Safety
-/// Caller must ensure all blocks contain valid, aligned, writable memory, and that the CPU has the
-/// width's instructions (the run leaves out a test it can't run, `runner::leave_out_what_the_cpu_lacks`).
+/// Caller must ensure all blocks contain valid, aligned, writable memory, and that the CPU has the width's instructions (the run leaves out
+/// a test it can't run, `runner::leave_out_what_the_cpu_lacks`).
 pub unsafe fn simple_test_v2_128_multi(
     blocks: &[crate::runner::AllocationBlock], thread_id: usize, error_mode: ErrorMode, timing: &TestTiming, config: &TestMemoryConfig,
     progress: Option<&TestProgress>,
@@ -6318,8 +6129,8 @@ pub unsafe fn simple_test_v2_128_multi(
 /// SimpleTest v2 AVX2 (u64x4) — 256-bit SIMD.
 ///
 /// # Safety
-/// Caller must ensure all blocks contain valid, aligned, writable memory, and that the CPU has the
-/// width's instructions (the run leaves out a test it can't run, `runner::leave_out_what_the_cpu_lacks`).
+/// Caller must ensure all blocks contain valid, aligned, writable memory, and that the CPU has the width's instructions (the run leaves out
+/// a test it can't run, `runner::leave_out_what_the_cpu_lacks`).
 pub unsafe fn simple_test_v2_256_multi(
     blocks: &[crate::runner::AllocationBlock], thread_id: usize, error_mode: ErrorMode, timing: &TestTiming, config: &TestMemoryConfig,
     progress: Option<&TestProgress>,
@@ -6330,8 +6141,8 @@ pub unsafe fn simple_test_v2_256_multi(
 /// SimpleTest v2 AVX-512 (u64x8) — 512-bit SIMD.
 ///
 /// # Safety
-/// Caller must ensure all blocks contain valid, aligned, writable memory, and that the CPU has the
-/// width's instructions (the run leaves out a test it can't run, `runner::leave_out_what_the_cpu_lacks`).
+/// Caller must ensure all blocks contain valid, aligned, writable memory, and that the CPU has the width's instructions (the run leaves out
+/// a test it can't run, `runner::leave_out_what_the_cpu_lacks`).
 pub unsafe fn simple_test_v2_512_multi(
     blocks: &[crate::runner::AllocationBlock], thread_id: usize, error_mode: ErrorMode, timing: &TestTiming, config: &TestMemoryConfig,
     progress: Option<&TestProgress>,
@@ -6350,16 +6161,14 @@ crate::auto_dispatch!(
 
 // ─── SimpleTest on the native patterns (pattern spec v2, `crate::pattern`) ──────────────────────
 //
-// A SimpleTest whose config names no `pattern_mode` runs a native program: each write round
-// writes one phase of it (a family, its pair's key, the polarity) and its verifies check that
-// phase. Each width's kernel takes each line from the line functions' vector forms at its width
-// (`with_phase_vectors!`, so the 128-bit variant stays 128-bit); tests check every width writes
-// the same image. Per chunk the phase is
-// computed once and its family matched once, outside the loops, and the accumulators are checked
-// once, at the chunk's end: `ErrorCheckInterval` isn't read.
+// A SimpleTest whose config names no `pattern_mode` runs a native program: each write round writes one phase of it (a family, its pair's
+// key, the polarity) and its verifies check that phase. Each width's kernel takes each line from the line functions' vector forms at its
+// width (`with_phase_vectors!`, so the 128-bit variant stays 128-bit); tests check every width writes the same image. Per chunk the phase
+// is
+// computed once and its family matched once, outside the loops, and the accumulators are checked once, at the chunk's end:
+// `ErrorCheckInterval` isn't read.
 
-/// How a native SimpleTest runs: its program, and SimpleTest's write-and-verify or one side of a
-/// Bench pair.
+/// How a native SimpleTest runs: its program, and SimpleTest's write-and-verify or one side of a Bench pair.
 #[derive(Clone, Copy)]
 struct NativeRun {
     program: crate::pattern::Program,
@@ -6376,12 +6185,10 @@ impl NativeRun {
     }
 }
 
-/// One native SimpleTest walk over a chunk: words `[start, end)` of `base`, in whole lines, its
-/// first line line id `lid0`, each line `phase`'s. Sequential, or TM5's strided walk
-/// (`strided_walk!`) when `period`, its period in words, isn't 0. Each walk at each width
-/// is a function of its own (`native_simple_impl!`'s walks module), called once a chunk, so its
-/// loops keep every value in registers (TODO 99): in the per-chunk closures, with both walks of
-/// every family and beat in one function, values spilled to the stack in loops of a dozen
+/// One native SimpleTest walk over a chunk: words `[start, end)` of `base`, in whole lines, its first line line id `lid0`, each line
+/// `phase`'s. Sequential, or TM5's strided walk (`strided_walk!`) when `period`, its period in words, isn't 0. Each walk at each width is a
+/// function of its own (`native_simple_impl!`'s walks module), called once a chunk, so its loops keep every value in registers (TODO 99):
+/// in the per-chunk closures, with both walks of every family and beat in one function, values spilled to the stack in loops of a dozen
 /// instructions.
 #[derive(Clone, Copy)]
 struct NativeChunk {
@@ -6393,49 +6200,37 @@ struct NativeChunk {
     phase: crate::pattern::Phase,
 }
 
-/// `p` as it went in, through an optimisation barrier: TODO 99's one helper for it, with
-/// `opaque_u64` its form for an integer (Rule 6.14 of `doc/simd_codegen_rules.md`; the owner
-/// accepted it, 2026-10-20).
+/// `p` as it went in, through an optimisation barrier: TODO 99's one helper for it, with `opaque_u64` its form for an integer (Rule 6.14 of
+/// `doc/simd_codegen_rules.md`; the owner accepted it, 2026-10-20).
 ///
-/// What it does: nothing at run time. It is an empty `asm!` (the template a comment) that takes
-/// the value in a register the compiler picks and gives it back unchanged, so it emits no
-/// instruction and forces no move. But the compiler doesn't look inside an `asm!`, so it knows
-/// nothing of the value that comes out, and loop strength reduction (LLVM rewriting a loop's
-/// values as induction variables, each stepped by a constant of its own) can neither merge it
-/// with another value (a walked pointer turned into a base and an index) nor split it into several
-/// (one id turned into a counter for each value taken from it). Passed through it at each step, a
-/// value stays the one value the source steps.
+/// What it does: nothing at run time. It is an empty `asm!` (the template a comment) that takes the value in a register the compiler picks
+/// and gives it back unchanged, so it emits no instruction and forces no move. But the compiler doesn't look inside an `asm!`, so it knows
+/// nothing of the value that comes out, and loop strength reduction (LLVM rewriting a loop's values as induction variables, each stepped by
+/// a constant of its own) can neither merge it with another value (a walked pointer turned into a base and an index) nor split it into
+/// several (one id turned into a counter for each value taken from it). Passed through it at each step, a value stays the one value the
+/// source steps.
 ///
-/// Why (TODO 99): seen through, native SimpleTest's strided walk had its pointer and line id as
-/// four induction variables (a prefetch pointer, an offset from a base, the id and the id times
-/// 8), each with its step in a register, and the lines that hash with 64-bit constants spilled;
-/// its 512-bit `random` verify loaded every word as `(%base,%index,8)` (round 3). With the pointer
-/// through it, the walks that use it (`strided_walk!`, which every strided kernel runs,
-/// `native_write_seq!` and `native_differs_seq!`) address each access at a fixed displacement
-/// from the one pointer they step (Rule 6.3). With `header`'s line id through `opaque_u64`, its
-/// ident words stayed one value where they had been eight counters at 512 bits:
-/// Bench-Verify-Header +42% (round 3b, measured with the change that also ran the group loop to
-/// a bound, which gave Bench-Verify-Quiet its +78%: quiet's id isn't hidden). It can lose: hiding
-/// every family's id cost `linepair` and the one-line-a-step loops instructions
-/// (`native_differs_seq!`). Use it where the asm shows a value merged into an index or split into
-/// counters, and measure.
+/// Why (TODO 99): seen through, native SimpleTest's strided walk had its pointer and line id as four induction variables (a prefetch
+/// pointer, an offset from a base, the id and the id times 8), each with its step in a register, and the lines that hash with 64-bit
+/// constants spilled; its 512-bit `random` verify loaded every word as `(%base,%index,8)` (round 3). With the pointer through it, the walks
+/// that use it (`strided_walk!`, which every strided kernel runs, `native_write_seq!` and `native_differs_seq!`) address each access at a
+/// fixed displacement from the one pointer they step (Rule 6.3). With `header`'s line id through `opaque_u64`, its ident words stayed one
+/// value where they had been eight counters at 512 bits: Bench-Verify-Header +42% (round 3b, measured with the change that also ran the
+/// group loop to a bound, which gave Bench-Verify-Quiet its +78%: quiet's id isn't hidden). It can lose: hiding every family's id cost
+/// `linepair` and the one-line-a-step loops instructions (`native_differs_seq!`). Use it where the asm shows a value merged into an index
+/// or split into counters, and measure.
 ///
-/// The options. `pure`: the output is the input's alone, so the compiler may drop an unused one
-/// or merge two with the same input (a walk's input changes every step). `nostack`: it pushes
-/// nothing. `preserves_flags`: it leaves the flags as they were, so no compare is redone after
-/// it. And `pure` needs one of `nomem` (the asm touches no memory, so any load or store may move
-/// across it) and `readonly` (it may read memory and writes none, so loads may move across it and
-/// stores may not). An asm handed a pointer is taken to use it, and a pointer in a `nomem` block
-/// trips `clippy::pointers_in_nomem_asm_block`, which TMR fixes rather than allows: the pointer
-/// form says `readonly`. An integer gives the asm nothing to read, so the integer form says
-/// `nomem`. Each is the form the gains above were measured with; the other changes the code
-/// (2026-10-20): `nomem` on the pointer reorders four native loops (the same counts and stack
-/// accesses), and `readonly` on the integer takes 11 of 144 instructions off `header`'s 256-bit
-/// verify at the DDR6 model's 24-bit beat (unmeasured).
+/// The options. `pure`: the output is the input's alone, so the compiler may drop an unused one or merge two with the same input (a walk's
+/// input changes every step). `nostack`: it pushes nothing. `preserves_flags`: it leaves the flags as they were, so no compare is redone
+/// after it. And `pure` needs one of `nomem` (the asm touches no memory, so any load or store may move across it) and `readonly` (it may
+/// read memory and writes none, so loads may move across it and stores may not). An asm handed a pointer is taken to use it, and a pointer
+/// in a `nomem` block trips `clippy::pointers_in_nomem_asm_block`, which TMR fixes rather than allows: the pointer form says `readonly`. An
+/// integer gives the asm nothing to read, so the integer form says `nomem`. Each is the form the gains above were measured with; the other
+/// changes the code (2026-10-20): `nomem` on the pointer reorders four native loops (the same counts and stack accesses), and `readonly` on
+/// the integer takes 11 of 144 instructions off `header`'s 256-bit verify at the DDR6 model's 24-bit beat (unmeasured).
 ///
-/// Its effect is the compiler's, not a promise: a new toolchain may see through it, or schedule
-/// around it differently. On a toolchain update, re-read the release asm of the walks above
-/// (`tools/hot_loop_spills.py`, Rule 6).
+/// Its effect is the compiler's, not a promise: a new toolchain may see through it, or schedule around it differently. On a toolchain
+/// update, re-read the release asm of the walks above (`tools/hot_loop_spills.py`, Rule 6).
 #[inline(always)]
 fn opaque_ptr(mut p: *mut u64) -> *mut u64 {
     // SAFETY: the template is a comment: the register comes out as it went in
@@ -6443,9 +6238,8 @@ fn opaque_ptr(mut p: *mut u64) -> *mut u64 {
     p
 }
 
-/// `x` as it went in, through `opaque_ptr`'s barrier: its form for an integer, `nomem` as an
-/// integer gives the asm nothing to read (see `opaque_ptr`). `header`'s line id at each group step
-/// of the sequential verify (`native_differs_seq!`).
+/// `x` as it went in, through `opaque_ptr`'s barrier: its form for an integer, `nomem` as an integer gives the asm nothing to read (see
+/// `opaque_ptr`). `header`'s line id at each group step of the sequential verify (`native_differs_seq!`).
 #[inline(always)]
 fn opaque_u64(mut x: u64) -> u64 {
     // SAFETY: the template is a comment: the register comes out as it went in
@@ -6460,18 +6254,17 @@ macro_rules! native_line_ty {
     };
 }
 
-/// Runs `$body` with `$line` the line function of `$phase` at a width (`with_phase_vectors!` at
-/// `N` lanes for `[u64xN, N]`): its family and beat matched once, outside the walk.
+/// Runs `$body` with `$line` the line function of `$phase` at a width (`with_phase_vectors!` at `N` lanes for `[u64xN, N]`): its family and
+/// beat matched once, outside the walk.
 macro_rules! native_with_line {
     ([$simd:ty, $w:tt], $phase:expr, |$line:ident| $body:block) => {
         crate::pattern::with_phase_vectors!($w, $phase, |$line| $body)
     };
 }
 
-/// The sequential write of `$c`, a `NativeChunk`, each line `$line`'s: from the chunk's start, a
-/// pointer walked a line a step, to the chunk's end as the old loop ran (with a count, the
-/// compiler vectorized the scalar walks across lines, and spilled their constants), each line
-/// stored as vectors of the width `[u64xN, N]`.
+/// The sequential write of `$c`, a `NativeChunk`, each line `$line`'s: from the chunk's start, a pointer walked a line a step, to the
+/// chunk's end as the old loop ran (with a count, the compiler vectorized the scalar walks across lines, and spilled their constants), each
+/// line stored as vectors of the width `[u64xN, N]`.
 macro_rules! native_write_seq {
     ([$simd:ty, $w:tt], $c:expr, $line:expr) => {{
         let (NativeChunk { base, start, end, lid0, .. }, line) = ($c, $line);
@@ -6499,19 +6292,16 @@ macro_rules! native_write_strided {
     }};
 }
 
-/// The differences of `$c`'s words from `$line`'s on the sequential walk (see `native_write_seq`),
-/// ORed: 0 when every word holds. Each word's difference goes into 4 accumulators, one branch at
-/// the end. The SIMD walk takes 4 vectors a step (a group of lines), so the 4 accumulators are
-/// independent chains at every width, and the lines past the last whole group one at a time.
+/// The differences of `$c`'s words from `$line`'s on the sequential walk (see `native_write_seq`), ORed: 0 when every word holds. Each
+/// word's difference goes into 4 accumulators, one branch at the end. The SIMD walk takes 4 vectors a step (a group of lines), so the 4
+/// accumulators are independent chains at every width, and the lines past the last whole group one at a time.
 ///
-/// With `$hide`, the line id goes through `opaque_u64` at each group step, for `header` where a
-/// step takes more than one line (256 and 512 bits; TODO 99 round 3b). Seen through, each word a
-/// `header` line takes from `ident` (`(lid << 3) * G + key`, words 0 and 4 of each line of a
-/// group) became an induction variable of its own, stepped by a 64-bit constant: eight at 512
-/// bits, four at 256, and with the hash's constants they spilled. Hidden, each is an add to one
-/// product. Elsewhere hiding loses: `linepair` recomputed each line's polarity, which seen through
-/// it knew from the first (the group's step is even), and a line a step (the writes, the 128-bit
-/// verify) two induction variables were clean and 2-4 instructions shorter than the product.
+/// With `$hide`, the line id goes through `opaque_u64` at each group step, for `header` where a step takes more than one line (256 and 512
+/// bits; TODO 99 round 3b). Seen through, each word a `header` line takes from `ident` (`(lid << 3) * G + key`, words 0 and 4 of each line
+/// of a group) became an induction variable of its own, stepped by a 64-bit constant: eight at 512 bits, four at 256, and with the hash's
+/// constants they spilled. Hidden, each is an add to one product. Elsewhere hiding loses: `linepair` recomputed each line's polarity, which
+/// seen through it knew from the first (the group's step is even), and a line a step (the writes, the 128-bit verify) two induction
+/// variables were clean and 2-4 instructions shorter than the product.
 macro_rules! native_differs_seq {
     ([$simd:ty, $w:tt], $c:expr, $line:expr, $hide:expr) => {{
         // Vectors a line, and lines a group of 4 vectors
@@ -6520,15 +6310,13 @@ macro_rules! native_differs_seq {
         let (NativeChunk { base, start, end, lid0, .. }, line) = ($c, $line);
         let mut acc = [<$simd>::splat(0); 4];
         let (mut p, stop) = (base.add(start), base.wrapping_add(end));
-        // The last group's first word: the bound the group loop runs to, so the pointer is one
-        // register (compared as `p + group <= stop`, it and its sum were both live). Test memory
-        // sits far above address 0, so this never wraps.
+        // The last group's first word: the bound the group loop runs to, so the pointer is one register (compared as `p + group <= stop`,
+        // it and its sum were both live). Test memory sits far above address 0, so this never wraps.
         let last = stop.wrapping_sub(LPG * LINE_WORDS);
         let mut lid = lid0;
         while p <= last {
-            // Each line computed and checked before the next, the group's vector `k` into
-            // accumulator `k`. Computing the group's lines first and checking them after had the
-            // same instructions and ran 2.1x slower for `random` at 512 bits (Rule 6.12, TODO 99)
+            // Each line computed and checked before the next, the group's vector `k` into accumulator `k`. Computing the group's lines
+            // first and checking them after had the same instructions and ran 2.1x slower for `random` at 512 bits (Rule 6.12, TODO 99)
             for l in 0..LPG {
                 let words = line(lid + l as u64);
                 for v in 0..VPL {
@@ -6588,12 +6376,10 @@ unsafe fn native_rescan(ctx: &ChunkCtx, lid0: u64, phase: crate::pattern::Phase,
 /// A native SimpleTest at one width, `[u64xN, N]`, and its walks module `$walks`.
 macro_rules! native_simple_impl {
     ($fn_name:ident, $walks:ident, $test_name:literal, [$($kind:tt)*], $tf:literal) => {
-        /// The native SimpleTest's walks at this width, called once a chunk (`NativeChunk`). The
-        /// phase's family and beat are matched once a chunk, here, and each walk is generic over
-        /// the line function it gets, so each family and beat has its own function of each walk,
-        /// `#[inline(never)]` with the width's target features: in one function holding every
-        /// family's walk, what the walks share was kept across all of them, and values spilled in
-        /// walks that had registers free (TODO 99).
+        /// The native SimpleTest's walks at this width, called once a chunk (`NativeChunk`). The phase's family and beat are matched once a
+        /// chunk, here, and each walk is generic over the line function it gets, so each family and beat has its own function of each walk,
+        /// `#[inline(never)]` with the width's target features: in one function holding every family's walk, what the walks share was kept
+        /// across all of them, and values spilled in walks that had registers free (TODO 99).
         mod $walks {
             use super::*;
 
@@ -6610,8 +6396,8 @@ macro_rules! native_simple_impl {
             #[inline]
             #[target_feature(enable = $tf)]
             pub(super) unsafe fn differs(c: NativeChunk) -> u64 {
-                // `header`'s line id hidden from loop strength reduction (`opaque_u64`); the
-                // family is known in each arm, so each arm keeps one of the two
+                // `header`'s line id hidden from loop strength reduction (`opaque_u64`); the family is known in each arm, so each arm keeps
+                // one of the two
                 let hide = c.phase.family == crate::pattern::Family::Header;
                 native_with_line!([$($kind)*], c.phase, |line| {
                     if c.period != 0 {
@@ -6671,8 +6457,8 @@ macro_rules! native_simple_impl {
             // TM5's strided walk's period, or 0 for the sequential walk
             let period = if stride > 0 { strided_period(stride) } else { 0 };
             let pinned = run.pinned;
-            // A step that verifies its fill writes one image a suite cycle, so its pairs span two;
-            // a Bench pair is pinned to pair 0's P, its Init's and its Verify's alike
+            // A step that verifies its fill writes one image a suite cycle, so its pairs span two; a Bench pair is pinned to pair 0's P,
+            // its Init's and its Verify's alike
             let schedule = match (pinned, run.test_reps) {
                 (false, 0) => crate::pattern::Schedule::OncePerRun,
                 _ => crate::pattern::Schedule::Rounds,
@@ -6711,17 +6497,14 @@ native_simple_impl!(simple_native_512, simple_native_512_walks, "Mem-SimpleV2-51
 
 // ─── Mem-Sequence (TODO 97) ──────────────────────────────────────────────────────────────────────
 //
-// A configurable sequence of passes over each chunk (`crate::sequence`): writes, reads and
-// read-then-writes, each in an order. A write writes the program's next phase; a read checks the
-// phase last written; a read-then-write checks it and writes its inverse in the same visit, so
-// reads and writes alternate line by line. Each pass is one loop, its family, beat, operation and
-// order matched once outside it. A separate test from SimpleTest, to bench against it before it
-// replaces anything (the owner's call, 2026-10-16).
+// A configurable sequence of passes over each chunk (`crate::sequence`): writes, reads and read-then-writes, each in an order. A write
+// writes the program's next phase; a read checks the phase last written; a read-then-write checks it and writes its inverse in the same
+// visit, so reads and writes alternate line by line. Each pass is one loop, its family, beat, operation and order matched once outside it.
+// A separate test from SimpleTest, to bench against it before it replaces anything (the owner's call, 2026-10-16).
 
-/// One vector of a Mem-Sequence visit at `$at`, each access by `$access` (`access::Access`):
-/// `write` stores `$want`, `read` ORs its difference into `$acc`, `rw` does both and stores the
-/// inverse. Each evaluates its operands in the order the plain visit did (`*$at = $want`: the value
-/// first), and `Direct`'s `seen` is nothing, so the test's passes compile as they did.
+/// One vector of a Mem-Sequence visit at `$at`, each access by `$access` (`access::Access`): `write` stores `$want`, `read` ORs its
+/// difference into `$acc`, `rw` does both and stores the inverse. Each evaluates its operands in the order the plain visit did (`*$at =
+/// $want`: the value first), and `Direct`'s `seen` is nothing, so the test's passes compile as they did.
 macro_rules! sequence_visit {
     (write, $access:ident, $at:expr, $want:expr, $acc:expr, $ones:expr) => {{
         let want = $want;
@@ -6746,9 +6529,9 @@ macro_rules! sequence_visit {
     }};
 }
 
-/// A Mem-Sequence line `$lid` under `$key` as vectors of `$n` lanes, before the phase's polarity:
-/// `pattern::with_phase_vectors!`'s lines, each named by its family and beat (`[$kind]`, from
-/// `sequence_families!`), so each family's walks can be functions of their own (TODO 99).
+/// A Mem-Sequence line `$lid` under `$key` as vectors of `$n` lanes, before the phase's polarity: `pattern::with_phase_vectors!`'s lines,
+/// each named by its family and beat (`[$kind]`, from `sequence_families!`), so each family's walks can be functions of their own (TODO
+/// 99).
 macro_rules! sequence_line {
     ($n:tt, [ident], $lid:expr, $key:expr) => {
         crate::pattern::ident_line_v::<$n, { LINE_WORDS / $n }>($lid, $key)
@@ -6777,8 +6560,8 @@ macro_rules! sequence_line {
     };
 }
 
-/// `$m!($($args)* [kind])` for the family and beat of `$phase`, `kind` its line's name in
-/// `sequence_line!`: the arms of `pattern::with_phase_vectors!`, one each.
+/// `$m!($($args)* [kind])` for the family and beat of `$phase`, `kind` its line's name in `sequence_line!`: the arms of
+/// `pattern::with_phase_vectors!`, one each.
 macro_rules! sequence_families {
     ($phase:expr, $m:ident!($($args:tt)*)) => {{
         use crate::pattern::Family;
@@ -6807,9 +6590,8 @@ macro_rules! sequence_families {
     }};
 }
 
-/// A Mem-Sequence walk's accumulators (`init`), for the operations that read, and its value
-/// (`result`): the differences the reads found, ORed (0 for a write). A read-then-write's `ones`
-/// inverts what it writes.
+/// A Mem-Sequence walk's accumulators (`init`), for the operations that read, and its value (`result`): the differences the reads found,
+/// ORed (0 for a write). A read-then-write's `ones` inverts what it writes.
 macro_rules! sequence_acc {
     (init write, $acc:ident, $ones:ident, $simd:ty) => {};
     (init read, $acc:ident, $ones:ident, $simd:ty) => {
@@ -6825,18 +6607,17 @@ macro_rules! sequence_acc {
     (result $op:tt, $acc:ident) => {
         (($acc[0] | $acc[1]) | ($acc[2] | $acc[3])).reduce_or()
     };
-    // The next line's vectors to the next accumulators: line `j`'s vector `v` is always
-    // accumulator `(j * VPL + v) % 4`'s, as in a step of lines
+    // The next line's vectors to the next accumulators: line `j`'s vector `v` is always accumulator `(j * VPL + v) % 4`'s, as in a step of
+    // lines
     (rotate write, $acc:ident, $n:expr) => {};
     (rotate $op:tt, $acc:ident, $n:expr) => {
         $acc = std::array::from_fn(|k| $acc[(k + $n) % 4]);
     };
 }
 
-/// Mem-Sequence's step: `[line: [vector accumulator, ...], ...]`, the lines it visits, in order,
-/// each vector of each and the accumulator its difference goes to. A step is four vectors, one an
-/// accumulator, as every verify's: two lines at 256 bits, four at 512. Checked when it compiles:
-/// each line once, each of its vectors `0..VPL` once, each to the old walk's `(l * VPL + v) % 4`.
+/// Mem-Sequence's step: `[line: [vector accumulator, ...], ...]`, the lines it visits, in order, each vector of each and the accumulator
+/// its difference goes to. A step is four vectors, one an accumulator, as every verify's: two lines at 256 bits, four at 512. Checked when
+/// it compiles: each line once, each of its vectors `0..VPL` once, each to the old walk's `(l * VPL + v) % 4`.
 macro_rules! sequence_step_check {
     ($w:tt, [$($l:literal: [$($v:literal $a:literal),*]),*]) => {
         const _: () = {
@@ -6847,12 +6628,10 @@ macro_rules! sequence_step_check {
     };
 }
 
-/// One step of Mem-Sequence's forward, reverse or random walk at its width's step: `[line:
-/// [vector accumulator, ...] => (its first word, its id), ...]` (`sequence_step_check!`). Each line
-/// is computed and visited before the next, as `sequence_line!` gives it; but at 512 bits a line
-/// whose words come from one scalar hash (`switch`, `quiet` and `header` at 16, 32 and 64 bits)
-/// takes `sequence_hashed_step!`, the step's four hashes as one vector. Each vector's visit is
-/// `sequence_visit!`, by the pass's `$access`.
+/// One step of Mem-Sequence's forward, reverse or random walk at its width's step: `[line: [vector accumulator, ...] => (its first word,
+/// its id), ...]` (`sequence_step_check!`). Each line is computed and visited before the next, as `sequence_line!` gives it; but at 512
+/// bits a line whose words come from one scalar hash (`switch`, `quiet` and `header` at 16, 32 and 64 bits) takes `sequence_hashed_step!`,
+/// the step's four hashes as one vector. Each vector's visit is `sequence_visit!`, by the pass's `$access`.
 macro_rules! sequence_step {
     (@lines $op:tt, $simd:ty, $w:tt, $kind:tt, $pkey:ident, $mask:ident, $acc:ident, $ones:ident, $access:ident,
      [$($l:literal: [$($v:literal $a:literal),*] => $line:expr),*]) => {
@@ -6870,13 +6649,11 @@ macro_rules! sequence_step {
     };
 }
 
-/// A 512-bit Mem-Sequence step of four lines whose words come from one scalar hash a line, at a
-/// beat that divides a word (TODO 99 round 3b): the four hashes, `switch`'s words and `header`'s
-/// ident words computed as vectors of the four lines (`sequence_hashed`), then each line a
-/// permute of them (`@line`), visited before the next is permuted. A line at a time, the 512-bit
-/// walks hashed each line's word in some 35 general-purpose instructions, about 54 a line with its
-/// check, and at a step of four lines the heavier families' values went to the stack. Every other
-/// family and beat takes the step a line at a time (`sequence_step!`).
+/// A 512-bit Mem-Sequence step of four lines whose words come from one scalar hash a line, at a beat that divides a word (TODO 99 round
+/// 3b): the four hashes, `switch`'s words and `header`'s ident words computed as vectors of the four lines (`sequence_hashed`), then each
+/// line a permute of them (`@line`), visited before the next is permuted. A line at a time, the 512-bit walks hashed each line's word in
+/// some 35 general-purpose instructions, about 54 a line with its check, and at a step of four lines the heavier families' values went to
+/// the stack. Every other family and beat takes the step a line at a time (`sequence_step!`).
 macro_rules! sequence_hashed_step {
     ($op:tt, $simd:ty, [switch Bits16], $($rest:tt)*) => { sequence_hashed_step!(@step $op, splat, switch_word, Bits16, $($rest)*) };
     ($op:tt, $simd:ty, [switch Bits32], $($rest:tt)*) => { sequence_hashed_step!(@step $op, splat, switch_word, Bits32, $($rest)*) };
@@ -6894,9 +6671,8 @@ macro_rules! sequence_hashed_step {
         let parts = sequence_hashed::$parts(ids, $pkey, crate::pattern_gen::BusBeat::$beat);
         $(sequence_visit!($op, $access, lines[$l].0.add($v * 8) as *mut u64x8, sequence_hashed_step!(@line $shape, parts, $l) ^ $mask, $acc[$a], $ones);)*
     }};
-    // Line `l` of the four: `splat` its word in every lane; `alt` its word and the word's inverse
-    // in turn (64 bits); `header` its ident words 0 and 4 and its word in the rest, `header64` its
-    // ident words, then its word in even lanes and the inverse in odd
+    // Line `l` of the four: `splat` its word in every lane; `alt` its word and the word's inverse in turn (64 bits); `header` its ident
+    // words 0 and 4 and its word in the rest, `header64` its ident words, then its word in even lanes and the inverse in odd
     (@line splat, $parts:ident, $l:literal) => { simd_swizzle!($parts.0, [$l; 8]) };
     (@line alt, $parts:ident, $l:literal) => { simd_swizzle!($parts.0, [$l, 4 + $l, $l, 4 + $l, $l, 4 + $l, $l, 4 + $l]) };
     (@line header, $parts:ident, $l:literal) => {
@@ -6909,17 +6685,16 @@ macro_rules! sequence_hashed_step {
     ($op:tt, $simd:ty, $kind:tt, $($rest:tt)*) => { sequence_step!(@lines $op, $simd, 8, $kind, $($rest)*) };
 }
 
-/// What four Mem-Sequence lines are permutes of (`sequence_hashed_step!`), `ids` their ids a lane
-/// each: `pattern`'s `switch_line`, `quiet_line` and `header_line` at 16, 32 and 64 bits, computed
-/// for four lines at once. Each returns two vectors, the parts its lines' permutes take; the beat
-/// is a constant where they are inlined.
+/// What four Mem-Sequence lines are permutes of (`sequence_hashed_step!`), `ids` their ids a lane each: `pattern`'s `switch_line`,
+/// `quiet_line` and `header_line` at 16, 32 and 64 bits, computed for four lines at once. Each returns two vectors, the parts its lines'
+/// permutes take; the beat is a constant where they are inlined.
 mod sequence_hashed {
     use std::simd::{simd_swizzle, u64x4, u64x8};
 
     use crate::pattern_gen::BusBeat;
 
-    /// Each line's hash and `switch`'s value `a` from it (`pattern_gen::balanced_bytes`: the hash's
-    /// low 32 bits a nibble to a byte, each byte's high nibble the inverse of its low).
+    /// Each line's hash and `switch`'s value `a` from it (`pattern_gen::balanced_bytes`: the hash's low 32 bits a nibble to a byte, each
+    /// byte's high nibble the inverse of its low).
     #[inline(always)]
     fn hash(ids: u64x4, key: u64) -> (u64x4, u64x4) {
         const LOW_NIBBLES: u64 = 0x0F0F_0F0F_0F0F_0F0F;
@@ -6932,8 +6707,7 @@ mod sequence_hashed {
         (h, x | ((!x & s(LOW_NIBBLES)) << s(4)))
     }
 
-    /// `switch`'s word at 16 or 32 bits from `a` (`pattern_gen::bus_flip_line`), every word of its
-    /// line.
+    /// `switch`'s word at 16 or 32 bits from `a` (`pattern_gen::bus_flip_line`), every word of its line.
     #[inline(always)]
     fn word(a: u64x4, beat: BusBeat) -> u64x4 {
         let s = u64x4::splat;
@@ -6946,9 +6720,8 @@ mod sequence_hashed {
         }
     }
 
-    /// `quiet`'s held pin's bits from the hash, the same in every word of the line at 16, 32 and 64
-    /// bits: `pattern_gen::pin_mask`'s first word for `pattern::quiet_pin`, each transfer's bit 0
-    /// shifted to the pin.
+    /// `quiet`'s held pin's bits from the hash, the same in every word of the line at 16, 32 and 64 bits: `pattern_gen::pin_mask`'s first
+    /// word for `pattern::quiet_pin`, each transfer's bit 0 shifted to the pin.
     #[inline(always)]
     fn held(h: u64x4, beat: BusBeat) -> u64x4 {
         let s = u64x4::splat;
@@ -6956,8 +6729,7 @@ mod sequence_hashed {
         s(crate::pattern_gen::pin_mask(0, beat)[0]) << pin
     }
 
-    /// The four lines' `ident` words 0 and 4 (`header_line`'s), line `l`'s at lanes `l` and
-    /// `4 + l`.
+    /// The four lines' `ident` words 0 and 4 (`header_line`'s), line `l`'s at lanes `l` and `4 + l`.
     #[inline(always)]
     fn ident(ids: u64x4, key: u64) -> u64x8 {
         let s = u64x4::splat;
@@ -7016,15 +6788,13 @@ mod sequence_hashed {
     }
 }
 
-/// Mem-Sequence's forward walk (`$rev` false) or reverse (true) of `$op` over the chunk of `$walk`,
-/// its family's line `[$kind]`: a pointer walked from the chunk's first line or its last, each line
-/// and vector at a fixed displacement from it, the line's id beside it. One loop to a function
-/// (`sequence_orders!`), so its values stay in registers. In the width's form: `steps` a step's
-/// lines an iteration (`sequence_step!`), `rotate` a line an iteration with the accumulators
-/// rotated (both widths). Two lines' words at once spilled at 256 bits for the heavier families;
-/// at 512, four lines a step kept two id-derived values a line stepped beside the pointer, and
-/// `header`'s step stored up to 25 of its values to the stack and reloaded them, with the four
-/// lines' scalar hashes first and their checks after (Rule 6.12; TODO 99 round 3b).
+/// Mem-Sequence's forward walk (`$rev` false) or reverse (true) of `$op` over the chunk of `$walk`, its family's line `[$kind]`: a pointer
+/// walked from the chunk's first line or its last, each line and vector at a fixed displacement from it, the line's id beside it. One loop
+/// to a function (`sequence_orders!`), so its values stay in registers. In the width's form: `steps` a step's lines an iteration
+/// (`sequence_step!`), `rotate` a line an iteration with the accumulators rotated (both widths). Two lines' words at once spilled at 256
+/// bits for the heavier families; at 512, four lines a step kept two id-derived values a line stepped beside the pointer, and `header`'s
+/// step stored up to 25 of its values to the stack and reloaded them, with the four lines' scalar hashes first and their checks after (Rule
+/// 6.12; TODO 99 round 3b).
 macro_rules! sequence_linear {
     (rotate, $op:tt, $access:ident, $simd:ty, $w:tt, [$l0:literal: [$($v:literal $a:literal),*] $(, $l:literal: $rest:tt)*], $kind:tt, $walk:ident, $rev:literal) => {{
         sequence_step_check!($w, [$l0: [$($v $a),*] $(, $l: $rest)*]);
@@ -7071,17 +6841,15 @@ macro_rules! sequence_linear {
     }};
 }
 
-/// Mem-Sequence's random walk of `$op` over the chunk of `$walk`: each power-of-two block of the
-/// chunk's lines in its own scrambled order (`sequence::random_line`; a chunk is whole 4 KiB pages,
-/// so every block is 64 lines or more). Its lines are where the scramble puts them, so each is
-/// addressed from the block's first by its index. `j` counts from `-n` up to 0, so the loop needs
-/// no bound: `random_line` masks `j` to the block first, and `-n` is 0 there.
+/// Mem-Sequence's random walk of `$op` over the chunk of `$walk`: each power-of-two block of the chunk's lines in its own scrambled order
+/// (`sequence::random_line`; a chunk is whole 4 KiB pages, so every block is 64 lines or more). Its lines are where the scramble puts them,
+/// so each is addressed from the block's first by its index. `j` counts from `-n` up to 0, so the loop needs no bound: `random_line` masks
+/// `j` to the block first, and `-n` is 0 there.
 ///
-/// `steps` visits a step's lines an iteration (`$step`, `sequence_step!`): at 512 bits the compiler
-/// vectorizes their four scrambles, so 512 keeps it here. `rotate` visits a line an iteration and
-/// rotates the accumulators by its vectors, so each vector's difference goes to the accumulator it
-/// would in a step: at 256 bits the scrambles are scalar, and two lines' at once (and their hashes)
-/// didn't fit in the registers.
+/// `steps` visits a step's lines an iteration (`$step`, `sequence_step!`): at 512 bits the compiler vectorizes their four scrambles, so 512
+/// keeps it here. `rotate` visits a line an iteration and rotates the accumulators by its vectors, so each vector's difference goes to the
+/// accumulator it would in a step: at 256 bits the scrambles are scalar, and two lines' at once (and their hashes) didn't fit in the
+/// registers.
 macro_rules! sequence_random {
     (steps, $op:tt, $access:ident, $simd:ty, $w:tt, [$($l:literal: [$($v:literal $a:literal),*]),*], $kind:tt, $walk:ident) => {{
         sequence_step_check!($w, [$($l: [$($v $a),*]),*]);
@@ -7135,14 +6903,12 @@ macro_rules! sequence_random {
     }};
 }
 
-/// Mem-Sequence's strided walk of `$op` over the chunk of `$walk`: `for_each_strided_line!`'s
-/// lines and prefetches, a line a step, on a walked pointer: each pass from its first line, a
-/// period at a time, each vector of the line `acc[v % 4]`'s as the old walk's (at 512 bits one).
-/// The pointer goes from pass to pass (back `wrap`), so a pass keeps nothing else live: at TM5's
-/// large strides a pass is a line or two. Each pass is two loops, the steps whose prefetch lands in
-/// the pass and those whose lands in the next, so neither picks its target, and each line's id
-/// goes through `opaque_u64`. Not the shared `strided_walk!`: its counted pass, with a division
-/// and setup a pass, ran Parameter 16384 (passes of 2 lines) at 0.645x on AMD Zen 5 (TODO 99,
+/// Mem-Sequence's strided walk of `$op` over the chunk of `$walk`: `for_each_strided_line!`'s lines and prefetches, a line a step, on a
+/// walked pointer: each pass from its first line, a period at a time, each vector of the line `acc[v % 4]`'s as the old walk's (at 512 bits
+/// one). The pointer goes from pass to pass (back `wrap`), so a pass keeps nothing else live: at TM5's large strides a pass is a line or
+/// two. Each pass is two loops, the steps whose prefetch lands in the pass and those whose lands in the next, so neither picks its target,
+/// and each line's id goes through `opaque_u64`. Not the shared `strided_walk!`: its counted pass, with a division and setup a pass, ran
+/// Parameter 16384 (passes of 2 lines) at 0.645x on AMD Zen 5 (TODO 99,
 /// 2026-10-20).
 macro_rules! sequence_strided {
     ($op:tt, $access:ident, $simd:ty, $w:tt, [$($l:literal: [$($v:literal $a:literal),*]),*], $kind:tt, $walk:ident) => {
@@ -7159,12 +6925,10 @@ macro_rules! sequence_strided {
         // The first pass's first line: the last of the chunk's first period
         let mut p = bottom.wrapping_add(period - LINE_WORDS);
         loop {
-            // `strided_wrap` in bytes, from the pointers: a pass can be a line or two, so its
-            // start keeps no more than the walk does
+            // `strided_wrap` in bytes, from the pointers: a pass can be a line or two, so its start keeps no more than the walk does
             let wrap = sequence_wrap(p, stop, period);
             let mut lid = lid0 + ((p.addr() - bottom.addr()) / 64) as u64;
-            // `strided_ahead`'s targets, a loop each: the steps whose line `ahead` on is in this
-            // pass, then the rest, whose is in the next
+            // `strided_ahead`'s targets, a loop each: the steps whose line `ahead` on is in this pass, then the rest, whose is in the next
             let near = stop.wrapping_sub(ahead);
             while p < near {
                 prefetch_line(p.wrapping_add(ahead));
@@ -7191,20 +6955,18 @@ macro_rules! sequence_strided {
     }};
 }
 
-/// `strided_wrap` for the pass from `p` in bytes, from the pointers: the pass's lines rounded up to
-/// whole periods, plus a line. Back this from past the pass's end is the next pass's first line.
+/// `strided_wrap` for the pass from `p` in bytes, from the pointers: the pass's lines rounded up to whole periods, plus a line. Back this
+/// from past the pass's end is the next pass's first line.
 #[inline(always)]
 fn sequence_wrap(p: *const u64, stop: *const u64, period: usize) -> usize {
     let step = period * std::mem::size_of::<u64>();
     stop.addr().saturating_sub(p.addr()).div_ceil(step) * step + LINE_WORDS * std::mem::size_of::<u64>()
 }
 
-/// One Mem-Sequence pass of `$op` (`write`, `read` or `rw`) over `$walk`'s chunk in `$order`, its
-/// family's line `[$kind]`, each access by `$access`; returns the differences the reads found,
-/// ORed (0 for a write). Each order's loop is a function of its own, with the width's features,
-/// taking the walk by value (TODO 99): in one function for every family and order, the loops kept
-/// their bounds, keys and at 512 bits their accumulators on the stack. Each takes the access too,
-/// so a unit test's recorder runs the pass the test does (`access`).
+/// One Mem-Sequence pass of `$op` (`write`, `read` or `rw`) over `$walk`'s chunk in `$order`, its family's line `[$kind]`, each access by
+/// `$access`; returns the differences the reads found, ORed (0 for a write). Each order's loop is a function of its own, with the width's
+/// features, taking the walk by value (TODO 99): in one function for every family and order, the loops kept their bounds, keys and at 512
+/// bits their accumulators on the stack. Each takes the access too, so a unit test's recorder runs the pass the test does (`access`).
 macro_rules! sequence_orders {
     ($op:tt, $access:ident, $simd:ty, $w:tt, $tf:literal, $step:tt, $lform:ident, $rform:ident, $walk:ident, $order:expr, $kind:tt) => {
         match $order {
@@ -7244,8 +7006,7 @@ macro_rules! sequence_orders {
     };
 }
 
-/// The cold path of a Mem-Sequence read: rescan the chunk against `phase` (TODO 27). A
-/// read-then-write's goes to `rescan_read_write`.
+/// The cold path of a Mem-Sequence read: rescan the chunk against `phase` (TODO 27). A read-then-write's goes to `rescan_read_write`.
 #[cold]
 #[inline(never)]
 unsafe fn sequence_rescan(
@@ -7265,8 +7026,8 @@ unsafe fn sequence_rescan(
     scan.finish(format_args!("in idx {start}..{end} ({label})"))
 }
 
-/// Where a Mem-Sequence pass runs: words `[start, end)` of the extent at `ptr`, the first line's
-/// id, and TM5's stride period in words (0 when the test has none).
+/// Where a Mem-Sequence pass runs: words `[start, end)` of the extent at `ptr`, the first line's id, and TM5's stride period in words (0
+/// when the test has none).
 #[derive(Clone, Copy)]
 struct SequenceChunk {
     ptr: *mut u64,
@@ -7276,8 +7037,8 @@ struct SequenceChunk {
     period: usize,
 }
 
-/// What one Mem-Sequence pass's walk takes, by value (TODO 99): its chunk, the random order's key,
-/// and the phase's key and polarity (its family and beat pick the walk).
+/// What one Mem-Sequence pass's walk takes, by value (TODO 99): its chunk, the random order's key, and the phase's key and polarity (its
+/// family and beat pick the walk).
 #[derive(Clone, Copy)]
 struct SequenceWalk {
     ptr: *mut u64,
@@ -7297,11 +7058,10 @@ impl SequenceWalk {
     }
 }
 
-/// Mem-Sequence at one width: the test, and a function per operation for its passes, each
-/// picking its family's walk in its order (`sequence_orders!`), each access by `access`: the
-/// test's `Direct`, or a unit test's recorder (TODO 99). `$step` is the width's step
-/// (`sequence_step_check!`), `$lform` its forward and reverse walks' form (`sequence_linear!`) and
-/// `$rform` its random walk's (`sequence_random!`).
+/// Mem-Sequence at one width: the test, and a function per operation for its passes, each picking its family's walk in its order
+/// (`sequence_orders!`), each access by `access`: the test's `Direct`, or a unit test's recorder (TODO 99). `$step` is the width's step
+/// (`sequence_step_check!`), `$lform` its forward and reverse walks' form (`sequence_linear!`) and `$rform` its random walk's
+/// (`sequence_random!`).
 macro_rules! sequence_impl {
     ($fn_name:ident, $write:ident, $read:ident, $rw:ident, $simd:ty, $w:tt, $step:tt, $lform:ident, $rform:ident, $tf:literal) => {
         #[target_feature(enable = $tf)]
@@ -7383,12 +7143,11 @@ macro_rules! sequence_impl {
                     let first = u64::from(cycle - 1) * u64::from(writes);
                     let (mut current, mut next) = (first, first);
                     let mut phase = program.phase(&epoch, writes, current, schedule, beat);
-                    // A sequence that reads first reads a fill: one write pass before its steps,
-                    // through the same loops (each pass's loops are compiled once a function)
+                    // A sequence that reads first reads a fill: one write pass before its steps, through the same loops (each pass's loops
+                    // are compiled once a function)
                     let fill = crate::sequence::Step { op: Op::Write, count: 1, order: Some(crate::sequence::Order::Forward) };
                     let fill = if seq.reads_first() { std::slice::from_ref(&fill) } else { &[] };
-                    // Each pass's random order its own: from the step's key, the cycle, the chunk
-                    // and the pass
+                    // Each pass's random order its own: from the step's key, the cycle, the chunk and the pass
                     let mut pass = 0u64;
                     for rep in 0..reps {
                         let steps = if rep == 0 { fill } else { &[] }.iter().chain(seq.steps());
@@ -7458,8 +7217,8 @@ sequence_impl!(sequence_256, sequence_write_256, sequence_read_256, sequence_rw_
 sequence_impl!(sequence_512, sequence_write_512, sequence_read_512, sequence_rw_512, u64x8, 8, [0: [0 0], 1: [0 1], 2: [0 2], 3: [0 3]], rotate, steps,
                "avx512f,avx512bw,avx512cd,avx512dq,avx512vl,avx2,avx,fma,bmi1,bmi2");
 
-/// The width Mem-Sequence runs at for the run's `width`: that one, but 256 for 128, which it has no
-/// kernel for (`sequence_impl!` is stamped at 256 and 512).
+/// The width Mem-Sequence runs at for the run's `width`: that one, but 256 for 128, which it has no kernel for (`sequence_impl!` is stamped
+/// at 256 and 512).
 pub(crate) fn sequence_width(width: crate::simd::Width) -> crate::simd::Width {
     width.max(crate::simd::Width::W256)
 }
@@ -7472,8 +7231,8 @@ pub(crate) fn sequence_at(width: crate::simd::Width) -> crate::runner::TestFunct
     }
 }
 
-/// Mem-Sequence at the run's width (`crate::simd::test_width`: `width=`'s, else the widest this CPU
-/// has, 512 bits or 256; the CPU gate requires AVX2).
+/// Mem-Sequence at the run's width (`crate::simd::test_width`: `width=`'s, else the widest this CPU has, 512 bits or 256; the CPU gate
+/// requires AVX2).
 #[doc = include_str!("test_fn_safety.md")]
 pub unsafe fn sequence_auto_multi(
     blocks: &[crate::runner::AllocationBlock], thread_id: usize, error_mode: ErrorMode, timing: &TestTiming, config: &TestMemoryConfig,
@@ -7502,8 +7261,7 @@ fn simple_native_at(width: crate::simd::Width) -> SimpleNativeFn {
     }
 }
 
-/// A native SimpleTest at the run's width (`crate::simd::test_width`: `width=`'s, else the widest
-/// this CPU has).
+/// A native SimpleTest at the run's width (`crate::simd::test_width`: `width=`'s, else the widest this CPU has).
 ///
 /// # Safety
 /// As every test function: `blocks` hold valid, aligned, writable memory.
@@ -7514,10 +7272,9 @@ unsafe fn simple_native_auto(
     crate::dispatched!(simple_native_at(crate::simd::test_width()))(blocks, thread_id, error_mode, timing, config, progress, run)
 }
 
-/// Bench-Init-<family> and Bench-Verify-<family>: one native family's write or verify alone, at the
-/// run's width, every cycle on its own (`write_read_cycles` 1). Both are pinned to pair 0's P
-/// image under a zero epoch, so the Init writes what the Verify expects; the Verify checks its own
-/// fill and doesn't count it in its time or bytes (TODO 90).
+/// Bench-Init-<family> and Bench-Verify-<family>: one native family's write or verify alone, at the run's width, every cycle on its own
+/// (`write_read_cycles` 1). Both are pinned to pair 0's P image under a zero epoch, so the Init writes what the Verify expects; the Verify
+/// checks its own fill and doesn't count it in its time or bytes (TODO 90).
 macro_rules! native_bench {
     ($init:ident, $verify:ident, $family:expr) => {
         #[doc = include_str!("test_fn_safety.md")]
@@ -7581,64 +7338,54 @@ pub(crate) fn native_bench_tests()
 // SimpleTestNT — Non-Temporal SIMD Bandwidth Tests
 // =============================================================================
 //
-// Uses streaming stores (_mm_stream_si128 / _mm256_stream_si256 / _mm512_stream_si512)
-// which bypass the CPU cache, writing directly to DRAM. This eliminates the
-// read-for-ownership (RFO) traffic that normal stores incur, roughly doubling
-// write bandwidth. Verify uses regular loads (reads through cache as normal).
+// Uses streaming stores (_mm_stream_si128 / _mm256_stream_si256 / _mm512_stream_si512) which bypass the CPU cache, writing directly to
+// DRAM. This eliminates the read-for-ownership (RFO) traffic that normal stores incur, roughly doubling write bandwidth. Verify uses
+// regular loads (reads through cache as normal).
 //
-// Compare Mem-SimpleNT-* against Mem-SimpleV2-* to see the impact of NT stores
-// vs regular (temporal) stores on the same positional pattern.
+// Compare Mem-SimpleNT-* against Mem-SimpleV2-* to see the impact of NT stores vs regular (temporal) stores on the same positional pattern.
 //
 // WHY MANUAL UNROLL (not LLVM-driven):
 //
-// There is no way in current Rust/LLVM (as of LLVM 22.1, rustc 1.95-nightly) to
-// get both correct non-temporal stores AND LLVM-driven loop optimization. We tested
-// every available approach in an isolated benchmark (see ../nt-test/):
+// There is no way in current Rust/LLVM (as of LLVM 22.1, rustc 1.95-nightly) to get both correct non-temporal stores AND LLVM-driven loop
+// optimization. We tested every available approach in an isolated benchmark (see ../nt-test/):
 //
-// 1. core::intrinsics::nontemporal_store — LLVM beautifully unrolls the loop but
-//    STRIPS the !nontemporal metadata during optimization passes. All stores become
-//    regular vmovdqa64/vmovaps. Tested on scalar u64, u64x8 constant, u64x8 with
-//    compute pattern — NT metadata is lost in every case. LLVM bug #56703 fixed
-//    ArgumentPromotionPass but other passes still strip it.
+// 1. core::intrinsics::nontemporal_store — LLVM beautifully unrolls the loop but STRIPS the !nontemporal metadata during optimization
+//    passes. All stores become regular vmovdqa64/vmovaps. Tested on scalar u64, u64x8 constant, u64x8 with compute pattern — NT metadata is
+//    lost in every case. LLVM bug #56703 fixed ArgumentPromotionPass but other passes still strip it.
 //
-// 2. std::arch intrinsics (_mm512_stream_si512 etc.) — emit correct vmovntdq but
-//    as inline asm (#APP/#NO_APP blocks). LLVM treats these as opaque and will NOT
-//    unroll the loop automatically. Each iteration does only 1 store.
+// 2. std::arch intrinsics (_mm512_stream_si512 etc.) — emit correct vmovntdq but as inline asm (#APP/#NO_APP blocks). LLVM treats these as
+//    opaque and will NOT unroll the loop automatically. Each iteration does only 1 store.
 //
 // 3. Manual asm!("vmovntdq ...") — same as #2, correct NT but no auto-unroll.
 //
-// 4. LLVM flag -C llvm-args=-unroll-count=4 — forces LLVM to unroll even with
-//    inline asm, but produces suboptimal code (extra leaq address calculations
-//    between each #APP/#NO_APP block). Also a global flag affecting ALL loops.
+// 4. LLVM flag -C llvm-args=-unroll-count=4 — forces LLVM to unroll even with inline asm, but produces suboptimal code (extra leaq address
+//    calculations between each #APP/#NO_APP block). Also a global flag affecting ALL loops.
 //
-// SOLUTION: Manual 4x unroll using std::arch intrinsics (each width's `pos_write_nt`,
-// `simple_simd_loops!`). This gives us:
+// SOLUTION: Manual 4x unroll using std::arch intrinsics (each width's `pos_write_nt`, `simple_simd_loops!`). This gives us:
 //   - Correct NT stores (vmovntdq confirmed in assembly output)
 //   - 4 stores per loop iteration (amortizes loop overhead)
 //   - Clean address offsets (ptr+0, ptr+w, ptr+2w, ptr+3w)
 //
-// UNROLL FACTOR: 4x was chosen after benchmarking 1x/2x/4x/8x/16x across all
-// three widths (128/256/512). On a single thread, all factors hit the same ~24 GiB/s
-// memory bandwidth ceiling. In multi-threaded TMR with interleaved compute+verify,
-// 4x provides enough pipeline depth without excessive code bloat. Going higher
-// (8x/16x) showed no benefit and risks instruction cache pressure.
+// UNROLL FACTOR: 4x was chosen after benchmarking 1x/2x/4x/8x/16x across all three widths (128/256/512). On a single thread, all factors
+// hit the same ~24 GiB/s memory bandwidth ceiling. In multi-threaded TMR with interleaved compute+verify, 4x provides enough pipeline depth
+// without excessive code bloat. Going higher (8x/16x) showed no benefit and risks instruction cache pressure.
 //
 // SIMD WIDTH PERFORMANCE: 128-bit ≈ 256-bit >> 512-bit for NT stores.
-// 512-bit stores fill write-combine buffers faster (64B = 1 full cache line per
-// store) creating back-pressure when the memory controller can't drain fast enough.
+// 512-bit stores fill write-combine buffers faster (64B = 1 full cache line per store) creating back-pressure when the memory controller
+// can't drain fast enough.
 // This is a hardware characteristic, not fixable in software.
 //
 // WHY MACROS (not generic traits):
 // #[target_feature] does not propagate through generic function call boundaries.
-// A generic fn<T: SimdOps>() called from a #[target_feature(enable = "avx512f")]
-// function does NOT inherit AVX-512. The inner function compiles at baseline ISA.
+// A generic fn<T: SimdOps>() called from a #[target_feature(enable = "avx512f")] function does NOT inherit AVX-512. The inner function
+// compiles at baseline ISA.
 // Macros physically expand the code at the call site, guaranteeing correct codegen.
 //
 // =============================================================================
 
 /// Stamps out a complete SimpleTestNT implementation for a given SIMD width.
-/// Generates one #[target_feature] impl function + one public wrapper. The NT write and the verify
-/// are the width's `pos_write_nt` and `pos_verify` (`simple_simd_loops!`, TODO 99).
+/// Generates one #[target_feature] impl function + one public wrapper. The NT write and the verify are the width's `pos_write_nt` and
+/// `pos_verify` (`simple_simd_loops!`, TODO 99).
 macro_rules! simple_test_nt_impl {
     (
         $impl_fn:ident,
@@ -7769,9 +7516,8 @@ mod simple_loops_tests {
         (start..start + head).chain((start..end).step_by(13)).chain(end - tail..end).collect()
     }
 
-    /// The strided chunks the walk tests take: a pass shorter than the lookahead (TM5 Parameter 8
-    /// on 2 channels, its period 16 lines), one longer (two-line periods, 300 of them), and a
-    /// period of 64 lines off a page.
+    /// The strided chunks the walk tests take: a pass shorter than the lookahead (TM5 Parameter 8 on 2 channels, its period 16 lines), one
+    /// longer (two-line periods, 300 of them), and a period of 64 lines off a page.
     const WALKS: [(usize, usize, usize); 3] = [(0, 4096, 15 * 8), (0, 300 * 16, 8), (64, 64 + 4096 + 40, 63 * 8)];
 
     /// Mode 20's words, from the definition: a line `seed + j * step`, both hashed from its address.
@@ -7781,9 +7527,9 @@ mod simple_loops_tests {
         pattern_gen::line_words(seed, step)[i % LINE_WORDS]
     }
 
-    /// One width's loops (`simple_simd_loops!`): each write leaves its pattern on its words and no
-    /// other, the NT write the cached one's image and each strided write the sequential one's; each
-    /// verify reads clean and sees a bad word in every lane of every accumulator and in each tail.
+    /// One width's loops (`simple_simd_loops!`): each write leaves its pattern on its words and no other, the NT write the cached one's
+    /// image and each strided write the sequential one's; each verify reads clean and sees a bad word in every lane of every accumulator
+    /// and in each tail.
     macro_rules! check_simd_loops {
         ($loops:ident, $w:expr) => {{
             const W: usize = $w;
@@ -7791,8 +7537,8 @@ mod simple_loops_tests {
             let mut mem = Mem::new(8192);
             let ptr = mem.ptr();
             let what = stringify!($loops);
-            // Four steps of four vectors and three more: the first step's words are every lane of
-            // every accumulator, the last three vectors the tail
+            // Four steps of four vectors and three more: the first step's words are every lane of every accumulator, the last three vectors
+            // the tail
             let (start, end) = (64, 64 + 19 * W);
             let pos = SimplePositional { ptr, start, end, base };
             unsafe { $loops::pos_write(pos) };
@@ -7801,8 +7547,8 @@ mod simple_loops_tests {
             unsafe { $loops::pos_write_nt(pos) };
             mem.assert_image(start, end, |i| i as u64 ^ base, what);
             mem.assert_sees(flips(start, end, 16 * W, 3 * W), || unsafe { $loops::pos_verify(pos) }, what);
-            // A step starts on a multiple of four vectors: every head (from 3 vectors to none) and
-            // every tail (none to 3) around four steps, and a range shorter than a step
+            // A step starts on a multiple of four vectors: every head (from 3 vectors to none) and every tail (none to 3) around four
+            // steps, and a range shorter than a step
             for skip in 0..4 {
                 for rest in 0..4 {
                     let (start, end) = (64 + skip * W, 64 + (20 + rest) * W);
@@ -7820,8 +7566,8 @@ mod simple_loops_tests {
                 mem.assert_image(start, end, |i| i as u64 ^ base, what);
                 mem.assert_sees(start..end, || unsafe { $loops::pos_verify(pos) }, what);
             }
-            // Mode 20 in steps of four lines (by line) or eight (512 bits, by lanes): fifteen lines
-            // (a tail of three or seven), steps and no tail, one line over, and under a step
+            // Mode 20 in steps of four lines (by line) or eight (512 bits, by lanes): fifteen lines (a tail of three or seven), steps and
+            // no tail, one line over, and under a step
             let key = Mode20::new(3, 1, 0xDEADBEEFDEADBEEF, 0xCAFEBABECAFEBABE).key;
             for lines in [15, 16, 17, 3, 8] {
                 let (start, end) = (64, 64 + lines * LINE_WORDS);
@@ -7869,8 +7615,8 @@ mod simple_loops_tests {
         }
     }
 
-    /// One per-word mode's shared strided loops (`SimpleWords`): the image; the verify sees a bad
-    /// word in every lane of every line it reads.
+    /// One per-word mode's shared strided loops (`SimpleWords`): the image; the verify sees a bad word in every lane of every line it
+    /// reads.
     macro_rules! check_words {
         ($mode:literal, $definition:expr) => {{
             let definition = $definition;
@@ -7893,8 +7639,7 @@ mod simple_loops_tests {
         }};
     }
 
-    /// TODO 99: the shared strided loops' per-word modes, each from its `pattern_gen` definition
-    /// (mode 1's lines are 64 B, `cl_shift` 3).
+    /// TODO 99: the shared strided loops' per-word modes, each from its `pattern_gen` definition (mode 1's lines are 64 B, `cl_shift` 3).
     #[test]
     fn shared_word_loops_write_their_patterns_and_see_every_bad_word() {
         check_words!(0, pattern_gen::pattern_mode0);
@@ -7902,9 +7647,8 @@ mod simple_loops_tests {
         check_words!(13, pattern_gen::pattern_mode13);
     }
 
-    /// Mode 2's chain from the definitions (`pattern_gen`): each page of `[start, end)` of `ptr`
-    /// from its address, a line a link, as `Mode2 { thread_id: 3, cycle: 1, param0: 0x5DEECE66D,
-    /// param1: 0xB }` writes it; the words outside the range 0.
+    /// Mode 2's chain from the definitions (`pattern_gen`): each page of `[start, end)` of `ptr` from its address, a line a link, as `Mode2
+    /// { thread_id: 3, cycle: 1, param0: 0x5DEECE66D, param1: 0xB }` writes it; the words outside the range 0.
     fn mode2_chain(ptr: *mut u64, start: usize, end: usize) -> Vec<u64> {
         let mut chain = vec![0u64; end];
         for page in (start..end).step_by(PAGE_WORDS) {
@@ -7922,17 +7666,16 @@ mod simple_loops_tests {
         pattern_gen::mode30_line(ptr.wrapping_add(i - i % LINE_WORDS) as usize, mode30.key, mode30.beat)[i % LINE_WORDS]
     }
 
-    /// The words of `[start, end)` a verify test flips: every word of the first and last `edge`
-    /// (heads and tails, and every lane of every accumulator of the steps there), every 4 KiB
-    /// page's first and last words, and every 13th between.
+    /// The words of `[start, end)` a verify test flips: every word of the first and last `edge` (heads and tails, and every lane of every
+    /// accumulator of the steps there), every 4 KiB page's first and last words, and every 13th between.
     fn flips_and_pages(start: usize, end: usize, edge: usize) -> Vec<usize> {
         let edge = edge.min(end - start);
         let pages = (start..end).filter(|i| i % PAGE_WORDS == 0 || i % PAGE_WORDS == PAGE_WORDS - 1);
         flips(start, end, edge, edge).into_iter().chain(pages).collect()
     }
 
-    /// The ranges the per-word loops are tested on at width `w`: whole pages; a head and a tail of
-    /// every length under a step, across two page edges; inside a page; shorter than a step.
+    /// The ranges the per-word loops are tested on at width `w`: whole pages; a head and a tail of every length under a step, across two
+    /// page edges; inside a page; shorter than a step.
     fn word_ranges(w: usize) -> Vec<(usize, usize)> {
         let mut ranges = vec![(512, 512 + 3 * PAGE_WORDS)];
         ranges.extend((0..4 * w).map(|k| (1024 - k, 2048 + 3 * k + 1)));
@@ -7940,8 +7683,8 @@ mod simple_loops_tests {
         ranges
     }
 
-    /// One per-word mode's loops at a width of `$w` words, mode `$mode` at line shift `$cl_shift`,
-    /// against `$definition` (word index to value), on `$mem`, as `check_numbered_loops!` says.
+    /// One per-word mode's loops at a width of `$w` words, mode `$mode` at line shift `$cl_shift`, against `$definition` (word index to
+    /// value), on `$mem`, as `check_numbered_loops!` says.
     macro_rules! check_word_loops {
         ($mem:ident, $w:expr, $mode:literal, $cl_shift:expr, $write:path, $verify:path, $definition:expr) => {{
             let (w, definition, seed) = ($w, $definition, 0x0123_4567_89AB_CDEFu64);
@@ -7961,13 +7704,11 @@ mod simple_loops_tests {
         }};
     }
 
-    /// One width's numbered-mode loops (`simple_simd_loops!`): modes 0, 1 (at every inversion
-    /// shape, `m1_shape`), 2, 13 and 30 (at every beat) each write their definition's image
-    /// (`pattern_gen`) on their words and no other, in whole pages, in ranges with a head and a tail
-    /// of each length under a step, inside a page, and shorter than a step; each verify reads clean
-    /// and sees a bad word in every lane of every accumulator, at the page edges and in the heads
-    /// and tails; and the chunk's `errors` counts one bad word once (the rescan's wiring). Modes 10,
-    /// 11 and 20 are `check_simd_loops!`'s.
+    /// One width's numbered-mode loops (`simple_simd_loops!`): modes 0, 1 (at every inversion shape, `m1_shape`), 2, 13 and 30 (at every
+    /// beat) each write their definition's image (`pattern_gen`) on their words and no other, in whole pages, in ranges with a head and a
+    /// tail of each length under a step, inside a page, and shorter than a step; each verify reads clean and sees a bad word in every lane
+    /// of every accumulator, at the page edges and in the heads and tails; and the chunk's `errors` counts one bad word once (the rescan's
+    /// wiring). Modes 10, 11 and 20 are `check_simd_loops!`'s.
     macro_rules! check_numbered_loops {
         ($loops:ident, $w:expr) => {{
             const W: usize = $w;
@@ -7996,8 +7737,8 @@ mod simple_loops_tests {
             mem.words()[1300] ^= BIT;
             assert_eq!(unsafe { c.errors($loops::m2_verify(c), "test") }, 1, "{what}: mode 2: one bad word counted once");
 
-            // Mode 30 at each beat: steps of four lines (by line) or `W` (by lanes), with a tail of
-            // every length under eight, steps and no tail, one line, and under a step
+            // Mode 30 at each beat: steps of four lines (by line) or `W` (by lanes), with a tail of every length under eight, steps and no
+            // tail, one line, and under a step
             use pattern_gen::BusBeat;
             let key = Mode20::new(3, 1, 0xDEADBEEFDEADBEEF, 0xCAFEBABECAFEBABE).key;
             for beat in [BusBeat::Bits12, BusBeat::Bits16, BusBeat::Bits24, BusBeat::Bits32, BusBeat::Bits64] {
@@ -8023,8 +7764,8 @@ mod simple_loops_tests {
         }};
     }
 
-    /// TODO 99: the numbered-mode loops at each width the CPU has (`check_numbered_loops!`), which
-    /// SimpleTest runs at each width and Bench-Init/Verify at the run's.
+    /// TODO 99: the numbered-mode loops at each width the CPU has (`check_numbered_loops!`), which SimpleTest runs at each width and
+    /// Bench-Init/Verify at the run's.
     #[test]
     fn numbered_loops_write_their_patterns_and_see_every_bad_word() {
         check_numbered_loops!(simple_test_v2_128_loops, 2);
@@ -8039,9 +7780,8 @@ mod simple_loops_tests {
         }
     }
 
-    /// TODO 99: the shared strided loops' line modes write what the definitions give (mode 2's
-    /// strided image mode 20's lines), mode 30 at every beat; the verifies see a bad word in every
-    /// lane of every line they read.
+    /// TODO 99: the shared strided loops' line modes write what the definitions give (mode 2's strided image mode 20's lines), mode 30 at
+    /// every beat; the verifies see a bad word in every lane of every line they read.
     #[test]
     fn shared_line_loops_write_their_patterns_and_see_every_bad_word() {
         let mut mem = Mem::new(8192);
@@ -8090,9 +7830,8 @@ mod simple_loops_tests {
 // Measures raw INIT/write throughput per pattern mode with no-op test/verify.
 // ============================================================================
 
-/// Seal-Check: TM5's test 0 as a step (TODO 74), the seal check of every chunk, resealing a chunk
-/// that failed (TM5's refill). Its errors are its own, and TM5 numbers them 0. In an unsealed run
-/// it seals its extent first.
+/// Seal-Check: TM5's test 0 as a step (TODO 74), the seal check of every chunk, resealing a chunk that failed (TM5's refill). Its errors
+/// are its own, and TM5 numbers them 0. In an unsealed run it seals its extent first.
 #[doc = include_str!("test_fn_safety.md")]
 pub unsafe fn seal_check_multi(
     blocks: &[crate::runner::AllocationBlock], thread_id: usize, error_mode: ErrorMode, timing: &TestTiming, config: &TestMemoryConfig,
@@ -8132,9 +7871,8 @@ fn bench_seal_kernel(pattern: crate::seal::SealPattern, width: crate::seal::Seal
     crate::seal::SealKernel::new(pattern, measured)
 }
 
-/// The width a Bench-*-Seal-* test measures at: the one it names or, for one that names none
-/// (`Auto`), the run's `width=` or else the seal's auto; or why the CPU can't. It measures no other
-/// width in place of one the CPU lacks: the run leaves that test out
+/// The width a Bench-*-Seal-* test measures at: the one it names or, for one that names none (`Auto`), the run's `width=` or else the
+/// seal's auto; or why the CPU can't. It measures no other width in place of one the CPU lacks: the run leaves that test out
 /// (`runner::leave_out_what_the_cpu_lacks`, TODO 99).
 fn bench_seal_width(width: crate::seal::SealWidth) -> Result<crate::seal::SealWidth, String> {
     let width = match (width, crate::simd::width_given()) {
@@ -8144,11 +7882,10 @@ fn bench_seal_width(width: crate::seal::SealWidth) -> Result<crate::seal::SealWi
     width.resolve()
 }
 
-/// The width a test runs at where its name doesn't say it (TODO 99): Mem-Sequence at the run's
-/// (`crate::simd::test_width`), or 256 for 128 (`sequence_width`), the numbered and native Bench
-/// pairs at the run's, Bench-{Init,Verify}-Seal-{TMR,TM5} at theirs (`bench_seal_width`). `None`
-/// for any other test: its name says its width, or it has none. An `-Auto` test is resolved by
-/// name to the test named for the run's width (`runner::TestDefinition::simd_width`).
+/// The width a test runs at where its name doesn't say it (TODO 99): Mem-Sequence at the run's (`crate::simd::test_width`), or 256 for 128
+/// (`sequence_width`), the numbered and native Bench pairs at the run's, Bench-{Init,Verify}-Seal-{TMR,TM5} at theirs (`bench_seal_width`).
+/// `None` for any other test: its name says its width, or it has none. An `-Auto` test is resolved by name to the test named for the run's
+/// width (`runner::TestDefinition::simd_width`).
 pub(crate) fn picked_width(test_name: &str) -> Option<crate::simd::Width> {
     let numbered = ["Bench-Init-TM5-", "Bench-Init-TMR-", "Bench-Verify-TM5-", "Bench-Verify-TMR-"];
     match test_name {
@@ -8167,14 +7904,12 @@ pub(crate) fn picked_width(test_name: &str) -> Option<crate::simd::Width> {
 
 #[cfg(test)]
 thread_local! {
-    /// The kernel the last Bench-*-Seal-* test on this thread measured with, as its body took it
-    /// (`bench_init_seal`, `bench_verify_seal`): a unit test sees the width the test ran at. The
-    /// binary keeps no record.
+    /// The kernel the last Bench-*-Seal-* test on this thread measured with, as its body took it (`bench_init_seal`, `bench_verify_seal`):
+    /// a unit test sees the width the test ran at. The binary keeps no record.
     static SEAL_MEASURED: std::cell::Cell<Option<crate::seal::SealKernel>> = const { std::cell::Cell::new(None) };
 }
 
-/// Bench-Init-Seal-*: the seal's fill alone (TODO 74), one non-temporal write pass per chunk per
-/// cycle.
+/// Bench-Init-Seal-*: the seal's fill alone (TODO 74), one non-temporal write pass per chunk per cycle.
 #[allow(clippy::too_many_arguments)]
 unsafe fn bench_init_seal(
     blocks: &[crate::runner::AllocationBlock], thread_id: usize, error_mode: ErrorMode, timing: &TestTiming, config: &TestMemoryConfig,
@@ -8201,8 +7936,8 @@ unsafe fn bench_init_seal(
     )
 }
 
-/// Bench-Verify-Seal-*: the seal's check alone (TODO 74), one read pass per chunk per cycle, after
-/// one fill unless it follows its Bench-Init-Seal-* (`skip_init`).
+/// Bench-Verify-Seal-*: the seal's check alone (TODO 74), one read pass per chunk per cycle, after one fill unless it follows its
+/// Bench-Init-Seal-* (`skip_init`).
 #[allow(clippy::too_many_arguments)]
 unsafe fn bench_verify_seal(
     blocks: &[crate::runner::AllocationBlock], thread_id: usize, error_mode: ErrorMode, timing: &TestTiming, config: &TestMemoryConfig,
@@ -8287,17 +8022,15 @@ pub fn bench_seal_tests() -> [(&'static str, crate::runner::TestFunction); 16] {
 
 // ─── Bench-Init and Bench-Verify (TODO 99) ──────────────────────────────────────────────────────
 //
-// Each numbered mode's write or verify alone, at the run's width (`width=`'s, else the widest this
-// CPU has), as the native Bench pairs run (`simple_native_auto`): the very kernels
-// SimpleTest runs at that width (`simple_simd_loops!`), so a Bench number stands for SimpleTest's
-// pattern cost there. Both sides take cycle 0's pattern, so a Bench-Verify checks what a Bench-Init
-// wrote, whatever cycle it ran.
+// Each numbered mode's write or verify alone, at the run's width (`width=`'s, else the widest this CPU has), as the native Bench pairs run
+// (`simple_native_auto`): the very kernels
+// SimpleTest runs at that width (`simple_simd_loops!`), so a Bench number stands for SimpleTest's pattern cost there. Both sides take cycle
+// 0's pattern, so a Bench-Verify checks what a Bench-Init wrote, whatever cycle it ran.
 
-/// A Bench-Init-* (`Write`) or Bench-Verify-* (`Verify`) of one numbered mode, `$args` the test
-/// function's six arguments: each chunk `$chunk(ctx)` (a mode's chunk struct), written by `$write`
-/// and, for a Bench-Verify, checked by `$verify` and, on a hit, the struct's `errors` (the cold
-/// rescan). A Bench-Verify's fill is setup: its verifies alone are timed and counted (TODO 90, the
-/// harness). `skip_init` skips the fill, when the Bench-Init before it wrote the chunks.
+/// A Bench-Init-* (`Write`) or Bench-Verify-* (`Verify`) of one numbered mode, `$args` the test function's six arguments: each chunk
+/// `$chunk(ctx)` (a mode's chunk struct), written by `$write` and, for a Bench-Verify, checked by `$verify` and, on a hit, the struct's
+/// `errors` (the cold rescan). A Bench-Verify's fill is setup: its verifies alone are timed and counted (TODO 90, the harness). `skip_init`
+/// skips the fill, when the Bench-Init before it wrote the chunks.
 macro_rules! bench_numbered_run {
     (Write, $args:expr, $test_name:expr, $chunk:expr, $write:path, $verify:path) => {{
         let (blocks, thread_id, error_mode, timing, config, progress) = $args;
@@ -8346,8 +8079,7 @@ macro_rules! bench_numbered_run {
     }};
 }
 
-/// The Bench pair's name of numbered mode `mode`: its Bench-Init's, or with `verify` its
-/// Bench-Verify's.
+/// The Bench pair's name of numbered mode `mode`: its Bench-Init's, or with `verify` its Bench-Verify's.
 fn bench_numbered_name(mode: u32, verify: bool) -> &'static str {
     match (mode, verify) {
         (0, false) => "Bench-Init-TM5-0",
@@ -8371,8 +8103,8 @@ fn bench_numbered_name(mode: u32, verify: bool) -> &'static str {
     }
 }
 
-/// A Bench-Init-* (`$action` `Write`) or Bench-Verify-* (`Verify`, `$verify` true) at one width,
-/// `$fn`, on width `$loops`'s kernels, the mode its config's (`config::bench_mode`, from the name).
+/// A Bench-Init-* (`$action` `Write`) or Bench-Verify-* (`Verify`, `$verify` true) at one width, `$fn`, on width `$loops`'s kernels, the
+/// mode its config's (`config::bench_mode`, from the name).
 macro_rules! bench_numbered {
     ($fn:ident, $action:ident, $verify:literal, $loops:ident) => {
         #[doc = include_str!("test_fn_safety.md")]
@@ -8386,8 +8118,7 @@ macro_rules! bench_numbered {
             let cl_shift = pattern_gen::cache_line_shift(config.cache_line_bytes);
             let args = (blocks, thread_id, error_mode, timing, config, progress);
             let test_name = bench_numbered_name(mode, $verify);
-            // Cycle 0, not ctx.cycle: the pattern stays the same every cycle, so a Bench-Verify
-            // knows what a Bench-Init wrote last
+            // Cycle 0, not ctx.cycle: the pattern stays the same every cycle, so a Bench-Verify knows what a Bench-Init wrote last
             let seed = |ctx: &ChunkCtx| pattern_gen::block_seed(ctx.ptr as usize, ctx.thread_id, 0);
             match mode {
                 // Mode 0: bit dispersion + branchless 4KB page complement
@@ -8432,8 +8163,7 @@ macro_rules! bench_numbered {
                         $loops::m2_verify
                     )
                 }
-                // Modes 10 and 11: the index XOR a base, mode 10's fixed, mode 11's the two
-                // parameters XORed
+                // Modes 10 and 11: the index XOR a base, mode 10's fixed, mode 11's the two parameters XORed
                 10 | 11 => {
                     let base = if mode == 10 { 0xDEADBEEFDEADBEEF_u64 } else { param0 ^ param1 };
                     bench_numbered_run!(
@@ -8508,9 +8238,8 @@ pub(crate) fn bench_verify_at(width: crate::simd::Width) -> crate::runner::TestF
     }
 }
 
-/// Bench-Init-TM5-* and Bench-Init-TMR-*: a numbered mode's write alone, every cycle, at the run's
-/// width (`crate::simd::test_width`: `width=`'s, else the widest this CPU has). Each test sets its
-/// `pattern_mode`, then calls this.
+/// Bench-Init-TM5-* and Bench-Init-TMR-*: a numbered mode's write alone, every cycle, at the run's width (`crate::simd::test_width`:
+/// `width=`'s, else the widest this CPU has). Each test sets its `pattern_mode`, then calls this.
 #[doc = include_str!("test_fn_safety.md")]
 pub unsafe fn bench_init_multi(
     blocks: &[crate::runner::AllocationBlock], thread_id: usize, error_mode: ErrorMode, timing: &TestTiming, config: &TestMemoryConfig,
@@ -8519,9 +8248,8 @@ pub unsafe fn bench_init_multi(
     crate::dispatched!(bench_init_at(crate::simd::test_width()))(blocks, thread_id, error_mode, timing, config, progress)
 }
 
-/// Bench-Verify-TM5-* and Bench-Verify-TMR-*: a numbered mode's verify alone, at the run's width.
-/// It fills its extent first, untimed, unless `skip_init` has it follow its Bench-Init-*, which
-/// wrote the same pattern.
+/// Bench-Verify-TM5-* and Bench-Verify-TMR-*: a numbered mode's verify alone, at the run's width. It fills its extent first, untimed,
+/// unless `skip_init` has it follow its Bench-Init-*, which wrote the same pattern.
 #[doc = include_str!("test_fn_safety.md")]
 pub unsafe fn bench_verify_multi(
     blocks: &[crate::runner::AllocationBlock], thread_id: usize, error_mode: ErrorMode, timing: &TestTiming, config: &TestMemoryConfig,
@@ -8539,9 +8267,9 @@ mod width_dispatch_tests {
     use crate::simd::{TestWidth, Width};
     type Multi = crate::runner::TestFunctionMultiBlock;
 
-    /// TODO 99: the tests that pick their width at run time and aren't resolved by name dispatch to
-    /// that width's function: the native and numbered Bench pairs at each width, Mem-Sequence at
-    /// 256 for 128, which it lacks. The run's width reaches them through `crate::simd::test_width`.
+    /// TODO 99: the tests that pick their width at run time and aren't resolved by name dispatch to that width's function: the native and
+    /// numbered Bench pairs at each width, Mem-Sequence at 256 for 128, which it lacks. The run's width reaches them through
+    /// `crate::simd::test_width`.
     #[test]
     fn the_bench_pairs_and_mem_sequence_dispatch_to_the_widths_function() {
         assert!(fn_addr_eq(simple_native_at(Width::W128), simple_native_128 as SimpleNativeFn));
@@ -8563,8 +8291,8 @@ mod width_dispatch_tests {
         assert!(!fn_addr_eq(sequence_at(Width::W256), sequence_at(Width::W512)));
     }
 
-    /// TODO 99: a Bench-*-Seal-* test that names no width measures the run's `width=`, else the
-    /// seal's auto; one that names a width keeps it.
+    /// TODO 99: a Bench-*-Seal-* test that names no width measures the run's `width=`, else the seal's auto; one that names a width keeps
+    /// it.
     #[test]
     fn the_seal_bench_pairs_without_a_width_take_the_runs() {
         let width = |name_width| bench_seal_kernel(SealPattern::Tmr, name_width, "test").width;
@@ -8579,15 +8307,12 @@ mod width_dispatch_tests {
         }
     }
 
-    /// TODO 99: every test function that picks its width as it runs calls the function of the
-    /// run's width, as its own dispatch calls it (`crate::dispatched!`, recorded by
-    /// `crate::simd::dispatches`), at each width the CPU has and under auto: each `-Auto` test's
-    /// dispatcher the function its name resolves to, which the run runs in its place, Mem-Sequence
-    /// its width's (256 for 128), the numbered and native Bench pairs theirs. And each test says
-    /// so (`TestDefinition::simd_width`, what the results file records). The tests above check the
-    /// mapping functions alone, which a dispatcher reading another width than the run's passed:
-    /// `bench_init_multi` at `Width::widest()`, or `auto_dispatch!`'s 128-bit arm calling the AVX2
-    /// function.
+    /// TODO 99: every test function that picks its width as it runs calls the function of the run's width, as its own dispatch calls it
+    /// (`crate::dispatched!`, recorded by `crate::simd::dispatches`), at each width the CPU has and under auto: each `-Auto` test's
+    /// dispatcher the function its name resolves to, which the run runs in its place, Mem-Sequence its width's (256 for 128), the numbered
+    /// and native Bench pairs theirs. And each test says so (`TestDefinition::simd_width`, what the results file records). The tests above
+    /// check the mapping functions alone, which a dispatcher reading another width than the run's passed: `bench_init_multi` at
+    /// `Width::widest()`, or `auto_dispatch!`'s 128-bit arm calling the AVX2 function.
     #[test]
     fn every_dispatcher_calls_the_function_of_the_runs_width() {
         use crate::runner::TestFunction;
@@ -8620,8 +8345,7 @@ mod width_dispatch_tests {
                 if matches!(config.chunk_mode, ChunkMode::Absolute { .. }) {
                     config.chunk_mode = ChunkMode::Absolute { size_bytes: 64 * 1024 };
                 }
-                // SAFETY: the span is live, 64-byte aligned and the test's alone, and each width runs
-                // on a CPU that has it
+                // SAFETY: the span is live, 64-byte aligned and the test's alone, and each width runs on a CPU that has it
                 let ((), called) = crate::simd::dispatches(|| unsafe {
                     match function {
                         TestFunction::MultiBlock(f) => {
@@ -8646,11 +8370,10 @@ mod width_dispatch_tests {
         }
     }
 
-    /// TODO 99: the width a test records (`TestDefinition::simd_width`, the results file's) for the
-    /// tests whose width the dispatch test above can't see: a Bench-*-Seal-* naming no width the
-    /// width its kernel measures at, the run's given or else the seal's auto; and none for a test
-    /// that runs at the width it is named for (a Bench-*-Seal-* at 128, 256 or 512 among them, and
-    /// the 512-bit tests, which no longer step down) or has none.
+    /// TODO 99: the width a test records (`TestDefinition::simd_width`, the results file's) for the tests whose width the dispatch test
+    /// above can't see: a Bench-*-Seal-* naming no width the width its kernel measures at, the run's given or else the seal's auto; and
+    /// none for a test that runs at the width it is named for (a Bench-*-Seal-* at 128, 256 or 512 among them, and the 512-bit tests, which
+    /// no longer step down) or has none.
     #[test]
     fn the_seal_pairs_record_their_width_and_the_rest_none() {
         let cache_info = get_cache_info();
@@ -8676,13 +8399,11 @@ mod width_dispatch_tests {
         }
     }
 
-    /// TODO 99: each Bench-*-Seal-* test measures with its pattern at the width the results file
-    /// records for it: one naming no width the run's given, else the seal's auto; one at 128, 256
-    /// or 512, which records none, that width (one the CPU lacks isn't run: a run leaves it out,
-    /// `runner::leave_out_what_the_cpu_lacks`). Each is run, and the kernel its body took noted
-    /// (`SEAL_MEASURED`): the
-    /// record is worked out apart from the kernel (`picked_width` calls `bench_seal_width` itself),
-    /// so the test above passed a pair built at another width than it records.
+    /// TODO 99: each Bench-*-Seal-* test measures with its pattern at the width the results file records for it: one naming no width the
+    /// run's given, else the seal's auto; one at 128, 256 or 512, which records none, that width (one the CPU lacks isn't run: a run leaves
+    /// it out, `runner::leave_out_what_the_cpu_lacks`). Each is run, and the kernel its body took noted (`SEAL_MEASURED`): the
+    /// record is worked out apart from the kernel (`picked_width` calls `bench_seal_width` itself), so the test above passed a pair built
+    /// at another width than it records.
     #[test]
     fn the_seal_pairs_measure_at_the_width_they_record() {
         use crate::runner::TestFunction;
@@ -8705,8 +8426,7 @@ mod width_dispatch_tests {
                 (config.cache_line_bytes, config.chunk_mode) = (cache_info.cache_line_size, ChunkMode::Absolute { size_bytes: 64 * 1024 });
                 let TestFunction::MultiBlock(f) = function else { panic!("{what}: not a block test") };
                 SEAL_MEASURED.set(None);
-                // SAFETY: the span is live, 64-byte aligned and the test's alone, and its width is
-                // one the CPU has (above)
+                // SAFETY: the span is live, 64-byte aligned and the test's alone, and its width is one the CPU has (above)
                 let _ = unsafe { f(&span.blocks, 0, ErrorMode::Log, &config.timing, &config, None) };
                 let measured = SEAL_MEASURED.take().unwrap_or_else(|| panic!("{what}: measured with no kernel"));
 
@@ -8727,9 +8447,8 @@ mod width_dispatch_tests {
     }
 }
 
-/// Memory for a unit test that runs a test function itself (TODO 99): a heap buffer of whole
-/// lines, 64-byte aligned, as the one block of thread 0's span, as runner.rs's tests run them (over
-/// guarded regions of several blocks there).
+/// Memory for a unit test that runs a test function itself (TODO 99): a heap buffer of whole lines, 64-byte aligned, as the one block of
+/// thread 0's span, as runner.rs's tests run them (over guarded regions of several blocks there).
 #[cfg(test)]
 mod heap_span {
     use std::simd::u64x8;
@@ -8781,9 +8500,8 @@ mod heap_span {
 mod refresh_wait_tests {
     use super::*;
 
-    /// Mem-Refresh waits between a chunk's write and its check for its `wait_ms`, else 64 ms
-    /// (`REFRESH_WAIT_MS`): one cycle of one chunk the span's size takes at least that, and checks
-    /// clean after it.
+    /// Mem-Refresh waits between a chunk's write and its check for its `wait_ms`, else 64 ms (`REFRESH_WAIT_MS`): one cycle of one chunk
+    /// the span's size takes at least that, and checks clean after it.
     #[test]
     fn mem_refresh_waits_its_wait_ms() {
         let span = super::heap_span::HeapSpan::new(64 * 1024, 0);
@@ -8796,8 +8514,7 @@ mod refresh_wait_tests {
             config.chunk_mode = ChunkMode::Whole;
             config.parameter_context = wait_ms.map(|ms| crate::config::TestParameterContext { wait_ms: Some(ms), ..Default::default() });
             let start = std::time::Instant::now();
-            // SAFETY: the span is live, 64-byte aligned and the test's alone; the startup gate
-            // gives AVX2
+            // SAFETY: the span is live, 64-byte aligned and the test's alone; the startup gate gives AVX2
             let stats = unsafe { refresh_stable_256_multi(&span.blocks, 0, ErrorMode::Log, &config.timing, &config, None) };
             let took = start.elapsed();
             let wait = std::time::Duration::from_millis(wait_ms.unwrap_or(REFRESH_WAIT_MS));
@@ -8870,11 +8587,9 @@ mod bench_move_tests {
         }
     }
 
-    /// TODO 99: Mem-BlockMove's half-chunk kernels. The fill writes each source word the pattern
-    /// plus its index and nothing else; each direction pattern's copy leaves the image the old
-    /// loops left (the 4-way's quarters too, which miss the last words of a half-chunk that isn't
-    /// a multiple of 4); a whole copy reads clean, and a bad word is seen in each lane of each
-    /// accumulator and in the tail.
+    /// TODO 99: Mem-BlockMove's half-chunk kernels. The fill writes each source word the pattern plus its index and nothing else; each
+    /// direction pattern's copy leaves the image the old loops left (the 4-way's quarters too, which miss the last words of a half-chunk
+    /// that isn't a multiple of 4); a whole copy reads clean, and a bad word is seen in each lane of each accumulator and in the tail.
     #[test]
     fn block_move_copies_as_before_and_sees_every_bad_word() {
         let pattern_base = 0xDEADBEEFCAFEBABEu64;
@@ -8901,8 +8616,7 @@ mod bench_move_tests {
                 assert_eq!(unsafe { chunk.verify() } == 0, whole, "{dirs} directions, words {start} + {len}: the verify");
                 assert!(whole || dirs == 4, "{dirs} directions copy every word");
             }
-            // The check, on a whole copy: each word of the first step (every lane of the four
-            // accumulators), each of the tail, and a spread
+            // The check, on a whole copy: each word of the first step (every lane of the four accumulators), each of the tail, and a spread
             let half = start + len + 64;
             let mut mem = vec![!0u64; 2 * half];
             let base = mem.as_mut_ptr();
@@ -8922,15 +8636,12 @@ mod bench_move_tests {
         }
     }
 
-    /// Mem-BlockMove's accesses copying words `[start, end)` for `dirs` directions, in order, from
-    /// each pattern's definition: each word read from the source, where it holds `value`, and
-    /// written to the same offset of the destination, `half` words on. A whole step is 16 words,
-    /// its four vectors read, then the four written. Up takes the steps from the bottom, their
-    /// vectors from the bottom, then the words past them, up; down the steps from the top, their
-    /// vectors from the top, then the words below them, down; a strided pass goes a word at a time,
-    /// up. 1 direction is up; 2 the first half up and the second down; 4 the quarters up, down,
-    /// even words then odd, up (the last `len % 4` words left); any other count that many strided
-    /// passes, pass `k` from word `start + k`.
+    /// Mem-BlockMove's accesses copying words `[start, end)` for `dirs` directions, in order, from each pattern's definition: each word
+    /// read from the source, where it holds `value`, and written to the same offset of the destination, `half` words on. A whole step is 16
+    /// words, its four vectors read, then the four written. Up takes the steps from the bottom, their vectors from the bottom, then the
+    /// words past them, up; down the steps from the top, their vectors from the top, then the words below them, down; a strided pass goes a
+    /// word at a time, up. 1 direction is up; 2 the first half up and the second down; 4 the quarters up, down, even words then odd, up
+    /// (the last `len % 4` words left); any other count that many strided passes, pass `k` from word `start + k`.
     fn copy_visits(start: usize, end: usize, half: usize, dirs: u32, value: &dyn Fn(usize) -> u64) -> Vec<super::access::Visit> {
         use super::access::Visit;
         let read = |v: &mut Vec<Visit>, at: usize, n: usize| v.push(Visit::Read(at, (at..at + n).map(value).collect()));
@@ -8979,10 +8690,9 @@ mod bench_move_tests {
         visits
     }
 
-    /// TODO 99: Mem-BlockMove's copies go in their pattern's order, `copy_visits`': which source
-    /// word goes to which destination word, in what sequence, each read before it is written. The
-    /// image test above can't see it: copying the second half up, or the even-then-odd quarter
-    /// straight, leaves the same image.
+    /// TODO 99: Mem-BlockMove's copies go in their pattern's order, `copy_visits`': which source word goes to which destination word, in
+    /// what sequence, each read before it is written. The image test above can't see it: copying the second half up, or the even-then-odd
+    /// quarter straight, leaves the same image.
     #[test]
     fn block_move_copies_in_their_patterns_order() {
         use super::access::{Recorded, assert_visits};
@@ -9006,13 +8716,11 @@ mod bench_move_tests {
         }
     }
 
-    /// TODO 99: Mem-BlockMove's test function copies in the pattern its `copy_directions` asks for.
-    /// Run on a span of its own, its copies, recorded as its own dispatch makes them, are
-    /// `copy_visits`' for that count, half-chunk by half-chunk, each word the value its fill wrote.
-    /// The test above runs `BlockMoveChunk::copy` itself, so it passes whatever count the test
-    /// function gives it (a review's change gave it 1 and every test passed), and the image can't
-    /// tell: each count copies every word. A 192 KiB extent in chunks of 128 KiB: half-chunks of
-    /// 64 KiB over the 96 KiB source half, at 0 and 32 KiB, overlapping.
+    /// TODO 99: Mem-BlockMove's test function copies in the pattern its `copy_directions` asks for. Run on a span of its own, its copies,
+    /// recorded as its own dispatch makes them, are `copy_visits`' for that count, half-chunk by half-chunk, each word the value its fill
+    /// wrote. The test above runs `BlockMoveChunk::copy` itself, so it passes whatever count the test function gives it (a review's change
+    /// gave it 1 and every test passed), and the image can't tell: each count copies every word. A 192 KiB extent in chunks of 128 KiB:
+    /// half-chunks of 64 KiB over the 96 KiB source half, at 0 and 32 KiB, overlapping.
     #[test]
     fn block_move_copies_as_its_directions_ask() {
         use super::access::{assert_visits, record_direct};
@@ -9045,9 +8753,8 @@ mod bench_move_tests {
 // Test Registry - Maps config test names to actual function implementations
 // ============================================================================
 
-/// The per-chunk loop a test that runs through `run_phased_test` actually runs, as
-/// (`write_read_cycles`, `test_reps`, `verify_reps`): the config's where the test reads them, its
-/// own where it fixes them. `None` for Tier 2, bandwidth and latency tests, which ignore all three
+/// The per-chunk loop a test that runs through `run_phased_test` actually runs, as (`write_read_cycles`, `test_reps`, `verify_reps`): the
+/// config's where the test reads them, its own where it fixes them. `None` for Tier 2, bandwidth and latency tests, which ignore all three
 /// (`doc/test_harness_tiers.md`). A new Tier 1 test family adds itself here.
 pub fn effective_reps(actual_name: &str, config: &TestMemoryConfig) -> Option<(u32, u32, u32)> {
     let wrc = config.write_read_cycles;
@@ -9074,10 +8781,9 @@ pub fn get_test_function_by_name(name: &str) -> Option<crate::runner::TestFuncti
         "Mem-StuckBit256" => Some(TestFunction::MultiBlock(stuck_bit_test_256_multi)),
         "Mem-StuckBit512" => Some(TestFunction::MultiBlock(stuck_bit_test_512_multi)),
         "Mem-StuckBitAuto" => Some(TestFunction::MultiBlock(stuck_bit_test_auto_multi)),
-        // CLFLUSHOPT-verify variants (#59). These map to the SAME functions — flushing is
-        // driven by `TestMemoryConfig.flush_before_verify`, not by the function. The hardcoded
-        // registrations set it via `.with_flush_before_verify(true)`; JSON configs set the
-        // per-test `flush_before_verify` field (so any test can opt in, not just these names).
+        // CLFLUSHOPT-verify variants (#59). These map to the SAME functions — flushing is driven by `TestMemoryConfig.flush_before_verify`,
+        // not by the function. The hardcoded registrations set it via `.with_flush_before_verify(true)`; JSON configs set the per-test
+        // `flush_before_verify` field (so any test can opt in, not just these names).
         "Mem-StuckBit-FlushAuto" => Some(TestFunction::MultiBlock(stuck_bit_test_auto_multi)),
         "Mem-StuckBit-Flush128" => Some(TestFunction::MultiBlock(stuck_bit_test_128_multi)),
         "Mem-StuckBit-Flush256" => Some(TestFunction::MultiBlock(stuck_bit_test_256_multi)),
@@ -9223,10 +8929,9 @@ mod random_replay_tests {
     };
     use crate::pattern_gen::{LINE_WORDS, PAGE_WORDS};
 
-    /// TODO 93: TM5's strided walk touches each line once, in TM5's order: the period's last line
-    /// first, each pass a period at a time. Parameter 8 on 2 channels is 15 lines of stride. Each
-    /// step prefetches the line the walk reaches `STRIDED_AHEAD` steps on, or as many as the
-    /// shortest pass has lines.
+    /// TODO 93: TM5's strided walk touches each line once, in TM5's order: the period's last line first, each pass a period at a time.
+    /// Parameter 8 on 2 channels is 15 lines of stride. Each step prefetches the line the walk reaches `STRIDED_AHEAD` steps on, or as many
+    /// as the shortest pass has lines.
     #[test]
     fn the_strided_walk_is_tm5s() {
         let mem = [0u64; 1];
@@ -9273,8 +8978,8 @@ mod random_replay_tests {
         }
     }
 
-    /// A failed check's record keeps the bits the check saw that the rescan didn't see again (Astra's
-    /// review: a partly vanished failure lost its bit-47 evidence).
+    /// A failed check's record keeps the bits the check saw that the rescan didn't see again (Astra's review: a partly vanished failure
+    /// lost its bit-47 evidence).
     #[test]
     fn the_alarm_record_keeps_what_the_rescan_lost() {
         let partly = super::alarm_record(1, 0x0000_8000_0000_0001, 0x1);
@@ -9290,9 +8995,8 @@ mod random_replay_tests {
         assert!(none.contains("not reproduced") && none.contains("0x0000000000000080"), "{none}");
     }
 
-    /// TODO 99: Mem-Stride's write and verify at each of its strides as a constant, and at one
-    /// that isn't (the runtime fallback): a clean pass reads clean, and a bad word is seen in each
-    /// of the four accumulators' lanes and in the tail.
+    /// TODO 99: Mem-Stride's write and verify at each of its strides as a constant, and at one that isn't (the runtime fallback): a clean
+    /// pass reads clean, and a bad word is seen in each of the four accumulators' lanes and in the tail.
     #[test]
     fn stride_walks_see_a_bad_word_in_every_lane_at_every_stride() {
         let (subdivisions, elements_per_subdiv) = (4usize, 4 * 4096 + 5);
@@ -9319,15 +9023,13 @@ mod random_replay_tests {
         }
     }
 
-    /// TODO 99 round 3: Mem-Stride's walked pointers write each subdivision's words from its start,
-    /// every stride, the pattern plus the index, and nothing else; read clean; and see a bad word in
-    /// each lane of each accumulator (the first 16 words a subdivision visits) and in the tails (its
-    /// last 20), in every subdivision, with a tail and without, at each stride and the fallback's.
-    /// And with each subdivision a word short of the verify's next whole step (round 3's review): 15
-    /// mod 16 words at stride 1, whose steps are 16 words; elsewhere 3 mod 4 visits, the subdivision
-    /// a whole number of strides long, so a fourth would be the word after it. A main loop's bound
-    /// a step long reads that word: in the chunk, the next subdivision's first, which holds what the
-    /// walk expects, so it shows only past the last subdivision, at the chunk's end.
+    /// TODO 99 round 3: Mem-Stride's walked pointers write each subdivision's words from its start, every stride, the pattern plus the
+    /// index, and nothing else; read clean; and see a bad word in each lane of each accumulator (the first 16 words a subdivision visits)
+    /// and in the tails (its last 20), in every subdivision, with a tail and without, at each stride and the fallback's. And with each
+    /// subdivision a word short of the verify's next whole step (round 3's review): 15 mod 16 words at stride 1, whose steps are 16 words;
+    /// elsewhere 3 mod 4 visits, the subdivision a whole number of strides long, so a fourth would be the word after it. A main loop's
+    /// bound a step long reads that word: in the chunk, the next subdivision's first, which holds what the walk expects, so it shows only
+    /// past the last subdivision, at the chunk's end.
     #[test]
     fn stride_walks_write_their_words_and_see_every_lane_and_tail() {
         const UNTOUCHED: u64 = 0xDEAD_0000_0000_0000;
@@ -9366,9 +9068,8 @@ mod random_replay_tests {
         }
     }
 
-    /// TODO 99: Mem-CacheBust's chunk walks write each word its variant's pattern plus its index and
-    /// nothing outside the chunk, read clean, and see a bad word in each lane of each accumulator
-    /// and in the tails, with one pattern and with four.
+    /// TODO 99: Mem-CacheBust's chunk walks write each word its variant's pattern plus its index and nothing outside the chunk, read clean,
+    /// and see a bad word in each lane of each accumulator and in the tails, with one pattern and with four.
     #[test]
     fn cache_bust_walks_write_their_pattern_and_see_every_bad_word() {
         // Walks of 22 and 21 words (a vector step and a tail), then of 32 (two steps, no tail)
@@ -9403,13 +9104,11 @@ mod random_replay_tests {
         }
     }
 
-    /// TODO 99: the strided walk on a pointer, every strided kernel's (`strided_walk!`), is
-    /// `for_each_strided_line!`'s: the same lines in the same order, each with its id as each
-    /// caller takes it (none, a line id, a word offset), and the same line prefetched at each step,
-    /// in both of a pass's loops (on in the pass, then on into the next). The shapes put a pass's
-    /// lines in the first loop only (a period longer than the chunk: a line a pass, or none), in
-    /// the second only (passes as long as the lookahead), and in both (passes a line longer, and
-    /// passes longer than `STRIDED_AHEAD`).
+    /// TODO 99: the strided walk on a pointer, every strided kernel's (`strided_walk!`), is `for_each_strided_line!`'s: the same lines in
+    /// the same order, each with its id as each caller takes it (none, a line id, a word offset), and the same line prefetched at each
+    /// step, in both of a pass's loops (on in the pass, then on into the next). The shapes put a pass's lines in the first loop only (a
+    /// period longer than the chunk: a line a pass, or none), in the second only (passes as long as the lookahead), and in both (passes a
+    /// line longer, and passes longer than `STRIDED_AHEAD`).
     #[test]
     fn the_pointer_walk_is_tm5s() {
         use super::opaque_ptr;
@@ -9479,16 +9178,13 @@ mod random_replay_tests {
         }
     }
 
-    /// TODO 99: the native SimpleTest's walks at every width this CPU has, for every family and
-    /// beat and both polarities, sequential and strided (passes of 2 or 3 lines, and passes of one
-    /// line, the period longer than the chunk), from an even and an odd line id: the write leaves
-    /// each word of the chunk its phase's (`Phase::line`, the spec's) and nothing outside it, a
-    /// verify reads that clean, and a flipped bit is seen in each word of the first 4 lines (every
-    /// lane of every accumulator), of the last 3 (the lines past the last whole group: 3 at 512
-    /// bits, 1 at 256), in a word of every line (every strided pass, round 3b) and in a spread.
-    /// Strided, in every word: at a period of 16 lines, a word of every line is the same word of
-    /// each line of a pass, so a strided verify that skipped another vector of a pass passed
-    /// (round 3's review had found passes with no flip at all; TODO 99).
+    /// TODO 99: the native SimpleTest's walks at every width this CPU has, for every family and beat and both polarities, sequential and
+    /// strided (passes of 2 or 3 lines, and passes of one line, the period longer than the chunk), from an even and an odd line id: the
+    /// write leaves each word of the chunk its phase's (`Phase::line`, the spec's) and nothing outside it, a verify reads that clean, and a
+    /// flipped bit is seen in each word of the first 4 lines (every lane of every accumulator), of the last 3 (the lines past the last
+    /// whole group: 3 at 512 bits, 1 at 256), in a word of every line (every strided pass, round 3b) and in a spread. Strided, in every
+    /// word: at a period of 16 lines, a word of every line is the same word of each line of a pass, so a strided verify that skipped
+    /// another vector of a pass passed (round 3's review had found passes with no flip at all; TODO 99).
     #[test]
     fn native_walks_write_their_phase_and_see_every_bad_word() {
         use crate::pattern::{Family, Phase};
@@ -9507,8 +9203,7 @@ mod random_replay_tests {
             widths.push(("512", (super::simple_native_512_walks::write, super::simple_native_512_walks::differs)));
         }
         const UNTOUCHED: u64 = 0x0DD0_F00D_0DD0_F00D;
-        // 43 lines from line 8 of the buffer (64 B aligned), so whole groups and a tail at 512
-        // and 256 bits
+        // 43 lines from line 8 of the buffer (64 B aligned), so whole groups and a tail at 512 and 256 bits
         let (start, lines) = (64usize, 43usize);
         let end = start + lines * LINE_WORDS;
         let mut buf = vec![std::simd::u64x8::splat(UNTOUCHED); end / 8 + 8];
@@ -9562,8 +9257,8 @@ mod random_replay_tests {
         assert_eq!(ran, widths.len() * 19 * 4 * 3);
     }
 
-    /// TODO 89: the strided accumulate sees a bad word wherever its walk passes, at any stride
-    /// and remainder; the rescans count each bad word exactly, the strided one only on its walk.
+    /// TODO 89: the strided accumulate sees a bad word wherever its walk passes, at any stride and remainder; the rescans count each bad
+    /// word exactly, the strided one only on its walk.
     #[test]
     fn strided_verify_finds_and_counts_each_bad_word() {
         let len = 1000usize;
@@ -9599,9 +9294,9 @@ mod random_replay_tests {
         }
     }
 
-    /// TODO 76: modes 2 and 20 depend only on the address, so writing a range in overlapping
-    /// pieces, in any order, gives the image one pass gives. The verify finds nothing on it and
-    /// counts each bad word exactly (the 256-bit loops, which every CPU TMR runs on has, TODO 99).
+    /// TODO 76: modes 2 and 20 depend only on the address, so writing a range in overlapping pieces, in any order, gives the image one pass
+    /// gives. The verify finds nothing on it and counts each bad word exactly (the 256-bit loops, which every CPU TMR runs on has, TODO
+    /// 99).
     #[test]
     fn line_patterns_are_position_pure_and_count_exactly() {
         use super::{SimpleMode2, SimpleMode20, simple_test_v2_256_loops as loops};
@@ -9646,9 +9341,8 @@ mod random_replay_tests {
         }
     }
 
-    /// A failed check counts the bits its differences had; a bit only the rescan found (the word
-    /// changed since) counts in the words alone. Under rescan=off a check counts its bits, with no
-    /// words (TODO 97, the second review).
+    /// A failed check counts the bits its differences had; a bit only the rescan found (the word changed since) counts in the words alone.
+    /// Under rescan=off a check counts its bits, with no words (TODO 97, the second review).
     #[test]
     fn failing_bits_count_what_the_check_saw() {
         let mut mem = [0u64; 8];
@@ -9663,10 +9357,9 @@ mod random_replay_tests {
         assert!(bits.test.is_empty() && bits.seal.detail() == "9: 1 / 0", "{bits:?}");
     }
 
-    /// TODO 99 (and TODO 97): Mem-MovingInv's passes over a chunk write `ident`'s word of each
-    /// word's id (P, then ~P going up, then P going down) and nothing outside the chunk, read
-    /// clean, and see a bad word wherever it is: in each lane of each accumulator and in the words
-    /// past the whole steps, going up and going down.
+    /// TODO 99 (and TODO 97): Mem-MovingInv's passes over a chunk write `ident`'s word of each word's id (P, then ~P going up, then P going
+    /// down) and nothing outside the chunk, read clean, and see a bad word wherever it is: in each lane of each accumulator and in the
+    /// words past the whole steps, going up and going down.
     #[test]
     fn moving_inversions_passes_write_their_images_and_see_every_bad_word() {
         const UNTOUCHED: u64 = 0x0BAD_F00D_DEAD_BEEF;
@@ -9703,12 +9396,11 @@ mod random_replay_tests {
         }
     }
 
-    /// TODO 99: Mem-MovingInv's passes visit a chunk in March X's order, a 32 B vector at a time in
-    /// the whole steps and a word at a time past them. The fill writes P going up. The up pass
-    /// reads each vector (P), then writes it (~P), from the bottom; the down pass reads each (~P),
-    /// then writes it (P), from the top: the words past the whole steps first, then the steps,
-    /// their vectors from the top. The verify reads P going up. So each vector is read just before
-    /// it is written, while the vectors below it hold one value and those above the other.
+    /// TODO 99: Mem-MovingInv's passes visit a chunk in March X's order, a 32 B vector at a time in the whole steps and a word at a time
+    /// past them. The fill writes P going up. The up pass reads each vector (P), then writes it (~P), from the bottom; the down pass reads
+    /// each (~P), then writes it (P), from the top: the words past the whole steps first, then the steps, their vectors from the top. The
+    /// verify reads P going up. So each vector is read just before it is written, while the vectors below it hold one value and those above
+    /// the other.
     #[test]
     fn moving_inversions_passes_visit_in_march_order() {
         use super::access::{Recorded, Visit, assert_visits};
@@ -9719,8 +9411,7 @@ mod random_replay_tests {
             let mut mem = vec![0u64; start + len + 8];
             let base = mem.as_mut_ptr();
             let chunk = super::MovingInvChunk { base, start, end: start + len, ids, key };
-            // What a pass visits, going up, as (first word, words): each whole step's four vectors,
-            // then each word past them
+            // What a pass visits, going up, as (first word, words): each whole step's four vectors, then each word past them
             let past = start + len / 16 * 16;
             let units: Vec<(usize, usize)> =
                 (start..past).step_by(4).map(|at| (at, 4)).chain((past..start + len).map(|at| (at, 1))).collect();
@@ -9746,8 +9437,8 @@ mod random_replay_tests {
         }
     }
 
-    /// Modulo-X's lines: in any range, one victim in every `MODULO_X` at the offset, and the runs
-    /// between them the aggressors, each line exactly once (TODO 97).
+    /// Modulo-X's lines: in any range, one victim in every `MODULO_X` at the offset, and the runs between them the aggressors, each line
+    /// exactly once (TODO 97).
     #[test]
     fn modulo_lines_split_victims_from_aggressors() {
         for (start, end) in [(0usize, 100usize), (7, 93), (40, 41), (19, 21), (0, 0)] {
@@ -9777,10 +9468,9 @@ mod random_replay_tests {
         }
     }
 
-    /// TODO 99: Mem-ModuloX's passes over a chunk write P over its victim lines and ~P over the
-    /// rest (`ident`'s word of each word's id), and nothing outside the chunk; the victims' check
-    /// reads clean and sees a bad word in every victim line, an even count of them and an odd. The
-    /// offsets give aggressor runs of 1, 2, 5, 9, 10, 14, 17 and 19 lines, odd and even.
+    /// TODO 99: Mem-ModuloX's passes over a chunk write P over its victim lines and ~P over the rest (`ident`'s word of each word's id),
+    /// and nothing outside the chunk; the victims' check reads clean and sees a bad word in every victim line, an even count of them and an
+    /// odd. The offsets give aggressor runs of 1, 2, 5, 9, 10, 14, 17 and 19 lines, odd and even.
     #[test]
     fn modulo_x_passes_write_their_images_and_see_every_bad_victim_word() {
         use super::{LINE_WORDS, MODULO_X};
@@ -9827,10 +9517,9 @@ mod random_replay_tests {
         }
     }
 
-    /// Mem-Sequence's passes at 256 bits: a write in any order and a read in any order agree; a
-    /// read in each order sees a flipped bit at a block's edges and inside them; a read-then-write
-    /// sees it and leaves the inverse in every line, the bad word's too. The walk is shared by every
-    /// operation, so the write's and the read-then-write's full coverage is the read's (TODO 97).
+    /// Mem-Sequence's passes at 256 bits: a write in any order and a read in any order agree; a read in each order sees a flipped bit at a
+    /// block's edges and inside them; a read-then-write sees it and leaves the inverse in every line, the bad word's too. The walk is
+    /// shared by every operation, so the write's and the read-then-write's full coverage is the read's (TODO 97).
     #[test]
     fn sequence_passes_find_a_bad_word_in_every_order() {
         use crate::sequence::Order;
@@ -9891,8 +9580,7 @@ mod random_replay_tests {
     fn sequence_walk_by<A: super::Access>(
         width: usize, op: u8, chunk: super::SequenceChunk, order: crate::sequence::Order, key: u64, phase: crate::pattern::Phase, access: A,
     ) -> u64 {
-        // SAFETY: the chunk is in a live, 64-byte aligned buffer, and 512 bits run only on a CPU
-        // with AVX-512 (`sequence_widths`)
+        // SAFETY: the chunk is in a live, 64-byte aligned buffer, and 512 bits run only on a CPU with AVX-512 (`sequence_widths`)
         unsafe {
             match (width, op) {
                 (256, 0) => super::sequence_write_256(chunk, order, key, phase, access),
@@ -9905,9 +9593,8 @@ mod random_replay_tests {
         }
     }
 
-    /// A chunk's lines in the order a Mem-Sequence pass visits them, from each order's definition:
-    /// up; down; each power-of-two block in `sequence::random_line`'s order, `j` from 0; TM5's
-    /// strided passes, the period's last line first, each a period at a time.
+    /// A chunk's lines in the order a Mem-Sequence pass visits them, from each order's definition: up; down; each power-of-two block in
+    /// `sequence::random_line`'s order, `j` from 0; TM5's strided passes, the period's last line first, each a period at a time.
     fn sequence_visits(order: crate::sequence::Order, lines: usize, period_lines: usize, key: u64) -> Vec<usize> {
         use crate::sequence::Order;
         match order {
@@ -9926,14 +9613,12 @@ mod random_replay_tests {
         }
     }
 
-    /// The orders a Mem-Sequence test runs, each with a stride: the strided walk at a period shorter
-    /// than the 192 lines of these tests' chunks (16 lines, passes of 12) and at one longer (4096,
-    /// passes of one line or none). Neither has a pass take steps in both of its loops: at 16 lines
-    /// the lookahead is the whole chunk, so every step is the second loop's (its prefetch in the
-    /// next pass); at 4096 it is 0, so every step is the first's. At periods that don't divide the
-    /// chunk (5, 7 and 101 lines: 2, 3 and 91 passes) a pass steps in the first loop, then on in
-    /// the second from where it left off, as every pass does in a chunk of 128 periods or more
-    /// (TODO 99 round 3's review).
+    /// The orders a Mem-Sequence test runs, each with a stride: the strided walk at a period shorter than the 192 lines of these tests'
+    /// chunks (16 lines, passes of 12) and at one longer (4096, passes of one line or none). Neither has a pass take steps in both of its
+    /// loops: at 16 lines the lookahead is the whole chunk, so every step is the second loop's (its prefetch in the next pass); at 4096 it
+    /// is 0, so every step is the first's. At periods that don't divide the chunk (5, 7 and 101 lines: 2, 3 and 91 passes) a pass steps in
+    /// the first loop, then on in the second from where it left off, as every pass does in a chunk of 128 periods or more (TODO 99 round
+    /// 3's review).
     const SEQUENCE_ORDERS: [(crate::sequence::Order, usize); 8] = [
         (crate::sequence::Order::Forward, 15 * 8),
         (crate::sequence::Order::Reverse, 15 * 8),
@@ -9945,11 +9630,10 @@ mod random_replay_tests {
         (crate::sequence::Order::Stride, 100 * 8),
     ];
 
-    /// TODO 99: Mem-Sequence's walks, a function each per width, operation, order and family. At
-    /// each width, in every order, for every family and beat in both polarities: a write leaves each
-    /// line of the chunk its words by the scalar definition (`Phase::line`) and nothing outside it; a
-    /// read of that is clean; a read-then-write is clean and leaves the inverse in every word, so it
-    /// visited each once.
+    /// TODO 99: Mem-Sequence's walks, a function each per width, operation, order and family. At each width, in every order, for every
+    /// family and beat in both polarities: a write leaves each line of the chunk its words by the scalar definition (`Phase::line`) and
+    /// nothing outside it; a read of that is clean; a read-then-write is clean and leaves the inverse in every word, so it visited each
+    /// once.
     #[test]
     fn sequence_walks_write_every_family_in_every_order() {
         use crate::pattern::{Family, Phase};
@@ -10005,13 +9689,11 @@ mod random_replay_tests {
         assert_eq!(kinds, 19, "every family and beat `sequence_families!` has");
     }
 
-    /// TODO 99: Mem-Sequence's reads and read-then-writes, at each width and in every order, report
-    /// exactly a bit flipped in any lane of any accumulator and at each walk's edges: every word of
-    /// the first and last four lines visited (a step is two lines at 256 bits, four at 512, each
-    /// vector its own accumulator), of each random block's first and last, and of each strided
-    /// pass's. `ident`'s lines are vector arithmetic; `switch`, `quiet` and `header` hash a scalar
-    /// word a line, at each beat a 512-bit step can take as one vector of four (16, 32 and 64
-    /// bits), and `quiet` at 24 bits and `header` at 12, the heaviest lines (TODO 99 round 3b).
+    /// TODO 99: Mem-Sequence's reads and read-then-writes, at each width and in every order, report exactly a bit flipped in any lane of
+    /// any accumulator and at each walk's edges: every word of the first and last four lines visited (a step is two lines at 256 bits, four
+    /// at 512, each vector its own accumulator), of each random block's first and last, and of each strided pass's. `ident`'s lines are
+    /// vector arithmetic; `switch`, `quiet` and `header` hash a scalar word a line, at each beat a 512-bit step can take as one vector of
+    /// four (16, 32 and 64 bits), and `quiet` at 24 bits and `header` at 12, the heaviest lines (TODO 99 round 3b).
     #[test]
     fn sequence_walks_see_a_bad_word_in_every_lane() {
         use crate::pattern::{Family, Phase};
@@ -10104,8 +9786,8 @@ mod random_replay_tests {
         kinds
     }
 
-    /// One pass of `op` at `width` bits through the test's own functions, by a recorder: what it
-    /// returned, and each access it made, in order, its first word from the chunk's.
+    /// One pass of `op` at `width` bits through the test's own functions, by a recorder: what it returned, and each access it made, in
+    /// order, its first word from the chunk's.
     fn sequence_recorded(
         width: usize, op: crate::sequence::Op, chunk: super::SequenceChunk, order: crate::sequence::Order, key: u64,
         phase: crate::pattern::Phase,
@@ -10122,11 +9804,10 @@ mod random_replay_tests {
         (seen, visits.into_inner())
     }
 
-    /// A write, a read and a read-then-write of `phase` over `chunk` at `width` bits, each through
-    /// the test's own functions, by a recorder, visit the lines `lines(key)` gives for the pass's key
-    /// (the chunk's, from its first), in that order: each line's vectors in turn, the write writing
-    /// its line's words, the read reading them, the read-then-write reading them and writing their
-    /// inverse. The reads read clean.
+    /// A write, a read and a read-then-write of `phase` over `chunk` at `width` bits, each through the test's own functions, by a recorder,
+    /// visit the lines `lines(key)` gives for the pass's key (the chunk's, from its first), in that order: each line's vectors in turn, the
+    /// write writing its line's words, the read reading them, the read-then-write reading them and writing their inverse. The reads read
+    /// clean.
     fn check_sequence_visits(
         width: usize, chunk: super::SequenceChunk, order: crate::sequence::Order, phase: crate::pattern::Phase,
         lines: impl Fn(u64) -> Vec<usize>, what: &str,
@@ -10159,13 +9840,11 @@ mod random_replay_tests {
         }
     }
 
-    /// TODO 99: Mem-Sequence's forward, reverse and random walks visit their lines in their order,
-    /// which the image and detection tests can't see (any order that visits each line once passes
-    /// them). At each width, for a write, a read and a read-then-write of every family and beat:
-    /// forward up from the chunk's first line, reverse down from its last, random each power-of-two
-    /// block in `sequence::random_line`'s scramble under the pass's key (`sequence_visits`); each
-    /// line's vectors in turn, each with its own line's words. At 512 bits the random walk takes four
-    /// lines a step, `switch`, `quiet` and `header` at 16, 32 and 64 bits as one hashed step.
+    /// TODO 99: Mem-Sequence's forward, reverse and random walks visit their lines in their order, which the image and detection tests
+    /// can't see (any order that visits each line once passes them). At each width, for a write, a read and a read-then-write of every
+    /// family and beat: forward up from the chunk's first line, reverse down from its last, random each power-of-two block in
+    /// `sequence::random_line`'s scramble under the pass's key (`sequence_visits`); each line's vectors in turn, each with its own line's
+    /// words. At 512 bits the random walk takes four lines a step, `switch`, `quiet` and `header` at 16, 32 and 64 bits as one hashed step.
     #[test]
     fn sequence_walks_visit_their_orders_lines() {
         use crate::sequence::Order;
@@ -10191,12 +9870,10 @@ mod random_replay_tests {
         }
     }
 
-    /// TODO 99: Mem-Sequence's strided walks visit TM5's lines in TM5's order, as
-    /// `for_each_strided_line!` gives them, at each width, for a write, a read and a read-then-write
-    /// of every family and beat: each line's vectors in turn, each with its own line's words. A pass
-    /// is two loops, the lines whose prefetch lands in the pass, then those whose lands in the next,
-    /// so the shapes put lines in each, and in both in one pass where the period doesn't divide the
-    /// chunk: `(pad, lines, period in lines, lines in the first loop)`.
+    /// TODO 99: Mem-Sequence's strided walks visit TM5's lines in TM5's order, as `for_each_strided_line!` gives them, at each width, for a
+    /// write, a read and a read-then-write of every family and beat: each line's vectors in turn, each with its own line's words. A pass is
+    /// two loops, the lines whose prefetch lands in the pass, then those whose lands in the next, so the shapes put lines in each, and in
+    /// both in one pass where the period doesn't divide the chunk: `(pad, lines, period in lines, lines in the first loop)`.
     #[test]
     fn sequence_strided_walks_visit_tm5s_lines() {
         use crate::sequence::Order;
@@ -10230,10 +9907,9 @@ mod random_replay_tests {
         }
     }
 
-    /// A read-then-write's rescan: a word that didn't take the write is found against what was
-    /// written; if every word took it, what was read is written back, flushed and rescanned, so a
-    /// read that went wrong is not reproduced and the chunk is left holding what was read (TODO 97,
-    /// the review: a cell stuck at the written value read back right).
+    /// A read-then-write's rescan: a word that didn't take the write is found against what was written; if every word took it, what was
+    /// read is written back, flushed and rescanned, so a read that went wrong is not reproduced and the chunk is left holding what was read
+    /// (TODO 97, the review: a cell stuck at the written value read back right).
     #[test]
     fn a_read_then_writes_rescan_writes_back_what_it_read() {
         let mut mem = vec![std::simd::u64x8::splat(0); 16];
@@ -10253,9 +9929,8 @@ mod random_replay_tests {
         assert_eq!((counts.alarms, counts.not_reproduced), (2, 1));
     }
 
-    /// Mem-Sequence's config for a test on a span of its own: one cycle, one chunk (the extent),
-    /// `sequence` in `order` where a step names none, `wrc` runs of it, and a stride of `stride`
-    /// words (0 is TM5's jump 0: none).
+    /// Mem-Sequence's config for a test on a span of its own: one cycle, one chunk (the extent), `sequence` in `order` where a step names
+    /// none, `wrc` runs of it, and a stride of `stride` words (0 is TM5's jump 0: none).
     fn sequence_config(sequence: &str, order: crate::sequence::Order, wrc: u32, stride: usize) -> crate::tests::TestMemoryConfig {
         use crate::tests::{ChunkMode, ExtentMode, TestMemoryConfig, TestTiming};
         let context = crate::config::TestParameterContext { stride_elements: Some(stride), ..Default::default() };
@@ -10266,15 +9941,14 @@ mod random_replay_tests {
             .with_sequence(crate::sequence::Sequence::parse(sequence, order).unwrap())
     }
 
-    /// Mem-Sequence's test function at `width` bits, run on `span` under `config`: its stats, and
-    /// its accesses as its own dispatch makes them (`access::record_direct`), `faults` made among
-    /// them.
+    /// Mem-Sequence's test function at `width` bits, run on `span` under `config`: its stats, and its accesses as its own dispatch makes
+    /// them (`access::record_direct`), `faults` made among them.
     fn sequence_run(
         width: usize, span: &super::heap_span::HeapSpan, config: &crate::tests::TestMemoryConfig, faults: &[super::access::Fault],
     ) -> (crate::tests::TestStats, Vec<super::access::Visit>) {
         super::access::record_direct(span.ptr(), faults, || {
-            // SAFETY: the span is live, 64-byte aligned and the test's alone, and 512 bits run only on
-            // a CPU with AVX-512 (`sequence_widths`)
+            // SAFETY: the span is live, 64-byte aligned and the test's alone, and 512 bits run only on a CPU with AVX-512
+            // (`sequence_widths`)
             unsafe {
                 if width == 256 {
                     super::sequence_256(&span.blocks, 0, crate::ErrorMode::Log, &config.timing, config, None)
@@ -10285,10 +9959,9 @@ mod random_replay_tests {
         })
     }
 
-    /// The lines one pass of `op` at `width` bits visited, in order, from its `visits` (words from
-    /// the span's first, where the chunk starts). Fails unless each line's vectors are visited in
-    /// turn, each written by a write, read by a read, and read then written with the inverse by a
-    /// read-then-write.
+    /// The lines one pass of `op` at `width` bits visited, in order, from its `visits` (words from the span's first, where the chunk
+    /// starts). Fails unless each line's vectors are visited in turn, each written by a write, read by a read, and read then written with
+    /// the inverse by a read-then-write.
     fn sequence_pass_lines(visits: &[super::access::Visit], op: crate::sequence::Op, width: usize, what: &str) -> Vec<usize> {
         use super::access::Visit;
         use crate::sequence::Op;
@@ -10316,11 +9989,10 @@ mod random_replay_tests {
             .collect()
     }
 
-    /// Checks that a run of Mem-Sequence's test function over a chunk of `lines` lines made
-    /// `passes`, each `(op, order)` in turn, by its `visits`: each pass all of its op
-    /// (`sequence_pass_lines`), over every line in its order (`sequence_visits`, TM5's stride at
-    /// `period_lines`), a random pass each power-of-two block's lines in a scramble of its own: not
-    /// in order, and not another random pass's. Returns where each pass's visits start.
+    /// Checks that a run of Mem-Sequence's test function over a chunk of `lines` lines made `passes`, each `(op, order)` in turn, by its
+    /// `visits`: each pass all of its op (`sequence_pass_lines`), over every line in its order (`sequence_visits`, TM5's stride at
+    /// `period_lines`), a random pass each power-of-two block's lines in a scramble of its own: not in order, and not another random
+    /// pass's. Returns where each pass's visits start.
     fn check_sequence_passes(
         visits: &[super::access::Visit], passes: &[(crate::sequence::Op, crate::sequence::Order)], width: usize, lines: usize,
         period_lines: usize, what: &str,
@@ -10358,15 +10030,13 @@ mod random_replay_tests {
         starts
     }
 
-    /// TODO 99: Mem-Sequence's test function runs each step as its pass. At each width, its passes,
-    /// recorded as its own dispatch makes them, are the steps' in turn: each `count` passes of its
-    /// op in its order, the sequence's where it names none, `write_read_cycles` runs of them, a
-    /// forward fill first when the sequence reads first; with no stride (TM5's jump 0) a stride
-    /// step's passes go forward, with one TM5's strided walk. Each op runs in every order. Each read
-    /// finds what the last write left. The walk tests run the passes themselves, so they pass
-    /// whatever op and order the test function gives them, and runner.rs's
-    /// `mem_sequence_runs_every_order_and_step` runs the test function by its image, which every
-    /// order leaves the same, always with a stride.
+    /// TODO 99: Mem-Sequence's test function runs each step as its pass. At each width, its passes, recorded as its own dispatch makes
+    /// them, are the steps' in turn: each `count` passes of its op in its order, the sequence's where it names none, `write_read_cycles`
+    /// runs of them, a forward fill first when the sequence reads first; with no stride (TM5's jump 0) a stride step's passes go forward,
+    /// with one TM5's strided walk. Each op runs in every order. Each read finds what the last write left. The walk tests run the passes
+    /// themselves, so they pass whatever op and order the test function gives them, and runner.rs's
+    /// `mem_sequence_runs_every_order_and_step` runs the test function by its image, which every order leaves the same, always with a
+    /// stride.
     #[test]
     fn sequence_runs_each_step_as_its_pass() {
         use crate::sequence::Op::{Read as R, ReadWrite as RW, Write as W};
@@ -10397,15 +10067,13 @@ mod random_replay_tests {
         }
     }
 
-    /// TODO 99: after a read-then-write whose check failed, Mem-Sequence's test function writes the
-    /// chunk again, forward whatever the pass's order, with what the pass wrote, when the rescan
-    /// wrote back what was read (`rescan_read_write`: every word took the write, so the read went
-    /// wrong); and not when the rescan found a word that didn't take it, which the next read then
-    /// finds too. At each width, `W RW@reverse R`, the read-then-write from the last line: a word of
-    /// the first line flipped once it starts, before it reaches it (one error, from one failed check
-    /// not reproduced); then that and a word of the last line flipped once the pass has written it
-    /// (two errors and two failed checks, the rescan's and the read's, each localised). No test made
-    /// a read-then-write's check fail inside the test function.
+    /// TODO 99: after a read-then-write whose check failed, Mem-Sequence's test function writes the chunk again, forward whatever the
+    /// pass's order, with what the pass wrote, when the rescan wrote back what was read (`rescan_read_write`: every word took the write, so
+    /// the read went wrong); and not when the rescan found a word that didn't take it, which the next read then finds too. At each width,
+    /// `W RW@reverse R`, the read-then-write from the last line: a word of the first line flipped once it starts, before it reaches it (one
+    /// error, from one failed check not reproduced); then that and a word of the last line flipped once the pass has written it (two errors
+    /// and two failed checks, the rescan's and the read's, each localised). No test made a read-then-write's check fail inside the test
+    /// function.
     #[test]
     fn sequence_rewrites_a_chunk_its_rescan_wrote_back() {
         use super::access::{Fault, Visit};
@@ -10418,8 +10086,7 @@ mod random_replay_tests {
         let at = |v: &Visit| match v {
             Visit::Read(at, _) | Visit::Write(at, _) => *at,
         };
-        /// The first read among `visits` of the vector of `lanes` words a fault's word is in: that
-        /// word of it.
+        /// The first read among `visits` of the vector of `lanes` words a fault's word is in: that word of it.
         fn read_of(visits: &mut [Visit], fault: Fault, lanes: usize) -> &mut u64 {
             let vector = fault.word / lanes * lanes;
             match visits.iter_mut().find(|v| matches!(v, Visit::Read(at, _) if *at == vector)) {
@@ -10444,8 +10111,8 @@ mod random_replay_tests {
                     counts,
                     "{what}: the errors, the failed checks and those not reproduced"
                 );
-                // The read-then-write read the flipped word and wrote the inverse of what it should
-                // have read: its read as it should have been, for the passes' check
+                // The read-then-write read the flipped word and wrote the inverse of what it should have read: its read as it should have
+                // been, for the passes' check
                 *read_of(&mut visits[rw..], read_wrong, lanes) ^= read_wrong.flip;
                 let starts = check_sequence_passes(&visits, passes, width, lines, 0, &what);
                 // What the read-then-write wrote, forward, as the rewrite writes it and the read reads it
@@ -10469,8 +10136,7 @@ mod random_replay_tests {
         }
     }
 
-    /// Mem-Random's final sweep reads every word, finds a bad one the random reads would miss,
-    /// and stops where it is told (TODO 97).
+    /// Mem-Random's final sweep reads every word, finds a bad one the random reads would miss, and stops where it is told (TODO 97).
     #[test]
     fn the_final_sweep_reads_every_word() {
         let ids = crate::pattern::word_base(2);
@@ -10487,9 +10153,8 @@ mod random_replay_tests {
         assert_eq!(unsafe { super::random_sweep(extent, 64, "test", |errors| errors > 0) }, (1, 128));
     }
 
-    /// TODO 99: Mem-Random's reads take xorshift's steps and `rng * len >> 64`'s indices, as a
-    /// plain loop does, and leave the RNG where it does; they read clean, and see a bad word at
-    /// the read of each accumulator and of the reads past the last step of four.
+    /// TODO 99: Mem-Random's reads take xorshift's steps and `rng * len >> 64`'s indices, as a plain loop does, and leave the RNG where it
+    /// does; they read clean, and see a bad word at the read of each accumulator and of the reads past the last step of four.
     #[test]
     fn random_reads_take_the_rngs_steps_and_see_every_bad_word() {
         let (ids, len) = (crate::pattern::word_base(5), 1000usize);
@@ -10521,9 +10186,8 @@ mod random_replay_tests {
         }
     }
 
-    /// TODO 99: Mem-Random's sweep check reads each word of its range against its id and nothing
-    /// outside it: clean, it reads clean, and it sees a bad word in each lane of each accumulator
-    /// and in the words past the whole steps.
+    /// TODO 99: Mem-Random's sweep check reads each word of its range against its id and nothing outside it: clean, it reads clean, and it
+    /// sees a bad word in each lane of each accumulator and in the words past the whole steps.
     #[test]
     fn the_sweep_check_sees_every_bad_word_of_its_range() {
         let ids = crate::pattern::word_base(7);
@@ -10543,9 +10207,8 @@ mod random_replay_tests {
         }
     }
 
-    /// TODO 76: Mem-Random's replay counts the bad words the hot loop's reads saw, each once however
-    /// often they were read (TODO 97), on a length that isn't a power of two, and every index stays
-    /// below it. Their bits are counted by the way each went.
+    /// TODO 76: Mem-Random's replay counts the bad words the hot loop's reads saw, each once however often they were read (TODO 97), on a
+    /// length that isn't a power of two, and every index stays below it. Their bits are counted by the way each went.
     #[test]
     fn replay_counts_each_bad_word_a_plain_loop_reads_once() {
         use crate::failing_bits::BitFailures;
@@ -10600,8 +10263,8 @@ mod mirror_tests {
 
     use super::{MirrorChunk, MirrorMode};
 
-    /// The swaps of one round trip as the index loops before TODO 99 made them, in their order:
-    /// element pairs from the chunk's start, from each mode's definition.
+    /// The swaps of one round trip as the index loops before TODO 99 made them, in their order: element pairs from the chunk's start, from
+    /// each mode's definition.
     fn index_swaps(mode: MirrorMode, w: usize, start: usize, end: usize) -> Vec<(usize, usize)> {
         let (len, mut swaps) = (end - start, Vec::new());
         match mode {
@@ -10627,8 +10290,7 @@ mod mirror_tests {
         swaps
     }
 
-    /// TODO 99: a swap exchanges two vectors, at every width (a round trip would hide one that
-    /// didn't), and touches nothing else.
+    /// TODO 99: a swap exchanges two vectors, at every width (a round trip would hide one that didn't), and touches nothing else.
     #[test]
     fn a_mirror_swap_exchanges_its_two_vectors() {
         let mut buf = vec![u64x8::splat(0); 6];
@@ -10656,9 +10318,8 @@ mod mirror_tests {
         }
     }
 
-    /// TODO 85: one test op of every mirror mode, at every width, visits each vector of the
-    /// chunk in exactly two swaps, swaps it only with its mirror image (in its own subblock;
-    /// 128 B units for a jump), and leaves the chunk as it began. TODO 99: the walked pointers swap
+    /// TODO 85: one test op of every mirror mode, at every width, visits each vector of the chunk in exactly two swaps, swaps it only with
+    /// its mirror image (in its own subblock; 128 B units for a jump), and leaves the chunk as it began. TODO 99: the walked pointers swap
     /// the pairs the index loops did, in their order.
     #[test]
     fn mirror_modes_swap_mirror_pairs_twice_and_round_trip() {
@@ -10727,13 +10388,11 @@ mod mirror_tests {
         }
     }
 
-    /// TODO 99 round 3: the whole mirror's swaps after its steps of four (`mirror_swap_whole!`'s
-    /// second loop). A test op's chunk is whole 4 KiB pages, a multiple of four vectors at every
-    /// width, so that loop never runs there, nor in the test above (round 3's review). Chunks of 1
-    /// to 13 vectors run it for 1, 2 and 3 swaps, after none to three steps: each walk swaps the
-    /// index loop's pairs in its order, and round trips. A chunk must be whole vectors: of `len`
-    /// words at `w` lanes the walk swaps `len.div_ceil(w)` times, where the index loop swapped
-    /// `len / w`, the last swap across the chunk's ends.
+    /// TODO 99 round 3: the whole mirror's swaps after its steps of four (`mirror_swap_whole!`'s second loop). A test op's chunk is whole 4
+    /// KiB pages, a multiple of four vectors at every width, so that loop never runs there, nor in the test above (round 3's review).
+    /// Chunks of 1 to 13 vectors run it for 1, 2 and 3 swaps, after none to three steps: each walk swaps the index loop's pairs in its
+    /// order, and round trips. A chunk must be whole vectors: of `len` words at `w` lanes the walk swaps `len.div_ceil(w)` times, where the
+    /// index loop swapped `len / w`, the last swap across the chunk's ends.
     #[test]
     fn a_whole_mirror_swaps_past_its_last_step() {
         for w in [2usize, 4, 8] {

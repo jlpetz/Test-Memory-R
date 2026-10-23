@@ -1,8 +1,7 @@
-// Every `unsafe` block in this file crosses a Win32 FFI boundary, where the borrow checker is
-// switched off precisely where the invariants get subtle (TODO #66). The lint below makes a missing
-// `// SAFETY:` a warning here in the tests too; `src/lib.rs` makes it one in all shipped code. It
-// was per file until 2026-10-23, lest the SIMD kernels need boilerplate, but their `unsafe fn`s
-// need no blocks (`test_fn_safety.md` covers them): crate-wide added 30 sites, none a kernel's.
+// Every `unsafe` block in this file crosses a Win32 FFI boundary, where the borrow checker is switched off precisely where the invariants
+// get subtle (TODO #66). The lint below makes a missing `// SAFETY:` a warning here in the tests too; `src/lib.rs` makes it one in all
+// shipped code. It was per file until 2026-10-23, lest the SIMD kernels need boilerplate, but their `unsafe fn`s need no blocks
+// (`test_fn_safety.md` covers them): crate-wide added 30 sites, none a kernel's.
 #![warn(clippy::undocumented_unsafe_blocks)]
 
 use std::ffi::c_void;
@@ -29,19 +28,16 @@ enum PrivilegeState {
 
 fn format_win32_error(err: WIN32_ERROR) -> String {
     let mut buffer = [0u16; 512];
-    // SAFETY: `FormatMessageW` writes at most `buffer.len()` UTF-16 units into the stack buffer we
-    // hand it, and the length we pass is that array's own length. Without
-    // `FORMAT_MESSAGE_ALLOCATE_BUFFER` it never reallocates, so the pointer stays ours.
+    // SAFETY: `FormatMessageW` writes at most `buffer.len()` UTF-16 units into the stack buffer we hand it, and the length we pass is that
+    // array's own length. Without `FORMAT_MESSAGE_ALLOCATE_BUFFER` it never reallocates, so the pointer stays ours.
     let len = unsafe { FormatMessageW(FORMAT_MESSAGE_FROM_SYSTEM, None, err.0, 0, PWSTR(buffer.as_mut_ptr()), buffer.len() as u32, None) };
     if len == 0 { format!("Unknown error {}", err.0) } else { String::from_utf16_lossy(&buffer[..len as usize]).trim().to_string() }
 }
 
 pub fn check_large_page_privilege() -> Result<(), &'static str> {
-    // SAFETY: `GetCurrentProcess` returns a pseudo-handle that needs no closing. `token` starts as
-    // a default `HANDLE` and is only used on the paths where `OpenProcessToken` succeeded; every
-    // early return closes it exactly once. `luid` is fully initialised before
-    // `LookupPrivilegeValueW` writes it, and the `VirtualAlloc` probe below is paired with
-    // `VirtualFree` on the success path.
+    // SAFETY: `GetCurrentProcess` returns a pseudo-handle that needs no closing. `token` starts as a default `HANDLE` and is only used on
+    // the paths where `OpenProcessToken` succeeded; every early return closes it exactly once. `luid` is fully initialised before
+    // `LookupPrivilegeValueW` writes it, and the `VirtualAlloc` probe below is paired with `VirtualFree` on the success path.
     unsafe {
         let process = GetCurrentProcess();
         let mut token: HANDLE = HANDLE::default();
@@ -119,10 +115,9 @@ pub fn check_large_page_privilege() -> Result<(), &'static str> {
 
 /// # Safety
 ///
-/// `token` must be an open process-token handle with `TOKEN_QUERY` access, and must stay open for
-/// the duration of the call — this function never closes it; the caller owns that. Reading a
-/// closed or non-token handle is what makes this `unsafe` rather than the pointer work below, which
-/// is bounded by the two-call `GetTokenInformation` size protocol.
+/// `token` must be an open process-token handle with `TOKEN_QUERY` access, and must stay open for the duration of the call — this function
+/// never closes it; the caller owns that. Reading a closed or non-token handle is what makes this `unsafe` rather than the pointer work
+/// below, which is bounded by the two-call `GetTokenInformation` size protocol.
 unsafe fn check_privilege_in_token(token: HANDLE, privilege_luid: LUID) -> PrivilegeState {
     use windows::Win32::Security::TOKEN_PRIVILEGES_ATTRIBUTES;
 
@@ -136,13 +131,11 @@ unsafe fn check_privilege_in_token(token: HANDLE, privilege_luid: LUID) -> Privi
 
     // Allocate buffer and get actual privileges.
     //
-    // ALIGNMENT: backed by `u64`, not `u8`. `TOKEN_PRIVILEGES` requires 4-byte alignment
-    // (DWORD `PrivilegeCount` + `LUID_AND_ATTRIBUTES` array), but `Vec<u8>` only guarantees
-    // 1 byte — so reinterpreting a `Vec<u8>` as `*const TOKEN_PRIVILEGES` below is UB by the
-    // letter of the language, and only "works" because the global allocator happens to hand
-    // back 8/16-byte-aligned blocks. `Vec<u64>` guarantees 8 >= 4 by construction, so the
-    // cast is sound rather than incidentally lucky. Keep the element type at least as
-    // aligned as any struct read out of this buffer.
+    // ALIGNMENT: backed by `u64`, not `u8`. `TOKEN_PRIVILEGES` requires 4-byte alignment (DWORD `PrivilegeCount` + `LUID_AND_ATTRIBUTES`
+    // array), but `Vec<u8>` only guarantees 1 byte — so reinterpreting a `Vec<u8>` as `*const TOKEN_PRIVILEGES` below is UB by the letter
+    // of the language, and only "works" because the global allocator happens to hand back 8/16-byte-aligned blocks. `Vec<u64>` guarantees 8
+    // >= 4 by construction, so the cast is sound rather than incidentally lucky. Keep the element type at least as aligned as any struct
+    // read out of this buffer.
     let elements = (return_length as usize).div_ceil(std::mem::size_of::<u64>());
     let mut buffer = vec![0u64; elements];
     if GetTokenInformation(token, TokenPrivileges, Some(buffer.as_mut_ptr() as *mut c_void), return_length, &mut return_length).is_err() {
@@ -182,9 +175,8 @@ unsafe fn check_privilege_in_token(token: HANDLE, privilege_luid: LUID) -> Privi
 
 /// # Safety
 ///
-/// `token` must be an open process-token handle with `TOKEN_ADJUST_PRIVILEGES` access (and
-/// `TOKEN_QUERY` if the caller then re-reads the state), open for the duration of the call. This
-/// function does not close it.
+/// `token` must be an open process-token handle with `TOKEN_ADJUST_PRIVILEGES` access (and `TOKEN_QUERY` if the caller then re-reads the
+/// state), open for the duration of the call. This function does not close it.
 unsafe fn enable_privilege_in_token(token: HANDLE, privilege_luid: LUID) -> Result<(), &'static str> {
     use windows::Win32::Security::TOKEN_PRIVILEGES_ATTRIBUTES;
 
@@ -216,9 +208,8 @@ fn is_elevated() -> bool {
     use windows::Win32::Security::{GetTokenInformation, TOKEN_ELEVATION, TokenElevation};
     use windows::Win32::System::Threading::{GetCurrentProcess, OpenProcessToken};
 
-    // SAFETY: `elevation` is a fully initialised local passed directly as the out-param, with the
-    // length `size_of::<TOKEN_ELEVATION>()` matching its type — the direct-argument form, so no
-    // pointer outlives the call (TODO #66). The token is closed on both paths.
+    // SAFETY: `elevation` is a fully initialised local passed directly as the out-param, with the length `size_of::<TOKEN_ELEVATION>()`
+    // matching its type — the direct-argument form, so no pointer outlives the call (TODO #66). The token is closed on both paths.
     unsafe {
         let process = GetCurrentProcess();
         let mut token: HANDLE = HANDLE::default();
@@ -246,9 +237,8 @@ fn is_elevated() -> bool {
 
 /// Alternative privilege enabling that works better on Windows Server
 pub fn enable_large_page_privilege_enhanced() -> Result<(), String> {
-    // SAFETY: same token discipline as `check_large_page_privilege` — `token` is used only where
-    // `OpenProcessToken` succeeded, and closed exactly once on every return path. The
-    // `check_privilege_in_token` / `enable_privilege_in_token` calls below meet their documented
+    // SAFETY: same token discipline as `check_large_page_privilege` — `token` is used only where `OpenProcessToken` succeeded, and closed
+    // exactly once on every return path. The `check_privilege_in_token` / `enable_privilege_in_token` calls below meet their documented
     // contract because the token was opened with `TOKEN_QUERY | TOKEN_ADJUST_PRIVILEGES`.
     unsafe {
         let process = GetCurrentProcess();
@@ -428,8 +418,7 @@ pub fn setup_large_pages_automatically() -> Result<String, String> {
 /// Check the current state of the SeLockMemoryPrivilege
 fn check_privilege_state() -> PrivilegeState {
     // SAFETY: `token` is opened with `TOKEN_QUERY` — the access
-    // `check_privilege_in_token` documents — stays open across that call, and is closed once on
-    // each return path.
+    // `check_privilege_in_token` documents — stays open across that call, and is closed once on each return path.
     unsafe {
         let process = GetCurrentProcess();
         let mut token: HANDLE = HANDLE::default();
@@ -455,9 +444,8 @@ fn check_privilege_state() -> PrivilegeState {
 
 /// Test a small large page allocation
 fn test_large_page_allocation() -> Result<(), String> {
-    // SAFETY: a self-contained 2 MB probe. The returned pointer is never dereferenced — only
-    // null-checked and, when non-null, released with the `MEM_RELEASE` form `VirtualFree` requires
-    // (size 0, base address as returned).
+    // SAFETY: a self-contained 2 MB probe. The returned pointer is never dereferenced — only null-checked and, when non-null, released with
+    // the `MEM_RELEASE` form `VirtualFree` requires (size 0, base address as returned).
     unsafe {
         let test_size = 2 * 1024 * 1024; // 2MB
         let ptr = VirtualAlloc(Some(null_mut()), test_size, MEM_RESERVE | MEM_COMMIT | MEM_LARGE_PAGES, PAGE_READWRITE);
@@ -520,10 +508,9 @@ pub fn diagnose_and_setup_large_pages() -> String {
     report
 }
 
-/// `secedit`, with no console window of its own. Its output is piped to TMR (`output()`), but a
-/// console program started by a process with no console gets a console window, which flashes on the
-/// desktop: the window's, launched with a double-click (TODO 29 S6). Nothing changes for the CLI,
-/// whose console its output never reached.
+/// `secedit`, with no console window of its own. Its output is piped to TMR (`output()`), but a console program started by a process with
+/// no console gets a console window, which flashes on the desktop: the window's, launched with a double-click (TODO 29 S6). Nothing changes
+/// for the CLI, whose console its output never reached.
 fn secedit() -> Command {
     use std::os::windows::process::CommandExt;
     let mut command = Command::new("secedit");
@@ -556,9 +543,8 @@ fn grant_privilege_via_secedit(username: &str) -> Result<(), String> {
     log::info!("Exported policy file encoding: {}", if is_utf16_le { "UTF-16 LE" } else { "UTF-8/ANSI" });
 
     let content = if is_utf16_le {
-        // Decode UTF-16 LE (skip 2-byte BOM). `as_chunks::<2>()` yields fixed-size [u8; 2]
-        // arrays (no per-index bounds checks); `.0` drops any odd trailing byte, matching the
-        // previous `chunks_exact(2)` behaviour.
+        // Decode UTF-16 LE (skip 2-byte BOM). `as_chunks::<2>()` yields fixed-size [u8; 2] arrays (no per-index bounds checks); `.0` drops
+        // any odd trailing byte, matching the previous `chunks_exact(2)` behaviour.
         let utf16_data: Vec<u16> = bytes[2..].as_chunks::<2>().0.iter().map(|chunk| u16::from_le_bytes(*chunk)).collect();
         String::from_utf16(&utf16_data).map_err(|_| "Invalid UTF-16 data in policy file")?
     } else {
@@ -702,8 +688,8 @@ fn check_if_privilege_in_policy() -> Result<bool, String> {
     let bytes = std::fs::read("temp_quick_check.inf").map_err(|e| format!("Failed to read policy file: {}", e))?;
 
     let content = if bytes.len() >= 2 && bytes[0] == 0xFF && bytes[1] == 0xFE {
-        // Decode UTF-16 LE (skip 2-byte BOM) — see the note in the other decode site: fixed-size
-        // [u8; 2] chunks avoid per-index bounds checks; `.0` drops an odd trailing byte.
+        // Decode UTF-16 LE (skip 2-byte BOM) — see the note in the other decode site: fixed-size [u8; 2] chunks avoid per-index bounds
+        // checks; `.0` drops an odd trailing byte.
         let utf16_data: Vec<u16> = bytes[2..].as_chunks::<2>().0.iter().map(|chunk| u16::from_le_bytes(*chunk)).collect();
         String::from_utf16(&utf16_data).map_err(|_| "Invalid UTF-16 data in policy file".to_string())?
     } else {

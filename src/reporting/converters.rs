@@ -85,10 +85,9 @@ pub fn create_consolidated_memory_report(mem_info: &SystemMemoryInfo, allocation
 }
 
 /// Convert TestDefinition structs to test configuration report (updated version)
-/// Now accepts cache_info and thread_count to calculate actual extent sizes for cache targets
-/// `thread_memory` is each thread's bytes (planned or allocated): extents and chunks are shown
-/// resolved for the thread with the least, the range when threads differ. `tm5` is a TM5
-/// import's `.cfg` window and lock granularity (MiB), for a header line.
+/// Now accepts cache_info and thread_count to calculate actual extent sizes for cache targets `thread_memory` is each thread's bytes
+/// (planned or allocated): extents and chunks are shown resolved for the thread with the least, the range when threads differ. `tm5` is a
+/// TM5 import's `.cfg` window and lock granularity (MiB), for a header line.
 /// What the plan shows of the cycle beyond its tests (TODO 74).
 pub struct PlanSequence<'a> {
     /// `cycle_order` as written, each id with whether it runs; `None` without one
@@ -119,8 +118,8 @@ fn width_note(width: crate::simd::Width, source: &str, test_definitions: &[crate
     )
 }
 
-/// The plan: one row per test, in the order of its first step, then the cycle's sequence when it
-/// isn't simply each test once, and the seal (TODO 74).
+/// The plan: one row per test, in the order of its first step, then the cycle's sequence when it isn't simply each test once, and the seal
+/// (TODO 74).
 pub fn create_test_configuration_report_v2(
     test_definitions: &[crate::runner::TestDefinition], suite_timing: &crate::runner::TestSuiteTiming,
     cache_info: &crate::cache::CacheInfo, thread_memory: &[usize], tm5: Option<(u32, u32)>, sequence: &PlanSequence,
@@ -187,8 +186,7 @@ pub fn create_test_configuration_report_v2(
         let mut extent_mode = formatter.format_extent_mode_with_size(&config.extent_mode, cache_info, thread_count);
         let mut chunk_mode = formatter.format_chunk_mode_with_size(&config.chunk_mode, cache_info, thread_count);
 
-        // Resolved as the test resolves them (`TestRunner::new`): the extent floored to 4 KiB,
-        // then the chunk from it, spread over it
+        // Resolved as the test resolves them (`TestRunner::new`): the extent floored to 4 KiB, then the chunk from it, spread over it
         if least > 0 {
             let mut sized = config.clone();
             sized.thread_count = thread_count;
@@ -217,8 +215,8 @@ pub fn create_test_configuration_report_v2(
                 ChunkMode::Absolute { .. } | ChunkMode::CacheTotal { .. } => String::new(),
             };
             chunk_mode = format!("{} x{}{overlap}{source}", size(spread.chunk()), spread.count());
-            // Only when the memory is what limits the extent: a cache-sized extent smaller than
-            // its chunk is the test's design (Mem-Refresh's 2 GiB chunk means "the whole extent")
+            // Only when the memory is what limits the extent: a cache-sized extent smaller than its chunk is the test's design
+            // (Mem-Refresh's 2 GiB chunk means "the whole extent")
             let memory_bounds_extent = sized.calculate_extent_size(name, 1 << 60) > lo;
             if resolution.shrunk_by_memory() && memory_bounds_extent {
                 notes.push(format!("⚠  Chunk size was adjusted for test {} ({}) from {} -> {}, as the memory allocation ({} per thread) can't support it",
@@ -323,8 +321,8 @@ pub fn create_cycle_report(cycle: u32, duration_secs: u32, summaries: &[TestSumm
     CycleReport { cycle_number: cycle, duration_secs, test_performances }
 }
 
-/// The allocation report (TODO 81) from the stitched allocator's spans and the requests that
-/// built them. Takes the spans so their request record moves in, and goes with the report.
+/// The allocation report (TODO 81) from the stitched allocator's spans and the requests that built them. Takes the spans so their request
+/// record moves in, and goes with the report.
 pub fn create_allocation_report(
     spans: Vec<crate::memory::stitched::ThreadSpan>, elapsed: std::time::Duration, numa_nodes: u32,
 ) -> AllocationReport {
@@ -467,14 +465,14 @@ fn allocation_fairness(threads: &[AllocationThread]) -> Vec<DimensionFairness> {
                             let flag = if short > 0.0 || behind { FairnessFlag::Warn } else { FairnessFlag::Fine };
                             (flag, short.max(-deviation).max(0.0))
                         }
-                        // More than one 1 GiB page fewer than the others: an even split promises
-                        // one apart. Only the side that lost out, or every thread is flagged.
+                        // More than one 1 GiB page fewer than the others: an even split promises one apart. Only the side that lost out, or
+                        // every thread is flagged.
                         FairnessDimension::Huge => {
                             let flag = if deviation < -page { FairnessFlag::Notice } else { FairnessFlag::Fine };
                             (flag, (-deviation).max(0.0))
                         }
-                        // Shown, never flagged: more 2 MiB pages is the 1 GiB shortfall again, and
-                        // fewer is more 1 GiB pages or 4 KiB ones, which 4 KiB flags.
+                        // Shown, never flagged: more 2 MiB pages is the 1 GiB shortfall again, and fewer is more 1 GiB pages or 4 KiB ones,
+                        // which 4 KiB flags.
                         FairnessDimension::Large => (FairnessFlag::Fine, deviation.abs()),
                         FairnessDimension::Regular => {
                             let flag = if value > 0.0 { FairnessFlag::Notice } else { FairnessFlag::Fine };
@@ -512,8 +510,8 @@ fn allocation_fairness(threads: &[AllocationThread]) -> Vec<DimensionFairness> {
 
 /// Convert thread stats to thread timing report
 ///
-/// `whea` is the count attributed to *this test* (the delta across it), not the run total — it is
-/// what lets the aggregate row fail when the per-thread rows are all clean.
+/// `whea` is the count attributed to *this test* (the delta across it), not the run total — it is what lets the aggregate row fail when the
+/// per-thread rows are all clean.
 pub fn create_thread_timing_report(
     stats: &[(usize, usize, u64, std::time::Duration, u64, u64, u32)], // (thread_id, cpu_id, bytes, time, errors, operations, cycles_completed)
     whea: crate::whea::WheaCounts,
@@ -541,8 +539,8 @@ pub fn create_thread_timing_report(
             // Calculate throughput
             let throughput_mib_s = if !elapsed.is_zero() { (bytes as f64 / (1024.0 * 1024.0)) / elapsed.as_secs_f64() } else { 0.0 };
 
-            // Get physical core and NUMA node info from the real detected topology
-            // (NOT cpu_id/2 — that hardcoded 2-way SMT and mislabeled cores on non-SMT CPUs).
+            // Get physical core and NUMA node info from the real detected topology (NOT cpu_id/2 — that hardcoded 2-way SMT and mislabeled
+            // cores on non-SMT CPUs).
             let physical_core_id = crate::cpu_topology::get_physical_core_for_cpu(cpu_id);
             let numa_node = crate::cpu_topology::get_numa_node_for_cpu(cpu_id);
 
@@ -576,8 +574,8 @@ pub fn create_thread_timing_report(
     ThreadTimingReport { average_elapsed_ms: avg_elapsed, thread_timings, whea }
 }
 
-/// The final summary (TODO 74): one row per test, its steps combined (a test that runs twice a
-/// cycle is one row with twice the runs), the seal's stages, and the steps that found errors.
+/// The final summary (TODO 74): one row per test, its steps combined (a test that runs twice a cycle is one row with twice the runs), the
+/// seal's stages, and the steps that found errors.
 pub fn create_overall_stats_summary_report(result: &crate::results::TestRunResult) -> super::models::FinalTestSummaryReport {
     use super::models::{FinalTestSummaryReport, SealStagesSummary, StepErrorsEntry, TestSummaryEntry};
     let overall_stats = &result.overall_stats;
@@ -589,8 +587,8 @@ pub fn create_overall_stats_summary_report(result: &crate::results::TestRunResul
     let seconds = secs % 60;
     let total_runtime = format!("{:02}:{:02}:{:02}", hours, minutes, seconds);
 
-    // Steps of one test, combined: times and data per run, errors summed. A step's figures are
-    // already per run (`TestAverage`), so the test's are its steps' run-weighted means.
+    // Steps of one test, combined: times and data per run, errors summed. A step's figures are already per run (`TestAverage`), so the
+    // test's are its steps' run-weighted means.
     let mut per_test_summaries: Vec<TestSummaryEntry> = Vec::new();
     let mut seen: Vec<usize> = Vec::new();
     for avg in &overall_stats.per_step_averages {
@@ -672,8 +670,8 @@ pub fn create_overall_stats_summary_report(result: &crate::results::TestRunResul
         overall_throughput_mib_s: overall_stats.overall_throughput_mib_s,
         overall_throughput_gib_s: overall_stats.overall_throughput_mib_s / 1024.0,
         total_errors: overall_stats.total_errors,
-        // Exact run-level counters (see TestRunResult::set_whea_totals) — not a sum of the
-        // per-test figures, which miss events logged outside a test's execution window.
+        // Exact run-level counters (see TestRunResult::set_whea_totals) — not a sum of the per-test figures, which miss events logged
+        // outside a test's execution window.
         whea_total: overall_stats.whea_total,
         whea_corrected: overall_stats.whea_corrected,
         whea_monitored: overall_stats.whea_monitored,
@@ -696,8 +694,8 @@ mod tests {
     const MIB: usize = 1 << 20;
     const GIB: usize = 1 << 30;
 
-    /// TODO 99: a width given is in the plan, with where it came from, and Mem-Sequence's own
-    /// where it lacks that one; under auto the plan says nothing of it.
+    /// TODO 99: a width given is in the plan, with where it came from, and Mem-Sequence's own where it lacks that one; under auto the plan
+    /// says nothing of it.
     #[test]
     fn a_width_given_is_in_the_plan() {
         use crate::simd::Width;
@@ -726,8 +724,7 @@ mod tests {
         assert!(given.len() == 1 && !given[0].contains("has no"), "no Mem-Sequence in the plan: {given:?}");
     }
 
-    /// TODO 99: a sealed plan names the seal's kernel and where its width came from: calibrated,
-    /// the rule, or the setting.
+    /// TODO 99: a sealed plan names the seal's kernel and where its width came from: calibrated, the rule, or the setting.
     #[test]
     fn the_plan_says_where_the_seals_width_came_from() {
         use crate::seal::{SealKernel, SealPattern, SealWidth, SealWidthSource};
@@ -754,8 +751,8 @@ mod tests {
         &table.rows[row][col]
     }
 
-    /// The 2026-10-16 run on this box (`allocation_report_one_node`): its console golden is the
-    /// CLI's (`report_allocation_one_node`, crates/tmr-cli).
+    /// The 2026-10-16 run on this box (`allocation_report_one_node`): its console golden is the CLI's (`report_allocation_one_node`,
+    /// crates/tmr-cli).
     #[test]
     fn one_node_reads_as_local_and_fair() {
         let report = allocation_report_one_node();
@@ -792,8 +789,8 @@ mod tests {
         assert!(summary.rows.iter().all(|r| r[0] != "Remote"));
     }
 
-    /// Two nodes, node 1 short of 1 GiB pages (`allocation_report_two_nodes`): its console golden is
-    /// the CLI's (`report_allocation_two_nodes`, crates/tmr-cli).
+    /// Two nodes, node 1 short of 1 GiB pages (`allocation_report_two_nodes`): its console golden is the CLI's
+    /// (`report_allocation_two_nodes`, crates/tmr-cli).
     #[test]
     fn a_short_node_shows_in_every_table() {
         let report = allocation_report_two_nodes();

@@ -1,13 +1,11 @@
-//! The colour palette (TODO 7, the owner's note 1: colours are a setting): built-in defaults per
-//! light/dark, overridable from `colours.json` next to tmr.exe. The file is read once, when the
-//! window opens; a missing file means the defaults, and a bad key or value is reported on the
-//! console and that one colour keeps its default.
+//! The colour palette (TODO 7, the owner's note 1: colours are a setting): built-in defaults per light/dark, overridable from
+//! `colours.json` next to tmr.exe. The file is read once, when the window opens; a missing file means the defaults, and a bad key or value
+//! is reported on the console and that one colour keeps its default.
 //!
-//! `colours.json` holds a `"dark"` and/or a `"light"` object, each mapping a key below to a colour
-//! string, `"#RRGGBB"` or `"#AARRGGBB"` (alpha first, as XAML writes it). Keys starting with `_`
-//! are ignored, so the file can carry notes. Any key left out keeps its default.
-//! `crates/tmr-gui/colours.example.json` has every key at its default (a test keeps it so): copy it
-//! next to tmr.exe as `colours.json` and edit it.
+//! `colours.json` holds a `"dark"` and/or a `"light"` object, each mapping a key below to a colour string, `"#RRGGBB"` or `"#AARRGGBB"`
+//! (alpha first, as XAML writes it). Keys starting with `_` are ignored, so the file can carry notes. Any key left out keeps its default.
+//! `crates/tmr-gui/colours.example.json` has every key at its default (a test keeps it so): copy it next to tmr.exe as `colours.json` and
+//! edit it.
 //!
 //! | key               | used for                                                             |
 //! |-------------------|----------------------------------------------------------------------|
@@ -27,12 +25,10 @@
 //! | `progress_fill`   | the progress bar's filled part                                       |
 //! | `progress_text`   | the percentage drawn inside the progress bar                         |
 //!
-//! Defaults: text and cards are WinUI's Fluent values (TextFillColorPrimary etc.), so dark mode
-//! keeps WinUI's bright white primary text (the owner's pick; egui's grey is `#8C8C8C` in dark,
-//! `#505050` in light, for anyone who wants it). `error` is egui 0.37's `error_fg_color`
-//! (`#FF0000` in both schemes), the darker, richer red the owner chose over WinUI's critical red.
-//! The progress bar takes egui's colours (track `extreme_bg_color`, fill `selection.bg_fill`,
-//! text `selection.stroke`).
+//! Defaults: text and cards are WinUI's Fluent values (TextFillColorPrimary etc.), so dark mode keeps WinUI's bright white primary text
+//! (the owner's pick; egui's grey is `#8C8C8C` in dark, `#505050` in light, for anyone who wants it). `error` is egui 0.37's
+//! `error_fg_color` (`#FF0000` in both schemes), the darker, richer red the owner chose over WinUI's critical red. The progress bar takes
+//! egui's colours (track `extreme_bg_color`, fill `selection.bg_fill`, text `selection.stroke`).
 
 use std::path::PathBuf;
 
@@ -141,9 +137,8 @@ impl Palettes {
         if dark { &self.dark } else { &self.light }
     }
 
-    /// The defaults, with `colours.json` next to the exe applied over them if it exists, and what it
-    /// gets wrong, for the window's errors: it opens before Start sets up its logger, and maybe with
-    /// no console.
+    /// The defaults, with `colours.json` next to the exe applied over them if it exists, and what it gets wrong, for the window's errors:
+    /// it opens before Start sets up its logger, and maybe with no console.
     pub fn load() -> (Self, Vec<String>) {
         let mut problems = Vec::new();
         let palettes = beside_exe("colours.json").map_or(Self::DEFAULT, |path| match std::fs::read_to_string(&path) {
@@ -159,8 +154,7 @@ impl Palettes {
 
     const DEFAULT: Self = Self { light: Palette::LIGHT, dark: Palette::DARK };
 
-    /// `text`'s colours over the defaults; what it gets wrong into `problems`, each keeping its
-    /// default
+    /// `text`'s colours over the defaults; what it gets wrong into `problems`, each keeping its default
     fn parse(text: &str, problems: &mut Vec<String>) -> Self {
         let mut palettes = Self::DEFAULT;
         let root: serde_json::Value = match serde_json::from_str(text) {
@@ -280,8 +274,8 @@ mod tests {
         out
     }
 
-    /// `colours.example.json` is every key at its default; `TMR_BLESS=1 cargo test -p tmr-gui`
-    /// rewrites it, as it does the console's goldens
+    /// `colours.example.json` is every key at its default; `TMR_BLESS=1 cargo test -p tmr-gui` rewrites it, as it does the console's
+    /// goldens
     #[test]
     fn the_example_file_has_every_key_at_its_default() {
         let path = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("colours.example.json");

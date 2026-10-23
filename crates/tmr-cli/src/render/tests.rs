@@ -1,10 +1,8 @@
-//! Goldens of the CLI's frontend (TODO 29), from fixed payloads: each event the console goldens of
-//! a run don't show (`testdata/console/{cycle,plan_only,not_run}.txt`, `run_tests.rs`), through
-//! `CliFrontend::event` as a run sends it, and the ticker; and the ticker's clock. `Run::Allocated` and
-//! `Run::FinalSummary` have none of their own: each shows one report, whose golden is the
-//! Reporter's (`report_allocation_*`, `report_final_summary`). And a session's: every setup event,
-//! as a session sends it, and each way a session ends. A session itself can't run in a test: its
-//! setup checks and grants the large-page privilege, and runs secedit.
+//! Goldens of the CLI's frontend (TODO 29), from fixed payloads: each event the console goldens of a run don't show
+//! (`testdata/console/{cycle,plan_only,not_run}.txt`, `run_tests.rs`), through `CliFrontend::event` as a run sends it, and the ticker; and
+//! the ticker's clock. `Run::Allocated` and `Run::FinalSummary` have none of their own: each shows one report, whose golden is the
+//! Reporter's (`report_allocation_*`, `report_final_summary`). And a session's: every setup event, as a session sends it, and each way a
+//! session ends. A session itself can't run in a test: its setup checks and grants the large-page privilege, and runs secedit.
 
 use std::sync::Arc;
 use std::time::{Duration, Instant};
@@ -150,9 +148,8 @@ fn the_ticker_draws_as_its_golden() {
     check("ticker", &text);
 }
 
-/// The ticker's clock (`CliFrontend::tick`), on the monitor's 500 ms ticks: the first tick starts
-/// it, a draw is due 2 seconds after the last, and one that couldn't draw (the console was held) is
-/// tried at the next tick.
+/// The ticker's clock (`CliFrontend::tick`), on the monitor's 500 ms ticks: the first tick starts it, a draw is due 2 seconds after the
+/// last, and one that couldn't draw (the console was held) is tried at the next tick.
 #[test]
 fn the_ticker_draws_2_seconds_after_its_last_draw() {
     let start = Instant::now();
@@ -168,8 +165,7 @@ fn the_ticker_draws_2_seconds_after_its_last_draw() {
     assert_eq!(last_draw, Some(start + Duration::from_millis(5000)));
 }
 
-/// Where the suite stands 41 minutes into an hour: cycle 4 of 8, its second test of 6 running, 52%
-/// into its own limit, its live figures in.
+/// Where the suite stands 41 minutes into an hour: cycle 4 of 8, its second test of 6 running, 52% into its own limit, its live figures in.
 fn snapshot() -> ProgressSnapshot {
     ProgressSnapshot {
         runtime: Duration::from_secs(41 * 60 + 10),
@@ -194,9 +190,8 @@ fn snapshot() -> ProgressSnapshot {
     }
 }
 
-/// A step of 5 passes of 61 s on two threads, both numbered CPU 0, so no figure depends on this
-/// machine's topology: unsealed, on no cycle limit, ended by its time limit, with a corrected WHEA
-/// event; a test and a verify repeated.
+/// A step of 5 passes of 61 s on two threads, both numbered CPU 0, so no figure depends on this machine's topology: unsealed, on no cycle
+/// limit, ended by its time limit, with a corrected WHEA event; a test and a verify repeated.
 fn step() -> StepReport {
     let whea = WheaCounts { total: 1, corrected: 1 };
     let thread = |id: usize, ms: u64, passes: u32| (id, 0, 60 * GIB, Duration::from_millis(ms), 0, 1_250_000_000, passes);
@@ -263,8 +258,7 @@ fn step() -> StepReport {
     }
 }
 
-/// Four threads on two cores of two CPUs each, one thread with errors, and the run's WHEA event on
-/// each table's aggregate row
+/// Four threads on two cores of two CPUs each, one thread with errors, and the run's WHEA event on each table's aggregate row
 fn cpu_performance() -> CpuPerformanceSummary {
     let whea = WheaCounts { total: 1, corrected: 1 };
     let threads = (0..4)
@@ -308,9 +302,8 @@ fn cpu_performance() -> CpuPerformanceSummary {
     }
 }
 
-/// A session's setup events, each after a `## case` line, through `CliFrontend::event` as a session
-/// sends them, all their forms. `Setup::Starting` is shown apart, with a Ctrl+C of the test's own:
-/// the CLI's (`crate::take_ctrl_c`) would take it from the test process.
+/// A session's setup events, each after a `## case` line, through `CliFrontend::event` as a session sends them, all their forms.
+/// `Setup::Starting` is shown apart, with a Ctrl+C of the test's own: the CLI's (`crate::take_ctrl_c`) would take it from the test process.
 #[test]
 fn setup_events_print_as_their_golden() {
     let fe = CliFrontend::new();
@@ -426,9 +419,8 @@ fn setup_events_print_as_their_golden() {
     check("setup", &text);
 }
 
-/// TODO 99: the line each seal calibration shows at startup, as the CLI's test of it said before
-/// the split: Loaded, with its width and when; Stale; None. Which one a stored calibration is, is
-/// the session's to say (`tmr::session::load_seal_calibration`'s test).
+/// TODO 99: the line each seal calibration shows at startup, as the CLI's test of it said before the split: Loaded, with its width and
+/// when; Stale; None. Which one a stored calibration is, is the session's to say (`tmr::session::load_seal_calibration`'s test).
 #[test]
 fn the_seal_calibration_says_which_width_auto_takes() {
     let at = chrono::Utc.with_ymd_and_hms(2026, 10, 21, 9, 5, 0).unwrap();
@@ -438,9 +430,8 @@ fn the_seal_calibration_says_which_width_auto_takes() {
     assert_eq!(line(SealCalibrationState::None), "  Seal calibration: None (run --calibrate-seal to calibrate)\n");
 }
 
-/// How a session ends on the console, each after a `## case` line: a run's verdict,
-/// `--startup-debug`'s, and why setup stopped one (an unknown flag shows the help, with tmr.exe's
-/// name). The restart chosen and a command show nothing here: the prompt said its piece, and a
+/// How a session ends on the console, each after a `## case` line: a run's verdict, `--startup-debug`'s, and why setup stopped one (an
+/// unknown flag shows the help, with tmr.exe's name). The restart chosen and a command show nothing here: the prompt said its piece, and a
 /// command writes its own (`tmr::commands::run`).
 #[test]
 fn session_ends_print_as_their_golden() {

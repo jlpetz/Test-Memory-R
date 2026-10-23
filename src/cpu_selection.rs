@@ -16,21 +16,18 @@
 //! - `cpu-stride=even` — spread the count evenly across the whole pool
 //!
 //! `cputype=cores|threads` is also a Stage-1 prefilter (handled by the caller): stride operates
-//! on the physical-core pool *after* SMT filtering, so `cpu-stride=2` means "every other core",
-//! not "every other SMT sibling".
+//! on the physical-core pool *after* SMT filtering, so `cpu-stride=2` means "every other core", not "every other SMT sibling".
 //!
 //! # Why this matters (the motivating case)
 //!
-//! On multi-CCD parts, core groups can sit on **separate memory-bandwidth domains**. On a
-//! 16-core EPYC 9R45 (AWS m8a.4xlarge) cores 0-7 and 8-15 each have their own ~40 GB/s pool, and
-//! per-thread bandwidth ≈ `pool ÷ threads_in_that_pool`. Loading the pools unevenly (e.g. 4
-//! threads in one, 2 in the other) produces wildly bimodal per-thread results that look like a
-//! bug but are real hardware behaviour. `cpus=50% cpu-stride=even` selects
-//! `[0,2,4,6,8,10,12,14]` — 4 threads per domain — giving uniform, comparable numbers.
+//! On multi-CCD parts, core groups can sit on **separate memory-bandwidth domains**. On a 16-core EPYC 9R45 (AWS m8a.4xlarge) cores 0-7 and
+//! 8-15 each have their own ~40 GB/s pool, and per-thread bandwidth ≈ `pool ÷ threads_in_that_pool`. Loading the pools unevenly (e.g. 4
+//! threads in one, 2 in the other) produces wildly bimodal per-thread results that look like a bug but are real hardware behaviour.
+//! `cpus=50% cpu-stride=even` selects `[0,2,4,6,8,10,12,14]` — 4 threads per domain — giving uniform, comparable numbers.
 //! `skip-cores=0-7` instead isolates a single domain for measurement.
 //!
-//! Selection **errors rather than silently right-sizing** when a count/stride combination can't
-//! fit the pool: the `cpus=` percentage is the intended way to scale down.
+//! Selection **errors rather than silently right-sizing** when a count/stride combination can't fit the pool: the `cpus=` percentage is the
+//! intended way to scale down.
 
 use std::collections::HashMap;
 
@@ -43,8 +40,8 @@ use crate::cpu_topology::{CoreType, get_cpu_topology, is_hybrid_cpu};
 /// - `"N%"`  → `(round(N% of total), None)` — never skips *every* core
 /// - `"A-B"` → `(0, Some((A, B)))` — exclude that inclusive core-id range
 ///
-/// Unparseable input falls back to the historical default of skipping 1 core (the param layer
-/// validates the shape up front, so this is belt-and-braces).
+/// Unparseable input falls back to the historical default of skipping 1 core (the param layer validates the shape up front, so this is
+/// belt-and-braces).
 pub fn resolve_skip_spec(spec: &str, total_cores: usize) -> (usize, Option<(usize, usize)>) {
     let s = spec.trim();
     // Inclusive id range to exclude.
@@ -65,12 +62,11 @@ pub fn resolve_skip_spec(spec: &str, total_cores: usize) -> (usize, Option<(usiz
 
 /// Stage 2: pick `count` entries out of `pool` at the given spacing.
 ///
-/// `stride_spec`: `"1"` = packed, `"N"` = every Nth, `"even"` = spread across the whole pool
-/// (stride = `pool.len() / count`).
+/// `stride_spec`: `"1"` = packed, `"N"` = every Nth, `"even"` = spread across the whole pool (stride = `pool.len() / count`).
 ///
 /// # Errors
-/// Returns `Err` — never silently right-sizes — when the last pick would fall outside the pool
-/// (`(count-1) * stride >= pool.len()`). Lower `cpus=` or the stride instead.
+/// Returns `Err` — never silently right-sizes — when the last pick would fall outside the pool (`(count-1) * stride >= pool.len()`). Lower
+/// `cpus=` or the stride instead.
 pub fn apply_cpu_stride(pool: &[usize], count: usize, stride_spec: &str) -> Result<Vec<usize>, String> {
     if count == 0 || pool.is_empty() {
         return Ok(Vec::new());
@@ -98,16 +94,14 @@ pub fn apply_cpu_stride(pool: &[usize], count: usize, stride_spec: &str) -> Resu
     Ok((0..count).map(|i| pool[i * stride]).collect())
 }
 
-/// Full two-stage selection: returns `(thread_count, cpu_list)` where `cpu_list[i]` is the
-/// logical CPU that worker `i` gets pinned to.
+/// Full two-stage selection: returns `(thread_count, cpu_list)` where `cpu_list[i]` is the logical CPU that worker `i` gets pinned to.
 ///
 /// - `cpus_to_skip` / `excluded_range` — Stage 1 filter (see [`resolve_skip_spec`])
 /// - `stride_spec` — Stage 2 spacing (see [`apply_cpu_stride`])
 /// - `avoid_smt_doubling` — when true, at most one logical CPU per physical core
 ///
-/// Hybrid (P/E-core) CPUs keep their existing behaviour: E-cores are skipped first, then
-/// one-thread-per-P-core, then one-per-E-core, then SMT siblings. Spacing currently applies to
-/// the non-hybrid path; on hybrid parts the core-type ordering already spreads the assignment.
+/// Hybrid (P/E-core) CPUs keep their existing behaviour: E-cores are skipped first, then one-thread-per-P-core, then one-per-E-core, then
+/// SMT siblings. Spacing currently applies to the non-hybrid path; on hybrid parts the core-type ordering already spreads the assignment.
 pub fn calculate_thread_allocation(
     requested_threads: usize, cpus_to_skip: usize, avoid_smt_doubling: bool, excluded_range: Option<(usize, usize)>, stride_spec: &str,
 ) -> Result<(usize, Vec<usize>), String> {
@@ -157,8 +151,8 @@ pub fn calculate_thread_allocation(
         let p_cores_to_skip = cores_to_skip.min(p_cores.len());
         let p_cores_to_use = p_cores.iter().skip(p_cores_to_skip);
 
-        // Round-robin assignment: spread threads across physical cores first, then fill in SMT
-        // siblings if more threads are needed (better utilisation at partial CPU counts).
+        // Round-robin assignment: spread threads across physical cores first, then fill in SMT siblings if more threads are needed (better
+        // utilisation at partial CPU counts).
         let p_cores_vec: Vec<_> = p_cores_to_use.collect();
         let e_cores_vec: Vec<_> = e_cores_to_use.collect();
 
@@ -209,8 +203,7 @@ pub fn calculate_thread_allocation(
         // Stage 1: skip the first N cores (range exclusion already applied to cores_map).
         let cores_to_use: Vec<_> = physical_cores.iter().skip(cores_to_skip).cloned().collect();
 
-        // Stage 2: apply spacing across the available pool. The primary pass takes the first
-        // logical CPU of each selected physical core.
+        // Stage 2: apply spacing across the available pool. The primary pass takes the first logical CPU of each selected physical core.
         let first_cpu_pool: Vec<usize> =
             cores_to_use.iter().filter_map(|pc| cores_map.get(pc).and_then(|l| l.first()).map(|(id, _)| *id)).collect();
 
@@ -218,8 +211,8 @@ pub fn calculate_thread_allocation(
         let strided = apply_cpu_stride(&first_cpu_pool, primary_count, stride_spec)?;
         selected_cpus.extend(strided);
 
-        // If not avoiding SMT and still short, take SMT siblings of the cores we actually
-        // selected (keeps siblings with their primary, honouring the spacing).
+        // If not avoiding SMT and still short, take SMT siblings of the cores we actually selected (keeps siblings with their primary,
+        // honouring the spacing).
         if !avoid_smt_doubling && selected_cpus.len() < requested_threads {
             let chosen: Vec<usize> = selected_cpus.clone();
             for primary in &chosen {

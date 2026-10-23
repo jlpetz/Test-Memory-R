@@ -1,20 +1,17 @@
-//! The console's output against goldens (TODO 29): what a test printed, captured, compared with
-//! this crate's `testdata/console/<name>.txt`. The engine/presentation split moved every print
-//! behind a frontend, and into this crate, and these show the moved prints still write the bytes
+//! The console's output against goldens (TODO 29): what a test printed, captured, compared with this crate's `testdata/console/<name>.txt`.
+//! The engine/presentation split moved every print behind a frontend, and into this crate, and these show the moved prints still write the
+//! bytes
 //! they did. `TMR_BLESS=1 cargo test` writes the goldens instead of comparing them;
-//! `git diff crates/tmr-cli/testdata/` then shows what changed. The engine's code a golden runs it
-//! reaches through `tmr::test_support`.
+//! `git diff crates/tmr-cli/testdata/` then shows what changed. The engine's code a golden runs it reaches through `tmr::test_support`.
 //!
-//! The capture is libtest's own mechanism: `set_output_capture` swaps this thread's buffer for
-//! ours, and libtest's spawn hook (under `--nocapture`, our own) hands the capture on to every
-//! thread spawned meanwhile, so the workers' lines land in it too. Two more pieces make it whole:
-//! `console.rs` writes through `print!` in a test build (a locked stdout bypasses the capture), and
-//! `Logger` prints each log record as the CLI's logger does (`setup_logging`), through
-//! `console::print_above`, so the records and their order against the prints are in the golden.
+//! The capture is libtest's own mechanism: `set_output_capture` swaps this thread's buffer for ours, and libtest's spawn hook (under
+//! `--nocapture`, our own) hands the capture on to every thread spawned meanwhile, so the workers' lines land in it too. Two more pieces
+//! make it whole: `console.rs` writes through `print!` in a test build (a locked stdout bypasses the capture), and `Logger` prints each log
+//! record as the CLI's logger does (`setup_logging`), through `console::print_above`, so the records and their order against the prints are
+//! in the golden.
 //!
-//! The capture takes stdout and stderr together, as libtest's does, so which of the two a line
-//! goes to isn't in a golden: the owner's A/B of the exe captures them apart
-//! (`tools/console_diff.py`).
+//! The capture takes stdout and stderr together, as libtest's does, so which of the two a line goes to isn't in a golden: the owner's A/B
+//! of the exe captures them apart (`tools/console_diff.py`).
 
 use std::cell::Cell;
 use std::io;
@@ -23,12 +20,11 @@ use std::sync::{Arc, Mutex};
 
 type Sink = Arc<Mutex<Vec<u8>>>;
 
-/// Runs `f` and returns what it printed, with its threads' prints and every log record from Info
-/// up.
+/// Runs `f` and returns what it printed, with its threads' prints and every log record from Info up.
 pub(crate) fn capture<R>(f: impl FnOnce() -> R) -> (R, String) {
     install_logger();
-    // The detections log what they found at their first use, wherever that is: before the
-    // capture, so no golden depends on which test ran first
+    // The detections log what they found at their first use, wherever that is: before the capture, so no golden depends on which test ran
+    // first
     tmr::test_support::detect();
     let sink: Sink = Arc::new(Mutex::new(Vec::new()));
     let restore = Restore { outer: io::set_output_capture(Some(Arc::clone(&sink))), sink: Arc::clone(&sink) };
@@ -43,8 +39,8 @@ pub(crate) fn capture<R>(f: impl FnOnce() -> R) -> (R, String) {
 
 thread_local!(static DEBUG_RECORDS: Cell<bool> = const { Cell::new(false) });
 
-/// `capture`, with this thread's Debug records too, as `RUST_LOG=debug` shows them: where an event
-/// lands against the records only that level has. Other threads' records stay from Info up.
+/// `capture`, with this thread's Debug records too, as `RUST_LOG=debug` shows them: where an event lands against the records only that
+/// level has. Other threads' records stay from Info up.
 pub(crate) fn capture_with_debug<R>(f: impl FnOnce() -> R) -> (R, String) {
     /// Ends the Debug records however `f` ends
     struct Stop;
@@ -58,9 +54,8 @@ pub(crate) fn capture_with_debug<R>(f: impl FnOnce() -> R) -> (R, String) {
     capture(f)
 }
 
-/// Under `--nocapture`, as cargo-nextest runs each test, libtest captures nothing and so hands no
-/// capture on to the threads a test spawns: this thread then hands on its own, as libtest's spawn
-/// hook does, once (a hook can't be taken back, and one is enough).
+/// Under `--nocapture`, as cargo-nextest runs each test, libtest captures nothing and so hands no capture on to the threads a test spawns:
+/// this thread then hands on its own, as libtest's spawn hook does, once (a hook can't be taken back, and one is enough).
 fn hand_on_capture() {
     thread_local!(static HANDS_ON: Cell<bool> = const { Cell::new(false) });
     if !HANDS_ON.replace(true) {
@@ -74,8 +69,8 @@ fn hand_on_capture() {
     }
 }
 
-/// Puts libtest's capture back however `capture`'s closure ends. On a panic, what the closure
-/// printed goes to libtest's capture too, so the failure shows it.
+/// Puts libtest's capture back however `capture`'s closure ends. On a panic, what the closure printed goes to libtest's capture too, so the
+/// failure shows it.
 struct Restore {
     outer: Option<Sink>,
     sink: Sink,
@@ -102,9 +97,8 @@ pub(crate) fn mask_stamps(text: &str) -> String {
     mask_shape(text, "9999-99-99 99:99:99", "<stamp>")
 }
 
-/// The plan's output with what depends on this machine masked: the log stamps, and the size a
-/// chunk sized by a cache asks for (its row names the cache, `(DRAM*2)`), which a note quotes when
-/// the thread's memory made the chunk smaller.
+/// The plan's output with what depends on this machine masked: the log stamps, and the size a chunk sized by a cache asks for (its row
+/// names the cache, `(DRAM*2)`), which a note quotes when the thread's memory made the chunk smaller.
 pub(crate) fn mask_plan(text: &str) -> String {
     let text = mask_stamps(text);
     // The tests whose chunk a cache sizes: their rows' second cell is the name
@@ -125,16 +119,14 @@ pub(crate) fn mask_plan(text: &str) -> String {
         .join("\n")
 }
 
-/// A run's output with what changes from one run to the next masked: the log stamps, hh:mm:ss,
-/// what was measured (times, rates, latencies, ratios and deviations: `mask_figures`, and a
-/// latency table's figures) and addresses. Labels, counts (ops, samples, cycles), byte counts,
+/// A run's output with what changes from one run to the next masked: the log stamps, hh:mm:ss, what was measured (times, rates, latencies,
+/// ratios and deviations: `mask_figures`, and a latency table's figures) and addresses. Labels, counts (ops, samples, cycles), byte counts,
 /// glyphs and the order of the lines stay exact, but for two things the scheduler orders:
-/// - the workers' lines: a run of lines that name a thread (`[Thread 1] Running ...`, `..., thread
-///   0: idx 77`) is put in thread order, each thread's own lines in theirs;
-/// - the rows of a table of threads, sorted: the step's thread table orders its threads by their
-///   times, and its latency table by when each finished. A table's columns are as wide as its
-///   widest cell, which a masked figure no longer shows, so its cells are joined by ` | ` and its
-///   rules cut to `-`.
+/// - the workers' lines: a run of lines that name a thread (`[Thread 1] Running ...`, `..., thread 0: idx 77`) is put in thread order, each
+///   thread's own lines in theirs;
+/// - the rows of a table of threads, sorted: the step's thread table orders its threads by their times, and its latency table by when each
+///   finished. A table's columns are as wide as its widest cell, which a masked figure no longer shows, so its cells are joined by ` | `
+///   and its rules cut to `-`.
 pub(crate) fn mask_run(text: &str) -> String {
     let text = mask_shape(&mask_stamps(text), "99:99:99", "<hms>");
     let mut lines: Vec<String> = text.split('\n').map(mask_figures).collect();
@@ -211,10 +203,9 @@ fn mask_shape(text: &str, shape: &str, with: &str) -> String {
     out
 }
 
-/// One line with what a run measured masked as `#`: a time (`0.4s`, `75.3ns`), a rate (`MiB/s`,
-/// `ops/s`), a ratio (`1.20x`), a deviation (`+12.3`, signed) and a percentile (`P50=72.3`). A
-/// count stays (`163.84K ops`, `1 samples`, the Avg row's `1.0` cycles), as do byte counts, whole
-/// numbers and hex.
+/// One line with what a run measured masked as `#`: a time (`0.4s`, `75.3ns`), a rate (`MiB/s`, `ops/s`), a ratio (`1.20x`), a deviation
+/// (`+12.3`, signed) and a percentile (`P50=72.3`). A count stays (`163.84K ops`, `1 samples`, the Avg row's `1.0` cycles), as do byte
+/// counts, whole numbers and hex.
 fn mask_figures(line: &str) -> String {
     let chars: Vec<char> = line.chars().collect();
     let rest = |at: usize| chars[at..].iter().collect::<String>();
@@ -265,9 +256,8 @@ fn mask_figures(line: &str) -> String {
     out
 }
 
-/// Prints each record from Info up, and Debug on a thread under `capture_with_debug`, as the CLI's
-/// logger prints it on a console (`setup_logging`), colour and all, through `print_above` as its
-/// `LogSink` does. File-only records print nothing, as there.
+/// Prints each record from Info up, and Debug on a thread under `capture_with_debug`, as the CLI's logger prints it on a console
+/// (`setup_logging`), colour and all, through `print_above` as its `LogSink` does. File-only records print nothing, as there.
 struct Logger;
 
 impl log::Log for Logger {
@@ -299,8 +289,7 @@ impl log::Log for Logger {
     fn flush(&self) {}
 }
 
-/// Installs `Logger` once a process: the first capture does, and every test's records print
-/// from then on, into the test's own capture.
+/// Installs `Logger` once a process: the first capture does, and every test's records print from then on, into the test's own capture.
 fn install_logger() {
     static LOGGER: Logger = Logger;
     static ONCE: std::sync::Once = std::sync::Once::new();
@@ -313,8 +302,8 @@ fn install_logger() {
 mod tests {
     use super::*;
 
-    /// The capture has what the console module prints above the ticker, the log records, and what
-    /// a spawned thread prints, in the order they were printed.
+    /// The capture has what the console module prints above the ticker, the log records, and what a spawned thread prints, in the order
+    /// they were printed.
     #[test]
     fn the_capture_has_the_consoles_lines_the_logs_and_the_threads() {
         let ((), text) = capture(|| {

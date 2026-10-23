@@ -1,5 +1,5 @@
-//! The ticker as the CLI draws it, and the stamp each step's report ends with (TODO 29: moved from
-//! `progress.rs`, as functions of a `ProgressSnapshot`).
+//! The ticker as the CLI draws it, and the stamp each step's report ends with (TODO 29: moved from `progress.rs`, as functions of a
+//! `ProgressSnapshot`).
 
 use std::fmt::Write as _;
 use std::time::Duration;
@@ -10,8 +10,7 @@ use tmr::frontend::ProgressSnapshot;
 const BYTES_PER_MIB_F64: f64 = 1024.0 * 1024.0;
 const BYTES_PER_GIB_F64: f64 = 1024.0 * 1024.0 * 1024.0;
 
-/// The ticker. It starts with a blank line, which sets it off from the output above, and has two
-/// lines under that:
+/// The ticker. It starts with a blank line, which sets it off from the output above, and has two lines under that:
 ///
 /// ```text
 ///
@@ -19,8 +18,8 @@ const BYTES_PER_GIB_F64: f64 = 1024.0 * 1024.0 * 1024.0;
 /// Test 2/6 Mem-Refresh128 (00:05:12, 53%) | 285.00 GiB @ 19108.7 MiB/s (18.66 GiB/s)
 /// ```
 ///
-/// Each bracketed part appears only when the matching limit exists. Errors are always shown,
-/// the running test's live ones included; the WHEA C/UC split only when there is one.
+/// Each bracketed part appears only when the matching limit exists. Errors are always shown, the running test's live ones included; the
+/// WHEA C/UC split only when there is one.
 pub(super) fn render(snapshot: &ProgressSnapshot) -> String {
     let mut line = format!("\n{}", suite_line(snapshot, snapshot.live_errors));
 
@@ -51,16 +50,15 @@ pub(super) fn render(snapshot: &ProgressSnapshot) -> String {
     line
 }
 
-/// The ticker's first line, then the test that just ended. It is the last line of that test's
-/// report, so a record of the suite's progress stays on screen after the ticker is gone:
+/// The ticker's first line, then the test that just ended. It is the last line of that test's report, so a record of the suite's progress
+/// stays on screen after the ticker is gone:
 ///
 /// ```text
 /// Runtime: 00:03:03 | Cycle 2/2 (00:01:31, 100%) | 0 errors + 0 WHEA | Test 6/6 Mem-Refresh512 (00:00:15)
 /// ```
 ///
-/// From a snapshot taken after the test's results are in, so the error total includes this test.
-/// `duration` is the test's own measured time, the one its report shows. `None` before the first
-/// test.
+/// From a snapshot taken after the test's results are in, so the error total includes this test. `duration` is the test's own measured
+/// time, the one its report shows. `None` before the first test.
 pub(super) fn test_stamp(snapshot: &ProgressSnapshot, duration: Duration) -> Option<String> {
     let test = snapshot.test.as_ref()?;
     let mut line = suite_line(snapshot, 0);
@@ -68,8 +66,8 @@ pub(super) fn test_stamp(snapshot: &ProgressSnapshot, duration: Duration) -> Opt
     Some(line)
 }
 
-/// `Runtime | Cycle | errors`: the ticker's first line, and the start of each test's stamp.
-/// `live_errors` is what the running test has found so far, not yet in the finished tests' errors.
+/// `Runtime | Cycle | errors`: the ticker's first line, and the start of each test's stamp. `live_errors` is what the running test has
+/// found so far, not yet in the finished tests' errors.
 fn suite_line(snapshot: &ProgressSnapshot, live_errors: u64) -> String {
     let tests = snapshot.tests_per_cycle;
     let cycle = u64::from(snapshot.cycle);
@@ -88,8 +86,7 @@ fn suite_line(snapshot: &ProgressSnapshot, live_errors: u64) -> String {
     match snapshot.cycle_limit {
         Some(limit) => {
             let _ = write!(line, " | Cycle {}/{} ({}", cycle, limit, hms(snapshot.cycle_elapsed));
-            // Whole-run completion, counting finished tests only: Cycle 4/8 with 1 of 6 tests
-            // done is (3*6 + 1) / (8*6) = 40%.
+            // Whole-run completion, counting finished tests only: Cycle 4/8 with 1 of 6 tests done is (3*6 + 1) / (8*6) = 40%.
             let done = cycle.saturating_sub(1) * tests + snapshot.tests_done;
             let _ = write!(line, ", {}%)", percent(done as u128, u128::from(limit) * tests as u128));
         }
