@@ -266,7 +266,8 @@ pub struct Model {
     pub status: Status,
     /// The suite's clock: 0 until it starts, held when it ends
     pub runtime: Duration,
-    /// Where the run is, one line
+    /// Where the run is, one line: the cycle and the test, with their clocks, as the ticker gives them (`position`), and before the suite
+    /// and after it what the session is doing and how the run ended
     pub position: String,
     /// How far the run is, 0 to 1: its cycles, or its time when that ends it sooner
     pub fraction: f64,
@@ -343,6 +344,11 @@ impl Model {
         if self.status == Status::Running {
             self.status = Status::Stopping;
         }
+    }
+
+    /// The header's clock, the suite's runtime: `00:41:10`
+    pub fn runtime_line(&self) -> String {
+        hms(self.runtime)
     }
 
     /// The suite's progress, once it started
@@ -660,19 +666,41 @@ fn plan_fact(plan: &TestConfigurationReport, name: Option<&str>) -> String {
     format!("{name}{} step{} a cycle{sealed}", plan.step_count, plural(plan.step_count))
 }
 
-/// `Cycle 2 of 3 · Test 4 of 16 · Mem-StuckBit256 · Checking seal`, as the ticker counts them
+/// The cycle and the test running, each with how long it has run, in the ticker's words (crates/tmr-cli's `render/ticker.rs`):
+/// `Cycle 4/8 (00:12:34, 39%) · Test 2/6 Mem-Refresh128 (00:05:12, 52%) · Checking seal`. A percentage only where a limit gives one: the
+/// cycle's is the whole run's, the test's its own time limit's.
 fn position(s: &ProgressSnapshot) -> String {
+    let (cycle, tests) = (u64::from(s.cycle), s.tests_per_cycle);
     let mut line = match s.cycle_limit {
-        Some(limit) => format!("Cycle {} of {limit}", s.cycle),
-        None => format!("Cycle {}", s.cycle),
+        Some(limit) => {
+            // Finished tests only, as the ticker counts them: Cycle 4/8 with 1 of 6 tests done is (3*6 + 1) / (8*6) = 39%
+            let done = cycle.saturating_sub(1) * tests + s.tests_done;
+            format!("Cycle {cycle}/{limit} ({}, {}%)", hms(s.cycle_elapsed), percent(done.into(), u128::from(limit) * u128::from(tests)))
+        }
+        None => format!("Cycle {cycle} ({})", hms(s.cycle_elapsed)),
     };
     if let Some(test) = &s.test {
-        line += &format!(" · Test {} of {} · {}", test.number, s.tests_per_cycle, test.name);
+        line += &format!(" · Test {}/{tests} {} ({}", test.number, test.name, hms(test.elapsed));
+        if let Some(limit) = test.time_limit {
+            line += &format!(", {}%", percent(test.elapsed.as_millis(), limit.as_millis()));
+        }
+        line.push(')');
         if let Some(stage) = test.live.stage.map(|stage| stage.label()).filter(|label| !label.is_empty()) {
             line += &format!(" · {stage}");
         }
     }
     line
+}
+
+/// `part` as a whole percentage of `whole`, rounded down and capped at 100, as the ticker's; 0 when `whole` is 0
+fn percent(part: u128, whole: u128) -> u128 {
+    (part * 100).checked_div(whole).map_or(0, |p| p.min(100))
+}
+
+/// `00:41:10`, the ticker's clock
+fn hms(d: Duration) -> String {
+    let secs = d.as_secs();
+    format!("{:02}:{:02}:{:02}", secs / 3600, secs / 60 % 60, secs % 60)
 }
 
 /// How far the run is: its finished tests against its cycle limit's, as the ticker's percentage counts them, or its runtime against its
@@ -745,7 +773,7 @@ pub fn args_of(text: &str) -> Vec<String> {
 #[cfg(test)]
 mod tests {
     use tmr::frontend::{
-        AllocationThread, CacheInfo, CpuInfo, ErrorMode, LiveFigures, MemoryModule, MemoryStatus, Selection, StepConfigLine,
+        AllocationThread, CacheInfo, CpuInfo, ErrorMode, LiveFigures, MemoryModule, MemoryStatus, Selection, Stage, StepConfigLine,
         SystemInfoReport, TestSnapshot, TestSummary, ThreadTimingReport, TscCalibrationInfo,
     };
 
@@ -1206,8 +1234,8 @@ mod tests {
         assert_eq!((m.runtime, m.series.received), (Duration::ZERO, 0), "before the suite begins");
 
         m.tick(Some(snapshot(0)), Vec::new());
-        assert_eq!(m.runtime, Duration::from_secs(95));
-        assert_eq!(m.position, "Cycle 2 of 4 · Test 3 of 6 · Mem-Refresh128");
+        assert_eq!((m.runtime, m.runtime_line().as_str()), (Duration::from_secs(95), "00:01:35"));
+        assert_eq!(m.position, "Cycle 2/4 (00:00:30, 33%) · Test 3/6 Mem-Refresh128 (00:00:05)");
         assert_eq!(m.fraction, 8.0 / 24.0, "a cycle and 2 tests of 4 cycles of 6");
         assert_eq!(m.series.latest().map(|v| (v * 10.0).round() / 10.0), Some(19108.7));
         assert_eq!(m.series.marks().count(), 1, "the finished test's error");
@@ -1231,6 +1259,83 @@ mod tests {
         let later = ProgressSnapshot { runtime: Duration::from_secs(500), ..snapshot(0) };
         m.tick(Some(later), Vec::new());
         assert_eq!((m.runtime, m.series.received), (Duration::from_secs(95), 4));
+    }
+
+    /// The ticker's golden (crates/tmr-cli's `testdata/console/ticker.txt`), each `## case` and its lines
+    fn ticker_golden() -> Vec<(String, String)> {
+        let text = include_str!("../../tmr-cli/testdata/console/ticker.txt").replace("\r\n", "\n");
+        text.split("## ")
+            .filter(|case| !case.is_empty())
+            .filter_map(|case| case.split_once('\n'))
+            .map(|(n, t)| (n.into(), t.into()))
+            .collect()
+    }
+
+    /// Each of `parts`, a window line's, cut at its ` · `, is word for word in the golden's `case`: the window and the console's ticker
+    /// say the same, which a change to the ticker that the window doesn't follow breaks
+    fn in_the_ticker(case: &str, parts: &[&str]) {
+        let golden = ticker_golden();
+        let (_, text) = golden.iter().find(|(name, _)| name == case).unwrap_or_else(|| panic!("no case {case:?} in {golden:?}"));
+        for part in parts.iter().flat_map(|part| part.split(" · ")) {
+            assert!(text.contains(part), "{part:?} is not in the ticker's {case:?}:\n{text}");
+        }
+    }
+
+    /// The ticker golden's snapshot (crates/tmr-cli's `render/tests.rs`): 41:10 into a run of 8 cycles or an hour, cycle 4 12:34 in with 1
+    /// of its 6 tests done, its second 5:12 into its own 10 minutes, its figures in
+    fn ticker_snapshot() -> ProgressSnapshot {
+        ProgressSnapshot {
+            runtime: Duration::from_secs(41 * 60 + 10),
+            time_limit: Some(Duration::from_secs(3600)),
+            cycle: 4,
+            cycle_limit: Some(8),
+            cycle_elapsed: Duration::from_secs(12 * 60 + 34),
+            tests_done: 1,
+            tests_per_cycle: 6,
+            finished_errors: 0,
+            live_errors: 0,
+            whea: WheaCounts::default(),
+            test: Some(TestSnapshot {
+                number: 2,
+                name: "Mem-Refresh128".to_string(),
+                elapsed: Duration::from_secs(5 * 60 + 12),
+                time_limit: Some(Duration::from_secs(600)),
+                finished: false,
+                publishes: true,
+                live: LiveFigures { published: true, bytes: 285 << 30, bytes_per_sec: 19108.7 * MIB, ..Default::default() },
+            }),
+        }
+    }
+
+    /// The position line in the ticker's words, its cases: a cycle limit and a test's time limit, each with its percentage; no limits, so
+    /// no percentages, and a stage; before the first test, the cycle alone
+    #[test]
+    fn the_position_line_is_the_tickers() {
+        let running = ticker_snapshot();
+        assert_eq!(position(&running), "Cycle 4/8 (00:12:34, 39%) · Test 2/6 Mem-Refresh128 (00:05:12, 52%)");
+        in_the_ticker("limits, a test on its own time limit, its figures in", &[&position(&running)]);
+
+        let mut unlimited = ticker_snapshot();
+        (unlimited.time_limit, unlimited.cycle_limit, unlimited.cycle) = (None, None, 12);
+        let test = unlimited.test.as_mut().unwrap();
+        test.time_limit = None;
+        test.live = LiveFigures { stage: Some(Stage::CheckingSeal), ..Default::default() };
+        assert_eq!(position(&unlimited), "Cycle 12 (00:12:34) · Test 2/6 Mem-Refresh128 (00:05:12) · Checking seal");
+        in_the_ticker("no limits, errors and WHEA, a stage, no figures yet", &[&position(&unlimited)]);
+
+        let before = ProgressSnapshot { test: None, cycle: 1, tests_done: 0, cycle_elapsed: Duration::ZERO, ..ticker_snapshot() };
+        assert_eq!(position(&before), "Cycle 1/8 (00:00:00, 0%)");
+        in_the_ticker("before the first test", &[&position(&before)]);
+
+        // The last cycle's last test past its time: each percentage caps at 100
+        let mut over = ProgressSnapshot { cycle: 8, tests_done: 6, ..ticker_snapshot() };
+        over.test.as_mut().unwrap().elapsed = Duration::from_secs(700);
+        assert_eq!(position(&over), "Cycle 8/8 (00:12:34, 100%) · Test 2/6 Mem-Refresh128 (00:11:40, 100%)");
+        assert_eq!(
+            (hms(Duration::from_secs(100 * 3600 + 61)), percent(1, 0)),
+            ("100:01:01".to_string(), 0),
+            "a night's clock; nothing of 0"
+        );
     }
 
     /// The progress takes whichever limit is nearer, or with neither, the cycle's tests

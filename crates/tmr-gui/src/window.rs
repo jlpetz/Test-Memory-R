@@ -247,8 +247,6 @@ impl Window {
     /// timer.
     fn header(&self, row: i32, context: &ViewContext<Self>) -> View {
         let p = self.palette();
-        let secs = self.model.runtime.as_secs();
-        let runtime = format!("{:02}:{:02}:{:02}", secs / 3600, secs / 60 % 60, secs % 60);
         let info = self.model.info_line();
         Grid::new()
             .grid_row(row)
@@ -289,7 +287,7 @@ impl Window {
                 // The timer keeps reactor's default font: 0.100.0's TextBlock has no font family; the next release adds it (owner's note
                 // 6).
                 TextBlock::new()
-                    .text(runtime)
+                    .text(self.model.runtime_line())
                     .font_size(20.0)
                     .font_weight(FontWeight::SEMI_LIGHT)
                     .foreground(brush(p.text_primary))
