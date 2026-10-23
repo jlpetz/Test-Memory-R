@@ -62,3 +62,5 @@ TM5 to the community.
 
 - Serj's work: <https://testmem.tz.ru>
 - TM5 page: <https://testmem.tz.ru/testmem5.htm>
+
+![TestMem5 v0.12 testing a Ryzen 7 5700X with anta777's configuration](doc/images/tm5.png)
