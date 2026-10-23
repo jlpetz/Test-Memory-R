@@ -39,17 +39,32 @@ impl Machine {
     }
 }
 
-/// A memory module's line in the DIMM list: its locator, its maker and part number, its capacity and its speed. A field SMBIOS left empty
-/// (a VM's often are) shows as `–`.
+/// A memory module, as the DIMM selector shows it: its name, the locator, or `DIMM 2` where SMBIOS left that empty, and the rest SMBIOS
+/// gives, `G.Skill F5-6000J3040G32G · 32 GiB · 6000 MT/s`, a field it left empty (a VM's often are) left out.
 #[derive(Clone, Debug, PartialEq)]
 pub struct Dimm {
-    pub locator: String,
-    pub part: String,
-    pub capacity: String,
-    pub speed: String,
+    pub name: String,
+    pub details: String,
 }
 
-/// The system panel's lines.
+impl Dimm {
+    /// Its item in the selector's menu, which names it when it is chosen (`SystemPanel::choose`)
+    pub fn choice(&self) -> String {
+        if self.details.is_empty() { self.name.clone() } else { format!("{} · {}", self.name, self.details) }
+    }
+}
+
+/// The system panel's memory line: the memory's total, the DIMMs' count, an item of its own, and the total's tooltip.
+#[derive(Clone, Debug, PartialEq)]
+pub struct MemoryLine {
+    /// `64 GiB DDR5`, the modules' total and their type when they share one; with none listed, what Windows reports, if it has yet
+    pub total: Option<String>,
+    /// `2 DIMMs`
+    pub dimms: String,
+    pub about: String,
+}
+
+/// The system panel's lines: the CPU, the caches, the memory, and the DIMM chosen in its selector.
 #[derive(Clone, Debug, PartialEq)]
 pub struct SystemPanel {
     pub cpu: String,
@@ -58,9 +73,12 @@ pub struct SystemPanel {
     pub cache_line: String,
     /// The cache line's tooltip: each level and where the sizes came from
     pub cache_detail: String,
+    /// The modules SMBIOS lists, in its order
     pub dimms: Vec<Dimm>,
-    /// The DIMM list's title: `2 × DDR5 · 64 GiB total`
-    pub dimm_title: String,
+    /// The modules' total and type, `64 GiB DDR5`, when SMBIOS gives their sizes
+    installed: Option<String>,
+    /// The DIMM the selector shows: the first, until another is chosen
+    chosen: usize,
 }
 
 impl SystemPanel {
@@ -69,7 +87,7 @@ impl SystemPanel {
         let total: u64 = modules.iter().map(|m| m.capacity_bytes).sum();
         let types: Vec<&str> = modules.iter().filter_map(|m| memory_type(m.memory_type)).collect();
         let kind = match types.first() {
-            Some(kind) if types.iter().all(|t| t == kind) => format!(" × {kind}"),
+            Some(kind) if types.iter().all(|t| t == kind) => format!(" {kind}"),
             _ => String::new(),
         };
         SystemPanel {
@@ -77,12 +95,44 @@ impl SystemPanel {
             cpu_detail: format!("{}\n{} cores, {} logical CPUs", machine.cpu, machine.physical_cores, machine.logical_cpus),
             cache_line: cache_line(machine),
             cache_detail: cache_detail(machine),
-            dimms: modules.iter().map(dimm).collect(),
-            dimm_title: if modules.is_empty() {
-                "SMBIOS lists no memory modules".to_string()
-            } else {
-                format!("{}{kind} · {} total", modules.len(), size(total as usize))
-            },
+            dimms: modules.iter().enumerate().map(|(i, module)| dimm(i, module)).collect(),
+            installed: (total > 0).then(|| format!("{}{kind}", size(total as usize))),
+            chosen: 0,
+        }
+    }
+
+    /// The memory line, `64 GiB DDR5 · 2 DIMMs`. `ram_bytes` is what Windows reports, a little under what is installed, which the
+    /// total's tooltip gives, and the total is when SMBIOS gives no sizes.
+    pub fn memory_line(&self, ram_bytes: Option<u64>) -> MemoryLine {
+        let windows = ram_bytes.map(|bytes| size(bytes as usize));
+        let dimms = match self.dimms.len() {
+            0 => "SMBIOS lists no DIMMs".to_string(),
+            n => format!("{n} DIMM{}", if n == 1 { "" } else { "s" }),
+        };
+        let about = match (&self.installed, &windows) {
+            (Some(_), Some(windows)) => {
+                format!("Installed, as SMBIOS lists the modules. Windows reports {windows} (GlobalMemoryStatusEx), a little under it.")
+            }
+            (Some(_), None) => "Installed, as SMBIOS lists the modules".to_string(),
+            (None, _) => "The physical memory Windows reports (GlobalMemoryStatusEx), a little under what is installed".to_string(),
+        };
+        MemoryLine { total: self.installed.clone().or(windows), dimms, about }
+    }
+
+    /// The DIMM the selector shows; `None` when SMBIOS lists none
+    pub fn chosen(&self) -> Option<&Dimm> {
+        self.dimms.get(self.chosen)
+    }
+
+    /// The selector's menu offers a choice: there are several
+    pub fn choosable(&self) -> bool {
+        self.dimms.len() > 1
+    }
+
+    /// The DIMM whose menu item is `choice` (`Dimm::choice`) is the one shown; a choice that names none changes nothing
+    pub fn choose(&mut self, choice: &str) {
+        if let Some(i) = self.dimms.iter().position(|dimm| dimm.choice() == choice) {
+            self.chosen = i;
         }
     }
 }
@@ -124,15 +174,19 @@ fn cache_detail(m: &Machine) -> String {
     lines.join("\n")
 }
 
-fn dimm(m: &MemoryModule) -> Dimm {
-    let or_dash = |text: &str| if text.trim().is_empty() { "–".to_string() } else { text.trim().to_string() };
+/// The `index`th module SMBIOS lists, from 0
+fn dimm(index: usize, m: &MemoryModule) -> Dimm {
     let part = format!("{} {}", m.manufacturer.trim(), m.part_number.trim());
-    Dimm {
-        locator: or_dash(&m.locator),
-        part: or_dash(&part),
-        capacity: if m.capacity_bytes > 0 { size(m.capacity_bytes as usize) } else { "–".to_string() },
-        speed: if m.speed_mts > 0 { m.speed_mts.to_string() } else { "–".to_string() },
-    }
+    let details: Vec<String> = [
+        Some(part.trim().to_string()).filter(|part| !part.is_empty()),
+        (m.capacity_bytes > 0).then(|| size(m.capacity_bytes as usize)),
+        (m.speed_mts > 0).then(|| format!("{} MT/s", m.speed_mts)),
+    ]
+    .into_iter()
+    .flatten()
+    .collect();
+    let locator = m.locator.trim();
+    Dimm { name: if locator.is_empty() { format!("DIMM {}", index + 1) } else { locator.to_string() }, details: details.join(" · ") }
 }
 
 /// The SMBIOS memory type's name (Type 17 offset 0x12), for the ones a DDR5 tester meets
@@ -192,41 +246,87 @@ mod tests {
         }
     }
 
-    /// A desktop's: the caches in one line with every level in its tooltip, and each DIMM
+    /// What Windows reports of a desktop's 64 GiB
+    const WINDOWS: Option<u64> = Some(67_000_000_000);
+
+    fn shown(name: &str, details: &str) -> Dimm {
+        Dimm { name: name.to_string(), details: details.to_string() }
+    }
+
+    /// A desktop's: the caches in one line with every level in its tooltip; the memory's total and its DIMMs, the first shown in the
+    /// selector until another is chosen
     #[test]
-    fn a_desktop_shows_its_caches_and_dimms() {
-        let panel = SystemPanel::of(&machine(vec![module("DIMM_A2", 32), module("DIMM_B2", 32)]));
+    fn a_desktop_shows_its_caches_and_its_dimms_the_first_chosen() {
+        let fast = MemoryModule {
+            manufacturer: "Kingston".to_string(),
+            part_number: "KF564C32-32".to_string(),
+            speed_mts: 6400,
+            ..module("DIMM_B2", 32)
+        };
+        let mut panel = SystemPanel::of(&machine(vec![module("DIMM_A2", 32), fast]));
         assert_eq!(panel.cache_line, "L1 32 KiB · L2 1 MiB per core · L3 16 MiB");
         assert_eq!(
             panel.cache_detail,
             "L1 data: 32 KiB per core\nL1 instruction: 32 KiB per core\nL2: 1 MiB per core\nL3: 16 MiB, shared\n64-byte lines\nfrom raw_cpuid leaf 4"
         );
         assert_eq!(panel.cpu_detail, "AMD Ryzen 5 8600G w/ Radeon 760M Graphics\n6 cores, 12 logical CPUs");
-        assert_eq!(panel.dimm_title, "2 × DDR5 · 64 GiB total");
-        let dimm = Dimm {
-            locator: "DIMM_A2".to_string(),
-            part: "G.Skill F5-6000J3040G32G".to_string(),
-            capacity: "32 GiB".to_string(),
-            speed: "6000".to_string(),
-        };
-        assert_eq!(panel.dimms[0], dimm);
+        assert_eq!(panel.memory_line(WINDOWS), MemoryLine {
+            total: Some("64 GiB DDR5".to_string()),
+            dimms: "2 DIMMs".to_string(),
+            about: "Installed, as SMBIOS lists the modules. Windows reports 62.4 GiB (GlobalMemoryStatusEx), a little under it."
+                .to_string(),
+        });
+        assert_eq!(panel.memory_line(None).about, "Installed, as SMBIOS lists the modules", "before Windows' figure");
+
+        let (a2, b2) = (
+            shown("DIMM_A2", "G.Skill F5-6000J3040G32G · 32 GiB · 6000 MT/s"),
+            shown("DIMM_B2", "Kingston KF564C32-32 · 32 GiB · 6400 MT/s"),
+        );
+        assert_eq!((panel.chosen(), panel.choosable()), (Some(&a2), true), "the first, before any choice");
+        let choices: Vec<String> = panel.dimms.iter().map(Dimm::choice).collect();
+        assert_eq!(choices, [
+            "DIMM_A2 · G.Skill F5-6000J3040G32G · 32 GiB · 6000 MT/s",
+            "DIMM_B2 · Kingston KF564C32-32 · 32 GiB · 6400 MT/s"
+        ]);
+        panel.choose(&choices[1]);
+        assert_eq!(panel.chosen(), Some(&b2));
+        panel.choose("DIMM_C2");
+        assert_eq!(panel.chosen(), Some(&b2), "a choice that names no DIMM changes nothing");
+        panel.choose(&choices[0]);
+        assert_eq!(panel.chosen(), Some(&a2));
     }
 
-    /// A VM's: a module SMBIOS says little about, or none at all
+    /// One DIMM: shown, with nothing to choose
+    #[test]
+    fn one_dimm_is_shown_with_nothing_to_choose() {
+        let panel = SystemPanel::of(&machine(vec![module("DIMM_A2", 32)]));
+        let memory = panel.memory_line(WINDOWS);
+        assert_eq!((memory.total.as_deref(), memory.dimms.as_str()), (Some("32 GiB DDR5"), "1 DIMM"));
+        let a2 = shown("DIMM_A2", "G.Skill F5-6000J3040G32G · 32 GiB · 6000 MT/s");
+        assert_eq!((panel.chosen(), panel.choosable()), (Some(&a2), false));
+    }
+
+    /// A VM's: modules SMBIOS says little about, named by their place, or none at all, when the total is Windows'
     #[test]
     fn a_vm_shows_what_smbios_gives() {
-        let blank = MemoryModule { capacity_bytes: 64 << 30, ..Default::default() };
-        let panel = SystemPanel::of(&machine(vec![blank]));
-        assert_eq!(panel.dimm_title, "1 · 64 GiB total");
-        assert_eq!(panel.dimms[0], Dimm {
-            locator: "–".to_string(),
-            part: "–".to_string(),
-            capacity: "64 GiB".to_string(),
-            speed: "–".to_string()
+        let blank = MemoryModule { capacity_bytes: 32 << 30, ..Default::default() };
+        let panel = SystemPanel::of(&machine(vec![blank.clone(), blank]));
+        assert_eq!(panel.memory_line(WINDOWS).total.as_deref(), Some("64 GiB"), "no type");
+        assert_eq!(panel.dimms, [shown("DIMM 1", "32 GiB"), shown("DIMM 2", "32 GiB")]);
+        assert_eq!(panel.dimms.iter().map(Dimm::choice).collect::<Vec<_>>(), ["DIMM 1 · 32 GiB", "DIMM 2 · 32 GiB"]);
+        assert_eq!(shown("DIMM 1", "").choice(), "DIMM 1", "nothing more to say");
+
+        let none = SystemPanel::of(&machine(Vec::new()));
+        assert_eq!(none.memory_line(WINDOWS), MemoryLine {
+            total: Some("62.4 GiB".to_string()),
+            dimms: "SMBIOS lists no DIMMs".to_string(),
+            about: "The physical memory Windows reports (GlobalMemoryStatusEx), a little under what is installed".to_string(),
         });
-        assert_eq!(SystemPanel::of(&machine(Vec::new())).dimm_title, "SMBIOS lists no memory modules");
-        let none = Machine { l1_data: 0, l1_instruction: 0, l2: 0, l3: 0, ..machine(Vec::new()) };
-        assert_eq!(cache_line(&none), "caches not found");
+        assert_eq!(none.memory_line(None).total, None, "before Windows' figure");
+        assert_eq!((none.chosen(), none.choosable()), (None, false));
+
+        let no_caches = Machine { l1_data: 0, l1_instruction: 0, l2: 0, l3: 0, ..machine(Vec::new()) };
+        assert_eq!(cache_line(&no_caches), "caches not found");
         assert_eq!([49152, 2 << 20, 67_000_000_000].map(size), ["48 KiB", "2 MiB", "62.4 GiB"]);
     }
 }

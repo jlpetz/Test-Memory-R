@@ -16,7 +16,6 @@ use windows_reactor::*;
 use crate::logger::{self, LogLines};
 use crate::model::{Model, Status, StepRow};
 use crate::palette::{Palette, Palettes, brush};
-use crate::sysinfo::{self, SystemPanel};
 use crate::{Feed, GuiFrontend, chart};
 
 const PAGE_MARGIN_X: f64 = 20.0;
@@ -36,6 +35,8 @@ pub(crate) enum Message {
     Args(String),
     /// The restart dialog's answer: its primary button exits, its close button (and Esc) continues on 4 KiB pages
     Restart(ContentDialogResult),
+    /// A DIMM chosen in the system panel's selector: its menu item
+    Dimm(String),
     Scheme(ColorScheme),
     Size(WindowSize),
 }
@@ -188,6 +189,7 @@ impl Component for Window {
                 ContentDialogResult::Primary => RestartChoice::Exit,
                 _ => RestartChoice::Continue4K,
             }),
+            Message::Dimm(choice) => self.model.choose_dimm(&choice),
             Message::Scheme(scheme) => self.dark = scheme == ColorScheme::Dark,
             Message::Size(size) => self.width = size.width,
         }
@@ -217,7 +219,7 @@ impl Component for Window {
                 GridLength::Auto,      // parameters, buttons
             ])
             .children((
-                self.header(0),
+                self.header(0, context),
                 self.position(1),
                 self.chart_card(2),
                 self.results(3),
@@ -243,7 +245,7 @@ impl Window {
 
     /// Two rows on the left (title + badge + timer, then the info line); the system panel spans both on the right, right-justified like the
     /// timer.
-    fn header(&self, row: i32) -> View {
+    fn header(&self, row: i32, context: &ViewContext<Self>) -> View {
         let p = self.palette();
         let secs = self.model.runtime.as_secs();
         let runtime = format!("{:02}:{:02}:{:02}", secs / 3600, secs / 60 % 60, secs % 60);
@@ -308,7 +310,7 @@ impl Window {
                     .grid_row_span(2)
                     .grid_column(5)
                     .vertical_alignment(VerticalAlignment::Center)
-                    .content(self.system_info()),
+                    .content(self.system_info(context)),
                 TextBlock::new()
                     .text(info.clone())
                     .foreground(brush(p.text_secondary))
@@ -321,105 +323,63 @@ impl Window {
             ))
     }
 
-    /// CPU, RAM + the DIMM drop-down, caches; every line right-justified. Empty until the session's setup has detected them.
-    fn system_info(&self) -> View {
+    /// Four lines, every one right-justified: the CPU, the caches, the memory's total and its DIMMs, and the DIMM selector with the chosen
+    /// DIMM's details. Empty until the session's setup has detected them.
+    fn system_info(&self, context: &ViewContext<Self>) -> View {
         let p = self.palette();
-        let Some(s) = &self.model.system else {
+        let (Some(s), Some(memory)) = (&self.model.system, self.model.memory_line()) else {
             return TextBlock::new()
                 .text("System info: at Start")
                 .foreground(brush(p.text_secondary))
                 .horizontal_alignment(HorizontalAlignment::Right)
                 .into();
         };
-        let dimms = s.dimms.len();
-        let dimm_label = format!("{dimms} DIMM{} ▾", if dimms == 1 { "" } else { "s" });
-        // DropDownButton takes no flyout in 0.100.0 (the native side attaches flyouts to Button and SplitButton only), so this is a subtle
-        // Button with a ▾ and a flyout. The negative margin cancels the button's padding so the line keeps text height and lines up right.
-        let dimm_button = Button::new()
-            .style(ButtonStyle::Subtle)
-            .margin(Thickness::new(0.0, -5.0, -11.0, -6.0))
-            .vertical_alignment(VerticalAlignment::Center)
-            .content(TextBlock::new().text(dimm_label).foreground(brush(p.text_primary)))
-            .flyout_with(Flyout::rich(self.dimm_table(s)).placement(FlyoutPlacement::BottomEdgeAlignedRight));
-        let ram = self.model.ram_bytes.map_or("RAM ·".to_string(), |bytes| format!("{} RAM ·", sysinfo::size(bytes as usize)));
-        StackPanel::new().spacing(2.0).horizontal_alignment(HorizontalAlignment::Right).children((
-            TextBlock::new()
-                .text(s.cpu.clone())
-                .font_size(13.0)
-                .font_weight(FontWeight::SEMI_BOLD)
-                .foreground(brush(p.text_primary))
-                .max_width(380.0)
-                .text_trimming(TextTrimming::CharacterEllipsis)
-                .horizontal_alignment(HorizontalAlignment::Right)
-                .tooltip(s.cpu_detail.clone()),
-            StackPanel::new().orientation(Orientation::Horizontal).horizontal_alignment(HorizontalAlignment::Right).spacing(6.0).children(
-                (
-                    TextBlock::new()
-                        .text(ram)
-                        .foreground(brush(p.text_secondary))
-                        .vertical_alignment(VerticalAlignment::Center)
-                        .tooltip("The physical memory Windows reports (GlobalMemoryStatusEx), a little under what is installed"),
-                    dimm_button,
-                ),
-            ),
-            TextBlock::new()
-                .text(s.cache_line.clone())
-                .foreground(brush(p.text_secondary))
-                .horizontal_alignment(HorizontalAlignment::Right)
-                .tooltip(s.cache_detail.clone()),
-        ))
-    }
-
-    /// The DIMM flyout: one line per module, from SMBIOS's memory devices. Manufacturer and part number share a column: WinUI's
-    /// FlyoutPresenter caps the width at 456 px (FlyoutThemeMaxWidth, not settable from reactor 0.100.0) and scrolls sideways past it,
-    /// which five columns overran.
-    fn dimm_table(&self, s: &SystemPanel) -> View {
-        let p = self.palette();
-        const HEADINGS: [&str; 4] = ["Locator", "Manufacturer · part number", "Capacity", "MT/s"];
-        let numeric = |c: usize| c >= 2;
-        let align = |c: usize| if numeric(c) { HorizontalAlignment::Right } else { HorizontalAlignment::Left };
-        let mut cells: Vec<(u64, View)> = Vec::new();
-        for (c, heading) in HEADINGS.iter().enumerate() {
-            cells.push((
-                c as u64,
+        let secondary =
+            |text: String| TextBlock::new().text(text).foreground(brush(p.text_secondary)).vertical_alignment(VerticalAlignment::Center);
+        let line = || StackPanel::new().orientation(Orientation::Horizontal).horizontal_alignment(HorizontalAlignment::Right).spacing(6.0);
+        let mut lines: Vec<(u64, View)> = vec![
+            (
+                0,
                 TextBlock::new()
-                    .text(*heading)
+                    .text(s.cpu.clone())
+                    .font_size(13.0)
                     .font_weight(FontWeight::SEMI_BOLD)
-                    .foreground(brush(p.text_secondary))
-                    .horizontal_alignment(align(c))
-                    .grid_row(0)
-                    .grid_column(c as i32)
-                    .into(),
-            ));
+                    .foreground(brush(p.text_primary))
+                    .max_width(380.0)
+                    .text_trimming(TextTrimming::CharacterEllipsis)
+                    .horizontal_alignment(HorizontalAlignment::Right)
+                    .tooltip(s.cpu_detail.clone()),
+            ),
+            (1, secondary(s.cache_line.clone()).horizontal_alignment(HorizontalAlignment::Right).tooltip(s.cache_detail.clone())),
+        ];
+        let count = |dimms: String| secondary(dimms).tooltip("The memory modules SMBIOS lists");
+        let memory_line = match memory.total {
+            Some(total) => line().children((secondary(total).tooltip(memory.about), secondary("·".to_string()), count(memory.dimms))),
+            None => line().children((count(memory.dimms),)),
+        };
+        lines.push((2, memory_line));
+        if let Some(dimm) = s.chosen() {
+            let name =
+                |text: String| TextBlock::new().text(text).foreground(brush(p.text_primary)).vertical_alignment(VerticalAlignment::Center);
+            // A menu of the DIMMs, each with its details, on a subtle Button with a ▾: DropDownButton takes a menu too, but 0.100.0 gives it
+            // no subtle style, and its border would make the line taller than text. The negative margin cancels the button's padding for the
+            // same reason, and keeps the line's spacing to the details. With one DIMM there is nothing to choose: its name alone.
+            let selector: View = if s.choosable() {
+                let choices = s.dimms.iter().enumerate().map(|(i, dimm)| MenuItem::item(i, dimm.choice()));
+                Button::new()
+                    .style(ButtonStyle::Subtle)
+                    .margin(Thickness::new(0.0, -5.0, -11.0, -6.0))
+                    .vertical_alignment(VerticalAlignment::Center)
+                    .content(name(format!("{} ▾", dimm.name)))
+                    .menu(Menu::new(choices, context.callback(Message::Dimm)))
+            } else {
+                name(dimm.name.clone()).into()
+            };
+            let details =
+                secondary(dimm.details.clone()).max_width(300.0).text_trimming(TextTrimming::CharacterEllipsis).tooltip(dimm.choice());
+            lines.push((3, line().children((selector, details))));
         }
-        for (r, d) in s.dimms.iter().enumerate() {
-            let values = [&d.locator, &d.part, &d.capacity, &d.speed];
-            for (c, value) in values.into_iter().enumerate() {
-                cells.push((
-                    ((r + 1) * 8 + c) as u64,
-                    TextBlock::new()
-                        .text(value.clone())
-                        .foreground(brush(p.text_primary))
-                        .is_text_selection_enabled(true)
-                        .horizontal_alignment(align(c))
-                        .grid_row((r + 1) as i32)
-                        .grid_column(c as i32)
-                        .into(),
-                ));
-            }
-        }
-        StackPanel::new().spacing(10.0).children((
-            TextBlock::new()
-                .text(format!("Memory modules · {}", s.dimm_title))
-                .font_weight(FontWeight::SEMI_BOLD)
-                .foreground(brush(p.text_primary)),
-            Grid::new()
-                .column_spacing(16.0)
-                .row_spacing(4.0)
-                .rows(std::iter::repeat_n(GridLength::Auto, s.dimms.len() + 1))
-                .columns([GridLength::Auto; 4])
-                .keyed_children(cells),
-        ))
+        StackPanel::new().spacing(2.0).horizontal_alignment(HorizontalAlignment::Right).keyed_children(lines)
     }
 
     fn position(&self, row: i32) -> View {

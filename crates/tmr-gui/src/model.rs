@@ -17,7 +17,7 @@ use tmr::frontend::{
 };
 use tmr::session::{SessionEnd, Stopped};
 
-use crate::sysinfo::{Machine, SystemPanel};
+use crate::sysinfo::{Machine, MemoryLine, SystemPanel};
 
 const MIB: f64 = 1024.0 * 1024.0;
 const GIB: f64 = 1024.0 * 1024.0 * 1024.0;
@@ -348,6 +348,18 @@ impl Model {
     /// The suite's progress, once it started
     pub fn progress(&self) -> Option<&Arc<ProgressTracker>> {
         self.progress.as_ref()
+    }
+
+    /// The system panel's memory line, once setup has detected the machine: the modules' total and count, and Windows' figure
+    pub fn memory_line(&self) -> Option<MemoryLine> {
+        self.system.as_ref().map(|system| system.memory_line(self.ram_bytes))
+    }
+
+    /// A DIMM was chosen in the system panel's selector, by its menu item (`Dimm::choice`)
+    pub fn choose_dimm(&mut self, choice: &str) {
+        if let Some(system) = &mut self.system {
+            system.choose(choice);
+        }
     }
 
     /// The info line: the session's facts, or until there are any, the command Start runs (ran)
@@ -1000,7 +1012,11 @@ mod tests {
             (system.cpu.as_str(), system.cache_line.as_str()),
             ("AMD Ryzen 5 8600G w/ Radeon 760M Graphics", "L1 32 KiB · L2 1 MiB per core · L3 16 MiB")
         );
-        assert_eq!(system.dimm_title, "1 × DDR5 · 32 GiB total");
+        let memory = m.memory_line().expect("the memory line");
+        assert_eq!((memory.total.as_deref(), memory.dimms.as_str()), (Some("32 GiB DDR5"), "1 DIMM"));
+        assert!(memory.about.contains("Windows reports 62 GiB"), "{}", memory.about);
+        m.choose_dimm("DIMM_A2 · 32 GiB");
+        assert_eq!(m.system.as_ref().and_then(SystemPanel::chosen).map(|dimm| dimm.details.as_str()), Some("32 GiB"));
         assert_eq!(m.errors, [
             "Large pages are set up but take effect after Windows restarts: this run takes 4 KiB pages (minpage=regular)",
             "priority=realtime with a worker on every logical CPU: the window can freeze until the run ends"
