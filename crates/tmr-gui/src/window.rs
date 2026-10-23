@@ -7,8 +7,8 @@
 //! It draws `Model`, and re-renders only when a message arrives: a batch from the feed (at least every 500 ms while the session runs), a
 //! button, the dialog's answer, a keystroke in the box, a theme change or a resize. Nothing animates.
 
-use std::sync::Arc;
 use std::sync::mpsc::{self, Receiver, RecvTimeoutError};
+use std::sync::{Arc, OnceLock};
 use std::time::Duration;
 
 use tmr::frontend::{Event, ProgressSnapshot, ProgressTracker, RestartChoice, Run};
@@ -27,6 +27,18 @@ const PROGRESS_HEIGHT: f64 = 22.0;
 const TICK: Duration = Duration::from_millis(500);
 /// The rows and error lines drawn, the newest: a night's run has thousands, and every redraw builds the ones drawn
 const SHOWN: usize = 200;
+
+/// The title bar's icon (TODO 7), the exe's own (crates/tmr-app/tmr.ico). WinUI's AppWindow takes an icon only as an .ico file's path,
+/// so it is written once to the temp directory; `None` when it can't be, and the window keeps Windows' default.
+fn icon_path() -> Option<&'static str> {
+    static PATH: OnceLock<Option<String>> = OnceLock::new();
+    PATH.get_or_init(|| {
+        let path = std::env::temp_dir().join("tmr-icon.ico");
+        std::fs::write(&path, include_bytes!("../../tmr-app/tmr.ico")).ok()?;
+        Some(path.to_string_lossy().into_owned())
+    })
+    .as_deref()
+}
 
 pub(crate) enum Message {
     Feed(Box<Batch>),
@@ -198,13 +210,15 @@ impl Component for Window {
 
     fn view(&self, _args: &Vec<String>, context: &mut ViewContext<Self>) -> View {
         context.window_title(format!("Test Memory R (TMR) v{}", env!("CARGO_PKG_VERSION")));
-        context.window_visuals(
-            WindowVisuals::new()
-                .backdrop(WindowBackdrop::Mica)
-                .theme(WindowTheme::System)
-                .client_size(860.0, 960.0)
-                .constraints(WindowConstraints { min_width: Some(720.0), min_height: Some(680.0), ..Default::default() }),
-        );
+        let visuals = WindowVisuals::new()
+            .backdrop(WindowBackdrop::Mica)
+            .theme(WindowTheme::System)
+            .client_size(860.0, 960.0)
+            .constraints(WindowConstraints { min_width: Some(720.0), min_height: Some(680.0), ..Default::default() });
+        context.window_visuals(match icon_path() {
+            Some(path) => visuals.icon(path),
+            None => visuals,
+        });
         context.on_color_scheme(context.callback(Message::Scheme));
         context.on_window_size(context.callback(Message::Size));
 
